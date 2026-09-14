@@ -46,6 +46,10 @@ type retiredKeyView struct {
 	RetiredAt  time.Time `json:"retired_at"`
 	ReplacedBy string    `json:"replaced_by,omitempty"`
 	DeleteOwed bool      `json:"delete_owed"`
+	// Deleted marks a key whose object is already gone and which is held only
+	// so a bucket listing that began before the delete cannot adopt it back.
+	// Nothing is owed for it; the next accepted refresh drops it.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 type pendingKeyView struct {
@@ -105,11 +109,11 @@ func (h *Handler) handleLeftovers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		retired    []retiredKeyView
-		pending    []pendingKeyView
-		owed, held int
-		nRetired   int
-		nPending   int
+		retired            []retiredKeyView
+		pending            []pendingKeyView
+		owed, landed, held int
+		nRetired           int
+		nPending           int
 	)
 	if lister, ok := h.manifest.(LeftoverLister); ok {
 		all := lister.RetiredKeys()
@@ -118,9 +122,13 @@ func (h *Handler) handleLeftovers(w http.ResponseWriter, r *http.Request) {
 			if rk.Reclaim {
 				owed++
 			}
+			if rk.Deleted {
+				landed++
+			}
 			if len(retired) < limit {
 				retired = append(retired, retiredKeyView{
-					Key: rk.Key, RetiredAt: rk.At, ReplacedBy: rk.By, DeleteOwed: rk.Reclaim,
+					Key: rk.Key, RetiredAt: rk.At, ReplacedBy: rk.By,
+					DeleteOwed: rk.Reclaim, Deleted: rk.Deleted,
 				})
 			}
 		}
@@ -150,11 +158,12 @@ func (h *Handler) handleLeftovers(w http.ResponseWriter, r *http.Request) {
 		"pending_keys":        pending,
 		"unfinished_rewrites": rewrites,
 		"counts": map[string]int{
-			"retired":             nRetired,
-			"retired_delete_owed": owed,
-			"pending":             nPending,
-			"pending_held":        held,
-			"unfinished_rewrites": nRewrites,
+			"retired":               nRetired,
+			"retired_delete_owed":   owed,
+			"retired_delete_landed": landed,
+			"pending":               nPending,
+			"pending_held":          held,
+			"unfinished_rewrites":   nRewrites,
 		},
 		"truncated": nRetired > len(retired) || nPending > len(pending) || nRewrites > len(rewrites),
 		"limit":     limit,

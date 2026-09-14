@@ -153,8 +153,11 @@ resolves, finishes and retires nothing until the read succeeds
 **The manifest refresh.** Every `manifest.refresh_interval` (and at startup) the
 manifest is rebuilt from a bucket listing. A listing cannot tell a live file from
 an object the manifest let go of, so the manifest remembers **retired** keys (a
-publish replaced them, or an output was abandoned, and the delete has not landed)
-and **pending** keys (uploaded, not yet published) and the refresh adopts neither.
+publish replaced them, or an output was abandoned) and **pending** keys
+(uploaded, not yet published) and the refresh adopts neither. A retired key is
+held until a listing that began after the retirement proves the object gone —
+not until the delete lands, because the listing already in flight was answered
+before it.
 Without that, every "unmanifested object is reclaimed by the orphan sweep" claim
 below was false within one refresh interval: the refresh re-adopted the object
 first — serving its rows twice, bringing deleted rows back once the tombstone

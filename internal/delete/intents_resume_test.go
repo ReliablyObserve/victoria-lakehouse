@@ -92,8 +92,13 @@ func TestResumeRewrites_DiscardedRecordRetriesItsDelete(t *testing.T) {
 	}
 
 	s.resumeRewrites(context.Background(), "t")
-	if pool.Has(repl) || m.IsRetired(repl) {
-		t.Fatal("the retried delete removes and forgets the abandoned replacement")
+	if pool.Has(repl) {
+		t.Fatal("the retried delete removes the abandoned replacement")
+	}
+	// The key stays retired as a guard against a listing older than the delete,
+	// with nothing owed for it any more.
+	if rk, ok := m.LookupRetired(repl); !ok || rk.Reclaim || !rk.Deleted {
+		t.Fatalf("the landed delete settles the debt and keeps the guard, got %+v ok=%v", rk, ok)
 	}
 	if ts, _ := store.Get("t"); len(ts.Superseded) != 0 {
 		t.Fatalf("all records clear: %+v", ts.Superseded)

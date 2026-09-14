@@ -175,8 +175,10 @@ GET /delete/{logsql|tracessql}/leftovers
 ```
 
 Read-only listing of what this instance is still holding on to: keys the
-manifest retired while their objects await deletion (`delete_owed` marks the
-ones this process owes), uploads claimed but not published (`held` marks a
+manifest retired so a refresh cannot adopt them back (`delete_owed` marks the
+ones whose objects are still in the bucket and this process owes; `deleted`
+marks the ones already gone, held only until a listing older than the delete
+can no longer be applied), uploads claimed but not published (`held` marks a
 replacement whose swap is not durable yet), and the durable records of
 unfinished rewrites with their state. It is instance-wide, not tenant-scoped
 (`"scope": "instance"`), like the tombstone listing. The alerts on retired-key

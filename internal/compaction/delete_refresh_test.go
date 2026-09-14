@@ -92,10 +92,28 @@ func TestDeleteRefresh_MergedSourceWhoseDeleteFailedIsNotReadopted(t *testing.T)
 	if w.pool.get(stuck) == nil {
 		t.Fatal("fixture: the merged source must survive its failed delete")
 	}
-	// The source whose delete landed is forgotten at once; only the stuck one
-	// stays retired, so the retired set tracks exactly the outstanding deletes.
-	if rk := w.manifest.RetiredKeys(); len(rk) != 1 || rk[0].Key != stuck || !rk[0].Reclaim {
-		t.Fatalf("retired keys = %+v, want only the stuck source with its delete owed", rk)
+	// Both sources stay retired: the stuck one because its object is still
+	// there and owed, the other because a listing that began before its delete
+	// can still report it. Only the stuck one is owed — the retired set tracks
+	// the outstanding deletes through Reclaim, not through membership.
+	rk := w.manifest.RetiredKeys()
+	if len(rk) != 2 {
+		t.Fatalf("retired keys = %+v, want both merged sources held", rk)
+	}
+	owed, landed := 0, 0
+	for _, r := range rk {
+		switch {
+		case r.Reclaim:
+			owed++
+			if r.Key != stuck {
+				t.Fatalf("the delete owed is %s, want the stuck source %s", r.Key, stuck)
+			}
+		case r.Deleted:
+			landed++
+		}
+	}
+	if owed != 1 || landed != 1 {
+		t.Fatalf("retired keys = %+v, want exactly one delete owed and one landed", rk)
 	}
 
 	w.refresh(t)
@@ -177,4 +195,57 @@ func TestDeleteRefresh_RefreshBetweenCompactionUploadAndPublish(t *testing.T) {
 	}
 	w.refresh(t)
 	w.assertVisible(t, "after the publish")
+}
+
+// TestDeleteRefresh_ListingThatBeganBeforeTheCompactionIsNotReadopted drives the
+// whole compaction — merge, publish, delete both sources, all deletes landing —
+// against a bucket listing that BEGAN BEFORE it and is applied after. S3 read
+// the sources before they were deleted, so its answer still names them; the
+// refresh applying it must not put them back next to the output that already
+// holds their rows.
+//
+// This is the case a landed delete cannot settle on its own, and it is the one
+// that happens every time in production: deletes normally succeed.
+func TestDeleteRefresh_ListingThatBeganBeforeTheCompactionIsNotReadopted(t *testing.T) {
+	w := newRaceWorld(t)
+
+	// The LIST begins and pages the bucket as it is: both sources, no output.
+	listStart := time.Now()
+	var stale []manifest.ListedObject
+	for _, k := range w.pool.Keys() {
+		stale = append(stale, manifest.ListedObject{Key: k, Size: int64(len(w.pool.get(k)))})
+	}
+	time.Sleep(2 * time.Millisecond)
+
+	res, err := w.compactor(time.Hour).Compact(context.Background(), racePartition, w.files, 0)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	for _, f := range w.files {
+		if w.pool.get(f.Key) != nil {
+			t.Fatalf("fixture: source %s should have been deleted by the compaction", f.Key)
+		}
+	}
+
+	// The LIST's pages arrive and the refresh applies them.
+	if !w.manifest.ApplyListing(stale, listStart) {
+		t.Fatal("the refresh was rejected by the cliff guard")
+	}
+	for _, f := range w.files {
+		if w.manifest.HasKey(f.Key) {
+			fi, _ := w.manifest.GetFileByKey(f.Key)
+			t.Errorf("the refresh re-admitted the deleted source %s next to %s; entry now %+v", f.Key, res.OutputFile, fi)
+		}
+	}
+	if !w.manifest.HasKey(res.OutputFile) {
+		t.Errorf("merged output %s missing from the manifest", res.OutputFile)
+	}
+	w.assertVisible(t, "refresh from a listing that began before the compaction")
+
+	// A listing that began after the deletes settles them: the guards go.
+	w.refresh(t)
+	if rk := w.manifest.RetiredKeys(); len(rk) != 0 {
+		t.Errorf("a listing that began after the deletes must forget the guards, still held: %+v", rk)
+	}
+	w.assertVisible(t, "after the settling refresh")
 }

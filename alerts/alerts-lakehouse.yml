@@ -196,6 +196,22 @@ groups:
           summary: "The manifest forgot a key whose object it still owed a delete for"
           description: "{{ $value }} key(s) this instance superseded were dropped from the retired set while their objects were still in the bucket. The next refresh adopts them: their rows are served next to the files that replaced them, and rows a delete removed come back. List them with GET /delete/logsql/leftovers and delete the objects by hand. lakehouse_manifest_retired_delete_owed shows how close the set is to its bound."
 
+      - alert: LakehouseManifestRetiredGuardEvictedAfterDelete
+        expr: increase(lakehouse_manifest_retired_evicted_total{reason="cap_delete_landed"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The manifest forgot a deleted key before a listing could prove it gone"
+          description: "{{ $value }} key(s) whose objects this instance deleted were dropped from the retired set under its size bound, before any bucket listing that began after the delete had been applied. A ListObjectsV2 still in flight was answered before the delete and still names those objects, so the refresh applying it re-admits them next to the files that replaced them — as entries with no row count or aggregates, whose downloads then fail. Check why the retired set is at its bound (lakehouse_manifest_retired_delete_owed points at deletes that are failing) and whether refreshes are being accepted (lakehouse_manifest_refresh_cliff_guard_rejections_total)."
+
+      - alert: LakehouseManifestRetiredDeleteLandedNotDraining
+        expr: lakehouse_manifest_retired_delete_landed > 0 and increase(lakehouse_manifest_retired_settled_total[30m]) == 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Deleted keys are not being settled by the manifest refresh"
+          description: "Keys whose objects are already deleted are held so a bucket listing older than the delete cannot adopt them back, and each is released by the first accepted listing that began after it. Guards are outstanding and NOT ONE has been released in 30 minutes, so refreshes are not completing or are being rejected: check lakehouse_manifest_refresh_cliff_guard_rejections_total and the manifest refresh phase in GET /lakehouse/info. The set grows with every compaction and permanent delete until a refresh lands. (The gauge alone cannot answer this: a node compacting faster than it refreshes refills the set as fast as it drains, so a non-zero gauge is normal — the settled counter is what proves progress.)"
+
       - alert: LakehouseTombstoneRestoreFailed
         expr: increase(lakehouse_delete_startup_inconsistencies_total{kind="s3_restore_failed"}[1h]) > 0 and on() lakehouse_delete_tombstone_restore_pending > 0
         labels:
