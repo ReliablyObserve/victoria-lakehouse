@@ -98,14 +98,16 @@ TestParity_Response/hits_bucket_keys/hits_bucket_keys  # B5: sub-hour /hits buck
 
 # --- B6: a tenant-scoped read answers with every tenant's rows --------------
 # Hot answers each tenant with its own rows; cold answers both tenants with
-# the union. These flip to pass when the tenant-scoping fix lands, and the
-# ratchet then forces this whole group to be deleted.
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_0/field_values_set  # B6: cold logs field_values ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_0/hits_total  # B6: cold logs hits ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_0/query_rows  # B6: cold logs query ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_2/field_values_set  # B6: cold logs field_values ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_2/hits_total  # B6: cold logs hits ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_2/query_rows  # B6: cold logs query ignores the request's tenant
+# the union once the rows are flushed. (While they are still buffered the
+# cold answers look scoped, which is why the logs test waits for the flushed
+# state before asserting.) These flip to pass when the tenant-scoping fix
+# lands, and the ratchet then forces this whole group to be deleted.
+TestTenantIsolation_Logs_PerTenantCounts/LH/account_3/field_values_set  # B6: cold logs field_values ignores the request's tenant
+TestTenantIsolation_Logs_PerTenantCounts/LH/account_3/hits_total  # B6: cold logs hits ignores the request's tenant
+TestTenantIsolation_Logs_PerTenantCounts/LH/account_3/query_rows  # B6: cold logs query ignores the request's tenant
+TestTenantIsolation_Logs_PerTenantCounts/LH/account_4/field_values_set  # B6: cold logs field_values ignores the request's tenant
+TestTenantIsolation_Logs_PerTenantCounts/LH/account_4/hits_total  # B6: cold logs hits ignores the request's tenant
+TestTenantIsolation_Logs_PerTenantCounts/LH/account_4/query_rows  # B6: cold logs query ignores the request's tenant
 TestTenantIsolation_Traces_PerTenantParity/account_0/field_values_hits  # B6: cold traces field_values ignores the request's tenant
 TestTenantIsolation_Traces_PerTenantParity/account_1/field_values_hits  # B6: cold traces field_values ignores the request's tenant
 

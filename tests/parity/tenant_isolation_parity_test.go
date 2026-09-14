@@ -14,8 +14,10 @@ package parity
 // known constants rather than whatever the shared seed happened to produce.
 // It is written far enough in the past (isolationHoursBack) to sit outside
 // the window every other test in this suite asks for, so it can never
-// perturb another comparison. The traces side uses the two tenants the
-// parity compose already seeds and takes hot VT as the reference.
+// perturb another comparison, and for two tenants that own no other data, so
+// the cold manifest's entries for them are exactly the corpus. The traces
+// side uses the two tenants the parity compose already seeds and takes hot VT
+// as the reference.
 
 import (
 	"bytes"
@@ -42,9 +44,17 @@ const (
 	isolationRowsTenantA = 40
 	isolationRowsTenantB = 25
 
-	isolationAccountA = "0" // the default tenant every unscoped read lands on
-	isolationAccountB = "2"
+	// Tenants no other writer in the stack uses (datagen seeds logs into 0:0
+	// and traces into 0:0 and 1:0), so everything the cold manifest lists
+	// for them is the corpus — which is what lets seedIsolationCorpus tell
+	// a flushed corpus from one still in the write path.
+	isolationAccountA = "3"
+	isolationAccountB = "4"
 	isolationProject  = "0"
+
+	// coldManifestRefreshInterval is -lakehouse.manifest.refresh-interval
+	// on lakehouse-logs in tests/parity/docker-compose.yml.
+	coldManifestRefreshInterval = 5 * time.Second
 )
 
 // isolationServices gives each tenant a DISJOINT set of service.name values.
@@ -188,46 +198,128 @@ func isolationParams() url.Values {
 	}
 }
 
-// seedIsolationCorpus writes the two-tenant corpus to both logs tiers, once.
+// seedIsolationCorpus writes the two-tenant corpus to both logs tiers, once,
+// and returns when the cold tier holds it in the state it then stays in.
 // Re-running the suite against a live stack would otherwise double every
 // count, so it first checks whether the corpus is already there.
+//
+// What a cold read answers for rows written seconds ago depends on where they
+// are, not only on whether the read is scoped. Until the flush they are served
+// from the local buffer, which honors the request's tenant. Once one tenant's
+// file lands, the buffer only serves rows newer than the newest file in the
+// window, so the other tenant's still-buffered rows vanish from every read.
+// And a manifest refresh that listed the bucket just before an upload drops
+// the new file again until the next refresh. On the current cold tier the
+// reads therefore look correctly scoped while the corpus is buffered, answer
+// both tenants with one tenant's rows mid-flush, and leak the union once
+// settled — so assertions taken at the wrong moment passed or failed on timing
+// alone.
+//
+// Readiness is never judged from the per-tenant counts under test: a sum of
+// two leaking reads can reach the corpus size while one tenant's rows are
+// missing entirely. The corpus is ready when, for three manifest refresh
+// intervals without a change, hot answers each tenant with exactly its rows,
+// the cold manifest lists files for both tenants (they own no other data, so
+// those files are the corpus), and the cold answers stay the same.
 func seedIsolationCorpus(t *testing.T) {
 	t.Helper()
 	if isolationQueryRows(t, vlBaseURL, isolationAccountA) == isolationRowsTenantA &&
 		isolationQueryRows(t, vlBaseURL, isolationAccountB) == isolationRowsTenantB {
-		t.Log("isolation corpus already present — skipping seed")
-		return
-	}
-
-	for _, tn := range []struct {
-		account string
-		rows    int
-	}{
-		{isolationAccountA, isolationRowsTenantA},
-		{isolationAccountB, isolationRowsTenantB},
-	} {
-		body := isolationNDJSON(tn.account, tn.rows)
-		for _, base := range []string{vlBaseURL, lhBaseURL} {
-			pushIsolationRows(t, base, tn.account, body)
+		t.Log("isolation corpus already present on hot — skipping seed")
+	} else {
+		for _, tn := range []struct {
+			account string
+			rows    int
+		}{
+			{isolationAccountA, isolationRowsTenantA},
+			{isolationAccountB, isolationRowsTenantB},
+		} {
+			body := isolationNDJSON(tn.account, tn.rows)
+			for _, base := range []string{vlBaseURL, lhBaseURL} {
+				pushIsolationRows(t, base, tn.account, body)
+			}
 		}
 	}
 
-	// Wait for hot to expose the rows and for cold to have flushed them.
+	stableFor := 3 * coldManifestRefreshInterval
 	deadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
-		hotA := isolationQueryRows(t, vlBaseURL, isolationAccountA)
-		hotB := isolationQueryRows(t, vlBaseURL, isolationAccountB)
-		coldTotal := isolationQueryRows(t, lhBaseURL, isolationAccountA) +
-			isolationQueryRows(t, lhBaseURL, isolationAccountB)
-		if hotA == isolationRowsTenantA && hotB == isolationRowsTenantB &&
-			coldTotal >= isolationRowsTenantA+isolationRowsTenantB {
-			t.Logf("isolation corpus visible: hot a=%d b=%d, cold total=%d", hotA, hotB, coldTotal)
+	var stable isolationState
+	var stableSince time.Time
+	for {
+		state := observeIsolationCorpus(t)
+		switch {
+		case !state.ready():
+			stableSince = time.Time{}
+		case stableSince.IsZero() || state != stable:
+			stable, stableSince = state, time.Now()
+		case time.Since(stableSince) >= stableFor:
+			t.Logf("isolation corpus unchanged for %s: %s", stableFor, state)
 			return
 		}
-		time.Sleep(5 * time.Second)
+		if time.Now().After(deadline) {
+			t.Fatalf("isolation corpus did not hold steady for %s within 2m (last: %s) — "+
+				"ingest, flush or manifest problem, not a tenant-scope result", stableFor, state)
+		}
+		time.Sleep(time.Second)
 	}
-	t.Fatal("isolation corpus never became visible on both tiers within 2m — " +
-		"ingest or flush problem, not a tenant-scope result")
+}
+
+// isolationState is one observation of the isolation corpus on both tiers.
+type isolationState struct {
+	hotA, hotB   int  // rows hot VictoriaLogs answers each tenant with
+	coldListed   bool // the cold manifest lists files for both tenants
+	coldA, coldB int  // rows the cold tier answers each tenant with
+}
+
+// ready reports whether hot holds exactly the corpus and the cold tier has
+// flushed it. The cold answers are deliberately not part of it.
+func (s isolationState) ready() bool {
+	return s.hotA == isolationRowsTenantA && s.hotB == isolationRowsTenantB && s.coldListed
+}
+
+func (s isolationState) String() string {
+	return fmt.Sprintf("hot a=%d b=%d (want %d/%d), cold manifest lists both tenants=%v, cold a=%d b=%d",
+		s.hotA, s.hotB, isolationRowsTenantA, isolationRowsTenantB, s.coldListed, s.coldA, s.coldB)
+}
+
+func observeIsolationCorpus(t *testing.T) isolationState {
+	t.Helper()
+	return isolationState{
+		hotA:       isolationQueryRows(t, vlBaseURL, isolationAccountA),
+		hotB:       isolationQueryRows(t, vlBaseURL, isolationAccountB),
+		coldListed: coldManifestListsTenants(t, lhBaseURL, isolationProject, isolationAccountA, isolationAccountB),
+		coldA:      isolationQueryRows(t, lhBaseURL, isolationAccountA),
+		coldB:      isolationQueryRows(t, lhBaseURL, isolationAccountB),
+	}
+}
+
+// coldManifestListsTenants reports whether the cold tier's manifest, read
+// through /lakehouse/api/v1/tenants, holds at least one file for every given
+// account under project.
+func coldManifestListsTenants(t *testing.T, base, project string, accounts ...string) bool {
+	t.Helper()
+	r := fetch(t, base, "/lakehouse/api/v1/tenants", nil)
+	if r.StatusCode != 200 {
+		t.Fatalf("GET %s/lakehouse/api/v1/tenants returned %d: %s", base, r.StatusCode, string(r.Body))
+	}
+	var d struct {
+		Tenants []tenantSummary `json:"tenants"`
+	}
+	if err := json.Unmarshal(r.Body, &d); err != nil {
+		t.Fatalf("parse %s/lakehouse/api/v1/tenants: %v", base, err)
+	}
+	files := make(map[string]int64, len(d.Tenants))
+	for _, te := range d.Tenants {
+		if te.ProjectID == project {
+			files[te.AccountID] = te.TotalFiles
+		}
+	}
+	for _, account := range accounts {
+		if files[account] <= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // isolationNDJSON builds `rows` log lines inside the isolation window. Field
