@@ -72,7 +72,6 @@ type RewriteResult struct {
 // the filtered result back.
 type Rewriter struct {
 	pool         RewriterPool
-	prefix       string
 	rowGroupSize int
 	mode         string
 	writers      ParquetWriters
@@ -107,9 +106,16 @@ func WithParquetWriters(w ParquetWriters) RewriterOption {
 	return func(r *Rewriter) { r.writers = w }
 }
 
-// NewRewriter creates a Rewriter with the given pool, key prefix, row group size, and mode.
+// NewRewriter creates a Rewriter with the given pool, row group size, and mode.
 // Mode should be "logs" or "traces". If rowGroupSize <= 0 it defaults to 10000.
+//
+// prefix is the deployment's key prefix. It deliberately plays no part in where
+// a replacement is written: a replacement always lands in its source object's
+// own directory (see replacementKey), because under per-tenant layouts the
+// deployment prefix is the DEFAULT tenant's and the source's directory is the
+// only place that carries the owning tenant.
 func NewRewriter(pool RewriterPool, prefix string, rowGroupSize int, mode string, opts ...RewriterOption) *Rewriter {
+	_ = prefix
 	if rowGroupSize <= 0 {
 		rowGroupSize = 10000
 	}
@@ -118,7 +124,6 @@ func NewRewriter(pool RewriterPool, prefix string, rowGroupSize int, mode string
 	}
 	r := &Rewriter{
 		pool:         pool,
-		prefix:       prefix,
 		rowGroupSize: rowGroupSize,
 		mode:         mode,
 	}
@@ -198,9 +203,7 @@ func (r *Rewriter) RewriteFile(ctx context.Context, key string, tombstones []Tom
 	result.BloomBytes = footerBloomBytes(newData)
 	result.ColumnBytes = columnBytesFromFooter(newData)
 
-	partition := extractPartition(key)
-	short := uuid.New().String()[:8]
-	newKey := fmt.Sprintf("%s%s/%s.parquet", r.prefix, partition, short)
+	newKey := replacementKey(key, uuid.New().String()[:8])
 	result.NewKey = newKey
 
 	if err := r.pool.Upload(ctx, newKey, newData); err != nil {
@@ -449,6 +452,28 @@ func matchesAny(fields map[string]string, ts int64, tombstones []Tombstone) bool
 		}
 	}
 	return false
+}
+
+// replacementKey names the object that replaces sourceKey: same directory, new
+// base name. The directory is kept byte for byte — it carries the tenant prefix
+// ({AccountID}/{ProjectID}/<signal>/) and the partition, and S3 keys are
+// literal strings, so no path cleaning is applied either: a cleaned directory
+// would be a different key space.
+//
+// The result is never the source key itself. A replacement that reused the
+// source's name would overwrite the only copy of the kept rows before the
+// manifest points at it, and the commit step — which deletes the superseded
+// key — would then delete the replacement.
+func replacementKey(sourceKey, id string) string {
+	dir := ""
+	if i := strings.LastIndex(sourceKey, "/"); i >= 0 {
+		dir = sourceKey[:i+1]
+	}
+	key := dir + id + ".parquet"
+	if key == sourceKey {
+		key = dir + id + "-r.parquet"
+	}
+	return key
 }
 
 // extractPartition extracts the partition path (e.g. "dt=2026-01-01/hour=10")

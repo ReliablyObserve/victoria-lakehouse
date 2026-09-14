@@ -62,13 +62,18 @@ func FuzzTombstoneMatchesRow(f *testing.F) {
 	})
 }
 
-// FuzzRewritePartitionFromKey drives the key → partition derivation with arbitrary
-// keys. It is the fallback the rewriter uses when the manifest does not know a
-// key, so a wrong answer files a replacement under a partition no query looks
-// in — the object exists, is manifested, and is invisible.
+// FuzzRewritePartitionFromKey drives the key → partition derivation, and the
+// key a rewrite writes its replacement under, with arbitrary keys. A wrong
+// partition files a replacement where no query looks — the object exists, is
+// manifested, and is invisible; a replacement outside its source's directory
+// leaves the owning tenant's key space and is served to another tenant.
 func FuzzRewritePartitionFromKey(f *testing.F) {
 	f.Add("logs/dt=2026-01-01/hour=10/a.parquet")
 	f.Add("1002/0/logs/dt=2026-01-01/hour=10/a.parquet")
+	f.Add("1002/0/traces/dt=2026-01-01/hour=10/compacted-L2-0123abcd.parquet")
+	f.Add("acme/logs/dt=2026-01-01/hour=10/a.parquet")
+	f.Add("0/0/logs//dt=2026-01-01/hour=10/a.parquet")
+	f.Add("a.parquet")
 	f.Add("")
 	f.Add("/")
 	f.Add("=")
@@ -76,6 +81,22 @@ func FuzzRewritePartitionFromKey(f *testing.F) {
 	f.Add(strings.Repeat("dt=x/", 500))
 
 	f.Fuzz(func(t *testing.T, key string) {
+		// The replacement shares the source's directory byte for byte (tenant
+		// prefix and partition included), is a distinct .parquet object, and so
+		// derives the same partition.
+		const id = "0123abcd"
+		repl := replacementKey(key, id)
+		dir := key[:strings.LastIndex(key, "/")+1]
+		if !strings.HasPrefix(repl, dir) || strings.Contains(repl[len(dir):], "/") {
+			t.Fatalf("replacementKey(%q) = %q is not in the source directory %q", key, repl, dir)
+		}
+		if repl == key || !strings.HasSuffix(repl, ".parquet") {
+			t.Fatalf("replacementKey(%q) = %q must be a distinct .parquet key", key, repl)
+		}
+		if extractPartition(repl) != extractPartition(dir+"x.parquet") {
+			t.Fatalf("replacementKey(%q) = %q moved partitions: %q vs %q", key, repl, extractPartition(repl), extractPartition(dir+"x.parquet"))
+		}
+
 		got := extractPartition(key)
 
 		if got == "" {
