@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -73,5 +74,39 @@ func TestDedupOverlappingFiles_HigherLevelWins(t *testing.T) {
 	}
 	if got[0].Key != "l2.parquet" {
 		t.Errorf("kept %q, want l2.parquet (higher level)", got[0].Key)
+	}
+}
+
+// TestDedupOverlappingFiles_NeverAcrossTenants: a larger file of one tenant
+// covering the same seconds as a smaller file of another tenant is not its
+// compacted output — both must survive, or a cross-tenant read (global read,
+// tenant list) silently loses the smaller tenant's values.
+func TestDedupOverlappingFiles_NeverAcrossTenants(t *testing.T) {
+	files := []manifest.FileInfo{
+		{Key: "0/0/logs/dt=2026-05-10/hour=14/big.parquet", Size: 5000, MinTimeNs: 1000, MaxTimeNs: 9000},
+		{Key: "1001/0/logs/dt=2026-05-10/hour=14/small.parquet", Size: 100, MinTimeNs: 2000, MaxTimeNs: 3000},
+		{Key: "3003/0/logs/dt=2026-05-10/hour=14/small.parquet", Size: 100, MinTimeNs: 2000, MaxTimeNs: 3000, CompactionLevel: 0},
+	}
+	if got := dedupOverlappingFiles(append([]manifest.FileInfo(nil), files...)); len(got) != 3 {
+		t.Errorf("dedup across tenants kept %d of 3 files: %+v", len(got), got)
+	}
+
+	// Within one tenant partition the compacted output still subsumes its source.
+	same := []manifest.FileInfo{
+		{Key: "1001/0/logs/dt=2026-05-10/hour=14/src.parquet", Size: 100, MinTimeNs: 2000, MaxTimeNs: 3000},
+		{Key: "1001/0/logs/dt=2026-05-10/hour=14/merged.parquet", Size: 900, MinTimeNs: 1000, MaxTimeNs: 9000, CompactionLevel: 1},
+	}
+	got := dedupOverlappingFiles(same)
+	if len(got) != 1 || !strings.HasSuffix(got[0].Key, "merged.parquet") {
+		t.Errorf("same-partition dedup kept %+v, want only the compacted output", got)
+	}
+
+	// Same tenant, different hour directories: not a compaction pair either.
+	hours := []manifest.FileInfo{
+		{Key: "1001/0/logs/dt=2026-05-10/hour=14/a.parquet", Size: 900, MinTimeNs: 1000, MaxTimeNs: 9000, CompactionLevel: 1},
+		{Key: "1001/0/logs/dt=2026-05-10/hour=15/b.parquet", Size: 100, MinTimeNs: 2000, MaxTimeNs: 3000},
+	}
+	if got := dedupOverlappingFiles(hours); len(got) != 2 {
+		t.Errorf("dedup across partitions kept %d of 2 files: %+v", len(got), got)
 	}
 }

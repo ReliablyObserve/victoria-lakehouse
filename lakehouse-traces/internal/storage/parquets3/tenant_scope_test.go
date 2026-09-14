@@ -1457,3 +1457,35 @@ func TestTenantScope_BufferBridge_TenantListAsksPerTenant(t *testing.T) {
 		t.Errorf("a cross-tenant scope is one bridge request, got %d", n)
 	}
 }
+
+// TestTenantScope_Invariant_ExactFieldValues pins the positive side for field
+// enumeration: every request shape gets exactly the service values of the
+// tenants it may read — none foreign, none missing. A filter forces the scan
+// path, where objects are de-duplicated before scanning; that de-duplication
+// must never treat another tenant's object as a compacted copy of this one.
+func TestTenantScope_Invariant_ExactFieldValues(t *testing.T) {
+	for _, layout := range tsLayouts() {
+		for _, tc := range tsCases() {
+			t.Run(string(layout)+"/"+tc.name, func(t *testing.T) {
+				f := newTenantScopeFixtureLayout(t, layout)
+				f.addLegacyObject()
+				q := mustParseQueryWithTime(t, `service.name:svc*`, f.startNs, f.endNs)
+				vals, err := f.s.GetFieldValues(f.ctx(tc.globalRead), tc.tenantIDs, q, "service.name", 100)
+				if err != nil {
+					t.Fatalf("GetFieldValues: %v", err)
+				}
+				got := make([]string, 0, len(vals))
+				for _, v := range vals {
+					if strings.HasPrefix(v.Value, "svc-") {
+						got = append(got, v.Value)
+					}
+				}
+				sort.Strings(got)
+				want := tsSortedKeys(f.expectedServices(tc.tenantIDs, tc.globalRead))
+				if strings.Join(got, ",") != strings.Join(want, ",") {
+					t.Errorf("field_values = %v, want exactly %v", got, want)
+				}
+			})
+		}
+	}
+}

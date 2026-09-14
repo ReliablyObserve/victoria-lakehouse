@@ -257,7 +257,16 @@ func dedupOverlappingFiles(files []manifest.FileInfo) []manifest.FileInfo {
 
 // shouldDropBecauseCoveredBy reports whether `b` is redundant given the
 // presence of `a` — i.e. `a` is the compacted output that subsumes `b`.
+//
+// Compaction merges files of ONE tenant partition (the tenant's key directory
+// for one hour), so only a file from the same directory can subsume `b`. A file
+// of another tenant — which a cross-tenant read or a tenant list puts in the
+// same candidate list — covering the same seconds holds different rows and must
+// never make `b` look redundant.
 func shouldDropBecauseCoveredBy(b, a manifest.FileInfo) bool {
+	if manifest.ExtractTenantPartition(a.Key) != manifest.ExtractTenantPartition(b.Key) {
+		return false
+	}
 	if a.MinTimeNs == 0 || a.MaxTimeNs == 0 || b.MinTimeNs == 0 || b.MaxTimeNs == 0 {
 		return false
 	}
