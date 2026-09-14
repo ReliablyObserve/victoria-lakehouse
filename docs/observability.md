@@ -76,6 +76,7 @@ graph LR
 | Metric | Type | Description |
 |---|---|---|
 | `lakehouse_manifest_files` | Gauge | Parquet files tracked |
+| `lakehouse_manifest_tenant_bucket_list_errors_total` | Counter (label: `bucket`) | Failed LISTs of a tenant's dedicated bucket during a refresh. One unreachable bucket fails the whole refresh — the manifest then keeps its previous state for every tenant — so any sustained rate means the fleet's view of S3 is frozen. The series of each registered dedicated bucket is exported at zero |
 | `lakehouse_manifest_fast_path_total` | Counter | Queries short-circuited |
 | `lakehouse_discovery_hot_boundary_seconds` | Gauge | Auto-discovered boundary |
 | `lakehouse_discovery_hot_boundary_gap_days` | Gauge | Gap between cold and hot |
@@ -113,7 +114,7 @@ graph LR
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `lakehouse_parquet_row_groups_skipped_total` | Counter | `reason` | Skipped by stats/bloom |
+| `lakehouse_parquet_row_groups_skipped_total` | Counter | `reason` | Objects or row groups skipped before decoding, by the stage that pruned them: `label_index`, `column_stats` (manifest file pre-filters), `footer_prefetch` (footer-only file skip), `stats` (row-group time range), `bloom`, `pushdown`, `token_bloom` (row-group checks). Every reason is exported at zero from process start |
 | `lakehouse_parquet_bloom_checks_total` | Counter | `result` | Bloom lookups |
 | `lakehouse_parquet_column_bytes_read_total` | Counter | | Parquet I/O |
 
@@ -167,6 +168,13 @@ Per-tenant metrics subject to cardinality cap (`stats.metrics_cardinality_limit`
 | `lakehouse_tenant_queries_total` | Counter | `tenant` | Cumulative queries per tenant |
 | `lakehouse_tenant_last_write_timestamp` | Gauge | `tenant` | Unix seconds of last write |
 | `lakehouse_tenant_last_query_timestamp` | Gauge | `tenant` | Unix seconds of last query |
+
+Read scoping (see [multi-tenancy — Read Scoping](multi-tenancy.md#read-scoping-which-data-a-request-sees)); these are not per-tenant and not subject to the cap:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_tenant_scope_violations_total` | Counter | `site` | Objects or buffered rows the read path selected for a request but that belong to another tenant, dropped before answering. Expected to stay 0; `site` names the read path (`query`, `field_names`, `field_values`, `streams`, `stream_ids`, `catalog_field_names`, `catalog_field_values`, `trace_index_lookup`, `bridge_logs`, `bridge_traces`). |
+| `lakehouse_global_read_queries_total` | Counter | | Select requests that presented a valid global-read credential and were answered across all tenants |
 
 ### Global Storage Metrics
 
@@ -267,6 +275,8 @@ Shipped in `alerts/alerts-lakehouse.yml`:
 | `LakehouseDiscoveryFailed` | critical | No storage nodes found for 10m |
 | `LakehouseS3ThrottleSustained` | warning | Sustained S3 throttling for 5m |
 | `LakehousePeerDown` | warning | High peer error rate for 5m |
+| `LakehouseTenantScopeViolation` | critical | Any `lakehouse_tenant_scope_violations_total` increase in 5m |
+| `LakehouseTenantBucketListFailing` | critical | A tenant's dedicated bucket failed to list for 10m (`lakehouse_manifest_tenant_bucket_list_errors_total`) |
 
 ## Structured Logging
 

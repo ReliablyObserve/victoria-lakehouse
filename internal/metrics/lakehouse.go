@@ -190,7 +190,32 @@ var (
 	ManifestPushPeers                   = NewGauge("lakehouse_manifest_push_peers")
 	ManifestPushErrorsTotal             = NewCounter("lakehouse_manifest_push_errors_total")
 	ManifestUpdateReceivedTotal         = NewCounter("lakehouse_manifest_update_received_total")
+
+	// ManifestTenantBucketListErrors counts failed LISTs of a tenant's
+	// dedicated bucket during a manifest refresh, by bucket. One failing
+	// bucket fails the whole refresh — the manifest then keeps serving its
+	// previous state rather than dropping that tenant's objects — so a
+	// non-zero rate means the fleet's view of S3 is frozen until the bucket
+	// is reachable again. The series of every registered dedicated bucket is
+	// created at zero by Manifest.SetTenantBuckets.
+	ManifestTenantBucketListErrors = NewCounterVec("lakehouse_manifest_tenant_bucket_list_errors_total", "bucket")
 )
+
+// RowGroupSkipReasons is every reason ParquetRowGroupsSkipped is incremented
+// with on either binary: the manifest-level file pre-filters (label_index,
+// column_stats), the footer-only file skip (footer_prefetch) and the
+// row-group checks (stats = time range, bloom, pushdown, token_bloom).
+// TestRowGroupSkipReasons_MatchCallSites keeps the list and the call sites in
+// step.
+var RowGroupSkipReasons = []string{"label_index", "column_stats", "footer_prefetch", "stats", "bloom", "pushdown", "token_bloom"}
+
+func init() {
+	// Export every reason from process start. Which stage prunes a query
+	// depends on the objects it selects, so a series that only appeared on
+	// its first skip could be missing for a long time on a tenant-scoped
+	// read that never reaches that stage.
+	ParquetRowGroupsSkipped.Init(RowGroupSkipReasons...)
+}
 
 // Parquet engine metrics
 var (
@@ -467,6 +492,18 @@ var (
 	QueryRejectedTotal        = NewCounter("lakehouse_query_rejected_total")
 	QueryFileLimitExceeded    = NewCounter("lakehouse_query_file_limit_exceeded_total")
 	QueryMemoryBudgetExceeded = NewCounter("lakehouse_query_memory_budget_exceeded_total")
+
+	// TenantScopeViolations counts objects/rows the read path selected that do
+	// NOT belong to the requesting tenant. The guard drops them before they can
+	// reach a response, so a non-zero value is a defect signal (manifest key
+	// shape drift, a new call site that bypassed the scoped file lookup, or a
+	// peer answering the buffer bridge without tenant scoping), never routine.
+	// {site} names the query path that tripped it.
+	TenantScopeViolations = NewCounterVec("lakehouse_tenant_scope_violations_total", "site")
+
+	// GlobalReadQueriesTotal counts select requests that presented a valid
+	// global-read credential and were therefore answered across every tenant.
+	GlobalReadQueriesTotal = NewCounter("lakehouse_global_read_queries_total")
 )
 
 // Compaction metrics

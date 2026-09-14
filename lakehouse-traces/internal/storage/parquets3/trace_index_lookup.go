@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go/format"
 
@@ -52,24 +53,21 @@ const traceIndexLookupParallelism = 16
 // a footer-only miss as authoritative makes us silently skip real
 // data; see the commit history around this file for the regression
 // that brought that to light).
-func (s *Storage) LookupTraceIndex(ctx context.Context, traceID string) (startNs, endNs int64, found bool, err error) {
+//
+// The walk covers the REQUEST TENANT's files only (tenantIDs, resolved like
+// every other read — see filesForTenants). Walking every tenant's footers
+// would tell a caller whether another tenant holds a trace ID and when, and
+// in a bucket-per-tenant deployment would read other tenants' buckets.
+func (s *Storage) LookupTraceIndex(ctx context.Context, tenantIDs []logstorage.TenantID, traceID string) (startNs, endNs int64, found bool, err error) {
 	if traceID == "" {
 		metrics.TraceIndexLookups.Inc("miss")
 		return 0, 0, false, nil
 	}
 
-	files := s.manifest.AllFiles()
-	if len(files) == 0 {
+	flatFiles := s.filesForTenants(ctx, "trace_index_lookup", 0, 1<<62, tenantIDs)
+	if len(flatFiles) == 0 {
 		metrics.TraceIndexLookups.Inc("miss")
 		return 0, 0, false, nil
-	}
-
-	// Flatten so the worker pool sees one job per file rather than a
-	// nested loop. Avoids the per-partition slice indirection inside
-	// hot goroutines.
-	var flatFiles []manifest.FileInfo
-	for _, partFiles := range files {
-		flatFiles = append(flatFiles, partFiles...)
 	}
 
 	// Parallel footer fetch with bounded concurrency. cancelCtx lets

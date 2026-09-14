@@ -438,6 +438,12 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		ColumnBytes:       columnBytesFromFooter(outputData),
 	})
 
+	// Every input row is now inside outputKey. Mark the inputs before deleting
+	// them: an S3 LIST that started before the deletes still returns them, and
+	// a refresh that re-admitted them would count their rows twice — once in
+	// the source, once in the merged output.
+	c.manifest.MarkSuperseded(inputKeys)
+
 	for _, f := range g.Files {
 		c.manifest.RemoveFile(partition, f.Key)
 		if err := c.pool.Delete(ctx, f.Key); err != nil {

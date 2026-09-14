@@ -91,10 +91,11 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
+	scope := scopeFor(ctx, tenantIDs)
 
 	// pmeta labels read-flip: catalog field names first (range-aware), labelIndex fallback.
 	if filter == nil && s.catalog != nil {
-		if names := s.catalogFieldNames(q); len(names) > 0 {
+		if names := s.catalogFieldNames(q, scope); len(names) > 0 {
 			result := make([]logstorage.ValueWithHits, len(names))
 			for i, name := range names {
 				result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
@@ -102,7 +103,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 			return result, nil
 		}
 	}
-	if filter == nil && s.labelIndex.Len() > 0 {
+	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 		names := s.labelIndex.GetFieldNames()
 		result := make([]logstorage.ValueWithHits, len(names))
 		for i, name := range names {
@@ -113,7 +114,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForScope("field_names", startNs, endNs, scope)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -134,7 +135,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	s.updateLabelIndexNamesOnly(f)
 
 	if s.catalog != nil {
-		if names := s.catalogFieldNames(q); len(names) > 0 {
+		if names := s.catalogFieldNames(q, scope); len(names) > 0 {
 			result := make([]logstorage.ValueWithHits, len(names))
 			for i, name := range names {
 				result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
@@ -142,7 +143,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 			return result, nil
 		}
 	}
-	if s.labelIndex.Len() > 0 {
+	if s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 		names := s.labelIndex.GetFieldNames()
 		result := make([]logstorage.ValueWithHits, len(names))
 		for i, name := range names {
@@ -250,6 +251,7 @@ func (s *Storage) scanProjectedFieldValues(
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
+	scope := scopeFor(ctx, tenantIDs)
 
 	// pmeta catalog fast-path (--pmeta): union the field's values across the
 	// partitions in the query's time range, served from RAM. nil (flag off) or
@@ -261,12 +263,12 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		if s.refuseEnumeration(fieldName) {
 			return nil, nil // declared id column: don't enumerate (matches VT), no scan
 		}
-		if result := s.catalogFieldValues(q, fieldName, limit); len(result) > 0 {
+		if result := s.catalogFieldValues(q, scope, fieldName, limit); len(result) > 0 {
 			return result, nil
 		}
 	}
 
-	if filter == nil && s.labelIndex.Len() > 0 {
+	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 		vals := s.labelIndex.GetFieldValues(fieldName, limit)
 		if len(vals) == 0 {
 			if m := s.registry.ResolveToParquet(fieldName); m != nil && m.InternalName != fieldName {
@@ -289,7 +291,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForScope("field_values", startNs, endNs, scope)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -384,7 +386,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -426,7 +428,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForTenants(ctx, "stream_ids", startNs, endNs, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
 	}

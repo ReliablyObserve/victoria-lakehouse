@@ -15,16 +15,32 @@
     - tests/e2e/tenant_mapping_test.go#TestTenantMapping_StringAndIntPaths
     - tests/e2e/isolation_verify_test.go#TestVerifyIsolation_OrgID_NoCrossTenantLeak
     - tests/e2e/endpoints_verification_test.go#TestEndpoint_MultiTenant_DataIsolation
+    - internal/storage/parquets3/tenant_scope_test.go
+    - internal/storage/parquets3/tenant_scope_labelindex_test.go
+    - lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go
+    - lakehouse-traces/internal/storage/parquets3/tenant_scope_labelindex_test.go
+    - lakehouse-traces/internal/storage/parquets3/tenant_scope_traces_test.go
+    - internal/selectapi/tenant_scope_test.go
+    - internal/buffer/handler_tenant_test.go
+    - internal/manifest/tenant_scope_test.go
+    - tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Logs_ExactCounts
+    - tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Traces_ExactCounts
+    - tests/parity/tenant_scope_parity_test.go#TestTenantParity_PerTenantQueryReturnsOnlyOwnedData
   docs:
     - docs/multi-tenancy.md
+    - docs/multi-tenancy.md#read-scoping-which-data-a-request-sees
     - docs/configuration.md
   highlight: >-
     **Single binary, all tenants**: one lakehouse-logs/traces process serves all tenants simultaneously via header-based routing (`X-Scope-AccountID` / `X-Scope-ProjectID`, vmauth-compatible). Same pattern as Grafana Loki and Tempo.
   description: >-
     Tenancy is resolved from request headers at the edge of every path — insert, query, admin —
     and carried through to the storage prefix, so there is no per-tenant process to schedule and
-    no per-tenant config to reload. Isolation is asserted by e2e tests that try to read across
-    tenants and must fail.
+    no per-tenant config to reload. A select request reads exactly one tenant, as upstream
+    VictoriaLogs and VictoriaTraces do: the tenant in its headers, or `0:0` when there are none,
+    on every query class — row scans, metadata fast paths, field and stream enumeration, pmeta
+    catalog answers, the buffer bridge and the Jaeger API. Isolation is asserted by an invariant
+    matrix over query class × request shape × tenant layout and by e2e tests that count each
+    tenant's rows exactly and try to read across tenants.
 
 - id: lh.feature.tenancy.s3_prefix_isolation
   title: In-path per-tenant S3 isolation
@@ -62,6 +78,9 @@
     - internal/s3reader/pool_registry_test.go
     - internal/storage/parquets3/bucket_routing_test.go
     - internal/tenant/effective_test.go
+    - internal/manifest/tenant_buckets_refresh_test.go
+    - internal/manifest/tenant_range_walk_test.go
+    - tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_BucketLayout
   docs:
     - docs/multi-tenancy.md
     - docs/configuration.md
@@ -149,6 +168,9 @@
     - tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithCorrectSecret
     - tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithWrongSecret
     - tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadMissingHeader
+    - internal/tenant/global_read_test.go
+    - internal/storage/global_read_test.go
+    - lakehouse-traces/internal/selectapi/global_read_test.go
   docs:
     - docs/multi-tenancy.md
     - docs/security.md

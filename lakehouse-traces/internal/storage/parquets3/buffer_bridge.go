@@ -5,11 +5,70 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"sync"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
+
+// checkPeerTenantScope verifies that the peer honoured the tenant scope of the
+// request. A peer running a build without tenant-scoped buffer queries does not
+// echo the header, so its rows are untrusted: the fan-out fails closed and drops
+// the whole answer rather than merging rows it cannot attribute. A mixed-version
+// fleet therefore loses the unflushed window from old peers (they are still in
+// the cold tier after the next flush) instead of leaking across tenants.
+func checkPeerTenantScope(resp *http.Response, scope tenantScope) error {
+	got := resp.Header.Get(buffer.TenantScopeHeader)
+	if want := bufferScopeString(scope); got != want {
+		return fmt.Errorf("peer did not scope /internal/buffer/query to tenant %s (echoed %q); dropping its rows", want, got)
+	}
+	return nil
+}
+
+// bridgeScopes splits a scope into the scopes one /internal/buffer/query can
+// express — every tenant, or exactly one tenant — so a request that names
+// several tenants asks each peer once per tenant and never for more.
+func bridgeScopes(scope tenantScope) []tenantScope {
+	if scope.all || scope.single() {
+		return []tenantScope{scope}
+	}
+	pairs := scope.pairs()
+	out := make([]tenantScope, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, tenantScope{account: p.account, project: p.project})
+	}
+	return out
+}
+
+// bufferScopeString is the tenant-scope value the buffer handler echoes for
+// this scope.
+func bufferScopeString(scope tenantScope) string {
+	if scope.all {
+		return buffer.AllTenantsScope
+	}
+	return scope.account + ":" + scope.project
+}
+
+// bufferQueryURL builds the tenant-scoped /internal/buffer/query URL: one
+// tenant's account_id/project_id, or all_tenants=true for a cross-tenant read
+// that already passed the global-read check.
+func (b *BufferBridge) bufferQueryURL(endpoint string, startNs, endNs int64, scope tenantScope) string {
+	q := url.Values{}
+	q.Set("start", strconv.FormatInt(startNs, 10))
+	q.Set("end", strconv.FormatInt(endNs, 10))
+	q.Set("mode", string(b.mode))
+	q.Set("tenant_scope", buffer.TenantScopeVersion)
+	if scope.all {
+		q.Set("all_tenants", "true")
+	} else {
+		q.Set("account_id", scope.account)
+		q.Set("project_id", scope.project)
+	}
+	return endpoint + "/internal/buffer/query?" + q.Encode()
+}
 
 // BufferBridge queries insert pods for unflushed data via parallel fan-out.
 // Select pods use this to achieve zero-delay reads by merging buffered rows
@@ -117,7 +176,7 @@ func (b *BufferBridge) getQueryEndpoints() []string {
 // QueryLogs fans out to all insert pod endpoints in parallel and returns
 // the merged set of buffered log rows within the given time range.
 // Endpoint errors are silently ignored for graceful degradation.
-func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64) ([]schema.LogRow, error) {
+func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, scope tenantScope) ([]schema.LogRow, error) {
 	if !b.cfg.BufferQueryEnabled {
 		return nil, nil
 	}
@@ -135,28 +194,27 @@ func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64) ([]s
 	var wg sync.WaitGroup
 
 	for _, ep := range eps {
-		wg.Add(1)
-		go func(endpoint string) {
-			defer wg.Done()
-			rows, err := b.fetchLogs(ctx, endpoint, startNs, endNs)
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			all = append(all, rows...)
-			mu.Unlock()
-		}(ep)
+		for _, sub := range bridgeScopes(scope) {
+			wg.Add(1)
+			go func(endpoint string, sub tenantScope) {
+				defer wg.Done()
+				rows, err := b.fetchLogs(ctx, endpoint, startNs, endNs, sub)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				all = append(all, rows...)
+				mu.Unlock()
+			}(ep, sub)
+		}
 	}
 	wg.Wait()
 
 	return all, nil
 }
 
-func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, endNs int64) ([]schema.LogRow, error) {
-	url := fmt.Sprintf("%s/internal/buffer/query?start=%d&end=%d&mode=%s",
-		endpoint, startNs, endNs, string(b.mode))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, endNs int64, scope tenantScope) ([]schema.LogRow, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.bufferQueryURL(endpoint, startNs, endNs, scope), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +227,9 @@ func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, 
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
+	}
+	if err := checkPeerTenantScope(resp, scope); err != nil {
+		return nil, err
 	}
 
 	var rows []schema.LogRow
@@ -186,7 +247,7 @@ func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, 
 // QueryTraces fans out to all insert pod endpoints in parallel and returns
 // the merged set of buffered trace rows within the given time range.
 // Endpoint errors are silently ignored for graceful degradation.
-func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64) ([]schema.TraceRow, error) {
+func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, scope tenantScope) ([]schema.TraceRow, error) {
 	if !b.cfg.BufferQueryEnabled {
 		return nil, nil
 	}
@@ -204,28 +265,27 @@ func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64) ([
 	var wg sync.WaitGroup
 
 	for _, ep := range eps {
-		wg.Add(1)
-		go func(endpoint string) {
-			defer wg.Done()
-			rows, err := b.fetchTraces(ctx, endpoint, startNs, endNs)
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			all = append(all, rows...)
-			mu.Unlock()
-		}(ep)
+		for _, sub := range bridgeScopes(scope) {
+			wg.Add(1)
+			go func(endpoint string, sub tenantScope) {
+				defer wg.Done()
+				rows, err := b.fetchTraces(ctx, endpoint, startNs, endNs, sub)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				all = append(all, rows...)
+				mu.Unlock()
+			}(ep, sub)
+		}
 	}
 	wg.Wait()
 
 	return all, nil
 }
 
-func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs, endNs int64) ([]schema.TraceRow, error) {
-	url := fmt.Sprintf("%s/internal/buffer/query?start=%d&end=%d&mode=%s",
-		endpoint, startNs, endNs, string(b.mode))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs, endNs int64, scope tenantScope) ([]schema.TraceRow, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.bufferQueryURL(endpoint, startNs, endNs, scope), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +298,9 @@ func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
+	}
+	if err := checkPeerTenantScope(resp, scope); err != nil {
+		return nil, err
 	}
 
 	var rows []schema.TraceRow

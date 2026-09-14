@@ -219,6 +219,10 @@ The receiving node verifies the Bearer token, then applies additions and removal
 
 The compaction scheduler also uses `Pusher.Notify()` after merging files — broadcasting both the new merged file (added) and the replaced source files (removed).
 
+**Superseded sources.** Compaction writes the merged output, removes the sources from the manifest and deletes their objects. An S3 `ListObjectsV2` that started before those deletes still returns the sources, so the refresh applying that listing would put their rows back next to the merged output that already holds them — every row read twice and every field value counted twice until the next refresh. The compactor therefore calls `Manifest.MarkSuperseded(inputKeys)` before deleting, and `RefreshFromS3` ignores marked keys. The marks are dropped as soon as a listing stops returning the key and expire after 10 minutes, so the set is bounded by the objects S3 is still reporting after their delete (and a delete that failed after the output was written heals on its own).
+
+This is the only place redundancy is decided. The field-enumeration paths (`field_names`, `field_values`, `streams`, `stream_field_values`) used to guess it instead, dropping any object whose time range fell inside a higher-compaction-level neighbour's. On a partition that is both compacted and still being written — a live tenant with backfilled history — that hid the newest flush from every enumeration while `/select/logsql/query` still returned its rows.
+
 ## S3 Refresh
 
 **Full scan** via `RefreshFromS3(ctx, client)`:

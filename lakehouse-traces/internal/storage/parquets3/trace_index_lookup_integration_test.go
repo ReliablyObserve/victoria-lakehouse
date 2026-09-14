@@ -67,7 +67,7 @@ func TestLookupTraceIndex_AggregatesAcrossFiles(t *testing.T) {
 	registerFileInMockS3(t, s, mock, "logs/dt=2026-06-01/hour=10/f1.parquet", data1, base)
 	registerFileInMockS3(t, s, mock, "logs/dt=2026-06-01/hour=10/f2.parquet", data2, base)
 
-	startNs, endNs, found, err := s.LookupTraceIndex(context.Background(), "trace-xyz")
+	startNs, endNs, found, err := s.LookupTraceIndex(context.Background(), nil, "trace-xyz")
 	if err != nil {
 		t.Fatalf("LookupTraceIndex: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestLookupTraceIndex_MissIsNotAuthoritative(t *testing.T) {
 	}, 2)
 	registerFileInMockS3(t, s, mock, "logs/dt=2026-06-01/hour=10/f1.parquet", data, base)
 
-	_, _, found, err := s.LookupTraceIndex(context.Background(), "trace-not-here")
+	_, _, found, err := s.LookupTraceIndex(context.Background(), nil, "trace-not-here")
 	if err != nil {
 		t.Fatalf("a clean miss must not error, got %v", err)
 	}
@@ -107,10 +107,10 @@ func TestLookupTraceIndex_EmptyTraceIDAndEmptyManifest(t *testing.T) {
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
 
-	if _, _, found, err := s.LookupTraceIndex(context.Background(), ""); err != nil || found {
+	if _, _, found, err := s.LookupTraceIndex(context.Background(), nil, ""); err != nil || found {
 		t.Errorf("empty trace ID must be a clean miss, got found=%v err=%v", found, err)
 	}
-	if _, _, found, err := s.LookupTraceIndex(context.Background(), "any"); err != nil || found {
+	if _, _, found, err := s.LookupTraceIndex(context.Background(), nil, "any"); err != nil || found {
 		t.Errorf("empty manifest must be a clean miss, got found=%v err=%v", found, err)
 	}
 }
@@ -131,7 +131,7 @@ func TestLookupTraceIndex_FooterErrorsSwallowed(t *testing.T) {
 		MaxTimeNs: base.Add(time.Minute).UnixNano(),
 	})
 
-	_, _, found, err := s.LookupTraceIndex(context.Background(), "trace-xyz")
+	_, _, found, err := s.LookupTraceIndex(context.Background(), nil, "trace-xyz")
 	if err != nil {
 		t.Fatalf("footer errors must be swallowed (fallback to scan), got %v", err)
 	}
@@ -159,7 +159,7 @@ func TestLookupTraceIndex_ErrorDoesNotMaskHit(t *testing.T) {
 		MaxTimeNs: base.Add(time.Minute).UnixNano(),
 	})
 
-	startNs, endNs, found, err := s.LookupTraceIndex(context.Background(), "trace-xyz")
+	startNs, endNs, found, err := s.LookupTraceIndex(context.Background(), nil, "trace-xyz")
 	if err != nil {
 		t.Fatalf("LookupTraceIndex: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestLookupTraceIndex_CancelledContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, found, err := s.LookupTraceIndex(ctx, "trace-xyz")
+	_, _, found, err := s.LookupTraceIndex(ctx, nil, "trace-xyz")
 	if err != nil {
 		t.Fatalf("cancelled lookup must not return an error, got %v", err)
 	}
@@ -210,7 +210,7 @@ func TestLookupTraceIndex_LargeFileFooterRangeRead(t *testing.T) {
 	}
 	registerFileInMockS3(t, s, mock, "logs/dt=2026-06-01/hour=10/big.parquet", data, base)
 
-	startNs, endNs, found, err := s.LookupTraceIndex(context.Background(), "trace-big")
+	startNs, endNs, found, err := s.LookupTraceIndex(context.Background(), nil, "trace-big")
 	if err != nil {
 		t.Fatalf("LookupTraceIndex: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
@@ -177,6 +178,7 @@ func TestPartitionKey(t *testing.T) {
 func mockS3() *httptest.Server {
 	var putCount atomic.Int64
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		if r.Method == http.MethodPut {
 			_, _ = io.Copy(io.Discard, r.Body)
 			_ = r.Body.Close()
@@ -541,6 +543,7 @@ func TestCheckSizeThreshold(t *testing.T) {
 
 func TestFlushAll_S3Error(t *testing.T) {
 	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		if r.Method == http.MethodPut {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -564,6 +567,7 @@ func TestFlushAll_S3Error(t *testing.T) {
 
 func TestFlushAll_TraceS3Error(t *testing.T) {
 	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		if r.Method == http.MethodPut {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
