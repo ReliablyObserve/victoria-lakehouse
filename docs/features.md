@@ -18,10 +18,10 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
-| Ops | 12 | 0 | 0 | 0 | 12 |
+| Ops | 13 | 0 | 0 | 0 | 13 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **126** | **1** | **3** | **8** | **138** |
+| **Total** | **127** | **1** | **3** | **8** | **139** |
 
 ## Coverage gaps
 
@@ -1380,7 +1380,7 @@ Cold-query latency is a sum of many small object-store operations, which aggrega
 - Verification: tests: `internal/telemetry/telemetry_test.go`, `internal/telemetry/traced_storage_test.go`, `internal/telemetry/traced_writer_test.go`, `internal/config/telemetry_test.go`
 - Docs: `docs/telemetry.md`
 
-## Ops (12)
+## Ops (13)
 
 ### ✅ Validated benchmark harness
 
@@ -1441,6 +1441,19 @@ The conformance registry answers "did we miss something upstream has"; the featu
 - Verification: tests: `tests/conformance/features_test.go#TestFeatures_RealCatalog`, `tests/conformance/registry/features_test.go#TestLoadFeatures_Valid`, `tests/conformance/report/features_test.go#TestRenderFeatures`, `scripts/ci/tests/test_check_registry_touch.sh`
 - Docs: `tests/conformance/README.md`, `docs/features.md`
 - Changelog: the release after `0.121.0`
+
+### ✅ Hot-vs-cold parity suite and known-failure ratchet
+
+`lh.feature.ops.hot_cold_parity_suite` · status: shipped · since: the release after v0.121.0 · surfaces: cli
+
+**Hot-vs-cold parity suite**: the same queries against hot VictoriaLogs/VictoriaTraces and the Lakehouse cold tier on one seed — comparisons that refuse to pass against an empty reference, exact per-tenant read-scope checks, and a known-failure ratchet that fails CI on any new divergence, crash or timeout, and on every allowlisted failure that starts passing.
+
+Parity is only a result if a comparison can fail. Every set, row, bucket, structure and count comparison fails when the reference tier returned nothing, a case built to match nothing must read 0 on both tiers, cold answers are taken only after the tier has settled, and per-tenant reads are held to exact counts and id sets against hot. The remaining divergences are recorded one per line with the divergence they belong to; the ratchet parses `go test -json` and fails the job on an unlisted failure, an aborted or crashed test binary, a stale entry or a drop in the pass count, so the list only ever shrinks.
+
+- Verification: tests: `scripts/ci/tests/test_parity_ratchet.py`, `tests/parity/harness_test.go#TestHarness_JudgeCounts`, `tests/parity/harness_test.go#TestHarness_ReadComparableCount`, `tests/parity/logs_filters_test.go#TestParity_Filters`, `tests/parity/logs_timerange_test.go#TestParity_TimeRange`, `tests/parity/traces_parity_test.go#TestParity_Traces_LogsQL`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Logs_PerTenantCounts`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Traces_PerTenantParity`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant`
+- Docs: `docs/parity-and-gaps.md#known-divergences-under-investigation`, `docs/parity-and-gaps.md#running-the-parity-suite`, `docs/parity-and-gaps.md#the-known-failure-ratchet`
+- Changelog: the release after `0.121.0`
+- Note: The parity tests run in the Parity Tests workflow (`.github/workflows/parity.yaml`) against its own compose stack, not in the unit-test jobs; that workflow runs the ratchet's unit tests before it builds the stack. The `TestHarness_*` checks issue no requests and also run without the stack. Some linked tests currently record known cold-tier divergences (B1–B7 in `docs/parity-and-gaps.md`) and are listed in `tests/parity/known_failures.txt` instead of passing — among them the Lakehouse subtests of both tenant-isolation tests (B6).
 
 ### ✅ Lifecycle HTTP endpoints
 
