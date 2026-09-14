@@ -1,0 +1,10 @@
+- id: lh.feature.storage.example
+  title: One
+  status: shipped
+  since: v1.0.0
+  area: storage
+  surfaces: [storage]
+  tests: ["internal/x/nope_test.go"]
+  docs: ["docs/nope.md"]
+  highlight: "h"
+  description: "d"

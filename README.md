@@ -379,88 +379,83 @@ Each binary supports three roles for independent scaling:
 
 ## Key Features
 
+<!-- features:begin -->
 ### Write Path
-- **Full VL insert protocol support**: jsonline, Loki (JSON + protobuf), ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert — all via VL's upstream `vlinsert` handlers.
-- **Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](docs/durability.md).
 - **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
-- **Buffer query bridge**: select pods fan out to ALL insert pods across ALL AZs via `/internal/buffer/query` for zero-delay reads of unflushed data. AZ-aware routing is only used for peer cache (L3), never for buffer queries — same-AZ-only would miss 2/3 of buffered rows in a 3-AZ deployment.
 - **Atomic S3 writes**: each Parquet file is written via a single S3 PutObject (1x write amplification). No WAL replay deduplication, no compactor reconciliation — contrast with Loki/Tempo's 3-5x write amplification from WAL→chunk→S3 pipelines.
+- **Buffer query bridge**: select pods fan out to ALL insert pods across ALL AZs via `/internal/buffer/query` for zero-delay reads of unflushed data. AZ-aware routing is only used for peer cache (L3), never for buffer queries — same-AZ-only would miss 2/3 of buffered rows in a 3-AZ deployment.
+- **Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](docs/durability.md).
+- **Full VL insert protocol support**: jsonline, Loki (JSON + protobuf), ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert — all via VL's upstream `vlinsert` handlers.
 - **Manifest label pruning**: `FileInfo.Labels` enables query-time file skipping based on label values without opening Parquet files.
 
 ### Read Path
-- **Schema-driven FieldType system**: centralized type-aware formatting for all Parquet column types (INT64 nanoseconds to RFC3339Nano, INT32 to decimal, etc.) via `FieldType.FormatValue()`. Eliminates scattered `fmt.Sprintf`/`time.Format` calls — all query paths use the schema registry for consistent output.
+- **Read-ahead**: sequential time scans prefetch next partitions, with column-popularity tracking deciding which columns are worth warming.
+- **Multi-tier bloom index** on `trace_id` and `service.name` for fast point lookups. Age-based tiering (Hot/Warm/Cold/Archive) with automatic downgrade, LRU cache, auto-tuning controller, and `/api/v1/bloom/status` API. See [Bloom Index](docs/bloom-index.md).
 - **Auto-discovery of hot boundary** via `/internal/partition/list` on vlstorage/vtstorage. Zero manual config.
-- **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
 - **LogsQL filter evaluation**: field matchers (exact, substring, regex, NOT) are applied post-scan to filter DataBlock rows at the storage layer.
 - **max_rows enforcement**: `query.max_rows` (default 10M) caps emitted rows per query, preventing unbounded cold-query resource usage.
-- **Multi-tier bloom index** on `trace_id` and `service.name` for fast point lookups. Age-based tiering (Hot/Warm/Cold/Archive) with automatic downgrade, LRU cache, auto-tuning controller, and `/api/v1/bloom/status` API. See [Bloom Index](docs/bloom-index.md).
 - **Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers).
-- **Correlated prefetch**: log query warms trace Parquet for same time+service, and vice versa.
-- **Read-ahead**: sequential time scans prefetch next partitions.
+- **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
+- **Schema-driven FieldType system**: centralized type-aware formatting for all Parquet column types (INT64 nanoseconds to RFC3339Nano, INT32 to decimal, etc.) via `FieldType.FormatValue()`. Eliminates scattered `fmt.Sprintf`/`time.Format` calls — all query paths use the schema registry for consistent output.
 
 ### Smart Cache
-- **Unified cache controller** orchestrating L1 (memory), L2 (disk), L3 (peer), L4 (S3) with per-entry TTL, hot access detection, and singleflight S3 deduplication.
 - **Active query pinning**: files used by in-flight queries are pinned in cache with configurable grace period, preventing eviction under load.
-- **Cache sizing calculator**: adaptive budget estimation blending ingestion rate (early) and query pattern analysis (after 12h uptime), with per-node fleet division.
-- **Snapshot persistence**: metadata snapshots to disk for fast cache warmup on restart.
 - **15 Prometheus metrics**: hit ratio, entries, bytes used/limit, evictions by reason, hot/pinned entries, coverage hours, prefetch hit ratio.
+- **Cache sizing calculator**: adaptive budget estimation blending ingestion rate (early) and query pattern analysis (after 12h uptime), with per-node fleet division.
+- **Unified cache controller** orchestrating L1 (memory), L2 (disk), L3 (peer), L4 (S3) with per-entry TTL, hot access detection, and singleflight S3 deduplication.
+- **Snapshot persistence**: metadata snapshots to disk for fast cache warmup on restart.
 
 ### Cross-Signal Prefetch
-- **Bidirectional hints** between `lakehouse-logs` and `lakehouse-traces` deployments. A logs query for `service=checkout` automatically warms trace Parquet for the same time window, and vice versa.
-- **Works across separate binaries/deployments** — logs and traces don't need to be co-located. Hints are exchanged via HTTP (`/internal/prefetch/hint`, `/internal/cache/evict-hint`).
 - **Connected data eviction**: when trace cache entries are evicted, correlated log entries are deprioritized.
+- **Bidirectional hints** between `lakehouse-logs` and `lakehouse-traces` deployments: a logs query for `service=checkout` automatically warms trace Parquet for the same time window, and vice versa. The two binaries need not be co-located — hints travel over HTTP (`/internal/prefetch/hint`, `/internal/cache/evict-hint`).
 - **Hint batching**: trace ID hints are accumulated and flushed on interval or batch size threshold, reducing HTTP overhead.
 - **Auth key support**: optional `X-Cross-Signal-Key` header for securing cross-deployment communication.
 
 ### Deletion
-- **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
+- **Glacier-safe**: never triggers retrieval fees — the tombstone suppresses reads and data ages out via lifecycle. **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure, with optional physical delete for strict compliance.
 - **`lakehouse-logs`**: `/delete/logsql/*` endpoints. **`lakehouse-traces`**: `/delete/tracessql/*` endpoints.
-- **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
 - **Cost estimation**: `/delete/logsql/estimate` (or `/delete/tracessql/estimate`) returns per-storage-class cost breakdown before executing.
-- **Verification**: `/delete/logsql/verify` (or `/delete/tracessql/verify`) confirms tombstoned data is invisible (normal mode) or physically deleted (deep mode).
+- **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
+- **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
 - **Un-delete**: remove a tombstone to restore data visibility instantly.
-- **Glacier-safe**: never triggers retrieval fees. Tombstone suppresses reads; data ages out via lifecycle.
-- **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure. Optional physical delete for strict compliance.
+- **Verification**: `/delete/logsql/verify` (or `/delete/tracessql/verify`) confirms tombstoned data is invisible (normal mode) or physically deleted (deep mode).
 
 ### Loki Drilldown Compatibility
-- **loki-vl-proxy hot+cold routing** with automatic time-based query routing: recent queries to VictoriaLogs (hot), older queries to lakehouse (cold), with configurable overlap.
+- **loki-vl-proxy hot+cold routing** with automatic time-based query routing: recent queries to VictoriaLogs (hot), older queries to lakehouse (cold), with configurable overlap. Trace-to-logs linking via derived fields lets a trace ID in Grafana jump straight to the correlated logs.
 - **Translated metadata mode** (`-metadata-field-mode=translated`) and structured metadata emission for full Grafana Loki Drilldown support.
-- **Trace-to-logs linking** via derived fields — click a trace ID in Grafana to jump to correlated logs.
 
 ### Multi-Tenancy
-- **Single binary, all tenants**: one lakehouse-logs/traces process serves all tenants simultaneously via header-based routing. Same pattern as Grafana Loki and Tempo.
-- **In-path S3 isolation**: `BatchWriter` groups rows by `(AccountID, ProjectID)` at flush and writes one Parquet file per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback).
-- **One process, many buckets**: optional per-tenant bucket overrides route a tenant's reads and writes to its own S3 bucket via the YAML policy file's `tenant.bucket` field (no template required). The s3reader pool registry caches a separate client per bucket so a single lakehouse process serves isolated buckets without restart. Manifest sidecars stay in the default bucket so a fleet-wide manifest still resolves files across many tenant buckets.
-- **Per-tenant config overrides** with global-default inheritance: `Retention`, `Cardinality`, `Ingest` rate limits, `Lifecycle` transitions, and `S3` bucket can be overridden per `(AccountID, ProjectID)` via a YAML policy file. Unspecified knobs fall back to the global defaults. Overrides keyed by OrgID alias re-resolve on the same cadence as alias sync, so late-registered tenants pick up their overrides without a restart.
+- **VL/manifest parity endpoint** surfaces drift between upstream VL counts and Lakehouse manifest counters with a matching UI panel — catches double-counting and silent missed writes.
 - **Retroactive bucket migration**: `POST /lakehouse/api/v1/admin/tenant/migrate` server-side-copies existing Parquet objects from the shared bucket to a tenant's new dedicated bucket, then flips `manifest.FileInfo.Bucket` and deletes the source — auth-gated via the existing global-read credential surface (header or Bearer token), closed by default.
 - **Enterprise bucket-template isolation**: legacy `--lakehouse.tenant.isolation=bucket` with `--lakehouse.tenant.bucket-template` for IAM-level hard isolation still works when every tenant follows a templated bucket layout.
+- **Per-tenant cardinality limits**: `tenant.CardinalityLimiter` gates streams at the insert path so a tenant over its `max_streams`/`max_fields` cap drops the offending rows rather than letting cardinality leak through to the writer.
 - **Global read mode**: configurable `X-Lakehouse-Global-Read` header (or Bearer token) allows admin/Grafana dashboards to query across all tenants (must be explicitly enabled).
-- **vmauth header extraction**: `X-Scope-AccountID` / `X-Scope-ProjectID` headers for tenant routing.
-- **Analytics compatible**: all Parquet tools (DuckDB, ClickHouse, Trino, Spark) query per-tenant prefix directly.
-- **Cost attribution**: per-prefix S3 Inventory or per-bucket billing for tenant cost allocation.
-- **Tenant stats & monitoring**: real-time per-tenant statistics (files, bytes, rows, cost) with CRDT fleet sync, JSON API, and Prometheus metrics. `/api/v1/stats/breakdown?group_by=tenant` returns exact per-tenant facets (not estimated shares) with `org_id` decoration; `/api/v1/tenants/policy` lists every resolved override + pending alias; `/api/v1/tenants/{id}` includes a `policy` block when configured.
-- **VL/manifest parity endpoint** surfaces drift between upstream VL counts and Lakehouse manifest counters with a matching UI panel — catches double-counting and silent missed writes.
-- **Per-tenant cardinality + ingest rate limits**: `tenant.CardinalityLimiter` gates streams at the insert path so a tenant over its `max_streams`/`max_fields` cap drops the offending rows rather than letting cardinality leak through to the writer; `tenant.IngestRateLimiter` adds independent byte/sec + row/sec token buckets with `X-RateLimit-*` headers + HTTP 429 on overflow.
-- **Per-tenant lifecycle overrides**: tenants with their own S3 transition schedule (e.g. `ONEZONE_IA @ 7d` → `GLACIER @ 60d`) shadow the global rules; the storage-class detector + rewriter scheduler both consult the per-tenant rules so manual predictions and the background rewriter agree.
+- **Single binary, all tenants**: one lakehouse-logs/traces process serves all tenants simultaneously via header-based routing (`X-Scope-AccountID` / `X-Scope-ProjectID`, vmauth-compatible). Same pattern as Grafana Loki and Tempo.
+- **Per-tenant ingest rate limits**: `tenant.IngestRateLimiter` adds independent byte/sec and row/sec token buckets with `X-RateLimit-*` headers and HTTP 429 on overflow.
+- **Per-tenant lifecycle overrides**: tenants with their own S3 transition schedule (e.g. `ONEZONE_IA @ 7d` → `GLACIER @ 60d`) shadow the global rules; the storage-class detector and rewriter scheduler both consult the per-tenant rules so manual predictions and the background rewriter agree.
+- **One process, many buckets**: optional per-tenant bucket overrides route a tenant's reads and writes to its own S3 bucket via the YAML policy file's `tenant.bucket` field (no template required). The s3reader pool registry caches a separate client per bucket so a single lakehouse process serves isolated buckets without restart. Manifest sidecars stay in the default bucket so a fleet-wide manifest still resolves files across many tenant buckets.
+- **Per-tenant config overrides** with global-default inheritance: `Retention`, `Cardinality`, `Ingest` rate limits, `Lifecycle` transitions, and `S3` bucket can be overridden per `(AccountID, ProjectID)` via a YAML policy file. Unspecified knobs fall back to the global defaults. Overrides keyed by OrgID alias re-resolve on the same cadence as alias sync, so late-registered tenants pick up their overrides without a restart.
+- **In-path S3 isolation**: `BatchWriter` groups rows by `(AccountID, ProjectID)` at flush and writes one Parquet file per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback). Every Parquet tool (DuckDB, ClickHouse, Trino, Spark) can query a tenant's prefix directly.
+- **Tenant stats & monitoring**: real-time per-tenant statistics (files, bytes, rows, cost) with CRDT fleet sync, JSON API, and Prometheus metrics. `/api/v1/stats/breakdown?group_by=tenant` returns exact per-tenant facets (not estimated shares) with `org_id` decoration; `/api/v1/tenants/policy` lists every resolved override plus pending aliases; `/api/v1/tenants/{id}` includes a `policy` block when configured.
 
 ### Tenant Stats & Storage Metrics
-- **TenantRegistry**: CRDT-based in-memory registry tracking per-tenant files, bytes, rows, time ranges, storage classes, and query activity.
+- **Cost estimation**: per-class pricing model with lifecycle savings calculation, request cost tracking, and per-tenant cost allocation — backed by per-prefix S3 Inventory or per-bucket billing for chargeback.
 - **Fleet synchronization**: delta broadcast with ZSTD compression (configurable interval), S3 snapshot fallback for crash recovery.
+- **JSON API**: endpoints under `/lakehouse/api/v1/` — tenants, overview, ingestion, cost, compression, cardinality, fields, instances and breakdown.
+- **TenantRegistry**: CRDT-based in-memory registry tracking per-tenant files, bytes, rows, time ranges, storage classes, and query activity.
 - **S3 storage class awareness**: lifecycle prediction (zero API cost), HeadObject sampling, optional S3 Inventory import.
-- **Cost estimation**: per-class pricing model with lifecycle savings calculation, request cost tracking, per-tenant cost allocation.
-- **JSON API**: 7 endpoints under `/lakehouse/api/v1/` — tenants, overview, ingestion, cost, compression, cardinality.
 - **Lakehouse Explorer UI**: built-in Preact+uPlot dashboard with Storage Overview, Tenants, and Cardinality Explorer tabs. Injected into VL/VT VMUI as optional tab (zero upstream modifications).
 
 ### Configuration Profiles
 - **Five named presets** (`balanced`, `max-performance`, `max-durability`, `max-cost-savings`, `dev`) tune 40+ settings for a specific operational goal.
-- **Three-level hierarchy** in Helm: global → per-signal (logs/traces) → per-role (insert/select). More specific levels override less specific.
-- **Any explicit setting wins**: profiles provide defaults, not constraints. Override individual flags without switching profiles.
+- **Three-level hierarchy** in Helm: global → per-signal (logs/traces) → per-role (insert/select), with the more specific level winning — and any explicit setting always overriding the profile, because profiles provide defaults, not constraints.
 
 ### Infrastructure
-- **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
 - **Distributed peer cache**: consistent hash routing across fleet instances via headless DNS.
+- **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
 - **Schema auto-discovery**: OTLP column names in Parquet, mapped to VL/VT names at query time. Schema registry carries per-column type information (FieldType) for type-aware formatting, extensible via `--lakehouse.schema.extra-promoted` with typed columns (string, int32, int64, float64, bool, timestamp_nano).
 - **SQS/SNS support**: optional near-real-time manifest updates from S3 event notifications.
+<!-- features:end -->
 
 ---
 
@@ -769,6 +764,7 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 ## Documentation
 
 ### Getting Started
+- [Feature catalog](docs/features.md) — every feature, its status, and the tests, rows and docs that verify it (generated)
 - [Getting Started](docs/getting-started.md) — quick start, first query in 5 minutes
 - [Docker Compose Setup](docs/docker-compose-setup.md) — full local environment with MinIO, hot/cold tiers, Grafana (11 datasources)
 - [Kubernetes Deployment](docs/kubernetes-deployment.md) — Helm install, values, topology, probes
