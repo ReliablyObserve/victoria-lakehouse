@@ -47,6 +47,12 @@ const maxManifestSnapshotBytes = 4 * 1024 * 1024 * 1024
 // counts can tune via cfg.Manifest.TenantRefreshConcurrency.
 const tenantRefreshMaxParallel = 8
 
+// tenantBucketListMaxParallel bounds the concurrent LISTs of dedicated tenant
+// buckets during one refresh. Small: these run next to the per-tenant prefix
+// LISTs of the default bucket, and a refresh should not be the reason an S3
+// endpoint starts throttling.
+const tenantBucketListMaxParallel = 4
+
 const maxLabelsPerField = 100
 
 type FileInfo struct {
@@ -604,20 +610,65 @@ func (m *Manifest) listTenantBuckets(ctx context.Context, client *s3.Client, fil
 		}
 	}
 
-	var addedFiles int
-	var addedBytes int64
+	type bucketListing struct {
+		bucket     string
+		listPrefix string
+		files      map[string][]FileInfo
+		err        error
+	}
+	listings := make([]bucketListing, 0, len(buckets))
 	for _, tb := range buckets {
 		if tb.Bucket == "" || tb.Bucket == m.bucket || tb.Prefix == "" {
 			continue
 		}
-		listPrefix := tb.Prefix + suffix
-		listed, _, _, err := listBucketPrefix(ctx, client, tb.Bucket, listPrefix)
-		if err != nil {
-			return 0, 0, fmt.Errorf("list tenant bucket %s/%s: %w", tb.Bucket, listPrefix, err)
+		listings = append(listings, bucketListing{bucket: tb.Bucket, listPrefix: tb.Prefix + suffix})
+	}
+	if len(listings) == 0 {
+		return 0, 0, nil
+	}
+
+	// LIST the dedicated buckets with bounded concurrency — a fleet with many
+	// bucket-per-tenant tenants would otherwise pay one round trip after
+	// another on every refresh — and merge the results in the registered
+	// bucket order, so the manifest a refresh produces does not depend on
+	// which LIST answered first.
+	sem := make(chan struct{}, tenantBucketListMaxParallel)
+	var wg sync.WaitGroup
+	for i := range listings {
+		wg.Add(1)
+		go func(l *bucketListing) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			l.files, _, _, l.err = listBucketPrefix(ctx, client, l.bucket, l.listPrefix)
+		}(&listings[i])
+	}
+	wg.Wait()
+
+	// Every failing bucket is counted (the operator needs to see which one is
+	// unreachable), and the first failure in registered order fails the whole
+	// refresh: the alternative — merging what did list — would silently drop
+	// the unreachable tenant's objects out of the manifest.
+	var firstErr error
+	for i := range listings {
+		if listings[i].err == nil {
+			continue
 		}
-		for partition, pf := range listed {
+		metrics.ManifestTenantBucketListErrors.Inc(listings[i].bucket)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("list tenant bucket %s/%s: %w", listings[i].bucket, listings[i].listPrefix, listings[i].err)
+		}
+	}
+	if firstErr != nil {
+		return 0, 0, firstErr
+	}
+
+	var addedFiles int
+	var addedBytes int64
+	for i := range listings {
+		for partition, pf := range listings[i].files {
 			for _, fi := range pf {
-				fi.Bucket = tb.Bucket
+				fi.Bucket = listings[i].bucket
 				if at, dup := existing[fi.Key]; dup {
 					addedBytes += fi.Size - files[at.partition][at.index].Size
 					files[at.partition][at.index] = fi
@@ -901,8 +952,17 @@ type TenantBucket struct {
 // next refresh and that tenant's cold-tier reads would come back short.
 func (m *Manifest) SetTenantBuckets(buckets []TenantBucket) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.tenantBuckets = append([]TenantBucket(nil), buckets...)
+	m.mu.Unlock()
+
+	// Export each bucket's LIST-error series at zero from the moment the
+	// bucket is registered, so an alert on it fires on the first failure
+	// instead of waiting for a series to appear.
+	for _, tb := range buckets {
+		if tb.Bucket != "" {
+			metrics.ManifestTenantBucketListErrors.Init(tb.Bucket)
+		}
+	}
 }
 
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {

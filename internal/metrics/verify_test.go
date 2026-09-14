@@ -200,6 +200,7 @@ func TestVerifyMetrics_CounterVecsExist(t *testing.T) {
 		{"TenantIngestionBytesTotal", TenantIngestionBytesTotal},
 		{"TenantQueriesTotal", TenantQueriesTotal},
 		{"TenantScopeViolations", TenantScopeViolations},
+		{"ManifestTenantBucketListErrors", ManifestTenantBucketListErrors},
 		{"CompactionSkippedTotal", CompactionSkippedTotal},
 		{"FooterParseRejected", FooterParseRejected},
 	}

@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 // multiBucketS3 serves ListObjectsV2 for several buckets (path-style
@@ -18,11 +21,15 @@ type multiBucketS3 struct {
 	buckets map[string]*mockS3Bucket
 	fail    map[string]bool
 	listed  map[string]int
+	delay   map[string]time.Duration
+	// inflight/maxInflight record the LIST concurrency the refresh drives.
+	inflight    int
+	maxInflight int
 }
 
 func newMultiBucketS3(t *testing.T, buckets map[string]map[string]int64) (*multiBucketS3, *httptest.Server) {
 	t.Helper()
-	m := &multiBucketS3{buckets: map[string]*mockS3Bucket{}, fail: map[string]bool{}, listed: map[string]int{}}
+	m := &multiBucketS3{buckets: map[string]*mockS3Bucket{}, fail: map[string]bool{}, listed: map[string]int{}, delay: map[string]time.Duration{}}
 	for name, keys := range buckets {
 		m.buckets[name] = newMockBucket(keys)
 	}
@@ -30,8 +37,20 @@ func newMultiBucketS3(t *testing.T, buckets map[string]map[string]int64) (*multi
 		bucket := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)[0]
 		m.mu.Lock()
 		m.listed[bucket]++
-		b, fail := m.buckets[bucket], m.fail[bucket]
+		m.inflight++
+		if m.inflight > m.maxInflight {
+			m.maxInflight = m.inflight
+		}
+		b, fail, delay := m.buckets[bucket], m.fail[bucket], m.delay[bucket]
 		m.mu.Unlock()
+		defer func() {
+			m.mu.Lock()
+			m.inflight--
+			m.mu.Unlock()
+		}()
+		if delay > 0 {
+			time.Sleep(delay)
+		}
 		if fail {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = fmt.Fprint(w, `<?xml version="1.0"?><Error><Code>AccessDenied</Code></Error>`)
@@ -211,5 +230,108 @@ func TestRefresh_DedicatedBucketObjectRegisteredByFlushSurvives(t *testing.T) {
 	}
 	if files[0].RowCount != 42 || files[0].Bucket != "bucket-tenant-1002" {
 		t.Errorf("kept %+v, want the flush-time enrichment (RowCount 42) plus the listed bucket", files[0])
+	}
+}
+
+// TestRefresh_TenantBucketListFailuresAreCounted: every dedicated bucket that
+// fails to list is counted under its own label, so an operator can see which
+// bucket is freezing the fleet's manifest, and the refresh error names the
+// first failure in registered order (not whichever LIST answered first).
+func TestRefresh_TenantBucketListFailuresAreCounted(t *testing.T) {
+	const first, second = "bucket-count-first", "bucket-count-second"
+	s3m, srv := newMultiBucketS3(t, map[string]map[string]int64{
+		"test-bucket": {"0/0/logs/" + tbPart + "/a.parquet": 100},
+		first:         {"1002/0/logs/" + tbPart + "/c.parquet": 300},
+		second:        {"1003/0/logs/" + tbPart + "/d.parquet": 300},
+	})
+	client := coverageS3Client(t, srv.URL)
+
+	m := tenantBucketManifest()
+	// Registering a bucket exports its series at zero, so an alert can fire on
+	// the first failure instead of waiting for the series to appear.
+	m.SetTenantBuckets([]TenantBucket{
+		{Bucket: first, Prefix: "1002/0/"},
+		{Bucket: second, Prefix: "1003/0/"},
+	})
+	before := map[string]uint64{}
+	for _, bucket := range []string{first, second} {
+		before[bucket] = metrics.ManifestTenantBucketListErrors.Get(bucket)
+	}
+
+	s3m.mu.Lock()
+	s3m.fail[first] = true
+	s3m.fail[second] = true
+	// The first bucket in registered order answers last.
+	s3m.delay[first] = 40 * time.Millisecond
+	s3m.mu.Unlock()
+
+	err := m.RefreshFromS3(context.Background(), client)
+	if err == nil {
+		t.Fatal("refresh must fail when a dedicated tenant bucket cannot be listed")
+	}
+	if !strings.Contains(err.Error(), first) {
+		t.Errorf("refresh error = %v, want the first failing bucket in registered order (%s)", err, first)
+	}
+	for _, bucket := range []string{first, second} {
+		if got := metrics.ManifestTenantBucketListErrors.Get(bucket) - before[bucket]; got != 1 {
+			t.Errorf("%s: LIST errors rose by %d, want 1", bucket, got)
+		}
+	}
+}
+
+// TestRefresh_TenantBucketListsAreBoundedAndOrdered: the dedicated-bucket LISTs
+// run concurrently but bounded, and the merge follows the registered order —
+// with the same key in two dedicated buckets, the last registered bucket wins
+// whichever LIST answers first.
+func TestRefresh_TenantBucketListsAreBoundedAndOrdered(t *testing.T) {
+	dupKey := "1002/0/logs/" + tbPart + "/dup.parquet"
+	buckets := map[string]map[string]int64{
+		"test-bucket": {"0/0/logs/" + tbPart + "/a.parquet": 100},
+		// Both dedicated buckets hold the same key with different sizes.
+		"bucket-tenant-A": {dupKey: 111},
+		"bucket-tenant-B": {dupKey: 222},
+	}
+	var registered []TenantBucket
+	for i := 0; i < 6; i++ {
+		name := fmt.Sprintf("bucket-filler-%d", i)
+		buckets[name] = map[string]int64{fmt.Sprintf("90%d/0/logs/%s/f.parquet", i, tbPart): 10}
+		registered = append(registered, TenantBucket{Bucket: name, Prefix: fmt.Sprintf("90%d/0/", i)})
+	}
+	registered = append(registered,
+		TenantBucket{Bucket: "bucket-tenant-A", Prefix: "1002/0/"},
+		TenantBucket{Bucket: "bucket-tenant-B", Prefix: "1002/0/"})
+
+	s3m, srv := newMultiBucketS3(t, buckets)
+	client := coverageS3Client(t, srv.URL)
+	s3m.mu.Lock()
+	// A (registered before B) answers last; a merge that followed completion
+	// order would keep A's copy.
+	s3m.delay["bucket-tenant-A"] = 60 * time.Millisecond
+	s3m.mu.Unlock()
+
+	m := tenantBucketManifest()
+	m.SetTenantBuckets(registered)
+	if err := m.RefreshFromS3(context.Background(), client); err != nil {
+		t.Fatalf("RefreshFromS3: %v", err)
+	}
+
+	files := m.GetFilesForRangeTenant(0, 1<<62, "1002", "0")
+	if len(files) != 1 {
+		t.Fatalf("duplicate key kept %d times: %+v", len(files), files)
+	}
+	if files[0].Bucket != "bucket-tenant-B" || files[0].Size != 222 {
+		t.Errorf("merged %+v, want the last registered bucket's copy (bucket-tenant-B, size 222)", files[0])
+	}
+	if got := m.TotalFiles(); got != 8 {
+		t.Errorf("TotalFiles = %d, want 8 (1 default + 6 fillers + 1 deduped)", got)
+	}
+
+	s3m.mu.Lock()
+	defer s3m.mu.Unlock()
+	if s3m.maxInflight < 2 {
+		t.Errorf("dedicated-bucket LISTs ran with max %d in flight; they must overlap", s3m.maxInflight)
+	}
+	if s3m.maxInflight > tenantBucketListMaxParallel+1 { // +1: the default bucket's own LIST may overlap
+		t.Errorf("dedicated-bucket LISTs ran %d in flight, want at most %d", s3m.maxInflight, tenantBucketListMaxParallel+1)
 	}
 }

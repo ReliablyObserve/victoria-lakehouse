@@ -253,7 +253,13 @@ lakehouse:
 
 In mixed mode the s3reader `PoolRegistry` caches a separate `ClientPool` per bucket, and the writer's `SetTenantBucket(account, project) → bucket` resolver sends each tenant's flushed Parquet to its bucket. Reads use the same routing in reverse: the client pool's bucket router derives the bucket from the object key's `{AccountID}/{ProjectID}/` segments, so a read of a tenant's object reaches that tenant's bucket (see [Read Scoping](#read-scoping-which-data-a-request-sees) for which objects a request may read). `manifest.FileInfo.Bucket` is set by the bucket migration below. Sidecars and the fleet-wide manifest stay in the default bucket — the only sharded thing is the data files themselves.
 
-The periodic manifest refresh lists every dedicated bucket under its tenant's prefix next to the default bucket, so objects that live only in a tenant's bucket stay in the manifest. If a dedicated bucket cannot be listed the refresh fails and the previous manifest is kept; a key found in both the shared and the dedicated bucket (a migration in progress) is kept once, as the dedicated-bucket copy.
+The periodic manifest refresh lists every dedicated bucket under its tenant's prefix next to the default bucket, so objects that live only in a tenant's bucket stay in the manifest. The dedicated buckets are listed concurrently (at most 4 at a time) and merged in the order they are registered, so the manifest a refresh produces does not depend on which LIST answered first; a key found in both the shared and the dedicated bucket (a migration in progress) is kept once, as the dedicated-bucket copy.
+
+**When a dedicated bucket cannot be listed** the whole refresh fails and the previous manifest is kept — for every tenant, not just that one — because the alternative is silently dropping the unreachable tenant's objects out of the manifest. Objects written after the last successful refresh stay invisible to queries until the bucket is reachable again, so this needs an operator:
+
+- each failure is counted in `lakehouse_manifest_tenant_bucket_list_errors_total{bucket}` (the series of every registered dedicated bucket is exported at zero, so the counter is visible before the first failure), and the `LakehouseTenantBucketListFailing` alert fires after 10 minutes of failures;
+- the refresh logs `list tenant bucket <bucket>/<prefix>` with the S3 error;
+- check that the bucket exists, that the pod's credentials still reach it, and that its policy grants `s3:ListBucket` on the tenant prefix. Removing the tenant's `s3.bucket` override (after migrating its objects back) also clears it, since an unregistered bucket is never listed.
 
 Current limitation: the per-tenant `overrides[].s3.bucket` form above is what installs bucket routing. `isolation: bucket` with `bucket_template` is validated at startup but does not install per-tenant routing on its own.
 

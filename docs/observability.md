@@ -76,6 +76,7 @@ graph LR
 | Metric | Type | Description |
 |---|---|---|
 | `lakehouse_manifest_files` | Gauge | Parquet files tracked |
+| `lakehouse_manifest_tenant_bucket_list_errors_total` | Counter (label: `bucket`) | Failed LISTs of a tenant's dedicated bucket during a refresh. One unreachable bucket fails the whole refresh — the manifest then keeps its previous state for every tenant — so any sustained rate means the fleet's view of S3 is frozen. The series of each registered dedicated bucket is exported at zero |
 | `lakehouse_manifest_fast_path_total` | Counter | Queries short-circuited |
 | `lakehouse_discovery_hot_boundary_seconds` | Gauge | Auto-discovered boundary |
 | `lakehouse_discovery_hot_boundary_gap_days` | Gauge | Gap between cold and hot |
@@ -275,6 +276,7 @@ Shipped in `alerts/alerts-lakehouse.yml`:
 | `LakehouseS3ThrottleSustained` | warning | Sustained S3 throttling for 5m |
 | `LakehousePeerDown` | warning | High peer error rate for 5m |
 | `LakehouseTenantScopeViolation` | critical | Any `lakehouse_tenant_scope_violations_total` increase in 5m |
+| `LakehouseTenantBucketListFailing` | critical | A tenant's dedicated bucket failed to list for 10m (`lakehouse_manifest_tenant_bucket_list_errors_total`) |
 
 ## Structured Logging
 

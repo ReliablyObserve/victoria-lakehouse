@@ -190,6 +190,15 @@ var (
 	ManifestPushPeers                   = NewGauge("lakehouse_manifest_push_peers")
 	ManifestPushErrorsTotal             = NewCounter("lakehouse_manifest_push_errors_total")
 	ManifestUpdateReceivedTotal         = NewCounter("lakehouse_manifest_update_received_total")
+
+	// ManifestTenantBucketListErrors counts failed LISTs of a tenant's
+	// dedicated bucket during a manifest refresh, by bucket. One failing
+	// bucket fails the whole refresh — the manifest then keeps serving its
+	// previous state rather than dropping that tenant's objects — so a
+	// non-zero rate means the fleet's view of S3 is frozen until the bucket
+	// is reachable again. The series of every registered dedicated bucket is
+	// created at zero by Manifest.SetTenantBuckets.
+	ManifestTenantBucketListErrors = NewCounterVec("lakehouse_manifest_tenant_bucket_list_errors_total", "bucket")
 )
 
 // RowGroupSkipReasons is every reason ParquetRowGroupsSkipped is incremented
