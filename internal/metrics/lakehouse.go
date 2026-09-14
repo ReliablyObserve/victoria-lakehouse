@@ -196,8 +196,10 @@ var (
 	// (reason=published_during_listing).
 	ManifestRefreshSkipped = NewCounterVec("lakehouse_manifest_refresh_skipped_total", "reason")
 	// ManifestRetiredEvicted counts retired keys forgotten by the age or size
-	// bound (reason=ttl|cap) rather than by their object being deleted. Should
-	// stay 0: an evicted key whose object still exists is adopted again.
+	// bound (reason=ttl|cap|cap_delete_owed|cap_delete_landed) rather than by a
+	// listing proving the object gone. Should stay 0: an evicted key whose
+	// object still exists is adopted again, and so is one whose object a
+	// still-running listing read before the delete.
 	ManifestRetiredEvicted = NewCounterVec("lakehouse_manifest_retired_evicted_total", "reason")
 	// ManifestRetiredReclaimed / ManifestRetiredReclaimErrors count the retry
 	// deletes of superseded and abandoned objects whose first delete failed.
@@ -207,6 +209,18 @@ var (
 	// this process still owes a delete for — the keys whose eviction would let
 	// a refresh serve them again. Drains as the deletes land.
 	ManifestRetiredReclaimOwed = NewGauge("lakehouse_manifest_retired_delete_owed")
+	// ManifestRetiredDeleteLanded is the part of the retired set whose objects
+	// are already deleted and which is held only so a listing that began before
+	// the delete cannot adopt them back. Drains at the next accepted refresh, so
+	// it tracks one refresh interval of deletes; a value that keeps growing
+	// means refreshes are not being accepted.
+	ManifestRetiredDeleteLanded = NewGauge("lakehouse_manifest_retired_delete_landed")
+	// ManifestRetiredSettled counts retired keys an accepted listing proved
+	// gone — the only event that releases a key other than eviction. It is what
+	// says whether the set is draining: the gauges cannot, because a node that
+	// compacts faster than it refreshes refills the set as fast as it empties
+	// and never reads zero while working perfectly.
+	ManifestRetiredSettled = NewCounter("lakehouse_manifest_retired_settled_total")
 	// ManifestHeldKeys is the number of registered files another publish may
 	// not supersede yet because the rewrite that swapped them in has not
 	// recorded that swap durably. Steady state 0.

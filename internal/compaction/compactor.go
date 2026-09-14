@@ -552,7 +552,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		if err := c.pool.Delete(ctx, outputKey); err != nil {
 			logger.Warnf("abandoned compaction output not deleted (retried by the next reclaim); key=%s: %s", outputKey, err)
 		} else {
-			c.manifest.ForgetRetired(outputKey)
+			c.manifest.ConfirmDeleted(outputKey)
 		}
 		return nil, fmt.Errorf("compaction of %s abandoned: a source left the manifest during the merge", partition)
 	}
@@ -565,7 +565,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 			logger.Warnf("failed to delete source file (retried by the next reclaim); key=%s, error=%s", f.Key, err)
 			continue
 		}
-		c.manifest.ForgetRetired(f.Key)
+		c.manifest.ConfirmDeleted(f.Key)
 	}
 
 	// The merged output is published and the sources are gone. Every tombstone
