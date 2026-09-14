@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.132.0] - 2026-09-14
+
 ### Fixed
 
 - **Cold-tier reads are scoped to the request tenant on both binaries.** A select request is now answered from exactly one tenant — the tenant in its `AccountID`/`ProjectID` (or `X-Scope-*`) headers, or `0:0` when there are none — and a request on VL's internal select protocol from exactly the tenants it lists, matching upstream VictoriaLogs/VictoriaTraces; only a request carrying the configured global-read header or bearer token reads across tenants. Previously the logs binary resolved cold-tier objects for a time range without consulting the tenant, and on both binaries field and stream enumeration, pmeta catalog answers, the in-memory label index, the Jaeger handlers (which passed no tenant), the traces trace-by-id index lookup and the multi-pod buffer bridge returned data of every tenant, so unscoped, scoped and unknown-tenant requests could see other tenants' rows and values. Affected endpoints: `/select/logsql/query`, `hits`, `stats_query`, `stats_query_range`, `facets`, `field_names`, `field_values`, `stream_field_values`, `streams`, `stream_ids`, `/select/tenant_ids` (reported a fixed `0:0`), the Jaeger and Tempo trace-by-id APIs, and `/internal/buffer/query`. Details:
