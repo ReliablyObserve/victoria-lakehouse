@@ -893,6 +893,7 @@ func TestUpdateLabelIndex(t *testing.T) {
 
 func TestGetFieldNames_UsesLabelIndex(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web"})
 	s.labelIndex.Add("level", []string{"info", "error"})
 
@@ -911,6 +912,7 @@ func TestGetFieldNames_UsesLabelIndex(t *testing.T) {
 
 func TestGetFieldValues_UsesLabelIndex(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
 
 	q := mustParseQueryWithTime(t, "*",

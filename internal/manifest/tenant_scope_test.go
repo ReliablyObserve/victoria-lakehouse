@@ -7,8 +7,8 @@ import (
 
 // The read path leans on three manifest guarantees: a tenant only ever gets its
 // own objects back, objects written under the pre-tenant static prefix are
-// findable as the default tenant's data, and the manifest can say how many
-// tenant scopes it holds (which is what decides whether a global, not
+// findable as the default tenant's data, and the manifest can name the one
+// tenant it holds objects for (which is what decides whether a global, not
 // tenant-keyed, in-RAM index may answer a query).
 
 const tsPart = "dt=2026-05-10/hour=14"
@@ -62,36 +62,64 @@ func TestGetFilesForRangeUntenanted_RemoveKeepsBookkeeping(t *testing.T) {
 	if got := m.GetFilesForRangeUntenanted(lo, hi); len(got) != 0 {
 		t.Errorf("legacy object still tracked after RemoveFile: %+v", got)
 	}
-	if n := m.TenantScopeCount(); n != 0 {
-		t.Errorf("TenantScopeCount = %d after removing the only object, want 0", n)
+	if acc, proj, ok := m.SoleTenant(); ok {
+		t.Errorf("SoleTenant = %s:%s after removing the only object, want none", acc, proj)
 	}
 }
 
-func TestTenantScopeCount(t *testing.T) {
+func TestSoleTenant(t *testing.T) {
 	base := time.Date(2026, 5, 10, 14, 30, 0, 0, time.UTC).UnixNano()
 	cases := []struct {
-		name string
-		keys []string
-		want int
+		name     string
+		template string
+		keys     []string
+		wantAcc  string
+		wantProj string
+		wantOK   bool
 	}{
-		{"empty", nil, 0},
-		{"one tenant", []string{"0/0/logs/" + tsPart + "/a.parquet"}, 1},
-		{"legacy only", []string{"logs/" + tsPart + "/a.parquet"}, 1},
-		{"two tenants", []string{"0/0/logs/" + tsPart + "/a.parquet", "1/2/logs/" + tsPart + "/b.parquet"}, 2},
-		{"tenant plus legacy", []string{"0/0/logs/" + tsPart + "/a.parquet", "logs/" + tsPart + "/b.parquet"}, 2},
-		{"same tenant twice", []string{"3/4/logs/" + tsPart + "/a.parquet", "3/4/logs/" + tsPart + "/b.parquet"}, 1},
+		{"empty", "{AccountID}/{ProjectID}/", nil, "", "", false},
+		{"one tenant", "{AccountID}/{ProjectID}/", []string{"1001/0/logs/" + tsPart + "/a.parquet"}, "1001", "0", true},
+		{"same tenant twice", "{AccountID}/{ProjectID}/", []string{"3/4/logs/" + tsPart + "/a.parquet", "3/4/logs/" + tsPart + "/b.parquet"}, "3", "4", true},
+		{"two tenants", "{AccountID}/{ProjectID}/", []string{"0/0/logs/" + tsPart + "/a.parquet", "1/2/logs/" + tsPart + "/b.parquet"}, "", "", false},
+		// Legacy untenanted objects are 0:0's data.
+		{"legacy only", "{AccountID}/{ProjectID}/", []string{"logs/" + tsPart + "/a.parquet"}, "0", "0", true},
+		{"legacy without a template", "", []string{"logs/" + tsPart + "/a.parquet"}, "0", "0", true},
+		{"default tenant plus legacy", "{AccountID}/{ProjectID}/", []string{"0/0/logs/" + tsPart + "/a.parquet", "logs/" + tsPart + "/b.parquet"}, "0", "0", true},
+		{"other tenant plus legacy", "{AccountID}/{ProjectID}/", []string{"1001/0/logs/" + tsPart + "/a.parquet", "logs/" + tsPart + "/b.parquet"}, "", "", false},
+		{"default account other project plus legacy", "{AccountID}/{ProjectID}/", []string{"0/5/logs/" + tsPart + "/a.parquet", "logs/" + tsPart + "/b.parquet"}, "", "", false},
+		{"orgid-shaped key", "{OrgID}/", []string{"acme/logs/" + tsPart + "/a.parquet"}, "acme", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := New("test-bucket", "")
-			m.SetPrefixTemplate("{AccountID}/{ProjectID}/")
+			if tc.template != "" {
+				m.SetPrefixTemplate(tc.template)
+			}
 			for _, k := range tc.keys {
 				m.AddFile(tsPart, FileInfo{Key: k, Size: 10, RowCount: 1, MinTimeNs: base, MaxTimeNs: base})
 			}
-			if got := m.TenantScopeCount(); got != tc.want {
-				t.Errorf("TenantScopeCount = %d, want %d", got, tc.want)
+			acc, proj, ok := m.SoleTenant()
+			if acc != tc.wantAcc || proj != tc.wantProj || ok != tc.wantOK {
+				t.Errorf("SoleTenant = (%q, %q, %v), want (%q, %q, %v)", acc, proj, ok, tc.wantAcc, tc.wantProj, tc.wantOK)
 			}
 		})
+	}
+}
+
+// TestSoleTenant_FollowsRemovals: removing the last object of the second tenant
+// makes the remaining tenant the sole tenant again.
+func TestSoleTenant_FollowsRemovals(t *testing.T) {
+	base := time.Date(2026, 5, 10, 14, 30, 0, 0, time.UTC).UnixNano()
+	m := New("test-bucket", "")
+	m.SetPrefixTemplate("{AccountID}/{ProjectID}/")
+	m.AddFile(tsPart, FileInfo{Key: "1001/0/logs/" + tsPart + "/a.parquet", Size: 10, RowCount: 1, MinTimeNs: base, MaxTimeNs: base})
+	m.AddFile(tsPart, FileInfo{Key: "2002/7/logs/" + tsPart + "/b.parquet", Size: 10, RowCount: 1, MinTimeNs: base, MaxTimeNs: base})
+	if _, _, ok := m.SoleTenant(); ok {
+		t.Fatal("two tenants reported a sole tenant")
+	}
+	m.RemoveFile(tsPart, "2002/7/logs/"+tsPart+"/b.parquet")
+	if acc, proj, ok := m.SoleTenant(); !ok || acc != "1001" || proj != "0" {
+		t.Fatalf("after removing 2002:7, SoleTenant = (%q, %q, %v), want 1001:0", acc, proj, ok)
 	}
 }
 

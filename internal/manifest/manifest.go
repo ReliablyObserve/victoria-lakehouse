@@ -1117,19 +1117,38 @@ func (m *Manifest) GetFilesForRangeUntenanted(startNs, endNs int64) []FileInfo {
 	return out
 }
 
-// TenantScopeCount reports how many distinct tenant scopes the manifest holds,
-// counting the legacy untenanted layout as one scope. 0 or 1 means no query
-// can cross a tenant boundary, which lets the read path keep using global
-// in-RAM indexes (labelIndex) that are not tenant-keyed.
-func (m *Manifest) TenantScopeCount() int {
+// SoleTenant reports the one tenant the manifest holds objects for, as the
+// (account, project) strings object keys use. Objects under the legacy
+// untenanted layout are tenant 0:0's data, so a manifest with only legacy
+// objects, or with legacy objects and 0:0-prefixed objects (a default-tenant
+// deployment moving to the prefix template), has the sole tenant 0:0. ok=false
+// when the manifest holds no objects or objects of more than one tenant.
+//
+// The read path uses it to decide whether an in-RAM index that is not
+// tenant-keyed (labelIndex) may answer a request: only when every value in it
+// can belong to the requesting tenant.
+func (m *Manifest) SoleTenant() (account, project string, ok bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	n := len(m.tenantAggregates)
-	if m.legacyAggregate != nil && m.legacyAggregate.files > 0 {
-		n++
+	legacy := m.legacyAggregate != nil && m.legacyAggregate.files > 0
+	switch len(m.tenantAggregates) {
+	case 0:
+		if legacy {
+			return "0", "0", true
+		}
+		return "", "", false
+	case 1:
+		for k := range m.tenantAggregates {
+			// An {OrgID}-shaped key has no project segment; account "0" alone
+			// then names the default tenant, as tenant key ownership does.
+			if legacy && (k.account != "0" || (k.project != "0" && k.project != "")) {
+				return "", "", false
+			}
+			return k.account, k.project, true
+		}
 	}
-	return n
+	return "", "", false
 }
 
 // filesInAccumRangeLocked collects the files of one accumulator's partitions

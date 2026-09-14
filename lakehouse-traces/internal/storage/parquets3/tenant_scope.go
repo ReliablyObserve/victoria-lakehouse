@@ -212,16 +212,27 @@ func tenantOwnsKey(parse func(string) (string, string, bool), scope tenantScope,
 }
 
 // tenantScopeAllowsGlobalIndex reports whether the range-independent, NOT
-// tenant-keyed in-RAM label index may answer this request. It can only do so
-// when the manifest holds at most one tenant scope (single-tenant deployment),
-// because the index unions every tenant's field names and values. Multi-tenant
-// deployments fall through to the partition-keyed pmeta catalog or a scan,
-// both of which are scoped per file key.
+// tenant-keyed in-RAM label index may answer this request. The index unions the
+// field names and values of every object it was built from, so it may answer
+// only a validated cross-tenant read, or a request for exactly one tenant that
+// is the only tenant the manifest holds objects for (legacy untenanted objects
+// count as 0:0). A request by any other tenant — unknown, 0:0 in a deployment
+// whose only tenant is 1001:0, or a tenant list — falls through to the
+// partition-keyed pmeta catalog or a scan, both scoped per object key.
 func (s *Storage) tenantScopeAllowsGlobalIndex(scope tenantScope) bool {
 	if scope.all {
 		return true
 	}
-	return s.manifest.TenantScopeCount() <= 1
+	if !scope.single() {
+		return false
+	}
+	account, project, ok := s.manifest.SoleTenant()
+	if !ok {
+		return false
+	}
+	// Same ownership rule as tenantOwnsKey: an {OrgID}-shaped key carries no
+	// project segment.
+	return scope.account == account && (project == "" || scope.project == project)
 }
 
 // rowInTenantScope reports whether a buffered row (fetched over the buffer

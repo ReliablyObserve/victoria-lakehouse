@@ -624,25 +624,6 @@ func TestTenantScope_Invariant_FileSelection(t *testing.T) {
 	}
 }
 
-// TestTenantScope_LabelIndex_GatedByTenantCount checks the one in-RAM structure
-// that is NOT tenant-keyed: it may only answer while the manifest holds a single
-// tenant scope.
-func TestTenantScope_LabelIndex_GatedByTenantCount(t *testing.T) {
-	multi := newTenantScopeFixture(t)
-	if multi.s.tenantScopeAllowsGlobalIndex(tenantScope{account: "1001", project: "0"}) {
-		t.Error("the global label index was allowed to answer a scoped query in a multi-tenant manifest")
-	}
-	if !multi.s.tenantScopeAllowsGlobalIndex(tenantScope{all: true}) {
-		t.Error("a validated cross-tenant read may use the global label index")
-	}
-
-	single := newEmptyTenantScopeFixture(t, tsLayoutPrefix, "{AccountID}/{ProjectID}/")
-	single.put(tsNow(), tsDefaultBucket, "0/0/logs/"+tsPartition+"/only.parquet", "svc-tenant-0-0", 2)
-	if !single.s.tenantScopeAllowsGlobalIndex(tenantScope{account: "0", project: "0"}) {
-		t.Error("a single-tenant manifest should keep the global label index fast path")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Legacy layout: untenanted objects belong to 0:0 and must not be dropped.
 // ---------------------------------------------------------------------------

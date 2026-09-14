@@ -1312,8 +1312,9 @@ func (s *Storage) WarmLabelIndex(ctx context.Context) {
 	}
 	// Cross-tenant by construction: the label index is a global, NOT
 	// tenant-keyed, RAM structure. That is exactly why the read path may only
-	// answer from it in a single-tenant deployment — see
-	// tenantScopeAllowsGlobalIndex, which gates every query that touches it.
+	// answer from it for the manifest's sole tenant (or a validated global
+	// read) — see tenantScopeAllowsGlobalIndex, which gates every query that
+	// touches it.
 	files := s.filesForScope("warm_label_index", 0, 1<<62, tenantScope{all: true})
 	if len(files) == 0 {
 		return
