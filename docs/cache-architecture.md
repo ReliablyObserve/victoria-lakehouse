@@ -236,7 +236,9 @@ skip the 1-2 round-trip footer fetch + parse.
 
 The cache auto-resizes after each manifest refresh so the cap
 tracks the active file count instead of being pinned at the
-startup value. Eviction is pure LRU; bumped on `Get`, evicted
+startup value (traces only today — the logs binary's footer cache
+is fixed at 10 000 entries; see
+[scale limits](petabyte-scale-audit.md#footer-cache)). Eviction is pure LRU; bumped on `Get`, evicted
 from the back when the cap is exceeded.
 
 ### Two-phase Footer Fetch
