@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.132.1] - 2026-09-14
+
 ### Added
 
 - **Delete leftovers API — what an instance still owes.** `GET /delete/logsql/leftovers` (traces: `/delete/tracessql/leftovers`) lists, read-only, the keys the manifest retired while their objects await deletion (with `delete_owed` marking the ones this process superseded and `replaced_by` naming the file that took over), the uploads claimed but not published (`held` marking a replacement whose swap is not durable yet), and the durable records of unfinished rewrites with their state and both object keys — plus whether the tombstone store's write-through is armed, how many records are owed to S3, and whether its S3 restore is still pending. Every delete alert asks an operator to act on specific objects (“delete the listed leftovers”) and until now nothing could name them; the alert texts now point here. Instance-wide, not tenant-scoped (`"scope": "instance"` in the payload, like the tombstone listing beside it), and bounded: the lists cap at `limit` entries (default 1000, maximum 10000, `truncated` set) while the counts are always the full totals. `lakehouse_delete_tombstone_removed_markers_evicted_total`, `lakehouse_delete_tombstone_restore_pending`, `lakehouse_delete_rewrites_unfinished`, `lakehouse_delete_rewrite_deferred_total{reason}`, `lakehouse_delete_rewrite_key_collisions_total`, `lakehouse_manifest_retired_delete_owed`, `lakehouse_manifest_held_keys` and `lakehouse_manifest_key_claim_rejected_total{reason}` now have dashboard panels, and a test fails the build if any `lakehouse_delete_*` metric is on no panel and in no alert.
