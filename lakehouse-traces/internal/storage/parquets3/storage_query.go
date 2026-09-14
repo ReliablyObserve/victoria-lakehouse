@@ -828,9 +828,9 @@ func widenTraceIDQueryToNow(q *logstorage.Query, startNs, endNs int64) (*logstor
 }
 
 // servePureBufferQuery answers a query whose window is entirely unflushed (no
-// cold-tier files) by running the FULL query — aggregation pipes intact — on the
-// co-located logstorage buffer's own VL engine, so it aggregates natively
-// instead of the bridge's DropAllPipes path that ships every raw row upstream.
+// cold-tier files for the request's tenants) from the co-located logstorage
+// buffer's own VL engine, emitting the matching RAW rows; the storage adapter
+// applies the query's pipes on top, exactly as for rows read from Parquet.
 // Returns true when it served the query. Declines (false, caller falls through
 // to the bridge) when there is no local buffer, when peers exist (this node's
 // buffer then holds only its own rows — multi-pod must fan out), or on error.
@@ -840,7 +840,17 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query,
 		return false
 	}
 	startNs, endNs := q.GetFilterTimeRange()
-	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs), q, false, nil)
+	// Emit RAW rows. Both storage adapters run a query's pipes themselves
+	// (logstorage.RunQueryExternal*) over whatever RunQuery emits, and RunQuery's
+	// block filter re-applies the query's row filter to every block. Running the
+	// pipes here as well would hand aggregated rows (count, hits buckets) to both:
+	// the row filter drops them (a filtered `| stats count()` answered 0) or the
+	// adapter aggregates them a second time (`* | stats count()` answered 1).
+	qBuf := q
+	if logstorage.QueryHasPipes(q) {
+		qBuf = logstorage.CloneWithoutPipes(q)
+	}
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs), qBuf, false, nil)
 	if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
 		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
 		return false

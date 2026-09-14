@@ -433,20 +433,29 @@ func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
 }
 
 // servePureBufferQuery answers a query whose window is entirely unflushed (no
-// cold-tier files) directly from the co-located logstorage buffer, running the
-// FULL query — aggregation pipes intact — through the buffer's VL engine. The
-// engine computes count/stats/group-by natively and emits the small result,
-// instead of the bridge's DropAllPipes path that ships every raw row upstream
-// for re-aggregation. Returns false (caller falls back to the bridge) when the
-// node isn't a single-node logstore buffer: with peers, other pods hold
-// unflushed rows reachable only via the bridge fan-out. No upstream
-// modification — this calls the buffer's public RunQuery.
+// cold-tier files for the request's tenants) directly from the co-located
+// logstorage buffer through its VL engine, emitting the matching RAW rows; the
+// storage adapter applies the query's pipes on top, exactly as for rows read
+// from Parquet. Returns false (caller falls back to the bridge) when the node
+// isn't a single-node logstore buffer: with peers, other pods hold unflushed
+// rows reachable only via the bridge fan-out. No upstream modification — this
+// calls the buffer's public RunQuery.
 func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) bool {
 	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
 		return false
 	}
 	startNs, endNs := q.GetFilterTimeRange()
-	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs), q, false, nil)
+	// Emit RAW rows. Both storage adapters run a query's pipes themselves
+	// (logstorage.RunQueryExternal*) over whatever RunQuery emits, and RunQuery's
+	// block filter re-applies the query's row filter to every block. Running the
+	// pipes here as well would hand aggregated rows (count, hits buckets) to both:
+	// the row filter drops them (a filtered `| stats count()` answered 0) or the
+	// adapter aggregates them a second time (`* | stats count()` answered 1).
+	qBuf := q
+	if logstorage.QueryHasPipes(q) {
+		qBuf = logstorage.CloneWithoutPipes(q)
+	}
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs), qBuf, false, nil)
 	if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
 		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
 		return false
