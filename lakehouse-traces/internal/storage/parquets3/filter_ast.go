@@ -157,6 +157,42 @@ func FilterContainsOr(f *logstorage.Filter) bool {
 	return found
 }
 
+// FilterIsTimeOnly reports whether f constrains nothing but _time ranges: one
+// _time range, or an AND of _time ranges (a `*` inside the AND is neutral).
+//
+// day_range and week_range are not time-only: they keep rows by hour of day or
+// weekday inside the query range, so they must be evaluated per row. OR, NOT
+// and every other node make the filter not time-only, and so does a tree the
+// walk cannot read — answering false only costs row-level evaluation, never a
+// wrong result.
+func FilterIsTimeOnly(f *logstorage.Filter) bool {
+	if f == nil {
+		return false
+	}
+	return isTimeOnlyNode(filterInner(f))
+}
+
+func isTimeOnlyNode(v reflect.Value) bool {
+	v = derefValue(v)
+	switch astTypeName(v) {
+	case astTypeTime, astTypeNoop:
+		return true
+	case astTypeAnd:
+		filters := v.FieldByName("filters")
+		if !filters.IsValid() || filters.Kind() != reflect.Slice || filters.Len() == 0 {
+			return false
+		}
+		for i := 0; i < filters.Len(); i++ {
+			if !isTimeOnlyNode(filters.Index(i)) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 // FilterIsNegated reports whether a predicate on fieldName appears
 // under a filterNot anywhere in the filter tree. Negated predicates
 // must not be pushed down because file-level filtering inverts match
