@@ -767,6 +767,10 @@
           "legendFormat": "retired keys whose delete is owed"
         },
         {
+          "expr": "lakehouse_manifest_retired_delete_landed{instance=~\"$instance\"}",
+          "legendFormat": "retired keys already deleted (listing guard)"
+        },
+        {
           "expr": "lakehouse_manifest_held_keys{instance=~\"$instance\"}",
           "legendFormat": "held replacements"
         },

@@ -263,7 +263,7 @@ func (s *RewriteScheduler) commit(ctx context.Context, id, source, newKey string
 		logger.Warnf("superseded object not deleted (retried on the next pass): %s; key=%s, tombstone=%s", err, source, id)
 		return false
 	}
-	s.manifest.ForgetRetired(source)
+	s.manifest.ConfirmDeleted(source)
 	clearRecord(s.store, id, source, newKey)
 	return true
 }
@@ -311,7 +311,7 @@ func (s *RewriteScheduler) discard(ctx context.Context, id, source, newKey strin
 			logger.Warnf("abandoned replacement not deleted (retried on the next pass): %s; key=%s, tombstone=%s", err, newKey, id)
 			return false
 		}
-		s.manifest.ForgetRetired(newKey)
+		s.manifest.ConfirmDeleted(newKey)
 	}
 	clearRecord(s.store, id, source, newKey)
 	return true

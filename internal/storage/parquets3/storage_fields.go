@@ -455,12 +455,13 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		return nil, nil
 	}
 	// Every object in the list is scanned. A compaction source whose rows are
-	// already inside a merged output never reaches here: the compactor removes
-	// it from the manifest and marks it superseded, so a LIST that still
-	// returns it cannot put it back (manifest.MarkSuperseded). Guessing
-	// redundancy here from time ranges and compaction levels instead used to
-	// hide the newest flush of a live partition — its rows fall inside the
-	// compacted neighbour's backfilled range — from every enumeration.
+	// already inside a merged output never reaches here: the publish removes it
+	// from the manifest and retires the key, and the retirement outlives the
+	// delete, so a LIST that still returns it cannot put it back (see
+	// internal/manifest/retired.go). Guessing redundancy here from time ranges
+	// and compaction levels instead used to hide the newest flush of a live
+	// partition — its rows fall inside the compacted neighbour's backfilled
+	// range — from every enumeration.
 
 	// The scan reads every row of every overlapping file, including the rows
 	// that lie outside the query window, so it must apply every tombstone

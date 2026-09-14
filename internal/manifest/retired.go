@@ -31,9 +31,22 @@ import (
 //
 // Retired keys are remembered with the time they retired and forgotten once a
 // listing that began after that time no longer contains them (the object is
-// gone), when an explicit reclaim confirms the delete, or after retiredKeyTTL,
-// with the set capped at maxRetiredKeys (oldest first) — so it is bounded by
-// the objects still awaiting deletion. They are persisted with the snapshot.
+// gone), or after retiredKeyTTL, with the set capped at maxRetiredKeys (oldest
+// first). They are persisted with the snapshot.
+//
+// A landed delete is NOT what forgets a key. The listing a refresh applies may
+// have begun before the publish that retired the key and before the delete that
+// removed its object, and S3 answers it from the state it read then: the object
+// is in that answer whether or not it exists now. Dropping the record the moment
+// the delete returns therefore leaves exactly the window the record exists for —
+// the refresh adopts the deleted object back, next to whatever replaced it, as a
+// bare listing entry with no row count and no aggregates. What a landed delete
+// does is settle who owes what: ConfirmDeleted clears Reclaim (nothing left to
+// delete, so ReclaimRetired stops retrying and the owed gauge stays honest) and
+// sets Deleted, and the first accepted listing that began after the retirement
+// forgets the key — the object was proven gone by a listing that could see it.
+// So the set stays bounded by the objects a listing might still report, not by
+// the deletes this process has done.
 //
 // Pending keys are in-memory only, on purpose. Whether an upload was published
 // is not something a periodic snapshot can know: a snapshot taken between the
@@ -87,6 +100,13 @@ type RetiredKey struct {
 	// replaced it or an output was abandoned — and owes its deletion. A key
 	// removed on another component's behalf is only kept out of the refresh.
 	Reclaim bool
+	// Deleted reports that the object is confirmed gone: a delete returned
+	// success for this key. The record is kept anyway, because a listing that
+	// began before the delete still reports the object and a refresh applying
+	// it would adopt it back; it is dropped by the first accepted listing that
+	// began after At. Deleted and Reclaim are mutually exclusive — there is
+	// nothing left to reclaim.
+	Deleted bool
 }
 
 // retireLocked records key as retired. Caller holds m.mu (write).
@@ -98,7 +118,10 @@ func (m *Manifest) retireLocked(rk RetiredKey) {
 		rk.At = time.Now()
 	}
 	if cur, ok := m.retired[rk.Key]; ok {
-		// A second retirement never downgrades an owed reclaim.
+		// A second retirement never downgrades an owed reclaim. It does clear
+		// Deleted (rk carries none): retiring a key again says an object may
+		// exist under it once more, so the record goes back to "may still be
+		// listed" and its At restarts the window.
 		rk.Reclaim = rk.Reclaim || cur.Reclaim
 		if rk.By == "" {
 			rk.By = cur.By
@@ -305,15 +328,24 @@ func (m *Manifest) UnretireIfReplacedBy(key, replacement string) bool {
 	return true
 }
 
-// ForgetRetired drops key from the retired set once its object is confirmed
-// deleted.
-func (m *Manifest) ForgetRetired(key string) {
+// ConfirmDeleted records that key's object is gone: a delete returned success.
+// The retirement itself is KEPT — see the note at the top of this file on why a
+// landed delete cannot forget a key — with its delete no longer owed. The first
+// accepted listing that began after the retirement drops it.
+//
+// A key that is not retired is left alone: nothing is claiming it must stay out
+// of the refresh, so there is no record to settle.
+func (m *Manifest) ConfirmDeleted(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.retired[key]; ok {
-		delete(m.retired, key)
-		m.updateRetiredGaugesLocked()
+	rk, ok := m.retired[key]
+	if !ok {
+		return
 	}
+	rk.Reclaim = false
+	rk.Deleted = true
+	m.retired[key] = rk
+	m.updateRetiredGaugesLocked()
 }
 
 // LookupRetired returns key's retirement record, if it is retired.
@@ -381,8 +413,15 @@ func (m *Manifest) ReclaimRetired(ctx context.Context, del func(ctx context.Cont
 			continue
 		}
 		m.mu.Lock()
+		// Same rule as ConfirmDeleted's: the delete landed, so nothing is owed,
+		// but the record stays until a listing that began after the retirement
+		// proves the object gone. The At check keeps a key retired again since
+		// this scan read it — a new object under that key — from being settled
+		// by this older delete.
 		if cur, ok := m.retired[rk.Key]; ok && cur.At.Equal(rk.At) {
-			delete(m.retired, rk.Key)
+			cur.Reclaim = false
+			cur.Deleted = true
+			m.retired[rk.Key] = cur
 		}
 		m.updateRetiredGaugesLocked()
 		m.mu.Unlock()
@@ -399,8 +438,10 @@ func (m *Manifest) ReclaimRetired(ctx context.Context, del func(ctx context.Cont
 // forget: its object is still in the bucket, so the next refresh adopts it back
 // next to whatever replaced it. A key removed on another component's behalf
 // (retention, which deletes first; a peer's push, whose own node owes the
-// delete) usually has no object left at all. So the TTL only applies to the
-// latter, and the cap evicts every one of them before touching an owed key.
+// delete) usually has no object left at all, and a Deleted key provably has
+// none — it is held only until a listing old enough to still report it can no
+// longer be applied. So the TTL spares owed keys alone, and the cap evicts the
+// provably-gone keys first, the rest of the unowed next, and an owed key last.
 // Caller holds m.mu (write).
 func (m *Manifest) pruneRetiredLocked(now time.Time) {
 	for k, rk := range m.retired {
@@ -416,6 +457,9 @@ func (m *Manifest) pruneRetiredLocked(now time.Time) {
 		}
 		sort.Slice(keys, func(i, j int) bool {
 			ri, rj := m.retired[keys[i]], m.retired[keys[j]]
+			if ri.Deleted != rj.Deleted {
+				return ri.Deleted // the object is gone: cheapest to forget
+			}
 			if ri.Reclaim != rj.Reclaim {
 				return !ri.Reclaim // evict keys nobody here owes a delete for first
 			}
@@ -423,10 +467,16 @@ func (m *Manifest) pruneRetiredLocked(now time.Time) {
 		})
 		for _, k := range keys[:len(keys)-maxRetiredKeys] {
 			reason := "cap"
-			if m.retired[k].Reclaim {
+			switch {
+			case m.retired[k].Reclaim:
 				// The object is still in the bucket and its delete is owed:
 				// forgetting it means the next refresh serves it again.
 				reason = "cap_delete_owed"
+			case m.retired[k].Deleted:
+				// The object is gone, but a listing that began before the
+				// delete can still report it: forgetting the guard early is
+				// how a deleted object is adopted back.
+				reason = "cap_delete_landed"
 			}
 			delete(m.retired, k)
 			metrics.ManifestRetiredEvicted.Inc(reason)
@@ -435,17 +485,22 @@ func (m *Manifest) pruneRetiredLocked(now time.Time) {
 	m.updateRetiredGaugesLocked()
 }
 
-// updateRetiredGaugesLocked publishes the retired-set size and how much of it
-// this process still owes deletes for. Caller holds m.mu.
+// updateRetiredGaugesLocked publishes the retired-set size, how much of it this
+// process still owes deletes for, and how much is held only as a guard against
+// a listing older than a landed delete. Caller holds m.mu.
 func (m *Manifest) updateRetiredGaugesLocked() {
-	owed := 0
+	owed, landed := 0, 0
 	for _, rk := range m.retired {
-		if rk.Reclaim {
+		switch {
+		case rk.Reclaim:
 			owed++
+		case rk.Deleted:
+			landed++
 		}
 	}
 	metrics.ManifestRetiredKeys.Set(int64(len(m.retired)))
 	metrics.ManifestRetiredReclaimOwed.Set(int64(owed))
+	metrics.ManifestRetiredDeleteLanded.Set(int64(landed))
 }
 
 // refreshExclusionsLocked removes retired and pending keys from a listing,

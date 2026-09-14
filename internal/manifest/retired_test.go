@@ -110,8 +110,8 @@ func TestUnretireIfReplacedBy_OnlyUndoesThatPublish(t *testing.T) {
 	if m.UnretireIfReplacedBy(k, "mine") || !m.IsRetired(k) {
 		t.Fatal("a retirement made by another publish must not be undone")
 	}
-	m.Retire(k, "mine", true) // re-retired: By stays the first non-empty one
-	m.ForgetRetired(k)
+	m.Retire(k, "mine", true) // re-retired: the newer publish names itself
+	m.Unretire(k)
 	m.Retire(k, "mine", true)
 	if !m.UnretireIfReplacedBy(k, "mine") || m.IsRetired(k) {
 		t.Fatal("this publish's retirement must be undone")
@@ -128,10 +128,73 @@ func TestRetiredKeys_OldestFirst(t *testing.T) {
 	if len(got) != 3 || got[0].Key != refreshKey("k0") || got[2].Key != refreshKey("k2") {
 		t.Fatalf("RetiredKeys = %+v", got)
 	}
-	m.ForgetRetired(refreshKey("k1"))
-	m.ForgetRetired(refreshKey("never-retired"))
+	m.Unretire(refreshKey("k1"))
+	m.Unretire(refreshKey("never-retired"))
 	if len(m.RetiredKeys()) != 2 {
-		t.Fatal("ForgetRetired must drop exactly that key")
+		t.Fatal("Unretire must drop exactly that key")
+	}
+}
+
+// TestConfirmDeleted_KeepsTheRecordAndClearsTheDebt: a landed delete settles who
+// owes the object, it does not forget the key. A listing that began before the
+// delete still reports the object, and the record is what keeps the refresh
+// applying that listing from adopting it back.
+func TestConfirmDeleted_KeepsTheRecordAndClearsTheDebt(t *testing.T) {
+	m := New("b", "")
+	k := refreshKey("src")
+	m.Retire(k, refreshKey("out"), true)
+
+	m.ConfirmDeleted(refreshKey("never-retired")) // no record to settle
+	if m.IsRetired(refreshKey("never-retired")) {
+		t.Fatal("ConfirmDeleted must not retire a key that was not retired")
+	}
+
+	m.ConfirmDeleted(k)
+	rk, ok := m.LookupRetired(k)
+	if !ok {
+		t.Fatal("a landed delete must not forget the key: a listing older than the delete still reports the object")
+	}
+	if rk.Reclaim {
+		t.Fatal("a landed delete owes nothing more")
+	}
+	if !rk.Deleted {
+		t.Fatal("the record must say the object is gone, so the cap evicts it before a key whose object is not")
+	}
+	if rk.By != refreshKey("out") {
+		t.Fatalf("the replacement must survive the confirmation, got By=%q", rk.By)
+	}
+
+	// Nothing is retried for it: ReclaimRetired only deletes what is owed.
+	deleted, failed := m.ReclaimRetired(context.Background(), func(context.Context, string) error {
+		t.Fatal("a confirmed delete must not be retried")
+		return nil
+	}, 0)
+	if deleted != 0 || failed != 0 {
+		t.Fatalf("ReclaimRetired = (%d, %d), want (0, 0)", deleted, failed)
+	}
+}
+
+// TestConfirmDeleted_ReRetirementReopensTheWindow: the key names a new object
+// again, so the record goes back to "may still be listed" and its window
+// restarts from the new retirement.
+func TestConfirmDeleted_ReRetirementReopensTheWindow(t *testing.T) {
+	m := New("b", "")
+	k := refreshKey("src")
+	m.Retire(k, "", true)
+	m.ConfirmDeleted(k)
+	first, _ := m.LookupRetired(k)
+
+	time.Sleep(time.Millisecond)
+	m.Retire(k, "", true)
+	rk, ok := m.LookupRetired(k)
+	if !ok || rk.Deleted {
+		t.Fatalf("a fresh retirement must clear Deleted, got %+v ok=%v", rk, ok)
+	}
+	if !rk.Reclaim {
+		t.Fatal("the new object's delete is owed again")
+	}
+	if !rk.At.After(first.At) {
+		t.Fatal("the window must restart from the new retirement, not the settled one")
 	}
 }
 
@@ -157,8 +220,17 @@ func TestReclaimRetired(t *testing.T) {
 	if deleted != 1 || failed != 1 || len(deletedKeys) != 1 || deletedKeys[0] != owed {
 		t.Fatalf("deleted=%d failed=%d keys=%v, want only %s deleted and %s failed", deleted, failed, deletedKeys, owed, failing)
 	}
-	if m.IsRetired(owed) || !m.IsRetired(failing) || !m.IsRetired(notOwed) {
-		t.Fatal("only a confirmed delete forgets its key; a failed one is retried, an un-owed one is never deleted")
+	// A landed delete settles the debt but keeps the record: a listing that
+	// began before it still reports the object. A failed delete stays owed and
+	// an un-owed key is never deleted at all.
+	if rk, ok := m.LookupRetired(owed); !ok || rk.Reclaim || !rk.Deleted {
+		t.Fatalf("the reclaimed key must stay retired with its delete settled, got %+v ok=%v", rk, ok)
+	}
+	if rk, ok := m.LookupRetired(failing); !ok || !rk.Reclaim || rk.Deleted {
+		t.Fatalf("a failed delete must stay owed for the next scan, got %+v ok=%v", rk, ok)
+	}
+	if rk, ok := m.LookupRetired(notOwed); !ok || rk.Reclaim || rk.Deleted {
+		t.Fatalf("an un-owed key must be left exactly as it was, got %+v ok=%v", rk, ok)
 	}
 	if metrics.ManifestRetiredReclaimErrors.Get() <= beforeErr {
 		t.Error("a failed reclaim must be counted")
