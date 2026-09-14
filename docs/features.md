@@ -1098,7 +1098,7 @@ Pods broadcast compressed deltas to each other on an interval and checkpoint to 
 
 Fleet-wide dashboards need to see everything, and nothing else should. Global read is off until enabled, requires a credential, and is covered by tests for the correct secret, the wrong secret and the missing header — the three cases that decide whether isolation holds.
 
-- Verification: tests: `internal/config/tenant_test.go`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_GlobalRead_SeesAllTenants`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithCorrectSecret`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithWrongSecret`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadMissingHeader`
+- Verification: tests: `internal/config/tenant_test.go`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_GlobalRead_SeesAllTenants`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithCorrectSecret`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadWithWrongSecret`, `tests/e2e/multitenancy_test.go#TestMultitenancy_GlobalReadMissingHeader`, `internal/tenant/global_read_test.go`, `internal/storage/global_read_test.go`, `lakehouse-traces/internal/selectapi/global_read_test.go`
 - Docs: `docs/multi-tenancy.md`, `docs/security.md`
 
 ### ✅ Header-routed multi-tenancy in one process
@@ -1107,10 +1107,10 @@ Fleet-wide dashboards need to see everything, and nothing else should. Global re
 
 **Single binary, all tenants**: one lakehouse-logs/traces process serves all tenants simultaneously via header-based routing (`X-Scope-AccountID` / `X-Scope-ProjectID`, vmauth-compatible). Same pattern as Grafana Loki and Tempo.
 
-Tenancy is resolved from request headers at the edge of every path — insert, query, admin — and carried through to the storage prefix, so there is no per-tenant process to schedule and no per-tenant config to reload. Isolation is asserted by e2e tests that try to read across tenants and must fail.
+Tenancy is resolved from request headers at the edge of every path — insert, query, admin — and carried through to the storage prefix, so there is no per-tenant process to schedule and no per-tenant config to reload. A select request reads exactly one tenant, as upstream VictoriaLogs and VictoriaTraces do: the tenant in its headers, or `0:0` when there are none, on every query class — row scans, metadata fast paths, field and stream enumeration, pmeta catalog answers, the buffer bridge and the Jaeger API. Isolation is asserted by an invariant matrix over query class × request shape × tenant layout and by e2e tests that count each tenant's rows exactly and try to read across tenants.
 
-- Verification: rows: `lh.tenants.list.schema` (pass, pending) · tests: `internal/tenant/middleware_test.go`, `internal/tenant/resolver_test.go`, `tests/e2e/tenant_mapping_test.go#TestTenantMapping_StringAndIntPaths`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_OrgID_NoCrossTenantLeak`, `tests/e2e/endpoints_verification_test.go#TestEndpoint_MultiTenant_DataIsolation`
-- Docs: `docs/multi-tenancy.md`, `docs/configuration.md`
+- Verification: rows: `lh.tenants.list.schema` (pass, pending) · tests: `internal/tenant/middleware_test.go`, `internal/tenant/resolver_test.go`, `tests/e2e/tenant_mapping_test.go#TestTenantMapping_StringAndIntPaths`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_OrgID_NoCrossTenantLeak`, `tests/e2e/endpoints_verification_test.go#TestEndpoint_MultiTenant_DataIsolation`, `internal/storage/parquets3/tenant_scope_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_traces_test.go`, `internal/selectapi/tenant_scope_test.go`, `internal/buffer/handler_tenant_test.go`, `internal/manifest/tenant_scope_test.go`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Logs_ExactCounts`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Traces_ExactCounts`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_PerTenantQueryReturnsOnlyOwnedData`
+- Docs: `docs/multi-tenancy.md`, `docs/multi-tenancy.md#read-scoping-which-data-a-request-sees`, `docs/configuration.md`
 
 ### ✅ Per-tenant ingest rate limits
 
@@ -1142,7 +1142,7 @@ Storage-class policy is a cost decision each tenant may make differently. Both t
 
 Some tenants need their data in their own bucket for billing or IAM reasons, and they should not force every tenant into that shape. A per-tenant override is a policy entry, not a deployment: clients are pooled per bucket and the manifest keeps resolving across all of them.
 
-- Verification: tests: `internal/tenant/bucket_entries_test.go`, `internal/s3reader/pool_registry_test.go`, `internal/storage/parquets3/bucket_routing_test.go`, `internal/tenant/effective_test.go`
+- Verification: tests: `internal/tenant/bucket_entries_test.go`, `internal/s3reader/pool_registry_test.go`, `internal/storage/parquets3/bucket_routing_test.go`, `internal/tenant/effective_test.go`, `internal/manifest/tenant_buckets_refresh_test.go`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_BucketLayout`
 - Docs: `docs/multi-tenancy.md`, `docs/configuration.md`
 
 ### ✅ Tenant-isolated partition metadata
@@ -1432,7 +1432,7 @@ Every e2e and benchmark claim in this repo is only as honest as its seed. The ge
 
 ### ✅ Lakehouse feature catalog
 
-`lh.feature.ops.feature_catalog` · status: shipped · since: the release after v0.121.0 · surfaces: cli
+`lh.feature.ops.feature_catalog` · status: shipped · since: v0.122.0 · surfaces: cli
 
 **Feature catalog**: every Lakehouse capability is declared with the registry rows, tests, benchmarks and docs that verify it — and `docs/features.md` plus the README's Key Features bullets are generated from that declaration, so what ships and what is verified cannot drift apart.
 
@@ -1440,7 +1440,7 @@ The conformance registry answers "did we miss something upstream has"; the featu
 
 - Verification: tests: `tests/conformance/features_test.go#TestFeatures_RealCatalog`, `tests/conformance/registry/features_test.go#TestLoadFeatures_Valid`, `tests/conformance/report/features_test.go#TestRenderFeatures`, `scripts/ci/tests/test_check_registry_touch.sh`
 - Docs: `tests/conformance/README.md`, `docs/features.md`
-- Changelog: the release after `0.121.0`
+- Changelog: `0.122.0`
 
 ### ✅ Lifecycle HTTP endpoints
 
