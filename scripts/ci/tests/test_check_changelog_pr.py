@@ -9,6 +9,8 @@ from scripts.ci.check_changelog_pr import (
     is_release_commit,
     is_release_metadata_sync,
     should_require_changelog,
+    adds_version_section,
+    version_headings,
     versioned_bullets,
 )
 
@@ -211,6 +213,24 @@ class CheckChangelogPRTests(unittest.TestCase):
         )
         self.assertFalse(is_release_metadata_sync(["README.md"]))
         self.assertFalse(is_release_metadata_sync(["CHANGELOG.md", "internal/delete/handler.go"]))
+
+    def test_version_headings_excludes_unreleased(self):
+        text = "## [Unreleased]\n\n## [0.122.0] - 2026-09-14\n\n- a\n\n## [0.121.0] - 2026-09-13\n"
+        self.assertEqual(version_headings(text), {"0.122.0", "0.121.0"})
+
+    def test_adds_version_section_for_out_of_order_release(self):
+        base = "## [Unreleased]\n\n## [0.122.0] - 2026-09-14\n\n### Added\n\n- **Catalog.**\n"
+        head = (
+            "## [Unreleased]\n\n## [0.122.0] - 2026-09-14\n\n### Added\n\n- **Catalog.**\n\n"
+            "## [0.121.1] - 2026-09-14\n\n### Changed\n\n- **Contributing.**\n"
+        )
+        self.assertTrue(adds_version_section(head, base))
+        self.assertEqual(extract_unreleased_section(head), extract_unreleased_section(base))
+
+    def test_adds_version_section_false_when_headings_unchanged(self):
+        base = "## [Unreleased]\n\n## [0.122.0] - 2026-09-14\n\n- a\n"
+        head = "## [Unreleased]\n\n## [0.122.0] - 2026-09-14\n\n- a\n- b\n"
+        self.assertFalse(adds_version_section(head, base))
 
 
 if __name__ == "__main__":

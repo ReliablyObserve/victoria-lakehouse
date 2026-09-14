@@ -128,6 +128,20 @@ func CloneWithoutPipes(q *Query) *Query {
 	return &qCopy
 }
 
+// QueryFilter returns the filter of q for row-level evaluation (MatchRow)
+// without rendering q to text and parsing it back. That round trip fails for
+// queries VL accepts but cannot print back in parseable form (for example
+// `>'-'`) — Query.Clone turns the failure into a panic, which the
+// VictoriaMetrics HTTP server answers by exiting the process — and a re-parse
+// anchors relative time filters (`_time:5m`) to the parse time instead of the
+// query's timestamp. Returns nil when q is nil or has no filter.
+func QueryFilter(q *Query) *Filter {
+	if q == nil || q.f == nil {
+		return nil
+	}
+	return &Filter{f: q.f}
+}
+
 // GetQueryPipeFields returns field names referenced by pipe operators.
 // Walks both `by(...)` / `fields` clauses *and* the column arguments of
 // stats aggregation functions (`histogram(duration)`, `sum(x)`,

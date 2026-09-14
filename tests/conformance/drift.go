@@ -1,4 +1,6 @@
-// Package conformance joins the upstream inventory with the registry.
+// Package conformance joins the upstream inventory with the registry (this
+// file) and the feature catalog with both of them plus the changelog
+// (features.go) — the two halves of the drift gate.
 package conformance
 
 import (

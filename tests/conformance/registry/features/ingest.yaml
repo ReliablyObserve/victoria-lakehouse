@@ -1,0 +1,171 @@
+# Ingest features: everything between "a client sends rows" and "a Parquet
+# file exists on S3". Schema: registry/features.go (Feature.Validate).
+
+- id: lh.feature.ingest.vl_insert_protocols
+  title: Full VictoriaLogs insert protocol surface
+  status: shipped
+  area: ingest
+  readme_section: Write Path
+  surfaces: [api, ingest]
+  tests:
+    - tests/e2e/roundtrip_test.go#TestRoundTrip_Logs_InsertAndQuery
+    - internal/upstreamreuse/upstreamreuse_test.go#TestVLVTSymbolsAreImported
+    - tests/conformance/drift_test.go#TestCheckDrift_AgreesWithCoverageDocOnInsertPrefixes
+  docs:
+    - docs/write-path.md
+    - docs/getting-started.md
+  changelog_bullets:
+    - 'VL-compatible insert APIs'
+  highlight: >-
+    **Full VL insert protocol support**: jsonline, Loki (JSON + protobuf), ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert — all via VL's upstream `vlinsert` handlers.
+  description: >-
+    Lakehouse mounts the upstream `vlinsert` handlers instead of re-implementing them, so every
+    ingest protocol VictoriaLogs speaks is accepted unchanged and stays in step with the pinned
+    upstream. The Lakehouse delta is the storage behind them: rows land in the insert buffer and
+    are flushed to Parquet on S3 rather than into local hot storage.
+
+- id: lh.feature.ingest.crash_safe_durability
+  title: Crash-safe durability without a WAL
+  status: shipped
+  area: ingest
+  readme_section: Write Path
+  surfaces: [ingest, flag]
+  tests:
+    - internal/storage/parquets3/buffer_flusher_test.go
+    - tests/e2e/chaos_durability_test.go#TestChaos_BufferRestoreOnRestart
+    - internal/lifecycle/staleness_test.go#TestReconcileWAL_SomeNeedReflush
+    - internal/config/config_test.go#TestValidate_AckMode
+    - lakehouse-traces/internal/storage/parquets3/buffer_flusher_test.go
+  docs:
+    - docs/durability.md
+    - docs/storage-flow.md
+  changelog_bullets:
+    - 'Write-ahead log (WAL)'
+    - 'WAL integration in BatchWriter'
+  notes: >-
+    The original write-ahead log was replaced by the logstore insert buffer plus a persisted
+    flush watermark; the WAL changelog bullets belong to this feature's history.
+  highlight: >-
+    **Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](docs/durability.md).
+  description: >-
+    Buffered rows are persisted by the same logstorage engine the hot tier uses, so a pod that
+    dies mid-window restores its parts on open. A persisted flush watermark records what already
+    reached S3, so the restart re-flushes only the uncommitted window and does so idempotently.
+    `ack_mode=flush-sync` trades throughput for acknowledging only after the S3 write.
+
+- id: lh.feature.ingest.adaptive_file_sizing
+  title: Adaptive Parquet file sizing
+  status: shipped
+  area: ingest
+  readme_section: Write Path
+  surfaces: [ingest, flag]
+  tests:
+    - internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize
+    - lakehouse-traces/internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize
+    - internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesLogs_CountsEveryStringColumn
+    - lakehouse-traces/internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesTraces_CountsEveryStringColumn
+  docs:
+    - docs/write-path.md
+    - docs/configuration.md
+  changelog_bullets:
+    - 'Adaptive file sizing'
+  highlight: >-
+    **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
+  description: >-
+    The writer tracks an estimated on-disk size per partition and flushes as it approaches the
+    configured target, so files land in the size band that keeps S3 request counts and row-group
+    geometry sane instead of being dictated by wall-clock flush intervals alone.
+
+- id: lh.feature.ingest.atomic_s3_writes
+  title: Atomic single-PutObject Parquet writes
+  status: shipped
+  since: v0.8.0
+  area: ingest
+  readme_section: Write Path
+  surfaces: [storage, ingest]
+  tests:
+    - internal/storage/parquets3/writer_test.go#TestFlushAll_Logs
+    - internal/storage/parquets3/writer_test.go#TestFlushAll_MultiplePartitions
+    - lakehouse-traces/internal/storage/parquets3/buffer_flusher_roundtrip_test.go#TestInteg_FlusherRoundTrip_MultiFilePartition
+  docs:
+    - docs/write-path.md
+    - docs/durability.md
+  highlight: >-
+    **Atomic S3 writes**: each Parquet file is written via a single S3 PutObject (1x write amplification). No WAL replay deduplication, no compactor reconciliation — contrast with Loki/Tempo's 3-5x write amplification from WAL→chunk→S3 pipelines.
+  description: >-
+    A flush produces one complete Parquet object per (partition, tenant) and uploads it with one
+    PutObject, so a file is either absent or complete — there is no partially visible object to
+    reconcile, and write amplification stays at 1x.
+
+- id: lh.feature.ingest.buffer_query_bridge
+  title: Buffer query bridge across insert pods
+  status: shipped
+  area: ingest
+  readme_section: Write Path
+  surfaces: [api, ingest]
+  tests:
+    - internal/buffer/handler_test.go
+    - internal/storage/parquets3/buffer_bridge_test.go
+    - internal/storage/parquets3/buffer_bridge_az_test.go
+    - lakehouse-traces/internal/storage/parquets3/buffer_bridge_az_test.go
+  docs:
+    - docs/write-path.md
+    - docs/read-path.md
+  changelog_bullets:
+    - 'Buffer query bridge'
+  highlight: >-
+    **Buffer query bridge**: select pods fan out to ALL insert pods across ALL AZs via `/internal/buffer/query` for zero-delay reads of unflushed data. AZ-aware routing is only used for peer cache (L3), never for buffer queries — same-AZ-only would miss 2/3 of buffered rows in a 3-AZ deployment.
+  description: >-
+    Rows are queryable the moment they are accepted: a select pod asks every insert pod for its
+    unflushed window over `/internal/buffer/query` and merges the answer with what S3 already
+    holds. The fan-out is deliberately AZ-blind — buffered rows live wherever the writer that
+    accepted them runs.
+
+- id: lh.feature.ingest.logstore_buffer
+  title: Engine-native queryable insert buffer
+  status: in-progress
+  area: ingest
+  surfaces: [ingest, flag]
+  tests:
+    - internal/membuffer/store_test.go
+    - internal/storage/parquets3/local_buffer_readmerge_test.go#TestQueryBufferBridge_LocalBufferServesRecent
+    - internal/vlstorage/buffer_dualwrite_test.go#TestDualWrite_LogsLegacyAndBufferParity
+    - internal/config/buffer_engine_test.go
+    - lakehouse-traces/internal/storage/parquets3/local_buffer_readmerge_test.go#TestQueryBufferBridge_WatermarkPreventsDoubleCount
+  docs:
+    - docs/read-path.md
+    - docs/storage-flow.md
+  changelog_bullets:
+    - 'Option B — logstorage-native queryable buffer (cold-tier recently-flushed parity).'
+    - 'Option B — logstorage-native queryable insert buffer (cold-tier recently-flushed parity with hot VT).'
+  notes: >-
+    Opt-in: `-lakehouse.insert.buffer-engine=logstore` (the default is still the legacy staging
+    buffer), which is why the roadmap lists it as in progress rather than shipped.
+  highlight: >-
+    **Engine-native insert buffer**: recently ingested rows are held in the upstream logstorage engine and answered through the same query path as flushed data, so the recently-flushed window matches hot VL/VT instead of degrading.
+  description: >-
+    Instead of a bespoke in-memory buffer with its own query semantics, the insert buffer is the
+    upstream logstorage engine itself. Queries read buffered and flushed rows through one path,
+    with a watermark preventing double counting of rows that have just been flushed.
+
+- id: lh.feature.ingest.label_extraction
+  title: Write-time label extraction for manifest pruning
+  status: shipped
+  area: ingest
+  surfaces: [storage, ingest]
+  tests:
+    - internal/storage/parquets3/labels_test.go
+    - internal/storage/parquets3/writer_test.go#TestFlushAll_PopulatesLabels
+    - internal/schema/label_columns_test.go
+    - internal/compaction/labels_merge_test.go
+  docs:
+    - docs/manifest-system.md
+    - docs/write-path.md
+  changelog_bullets:
+    - 'Label extraction'
+  highlight: >-
+    **Write-time label extraction**: the values a query is most likely to filter on are recorded per file at flush time, so the manifest can skip files without opening them.
+  description: >-
+    The writer extracts the label values present in each flushed file and stores them on the
+    manifest entry. Compaction merges the label sets of its inputs so the pruning information
+    survives rollups.
