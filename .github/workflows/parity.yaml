@@ -116,7 +116,15 @@ jobs:
       # reads fewer rows than the hot tier holds (and than the cold tier's
       # own scan path returns a second later). Poll until each cold tier
       # agrees with its hot counterpart on a plain row count — for the logs
-      # corpus and for BOTH seeded traces tenants.
+      # corpus and for BOTH seeded traces tenants — and keeps agreeing.
+      #
+      # One agreeing check is not a settled tier either. Rows written
+      # seconds ago are answered from the cold tier's local buffer, which
+      # can agree with hot on a count while the Parquet path the suite then
+      # reads does not, and a manifest refresh racing a flush hides the new
+      # file for one refresh interval. So the counts must stay unchanged for
+      # four checks in a row: 15s, three -lakehouse.manifest.refresh-interval
+      # periods of the parity compose.
       - name: Wait for LH to flush and settle
         run: |
           # Probes run from inside the network (the stack publishes no
@@ -139,6 +147,8 @@ jobs:
             [ "$1" -gt 0 ] && [ "$1" = "$2" ]
           }
           settled=0
+          steady=0
+          previous=""
           for i in $(seq 1 60); do
             hot_logs=$(probe victorialogs:9428 '* | stats count() n' 0)
             cold_logs=$(probe lakehouse-logs:9428 '* | stats count() n' 0)
@@ -146,12 +156,24 @@ jobs:
             cold_traces=$(probe lakehouse-traces:10428 'span_id:* | stats count() n' 0)
             hot_traces_t1=$(probe victoriatraces:10428 'span_id:* | stats count() n' 1)
             cold_traces_t1=$(probe lakehouse-traces:10428 'span_id:* | stats count() n' 1)
-            echo "settle check $i/60: logs hot=$hot_logs cold=$cold_logs" \
-              "| traces tenant 0 hot=$hot_traces cold=$cold_traces" \
-              "| traces tenant 1 hot=$hot_traces_t1 cold=$cold_traces_t1"
+            current="$hot_logs $cold_logs $hot_traces $cold_traces $hot_traces_t1 $cold_traces_t1"
             if agree "$hot_logs" "$cold_logs" \
                && agree "$hot_traces" "$cold_traces" \
                && agree "$hot_traces_t1" "$cold_traces_t1"; then
+              if [ "$current" = "$previous" ]; then
+                steady=$((steady + 1))
+              else
+                steady=1
+              fi
+            else
+              steady=0
+            fi
+            previous="$current"
+            echo "settle check $i/60: logs hot=$hot_logs cold=$cold_logs" \
+              "| traces tenant 0 hot=$hot_traces cold=$cold_traces" \
+              "| traces tenant 1 hot=$hot_traces_t1 cold=$cold_traces_t1" \
+              "| agreeing unchanged for $steady/4 checks"
+            if [ "$steady" -ge 4 ]; then
               settled=1
               echo "cold tiers settled"
               break

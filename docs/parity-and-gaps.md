@@ -121,9 +121,10 @@ the `parity-tests` service, so it can run alongside other local stacks.
 docker compose -f tests/parity/docker-compose.yml build
 docker compose -f tests/parity/docker-compose.yml up -d
 # Wait until datagen-seed and datagen-seed-tenant2 have exited 0, then until
-# each cold tier agrees with its hot counterpart on a positive row count: the
-# logs corpus, and span_id:* for traces tenants 0 and 1. The "Wait for LH to
-# flush and settle" step of .github/workflows/parity.yaml is that poll.
+# each cold tier agrees with its hot counterpart on a positive row count — the
+# logs corpus, and span_id:* for traces tenants 0 and 1 — unchanged across
+# four checks 5s apart. The "Wait for LH to flush and settle" step of
+# .github/workflows/parity.yaml is that poll.
 docker compose -f tests/parity/docker-compose.yml --profile test run --rm --no-deps -T \
   parity-tests go test -tags=parity -json -count=1 -timeout=15m ./... \
   > parity-results.json
@@ -136,8 +137,8 @@ docker compose -f tests/parity/docker-compose.yml down -v
 means seeding a second copy of the corpus — after the cold tier was checked
 and while the suite is already reading it.
 
-Four properties the harness has to keep, because breaking any of them turns
-a comparison into a silent no-op:
+Five properties the harness has to keep, because breaking any of them turns
+a comparison into a silent no-op or a result that depends on timing:
 
 - **Quote field names containing `:`.** `resource_attr:service.name` unquoted
   parses as field `resource_attr` with a bucket, matches nothing, and the
@@ -160,6 +161,17 @@ a comparison into a silent no-op:
   `_time` reads it from the reference tier with `referenceRow()` /
   `referenceRowTime()`, and a narrow window is anchored on a row that exists
   rather than on a fixed offset that is empty in some seeds.
+- **Assert on cold rows only once they have settled.** For rows written
+  seconds ago the cold tier's answer depends on where they are: the local
+  buffer answers first, the first flushed file hides the other still-buffered
+  rows behind its time watermark, and a manifest refresh racing the flush can
+  drop the new file for one refresh interval. A tenant-scoped read that leaks
+  on flushed data looks correctly scoped while the rows are buffered. So the
+  settle step requires its counts to stay unchanged for three manifest refresh
+  intervals, and a test that writes its own rows
+  (`TestTenantIsolation_Logs_PerTenantCounts`) waits until the cold manifest
+  lists them and the cold answers have stopped changing for as long — judged
+  from evidence other than the answers it asserts on.
 
 ### The known-failure ratchet
 
