@@ -72,3 +72,68 @@ func BenchmarkTenantScope_FileSelection(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkTenantScope_FileSelection_LongRetention is the dashboard shape: a
+// one-hour query against a manifest that keeps a year of hourly partitions
+// (8,760) for two tenants, one object per tenant-partition. Selection cost must
+// follow the partitions inside the query window, not every partition the
+// tenant ever wrote.
+func BenchmarkTenantScope_FileSelection_LongRetention(b *testing.B) {
+	const tenants, partitions = 2, 24 * 365
+	s := testStorage()
+	s.manifest = manifest.New("test-bucket", "")
+	s.manifest.SetPrefixTemplate("{AccountID}/{ProjectID}/")
+	base := time.Date(2025, 9, 1, 0, 0, 0, 0, time.UTC)
+	for p := 0; p < partitions; p++ {
+		t := base.Add(time.Duration(p) * time.Hour)
+		part := fmt.Sprintf("dt=%s/hour=%02d", t.Format("2006-01-02"), t.Hour())
+		for _, tn := range []int{0, 7} {
+			s.manifest.AddFile(part, manifest.FileInfo{
+				Key:       fmt.Sprintf("%d/0/logs/%s/f.parquet", tn, part),
+				Size:      1 << 20,
+				RowCount:  1000,
+				MinTimeNs: t.UnixNano(),
+				MaxTimeNs: t.Add(59 * time.Minute).UnixNano(),
+			})
+		}
+	}
+	// The last full hour of the year, as a dashboard's "last 1h" panel asks.
+	last := base.Add(time.Duration(partitions-1) * time.Hour)
+	start, end := last.Add(time.Minute).UnixNano(), last.Add(30*time.Minute).UnixNano()
+
+	b.Run("unscoped_walk_previous", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if n := len(s.manifest.GetFilesForRange(start, end)); n != tenants {
+				b.Fatalf("got %d", n)
+			}
+		}
+	})
+	b.Run("scoped_tenant_7", func(b *testing.B) {
+		b.ReportAllocs()
+		scope := tenantScope{account: "7", project: "0"}
+		for i := 0; i < b.N; i++ {
+			if n := len(s.filesForScope("bench", start, end, scope)); n != 1 {
+				b.Fatalf("got %d", n)
+			}
+		}
+	})
+	b.Run("scoped_default_0_0", func(b *testing.B) {
+		b.ReportAllocs()
+		scope := tenantScope{account: "0", project: "0"}
+		for i := 0; i < b.N; i++ {
+			if n := len(s.filesForScope("bench", start, end, scope)); n != 1 {
+				b.Fatalf("got %d", n)
+			}
+		}
+	})
+	b.Run("global_read", func(b *testing.B) {
+		b.ReportAllocs()
+		scope := tenantScope{all: true}
+		for i := 0; i < b.N; i++ {
+			if n := len(s.filesForScope("bench", start, end, scope)); n != tenants {
+				b.Fatalf("got %d", n)
+			}
+		}
+	})
+}

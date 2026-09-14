@@ -88,7 +88,14 @@ How each part of the read path is scoped:
 - **Legacy layout.** Objects written before the tenant prefix template existed (a static `s3.prefix` such as `logs/`, no `{AccountID}/{ProjectID}/` segment in the key) were ingested without tenant headers, so they belong to tenant `0:0`: a `0:0` request includes them, every other tenant never sees them. Deployments that ingest more than one tenant must use the tenant prefix template.
 - **Bucket-per-tenant.** A tenant with an `s3.bucket` override has its objects in that bucket; the client pool derives the bucket from the object key (`{AccountID}/{ProjectID}/…`). Because the object list is already the tenant's, a scoped request only issues S3 requests against the tenant's own bucket, and an unscoped (`0:0`) request only against the default bucket.
 
-Cost: object selection walks only the requesting tenant's partitions. `BenchmarkTenantScope_FileSelection` (50 tenants × 168 hourly partitions × 4 objects, one tenant's 7-day query, Apple M5 Pro) measures 0.32 ms and 0.68 MB per query for the scoped selection including the per-key re-check, against 7.2 ms and 41 MB for the previous walk over every tenant — before counting the objects of other tenants that a query no longer opens.
+Cost: object selection walks the partitions inside the query window and skips the ones the tenant has no objects in (a binary search into the manifest's time-sorted partition index, the same walk the unscoped path uses). Two shapes, measured on an Apple M5 Pro with the old and new code interleaved (medians of 6 runs of `BenchmarkTenantScope_FileSelection`, `-benchtime 1s`):
+
+| shape | previous unscoped walk | scoped selection |
+|---|---|---|
+| 50 tenants × 168 hourly partitions × 4 objects, one tenant's 7-day query | 9.1 ms, 40 MiB, 28 allocs | **0.27 ms, 0.78 MiB, 690 allocs** |
+| 2 tenants × 8,760 hourly partitions (a year), one-hour query | 0.26 µs, 0.9 KiB, 5 allocs | **0.32 µs, 0.8 KiB, 7 allocs** |
+
+The second shape is the dashboard shape, and it is the one that regressed while the selection iterated the tenant's whole partition set: 2.3 ms, 959 KiB and 43,807 allocations per call — per `hits`, `field_values` and `streams` request — because every partition the tenant had ever written was parsed. Those numbers are the "before" of the second row before the partition-index walk landed. Neither figure counts the objects of other tenants that a scoped query no longer opens.
 
 ### Tenant Name Mapping (X-Scope-OrgID)
 

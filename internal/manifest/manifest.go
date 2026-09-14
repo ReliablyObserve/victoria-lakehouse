@@ -1135,21 +1135,31 @@ func (m *Manifest) TenantScopeCount() int {
 // filesInAccumRangeLocked collects the files of one accumulator's partitions
 // that overlap [startNs, endNs] and carry keyPrefix ("" = no prefix check).
 // Must hold m.mu (read).
+//
+// It walks the time-sorted partition index from the first partition that ends
+// after startNs (binary search), exactly like GetFilesForRange, and skips the
+// partitions the accumulator holds no files in: O(log P + partitions inside the
+// window). Iterating the accumulator's own partition set instead costs every
+// partition the tenant ever wrote — 8,760 partition-key parses per query on a
+// year of hourly partitions, whatever the query window.
 func (m *Manifest) filesInAccumRangeLocked(a *tenantAccum, startNs, endNs int64, keyPrefix string) []FileInfo {
 	start := time.Unix(0, startNs)
 	end := time.Unix(0, endNs)
 
+	idx := sort.Search(len(m.sortedPartitions), func(i int) bool {
+		return m.sortedPartitions[i].end.After(start)
+	})
+
 	var result []FileInfo
-	for partition := range a.partitions {
-		t, err := parsePartitionTime(partition)
-		if err != nil {
+	for i := idx; i < len(m.sortedPartitions); i++ {
+		p := &m.sortedPartitions[i]
+		if !p.start.Before(end) {
+			break
+		}
+		if a.partitions[p.key] <= 0 {
 			continue
 		}
-		partEnd := t.Add(time.Hour)
-		if !partEnd.After(start) || !t.Before(end) {
-			continue
-		}
-		for _, fi := range m.files[partition] {
+		for _, fi := range m.files[p.key] {
 			if keyPrefix != "" && !strings.HasPrefix(fi.Key, keyPrefix) {
 				continue
 			}
