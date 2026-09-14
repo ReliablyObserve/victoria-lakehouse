@@ -6,9 +6,13 @@ import "testing"
 
 func TestParity_StatsExtended(t *testing.T) {
 	cases := []ParityCase{
-		{Name: "median_duration", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* duration:* | stats median(duration) med"}, Compare: CountTolerance, Tolerance: 0.05},
-		{Name: "quantile_95_duration", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* duration:* | stats quantile(0.95, duration) p95"}, Compare: CountTolerance, Tolerance: 0.05},
-		{Name: "quantile_50_duration", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* duration:* | stats quantile(0.50, duration) p50"}, Compare: CountTolerance, Tolerance: 0.05},
+		// Log rows carry no `duration` field. Both tiers answered these with
+		// an empty sample value, and the count comparison then counted the
+		// one-line envelope on each side and passed 1 == 1.
+		// severity_number is the corpus's numeric column.
+		{Name: "median_duration", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* severity_number:* | stats median(severity_number) med"}, Compare: CountTolerance, Tolerance: 0.05},
+		{Name: "quantile_95_duration", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* severity_number:* | stats quantile(0.95, severity_number) p95"}, Compare: CountTolerance, Tolerance: 0.05},
+		{Name: "quantile_50_duration", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* severity_number:* | stats quantile(0.50, severity_number) p50"}, Compare: CountTolerance, Tolerance: 0.05},
 		{Name: "count_empty_field", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats count_empty(nonexistent_field) empties"}, Compare: CountEqual},
 		{Name: "values_level", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats values(level) all_levels"}, Compare: NonEmpty},
 		{Name: "uniq_values_level", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | stats uniq_values(level) levels"}, Compare: NonEmpty},

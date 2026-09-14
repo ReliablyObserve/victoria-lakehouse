@@ -2,19 +2,30 @@
 
 package parity
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestParity_FiltersGapfill(t *testing.T) {
 	t.Run("time_range_filter", func(t *testing.T) {
+		// A relative `_time:<d>` filter is evaluated at the request's `end`.
+		// The default window ends an hour after the newest seeded row, so
+		// `_time:1h` and `_time:5m` both read that empty hour on both tiers.
+		// Evaluating them in the middle of the seeded data gives each a
+		// populated window of exactly the width it names.
+		evalAt := strconv.FormatInt(seedWindowMidpoint().UnixNano(), 10)
 		cases := []ParityCase{
 			{Name: "time_range_1h", Endpoint: statsEndpoint(), Params: map[string]string{
 				"query": `_time:1h | stats count() rows`,
+				"end":   evalAt,
 			}, Compare: CountTolerance, Tolerance: 0.05},
 			{Name: "time_range_24h", Endpoint: statsEndpoint(), Params: map[string]string{
 				"query": `_time:24h | stats count() rows`,
 			}, Compare: CountTolerance, Tolerance: 0.05},
 			{Name: "time_range_5m", Endpoint: statsEndpoint(), Params: map[string]string{
 				"query": `_time:5m | stats count() rows`,
+				"end":   evalAt,
 			}, Compare: CountTolerance, Tolerance: 0.1},
 		}
 		RunParity(t, vlBaseURL, lhBaseURL, cases)

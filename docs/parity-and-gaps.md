@@ -103,6 +103,125 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 | **Stats snapshot vs manifest divergence** | Reconciled at API layer | Resolved | `/api/v1/tenants` now overlays manifest truth on registry entries; `LiveAggregateWindow` is the single source for time-bounded totals. |
 | **Cold row field set** | **Resolved** | UX-degradation | Cold rows used to carry every Parquet leaf column — unset ones as the literal `"<null>"` — plus the tenant columns, the unmapped spare slots, and (on traces) a duplicate of every promoted attribute under its raw Parquet name and the service-graph edge columns. A cold row now carries exactly its ingested fields, under the same names hot returns. See the Closed section below. |
 
+## Known divergences under investigation
+
+Failures the hot-vs-cold parity suite (`tests/parity`, build tag `parity`)
+reproduces on every run. Each is a real cold-tier divergence, not a harness
+defect, and each is listed in `tests/parity/known_failures.txt` so CI fails
+the moment a *new* one appears or one of these starts passing. The ids are
+the handle the allowlist and the fixes refer to.
+
+| Id | Divergence | Surfaces as |
+|---|---|---|
+| **B1** | Cold query rows carry columns hot does not: `<null>` placeholders for unset map attributes, the `account_id` / `project_id` tenant columns, the `ded_s01`…`ded_s08` dedicated slot columns, and unprefixed duplicates of the traces attributes (`service.name` next to `resource_attr:service.name`). | Every `rows_match` comparison, `facets` value sets, `traces_trace_id_lookup`, `traces_field_names_resource_attr_prefix`. |
+| **B2** | `/select/logsql/field_names` is built from the Parquet columns present in the scanned files only, so it reports a fraction of the fields hot VL/VT lists (22 of 63 on the seeded traces corpus) and omits `_time`, `_msg`, `_stream`, the VT metadata fields and every map-stored attribute. | `field_names*` on both signals, `traces_field_names_vt_metadata`, `traces_field_names_span_attr_prefix`, `traces_field_names_completeness`. |
+| **B3** | A filter combined with any pipe returns 0 rows on cold while hot returns the full match set. Seen for every filter on a non-promoted map attribute (with a pipe present, the cold column projection in `internal/storage/parquets3/projection.go` reads no map column), for an exact `_msg` literal that contains `:` (the same projection only reads the body for filters that look like free text, and a `:` inside the literal defeats that check), and for a `_msg` regexp containing an escaped double quote. | `range_numeric`, `ipv4_filter`, `exact_msg`, `field_exists_multi`, `negated_exists_combined`, the numeric range/comparison filters, `filter_with_double_quote`, `stats_by_format`. |
+| **B4** | The `rename`, `format`, `len`, `math`, `extract` and `unpack_json` pipes drop their input columns on cold, so the output row is missing the fields the pipe read from. | `TestParity_PipesExtended/*`, `TestParity_PipesGapfill/string_functions`, `TestParity_PipesGapfill/chained_pipes_3plus`. |
+| **B5** | `/select/logsql/hits` at sub-hour `step` returns evenly spaced synthetic buckets — the totals match hot but the per-bucket distribution is flat, because cold partitions are hour-granular and the sub-hour buckets are interpolated rather than counted. | `hits_small_step`, `hits_bucket_keys`. |
+| **B6** | A tenant-scoped read on the cold tier answers with every tenant's rows rather than only the requesting tenant's: the logs query path in `internal/storage/parquets3/storage_query.go` selects files with `GetFilesForRange` instead of `GetFilesForRangeTenant` and never consults the request's tenant ids, and on both binaries `field_names`, `field_values` and `streams`, the pmeta catalog, the label index and the buffer bridge are unscoped; the traces Jaeger path passes `tenantIDs=nil`. | `TestTenantIsolation_Logs_PerTenantCounts/LH/*`, `TestTenantIsolation_Traces_PerTenantParity/*/field_values_hits`. |
+| **B7** | A row whose timestamp is exactly the last nanosecond of the query window is dropped on cold. The HTTP `end` bound is exclusive and the upstream handler turns it into an inclusive bound by subtracting 1 ns; cold row-group pruning (`rowGroupMatchesTimeRange` in `storage_query.go`, both binaries) then compares that inclusive bound exclusively (`rgMin < endNs`), so a row group whose smallest timestamp sits on the bound is skipped. The file-level and row-level checks are inclusive and agree with hot. | `TestParity_TimeRange/boundary_ns_start_inclusive`. |
+
+Each is fixed in its own PR; none of them is a test-harness problem, so the
+suite records them rather than hiding them.
+
+## Intentional differences
+
+Behaviors where hot and cold deliberately disagree. These are **not** gaps —
+a test that "fixes" one of them would be wrong.
+
+| Behavior | Hot | Cold | Why |
+|---|---|---|---|
+| Bare `service.name` on traces LogsQL | No such field; matches nothing | Answers from a promoted alias column | The Lakehouse traces schema promotes `service.name` alongside VT's `resource_attr:service.name` so Grafana/Tempo-shaped queries work without the prefix. Pinned by `TestParity_Traces_LogsQL/traces_service_name_is_lh_only_alias`, which asserts hot returns 0 and cold returns rows. |
+| Live tail (`/api/v2/search/tail`, `/select/logsql/tail`) | Streams | `501 Not Implemented` | Cold storage is write-once-read-many; there is nothing to tail after the flush. |
+
+## Running the parity suite
+
+The suite lives in `tests/parity` behind the `parity` build tag and runs
+inside its own compose stack (`tests/parity/docker-compose.yml`), which
+publishes no host ports — every service is addressed by container DNS from
+the `parity-tests` service, so it can run alongside other local stacks.
+
+```sh
+docker compose -f tests/parity/docker-compose.yml build
+docker compose -f tests/parity/docker-compose.yml up -d
+# Wait until datagen-seed and datagen-seed-tenant2 have exited 0, then until
+# each cold tier agrees with its hot counterpart on a positive row count — the
+# logs corpus, and span_id:* for traces tenants 0 and 1 — unchanged across
+# four checks 5s apart. The "Wait for LH to flush and settle" step of
+# .github/workflows/parity.yaml is that poll.
+docker compose -f tests/parity/docker-compose.yml --profile test run --rm --no-deps -T \
+  parity-tests go test -tags=parity -json -count=1 -timeout=15m ./... \
+  > parity-results.json
+python scripts/ci/parity_ratchet.py --results parity-results.json
+docker compose -f tests/parity/docker-compose.yml down -v
+```
+
+`--no-deps` is not optional. Without it `compose run` starts the
+`parity-tests` dependencies again, and for the one-shot datagen services that
+means seeding a second copy of the corpus — after the cold tier was checked
+and while the suite is already reading it.
+
+Five properties the harness has to keep, because breaking any of them turns
+a comparison into a silent no-op or a result that depends on timing:
+
+- **Quote field names containing `:`.** `resource_attr:service.name` unquoted
+  parses as field `resource_attr` with a bucket, matches nothing, and the
+  comparison then holds vacuously. Write `` `resource_attr:service.name` ``.
+- **Ask for the seeded window.** `cmd/datagen` backfills at
+  `now - rand[1..hours-back]h`; a short relative window like `_time:10m` is
+  empty on both tiers. Use `seedWindowParams()` / `seedWindowFilter()` from
+  `tests/parity/helpers.go`. A relative filter inside the query is evaluated
+  at the request's `end`, which `seedWindowParams()` puts an hour after the
+  newest row, so a case testing `_time:1h` also sets `end` to
+  `seedWindowMidpoint()`.
+- **Never compare against an empty reference.** `requireNonEmptyReference`
+  fails every comparison — set, row, bucket, structure and count — whose
+  reference side produced nothing; for counts that includes a `NaN` or empty
+  aggregate value. If it fires, fix the query or the seed — relaxing the
+  guard restores the vacuous pass it exists to catch. A case built to match
+  nothing sets `ExpectEmpty`, and then both tiers must answer 0.
+- **Look values up instead of guessing them.** The seed randomizes message
+  text and timestamps, so a case that needs an exact message or a row's exact
+  `_time` reads it from the reference tier with `referenceRow()` /
+  `referenceRowTime()`, and a narrow window is anchored on a row that exists
+  rather than on a fixed offset that is empty in some seeds.
+- **Assert on cold rows only once they have settled.** For rows written
+  seconds ago the cold tier's answer depends on where they are: the local
+  buffer answers first, the first flushed file hides the other still-buffered
+  rows behind its time watermark, and a manifest refresh racing the flush can
+  drop the new file for one refresh interval. A tenant-scoped read that leaks
+  on flushed data looks correctly scoped while the rows are buffered. So the
+  settle step requires its counts to stay unchanged for three manifest refresh
+  intervals, and a test that writes its own rows
+  (`TestTenantIsolation_Logs_PerTenantCounts`) waits until the cold manifest
+  lists them and the cold answers have stopped changing for as long — judged
+  from evidence other than the answers it asserts on.
+
+### The known-failure ratchet
+
+`tests/parity/known_failures.txt` lists every test allowed to fail, one per
+line: the test path, then whitespace, `#`, whitespace and a reason naming a
+divergence id above (the whitespace is what lets a path such as `sub#01`
+contain a `#`). One `# min-pass: N` directive records how many tests passed
+when the list was last updated. `scripts/ci/parity_ratchet.py` reads
+`go test -json` output, keyed by package and test, and fails the Parity Tests
+job when:
+
+- a failing test is not on the list (new divergence or harness regression),
+- a test started and never finished, the test binary panicked, or a package
+  failed without a failing test — a timeout or crash, which `go test -json`
+  otherwise reports only as a package-level `fail` and which no list entry
+  can cover,
+- a listed test passes, skips, or no longer exists (stale entry — delete it),
+- the pass count drops below `min-pass` (coverage went backwards, typically
+  a test that started skipping on missing data).
+
+A parent test that fails only because a listed subtest failed is accepted
+without its own entry. `go test -json` does not say whether the parent's own
+body failed as well, so such a parent is excused either way — keep
+assertions out of parents whose subtests are listed. The list only ever
+shrinks.
+
 ## Versioning gap-register
 
 This file is the source of truth for "what cold tier doesn't do yet". When closing a gap, move its row to a closed section at the bottom with the PR number and date so reviewers can see the trajectory.
