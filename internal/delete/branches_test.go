@@ -141,7 +141,8 @@ func TestRewriter_CommitAndDiscardEdgePaths(t *testing.T) {
 	if pool.Has("logs/new.parquet") {
 		t.Fatal("an unpublished replacement must be discarded")
 	}
-	// A failed discard is logged, not fatal: the orphan sweep reclaims it.
+	// A failed discard is logged, not fatal (the scheduler's durable path
+	// retries it; see TestRewriteRefresh_*).
 	failing.Discard(ctx, &RewriteResult{NewKey: "logs/other.parquet"})
 }
 

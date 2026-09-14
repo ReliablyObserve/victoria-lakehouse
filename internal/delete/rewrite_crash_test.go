@@ -18,11 +18,12 @@ import (
 // kept row is lost, no deleted row is resurrected, and a retry converges.
 //
 // The three steps are prepare (write the replacement), publish (swap the
-// manifest entry) and commit (delete the superseded object). The dangerous
-// window is between publish and commit, and it is dangerous in only one
-// direction: an object nobody manifests is reclaimed by the orphan sweep, so
-// the ordering must be chosen such that the object left unmanifested is always
-// the one whose rows are already safe elsewhere.
+// manifest entry) and commit (delete the superseded object). A failure leaves
+// a record on the tombstone and the object it names retired in the manifest,
+// so the retry settles it — without the orphan sweep, which a manifest refresh
+// would otherwise beat to the object. Crashes (the process dying, not a step
+// failing) are covered with restarts and refreshes by
+// TestRewriteCrashMatrix_WithManifestRefresh.
 func TestRewriteCrashMatrix(t *testing.T) {
 	cases := []struct {
 		name string
@@ -82,21 +83,19 @@ func TestRewriteCrashMatrix(t *testing.T) {
 				t.Fatalf("source object present = %v, want %v", got, tc.sourceSurvives)
 			}
 
-			// The critical claim: whatever the crash left behind, no KEPT row
+			// The critical claim: whatever the failure left behind, no KEPT row
 			// is unreachable. That is weaker than the full invariant set,
-			// because a crash legitimately leaves an unmanifested object
-			// behind for the orphan sweep — but a kept row that exists in no
+			// because a failed delete legitimately leaves an unmanifested
+			// object behind for the retry — but a kept row that exists in no
 			// readable object is unrecoverable, and that must never happen.
 			assertKeptRowsReadable(t, f, tc.name)
 
-			// Retry. Every crash must be recoverable by simply running again.
-			// A failing step is armed to fire ONCE, so the second run is clean.
+			// Retry. Every failure must be recoverable by simply running again.
+			// A failing step is armed to fire ONCE, so the second run is clean
+			// and must settle everything the first left behind, with no orphan
+			// sweep involved.
 			f.sched.RunOnce(context.Background())
-			// The commit-failure case leaves the superseded object behind on
-			// purpose: it is unmanifested, so the orphan sweep reclaims it.
-			// Simulate that sweep, then the state must be fully converged.
-			simulateOrphanSweep(t, f)
-			f.assertConverged(t, tc.name+" / after retry + orphan sweep")
+			f.assertConverged(t, tc.name+" / after retry")
 		})
 	}
 }
@@ -271,7 +270,6 @@ func TestRewriteConcurrency_RaceWithReadersAndCompaction(t *testing.T) {
 	// first published its replacement, the other found the key already
 	// superseded (or failed cleanly and retried).
 	f.sched.RunOnce(context.Background())
-	simulateOrphanSweep(t, f)
 	f.assertConverged(t, "after concurrent rewrites, reads and compaction")
 }
 
@@ -423,21 +421,6 @@ func assertKeptRowsReadable(t *testing.T, f *rewriteFixture, stage string) {
 	for body := range f.keptBodies {
 		if !present[body] {
 			t.Fatalf("%s: kept row %q exists in no object — unrecoverable", stage, body)
-		}
-	}
-}
-
-// simulateOrphanSweep deletes every object the manifest does not know, which is
-// what internal/compaction's Tier B does once an object passes its age gate.
-// Running it in these tests is how they prove a crash leaves only objects that
-// are SAFE to reclaim.
-func simulateOrphanSweep(t *testing.T, f *rewriteFixture) {
-	t.Helper()
-	for _, k := range f.pool.Keys() {
-		if !f.manifest.HasKey(k) {
-			if err := f.pool.Delete(context.Background(), k); err != nil {
-				t.Fatalf("sweep %s: %v", k, err)
-			}
 		}
 	}
 }

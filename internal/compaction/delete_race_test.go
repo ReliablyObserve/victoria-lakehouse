@@ -115,18 +115,15 @@ func (w *raceWorld) compactor(delay time.Duration) *Compactor {
 }
 
 // converge drives the system to rest: scheduler passes until no tombstone has
-// work, then a sweep of any object nothing manifests (what the orphan sweep
-// does after its age gate).
+// work, then the compaction scheduler's retry of outstanding deletes. No blind
+// sweep of unmanifested objects: everything a publish lets go of must be
+// settled by the paths that let it go.
 func (w *raceWorld) converge(t *testing.T) {
 	t.Helper()
 	for i := 0; i < 5 && w.store.Count() > 0; i++ {
 		w.scheduler().RunOnce(context.Background())
 	}
-	for _, k := range w.pool.Keys() {
-		if !w.manifest.HasKey(k) {
-			_ = w.pool.Delete(context.Background(), k)
-		}
-	}
+	w.manifest.ReclaimRetired(context.Background(), w.pool.Delete, 0)
 }
 
 // assert checks the full invariant set plus the row oracle.

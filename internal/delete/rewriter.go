@@ -247,14 +247,17 @@ func (r *Rewriter) Commit(ctx context.Context, result *RewriteResult) error {
 }
 
 // Discard deletes a replacement that was written but will never be published —
-// the source was merged away concurrently. Best-effort: an object left behind is
-// unmanifested, so the orphan sweep reclaims it.
+// the source was merged away concurrently. Best-effort, and not durable on its
+// own: an object it fails to delete is unmanifested, but a manifest refresh
+// adopts it unless the manifest has it retired (Manifest.AbandonPending). The
+// scheduler therefore does not call it; it records the discard on the tombstone
+// and retries the delete until it lands.
 func (r *Rewriter) Discard(ctx context.Context, result *RewriteResult) {
 	if result == nil || result.Published || result.NewKey == "" {
 		return
 	}
 	if err := r.pool.Delete(ctx, result.NewKey); err != nil {
-		logger.Warnf("discarded rewrite not deleted (orphan sweep will reclaim it); key=%s: %s", result.NewKey, err)
+		logger.Warnf("discarded rewrite not deleted; key=%s: %s", result.NewKey, err)
 	}
 }
 

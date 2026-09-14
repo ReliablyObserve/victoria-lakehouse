@@ -22,9 +22,8 @@ type RewriteSchedulerConfig struct {
 
 	// Manifest receives the rewritten object's registration. It is NOT
 	// optional for rewriting: a rewrite that cannot be published leaves the
-	// replacement unmanifested (the orphan sweep reclaims it, losing the kept
-	// rows) and the manifest pointing at a deleted key. When Manifest is nil
-	// the scheduler refuses to rewrite anything and counts
+	// replacement unmanaged and the manifest pointing at a deleted key. When
+	// Manifest is nil the scheduler refuses to rewrite anything and counts
 	// lakehouse_delete_rewrite_skipped_no_manifest_total instead.
 	Manifest ManifestUpdater
 
