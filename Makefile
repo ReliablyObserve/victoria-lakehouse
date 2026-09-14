@@ -19,17 +19,32 @@ export GOWORK=off
 
 # VictoriaLogs — Go module proxy has stale cache with wrong module path.
 # We clone the correct version locally and use a replace directive in go.mod.
-VL_VERSION_LOGS := v1.50.0
-VL_COMMIT_TRACES := 77df0c04d532
+#
+# Two VictoriaLogs pins, on purpose — do not collapse them:
+#
+#   VL_VERSION_LOGS  — the VictoriaLogs release the logs binary embeds. Free to
+#                      track the newest VL release.
+#   VL_COMMIT_TRACES — DERIVED, never chosen: it is always the VictoriaLogs
+#                      commit that VictoriaTraces' own go.mod requires at
+#                      VT_VERSION. Read it with
+#                      `git show $(VT_VERSION):go.mod | grep VictoriaLogs`
+#                      (VT v0.11.0 → v1.121.1-0.20260617051904-6ae2da3c11f3,
+#                      i.e. VL v1.51.0) and copy the commit part here.
+#                      It legitimately lags VL_VERSION_LOGS: the traces binary
+#                      links VT against the exact VL VT was built and tested
+#                      with. Lifting it to VL_VERSION_LOGS "because it
+#                      compiles" is not allowed.
+VL_VERSION_LOGS := v1.52.0
+VL_COMMIT_TRACES := 6ae2da3c11f3
 VL_REPO := https://github.com/VictoriaMetrics/VictoriaLogs.git
 VL_DIR_LOGS := deps/VictoriaLogs
 VL_DIR_TRACES := lakehouse-traces/deps/VictoriaLogs
 
-VT_VERSION := v0.9.2
+VT_VERSION := v0.11.0
 VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
 VT_DIR := lakehouse-traces/deps/VictoriaTraces
 
-.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt conformance-gen conformance-check
+.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt sync-vmui sync-vmui-traces conformance-gen conformance-check
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -66,17 +81,58 @@ $(VT_DIR)/go.mod:
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-dispatch.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-flag-dedup.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtinsert-flag-dedup.patch
-	cd $(VT_DIR) && git apply ../../../patches/vt-traces/go-mod-replace.patch
+	# Point VT's own VictoriaLogs dependency at the sibling checkout the
+	# deps-traces target prepares, so VT's vlstorage path sees the same
+	# external.go replacement we apply on the logs side. `go mod edit` instead
+	# of a patch: a one-line go.mod diff carries three lines of context that
+	# change on every upstream dependency bump, and a context conflict here is
+	# indistinguishable from a real breakage.
+	cd $(VT_DIR) && go mod edit -replace github.com/VictoriaMetrics/VictoriaLogs=../VictoriaLogs
+
+# vmui is VictoriaLogs' own web UI. Lakehouse serves it at /select/vmui/ from
+# internal/ui/vmui/ via `go:embed` (internal/ui/vmui.go) and injects the
+# Lakehouse tab into its index.html on the way out (internal/ui/vmui_inject.go)
+# — the assets themselves are never modified, they are VL's build output.
+#
+# Only index.html is tracked in git; the rest of the bundle (assets/,
+# favicon.svg, manifest.json, config.json, preview.jpg, robots.txt) is
+# .gitignore'd and copied from the vendored VL tree at build time, so the repo
+# never carries a second copy of VL's minified bundle. index.html IS tracked
+# because it names the content-hashed asset filenames, which makes it the
+# drift marker TestVMUIIndexMatchesVendoredVL compares against the vendored
+# tree: a VL bump that rebuilds vmui changes those hashes and fails the test
+# until `make sync-vmui` is re-run and index.html re-committed.
+#
+# The Docker builds do the same copy inline (Dockerfile.logs:30,
+# Dockerfile.traces:50). These targets make a local build reproduce it.
+# The vmui directory is wiped first so assets from a previous VL version
+# cannot survive a downgrade or a partial copy.
+sync-vmui: deps-logs
+	@rm -rf internal/ui/vmui
+	@mkdir -p internal/ui/vmui
+	cp -R $(VL_DIR_LOGS)/app/vlselect/vmui/. internal/ui/vmui/
+	@echo "vmui: internal/ui/vmui <- $(VL_DIR_LOGS)/app/vlselect/vmui (VictoriaLogs $(VL_VERSION_LOGS))"
+
+# sync-vmui-traces is the traces-binary counterpart: lakehouse-traces embeds the
+# same internal/ui package, but Dockerfile.traces copies vmui from the traces
+# module's own VL checkout (VL_COMMIT_TRACES), not the logs one. Run this before
+# a local `make build-traces` if the two pins have diverged and you care which
+# vmui build the traces binary serves.
+sync-vmui-traces: deps-traces
+	@rm -rf internal/ui/vmui
+	@mkdir -p internal/ui/vmui
+	cp -R $(VL_DIR_TRACES)/app/vlselect/vmui/. internal/ui/vmui/
+	@echo "vmui: internal/ui/vmui <- $(VL_DIR_TRACES)/app/vlselect/vmui (VictoriaLogs $(VL_COMMIT_TRACES))"
 
 build: build-logs build-traces
 
 bench:
 	go build -o bin/lakehouse-bench ./cmd/bench/
 
-build-logs: deps-logs
+build-logs: deps-logs sync-vmui
 	go build $(GOBUILDFLAGS) -ldflags "$(LDFLAGS)" -o bin/lakehouse-logs ./cmd/lakehouse-logs
 
-build-traces: deps-traces deps-vt
+build-traces: deps-traces deps-vt sync-vmui-traces
 	cd lakehouse-traces && go build $(GOBUILDFLAGS) -ldflags "$(LDFLAGS)" -o ../bin/lakehouse-traces .
 
 test: test-logs test-traces
@@ -128,11 +184,15 @@ coverage-traces: deps-traces
 	cd lakehouse-traces && go test ./internal/... -coverprofile=coverage-traces.out -covermode=atomic
 	cd lakehouse-traces && go tool cover -html=coverage-traces.out -o coverage-traces.html
 
+# The Dockerfiles carry the same pins as ARG defaults (kept equal to these by
+# TestDockerfilePinsMatchMakefile), but pass them explicitly so a local build is
+# never one forgotten default away from cloning the wrong upstream tree and
+# failing with a misleading "patch failed" hunk error.
 docker-logs:
-	docker build -f Dockerfile.logs -t ghcr.io/reliablyobserve/lakehouse-logs:$(VERSION) .
+	docker build -f Dockerfile.logs 		--build-arg VL_VERSION=$(VL_VERSION_LOGS) 		-t ghcr.io/reliablyobserve/lakehouse-logs:$(VERSION) .
 
 docker-traces:
-	docker build -f Dockerfile.traces -t ghcr.io/reliablyobserve/lakehouse-traces:$(VERSION) .
+	docker build -f Dockerfile.traces 		--build-arg VL_VERSION=$(VL_VERSION_LOGS) 		--build-arg VL_COMMIT=$(VL_COMMIT_TRACES) 		--build-arg VT_VERSION=$(VT_VERSION) 		-t ghcr.io/reliablyobserve/lakehouse-traces:$(VERSION) .
 
 docker: docker-logs docker-traces
 

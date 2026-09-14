@@ -1,0 +1,34 @@
+# upstream: lib/logstorage/storage_search.go initSubqueries
+# tree: lakehouse-traces/deps/VictoriaLogs
+# pin: 6ae2da3c11f3
+
+func initSubqueries(qctx *QueryContext, runQuery runQueryFunc, eagerExecute bool) (*Query, error) {
+	getFieldValues := func(q *Query, fieldName string) ([]string, error) {
+		qctxLocal := qctx.WithQuery(q)
+		return getFieldValuesGeneric(qctxLocal, runQuery, fieldName)
+	}
+	qNew, err := initFilterInValues(qctx.Query, getFieldValues)
+	if err != nil {
+		return nil, fmt.Errorf("cannot initialize `in` subqueries: %w", err)
+	}
+
+	getJoinRows := func(q *Query) ([][]Field, error) {
+		qctxLocal := qctx.WithQuery(q)
+		return getRows(qctxLocal, runQuery)
+	}
+	qNew, err = initJoinMaps(qNew, getJoinRows)
+	if err != nil {
+		return nil, fmt.Errorf("cannot initialize `join` subqueries: %w", err)
+	}
+
+	runUnionQuery := func(ctx context.Context, q *Query, writeBlock writeBlockResultFunc) error {
+		qctxLocal := qctx.WithContextAndQuery(ctx, q)
+		return runQuery(qctxLocal, writeBlock)
+	}
+	qNew, err = initUnionQueries(qctx, qNew, runUnionQuery, eagerExecute)
+	if err != nil {
+		return nil, fmt.Errorf("cannot initialize 'union' subqueries: %w", err)
+	}
+
+	return initStreamContextPipes(qctx, qNew, runQuery)
+}

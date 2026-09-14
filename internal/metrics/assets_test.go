@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -16,11 +17,14 @@ import (
 // import, or Prometheus rejects the rule group at load — so they are covered
 // here rather than trusted to review.
 //
-// The assertions are deliberately structural (parses, non-empty, every rule
-// has an expression and a name). Asserting that every metric referenced by a
-// panel exists in this package would be stronger, but several panels
-// legitimately reference recording-rule outputs and histogram-derived series
-// (`..._bucket`) that no Go source defines literally.
+// Most assertions are structural (parses, non-empty, every rule has an
+// expression and a name). Asserting that every metric referenced by a panel
+// exists in this package would be stronger, but several panels legitimately
+// reference recording-rule outputs and histogram-derived series (`..._bucket`)
+// that no Go source defines literally.
+//
+// The other direction IS asserted, for the delete family: see
+// TestDeleteMetrics_AreVisibleSomewhere.
 
 func repoRoot(t *testing.T) string {
 	t.Helper()
@@ -64,6 +68,60 @@ func TestDashboards_ParseAndHavePanels(t *testing.T) {
 	}
 	if found == 0 {
 		t.Fatalf("no dashboards found under %s", dir)
+	}
+}
+
+// TestDeleteMetrics_AreVisibleSomewhere closes the gap a review found: a metric
+// that exists only in the code is a number nobody sees. Every delete-family
+// metric — the family where an unnoticed value means rows are hidden, served
+// twice, or an object is leaked — must appear on a dashboard panel or in an
+// alert rule.
+//
+// Scoped to `lakehouse_delete_*` on purpose: it is the family whose values an
+// operator has to act on, and a repo-wide rule would be noise.
+func TestDeleteMetrics_AreVisibleSomewhere(t *testing.T) {
+	root := repoRoot(t)
+	src, err := os.ReadFile(filepath.Join(root, "internal", "metrics", "lakehouse.go"))
+	if err != nil {
+		t.Fatalf("read metric definitions: %v", err)
+	}
+	defined := regexp.MustCompile(`"(lakehouse_delete_[a-z0-9_]+)"`).FindAllStringSubmatch(string(src), -1)
+	if len(defined) == 0 {
+		t.Fatal("no delete metrics found; this gate would pass on an empty file")
+	}
+
+	var assets strings.Builder
+	for _, pattern := range []string{
+		filepath.Join(root, "dashboards", "*.json"),
+		filepath.Join(root, "alerts", "*.yml"),
+		filepath.Join(root, "alerts", "*.yaml"),
+	} {
+		paths, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("glob %s: %v", pattern, err)
+		}
+		for _, p := range paths {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatalf("read %s: %v", p, err)
+			}
+			assets.Write(data)
+		}
+	}
+	if assets.Len() == 0 {
+		t.Fatal("no dashboards or alert rules were read")
+	}
+
+	seen := map[string]bool{}
+	for _, m := range defined {
+		name := m[1]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if !strings.Contains(assets.String(), name) {
+			t.Errorf("%s is on no dashboard panel and in no alert rule: add one, or the value is invisible to operators", name)
+		}
 	}
 }
 

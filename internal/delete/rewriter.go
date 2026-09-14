@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/google/uuid"
 	"github.com/parquet-go/parquet-go"
 
@@ -21,6 +22,13 @@ type RewriterPool interface {
 }
 
 // RewriteResult summarises a single file rewrite operation.
+//
+// Beyond the counters, it carries everything the manifest needs to register the
+// rewritten object, computed from the KEPT rows rather than inherited from the
+// superseded entry. Row counts and per-value aggregates that are not recomputed
+// would keep reporting the deleted rows forever — `stats count() by (field)` is
+// answered straight from LabelAggregates without opening a file, so a stale
+// aggregate resurrects deleted rows in every dashboard that uses one.
 type RewriteResult struct {
 	OldKey      string
 	NewKey      string
@@ -28,39 +36,144 @@ type RewriteResult struct {
 	RowsRemoved int64
 	BytesBefore int64
 	BytesAfter  int64
-	Duration    time.Duration
+
+	// MinTimeNs / MaxTimeNs are the true bounds of the kept rows (a full scan,
+	// not first/last row — the input is not guaranteed time-sorted, and an
+	// understated MaxTimeNs breaks manifest range pruning).
+	MinTimeNs int64
+	MaxTimeNs int64
+	// RawBytes is the uncompressed footprint of the kept rows.
+	RawBytes int64
+	// BloomBytes / ColumnBytes are read back from the written footer.
+	BloomBytes  int64
+	ColumnBytes map[string]int64
+	// LabelAggregates is field -> value -> row count over the kept rows only.
+	LabelAggregates map[string]map[string]int64
+	// Labels is the per-field distinct value set over the kept rows — the set
+	// the manifest's inverted index is built from and the pmeta field catalog
+	// is fed with. It must be recomputed: a value carried only by the removed
+	// rows would otherwise go back into the catalog and be served by
+	// field_values after the rows are gone.
+	Labels map[string][]string
+	// BloomValues is column -> distinct values for the bloom columns over the
+	// kept rows, handed to the pmeta bloom facet so the replacement stays
+	// bloom-prunable (the same feed compaction provides for its outputs).
+	BloomValues map[string][]string
+
+	// Published is set by the scheduler once the manifest points at NewKey.
+	// Until then the superseded object MUST NOT be deleted: an unpublished
+	// rewrite whose source is already gone loses the kept rows outright.
+	Published bool
+
+	Duration time.Duration
+
+	// data holds a prepared replacement's bytes until Upload writes them.
+	data []byte
 }
 
 // Rewriter reads Parquet files from S3, removes tombstoned rows, and writes
 // the filtered result back.
 type Rewriter struct {
 	pool         RewriterPool
-	prefix       string
 	rowGroupSize int
 	mode         string
+	writers      ParquetWriters
 }
 
-// NewRewriter creates a Rewriter with the given pool, key prefix, row group size, and mode.
+// ParquetWriters produce the bytes of a rewritten file.
+//
+// A replacement must be as prunable as the file it replaces: the SBBF column
+// blooms external readers (ClickHouse, DuckDB, Trino) use straight from S3, the
+// Tier-2 slot blooms and binding, and for traces the `_trace_idx` footer index.
+// The compactor already writes exactly that, so the embedder injects the
+// compactor's writers (compaction.WriteLogs / WriteTraces) and a rewritten file
+// becomes indistinguishable from a compaction output of the same rows. The
+// delete package cannot import the compactor itself — the compactor imports
+// this package for the tombstone store — which is why this is injected rather
+// than called directly.
+//
+// Unset writers fall back to a minimal writer (row groups + the source file's
+// slot binding, no blooms, no compression). That fallback exists for unit tests;
+// production wiring always sets both, and the binaries' tests pin that.
+type ParquetWriters struct {
+	Logs             func(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error)
+	Traces           func(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) ([]byte, error)
+	CompressionLevel int
+}
+
+// RewriterOption configures a Rewriter.
+type RewriterOption func(*Rewriter)
+
+// WithParquetWriters injects the writers a replacement file is produced with.
+func WithParquetWriters(w ParquetWriters) RewriterOption {
+	return func(r *Rewriter) { r.writers = w }
+}
+
+// NewRewriter creates a Rewriter with the given pool, row group size, and mode.
 // Mode should be "logs" or "traces". If rowGroupSize <= 0 it defaults to 10000.
-func NewRewriter(pool RewriterPool, prefix string, rowGroupSize int, mode string) *Rewriter {
+//
+// prefix is the deployment's key prefix. It deliberately plays no part in where
+// a replacement is written: a replacement always lands in its source object's
+// own directory (see replacementKey), because under per-tenant layouts the
+// deployment prefix is the DEFAULT tenant's and the source's directory is the
+// only place that carries the owning tenant.
+func NewRewriter(pool RewriterPool, prefix string, rowGroupSize int, mode string, opts ...RewriterOption) *Rewriter {
+	_ = prefix
 	if rowGroupSize <= 0 {
 		rowGroupSize = 10000
 	}
 	if mode == "" {
 		mode = "logs"
 	}
-	return &Rewriter{
+	r := &Rewriter{
 		pool:         pool,
-		prefix:       prefix,
 		rowGroupSize: rowGroupSize,
 		mode:         mode,
 	}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
 }
 
-// RewriteFile downloads the Parquet file at key, removes rows matching any of
-// the provided tombstones, and uploads the filtered file. If no rows are
-// removed the original file is left untouched and RowsRemoved == 0.
+// HasProductionWriters reports whether both format-preserving writers are
+// injected. The binaries assert it at construction so a missed wiring cannot
+// silently ship replacements without blooms.
+func (r *Rewriter) HasProductionWriters() bool {
+	return r.writers.Logs != nil && r.writers.Traces != nil
+}
+
+// RewriteFile prepares a rewrite and uploads its replacement in one call: it
+// downloads the Parquet file at key, removes rows matching any of the provided
+// tombstones and writes the filtered result under a new key. It deliberately
+// does NOT touch the superseded object — that is Commit's job, and it must not
+// happen until the manifest points at the replacement.
+//
+// The scheduler does not use it: it records the replacement key durably between
+// Prepare and Upload (see RewriteScheduler), which is what lets a restart find
+// a replacement a crash left behind. The previous single-phase version deleted
+// the old object inside this function while nothing ever updated the manifest,
+// so the manifest pointed at a deleted key and the replacement was an unmanaged
+// object the orphan sweep removed after its age gate — losing the rows the
+// delete was supposed to KEEP.
+//
+// If no rows match, the original file is left untouched and RowsRemoved == 0.
 func (r *Rewriter) RewriteFile(ctx context.Context, key string, tombstones []Tombstone) (*RewriteResult, error) {
+	result, err := r.Prepare(ctx, key, tombstones)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.Upload(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Prepare downloads key, removes the rows matching the tombstones, and fills in
+// the result — the kept rows' metadata and the replacement key, chosen in the
+// source's own directory — without writing anything. When rows are removed and
+// some are kept, the replacement bytes are held for Upload.
+func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombstone) (*RewriteResult, error) {
 	start := time.Now()
 
 	data, err := r.pool.Download(ctx, key)
@@ -84,36 +197,164 @@ func (r *Rewriter) RewriteFile(ctx context.Context, key string, tombstones []Tom
 		return nil, err
 	}
 
-	if result.RowsRemoved == 0 {
-		result.Duration = time.Since(start)
-		return result, nil
-	}
-
-	if result.RowsKept == 0 {
-		if err := r.pool.Delete(ctx, key); err != nil {
-			return nil, fmt.Errorf("delete empty file %s: %w", key, err)
-		}
+	if result.RowsRemoved == 0 || result.RowsKept == 0 {
+		// Nothing to write: either no row matched, or every row went and there
+		// is no replacement (publishing drops the entry; Commit deletes the file).
 		result.BytesAfter = 0
 		result.Duration = time.Since(start)
 		return result, nil
 	}
 
 	result.BytesAfter = int64(len(newData))
-
-	partition := extractPartition(key)
-	short := uuid.New().String()[:8]
-	newKey := fmt.Sprintf("%s%s/%s.parquet", r.prefix, partition, short)
-	result.NewKey = newKey
-
-	if err := r.pool.Upload(ctx, newKey, newData); err != nil {
-		return nil, fmt.Errorf("upload %s: %w", newKey, err)
-	}
-	if err := r.pool.Delete(ctx, key); err != nil {
-		return nil, fmt.Errorf("delete old file %s: %w", key, err)
-	}
-
+	result.BloomBytes = footerBloomBytes(newData)
+	result.ColumnBytes = columnBytesFromFooter(newData)
+	result.NewKey = replacementKey(key, newReplacementID())
+	result.data = newData
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+// Upload writes a prepared replacement. A result with no replacement is a
+// no-op.
+func (r *Rewriter) Upload(ctx context.Context, result *RewriteResult) error {
+	if result == nil || result.NewKey == "" || result.data == nil {
+		return nil
+	}
+	start := time.Now()
+	if err := r.pool.Upload(ctx, result.NewKey, result.data); err != nil {
+		return fmt.Errorf("upload %s: %w", result.NewKey, err)
+	}
+	result.data = nil
+	result.Duration += time.Since(start)
+	return nil
+}
+
+// Commit is the CLEANUP half: it deletes the superseded object once the
+// manifest has been updated to point at the replacement. It refuses to run on
+// an unpublished result, which is the single guard standing between a failed
+// manifest hand-off and permanent loss of the kept rows.
+func (r *Rewriter) Commit(ctx context.Context, result *RewriteResult) error {
+	if result == nil || result.RowsRemoved == 0 {
+		return nil
+	}
+	if !result.Published {
+		return fmt.Errorf("refusing to delete %s: rewrite not published to the manifest", result.OldKey)
+	}
+	if err := r.pool.Delete(ctx, result.OldKey); err != nil {
+		return fmt.Errorf("delete superseded file %s: %w", result.OldKey, err)
+	}
+	return nil
+}
+
+// Discard deletes a replacement that was written but will never be published —
+// the source was merged away concurrently. Best-effort, and not durable on its
+// own: an object it fails to delete is unmanifested, but a manifest refresh
+// adopts it unless the manifest has it retired (Manifest.AbandonPending). The
+// scheduler therefore does not call it; it records the discard on the tombstone
+// and retries the delete until it lands.
+func (r *Rewriter) Discard(ctx context.Context, result *RewriteResult) {
+	if result == nil || result.Published || result.NewKey == "" {
+		return
+	}
+	if err := r.pool.Delete(ctx, result.NewKey); err != nil {
+		logger.Warnf("discarded rewrite not deleted; key=%s: %s", result.NewKey, err)
+	}
+}
+
+// deleteObject deletes one object through the rewriter's pool.
+func (r *Rewriter) deleteObject(ctx context.Context, key string) error {
+	return r.pool.Delete(ctx, key)
+}
+
+// footerBloomBytes sums the encoded size of every column-chunk bloom filter in
+// the written file — the same measure the flush and compaction writers record,
+// so the manifest's bloom-cost accounting stays comparable across all three
+// producers. Best-effort: 0 when the footer can't be parsed.
+func footerBloomBytes(data []byte) int64 {
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return 0
+	}
+	var total int64
+	for _, rg := range f.RowGroups() {
+		for _, cc := range rg.ColumnChunks() {
+			if bf := cc.BloomFilter(); bf != nil {
+				total += bf.Size()
+			}
+		}
+	}
+	return total
+}
+
+// columnBytesFromFooter returns column name -> total compressed bytes, read
+// from the written footer. Mirrors the flush/compaction writers so per-field
+// storage accounting does not go blank the moment a file is rewritten.
+func columnBytesFromFooter(data []byte) map[string]int64 {
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil
+	}
+	md := f.Metadata()
+	if md == nil || len(md.RowGroups) == 0 {
+		return nil
+	}
+	out := make(map[string]int64)
+	for i := range md.RowGroups {
+		for j := range md.RowGroups[i].Columns {
+			cm := md.RowGroups[i].Columns[j].MetaData
+			if len(cm.PathInSchema) == 0 {
+				continue
+			}
+			out[cm.PathInSchema[0]] += cm.TotalCompressedSize
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// sourceSlotMapping lifts the Tier-2 dedicated-slot name binding out of the
+// SOURCE file's footer so the rewritten file keeps it. The read path resolves
+// ded_sNN columns by each file's OWN footer KV and skips the raw slot column
+// when the key is absent — so a rewritten file that dropped the binding would
+// serve its kept rows with the promoted attributes missing. Returns nil (and
+// the caller writes no KV) when the source carried none.
+func sourceSlotMapping(data []byte) []byte {
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil
+	}
+	md := f.Metadata()
+	if md == nil {
+		return nil
+	}
+	for _, kv := range md.KeyValueMetadata {
+		if kv.Key == schema.DedicatedSlotsMetaKey {
+			return []byte(kv.Value)
+		}
+	}
+	return nil
+}
+
+// writerOptions builds the option set for the FALLBACK writer (see
+// ParquetWriters): the configured row group size plus the source's slot binding
+// when it had one.
+//
+// Per-row-group token-bloom KV entries are deliberately NOT carried over. They
+// are keyed by row group index, and removing rows re-packs the row groups, so
+// source row group i's bloom does not describe output row group i. Copying them
+// would let the reader skip a row group that does hold matching rows — a false
+// NEGATIVE, i.e. silently missing query results. Omitting the key means "no
+// bloom information", which costs a scan and returns the right answer.
+func (r *Rewriter) writerOptions(src []byte) []parquet.WriterOption {
+	opts := []parquet.WriterOption{
+		parquet.MaxRowsPerRowGroup(int64(r.rowGroupSize)),
+	}
+	if kv := sourceSlotMapping(src); len(kv) > 0 {
+		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
+	}
+	return opts
 }
 
 func (r *Rewriter) filterLogRows(data []byte, tombstones []Tombstone, result *RewriteResult) ([]byte, error) {
@@ -145,10 +386,24 @@ func (r *Rewriter) filterLogRows(data []byte, tombstones []Tombstone, result *Re
 		return nil, nil
 	}
 
+	// Manifest metadata recomputed over the KEPT rows. Inheriting either of
+	// these from the superseded entry would keep counting the deleted rows.
+	result.MinTimeNs, result.MaxTimeNs = schema.LogRowTimeBounds(kept)
+	result.LabelAggregates = schema.ExtractLogLabelAggregates(kept)
+	result.Labels = schema.ExtractLogLabels(kept)
+	result.BloomValues = schema.ExtractLogBloomValues(kept)
+	result.RawBytes = schema.EstimateRawBytesLogs(kept)
+
+	if r.writers.Logs != nil {
+		out, err := r.writers.Logs(kept, r.rowGroupSize, r.writers.CompressionLevel)
+		if err != nil {
+			return nil, fmt.Errorf("write parquet: %w", err)
+		}
+		return out, nil
+	}
+
 	var buf bytes.Buffer
-	writer := parquet.NewGenericWriter[schema.LogRow](&buf,
-		parquet.MaxRowsPerRowGroup(int64(r.rowGroupSize)),
-	)
+	writer := parquet.NewGenericWriter[schema.LogRow](&buf, r.writerOptions(data)...)
 	if _, err := writer.Write(kept); err != nil {
 		return nil, fmt.Errorf("write parquet: %w", err)
 	}
@@ -187,10 +442,23 @@ func (r *Rewriter) filterTraceRows(data []byte, tombstones []Tombstone, result *
 		return nil, nil
 	}
 
+	// See filterLogRows: recomputed over the kept rows, never inherited.
+	result.MinTimeNs, result.MaxTimeNs = schema.TraceRowTimeBounds(kept)
+	result.LabelAggregates = schema.ExtractTraceLabelAggregates(kept)
+	result.Labels = schema.ExtractTraceLabels(kept)
+	result.BloomValues = schema.ExtractTraceBloomValues(kept)
+	result.RawBytes = schema.EstimateRawBytesTraces(kept)
+
+	if r.writers.Traces != nil {
+		out, err := r.writers.Traces(kept, r.rowGroupSize, r.writers.CompressionLevel)
+		if err != nil {
+			return nil, fmt.Errorf("write parquet: %w", err)
+		}
+		return out, nil
+	}
+
 	var buf bytes.Buffer
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf,
-		parquet.MaxRowsPerRowGroup(int64(r.rowGroupSize)),
-	)
+	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, r.writerOptions(data)...)
 	if _, err := writer.Write(kept); err != nil {
 		return nil, fmt.Errorf("write parquet: %w", err)
 	}
@@ -207,6 +475,32 @@ func matchesAny(fields map[string]string, ts int64, tombstones []Tombstone) bool
 		}
 	}
 	return false
+}
+
+// newReplacementID draws the short random id a replacement key is built from.
+// A variable so a test can force the collision the claim guards against.
+var newReplacementID = func() string { return uuid.New().String()[:8] }
+
+// replacementKey names the object that replaces sourceKey: same directory, new
+// base name. The directory is kept byte for byte — it carries the tenant prefix
+// ({AccountID}/{ProjectID}/<signal>/) and the partition, and S3 keys are
+// literal strings, so no path cleaning is applied either: a cleaned directory
+// would be a different key space.
+//
+// The result is never the source key itself. A replacement that reused the
+// source's name would overwrite the only copy of the kept rows before the
+// manifest points at it, and the commit step — which deletes the superseded
+// key — would then delete the replacement.
+func replacementKey(sourceKey, id string) string {
+	dir := ""
+	if i := strings.LastIndex(sourceKey, "/"); i >= 0 {
+		dir = sourceKey[:i+1]
+	}
+	key := dir + id + ".parquet"
+	if key == sourceKey {
+		key = dir + id + "-r.parquet"
+	}
+	return key
 }
 
 // extractPartition extracts the partition path (e.g. "dt=2026-01-01/hour=10")

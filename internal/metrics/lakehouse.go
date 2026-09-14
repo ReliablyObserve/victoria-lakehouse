@@ -184,13 +184,69 @@ var (
 	// genuinely shrank and the guard is now lying to readers, so
 	// an operator should restart the pod to force a clean rebuild.
 	ManifestRefreshCliffGuardRejections = NewCounter("lakehouse_manifest_refresh_cliff_guard_rejections_total")
-	DiscoveryHotBoundaryDays            = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
-	DiscoveryGapDays                    = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
-	ManifestPushTotal                   = NewCounter("lakehouse_manifest_push_total")
-	ManifestPushPeers                   = NewGauge("lakehouse_manifest_push_peers")
-	ManifestPushErrorsTotal             = NewCounter("lakehouse_manifest_push_errors_total")
-	ManifestUpdateReceivedTotal         = NewCounter("lakehouse_manifest_update_received_total")
+	// ManifestRetiredKeys is the number of keys the manifest deliberately
+	// stopped listing whose objects may still exist (a publish replaced them,
+	// an output was abandoned, or they were removed on another component's
+	// behalf). The refresh does not adopt them. It drains as their deletes land;
+	// a value that only grows means deletes are failing.
+	ManifestRetiredKeys = NewGauge("lakehouse_manifest_retired_keys")
+	// ManifestRefreshSkipped counts listed objects the refresh kept out of the
+	// manifest (reason=retired|pending) and tracked files it kept although the
+	// listing lacked them because they were published while it ran
+	// (reason=published_during_listing).
+	ManifestRefreshSkipped = NewCounterVec("lakehouse_manifest_refresh_skipped_total", "reason")
+	// ManifestRetiredEvicted counts retired keys forgotten by the age or size
+	// bound (reason=ttl|cap) rather than by their object being deleted. Should
+	// stay 0: an evicted key whose object still exists is adopted again.
+	ManifestRetiredEvicted = NewCounterVec("lakehouse_manifest_retired_evicted_total", "reason")
+	// ManifestRetiredReclaimed / ManifestRetiredReclaimErrors count the retry
+	// deletes of superseded and abandoned objects whose first delete failed.
+	ManifestRetiredReclaimed     = NewCounter("lakehouse_manifest_retired_reclaimed_total")
+	ManifestRetiredReclaimErrors = NewCounter("lakehouse_manifest_retired_reclaim_errors_total")
+	// ManifestRetiredReclaimOwed is the part of the retired set whose objects
+	// this process still owes a delete for — the keys whose eviction would let
+	// a refresh serve them again. Drains as the deletes land.
+	ManifestRetiredReclaimOwed = NewGauge("lakehouse_manifest_retired_delete_owed")
+	// ManifestHeldKeys is the number of registered files another publish may
+	// not supersede yet because the rewrite that swapped them in has not
+	// recorded that swap durably. Steady state 0.
+	ManifestHeldKeys = NewGauge("lakehouse_manifest_held_keys")
+	// ManifestKeyClaimRejected counts refused key claims and publishes by
+	// reason (registered, retired, pending, publish_key_taken) — a non-zero
+	// value means two writers generated the same object key.
+	ManifestKeyClaimRejected    = NewCounterVec("lakehouse_manifest_key_claim_rejected_total", "reason")
+	DiscoveryHotBoundaryDays    = NewFloatGauge("lakehouse_discovery_hot_boundary_days")
+	DiscoveryGapDays            = NewFloatGauge("lakehouse_discovery_hot_boundary_gap_days")
+	ManifestPushTotal           = NewCounter("lakehouse_manifest_push_total")
+	ManifestPushPeers           = NewGauge("lakehouse_manifest_push_peers")
+	ManifestPushErrorsTotal     = NewCounter("lakehouse_manifest_push_errors_total")
+	ManifestUpdateReceivedTotal = NewCounter("lakehouse_manifest_update_received_total")
+
+	// ManifestTenantBucketListErrors counts failed LISTs of a tenant's
+	// dedicated bucket during a manifest refresh, by bucket. One failing
+	// bucket fails the whole refresh — the manifest then keeps serving its
+	// previous state rather than dropping that tenant's objects — so a
+	// non-zero rate means the fleet's view of S3 is frozen until the bucket
+	// is reachable again. The series of every registered dedicated bucket is
+	// created at zero by Manifest.SetTenantBuckets.
+	ManifestTenantBucketListErrors = NewCounterVec("lakehouse_manifest_tenant_bucket_list_errors_total", "bucket")
 )
+
+// RowGroupSkipReasons is every reason ParquetRowGroupsSkipped is incremented
+// with on either binary: the manifest-level file pre-filters (label_index,
+// column_stats), the footer-only file skip (footer_prefetch) and the
+// row-group checks (stats = time range, bloom, pushdown, token_bloom).
+// TestRowGroupSkipReasons_MatchCallSites keeps the list and the call sites in
+// step.
+var RowGroupSkipReasons = []string{"label_index", "column_stats", "footer_prefetch", "stats", "bloom", "pushdown", "token_bloom"}
+
+func init() {
+	// Export every reason from process start. Which stage prunes a query
+	// depends on the objects it selects, so a series that only appeared on
+	// its first skip could be missing for a long time on a tenant-scoped
+	// read that never reaches that stage.
+	ParquetRowGroupsSkipped.Init(RowGroupSkipReasons...)
+}
 
 // Parquet engine metrics
 var (
@@ -476,6 +532,18 @@ var (
 	QueryRejectedTotal        = NewCounter("lakehouse_query_rejected_total")
 	QueryFileLimitExceeded    = NewCounter("lakehouse_query_file_limit_exceeded_total")
 	QueryMemoryBudgetExceeded = NewCounter("lakehouse_query_memory_budget_exceeded_total")
+
+	// TenantScopeViolations counts objects/rows the read path selected that do
+	// NOT belong to the requesting tenant. The guard drops them before they can
+	// reach a response, so a non-zero value is a defect signal (manifest key
+	// shape drift, a new call site that bypassed the scoped file lookup, or a
+	// peer answering the buffer bridge without tenant scoping), never routine.
+	// {site} names the query path that tripped it.
+	TenantScopeViolations = NewCounterVec("lakehouse_tenant_scope_violations_total", "site")
+
+	// GlobalReadQueriesTotal counts select requests that presented a valid
+	// global-read credential and were therefore answered across every tenant.
+	GlobalReadQueriesTotal = NewCounter("lakehouse_global_read_queries_total")
 )
 
 // Compaction metrics
@@ -707,6 +775,113 @@ var (
 	DeleteCompactionRowsRemoved = NewCounter("lakehouse_delete_compaction_rows_removed_total")
 	DeleteVerifyTotal           = NewCounter("lakehouse_delete_verify_total")
 	DeleteVerifyLeakDetected    = NewCounter("lakehouse_delete_verify_leak_detected_total")
+)
+
+// Delete rewrite bookkeeping — the manifest hand-off and the tombstone
+// durability path. Every one of these counts a state transition that used to
+// happen silently (or not at all), so a non-zero error counter is the operator's
+// first signal that a rewritten object and the manifest have diverged.
+var (
+	// DeleteRewriteManifestUpdated counts rewritten objects successfully
+	// re-registered in the manifest (new key in, old key out).
+	DeleteRewriteManifestUpdated = NewCounter("lakehouse_delete_rewrite_manifest_updated_total")
+	// DeleteRewriteManifestErrors counts rewrites whose manifest hand-off
+	// failed. The rewritten object is left unpublished and the tombstone is
+	// NOT marked reaped, so the next scheduler tick retries.
+	DeleteRewriteManifestErrors = NewCounter("lakehouse_delete_rewrite_manifest_errors_total")
+	// DeleteRewriteSkippedNoManifest counts rewrites refused because no
+	// manifest was wired into the scheduler. Rewriting without a manifest
+	// would orphan the rewritten object, so the safeguard is to not rewrite.
+	DeleteRewriteSkippedNoManifest = NewCounter("lakehouse_delete_rewrite_skipped_no_manifest_total")
+	// DeleteRewriteOldObjectErrors counts failures to delete the superseded
+	// object AFTER the manifest already points at its replacement. Harmless
+	// for correctness (the stale object is unmanifested and the orphan sweep
+	// reclaims it) but it costs storage until then.
+	DeleteRewriteOldObjectErrors = NewCounter("lakehouse_delete_rewrite_old_object_errors_total")
+	// DeleteRewriteSuperseded counts rewrites discarded because their source
+	// left the manifest between the read and the publish — a concurrent
+	// compaction merged it. The tombstone follows the rows to the compacted
+	// output instead; publishing would have duplicated them.
+	DeleteRewriteSuperseded = NewCounter("lakehouse_delete_rewrite_superseded_total")
+	// DeleteRewriteAlreadyReaped counts keys the rewriter found already gone
+	// from storage — the self-healing path after a crash between the manifest
+	// swap and the tombstone bookkeeping.
+	DeleteRewriteAlreadyReaped = NewCounter("lakehouse_delete_rewrite_already_reaped_total")
+	// DeleteTombstonesCompleted counts tombstones retired because every key
+	// they covered has been rewritten; a completed tombstone leaves Active().
+	DeleteTombstonesCompleted = NewCounter("lakehouse_delete_tombstones_completed_total")
+	// DeleteTombstonePersistTotal / Errors count durability writes by target
+	// ("disk" or "s3").
+	DeleteTombstonePersistTotal  = NewCounterVec("lakehouse_delete_tombstone_persist_total", "target")
+	DeleteTombstonePersistErrors = NewCounterVec("lakehouse_delete_tombstone_persist_errors_total", "target")
+	// DeleteTombstonePersistPending is the number of tombstone records whose
+	// S3 copy is behind the in-memory state. Steady-state 0; a sustained
+	// non-zero value means S3 writes are failing and only the local disk copy
+	// would survive a pod move.
+	DeleteTombstonePersistPending = NewGauge("lakehouse_delete_tombstone_persist_pending")
+	// DeleteStartupInconsistencies counts manifest/tombstone disagreements
+	// found by the boot-time self-check, by kind.
+	DeleteStartupInconsistencies = NewCounterVec("lakehouse_delete_startup_inconsistencies_total", "kind")
+	// DeleteRewriteInterrupted counts rewrites found unfinished — at startup or
+	// by a later pass — by how they were resolved: undone (never published),
+	// published (finished: the superseded object is deleted) or discarded (the
+	// abandoned replacement is deleted).
+	DeleteRewriteInterrupted = NewCounterVec("lakehouse_delete_rewrite_interrupted_total", "outcome")
+	// DeleteRewriteAbandonedObjectErrors counts failed deletes of replacements
+	// whose publish was refused or failed. Retried on every scheduler pass.
+	DeleteRewriteAbandonedObjectErrors = NewCounter("lakehouse_delete_rewrite_abandoned_object_errors_total")
+	// DeleteTombstoneNotDurable counts the times a rewrite step could not
+	// proceed because the tombstone change authorising it had not reached
+	// durable storage. Sustained values mean tombstone writes are failing and
+	// deletes have stopped making progress (they are not losing data).
+	DeleteTombstoneNotDurable = NewCounter("lakehouse_delete_tombstone_not_durable_total")
+	// DeleteRewritesUnfinished is the number of rewrite records whose objects
+	// are not settled yet. Must be 0 before rolling back to a release that
+	// cannot read them.
+	DeleteRewritesUnfinished = NewGauge("lakehouse_delete_rewrites_unfinished")
+	// DeleteTombstoneRestoreAttempts counts S3 restore attempts by result
+	// (failed, recovered) — a failed startup restore is retried on every
+	// rewrite pass until it succeeds.
+	DeleteTombstoneRestoreAttempts = NewCounterVec("lakehouse_delete_tombstone_restore_attempts_total", "result")
+	// DeleteTombstoneRestorePending is 1 while the S3 copy of the tombstone
+	// store has not been read in this process. While it is 1 the node enforces
+	// only the deletes it found locally and resolves no interrupted rewrite —
+	// the state the restore-failed alert fires on.
+	DeleteTombstoneRestorePending = NewGauge("lakehouse_delete_tombstone_restore_pending")
+	// DeleteRewriteDeferred counts rewrite work postponed rather than done, by
+	// reason: the manifest has not listed the bucket yet (unlisted), the
+	// tombstone store is incomplete (restore_pending), or a record is not
+	// durable (not_durable).
+	DeleteRewriteDeferred = NewCounterVec("lakehouse_delete_rewrite_deferred_total", "reason")
+	// DeleteRewriteKeyCollisions counts replacement keys that could not be
+	// claimed because the key was already in use.
+	DeleteRewriteKeyCollisions = NewCounter("lakehouse_delete_rewrite_key_collisions_total")
+	// DeleteTombstoneRemovedMarkersEvicted counts removed-tombstone markers
+	// dropped by their TTL or cap. A marker is never evicted while its S3
+	// delete is still owed; eviction only bounds the set's size.
+	DeleteTombstoneRemovedMarkersEvicted = NewCounter("lakehouse_delete_tombstone_removed_markers_evicted_total")
+	// DeleteFieldsScanFallback counts requests that gave up a fast path whose
+	// answer a tombstone cannot be applied to (metadata-only field
+	// enumeration: field_names/field_values/streams/stream_ids; the
+	// pure-buffer aggregate path: pure_buffer) because an active tombstone
+	// overlapped what that path answers from, so rows had to be verified.
+	DeleteFieldsScanFallback = NewCounterVec("lakehouse_delete_fields_scan_fallback_total", "endpoint")
+	// DeleteCompactionKeysReaped counts source keys marked reaped because a
+	// compaction merged them (the tombstone follows the rows to the output).
+	DeleteCompactionKeysReaped = NewCounter("lakehouse_delete_compaction_keys_reaped_total")
+	// CompactionPublishConflicts counts compactions abandoned at publish
+	// because one of their sources had already left the manifest (a
+	// concurrent delete rewrite, or a racing compaction). The merged output is
+	// discarded rather than registered next to whatever replaced the source.
+	CompactionPublishConflicts = NewCounter("lakehouse_compaction_publish_conflicts_total")
+	// DeleteCatalogRebuilds counts pmeta field-catalog value rebuilds after rows
+	// were removed, by result ("rebuilt", "skipped_unlabeled_file"). A skipped
+	// rebuild leaves the previous (over-inclusive) value set in place.
+	DeleteCatalogRebuilds = NewCounterVec("lakehouse_delete_catalog_rebuilds_total", "result")
+	// DeleteTombstoneKeysDiscovered counts files added to a tombstone's work
+	// list because they overlap its range but were not in AffectedKeys — the
+	// outputs of compactions that carried its rows forward, and late flushes.
+	DeleteTombstoneKeysDiscovered = NewCounter("lakehouse_delete_tombstone_keys_discovered_total")
 )
 
 // Resource bound metrics — K8s-style request/limit/usage per resource surface.

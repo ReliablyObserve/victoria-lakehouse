@@ -58,6 +58,7 @@ const sidebars: SidebarsConfig = {
         'lakehouse-explorer',
         'security',
         'scaling',
+        'upstream-sync',
       ],
     },
     {

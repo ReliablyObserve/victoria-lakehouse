@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,10 +62,31 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) < 2 {
-		// ListObjectsV2 request
+		// ListObjectsV2 request: every stored key under the prefix, so the
+		// production manifest refresh can be exercised against this bucket.
 		if r.URL.Query().Get("list-type") == "2" {
+			prefix := r.URL.Query().Get("prefix")
+			m.mu.RLock()
+			keys := make([]string, 0, len(m.files))
+			for k := range m.files {
+				if strings.HasPrefix(k, prefix) {
+					keys = append(keys, k)
+				}
+			}
+			sizes := make(map[string]int, len(keys))
+			for _, k := range keys {
+				sizes[k] = len(m.files[k])
+			}
+			m.mu.RUnlock()
+			sort.Strings(keys)
+			var b strings.Builder
+			b.WriteString(`<?xml version="1.0"?><ListBucketResult>`)
+			for _, k := range keys {
+				fmt.Fprintf(&b, `<Contents><Key>%s</Key><Size>%d</Size></Contents>`, k, sizes[k])
+			}
+			b.WriteString(`<IsTruncated>false</IsTruncated></ListBucketResult>`)
 			w.Header().Set("Content-Type", "application/xml")
-			_, _ = fmt.Fprint(w, `<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`)
+			_, _ = fmt.Fprint(w, b.String())
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -1622,7 +1644,7 @@ func TestInteg_queryBufferBridge_NilBridge(t *testing.T) {
 
 	var rowsEmitted atomic.Int64
 	// Should not panic
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called with nil bridge")
 		})
@@ -2081,7 +2103,7 @@ func TestInteg_queryBufferBridge_MaxRowsExceeded(t *testing.T) {
 	rowsEmitted.Store(100)
 
 	// Should not panic or call writeBlock when maxRows is exceeded
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 50, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 50, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called when maxRows exceeded")
 		})

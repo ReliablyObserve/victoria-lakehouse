@@ -80,7 +80,10 @@ func TestRequiredPatchesExist(t *testing.T) {
 		"patches/vt-traces/vtstorage-dispatch.patch",
 		"patches/vt-traces/vtstorage-flag-dedup.patch",
 		"patches/vt-traces/vtinsert-flag-dedup.patch",
-		"patches/vt-traces/go-mod-replace.patch",
+		// NOTE: VT's go.mod replace directive (VictoriaLogs => ../VictoriaLogs)
+		// is applied by `go mod edit` in the Makefile's deps-vt target, not by
+		// a patch file — a one-line go.mod diff carries context that moves on
+		// every upstream dependency bump. See patches/README.md.
 	}
 	root := repoRoot(t)
 	for _, rel := range required {

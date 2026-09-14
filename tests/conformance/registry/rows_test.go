@@ -2,9 +2,11 @@ package registry
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/inventory"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
@@ -85,17 +87,18 @@ var templateReplacer = strings.NewReplacer(
 
 // TestRows_QueriesParseWithUpstream enforces the reuse-upstream-code rule:
 // every row that sends a LogsQL query to a /select/logsql/* endpoint
-// must parse with the real VL 1.50.0 parser (github.com/VictoriaMetrics/
-// VictoriaLogs/lib/logstorage, vendored under deps/ and reachable from the
-// root module via the go.mod replace directive) — not just look plausible.
-// The row's rendered query must also round-trip: re-parsing Query.String()
-// must succeed.
+// must parse with the real vendored VL parser (github.com/VictoriaMetrics/
+// VictoriaLogs/lib/logstorage, vendored under deps/ at VL_VERSION_LOGS and
+// reachable from the root module via the go.mod replace directive) — not just
+// look plausible. The row's rendered query must also round-trip: re-parsing
+// Query.String() must succeed.
 func TestRows_QueriesParseWithUpstream(t *testing.T) {
 	reg, err := LoadDir("rows")
 	if err != nil {
 		t.Fatal(err)
 	}
-	checked := 0
+	pinnedVL := pinnedVLVersion(t)
+	checked, skippedAhead := 0, 0
 	for _, r := range reg.Rows {
 		if r.Request == nil || !strings.HasPrefix(r.Request.Path, "/select/logsql/") {
 			continue
@@ -110,12 +113,15 @@ func TestRows_QueriesParseWithUpstream(t *testing.T) {
 		if r.Compare != nil && r.Compare.Type == "error" {
 			continue
 		}
-		// A row with `since` newer than the pin (e.g. coalesce at vl 1.51.0,
-		// json_array_concat at vl 1.52.0) exercises syntax the *pinned*
+		// A row whose `since` is NEWER than the pin exercises syntax the
 		// vendored parser does not have yet by design — that's the entire
-		// point of the since/differ annotation. It can never parse against
-		// today's deps/VictoriaLogs checkout, so it's out of scope here.
-		if len(r.Since) > 0 {
+		// point of the since/differ annotation, and it can never parse against
+		// today's deps/VictoriaLogs checkout. A row whose `since` the pin has
+		// already reached is checked like any other: after the VL 1.52.0 bump
+		// that includes coalesce (since 1.51.0) and json_array_concat (since
+		// 1.52.0), which previously escaped the parser entirely.
+		if sinceNewerThanPin(r.Since["vl"], pinnedVL) {
+			skippedAhead++
 			continue
 		}
 		checked++
@@ -132,6 +138,49 @@ func TestRows_QueriesParseWithUpstream(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no /select/logsql/* rows with a query param were checked — the test is not exercising anything")
 	}
+	t.Logf("parsed %d LogsQL row queries against vendored VictoriaLogs %s (%d skipped: since is newer than the pin)", checked, pinnedVL, skippedAhead)
+}
+
+// pinnedVLVersion reads VL_VERSION_LOGS from the Makefile — the single source
+// of truth for which VictoriaLogs the vendored parser under deps/ actually is.
+func pinnedVLVersion(t *testing.T) string {
+	t.Helper()
+	root, err := inventory.RepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := inventory.DefaultDirs(root).VLVersion
+	if v == "" {
+		t.Fatal("VL_VERSION_LOGS not readable from the Makefile — without the pin this test cannot tell an ahead-of-pin row from a broken one")
+	}
+	return v
+}
+
+// sinceNewerThanPin reports whether a row's `since` version is strictly newer
+// than the pinned one. Both are dotted integers with an optional leading "v".
+// An unparseable or absent `since` is never "ahead": the row gets checked.
+func sinceNewerThanPin(since, pin string) bool {
+	if since == "" {
+		return false
+	}
+	part := func(s string, i int) int {
+		fields := strings.Split(strings.TrimPrefix(s, "v"), ".")
+		if i >= len(fields) {
+			return 0
+		}
+		n, err := strconv.Atoi(fields[i])
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	for i := 0; i < 3; i++ {
+		a, b := part(since, i), part(pin, i)
+		if a != b {
+			return a > b
+		}
+	}
+	return false
 }
 
 // tempoKnownStageFuncs are the pipe-stage keywords the traces module accepts

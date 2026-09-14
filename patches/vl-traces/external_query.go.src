@@ -18,6 +18,18 @@ import (
 // RunQueryExternalWithSubqueries instead, passing the adapter's own
 // RunQuery as the runQuery callback so the inner side of a `| join …`
 // can be resolved against the same external backend.
+//
+// upstream-copy: lib/logstorage/storage_search.go (*Storage).runQuery
+// upstream-divergence: this is upstream's runQuery with the local tier's
+// searchParallel replaced by searchFn, and WITHOUT the initSubqueries call
+// upstream makes first. A query carrying `in(...)`, `join`, `union` or
+// `stream_context` therefore reaches runPipes with its subqueries
+// unresolved. That is why nothing in Lakehouse calls this entry point —
+// both adapters call RunQueryExternalWithSubqueries — and why it stays
+// exported only as the documented no-subquery form. Upstream's own
+// per-tier options (getSearchOptions, GetParallelReaders,
+// defaultParallelReaders) have no meaning for an external backend and are
+// deliberately dropped; concurrency and the pipe chain are reused verbatim.
 func RunQueryExternal(qctx *QueryContext, searchFn func(writeBlock WriteDataBlockFunc) error, writeBlock WriteDataBlockFunc) error {
 	writeBlockResult := writeBlock.newBlockResultWriter()
 
@@ -55,6 +67,21 @@ type ExternalRunQueryFn func(qctx *QueryContext, writeBlock WriteDataBlockFunc) 
 // The external storage adapter must do the same — otherwise the inner
 // subquery never executes and the cold tier serves an empty
 // Service Graph.
+//
+// upstream-copy: lib/logstorage/storage_search.go initSubqueries
+// upstream-divergence: upstream's initSubqueries runs FOUR initialisers —
+// initFilterInValues (`in(...)` subqueries), initJoinMaps (`join`),
+// initUnionQueries (`union`) and initStreamContextPipes (`stream_context`).
+// This function runs only initJoinMaps, because that is the one Lakehouse
+// has a cold-tier test for; the other three are resolved on the hot tier
+// only, so a cold query using them returns fewer rows than the same query
+// against upstream rather than failing. Reuse-first note: the remaining
+// three cannot simply be called here — initUnionQueries and
+// initStreamContextPipes take a runQueryFunc over writeBlockResultFunc and
+// a *QueryContext they re-parent, so adopting them is an adapter change,
+// not a one-line call. Tracked as a cold-tier parity gap. The tail after
+// the initialisers is upstream (*Storage).runQuery's, baselined separately
+// under RunQueryExternal.
 func RunQueryExternalWithSubqueries(qctx *QueryContext, searchFn func(writeBlock WriteDataBlockFunc) error, runQuery ExternalRunQueryFn, writeBlock WriteDataBlockFunc) error {
 	q := qctx.Query
 
@@ -89,6 +116,10 @@ func RunQueryExternalWithSubqueries(qctx *QueryContext, searchFn func(writeBlock
 }
 
 // QueryHasPipes returns true if the query has pipe operators attached.
+//
+// upstream-original: an accessor for the unexported Query.pipes field, which
+// upstream exposes no getter for. No upstream logic is duplicated; a rename
+// of the field breaks the build loudly.
 func QueryHasPipes(q *Query) bool {
 	return len(q.pipes) > 0
 }
@@ -106,6 +137,15 @@ func QueryHasPipes(q *Query) bool {
 // enumeration (`/api/v2/search/tags`), tag value enumeration
 // (`/api/v2/search/tag/<k>/values`), and compare metrics
 // (`/api/metrics/query_range` with `compare(...)`).
+//
+// upstream-typeset: pipes-implementing-updateNeededFields
+// upstream-divergence: the switch enumerates four of upstream's pipe types by
+// hand. Upstream has no marker for "this pipe enumerates every field", so a
+// pipe added upstream falls through into the projected-subset branch — right
+// for most pipes, wrong for any new field-enumerating one, and silent either
+// way because it neither fails to compile nor errors at query time. The
+// baselined type set makes an upstream pipe addition fail this guard, so the
+// new pipe is classified by a human instead of defaulted.
 func QueryNeedsAllFields(q *Query) bool {
 	if q == nil {
 		return false
@@ -122,6 +162,11 @@ func QueryNeedsAllFields(q *Query) bool {
 // CloneWithoutPipes returns a shallow copy of q with pipes removed.
 // Use this when passing a query to a storage backend that should return
 // raw filtered data — pipe processing happens externally via RunQueryExternal.
+//
+// upstream-original: a struct copy with pipes cleared. Upstream's own
+// Query.Clone renders the query to text and parses it back, which is both
+// lossy and panics on queries VictoriaLogs accepts but cannot print (see
+// QueryFilter); there is no upstream function that does this.
 func CloneWithoutPipes(q *Query) *Query {
 	qCopy := *q
 	qCopy.pipes = nil
@@ -135,6 +180,10 @@ func CloneWithoutPipes(q *Query) *Query {
 // VictoriaMetrics HTTP server answers by exiting the process — and a re-parse
 // anchors relative time filters (`_time:5m`) to the parse time instead of the
 // query's timestamp. Returns nil when q is nil or has no filter.
+//
+// upstream-original: an accessor for the unexported Query.f field wrapped in
+// the exported Filter type upstream already declares. No upstream logic is
+// duplicated.
 func QueryFilter(q *Query) *Filter {
 	if q == nil || q.f == nil {
 		return nil
@@ -157,6 +206,24 @@ func QueryFilter(q *Query) *Filter {
 // `_time` but drop `duration`, and the histogram would compute over an
 // empty column. See lakehouse cold-tier parity (PR #105) for the
 // failure mode this prevents.
+//
+// upstream-copy: lib/logstorage/parser.go getNeededColumns
+// upstream-divergence: upstream's getNeededColumns is the complete answer —
+// it walks the pipe chain BACKWARDS and asks EVERY pipe, through the
+// pipe.updateNeededFields interface method, which input fields it needs.
+// This function walks FORWARDS and asks only four pipe types by hand
+// (pipeStats, pipeUniq, pipeTop, pipeFields), so every other pipe —
+// extract, unpack_json, math, format, filter, sort, replace, unroll, and
+// each one upstream adds — contributes nothing and its input columns are
+// projected away. That is cold-tier parity divergence B4. It is NOT
+// replaced by a call to getNeededColumns in this bump: getNeededColumns
+// returns a *prefixfilter.Filter seeded with allow-`*` and answers in
+// prefix patterns, while the Parquet projection needs exact column names
+// and treats "cannot resolve precisely" as "read every column" — swapping
+// them changes which columns every cold query reads, which is a read-path
+// and performance change that must be measured, not folded into an
+// upstream bump. Reuse-first target: replace this function with
+// getNeededColumns plus a prefix-to-column resolution step.
 func GetQueryPipeFields(q *Query) []string {
 	if q == nil {
 		return nil
@@ -250,6 +317,17 @@ type TimeBucket struct {
 //     rows, so they are unconstrained (`hits` appends `sort by (_time)` there).
 //   - A query with no `stats` pipe returns the rows themselves: their values
 //     must be real.
+//
+// upstream-original: upstream has no "can this query be answered without
+// reading row values" predicate; this is LH's own, written against upstream's
+// unexported `*pipeStats` (byFields/hasBucketConfig, funcs with `iff` and
+// updateNeededFields). It reads that struct rather than copying a function, so
+// the drift guard cannot baseline it and an upstream change here fails neither
+// the build nor a query — it would silently classify a query metadata-only
+// while the new construct needs real rows. Re-read pipeStats on every VL bump;
+// the conservative default (return needsRowValues=true) is what every early
+// return above takes, so an unrecognised shape costs a scan, never a wrong
+// answer.
 func GetQueryTimeBucketing(q *Query) (buckets []TimeBucket, needsRowValues bool) {
 	if q == nil || len(q.pipes) == 0 {
 		return nil, true
@@ -286,6 +364,12 @@ func GetQueryTimeBucketing(q *Query) (buckets []TimeBucket, needsRowValues bool)
 // TruncateTimestampToBucket returns the start of the bucket ts falls into,
 // using VL's own truncation so calendar buckets, week alignment and bucket
 // offsets behave exactly as they do inside `stats by (_time:...)`.
+//
+// upstream-original: an exported wrapper with no upstream counterpart. The
+// truncation itself is upstream's own truncateTimestamp, called unchanged, so
+// calendar buckets, week alignment and offsets stay identical to what
+// `stats by (_time:...)` computes — LH only needs it reachable from outside
+// the package. It carries no logic to drift.
 func TruncateTimestampToBucket(ts int64, b TimeBucket) int64 {
 	size := b.Size
 	if size <= 0 {

@@ -41,11 +41,26 @@ Applied to `deps/VictoriaLogs/...` and
 get the same patch set; if you add a patch to one, mirror it to the
 other.
 
+The two trees are **two different VictoriaLogs checkouts**: the logs
+binary embeds `VL_VERSION_LOGS` (v1.52.0), the traces binary embeds
+`VL_COMMIT_TRACES` (6ae2da3c11f3 = v1.51.0 — the commit VictoriaTraces
+v0.11.0 pins in its own `go.mod`). The pins legitimately differ, so the
+two patch files for the same upstream file may carry different *context*
+even though the lines they add are identical.
+
+`scripts/ci/check_patches_equal.sh` (CI job `lint-logs`) enforces that:
+every file must exist in both directories and be byte-equal, unless it is
+listed in **`patches/vl-traces/DIVERGENCE.md`** with the upstream change
+that moved the context. The check also fails on a *stale* row — a listed
+file that is in fact byte-equal — so the list empties itself once both
+pins reach the same VictoriaLogs release. A patch that exists on only one
+side is always an error; `DIVERGENCE.md` never excuses that.
+
 | Patch | Upstream file | Symbol exported / behavior |
 | --- | --- | --- |
-| `external.go.src` | `app/vlstorage/external.go` | Drop-in replacement that wires VL's vlstorage to LH's storage backend. Full-file replacement (no diff). |
-| `external_query.go.src` | `lib/logstorage/external_query.go` | Drop-in replacement exposing `ExternalQuery` hooks LH calls from its own query path, plus `GetQueryTimeBucketing` / `TruncateTimestampToBucket`, which classify whether a query can be answered without reading per-row values and with which `_time` bucketing. Full-file replacement. |
-| `vlstorage-dispatch.patch` | `app/vlstorage/main.go` | Routes VL's `RunQuery` / `GetFieldNames` / `GetFieldValues` / `GetStreamFieldNames` / `GetStreamFieldValues` / `GetStreamIDs` / `GetStreams` / `GetStats` / `GetHits` to `externalStorage` when LH has registered itself. |
+| `external.go.src` | `app/vlstorage/external.go` | Added file (upstream has none) that wires VL's vlstorage to LH's storage backend: the `ExternalStorage` interface the dispatch patch routes to. Copied, not diffed — so it keeps compiling when upstream changes the storage functions it mirrors; see `docs/upstream-sync.md`. |
+| `external_query.go.src` | `lib/logstorage/external_query.go` | Added file (upstream has none) exposing `ExternalQuery` hooks LH calls from its own query path, mirroring the native path in `lib/logstorage/storage_search.go`, plus `GetQueryTimeBucketing` / `TruncateTimestampToBucket`, which classify whether a query can be answered without reading per-row values and with which `_time` bucketing. Copied, not diffed. |
+| `vlstorage-dispatch.patch` | `app/vlstorage/main.go` | Routes VL's `RunQuery` / `GetFieldNames` / `GetFieldValues` / `GetStreamFieldNames` / `GetStreamFieldValues` / `GetStreams` / `GetStreamIDs` / `DeleteRunTask` / `DeleteStopTask` / `DeleteActiveTasks` / `GetTenantIDs` to `externalStorage` when LH has registered itself. |
 | `vl-export-severity.patch` | `app/vlinsert/opentelemetry/pb.go` | Adds `FormatSeverity(int32) string` as the public wrapper around the package-local `formatSeverity`. Consumed by `internal/schema/severity.go::DeriveSeverityText` so cold rows derive `level` from `severity_number` the same way VL hot does. |
 | `vl-const-timestamps-parse.patch` | `lib/logstorage/block_result.go` | Makes `tryParseTimestamps` parse a CONSTANT `_time` column once instead of once per row, using VL's own `areConstValues`. Pure optimization, no semantic change. The cold tier answers count-class queries from manifest metadata with a constant `_time` column (see `internal/storage/parquets3/manifest_fastpath.go`); without this, a metadata-only answer still cost O(rows) RFC3339 parsing. |
 | `vl-export-streamtags-get.patch` | `lib/logstorage/stream_tags.go` | Adds `(*StreamTags).Get(name)` and `(*StreamTags).UnmarshalString(s)`. The cold insert path uses `Get` to lift the stream-label `level` onto `row.SeverityText` without re-parsing the canonical string; the compactor uses `UnmarshalString` to re-parse the human-readable Stream column when backfilling SeverityText on historical files. |
@@ -56,12 +71,22 @@ Applied to `lakehouse-traces/deps/VictoriaTraces/...`.
 
 | Patch | Upstream file | Symbol exported / behavior |
 | --- | --- | --- |
-| `external.go.src` | `app/vtstorage/external.go` | Drop-in replacement that wires VT's vtstorage to LH's trace storage backend. |
+| `external.go.src` | `app/vtstorage/external.go` | Added file (upstream has none) that wires VT's vtstorage to LH's trace storage backend. Copied, not diffed. |
 | `flag_dedup.go.src` | `app/vtstorage/flag_dedup.go` | Adds the dedup-flag guard so VT's flags don't collide with LH's identical flags in the same binary. |
 | `vtstorage-dispatch.patch` | `app/vtstorage/main.go` | Routes VT's query handlers to `externalStorage` when LH has registered itself. |
 | `vtstorage-flag-dedup.patch` | `app/vtstorage/main.go` | Wires `flag_dedup.go.src` into VT's flag parsing path so duplicate `flag.Lookup` calls don't panic. (15 flag sites in one file — helper file is cheaper than inline closures.) |
 | `vtinsert-flag-dedup.patch` | `app/vtinsert/insertutil/{common_params,flags}.go` | Dedupes the VT vtinsert flags (`-defaultMsgValue`, `-insert.maxFieldsPerLine`) that collide with VL's same-named flags when both packages link into the lakehouse-traces binary. Uses inline `flag.Lookup` closures (2 sites, no helper file). |
-| `go-mod-replace.patch` | `go.mod` | Pins VT's VL dependency to the patched local checkout so VT's vlstorage path sees the same `external.go` replacement we apply on the logs side. |
+
+Not every overlay is a patch file. VT's own `go.mod` needs a
+`replace github.com/VictoriaMetrics/VictoriaLogs => ../VictoriaLogs`
+so VT's vlstorage path sees the same `external.go` replacement we apply
+on the logs side. That used to be `go-mod-replace.patch`; it is now a
+`go mod edit -replace` line in the Makefile's `deps-vt` target. A
+one-line `go.mod` diff carries three lines of context that change on
+every upstream dependency bump, and a context conflict there is
+indistinguishable from a real breakage — `go mod edit` states the intent
+and cannot rot. The effect is identical (verified by `git diff` on the
+cloned tree).
 
 ## Imported VL/VT symbols — natural reuse
 
@@ -121,7 +146,11 @@ this directory:
 2. **`TestVLLogsPatchesMirrorTraces`** fails when `vl-logs/` and
    `vl-traces/` drift in file membership. Both VL clones in the
    repo share the same patch set; an asymmetric edit gets caught
-   before the build breaks.
+   before the build breaks. `scripts/ci/check_patches_equal.sh`
+   goes one step further and compares the files byte for byte,
+   with declared exceptions in `patches/vl-traces/DIVERGENCE.md`
+   (see above); it is self-tested by
+   `scripts/ci/tests/check_patches_equal_test.sh`.
 3. **`TestForbiddenLocalCopiesOfUpstreamSymbols`** fails when grep
    matches a known re-implementation pattern (e.g. a local
    `logSeverities` table or a hand-rolled `extractStreamTagLevel`
@@ -137,9 +166,14 @@ so they run on every commit in CI without needing the
 Audited the patch set for redundancy and missing upstream reuse.
 Findings recorded here for future maintainers:
 
-- **vl-logs ↔ vl-traces mirror** — bytes-identical files in two
+- **vl-logs ↔ vl-traces mirror** — near-identical files in two
   directories. Could be a single source + Makefile copy, but that
-  complicates Docker COPY semantics. Current shape preferred.
+  complicates Docker COPY semantics, and since the 2026-09 bump the
+  two directories are no longer unconditionally byte-equal (the pins
+  are v1.52.0 and v1.51.0, so two patches carry one differing context
+  line each — see `patches/vl-traces/DIVERGENCE.md`). Current shape
+  preferred, with the equality guard enforcing that every *other*
+  file stays identical.
 - **`vlstorage-dispatch` and `external.go.src`** — split because
   `external.go.src` is a *replacement* (`cp`) and the dispatch is
   a *diff* (`git apply`). Cannot be combined cleanly.
@@ -174,9 +208,29 @@ $ go build ./lakehouse-traces/...
 If `git apply` fails after an upstream bump (`VL_VERSION_LOGS`,
 `VL_COMMIT_TRACES`, `VT_VERSION` in Makefile), regenerate the patch
 against the new upstream rather than locally reimplementing the
-behavior:
+behavior. The whole bump, of which this is one step, is described in
+`docs/upstream-sync.md`; the daily upstream sync probe
+(`scripts/ci/upstream_sync_probe.sh`) reports which patches no longer
+apply to the newest releases, with the context each one searched for,
+before anyone starts.
 
 ```
-$ cd deps/VictoriaLogs && git diff path/to/file > /tmp/p.patch
-$ cp /tmp/p.patch ../../patches/vl-logs/your-patch.patch
+$ rm -rf deps/VictoriaLogs
+$ make deps-logs                                # stops at the failing git apply
+$ cd deps/VictoriaLogs
+$ patch -p1 -F3 < ../../patches/vl-logs/your-patch.patch   # hand-apply with fuzz
+$ git diff path/to/file > ../../patches/vl-logs/your-patch.patch
+$ cd ../.. && rm -rf deps/VictoriaLogs && make deps-logs   # must apply cleanly now
 ```
+
+Then mirror to `patches/vl-traces/` against
+`lakehouse-traces/deps/VictoriaLogs` the same way, and run
+
+```
+$ scripts/ci/check_patches_equal.sh
+```
+
+If the two files legitimately differ (the pins straddle an upstream
+change to a context line), add the row to
+`patches/vl-traces/DIVERGENCE.md` naming that upstream change. If they
+do not differ, the guard fails on a stale row — remove it.

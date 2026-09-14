@@ -1,0 +1,8 @@
+go test fuzz v1
+string("\xb9")
+string("")
+int64(-102)
+int64(-17)
+string("")
+string("0")
+bool(false)

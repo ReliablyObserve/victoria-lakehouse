@@ -1,7 +1,9 @@
 # Metadata + S3 optimization architecture
 
-How Lakehouse scales to PB while staying fast on restart, serving
-latest data without flush waits, and minimizing S3 traffic. Use
+How Lakehouse stays fast on restart, serves the latest data without
+flush waits, and keeps S3 traffic down on the way to PB scale — the
+components that do not scale that far yet are listed on the
+[scale limits page](../petabyte-scale-audit.md). Use
 this doc as the reference when reasoning about query latency,
 restart behaviour, or cost — every optimization listed here has
 a config knob, a metric, and a documented edge case.
@@ -150,8 +152,11 @@ silently steps aside.
 ```
 
 The snapshot persists just the key list (no footer bytes — those
-are reconstructed via S3 range-reads). Cost on shutdown is a few
-KiB even at PB scale. On the next start the prefetch runs
+are reconstructed via S3 range-reads). Cost on shutdown is a 4-byte
+length plus the object key per cached entry — roughly 60–150 B
+depending on tenant ids and the configured prefix, so on the order
+of 10–30 MB at 200 k entries
+(`internal/storage/parquets3/footer_cache_snapshot.go`). On the next start the prefetch runs
 concurrently with the rest of the warmup chain, so first user
 queries arrive with the warmest files already cached.
 
@@ -357,7 +362,7 @@ in `docs/operations/lifecycle.md`.
 
 ### Scenario D — PB-scale wide-time-range query
 
-1. User runs `_time:30d | service.name=foo | count()`.
+1. User runs `_time:30d service.name:=foo | count()`.
 2. Manifest returns ~50k matching files (30 days × ~1700/day at
    PB ingest).
 3. Bloom + zone-map skip eliminates ~90% of files (the ones

@@ -11,6 +11,36 @@ import (
 
 var flagRe = regexp.MustCompile(`(?:flag\.(?:Int|Int64|Uint|Uint64|String|Bool|Float64|Duration|Var)|flagutil\.New[A-Za-z]+|safe[A-Z][A-Za-z]*)\(\s*"([a-zA-Z0-9_.\-]+)"`)
 
+// ScanFlagNames returns every flag name registered by the non-test .go files
+// directly inside dir, mapped to the file (relative to dir) that registers it.
+// It does not recurse: callers pass the exact package directories they care
+// about. Exported so callers that need a different notion of "which packages
+// count" than ExtractFlags's static list — for example the flag-collision
+// guard, which derives the linked set from `go list -deps` — can reuse the
+// same definition of what a flag registration looks like.
+func ScanFlagNames(dir string) (map[string]string, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, e := range ents {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range flagRe.FindAllStringSubmatch(string(data), -1) {
+			if _, ok := out[m[1]]; !ok {
+				out[m[1]] = e.Name()
+			}
+		}
+	}
+	return out, nil
+}
+
 // Packages whose flags reach a user of the binaries (relative to the VL / VT dir).
 var VLFlagPackages = []string{"app/vlselect", "app/vlselect/logsql", "app/vlselect/internalselect", "app/vlinsert", "app/vlstorage"}
 var VTFlagPackages = []string{"app/vtselect", "app/vtselect/logsql", "app/vtselect/internalselect", "app/vtselect/traces/tracecommon", "app/vtinsert", "app/vtstorage", "app/victoria-traces/servicegraph"}
@@ -46,24 +76,16 @@ func ExtractFlags(root string, pkgDirs []string, linked map[string]bool, surface
 			}
 		}
 		for _, d := range dirs {
-			ents, err := os.ReadDir(d)
+			names, err := ScanFlagNames(d)
 			if err != nil {
 				return nil, err
 			}
-			for _, e := range ents {
-				if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			for name, file := range names {
+				if _, ok := seen[name]; ok {
 					continue
 				}
-				data, err := os.ReadFile(filepath.Join(d, e.Name()))
-				if err != nil {
-					return nil, err
-				}
-				rel, _ := filepath.Rel(root, filepath.Join(d, e.Name()))
-				for _, m := range flagRe.FindAllStringSubmatch(string(data), -1) {
-					if _, ok := seen[m[1]]; !ok {
-						seen[m[1]] = Item{Kind: "flag", Surface: surface, Name: m[1], Source: filepath.ToSlash(rel), Linked: linked[pkg]}
-					}
-				}
+				rel, _ := filepath.Rel(root, filepath.Join(d, file))
+				seen[name] = Item{Kind: "flag", Surface: surface, Name: name, Source: filepath.ToSlash(rel), Linked: linked[pkg]}
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-# VL /select/* endpoints (surface vl), pinned VL v1.50.0.
+# VL /select/* endpoints (surface vl), pinned VL v1.52.0.
 # Canonical requests use the seed vocabulary: services api-gateway, checkout,
 # payments, inventory, notifications; tenant {{tenant.account}}/{{tenant.project}};
 # window {{seed.start}}..{{seed.cold_end}}. See docs/parity-and-gaps.md for divergences.
@@ -22,6 +22,10 @@
 #                                               used by the /internal/delete/* and
 #                                               /delete/run_task-style rows.
 #   {{tenant.account}} / {{tenant.project}}  — the seeded tenant pair.
+#   {{tenant.global_read}}                    — the value of the configured global-read
+#                                               header (X-Lakehouse-Global-Read) on the
+#                                               cold stack under test; only the
+#                                               tenant_scope.global rows send it.
 #   {{tombstone_id}}                          — not part of the seed: the id returned by a
 #                                               prior delete request in the same run (see
 #                                               lh.delete.tombstone_by_id.status).
@@ -39,6 +43,30 @@
 #                                               version=<the exact expected constant> — see
 #                                               checkProtocolVersion in
 #                                               app/vlselect/internalselect/internalselect.go.
+#
+#                                               These two resolve PER MODULE, from the
+#                                               vendored VictoriaLogs tree of the binary the
+#                                               row targets — never from a single global
+#                                               value:
+#                                                 surface vl  -> deps/VictoriaLogs
+#                                                                (VL_VERSION_LOGS)
+#                                                 surface vt  -> lakehouse-traces/deps/
+#                                                                VictoriaLogs
+#                                                                (VL_COMMIT_TRACES)
+#                                               lakehouse-traces mounts VictoriaLogs'
+#                                               internalselect package for these endpoints
+#                                               (lakehouse-traces/main.go), so the traces
+#                                               surface follows the traces VL pin, not
+#                                               VictoriaTraces and not the logs pin. The two
+#                                               pins are deliberately allowed to differ and
+#                                               today they do: at VL v1.52.0 / VL v1.51.0 the
+#                                               select version is v5 on both, while delete is
+#                                               v2 on the logs pin and v1 on the traces pin.
+#                                               The resolved pairs are recorded per module
+#                                               under `protocol:` in
+#                                               tests/conformance/inventory.generated.yaml,
+#                                               so an upstream bump that moves either one
+#                                               shows up as drift.
 
 - id: vl.select.query.wildcard
   title: "/select/logsql/query — wildcard retrieval"
@@ -316,7 +344,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "Route arrives in VL 1.51.0 (pinned is 1.50.0); LH dispatcher also has no vmalert proxy wired yet. Re-check both after the version bump (docs/parity-and-gaps.md)."
+  differ_note: "Live since the VL 1.51.0 bump (pinned VL is 1.52.0), but Lakehouse registers no vmalert proxy route in its dispatcher, so the route is served hot only. Paired flag row: vl.flag.vmalert_proxy_url (docs/parity-and-gaps.md)."
   since: { vl: "1.51.0" }
   targets: [hot, cold]
   seed: [logs.base]

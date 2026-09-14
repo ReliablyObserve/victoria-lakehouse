@@ -37,7 +37,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "scope=intrinsic filtering arrives in VT 0.9.4; absent at the pinned 0.9.2. Re-check after the version bump (docs/parity-and-gaps.md)."
+  differ_note: "Live at the pinned VT 0.11.0 (arrived in 0.9.4). Whether the cold tier reports the same intrinsic tag set is verified by the parity run (docs/parity-and-gaps.md)."
   since: { vt: "0.9.4" }
   targets: [hot, cold]
   seed: [traces.base]
@@ -67,7 +67,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "VT 0.10.0 returns span kind values as strings (SPAN_KIND_SERVER, ...) instead of the old ints; pinned 0.9.2 still returns ints. Re-check after the version bump (docs/parity-and-gaps.md)."
+  differ_note: "Both tiers now run VT 0.11.0, which returns span kind values as strings (SPAN_KIND_SERVER, ...) rather than the pre-0.10.0 ints; the cold tier must produce the same strings, which the parity run checks (docs/parity-and-gaps.md)."
   since: { vt: "0.10.0" }
   targets: [hot, cold]
   seed: [traces.base]
@@ -125,7 +125,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "The full spanSets (multiple matched spans per trace, with match highlighting) response shape arrives in VT 0.9.4; pinned 0.9.2 returns the legacy single-spanSet shape. Re-check after the version bump (docs/parity-and-gaps.md)."
+  differ_note: "The pinned VT 0.11.0 returns the full spanSets shape (multiple matched spans per trace, with match highlighting) rather than the pre-0.9.4 single-spanSet one; whether the cold tier reproduces it is verified by the parity run (docs/parity-and-gaps.md)."
   since: { vt: "0.9.4" }
   targets: [hot, cold]
   seed: [traces.base]
@@ -141,7 +141,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "The v1 trace-by-id route arrives in VT 0.9.3; absent at the pinned 0.9.2. Re-check after the version bump (docs/parity-and-gaps.md)."
+  differ_note: "Live at the pinned VT 0.11.0 (arrived in 0.9.3). Whether the cold tier answers it identically to /api/v2/traces/{id} is verified by the parity run (docs/parity-and-gaps.md)."
   since: { vt: "0.9.3" }
   targets: [hot, cold, global]
   seed: [traces.base]
@@ -171,7 +171,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "Protobuf-encoded trace responses (Accept: application/protobuf) arrive in VT 0.9.3; pinned 0.9.2 only serves JSON. Re-check after the version bump (docs/parity-and-gaps.md)."
+  differ_note: "The pinned VT 0.11.0 serves protobuf-encoded trace responses for Accept: application/protobuf (added in 0.9.3); cold-tier encoding parity is verified by the parity run (docs/parity-and-gaps.md)."
   since: { vt: "0.9.3" }
   targets: [hot, cold]
   seed: [traces.base]

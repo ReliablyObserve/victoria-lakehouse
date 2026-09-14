@@ -107,17 +107,7 @@ func (h *AdminHandler) handleMigrate(w http.ResponseWriter, r *http.Request) {
 // Operators MUST set at least one of HeaderValue / BearerToken to
 // open it; this is conservative-by-default.
 func (h *AdminHandler) authorize(r *http.Request) bool {
-	if h.auth.HeaderName != "" && h.auth.HeaderValue != "" {
-		if r.Header.Get(h.auth.HeaderName) == h.auth.HeaderValue {
-			return true
-		}
-	}
-	if h.auth.BearerToken != "" {
-		const prefix = "Bearer "
-		got := r.Header.Get("Authorization")
-		if len(got) > len(prefix) && got[:len(prefix)] == prefix && got[len(prefix):] == h.auth.BearerToken {
-			return true
-		}
-	}
-	return false
+	// Same credential, same validation as the global-read widening on the
+	// select path — one operator key family, one implementation.
+	return NewGlobalReadAuth(h.auth.HeaderName, h.auth.HeaderValue, h.auth.BearerToken).Authorize(r)
 }

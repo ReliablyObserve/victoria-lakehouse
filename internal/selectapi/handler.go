@@ -23,6 +23,9 @@ type Handler struct {
 	resolver *tenant.TenantResolver
 	timeout  time.Duration
 	sem      chan struct{}
+	// globalRead validates the operator credential that widens a query from
+	// one tenant to all of them. Zero value = not configured = never widened.
+	globalRead tenant.GlobalReadAuth
 }
 
 func NewHandler(store storage.Storage, cfg *config.Config, opts ...HandlerOption) *Handler {
@@ -35,6 +38,11 @@ func NewHandler(store storage.Storage, cfg *config.Config, opts ...HandlerOption
 		cfg:     cfg,
 		timeout: cfg.Query.Timeout,
 		sem:     make(chan struct{}, maxConcurrent),
+		globalRead: tenant.NewGlobalReadAuth(
+			cfg.Tenant.GlobalReadHeader,
+			cfg.Tenant.GlobalReadValue,
+			cfg.Tenant.GlobalReadToken,
+		),
 	}
 	for _, o := range opts {
 		o(h)
@@ -98,6 +106,19 @@ func requestNeedsFieldData(r *http.Request) bool {
 	return false
 }
 
+// scopeContext widens the request to a cross-tenant read when — and only when
+// — the configured global-read credential validates. Without it (or with a
+// wrong value) the request keeps the single tenant VL derived from its headers,
+// which is what every normal query gets.
+func (h *Handler) scopeContext(r *http.Request) context.Context {
+	ctx := r.Context()
+	if h.globalRead.Enabled() && h.globalRead.Authorize(r) {
+		metrics.GlobalReadQueriesTotal.Inc()
+		return storage.WithGlobalRead(ctx)
+	}
+	return ctx
+}
+
 func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -110,7 +131,7 @@ func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *
 		}
 		normalizeTimeParams(r)
 		start := time.Now()
-		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+		ctx, cancel := context.WithTimeout(h.scopeContext(r), h.timeout)
 		defer cancel()
 		ctx, span := otel.Tracer("lakehouse").Start(ctx, "vl.handler."+r.URL.Path)
 		defer span.End()
