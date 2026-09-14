@@ -267,11 +267,8 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// carries no row the tombstone filter could drop, so deleted buffered
 		// spans would be counted; the raw-row path below filters them.
 		// Twin of internal/storage/parquets3/storage_query.go.
-		if !hasTombstones && s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
+		if s.servePureBufferQuery(ctx, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
-		}
-		if hasTombstones {
-			noteFieldsScanFallback("pure_buffer")
 		}
 		// No cold-tier files cover the requested window, but the in-flight
 		// buffer-bridge may still have rows newer than the latest flushed
@@ -876,7 +873,15 @@ func widenTraceIDQueryToNow(q *logstorage.Query, startNs, endNs int64) (*logstor
 // to the bridge) when there is no local buffer, when peers exist (this node's
 // buffer then holds only its own rows — multi-pod must fan out), or on error.
 // Twin of internal/storage/parquets3/storage_query.go.
-func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) bool {
+func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, hasTombstones bool, writeBlock logstorage.WriteDataBlockFunc) bool {
+	// A tombstone is applied to the blocks the storage emits, and this path
+	// emits the buffer's already-aggregated result, which carries no row the
+	// tombstone filter could drop. While one overlaps the window, decline and
+	// let the caller serve the raw rows.
+	if hasTombstones {
+		noteFieldsScanFallback("pure_buffer")
+		return false
+	}
 	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
 		return false
 	}

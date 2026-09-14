@@ -192,11 +192,8 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// carries no row the tombstone filter could drop, so deleted buffered
 		// rows would be counted; the raw-row path below filters them.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
-		if !hasTombstones && s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
+		if s.servePureBufferQuery(ctx, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
-		}
-		if hasTombstones {
-			noteFieldsScanFallback("pure_buffer")
 		}
 		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
 		return nil
@@ -465,7 +462,15 @@ func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID)
 // node isn't a single-node logstore buffer: with peers, other pods hold
 // unflushed rows reachable only via the bridge fan-out. No upstream
 // modification — this calls the buffer's public RunQuery.
-func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) bool {
+func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, hasTombstones bool, writeBlock logstorage.WriteDataBlockFunc) bool {
+	// A tombstone is applied to the blocks the storage emits, and this path
+	// emits the buffer's already-aggregated result, which carries no row the
+	// tombstone filter could drop. While one overlaps the window, decline and
+	// let the caller serve the raw rows.
+	if hasTombstones {
+		noteFieldsScanFallback("pure_buffer")
+		return false
+	}
 	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
 		return false
 	}

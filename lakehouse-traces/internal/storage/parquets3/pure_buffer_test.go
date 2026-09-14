@@ -31,7 +31,7 @@ func TestServePureBufferQuery_EngagesAndKeepsPipes(t *testing.T) {
 	emitted := 0
 	wb := func(_ uint, _ *logstorage.DataBlock) { emitted++ }
 
-	if !s.servePureBufferQuery(context.Background(), q, nil, wb) {
+	if !s.servePureBufferQuery(context.Background(), q, nil, false, wb) {
 		t.Fatal("fast path did not engage for a single-node unflushed window")
 	}
 	if !fake.ran {
@@ -55,7 +55,7 @@ func TestServePureBufferQuery_SkipsWhenUnsafe(t *testing.T) {
 
 	t.Run("no local buffer", func(t *testing.T) {
 		s := &Storage{} // localBuffer nil
-		if s.servePureBufferQuery(context.Background(), q, nil, func(uint, *logstorage.DataBlock) {}) {
+		if s.servePureBufferQuery(context.Background(), q, nil, false, func(uint, *logstorage.DataBlock) {}) {
 			t.Error("fast path engaged with no local buffer; must defer to the bridge")
 		}
 	})
@@ -66,7 +66,7 @@ func TestServePureBufferQuery_SkipsWhenUnsafe(t *testing.T) {
 			localBuffer:  fake,
 			bufferBridge: &BufferBridge{endpoints: []string{"http://peer-1:8480"}},
 		}
-		if s.servePureBufferQuery(context.Background(), q, nil, func(uint, *logstorage.DataBlock) {}) {
+		if s.servePureBufferQuery(context.Background(), q, nil, false, func(uint, *logstorage.DataBlock) {}) {
 			t.Error("fast path engaged while peers exist; would drop peers' unflushed rows")
 		}
 		if fake.ran {
@@ -82,10 +82,25 @@ func TestServePureBufferQuery_ErrorFallsBack(t *testing.T) {
 	fake := &fakeLocalBuffer{queryErr: context.DeadlineExceeded}
 	s := &Storage{localBuffer: fake}
 	q := mustParseQuery(t, "*| stats count()")
-	if s.servePureBufferQuery(context.Background(), q, nil, func(uint, *logstorage.DataBlock) {}) {
+	if s.servePureBufferQuery(context.Background(), q, nil, false, func(uint, *logstorage.DataBlock) {}) {
 		t.Error("fast path reported success despite a buffer error; caller would skip the bridge fallback")
 	}
 	if !fake.ran {
 		t.Error("expected the buffer to be attempted before falling back")
+	}
+}
+
+// TestServePureBufferQuery_DeclinesUnderATombstone: the buffer's aggregated
+// result carries no row a tombstone filter could drop, so the fast path must
+// not even run while one overlaps the window.
+func TestServePureBufferQuery_DeclinesUnderATombstone(t *testing.T) {
+	fake := &fakeLocalBuffer{emit: true}
+	s := &Storage{localBuffer: fake}
+	q := mustParseQuery(t, "*| stats count()")
+	if s.servePureBufferQuery(context.Background(), q, nil, true, func(uint, *logstorage.DataBlock) {}) {
+		t.Fatal("the pure-buffer path engaged while a tombstone overlaps the window")
+	}
+	if fake.ran {
+		t.Fatal("the buffer must not be queried for an aggregate a tombstone cannot be applied to")
 	}
 }
