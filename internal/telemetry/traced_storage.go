@@ -71,6 +71,18 @@ func (t *TracedStorage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage
 }
 
 // HasDataForRange delegates without a span (hot path, called constantly).
+// TenantIDsForRange forwards the optional tenant-enumeration interface so
+// /select/tenant_ids keeps reporting real tenants when telemetry wraps the
+// storage.
+func (t *TracedStorage) TenantIDsForRange(startNs, endNs int64) []logstorage.TenantID {
+	if tl, ok := t.inner.(interface {
+		TenantIDsForRange(startNs, endNs int64) []logstorage.TenantID
+	}); ok {
+		return tl.TenantIDsForRange(startNs, endNs)
+	}
+	return nil
+}
+
 func (t *TracedStorage) HasDataForRange(startNs, endNs int64) bool {
 	return t.inner.HasDataForRange(startNs, endNs)
 }

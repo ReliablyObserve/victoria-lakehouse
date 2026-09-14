@@ -47,6 +47,12 @@ const maxManifestSnapshotBytes = 4 * 1024 * 1024 * 1024
 // counts can tune via cfg.Manifest.TenantRefreshConcurrency.
 const tenantRefreshMaxParallel = 8
 
+// tenantBucketListMaxParallel bounds the concurrent LISTs of dedicated tenant
+// buckets during one refresh. Small: these run next to the per-tenant prefix
+// LISTs of the default bucket, and a refresh should not be the reason an S3
+// endpoint starts throttling.
+const tenantBucketListMaxParallel = 4
+
 const maxLabelsPerField = 100
 
 type FileInfo struct {
@@ -185,6 +191,15 @@ type Manifest struct {
 	// the manifest's file count).
 	tenantAggregates map[tenantAccumKey]*tenantAccum
 
+	// legacyAggregate accumulates files whose key carries no parseable
+	// tenant segment — the pre-tenant-layout deployments that write
+	// under a static prefix (s3.prefix=logs/). They are NOT a tenant of
+	// their own: they are the data of the default tenant 0:0, and the
+	// read path must be able to find them without walking every
+	// partition. Kept out of tenantAggregates so TenantSummaries()
+	// keeps reporting only real, key-identified tenants.
+	legacyAggregate *tenantAccum
+
 	minTime     time.Time
 	maxTime     time.Time
 	totalFiles  int
@@ -221,6 +236,11 @@ type Manifest struct {
 	// detected_fields. Empty when no template is in use (legacy
 	// full-bucket path) — same behaviour as before.
 	signalSuffix string
+
+	// tenantBuckets lists the dedicated buckets of bucket-per-tenant tenants
+	// (an s3.bucket override) and the key prefix their objects use there. The
+	// refresh lists them next to the default bucket; see SetTenantBuckets.
+	tenantBuckets []TenantBucket
 
 	// partitionAttempts maps "dt=YYYY-MM-DD/hour=HH" -> last MarkAttempt
 	// timestamp recorded by the compaction scheduler (see
@@ -263,6 +283,12 @@ func New(bucket, prefix string) *Manifest {
 		bucket:            bucket,
 	}
 }
+
+// supersededTTL bounds how long a compacted-away key stays marked. It only has
+// to outlive an S3 LIST that was already in flight when the object was deleted
+// (seconds), and a wrong mark — a delete that failed after the merged output
+// was written — heals on its own after it.
+const supersededTTL = 10 * time.Minute
 
 // tenantAccumKey + tenantAccum back the incremental TenantSummaries
 // cache. Lives next to m.files under m.mu's protection.
@@ -335,33 +361,95 @@ func (m *Manifest) tenantKeyFromFileKey(fileKey string) (tenantAccumKey, bool) {
 			segments = 1
 		}
 	}
+	account, project, ok := parseTenantSegments(fileKey, segments)
+	if !ok {
+		return tenantAccumKey{}, false
+	}
+	return tenantAccumKey{account: account, project: project}, true
+}
+
+// parseTenantSegments splits the leading tenant segments off an S3 object key.
+// segments is 1 for an {OrgID}-shaped template and 2 for the default
+// {AccountID}/{ProjectID}. ok=false means the key is not tenant-segmented.
+func parseTenantSegments(fileKey string, segments int) (account, project string, ok bool) {
 	parts := strings.SplitN(fileKey, "/", segments+2)
 	if len(parts) < segments+1 {
-		return tenantAccumKey{}, false
+		return "", "", false
 	}
 	if !isValidTenantSegment(parts[0]) {
-		return tenantAccumKey{}, false
+		return "", "", false
 	}
 	if segments == 1 {
-		return tenantAccumKey{account: parts[0]}, true
+		return parts[0], "", true
 	}
 	if !isValidTenantSegment(parts[1]) {
-		return tenantAccumKey{}, false
+		return "", "", false
 	}
-	return tenantAccumKey{account: parts[0], project: parts[1]}, true
+	return parts[0], parts[1], true
+}
+
+// KeyTenant parses the (account, project) tuple out of an S3 object key using
+// the manifest's configured prefix template. ok=false means the key carries no
+// tenant segment at all — the legacy static-prefix layout, whose data belongs
+// to the default tenant 0:0. Exported so the read path can verify that every
+// object it is about to open really belongs to the requesting tenant.
+func (m *Manifest) KeyTenant(key string) (account, project string, ok bool) {
+	return m.TenantKeyParser()(key)
+}
+
+// TenantKeyParser snapshots the manifest's prefix template once and returns a
+// lock-free parser for object keys. Use it instead of KeyTenant when checking a
+// whole file list: the read-path guard runs over every selected file on every
+// query, and taking the manifest lock per file would serialise the hot path.
+func (m *Manifest) TenantKeyParser() func(key string) (account, project string, ok bool) {
+	m.mu.RLock()
+	segments := m.templateSegments
+	tmpl := m.prefixTemplate
+	m.mu.RUnlock()
+
+	if segments == 0 {
+		segments = 2
+		if strings.Contains(tmpl, "{OrgID}") && !strings.Contains(tmpl, "{ProjectID}") {
+			segments = 1
+		}
+	}
+	return func(key string) (string, string, bool) {
+		return parseTenantSegments(key, segments)
+	}
+}
+
+// TenantKeyPrefix returns the S3 key prefix that isolates (account, project)
+// under the manifest's configured prefix template.
+func (m *Manifest) TenantKeyPrefix(account, project string) string {
+	m.mu.RLock()
+	segments := m.templateSegments
+	m.mu.RUnlock()
+
+	if segments == 1 {
+		return account + "/"
+	}
+	return account + "/" + project + "/"
 }
 
 // updateTenantAggregateOnAdd applies a +1 file delta for fi/partition
 // to the tenant aggregate cache. Must hold m.mu (write).
 func (m *Manifest) updateTenantAggregateOnAdd(partition string, fi FileInfo) {
 	tk, ok := m.tenantKeyFromFileKey(fi.Key)
-	if !ok {
-		return
-	}
-	a := m.tenantAggregates[tk]
-	if a == nil {
-		a = &tenantAccum{partitions: make(map[string]int)}
-		m.tenantAggregates[tk] = a
+	var a *tenantAccum
+	if ok {
+		a = m.tenantAggregates[tk]
+		if a == nil {
+			a = &tenantAccum{partitions: make(map[string]int)}
+			m.tenantAggregates[tk] = a
+		}
+	} else {
+		// Legacy (untenanted) key. Accumulate separately so the read
+		// path can resolve the default tenant's files without a full
+		// manifest walk, and so they are never silently dropped.
+		if m.legacyAggregate == nil {
+			m.legacyAggregate = &tenantAccum{partitions: make(map[string]int)}
+		}
+		a = m.legacyAggregate
 	}
 	a.files++
 	a.bytes += fi.Size
@@ -388,10 +476,12 @@ func (m *Manifest) updateTenantAggregateOnAdd(partition string, fi FileInfo) {
 // count. Must hold m.mu (write).
 func (m *Manifest) updateTenantAggregateOnRemove(partition string, fi FileInfo) {
 	tk, ok := m.tenantKeyFromFileKey(fi.Key)
-	if !ok {
-		return
+	var a *tenantAccum
+	if ok {
+		a = m.tenantAggregates[tk]
+	} else {
+		a = m.legacyAggregate
 	}
-	a := m.tenantAggregates[tk]
 	if a == nil {
 		return
 	}
@@ -419,7 +509,11 @@ func (m *Manifest) updateTenantAggregateOnRemove(partition string, fi FileInfo) 
 	// Drop empty tenant aggregates so TenantSummaries() doesn't have to
 	// filter them out on every call.
 	if a.files == 0 {
-		delete(m.tenantAggregates, tk)
+		if ok {
+			delete(m.tenantAggregates, tk)
+		} else {
+			m.legacyAggregate = nil
+		}
 	}
 }
 
@@ -451,6 +545,7 @@ func (m *Manifest) recomputeTenantTimeBounds(a *tenantAccum) {
 // reassignments (RefreshFromS3, snapshot Load). Must hold m.mu (write).
 func (m *Manifest) rebuildTenantAggregates() {
 	m.tenantAggregates = make(map[tenantAccumKey]*tenantAccum)
+	m.legacyAggregate = nil
 	for partition, files := range m.files {
 		for i := range files {
 			m.updateTenantAggregateOnAdd(partition, files[i])
@@ -512,12 +607,118 @@ func (m *Manifest) SetSignalSuffix(suffix string) {
 // can abort the LIST without waiting for the remaining pages of a huge
 // bucket — at PB-scale a single full-bucket walk can run for minutes.
 func (m *Manifest) refreshFullBucket(ctx context.Context, client *s3.Client, listPrefix string) (map[string][]FileInfo, int, int64, error) {
+	return listBucketPrefix(ctx, client, m.bucket, listPrefix)
+}
+
+// listTenantBuckets lists every registered dedicated tenant bucket and merges
+// its Parquet objects into files, stamping FileInfo.Bucket. An object key that
+// the default-bucket listing also returned (a tenant mid-migration) is kept
+// once, as the dedicated-bucket copy — reads for that key already resolve to
+// the dedicated bucket, and listing it twice would scan it twice. Returns the
+// number of objects and bytes added.
+func (m *Manifest) listTenantBuckets(ctx context.Context, client *s3.Client, files map[string][]FileInfo) (int, int64, error) {
+	m.mu.RLock()
+	buckets := append([]TenantBucket(nil), m.tenantBuckets...)
+	suffix := m.signalSuffix
+	m.mu.RUnlock()
+	if len(buckets) == 0 {
+		return 0, 0, nil
+	}
+
+	type pos struct {
+		partition string
+		index     int
+	}
+	existing := make(map[string]pos)
+	for partition, pf := range files {
+		for i := range pf {
+			existing[pf[i].Key] = pos{partition, i}
+		}
+	}
+
+	type bucketListing struct {
+		bucket     string
+		listPrefix string
+		files      map[string][]FileInfo
+		err        error
+	}
+	listings := make([]bucketListing, 0, len(buckets))
+	for _, tb := range buckets {
+		if tb.Bucket == "" || tb.Bucket == m.bucket || tb.Prefix == "" {
+			continue
+		}
+		listings = append(listings, bucketListing{bucket: tb.Bucket, listPrefix: tb.Prefix + suffix})
+	}
+	if len(listings) == 0 {
+		return 0, 0, nil
+	}
+
+	// LIST the dedicated buckets with bounded concurrency — a fleet with many
+	// bucket-per-tenant tenants would otherwise pay one round trip after
+	// another on every refresh — and merge the results in the registered
+	// bucket order, so the manifest a refresh produces does not depend on
+	// which LIST answered first.
+	sem := make(chan struct{}, tenantBucketListMaxParallel)
+	var wg sync.WaitGroup
+	for i := range listings {
+		wg.Add(1)
+		go func(l *bucketListing) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			l.files, _, _, l.err = listBucketPrefix(ctx, client, l.bucket, l.listPrefix)
+		}(&listings[i])
+	}
+	wg.Wait()
+
+	// Every failing bucket is counted (the operator needs to see which one is
+	// unreachable), and the first failure in registered order fails the whole
+	// refresh: the alternative — merging what did list — would silently drop
+	// the unreachable tenant's objects out of the manifest.
+	var firstErr error
+	for i := range listings {
+		if listings[i].err == nil {
+			continue
+		}
+		metrics.ManifestTenantBucketListErrors.Inc(listings[i].bucket)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("list tenant bucket %s/%s: %w", listings[i].bucket, listings[i].listPrefix, listings[i].err)
+		}
+	}
+	if firstErr != nil {
+		return 0, 0, firstErr
+	}
+
+	var addedFiles int
+	var addedBytes int64
+	for i := range listings {
+		for partition, pf := range listings[i].files {
+			for _, fi := range pf {
+				fi.Bucket = listings[i].bucket
+				if at, dup := existing[fi.Key]; dup {
+					addedBytes += fi.Size - files[at.partition][at.index].Size
+					files[at.partition][at.index] = fi
+					continue
+				}
+				files[partition] = append(files[partition], fi)
+				existing[fi.Key] = pos{partition, len(files[partition]) - 1}
+				addedFiles++
+				addedBytes += fi.Size
+			}
+		}
+	}
+	return addedFiles, addedBytes, nil
+}
+
+// listBucketPrefix lists the Parquet objects under prefix in bucket, grouped
+// by hour partition.
+func listBucketPrefix(ctx context.Context, client *s3.Client, bucket, listPrefix string) (map[string][]FileInfo, int, int64, error) {
 	files := make(map[string][]FileInfo)
 	var totalFiles int
 	var totalBytes int64
 
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(m.bucket),
+		Bucket: aws.String(bucket),
 		Prefix: aws.String(listPrefix),
 	})
 	for paginator.HasMorePages() {
@@ -739,6 +940,12 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo, listSt
 		}
 		for i := range newFiles {
 			if old, ok := oldByKey[newFiles[i].Key]; ok {
+				// Keep the enrichment already known, but take the bucket the
+				// listing found the object in when the old entry had none (a
+				// flush registers the object before any refresh has seen it).
+				if old.Bucket == "" {
+					old.Bucket = newFiles[i].Bucket
+				}
 				newFiles[i] = old
 			}
 		}
@@ -760,6 +967,35 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo, listSt
 		}
 	}
 	return confirmedGone
+}
+
+// TenantBucket is a dedicated bucket of the bucket-per-tenant layout and the
+// tenant key prefix of the objects inside it (for example "1002/0/"). The
+// manifest's signal suffix ("logs/" or "traces/", see SetSignalSuffix) is
+// appended when listing, so each binary lists only its own signal.
+type TenantBucket struct {
+	Bucket string
+	Prefix string
+}
+
+// SetTenantBuckets registers the dedicated tenant buckets that RefreshFromS3
+// must list in addition to the default bucket. The refresh replaces the file
+// set with exactly what its listings return, so without this the objects of a
+// tenant with an s3.bucket override would drop out of the manifest at the
+// next refresh and that tenant's cold-tier reads would come back short.
+func (m *Manifest) SetTenantBuckets(buckets []TenantBucket) {
+	m.mu.Lock()
+	m.tenantBuckets = append([]TenantBucket(nil), buckets...)
+	m.mu.Unlock()
+
+	// Export each bucket's LIST-error series at zero from the moment the
+	// bucket is registered, so an alert on it fires on the first failure
+	// instead of waiting for a series to appear.
+	for _, tb := range buckets {
+		if tb.Bucket != "" {
+			metrics.ManifestTenantBucketListErrors.Init(tb.Bucket)
+		}
+	}
 }
 
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
@@ -806,6 +1042,12 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 		files = f
 	}
 
+	// Bucket-per-tenant: add each dedicated bucket's objects into files. A failed
+	// LIST fails the whole refresh (the previous state is kept) rather than
+	// swapping in a manifest that silently lost a tenant.
+	if _, _, err := m.listTenantBuckets(ctx, client, files); err != nil {
+		return err
+	}
 	m.applyRefreshedFiles(files, listStart)
 	return nil
 }
@@ -972,26 +1214,103 @@ func (m *Manifest) GetFilesForRangeTenant(startNs, endNs int64, account, project
 		return nil
 	}
 
-	start := time.Unix(0, startNs)
-	end := time.Unix(0, endNs)
-
 	keyPrefix := account + "/"
 	if project != "" {
 		keyPrefix += project + "/"
 	}
+	return m.filesInAccumRangeLocked(a, startNs, endNs, keyPrefix)
+}
+
+// GetFilesForRangeUntenanted returns the files overlapping [startNs, endNs]
+// whose S3 key carries NO parseable tenant segment — the legacy static-prefix
+// layout (s3.prefix=logs/, written before the tenant prefix template existed).
+// Those objects hold the default tenant's data, so a 0:0 read must include
+// them; every other tenant must not see them. Walks only the partitions the
+// legacy accumulator recorded, so it costs nothing on a tenant-clean manifest.
+func (m *Manifest) GetFilesForRangeUntenanted(startNs, endNs int64) []FileInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	a := m.legacyAggregate
+	if a == nil || len(a.partitions) == 0 {
+		return nil
+	}
+	files := m.filesInAccumRangeLocked(a, startNs, endNs, "")
+	// The accumulator's partitions can also hold tenant-scoped files when a
+	// deployment migrated mid-life, so re-check each key's shape.
+	out := files[:0]
+	for _, fi := range files {
+		if _, ok := m.tenantKeyFromFileKey(fi.Key); ok {
+			continue
+		}
+		out = append(out, fi)
+	}
+	return out
+}
+
+// SoleTenant reports the one tenant the manifest holds objects for, as the
+// (account, project) strings object keys use. Objects under the legacy
+// untenanted layout are tenant 0:0's data, so a manifest with only legacy
+// objects, or with legacy objects and 0:0-prefixed objects (a default-tenant
+// deployment moving to the prefix template), has the sole tenant 0:0. ok=false
+// when the manifest holds no objects or objects of more than one tenant.
+//
+// The read path uses it to decide whether an in-RAM index that is not
+// tenant-keyed (labelIndex) may answer a request: only when every value in it
+// can belong to the requesting tenant.
+func (m *Manifest) SoleTenant() (account, project string, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	legacy := m.legacyAggregate != nil && m.legacyAggregate.files > 0
+	switch len(m.tenantAggregates) {
+	case 0:
+		if legacy {
+			return "0", "0", true
+		}
+		return "", "", false
+	case 1:
+		for k := range m.tenantAggregates {
+			// An {OrgID}-shaped key has no project segment; account "0" alone
+			// then names the default tenant, as tenant key ownership does.
+			if legacy && (k.account != "0" || (k.project != "0" && k.project != "")) {
+				return "", "", false
+			}
+			return k.account, k.project, true
+		}
+	}
+	return "", "", false
+}
+
+// filesInAccumRangeLocked collects the files of one accumulator's partitions
+// that overlap [startNs, endNs] and carry keyPrefix ("" = no prefix check).
+// Must hold m.mu (read).
+//
+// It walks the time-sorted partition index from the first partition that ends
+// after startNs (binary search), exactly like GetFilesForRange, and skips the
+// partitions the accumulator holds no files in: O(log P + partitions inside the
+// window). Iterating the accumulator's own partition set instead costs every
+// partition the tenant ever wrote — 8,760 partition-key parses per query on a
+// year of hourly partitions, whatever the query window.
+func (m *Manifest) filesInAccumRangeLocked(a *tenantAccum, startNs, endNs int64, keyPrefix string) []FileInfo {
+	start := time.Unix(0, startNs)
+	end := time.Unix(0, endNs)
+
+	idx := sort.Search(len(m.sortedPartitions), func(i int) bool {
+		return m.sortedPartitions[i].end.After(start)
+	})
 
 	var result []FileInfo
-	for partition := range a.partitions {
-		t, err := parsePartitionTime(partition)
-		if err != nil {
+	for i := idx; i < len(m.sortedPartitions); i++ {
+		p := &m.sortedPartitions[i]
+		if !p.start.Before(end) {
+			break
+		}
+		if a.partitions[p.key] <= 0 {
 			continue
 		}
-		partEnd := t.Add(time.Hour)
-		if !partEnd.After(start) || !t.Before(end) {
-			continue
-		}
-		for _, fi := range m.files[partition] {
-			if !strings.HasPrefix(fi.Key, keyPrefix) {
+		for _, fi := range m.files[p.key] {
+			if keyPrefix != "" && !strings.HasPrefix(fi.Key, keyPrefix) {
 				continue
 			}
 			if fi.MinTimeNs != 0 && fi.MaxTimeNs != 0 {

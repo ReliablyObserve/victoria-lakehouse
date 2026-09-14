@@ -104,7 +104,20 @@ func (a *adapter) GetStreamIDs(qctx *logstorage.QueryContext, limit uint64) ([]l
 	return a.store.GetStreamIDs(qctx.Context, qctx.TenantIDs, qctx.Query, limit)
 }
 
+// tenantLister is implemented by storages that can enumerate the tenants
+// holding data in a time range. Kept as an optional interface so the core
+// storage.Storage contract (and every test double implementing it) is unchanged.
+type tenantLister interface {
+	TenantIDsForRange(startNs, endNs int64) []logstorage.TenantID
+}
+
 func (a *adapter) GetTenantIDs(_ context.Context, start, end int64) ([]logstorage.TenantID, error) {
+	// Report the tenants the cold tier actually holds. The previous hardcoded
+	// 0:0 made every multi-tenant deployment look single-tenant to callers that
+	// enumerate tenants.
+	if tl, ok := a.store.(tenantLister); ok {
+		return tl.TenantIDsForRange(start, end), nil
+	}
 	if !a.store.HasDataForRange(start, end) {
 		return nil, nil
 	}

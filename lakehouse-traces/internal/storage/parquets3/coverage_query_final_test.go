@@ -16,6 +16,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
@@ -1398,6 +1399,7 @@ func TestCovFinal_RunQuery_HotBoundarySuppression(t *testing.T) {
 // flush loop end to end on the traces write path.
 func TestCovFinal_StartWriter_FlushPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -1440,6 +1442,7 @@ func TestCovFinal_StartWriter_FlushPath(t *testing.T) {
 // avoid lifecycle complications.
 func TestCovFinal_StartWriter_WithSmartCacheCallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()

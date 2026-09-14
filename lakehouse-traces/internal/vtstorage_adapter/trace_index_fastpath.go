@@ -18,7 +18,8 @@ import (
 // Kept as a private interface so we don't pollute storage.Storage (shared
 // with the logs module) with a trace-specific method.
 type traceIndexLookup interface {
-	LookupTraceIndex(ctx context.Context, traceID string) (startNs, endNs int64, found bool, err error)
+	// LookupTraceIndex answers from the request tenant's files only.
+	LookupTraceIndex(ctx context.Context, tenantIDs []logstorage.TenantID, traceID string) (startNs, endNs int64, found bool, err error)
 }
 
 // traceIndexLookupTraceID inspects q and returns the trace ID if and only

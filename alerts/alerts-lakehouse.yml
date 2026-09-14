@@ -101,6 +101,24 @@ groups:
           summary: "High peer cache error rate"
           description: "Peer cache error rate is {{ $value | humanizePercentage }}. Check network connectivity between pods."
 
+      - alert: LakehouseTenantScopeViolation
+        expr: sum by (site) (increase(lakehouse_tenant_scope_violations_total[5m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Lakehouse dropped data that did not belong to the requesting tenant"
+          description: "The read path at site {{ $labels.site }} selected {{ $value }} object(s) or buffered row(s) owned by another tenant in the last 5 minutes and dropped them before answering. This indicates a defect (manifest key-shape drift, a read path that bypassed tenant scoping, or an insert pod answering /internal/buffer/query without tenant scoping) — see docs/multi-tenancy.md#read-scoping-which-data-a-request-sees."
+
+      - alert: LakehouseTenantBucketListFailing
+        expr: sum by (bucket) (increase(lakehouse_manifest_tenant_bucket_list_errors_total[15m])) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Lakehouse cannot list a tenant's dedicated S3 bucket"
+          description: "The manifest refresh failed to LIST {{ $labels.bucket }} {{ $value }} time(s) in the last 15 minutes. Every refresh fails while that bucket is unreachable, so the manifest keeps serving its previous state for ALL tenants and objects written since then stay invisible to queries. Check that the bucket exists, that the pod's credentials still reach it and that its policy grants s3:ListBucket — see docs/multi-tenancy.md#enterprise-bucket-per-tenant-isolation."
+
   - name: lakehouse-deletes
     rules:
       - alert: LakehouseTombstoneS3Backlog

@@ -24,7 +24,7 @@ type fastpathStore struct {
 	runQuery func(*logstorage.Query) // records fallback path invocation
 }
 
-func (s *fastpathStore) LookupTraceIndex(_ context.Context, traceID string) (int64, int64, bool, error) {
+func (s *fastpathStore) LookupTraceIndex(_ context.Context, _ []logstorage.TenantID, traceID string) (int64, int64, bool, error) {
 	s.got = traceID
 	return s.startNs, s.endNs, s.found, s.err
 }

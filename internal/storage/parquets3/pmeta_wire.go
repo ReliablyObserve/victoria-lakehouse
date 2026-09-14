@@ -260,7 +260,7 @@ func sketchSet(fields []string) map[string]bool {
 // Returns nil when the catalog has nothing for the range (cold or field not
 // catalogued) so the caller falls through to the legacy labelIndex/scan path.
 // Caller guarantees s.catalog != nil.
-func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limit uint64) []logstorage.ValueWithHits {
+func (s *Storage) catalogFieldValues(q *logstorage.Query, scope tenantScope, fieldName string, limit uint64) []logstorage.ValueWithHits {
 	startNs, endNs := q.GetFilterTimeRange()
 	seen := make(map[string]struct{}, 16)
 	valset := make(map[string]struct{})
@@ -272,7 +272,10 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 	if limit < math.MaxInt32 {
 		catLimit = int(limit)
 	}
-	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
+	// The catalog is keyed by the TENANT partition (the full key directory), so
+	// scoping the file list scopes the answer: a tenant only ever unions its own
+	// partitions' facets.
+	for _, fi := range s.filesForScope("catalog_field_values", startNs, endNs, scope) {
 		p := manifest.ExtractTenantPartition(fi.Key)
 		if _, ok := seen[p]; ok {
 			continue
@@ -306,11 +309,11 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, fieldName string, limi
 // query's time range, served from the pmeta catalog in RAM. Returns nil when the
 // catalog has nothing for the range so the caller falls through to the legacy
 // labelIndex. Caller guarantees s.catalog != nil.
-func (s *Storage) catalogFieldNames(q *logstorage.Query) []string {
+func (s *Storage) catalogFieldNames(q *logstorage.Query, scope tenantScope) []string {
 	startNs, endNs := q.GetFilterTimeRange()
 	seen := make(map[string]struct{}, 16)
 	nameset := make(map[string]struct{})
-	for _, fi := range s.manifest.GetFilesForRange(startNs, endNs) {
+	for _, fi := range s.filesForScope("catalog_field_names", startNs, endNs, scope) {
 		p := manifest.ExtractTenantPartition(fi.Key)
 		if _, ok := seen[p]; ok {
 			continue

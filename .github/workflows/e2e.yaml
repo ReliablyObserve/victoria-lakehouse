@@ -134,6 +134,12 @@ jobs:
         env: *e2e-env
         run: go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestStringTenant_" 2>&1 | tee -a e2e-results.txt
 
+      - name: Verify tenant read scoping (exact per-tenant counts, both binaries, prefix + bucket layouts)
+        env: *e2e-env
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=15m ./tests/e2e/ -run "TestMultitenancy_TenantScope_" 2>&1 | tee -a e2e-results.txt
+
       - name: Run remaining E2E tests
         env: *e2e-env
         run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ -run "^(?!TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_|TestStringTenant_)" 2>&1 | tee -a e2e-results.txt
@@ -144,6 +150,19 @@ jobs:
         with:
           name: e2e-results
           path: e2e-results.txt
+
+      - name: Show read-path decisions on failure
+        if: failure()
+        run: |
+          # Flush, compaction, refresh and pre-filter decisions over the whole
+          # run (not just the tail), so a failing exact-count check can be
+          # traced to the objects each query selected or skipped.
+          for svc in lakehouse-logs lakehouse-traces; do
+            echo "=== $svc: read-path decisions ==="
+            docker compose -f deployment/docker/docker-compose-e2e.yml logs "$svc" --no-log-prefix 2>/dev/null \
+              | grep -E "flushed (log|trace) partition|compaction complete|compacted partition|bloom index pre-filter|label index fast-path|label pre-filter|column stats pre-filter|tenant scope violation|manifest refreshed;|pure-buffer|local buffer query failed" \
+              | tail -400 || true
+          done
 
       - name: Show docker logs on failure
         if: failure()

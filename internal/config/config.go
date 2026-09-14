@@ -1502,6 +1502,9 @@ func (c *Config) validateSubsystems() error {
 	if c.Tenant.Isolation == "bucket" && c.Tenant.BucketTemplate == "" {
 		return fmt.Errorf("--lakehouse.tenant.bucket-template is required when isolation=bucket")
 	}
+	if err := validateTenantPrefixTemplate(c.Tenant.PrefixTemplate); err != nil {
+		return err
+	}
 
 	if c.HotBoundary != "" {
 		if err := validateDuration(c.HotBoundary); err != nil {
@@ -1509,6 +1512,32 @@ func (c *Config) validateSubsystems() error {
 		}
 	}
 
+	return nil
+}
+
+// validateTenantPrefixTemplate rejects a tenant prefix template the writer and
+// the manifest cannot agree on. Object keys carry the tenant as the two leading
+// segments, {AccountID}/{ProjectID}: that is what the writer expands, what the
+// manifest parses back, and what the read path checks an object against.
+//
+// A template that leaves a placeholder unexpanded ({OrgID}, say) writes every
+// tenant under one static prefix — objects with no tenant segment, which belong
+// to tenant 0:0, so no other tenant could read its own rows back. A template
+// with only one of the two segments is just as broken: the signal directory
+// ("logs/", "traces/") is then parsed as the missing segment. An empty template
+// is the single-tenant (legacy) layout and stays valid.
+func validateTenantPrefixTemplate(tmpl string) error {
+	if tmpl == "" {
+		return nil
+	}
+	const guidance = "object keys carry the tenant as {AccountID}/{ProjectID}/, which is what the writer expands and the read path checks; " +
+		"string OrgIDs are presentation-only and map to an account/project pair (see docs/multi-tenancy.md#tenant-name-mapping-x-scope-orgid)"
+	if !strings.Contains(tmpl, "{AccountID}") || !strings.Contains(tmpl, "{ProjectID}") {
+		return fmt.Errorf("--lakehouse.tenant.prefix-template %q must contain both {AccountID} and {ProjectID}: %s", tmpl, guidance)
+	}
+	if rest := strings.NewReplacer("{AccountID}", "", "{ProjectID}", "").Replace(tmpl); strings.ContainsAny(rest, "{}") {
+		return fmt.Errorf("--lakehouse.tenant.prefix-template %q carries a placeholder the writer does not expand (only {AccountID} and {ProjectID} are expanded): %s", tmpl, guidance)
+	}
 	return nil
 }
 

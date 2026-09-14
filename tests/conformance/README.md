@@ -27,6 +27,8 @@ on top.
   `{{seed.start_us}}` / `{{seed.cold_end_us}}` (microsecond-epoch integers, e.g. VT's
   Jaeger traces-search `start`/`end`), `{{seed.trace_id}}` / `{{seed.stream_id}}`,
   `{{seed.task_id}}` (a delete-task id), `{{tenant.account}}` / `{{tenant.project}}`,
+  `{{tenant.global_read}}` (the cold stack's configured global-read header value, sent
+  only by the `*.tenant_scope.global.*` rows),
   `{{tombstone_id}}` (the id returned by a prior delete request in the same run, not
   part of the seed), and `{{proto.internal_select}}` / `{{proto.internal_delete}}` (not
   part of the seed either: the protocol version constant the runner reads from the

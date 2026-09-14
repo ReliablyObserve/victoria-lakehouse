@@ -123,9 +123,10 @@ func remapSlotFieldHits(hits map[string]uint64) {
 
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
+	scope := scopeFor(ctx, tenantIDs)
 
 	startNs, endNs := q.GetFilterTimeRange()
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForScope("field_names", startNs, endNs, scope)
 
 	// Aggregate actual non-null row counts across candidate files.
 	// Previously this returned Hits=1 for every field — a stub that fed
@@ -138,12 +139,11 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 		// No catalog consult here: catalogFieldNames unions over the SAME
 		// (empty) file range, so it can never return names in this branch —
 		// only the range-independent labelIndex can.
-		if filter == nil && s.labelIndex.Len() > 0 {
+		if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 			return labelIndexNamesWithHits(s.labelIndex.GetFieldNames(), nil), nil
 		}
 		return nil, nil
 	}
-	files = dedupOverlappingFiles(files)
 
 	// Pre-warm the footer cache in parallel using small range reads
 	// (~16 KB per file) so the sequential loop below hits the cache.
@@ -218,11 +218,11 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	// so callers that only want names still see them. pmeta read-flip: catalog
 	// first, legacy labelIndex second.
 	if s.catalog != nil {
-		if names := s.catalogFieldNames(q); len(names) > 0 {
+		if names := s.catalogFieldNames(q, scope); len(names) > 0 {
 			return labelIndexNamesWithHits(names, hits), nil
 		}
 	}
-	if s.labelIndex.Len() > 0 {
+	if s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 		return labelIndexNamesWithHits(s.labelIndex.GetFieldNames(), hits), nil
 	}
 	return nil, nil
@@ -236,85 +236,6 @@ func labelIndexNamesWithHits(names []string, hits map[string]uint64) []logstorag
 		result[i] = logstorage.ValueWithHits{Value: name, Hits: hits[name]}
 	}
 	return result
-}
-
-// dedupOverlappingFiles removes manifest entries that are redundant
-// because a higher-level compacted file already covers the same time
-// range. Without this, GetFieldValues (and other manifest-walking field
-// APIs) inflate value counts by ~2x during the brief overlap window
-// between a freshly-compacted output and its still-listed sources.
-//
-// Heuristic:
-//   - For every pair (A, B), if A and B overlap on >= 90% of B's time
-//     range AND A has a higher CompactionLevel than B (or equal level
-//     with strictly larger Size), B is dropped.
-//   - Disjoint or partially overlapping files are preserved.
-//
-// This is intentionally conservative: equal-level overlaps without a
-// size signal are kept (rare; usually only happens for sibling files
-// produced by the same compaction round).
-func dedupOverlappingFiles(files []manifest.FileInfo) []manifest.FileInfo {
-	if len(files) <= 1 {
-		return files
-	}
-	drop := make([]bool, len(files))
-	for i := range files {
-		if drop[i] {
-			continue
-		}
-		for j := range files {
-			if i == j || drop[j] {
-				continue
-			}
-			if shouldDropBecauseCoveredBy(files[j], files[i]) {
-				drop[j] = true
-			}
-		}
-	}
-	result := files[:0]
-	for i, fi := range files {
-		if !drop[i] {
-			result = append(result, fi)
-		}
-	}
-	return result
-}
-
-// shouldDropBecauseCoveredBy reports whether `b` is redundant given the
-// presence of `a` — i.e. `a` is the compacted output that subsumes `b`.
-func shouldDropBecauseCoveredBy(b, a manifest.FileInfo) bool {
-	if a.MinTimeNs == 0 || a.MaxTimeNs == 0 || b.MinTimeNs == 0 || b.MaxTimeNs == 0 {
-		return false
-	}
-	bRange := b.MaxTimeNs - b.MinTimeNs
-	if bRange <= 0 {
-		return false
-	}
-	overlapStart := b.MinTimeNs
-	if a.MinTimeNs > overlapStart {
-		overlapStart = a.MinTimeNs
-	}
-	overlapEnd := b.MaxTimeNs
-	if a.MaxTimeNs < overlapEnd {
-		overlapEnd = a.MaxTimeNs
-	}
-	overlap := overlapEnd - overlapStart
-	if overlap <= 0 {
-		return false
-	}
-	// Require >= 90% of B to be inside A.
-	if overlap*10 < bRange*9 {
-		return false
-	}
-	// Prefer higher compaction level; if equal, prefer the strictly
-	// larger file (the merged output).
-	if a.CompactionLevel > b.CompactionLevel {
-		return true
-	}
-	if a.CompactionLevel == b.CompactionLevel && a.Size > b.Size {
-		return true
-	}
-	return false
 }
 
 // accumulateFieldHits computes per-field non-null row counts for every
@@ -476,6 +397,7 @@ func (s *Storage) scanProjectedFieldValues(
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
+	scope := scopeFor(ctx, tenantIDs)
 
 	// pmeta catalog fast-path (--pmeta): union the field's values across the
 	// partitions in the query's time range, served from RAM. nil (flag off) or
@@ -506,13 +428,13 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 			if s.refuseEnumeration(fieldName) {
 				return nil, nil // declared id column: don't enumerate (matches VL), no scan
 			}
-			if result := s.catalogFieldValues(q, fieldName, limit); len(result) > 0 {
+			if result := s.catalogFieldValues(q, scope, fieldName, limit); len(result) > 0 {
 				return result, nil
 			}
 		}
 	}
 
-	if filter == nil && s.labelIndex.Len() > 0 {
+	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 		if len(s.allTombstones()) > 0 {
 			gaveUpFastPath = true
 		} else if vals := s.labelIndex.GetFieldValues(fieldName, limit); len(vals) > 0 {
@@ -528,13 +450,17 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		noteFieldsScanFallback("field_values")
 	}
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForScope("field_values", startNs, endNs, scope)
 	if len(files) == 0 {
 		return nil, nil
 	}
-	// Drop pre-compaction sources whose contents are already in a higher-
-	// level merged file to avoid double-counting field values.
-	files = dedupOverlappingFiles(files)
+	// Every object in the list is scanned. A compaction source whose rows are
+	// already inside a merged output never reaches here: the compactor removes
+	// it from the manifest and marks it superseded, so a LIST that still
+	// returns it cannot put it back (manifest.MarkSuperseded). Guessing
+	// redundancy here from time ranges and compaction levels instead used to
+	// hide the newest flush of a live partition — its rows fall inside the
+	// compacted neighbour's backfilled range — from every enumeration.
 
 	// The scan reads every row of every overlapping file, including the rows
 	// that lie outside the query window, so it must apply every tombstone
@@ -596,11 +522,10 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
 	}
-	files = dedupOverlappingFiles(files)
 
 	// Whole files are scanned: apply every tombstone overlapping their rows,
 	// not only those overlapping the query window.
@@ -648,11 +573,10 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForTenants(ctx, "stream_ids", startNs, endNs, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
 	}
-	files = dedupOverlappingFiles(files)
 
 	// Whole files are scanned: apply every tombstone overlapping their rows,
 	// not only those overlapping the query window.

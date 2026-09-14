@@ -46,7 +46,7 @@ func TestQueryBufferBridge_LocalBufferServesRecent(t *testing.T) {
 		}
 		var got atomic.Int64
 		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
-		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour), 0,
+		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour), nil,
 			q, []logstorage.TenantID{{}}, wb)
 		return got.Load()
 	}
@@ -85,7 +85,7 @@ func TestQueryBufferBridge_MultiNodeSkipsLocalBuffer(t *testing.T) {
 			bb.SetEndpoints([]string{"http://peer-a:20428", "http://peer-b:20428"})
 		}
 		s := &Storage{localBuffer: spy, bufferBridge: bb, cfg: &config.Config{Mode: config.ModeTraces}}
-		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour), 0,
+		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour), nil,
 			q, []logstorage.TenantID{{}}, func(_ uint, _ *logstorage.DataBlock) {})
 		return spy.calls
 	}
@@ -128,7 +128,7 @@ func TestQueryBufferBridge_WatermarkPreventsDoubleCount(t *testing.T) {
 		var got atomic.Int64
 		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
 		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour),
-			watermarkNs, q, []logstorage.TenantID{{}}, wb)
+			bufferWatermarks{{}: watermarkNs}, q, []logstorage.TenantID{{}}, wb)
 		return got.Load()
 	}
 
@@ -151,7 +151,7 @@ func TestQueryBufferBridge_WatermarkPreventsDoubleCount(t *testing.T) {
 		var got atomic.Int64
 		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
 		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour),
-			watermarkNs, qTID, []logstorage.TenantID{{}}, wb)
+			bufferWatermarks{{}: watermarkNs}, qTID, []logstorage.TenantID{{}}, wb)
 		return got.Load()
 	}
 	if got := countTID(now + 4); got != 5 {

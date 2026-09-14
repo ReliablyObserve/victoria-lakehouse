@@ -28,6 +28,9 @@ type Handler struct {
 	resolver *tenant.TenantResolver
 	timeout  time.Duration
 	sem      chan struct{}
+	// globalRead validates the operator credential that widens a query from
+	// one tenant to all of them. Zero value = not configured = never widened.
+	globalRead tenant.GlobalReadAuth
 }
 
 type HandlerOption func(*Handler)
@@ -46,6 +49,11 @@ func NewHandler(store storage.Storage, cfg *config.Config, opts ...HandlerOption
 		cfg:     cfg,
 		timeout: cfg.Query.Timeout,
 		sem:     make(chan struct{}, maxConcurrent),
+		globalRead: tenant.NewGlobalReadAuth(
+			cfg.Tenant.GlobalReadHeader,
+			cfg.Tenant.GlobalReadValue,
+			cfg.Tenant.GlobalReadToken,
+		),
 	}
 	for _, o := range opts {
 		o(h)
@@ -71,7 +79,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	if h.cfg.Mode == config.ModeTraces {
 		mux.HandleFunc("/select/jaeger/", func(w http.ResponseWriter, r *http.Request) {
-			if !jaeger.RequestHandler(r.Context(), w, r) {
+			if !jaeger.RequestHandler(h.scopeContext(r), w, r) {
 				// Upstream VT's main HTTP dispatcher writes the same 400
 				// for paths Jaeger doesn't know about. Without this,
 				// Grafana sees HTTP 200 + 0 bytes (silent empty) and
@@ -81,7 +89,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		})
 		mux.HandleFunc("/select/tempo/", func(w http.ResponseWriter, r *http.Request) {
 			normalizeTempoSearchParams(r)
-			if !tempo.RequestHandler(r.Context(), w, r) {
+			if !tempo.RequestHandler(h.scopeContext(r), w, r) {
 				// Same parity fix as Jaeger above — tempo.RequestHandler
 				// returns false for unknown paths (e.g. /api/v2/search
 				// — TraceQL v2 — which upstream VT itself rejects with
@@ -91,12 +99,24 @@ func (h *Handler) Register(mux *http.ServeMux) {
 				http.Error(w, fmt.Sprintf("unsupported path requested: %q", r.URL.Path), http.StatusBadRequest)
 			}
 		})
-		mux.HandleFunc("/api/traces/", rewriteToJaeger)
-		mux.HandleFunc("/api/traces", rewriteToJaeger)
-		mux.HandleFunc("/api/services", rewriteToJaeger)
-		mux.HandleFunc("/api/services/", rewriteToJaeger)
-		mux.HandleFunc("/api/dependencies", rewriteToJaeger)
+		mux.HandleFunc("/api/traces/", h.rewriteToJaeger)
+		mux.HandleFunc("/api/traces", h.rewriteToJaeger)
+		mux.HandleFunc("/api/services", h.rewriteToJaeger)
+		mux.HandleFunc("/api/services/", h.rewriteToJaeger)
+		mux.HandleFunc("/api/dependencies", h.rewriteToJaeger)
 	}
+}
+
+// scopeContext widens the request to a cross-tenant read when — and only when
+// — the configured global-read credential validates. Twin of
+// internal/selectapi/handler.go.
+func (h *Handler) scopeContext(r *http.Request) context.Context {
+	ctx := r.Context()
+	if h.globalRead.Enabled() && h.globalRead.Authorize(r) {
+		metrics.GlobalReadQueriesTotal.Inc()
+		return storage.WithGlobalRead(ctx)
+	}
+	return ctx
 }
 
 func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
@@ -111,7 +131,7 @@ func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *
 		}
 		normalizeTimeParams(r)
 		start := time.Now()
-		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+		ctx, cancel := context.WithTimeout(h.scopeContext(r), h.timeout)
 		defer cancel()
 		ctx, span := otel.Tracer("lakehouse-traces").Start(ctx, "vl.handler."+r.URL.Path)
 		defer span.End()
@@ -157,9 +177,9 @@ func (h *Handler) handleTailNoop(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, "live tail not supported on cold storage", http.StatusNotImplemented)
 }
 
-func rewriteToJaeger(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) rewriteToJaeger(w http.ResponseWriter, r *http.Request) {
 	r.URL.Path = "/select/jaeger" + r.URL.Path
-	jaeger.RequestHandler(r.Context(), w, r)
+	jaeger.RequestHandler(h.scopeContext(r), w, r)
 }
 
 // normalizeTempoSearchParams works around an upstream VT quirk in

@@ -60,7 +60,7 @@ func TestMemLeak_Handler_ServeHTTPLogCycles(t *testing.T) {
 
 	// Warm up
 	for i := 0; i < 50; i++ {
-		req := httptest.NewRequest("GET", "/?start="+strconv.FormatInt(now-1e9, 10)+"&end="+strconv.FormatInt(now+1e10, 10)+"&mode=logs", nil)
+		req := httptest.NewRequest("GET", "/?start="+strconv.FormatInt(now-1e9, 10)+"&end="+strconv.FormatInt(now+1e10, 10)+"&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
 	}
@@ -72,7 +72,7 @@ func TestMemLeak_Handler_ServeHTTPLogCycles(t *testing.T) {
 	startStr := strconv.FormatInt(now-1e9, 10)
 	endStr := strconv.FormatInt(now+1e10, 10)
 	for i := 0; i < iterations; i++ {
-		req := httptest.NewRequest("GET", "/?start="+startStr+"&end="+endStr+"&mode=logs", nil)
+		req := httptest.NewRequest("GET", "/?start="+startStr+"&end="+endStr+"&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
 	}
@@ -99,7 +99,7 @@ func TestMemLeak_Handler_ServeHTTPTraceCycles(t *testing.T) {
 
 	// Warm up
 	for i := 0; i < 50; i++ {
-		req := httptest.NewRequest("GET", "/?start="+strconv.FormatInt(now-1e9, 10)+"&end="+strconv.FormatInt(now+1e10, 10)+"&mode=traces", nil)
+		req := httptest.NewRequest("GET", "/?start="+strconv.FormatInt(now-1e9, 10)+"&end="+strconv.FormatInt(now+1e10, 10)+"&mode=traces&account_id=0&project_id=0&tenant_scope=v1", nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
 	}
@@ -111,7 +111,7 @@ func TestMemLeak_Handler_ServeHTTPTraceCycles(t *testing.T) {
 	startStr := strconv.FormatInt(now-1e9, 10)
 	endStr := strconv.FormatInt(now+1e10, 10)
 	for i := 0; i < iterations; i++ {
-		req := httptest.NewRequest("GET", "/?start="+startStr+"&end="+endStr+"&mode=traces", nil)
+		req := httptest.NewRequest("GET", "/?start="+startStr+"&end="+endStr+"&mode=traces&account_id=0&project_id=0&tenant_scope=v1", nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
 	}
@@ -133,7 +133,7 @@ func TestMemLeak_Handler_ServeHTTPEmptyStore(t *testing.T) {
 	// Warm up
 	now := time.Now().UnixNano()
 	for i := 0; i < 50; i++ {
-		req := httptest.NewRequest("GET", "/?start=0&end="+strconv.FormatInt(now, 10)+"&mode=logs", nil)
+		req := httptest.NewRequest("GET", "/?start=0&end="+strconv.FormatInt(now, 10)+"&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
 	}
@@ -144,7 +144,7 @@ func TestMemLeak_Handler_ServeHTTPEmptyStore(t *testing.T) {
 	const iterations = 20000
 	endStr := strconv.FormatInt(now, 10)
 	for i := 0; i < iterations; i++ {
-		req := httptest.NewRequest("GET", "/?start=0&end="+endStr+"&mode=logs", nil)
+		req := httptest.NewRequest("GET", "/?start=0&end="+endStr+"&mode=logs&account_id=0&project_id=0&tenant_scope=v1", nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
 	}

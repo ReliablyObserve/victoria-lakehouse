@@ -81,6 +81,7 @@ func testFieldStorage(t *testing.T, rows []fullLogRow) (*Storage, string) {
 
 func TestGetFieldNames_FromLabelIndex(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web"})
 	s.labelIndex.Add("level", []string{"info", "error"})
 	s.labelIndex.Add("host.name", nil)
@@ -192,6 +193,7 @@ func TestGetFieldNames_CancelledContext(t *testing.T) {
 
 func TestGetFieldValues_FromLabelIndex(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
 
 	q := mustParseQueryWithTime(t, "*",
@@ -210,6 +212,7 @@ func TestGetFieldValues_FromLabelIndex(t *testing.T) {
 
 func TestGetFieldValues_FromLabelIndex_WithLimit(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("level", []string{"info", "warn", "error", "debug", "trace"})
 
 	q := mustParseQueryWithTime(t, "*",
@@ -449,6 +452,7 @@ func TestGetStreamFieldNames_Traces_ReturnsRegistryFields(t *testing.T) {
 
 func TestGetStreamFieldValues_DelegatesToGetFieldValues(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web"})
 
 	q := mustParseQueryWithTime(t, "*",
@@ -1087,6 +1091,7 @@ func TestGetFieldValues_MultipleFiles(t *testing.T) {
 
 func TestGetFieldValues_ZeroLimit(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"a", "b", "c"})
 
 	q := mustParseQueryWithTime(t, "*",
