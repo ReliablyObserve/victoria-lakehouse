@@ -29,7 +29,7 @@ VT_VERSION := v0.9.2
 VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
 VT_DIR := lakehouse-traces/deps/VictoriaTraces
 
-.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt conformance-gen conformance-check
+.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt conformance-gen conformance-check config-surface config-docs config-drift
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -99,6 +99,28 @@ conformance-gen: deps-logs deps-traces deps-vt
 conformance-check: deps-logs deps-traces deps-vt
 	go run ./tests/conformance/cmd/confgen -check
 	CONFORMANCE_REQUIRE_DEPS=1 go test ./tests/conformance/... -count=1 -timeout=5m
+
+# Configuration surface. The code defaults are the source of truth: both
+# binaries' `print-default-config` output and the config field comments are
+# pinned in golden files, and docs/configuration.md, docs/getting-started.md,
+# README.md and the Helm chart are generated from or checked against them
+# (docs/configuration.md#configuration-drift-gate).
+CONFIG_SURFACE_TESTS := TestConfigSurface|TestPrintDefaultConfig
+
+config-surface: deps-logs deps-traces deps-vt
+	CONFIG_SURFACE_UPDATE=1 go test ./cmd/lakehouse-logs -run 'TestConfigSurfaceGolden' -count=1
+	cd lakehouse-traces && CONFIG_SURFACE_UPDATE=1 go test . -run 'TestConfigSurfaceGolden' -count=1
+	CONFIG_SURFACE_UPDATE=1 go test ./internal/config -run 'TestFieldDocsGolden' -count=1
+
+config-docs: config-surface
+	python3 scripts/ci/config_drift_report.py --write-docs
+
+config-drift: deps-logs deps-traces deps-vt
+	go test ./cmd/lakehouse-logs -run '$(CONFIG_SURFACE_TESTS)' -count=1
+	cd lakehouse-traces && go test . -run '$(CONFIG_SURFACE_TESTS)' -count=1
+	go test ./internal/config -run 'TestFieldDocsGolden|TestDocumentedConfigExamplesLoad' -count=1
+	go run ./scripts/ci/helmdrift
+	python3 scripts/ci/config_drift_report.py --check
 
 test-integration-logs: deps-logs
 	go test -tags=integration ./internal/... -race -count=1 -timeout=15m

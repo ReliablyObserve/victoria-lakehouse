@@ -47,21 +47,59 @@ jobs:
             lakehouse-traces/deps/VictoriaTraces
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
-  # Guards the binaries-vs-Helm config surface: every yaml-tagged key in
-  # internal/config (shared by the logs AND traces binaries) must be documented
-  # in charts/.../values.yaml AND enumerated in values.schema.json, or
-  # consciously grandfathered in scripts/ci/helm-drift-allowlist.txt.
-  # A new config key without chart coverage FAILS here with instructions.
+  # Config drift gate. The code defaults are the source of truth: both
+  # binaries' `print-default-config` output is pinned in golden files, and
+  # every other surface that spells a setting is generated from it or checked
+  # against it (docs/configuration.md#configuration-drift-gate):
+  # - helmdrift: every yaml-tagged key in internal/config is documented in
+  #   charts/.../values.yaml AND values.schema.json, or grandfathered in
+  #   scripts/ci/helm-drift-allowlist.txt;
+  # - config_drift_report.py: chart values, schema defaults and template
+  #   fallbacks equal the code defaults (or are `override` lines with a
+  #   reason in the same allowlist), docs tables and YAML examples and flag
+  #   usage strings match the code, deployment configs use real keys, and the
+  #   generated docs blocks are fresh.
+  # needs: deps because the golden tests build both binaries.
   helm-config-drift:
+    needs: deps
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Check Helm config drift
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+
+      - name: Install report dependencies
+        run: pip install pyyaml
+
+      - name: Config surface golden files (logs, field docs, documented examples)
+        run: |
+          go test ./cmd/lakehouse-logs -run 'TestConfigSurface|TestPrintDefaultConfig' -count=1
+          go test ./internal/config -run 'TestFieldDocsGolden|TestDocumentedConfigExamplesLoad' -count=1
+
+      - name: Config surface golden file (traces)
+        working-directory: lakehouse-traces
+        run: go test . -run 'TestConfigSurface|TestPrintDefaultConfig' -count=1
+
+      - name: Check Helm config key coverage
         run: go run ./scripts/ci/helmdrift
+
+      - name: Check config drift (chart, docs, flags, deployment configs)
+        run: python scripts/ci/config_drift_report.py --check
 
   # Multi-engine parquet readback gate: writes synthetic files with the
   # REAL production schemas + writer options (zstd best, row-group

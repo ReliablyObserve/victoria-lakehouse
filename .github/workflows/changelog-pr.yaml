@@ -34,5 +34,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run changelog gate tests
+      - name: Install test dependencies
+        run: pip install pyyaml
+
+      - name: Run CI script tests
         run: python -m unittest discover -s scripts/ci/tests -v
