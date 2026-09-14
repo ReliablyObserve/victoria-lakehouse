@@ -275,3 +275,85 @@ func TestPublishRewrite_RefusesAKeyTheManifestAlreadyServes(t *testing.T) {
 		t.Fatal("the source's entry was removed by a refused publish")
 	}
 }
+
+// hookedManifest runs a hook on the first Retire — the point where handling one
+// record has already started changing state, so a test can make another record
+// advance exactly there.
+type hookedManifest struct {
+	ManifestUpdater
+	onFirstRetire func()
+}
+
+func (h *hookedManifest) Retire(key, by string, reclaim bool) bool {
+	if h.onFirstRetire != nil {
+		fn := h.onFirstRetire
+		h.onFirstRetire = nil
+		fn()
+	}
+	return h.ManifestUpdater.Retire(key, by, reclaim)
+}
+
+// TestResumeRewrites_ActsOnTheRecordAsItIsUnderTheClaim: the resume loop reads
+// the tombstone once and then works through its records one by one, so by the
+// time it reaches the last one the record it read may be several steps old. A
+// rewrite that published in the meantime owns a REPLACEMENT the manifest is
+// serving; undoing it on the strength of the stale `prepared` deletes the live
+// copy of those rows. The loop therefore re-reads under the key claim.
+func TestResumeRewrites_ActsOnTheRecordAsItIsUnderTheClaim(t *testing.T) {
+	const (
+		dir      = "logs/dt=2026-03-01/hour=07/"
+		sourceA  = dir + "src-a.parquet"
+		abandonA = dir + "aaaaaaaa.parquet"
+		sourceB  = dir + "src-b.parquet"
+		liveB    = dir + "bbbbbbbb.parquet"
+	)
+	rows := []schema.LogRow{{TimestampUnixNano: 1000, Body: "keep-a", SeverityText: "info", ServiceName: "web"}}
+	pool := newMockRewriterPool()
+	for _, k := range []string{sourceA, abandonA, liveB} {
+		pool.Put(k, buildTestParquet(t, rows))
+	}
+	// The manifest serves A (whose rewrite is still prepared) and B's
+	// replacement (whose rewrite published while this loop was running).
+	m := newTestManifest(t, map[string]int64{sourceA: 1, liveB: 1})
+
+	store := NewTombstoneStore()
+	store.Add(Tombstone{
+		ID: "ts-resume", Query: `severity_text:="error"`, StartNs: 0, EndNs: 1 << 40,
+		AffectedKeys: []string{sourceA, sourceB}, CreatedAt: time.Now().Add(-2 * time.Hour),
+		Mode: "permanent", Reaped: map[string]bool{},
+	})
+	store.Update("ts-resume", func(cur *Tombstone) bool {
+		cur.Superseded = map[string]Supersession{
+			sourceA: {NewKey: abandonA, State: SupersessionPrepared, At: time.Now()},
+			sourceB: {NewKey: liveB, State: SupersessionPrepared, At: time.Now()},
+		}
+		return true
+	})
+
+	hooked := &hookedManifest{ManifestUpdater: m, onFirstRetire: func() {
+		// B's rewrite finishes here: its replacement is the manifest's copy of
+		// those rows from now on.
+		recordPublished(store, "ts-resume", sourceB, liveB)
+	}}
+	sched := NewRewriteScheduler(RewriteSchedulerConfig{
+		Store:          store,
+		Rewriter:       NewRewriter(pool, "logs/", 1000, "logs"),
+		Detector:       NewStorageClassDetector(nil),
+		RewriteDelay:   time.Hour,
+		AllowedClasses: []string{"STANDARD"},
+		Manifest:       hooked,
+	})
+
+	sched.resumeRewrites(context.Background(), "ts-resume")
+
+	if !pool.Has(liveB) {
+		t.Fatalf("%s was deleted: the loop undid a rewrite that had published, taking the manifest's only copy of its rows", liveB)
+	}
+	if !m.HasKey(liveB) {
+		t.Fatalf("the manifest stopped serving %s", liveB)
+	}
+	// A's own resolution still happened: its abandoned upload is gone.
+	if pool.Has(abandonA) {
+		t.Errorf("the abandoned replacement %s was not cleaned up", abandonA)
+	}
+}
