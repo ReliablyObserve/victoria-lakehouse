@@ -16,7 +16,9 @@
     - tests/e2e/isolation_verify_test.go#TestVerifyIsolation_OrgID_NoCrossTenantLeak
     - tests/e2e/endpoints_verification_test.go#TestEndpoint_MultiTenant_DataIsolation
     - internal/storage/parquets3/tenant_scope_test.go
+    - internal/storage/parquets3/tenant_scope_labelindex_test.go
     - lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go
+    - lakehouse-traces/internal/storage/parquets3/tenant_scope_labelindex_test.go
     - lakehouse-traces/internal/storage/parquets3/tenant_scope_traces_test.go
     - internal/selectapi/tenant_scope_test.go
     - internal/buffer/handler_tenant_test.go
@@ -77,6 +79,7 @@
     - internal/storage/parquets3/bucket_routing_test.go
     - internal/tenant/effective_test.go
     - internal/manifest/tenant_buckets_refresh_test.go
+    - internal/manifest/tenant_range_walk_test.go
     - tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_BucketLayout
   docs:
     - docs/multi-tenancy.md
