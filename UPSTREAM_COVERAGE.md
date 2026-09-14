@@ -484,6 +484,7 @@ flag: 18/174 covered by at least one registry row.
 | `lh.delete.tombstone_by_id.status` | LH delete tombstone by id — lookup one tombstone's status | admin | 🟡 declared, not yet executed |
 | `lh.delete.tombstones.status` | LH delete tombstones — list active LogsQL delete tombstones | admin | 🟡 declared, not yet executed |
 | `lh.delete.verify.status` | LH delete verify — confirm a query's matching rows are gone | admin | 🟡 declared, not yet executed |
+| `lh.flag.print_default_config` | LH print-default-config — every config key with its default and merge rule, every profile override and every flag, as JSON | flag | 🟡 declared, not yet executed |
 | `lh.health.status` | LH health — liveness probe | internal | 🟡 declared, not yet executed |
 | `lh.info.schema` | LH info — build/version/config summary | admin | 🟡 declared, not yet executed |
 | `lh.internal.cache_stats.schema` | LH internal cache stats — hot-cache hit rate and eviction counters | internal | 🟡 declared, not yet executed |

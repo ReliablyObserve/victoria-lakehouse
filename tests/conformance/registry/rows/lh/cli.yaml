@@ -1,0 +1,19 @@
+# LH-addition command-line surfaces: operator subcommands of the lakehouse
+# binaries that have no upstream VL/VT counterpart. kind: flag rows need no
+# `request` and no `seed`.
+
+- id: lh.flag.print_default_config
+  title: "LH print-default-config — every config key with its default and merge rule, every profile override and every flag, as JSON"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/configuration.md
+    tests:
+      - cmd/lakehouse-logs/config_surface_test.go
+      - lakehouse-traces/config_surface_test.go
