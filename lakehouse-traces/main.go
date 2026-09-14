@@ -58,7 +58,14 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
-const vtCompat = "0.8.2"
+// vtCompat is the VictoriaTraces release this binary embeds, reported on
+// /lakehouse/info and in the startup log. It must equal the version
+// lakehouse-traces/go.mod requires; TestVTCompatMatchesGoMod fails the build
+// otherwise. (The traces module also vendors its own VictoriaLogs at
+// VL_COMMIT_TRACES, but that pin is a pseudo-version derived from
+// VictoriaTraces' own go.mod and is reported through the conformance
+// inventory, not here.)
+const vtCompat = "0.11.0"
 
 var (
 	configPath      = flag.String("lakehouse.config", "", "Path to YAML config file")

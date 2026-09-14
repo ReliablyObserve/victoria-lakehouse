@@ -1,0 +1,4339 @@
+{
+  "parquet_go_version": "v0.32.0",
+  "files": [
+    {
+      "name": "logs-basic",
+      "rows": 31234,
+      "row_groups": 4,
+      "rows_per_row_group": [
+        10000,
+        10000,
+        10000,
+        1234
+      ],
+      "footer_kv_keys": [
+        "_bloom_body_rg_0",
+        "_bloom_body_rg_1",
+        "_bloom_body_rg_2",
+        "_bloom_body_rg_3"
+      ],
+      "time_column": "timestamp_unix_nano",
+      "time_min": 1760000000000000000,
+      "time_max": 1760000031233000000,
+      "columns": [
+        {
+          "name": "account_id",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "project_id",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "timestamp_unix_nano",
+          "type": "INT64",
+          "encodings": [
+            "DELTA_BINARY_PACKED"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "body",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            4,
+            4,
+            4,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "severity_text",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "severity_number",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "service.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "trace_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            2,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "span_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.namespace.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.pod.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.deployment.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.node.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "deployment.environment",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "cloud.region",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "host.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "_stream",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "_stream_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "scope.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "container.id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            3,
+            3,
+            3,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "service.instance.id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "service.version",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "exception.type",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "exception.message",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "k8s.cluster.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "telemetry.sdk.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "telemetry.sdk.language",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "telemetry.sdk.version",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "cloud.account.id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "cloud.provider",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "os.type",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "host.arch",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "process.runtime.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "process.runtime.version",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "ded_s01",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "ded_s02",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "ded_s03",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "ded_s04",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "ded_s05",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "ded_s06",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "ded_s07",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "ded_s08",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 31234
+        },
+        {
+          "name": "resource.attributes.key_value.key",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            3,
+            3,
+            3,
+            1
+          ],
+          "num_values": 62468,
+          "null_count": 0
+        },
+        {
+          "name": "resource.attributes.key_value.value",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            2,
+            1
+          ],
+          "num_values": 62468,
+          "null_count": 0
+        },
+        {
+          "name": "log.attributes.key_value.key",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            2,
+            1
+          ],
+          "num_values": 62468,
+          "null_count": 0
+        },
+        {
+          "name": "log.attributes.key_value.value",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            2,
+            1
+          ],
+          "num_values": 62468,
+          "null_count": 0
+        },
+        {
+          "name": "scope.attributes.key_value.key",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        },
+        {
+          "name": "scope.attributes.key_value.value",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 31234,
+          "null_count": 0
+        }
+      ],
+      "bloom_probes": [
+        {
+          "column": "service.name",
+          "present_keys": 12,
+          "present_hits": 12,
+          "absent_keys": 512,
+          "absent_false_hits": 0
+        },
+        {
+          "column": "trace_id",
+          "present_keys": 65,
+          "present_hits": 65,
+          "absent_keys": 512,
+          "absent_false_hits": 31
+        }
+      ]
+    },
+    {
+      "name": "logs-highcard",
+      "rows": 200000,
+      "row_groups": 20,
+      "rows_per_row_group": [
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000
+      ],
+      "footer_kv_keys": [
+        "_bloom_body_rg_0",
+        "_bloom_body_rg_1",
+        "_bloom_body_rg_10",
+        "_bloom_body_rg_11",
+        "_bloom_body_rg_12",
+        "_bloom_body_rg_13",
+        "_bloom_body_rg_14",
+        "_bloom_body_rg_15",
+        "_bloom_body_rg_16",
+        "_bloom_body_rg_17",
+        "_bloom_body_rg_18",
+        "_bloom_body_rg_19",
+        "_bloom_body_rg_2",
+        "_bloom_body_rg_3",
+        "_bloom_body_rg_4",
+        "_bloom_body_rg_5",
+        "_bloom_body_rg_6",
+        "_bloom_body_rg_7",
+        "_bloom_body_rg_8",
+        "_bloom_body_rg_9"
+      ],
+      "time_column": "timestamp_unix_nano",
+      "time_min": 1770000000000000000,
+      "time_max": 1770000000199999000,
+      "columns": [
+        {
+          "name": "account_id",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "project_id",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "timestamp_unix_nano",
+          "type": "INT64",
+          "encodings": [
+            "DELTA_BINARY_PACKED"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "body",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "severity_text",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "severity_number",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "service.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "trace_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "span_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.namespace.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.pod.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.deployment.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.node.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "deployment.environment",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "cloud.region",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "host.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "_stream",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "_stream_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "scope.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 0
+        },
+        {
+          "name": "container.id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "service.instance.id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "service.version",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "exception.type",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "exception.message",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "k8s.cluster.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "telemetry.sdk.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "telemetry.sdk.language",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "telemetry.sdk.version",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "cloud.account.id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "cloud.provider",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "os.type",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "host.arch",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "process.runtime.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "process.runtime.version",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "ded_s01",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "ded_s02",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "ded_s03",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "ded_s04",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "ded_s05",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "ded_s06",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "ded_s07",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "ded_s08",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "resource.attributes.key_value.key",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "resource.attributes.key_value.value",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "log.attributes.key_value.key",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "log.attributes.key_value.value",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "scope.attributes.key_value.key",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        },
+        {
+          "name": "scope.attributes.key_value.value",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "num_values": 200000,
+          "null_count": 200000
+        }
+      ],
+      "bloom_probes": [
+        {
+          "column": "service.name",
+          "present_keys": 2000,
+          "present_hits": 2000,
+          "absent_keys": 2048,
+          "absent_false_hits": 473
+        }
+      ]
+    },
+    {
+      "name": "traces-basic",
+      "rows": 20777,
+      "row_groups": 3,
+      "rows_per_row_group": [
+        10000,
+        10000,
+        777
+      ],
+      "footer_kv_keys": [
+        "_bloom_body_rg_0",
+        "_bloom_body_rg_1",
+        "_bloom_body_rg_2",
+        "_trace_idx"
+      ],
+      "time_column": "timestamp_unix_nano",
+      "time_min": 1760000000000000000,
+      "time_max": 1760000020776000000,
+      "columns": [
+        {
+          "name": "account_id",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "project_id",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "timestamp_unix_nano",
+          "type": "INT64",
+          "encodings": [
+            "DELTA_BINARY_PACKED"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "start_time_unix_nano",
+          "type": "INT64",
+          "encodings": [
+            "DELTA_BINARY_PACKED"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "trace_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "span_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "parent_span_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "span.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "service.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "duration_ns",
+          "type": "INT64",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "status.code",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "status.message",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "span.kind",
+          "type": "INT32",
+          "encodings": [
+            "PLAIN"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "http.method",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "http.status_code",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "http.url",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "db.system",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "db.statement",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.namespace.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.pod.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.deployment.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "k8s.node.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "deployment.environment",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "cloud.region",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "host.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "_stream",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "_stream_id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "scope.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "url.full",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "client.address",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "server.address",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "network.peer.address",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "db.collection.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "db.operation.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "rpc.method",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "messaging.destination.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "code.function.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "exception.type",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "container.id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            3,
+            3,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "service.instance.id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": true,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "k8s.cluster.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "telemetry.sdk.name",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "cloud.account.id",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "db.query.text",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "ded_s01",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "ded_s02",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "ded_s03",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "ded_s04",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "ded_s05",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "ded_s06",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "ded_s07",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "ded_s08",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "PLAIN",
+            "RLE",
+            "RLE_DICTIONARY"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "resource.attributes.key_value.key",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            3,
+            3,
+            1
+          ],
+          "num_values": 41554,
+          "null_count": 0
+        },
+        {
+          "name": "resource.attributes.key_value.value",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            1
+          ],
+          "num_values": 41554,
+          "null_count": 0
+        },
+        {
+          "name": "span.attributes.key_value.key",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            1
+          ],
+          "num_values": 41554,
+          "null_count": 0
+        },
+        {
+          "name": "span.attributes.key_value.value",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            1
+          ],
+          "num_values": 41554,
+          "null_count": 0
+        },
+        {
+          "name": "scope.attributes.key_value.key",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "scope.attributes.key_value.value",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 0
+        },
+        {
+          "name": "parent",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "child",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        },
+        {
+          "name": "callCount",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 20777
+        }
+      ],
+      "bloom_probes": [
+        {
+          "column": "service.name",
+          "present_keys": 12,
+          "present_hits": 12,
+          "absent_keys": 512,
+          "absent_false_hits": 0
+        },
+        {
+          "column": "trace_id",
+          "present_keys": 65,
+          "present_hits": 65,
+          "absent_keys": 512,
+          "absent_false_hits": 1
+        }
+      ]
+    }
+  ]
+}

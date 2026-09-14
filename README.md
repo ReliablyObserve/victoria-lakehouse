@@ -362,8 +362,8 @@ Two separate binaries, each pinned to its own VL/VT upstream version for maximum
 
 | Binary | Port | Upstream Compat | Insert APIs | Select APIs | Docker Image |
 |---|---|---|---|---|---|
-| `lakehouse-logs` | 9428 | VL v1.50.0 | All VL insert protocols (jsonline, Loki, ES bulk, syslog, journald, Datadog, OTLP, Splunk) | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/lakehouse-logs` |
-| `lakehouse-traces` | 10428 | VT v0.9.2 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, Tempo `/select/tempo/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/lakehouse-traces` |
+| `lakehouse-logs` | 9428 | VL v1.52.0 | All VL insert protocols (jsonline, Loki, ES bulk, syslog, journald, Datadog, OTLP, Splunk) | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/lakehouse-logs` |
+| `lakehouse-traces` | 10428 | VT v0.11.0 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, Tempo `/select/tempo/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/lakehouse-traces` |
 
 Each binary supports three roles for independent scaling:
 
@@ -850,7 +850,20 @@ make build            # Build both binaries
 make test             # Run all tests
 make lint             # golangci-lint both modules
 make e2e              # Full E2E with MinIO + VL cluster
+
+# Embedded VictoriaLogs web UI (served at /select/vmui/)
+make sync-vmui        # Copy vmui from deps/VictoriaLogs into internal/ui/vmui/
+make sync-vmui-traces # Same, from the traces module's VictoriaLogs pin
 ```
+
+`make build-logs` / `make build-traces` run the matching `sync-vmui*` target for
+you. Only `internal/ui/vmui/index.html` is tracked in git — it names the
+content-hashed asset filenames, so it is the drift marker: after an upstream
+VictoriaLogs bump rebuilds vmui, `go test ./internal/ui/...` fails until
+`make sync-vmui` is re-run and the new `index.html` committed. The rest of the
+bundle is `.gitignore`'d and copied from the vendored tree at build time (the
+Docker builds do the same copy inline), so the repository never carries a
+second copy of VictoriaLogs' minified assets.
 
 ---
 
