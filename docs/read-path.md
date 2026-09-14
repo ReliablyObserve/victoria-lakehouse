@@ -20,6 +20,8 @@ The query context carries:
 - `Query` -- the raw LogsQL, Jaeger, or Tempo query string
 - `RequestedColumns` -- optional column projection list
 
+The enumeration endpoints (`field_names`, `field_values`, `streams`, `stream_field_values`) select objects through the same tenant-scoped manifest lookup and then scan **every** selected object. They do not second-guess the list: an object whose rows are already inside a merged compaction output never reaches them, because the compactor removes it from the manifest and marks it superseded (see [manifest-system.md](manifest-system.md#compaction-integration)). Deciding that in the read path from time ranges and compaction levels hid the newest flush of a live partition — its rows fall inside the compacted neighbour's backfilled range — from every enumeration while `query` and `hits` still returned them.
+
 ## Pruning Cascade
 
 Victoria Lakehouse applies a ten-level pruning cascade, each eliminating work before the next level begins. The cascade is split into three phases: file-level pruning (avoids downloading data), row-group-level pruning (avoids reading row data), and row-level pruning (minimizes deserialized rows).

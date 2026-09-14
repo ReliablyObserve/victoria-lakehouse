@@ -163,6 +163,20 @@ type Manifest struct {
 	// RefreshFromS3, rebuildIndex, snapshot Load.
 	byKey map[string]string
 
+	// superseded holds the keys of objects the compactor merged into a higher
+	// level and then deleted from S3, with the time they were marked. A LIST
+	// that started before those deletes still returns them, so a refresh would
+	// re-admit rows that are already inside the merged output and count them
+	// twice. The marks expire (supersededTTL) and are dropped as soon as a
+	// listing stops returning the key, so the map is bounded by the objects S3
+	// is still reporting after their delete — a handful, briefly.
+	//
+	// This is the ONLY place the read path learns that an object is redundant.
+	// The enumeration paths used to guess it from time ranges and compaction
+	// levels, which silently dropped the newest flush of a live partition
+	// whenever its rows fell inside a compacted neighbour's range.
+	superseded map[string]time.Time
+
 	// onAdd / onRemove fire (under the write lock) on every file add/remove.
 	// Flush AND compaction both route through AddFile/RemoveFile, so one observer
 	// captures every storage diff — used by the StatsAggregate sidecar cache to
@@ -259,9 +273,106 @@ func New(bucket, prefix string) *Manifest {
 		partitionAttempts: make(map[string]time.Time),
 		byKey:             make(map[string]string),
 		tenantAggregates:  make(map[tenantAccumKey]*tenantAccum),
+		superseded:        make(map[string]time.Time),
 		prefix:            prefix,
 		bucket:            bucket,
 	}
+}
+
+// supersededTTL bounds how long a compacted-away key stays marked. It only has
+// to outlive an S3 LIST that was already in flight when the object was deleted
+// (seconds), and a wrong mark — a delete that failed after the merged output
+// was written — heals on its own after it.
+const supersededTTL = 10 * time.Minute
+
+// MarkSuperseded records that these objects were merged into a higher-level
+// object and deleted, so a listing that still returns them must not put their
+// rows back into the manifest. Called by the compactor with the keys it is
+// removing; the rows are in the merged output, so hiding them is never a loss.
+func (m *Manifest) MarkSuperseded(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.superseded == nil {
+		m.superseded = make(map[string]time.Time, len(keys))
+	}
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		m.superseded[k] = now
+	}
+}
+
+// IsSuperseded reports whether key is currently marked as compacted away.
+func (m *Manifest) IsSuperseded(key string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	marked, ok := m.superseded[key]
+	return ok && time.Since(marked) < supersededTTL
+}
+
+// SupersededCount is the number of live marks — bounded by what S3 still lists
+// after a delete, and by supersededTTL.
+func (m *Manifest) SupersededCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, marked := range m.superseded {
+		if time.Since(marked) < supersededTTL {
+			n++
+		}
+	}
+	return n
+}
+
+// dropSupersededLocked removes the listed objects that were compacted away and
+// forgets every mark the listing no longer returns (or that has expired).
+// Returns how many files and bytes were dropped so the caller can correct the
+// refresh totals. Must be called with m.mu held.
+func (m *Manifest) dropSupersededLocked(files map[string][]FileInfo) (int, int64) {
+	if len(m.superseded) == 0 {
+		return 0, 0
+	}
+	now := time.Now()
+	for key, marked := range m.superseded {
+		if now.Sub(marked) >= supersededTTL {
+			delete(m.superseded, key)
+		}
+	}
+	if len(m.superseded) == 0 {
+		return 0, 0
+	}
+	stillListed := make(map[string]struct{}, len(m.superseded))
+	var droppedFiles int
+	var droppedBytes int64
+	for partition, pFiles := range files {
+		kept := pFiles[:0]
+		for _, fi := range pFiles {
+			if _, ok := m.superseded[fi.Key]; ok {
+				stillListed[fi.Key] = struct{}{}
+				droppedFiles++
+				droppedBytes += fi.Size
+				continue
+			}
+			kept = append(kept, fi)
+		}
+		if len(kept) == 0 {
+			delete(files, partition)
+			continue
+		}
+		files[partition] = kept
+	}
+	// A key S3 no longer lists is gone for good; the mark has done its job.
+	for key := range m.superseded {
+		if _, ok := stillListed[key]; !ok {
+			delete(m.superseded, key)
+		}
+	}
+	return droppedFiles, droppedBytes
 }
 
 // tenantAccumKey + tenantAccum back the incremental TenantSummaries
@@ -1035,6 +1146,15 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	}
 
 	m.mu.Lock()
+	// Objects the compactor merged away and deleted can still come back from a
+	// LIST that started before the delete. Their rows are inside the merged
+	// output, so re-admitting them would count every row twice until the next
+	// refresh.
+	if droppedFiles, droppedBytes := m.dropSupersededLocked(files); droppedFiles > 0 {
+		totalFiles -= droppedFiles
+		totalBytes -= droppedBytes
+		logger.Infof("manifest refresh: ignored %d compacted-away objects still returned by LIST", droppedFiles)
+	}
 	m.mergeRefreshedFilesLocked(files)
 
 	// Cliff guard. A transient S3 LIST hiccup (toxiproxy spike, brief
