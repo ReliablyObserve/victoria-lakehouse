@@ -1,82 +1,35 @@
 package parquets3
 
 import (
-	"strings"
-
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
-// parseFilterFromQuery extracts the filter from a parsed Query using VL's own
-// DropAllPipes() and ParseFilter(). Returns nil for wildcard or time-only queries
-// (caller treats nil as "match all").
+// parseFilterFromQuery returns q's filter for row-level evaluation, or nil when
+// nothing is left to evaluate per row (a wildcard or time-only filter; the
+// caller treats nil as "match all").
+//
+// The filter is taken from the parsed query itself (logstorage.QueryFilter).
+// Rendering q and parsing the text back failed for queries VL accepts but
+// cannot print back (Query.Clone panics on that, and the VictoriaMetrics HTTP
+// server exits the process on a handler panic), re-anchored relative ranges
+// such as `_time:5m` to the parse time, and fell back to "match all" whenever
+// the re-parse failed.
 func parseFilterFromQuery(q *logstorage.Query) *logstorage.Filter {
-	if q == nil {
-		return nil
-	}
-	// Clone the query and strip pipes using VL's exported method,
-	// then get the filter-only string representation.
-	clone := q.Clone(q.GetTimestamp())
-	clone.DropAllPipes()
-	filterStr := clone.String()
-
-	if filterStr == "" || filterStr == "*" {
+	f := logstorage.QueryFilter(q)
+	if f == nil {
 		return nil
 	}
 
-	// Time-only queries have no field filters to evaluate at row level —
-	// time filtering is handled by partition/row-group pruning.
-	if isTimeOnlyFilter(filterStr) {
-		return nil
-	}
-
-	f, err := logstorage.ParseFilter(filterStr)
-	if err != nil {
+	// A time-only filter has nothing left to evaluate per row: the cold read
+	// paths bound every row by q.GetFilterTimeRange(), and partition and
+	// row-group pruning use the same range. The decision walks the parsed
+	// filter instead of scanning the query text, so every range form VL accepts
+	// ([a, b], [a, b), (a, b], (a, b), >a, 5m offset 1h, ...) is recognized,
+	// and a shape the walk does not recognize is evaluated per row.
+	if FilterIsTimeOnly(f) {
 		return nil
 	}
 	return f
-}
-
-// isTimeOnlyFilter returns true if the filter string contains only _time predicates.
-func isTimeOnlyFilter(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" || s == "*" {
-		return true
-	}
-	cleaned := stripTimePredicates(s)
-	cleaned = strings.TrimSpace(cleaned)
-	return cleaned == "" || cleaned == "*"
-}
-
-// stripTimePredicates removes _time:[...] filter expressions from the string.
-func stripTimePredicates(s string) string {
-	for {
-		idx := strings.Index(s, "_time:")
-		if idx < 0 {
-			return s
-		}
-		end := idx + len("_time:")
-		if end < len(s) && s[end] == '[' {
-			depth := 0
-			for i := end; i < len(s); i++ {
-				if s[i] == '[' {
-					depth++
-				} else if s[i] == ']' {
-					depth--
-					if depth == 0 {
-						s = s[:idx] + s[i+1:]
-						break
-					}
-				}
-			}
-		} else {
-			spaceIdx := strings.IndexByte(s[end:], ' ')
-			if spaceIdx < 0 {
-				s = s[:idx]
-			} else {
-				s = s[:idx] + s[end+spaceIdx:]
-			}
-		}
-	}
 }
 
 // filterDataBlock removes rows from a DataBlock that don't match the given filter.
