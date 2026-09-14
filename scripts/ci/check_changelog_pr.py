@@ -138,6 +138,26 @@ def has_new_versioned_entries(head_full_changelog: str, base_full_changelog: str
     return bool(versioned_bullets(head_full_changelog) - base_all_bullets)
 
 
+def version_headings(text: str) -> set[str]:
+    """Released version headings (``## [x.y.z]``), excluding ``[Unreleased]``."""
+    return {
+        m.group(1)
+        for m in re.finditer(r"^## \[([^\]]+)\]", text, re.MULTILINE)
+        if m.group(1) != "Unreleased"
+    }
+
+
+def adds_version_section(head_full_changelog: str, base_full_changelog: str) -> bool:
+    """True when the head changelog carries a version heading the base lacks.
+
+    A release-metadata sync normally materializes ``[Unreleased]`` into the new
+    version. When a release is cut out of order (two release runs raced, or a
+    tag is backfilled) ``[Unreleased]`` may already be empty on the base, so the
+    sync can only be recognized by the version section it adds.
+    """
+    return bool(version_headings(head_full_changelog) - version_headings(base_full_changelog))
+
+
 def has_meaningful_changelog_content(section: str) -> bool:
     if not section.strip():
         return False
@@ -261,7 +281,7 @@ def main() -> int:
         return 0
 
     if is_release_metadata_sync(files):
-        if head_unreleased.strip() == base_unreleased.strip():
+        if head_unreleased.strip() == base_unreleased.strip() and not adds_version_section(head_text, base_text):
             print(
                 "changelog gate: release metadata sync must materialize Unreleased into a version section",
                 file=sys.stderr,
