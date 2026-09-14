@@ -1,0 +1,9 @@
+- id: lh.feature.storage.example
+  title: One
+  status: shipped
+  since: v1.0.0
+  area: storage
+  surfaces: [storage]
+  highlight: "h"
+  description: "d"
+  hilight: "typo"

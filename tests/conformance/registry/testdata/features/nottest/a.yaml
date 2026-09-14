@@ -1,0 +1,8 @@
+- id: lh.feature.storage.example
+  title: One
+  status: shipped
+  area: storage
+  surfaces: [storage]
+  tests: [".github/workflows/ci.yaml"]
+  highlight: "h"
+  description: "d"
