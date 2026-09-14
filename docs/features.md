@@ -844,7 +844,7 @@ A delete over cold storage can be free or expensive depending on where the match
 
 ### ✅ Leftovers API — what an instance still owes
 
-`lh.feature.deletion.leftovers_api` · status: shipped · since: the release after v0.122.0 · surfaces: api
+`lh.feature.deletion.leftovers_api` · status: shipped · since: the release after v0.122.1 · surfaces: api
 
 **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
 
@@ -852,7 +852,7 @@ The alerts on retired-key eviction, non-durable tombstone records and unfinished
 
 - Verification: rows: `lh.delete.leftovers.status` (pass, pending) · tests: `internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded`, `internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered`, `internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere`
 - Docs: `docs/deletion-strategy.md`, `docs/operations.md#what-this-instance-still-owes-prefixleftovers`, `docs/operations.md#rolling-back`
-- Changelog: the release after `0.122.0`
+- Changelog: the release after `0.122.1`
 
 ### ✅ Hide, permanent and auto delete modes
 
