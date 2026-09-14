@@ -458,7 +458,8 @@ the key un-reaped, so the next tick retries it. An **un-delete** of a tombstone
 with an unfinished rewrite is refused with `409 Conflict` — the record lives on
 the tombstone, and removing it mid-rewrite would drop the only trace of a
 replacement object; retry once the rewrite settles (seconds, unless deletes are
-failing).
+failing). Stopping a delete task through the VictoriaLogs-compatible delete-task
+API removes the same tombstone and is refused the same way, with an error.
 
 **Publishes are conditional.** The swap happens only if the source file is
 still registered. If a compaction merged the same file between the rewrite's
