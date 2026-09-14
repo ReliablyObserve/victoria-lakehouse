@@ -283,3 +283,22 @@ func TestResumeRewrites_RetriesUntilTheDeleteLands(t *testing.T) {
 	}
 	f.assertConverged(t, "after the retried delete")
 }
+
+// TestAdd_ReaddingATombstoneKeepsItsUnfinishedRewriteRecords: a delete re-issued
+// under the same id (a retried delete task) replaces the tombstone's definition,
+// but the records of rewrites already in flight describe objects, not the
+// definition — dropping them would lose the only trace of a replacement.
+func TestAdd_ReaddingATombstoneKeepsItsUnfinishedRewriteRecords(t *testing.T) {
+	store := NewTombstoneStore()
+	store.Add(Tombstone{ID: "task", Query: "*", Mode: "auto",
+		Superseded: map[string]Supersession{"src": {NewKey: "repl", State: SupersessionPrepared}}})
+	store.Add(Tombstone{ID: "task", Query: `service.name:="x"`, Mode: "auto"})
+
+	got, _ := store.Get("task")
+	if got.Query != `service.name:="x"` {
+		t.Fatalf("the re-issued definition must win: %+v", got)
+	}
+	if got.Superseded["src"].NewKey != "repl" {
+		t.Fatalf("the unfinished rewrite record must survive the re-add: %+v", got.Superseded)
+	}
+}

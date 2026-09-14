@@ -356,7 +356,23 @@ func (s *TombstoneStore) PersistenceEnabled() bool {
 // so a reader can never observe a torn map.
 func (s *TombstoneStore) Add(ts Tombstone) {
 	s.mu.Lock()
-	s.tombstones[ts.ID] = cloneTombstone(ts)
+	next := cloneTombstone(ts)
+	// A delete re-issued under an existing id (a retried delete task) replaces
+	// the definition, but not the records of rewrites already in flight: those
+	// describe objects in the bucket, and dropping one loses the only trace of
+	// a replacement a restart would have to finish or undo.
+	if cur, ok := s.tombstones[ts.ID]; ok {
+		for source, rec := range cur.Superseded {
+			if _, overridden := next.Superseded[source]; overridden {
+				continue
+			}
+			if next.Superseded == nil {
+				next.Superseded = make(map[string]Supersession, len(cur.Superseded))
+			}
+			next.Superseded[source] = rec
+		}
+	}
+	s.tombstones[ts.ID] = next
 	// A new delete reusing a removed id stands; its marker no longer applies.
 	delete(s.removed, ts.ID)
 	p := s.persist
