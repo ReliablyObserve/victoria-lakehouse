@@ -71,7 +71,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// in the cold parquet.)
 	if lookup, ok := a.store.(traceIndexLookup); ok {
 		if traceID, isLookup := traceIndexLookupTraceID(qctx.Query); isLookup && traceID != "" {
-			startNs, endNs, found, _ := lookup.LookupTraceIndex(qctx.Context, traceID)
+			startNs, endNs, found, _ := lookup.LookupTraceIndex(qctx.Context, qctx.TenantIDs, traceID)
 			if found {
 				emitTraceIndexBlock(writeBlock, startNs, endNs)
 				return nil

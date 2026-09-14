@@ -28,7 +28,7 @@ graph LR
 
 | Component | Configuration |
 |---|---|
-| VictoriaLogs | v1.50.0, local disk (EBS-equivalent), continuous ingestion, port 9428 |
+| VictoriaLogs | v1.50.0, local disk (EBS-equivalent), continuous ingestion, port 9428 — the release pinned when this run was measured; the current pin is v1.52.0 |
 | Victoria Lakehouse | latest (PR #83), S3 via MinIO + **S3 latency proxy** (65ms GET, 80ms LIST, 15ms HEAD), port 19429, select-only mode, 64 file workers, 512MB cache |
 | ClickHouse | v26.5.1, querying same Parquet files via s3() table function |
 | S3 Latency Proxy | Reverse proxy adding realistic us-east-1 S3 latencies (±30% jitter) |

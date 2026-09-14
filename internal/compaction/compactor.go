@@ -18,6 +18,7 @@ import (
 	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -54,6 +55,24 @@ type CompactorConfig struct {
 	// parameter per knob. Passed by value because the struct is small
 	// and the compactor doesn't mutate it.
 	CompactionConfig config.CompactionConfig
+
+	// Tombstones lets compaction act as a second reaper: rows matching a
+	// tombstone that is eligible for physical removal are dropped from the
+	// merged output instead of being copied forward, and the tombstone's
+	// bookkeeping follows the rows (see reconcileTombstones). Optional — a nil
+	// store leaves compaction behaving exactly as it did before.
+	Tombstones *delete.TombstoneStore
+
+	// TombstoneRewriteDelay is the delete path's rewrite_delay: the un-delete
+	// window during which a permanent or auto tombstone's rows must NOT be
+	// physically removed. Compaction honours the same window the rewrite
+	// scheduler does (Tombstone.EligibleForPhysicalRemoval).
+	TombstoneRewriteDelay time.Duration
+
+	// NeverDeletePrefixes mirrors the orphan sweep's protected list so the
+	// reap bookkeeping never claims an object compaction is not allowed to
+	// remove. Empty means the sweep's defaults.
+	NeverDeletePrefixes []string
 
 	// TenantCompressionLookup resolves the per-output-level
 	// compression schedule for a given tenant prefix (e.g.
@@ -98,10 +117,17 @@ type Compactor struct {
 	bloomRebuilder   BloomRebuilder
 	cfg              config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
+	tombstones       *delete.TombstoneStore
+	tombstoneDelay   time.Duration
+	neverDelete      []string
 }
 
 // NewCompactor creates a Compactor from the given config.
 func NewCompactor(cfg CompactorConfig) *Compactor {
+	neverDelete := cfg.NeverDeletePrefixes
+	if len(neverDelete) == 0 {
+		neverDelete = defaultNeverDeletePrefixes()
+	}
 	return &Compactor{
 		pool:             cfg.Pool,
 		manifest:         cfg.Manifest,
@@ -112,6 +138,9 @@ func NewCompactor(cfg CompactorConfig) *Compactor {
 		bloomRebuilder:   cfg.BloomRebuilder,
 		cfg:              cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
+		tombstones:       cfg.Tombstones,
+		tombstoneDelay:   cfg.TombstoneRewriteDelay,
+		neverDelete:      neverDelete,
 	}
 }
 
@@ -192,6 +221,26 @@ type tenantFileGroup struct {
 // groupFilesByTenant partitions the input by tenant prefix + bucket.
 // Same-tenant files in different buckets are kept separate so output
 // inherits the source bucket. Group order is deterministic.
+// newCompactionOutputID draws the short random id an output key is built from.
+// A variable so a test can force the collision the claim guards against.
+var newCompactionOutputID = func() string { return uuid.New().String()[:8] }
+
+// maxOutputKeyAttempts bounds the redraw loop on a key collision.
+const maxOutputKeyAttempts = 5
+
+// claimOutputKey reserves an unused key for the merged output.
+func (c *Compactor) claimOutputKey(prefix, partition string, level int) (string, bool) {
+	for attempt := 0; attempt < maxOutputKeyAttempts; attempt++ {
+		key := fmt.Sprintf("%s%s/compacted-L%d-%s.parquet", prefix, partition, level, newCompactionOutputID())
+		if c.manifest.ClaimPending(key) {
+			return key, true
+		}
+		metrics.ManifestKeyClaimRejected.Inc("compaction_output")
+		logger.Warnf("compaction output key already in use; drawing another; key=%s", key)
+	}
+	return "", false
+}
+
 func groupFilesByTenant(files []manifest.FileInfo) []tenantFileGroup {
 	type groupKey struct {
 		Prefix string
@@ -257,7 +306,12 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		allData   [][]byte
 		inputKeys []string
 		bytesRead int64
+		// appliedTombstones is the set of tombstones the merge filtered out of
+		// the output, the only ones the output may be recorded clean for.
+		appliedTombstones map[string]bool
 	)
+	// One clock reading for the whole merge, so eligibility is judged once.
+	now := time.Now()
 	for _, f := range g.Files {
 		data, err := c.pool.Download(ctx, f.Key)
 		if err != nil {
@@ -276,6 +330,13 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	var minTime, maxTime int64
 	var labelAggregates map[string]map[string]int64
 	var bloomValues map[string][]string
+	// survivors describes the merged output when tombstoned rows were dropped
+	// from it (nil otherwise). The label set and raw size normally come from
+	// the INPUT files' manifest entries, which is exact for a pure row union;
+	// once rows are dropped those inputs describe data the output no longer
+	// holds, and a label value only the dropped rows carried would be fed to
+	// the pmeta field catalog and served by field_values after the rows are gone.
+	var survivors *survivorMeta
 
 	// Pick the per-output-level compression. Tenant override beats
 	// the global progressive schedule, which in turn beats the
@@ -317,6 +378,18 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		if err != nil {
 			return nil, err
 		}
+		// Drop tombstoned rows BEFORE anything is derived from the merge:
+		// row count, time bounds, label aggregates and blooms all feed the
+		// manifest, and deriving them from rows that are about to be dropped
+		// would publish metadata describing data the output does not contain.
+		var dropped int
+		merged, dropped, appliedTombstones = dropTombstonedLogRows(c.tombstones, merged, now, c.tombstoneDelay)
+		if dropped > 0 {
+			survivors = &survivorMeta{
+				labels:   schema.ExtractLogLabels(merged),
+				rawBytes: schema.EstimateRawBytesLogs(merged),
+			}
+		}
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
 			// True min/max scan — NOT merged[0]/merged[len-1]. The merge
@@ -348,6 +421,15 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		if err != nil {
 			return nil, err
 		}
+		// See the logs branch: suppression happens before any derived metadata.
+		var dropped int
+		merged, dropped, appliedTombstones = dropTombstonedTraceRows(c.tombstones, merged, now, c.tombstoneDelay)
+		if dropped > 0 {
+			survivors = &survivorMeta{
+				labels:   schema.ExtractTraceLabels(merged),
+				rawBytes: schema.EstimateRawBytesTraces(merged),
+			}
+		}
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
 			// True min/max scan — same rationale as the logs branch above.
@@ -377,10 +459,16 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	if outputPrefix == "" {
 		outputPrefix = c.prefix
 	}
-	short := uuid.New().String()[:8]
-	outputKey := fmt.Sprintf("%s%s/compacted-L%d-%s.parquet", outputPrefix, partition, outputLevel, short)
-
+	// Until the publish below, the output is a second copy of its sources'
+	// rows: a manifest refresh running in between must not adopt it. The claim
+	// also makes the short random id collision-safe — uploading to a key the
+	// manifest already serves would overwrite a live object.
+	outputKey, claimed := c.claimOutputKey(outputPrefix, partition, outputLevel)
+	if !claimed {
+		return nil, fmt.Errorf("no free output key for %s", partition)
+	}
 	if err := c.pool.Upload(ctx, outputKey, outputData); err != nil {
+		c.manifest.ReleasePending(outputKey)
 		return nil, fmt.Errorf("upload compacted file: %w", err)
 	}
 
@@ -394,6 +482,9 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	var inputRawBytes int64
 	for _, f := range g.Files {
 		inputRawBytes += f.RawBytes
+	}
+	if survivors != nil {
+		inputRawBytes = survivors.rawBytes
 	}
 
 	// Per-output-level compression observability. The ratio is
@@ -421,8 +512,18 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// the bug. The union is bounded by maxLabelsPerField inside
 	// indexFileLabels so a misbehaving input can't blow up the index.
 	mergedLabels := mergeFileLabels(g.Files)
+	if survivors != nil {
+		mergedLabels = survivors.labels
+	}
 
-	c.manifest.AddFile(partition, manifest.FileInfo{
+	// Publish: register the output and drop the sources in ONE step, and only
+	// if every source is still registered. A source can leave the manifest
+	// while this merge runs — a delete rewrite replaced it, or a racing
+	// compaction merged it. The output was built from that source's ORIGINAL
+	// rows, so registering it anyway would duplicate them next to whatever
+	// replaced the source (and bring back any rows a delete removed). The
+	// merge is abandoned instead and the next tick re-selects.
+	if !c.manifest.ReplaceFiles(partition, inputKeys, manifest.FileInfo{
 		Key:               outputKey,
 		Bucket:            g.Bucket,
 		Size:              int64(len(outputData)),
@@ -436,14 +537,47 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		Labels:            mergedLabels,
 		LabelAggregates:   labelAggregates,
 		ColumnBytes:       columnBytesFromFooter(outputData),
-	})
-
-	for _, f := range g.Files {
-		c.manifest.RemoveFile(partition, f.Key)
-		if err := c.pool.Delete(ctx, f.Key); err != nil {
-			logger.Warnf("failed to delete source file; key=%s, error=%s", f.Key, err)
+	}) {
+		metrics.CompactionPublishConflicts.Inc()
+		if c.manifest.HasKey(outputKey) {
+			// The output key belongs to a file the manifest already serves.
+			// The claim above makes this unreachable within one process; never
+			// delete in that case — the object may be that other file.
+			metrics.ManifestKeyClaimRejected.Inc("publish_key_taken")
+			return nil, fmt.Errorf("compaction of %s abandoned: its output key %s is already registered", partition, outputKey)
 		}
+		// Retired before the delete: if the delete fails, no refresh adopts
+		// the abandoned output, and the scheduler's reclaim retries it.
+		c.manifest.AbandonPending(outputKey)
+		if err := c.pool.Delete(ctx, outputKey); err != nil {
+			logger.Warnf("abandoned compaction output not deleted (retried by the next reclaim); key=%s: %s", outputKey, err)
+		} else {
+			c.manifest.ConfirmDeleted(outputKey)
+		}
+		return nil, fmt.Errorf("compaction of %s abandoned: a source left the manifest during the merge", partition)
 	}
+
+	// The publish retired every source in the manifest, so a source whose
+	// delete fails is not adopted again by a refresh; the scheduler's reclaim
+	// retries the delete.
+	for _, f := range g.Files {
+		if err := c.pool.Delete(ctx, f.Key); err != nil {
+			logger.Warnf("failed to delete source file (retried by the next reclaim); key=%s, error=%s", f.Key, err)
+			continue
+		}
+		c.manifest.ConfirmDeleted(f.Key)
+	}
+
+	// The merged output is published and the sources are gone. Every tombstone
+	// that named a source must now name the output instead, marked clean only
+	// when compaction actually filtered that tombstone's rows out of it — so a
+	// tombstone can never complete while a file that still holds its rows
+	// exists (which would un-hide those rows the moment it retires).
+	// Retiring a tombstone means its rows stop being hidden, so it waits for a
+	// manifest that has listed the bucket (the file set it is judged against
+	// must be real) and for a tombstone store that was restored completely.
+	canRetire := c.manifest.Listed() && (c.tombstones == nil || !c.tombstones.S3RestorePending())
+	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, appliedTombstones, canRetire)
 
 	return &compactGroupResult{
 		InputKeys:    inputKeys,
@@ -664,6 +798,24 @@ func columnBytesFromFooter(data []byte) map[string]int64 {
 		return nil
 	}
 	return out
+}
+
+// WriteLogs writes rows exactly as a compaction output is written: zstd at the
+// given level, the SBBF column blooms for the configured bloom set (including
+// Tier-2 slot blooms), and the slot binding in the footer KV. Exported so the
+// delete rewriter produces replacements that are indistinguishable from a
+// compaction output of the same rows — a rewrite must never reduce a file's
+// prunability, and sharing the one writer means a later improvement to the
+// output format reaches both producers at once.
+func WriteLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
+	return writeCompactedLogs(rows, rowGroupSize, compressionLevel)
+}
+
+// WriteTraces is WriteLogs for spans; it also carries the per-file `_trace_idx`
+// footer index, recomputed from the rows written, so trace-by-ID lookups keep
+// their fast path on a rewritten file.
+func WriteTraces(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
+	return writeCompactedTraces(rows, rowGroupSize, compressionLevel)
 }
 
 func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error) {

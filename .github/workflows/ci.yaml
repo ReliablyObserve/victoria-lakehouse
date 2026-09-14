@@ -10,9 +10,9 @@ permissions:
   contents: read
 
 env:
-  VL_VERSION_LOGS: v1.50.0
-  VL_COMMIT_TRACES: 77df0c04d532
-  VT_VERSION: v0.9.2
+  VL_VERSION_LOGS: v1.52.0
+  VL_COMMIT_TRACES: 6ae2da3c11f3
+  VT_VERSION: v0.11.0
   GOWORK: "off"
 
 jobs:
@@ -327,6 +327,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Pure repo-tree checks: the two VictoriaLogs patch directories must
+      # stay byte-equal except where patches/vl-traces/DIVERGENCE.md declares
+      # a reason. No upstream checkout needed, so it runs before setup-go.
+      - name: Patch-set consistency guard self-test
+        run: scripts/ci/tests/check_patches_equal_test.sh
+
+      - name: Patch-set consistency (vl-logs vs vl-traces)
+        run: scripts/ci/check_patches_equal.sh
+
+      # The daily upstream sync probe, against a fake upstream (local git
+      # repositories, shimmed gh and go): every verdict and exit code, no
+      # network, no Go toolchain needed.
+      - name: Upstream sync probe self-test
+        run: scripts/ci/tests/upstream_sync_probe_test.sh
+
+      # Its publishing half against a local bare repository: no token no push,
+      # never overwriting a branch a maintainer committed to, one pull request.
+      - name: Upstream sync publish self-test
+        run: scripts/ci/tests/upstream_sync_publish_test.sh
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -456,6 +476,7 @@ jobs:
           for attempt in 1 2 3; do
             docker build -f Dockerfile.logs \
               --build-arg VERSION=${{ github.sha }} \
+              --build-arg VL_VERSION=${{ env.VL_VERSION_LOGS }} \
               -t ghcr.io/${REPO}/lakehouse-logs:${{ github.sha }} . && exit 0
             echo "build attempt ${attempt} failed; retrying in $((attempt*20))s"
             sleep $((attempt*20))
@@ -478,6 +499,9 @@ jobs:
           for attempt in 1 2 3; do
             docker build -f Dockerfile.traces \
               --build-arg VERSION=${{ github.sha }} \
+              --build-arg VL_VERSION=${{ env.VL_VERSION_LOGS }} \
+              --build-arg VL_COMMIT=${{ env.VL_COMMIT_TRACES }} \
+              --build-arg VT_VERSION=${{ env.VT_VERSION }} \
               -t ghcr.io/${REPO}/lakehouse-traces:${{ github.sha }} . && exit 0
             echo "build attempt ${attempt} failed; retrying in $((attempt*20))s"
             sleep $((attempt*20))

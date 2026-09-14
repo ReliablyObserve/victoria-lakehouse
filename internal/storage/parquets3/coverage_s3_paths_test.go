@@ -17,6 +17,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -261,6 +262,7 @@ func TestInteg_queryBufferBridge_LogsMode(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)
@@ -284,7 +286,7 @@ func TestInteg_queryBufferBridge_LogsMode(t *testing.T) {
 	startNs := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 10, 15, 0, 0, 0, time.UTC).UnixNano()
 
-	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -310,6 +312,7 @@ func TestInteg_queryBufferBridge_TracesMode(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)
@@ -334,7 +337,7 @@ func TestInteg_queryBufferBridge_TracesMode(t *testing.T) {
 	startNs := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC).UnixNano()
 	endNs := time.Date(2026, 5, 10, 15, 0, 0, 0, time.UTC).UnixNano()
 
-	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), startNs, endNs, 0, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
 		})
@@ -360,7 +363,7 @@ func TestInteg_queryBufferBridge_DisabledConfig(t *testing.T) {
 	s.bufferBridge = bb
 
 	var rowsEmitted atomic.Int64
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called when buffer query is disabled")
 		})
@@ -552,9 +555,10 @@ func TestInteg_RunQuery_TimestampOnlyHint(t *testing.T) {
 	startNs := now.Add(-time.Hour).UnixNano()
 	endNs := now.Add(time.Hour).UnixNano()
 
-	// Use WithTimestampOnlyHint to trigger the metadata fast path
+	// The timestamp-only hint plus a count-shaped query is what puts a query
+	// on the metadata fast path — a bare `*` is a retrieval and reads the file.
 	ctx := storage.WithTimestampOnlyHint(context.Background())
-	q := mustParseQueryWithTime(t, "*", startNs, endNs)
+	q := mustParseQueryWithTime(t, "* | stats count()", startNs, endNs)
 
 	var totalRows int
 	var mu sync.Mutex
@@ -2273,7 +2277,7 @@ func TestInteg_logRowsToDataBlock(t *testing.T) {
 		{TimestampUnixNano: now + int64(time.Second), Body: "world", SeverityText: "ERROR", ServiceName: "worker"},
 	}
 
-	db := s.logRowsToDataBlock(rows)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -2284,7 +2288,7 @@ func TestInteg_logRowsToDataBlock(t *testing.T) {
 
 func TestInteg_logRowsToDataBlock_Empty(t *testing.T) {
 	s := testStorage()
-	db := s.logRowsToDataBlock(nil)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", nil)
 	if db != nil {
 		t.Error("expected nil for empty rows")
 	}
@@ -2300,7 +2304,7 @@ func TestInteg_traceRowsToDataBlock(t *testing.T) {
 		{TimestampUnixNano: now, TraceID: "trace-1", SpanID: "span-1", ServiceName: "api-gw"},
 	}
 
-	db := s.traceRowsToDataBlock(rows)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", rows)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -2311,7 +2315,7 @@ func TestInteg_traceRowsToDataBlock(t *testing.T) {
 
 func TestInteg_traceRowsToDataBlock_Empty(t *testing.T) {
 	s := testStorage()
-	db := s.traceRowsToDataBlock(nil)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", nil)
 	if db != nil {
 		t.Error("expected nil for empty rows")
 	}
@@ -2570,6 +2574,7 @@ func TestInteg_RunQuery_WithBufferBridge(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)
@@ -3703,7 +3708,7 @@ func TestInteg_RunQuery_TimestampOnlyFastPath(t *testing.T) {
 
 	startNs := now.Add(-time.Minute).UnixNano()
 	endNs := now.Add(time.Minute).UnixNano()
-	q := mustParseQueryWithTime(t, "*", startNs, endNs)
+	q := mustParseQueryWithTime(t, "* | stats count()", startNs, endNs)
 
 	ctx := storage.WithTimestampOnlyHint(context.Background())
 
@@ -3717,8 +3722,11 @@ func TestInteg_RunQuery_TimestampOnlyFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunQuery with ts-only: %v", err)
 	}
-	// Should return results via either fast path or regular path
-	t.Logf("timestamp-only fast path: totalRows=%d", totalRows)
+	// The file is fully inside the window, so the manifest answers it and the
+	// row count must be exactly what the file holds.
+	if totalRows != len(rows) {
+		t.Errorf("totalRows = %d, want %d", totalRows, len(rows))
+	}
 }
 
 // ---------------------------------------------------------------------------

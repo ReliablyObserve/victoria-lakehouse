@@ -20,6 +20,8 @@ The query context carries:
 - `Query` -- the raw LogsQL, Jaeger, or Tempo query string
 - `RequestedColumns` -- optional column projection list
 
+The enumeration endpoints (`field_names`, `field_values`, `streams`, `stream_field_values`) select objects through the same tenant-scoped manifest lookup and then scan **every** selected object. They do not second-guess the list: an object whose rows are already inside a merged compaction output never reaches them, because the publish removes it from the manifest and retires its key until a listing proves the object gone (see [manifest-system.md](manifest-system.md#compaction-integration)). Deciding that in the read path from time ranges and compaction levels hid the newest flush of a live partition — its rows fall inside the compacted neighbour's backfilled range — from every enumeration while `query` and `hits` still returned them.
+
 ## Pruning Cascade
 
 Victoria Lakehouse applies a ten-level pruning cascade, each eliminating work before the next level begins. The cascade is split into three phases: file-level pruning (avoids downloading data), row-group-level pruning (avoids reading row data), and row-level pruning (minimizes deserialized rows).
@@ -102,7 +104,11 @@ For exact-match queries on bloom-enabled columns, the engine checks partition-le
 
 ### Level 3: Footer Parse and Cache
 
-The Parquet footer (file metadata, schema, column indices) is parsed once per file access and stored in an LRU cache (`FooterCache`, default 10K entries; auto-resizes after each manifest refresh to track active file count). On subsequent accesses, the parsed `parquet.File` is reused without re-parsing.
+The Parquet footer (file metadata, schema, column indices) is parsed once per file access and stored in an LRU cache (`FooterCache`, default 10K entries; auto-resizes after each manifest refresh to track active file count). A cached entry is metadata only: it supplies the schema, the column count and the row-group layout that plan a ranged read of the projected columns, so a projected read of a known file needs no footer round trip.
+
+A read that needs every column (a bare filter, `* | limit N`, or the upstream `limit` argument, which VL rewrites to `| sort by (_time) desc | offset | limit`) downloads the whole object and always decodes rows through a fresh handle over those bytes, on both binaries. It never reuses the cached handle: a cache entry is backed by a copy of the object's metadata tail — the page index and the footer — and returns zeros for the column data, and parquet-go column and page readers keep per-read state anyway. The traces binary used to reuse the cached handle there, so such a query returned no rows from any object of 128 KiB or more whose footer the same query had prefetched; `TestFullRowRead_AfterFooterPrefetch` and `TestOpenParquet_FullDownloadNeverReusesCachedHandle` (`lakehouse-traces/internal/storage/parquets3/full_read_footer_cache_test.go`) pin the fix.
+
+A whole-object read caches that metadata tail rather than a handle over the object it just downloaded: the cache is bounded by entry count (10,000), not bytes, so entries referencing object bodies could hold gigabytes — `TestParseFooterFromData_EntryDoesNotRetainTheObject` measures it. The copy includes the page index (the per-page null counts and min/max bounds that `field_names`' hit counts and the manifest's time-bound enrichment read), so a warm cache answers those from RAM instead of degrading to whole-chunk estimates.
 
 Cold-file footers are fetched via a two-phase range read. The first
 range pulls the last 64 KiB of the file in one round-trip, which

@@ -219,6 +219,14 @@ The receiving node verifies the Bearer token, then applies additions and removal
 
 The compaction scheduler also uses `Pusher.Notify()` after merging files — broadcasting both the new merged file (added) and the replaced source files (removed).
 
+**Superseded sources.** Compaction writes the merged output, removes the sources from the manifest and deletes their objects. An S3 `ListObjectsV2` that started before those deletes still returns the sources, so the refresh applying that listing would put their rows back next to the merged output that already holds them — every row read twice and every field value counted twice until the next refresh. The publish (`ReplaceFiles`) therefore retires each source key, and the refresh does not adopt a retired key.
+
+The retirement outlives the delete. `Manifest.ConfirmDeleted(key)`, called when `Delete` returns success, clears `Reclaim` — nothing more is owed, so the scheduler's reclaim stops retrying it — but keeps the record, marked `Deleted`. Forgetting it there would reopen the exact window it exists for: the in-flight listing was answered from the bucket as it was *before* the delete. What forgets a key is the first accepted listing that **began after the retirement** and came back without it; no listing still in flight can report an object such a listing could not see. A rejected listing (cliff guard) settles nothing. The backstops are `retiredKeyTTL` and `maxRetiredKeys`, which evict the provably-gone keys first and an owed key last.
+
+So the set is bounded by the objects a listing might still report — roughly one refresh interval of deletes, plus anything whose delete failed. `lakehouse_manifest_retired_delete_owed` and `lakehouse_manifest_retired_delete_landed` split it; the second should drain every refresh.
+
+This is the only place redundancy is decided. The field-enumeration paths (`field_names`, `field_values`, `streams`, `stream_field_values`) used to guess it instead, dropping any object whose time range fell inside a higher-compaction-level neighbour's. On a partition that is both compacted and still being written — a live tenant with backfilled history — that hid the newest flush from every enumeration while `/select/logsql/query` still returned its rows.
+
 ## S3 Refresh
 
 **Full scan** via `RefreshFromS3(ctx, client)`:
@@ -231,16 +239,42 @@ flowchart TD
     FILTER -->|Yes| EXTRACT[ExtractPartition<br/>Create FileInfo]
     FILTER -->|No| SKIP[Skip]
     EXTRACT --> GROUP[Group by partition]
-    GROUP --> REPLACE[Atomic swap:<br/>replace entire manifest]
+    GROUP --> EXCL["Drop retired and pending keys;<br/>keep files published during the listing"]
+    EXCL --> REPLACE[Atomic swap:<br/>replace entire manifest]
     REPLACE --> LOG["Log: partitions=N, files=N, bytes=N"]
 ```
 
 - Uses AWS SDK v2 paginator (handles 1000-item pages)
 - Filters to `.parquet` files only
-- Atomically replaces the entire manifest under write lock
+- Keeps the full tracked entry (every enrichment field) for keys it already knows
+- Atomically replaces the entire manifest under write lock, unless the cliff guard rejects a listing that lost more than half the files
 - Recalculates `minTime`, `maxTime`, `totalFiles`, `totalBytes`
+- `ApplyListing(objects, listStart)` applies a listing from any other lister the same way
 
-**Limitation:** S3 refresh only populates `Key` and `Size` fields. Rich metadata (`RowCount`, `MinTimeNs`, `MaxTimeNs`, `Labels`) is only available for files registered through the write path.
+**Limitation:** S3 refresh only populates `Key` and `Size` fields for keys it did not already track. Rich metadata (`RowCount`, `MinTimeNs`, `MaxTimeNs`, `Labels`) is only available for files registered through the write path.
+
+### What the refresh does not adopt
+
+A listing cannot tell a live file from an object the manifest deliberately let
+go of, so the manifest remembers two kinds of key the refresh must leave out:
+
+| kind | written by | why adopting it is wrong | forgotten when |
+|------|------------|--------------------------|----------------|
+| **retired** | `ReplaceFile` / `ReplaceFiles` (the source a rewrite or compaction publish replaced), `RemoveFileIfPresent`, `AbandonPending` (an output whose publish was refused), `RemoveFile` (retention, a peer's push), `Retire` | its rows would be served next to the replacement's copy, deleted rows would reappear once the tombstone retires, and the orphan sweep — which only reclaims unmanifested objects — would never see it | the first accepted listing that began after the retirement comes back without it — a landed delete only clears the debt (`ConfirmDeleted`), it does not release the key; or after 7 days for a key no delete is owed for (cap 100,000, evicting provably-deleted keys first, then unowed, then owed, oldest first within each) |
+| **pending** | `MarkPending`, before a rewrite or compaction uploads an output | its rows would be served next to its still-registered source, and the publish that follows would be dropped as a duplicate key, losing its row counts and labels | its publish, or `AbandonPending` |
+
+Keys the manifest never knew — files flushed by a peer, or flushed after the
+snapshot a node restarted from — are still adopted; that is what the refresh is
+for. And a file registered while a listing ran is kept even though that
+listing cannot contain it, so a publish is never hidden until the next refresh.
+
+A retired key with `Reclaim` set is an object this node owes a delete (its
+first delete failed). The compaction scheduler retries those deletes on every
+scan (`ReclaimRetired`, at most 1,000 per scan). Retired keys are persisted with
+the snapshot; pending keys are not — whether an interrupted upload was published
+is not something a periodic snapshot can know, so the delete rewriter records
+that durably on the tombstone instead (see
+[Operations → Background Rewriter](operations.md#background-rewriter)).
 
 ### Refresh Schedule
 
@@ -262,17 +296,19 @@ flowchart TD
     BOOT[Startup] --> DISK{Disk snapshot?}
     DISK -->|Yes| LOAD[LoadFrom disk<br/>Instant restore]
     DISK -->|No| EMPTY[Empty manifest]
-    LOAD --> S3[RefreshFromS3<br/>5 min timeout]
-    EMPTY --> S3
+    LOAD --> RESOLVE[Resolve interrupted<br/>delete rewrites]
+    EMPTY --> RESOLVE
+    RESOLVE --> S3[RefreshFromS3<br/>5 min timeout]
     S3 --> WARM[WarmLabelIndex<br/>Sample 10 files]
     WARM --> READY[PhaseReady<br/>Start periodic refresh]
 ```
 
 On startup:
 1. Load disk snapshot if available (fast, < 100 ms)
-2. Full S3 refresh (may take seconds for large buckets)
-3. Sample files to build label index for field discovery
-4. Mark ready and start periodic refresh ticker
+2. Apply every delete rewrite a previous process left unfinished to the manifest's view (retire the objects the refresh must not adopt)
+3. Full S3 refresh (may take seconds for large buckets)
+4. Sample files to build label index for field discovery
+5. Mark ready and start periodic refresh ticker
 
 ## Persistence
 
@@ -287,6 +323,7 @@ type persistedManifest struct {
     TotalFiles_ int
     TotalBytes_ int64
     SavedAt     time.Time
+    Retired     []RetiredKey // absent in older snapshots
 }
 ```
 
@@ -360,6 +397,10 @@ Concurrent reads are fully parallel. Writes serialize against each other and blo
 | `lakehouse_manifest_bytes` | Gauge | Current tracked total bytes |
 | `lakehouse_manifest_fast_path_total` | Counter | Queries with no overlapping data |
 | `lakehouse_manifest_refresh_duration_seconds` | Histogram | S3 refresh latency |
+| `lakehouse_manifest_retired_keys` | Gauge | Keys kept out of the refresh while their objects may still exist; drains as deletes land |
+| `lakehouse_manifest_refresh_skipped_total{reason}` | Counter | Listed objects left out (`retired`, `pending`) and files kept although the listing lacked them (`published_during_listing`) |
+| `lakehouse_manifest_retired_evicted_total{reason}` | Counter | Retired keys forgotten by the age (`ttl`) or size (`cap`) bound instead of by their delete; should stay 0 |
+| `lakehouse_manifest_retired_reclaimed_total` / `lakehouse_manifest_retired_reclaim_errors_total` | Counter | Retried deletes of superseded and abandoned objects |
 | `lakehouse_manifest_push_total` | Counter | Updates sent to peers |
 | `lakehouse_manifest_push_peers` | Gauge | Peer count in cluster |
 | `lakehouse_manifest_push_errors_total` | Counter | Failed push attempts |

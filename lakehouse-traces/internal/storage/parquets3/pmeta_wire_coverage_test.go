@@ -206,7 +206,7 @@ func TestCatalogFieldNames_RangeUnion(t *testing.T) {
 	})
 
 	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
-	got := s.catalogFieldNames(q)
+	got := s.catalogFieldNames(q, tenantScope{all: true})
 	if !reflect.DeepEqual(got, []string{"env", "service.name"}) {
 		t.Errorf("catalogFieldNames = %v, want [env service.name] (sorted union)", got)
 	}
@@ -215,7 +215,7 @@ func TestCatalogFieldNames_RangeUnion(t *testing.T) {
 	qOld := mustParseQueryWithTime(t, "*",
 		time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
 		time.Date(1999, 1, 2, 0, 0, 0, 0, time.UTC).UnixNano())
-	if got := s.catalogFieldNames(qOld); got != nil {
+	if got := s.catalogFieldNames(qOld, tenantScope{all: true}); got != nil {
 		t.Errorf("expected nil for non-overlapping range, got %v", got)
 	}
 }

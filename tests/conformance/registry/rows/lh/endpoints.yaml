@@ -160,6 +160,20 @@
   pending: true
   notes: "Depends on a prior delete step in the same run: {{tombstone_id}} is the id that step's response returned, not a seeded value."
 
+- id: lh.delete.leftovers.status
+  title: "LH delete leftovers — list retired/pending keys and unfinished rewrites"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /delete/logsql/leftovers }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  notes: "Read-only and instance-wide (not tenant-scoped); the delete alerts point at it to name the objects they warn about."
+
 - id: lh.delete.verify.status
   title: "LH delete verify — confirm a query's matching rows are gone"
   surface: lh
@@ -263,3 +277,31 @@
   compare: { type: schema }
   layers: [api]
   pending: true
+
+- id: lh.delete.rewrite_keeps_kept_rows
+  title: "LH delete rewrite — the rows a delete did NOT match stay queryable afterwards"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: POST, path: /delete/logsql/delete, params: { query: "service.name:checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}", mode: "permanent" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  notes: "After the background rewriter processes the tombstone, a query over the same window must still return every row the delete did not match, exactly once, and none that it did. The rewritten object must be registered in the manifest under the source's own tenant directory and the superseded key must be gone from it — and stay gone through every manifest refresh, including after a restart that interrupted the rewrite and when a compaction of the same file races it. Covered at unit level by internal/delete/rewrite_manifest_test.go (TestRewrite_PublishesReplacementIntoManifest), internal/delete/rewrite_crash_refresh_test.go (TestRewriteCrashMatrix_WithManifestRefresh), internal/delete/rewrite_tenant_key_test.go, internal/compaction/delete_race_test.go (TestDeleteRace_*), internal/compaction/delete_refresh_test.go (TestDeleteRefresh_*) and internal/compaction/delete_property_test.go (TestDeleteLifecycleProperties); this row is the end-to-end expectation the runner will execute."
+
+- id: lh.delete.hide_survives_crash
+  title: "LH hide-mode delete — suppression survives a non-graceful restart"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: POST, path: /delete/logsql/delete, params: { query: "service.name:checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}", mode: "hide" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  notes: "Create a hide-mode tombstone, kill the pod without a graceful shutdown, restart it, and query the same window: the suppressed rows must still be absent, the deleted value must still be absent from field_values, and removing the tombstone afterwards must bring the rows back even if a compaction ran in between. Covered at unit level by internal/delete/tombstone_durability_test.go (TestTombstoneDurability_SurvivesACrashViaDisk / ViaS3 / RestoreUnionsDiskAndS3), internal/storage/parquets3/fields_tombstones_test.go (TestFieldValues_TombstonedValueDisappears) and internal/compaction/tombstones_test.go (TestCompaction_HideModeRowsAreCarriedForward); this row is the end-to-end expectation the runner will execute."

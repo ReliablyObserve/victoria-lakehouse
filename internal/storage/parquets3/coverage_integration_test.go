@@ -9,16 +9,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
-
-	"sync/atomic"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
@@ -36,6 +36,11 @@ type mockS3Server struct {
 	mu    sync.RWMutex
 	files map[string][]byte // key -> file data
 	srv   *httptest.Server
+
+	// gets / bytesServed count object reads (full and ranged) and the body
+	// bytes they returned, so benchmarks can report real S3 economics.
+	gets        atomic.Int64
+	bytesServed atomic.Int64
 }
 
 func newMockS3Server() *mockS3Server {
@@ -57,10 +62,31 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) < 2 {
-		// ListObjectsV2 request
+		// ListObjectsV2 request: every stored key under the prefix, so the
+		// production manifest refresh can be exercised against this bucket.
 		if r.URL.Query().Get("list-type") == "2" {
+			prefix := r.URL.Query().Get("prefix")
+			m.mu.RLock()
+			keys := make([]string, 0, len(m.files))
+			for k := range m.files {
+				if strings.HasPrefix(k, prefix) {
+					keys = append(keys, k)
+				}
+			}
+			sizes := make(map[string]int, len(keys))
+			for _, k := range keys {
+				sizes[k] = len(m.files[k])
+			}
+			m.mu.RUnlock()
+			sort.Strings(keys)
+			var b strings.Builder
+			b.WriteString(`<?xml version="1.0"?><ListBucketResult>`)
+			for _, k := range keys {
+				fmt.Fprintf(&b, `<Contents><Key>%s</Key><Size>%d</Size></Contents>`, k, sizes[k])
+			}
+			b.WriteString(`<IsTruncated>false</IsTruncated></ListBucketResult>`)
 			w.Header().Set("Content-Type", "application/xml")
-			_, _ = fmt.Fprint(w, `<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`)
+			_, _ = fmt.Fprint(w, b.String())
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -104,12 +130,16 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
 		w.Header().Set("Content-Length", strconv.Itoa(int(end-start+1)))
 		w.WriteHeader(http.StatusPartialContent)
+		m.gets.Add(1)
+		m.bytesServed.Add(end - start + 1)
 		_, _ = w.Write(data[start : end+1])
 		return
 	}
 
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
+	m.gets.Add(1)
+	m.bytesServed.Add(int64(len(data)))
 	_, _ = w.Write(data)
 }
 
@@ -126,7 +156,7 @@ func (m *mockS3Server) url() string {
 // and manifest.
 // ---------------------------------------------------------------------------
 
-func testStorageWithS3(t *testing.T, s3url string) *Storage {
+func testStorageWithS3(t testing.TB, s3url string) *Storage {
 	t.Helper()
 	pool := testPool(t, s3url)
 	cfg := testConfig()
@@ -147,7 +177,7 @@ func testStorageWithS3(t *testing.T, s3url string) *Storage {
 }
 
 // writeParquetToBytes generates a Parquet file in memory and returns its bytes.
-func writeParquetToBytes(t *testing.T, rows []logRow) []byte {
+func writeParquetToBytes(t testing.TB, rows []logRow) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	w := parquet.NewGenericWriter[logRow](&buf, parquet.Compression(&parquet.Zstd))
@@ -1614,7 +1644,7 @@ func TestInteg_queryBufferBridge_NilBridge(t *testing.T) {
 
 	var rowsEmitted atomic.Int64
 	// Should not panic
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 0, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called with nil bridge")
 		})
@@ -2073,7 +2103,7 @@ func TestInteg_queryBufferBridge_MaxRowsExceeded(t *testing.T) {
 	rowsEmitted.Store(100)
 
 	// Should not panic or call writeBlock when maxRows is exceeded
-	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 50, &rowsEmitted, 0, nil, nil,
+	s.queryBufferBridge(context.Background(), 0, int64(time.Hour), 50, &rowsEmitted, nil, nil, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			t.Error("should not be called when maxRows exceeded")
 		})

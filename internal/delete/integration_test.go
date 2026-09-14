@@ -14,6 +14,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	lhmanifest "github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -34,14 +35,40 @@ func writeTestParquet(t *testing.T, rows []schema.LogRow) []byte {
 
 // testSetup creates all the components needed for integration tests.
 type testSetup struct {
-	pool      *mockS3Pool
-	store     *TombstoneStore
-	manifest  *mockManifest
+	pool     *mockS3Pool
+	store    *TombstoneStore
+	manifest *mockManifest
+	// files is the real manifest the rewrite scheduler publishes into. Without
+	// one the scheduler refuses to rewrite at all, which is the safeguard that
+	// keeps an unwired deployment from orphaning its replacements.
+	files     *lhmanifest.Manifest
 	detector  *StorageClassDetector
 	rewriter  *Rewriter
 	scheduler *RewriteScheduler
 	handler   *Handler
 	mux       *http.ServeMux
+}
+
+// setFiles registers the given files with BOTH the handler's query-side mock
+// and the real manifest the rewrite scheduler publishes into, so a test cannot
+// accidentally set up a state where the two already disagree.
+func (ts *testSetup) setFiles(files []FileInfo) {
+	ts.manifest.files = files
+	objects := make([]lhmanifest.ListedObject, 0, len(files))
+	for _, f := range files {
+		ts.files.AddFile(extractPartition(f.Key), lhmanifest.FileInfo{
+			Key:       f.Key,
+			Size:      f.Size,
+			MinTimeNs: f.MinTimeNs,
+			MaxTimeNs: f.MaxTimeNs,
+			RowCount:  1,
+		})
+		objects = append(objects, lhmanifest.ListedObject{Key: f.Key, Size: f.Size})
+	}
+	// A running node has listed its bucket; until a manifest has, the scheduler
+	// refuses to read an absent key as a deleted object and never retires a
+	// tombstone (see Manifest.Listed).
+	ts.files.ApplyListing(objects, time.Now())
 }
 
 func newTestSetup(t *testing.T, lifecycleRules []LifecycleRule) *testSetup {
@@ -60,6 +87,8 @@ func newTestSetup(t *testing.T, lifecycleRules []LifecycleRule) *testSetup {
 
 	handler := NewHandler(store, manifest, detector, cfg, "logs")
 
+	files := lhmanifest.New("test-bucket", "")
+
 	scheduler := NewRewriteScheduler(RewriteSchedulerConfig{
 		Store:          store,
 		Rewriter:       rewriter,
@@ -67,6 +96,7 @@ func newTestSetup(t *testing.T, lifecycleRules []LifecycleRule) *testSetup {
 		RewriteDelay:   0, // no delay for tests
 		AllowedClasses: []string{"STANDARD"},
 		MaxConcurrent:  1,
+		Manifest:       files,
 	})
 
 	mux := http.NewServeMux()
@@ -76,6 +106,7 @@ func newTestSetup(t *testing.T, lifecycleRules []LifecycleRule) *testSetup {
 		pool:      pool,
 		store:     store,
 		manifest:  manifest,
+		files:     files,
 		detector:  detector,
 		rewriter:  rewriter,
 		scheduler: scheduler,
@@ -120,6 +151,18 @@ func (s *testSetup) doGet(t *testing.T, path string) map[string]any {
 	return result
 }
 
+// doGetExpect asserts the status code of a GET without requiring a JSON body —
+// used where the interesting outcome IS the status (a retired tombstone 404s).
+func (s *testSetup) doGetExpect(t *testing.T, path string, want int) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	if w.Code != want {
+		t.Fatalf("GET %s: expected %d, got %d: %s", path, want, w.Code, w.Body.String())
+	}
+}
+
 func (s *testSetup) doDelete(t *testing.T, path string) map[string]any {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodDelete, path, nil)
@@ -156,9 +199,9 @@ func TestIntegration_FullRoundTrip_Permanent(t *testing.T) {
 	}
 
 	// Register file in manifest.
-	ts.manifest.files = []FileInfo{
+	ts.setFiles([]FileInfo{
 		{Key: fileKey, Size: int64(len(parquetData)), MinTimeNs: 1000, MaxTimeNs: 3000},
-	}
+	})
 
 	// Step 1: POST /delete/logsql/estimate
 	estimateResp := ts.doPost(t, "/delete/logsql/estimate", url.Values{
@@ -233,10 +276,8 @@ func TestIntegration_FullRoundTrip_Permanent(t *testing.T) {
 	}
 
 	// Step 6: Verify old file is deleted, new file exists.
-	ts.pool.mu.Lock()
-	_, oldExists := ts.pool.objects[fileKey]
-	_, newExists := ts.pool.objects[result.NewKey]
-	ts.pool.mu.Unlock()
+	oldExists := ts.pool.Has(fileKey)
+	newExists := ts.pool.Has(result.NewKey)
 
 	if oldExists {
 		t.Fatal("expected old file to be deleted from pool")
@@ -245,14 +286,26 @@ func TestIntegration_FullRoundTrip_Permanent(t *testing.T) {
 		t.Fatalf("expected new file %s to exist in pool", result.NewKey)
 	}
 
-	// Step 7: GET /delete/logsql/tombstone/{id} to verify reaped state.
-	tombResp := ts.doGet(t, "/delete/logsql/tombstone/"+tombstoneID)
-	reaped, ok := tombResp["Reaped"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected Reaped map in tombstone response, got %v", tombResp)
+	// Step 7: the manifest now serves the kept rows from the replacement and no
+	// longer points at the object that was deleted in step 6. This is the whole
+	// point of the rewrite: neither the kept rows nor the deleted ones may be
+	// reachable through a stale entry.
+	if ts.files.HasKey(fileKey) {
+		t.Fatalf("manifest still points at the deleted object %s", fileKey)
 	}
-	if reaped[fileKey] != true {
-		t.Fatalf("expected file %s to be marked as reaped, got %v", fileKey, reaped[fileKey])
+	if !ts.files.HasKey(result.NewKey) {
+		t.Fatalf("manifest does not know the replacement %s", result.NewKey)
+	}
+	if fi, ok := ts.files.GetFileByKey(result.NewKey); !ok || fi.RowCount != result.RowsKept {
+		t.Fatalf("replacement RowCount = %d, want RowsKept = %d", fi.RowCount, result.RowsKept)
+	}
+
+	// Step 8: the tombstone covered exactly one file, that file is rewritten,
+	// so the tombstone is retired — GET must now 404 rather than return a
+	// record that stays Active() forever.
+	ts.doGetExpect(t, "/delete/logsql/tombstone/"+tombstoneID, http.StatusNotFound)
+	if _, still := ts.store.Get(tombstoneID); still {
+		t.Fatal("a fully reaped tombstone must be completed, not left active")
 	}
 }
 
@@ -271,9 +324,9 @@ func TestIntegration_ModeHide_NoRewrite(t *testing.T) {
 		t.Fatalf("upload test file: %v", err)
 	}
 
-	ts.manifest.files = []FileInfo{
+	ts.setFiles([]FileInfo{
 		{Key: fileKey, Size: int64(len(parquetData)), MinTimeNs: 1000, MaxTimeNs: 2000},
-	}
+	})
 
 	// POST /delete/logsql/delete?mode=hide
 	deleteResp := ts.doPost(t, "/delete/logsql/delete", url.Values{
@@ -305,9 +358,7 @@ func TestIntegration_ModeHide_NoRewrite(t *testing.T) {
 	}
 
 	// Verify old file still exists.
-	ts.pool.mu.Lock()
-	_, exists := ts.pool.objects[fileKey]
-	ts.pool.mu.Unlock()
+	exists := ts.pool.Has(fileKey)
 
 	if !exists {
 		t.Fatal("expected file to still exist for mode=hide")
@@ -318,9 +369,9 @@ func TestIntegration_Undelete(t *testing.T) {
 	ts := newTestSetup(t, nil)
 
 	fileKey := "logs/dt=2026-01-01/hour=12/00001.parquet"
-	ts.manifest.files = []FileInfo{
+	ts.setFiles([]FileInfo{
 		{Key: fileKey, Size: 1024, MinTimeNs: 1000, MaxTimeNs: 3000},
-	}
+	})
 
 	// Create a tombstone.
 	deleteResp := ts.doPost(t, "/delete/logsql/delete", url.Values{
@@ -375,9 +426,9 @@ func TestIntegration_GlacierSkip(t *testing.T) {
 		t.Fatalf("upload test file: %v", err)
 	}
 
-	ts.manifest.files = []FileInfo{
+	ts.setFiles([]FileInfo{
 		{Key: fileKey, Size: int64(len(parquetData)), MinTimeNs: 1000, MaxTimeNs: 2000},
-	}
+	})
 
 	// Create tombstone with mode=permanent.
 	deleteResp := ts.doPost(t, "/delete/logsql/delete", url.Values{
@@ -418,9 +469,7 @@ func TestIntegration_GlacierSkip(t *testing.T) {
 	}
 
 	// Verify file still exists (not deleted).
-	ts.pool.mu.Lock()
-	_, exists := ts.pool.objects[fileKey]
-	ts.pool.mu.Unlock()
+	exists := ts.pool.Has(fileKey)
 
 	if !exists {
 		t.Fatal("expected file to still exist when glacier skip occurs")
@@ -450,9 +499,9 @@ func TestIntegration_AllRowsRemoved(t *testing.T) {
 		t.Fatalf("upload test file: %v", err)
 	}
 
-	ts.manifest.files = []FileInfo{
+	ts.setFiles([]FileInfo{
 		{Key: fileKey, Size: int64(len(parquetData)), MinTimeNs: 1000, MaxTimeNs: 2000},
-	}
+	})
 
 	// Create tombstone with wildcard query (matches all rows).
 	deleteResp := ts.doPost(t, "/delete/logsql/delete", url.Values{
@@ -481,9 +530,7 @@ func TestIntegration_AllRowsRemoved(t *testing.T) {
 	}
 
 	// Verify old file is deleted and no new file is uploaded.
-	ts.pool.mu.Lock()
-	_, oldExists := ts.pool.objects[fileKey]
-	ts.pool.mu.Unlock()
+	oldExists := ts.pool.Has(fileKey)
 
 	if oldExists {
 		t.Fatal("expected old file to be deleted")
@@ -519,10 +566,10 @@ func TestIntegration_TraceDelete_FullRoundTrip(t *testing.T) {
 	}
 
 	key := "traces/dt=2026-05-02/hour=10/batch.parquet"
-	pool.objects[key] = buf.Bytes()
+	pool.Put(key, buf.Bytes())
 
 	manifest := &mockManifest{files: []FileInfo{
-		{Key: key, Size: int64(len(pool.objects[key])), MinTimeNs: 1000, MaxTimeNs: 4000},
+		{Key: key, Size: int64(len(mustGet(t, pool, key))), MinTimeNs: 1000, MaxTimeNs: 4000},
 	}}
 
 	cfg := &config.DeleteConfig{
@@ -581,7 +628,7 @@ func TestIntegration_TraceDelete_FullRoundTrip(t *testing.T) {
 	}
 
 	// Verify new file contents
-	newData := pool.objects[result.NewKey]
+	newData := mustGet(t, pool, result.NewKey)
 	reader := parquet.NewGenericReader[schema.TraceRow](bytes.NewReader(newData))
 	defer func() { _ = reader.Close() }()
 
@@ -617,7 +664,7 @@ func TestIntegration_TraceDelete_ByTraceID(t *testing.T) {
 	}
 
 	key := "traces/dt=2026-05-02/hour=10/batch2.parquet"
-	pool.objects[key] = buf.Bytes()
+	pool.Put(key, buf.Bytes())
 
 	// Create tombstone for specific trace ID
 	ts := Tombstone{

@@ -210,7 +210,7 @@ per pod (10 pods in the cluster, 50 M global), `footer_max_items
 
 | Mechanism | Code | What it does | Mem @ PB | Disk @ PB | Typical skip |
 |---|---|---|---:|---:|---:|
-| **manifestFastPath** | `internal/storage/parquets3/storage_query.go::manifestFastPath` | `* \| stats count()` answers from `manifest.RowCount` without opening any file. | 0 (already in manifest) | 0 | 100 % of files |
+| **manifestFastPath** | `internal/storage/parquets3/manifest_fastpath.go::manifestFastPath` | `* \| stats count()` and `\| stats by (_time:<step>) count()` answer from `manifest.RowCount` without opening any file. Emits a CONSTANT `_time` column, so cost per file is O(1), not O(rows), and there is no cap on how many rows a file may contribute. A file is only eligible when every `_time` bucket the query groups by contains its whole span — otherwise it is read, so per-bucket counts stay exact. | 0 (already in manifest) | 0 | 100 % of files |
 | **Inverted label index** | `internal/manifest/manifest.go::GetFileKeysByLabel` + `storage_query.go::filterByLabelIndex` | Manifest holds `field → value → set-of-file-keys`. `service.name:="X"` resolves to candidates in O(1). Multi-field filters intersect sets. Files with `Labels=nil` stay in the candidate set (`be8c126`). | ~50 MB (5 M files × 5 fields × 2 values × 5 B) | 0 (rebuilt on snapshot load) | 60–90 % |
 | **Column-stats min/max bracket** | `manifest.ColumnStatsContains` + `filter_pushdown.go::rowGroupMatchesFilter` | Parquet column-index min/max are cached on `FileInfo`. Row groups whose `[min, max]` don't bracket the filter value are skipped without opening the file. | ~200 MB (5 M × ~40 B per file) | 0 (cached) | 30–70 % |
 | **File-level partition bloom** | `internal/pmeta` bloom facet + `storage_query.go::filterFilesByBloomIndex` (legacy `_bloom.bin` partition index as fallback) | Per-partition 1-hour-granularity bloom. Before opening a file, ask whether the queried value could possibly be there. Cap `maxBloomCardinality = 50 000`. | ~80 MB (one bloom per partition × ~5 K partitions × 16 KB) | ~300 MB on S3 (bloom facet in `_pmeta.bundle`; legacy `.bloom`/`_bloom.bin` sidecars stay readable) | 20–80 % |
@@ -270,7 +270,7 @@ hit rate as high as possible without blowing the memory budget".
 | **Smart Cache L1 (memory)** | `internal/smartcache/Controller` + `internal/cache/LRU` | Decoded parquet row groups in RAM. LRU with peer-aware affinity. | 256 MiB (small), 1 GiB (PB) | `cache.memory_mb` |
 | **Smart Cache L2 (disk)** | `internal/cache/DiskCache` | Raw parquet bytes on local disk; survives restarts. | 2 GiB (small), 100 GiB (PB) | `cache.disk_max_mb` |
 | **Footer cache** | `internal/storage/parquets3/FooterCache` | LRU of parsed parquet footers (with `_trace_idx`, bloom, column index). | 10 000 (small), 200 000 (PB) | `cache.footer_max_items` |
-| **Footer-cache disk snapshot** | `footer_cache_snapshot.go` (task 78) | LRU key-list snapshot persisted at shutdown; reloaded async after `/ready=200` so a restart doesn't refetch every footer from S3. | < 1 MiB on disk | persist_path |
+| **Footer-cache disk snapshot** | `footer_cache_snapshot.go` | LRU key-list snapshot persisted at shutdown; reloaded async after `/ready=200` so a restart doesn't refetch every footer from S3. | 4 B + object key per cached entry (≈ 60–150 B): ~1 MiB at 10 k entries, 10–30 MB at 200 k | persist_path |
 | **PeerCache** | `internal/peercache` | Consistent-hash ring of peers' L1 caches. Local query knows which peer holds a key without asking. | bounded by peer count | k8s headless service |
 | **Self-cache filter** | `storage_query.go::applyOwnedFilesFirst` + `LookupOwner` | Excludes files this pod owns from "fetch from peer" set; prevents peer→peer fan-out for files we already have. | — | none |
 
@@ -315,14 +315,14 @@ hit rate as high as possible without blowing the memory budget".
 
 | Mechanism | Code | Notes |
 |---|---|---|
-| **Manifest snapshot binary streaming decode** | `manifest.LoadFrom` (task 79) | Incremental decode, capped at 50 GiB |
+| **Manifest snapshot binary streaming decode** | `manifest.LoadFrom` | Incremental decode, capped at 50 GiB |
 | **Async footer cache reload** | `cmd/lakehouse-logs/main.go::footerCacheSnapshotPath` + `PrefetchFootersByKeys` | Restart skips refetching every footer |
-| **Priority warmup (recent partitions first)** | `warmup.go` (task 80) | Last 24 h warm before older data |
+| **Priority warmup (recent partitions first)** | `warmup.go` | Last 24 h warm before older data |
 | **BufferBridge serving unflushed data** | `buffer_bridge.go` + `SetSelfEndpoint` | Single-node self-loop, multi-node peer fan-out |
-| **S3 backoff + jitter on 503 SlowDown** | `s3reader` (task 81) | Honors S3 throttle hints |
+| **S3 backoff + jitter on 503 SlowDown** | `s3reader` | Honors S3 throttle hints |
 | **Manifest tenant-scoped LIST** | `manifest.refreshTenantScoped` | Replaces full-bucket walk with per-tenant LIST × per-tier signal suffix (`6c8fd99`) |
 | **Manifest cliff guard** | `manifest.RefreshFromS3` (`a2c3c3f`) | Rejects refreshes that drop >50 % of files |
-| **Adaptive log hints on slow query** | `internal/startup/hints.go` (task 82) | Surfaces "try lowering footer_max_items" etc. |
+| **Adaptive log hints on slow query** | `internal/startup/hints.go` | Surfaces "try lowering footer_max_items" etc. |
 
 ### G. Cross-tier / federated {#g-federation}
 
@@ -347,9 +347,9 @@ know which artifact lands where. This table is the master reference.
 | # | Artifact | RAM | 💾 PVC | ☁ S3 | Lifecycle |
 |---|---|:-:|:-:|:-:|---|
 | 1 | **Manifest in-memory index** (`files`, `partitionMeta`, inverted label index, `sortedPartitions`, `byKey`, tenant aggregates) | ✅ primary | snapshot | — | rebuilt on `RefreshFromS3`; snapshotted on shutdown |
-| 2 | **Manifest snapshot** (`manifest-snapshot.json`, binary-gob format) | — | ✅ primary | — | written at shutdown via `manifest.SaveTo` (task 73); loaded async at startup (task 79) |
+| 2 | **Manifest snapshot** (`manifest-snapshot.json`, binary-gob format) | — | ✅ primary | — | written at shutdown via `manifest.SaveTo`; loaded async at startup |
 | 3 | **Footer cache** (parsed parquet footers, includes embedded row-group bloom + `_trace_idx` + token bloom KVs) | ✅ primary | snapshot | — | LRU evicted under memory pressure |
-| 4 | **Footer-cache snapshot** (`footer-cache-snapshot.bin`, LRU key-list only) | — | ✅ primary | — | written at shutdown (task 78); the actual footer bytes refetched from S3 by async prefetch after `/ready=200` |
+| 4 | **Footer-cache snapshot** (`footer-cache-snapshot.bin`, LRU key-list only) | — | ✅ primary | — | written at shutdown; the actual footer bytes refetched from S3 by async prefetch after `/ready=200` |
 | 5 | **Smart cache L1** (decoded parquet row groups) | ✅ primary | — | — | LRU; never persisted |
 | 6 | **Smart cache L2** (raw parquet bytes) | — | ✅ primary | — | LRU on disk; survives restart |
 | 7 | **PeerCache ring** (consistent-hash map of peer endpoints) | ✅ primary | — | — | derived from k8s headless service watch |
@@ -506,13 +506,16 @@ CPU caveats:
 into a Go process. The footer cache is the biggest in-process
 allocation — every entry past line 4 in the section A table that
 mentions "in footer cache" is sharing this single pool. At PB scale
-the footer cache alone consumes 10 GiB per pod and the manifest
+the footer cache alone can consume 10 GiB per pod and the manifest
 another 1 GiB; the operator-tunable knobs (`cache.memory_mb`,
-`cache.disk_max_mb`, `cache.footer_max_items`) all gate this, and
+`cache.disk_max_mb`, `cache.footer_max_items`) gate this — except
+that the logs binary currently ignores `cache.footer_max_items` and
+fixes its footer cache at 10 000 entries (see
+[scale limits](petabyte-scale-audit.md#footer-cache)) — and
 the [sizing guide](operations/sizing.md) records the actual worked
 examples for k8s pod limits.
 
-The PB-scale row of the table is the failure mode the [PB-scale audit](petabyte-scale-audit.md) discusses
+The PB-scale row of the table is the failure mode the [scale limits page](petabyte-scale-audit.md) discusses
 — without the lifecycle speedups in section F and the file
 narrowing in section A, the per-query S3 budget would not survive.
 
@@ -611,6 +614,6 @@ Today's coverage:
 - [docs/cache-architecture.md](cache-architecture.md) — deep-dive on the L1/L2/footer caches
 - [docs/manifest-system.md](manifest-system.md) — the manifest, including signal-suffix + cliff-guard fixes
 - [docs/bloom-index.md](bloom-index.md) — file-level bloom mechanics
-- [docs/petabyte-scale-audit.md](petabyte-scale-audit.md) — the audit that motivated several of the lifecycle items
+- [docs/petabyte-scale-audit.md](petabyte-scale-audit.md) — scale limits and roadmap: what does not scale yet, with the code paths and planned changes
 - [docs/observability.md](observability.md) — the metrics surface
 - [docs/configuration.md](configuration.md) — current knobs

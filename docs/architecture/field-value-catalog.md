@@ -134,7 +134,7 @@ the ~30 typical low-card fields sit far below, so the global dict stays
 
 **Tuning:** raise `cardinality_threshold` to keep a bigger field
 exact-typeahead (it stays fully resident — there is no S3-paged value list
-today, that is A3 territory); lower it to shed RAM at the cost of more
+today, that belongs to time-tiered residency); lower it to shed RAM at the cost of more
 scan-backed fields. Changing classification only flips whether a field's value
 list is served from RAM vs the exact scan; it never affects search results.
 
@@ -359,7 +359,8 @@ Parameters: 50k partitions, 100 fields (~30 low-card, ~30 high-card), HLL p=14.
 **Load-bearing decision:** the "tens of MB" guarantee holds **only** under
 **time-tiered residency** (hot window resident, older partitions paged from
 sidecar on demand). Full-corpus residency is ~900 MB and is not a tuning knob to
-turn on at PB scale. Track A3 must land before any PB-scale claim.
+turn on at PB scale. Time-tiered residency (paging old-but-live partitions out
+of RAM) must land before any PB-scale claim.
 
 ## 8. Sequenced build plan
 
@@ -381,7 +382,7 @@ turn on at PB scale. Track A3 must land before any PB-scale claim.
 ## 9. Risks (stated plainly)
 
 - **RAM:** full-corpus residency busts the budget (~900 MB). Tens-of-MB holds
-  only with A3 time-tiering — a load-bearing decision, not optional.
+  only with time-tiered residency — a load-bearing decision, not optional.
 - **HLL accuracy:** p=14 → ~0.81 % standard error; union of per-partition
   sketches is lossless (register-max), so merging does **not** compound error.
   Risk is only mismatched precision across pods/versions → pin p=14 globally,

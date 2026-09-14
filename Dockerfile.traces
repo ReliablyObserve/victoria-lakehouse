@@ -6,10 +6,16 @@ FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine3.23 AS builder
 RUN apk add --no-cache git
 WORKDIR /app
 ARG VERSION=dev
-ARG VL_VERSION=v1.50.0
-# VictoriaLogs at commit 77df0c04d532 (VictoriaTraces v0.9.2 compatible)
-ARG VL_COMMIT=77df0c04d532
-ARG VT_VERSION=v0.9.2
+# The three upstream pins must equal the Makefile's VL_VERSION_LOGS,
+# VL_COMMIT_TRACES and VT_VERSION: the patches applied below are generated
+# against those exact trees and a mismatch fails the build with an unhelpful
+# "patch failed" hunk error. Asserted by TestDockerfilePinsMatchMakefile in
+# tests/conformance.
+ARG VL_VERSION=v1.52.0
+# VictoriaLogs at commit 6ae2da3c11f3 (= VL v1.51.0), the commit
+# VictoriaTraces v0.11.0's own go.mod requires. Derived, never chosen.
+ARG VL_COMMIT=6ae2da3c11f3
+ARG VT_VERSION=v0.11.0
 ARG TARGETOS
 ARG TARGETARCH
 # FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. See Dockerfile.logs for the
@@ -45,7 +51,7 @@ RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTrac
     cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \
     git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch && \
     git apply /tmp/patches/vt-traces/vtinsert-flag-dedup.patch && \
-    git apply /tmp/patches/vt-traces/go-mod-replace.patch
+    go mod edit -replace github.com/VictoriaMetrics/VictoriaLogs=../VictoriaLogs
 COPY . .
 RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
 # The healthcheck binary (~3 MB) was folded into the main binary as

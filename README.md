@@ -362,8 +362,8 @@ Two separate binaries, each pinned to its own VL/VT upstream version for maximum
 
 | Binary | Port | Upstream Compat | Insert APIs | Select APIs | Docker Image |
 |---|---|---|---|---|---|
-| `lakehouse-logs` | 9428 | VL v1.50.0 | All VL insert protocols (jsonline, Loki, ES bulk, syslog, journald, Datadog, OTLP, Splunk) | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/lakehouse-logs` |
-| `lakehouse-traces` | 10428 | VT v0.9.2 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, Tempo `/select/tempo/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/lakehouse-traces` |
+| `lakehouse-logs` | 9428 | VL v1.52.0 | All VL insert protocols (jsonline, Loki, ES bulk, syslog, journald, Datadog, OTLP, Splunk) | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/lakehouse-logs` |
+| `lakehouse-traces` | 10428 | VT v0.11.0 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, Tempo `/select/tempo/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/lakehouse-traces` |
 
 Each binary supports three roles for independent scaling:
 
@@ -415,6 +415,7 @@ Each binary supports three roles for independent scaling:
 - **Glacier-safe**: never triggers retrieval fees — the tombstone suppresses reads and data ages out via lifecycle. **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure, with optional physical delete for strict compliance.
 - **`lakehouse-logs`**: `/delete/logsql/*` endpoints. **`lakehouse-traces`**: `/delete/tracessql/*` endpoints.
 - **Cost estimation**: `/delete/logsql/estimate` (or `/delete/tracessql/estimate`) returns per-storage-class cost breakdown before executing.
+- **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
 - **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
 - **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
 - **Un-delete**: remove a tombstone to restore data visibility instantly.
@@ -788,7 +789,7 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 - [Performance Machinery](docs/performance-machinery.md) — the complete inventory of speedup mechanisms, costs, and scale projections
 - [Metadata Consolidation](docs/architecture/metadata-consolidation.md) — the unified partition-metadata (pmeta) layer: facets, bundles, the sidecar retirement
 - [Field/Value Catalog](docs/architecture/field-value-catalog.md) — the pmeta facet behind fast label/field dropdowns
-- [Metadata & S3 Optimization](docs/architecture/metadata-and-s3-optimization.md) — how restarts stay fast and S3 traffic stays low at PB scale
+- [Metadata & S3 Optimization](docs/architecture/metadata-and-s3-optimization.md) — how restarts stay fast and S3 traffic is kept down (see Scale Limits for what does not scale yet)
 - [Restart & Warmup](docs/architecture/restart-and-warmup-design.md) — lifecycle phases, readiness semantics, warmup ordering
 - [Persistence & Durability](docs/durability.md) — no-WAL crash recovery, big-file sizing, serving unflushed data
 - [Deletion Strategy](docs/deletion-strategy.md) — cost-aware tombstone + selective rewrite, Glacier-safe, three modes
@@ -813,8 +814,8 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 - [Scaling](docs/scaling.md) — horizontal (insert/select separation) and vertical scaling
 - [Scaling-Restart Scenarios](docs/architecture/scaling-restart-scenarios.md) — six restart scenarios at PB scale with mitigations
 - [Restore & Elasticity](docs/architecture/restore-and-elasticity-pmeta.md) — measured restore times and the three restore scenarios
-- [PB-Scale Resources](docs/architecture/pb-scale-resources-pmeta.md) — measured resident-memory baseline and PB extrapolation
-- [Petabyte-Scale Audit](docs/petabyte-scale-audit.md) — the PB-survival audit of every subsystem
+- [PB-Scale Resources](docs/architecture/pb-scale-resources-pmeta.md) — measured resident-memory baseline and a single-tenant PB extrapolation
+- [Scale Limits and Roadmap](docs/petabyte-scale-audit.md) — per-component scale limits checked against the code, what breaks past them, and the planned changes
 - [Parity & Cold-Tier Gaps](docs/parity-and-gaps.md) — what the cold tier does, doesn't, and only-approximately does vs upstream VL/VT
 
 ### Benchmarks, Cost & Comparison
@@ -853,7 +854,20 @@ make build            # Build both binaries
 make test             # Run all tests
 make lint             # golangci-lint both modules
 make e2e              # Full E2E with MinIO + VL cluster
+
+# Embedded VictoriaLogs web UI (served at /select/vmui/)
+make sync-vmui        # Copy vmui from deps/VictoriaLogs into internal/ui/vmui/
+make sync-vmui-traces # Same, from the traces module's VictoriaLogs pin
 ```
+
+`make build-logs` / `make build-traces` run the matching `sync-vmui*` target for
+you. Only `internal/ui/vmui/index.html` is tracked in git — it names the
+content-hashed asset filenames, so it is the drift marker: after an upstream
+VictoriaLogs bump rebuilds vmui, `go test ./internal/ui/...` fails until
+`make sync-vmui` is re-run and the new `index.html` committed. The rest of the
+bundle is `.gitignore`'d and copied from the vendored tree at build time (the
+Docker builds do the same copy inline), so the repository never carries a
+second copy of VictoriaLogs' minified assets.
 
 ---
 

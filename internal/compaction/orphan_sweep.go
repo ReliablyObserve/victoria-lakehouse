@@ -112,7 +112,7 @@ func NewOrphanSweep(cfg OrphanSweepConfig) *OrphanSweep {
 		cfg.OrphanTTL = 2 * time.Hour
 	}
 	if len(cfg.NeverDeletePrefixes) == 0 {
-		cfg.NeverDeletePrefixes = []string{"_meta/", "_tombstones/", "_compaction_lock"}
+		cfg.NeverDeletePrefixes = defaultNeverDeletePrefixes()
 	}
 	return &OrphanSweep{
 		cfg:    cfg,
@@ -202,7 +202,7 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 			continue
 		}
 
-		files := o.cfg.Manifest.FilesForPartition(partition)
+		files := withoutHeld(o.cfg.Manifest, o.cfg.Manifest.FilesForPartition(partition))
 		if len(files) == 0 {
 			continue
 		}
@@ -461,3 +461,16 @@ func datePrefixOf(key, basePrefix string) string {
 	}
 	return key[:idx+end+1]
 }
+
+// defaultNeverDeletePrefixes is the single definition of the key substrings no
+// reclaim path may touch. Shared by the orphan sweep and by compaction's reap
+// bookkeeping so the two can never drift into disagreeing about what is
+// protected.
+func defaultNeverDeletePrefixes() []string {
+	return []string{"_meta/", tombstoneKeySegment, "_compaction_lock"}
+}
+
+// tombstoneKeySegment is the segment every tombstone object lives under. It
+// must stay identical to internal/delete's, which is why the two are compared
+// by a test rather than kept in sync by hand.
+const tombstoneKeySegment = "_tombstones/"

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestFileMeta_ApplyTo(t *testing.T) {
@@ -317,7 +318,7 @@ func TestRefresh_PreservesEveryEnrichmentField(t *testing.T) {
 		"dt=2026-06-10/hour=10": {{Key: full.Key, Bucket: "bucket", Size: 1234}},
 	}
 	m.mu.Lock()
-	m.mergeRefreshedFilesLocked(refreshed)
+	m.mergeRefreshedFilesLocked(refreshed, time.Now())
 	m.files = refreshed
 	m.mu.Unlock()
 

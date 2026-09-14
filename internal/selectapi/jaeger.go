@@ -15,7 +15,28 @@ import (
 
 // Jaeger API handlers for trace mode
 
+// jaegerTenantIDs derives the request's tenant the same way every other select
+// endpoint does — through VL's own GetTenantIDFromRequest, which reads the
+// AccountID/ProjectID headers and falls back to 0:0 when they are absent. The
+// Jaeger handlers previously passed a nil tenant list, which the storage layer
+// read as "no scope" and answered from every tenant's data.
+//
+// A malformed header is rejected by the caller (the error is surfaced as 400)
+// rather than silently downgraded to the default tenant.
+func jaegerTenantIDs(r *http.Request) ([]logstorage.TenantID, error) {
+	tenantID, err := logstorage.GetTenantIDFromRequest(r)
+	if err != nil {
+		return nil, err
+	}
+	return []logstorage.TenantID{tenantID}, nil
+}
+
 func (h *Handler) handleJaegerServices(w http.ResponseWriter, r *http.Request) {
+	tenantIDs, err := jaegerTenantIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	q, err := logstorage.ParseQuery("*")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -23,12 +44,12 @@ func (h *Handler) handleJaegerServices(w http.ResponseWriter, r *http.Request) {
 	}
 	q.AddTimeFilter(time.Now().Add(-720*time.Hour).UnixNano(), time.Now().UnixNano())
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+	ctx, cancel := context.WithTimeout(h.scopeContext(r), h.timeout)
 	defer cancel()
 
-	results, err := h.store.GetFieldValues(ctx, nil, q, "service.name", 1000)
+	results, err := h.store.GetFieldValues(ctx, tenantIDs, q, "service.name", 1000)
 	if err == nil && len(results) == 0 {
-		results, err = h.store.GetFieldValues(ctx, nil, q, "resource_attr:service.name", 1000)
+		results, err = h.store.GetFieldValues(ctx, tenantIDs, q, "resource_attr:service.name", 1000)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -51,6 +72,11 @@ func (h *Handler) handleJaegerServices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleJaegerOperations(w http.ResponseWriter, r *http.Request) {
+	tenantIDs, err := jaegerTenantIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	trimmed := strings.TrimPrefix(r.URL.Path, "/select/jaeger/api/services/")
 	trimmed = strings.TrimPrefix(trimmed, "/api/services/")
 	parts := strings.Split(trimmed, "/")
@@ -67,12 +93,12 @@ func (h *Handler) handleJaegerOperations(w http.ResponseWriter, r *http.Request)
 		}
 		q.AddTimeFilter(time.Now().Add(-720*time.Hour).UnixNano(), time.Now().UnixNano())
 
-		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+		ctx, cancel := context.WithTimeout(h.scopeContext(r), h.timeout)
 		defer cancel()
 
-		results, err := h.store.GetFieldValues(ctx, nil, q, "span.name", 1000)
+		results, err := h.store.GetFieldValues(ctx, tenantIDs, q, "span.name", 1000)
 		if err == nil && len(results) == 0 {
-			results, err = h.store.GetFieldValues(ctx, nil, q, "name", 1000)
+			results, err = h.store.GetFieldValues(ctx, tenantIDs, q, "name", 1000)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -99,6 +125,11 @@ func (h *Handler) handleJaegerOperations(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
+	tenantIDs, err := jaegerTenantIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	pathParts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
 	traceID := pathParts[len(pathParts)-1]
 	if traceID == "" || traceID == "traces" {
@@ -113,11 +144,11 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 	}
 	q.AddTimeFilter(0, time.Now().Add(time.Hour).UnixNano())
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+	ctx, cancel := context.WithTimeout(h.scopeContext(r), h.timeout)
 	defer cancel()
 
 	var spans []jaegerSpan
-	err = h.store.RunQuery(ctx, nil, q, func(_ uint, db *logstorage.DataBlock) {
+	err = h.store.RunQuery(ctx, tenantIDs, q, func(_ uint, db *logstorage.DataBlock) {
 		columns := db.GetColumns(false)
 		colMap := make(map[string][]string, len(columns))
 		for _, col := range columns {
@@ -257,6 +288,11 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
+	tenantIDs, err := jaegerTenantIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	params := r.URL.Query()
 	service := params.Get("service")
 	if service == "" {
@@ -342,11 +378,11 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	q.AddTimeFilter(startNs, endNs)
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+	ctx, cancel := context.WithTimeout(h.scopeContext(r), h.timeout)
 	defer cancel()
 
 	traceMap := make(map[string][]map[string]string)
-	err = h.store.RunQuery(ctx, nil, q, func(_ uint, db *logstorage.DataBlock) {
+	err = h.store.RunQuery(ctx, tenantIDs, q, func(_ uint, db *logstorage.DataBlock) {
 		columns := db.GetColumns(false)
 		colMap := make(map[string][]string, len(columns))
 		for _, col := range columns {

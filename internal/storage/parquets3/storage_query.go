@@ -172,7 +172,20 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		liveBytes.Add(-sz)
 	}
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	// Tombstones are applied to the blocks this function emits, so every path
+	// that emits something other than raw rows — manifest-answered counts,
+	// label-aggregate pushdown, and the pure-buffer path's aggregated result —
+	// is only usable while no tombstone overlaps the window.
+	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+
+	// Tenant-scoped file enumeration. VL hands us exactly one tenant per
+	// request (0:0 when no headers are present); only a validated global-read
+	// caller widens the scope. Everything downstream — the manifest fast path,
+	// count pushdown, the scan, and the buffer bridge — works off THIS list, so
+	// no other tenant's object can enter the answer. Twin of
+	// lakehouse-traces/internal/storage/parquets3/storage_query.go.
+	scope := scopeFor(ctx, tenantIDs)
+	files := s.filesForScope("query", startNs, endNs, scope)
 	if len(files) == 0 {
 		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
 		// is the co-located logstorage buffer. Push the FULL query (aggregation
@@ -182,11 +195,14 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// re-aggregated (profiled as the dominant recent-window cost). Safe
 		// because there is no Parquet data to double-count or merge with. Uses
 		// the buffer's public RunQuery (VL engine) — no upstream modification.
+		// Not while a tombstone overlaps the window: the aggregated result
+		// carries no row the tombstone filter could drop, so deleted buffered
+		// rows would be counted; the raw-row path below filters them.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
-		if s.servePureBufferQuery(ctx, q, tenantIDs, filteredWriteBlock) {
+		if s.servePureBufferQuery(ctx, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
 		}
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -205,14 +221,26 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.applySelfFilter(files)
 	s.applyCacheAffinity(files)
 
-	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+	// The plan decides whether this query may be answered from metadata at
+	// all, and with which `_time` bucketing. It also rides the context down to
+	// the row-group readers, which apply the same containment rule to a row
+	// group's own bounds before serving it without reading its data.
+	plan := planMetadataOnly(q)
+	ctx = withMetadataOnlyPlan(ctx, plan)
+
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
-		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
+		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
+		// The fast path stops emitting as soon as the query's max-rows or
+		// live-bytes budget cancels the context. Surface that the way the scan
+		// branch does (fileWorkerLoop parks ctx.Err() in firstErr, which
+		// RunQuery returns below): a count that stopped early is an ERROR, never
+		// a short number handed back as if it were the whole answer.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(remaining) == 0 {
-			if n := rowsEmitted.Load(); n > 0 {
-				metrics.QueryRowsTotal.Add(int(n))
-			}
-			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+			recordQueryRows(&rowsEmitted)
+			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -226,10 +254,8 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones {
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
-			if n := rowsEmitted.Load(); n > 0 {
-				metrics.QueryRowsTotal.Add(int(n))
-			}
-			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+			recordQueryRows(&rowsEmitted)
+			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 			return nil
 		}
 		files = remaining
@@ -237,7 +263,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 		return nil
 	}
 
@@ -296,7 +322,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	wg.Wait()
 
-	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, bufferWatermark(files, tenantIDs), q, tenantIDs, filteredWriteBlock)
+	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -304,9 +330,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	if n := rowsEmitted.Load(); n > 0 {
-		metrics.QueryRowsTotal.Add(int(n))
-	}
+	recordQueryRows(&rowsEmitted)
 
 	return nil
 }
@@ -371,6 +395,15 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 	}
 }
 
+// recordQueryRows adds the rows a query emitted to QueryRowsTotal. Shared by
+// RunQuery's three exits (manifest fast path, count pushdown, full scan), which
+// also keeps RunQuery inside the gocyclo budget.
+func recordQueryRows(rowsEmitted *atomic.Int64) {
+	if n := rowsEmitted.Load(); n > 0 {
+		metrics.QueryRowsTotal.Add(int(n))
+	}
+}
+
 // processOneFile is the per-file work unit extracted from the file-worker
 // goroutine body so that the K8s-style FileWorkers bound can scope its
 // Acquire/Release tightly around one file's I/O. Keeping the loop body
@@ -425,40 +458,37 @@ func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
 	}
 }
 
-// bufferWatermark returns the timestamp up to which the just-scanned Parquet
-// files already cover the data, so the buffer is queried only for STRICTLY
-// newer rows — preventing the buffer and the S3-Parquet scan from both emitting
-// the same row (a 2× double-count on count()/stats over the overlap window). It
-// is the max MaxTimeNs of the emitted files. Returns 0 (serve the full window)
-// for multi-tenant admin reads, where a global watermark could advance past a
-// lagging tenant and lose rows.
-func bufferWatermark(files []manifest.FileInfo, tenantIDs []logstorage.TenantID) int64 {
-	if len(tenantIDs) != 1 {
-		return 0
-	}
-	var wm int64
-	for i := range files {
-		if files[i].MaxTimeNs > wm {
-			wm = files[i].MaxTimeNs
-		}
-	}
-	return wm
-}
-
 // servePureBufferQuery answers a query whose window is entirely unflushed (no
-// cold-tier files) directly from the co-located logstorage buffer, running the
-// FULL query — aggregation pipes intact — through the buffer's VL engine. The
-// engine computes count/stats/group-by natively and emits the small result,
-// instead of the bridge's DropAllPipes path that ships every raw row upstream
-// for re-aggregation. Returns false (caller falls back to the bridge) when the
-// node isn't a single-node logstore buffer: with peers, other pods hold
-// unflushed rows reachable only via the bridge fan-out. No upstream
-// modification — this calls the buffer's public RunQuery.
-func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) bool {
+// cold-tier files for the request's tenants) directly from the co-located
+// logstorage buffer through its VL engine, emitting the matching RAW rows; the
+// storage adapter applies the query's pipes on top, exactly as for rows read
+// from Parquet. Returns false (caller falls back to the bridge) when the node
+// isn't a single-node logstore buffer: with peers, other pods hold unflushed
+// rows reachable only via the bridge fan-out. No upstream modification — this
+// calls the buffer's public RunQuery.
+func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, hasTombstones bool, writeBlock logstorage.WriteDataBlockFunc) bool {
+	// While a tombstone overlaps the window, decline this fast path and let the
+	// caller serve the rows through the standard path, which applies the storage
+	// tombstone filter to every emitted block.
+	if hasTombstones {
+		noteFieldsScanFallback("pure_buffer")
+		return false
+	}
 	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
 		return false
 	}
-	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, q, false, nil)
+	startNs, endNs := q.GetFilterTimeRange()
+	// Emit RAW rows. Both storage adapters run a query's pipes themselves
+	// (logstorage.RunQueryExternal*) over whatever RunQuery emits, and RunQuery's
+	// block filter re-applies the query's row filter to every block. Running the
+	// pipes here as well would hand aggregated rows (count, hits buckets) to both:
+	// the row filter drops them (a filtered `| stats count()` answered 0) or the
+	// adapter aggregates them a second time (`* | stats count()` answered 1).
+	qBuf := q
+	if logstorage.QueryHasPipes(q) {
+		qBuf = logstorage.CloneWithoutPipes(q)
+	}
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs), qBuf, false, nil)
 	if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
 		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
 		return false
@@ -466,31 +496,29 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query,
 	return true
 }
 
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, watermarkNs int64, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
 	if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 		return
 	}
 	// The watermark boundary exists ONLY to stop aggregation queries
 	// (count()/stats) from counting a row twice across the buffer↔Parquet
 	// overlap. trace_id-filtered queries are span/log RETRIEVAL (Jaeger/Tempo
-	// fetch, log→trace correlation): completeness matters and the watermark
-	// would wrongly exclude a trace's buffer rows whenever a scanned Parquet
-	// file (holding other, newer data) has a MaxTimeNs above this trace's time.
-	// So ignore the watermark for trace_id-filtered queries and serve the full
-	// window.
+	// fetch, trace-by-id, log→trace correlation): completeness matters and the
+	// watermark would wrongly exclude a trace's buffer rows whenever a scanned
+	// Parquet file (holding other, newer data) has a MaxTimeNs above this
+	// trace's time. So ignore the watermarks for trace_id-filtered queries and
+	// serve the buffer's full window.
 	if q != nil && queryFiltersTraceID(q.String()) {
-		watermarkNs = 0
+		wm = nil
 	}
-	// Serve the buffer only for data STRICTLY newer than what the Parquet scan
-	// at this call site already emitted (watermarkNs). Sites with no Parquet
-	// emitted pass 0 → full window.
-	bufStartNs := startNs
-	if watermarkNs > 0 && watermarkNs >= bufStartNs {
-		bufStartNs = watermarkNs + 1
-	}
-	if bufStartNs > endNs {
-		return
-	}
+	scope := scopeFor(ctx, tenantIDs)
+
+	// The buffer serves each tenant only the rows STRICTLY newer than that
+	// tenant's flush watermark (the newest MaxTimeNs among the Parquet objects
+	// this query selected for it), so no row is emitted from both tiers. The
+	// watermark is per tenant: under a global read one tenant's newer flush
+	// must not hide another tenant's still-unflushed rows.
+	//
 	// Option B (P3): use the co-located logstorage-native buffer directly
 	// (zero-conversion) ONLY when this node has no peers — single-node role=all,
 	// where the local buffer holds ALL unflushed rows. In a multi-pod deployment
@@ -500,61 +528,55 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 	// returns its own rows — no double-count, no need to exclude self from the
 	// unfiltered peer list).
 	if s.localBuffer != nil && (s.bufferBridge == nil || !s.bufferBridge.HasPeers()) {
-		qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
-		qBuf.DropAllPipes()
-		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qBuf, false, nil)
-		if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
-			logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
+		for _, id := range s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs) {
+			bufStartNs := bufferWindowStart(startNs, wm[id])
+			if bufStartNs > endNs {
+				continue // Parquet already covers this tenant's whole window.
+			}
+			qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
+			qBuf.DropAllPipes()
+			qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, qBuf, false, nil)
+			if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
+				logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
+			}
 		}
 		return
 	}
 	if s.bufferBridge == nil {
 		return
 	}
+	// Multi-pod fan-out. The bridge asks each peer for ONE tenant's rows (or
+	// every tenant's, for a validated global read), and the row→block
+	// conversion re-checks every row's account/project — belt and braces, so a
+	// peer that answers without scoping cannot leak into this answer.
+	// Twin of the other module's queryBufferBridge.
+	fetchStartNs := startNs
+	if scope.single() {
+		fetchStartNs = bufferWindowStart(startNs, wm[singleTenantID(tenantIDs)])
+		if fetchStartNs > endNs {
+			return
+		}
+	}
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		bufRows, _ := s.bufferBridge.QueryLogs(ctx, bufStartNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryLogs(ctx, fetchStartNs, endNs, scope)
+		bufRows = logRowsAfterWatermarks(bufRows, startNs, wm)
 		if len(bufRows) > 0 {
-			db := s.logRowsToDataBlock(bufRows)
+			db := s.logRowsToDataBlock(scope, "bridge_logs", bufRows)
 			if db != nil && db.RowsCount() > 0 {
 				writeBlock(0, db)
 			}
 		}
 	case config.ModeTraces:
-		bufRows, _ := s.bufferBridge.QueryTraces(ctx, bufStartNs, endNs)
+		bufRows, _ := s.bufferBridge.QueryTraces(ctx, fetchStartNs, endNs, scope)
+		bufRows = traceRowsAfterWatermarks(bufRows, startNs, wm)
 		if len(bufRows) > 0 {
-			db := s.traceRowsToDataBlock(bufRows)
+			db := s.traceRowsToDataBlock(scope, "bridge_traces", bufRows)
 			if db != nil && db.RowsCount() > 0 {
 				writeBlock(0, db)
 			}
 		}
 	}
-}
-
-func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
-	var remaining []manifest.FileInfo
-	for _, fi := range files {
-		if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
-			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs {
-			emitted := false
-			s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
-				if db != nil && db.RowsCount() > 0 {
-					writeBlock(0, db)
-					emitted = true
-				}
-			})
-			if emitted {
-				metrics.MetadataOnlyFiles.Inc()
-			}
-		} else {
-			remaining = append(remaining, fi)
-		}
-	}
-	if len(remaining) < len(files) {
-		logger.Infof("metadata fast path: resolved %d/%d files from manifest, %d remain for S3",
-			len(files)-len(remaining), len(files), len(remaining))
-	}
-	return remaining
 }
 
 // countByPushdownField returns the single field a query groups/projects by when
@@ -631,7 +653,7 @@ func countByPushdownField(queryStr string, pipeFields []string, filter *logstora
 // LabelAggregate for aggField by emitting synthetic rows reproducing that field's
 // value distribution — zero S3 reads. Files that straddle the range boundary
 // (whole-file aggregate would over-count outside the window), lack the aggregate,
-// or exceed the synthetic-row cap are returned for normal scanning. Mirrors
+// or exceed maxSyntheticAggRows are returned for normal scanning. Mirrors
 // manifestFastPath's boundary contract.
 func (s *Storage) manifestCountFastPath(files []manifest.FileInfo, startNs, endNs int64, aggField string, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
 	var remaining []manifest.FileInfo
@@ -657,17 +679,23 @@ func (s *Storage) manifestCountFastPath(files []manifest.FileInfo, startNs, endN
 	return remaining
 }
 
+// maxSyntheticAggRows bounds the count-pushdown fast path, which DOES
+// materialize one row per value occurrence because it has to reproduce a
+// field's value distribution. Above it the file is scanned for real —
+// the cap withholds the fast path, it never truncates an answer.
+const maxSyntheticAggRows = 1_000_000
+
 // streamSyntheticAggBlocks emits synthetic DataBlocks reproducing file fi's
 // distribution of aggField values: each value V repeated LabelAggregates[aggField][V]
 // times, plus the empty-value group (RowCount - sum) so rows with no value form the
 // "" group exactly as a real scan would. The field column is named and formatted
 // IDENTICALLY to the scan path (registry.ResolveFromParquet + FormatField) so the
 // downstream pipe groups the same way. Returns false (emitting nothing) when fi has
-// no aggregate for the field or its RowCount exceeds the synthetic cap (avoid the
+// no aggregate for the field or its RowCount exceeds maxSyntheticAggRows (avoid the
 // undercount a cap would cause) — caller then scans it.
 func (s *Storage) streamSyntheticAggBlocks(fi manifest.FileInfo, aggField string, emit func(*logstorage.DataBlock)) bool {
 	agg := fi.LabelAggregates[aggField]
-	if len(agg) == 0 || fi.RowCount <= 0 || fi.RowCount > maxSyntheticRows || emit == nil {
+	if len(agg) == 0 || fi.RowCount <= 0 || fi.RowCount > maxSyntheticAggRows || emit == nil {
 		return false
 	}
 
@@ -1068,11 +1096,18 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// (stats/hits on wildcard query), row groups that are fully within the
 	// query time range don't need any data reads — emit synthetic DataBlocks
 	// using row counts from Parquet metadata.
+	//
+	// The synthetic series is evenly spaced, which only tells the truth while
+	// the query cannot tell the row group's timestamps apart. The plan carries
+	// the query's `_time` bucketing; a row group whose true bounds straddle a
+	// bucket boundary is deferred to a real read, so per-bucket counts stay
+	// exact instead of being smeared uniformly across the buckets.
 	tsOnly := len(projectedCols) == 1 && projectedCols[s.registry.TimestampColumn()]
+	plan := metadataOnlyPlanFromContext(ctx)
 	if tsOnly && tsIdx >= 0 {
 		var deferred []indexedRowGroup
 		for _, m := range matchedRGs {
-			if rowGroupFullyInRange(m.rg, tsIdx, startNs, endNs) {
+			if rowGroupFullyInRange(m.rg, tsIdx, startNs, endNs) && rowGroupCoveredByPlan(m.rg, tsIdx, plan) {
 				metrics.ParquetRowGroupsScanned.Inc()
 				db := s.syntheticTimestampBlock(m.rg, tsIdx, startNs, endNs)
 				if db != nil && db.RowsCount() > 0 {
@@ -2665,6 +2700,31 @@ func rowGroupFullyInRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int6
 	return rgMin >= startNs && rgMax <= endNs
 }
 
+// rowGroupCoveredByPlan reports whether the row group's rows are
+// indistinguishable to the query that produced plan — i.e. its true timestamp
+// bounds fall inside one bucket of every `_time` bucketing the query groups by.
+// Only then may the evenly-spaced synthetic series stand in for the real
+// timestamps: every fabricated value lands in the same bucket as every real
+// one, so the per-bucket counts are exact.
+func rowGroupCoveredByPlan(rg parquet.RowGroup, tsColIdx int, plan metadataOnlyPlan) bool {
+	if !plan.eligible {
+		return false
+	}
+	if len(plan.buckets) == 0 {
+		return true
+	}
+	cols := rg.ColumnChunks()
+	if tsColIdx >= len(cols) {
+		return false
+	}
+	idx, err := cols[tsColIdx].ColumnIndex()
+	if err != nil || idx == nil || idx.NumPages() == 0 {
+		return false
+	}
+	rgMin, rgMax := columnIndexTimeBounds(idx)
+	return plan.coversSpan(rgMin, rgMax)
+}
+
 // syntheticTimestampBlock creates a DataBlock with NumRows rows containing
 // evenly distributed timestamps derived from row group metadata. Used for
 // stats/hits queries on wildcard where the row group is fully in range,
@@ -2750,108 +2810,6 @@ func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File
 	if totalRows > 0 {
 		s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
 	}
-}
-
-// Synthetic manifest block sizing.
-//
-//   - syntheticChunkSize bounds the per-block allocation so a multi-million
-//     row file no longer triggers a single huge []string allocation.
-//   - maxSyntheticRows is a defense-in-depth cap on the total row count
-//     emitted per file from the manifest fast path. Previously this was
-//     50M which could still allocate ~1GB of strings if the registry's
-//     timestamp formatter produced long values.
-const (
-	syntheticChunkSize = 10_000
-	maxSyntheticRows   = 1_000_000
-)
-
-// syntheticManifestBlock creates a DataBlock with fi.RowCount rows using
-// timestamps distributed across [MinTimeNs, MaxTimeNs] from manifest metadata.
-//
-// Prefer streamSyntheticManifestBlocks for query-path callers — it emits
-// multiple smaller blocks instead of materializing the full row count in
-// one slice. This single-block variant is preserved for legacy callers
-// (tests/benchmarks) and clamps to syntheticChunkSize to avoid surprise
-// allocations.
-func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataBlock {
-	n := int(fi.RowCount)
-	if n == 0 {
-		return nil
-	}
-	if n > syntheticChunkSize {
-		n = syntheticChunkSize
-	}
-	return s.buildSyntheticChunk(fi, 0, n)
-}
-
-// streamSyntheticManifestBlocks emits one or more DataBlocks covering
-// fi.RowCount rows, each of size <= syntheticChunkSize. Total row count
-// is capped at maxSyntheticRows as a safety net against pathological
-// manifest entries (the manifest fast path is metadata-only, so a wildly
-// inflated RowCount would otherwise allocate proportionally).
-func (s *Storage) streamSyntheticManifestBlocks(fi manifest.FileInfo, emit func(*logstorage.DataBlock)) {
-	total := int(fi.RowCount)
-	if total <= 0 || emit == nil {
-		return
-	}
-	if total > maxSyntheticRows {
-		total = maxSyntheticRows
-	}
-
-	for offset := 0; offset < total; offset += syntheticChunkSize {
-		chunk := syntheticChunkSize
-		if offset+chunk > total {
-			chunk = total - offset
-		}
-		db := s.buildSyntheticChunkOf(fi, offset, chunk, total)
-		if db != nil && db.RowsCount() > 0 {
-			emit(db)
-		}
-	}
-}
-
-// buildSyntheticChunk is a thin wrapper around buildSyntheticChunkOf that
-// derives the global row count from chunk size — kept for callers that
-// only emit a single chunk.
-func (s *Storage) buildSyntheticChunk(fi manifest.FileInfo, offset, chunk int) *logstorage.DataBlock {
-	return s.buildSyntheticChunkOf(fi, offset, chunk, chunk)
-}
-
-// buildSyntheticChunkOf renders `chunk` rows of synthetic timestamps
-// starting at the given offset, where the timestamp step is computed
-// against the global `total` row count so successive chunks remain
-// monotonically increasing across the file's [MinTimeNs, MaxTimeNs] range.
-func (s *Storage) buildSyntheticChunkOf(fi manifest.FileInfo, offset, chunk, total int) *logstorage.DataBlock {
-	if chunk <= 0 {
-		return nil
-	}
-
-	tsCol := s.registry.TimestampColumn()
-	internalName := tsCol
-	if m := s.registry.ResolveFromParquet(tsCol); m != nil {
-		internalName = m.InternalName
-	}
-
-	values := make([]string, chunk)
-	if total == 1 {
-		values[0] = s.registry.FormatField(internalName, fi.MinTimeNs)
-	} else {
-		step := (fi.MaxTimeNs - fi.MinTimeNs) / int64(total-1)
-		if step == 0 {
-			step = 1
-		}
-		for i := range values {
-			ts := fi.MinTimeNs + int64(offset+i)*step
-			if ts > fi.MaxTimeNs {
-				ts = fi.MaxTimeNs
-			}
-			values[i] = s.registry.FormatField(internalName, ts)
-		}
-	}
-
-	db := &logstorage.DataBlock{}
-	db.SetColumns([]logstorage.BlockColumn{{Name: internalName, Values: values}})
-	return db
 }
 
 func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs int64) bool {
@@ -3064,7 +3022,10 @@ func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, sta
 		keySet[k] = true
 	}
 
-	allFiles := s.manifest.GetFilesForRange(startNs, endNs)
+	// Cross-tenant by construction: the caller has already named the exact
+	// objects to read (compaction / verification tooling, never a select
+	// request), so there is no request tenant to scope to.
+	allFiles := s.filesForScope("query_specific_files", startNs, endNs, tenantScope{all: true})
 
 	var files []manifest.FileInfo
 	for _, f := range allFiles {
@@ -3105,16 +3066,11 @@ func isFileNotFoundError(err error) bool {
 
 func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock func(uint, *logstorage.DataBlock)) {
 	metrics.QueryFileNotFoundTotal.Inc()
+	plan := metadataOnlyPlanFromContext(ctx)
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
-		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 {
-		emitted := false
-		s.streamSyntheticManifestBlocks(fi, func(db *logstorage.DataBlock) {
-			if db != nil && db.RowsCount() > 0 {
-				filteredWriteBlock(0, db)
-				emitted = true
-			}
-		})
-		if emitted {
+		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+		fi.RowCount <= maxPlausibleRowCount && plan.coversFile(fi) {
+		if s.streamConstTimeBlocks(ctx, fi, filteredWriteBlock) {
 			metrics.MetadataOnlyFiles.Inc()
 		}
 		logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)

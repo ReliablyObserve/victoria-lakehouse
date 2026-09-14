@@ -850,6 +850,35 @@ An override goes stale — and fails the gate — as soon as the chart value or 
 default changes, so every deviation is justified again. The report also lists the keys no
 binary reads; that list is informational and drives the "Not read." marks above.
 
+**Leader election modes:**
+
+| Mode | Behavior |
+|---|---|
+| `auto` | Uses K8s Lease when `KUBERNETES_SERVICE_HOST` is set, else S3 lock, else none |
+| `k8s` | Kubernetes `coordination.k8s.io/v1` Lease — requires RBAC (provided by Helm chart) |
+| `s3` | S3 lock file with HTTP liveness detection before stealing an expired lock |
+| `none` | No coordination — every instance is always the leader (single-instance only) |
+
+## Inherited VL/VT Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--httpListenAddr` | `:9428` / `:10428` (auto) | HTTP listen address |
+| `--loggerLevel` | `INFO` | Log level (DEBUG, INFO, WARN, ERROR) |
+
+## Timeout Summary
+
+| Operation | Timeout | Retry | Notes |
+|---|---|---|---|
+| S3 single request | 30s | 3x exponential (200ms base) | Range read, HEAD, ListObjects |
+| Query execution | 60s | No retry | Client gets 504 if exceeded |
+| Storage node discovery poll | 10s | Next refresh cycle (5m) | Background |
+| Peer cache request | 5s | Falls back to S3 | Must be < query timeout |
+| SQS long poll | 20s | Immediate re-poll | AWS max |
+| Circuit breaker open | 30s | Half-open probe after timeout | 2 successes to close |
+| Startup max warmup | 5m | Goes ready with partial state | Background continues |
+| Graceful shutdown drain | 30s | Force exit after 60s | In-flight queries drain |
+
 ## YAML config example
 
 ```yaml

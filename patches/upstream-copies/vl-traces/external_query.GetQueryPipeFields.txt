@@ -1,0 +1,14 @@
+# upstream: lib/logstorage/parser.go getNeededColumns
+# tree: lakehouse-traces/deps/VictoriaLogs
+# pin: 6ae2da3c11f3
+
+func getNeededColumns(pipes []pipe) *prefixfilter.Filter {
+	var pf prefixfilter.Filter
+	pf.AddAllowFilter("*")
+
+	for i := len(pipes) - 1; i >= 0; i-- {
+		pipes[i].updateNeededFields(&pf)
+	}
+
+	return &pf
+}

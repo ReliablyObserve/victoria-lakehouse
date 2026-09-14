@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// The count cases below also cover the cold tier's metadata-only fast path: a
+// file whose whole time span sits inside the query window is counted from the
+// manifest instead of being read. The seed's files hold far fewer than
+// 1 000 000 rows each, so the "file above the old 1M cap" case cannot be
+// produced here — it is locked by the unit regressions
+// TestStreamConstTimeBlocks_NoRowCap and TestManifestFastPath_ExactAboveOneMillion
+// in internal/storage/parquets3, and declared for the runner as
+// lh.cold.count_exact_above_1m_rows in the conformance registry.
 func TestParity_Stats(t *testing.T) {
 	now := time.Now()
 

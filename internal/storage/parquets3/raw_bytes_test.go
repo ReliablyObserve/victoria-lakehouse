@@ -7,6 +7,12 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
+// fixedLogRowBytes mirrors the shared constant in internal/schema so this
+// package's test keeps asserting the same floor after the estimator moved
+// there. schema.EstimateRawBytesLogs(one empty row) IS that constant, so the
+// test below is also the cross-package check that the two agree.
+var fixedLogRowBytes = schema.EstimateRawBytesLogs([]schema.LogRow{{}})
+
 // TestEstimateRawBytesLogs_CountsEveryStringColumn guards against the
 // regression where only Body + ServiceName + TraceID + two attribute
 // maps were counted, leaving K8s / host / stream fields invisible.
@@ -84,7 +90,7 @@ func TestEstimateRawBytesTraces_CountsEveryStringColumn(t *testing.T) {
 
 func TestEstimateRawBytesLogs_EmptyRow_NonNegative(t *testing.T) {
 	got := estimateRawBytesLogs([]schema.LogRow{{}})
-	if got < int64(fixedLogRowBytes) {
+	if got < fixedLogRowBytes {
 		t.Errorf("empty row raw_bytes = %d, want >= fixed scalar size %d", got, fixedLogRowBytes)
 	}
 }

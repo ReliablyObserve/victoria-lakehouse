@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -464,6 +465,7 @@ func TestS3Func_QueryPeerAZs_Empty(t *testing.T) {
 func TestS3Func_QueryPeerAZs_MultiplePeers(t *testing.T) {
 	// Create mock servers for peer AZ responses
 	az1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		resp := struct {
 			AZ string `json:"az"`
 		}{AZ: "us-east-1a"}
@@ -473,6 +475,7 @@ func TestS3Func_QueryPeerAZs_MultiplePeers(t *testing.T) {
 	defer az1.Close()
 
 	az2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		resp := struct {
 			AZ string `json:"az"`
 		}{AZ: "us-east-1b"}
@@ -501,6 +504,7 @@ func TestS3Func_QueryPeerAZs_MultiplePeers(t *testing.T) {
 
 func TestS3Func_FetchPeerAZ_ValidResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		if r.URL.Path != "/internal/cache/stats" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -524,6 +528,7 @@ func TestS3Func_FetchPeerAZ_ValidResponse(t *testing.T) {
 func TestS3Func_FetchPeerAZ_AuthKey(t *testing.T) {
 	var receivedAuthKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		receivedAuthKey = r.Header.Get("X-Peer-Auth-Key")
 		resp := struct {
 			AZ string `json:"az"`
@@ -557,6 +562,7 @@ func TestS3Func_FetchPeerAZ_ConnectionRefused(t *testing.T) {
 
 func TestS3Func_FetchPeerAZ_InvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("not json"))
 	}))
@@ -830,6 +836,7 @@ func TestS3Func_LoadBloomIndex_MergesIntoExisting(t *testing.T) {
 
 func TestS3Func_FetchPeerAZ_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()

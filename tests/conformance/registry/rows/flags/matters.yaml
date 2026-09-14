@@ -1,6 +1,17 @@
 # Flags that matter: only flags that changed between versions, or that touch
 # LH compatibility (queueing/admission, retention, insert limits, cold-tier
 # lookbehind windows). kind: flag rows need no `request` and no `seed`.
+#
+# Flags without a row here are the drift gate's SOFT warnings: the upstream
+# binary registers them, Lakehouse inherits whatever they do, and no Lakehouse
+# behaviour depends on the difference. Ingest-format knobs (syslog.*, splunk.*,
+# journald.*, datadog.*, loki.*), storage-node/TLS plumbing (storageNode.*),
+# local-disk and auth-key knobs (storageDataPath, *AuthKey,
+# inmemoryDataFlushInterval, retention.maxDisk*) and the internal peer
+# transport caps (internalinsert.*, internalselect.*) are all in that class:
+# they are either pre-storage admission control Lakehouse mounts verbatim, or
+# they act on the hot local storage Lakehouse replaces wholesale. The triage is
+# summarised in tests/conformance/README.md.
 
 - id: vl.flag.search_max_concurrent_requests
   title: "-search.maxConcurrentRequests — admission control, same semantics on LH"
@@ -142,7 +153,7 @@
   kind: flag
   origin: native
   expect: differ
-  differ_note: "Flag arrives in VL 1.51.0 (pinned is 1.50.0); LH also has no vmalert proxy wired into its dispatcher yet. Re-check both after the version bump. See docs/parity-and-gaps.md."
+  differ_note: "Present since the VL 1.51.0 bump (pinned VL is 1.52.0). Lakehouse registers no vmalert proxy route in its dispatcher, so the flag has no cold-tier effect; the paired route row is vl.select.vmalert.differ. See docs/parity-and-gaps.md."
   since: { vl: "1.51.0" }
   targets: [hot, cold]
   upstream: { flag: vmalert.proxyURL }
@@ -169,7 +180,7 @@
   kind: flag
   origin: native
   expect: differ
-  differ_note: "Flag arrives in VT 0.9.4 (pinned is 0.9.2). Re-check after the version bump. See docs/parity-and-gaps.md."
+  differ_note: "Present since the VT 0.9.4 bump (pinned VT is 0.11.0), declared in app/vtselect/traces/tracecommon and linked into the traces binary. Whether the 1000-trace cap applies identically once results come from the cold tier is verified by the parity run, not here. See docs/parity-and-gaps.md."
   since: { vt: "0.9.4" }
   targets: [hot, cold]
   upstream: { flag: search.maxTraces }
@@ -183,7 +194,7 @@
   kind: flag
   origin: native
   expect: differ
-  differ_note: "Flag arrives in VT 0.9.4 alongside search.maxTraces (pinned is 0.9.2). Re-check after the version bump. See docs/parity-and-gaps.md."
+  differ_note: "Present since the VT 0.9.4 bump (pinned VT is 0.11.0) alongside search.maxTraces, and supersedes the deprecated search.traceMaxServiceNameList / search.traceMaxSpanNameList. Cold-tier behaviour is verified by the parity run, not here. See docs/parity-and-gaps.md."
   since: { vt: "0.9.4" }
   targets: [hot, cold]
   upstream: { flag: search.maxTags }
@@ -197,7 +208,7 @@
   kind: flag
   origin: native
   expect: differ
-  differ_note: "New 2h default hides tags for old cold data that predates it; explicit cold default needs to be set in compose/Helm once VT is bumped. See docs/parity-and-gaps.md."
+  differ_note: "Live since the VT 0.10.0 bump: the 2h default hides tags for cold data older than the window, so compose/Helm must set an explicit cold-tier value. See docs/parity-and-gaps.md."
   since: { vt: "0.10.0" }
   targets: [cold]
   upstream: { flag: search.fieldsLookbehind }
@@ -225,7 +236,7 @@
   kind: flag
   origin: native
   expect: differ
-  differ_note: "Deprecated in favor of fieldsLookbehind/streamFieldsLookbehind in VT 0.10.0; hot post-bump ignores it while LH cold (pre-bump) still honors it as the effective lookbehind. See docs/parity-and-gaps.md."
+  differ_note: "Deprecated in VT 0.10.0 in favour of fieldsLookbehind/streamFieldsLookbehind; both tiers now run VT 0.11.0, so neither honours it as the effective lookbehind and a deployment still passing it gets the new defaults instead. See docs/parity-and-gaps.md."
   targets: [cold]
   upstream: { flag: search.traceServiceAndSpanNameLookbehind }
   compare: { type: status }
@@ -291,3 +302,44 @@
   compare: { type: status }
   layers: [api]
   pending: true
+
+- id: vt.flag.vmalert_proxy_url
+  title: "-vmalert.proxyURL (VT 0.10.0+) — vmalert dispatcher proxy target"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "Present since the VT 0.10.0 bump (pinned VT is 0.11.0). Lakehouse registers no vmalert proxy route in its traces dispatcher, so the flag has no cold-tier effect; the paired route row is vt.select.vmalert.differ. Mirrors vl.flag.vmalert_proxy_url. See docs/parity-and-gaps.md."
+  since: { vt: "0.10.0" }
+  targets: [hot, cold]
+  upstream: { flag: vmalert.proxyURL }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+
+- id: vt.flag.nativeinsert_max_request_size
+  title: "-nativeinsert.maxRequestSize (VT 0.11.0+) — /insert/native body cap"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: pass
+  since: { vt: "0.11.0" }
+  targets: [hot, cold]
+  upstream: { flag: nativeinsert.maxRequestSize }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  notes: "Arrives with the native-ingest routes in VT 0.11.0 and is linked into the traces binary: lakehouse-traces mounts vtinsert.RequestHandler wholesale, so the cap is enforced by upstream's own handler before any Lakehouse code runs. The routes it caps are vt.insert.native.differ and vt.insert.multitenant_native.differ."
+
+- id: vl.flag.nativeinsert_max_request_size
+  title: "-nativeinsert.maxRequestSize — /insert/native body cap (logs)"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: nativeinsert.maxRequestSize }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  notes: "The VictoriaLogs counterpart of vt.flag.nativeinsert_max_request_size, rowed alongside it so the native-ingest admission cap is covered on both surfaces. lakehouse-logs mounts vlinsert's handler, so the cap is enforced by upstream before any Lakehouse code runs."
