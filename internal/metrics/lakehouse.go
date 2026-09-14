@@ -215,6 +215,12 @@ var (
 	// it tracks one refresh interval of deletes; a value that keeps growing
 	// means refreshes are not being accepted.
 	ManifestRetiredDeleteLanded = NewGauge("lakehouse_manifest_retired_delete_landed")
+	// ManifestRetiredSettled counts retired keys an accepted listing proved
+	// gone — the only event that releases a key other than eviction. It is what
+	// says whether the set is draining: the gauges cannot, because a node that
+	// compacts faster than it refreshes refills the set as fast as it empties
+	// and never reads zero while working perfectly.
+	ManifestRetiredSettled = NewCounter("lakehouse_manifest_retired_settled_total")
 	// ManifestHeldKeys is the number of registered files another publish may
 	// not supersede yet because the rewrite that swapped them in has not
 	// recorded that swap durably. Steady state 0.

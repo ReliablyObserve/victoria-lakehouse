@@ -567,6 +567,13 @@ func (m *Manifest) afterAcceptedRefreshLocked(confirmedGone []string, listStart 
 	for _, k := range confirmedGone {
 		delete(m.retired, k)
 	}
+	// Counted, not just gauged: this is the only event that releases a guard,
+	// so it is what tells an operator whether the set is draining. The gauge
+	// alone cannot — on a node compacting faster than it refreshes, the set is
+	// refilled as fast as it empties and never reads zero.
+	if len(confirmedGone) > 0 {
+		metrics.ManifestRetiredSettled.Add(len(confirmedGone))
+	}
 	if newer := m.recentAddsSinceLocked(listStart); len(newer) < len(m.recentAdds) {
 		m.recentAdds = append([]recentAdd(nil), newer...)
 	}

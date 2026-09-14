@@ -382,6 +382,7 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_manifest_held_keys` — replacements another publish may not supersede yet (their swap is not durable)
 - `lakehouse_manifest_retired_delete_owed` — how much of the retired set is this process's own outstanding deletes
 - `lakehouse_manifest_retired_delete_landed` — the part whose objects are already deleted, held only until a bucket listing older than the delete can no longer be applied; it should drain at every refresh, so a value that keeps climbing means refreshes are not being accepted
+- `lakehouse_manifest_retired_settled_total` — retired keys an accepted listing proved gone. This is the drain signal: on a node compacting faster than it refreshes the gauge above never reads zero even while draining perfectly, so alert on this counter standing still, not on the gauge being non-zero
 - `lakehouse_delete_tombstone_removed_markers_evicted_total` — removed-tombstone markers dropped by their TTL or cap (never while their S3 delete is owed)
 - `lakehouse_delete_compaction_rows_removed_total` / `lakehouse_delete_compaction_keys_reaped_total` — rows and source keys compaction reaped
 - `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`)
