@@ -1,0 +1,170 @@
+# Deletion features: the cost-aware three-tier delete path and its APIs.
+
+- id: lh.feature.deletion.three_tier_strategy
+  title: Three-tier deletion strategy
+  status: shipped
+  since: v0.18.2
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api, storage]
+  tests:
+    - internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite
+    - internal/delete/rewriter_test.go#TestRewriteFile_MatchingRowsRemoved
+    - internal/delete/storageclass_test.go#TestDetector
+  docs:
+    - docs/deletion-strategy.md
+  highlight: >-
+    **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
+  description: >-
+    Deleting from an object store costs money and, on archival classes, retrieval fees. The
+    strategy picks the cheapest tier that satisfies the request: hide it instantly with a
+    tombstone, rewrite the file only where rewriting is cheap, and otherwise let lifecycle expire
+    the data on schedule.
+
+- id: lh.feature.deletion.endpoints
+  title: Delete APIs for logs and traces
+  status: shipped
+  since: v0.18.2
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api]
+  rows: [lh.delete.tombstones.status, lh.delete.tombstone_by_id.status]
+  tests:
+    - internal/delete/handler_test.go#TestHandler_handleDelete_Valid
+    - internal/delete/handler_test.go#TestHandler_handleListTombstones_WithTombstones
+    - internal/delete/handler_test.go#TestHandler_TraceMode_Delete
+    - tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery
+  docs:
+    - docs/deletion-strategy.md
+  highlight: >-
+    **`lakehouse-logs`**: `/delete/logsql/*` endpoints. **`lakehouse-traces`**: `/delete/tracessql/*` endpoints.
+  description: >-
+    Both binaries expose the same delete surface in their own query language, including listing
+    active tombstones and addressing one by id, so deletion is scriptable and auditable rather
+    than an out-of-band S3 operation.
+
+- id: lh.feature.deletion.tombstones
+  title: Tombstones and query-time suppression
+  status: shipped
+  since: v0.18.2
+  area: deletion
+  surfaces: [api, storage]
+  tests:
+    - internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive
+    - internal/delete/handler_test.go#TestHandler_handleDelete_Valid
+    - tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery
+  docs:
+    - docs/deletion-strategy.md
+  highlight: >-
+    **Tombstones**: a delete is recorded as a predicate and applied at query time, so data disappears from every read immediately and at zero S3 cost.
+  description: >-
+    The tombstone store is consulted on every query path, including the ones that answer from
+    metadata, so a tombstoned row cannot reappear through a fast path. Physical removal, when
+    requested, happens afterwards on its own schedule.
+
+- id: lh.feature.deletion.modes
+  title: Hide, permanent and auto delete modes
+  status: shipped
+  since: v0.18.2
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api, flag]
+  tests:
+    - internal/delete/handler_test.go#TestHandler_handleDelete_ModeHide
+    - internal/delete/handler_test.go#TestHandler_handleDelete_ModePermanent
+    - internal/delete/handler_test.go#TestHandler_handleDelete_ModeAuto
+    - internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite
+  docs:
+    - docs/deletion-strategy.md
+    - docs/configuration.md
+  highlight: >-
+    **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
+  description: >-
+    The mode is the operator's statement about intent and budget: `hide` never touches S3,
+    `permanent` rewrites or deletes objects, and `auto` chooses per file from its storage class
+    so an archival object is never dragged out of Glacier by a routine delete.
+
+- id: lh.feature.deletion.estimate
+  title: Delete cost estimation
+  status: shipped
+  since: v0.18.2
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api]
+  rows: [lh.delete.logsql.estimate.status]
+  tests:
+    - internal/delete/handler_test.go#TestHandler_handleEstimate_Valid
+    - internal/delete/storageclass_test.go#TestStorageClass_EstimateRewriteCost
+    - internal/delete/handler_test.go#TestHandler_handleEstimate_CachedStorageClass
+    - tests/e2e/delete_test.go#TestDelete_Estimate
+  docs:
+    - docs/deletion-strategy.md
+  highlight: >-
+    **Cost estimation**: `/delete/logsql/estimate` (or `/delete/tracessql/estimate`) returns per-storage-class cost breakdown before executing.
+  description: >-
+    A delete over cold storage can be free or expensive depending on where the matching objects
+    live. The estimate answers that first — matched rows and files, broken down by storage class,
+    with the rewrite and request cost each class implies.
+
+- id: lh.feature.deletion.verify
+  title: Delete verification
+  status: shipped
+  since: v0.18.2
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api]
+  rows: [lh.delete.verify.status]
+  tests:
+    - internal/delete/handler_test.go#TestHandler_handleVerify_WithMatchingTombstone
+    - internal/delete/handler_test.go#TestHandler_handleVerify_PartialCoverage
+    - internal/delete/scheduler_test.go#TestSchedulerVerify
+    - tests/e2e/delete_test.go#TestDelete_Verify
+  docs:
+    - docs/deletion-strategy.md
+  highlight: >-
+    **Verification**: `/delete/logsql/verify` (or `/delete/tracessql/verify`) confirms tombstoned data is invisible (normal mode) or physically deleted (deep mode).
+  description: >-
+    Compliance needs proof, not a promise. Normal verification re-runs the predicate and asserts
+    nothing is returned; deep verification checks the objects themselves, and partial coverage is
+    reported as partial rather than rounded up to success.
+
+- id: lh.feature.deletion.undelete
+  title: Un-delete by removing a tombstone
+  status: shipped
+  since: v0.18.2
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api]
+  tests:
+    - internal/delete/integration_test.go#TestIntegration_Undelete
+    - internal/delete/handler_test.go#TestHandler_handleTombstoneByID_DeleteExisting
+    - internal/delete/tombstone_test.go#TestTombstoneStore_Remove
+  docs:
+    - docs/deletion-strategy.md
+  highlight: >-
+    **Un-delete**: remove a tombstone to restore data visibility instantly.
+  description: >-
+    Because a hide-mode delete never touched the data, it is reversible: deleting the tombstone
+    makes the rows visible again immediately, which is what makes tombstone-first the safe
+    default for an accidental over-broad predicate.
+
+- id: lh.feature.deletion.compliance
+  title: Glacier-safe, GDPR-compatible deletion
+  status: shipped
+  since: v0.18.2
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api, storage]
+  tests:
+    - internal/delete/storageclass_test.go
+    - internal/delete/tenant_lifecycle_test.go
+    - internal/delete/handler_test.go#TestHandler_handleVerify_WithMatchingTombstone
+  docs:
+    - docs/deletion-strategy.md
+  highlight: >-
+    **Glacier-safe**: never triggers retrieval fees — the tombstone suppresses reads and data ages out via lifecycle. **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure, with optional physical delete for strict compliance.
+  description: >-
+    The two constraints that usually conflict — "erase it now" and "do not pay to retrieve an
+    archive" — are reconciled by separating visibility from physical presence: erasure is
+    immediate and total from every read path, while the bytes leave on the lifecycle schedule
+    unless physical deletion is explicitly demanded.

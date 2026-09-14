@@ -38,6 +38,8 @@ jobs:
         run: make deps-logs deps-traces deps-vt
       - name: Conformance drift and generated files check
         run: make conformance-check
+      - name: Registry-touch checker tests
+        run: bash scripts/ci/tests/test_check_registry_touch.sh
       - name: Route/handler changes carry registry changes
         if: github.event_name == 'pull_request'
         run: scripts/ci/check_registry_touch.sh origin/${{ github.base_ref }}
