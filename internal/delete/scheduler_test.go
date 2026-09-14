@@ -256,7 +256,7 @@ func TestSchedulerRunOnce_ReapedKeyTheManifestStillServesIsMadePendingAgain(t *t
 	// The manifest drops the key (its object really is gone): the next pass
 	// records it as reaped and retires the tombstone.
 	files.RemoveFile(extractPartition(key), key)
-	files.ForgetRetired(key)
+	files.ConfirmDeleted(key)
 	sched.RunOnce(context.Background())
 	if _, still := store.Get("ts-reaped"); still {
 		t.Fatal("once the manifest no longer serves the key the tombstone completes")

@@ -110,8 +110,8 @@ func TestUnretireIfReplacedBy_OnlyUndoesThatPublish(t *testing.T) {
 	if m.UnretireIfReplacedBy(k, "mine") || !m.IsRetired(k) {
 		t.Fatal("a retirement made by another publish must not be undone")
 	}
-	m.Retire(k, "mine", true) // re-retired: By stays the first non-empty one
-	m.ForgetRetired(k)
+	m.Retire(k, "mine", true) // re-retired: the newer publish names itself
+	m.Unretire(k)
 	m.Retire(k, "mine", true)
 	if !m.UnretireIfReplacedBy(k, "mine") || m.IsRetired(k) {
 		t.Fatal("this publish's retirement must be undone")
@@ -128,10 +128,73 @@ func TestRetiredKeys_OldestFirst(t *testing.T) {
 	if len(got) != 3 || got[0].Key != refreshKey("k0") || got[2].Key != refreshKey("k2") {
 		t.Fatalf("RetiredKeys = %+v", got)
 	}
-	m.ForgetRetired(refreshKey("k1"))
-	m.ForgetRetired(refreshKey("never-retired"))
+	m.Unretire(refreshKey("k1"))
+	m.Unretire(refreshKey("never-retired"))
 	if len(m.RetiredKeys()) != 2 {
-		t.Fatal("ForgetRetired must drop exactly that key")
+		t.Fatal("Unretire must drop exactly that key")
+	}
+}
+
+// TestConfirmDeleted_KeepsTheRecordAndClearsTheDebt: a landed delete settles who
+// owes the object, it does not forget the key. A listing that began before the
+// delete still reports the object, and the record is what keeps the refresh
+// applying that listing from adopting it back.
+func TestConfirmDeleted_KeepsTheRecordAndClearsTheDebt(t *testing.T) {
+	m := New("b", "")
+	k := refreshKey("src")
+	m.Retire(k, refreshKey("out"), true)
+
+	m.ConfirmDeleted(refreshKey("never-retired")) // no record to settle
+	if m.IsRetired(refreshKey("never-retired")) {
+		t.Fatal("ConfirmDeleted must not retire a key that was not retired")
+	}
+
+	m.ConfirmDeleted(k)
+	rk, ok := m.LookupRetired(k)
+	if !ok {
+		t.Fatal("a landed delete must not forget the key: a listing older than the delete still reports the object")
+	}
+	if rk.Reclaim {
+		t.Fatal("a landed delete owes nothing more")
+	}
+	if !rk.Deleted {
+		t.Fatal("the record must say the object is gone, so the cap evicts it before a key whose object is not")
+	}
+	if rk.By != refreshKey("out") {
+		t.Fatalf("the replacement must survive the confirmation, got By=%q", rk.By)
+	}
+
+	// Nothing is retried for it: ReclaimRetired only deletes what is owed.
+	deleted, failed := m.ReclaimRetired(context.Background(), func(context.Context, string) error {
+		t.Fatal("a confirmed delete must not be retried")
+		return nil
+	}, 0)
+	if deleted != 0 || failed != 0 {
+		t.Fatalf("ReclaimRetired = (%d, %d), want (0, 0)", deleted, failed)
+	}
+}
+
+// TestConfirmDeleted_ReRetirementReopensTheWindow: the key names a new object
+// again, so the record goes back to "may still be listed" and its window
+// restarts from the new retirement.
+func TestConfirmDeleted_ReRetirementReopensTheWindow(t *testing.T) {
+	m := New("b", "")
+	k := refreshKey("src")
+	m.Retire(k, "", true)
+	m.ConfirmDeleted(k)
+	first, _ := m.LookupRetired(k)
+
+	time.Sleep(time.Millisecond)
+	m.Retire(k, "", true)
+	rk, ok := m.LookupRetired(k)
+	if !ok || rk.Deleted {
+		t.Fatalf("a fresh retirement must clear Deleted, got %+v ok=%v", rk, ok)
+	}
+	if !rk.Reclaim {
+		t.Fatal("the new object's delete is owed again")
+	}
+	if !rk.At.After(first.At) {
+		t.Fatal("the window must restart from the new retirement, not the settled one")
 	}
 }
 
@@ -157,8 +220,17 @@ func TestReclaimRetired(t *testing.T) {
 	if deleted != 1 || failed != 1 || len(deletedKeys) != 1 || deletedKeys[0] != owed {
 		t.Fatalf("deleted=%d failed=%d keys=%v, want only %s deleted and %s failed", deleted, failed, deletedKeys, owed, failing)
 	}
-	if m.IsRetired(owed) || !m.IsRetired(failing) || !m.IsRetired(notOwed) {
-		t.Fatal("only a confirmed delete forgets its key; a failed one is retried, an un-owed one is never deleted")
+	// A landed delete settles the debt but keeps the record: a listing that
+	// began before it still reports the object. A failed delete stays owed and
+	// an un-owed key is never deleted at all.
+	if rk, ok := m.LookupRetired(owed); !ok || rk.Reclaim || !rk.Deleted {
+		t.Fatalf("the reclaimed key must stay retired with its delete settled, got %+v ok=%v", rk, ok)
+	}
+	if rk, ok := m.LookupRetired(failing); !ok || !rk.Reclaim || rk.Deleted {
+		t.Fatalf("a failed delete must stay owed for the next scan, got %+v ok=%v", rk, ok)
+	}
+	if rk, ok := m.LookupRetired(notOwed); !ok || rk.Reclaim || rk.Deleted {
+		t.Fatalf("an un-owed key must be left exactly as it was, got %+v ok=%v", rk, ok)
 	}
 	if metrics.ManifestRetiredReclaimErrors.Get() <= beforeErr {
 		t.Error("a failed reclaim must be counted")
@@ -422,6 +494,22 @@ func TestSnapshot_CarriesRetiredKeysButNotPending(t *testing.T) {
 	if !ok || rk.By != repl || !rk.Reclaim {
 		t.Fatalf("the retirement must survive a restart, got %+v ok=%v", rk, ok)
 	}
+	// A guard whose delete already landed must survive too, still marked
+	// Deleted: a restart does not make an in-flight listing safe to apply, and
+	// restoring it as owed would send the reclaim after an object that is gone.
+	landed := refreshKey("landed")
+	m.Retire(landed, repl, true)
+	m.ConfirmDeleted(landed)
+	if err := m.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo (landed): %v", err)
+	}
+	restored2 := New("b", "")
+	if err := restored2.LoadFrom(path); err != nil {
+		t.Fatalf("LoadFrom (landed): %v", err)
+	}
+	if rk, ok := restored2.LookupRetired(landed); !ok || rk.Reclaim || !rk.Deleted {
+		t.Fatalf("a settled guard must survive a restart as settled, got %+v ok=%v", rk, ok)
+	}
 	if restored.IsPending(pending) {
 		t.Fatal("pending uploads are the previous process's in-flight work and must not be restored")
 	}
@@ -560,5 +648,124 @@ func TestRemoveFileIfPresent_RetiresWithReclaim(t *testing.T) {
 	}
 	if rk, ok := m.LookupRetired(k); !ok || !rk.Reclaim {
 		t.Fatalf("the removed key must be retired with its delete owed, got %+v ok=%v", rk, ok)
+	}
+}
+
+// TestPruneRetired_SettledGuardsAreEvictedBeforeAnythingElse: under cap
+// pressure the three kinds of retirement cost different amounts to forget, and
+// the order must follow that cost. A key whose delete landed (Deleted) is the
+// cheapest — its object is provably gone, so the only thing lost is protection
+// from a listing old enough to still name it. A key nobody here owes a delete
+// for is next. A key whose object is still in the bucket and whose delete is
+// owed is the most expensive: forgetting it re-admits a live object.
+//
+// This is the ordering a plain "unowed first, then oldest" rule gets wrong: it
+// would evict a fresh guard before a stale unowed key.
+func TestPruneRetired_SettledGuardsAreEvictedBeforeAnythingElse(t *testing.T) {
+	withSmallBounds(t, 20, 100)
+	m := New("b", "")
+	now := time.Now()
+	const each = 10
+	m.mu.Lock()
+	// The settled guards are the NEWEST, so an age-only rule would keep them
+	// and an "unowed first" rule would not distinguish them from `free`.
+	for i := 0; i < each; i++ {
+		m.retireLocked(RetiredKey{Key: "owed" + strconv.Itoa(i), At: now.Add(-2 * time.Hour), Reclaim: true})
+		m.retireLocked(RetiredKey{Key: "free" + strconv.Itoa(i), At: now.Add(-time.Hour)})
+		m.retireLocked(RetiredKey{Key: "landed" + strconv.Itoa(i), At: now, Deleted: true})
+	}
+	beforeLanded := metrics.ManifestRetiredEvicted.Get("cap_delete_landed")
+	beforeOwed := metrics.ManifestRetiredEvicted.Get("cap_delete_owed")
+	m.pruneRetiredLocked(now.Add(time.Second))
+
+	var owed, free, landed int
+	for _, rk := range m.retired {
+		switch {
+		case rk.Reclaim:
+			owed++
+		case rk.Deleted:
+			landed++
+		default:
+			free++
+		}
+	}
+	total := len(m.retired)
+	m.mu.Unlock()
+
+	if total != maxRetiredKeys {
+		t.Fatalf("the retired set holds %d keys, want the cap %d", total, maxRetiredKeys)
+	}
+	// 30 keys, cap 20: the 10 settled guards go first, and nothing else does.
+	if landed != 0 {
+		t.Errorf("%d settled guard(s) survived while keys whose objects may still exist were evicted; "+
+			"a provably-deleted object is the cheapest thing to forget", landed)
+	}
+	if owed != each {
+		t.Errorf("owed keys surviving = %d, want all %d: their objects are still in the bucket", owed, each)
+	}
+	if free != each {
+		t.Errorf("unowed keys surviving = %d, want all %d: only the settled guards should have been evicted", free, each)
+	}
+	if got := metrics.ManifestRetiredEvicted.Get("cap_delete_landed") - beforeLanded; got != each {
+		t.Errorf("cap_delete_landed counted %d evictions, want %d — the alert for losing a guard early", got, each)
+	}
+	if got := metrics.ManifestRetiredEvicted.Get("cap_delete_owed") - beforeOwed; got != 0 {
+		t.Errorf("%d owed keys were evicted before the settled guards", got)
+	}
+}
+
+// TestRetiredGauges_SplitOwedFromSettled pins the two gauges the leftovers
+// alert and dashboard read: one retirement moves from owed to settled without
+// changing the set's size, and a listing that proves it gone clears both.
+func TestRetiredGauges_SplitOwedFromSettled(t *testing.T) {
+	m := New("b", "")
+	k := refreshKey("src")
+	m.Retire(k, refreshKey("out"), true)
+	if got := metrics.ManifestRetiredReclaimOwed.Get(); got != 1 {
+		t.Fatalf("delete_owed gauge = %d, want 1", got)
+	}
+	if got := metrics.ManifestRetiredDeleteLanded.Get(); got != 0 {
+		t.Fatalf("delete_landed gauge = %d, want 0 before the delete lands", got)
+	}
+
+	m.ConfirmDeleted(k)
+	if got := metrics.ManifestRetiredReclaimOwed.Get(); got != 0 {
+		t.Errorf("delete_owed gauge = %d after the delete landed, want 0: nothing is owed any more", got)
+	}
+	if got := metrics.ManifestRetiredDeleteLanded.Get(); got != 1 {
+		t.Errorf("delete_landed gauge = %d, want 1: the guard is still held", got)
+	}
+	if got := metrics.ManifestRetiredKeys.Get(); got != 1 {
+		t.Errorf("retired_keys gauge = %d, want 1: settling a delete does not shrink the set", got)
+	}
+}
+
+// TestRetiredSettled_CountsOnlyWhatAnAcceptedListingReleased pins the counter
+// the "not draining" alert reads. The gauges cannot answer that question on a
+// busy node — the set refills as fast as it drains — so this counter is the
+// only evidence that guards are being released at all.
+func TestRetiredSettled_CountsOnlyWhatAnAcceptedListingReleased(t *testing.T) {
+	m := slWorld(t)
+	slPublishMerge(t, m)
+	m.ConfirmDeleted(slSrcA)
+	m.ConfirmDeleted(slSrcB)
+	time.Sleep(2 * time.Millisecond)
+
+	before := metrics.ManifestRetiredSettled.Get()
+	// A listing that began BEFORE the retirements settles nothing, even though
+	// it is accepted: it cannot prove an object gone that it was answered ahead of.
+	stale := []ListedObject{{Key: slSrcA, Size: 1000}, {Key: slSrcB, Size: 1000}, {Key: slMerged, Size: 1500}}
+	if !m.ApplyListing(stale, time.Now().Add(-time.Hour)) {
+		t.Fatal("fixture: refresh rejected")
+	}
+	if got := metrics.ManifestRetiredSettled.Get() - before; got != 0 {
+		t.Errorf("a listing older than the retirement settled %d key(s); it proves nothing about them", got)
+	}
+
+	if !m.ApplyListing([]ListedObject{{Key: slMerged, Size: 1500}}, time.Now()) {
+		t.Fatal("fixture: refresh rejected")
+	}
+	if got := metrics.ManifestRetiredSettled.Get() - before; got != 2 {
+		t.Errorf("settled counter rose by %d, want 2 — one per guard the accepted listing released", got)
 	}
 }

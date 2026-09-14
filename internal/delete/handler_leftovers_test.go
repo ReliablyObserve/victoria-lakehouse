@@ -46,10 +46,14 @@ func TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites(t *testing.T) {
 		replacement = "logs/dt=2026-03-01/hour=07/b2709b0d.parquet"
 		claimed     = "logs/dt=2026-03-01/hour=07/0badc0de.parquet"
 		byPeer      = "logs/dt=2026-03-01/hour=07/peer.parquet"
+		settled     = "logs/dt=2026-03-01/hour=07/src-0002.parquet"
 	)
-	// A superseded object whose delete this process owes, a key retired on
-	// someone else's behalf, and an upload that is claimed and held.
+	// A superseded object whose delete this process owes, one whose delete
+	// landed (held only against a listing older than the delete), a key retired
+	// on someone else's behalf, and an upload that is claimed and held.
 	m.Retire(superseded, replacement, true)
+	m.Retire(settled, replacement, true)
+	m.ConfirmDeleted(settled)
 	m.Retire(byPeer, "", false)
 	if !m.ClaimPending(claimed) {
 		t.Fatal("fixture: the claim was rejected")
@@ -75,7 +79,8 @@ func TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites(t *testing.T) {
 	}
 	counts, _ := body["counts"].(map[string]any)
 	for field, want := range map[string]float64{
-		"retired": 2, "retired_delete_owed": 1, "pending": 1, "pending_held": 1, "unfinished_rewrites": 1,
+		"retired": 3, "retired_delete_owed": 1, "retired_delete_landed": 1,
+		"pending": 1, "pending_held": 1, "unfinished_rewrites": 1,
 	} {
 		if got, _ := counts[field].(float64); got != want {
 			t.Errorf("counts[%q] = %v, want %v", field, counts[field], want)
@@ -83,10 +88,10 @@ func TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites(t *testing.T) {
 	}
 
 	retired, _ := body["retired_keys"].([]any)
-	if len(retired) != 2 {
-		t.Fatalf("listed %d retired keys, want 2", len(retired))
+	if len(retired) != 3 {
+		t.Fatalf("listed %d retired keys, want 3", len(retired))
 	}
-	var sawOwed bool
+	var sawOwed, sawSettled bool
 	for _, entry := range retired {
 		e, _ := entry.(map[string]any)
 		if e["key"] == superseded {
@@ -97,10 +102,27 @@ func TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites(t *testing.T) {
 			if e["replaced_by"] != replacement {
 				t.Errorf("%s: replaced_by = %v, want %s", superseded, e["replaced_by"], replacement)
 			}
+			if e["deleted"] == true {
+				t.Errorf("%s still has an object in the bucket; the listing must not call it deleted", superseded)
+			}
+		}
+		if e["key"] == settled {
+			sawSettled = true
+			// An operator reading this must be able to tell "still in the
+			// bucket, go delete it" from "already gone, nothing to do".
+			if e["deleted"] != true {
+				t.Errorf("%s: deleted = %v, want true — its delete landed", settled, e["deleted"])
+			}
+			if e["delete_owed"] != false {
+				t.Errorf("%s: delete_owed = %v, want false — nothing is owed once the delete landed", settled, e["delete_owed"])
+			}
 		}
 	}
 	if !sawOwed {
 		t.Errorf("the superseded key is not in the listing: %v", retired)
+	}
+	if !sawSettled {
+		t.Errorf("the settled guard is not in the listing: %v", retired)
 	}
 
 	pending, _ := body["pending_keys"].([]any)
