@@ -482,9 +482,9 @@ Upstream's live tail streams from the hot ingestion path. Rather than emulate it
 
 **LogsQL filter evaluation**: field matchers (exact, substring, regex, NOT) are applied post-scan to filter DataBlock rows at the storage layer.
 
-Filters that Parquet statistics cannot decide are evaluated on the decoded rows before they are handed to the engine, so cold results match what the hot engine would have returned. Parity and fuzz tests compare the cold evaluator against the upstream semantics.
+Filters that Parquet statistics cannot decide are evaluated on the decoded rows before they are handed to the engine, so cold results match what the hot engine would have returned. The row filter is taken straight from the parsed query, so a time-only query (any range form, including half-open) runs no per-row filter and never re-parses query text, and a query VictoriaLogs cannot print back is answered rather than crashing the process. Parity and fuzz tests compare the cold evaluator against the upstream semantics.
 
-- Verification: tests: `internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_parity_test.go`, `internal/storage/parquets3/free_text_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_fuzz_test.go` · bench: `level_filter`, `multi_filter`, `negation`, `fulltext`
+- Verification: rows: `lh.query.half_open_time_range` (pass, pending) · tests: `internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_parity_test.go`, `internal/storage/parquets3/free_text_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_fuzz_test.go`, `internal/storage/parquets3/time_only_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/time_only_filter_test.go` · bench: `level_filter`, `multi_filter`, `negation`, `fulltext`
 - Docs: `docs/storage-flow.md`, `docs/read-path.md`
 - Changelog: `0.18.1`
 
@@ -1432,7 +1432,7 @@ Every e2e and benchmark claim in this repo is only as honest as its seed. The ge
 
 ### ✅ Lakehouse feature catalog
 
-`lh.feature.ops.feature_catalog` · status: shipped · since: the release after v0.121.0 · surfaces: cli
+`lh.feature.ops.feature_catalog` · status: shipped · since: v0.122.0 · surfaces: cli
 
 **Feature catalog**: every Lakehouse capability is declared with the registry rows, tests, benchmarks and docs that verify it — and `docs/features.md` plus the README's Key Features bullets are generated from that declaration, so what ships and what is verified cannot drift apart.
 
@@ -1440,7 +1440,7 @@ The conformance registry answers "did we miss something upstream has"; the featu
 
 - Verification: tests: `tests/conformance/features_test.go#TestFeatures_RealCatalog`, `tests/conformance/registry/features_test.go#TestLoadFeatures_Valid`, `tests/conformance/report/features_test.go#TestRenderFeatures`, `scripts/ci/tests/test_check_registry_touch.sh`
 - Docs: `tests/conformance/README.md`, `docs/features.md`
-- Changelog: the release after `0.121.0`
+- Changelog: `0.122.0`
 
 ### ✅ Lifecycle HTTP endpoints
 

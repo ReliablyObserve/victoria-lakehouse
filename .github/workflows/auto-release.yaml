@@ -9,6 +9,14 @@ permissions:
   packages: write
   pull-requests: write
 
+# Release runs are serialized. Two runs that start together read the same
+# latest tag and publish two releases from one base version (v0.121.1 and
+# v0.122.0 on 2026-09-14). A queued run fetches tags after the previous
+# run pushed its tag, so each release builds on the last one.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
 env:
   GOWORK: "off"
   # Must stay equal to the Makefile pins (TestDockerfilePinsMatchMakefile keeps
@@ -94,23 +102,25 @@ jobs:
           #   minor:  0.+1.0  — normal feature
           #   patch:  0.0.+1  — fix / perf / docs / small change
           BUMP="patch"
+          LABEL_CLASSIFIED=false
 
           if [ -n "$PR_NUM" ]; then
             LABELS=$(gh pr view "$PR_NUM" --json labels --jq '.labels[].name' 2>/dev/null || true)
             if echo "$LABELS" | grep -qE "release:major|breaking-change"; then
-              BUMP="major"
+              BUMP="major"; LABEL_CLASSIFIED=true
             elif echo "$LABELS" | grep -qE "release:xl|epic"; then
-              BUMP="xl"
+              BUMP="xl"; LABEL_CLASSIFIED=true
             elif echo "$LABELS" | grep -qE "release:minor|feature"; then
-              BUMP="minor"
+              BUMP="minor"; LABEL_CLASSIFIED=true
             elif echo "$LABELS" | grep -qE "release:patch|bugfix|performance"; then
-              BUMP="patch"
+              BUMP="patch"; LABEL_CLASSIFIED=true
             fi
           fi
 
-          # Conventional-commit + size-based fallback. Only kicks
-          # in when the label gate didn't already classify.
-          if [ "$BUMP" = "patch" ]; then
+          # Conventional-commit + size-based fallback. Only kicks in when
+          # no release label classified the PR: an explicit patch label
+          # (bugfix, performance, release:patch) is never promoted by size.
+          if [ "$LABEL_CLASSIFIED" != "true" ]; then
             MSG_FIRST=$(echo "$COMMIT_MSG" | head -1)
             if echo "$MSG_FIRST" | grep -qiE "BREAKING CHANGE|^feat!:"; then
               BUMP="major"
@@ -168,7 +178,7 @@ jobs:
         run: |
           # Skip if only non-code files changed (docs, CI, website, release metadata)
           CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
-          if echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md|LICENSE|website/|scripts/ci/|charts/victoria-lakehouse/Chart\.yaml|tests/verification/)"; then
+          if echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md|CONTRIBUTING\.md|SECURITY\.md|CODE_OF_CONDUCT\.md|LICENSE|website/|scripts/ci/|charts/victoria-lakehouse/Chart\.yaml|tests/verification/)"; then
             echo "skip=false" >> $GITHUB_OUTPUT
           else
             echo "skip=true" >> $GITHUB_OUTPUT

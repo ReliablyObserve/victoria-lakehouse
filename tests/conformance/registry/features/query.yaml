@@ -29,12 +29,15 @@
   area: query
   readme_section: Read Path
   surfaces: [storage]
+  rows: [lh.query.half_open_time_range]
   tests:
     - internal/storage/parquets3/filter_test.go
     - lakehouse-traces/internal/storage/parquets3/filter_test.go
     - lakehouse-traces/internal/storage/parquets3/filter_parity_test.go
     - internal/storage/parquets3/free_text_filter_test.go
     - lakehouse-traces/internal/storage/parquets3/filter_fuzz_test.go
+    - internal/storage/parquets3/time_only_filter_test.go
+    - lakehouse-traces/internal/storage/parquets3/time_only_filter_test.go
   docs:
     - docs/storage-flow.md
     - docs/read-path.md
@@ -46,6 +49,9 @@
   description: >-
     Filters that Parquet statistics cannot decide are evaluated on the decoded rows before they
     are handed to the engine, so cold results match what the hot engine would have returned.
+    The row filter is taken straight from the parsed query, so a time-only query (any range form,
+    including half-open) runs no per-row filter and never re-parses query text, and a query
+    VictoriaLogs cannot print back is answered rather than crashing the process.
     Parity and fuzz tests compare the cold evaluator against the upstream semantics.
 
 - id: lh.feature.query.max_rows

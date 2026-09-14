@@ -358,7 +358,7 @@ Full engine comparison with query examples: [Analytics Engines](docs/analytics-e
 
 ## Binaries and Roles
 
-Two separate binaries, each pinned to its own VL/VT upstream version for maximum API compatibility. Same Go codebase (shared `internal/` packages for cache, manifest, S3, config), different entry points and schemas. Each binary is a standalone static binary (no CGo) with a distroless Docker image (<20MB compressed).
+Two separate binaries, each pinned to its own VL/VT upstream version for maximum API compatibility. Full upstream compatibility is a main rule, not a goal: every native VL/VT behavior must work on Lakehouse exactly as upstream, and every feature or upstream bump is gated by the conformance checks (registry, feature catalog and upstream-inventory drift) in [`tests/conformance/`](tests/conformance/README.md) (see [Main Rules](CONTRIBUTING.md#main-rules-non-negotiable)). Same Go codebase (shared `internal/` packages for cache, manifest, S3, config), different entry points and schemas. Each binary is a standalone static binary (no CGo) with a distroless Docker image (<20MB compressed).
 
 | Binary | Port | Upstream Compat | Insert APIs | Select APIs | Docker Image |
 |---|---|---|---|---|---|

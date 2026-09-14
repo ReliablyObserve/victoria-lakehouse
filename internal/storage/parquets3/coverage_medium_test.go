@@ -321,38 +321,6 @@ func TestMedium_detectConstantColumns(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. stripTimePredicates (filter.go ~51) — 78.9% → cover uncovered branches
-// ---------------------------------------------------------------------------
-
-func TestMedium_stripTimePredicates(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"no time predicate", `service.name:="api"`, `service.name:="api"`},
-		{"single bracketed time", `_time:[2025-01-01,2025-01-02]`, ``},
-		{"time with trailing filter", `_time:[2025-01-01,2025-01-02] service.name:="api"`, ` service.name:="api"`},
-		{"time with leading filter", `service.name:="api" _time:[2025-01-01,2025-01-02]`, `service.name:="api" `},
-		{"multiple time predicates", `_time:[2025-01-01,2025-01-02] _time:[2025-03-01,2025-04-01]`, ` `},
-		{"nested brackets", `_time:[2025-01-01,[nested],end]`, ``},
-		{"empty string", ``, ``},
-		{"time without brackets (space-delimited)", `_time:5m service.name:="api"`, ` service.name:="api"`},
-		{"time without brackets at end", `service.name:="api" _time:5m`, `service.name:="api" `},
-		{"time without brackets only", `_time:5m`, ``},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := stripTimePredicates(tt.input)
-			if got != tt.want {
-				t.Errorf("stripTimePredicates(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 5. parquetValueToAny (storage_query.go ~1714) — 46.2% → covered
 // ---------------------------------------------------------------------------
 
@@ -811,35 +779,6 @@ func TestMedium_isPrintable(t *testing.T) {
 			got := isPrintable(tt.input)
 			if got != tt.want {
 				t.Errorf("isPrintable(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Additional: isTimeOnlyFilter (filter.go ~40)
-// ---------------------------------------------------------------------------
-
-func TestMedium_isTimeOnlyFilter(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  bool
-	}{
-		{"empty", "", true},
-		{"wildcard", "*", true},
-		{"time only bracketed", `_time:[2025-01-01,2025-01-02]`, true},
-		{"time only no bracket", `_time:5m`, true},
-		{"time plus field filter", `_time:[2025-01-01,2025-01-02] service.name:="api"`, false},
-		{"field only", `service.name:="api"`, false},
-		{"multiple times", `_time:[2025-01-01,2025-01-02] _time:[2025-03-01,2025-04-01]`, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isTimeOnlyFilter(tt.input)
-			if got != tt.want {
-				t.Errorf("isTimeOnlyFilter(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}
