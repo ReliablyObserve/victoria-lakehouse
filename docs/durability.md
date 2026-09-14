@@ -103,35 +103,80 @@ crash safety means never letting them disagree in a direction that loses rows.
 **Tombstones.** Every mutation (create, un-delete, retirement of a fully
 rewritten tombstone) is written through before the call returns: the local disk
 copy (`{delete.persist_path}/tombstones.json`, temp file + rename) synchronously,
-and the S3 copy (`{tenant_prefix}_tombstones/{id}.json`) in the same call, queued
-and retried if S3 is down. Durability does **not** depend on a graceful
-shutdown. On boot the store restores the **union** of both copies, resolving
-per-record conflicts towards the one with the most rewrite progress, then a
-self-check compares the result against the manifest and counts any disagreement
-(see [Operations → Tombstone Management](operations.md#tombstone-management)).
+and the S3 copy (`{prefix}_tombstones/{id}.json`, one shared prefix for every
+tenant) in the same call, queued and retried if S3 is down. Durability does
+**not** depend on a graceful shutdown. On boot the store restores the **union**
+of both copies, resolving per-record conflicts towards the one with the most
+rewrite progress; a removal leaves a marker in the disk copy so a stale S3 copy
+of an un-deleted or retired tombstone is not restored (its delete is re-issued).
+Then every interrupted rewrite is resolved and a self-check compares the result
+against the manifest and counts any disagreement (see
+[Operations → Tombstone Management](operations.md#tombstone-management)).
 
 **Rewrites.** Removing rows from a Parquet object means writing a filtered
 replacement and dropping the original. The manifest is swapped between the two in
 a single atomic step — and only if the original is still registered — and the
-original is never deleted before that swap lands:
+original is never deleted before that swap lands and is recorded. Each step is
+recorded on the tombstone before the step that depends on it (`prepared` before
+the upload, `published` after the swap, cleared after the original's delete;
+`discarded` when a publish is refused), because the tombstone store is durable on
+every change while the manifest is durable only as of its last snapshot.
+
+**The manifest refresh.** Every `manifest.refresh_interval` (and at startup) the
+manifest is rebuilt from a bucket listing. A listing cannot tell a live file from
+an object the manifest let go of, so the manifest remembers **retired** keys (a
+publish replaced them, or an output was abandoned, and the delete has not landed)
+and **pending** keys (uploaded, not yet published) and the refresh adopts neither.
+Without that, every "unmanifested object is reclaimed by the orphan sweep" claim
+below was false within one refresh interval: the refresh re-adopted the object
+first — serving its rows twice, bringing deleted rows back once the tombstone
+retired, and hiding it from the sweep for good. See
+[Manifest System → What the refresh does not adopt](manifest-system.md#what-the-refresh-does-not-adopt).
+
+A crash is followed by a restart in one of three states — the manifest snapshot
+taken at the crash, a snapshot older than the rewrite, or no disk at all
+(tombstones from S3, manifest from the listing) — and the refresh runs before the
+scheduler gets another turn. Every row below holds in all three:
 
 | crash point / interleaving | state left behind | how it converges |
 |---|---|---|
-| after the replacement is uploaded | original still manifested; replacement unmanifested | the orphan sweep reclaims the replacement after `orphan_ttl`; the tombstone is retried |
-| after the manifest swap | replacement manifested; original unmanifested | the orphan sweep reclaims the original; the kept rows are served from the replacement |
-| after the original is deleted, before the tombstone records it | replacement manifested; tombstone still lists the key as pending | the scheduler sees the key is gone, marks it reaped, re-reads the files in the range and completes the tombstone |
+| after `prepared` is recorded, before the upload | no replacement; source manifested (or adopted by the refresh) | restart undoes the rewrite (the replacement key is retired); the rewrite runs again |
+| after the upload, before the publish | replacement in the bucket, `prepared` | restart retires the replacement, so the refresh does not adopt it next to the source; the next pass deletes it; the rewrite runs again |
+| after the swap, before `published` is recorded | a snapshot may hold the swap; nothing outside the process saw it | restart reverses the swap: the replacement is retired, the source (retired by this swap only) is served again; the rewrite runs again |
+| after `published` is recorded | replacement live; source retired | restart retires the source (a snapshot older than the swap would list it; the refresh would re-adopt it); the next pass deletes it and clears the record |
+| after peers and pmeta are told | as above | as above |
+| after the original is deleted | replacement live; record cleared | nothing to resolve; the refresh drops the original from an old snapshot |
+| the original's delete fails (no crash) | source retired, record `published` | every pass retries the delete; the refresh never re-adopts the source meanwhile; the tombstone retires only after the delete lands |
+| the publish fails or is refused, and the replacement's delete fails | record `discarded`, replacement retired | every pass retries the delete; the refresh never adopts the replacement |
+| the refresh runs between any two steps of a live rewrite or compaction | pending output, or retired source | neither is adopted; a file published while the listing ran is kept |
 | a compaction merged the original between the rewrite's read and its publish | the compacted output is manifested; the rewrite's swap is refused | the rewrite discards its replacement; the tombstone follows the rows into the compacted output and rewrites it if it still holds them |
-| a rewrite replaced a source between a compaction's read and its publish | the replacement is manifested; the compaction's swap is refused | the compaction discards its output and re-selects on the next tick |
+| a rewrite replaced a source between a compaction's read and its publish | the replacement is manifested; the compaction's swap is refused | the compaction abandons (retires and deletes) its output and re-selects on the next tick |
+| a compaction's source delete fails | output live; source retired | the compaction scheduler retries the delete every scan; the refresh never re-adopts the source |
 | a compaction published its output, then died before updating the tombstone | the output holds the tombstone's rows; nothing on the tombstone names it | before retiring, the scheduler re-reads every file overlapping the range, finds the output and rewrites it |
 
 Every one of these converges without operator action; none can leave a kept row
-in no readable object, store it twice, or retire a tombstone while a file still
+in no readable object, serve it twice, or retire a tombstone while a file still
 holds its rows. Compaction never physically removes rows of a `hide` tombstone
-or of one still inside `rewrite_delay`, so an un-delete always restores them.
-The one thing that would break this is rewriting without a manifest to publish
-into, so the rewriter refuses to run in that configuration rather than
-orphaning its output. Each row of this table is a test in
-`internal/delete/rewrite_crash_test.go` or `internal/compaction/delete_race_test.go`.
+or of one still inside `rewrite_delay`, and records an output clean for a
+tombstone only if the merge applied it, so an un-delete always restores them.
+The rewriter refuses to run without a manifest to publish into.
+
+The rows are tests: `TestRewriteCrashMatrix_WithManifestRefresh` (every step of
+the publish and discard paths × the three restart modes, refresh first),
+`TestRewriteRefreshAtEveryStep`, `TestRewriteRefresh_*` and
+`TestResumeRewrites_RetriesUntilTheDeleteLands` in `internal/delete`;
+`TestDeleteRace_*`, `TestDeleteRefresh_*` and the property suite
+`TestDeleteLifecycleProperties` (random deletes, un-deletes, compactions, failing
+deletes, refreshes and snapshot restarts) in `internal/compaction`; and the
+refresh merge rules in `internal/manifest/refresh_retired_test.go`.
+
+Two combinations fall outside the table: a node that loses its disk while S3
+writes of the tombstone store are also failing restores an older record from S3;
+and retired keys covering a *compaction's* leftover source are persisted with the
+manifest snapshot, so a crash between that compaction and the next snapshot can
+let the refresh adopt the leftover source again — the compaction crash window
+that predates this change (see
+[Operations → Known bounds](operations.md#where-tombstones-are-applied)).
 
 ---
 

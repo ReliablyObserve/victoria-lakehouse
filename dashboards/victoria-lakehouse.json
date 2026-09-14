@@ -577,6 +577,120 @@
           "legendFormat": "compaction publish conflicts/s"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 76
+      },
+      "id": 77,
+      "title": "Objects Awaiting Deletion",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "lakehouse_manifest_retired_keys{instance=~\"$instance\"}",
+          "legendFormat": "retired keys"
+        },
+        {
+          "expr": "rate(lakehouse_manifest_retired_reclaimed_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "reclaimed/s"
+        },
+        {
+          "expr": "rate(lakehouse_manifest_retired_reclaim_errors_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "reclaim errors/s"
+        },
+        {
+          "expr": "sum by (reason) (increase(lakehouse_manifest_retired_evicted_total{instance=~\"$instance\"}[1h]))",
+          "legendFormat": "evicted {{reason}}"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 76
+      },
+      "id": 78,
+      "title": "Manifest Refresh Exclusions",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(lakehouse_manifest_refresh_skipped_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{reason}}/s"
+        },
+        {
+          "expr": "increase(lakehouse_manifest_refresh_cliff_guard_rejections_total{instance=~\"$instance\"}[1h])",
+          "legendFormat": "cliff-guard rejections"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 76
+      },
+      "id": 79,
+      "title": "Interrupted Rewrites",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (outcome) (increase(lakehouse_delete_rewrite_interrupted_total{instance=~\"$instance\"}[1h]))",
+          "legendFormat": "resolved {{outcome}}"
+        },
+        {
+          "expr": "rate(lakehouse_delete_rewrite_old_object_errors_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "superseded-object delete errors/s"
+        },
+        {
+          "expr": "rate(lakehouse_delete_rewrite_abandoned_object_errors_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "abandoned-object delete errors/s"
+        }
+      ]
     }
   ],
   "schemaVersion": 39,

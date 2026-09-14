@@ -316,8 +316,11 @@ storage before the API call returns:
 - the **local disk copy** (`{persist_path}/tombstones.json`, written to a
   temporary file and renamed) is written synchronously, so a `SIGKILL`
   immediately after the delete API returns cannot lose the record;
-- the **S3 copy** (`{tenant_prefix}_tombstones/{id}.json`) is attempted in the
-  same call. If S3 is unavailable the record is queued,
+- the **S3 copy** (`{prefix}_tombstones/{id}.json`, where `{prefix}` is the
+  deployment's S3 prefix — `s3.prefix`, or else the default tenant prefix plus
+  the signal, e.g. `logs/`) is attempted in the same call. Tombstones are not
+  stored per tenant: in multi-tenant mode every tenant's tombstones live under
+  the one prefix (typically `logs/_tombstones/` or `traces/_tombstones/`). If S3 is unavailable the record is queued,
   `lakehouse_delete_tombstone_persist_pending` rises above zero, and the write
   is retried on the next mutation, on every rewrite-scheduler tick, and at
   shutdown. The disk copy is authoritative for that node in the meantime.
@@ -340,8 +343,12 @@ and logs plus counts every disagreement under
 | `persistence_disabled` | the store has no durable target | deletes are lost on an ungraceful restart |
 | `reaped_key_still_manifested` | tombstone state is ahead of the manifest snapshot | rows stay hidden by the query filter; self-heals |
 | `pending_key_missing_from_manifest` | the manifest snapshot is ahead of the tombstone copy | the scheduler marks the key reaped on its next tick |
-| `rewrite_source_unmanifested` | a rewrite ran on a file the manifest did not list | the replacement is still registered, so it is not swept |
+| `removed_tombstone_still_in_s3` | an un-deleted or retired tombstone's S3 copy survived a crash | the stale copy is ignored and its delete re-issued (see *Un-Delete*) |
 | `unreadable_tombstone_object` | an object under `_tombstones/` could not be parsed | that one record was skipped |
+
+Before the self-check, every **interrupted rewrite** is resolved against the
+restored manifest (see *Background Rewriter*), counted as
+`lakehouse_delete_rewrite_interrupted_total{outcome="undone"|"published"|"discarded"}`.
 
 Findings are reported, not repaired: every repair is a data movement that
 belongs to the rewrite scheduler's normal retry path.
@@ -359,16 +366,21 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_delete_tombstone_keys_discovered_total` — files added to a tombstone's work list because they overlap its range (compaction outputs carrying its rows, late files)
 - `lakehouse_delete_catalog_rebuilds_total{result}` — pmeta field-catalog value rebuilds after rows were removed
 - `lakehouse_compaction_publish_conflicts_total` — compactions abandoned at publish because a source was replaced mid-merge
-- `lakehouse_delete_rewrite_old_object_errors_total` — superseded objects that could not be deleted after a successful publish; harmless, the orphan sweep reclaims them
+- `lakehouse_delete_rewrite_old_object_errors_total` — deletes of superseded objects that failed after a successful publish; the rewrite's record and the object's retirement in the manifest stay until a later pass deletes it, and the tombstone does not retire before that
+- `lakehouse_delete_rewrite_abandoned_object_errors_total` — deletes of replacements whose publish was refused or failed; retried the same way
+- `lakehouse_delete_rewrite_interrupted_total{outcome}` — rewrites found unfinished (after a crash) and how they were resolved
+- `lakehouse_manifest_retired_keys`, `lakehouse_manifest_refresh_skipped_total{reason}`, `lakehouse_manifest_retired_evicted_total{reason}`, `lakehouse_manifest_retired_reclaimed_total` / `..._reclaim_errors_total` — objects the manifest refresh keeps out while their deletes are outstanding (see [Manifest System → What the refresh does not adopt](manifest-system.md#what-the-refresh-does-not-adopt))
 - `lakehouse_delete_rewrite_skipped_glacier_total` — rewrites skipped due to storage class
 - `lakehouse_delete_tombstone_persist_total{target="disk"|"s3"}` / `..._errors_total` — durability writes
 - `lakehouse_delete_tombstone_persist_pending` — records whose S3 copy is behind; steady state 0
 - `lakehouse_delete_compaction_rows_removed_total` / `lakehouse_delete_compaction_keys_reaped_total` — rows and source keys compaction reaped
-- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — field-enumeration requests that gave up a metadata-only fast path because a tombstone overlapped
+- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`)
 
 **Alert on** a sustained non-zero `lakehouse_delete_tombstone_persist_pending`
-(only the local disk copy would survive a pod move) and on any increase in
-`lakehouse_delete_rewrite_manifest_errors_total` — both ship as rules in
+(only the local disk copy would survive a pod move), on any increase in
+`lakehouse_delete_rewrite_manifest_errors_total`, on superseded or abandoned
+objects whose deletes keep failing, and on any retired key evicted by its bound
+(`lakehouse_manifest_retired_evicted_total`) — all ship as rules in
 `alerts/alerts-lakehouse.yml`.
 
 **Configuration:**
@@ -397,7 +409,8 @@ The rewriter processes tombstones with mode `permanent` or `auto` against S3 Sta
    range — not only the files that existed when the delete was issued
 3. Checks file storage class (HeadObject or lifecycle prediction) and skips
    non-Standard files (Glacier, IA) — tombstone-only suppression
-4. Rewrites each pending file in three steps (below)
+4. Rewrites each pending file in recorded steps (below), after first settling
+   any rewrite an earlier pass or a crashed process left unfinished
 5. Re-reads the files overlapping the range once more, and retires the
    tombstone only if every one of them has been handled
 
@@ -417,17 +430,35 @@ Retiring on the old snapshot would stop the query-time filter from hiding rows
 that were never removed. New entries are counted in
 `lakehouse_delete_tombstone_keys_discovered_total`.
 
-Each file goes through a **two-phase rewrite** so that no crash can lose rows:
+Each file goes through a **recorded rewrite**. Before each step that something
+later depends on, the rewrite writes its progress onto the tombstone — a durable
+record keyed by the source file, persisted like every tombstone change (disk
+synchronously, S3 in the same call). The manifest, by contrast, is only as
+durable as its last snapshot, so after a crash the record — not the manifest —
+says what happened:
 
 | step | what happens | if the process dies here |
 |------|--------------|--------------------------|
-| prepare | the filtered replacement is uploaded under a new key; the original is untouched | the original is still the manifested copy; the replacement is unmanifested and the orphan sweep reclaims it; the tombstone is retried |
-| publish | the manifest swaps the old key for the new one in a single atomic step | the original becomes unmanifested and is swept; the kept rows are served from the replacement |
-| commit | the superseded object is deleted | identical to the above |
+| record `prepared` | the replacement key is chosen and written onto the tombstone; nothing is uploaded yet | restart **undoes** the rewrite: the replacement key is retired in the manifest (a refresh will not adopt it) and the rewrite runs again |
+| upload | the filtered replacement is uploaded under its new key; the manifest marks it *pending*, so a manifest refresh in the meantime does not adopt it | same: undone; the replacement object is deleted by the next pass |
+| publish | the manifest swaps the old key for the new one in a single atomic step, and retires the old key | still `prepared`: undone — even if a snapshot captured the swap, the swap is reversed and the source is served again; peers, pmeta and the source's delete all wait for the next step, so nothing outside the process saw the replacement |
+| record `published` | the publish and the key's bookkeeping (source reaped, replacement clean) are recorded | restart **finishes** the rewrite: the source is retired (a refresh will not re-adopt it) and deleted by the next pass; the replacement is served from the manifest or adopted by the refresh |
+| hand-off | pmeta and peers are told | same: finished |
+| commit | the superseded object is deleted, then the record is cleared | if the delete failed, the record stays and every later pass retries it; the tombstone does not retire while any record remains |
+
+A publish that is refused or fails records `discarded`, retires the replacement,
+and deletes it; a failed delete is retried the same way. A restart resolves
+every record before the first manifest refresh runs, so no restart mode — a
+snapshot taken at the crash, a snapshot older than the rewrite, or a lost disk
+with tombstones restored from S3 — can serve a row twice or lose one.
 
 The superseded object is **never** deleted before the manifest points at its
-replacement. A manifest hand-off that fails leaves the key un-reaped, so the
-next tick retries it.
+replacement and that publish is recorded. A manifest hand-off that fails leaves
+the key un-reaped, so the next tick retries it. An **un-delete** of a tombstone
+with an unfinished rewrite is refused with `409 Conflict` — the record lives on
+the tombstone, and removing it mid-rewrite would drop the only trace of a
+replacement object; retry once the rewrite settles (seconds, unless deletes are
+failing).
 
 **Publishes are conditional.** The swap happens only if the source file is
 still registered. If a compaction merged the same file between the rewrite's
@@ -461,9 +492,8 @@ partition containing a file whose manifest entry has no labels, because
 replaying it would shrink the catalog to a partial list.
 
 **The rewriter refuses to run without a manifest.** A rewrite that cannot be
-published would leave the replacement unmanaged — the orphan sweep would delete
-it after `orphan_ttl`, taking the kept rows with it — and would strand the
-manifest on a deleted key. Refusing counts
+published would leave the replacement unmanaged and strand the manifest on a
+deleted key. Refusing counts
 `lakehouse_delete_rewrite_skipped_no_manifest_total` and leaves the safe state:
 the rows are hidden by the query-time filter but not yet removed.
 
@@ -485,8 +515,9 @@ while a compacted file still holds its rows. Keys under a never-delete prefix
 | path | behaviour |
 |------|-----------|
 | log/span query results | rows matching an active tombstone are filtered out |
-| `field_values`, `streams`, `stream_ids` | a tombstoned row's values are not enumerated. The pmeta catalog and the label index are bypassed while a tombstone overlaps the partition hours the query touches (the catalog answers with whole-hour value sets), so these requests fall back to a column-projected row scan until the tombstone retires — counted in `lakehouse_delete_fields_scan_fallback_total{endpoint}` |
-| `field_names` | names are still returned, but hit **counts** are reported as unknown (`0`) whenever a tombstone overlaps the rows they were counted from — the whole of every counted file, which can extend past the query window — rather than counts that still include the deleted rows |
+| aggregates over the unflushed window (`stats`, counts) | the pure-buffer fast path — the whole query, pipes included, run in the co-located buffer's engine — is skipped while a tombstone overlaps the window, because its aggregated result carries no row the tombstone filter could drop; the raw rows are filtered instead (`lakehouse_delete_fields_scan_fallback_total{endpoint="pure_buffer"}`) |
+| `field_values`, `streams`, `stream_ids` | a tombstoned row's values are not enumerated. The row scans read whole files, so they apply every tombstone overlapping the scanned files' rows, not only the query window. The pmeta catalog is bypassed while a tombstone overlaps the partition hours the query touches (it answers with whole-hour value sets), and the label index — which is not time-scoped — while any tombstone is active; these requests then fall back to a column-projected row scan until the tombstone retires — counted in `lakehouse_delete_fields_scan_fallback_total{endpoint}` |
+| `field_names` | names are still returned. On the logs binary hit **counts** are reported as unknown (`0`) whenever a tombstone overlaps the rows they were counted from — the whole of every counted file, which can extend past the query window — rather than counts that still include the deleted rows. The traces binary never reports per-field counts (every name carries `1`), so there is no count a tombstone could make wrong |
 | compaction output | rows of tombstones eligible for physical removal are dropped; `hide` and in-window rows are carried forward |
 
 **Known bounds**, stated rather than papered over:
@@ -498,10 +529,15 @@ while a compacted file still holds its rows. Keys under a never-delete prefix
   scan of every candidate file. Reporting the counts as unknown is the honest
   answer; the names settle once the background rewriter runs.
 - The legacy label index (used when pmeta is off) is not time-scoped: it lists
-  values seen at any time. Outside a tombstone's range it can therefore list a
-  value whose only rows were deleted, exactly as it can list values that do not
-  occur in the queried window at all. Inside the range the answer is verified
-  against rows.
+  values seen at any time, including values that do not occur in the queried
+  window. While any tombstone is active it is not consulted at all, so it can
+  no longer list a deleted value; the cost is a row scan for unfiltered
+  `field_values` requests until every tombstone has retired.
+- A tombstone whose range overlaps a file in a storage class the rewriter does
+  not touch (`auto_rewrite_classes`, Glacier or IA by default) never retires:
+  that file is skipped every pass and keeps the tombstone active, which is what
+  keeps its rows hidden. This is by design; it shows as an active tombstone in
+  the listing, not as an inconsistency.
 - The pmeta catalog is corrected in memory when rows are removed and persisted
   with the next bundle write. A crash in between can leave the persisted catalog
   listing a removed value until that partition's next rewrite or compaction.
@@ -512,18 +548,37 @@ while a compacted file still holds its rows. Keys under a never-delete prefix
   delete removes data that existed when it ran.
 - **Multi-instance deployments.** Tombstones live in each instance's memory and
   reach other instances only through the S3 copy they restore at startup; there
-  is no live propagation. Until the other instances restart, query-time
-  suppression applies on the instance that received the delete. The conditional
-  publish that keeps a rewrite and a compaction of the same file from both
-  registering an output works within one instance; manifest updates pushed to
-  peers are applied unconditionally, so a rewrite on one instance racing the
-  compaction owner of that partition on another can still leave both outputs
-  registered (the kept rows stored twice) in a narrow window. Before this
-  change the same race lost the kept rows outright.
+  is no live propagation, of a delete or of an un-delete. Until the other
+  instances restart, query-time suppression applies on the instance that
+  received the delete, and an un-deleted tombstone keeps hiding rows on the
+  others. Every instance with the rewriter enabled runs the scheduler over the
+  tombstones it restored, so two instances can rewrite the same file: the
+  conditional publish and the rewrite records work within one instance, but
+  manifest updates pushed to peers are applied unconditionally, so a rewrite on
+  one instance racing a rewrite — or the compaction owner of that partition — on
+  another can leave both outputs registered (the kept rows stored twice) in a
+  narrow window, and an interrupted rewrite's record can be resolved by an
+  instance that did not start it. Run the rewriter on one instance per
+  bucket prefix. Before this change the same races lost the kept rows outright.
+- The delete API is not tenant-scoped: a tombstone's query is evaluated against
+  every tenant's rows in its time range. Tenant isolation of the delete path is
+  tracked with the cold-tier tenant-scope fix.
+- **Crash recovery bounds.** A rewrite's record is durable on every change, so
+  every crash window of a rewrite is covered in every restart mode. Two
+  combinations are not: a node that loses its local disk while S3 writes of the
+  tombstone store are also failing restores an older record from S3; and the
+  manifest's retired keys — which cover a *compaction's* merged sources whose
+  delete failed — are persisted as of the last manifest snapshot
+  (`manifest.persist_interval`), so a crash between such a compaction and the
+  next snapshot can let the refresh adopt a leftover source again (the
+  pre-existing compaction crash window, now closed for every non-crash
+  failure).
 
 **Watching it.** The shipped dashboard (`dashboards/victoria-lakehouse.json`) has
 a *Deletes* row covering tombstone lifecycle, rewrite outcomes, durability, rows
-and files reaped, field-enumeration fallbacks and the consistency checks, and
+and files reaped, field-enumeration fallbacks, the consistency checks, objects
+awaiting deletion, the manifest refresh's exclusions and interrupted rewrites,
+and
 `alerts/alerts-lakehouse.yml` ships a `lakehouse-deletes` rule group for the
 conditions above. `GET /delete/logsql/tombstones` (or `/delete/tracessql/…`)
 reports `persistence.enabled` and `persistence.pending_s3_writes` next to the

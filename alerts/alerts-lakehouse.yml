@@ -152,3 +152,20 @@ groups:
         annotations:
           summary: "Compactions repeatedly abandoned at publish"
           description: "Compaction keeps finding its sources replaced mid-merge ({{ $value }}/s). Occasional conflicts with delete rewrites are expected; a sustained rate means two writers own the same partitions."
+
+      - alert: LakehouseSupersededObjectDeletesFailing
+        expr: (increase(lakehouse_manifest_retired_reclaim_errors_total[1h]) + increase(lakehouse_delete_rewrite_old_object_errors_total[1h]) + increase(lakehouse_delete_rewrite_abandoned_object_errors_total[1h])) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Objects replaced by a rewrite or compaction are not being deleted"
+          description: "Deletes of superseded or abandoned Parquet objects have kept failing for an hour. They stay out of the manifest, so no row is served twice, but they occupy storage, keep their tombstones active, and are forgotten by the manifest after 7 days — after which a refresh would serve them again. Check S3 delete permissions."
+
+      - alert: LakehouseManifestRetiredKeyEvicted
+        expr: increase(lakehouse_manifest_retired_evicted_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The manifest forgot a retired key before its object was deleted"
+          description: "{{ $value }} retired key(s) reached the age or size bound. If their objects still exist, the next manifest refresh serves their rows again next to the files that replaced them. Delete the listed leftovers or investigate why their deletes never succeeded."

@@ -47,7 +47,7 @@ For data on any S3 class, the default deletion mode is **tombstone-based soft de
 **Tombstones are stored in:**
 - In-memory (instant filter application)
 - Written through to disk on every change (survives `kill -9`, not just a graceful shutdown)
-- Written through to S3 as `{tenant_prefix}_tombstones/{id}.json` in the same call, retried on failure (survives pod loss)
+- Written through to S3 as `{prefix}_tombstones/{id}.json` in the same call, retried on failure (survives pod loss)
 
 Startup restores the union of the disk and S3 copies. The full guarantee, the
 conflict-resolution rule and the boot-time self-check are documented in
@@ -287,18 +287,23 @@ Each operates independently on its respective Parquet files. Both share the same
 ### Tombstone Storage Format
 
 ```
-s3://{bucket}/{tenant_prefix}_tombstones/
+s3://{bucket}/{prefix}_tombstones/
   {id}.json   # One object per tombstone
 ```
 
-`{tenant_prefix}` is the same prefix the signal's Parquet files live under (e.g.
-`1002/0/logs/`), so a tenant's tombstones sit beside its data. The
+`{prefix}` is the deployment's S3 prefix: `s3.prefix` if set, otherwise the
+default tenant prefix followed by the signal (`logs/` or `traces/`). Tombstones
+are **not** stored per tenant — in multi-tenant mode every tenant's tombstones
+share that one prefix (typically `logs/_tombstones/`), not the
+`{AccountID}/{ProjectID}/<signal>/` prefix its data lives under. The
 `_tombstones/` segment is on the orphan sweep's never-delete list, so the sweep
 cannot reclaim a live tombstone record.
 
 Tombstones are small JSON objects (<1 KB). Each one is written on creation and
-rewritten whenever its rewrite progress changes; the object is deleted when the
-tombstone is un-deleted or retired. They are loaded into memory at startup.
+rewritten whenever its rewrite progress changes — including the per-file rewrite
+record (`Superseded`) written before a replacement is uploaded and cleared once
+the superseded object is deleted; the object is deleted when the tombstone is
+un-deleted or retired. They are loaded into memory at startup.
 
 ### Rewrite Job Scheduling
 
