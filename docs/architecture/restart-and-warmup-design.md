@@ -222,7 +222,7 @@ shutdown:
   persist_timeout: 30s             # bound the SIGTERM snapshot save
 
 cache:
-  footer_max_items: 100000         # auto-tuned to manifest size by default
+  footer_max_items: 100000         # traces: auto-tuned to manifest size when unset; logs: fixed at 10000 today
   warmup_partitions: 12            # most-recent N partitions to pre-load
   warmup_max_files: 2000
 ```
@@ -235,6 +235,10 @@ cache:
 | single-node prod (~10k files) | 1k | 10k | 5m |
 | small cluster (~100k files) | 10k | 50k | 5m |
 | PB-scale (1M+ files) | 100k | 200k+ (~10 GB RAM) | 2m |
+
+The `footer_max_items` column applies to traces only today — the logs
+binary's footer cache is fixed at 10 000 entries; see
+[scale limits](../petabyte-scale-audit.md#footer-cache).
 
 ## Metrics surface
 
