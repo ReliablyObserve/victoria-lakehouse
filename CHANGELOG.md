@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Releases no longer race or over-bump.** Two release runs that started together read the same latest tag and published v0.121.1 and v0.122.0 from one base; `auto-release.yaml` now serializes runs (`concurrency: auto-release`, queued not cancelled). An explicit `bugfix`/`performance`/`release:patch` label now wins over the size rule, which previously promoted any labeled patch PR over 5,000 changed lines or 50 files to a +10 minor. Merges that change only `CONTRIBUTING.md`, `SECURITY.md` or `CODE_OF_CONDUCT.md` no longer cut a release. The changelog gate accepts a release-metadata PR that adds a version section out of order. The bump logic is now tested by running the workflow's own script (`scripts/ci/tests/test_auto_release_bump.py`).
+
 ## [0.122.0] - 2026-09-14
 
 ### Added
