@@ -1432,7 +1432,7 @@ Every e2e and benchmark claim in this repo is only as honest as its seed. The ge
 
 ### ✅ Lakehouse feature catalog
 
-`lh.feature.ops.feature_catalog` · status: shipped · since: the release after v0.121.0 · surfaces: cli
+`lh.feature.ops.feature_catalog` · status: shipped · since: v0.122.0 · surfaces: cli
 
 **Feature catalog**: every Lakehouse capability is declared with the registry rows, tests, benchmarks and docs that verify it — and `docs/features.md` plus the README's Key Features bullets are generated from that declaration, so what ships and what is verified cannot drift apart.
 
@@ -1440,7 +1440,7 @@ The conformance registry answers "did we miss something upstream has"; the featu
 
 - Verification: tests: `tests/conformance/features_test.go#TestFeatures_RealCatalog`, `tests/conformance/registry/features_test.go#TestLoadFeatures_Valid`, `tests/conformance/report/features_test.go#TestRenderFeatures`, `scripts/ci/tests/test_check_registry_touch.sh`
 - Docs: `tests/conformance/README.md`, `docs/features.md`
-- Changelog: the release after `0.121.0`
+- Changelog: `0.122.0`
 
 ### ✅ Lifecycle HTTP endpoints
 
