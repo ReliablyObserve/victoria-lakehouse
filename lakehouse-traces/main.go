@@ -301,6 +301,14 @@ func run(cfg *config.Config, addr string) {
 	// Arm write-through durability AFTER the restore so replaying the restored
 	// records does not rewrite every object back out.
 	tombstoneStore.EnablePersistence(tombstonePersistence)
+	// The restore re-queues the S3 delete of any removed tombstone whose stale
+	// S3 copy survived a crash. Drain that now rather than at the first rewrite
+	// scheduler tick: the scheduler may be disabled on this node.
+	if tombstoneStore.PendingS3Writes() > 0 {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		tombstoneStore.FlushPending(flushCtx)
+		flushCancel()
+	}
 	// A tombstone retiring is when its rows stop being hidden at query time;
 	// the field catalog must no longer list values only those rows carried.
 	tombstoneStore.SetCompletionObserver(func(ts delete.Tombstone) {

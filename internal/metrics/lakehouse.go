@@ -745,6 +745,10 @@ var (
 	// DeleteStartupInconsistencies counts manifest/tombstone disagreements
 	// found by the boot-time self-check, by kind.
 	DeleteStartupInconsistencies = NewCounterVec("lakehouse_delete_startup_inconsistencies_total", "kind")
+	// DeleteTombstoneRemovedMarkersEvicted counts removed-tombstone markers
+	// dropped by their TTL or cap. A marker is never evicted while its S3
+	// delete is still owed; eviction only bounds the set's size.
+	DeleteTombstoneRemovedMarkersEvicted = NewCounter("lakehouse_delete_tombstone_removed_markers_evicted_total")
 	// DeleteFieldsScanFallback counts requests that gave up a fast path whose
 	// answer a tombstone cannot be applied to (metadata-only field
 	// enumeration: field_names/field_values/streams/stream_ids; the

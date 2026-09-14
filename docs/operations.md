@@ -540,7 +540,23 @@ curl -X DELETE http://lakehouse:9428/delete/logsql/tombstone/{id}
 If the file has not been physically rewritten yet, the original data becomes visible again immediately. If already rewritten, the rows are permanently gone.
 
 The removal is persisted the same way the creation was (disk synchronously, S3
-in the same call with retry), so an un-delete is not undone by the next restart.
+in the same call with retry). If the S3 delete fails, that retry is owed in
+memory only, so the removal also leaves a marker (tombstone id → removal time)
+in the node's `tombstones.json`: a restart before the retry lands ignores the
+stale S3 copy instead of restoring it, and re-issues its delete (counted as
+`lakehouse_delete_startup_inconsistencies_total{kind="removed_tombstone_still_in_s3"}`).
+Retiring a fully rewritten tombstone leaves the same marker. A marker is kept
+while its S3 delete is owed and otherwise for 30 days, capped at 10,000
+(evictions: `lakehouse_delete_tombstone_removed_markers_evicted_total`).
+
+Two bounds follow from where the marker lives. It is on the node's local disk,
+so a node that boots without it (a new pod, a replaced volume) restores from S3
+alone and brings back a removed tombstone whose S3 delete never landed — watch
+`lakehouse_delete_tombstone_persist_pending` before replacing a volume. And an
+un-delete is not propagated to other running instances: each loads the store
+at startup, so in a multi-instance deployment un-delete on one instance, wait
+for its `lakehouse_delete_tombstone_persist_pending` to reach zero, then restart
+the others (see *Known bounds*).
 
 ### Cost Estimation Before Delete
 

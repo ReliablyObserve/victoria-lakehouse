@@ -168,6 +168,14 @@ type TombstoneStore struct {
 
 	// onComplete, when set, is called with a tombstone as it retires.
 	onComplete func(Tombstone)
+
+	// removed is id → removedAt for tombstones removed (un-deleted or
+	// retired), persisted with the disk copy so a restore can tell a stale S3
+	// object from a live record. See tombstone_removed.go.
+	removed map[string]time.Time
+	// staleS3 holds ids whose stale S3 copies a restore found before
+	// persistence was enabled; EnablePersistence queues their deletes.
+	staleS3 map[string]bool
 }
 
 // SetCompletionObserver installs a callback fired each time a tombstone
@@ -212,6 +220,12 @@ func (s *TombstoneStore) EnablePersistence(cfg PersistenceConfig) {
 		prefix:  normalizeTombstonePrefix(cfg.Prefix),
 		pending: make(map[string]pendingOp),
 	}
+	// Stale S3 copies of removed tombstones found by a restore that ran before
+	// persistence was armed: their deletes are owed from now on.
+	for id := range s.staleS3 {
+		s.persist.pending[id] = pendingDelete
+	}
+	s.staleS3 = nil
 	s.mu.Unlock()
 }
 
@@ -233,6 +247,8 @@ func (s *TombstoneStore) PersistenceEnabled() bool {
 func (s *TombstoneStore) Add(ts Tombstone) {
 	s.mu.Lock()
 	s.tombstones[ts.ID] = cloneTombstone(ts)
+	// A new delete reusing a removed id stands; its marker no longer applies.
+	delete(s.removed, ts.ID)
 	p := s.persist
 	s.mu.Unlock()
 	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
@@ -285,10 +301,12 @@ func cloneTombstone(ts Tombstone) Tombstone {
 }
 
 // Remove deletes a tombstone from the store by ID and persists the removal, so
-// an un-delete is not resurrected by the next restart.
+// an un-delete is not resurrected by the next restart — including a restart
+// that happens before a failed S3 delete is retried (see tombstone_removed.go).
 func (s *TombstoneStore) Remove(id string) {
 	s.mu.Lock()
 	delete(s.tombstones, id)
+	s.markRemovedLocked(id, time.Now())
 	p := s.persist
 	s.mu.Unlock()
 	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
@@ -311,6 +329,7 @@ func (s *TombstoneStore) Complete(id string) bool {
 		return false
 	}
 	delete(s.tombstones, id)
+	s.markRemovedLocked(id, time.Now())
 	p := s.persist
 	observer := s.onComplete
 	s.mu.Unlock()
@@ -364,15 +383,38 @@ func (s *TombstoneStore) Count() int {
 	return len(s.tombstones)
 }
 
-// PersistToDisk marshals all tombstones to JSON and writes atomically to {dir}/tombstones.json.
-// Creates dir if needed with mode 0o755.
+// PersistToDisk writes every tombstone, plus the removed-tombstone markers, to
+// {dir}/tombstones.json atomically (tmp + rename). Creates dir if needed.
 func (s *TombstoneStore) PersistToDisk(dir string) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create dir: %w", err)
 	}
 
+	// The markers whose S3 delete is still owed must survive pruning; read the
+	// queue before taking the store lock (lock order: persistence, then store).
+	var owed map[string]pendingOp
 	s.mu.RLock()
-	data, err := json.Marshal(s.tombstones)
+	p := s.persist
+	s.mu.RUnlock()
+	if p != nil {
+		p.mu.Lock()
+		owed = make(map[string]pendingOp, len(p.pending))
+		for id, op := range p.pending {
+			owed[id] = op
+		}
+		p.mu.Unlock()
+	}
+
+	s.mu.Lock()
+	s.pruneRemovedLocked(time.Now(), owed)
+	s.mu.Unlock()
+
+	s.mu.RLock()
+	data, err := json.Marshal(tombstonesFile{
+		Format:     tombstonesFileFormat,
+		Tombstones: s.tombstones,
+		Removed:    s.removed,
+	})
 	s.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshal tombstones: %w", err)
@@ -392,7 +434,10 @@ func (s *TombstoneStore) PersistToDisk(dir string) error {
 	return nil
 }
 
-// LoadFromDisk reads {dir}/tombstones.json and unmarshals into the store.
+// LoadFromDisk reads {dir}/tombstones.json (either the current envelope or the
+// previous release's bare map) and merges it into the store. Removal markers
+// are applied first, so a record they post-date — including one merged from S3
+// before this call — is dropped and its stale S3 copy is owed a delete.
 // If the file does not exist, returns nil (no-op).
 func (s *TombstoneStore) LoadFromDisk(dir string) error {
 	target := filepath.Join(dir, "tombstones.json")
@@ -405,15 +450,23 @@ func (s *TombstoneStore) LoadFromDisk(dir string) error {
 		return fmt.Errorf("read tombstones file: %w", err)
 	}
 
-	var loaded map[string]Tombstone
-	if err := json.Unmarshal(data, &loaded); err != nil {
-		return fmt.Errorf("unmarshal tombstones: %w", err)
+	loaded, err := decodeTombstonesFile(data)
+	if err != nil {
+		return err
 	}
 
 	s.mu.Lock()
-	for _, ts := range loaded {
+	for id, at := range loaded.Removed {
+		s.markRemovedLocked(id, at)
+	}
+	stale := s.dropStaleLocked()
+	for _, ts := range loaded.Tombstones {
+		if s.supersededByMarkerLocked(ts) {
+			continue
+		}
 		s.mergeLoadedLocked(ts)
 	}
+	s.owePendingS3DeletesLocked(stale)
 	s.mu.Unlock()
 
 	return nil
@@ -490,9 +543,17 @@ func (s *TombstoneStore) LoadFromS3(ctx context.Context, pool S3Pool, _ /*bucket
 	}
 
 	s.mu.Lock()
+	var stale []string
 	for _, ts := range loaded {
+		// A copy older than a removal marker is what a crash left behind
+		// before the removal's S3 delete was retried: not a tombstone.
+		if s.supersededByMarkerLocked(ts) {
+			stale = append(stale, ts.ID)
+			continue
+		}
 		s.mergeLoadedLocked(ts)
 	}
+	s.owePendingS3DeletesLocked(stale)
 	s.mu.Unlock()
 
 	if skipped > 0 {
