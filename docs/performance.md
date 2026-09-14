@@ -200,7 +200,7 @@ The footer cache is populated on first access and during cache warmup. It is sep
 
 | Setting | Default | Impact |
 |---|---|---|
-| `cache.footer_max_items` | 10000 | Max parsed footers in memory. Each footer is a few KB. |
+| `cache.footer_max_items` | 10000 | Max parsed footers in memory. Each footer is a few KB. (traces only today — the logs binary's footer cache is fixed at 10 000 entries; see [scale limits](petabyte-scale-audit.md#footer-cache)) |
 
 ### Parallel row group processing
 
