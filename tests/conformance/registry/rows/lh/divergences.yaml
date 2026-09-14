@@ -21,6 +21,25 @@
   layers: [api]
   pending: true
 
+- id: lh.query.half_open_time_range
+  title: "Cold query with a half-open _time range matches hot and does not hang"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "_time:[{{seed.start}}, {{seed.cold_end}})", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: ndjson-multiset, project: [_time, _msg] }
+  layers: [api]
+  pending: true
+  # The companion defect — a query VictoriaLogs parses but cannot print back
+  # (e.g. `>'-'`) crashing the process — cannot be an executable row here: the
+  # registry requires every row query to survive a round-trip parse, which is
+  # exactly what that input fails. It is covered by
+  # TestColdReads_QueryVLCannotPrintBack in the feature's tests instead.
+
 - id: lh.shim.time_params_ms
   title: "Time params accept milliseconds in addition to RFC3339/relative"
   surface: lh

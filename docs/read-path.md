@@ -185,6 +185,8 @@ After all pruning, the engine reads row data from surviving row groups.
 
 **Row-level timestamp filtering**: Each row's `timestamp_unix_nano` is checked against the exact query range boundaries, since row group statistics only provide coarse pruning.
 
+**Field filter (`parseFilterFromQuery`)**: the query's field predicates are evaluated per row with VictoriaLogs' `Filter.MatchRow()`. The filter is taken directly from the parsed query (`logstorage.QueryFilter`), not by rendering the query to text and parsing it back. A query with only a time range (any form VictoriaLogs accepts — `_time:[a, b]`, `_time:[a, b)`, `_time:(a, b]`, `_time:(a, b)`, `_time:>a`, `_time:5m offset 1h`, or an `AND` of these) carries no field predicate, so no per-row filter runs and time filtering is left entirely to the boundary check above and to file/row-group pruning; `day_range`/`week_range` are *not* time-only and are evaluated per row. The time-only decision walks the parsed filter's node types rather than scanning the query string.
+
 **Tombstone filtering**: If a `TombstoneStore` is configured (for soft deletes), `filterTombstonedRows()` removes rows matching any active tombstone before emitting results.
 
 **Parallel row group processing**: When multiple row groups survive pruning within a file, they are processed in parallel (up to 3 goroutines). Row groups are sorted by estimated cost (row count ascending) for optimal load balancing.
