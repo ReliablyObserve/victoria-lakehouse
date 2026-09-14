@@ -139,6 +139,16 @@ When contributing, ship documentation updates together with the code change they
 describe: new flags land in `docs/configuration.md`, behavior changes in the matching
 architecture/operations doc, and measured results in the benchmark docs.
 
+## Upstream Releases
+
+Victoria Lakehouse embeds VictoriaLogs and VictoriaTraces at pinned versions (the
+`Makefile` is the source of truth). Moving to a new upstream release follows
+[docs/upstream-sync.md](docs/upstream-sync.md): pins in all five places, fresh deps trees,
+regenerated patches, tidy and build, vmui sync, registry rows, the query-grammar sweep, a
+verification round and a benchmark. A daily workflow probes the newest releases and opens
+a pull request with what the bump would cost; the same page explains how to grant the
+token it needs.
+
 ## Architecture
 
 Victoria Lakehouse follows a modular architecture:

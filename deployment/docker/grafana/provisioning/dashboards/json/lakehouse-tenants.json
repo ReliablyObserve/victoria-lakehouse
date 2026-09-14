@@ -285,6 +285,76 @@
         { "expr": "lakehouse_storage_compression_ratio{job=\"lakehouse-logs\"}", "legendFormat": "logs ratio", "refId": "A" },
         { "expr": "lakehouse_storage_compression_ratio{job=\"lakehouse-traces\"}", "legendFormat": "traces ratio", "refId": "B" }
       ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
+      "description": "Objects or buffered rows the read path selected for a request that belong to another tenant, dropped before answering (lakehouse_tenant_scope_violations_total). Expected to stay at zero; any value is a defect signal. See docs/multi-tenancy.md#read-scoping-which-data-a-request-sees.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1, "showPoints": "never", "spanNulls": false },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "id": 38,
+      "options": {
+        "legend": { "calcs": ["sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "sum by (job, site) (increase(lakehouse_tenant_scope_violations_total[5m]))", "legendFormat": "{{job}} {{site}}", "refId": "A" }
+      ],
+      "title": "Tenant Scope Violations (dropped)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
+      "description": "Select requests answered across all tenants because they presented a valid global-read credential (lakehouse_global_read_queries_total).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 1, "showPoints": "never", "spanNulls": false },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "id": 39,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "sum by (job) (rate(lakehouse_global_read_queries_total[5m]))", "legendFormat": "{{job}}", "refId": "A" }
+      ],
+      "title": "Global-Read Queries",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "victoriametrics-metrics" },
+      "description": "Failed LISTs of a tenant's dedicated bucket during the manifest refresh (lakehouse_manifest_tenant_bucket_list_errors_total). One unreachable bucket fails every refresh, so the manifest keeps serving its previous state and objects written since then stay invisible — check the bucket, the pod's credentials and s3:ListBucket on it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1, "showPoints": "never", "spanNulls": false },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
+      "id": 40,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "sum"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        { "expr": "sum by (bucket) (increase(lakehouse_manifest_tenant_bucket_list_errors_total[15m]))", "legendFormat": "{{bucket}}", "refId": "A" }
+      ],
+      "title": "Tenant Bucket LIST Errors (15m)",
+      "type": "timeseries"
     }
   ],
   "schemaVersion": 39,

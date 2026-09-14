@@ -1,0 +1,523 @@
+# Tenant read scoping on the VL select surface, for both tenant layouts.
+#
+# Rule (upstream VL): a select request is answered from EXACTLY ONE tenant —
+# the tenant in its AccountID/ProjectID headers, or 0:0 when there are none.
+# Lakehouse widens a read to every tenant only for a request that presents the
+# configured global-read credential ({{tenant.global_read}} is that header's
+# value). Each endpoint × request shape is declared for both layouts:
+#   prefix — tenants share one bucket under {AccountID}/{ProjectID}/
+#   bucket — the tenant has a dedicated bucket via an s3.bucket override
+# Bucket-layout and global-read rows target cold only: hot VL has neither.
+# Semantics and the legacy (untenanted) layout: docs/multi-tenancy.md.
+
+- id: vl.select.query.tenant_scope.default.prefix
+  title: "/select/logsql/query — no tenant headers → the default tenant 0:0 only (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.query.tenant_scope.default.bucket
+  title: "/select/logsql/query — no tenant headers → the default tenant 0:0 only (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.query.tenant_scope.scoped.prefix
+  title: "/select/logsql/query — tenant headers → exactly that tenant (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.query.tenant_scope.scoped.bucket
+  title: "/select/logsql/query — tenant headers → exactly that tenant (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.query.tenant_scope.unknown.prefix
+  title: "/select/logsql/query — unknown tenant → empty, never a fall-through to other tenants (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.query.tenant_scope.unknown.bucket
+  title: "/select/logsql/query — unknown tenant → empty, never a fall-through to other tenants (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.query.tenant_scope.global.prefix
+  title: "/select/logsql/query — valid global-read credential → every tenant (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.query.tenant_scope.global.bucket
+  title: "/select/logsql/query — valid global-read credential → every tenant (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.field_values.tenant_scope.default.prefix
+  title: "/select/logsql/field_values — no tenant headers → the default tenant 0:0 only (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.field_values.tenant_scope.default.bucket
+  title: "/select/logsql/field_values — no tenant headers → the default tenant 0:0 only (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.field_values.tenant_scope.scoped.prefix
+  title: "/select/logsql/field_values — tenant headers → exactly that tenant (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.field_values.tenant_scope.scoped.bucket
+  title: "/select/logsql/field_values — tenant headers → exactly that tenant (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.field_values.tenant_scope.unknown.prefix
+  title: "/select/logsql/field_values — unknown tenant → empty, never a fall-through to other tenants (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.field_values.tenant_scope.unknown.bucket
+  title: "/select/logsql/field_values — unknown tenant → empty, never a fall-through to other tenants (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.field_values.tenant_scope.global.prefix
+  title: "/select/logsql/field_values — valid global-read credential → every tenant (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.field_values.tenant_scope.global.bucket
+  title: "/select/logsql/field_values — valid global-read credential → every tenant (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.streams.tenant_scope.default.prefix
+  title: "/select/logsql/streams — no tenant headers → the default tenant 0:0 only (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/streams }
+  request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.streams.tenant_scope.default.bucket
+  title: "/select/logsql/streams — no tenant headers → the default tenant 0:0 only (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/streams }
+  request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.streams.tenant_scope.scoped.prefix
+  title: "/select/logsql/streams — tenant headers → exactly that tenant (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/streams }
+  request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.streams.tenant_scope.scoped.bucket
+  title: "/select/logsql/streams — tenant headers → exactly that tenant (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/streams }
+  request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.streams.tenant_scope.unknown.prefix
+  title: "/select/logsql/streams — unknown tenant → empty, never a fall-through to other tenants (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/streams }
+  request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.streams.tenant_scope.unknown.bucket
+  title: "/select/logsql/streams — unknown tenant → empty, never a fall-through to other tenants (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/streams }
+  request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.streams.tenant_scope.global.prefix
+  title: "/select/logsql/streams — valid global-read credential → every tenant (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/streams }
+  request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.streams.tenant_scope.global.bucket
+  title: "/select/logsql/streams — valid global-read credential → every tenant (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/streams }
+  request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.hits.tenant_scope.default.prefix
+  title: "/select/logsql/hits — no tenant headers → the default tenant 0:0 only (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: "1h", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: series }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.hits.tenant_scope.default.bucket
+  title: "/select/logsql/hits — no tenant headers → the default tenant 0:0 only (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: "1h", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: series }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.hits.tenant_scope.scoped.prefix
+  title: "/select/logsql/hits — tenant headers → exactly that tenant (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: "1h", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: series }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.hits.tenant_scope.scoped.bucket
+  title: "/select/logsql/hits — tenant headers → exactly that tenant (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: "1h", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: series }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.hits.tenant_scope.unknown.prefix
+  title: "/select/logsql/hits — unknown tenant → empty, never a fall-through to other tenants (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: "1h", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: series }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.hits.tenant_scope.unknown.bucket
+  title: "/select/logsql/hits — unknown tenant → empty, never a fall-through to other tenants (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: "1h", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { AccountID: "99999", ProjectID: "99999" } }
+  compare: { type: series }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
+
+- id: vl.select.hits.tenant_scope.global.prefix
+  title: "/select/logsql/hits — valid global-read credential → every tenant (prefix layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: "1h", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: series }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
+
+- id: vl.select.hits.tenant_scope.global.bucket
+  title: "/select/logsql/hits — valid global-read credential → every tenant (bucket layout)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: "1h", start: "{{seed.start}}", end: "{{seed.cold_end}}" }, headers: { X-Lakehouse-Global-Read: "{{tenant.global_read}}" } }
+  compare: { type: series }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go] }
+  notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."

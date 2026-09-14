@@ -919,8 +919,11 @@ func (s *Storage) PrefetchFootersByKeys(ctx context.Context, keys []string, conc
 		fetched, len(keys), len(files))
 }
 
-// logRowsToDataBlock converts in-memory LogRow slices to a columnar DataBlock.
-func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock {
+// logRowsToDataBlock converts in-memory LogRow slices to a columnar DataBlock,
+// keeping only the rows that belong to the requesting tenant. The buffer bridge
+// already asks each peer for one tenant's rows; this is the second check.
+func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []schema.LogRow) *logstorage.DataBlock {
+	rows = filterLogRowsByTenant(scope, site, rows)
 	if len(rows) == 0 {
 		return nil
 	}
@@ -992,7 +995,8 @@ func (s *Storage) logRowsToDataBlock(rows []schema.LogRow) *logstorage.DataBlock
 // parquet name (e.g. `service.name`) and internal alias
 // (`resource_attr:service.name`) so a filter spelling either dialect
 // matches — mirroring the dual-emission in the file-scan path.
-func (s *Storage) traceRowsToDataBlock(rows []schema.TraceRow) *logstorage.DataBlock {
+func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []schema.TraceRow) *logstorage.DataBlock {
+	rows = filterTraceRowsByTenant(scope, site, rows)
 	if len(rows) == 0 {
 		return nil
 	}
@@ -1334,7 +1338,12 @@ func (s *Storage) WarmLabelIndex(ctx context.Context) {
 	if s.labelIndex.Len() > 0 {
 		return
 	}
-	files := s.manifest.GetFilesForRange(0, 1<<62)
+	// Cross-tenant by construction: the label index is a global, NOT
+	// tenant-keyed, RAM structure. That is exactly why the read path may only
+	// answer from it for the manifest's sole tenant (or a validated global
+	// read) — see tenantScopeAllowsGlobalIndex, which gates every query that
+	// touches it.
+	files := s.filesForScope("warm_label_index", 0, 1<<62, tenantScope{all: true})
 	if len(files) == 0 {
 		return
 	}
@@ -1439,11 +1448,20 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 	s.saveFileMetadataToDisk()
 }
 
+// enrichFromCachedFooter enriches from a footer cache entry. Time bounds come
+// from the page index, which a footer-only entry (the footer prefetch, or the
+// copy ParseFooterFromData caches) cannot read — such an entry contributes the
+// row count only. Callers holding a handle over the object's bytes should use
+// enrichFromParquetFile instead.
 func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFooter) bool {
+	return s.enrichFromParquetFile(fi, cached.File)
+}
+
+func (s *Storage) enrichFromParquetFile(fi manifest.FileInfo, pf *parquet.File) bool {
 	var totalRows int64
 	var minTs, maxTs int64
-	tsIdx := findColumnIndex(cached.File.Root(), s.registry.TimestampColumn())
-	for _, rg := range cached.File.RowGroups() {
+	tsIdx := findColumnIndex(pf.Root(), s.registry.TimestampColumn())
+	for _, rg := range pf.RowGroups() {
 		totalRows += rg.NumRows()
 		if tsIdx < 0 {
 			continue
@@ -1504,14 +1522,16 @@ func (s *Storage) enrichSmallFiles(ctx context.Context, files []manifest.FileInf
 				if err != nil || len(data) == 0 {
 					continue
 				}
-				cached, _, err := ParseFooterFromData(fi.Key, data)
+				cached, pf, err := ParseFooterFromData(fi.Key, data)
 				if err != nil {
 					continue
 				}
 				if s.footerCache != nil {
 					s.footerCache.Put(fi.Key, cached)
 				}
-				if s.enrichFromCachedFooter(fi, cached) {
+				// pf, not the cache entry: the entry keeps only the footer, and
+				// the time bounds below come from the page index.
+				if s.enrichFromParquetFile(fi, pf) {
 					mu.Lock()
 					enriched++
 					mu.Unlock()

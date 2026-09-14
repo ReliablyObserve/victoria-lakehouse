@@ -324,6 +324,11 @@ func TestMetrics_Parquet_RowGroupsScanned(t *testing.T) {
 func TestMetrics_Parquet_RowGroupsSkipped(t *testing.T) {
 	metrics := scrapeMetrics(t, logsBaseURL)
 	assertMetricExists(t, metrics, "lakehouse_parquet_row_groups_skipped_total")
+	// Every reason is exported from process start, whatever earlier tests
+	// happened to query.
+	for _, reason := range []string{"label_index", "column_stats", "footer_prefetch", "stats", "bloom", "pushdown", "token_bloom"} {
+		assertMetricWithLabelExists(t, metrics, "lakehouse_parquet_row_groups_skipped_total", "reason", reason)
+	}
 }
 
 func TestMetrics_Parquet_BloomChecks(t *testing.T) {

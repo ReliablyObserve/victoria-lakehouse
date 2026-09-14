@@ -18,6 +18,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
@@ -58,6 +59,15 @@ type SchedulerConfig struct {
 	// to every Compactor constructed in the scheduler loop;
 	// optional (nil = use the global schedule for every tenant).
 	TenantCompressionLookup func(tenantPrefix string) []int
+
+	// Tombstones is forwarded to every Compactor the scheduler builds, making
+	// compaction drop tombstoned rows rather than copy them forward. Optional;
+	// nil keeps the pre-existing behaviour.
+	Tombstones *delete.TombstoneStore
+	// TombstoneRewriteDelay is forwarded with it: the un-delete window inside
+	// which compaction must carry a tombstone's rows forward (see
+	// CompactorConfig.TombstoneRewriteDelay).
+	TombstoneRewriteDelay time.Duration
 	// OnCompacted is fired after a successful compaction. blooms carries the
 	// combined pmeta bloom of each output (outputKey -> column -> values) so the
 	// embedder can feed the bloom facet (compacted files stay bloom-prunable).
@@ -134,6 +144,8 @@ type Scheduler struct {
 	currentFP        string
 	compactionCfg    config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
+	tombstones       *delete.TombstoneStore
+	tombstoneDelay   time.Duration
 	onCompacted      func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
 
 	ringChangeRate int
@@ -198,6 +210,8 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		currentFP:        cfg.CurrentSchemaFingerprint,
 		compactionCfg:    cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
+		tombstones:       cfg.Tombstones,
+		tombstoneDelay:   cfg.TombstoneRewriteDelay,
 		onCompacted:      cfg.OnCompacted,
 		ringChangeRate:   rate,
 		drainTimeout:     drainTimeout,
@@ -285,6 +299,25 @@ func (s *Scheduler) Drain() {
 // IsDraining reports the current drain state. Tests + sweep coordination.
 func (s *Scheduler) IsDraining() bool { return s.draining.Load() }
 
+// maxReclaimPerScan bounds the retired-object deletes one scan attempts, so a
+// long outage's backlog drains over several ticks instead of stalling one.
+const maxReclaimPerScan = 1000
+
+// withoutHeld drops the files a rewrite has swapped in but not yet recorded
+// durably. Merging one would carry its rows into an output that the undo of
+// that rewrite — still possible until its record lands — knows nothing about,
+// and the publish would be refused anyway.
+func withoutHeld(m *manifest.Manifest, files []manifest.FileInfo) []manifest.FileInfo {
+	out := files[:0:0]
+	for _, fi := range files {
+		if m.IsHeld(fi.Key) {
+			continue
+		}
+		out = append(out, fi)
+	}
+	return out
+}
+
 // partitionCandidate pairs a partition name with its eligible compaction level.
 type partitionCandidate struct {
 	partition string
@@ -301,6 +334,16 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 	// (A) Drain check — no new work after Drain().
 	if s.draining.Load() {
 		return 0, nil
+	}
+
+	// Retry the deletes of objects this node superseded or abandoned whose
+	// first delete failed (merged sources, refused outputs). They are retired
+	// in the manifest, so no refresh adopts them meanwhile; until they are
+	// deleted they cost storage and keep their retirement record alive.
+	if s.pool != nil {
+		if deleted, failed := s.manifest.ReclaimRetired(ctx, s.pool.Delete, maxReclaimPerScan); deleted+failed > 0 {
+			logger.Infof("retired objects reclaimed; deleted=%d, failed=%d", deleted, failed)
+		}
 	}
 
 	// (B) Stabilization check (spec §3.1 cases 3 + 22).
@@ -382,7 +425,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		// from us).
 		s.manifest.MarkAttempt(c.partition, time.Now())
 
-		partFiles := s.manifest.FilesForPartition(c.partition)
+		partFiles := withoutHeld(s.manifest, s.manifest.FilesForPartition(c.partition))
 		fp := MajoritySchemaFingerprint(partFiles, c.level)
 		selected := s.policy.SelectFiles(partFiles, c.level, fp)
 		if len(selected) < 2 {
@@ -403,6 +446,8 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			BloomRebuilder:          s.bloomRebuilder,
 			CompactionConfig:        s.compactionCfg,
 			TenantCompressionLookup: s.tenantLookup,
+			Tombstones:              s.tombstones,
+			TombstoneRewriteDelay:   s.tombstoneDelay,
 		})
 
 		result, err := compactor.Compact(ctx, c.partition, selected, c.level)
@@ -453,7 +498,7 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 	if s.draining.Load() {
 		return nil, fmt.Errorf("scheduler is draining; no new compaction accepted")
 	}
-	files := s.manifest.FilesForPartition(partition)
+	files := withoutHeld(s.manifest, s.manifest.FilesForPartition(partition))
 	if len(files) == 0 {
 		return nil, fmt.Errorf("partition not found or empty: %s", partition)
 	}
@@ -489,6 +534,8 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 		BloomRebuilder:          s.bloomRebuilder,
 		CompactionConfig:        s.compactionCfg,
 		TenantCompressionLookup: s.tenantLookup,
+		Tombstones:              s.tombstones,
+		TombstoneRewriteDelay:   s.tombstoneDelay,
 	})
 	result, err := compactor.Compact(ctx, partition, selected, level)
 

@@ -892,6 +892,7 @@ func TestUpdateLabelIndex(t *testing.T) {
 
 func TestGetFieldNames_UsesLabelIndex(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web"})
 	s.labelIndex.Add("level", []string{"info", "error"})
 
@@ -910,6 +911,7 @@ func TestGetFieldNames_UsesLabelIndex(t *testing.T) {
 
 func TestGetFieldValues_UsesLabelIndex(t *testing.T) {
 	s := testStorage()
+	soleTenantManifest(t, s)
 	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
 
 	q := mustParseQueryWithTime(t, "*",
@@ -1169,7 +1171,7 @@ func TestLogRowsToDataBlock(t *testing.T) {
 		},
 	}
 
-	db := s.logRowsToDataBlock(rows)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", rows)
 
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
@@ -1258,12 +1260,12 @@ func TestLogRowsToDataBlock(t *testing.T) {
 
 func TestLogRowsToDataBlock_Empty(t *testing.T) {
 	s := testStorage()
-	db := s.logRowsToDataBlock(nil)
+	db := s.logRowsToDataBlock(tenantScope{all: true}, "test", nil)
 	if db != nil {
 		t.Error("expected nil DataBlock for nil rows")
 	}
 
-	db = s.logRowsToDataBlock([]schema.LogRow{})
+	db = s.logRowsToDataBlock(tenantScope{all: true}, "test", []schema.LogRow{})
 	if db != nil {
 		t.Error("expected nil DataBlock for empty rows")
 	}
@@ -1296,7 +1298,7 @@ func TestTraceRowsToDataBlock(t *testing.T) {
 		},
 	}
 
-	db := s.traceRowsToDataBlock(rows)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", rows)
 
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
@@ -1388,12 +1390,12 @@ func TestTraceRowsToDataBlock(t *testing.T) {
 
 func TestTraceRowsToDataBlock_Empty(t *testing.T) {
 	s := testStorage()
-	db := s.traceRowsToDataBlock(nil)
+	db := s.traceRowsToDataBlock(tenantScope{all: true}, "test", nil)
 	if db != nil {
 		t.Error("expected nil DataBlock for nil rows")
 	}
 
-	db = s.traceRowsToDataBlock([]schema.TraceRow{})
+	db = s.traceRowsToDataBlock(tenantScope{all: true}, "test", []schema.TraceRow{})
 	if db != nil {
 		t.Error("expected nil DataBlock for empty rows")
 	}

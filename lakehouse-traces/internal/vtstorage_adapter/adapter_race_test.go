@@ -25,7 +25,7 @@ type raceFastpathStore struct {
 	lastTraceID atomic.Value
 }
 
-func (s *raceFastpathStore) LookupTraceIndex(_ context.Context, traceID string) (int64, int64, bool, error) {
+func (s *raceFastpathStore) LookupTraceIndex(_ context.Context, _ []logstorage.TenantID, traceID string) (int64, int64, bool, error) {
 	atomic.AddInt64(&s.lookups, 1)
 	s.lastTraceID.Store(traceID)
 	return s.startNs, s.endNs, s.found, nil

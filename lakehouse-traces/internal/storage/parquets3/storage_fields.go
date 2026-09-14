@@ -91,10 +91,11 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
+	scope := scopeFor(ctx, tenantIDs)
 
 	// pmeta labels read-flip: catalog field names first (range-aware), labelIndex fallback.
 	if filter == nil && s.catalog != nil {
-		if names := s.catalogFieldNames(q); len(names) > 0 {
+		if names := s.catalogFieldNames(q, scope); len(names) > 0 {
 			result := make([]logstorage.ValueWithHits, len(names))
 			for i, name := range names {
 				result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
@@ -102,7 +103,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 			return result, nil
 		}
 	}
-	if filter == nil && s.labelIndex.Len() > 0 {
+	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 		names := s.labelIndex.GetFieldNames()
 		result := make([]logstorage.ValueWithHits, len(names))
 		for i, name := range names {
@@ -113,7 +114,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForScope("field_names", startNs, endNs, scope)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -134,7 +135,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	s.updateLabelIndexNamesOnly(f)
 
 	if s.catalog != nil {
-		if names := s.catalogFieldNames(q); len(names) > 0 {
+		if names := s.catalogFieldNames(q, scope); len(names) > 0 {
 			result := make([]logstorage.ValueWithHits, len(names))
 			for i, name := range names {
 				result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
@@ -142,7 +143,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 			return result, nil
 		}
 	}
-	if s.labelIndex.Len() > 0 {
+	if s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
 		names := s.labelIndex.GetFieldNames()
 		result := make([]logstorage.ValueWithHits, len(names))
 		for i, name := range names {
@@ -169,6 +170,7 @@ func (s *Storage) scanProjectedFieldValues(
 	fi manifest.FileInfo,
 	targetParquetCol string,
 	filter *logstorage.Filter,
+	tombstones []tombstone,
 	seen map[string]uint64,
 ) error {
 	projectedCols := map[string]bool{targetParquetCol: true}
@@ -181,6 +183,9 @@ func (s *Storage) scanProjectedFieldValues(
 			}
 		}
 	}
+	// A tombstone predicate can only be evaluated against columns that are in
+	// the projection — including the timestamp it is bounded by.
+	s.addTombstoneProjection(tombstones, projectedCols)
 
 	// Plan-then-fetch (S3 Tier-2): this path reads EVERY row group's
 	// projected chunks, so the plan covers all row groups — armed right
@@ -237,7 +242,7 @@ func (s *Storage) scanProjectedFieldValues(
 		for {
 			n, err := rows.ReadRows(buf)
 			if n > 0 {
-				collectFilteredValues(buf[:n], projectedNames, targetInProjection, filter, s, seen)
+				collectFilteredValues(buf[:n], projectedNames, targetInProjection, filter, tombstones, s, seen)
 			}
 			if err != nil {
 				break
@@ -250,6 +255,7 @@ func (s *Storage) scanProjectedFieldValues(
 
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
+	scope := scopeFor(ctx, tenantIDs)
 
 	// pmeta catalog fast-path (--pmeta): union the field's values across the
 	// partitions in the query's time range, served from RAM. nil (flag off) or
@@ -257,42 +263,70 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	// A no-limit request (limit==0) MUST still use the in-RAM index — it is
 	// self-bounded, so this is correct and avoids a full scan. See the logs-module
 	// comment: gating on `limit > 0` was the dropdown slowness.
-	if filter == nil && s.catalog != nil {
-		if s.refuseEnumeration(fieldName) {
-			return nil, nil // declared id column: don't enumerate (matches VT), no scan
-		}
-		if result := s.catalogFieldValues(q, fieldName, limit); len(result) > 0 {
-			return result, nil
-		}
-	}
-
-	if filter == nil && s.labelIndex.Len() > 0 {
-		vals := s.labelIndex.GetFieldValues(fieldName, limit)
-		if len(vals) == 0 {
-			if m := s.registry.ResolveToParquet(fieldName); m != nil && m.InternalName != fieldName {
-				vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
-			}
-		}
-		if len(vals) == 0 {
-			if m := s.registry.ResolveFromParquet(fieldName); m != nil && m.InternalName != fieldName {
-				vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
-			}
-		}
-		if len(vals) > 0 {
-			result := make([]logstorage.ValueWithHits, len(vals))
-			for i, v := range vals {
-				result[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
-			}
-			return result, nil
-		}
-	}
-
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	// The catalog and the labelIndex are built at write/compaction time and
+	// carry no tombstone awareness: a value that exists only on deleted rows is
+	// still in both. Serving from them while a tombstone could cover their
+	// answer is how a "deleted" value kept appearing in dropdowns, so a fast
+	// path is given up whenever a tombstone overlaps what IT answers from, and
+	// the answer is verified against rows instead:
+	//   - the catalog answers per partition hour → hour-widened window;
+	//   - the labelIndex is not time-scoped at all → any active tombstone;
+	//   - the row scan reads whole files → the scanned files' time span (below).
+	gaveUpFastPath := false
+
+	if filter == nil && s.catalog != nil {
+		if len(s.fieldsTombstones(partitionHourBounds(startNs, endNs))) > 0 {
+			gaveUpFastPath = true
+		} else {
+			if s.refuseEnumeration(fieldName) {
+				return nil, nil // declared id column: don't enumerate (matches VT), no scan
+			}
+			if result := s.catalogFieldValues(q, scope, fieldName, limit); len(result) > 0 {
+				return result, nil
+			}
+		}
+	}
+
+	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
+		if len(s.allTombstones()) > 0 {
+			gaveUpFastPath = true
+		} else {
+			vals := s.labelIndex.GetFieldValues(fieldName, limit)
+			if len(vals) == 0 {
+				if m := s.registry.ResolveToParquet(fieldName); m != nil && m.InternalName != fieldName {
+					vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
+				}
+			}
+			if len(vals) == 0 {
+				if m := s.registry.ResolveFromParquet(fieldName); m != nil && m.InternalName != fieldName {
+					vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
+				}
+			}
+			if len(vals) > 0 {
+				result := make([]logstorage.ValueWithHits, len(vals))
+				for i, v := range vals {
+					result[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
+				}
+				return result, nil
+			}
+		}
+	}
+
+	if gaveUpFastPath {
+		noteFieldsScanFallback("field_values")
+	}
+
+	files := s.filesForScope("field_values", startNs, endNs, scope)
 	if len(files) == 0 {
 		return nil, nil
 	}
+
+	// The scan reads every row of every overlapping file, including the rows
+	// that lie outside the query window, so it must apply every tombstone
+	// overlapping those files — not only the ones overlapping the window.
+	tombstones := s.fieldsTombstones(filesTimeSpan(files, startNs, endNs))
 
 	mapping := s.registry.ResolveToParquet(fieldName)
 	if mapping == nil {
@@ -335,7 +369,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 				// Column-projected read: fetches only (target + filter cols)
 				// chunk data from S3 rather than the entire file body.
 				localSeen := make(map[string]uint64)
-				if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, localSeen); err != nil {
+				if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, tombstones, localSeen); err != nil {
 					logger.Warnf("scan projected field values: %s; key=%s", err, fi.Key)
 					continue
 				}
@@ -384,9 +418,16 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
+	}
+
+	// Whole files are scanned: apply every tombstone overlapping their rows,
+	// not only those overlapping the query window.
+	tombstones := s.fieldsTombstones(filesTimeSpan(files, startNs, endNs))
+	if len(tombstones) > 0 {
+		noteFieldsScanFallback("streams")
 	}
 
 	streamColName := "_stream"
@@ -401,7 +442,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 			return nil, err
 		}
 
-		if err := s.scanProjectedFieldValues(ctx, fi, streamColName, filter, seen); err != nil {
+		if err := s.scanProjectedFieldValues(ctx, fi, streamColName, filter, tombstones, seen); err != nil {
 			logger.Warnf("scan projected streams: %s; key=%s", err, fi.Key)
 			continue
 		}
@@ -426,9 +467,16 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	files := s.manifest.GetFilesForRange(startNs, endNs)
+	files := s.filesForTenants(ctx, "stream_ids", startNs, endNs, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
+	}
+
+	// Whole files are scanned: apply every tombstone overlapping their rows,
+	// not only those overlapping the query window.
+	tombstones := s.fieldsTombstones(filesTimeSpan(files, startNs, endNs))
+	if len(tombstones) > 0 {
+		noteFieldsScanFallback("stream_ids")
 	}
 
 	colName := "_stream_id"
@@ -443,7 +491,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 			return nil, err
 		}
 
-		if err := s.scanProjectedFieldValues(ctx, fi, colName, filter, seen); err != nil {
+		if err := s.scanProjectedFieldValues(ctx, fi, colName, filter, tombstones, seen); err != nil {
 			logger.Warnf("scan projected stream_ids: %s; key=%s", err, fi.Key)
 			continue
 		}
@@ -466,7 +514,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 // collectFilteredValues collects values from targetColIdx for rows that match the filter.
 // Uses VL's Filter.MatchRow() for full LogsQL evaluation.
 // When filter is nil, all rows contribute values (no filtering).
-func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, s *Storage, seen map[string]uint64) {
+func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, tombstones []tombstone, s *Storage, seen map[string]uint64) {
 	var targetMapping *schema.FieldMapping
 	if s != nil && targetColIdx >= 0 && targetColIdx < len(colNames) {
 		targetMapping = s.registry.ResolveFromParquet(colNames[targetColIdx])
@@ -478,7 +526,10 @@ func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx i
 		return valueToString(v)
 	}
 
-	if filter == nil {
+	// Mirror of the logs module: the unfiltered fast path is available only
+	// when no tombstone overlaps, otherwise a deleted value stays visible in
+	// exactly the unfiltered enumeration a dropdown sends.
+	if filter == nil && len(tombstones) == 0 {
 		for _, row := range rows {
 			if targetColIdx < len(row) {
 				val := formatTarget(row[targetColIdx])
@@ -492,7 +543,7 @@ func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx i
 
 	tsColIdx := -1
 	for i, name := range colNames {
-		if name == "timestamp_unix_nano" {
+		if name == timestampColumn {
 			tsColIdx = i
 			break
 		}
@@ -500,15 +551,31 @@ func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx i
 
 	for _, row := range rows {
 		fields := parquetRowToFields(row, colNames, tsColIdx, s)
-		if filter.MatchRow(fields) {
-			if targetColIdx < len(row) {
-				val := formatTarget(row[targetColIdx])
-				if val != "" {
-					seen[val]++
-				}
+		if filter != nil && !filter.MatchRow(fields) {
+			continue
+		}
+		if len(tombstones) > 0 && rowTombstoned(tombstones, fields, rowTimestampNs(row, tsColIdx)) {
+			metrics.DeleteRowsSuppressed.Add(1)
+			continue
+		}
+		if targetColIdx < len(row) {
+			val := formatTarget(row[targetColIdx])
+			if val != "" {
+				seen[val]++
 			}
 		}
 	}
+}
+
+// rowTimestampNs reads the row timestamp out of the projected row. Returns 0
+// when the column is not projected, which makes every time-bounded tombstone
+// whose range excludes 0 a non-match — hence addTombstoneProjection always
+// forces the column in.
+func rowTimestampNs(row parquet.Row, tsColIdx int) int64 {
+	if tsColIdx < 0 || tsColIdx >= len(row) {
+		return 0
+	}
+	return row[tsColIdx].Int64()
 }
 
 // parquetRowToFields converts a raw Parquet row to []logstorage.Field
