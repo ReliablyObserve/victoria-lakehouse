@@ -65,7 +65,7 @@ Cost leadership is **scale-dependent**. At small scale (≤500 GB/mo), VL/VT EBS
 
 ¹ **CPU requirements** derived from throughput benchmarks in [Performance](docs/performance.md#benchmarks) and Helm [defaults](charts/victoria-lakehouse/values.yaml#L150-L160). VL/VT EBS CPU from [VictoriaLogs performance tuning](https://docs.victoriametrics.com/victorialogs/#performance-tuning). Loki/Tempo CPU from [Loki scaling guide](https://grafana.com/docs/loki/latest/operations/loki-canary/) and [Tempo documentation](https://grafana.com/docs/tempo/latest/configuration/).
 
-² **Memory requirements** from Helm [resource defaults](charts/victoria-lakehouse/values.yaml#L200-L220) and [cache configuration](docs/configuration.md#cache-settings). Multi-node scenarios scale linearly with pod count.
+² **Memory requirements** from Helm [resource defaults](charts/victoria-lakehouse/values.yaml#L200-L220) and [cache configuration](docs/configuration.md#cache). Multi-node scenarios scale linearly with pod count.
 
 ³ **Network traffic** calculated from ingest rate (500 GB/day ÷ 6.1x compression = 82 GB S3 PUT/day) and query patterns (estimated 10 queries/day × 10 GB = 100 GB GET/day). See [Cost Estimates — Network Traffic](docs/cost-estimates.md#network-traffic) for detailed calculations.
 
@@ -381,7 +381,7 @@ Each binary supports three roles for independent scaling:
 
 ### Write Path
 - **Full VL insert protocol support**: jsonline, Loki (JSON + protobuf), ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert — all via VL's upstream `vlinsert` handlers.
-- **Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](docs/durability.md).
+- **Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Inserts are acknowledged once buffered (`insert.ack_mode` is accepted but not read in this release). See [Persistence & Durability](docs/durability.md).
 - **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
 - **Buffer query bridge**: select pods fan out to ALL insert pods across ALL AZs via `/internal/buffer/query` for zero-delay reads of unflushed data. AZ-aware routing is only used for peer cache (L3), never for buffer queries — same-AZ-only would miss 2/3 of buffered rows in a 3-AZ deployment.
 - **Atomic S3 writes**: each Parquet file is written via a single S3 PutObject (1x write amplification). No WAL replay deduplication, no compactor reconciliation — contrast with Loki/Tempo's 3-5x write amplification from WAL→chunk→S3 pipelines.
@@ -452,9 +452,9 @@ Each binary supports three roles for independent scaling:
 - **Lakehouse Explorer UI**: built-in Preact+uPlot dashboard with Storage Overview, Tenants, and Cardinality Explorer tabs. Injected into VL/VT VMUI as optional tab (zero upstream modifications).
 
 ### Configuration Profiles
-- **Five named presets** (`balanced`, `max-performance`, `max-durability`, `max-cost-savings`, `dev`) tune 40+ settings for a specific operational goal.
-- **Three-level hierarchy** in Helm: global → per-signal (logs/traces) → per-role (insert/select). More specific levels override less specific.
-- **Any explicit setting wins**: profiles provide defaults, not constraints. Override individual flags without switching profiles.
+- **Five named presets** (`balanced`, `max-performance`, `max-durability`, `max-cost-savings`, `dev`), each an explicit set of overrides on the built-in defaults.
+- **Three-level hierarchy**: global → per-signal (logs/traces) → per-role (insert/select). More specific levels override less specific.
+- **Config-file keys win over the profile**: profiles provide defaults, not constraints.
 
 ### Infrastructure
 - **Metadata persistence**: manifest, label index, cache metadata, and smart cache snapshots survive restarts.
@@ -466,25 +466,26 @@ Each binary supports three roles for independent scaling:
 
 ## Configuration
 
-Minimal config (S3 bucket) works out of the box. All 130+ config options have production-ready defaults. Each binary automatically applies mode-appropriate defaults (port, S3 prefix, bloom columns, delete prefix).
+Minimal config (S3 bucket) works out of the box. Every config key has a default in code, and `lakehouse-logs print-default-config` / `lakehouse-traces print-default-config` print them all, with every profile and flag. Each binary automatically applies mode-appropriate defaults (port, S3 prefix, bloom columns, delete prefix).
 
 ### Configuration Profiles
 
-Five named presets tune 40+ settings with one flag. Any explicit setting overrides the profile:
+Five named presets, each an explicit set of overrides on the built-in defaults. Select one in the config file (`profile: max-durability`); keys set in the same file win over the profile.
 
-```bash
-lakehouse-logs --lakehouse.profile=max-durability --lakehouse.s3.bucket=obs-archive
-```
+<!-- BEGIN GENERATED: config-profile-summary -->
+<!-- Generated by `make config-docs` from the code; do not edit. -->
 
-| Profile | ack_mode | Durability | Cache | GC | Retention | Target |
-|---|---|---|---|---|---|---|
-| `balanced` (default) | buffer | logstore buffer | 512MB/50GB | 6h | Off | General production |
-| `max-performance` | buffer | logstore buffer | 2GB/100GB | 3h | Off | Lowest latency |
-| `max-durability` | flush-sync | logstore + S3-sync ack | 512MB/50GB | 1h | On | Zero data loss |
-| `max-cost-savings` | buffer | logstore buffer | 128MB/10GB | Off | On | Minimize cost |
-| `dev` | buffer | logstore buffer | 64MB/1GB | Off | Off | Local MinIO dev |
+| Profile | Ack mode (not read) | Flush interval | zstd level | Cache memory | Cache disk | Compaction | GC | Retention | Stats | Cross-signal |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `balanced` | buffer | 1m | 3 | 512MB | 50GB | on | on | off | on | off |
+| `max-performance` | buffer | 5s | 3 | 2GB | 100GB | on | on | off | on | on |
+| `max-durability` | flush-sync | 1m | 7 | 512MB | 50GB | on | on | on | on | off |
+| `max-cost-savings` | buffer | 30s | 11 | 128MB | 10GB | off | off | on | off | off |
+| `dev` | buffer | 1s | 1 | 64MB | 1GB | off | off | off | off | off |
 
-Profiles support three-level hierarchy in Helm: global → per-signal → per-role:
+<!-- END GENERATED: config-profile-summary -->
+
+Profiles support a three-level hierarchy, global → per-signal → per-role. In Helm:
 
 ```yaml
 lakehouseConfig:
@@ -555,7 +556,8 @@ lakehouse:
       staging-team: { account_id: 1003, project_id: 0 }
     overrides:                  # per-tenant policy: key is "account:project" OR OrgID alias
       "1002:0":                 # acme-corp: long retention + stream cap + ingest cap + 2-stage lifecycle
-        retention: 2160h        # 90 days
+        retention:
+          keep: 2160h           # 90 days
         cardinality:
           max_streams: 5000
           max_fields:  1000
@@ -568,9 +570,11 @@ lakehouse:
         s3:
           bucket: obs-acme      # one-process-many-buckets: this tenant's reads/writes route here
       "1:1":                    # tight retention only; everything else inherits global
-        retention: 168h         # 7 days
+        retention:
+          keep: 168h            # 7 days
       staging-team:             # keyed by OrgID alias — resolved at startup + on alias-sync tick
-        retention: 720h         # 30 days
+        retention:
+          keep: 720h            # 30 days
         cardinality: { max_streams: 50000 }
 ```
 

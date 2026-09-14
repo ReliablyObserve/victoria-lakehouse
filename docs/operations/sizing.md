@@ -135,53 +135,73 @@ window (see scaling-restart-scenarios.md scenario 2).
 
 ## Config knobs by scale
 
+This release does not read `startup.min_manifest_files`, `startup.serve_while_warming`,
+`cache.footer_max_items` or the `cache.warmup_*` keys from the config file. The warmup
+settings have flags (`-lakehouse.cache.warmup-partitions`,
+`-lakehouse.cache.warmup-max-files`); the other three have none and stay at their
+defaults. The examples keep them, marked, to show the intended values.
+
+Dev / CI:
+
 ```yaml
-# Dev / CI
-startup:
-  min_manifest_files: 0
-  serve_while_warming: false
-cache:
-  footer_max_items: 10000
-  warmup_partitions: 6
+lakehouse:
+  startup:
+    min_manifest_files: 0  # not read from the config file in this release
+    serve_while_warming: false  # not read from the config file in this release
+  cache:
+    footer_max_items: 10000  # not read from the config file in this release
+    warmup_partitions: 6  # not read from the config file in this release
+```
 
-# Small prod (10k files, 2-3 peers)
-startup:
-  min_manifest_files: 1000
-  serve_while_warming: true
-cache:
-  footer_max_items: 10000
-  warmup_partitions: 6
-manifest:
-  refresh_interval: 30s
-  persist_interval: 5m
+Small prod (10k files, 2-3 peers):
 
-# Medium (100k files, 3-6 peers)
-startup:
-  min_manifest_files: 10000
-  serve_while_warming: true
-cache:
-  footer_max_items: 50000
-  warmup_partitions: 12
-manifest:
-  refresh_interval: 30s
-  persist_interval: 5m
+```yaml
+lakehouse:
+  startup:
+    min_manifest_files: 1000  # not read from the config file in this release
+    serve_while_warming: true  # not read from the config file in this release
+  cache:
+    footer_max_items: 10000  # not read from the config file in this release
+    warmup_partitions: 6  # not read from the config file in this release
+  manifest:
+    refresh_interval: 30s
+    persist_interval: 5m
+```
 
-# Large / PB-scale (1M+ files, 6-10 peers)
-startup:
-  min_manifest_files: 100000
-  serve_while_warming: true
-  max_warmup_time: 10m
-cache:
-  footer_max_items: 200000
-  warmup_partitions: 24
-  warmup_max_files: 5000
-  memory_mb: 1024
-  disk_max_mb: 102400  # 100 GB L2
-manifest:
-  refresh_interval: 30s
-  persist_interval: 2m
-shutdown:
-  persist_timeout: 60s
+Medium (100k files, 3-6 peers):
+
+```yaml
+lakehouse:
+  startup:
+    min_manifest_files: 10000  # not read from the config file in this release
+    serve_while_warming: true  # not read from the config file in this release
+  cache:
+    footer_max_items: 50000  # not read from the config file in this release
+    warmup_partitions: 12  # not read from the config file in this release
+  manifest:
+    refresh_interval: 30s
+    persist_interval: 5m
+```
+
+Large / PB-scale (1M+ files, 6-10 peers):
+
+```yaml
+lakehouse:
+  startup:
+    min_manifest_files: 100000  # not read from the config file in this release
+    serve_while_warming: true  # not read from the config file in this release
+    max_warmup_time: 10m
+  cache:
+    footer_max_items: 200000  # not read from the config file in this release
+    warmup_partitions: 24  # not read from the config file in this release
+    warmup_max_files: 5000  # not read from the config file in this release
+    memory_limit: 1GB
+    disk_limit: 100GB  # L2
+  manifest:
+    refresh_interval: 30s
+    persist_interval: 2m
+  shutdown:
+    persist_timeout: 60s
 ```
 
 ## What scales linearly vs sub-linearly

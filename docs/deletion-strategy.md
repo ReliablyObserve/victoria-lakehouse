@@ -193,9 +193,9 @@ lakehouse:
     auto_rewrite_classes: ["STANDARD"]           # Only rewrite these classes
     rewrite_delay: 1h                             # Wait before rewriting (batch tombstones)
     rewrite_batch_size: 50                        # Max files per rewrite job
-    glacier_force_header: "X-Force-Glacier-Delete" # Required header for forced Glacier rewrite
-    tombstone_persist_path: /data/lakehouse/tombstones
-    cost_warning_threshold: "$10"                 # Warn user if estimated cost exceeds this
+    force_glacier_header: "X-Force-Glacier-Delete" # Required header for forced Glacier rewrite
+    persist_path: /data/lakehouse/tombstones      # tombstone persistence directory
+    cost_warning_threshold: 10.0                  # Warn user if estimated cost ($) exceeds this
 ```
 
 ## Cost Comparison: Delete Operations

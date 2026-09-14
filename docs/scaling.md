@@ -59,7 +59,7 @@ graph TD
 | L2 disk cache | Replicas | Each instance has own cache |
 | Peer cache | Replicas | Fleet-wide L2 sharing |
 | Manifest | Replicas | Replicated per instance (lightweight) |
-| S3 connections | Replicas | Per-instance `--lakehouse.s3.max-connections` |
+| S3 connections | Replicas | Per-instance `s3.max_connections` |
 
 ### Multi-AZ Deployment
 

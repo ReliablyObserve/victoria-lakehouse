@@ -209,8 +209,7 @@ go run ./cmd/datagen \
   --hours-back=72
 
 # 4. Start lakehouse
-go run ./cmd/lakehouse \
-  --lakehouse.mode=logs \
+go run ./cmd/lakehouse-logs \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.endpoint=http://localhost:9000 \
   --lakehouse.s3.access-key=minioadmin \

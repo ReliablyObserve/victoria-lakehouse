@@ -82,37 +82,33 @@ threshold and an explicit force-high-card override. A field starts exact; if its
 observed distinct count crosses the threshold it is marked high-card and its
 resident value list is dropped (reads fall through to the exact scan, §2.4).
 The whole catalog lives under the `pmeta` config key (it ships as a facet of
-the unified partition-metadata layer):
+the unified partition-metadata layer). This release does not read `pmeta.*` from the
+config file, so set these with the `-lakehouse.pmeta.*` flags below:
 
 ```yaml
 pmeta:
   # Master switch for the whole layer (catalog + file-meta + bloom facets).
-  # Off (the default) → no Store is built; flush/query paths are unchanged.
-  enabled: false
+  # On by default; off is a degraded mode with no metadata for new files.
+  enabled: true  # not read from the config file in this release
 
   # Per-field distinct-value cap before a field is classified high-card: the
   # catalog stops storing its values (RAM bound) and field_values falls through
   # to the exact scan — never a truncated list. NOTE: 0 currently maps to the
   # 50000 default (there is no "unlimited" setting today).
-  cardinality_threshold: 0
+  cardinality_threshold: 0  # not read from the config file in this release
 
   # Forced high-card regardless of threshold (known unbounded id columns).
   # DEFAULT IS EMPTY — [trace_id, span_id] is the recommended setting (it is
   # what the e2e compose runs). The HLL cardinality tap covers trace_id/span_id
   # ONLY (they are the only id columns with row-struct fields); other names here
   # are still excluded from the catalog but get no sketch — startup logs a warning.
-  always_sketch_fields: [trace_id, span_id]
+  always_sketch_fields: [trace_id, span_id]  # not read from the config file in this release
 
   # When true, field_values for an always_sketch_fields column returns EMPTY
   # instead of scanning to enumerate it (matches VL/VT; lookup BY value is
   # unaffected). Threshold-crossers are NOT refused. Default false (opt-in:
   # it is a behavior change for those fields).
-  refuse_sketch_enumeration: false
-
-  # Stop writing the legacy sidecars the facets replace (_file_metadata.json,
-  # per-file .bloom, partition _bloom.bin). Requires enabled; reversible —
-  # clear it and the sidecars resume. Default false.
-  retire_sidecar_writes: false
+  refuse_sketch_enumeration: false  # not read from the config file in this release
 ```
 
 CLI flags (both `lakehouse-logs` and `lakehouse-traces`) map 1:1:
@@ -123,7 +119,6 @@ CLI flags (both `lakehouse-logs` and `lakehouse-traces`) map 1:1:
 | `-lakehouse.pmeta.cardinality-threshold` | `pmeta.cardinality_threshold` |
 | `-lakehouse.pmeta.always-sketch-fields` (comma-separated) | `pmeta.always_sketch_fields` |
 | `-lakehouse.pmeta.refuse-sketch-enumeration` | `pmeta.refuse_sketch_enumeration` |
-| `-lakehouse.pmeta.retire-sidecar-writes` | `pmeta.retire_sidecar_writes` |
 
 Keys that appeared in earlier drafts of this doc but **do not exist**:
 `catalog:` (it is `pmeta:`), `always_exact_fields` (no per-field exact pin —

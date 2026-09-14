@@ -97,40 +97,40 @@ flowchart TD
 
 | Setting | Default | Impact |
 |---|---|---|
-| `query.max_concurrent` | 32 | Max simultaneous queries. Excess requests return HTTP 429. Increase on multi-core nodes with high query rate. |
-| `query.file_workers` | 8 | Parquet files processed in parallel per query. Higher values reduce latency on wide time ranges at the cost of memory. |
-| `query.timeout` | 30s | Per-request deadline. Increase for large time-range scans; keep low for interactive dashboards. |
-| `query.slow_threshold` | 5s | Queries exceeding this are logged as slow. Set to 0 to disable. |
+| `query.max_concurrent` | `32` | Max simultaneous queries. Excess requests return HTTP 429. Increase on multi-core nodes with high query rate. |
+| `query.file_workers` | `64` | Parquet files processed in parallel per query. Higher values reduce latency on wide time ranges at the cost of memory; the Helm chart sets 8 for its default pods. |
+| `query.timeout` | `1m` | Per-request deadline. Increase for large time-range scans; keep low for interactive dashboards. |
+| `query.slow_threshold` | `5s` | Queries exceeding this are logged as slow. |
 
 ### Cache sizing
 
 | Setting | Default | Impact |
 |---|---|---|
-| `cache.memory_limit` | 512MB | L1 in-process LRU. Should hold the working set of hot Parquet footers and bloom filters. Increase to reduce L2 reads. |
+| `cache.memory_limit` | `512MB` | L1 in-process LRU. Should hold the working set of hot Parquet footers and bloom filters. Increase to reduce L2 reads. |
 | `cache.disk_path` | `/data/lakehouse/cache` | L2 disk cache location. Use a fast local SSD (gp3 or io1). |
-| `cache.disk_limit` | 50GB | L2 LRU cap. Size to cover the most frequently queried time window. |
-| `cache.eviction_watermark` | 0.8 | L2 eviction starts at 80% full. Lower to be more aggressive. |
+| `cache.disk_limit` | `50GB` | L2 LRU cap. Size to cover the most frequently queried time window. |
+| `cache.eviction_watermark` | `0.8` | L2 eviction starts at 80% full. Lower to be more aggressive. |
 
 Smart cache TTL settings (in `smart_cache`):
 
 | Setting | Default | Impact |
 |---|---|---|
-| `smart_cache.max_age` | 24h | Entry TTL. Hot entries and pinned entries survive past this. |
-| `smart_cache.hot_access_threshold` | 3 | Accesses within `hot_window` to mark an entry hot. |
-| `smart_cache.hot_window` | 10m | Rolling window for hot detection. |
-| `smart_cache.target_hours` | 24 | Sizing target for automatic cache budget estimation. |
-| `smart_cache.query_grace_period` | 5m | Pin grace period after query completes. |
+| `smart_cache.max_age` | `24h` | Entry TTL. Hot entries and pinned entries survive past this. |
+| `smart_cache.hot_access_threshold` | `3` | Accesses within `hot_window` to mark an entry hot. |
+| `smart_cache.hot_window` | `10m` | Rolling window for hot detection. |
+| `smart_cache.target_hours` | `24` | Sizing target for automatic cache budget estimation. |
+| `smart_cache.query_grace_period` | `5m` | Pin grace period after query completes. |
 
 ### Insert path
 
 | Setting | Default | Impact |
 |---|---|---|
-| `insert.flush_interval` | 60s | How often partition buffers are flushed to S3. Lower reduces tail latency to S3; higher improves write throughput and compression. |
-| `insert.target_file_size` | 128MB | Compressed size threshold that triggers an early flush. Tune with `insert.row_group_size` together. |
-| `insert.row_group_size` | 10000 | Rows per Parquet row group. Larger row groups improve column stats pruning; smaller groups reduce memory per flush. |
-| `insert.compression_level` | 7 | ZSTD compression level. Level 7 gives 6x+ compression at ~260 MB/s write speed. Level 3 is 5x faster writes with ~25% less compression. Level 11+ gives <2% gain at 5x slower writes — not recommended. |
-| `insert.buffer_engine` | buffer | `logstore` selects the durable logstorage-native buffer (crash recovery via on-disk parts, no WAL). |
-| `insert.buffer_retention` | 1h | How long the logstore buffer keeps a row; the crash-recovery ceiling (validated `>= 4x buffer_flush_interval`). |
+| `insert.flush_interval` | `1m` | How often partition buffers are flushed to S3. Lower reduces tail latency to S3; higher improves write throughput and compression. |
+| `insert.target_file_size` | `128MB` | Compressed size threshold that triggers an early flush. Tune with `insert.row_group_size` together. |
+| `insert.row_group_size` | `10000` | Rows per Parquet row group. Larger row groups improve column stats pruning; smaller groups reduce memory per flush. |
+| `insert.compression_level` | `3` | ZSTD level of fresh writes; compaction recompresses older files at the levels in `compaction.compression_level_by_output_level`. Level 7 gives 6x+ compression at ~260 MB/s write speed; level 3 writes 5x faster with ~25% less compression; level 11+ gains <2% at 5x slower writes. |
+| `insert.buffer_engine` | `buffer` | `logstore` selects the durable logstorage-native buffer (crash recovery via on-disk parts, no WAL). |
+| `insert.buffer_retention` | `1h` | How long the logstore buffer keeps a row; the crash-recovery ceiling (validated `>= 4x buffer_flush_interval`). |
 
 ### Bloom index
 
@@ -194,13 +194,13 @@ If all rows match the filter (100% selectivity), the bitmap is discarded and the
 
 ### Parquet footer cache
 
-A dedicated LRU cache (default: 10,000 entries) stores parsed `parquet.File` metadata (footer, schema, column indices). This avoids re-parsing the Parquet footer on every query for recently accessed files.
+A dedicated LRU cache (sized automatically between 10,000 and 100,000 entries) stores parsed `parquet.File` metadata (footer, schema, column indices). This avoids re-parsing the Parquet footer on every query for recently accessed files.
 
 The footer cache is populated on first access and during cache warmup. It is separate from the L1/L2 data cache — it stores only the parsed metadata structure, not the file data itself.
 
 | Setting | Default | Impact |
 |---|---|---|
-| `cache.footer_max_items` | 10000 | Max parsed footers in memory. Each footer is a few KB. |
+| `cache.footer_max_items` | `0` | Max parsed footers in memory; 0 sizes the cache from the manifest file count, between 10000 and 100000. Each footer is a few KB. |
 
 ### Parallel row group processing
 
@@ -220,13 +220,13 @@ This index is populated as a side effect of query execution: when rows are read,
 
 ### Cache warmup
 
-On startup, the engine pre-fetches the most recent partitions into L1/L2 cache and parses their footers. This eliminates cold-start latency for the most commonly queried time window.
+When `-lakehouse.cache.warmup-partitions` or `-lakehouse.cache.warmup-max-files` is set, the engine pre-fetches the most recent partitions into L1/L2 cache at startup and parses their footers. This eliminates cold-start latency for the most commonly queried time window. Warmup is off by default, and this release reads the warmup settings only from flags.
 
 | Setting | Default | Impact |
 |---|---|---|
-| `cache.warmup_partitions` | 6 | Hours of recent data to warm |
-| `cache.warmup_max_files` | 500 | Max files to fetch during warmup |
-| `cache.warmup_concurrency` | 16 | Parallel S3 downloads during warmup |
+| `cache.warmup_partitions` | `0` | Hours of recent data to warm; 0 means 6 when warmup runs |
+| `cache.warmup_max_files` | `0` | Max files to fetch during warmup; 0 means 500 when warmup runs |
+| `cache.warmup_concurrency` | `0` | Parallel S3 downloads during warmup; 0 means 16 |
 
 ### Manifest partition index
 

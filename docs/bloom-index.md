@@ -214,28 +214,19 @@ On first startup, a background goroutine reads parquet file footers to extract b
 
 ## Configuration
 
-```yaml
-query:
-  bloom_index_enabled: true   # default: true
-  bloom_index_backfill: true  # scan existing files on startup
+The bloom index has no on/off switch or backfill setting in this release. The columns it
+indexes follow each signal's bloom set, which a config file can extend:
 
+```yaml
 lakehouse:
   logs:
-    bloom_columns: [service.name]
+    bloom_columns: [service.name, trace_id]
   traces:
     bloom_columns: [trace_id, service.name]
 ```
 
-Tier boundaries can be customized:
-
-```yaml
-bloom:
-  tier_hot_days: 7
-  tier_warm_days: 30
-  tier_cold_days: 90
-  fpr: 0.01              # false positive rate (1%)
-  cache_max_bytes: 100MB
-```
+Tier boundaries, the false-positive rate and the cache budget are not config keys; the
+current values are reported by `GET /api/v1/bloom/status`.
 
 ## Performance Impact
 

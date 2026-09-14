@@ -163,17 +163,17 @@ For a cluster that ingests >100 GB/day per peer:
 
 ```yaml
 startup:
-  min_manifest_files: 10000        # gate fresh-PVC honesty
-  serve_while_warming: true        # 204 routing during warmup
+  min_manifest_files: 10000        # gate fresh-PVC honesty; not read from the config file in this release
+  serve_while_warming: true        # 204 routing during warmup; not read from the config file in this release
   max_warmup_time: 10m             # tolerate bigger S3 LIST
 
 shutdown:
   persist_timeout: 60s             # bigger snapshot needs more time
 
 cache:
-  footer_max_items: 100000         # cover fragmented L0 hot zone
-  warmup_partitions: 12            # pre-load last 12 h on /ready
-  warmup_max_files: 2000
+  footer_max_items: 100000         # cover fragmented L0 hot zone; not read from the config file in this release
+  warmup_partitions: 12            # pre-load last 12 h on /ready; not read from the config file in this release
+  warmup_max_files: 2000  # not read from the config file in this release
 
 manifest:
   refresh_interval: 30s            # tighter than 5-min default

@@ -1028,7 +1028,7 @@
     },
     "smart_cache": {
       "name": "SmartCacheConfig",
-      "doc": "SmartCacheConfig controls the cache controller that pins, ages and sizes cached data."
+      "doc": "SmartCacheConfig controls how cached data is pinned, aged and sized."
     },
     "startup": {
       "name": "StartupConfig",

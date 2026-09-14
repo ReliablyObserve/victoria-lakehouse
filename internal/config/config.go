@@ -1154,7 +1154,7 @@ type LifecycleRuleConfig struct {
 	StorageClass   string `yaml:"storage_class" json:"storage_class"`
 }
 
-// SmartCacheConfig controls the cache controller that pins, ages and sizes cached data.
+// SmartCacheConfig controls how cached data is pinned, aged and sized.
 type SmartCacheConfig struct {
 	// MaxAge is the maximum age of a cached entry.
 	MaxAge time.Duration `yaml:"max_age"`
