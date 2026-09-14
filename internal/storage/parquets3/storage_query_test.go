@@ -51,7 +51,9 @@ func TestRunQuery_HotBoundary_SelectRoleDoesNotSuppress(t *testing.T) {
 			})
 
 			// Query strictly inside hot boundary AND covers the seeded file.
-			q := mustParseQueryWithTime(t, "*", queryStartNs, queryEndNs)
+			// A count-shaped query is what the manifest fast path answers: a
+			// bare `*` is a retrieval and always reads the file for real.
+			q := mustParseQueryWithTime(t, "* | stats count()", queryStartNs, queryEndNs)
 
 			var blocks int
 			writeBlock := func(_ uint, _ *logstorage.DataBlock) {

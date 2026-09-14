@@ -1,0 +1,33 @@
+Parse a constant `_time` column once instead of once per row.
+
+Blocks handed to VL by an external storage backend can carry a `_time` column
+whose values are all the same string: the lakehouse cold tier answers
+count-class queries from manifest metadata, where every row of a file shares
+one timestamp. mustInitFromDataBlock routes `_time` through tryParseTimestamps,
+which parsed every value, making a metadata-only answer cost O(rows) RFC3339
+parsing even though the column holds a single distinct value.
+
+Detect the constant column with VL's own areConstValues and parse once. No
+semantic change: a constant column yields the same timestamps either way, and
+a value that fails to parse still falls back to the regular column path.
+
+diff --git a/lib/logstorage/block_result.go b/lib/logstorage/block_result.go
+--- a/lib/logstorage/block_result.go
++++ b/lib/logstorage/block_result.go
+@@ -620,6 +620,16 @@ func tryParseTimestamps(dst []int64, src []string) ([]int64, bool) {
+ 	dstLen := len(dst)
+ 	dst = slicesutil.SetLength(dst, dstLen+len(src))
+ 	timestamps := dst[dstLen:]
++	if len(src) > 0 && areConstValues(src) {
++		ts, ok := TryParseTimestampRFC3339Nano(src[0])
++		if !ok {
++			return dst, false
++		}
++		for i := range timestamps {
++			timestamps[i] = ts
++		}
++		return dst, true
++	}
+ 	for i, v := range src {
+ 		ts, ok := TryParseTimestampRFC3339Nano(v)
+ 		if !ok {

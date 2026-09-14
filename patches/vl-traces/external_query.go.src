@@ -278,3 +278,102 @@ func GetQueryPipeFields(q *Query) []string {
 	}
 	return fields
 }
+
+// TimeBucket describes one `_time` bucketing applied by a `stats by (_time:<step>)`
+// pipe — the shape every LogsQL histogram query takes (`/select/logsql/hits`
+// builds `stats by (_time:step) count()`, `stats_query_range` the same).
+//
+// SizeStr and OffsetStr keep VL's original string forms because calendar
+// buckets ("week", "month", "year") truncate differently from a plain
+// nanosecond duration; TruncateTimestampToBucket feeds them straight back
+// into VL's own truncation routine.
+type TimeBucket struct {
+	SizeStr   string
+	Size      int64
+	OffsetStr string
+	Offset    int64
+}
+
+// GetQueryTimeBucketing classifies how the query consumes the rows handed to
+// it, so an external storage backend can decide whether it may answer from
+// metadata alone instead of reading per-row values.
+//
+// It returns the `_time` buckets the query groups by, and needsRowValues=true
+// when the answer depends on anything a metadata-only block cannot reproduce.
+// The rule is deliberately strict — a backend serving rows it never read must
+// be able to prove the answer is identical to a scan:
+//
+//   - The FIRST pipe must be a `stats` pipe. Rows reaching a pipe ahead of it
+//     are still raw, and a pipe there can read, reorder or drop them by value
+//     (`| sort by (_time) | limit 1 | stats count()` keeps a different row
+//     depending on whether the timestamps are real). Note that probing such a
+//     pipe with updateNeededFields cannot detect this: pipes short-circuit
+//     when the caller needs no field, so `sort` reports needing nothing.
+//   - That `stats` pipe may group only by `_time`, and only with a bucket:
+//     `by (_time)` ungrouped makes every distinct row timestamp its own group.
+//   - Its aggregate functions may need no field (`count()` — not `count(x)`,
+//     not `sum(x)`), and may not carry a per-function `if (...)` filter.
+//   - Pipes AFTER the `stats` pipe see group keys and aggregates, never raw
+//     rows, so they are unconstrained (`hits` appends `sort by (_time)` there).
+//   - A query with no `stats` pipe returns the rows themselves: their values
+//     must be real.
+//
+// upstream-original: upstream has no "can this query be answered without
+// reading row values" predicate; this is LH's own, written against upstream's
+// unexported `*pipeStats` (byFields/hasBucketConfig, funcs with `iff` and
+// updateNeededFields). It reads that struct rather than copying a function, so
+// the drift guard cannot baseline it and an upstream change here fails neither
+// the build nor a query — it would silently classify a query metadata-only
+// while the new construct needs real rows. Re-read pipeStats on every VL bump;
+// the conservative default (return needsRowValues=true) is what every early
+// return above takes, so an unrecognised shape costs a scan, never a wrong
+// answer.
+func GetQueryTimeBucketing(q *Query) (buckets []TimeBucket, needsRowValues bool) {
+	if q == nil || len(q.pipes) == 0 {
+		return nil, true
+	}
+	ps, ok := q.pipes[0].(*pipeStats)
+	if !ok {
+		return nil, true
+	}
+	for _, bf := range ps.byFields {
+		if bf.name != "_time" || !bf.hasBucketConfig() {
+			return nil, true
+		}
+		buckets = append(buckets, TimeBucket{
+			SizeStr:   bf.bucketSizeStr,
+			Size:      int64(bf.bucketSize),
+			OffsetStr: bf.bucketOffsetStr,
+			Offset:    int64(bf.bucketOffset),
+		})
+	}
+	for i := range ps.funcs {
+		f := &ps.funcs[i]
+		if f.f == nil || f.iff != nil {
+			return nil, true
+		}
+		var pf prefixfilter.Filter
+		f.f.updateNeededFields(&pf)
+		if !pf.MatchNothing() {
+			return nil, true
+		}
+	}
+	return buckets, false
+}
+
+// TruncateTimestampToBucket returns the start of the bucket ts falls into,
+// using VL's own truncation so calendar buckets, week alignment and bucket
+// offsets behave exactly as they do inside `stats by (_time:...)`.
+//
+// upstream-original: an exported wrapper with no upstream counterpart. The
+// truncation itself is upstream's own truncateTimestamp, called unchanged, so
+// calendar buckets, week alignment and offsets stay identical to what
+// `stats by (_time:...)` computes — LH only needs it reachable from outside
+// the package. It carries no logic to drift.
+func TruncateTimestampToBucket(ts int64, b TimeBucket) int64 {
+	size := b.Size
+	if size <= 0 {
+		size = 1
+	}
+	return truncateTimestamp(ts, size, b.Offset, b.SizeStr)
+}

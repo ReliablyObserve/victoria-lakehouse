@@ -52,7 +52,7 @@ func TestQueryFileLimitEnforced(t *testing.T) {
 	addManifestFiles(s, 20)
 
 	startNs, endNs := queryRange(20)
-	q := mustParseQueryWithTime(t, "*", startNs, endNs)
+	q := mustParseQueryWithTime(t, "* | stats count()", startNs, endNs)
 
 	var blocksCalled int
 	err := s.RunQuery(context.Background(), nil, q, func(workerID uint, db *logstorage.DataBlock) {
@@ -197,7 +197,7 @@ func TestQueryManifestFastPathBypassesLimit(t *testing.T) {
 	addManifestFiles(s2, 5) // 5 < limit of 10
 
 	startNs2, endNs2 := queryRange(5)
-	q2 := mustParseQueryWithTime(t, "*", startNs2, endNs2)
+	q2 := mustParseQueryWithTime(t, "* | stats count()", startNs2, endNs2)
 
 	ctx2 := storage.WithTimestampOnlyHint(context.Background())
 	var blocksEmitted int

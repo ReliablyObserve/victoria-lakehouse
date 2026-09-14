@@ -56,6 +56,7 @@ $(VL_DIR_LOGS)/go.mod:
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vlstorage-dispatch.patch
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-export-severity.patch
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-export-streamtags-get.patch
+	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-const-timestamps-parse.patch
 
 deps-traces: $(VL_DIR_TRACES)/go.mod
 
@@ -68,6 +69,7 @@ $(VL_DIR_TRACES)/go.mod:
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vlstorage-dispatch.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-export-severity.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-export-streamtags-get.patch
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-const-timestamps-parse.patch
 
 deps-vt: $(VT_DIR)/go.mod
 

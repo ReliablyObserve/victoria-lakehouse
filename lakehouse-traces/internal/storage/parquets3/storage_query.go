@@ -68,65 +68,6 @@ func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
 	}
 }
 
-func (s *Storage) manifestFastPath(files []manifest.FileInfo, startNs, endNs int64, writeBlock logstorage.WriteDataBlockFunc) []manifest.FileInfo {
-	var remaining []manifest.FileInfo
-	for _, fi := range files {
-		if fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
-			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs {
-			db := s.syntheticManifestBlock(fi)
-			if db != nil && db.RowsCount() > 0 {
-				writeBlock(0, db)
-				metrics.MetadataOnlyFiles.Inc()
-			}
-		} else {
-			remaining = append(remaining, fi)
-		}
-	}
-	if len(remaining) < len(files) {
-		logger.Infof("metadata fast path: resolved %d/%d files from manifest, %d remain for S3",
-			len(files)-len(remaining), len(files), len(remaining))
-	}
-	return remaining
-}
-
-func (s *Storage) syntheticManifestBlock(fi manifest.FileInfo) *logstorage.DataBlock {
-	const maxSyntheticRows = 50_000_000
-	n := int(fi.RowCount)
-	if n == 0 {
-		return nil
-	}
-	if n > maxSyntheticRows {
-		n = maxSyntheticRows
-	}
-
-	tsCol := s.registry.TimestampColumn()
-	internalName := tsCol
-	if m := s.registry.ResolveFromParquet(tsCol); m != nil {
-		internalName = m.InternalName
-	}
-
-	values := make([]string, n)
-	if n == 1 {
-		values[0] = s.registry.FormatField(internalName, fi.MinTimeNs)
-	} else {
-		step := (fi.MaxTimeNs - fi.MinTimeNs) / int64(n-1)
-		if step == 0 {
-			step = 1
-		}
-		for i := range values {
-			ts := fi.MinTimeNs + int64(i)*step
-			if ts > fi.MaxTimeNs {
-				ts = fi.MaxTimeNs
-			}
-			values[i] = s.registry.FormatField(internalName, ts)
-		}
-	}
-
-	db := &logstorage.DataBlock{}
-	db.SetColumns([]logstorage.BlockColumn{{Name: internalName, Values: values}})
-	return db
-}
-
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -272,8 +213,25 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.applySelfFilter(files)
 	s.applyCacheAffinity(files)
 
+	// The plan decides whether this query may be answered from metadata at
+	// all, and with which `_time` bucketing. Mirror of the logs module.
+	plan := planMetadataOnly(q)
+	ctx = withMetadataOnlyPlan(ctx, plan)
+
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
-		remaining := s.manifestFastPath(files, startNs, endNs, filteredWriteBlock)
+		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
+		// The fast path stops emitting as soon as the query's budget cancels the
+		// context. Surface that exactly the way THIS module's scan branch does
+		// (see the firstErr handling below): a cancellation is an error, except
+		// when it came from the max-rows limit, which the traces module treats
+		// as a deliberate truncation because its Jaeger/Tempo search handlers
+		// use that limit as a result cap. The logs module has no such caller and
+		// returns the error unconditionally there.
+		if err := ctx.Err(); err != nil {
+			if maxRows <= 0 || rowsEmitted.Load() < maxRows {
+				return err
+			}
+		}
 		if len(remaining) == 0 {
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
@@ -2773,11 +2731,11 @@ func isFileNotFoundError(err error) bool {
 
 func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock func(uint, *logstorage.DataBlock)) {
 	metrics.QueryFileNotFoundTotal.Inc()
+	plan := metadataOnlyPlanFromContext(ctx)
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
-		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 {
-		db := s.syntheticManifestBlock(fi)
-		if db != nil && db.RowsCount() > 0 {
-			filteredWriteBlock(0, db)
+		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+		fi.RowCount <= maxPlausibleRowCount && plan.coversFile(fi) {
+		if s.streamConstTimeBlocks(ctx, fi, filteredWriteBlock) {
 			metrics.MetadataOnlyFiles.Inc()
 		}
 		logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)

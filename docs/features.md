@@ -438,7 +438,7 @@ The projection is derived from the query's fields, filters and stats, then hande
 
 The metadata already knows how many rows each file holds and how they distribute across a field's values, so the common dashboard aggregations never open a Parquet file. Measured at 100 ms injected object-store latency, this is where the cold tier beats ClickHouse-over-S3 outright.
 
-- Verification: tests: `internal/storage/parquets3/count_pushdown_test.go`, `internal/storage/parquets3/filtered_count_pushdown_test.go`, `internal/manifest/count_by_label_test.go`, `internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates` · bench: `count_total`, `count_by_service`, `high_card`
+- Verification: rows: `lh.cold.count_exact_above_1m_rows` (pass, pending), `lh.cold.hits_bucket_counts_exact` (pass, pending) · tests: `internal/storage/parquets3/count_pushdown_test.go`, `internal/storage/parquets3/filtered_count_pushdown_test.go`, `internal/storage/parquets3/manifest_fastpath_exactness_test.go`, `lakehouse-traces/internal/storage/parquets3/manifest_fastpath_exactness_test.go`, `internal/manifest/count_by_label_test.go`, `internal/compaction/aggregate_healing_test.go#TestCompactor_HealsWipedLabelAggregates` · bench: `count_total`, `count_by_service`, `high_card`
 - Docs: `docs/query-performance-optimization.md`, `docs/read-path.md`
 - Changelog: `0.59.0`
 
@@ -1456,7 +1456,7 @@ The conformance registry answers "did we miss something upstream has"; the featu
 
 ### ✅ Hot-vs-cold parity suite and known-failure ratchet
 
-`lh.feature.ops.hot_cold_parity_suite` · status: shipped · since: the release after v0.142.1 · surfaces: cli
+`lh.feature.ops.hot_cold_parity_suite` · status: shipped · since: the release after v0.142.2 · surfaces: cli
 
 **Hot-vs-cold parity suite**: the same queries against hot VictoriaLogs/VictoriaTraces and the Lakehouse cold tier on one seed — comparisons that refuse to pass against an empty reference, exact per-tenant read-scope checks, and a known-failure ratchet that fails CI on any new divergence, crash or timeout, and on every allowlisted failure that starts passing.
 
@@ -1464,7 +1464,7 @@ Parity is only a result if a comparison can fail. Every set, row, bucket, struct
 
 - Verification: tests: `scripts/ci/tests/test_parity_ratchet.py`, `tests/parity/harness_test.go#TestHarness_JudgeCounts`, `tests/parity/harness_test.go#TestHarness_ReadComparableCount`, `tests/parity/logs_filters_test.go#TestParity_Filters`, `tests/parity/logs_timerange_test.go#TestParity_TimeRange`, `tests/parity/traces_parity_test.go#TestParity_Traces_LogsQL`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Logs_PerTenantCounts`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Traces_PerTenantParity`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant`
 - Docs: `docs/parity-and-gaps.md#known-divergences-under-investigation`, `docs/parity-and-gaps.md#running-the-parity-suite`, `docs/parity-and-gaps.md#the-known-failure-ratchet`
-- Changelog: the release after `0.142.1`
+- Changelog: the release after `0.142.2`
 - Note: The parity tests run in the Parity Tests workflow (`.github/workflows/parity.yaml`) against its own compose stack, not in the unit-test jobs; that workflow runs the ratchet's unit tests before it builds the stack. The `TestHarness_*` checks issue no requests and also run without the stack. Some linked tests currently record known cold-tier divergences (B1–B7 in `docs/parity-and-gaps.md`) and are listed in `tests/parity/known_failures.txt` instead of passing — among them the Lakehouse subtests of both tenant-isolation tests (B6).
 
 ### ✅ Lifecycle HTTP endpoints
