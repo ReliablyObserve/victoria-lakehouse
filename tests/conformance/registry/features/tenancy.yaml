@@ -25,7 +25,7 @@
     - internal/manifest/tenant_scope_test.go
     - tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Logs_ExactCounts
     - tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Traces_ExactCounts
-    - tests/parity/tenant_scope_parity_test.go#TestTenantParity_PerTenantQueryReturnsOnlyOwnedData
+    - tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Traces_PerTenantParity
   docs:
     - docs/multi-tenancy.md
     - docs/multi-tenancy.md#read-scoping-which-data-a-request-sees

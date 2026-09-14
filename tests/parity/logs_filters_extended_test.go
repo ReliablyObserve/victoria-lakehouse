@@ -7,7 +7,10 @@ import "testing"
 func TestParity_FiltersExtended(t *testing.T) {
 	cases := []ParityCase{
 		{Name: "prefix_match", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:"java" | stats count() rows`}, Compare: CountEqual},
-		{Name: "word_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:~"\btimeout\b" | stats count() rows`}, Compare: CountEqual},
+		// LogsQL unquotes "..." like a Go string literal, so a single `\b`
+		// reaches the regexp engine as a backspace character and matches
+		// nothing. The backslash itself has to be escaped to get RE2's `\b`.
+		{Name: "word_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:~"\\btimeout\\b" | stats count() rows`}, Compare: CountEqual},
 		{Name: "case_insensitive_msg", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:i("error") | stats count() rows`}, Compare: CountEqual},
 		{Name: "case_insensitive_exact", Endpoint: statsEndpoint(), Params: map[string]string{"query": `level:i("error") | stats count() rows`}, Compare: CountEqual},
 		{Name: "prefix_field", Endpoint: statsEndpoint(), Params: map[string]string{"query": `service.name:"api" | stats count() rows`}, Compare: CountEqual},

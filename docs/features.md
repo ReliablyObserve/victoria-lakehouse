@@ -18,10 +18,10 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
-| Ops | 13 | 0 | 0 | 0 | 13 |
+| Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **128** | **1** | **3** | **8** | **140** |
+| **Total** | **129** | **1** | **3** | **8** | **141** |
 
 ## Coverage gaps
 
@@ -1121,7 +1121,7 @@ Fleet-wide dashboards need to see everything, and nothing else should. Global re
 
 Tenancy is resolved from request headers at the edge of every path — insert, query, admin — and carried through to the storage prefix, so there is no per-tenant process to schedule and no per-tenant config to reload. A select request reads exactly one tenant, as upstream VictoriaLogs and VictoriaTraces do: the tenant in its headers, or `0:0` when there are none, on every query class — row scans, metadata fast paths, field and stream enumeration, pmeta catalog answers, the buffer bridge and the Jaeger API. Isolation is asserted by an invariant matrix over query class × request shape × tenant layout and by e2e tests that count each tenant's rows exactly and try to read across tenants.
 
-- Verification: rows: `lh.tenants.list.schema` (pass, pending) · tests: `internal/tenant/middleware_test.go`, `internal/tenant/resolver_test.go`, `tests/e2e/tenant_mapping_test.go#TestTenantMapping_StringAndIntPaths`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_OrgID_NoCrossTenantLeak`, `tests/e2e/endpoints_verification_test.go#TestEndpoint_MultiTenant_DataIsolation`, `internal/storage/parquets3/tenant_scope_test.go`, `internal/storage/parquets3/tenant_scope_labelindex_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_labelindex_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_traces_test.go`, `internal/selectapi/tenant_scope_test.go`, `internal/buffer/handler_tenant_test.go`, `internal/manifest/tenant_scope_test.go`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Logs_ExactCounts`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Traces_ExactCounts`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_PerTenantQueryReturnsOnlyOwnedData`
+- Verification: rows: `lh.tenants.list.schema` (pass, pending) · tests: `internal/tenant/middleware_test.go`, `internal/tenant/resolver_test.go`, `tests/e2e/tenant_mapping_test.go#TestTenantMapping_StringAndIntPaths`, `tests/e2e/isolation_verify_test.go#TestVerifyIsolation_OrgID_NoCrossTenantLeak`, `tests/e2e/endpoints_verification_test.go#TestEndpoint_MultiTenant_DataIsolation`, `internal/storage/parquets3/tenant_scope_test.go`, `internal/storage/parquets3/tenant_scope_labelindex_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_labelindex_test.go`, `lakehouse-traces/internal/storage/parquets3/tenant_scope_traces_test.go`, `internal/selectapi/tenant_scope_test.go`, `internal/buffer/handler_tenant_test.go`, `internal/manifest/tenant_scope_test.go`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Logs_ExactCounts`, `tests/e2e/multitenancy_test.go#TestMultitenancy_TenantScope_Traces_ExactCounts`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Traces_PerTenantParity`
 - Docs: `docs/multi-tenancy.md`, `docs/multi-tenancy.md#read-scoping-which-data-a-request-sees`, `docs/configuration.md`
 
 ### ✅ Per-tenant ingest rate limits
@@ -1392,7 +1392,7 @@ Cold-query latency is a sum of many small object-store operations, which aggrega
 - Verification: tests: `internal/telemetry/telemetry_test.go`, `internal/telemetry/traced_storage_test.go`, `internal/telemetry/traced_writer_test.go`, `internal/config/telemetry_test.go`
 - Docs: `docs/telemetry.md`
 
-## Ops (13)
+## Ops (14)
 
 ### ✅ Validated benchmark harness
 
@@ -1409,7 +1409,7 @@ A fast wrong answer is not a benchmark result. The harness validates every itera
 
 ### ✅ print-default-config and the config-drift gate
 
-`lh.feature.ops.config_drift_gate` · status: shipped · since: the release after v0.142.2 · surfaces: flag
+`lh.feature.ops.config_drift_gate` · status: shipped · since: the release after v0.142.3 · surfaces: flag
 
 **Config drift gate**: `print-default-config` emits every config key with its default, merge rule, profile overrides and flag as JSON, and CI regenerates the docs and Helm values from it so a hand-edit that disagrees with the code defaults fails the build.
 
@@ -1417,7 +1417,7 @@ The code defaults are the single source of truth for configuration. `print-defau
 
 - Verification: rows: `lh.flag.print_default_config` (pass, pending) · tests: `cmd/lakehouse-logs/config_surface_test.go`, `lakehouse-traces/config_surface_test.go`, `internal/config/surface_test.go`, `internal/config/field_docs_test.go`, `internal/config/docs_examples_test.go`
 - Docs: `docs/configuration.md`
-- Changelog: the release after `0.142.2`
+- Changelog: the release after `0.142.3`
 
 ### ✅ Configuration profiles
 
@@ -1465,6 +1465,19 @@ The conformance registry answers "did we miss something upstream has"; the featu
 - Verification: tests: `tests/conformance/features_test.go#TestFeatures_RealCatalog`, `tests/conformance/registry/features_test.go#TestLoadFeatures_Valid`, `tests/conformance/report/features_test.go#TestRenderFeatures`, `scripts/ci/tests/test_check_registry_touch.sh`
 - Docs: `tests/conformance/README.md`, `docs/features.md`
 - Changelog: `0.122.0`
+
+### ✅ Hot-vs-cold parity suite and known-failure ratchet
+
+`lh.feature.ops.hot_cold_parity_suite` · status: shipped · since: v0.142.3 · surfaces: cli
+
+**Hot-vs-cold parity suite**: the same queries against hot VictoriaLogs/VictoriaTraces and the Lakehouse cold tier on one seed — comparisons that refuse to pass against an empty reference, exact per-tenant read-scope checks, and a known-failure ratchet that fails CI on any new divergence, crash or timeout, and on every allowlisted failure that starts passing.
+
+Parity is only a result if a comparison can fail. Every set, row, bucket, structure and count comparison fails when the reference tier returned nothing, a case built to match nothing must read 0 on both tiers, cold answers are taken only after the tier has settled, and per-tenant reads are held to exact counts and id sets against hot. The remaining divergences are recorded one per line with the divergence they belong to; the ratchet parses `go test -json` and fails the job on an unlisted failure, an aborted or crashed test binary, a stale entry or a drop in the pass count, so the list only ever shrinks.
+
+- Verification: tests: `scripts/ci/tests/test_parity_ratchet.py`, `tests/parity/harness_test.go#TestHarness_JudgeCounts`, `tests/parity/harness_test.go#TestHarness_ReadComparableCount`, `tests/parity/logs_filters_test.go#TestParity_Filters`, `tests/parity/logs_timerange_test.go#TestParity_TimeRange`, `tests/parity/traces_parity_test.go#TestParity_Traces_LogsQL`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Logs_PerTenantCounts`, `tests/parity/tenant_isolation_parity_test.go#TestTenantIsolation_Traces_PerTenantParity`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty`, `tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant`
+- Docs: `docs/parity-and-gaps.md#known-divergences-under-investigation`, `docs/parity-and-gaps.md#running-the-parity-suite`, `docs/parity-and-gaps.md#the-known-failure-ratchet`
+- Changelog: `0.142.3`
+- Note: The parity tests run in the Parity Tests workflow (`.github/workflows/parity.yaml`) against its own compose stack, not in the unit-test jobs; that workflow runs the ratchet's unit tests before it builds the stack. The `TestHarness_*` checks issue no requests and also run without the stack. Some linked tests currently record known cold-tier divergences (B1–B7 in `docs/parity-and-gaps.md`) and are listed in `tests/parity/known_failures.txt` instead of passing — among them the Lakehouse subtests of both tenant-isolation tests (B6).
 
 ### ✅ Lifecycle HTTP endpoints
 

@@ -11,7 +11,7 @@ import (
 
 func TestParity_EdgeCases(t *testing.T) {
 	t.Run("empty_filter", func(t *testing.T) {
-		pc := ParityCase{Name: "empty_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `nonexistent_service:="xxx" | stats count() rows`}, Compare: CountEqual}
+		pc := ParityCase{Name: "empty_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `nonexistent_service:="xxx" | stats count() rows`}, Compare: CountEqual, ExpectEmpty: true}
 		RunParity(t, vlBaseURL, lhBaseURL, []ParityCase{pc})
 	})
 
@@ -40,17 +40,17 @@ func TestParity_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("special_chars", func(t *testing.T) {
-		pc := ParityCase{Name: "special_chars", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:="hello \"world\"" | stats count() rows`}, Compare: CountEqual}
+		pc := ParityCase{Name: "special_chars", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:="hello \"world\"" | stats count() rows`}, Compare: CountEqual, ExpectEmpty: true}
 		RunParity(t, vlBaseURL, lhBaseURL, []ParityCase{pc})
 	})
 
 	t.Run("unicode_msg", func(t *testing.T) {
-		pc := ParityCase{Name: "unicode_msg", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:="日本語" | stats count() rows`}, Compare: CountEqual}
+		pc := ParityCase{Name: "unicode_msg", Endpoint: statsEndpoint(), Params: map[string]string{"query": `_msg:="日本語" | stats count() rows`}, Compare: CountEqual, ExpectEmpty: true}
 		RunParity(t, vlBaseURL, lhBaseURL, []ParityCase{pc})
 	})
 
 	t.Run("empty_string_filter", func(t *testing.T) {
-		pc := ParityCase{Name: "empty_string_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `level:="" | stats count() rows`}, Compare: CountEqual}
+		pc := ParityCase{Name: "empty_string_filter", Endpoint: statsEndpoint(), Params: map[string]string{"query": `level:="" | stats count() rows`}, Compare: CountEqual, ExpectEmpty: true}
 		RunParity(t, vlBaseURL, lhBaseURL, []ParityCase{pc})
 	})
 
