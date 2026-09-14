@@ -13,7 +13,7 @@
   kind: insert
   origin: native
   expect: differ
-  differ_note: "Native binary ingest arrives with the VT 0.11.0 bump; pinned 0.9.2 has no /insert/native route. Re-check after the bump (docs/parity-and-gaps.md)."
+  differ_note: "Live at the pinned VT 0.11.0: lakehouse-traces mounts vtinsert.RequestHandler wholesale, so the route is served. End-to-end native ingest through the cold tier (a vtagent payload landing in Parquet) is not exercised yet — the verification round covers it (docs/parity-and-gaps.md)."
   since: { vt: "0.11.0" }
   targets: [hot]
   seed: [traces.base]
@@ -29,7 +29,7 @@
   kind: insert
   origin: native
   expect: differ
-  differ_note: "Arrives with the VT 0.11.0 bump alongside /insert/native; pinned 0.9.2 lacks both. Re-check after the bump (docs/parity-and-gaps.md)."
+  differ_note: "Live at the pinned VT 0.11.0 alongside /insert/native, with the same unverified cold-tier end-to-end path; additionally carries the per-request tenant, which the cold writer must honour (docs/parity-and-gaps.md)."
   since: { vt: "0.11.0" }
   targets: [hot]
   seed: [tenants.iso]

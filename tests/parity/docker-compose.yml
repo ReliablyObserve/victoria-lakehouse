@@ -41,7 +41,15 @@ services:
       "
 
   victorialogs:
-    image: victoriametrics/victoria-logs:v1.50.0
+    build:
+      context: ../../
+      dockerfile: deployment/docker/Dockerfile.upstream-probe
+      args:
+        UPSTREAM: victoriametrics/victoria-logs:v1.52.0
+    # Upstream image + one static busybox so the healthcheck below has a probe
+    # to run: the published image is distroless (no shell, no wget). See
+    # deployment/docker/Dockerfile.upstream-probe.
+    image: vl-probed:v1.52.0
     restart: unless-stopped
     command:
       - "-storageDataPath=/data"
@@ -51,7 +59,7 @@ services:
     volumes:
       - vl-data:/data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
+      test: ["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:9428/health"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -85,7 +93,15 @@ services:
       start_period: 10s
 
   victoriatraces:
-    image: victoriametrics/victoria-traces:v0.9.2
+    build:
+      context: ../../
+      dockerfile: deployment/docker/Dockerfile.upstream-probe
+      args:
+        UPSTREAM: victoriametrics/victoria-traces:v0.11.0
+    # Upstream image + one static busybox so the healthcheck below has a probe
+    # to run: the published image is distroless (no shell, no wget). See
+    # deployment/docker/Dockerfile.upstream-probe.
+    image: vt-probed:v0.11.0
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=48h"
@@ -94,7 +110,7 @@ services:
     volumes:
       - vt-data:/data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10428/health"]
+      test: ["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:10428/health"]
       interval: 5s
       timeout: 3s
       retries: 10

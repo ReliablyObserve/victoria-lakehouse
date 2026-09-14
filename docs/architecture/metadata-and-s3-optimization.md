@@ -357,7 +357,7 @@ in `docs/operations/lifecycle.md`.
 
 ### Scenario D — PB-scale wide-time-range query
 
-1. User runs `_time:30d | service.name=foo | count()`.
+1. User runs `_time:30d service.name:=foo | count()`.
 2. Manifest returns ~50k matching files (30 days × ~1700/day at
    PB ingest).
 3. Bloom + zone-map skip eliminates ~90% of files (the ones

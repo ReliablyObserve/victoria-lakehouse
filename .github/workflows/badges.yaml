@@ -12,8 +12,8 @@ permissions:
   contents: write
 
 env:
-  VL_VERSION_LOGS: v1.50.0
-  VL_COMMIT_TRACES: 77df0c04d532
+  VL_VERSION_LOGS: v1.52.0
+  VL_COMMIT_TRACES: 6ae2da3c11f3
   GOWORK: "off"
 
 jobs:
