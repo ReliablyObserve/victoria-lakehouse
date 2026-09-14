@@ -322,6 +322,10 @@ func TestMetrics_Parquet_RowGroupsScanned(t *testing.T) {
 }
 
 func TestMetrics_Parquet_RowGroupsSkipped(t *testing.T) {
+	// The counter's series appear with the first skip, so cause one instead of
+	// depending on what earlier tests happened to query: object metadata
+	// prunes an absent trace_id before a row group is read.
+	queryLogs(t, `trace_id:="parquet-row-groups-skipped-test"`, 1)
 	metrics := scrapeMetrics(t, logsBaseURL)
 	assertMetricExists(t, metrics, "lakehouse_parquet_row_groups_skipped_total")
 }
