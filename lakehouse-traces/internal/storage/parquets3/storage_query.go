@@ -1,7 +1,6 @@
 package parquets3
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -1050,24 +1049,21 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 	metrics.ParquetFilesOpened.Inc()
 	metrics.ParquetColumnBytesRead.Add(len(data))
 
-	if s.footerCache != nil {
-		if cached, ok := s.footerCache.Get(fi.Key); ok && cached.FileSize == int64(len(data)) {
-			return cached.File, nil, nil
-		}
-	}
-
-	if s.footerCache != nil {
-		cached, f, parseErr := ParseFooterFromData(fi.Key, data)
-		if parseErr != nil {
-			return nil, nil, parseErr
-		}
-		s.footerCache.Put(fi.Key, cached)
-		return f, nil, nil
-	}
-
-	f, parseErr := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	// Always open a fresh *parquet.File over the downloaded bytes. A footer
+	// cache entry is metadata only: one fetched by prefetchFooters or
+	// shouldSkipByFooter is backed by a synthetic reader that holds just the
+	// footer and reads the column-data region as zeros, so decoding rows
+	// through it yields no matching rows (every timestamp reads as 0). Even a
+	// data-backed entry must not be shared: parquet-go column chunk and page
+	// readers keep per-read state. ParseFooterFromData still feeds the cache,
+	// so the whole-file download doubles as the footer warmup. Mirror of
+	// internal/storage/parquets3/storage_query.go.
+	cached, f, parseErr := ParseFooterFromData(fi.Key, data)
 	if parseErr != nil {
-		return nil, nil, fmt.Errorf("open parquet file %s: %w", fi.Key, parseErr)
+		return nil, nil, parseErr
+	}
+	if s.footerCache != nil {
+		s.footerCache.Put(fi.Key, cached)
 	}
 	return f, nil, nil
 }

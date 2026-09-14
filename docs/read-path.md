@@ -102,7 +102,9 @@ For exact-match queries on bloom-enabled columns, the engine checks partition-le
 
 ### Level 3: Footer Parse and Cache
 
-The Parquet footer (file metadata, schema, column indices) is parsed once per file access and stored in an LRU cache (`FooterCache`, default 10K entries; auto-resizes after each manifest refresh to track active file count). On subsequent accesses, the parsed `parquet.File` is reused without re-parsing.
+The Parquet footer (file metadata, schema, column indices) is parsed once per file access and stored in an LRU cache (`FooterCache`, default 10K entries; auto-resizes after each manifest refresh to track active file count). A cached entry is metadata only: it supplies the schema, the column count and the row-group layout that plan a ranged read of the projected columns, so a projected read of a known file needs no footer round trip.
+
+A read that needs every column (a bare filter, `* | limit N`, or the upstream `limit` argument, which VL rewrites to `| sort by (_time) desc | offset | limit`) downloads the whole object and always decodes rows through a fresh handle over those bytes, on both binaries. It never reuses the cached handle: a footer fetched by a range read (the footer prefetch or the footer-based file skip) is backed by a reader that holds only the footer and returns zeros for the column data, and parquet-go column and page readers keep per-read state. The traces binary used to reuse the cached handle there, so such a query returned no rows from any object of 128 KiB or more whose footer the same query had prefetched; `TestFullRowRead_AfterFooterPrefetch` and `TestOpenParquet_FullDownloadNeverReusesCachedHandle` (`lakehouse-traces/internal/storage/parquets3/full_read_footer_cache_test.go`) pin the fix.
 
 Cold-file footers are fetched via a two-phase range read. The first
 range pulls the last 64 KiB of the file in one round-trip, which
