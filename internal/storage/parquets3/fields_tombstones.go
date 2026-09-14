@@ -41,6 +41,13 @@ func (s *Storage) fieldsTombstones(startNs, endNs int64) []tombstone {
 	return ts
 }
 
+// allTombstones returns every active tombstone, or nil. It gates answers that
+// are not time-scoped at all — the in-memory label index lists every value any
+// file ever carried, so a tombstone in any hour can cover a value it serves.
+func (s *Storage) allTombstones() []tombstone {
+	return s.fieldsTombstones(math.MinInt64, math.MaxInt64)
+}
+
 // partitionHourBounds widens [startNs, endNs] to the whole partition hours it
 // touches. The pmeta catalog answers field_values with the value union of every
 // partition hour a query window touches, not just the rows inside the window; a

@@ -7,6 +7,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
@@ -38,6 +39,35 @@ func (s *Storage) fieldsTombstones(startNs, endNs int64) []tombstone {
 		return nil
 	}
 	return ts
+}
+
+// allTombstones returns every active tombstone, or nil. It gates answers that
+// are not time-scoped at all — the in-memory label index lists every value any
+// file ever carried, so a tombstone in any hour can cover a value it serves.
+func (s *Storage) allTombstones() []tombstone {
+	return s.fieldsTombstones(math.MinInt64, math.MaxInt64)
+}
+
+// filesTimeSpan returns the time range covered by the given files' rows,
+// widened to include the query window. The enumeration scans read every row of
+// every file they open — including rows outside the query window — so the
+// tombstones they apply must be those overlapping this span. A file with
+// unknown bounds (either end zero) could hold rows from any time, so the span
+// is left open on both ends.
+func filesTimeSpan(files []manifest.FileInfo, startNs, endNs int64) (int64, int64) {
+	lo, hi := startNs, endNs
+	for _, fi := range files {
+		if fi.MinTimeNs == 0 || fi.MaxTimeNs == 0 {
+			return math.MinInt64, math.MaxInt64
+		}
+		if fi.MinTimeNs < lo {
+			lo = fi.MinTimeNs
+		}
+		if fi.MaxTimeNs > hi {
+			hi = fi.MaxTimeNs
+		}
+	}
+	return lo, hi
 }
 
 // partitionHourBounds widens [startNs, endNs] to the whole partition hours it

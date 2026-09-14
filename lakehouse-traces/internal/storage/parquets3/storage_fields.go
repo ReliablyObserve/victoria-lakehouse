@@ -266,50 +266,65 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	// The catalog and the labelIndex are built at write/compaction time and
 	// carry no tombstone awareness: a value that exists only on deleted rows is
 	// still in both. Serving from them while a tombstone could cover their
-	// answer is how a "deleted" value kept appearing in dropdowns, so both fast
-	// paths are given up and the answer is verified against rows. The catalog
-	// answers per partition hour, so the check uses the hour-widened window;
-	// the row scan below applies tombstones to the exact window.
-	tombstones := s.fieldsTombstones(startNs, endNs)
-	fastPathTombstones := s.fieldsTombstones(partitionHourBounds(startNs, endNs))
-	if len(fastPathTombstones) > 0 {
+	// answer is how a "deleted" value kept appearing in dropdowns, so a fast
+	// path is given up whenever a tombstone overlaps what IT answers from, and
+	// the answer is verified against rows instead:
+	//   - the catalog answers per partition hour → hour-widened window;
+	//   - the labelIndex is not time-scoped at all → any active tombstone;
+	//   - the row scan reads whole files → the scanned files' time span (below).
+	gaveUpFastPath := false
+
+	if filter == nil && s.catalog != nil {
+		if len(s.fieldsTombstones(partitionHourBounds(startNs, endNs))) > 0 {
+			gaveUpFastPath = true
+		} else {
+			if s.refuseEnumeration(fieldName) {
+				return nil, nil // declared id column: don't enumerate (matches VT), no scan
+			}
+			if result := s.catalogFieldValues(q, fieldName, limit); len(result) > 0 {
+				return result, nil
+			}
+		}
+	}
+
+	if filter == nil && s.labelIndex.Len() > 0 {
+		if len(s.allTombstones()) > 0 {
+			gaveUpFastPath = true
+		} else {
+			vals := s.labelIndex.GetFieldValues(fieldName, limit)
+			if len(vals) == 0 {
+				if m := s.registry.ResolveToParquet(fieldName); m != nil && m.InternalName != fieldName {
+					vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
+				}
+			}
+			if len(vals) == 0 {
+				if m := s.registry.ResolveFromParquet(fieldName); m != nil && m.InternalName != fieldName {
+					vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
+				}
+			}
+			if len(vals) > 0 {
+				result := make([]logstorage.ValueWithHits, len(vals))
+				for i, v := range vals {
+					result[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
+				}
+				return result, nil
+			}
+		}
+	}
+
+	if gaveUpFastPath {
 		noteFieldsScanFallback("field_values")
-	}
-
-	if filter == nil && len(fastPathTombstones) == 0 && s.catalog != nil {
-		if s.refuseEnumeration(fieldName) {
-			return nil, nil // declared id column: don't enumerate (matches VT), no scan
-		}
-		if result := s.catalogFieldValues(q, fieldName, limit); len(result) > 0 {
-			return result, nil
-		}
-	}
-
-	if filter == nil && len(fastPathTombstones) == 0 && s.labelIndex.Len() > 0 {
-		vals := s.labelIndex.GetFieldValues(fieldName, limit)
-		if len(vals) == 0 {
-			if m := s.registry.ResolveToParquet(fieldName); m != nil && m.InternalName != fieldName {
-				vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
-			}
-		}
-		if len(vals) == 0 {
-			if m := s.registry.ResolveFromParquet(fieldName); m != nil && m.InternalName != fieldName {
-				vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
-			}
-		}
-		if len(vals) > 0 {
-			result := make([]logstorage.ValueWithHits, len(vals))
-			for i, v := range vals {
-				result[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
-			}
-			return result, nil
-		}
 	}
 
 	files := s.manifest.GetFilesForRange(startNs, endNs)
 	if len(files) == 0 {
 		return nil, nil
 	}
+
+	// The scan reads every row of every overlapping file, including the rows
+	// that lie outside the query window, so it must apply every tombstone
+	// overlapping those files — not only the ones overlapping the window.
+	tombstones := s.fieldsTombstones(filesTimeSpan(files, startNs, endNs))
 
 	mapping := s.registry.ResolveToParquet(fieldName)
 	if mapping == nil {
@@ -406,7 +421,9 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 		return nil, nil
 	}
 
-	tombstones := s.fieldsTombstones(startNs, endNs)
+	// Whole files are scanned: apply every tombstone overlapping their rows,
+	// not only those overlapping the query window.
+	tombstones := s.fieldsTombstones(filesTimeSpan(files, startNs, endNs))
 	if len(tombstones) > 0 {
 		noteFieldsScanFallback("streams")
 	}
@@ -453,7 +470,9 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 		return nil, nil
 	}
 
-	tombstones := s.fieldsTombstones(startNs, endNs)
+	// Whole files are scanned: apply every tombstone overlapping their rows,
+	// not only those overlapping the query window.
+	tombstones := s.fieldsTombstones(filesTimeSpan(files, startNs, endNs))
 	if len(tombstones) > 0 {
 		noteFieldsScanFallback("stream_ids")
 	}
