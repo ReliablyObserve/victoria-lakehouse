@@ -12,6 +12,7 @@ import (
 )
 
 func TestParity_TracesExtended(t *testing.T) {
+	seededRegion := seededTracesValue(t, "`resource_attr:cloud.region`")
 	cases := []ParityCase{
 		// 1. Filter by span name
 		{
@@ -108,12 +109,17 @@ func TestParity_TracesExtended(t *testing.T) {
 			Params:   map[string]string{"query": `span_id:* | sort by(duration) desc | limit 10 | stats count() rows`},
 			Compare:  CountEqual,
 		},
-		// 15. Filter by resource region
+		// 15. Filter by resource region. The region is discovered from the
+		// seed rather than hard-coded: datagen draws each service's region
+		// from three candidates with a clock-seeded rng, so a fixed value is
+		// missing from roughly one seed in eight and the case then compares
+		// two empty answers.
 		{
 			Name:     "traces_filter_resource_region",
 			Endpoint: statsEndpoint(),
-			Params:   map[string]string{"query": "span_id:* `resource_attr:cloud.region`:=\"us-east-1\" | stats count() rows"},
-			Compare:  CountEqual,
+			Params: map[string]string{"query": fmt.Sprintf(
+				"span_id:* `resource_attr:cloud.region`:=%q | stats count() rows", seededRegion)},
+			Compare: CountEqual,
 		},
 		// 16. Combined AND filter. cmd/datagen writes only SERVER (2) and
 		// CLIENT (3) spans; kind 1 (INTERNAL) matched nothing.

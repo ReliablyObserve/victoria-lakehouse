@@ -26,27 +26,12 @@
 # cold-tier divergence with a fix in flight; a harness defect belongs in the
 # harness, not on this list.
 #
-# min-pass: 386
+# min-pass: 428
 
 # --- B1: cold query rows carry columns hot does not -------------------------
 # `<null>` placeholders for unset map attributes, the account_id/project_id
 # tenant columns, the ded_s01..ded_s08 dedicated slot columns, and unprefixed
 # duplicates of the traces attributes.
-TestParity_EdgeCasesExtended/limit_equals_offset/limit_equals_offset  # B1: junk columns in cold rows
-TestParity_EdgeCasesExtended/multiple_sort_keys/multiple_sort_keys  # B1: junk columns in cold rows
-TestParity_Endpoints/facets  # B1: cold facets carry exception.message/type=<null>
-TestParity_Endpoints/query_wildcard  # B1: junk columns in cold rows
-TestParity_Pipes/copy_pipe  # B1: junk columns in cold rows
-TestParity_Pipes/limit_1  # B1: junk columns in cold rows
-TestParity_Pipes/limit_10  # B1: junk columns in cold rows
-TestParity_Pipes/sort_time_asc  # B1: junk columns in cold rows
-TestParity_Pipes/sort_time_desc  # B1: junk columns in cold rows
-TestParity_PipesExtended/first_pipe  # B1: junk columns in cold rows
-TestParity_PipesExtended/last_pipe  # B1: junk columns in cold rows
-TestParity_PipesExtended/offset_pipe  # B1: junk columns in cold rows
-TestParity_PipesExtended/pipe_chain_delete_sort  # B1: junk columns in cold rows
-TestParity_Response/jsonl_structure  # B1: junk columns in cold rows
-TestParity_Traces_LogsQL/traces_trace_id_lookup  # B1: junk columns + unprefixed traces attributes
 
 # --- B2: field_names is built from Parquet columns only ---------------------
 # Cold reports only the columns present in the scanned files, so _time, _msg,
@@ -85,16 +70,12 @@ TestParity_PipesExtended/len_pipe  # B4: pipe loses its input columns
 TestParity_PipesExtended/pipe_chain_rename_stats  # B4: pipe loses its input columns
 TestParity_PipesExtended/rename_field  # B4: pipe loses its input columns
 TestParity_PipesExtended/unpack_json  # B4: pipe loses its input columns
-TestParity_PipesGapfill/chained_pipes_3plus/filter_rename_sort_limit  # B4: pipe loses its input columns
-TestParity_PipesGapfill/chained_pipes_3plus/format_delete_sort_limit  # B4: pipe loses its input columns
 TestParity_PipesGapfill/chained_pipes_3plus/len_math_filter_stats  # B4: pipe loses its input columns
 TestParity_PipesGapfill/chained_pipes_3plus/rename_filter_sort_fields_limit  # B4: pipe loses its input columns
 TestParity_PipesGapfill/string_functions/len_msg  # B4: pipe loses its input columns
 TestParity_PipesGapfill/string_functions/upper_level  # B4: pipe loses its input columns
 
 # --- B5: /hits at sub-hour steps returns synthetic buckets ------------------
-TestParity_EdgeCasesExtended/hits_small_step/hits_small_step  # B5: sub-hour /hits buckets are interpolated
-TestParity_Response/hits_bucket_keys/hits_bucket_keys  # B5: sub-hour /hits buckets are interpolated
 
 # --- B6: a tenant-scoped read answers with every tenant's rows --------------
 # Hot answers each tenant with its own rows; cold answers both tenants with
@@ -102,14 +83,6 @@ TestParity_Response/hits_bucket_keys/hits_bucket_keys  # B5: sub-hour /hits buck
 # cold answers look scoped, which is why the logs test waits for the flushed
 # state before asserting.) These flip to pass when the tenant-scoping fix
 # lands, and the ratchet then forces this whole group to be deleted.
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_3/field_values_set  # B6: cold logs field_values ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_3/hits_total  # B6: cold logs hits ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_3/query_rows  # B6: cold logs query ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_4/field_values_set  # B6: cold logs field_values ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_4/hits_total  # B6: cold logs hits ignores the request's tenant
-TestTenantIsolation_Logs_PerTenantCounts/LH/account_4/query_rows  # B6: cold logs query ignores the request's tenant
-TestTenantIsolation_Traces_PerTenantParity/account_0/field_values_hits  # B6: cold traces field_values ignores the request's tenant
-TestTenantIsolation_Traces_PerTenantParity/account_1/field_values_hits  # B6: cold traces field_values ignores the request's tenant
 
 # --- B7: a row group starting on the query's last nanosecond is skipped -----
 # The HTTP end bound is exclusive; the upstream handler turns it into an
