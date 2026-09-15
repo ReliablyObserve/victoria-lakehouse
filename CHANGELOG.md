@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.142.8] - 2026-09-15
+
 ### Changed
 
 - **loki-vl-proxy 1.58.0 → 1.76.0 in the e2e and benchmark composes.**
