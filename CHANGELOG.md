@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The hot/cold parity suite was measuring two broken tests and a stale allowlist.**
+  With the settle probe fixed (#216) the suite runs again, and its first honest result was two
+  failures that were defects in the TESTS, not cold-tier divergences.
+  `TestServiceGraphParity_JoinPipeWorksOnCold` built `| NOT parent:eq_field(child)`, but LogsQL
+  has no bare `NOT` pipe — upstream writes `| filter NOT <parent>:eq_field(<child>)` — so BOTH
+  tiers answered 400 and the case failed on a malformed query; with `filter` restored the join
+  works on cold, and the case now compares the edge sets of both tiers instead of only checking
+  that cold returned well-shaped rows (20 edges, every callCount equal).
+  `TestParity_TracesExtended/traces_filter_resource_region` hard-coded
+  `cloud.region:="us-east-1"`, but `cmd/datagen` draws each service's region from three
+  candidates with a clock-seeded rng, so with five services that value is absent from roughly
+  one seed in eight — the case had been comparing two empty answers at that rate since it was
+  written, passing vacuously until the empty-reference guard called it what it is; the region is
+  now discovered from the seed. 27 allowlist entries are deleted because the work that fixed
+  them has shipped: two B5 sub-hour `/hits` interpolation entries, eight B6
+  cold-tier-ignores-the-tenant entries, and seventeen pipe/sort/limit/facet/jsonl entries,
+  taking the allowlist from 60 to 33 — what remains is B2 and B3. `min-pass` rises 386 → 428 so
+  none of it can quietly regress. Verified on a local parity stack across four consecutive full
+  runs: 428 passed, 51 failed, 0 aborted, every failure allowlisted and every allowlist entry
+  still live.
 ## [0.142.5] - 2026-09-15
 
 ### Changed
