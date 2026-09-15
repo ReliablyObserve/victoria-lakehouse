@@ -35,8 +35,8 @@ func TestProjectedFieldsToDataBlock_HoistedScalarMap(t *testing.T) {
 	in1k, s1, e1 := build(1024)
 	in2k, s2, e2 := build(2048)
 
-	a1 := testing.AllocsPerRun(20, func() { _ = s.projectedFieldsToDataBlock(in1k, s1, e1) })
-	a2 := testing.AllocsPerRun(20, func() { _ = s.projectedFieldsToDataBlock(in2k, s2, e2) })
+	a1 := testing.AllocsPerRun(20, func() { _ = s.projectedFieldsToDataBlock(in1k, s1, e1, nil) })
+	a2 := testing.AllocsPerRun(20, func() { _ = s.projectedFieldsToDataBlock(in2k, s2, e2, nil) })
 
 	// Per-row alloc cost (slope). With per-row map allocation, the slope
 	// would include +1/row from `make(map[string]bool)`. After hoisting,

@@ -4,7 +4,6 @@ import (
 	"io"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -14,6 +13,9 @@ import (
 // bypassing the []field intermediate representation. For scalar columns, values
 // are read and formatted in a single pass per column. MAP columns are handled
 // by reading key/value leaf columns and assembling per-row maps.
+// slots is the file's ded_sNN -> configured attribute name binding (from the
+// Parquet footer KV); it decides how Tier-2 spare slots are named and which of
+// them are dropped, exactly as remapSlotFields does on the typed path.
 func readRowGroupColumnar(
 	f *parquet.File,
 	rg parquet.RowGroup,
@@ -21,6 +23,7 @@ func readRowGroupColumnar(
 	reg *schema.Registry,
 	startNs, endNs int64,
 	bitmap []bool,
+	slots schema.SlotMapping,
 ) *logstorage.DataBlock {
 	if len(wantCols) == 0 {
 		return nil
@@ -109,10 +112,13 @@ func readRowGroupColumnar(
 
 	for name, li := range leafMap {
 		if len(li.indices) == 1 {
-			// Scalar column.
-			internalName := name
-			if m := reg.ResolveFromParquet(name); m != nil {
-				internalName = m.InternalName
+			// Scalar column. queryFieldName is the shared rule with the
+			// row-oriented path (projectedFieldsToDataBlock): it drops
+			// bookkeeping columns and unmapped slots and resolves the
+			// emitted field name, so the two paths cannot drift.
+			internalName, ok := queryFieldName(name, reg, slots)
+			if !ok {
+				continue
 			}
 
 			values := readScalarColumnFormatted(chunks[li.indices[0]], numRows, rowMask, passCount, internalName, reg)
@@ -177,7 +183,10 @@ func readInt64Column(chunk parquet.ColumnChunk, numRows int) []int64 {
 	return result
 }
 
-// readScalarColumnFormatted reads a scalar column and formats values directly to strings.
+// readScalarColumnFormatted reads a scalar column and formats values directly
+// to strings. Returns nil when no row in the group carries a value for the
+// column: a column that is empty for every row is a field that does not exist
+// on any of these rows, and hot VictoriaLogs never reports such a field.
 func readScalarColumnFormatted(
 	chunk parquet.ColumnChunk,
 	numRows int,
@@ -192,6 +201,7 @@ func readScalarColumnFormatted(
 	values := make([]string, 0, passCount)
 	buf := make([]parquet.Value, 256)
 	rowIdx := 0
+	nonEmpty := false
 
 	for {
 		page, err := pages.ReadPage()
@@ -199,15 +209,21 @@ func readScalarColumnFormatted(
 			if err == io.EOF {
 				break
 			}
-			return values
+			return nonEmptyOrNil(values, nonEmpty)
 		}
 		vr := page.Values()
 		for {
 			n, readErr := vr.ReadValues(buf[:])
 			for i := 0; i < n; i++ {
 				if rowIdx < len(rowMask) && rowMask[rowIdx] {
+					// NULL and empty cells format to "" (see
+					// parquetValueToInterface): the row simply has no such
+					// field, matching the typed path's appendIfSet.
 					v := parquetValueToInterface(buf[i])
 					formatted := reg.FormatField(internalName, v)
+					if formatted != "" {
+						nonEmpty = true
+					}
 					values = append(values, formatted)
 				}
 				rowIdx++
@@ -216,6 +232,14 @@ func readScalarColumnFormatted(
 				break
 			}
 		}
+	}
+	return nonEmptyOrNil(values, nonEmpty)
+}
+
+// nonEmptyOrNil returns values only when at least one row carried a value.
+func nonEmptyOrNil(values []string, nonEmpty bool) []string {
+	if !nonEmpty {
+		return nil
 	}
 	return values
 }
@@ -229,6 +253,8 @@ func readMapColumnToBlockCols(
 	mapColName string,
 	promotedKeys map[string]bool,
 ) []logstorage.BlockColumn {
+	// Resolved once per column; mapAttrFieldNameWithPrefix applies the shared
+	// naming rule per attribute.
 	prefix := mapColumnToAttrPrefix(mapColName)
 
 	// Read all key and value entries with their repetition levels
@@ -319,7 +345,12 @@ func readMapColumnToBlockCols(
 		if promotedKeys[kv.key] {
 			continue
 		}
-		attrName := bytesutil.InternString(prefix + kv.key)
+		// Same naming rule the scalar columns go through: a MAP key that
+		// spells a reserved internal name never becomes a field.
+		attrName, ok := mapAttrFieldNameWithPrefix(prefix, kv.key)
+		if !ok {
+			continue
+		}
 		ac, ok := attrMap[attrName]
 		if !ok {
 			ac = &attrCol{values: make([]string, passCount)}

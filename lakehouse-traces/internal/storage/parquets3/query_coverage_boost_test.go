@@ -1063,12 +1063,12 @@ func TestQCB_ReadRowGroupColumnar_EmptyWantCols(t *testing.T) {
 	endNs := now.Add(time.Minute).UnixNano()
 
 	for _, rg := range f.RowGroups() {
-		db := readRowGroupColumnar(f, rg, nil, reg, startNs, endNs, nil)
+		db := readRowGroupColumnar(f, rg, nil, reg, startNs, endNs, nil, nil, nil)
 		if db != nil {
 			t.Error("nil wantCols should return nil")
 		}
 
-		db = readRowGroupColumnar(f, rg, map[string]bool{}, reg, startNs, endNs, nil)
+		db = readRowGroupColumnar(f, rg, map[string]bool{}, reg, startNs, endNs, nil, nil, nil)
 		if db != nil {
 			t.Error("empty wantCols should return nil")
 		}
@@ -1102,7 +1102,7 @@ func TestQCB_ReadRowGroupColumnar_WithBitmap(t *testing.T) {
 			"body":                true,
 		}
 
-		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, bitmap)
+		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, bitmap, nil, nil)
 		if db == nil {
 			t.Fatal("expected non-nil DataBlock")
 		}
@@ -1137,7 +1137,7 @@ func TestReadRowGroupColumnar_TimeRangeFilter(t *testing.T) {
 			"body":                true,
 		}
 
-		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, nil)
+		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, nil, nil, nil)
 		if db == nil {
 			t.Fatal("expected non-nil DataBlock")
 		}
@@ -1173,7 +1173,7 @@ func TestReadRowGroupColumnar_AllColumns(t *testing.T) {
 			"service.name":        true,
 		}
 
-		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, nil)
+		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, nil, nil, nil)
 		if db == nil {
 			t.Fatal("expected non-nil DataBlock")
 		}
@@ -1214,7 +1214,7 @@ func TestReadRowGroupColumnar_NonexistentColumn(t *testing.T) {
 	for _, rg := range f.RowGroups() {
 		wantCols := map[string]bool{"nonexistent_xyz": true}
 
-		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, nil)
+		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, nil, nil, nil)
 		if db != nil {
 			t.Error("nonexistent column should produce nil DataBlock")
 		}
@@ -1246,7 +1246,7 @@ func TestReadRowGroupColumnar_AllRowsOutOfTimeRange(t *testing.T) {
 			"body":                true,
 		}
 
-		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, nil)
+		db := readRowGroupColumnar(f, rg, wantCols, reg, startNs, endNs, nil, nil, nil)
 		if db != nil {
 			t.Error("all rows out of time range should produce nil DataBlock")
 		}
@@ -1594,7 +1594,7 @@ func TestReadRowGroupWithProjection_ConstantColumnsOnly(t *testing.T) {
 	err = s.readRowGroupWithProjection(f, rgs[0], startNs, endNs, cols, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
-		}, nil)
+		}, nil, nil)
 	if err != nil {
 		t.Fatalf("readRowGroupWithProjection: %v", err)
 	}
@@ -1645,7 +1645,7 @@ func TestReadRowGroupWithProjection_WithPushdownFilter(t *testing.T) {
 	err = s.readRowGroupWithProjection(f, rgs[0], startNs, endNs, cols, pdf,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
-		}, nil)
+		}, nil, nil)
 	if err != nil {
 		t.Fatalf("readRowGroupWithProjection: %v", err)
 	}

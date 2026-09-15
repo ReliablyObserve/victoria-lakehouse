@@ -103,3 +103,50 @@
     contains its whole [MinTimeNs, MaxTimeNs] span; otherwise it is read, so a per-bucket
     count never depends on where inside the file its rows actually sit.
     lakehouse_metadata_only_fallback_files_total counts the files read for this reason.
+
+- id: lh.rows.field_set_logs
+  title: "Cold query row field set equals hot — logs"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", limit: "50", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  notes: >-
+    A cold log line carries exactly the ingested fields, like the same line served
+    hot: no "<null>" placeholder values for unset Parquet columns, no account_id /
+    project_id tenant columns, no raw ded_sNN spare slots. Covered by
+    tests/parity TestParity_ColdRowFields and TestParity_Response/jsonl_structure.
+  refs:
+    tests:
+      - tests/parity/cold_row_fields_test.go
+      - internal/storage/parquets3/cold_row_fields_test.go
+
+- id: lh.rows.field_set_traces
+  title: "Cold query row field set equals hot — traces"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "span_id:*", limit: "50", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  notes: >-
+    A cold span carries exactly the ingested fields under VictoriaTraces' own
+    names: resource_attr: / span_attr: prefixed promoted attributes, no bare
+    Parquet column spellings, no "<null>" placeholders, no tenant or spare-slot
+    columns, and no service-graph edge columns (parent / child / callCount) on
+    plain spans. Covered by tests/parity TestParity_Traces_ColdSpanFields.
+  refs:
+    tests:
+      - tests/parity/cold_row_fields_test.go
+      - lakehouse-traces/internal/storage/parquets3/cold_row_fields_test.go

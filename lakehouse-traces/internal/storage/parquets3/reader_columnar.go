@@ -4,7 +4,6 @@ import (
 	"io"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -14,6 +13,10 @@ import (
 // bypassing the []field intermediate representation. For scalar columns, values
 // are read and formatted in a single pass per column. MAP columns are handled
 // by reading key/value leaf columns and assembling per-row maps.
+// slots is the file's ded_sNN -> configured attribute name binding (from the
+// Parquet footer KV); aliasCols holds the promoted Parquet column names the
+// query spelled directly. Together they decide how each column is named and
+// which columns surface at all — see queryFieldName / emitParquetNameAlias.
 func readRowGroupColumnar(
 	f *parquet.File,
 	rg parquet.RowGroup,
@@ -21,6 +24,8 @@ func readRowGroupColumnar(
 	reg *schema.Registry,
 	startNs, endNs int64,
 	bitmap []bool,
+	slots schema.SlotMapping,
+	aliasCols map[string]bool,
 ) *logstorage.DataBlock {
 	if len(wantCols) == 0 {
 		return nil
@@ -109,10 +114,14 @@ func readRowGroupColumnar(
 
 	for name, li := range leafMap {
 		if len(li.indices) == 1 {
-			// Scalar column.
-			internalName := name
-			if m := reg.ResolveFromParquet(name); m != nil {
-				internalName = m.InternalName
+			// Scalar column. queryFieldName is the shared rule with the
+			// row-oriented path (projectedFieldsToDataBlock): it drops
+			// bookkeeping columns and unmapped slots and resolves the
+			// emitted field name (VT's resource_attr:/span_attr: prefix
+			// included), so the two paths cannot drift.
+			internalName, ok := queryFieldName(name, reg, slots)
+			if !ok {
+				continue
 			}
 
 			values := readScalarColumnFormatted(chunks[li.indices[0]], numRows, rowMask, passCount, internalName, reg)
@@ -121,20 +130,19 @@ func readRowGroupColumnar(
 					Name:   internalName,
 					Values: values,
 				})
-				// Dual emission for promoted columns whose parquet name
-				// differs from the internal alias (e.g. parquet
+				// Alias emission for promoted columns whose parquet name
+				// differs from the internal name (e.g. parquet
 				// `service.name` ↔ internal `resource_attr:service.name`).
-				// A user-typed filter spelling either dialect must
+				// A user-typed filter spelling the parquet dialect must
 				// resolve to a column the DataBlock actually carries;
 				// without this, `service.name:="X"` resolves to a column
 				// that doesn't exist in the block and matches zero rows
 				// even though `_stream:{resource_attr:service.name="X"}`
-				// finds 78k rows in the same time window. Mirrors a5576bf
-				// (which fixed the same asymmetry in parquetRowToFields
-				// used by /select/logsql/values) and unblocks the
-				// previously-skipped parity test
-				// TestColdHotParity_FieldEqByParquetName.
-				if name != internalName {
+				// finds 78k rows in the same time window (a5576bf, pinned
+				// by TestColdHotParity_FieldEqByParquetName). Gated on the
+				// query actually spelling the parquet name so a wildcard
+				// span list carries the VT field names alone.
+				if emitParquetNameAlias(name, internalName, aliasCols) {
 					blockCols = append(blockCols, logstorage.BlockColumn{
 						Name:   name,
 						Values: values,
@@ -196,7 +204,10 @@ func readInt64Column(chunk parquet.ColumnChunk, numRows int) []int64 {
 	return result
 }
 
-// readScalarColumnFormatted reads a scalar column and formats values directly to strings.
+// readScalarColumnFormatted reads a scalar column and formats values directly
+// to strings. Returns nil when no row in the group carries a value for the
+// column: a column that is empty for every row is a field that does not exist
+// on any of these rows, and hot VictoriaTraces never reports such a field.
 func readScalarColumnFormatted(
 	chunk parquet.ColumnChunk,
 	numRows int,
@@ -211,6 +222,7 @@ func readScalarColumnFormatted(
 	values := make([]string, 0, passCount)
 	buf := make([]parquet.Value, 256)
 	rowIdx := 0
+	nonEmpty := false
 
 	for {
 		page, err := pages.ReadPage()
@@ -218,15 +230,21 @@ func readScalarColumnFormatted(
 			if err == io.EOF {
 				break
 			}
-			return values
+			return nonEmptyOrNil(values, nonEmpty)
 		}
 		vr := page.Values()
 		for {
 			n, readErr := vr.ReadValues(buf[:])
 			for i := 0; i < n; i++ {
 				if rowIdx < len(rowMask) && rowMask[rowIdx] {
+					// NULL and empty cells format to "" (see
+					// parquetValueToInterface): the span simply has no such
+					// field, matching the typed path's appendIfSet.
 					v := parquetValueToInterface(buf[i])
 					formatted := reg.FormatField(internalName, v)
+					if formatted != "" {
+						nonEmpty = true
+					}
 					values = append(values, formatted)
 				}
 				rowIdx++
@@ -235,6 +253,14 @@ func readScalarColumnFormatted(
 				break
 			}
 		}
+	}
+	return nonEmptyOrNil(values, nonEmpty)
+}
+
+// nonEmptyOrNil returns values only when at least one row carried a value.
+func nonEmptyOrNil(values []string, nonEmpty bool) []string {
+	if !nonEmpty {
+		return nil
 	}
 	return values
 }
@@ -249,6 +275,8 @@ func readMapColumnToBlockCols(
 	promotedKeys map[string]bool,
 	topLevelKeys map[string]bool,
 ) []logstorage.BlockColumn {
+	// Resolved once per column; mapAttrFieldNameWithPrefix applies the shared
+	// naming rule per attribute.
 	prefix := mapColumnToAttrPrefix(mapColName)
 
 	// Read all key and value entries with their repetition levels
@@ -339,11 +367,11 @@ func readMapColumnToBlockCols(
 		if promotedKeys[kv.key] {
 			continue
 		}
-		var attrName string
-		if topLevelKeys[kv.key] {
-			attrName = bytesutil.InternString(kv.key)
-		} else {
-			attrName = bytesutil.InternString(prefix + kv.key)
+		// Same naming rule the scalar columns go through: a MAP key that
+		// spells a reserved internal name never becomes a field.
+		attrName, ok := mapAttrFieldNameWithPrefix(prefix, kv.key, topLevelKeys)
+		if !ok {
+			continue
 		}
 		ac, ok := attrMap[attrName]
 		if !ok {

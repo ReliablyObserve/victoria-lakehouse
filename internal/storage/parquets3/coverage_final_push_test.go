@@ -410,7 +410,7 @@ func TestReadRowGroupColumnar_WithBitmap(t *testing.T) {
 	}
 
 	wantCols := map[string]bool{"body": true, "service.name": true}
-	db := readRowGroupColumnar(f, rgs[0], wantCols, reg, 0, int64(2000), bitmap)
+	db := readRowGroupColumnar(f, rgs[0], wantCols, reg, 0, int64(2000), bitmap, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -437,7 +437,7 @@ func TestReadRowGroupColumnar_NoTimestamp(t *testing.T) {
 
 	reg := schema.NewRegistry(schema.LogsProfile)
 	wantCols := map[string]bool{"body": true}
-	db := readRowGroupColumnar(f, rgs[0], wantCols, reg, 0, int64(9999), nil)
+	db := readRowGroupColumnar(f, rgs[0], wantCols, reg, 0, int64(9999), nil, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -464,7 +464,7 @@ func TestReadRowGroupColumnar_AllFilteredByTime(t *testing.T) {
 	reg := schema.NewRegistry(schema.LogsProfile)
 	wantCols := map[string]bool{"body": true}
 	// Time range that excludes all rows
-	db := readRowGroupColumnar(f, rgs[0], wantCols, reg, 9000, 9999, nil)
+	db := readRowGroupColumnar(f, rgs[0], wantCols, reg, 9000, 9999, nil, nil)
 	if db != nil {
 		t.Error("expected nil DataBlock when all rows filtered by time")
 	}
@@ -478,7 +478,7 @@ func TestReadRowGroupColumnar_EmptyWantCols(t *testing.T) {
 	rgs := f.RowGroups()
 
 	reg := schema.NewRegistry(schema.LogsProfile)
-	db := readRowGroupColumnar(f, rgs[0], nil, reg, 0, 9999, nil)
+	db := readRowGroupColumnar(f, rgs[0], nil, reg, 0, 9999, nil, nil)
 	if db != nil {
 		t.Error("expected nil for empty wantCols")
 	}

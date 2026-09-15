@@ -1167,9 +1167,16 @@ func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs,
 	return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs)
 }
 
+// allLeafColumns is the projection used by an unprojected (wildcard) scan. It
+// deliberately omits the storage-bookkeeping columns (schema.InternalColumns):
+// they are not query fields on hot VL, so reading them only costs bytes and
+// risks leaking them into the emitted DataBlock.
 func allLeafColumns(f *parquet.File) map[string]bool {
 	cols := make(map[string]bool)
 	for _, path := range f.Schema().Columns() {
+		if schema.IsInternalColumn(path[0]) {
+			continue
+		}
 		cols[path[0]] = true
 	}
 	return cols
@@ -1209,7 +1216,7 @@ func withFileSlots[T any](base func(*T, []field) []field, slotMap schema.SlotMap
 func remapSlotFields(fields []field, slotMap schema.SlotMapping) []field {
 	out := fields[:0]
 	for _, fld := range fields {
-		if len(fld.name) == 7 && fld.name[:5] == "ded_s" {
+		if schema.IsDedicatedSlotColumn(fld.name) {
 			if name, ok := slotMap[fld.name]; ok && name != "" {
 				out = append(out, field{name, fld.value})
 			}
@@ -1271,6 +1278,15 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 		})
 	}
 
+	// Tier-2 slot binding for THIS file (footer KV first, live config as the
+	// fallback for files written before the KV existed) — the same resolution
+	// readRowGroup does for the typed path. Both scan paths below name and drop
+	// slot columns through it, so a slot never surfaces as raw `ded_sNN`.
+	slots := fileSlotMapping(f)
+	if slots == nil {
+		slots = activeSlotResolver.Mapping()
+	}
+
 	constants := detectConstantColumns(f, rg, cols)
 
 	readCols := cols
@@ -1288,7 +1304,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 
 	// Fast path: columnar reading when no constant columns need merging.
 	if len(constants) == 0 && len(readCols) > 0 {
-		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap)
+		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap, slots)
 		emit(db)
 		return nil
 	}
@@ -1323,12 +1339,12 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 		}
 	}
 
-	db := s.projectedFieldsToDataBlock(allFields, startNs, endNs)
+	db := s.projectedFieldsToDataBlock(allFields, startNs, endNs, slots)
 	emit(db)
 	return nil
 }
 
-func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int64) *logstorage.DataBlock {
+func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int64, slots schema.SlotMapping) *logstorage.DataBlock {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -1395,7 +1411,6 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 		for _, fld := range fields {
 			if mapVal, ok := fld.value.(map[string]string); ok {
-				prefix := mapColumnToAttrPrefix(fld.name)
 				for k, v := range mapVal {
 					if v == "" {
 						continue
@@ -1403,7 +1418,14 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 					if scalarFieldNames[k] {
 						continue
 					}
-					attrName := bytesutil.InternString(prefix + k)
+					// Same naming rule the scalar columns go through
+					// (mapAttrFieldName / queryFieldName share
+					// emittableFieldName), so a MAP key cannot introduce a
+					// field name a column is forbidden to produce.
+					attrName, ok := mapAttrFieldName(fld.name, k)
+					if !ok {
+						continue
+					}
 					idx := getCol(attrName)
 					// Grow bitmap for new columns discovered via MAP.
 					for idx >= len(seenBitmap) {
@@ -1421,9 +1443,13 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 				continue
 			}
 
-			internalName := fld.name
-			if m := s.registry.ResolveFromParquet(fld.name); m != nil {
-				internalName = m.InternalName
+			// Shared naming/suppression rule with the columnar fast path
+			// (readRowGroupColumnar): bookkeeping columns and unmapped
+			// slots never surface, slots are named from the file's footer
+			// KV, and the registry resolves the rest.
+			internalName, ok := queryFieldName(fld.name, s.registry, slots)
+			if !ok {
+				continue
 			}
 
 			formatted := s.registry.FormatField(internalName, fld.value)

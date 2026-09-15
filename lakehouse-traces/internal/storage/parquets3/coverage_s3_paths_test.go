@@ -676,7 +676,7 @@ func TestS3_readRowGroupColumnar_WithBitmap(t *testing.T) {
 		"service.name":        true,
 	}
 
-	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, bitmap)
+	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, bitmap, nil, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -708,7 +708,7 @@ func TestS3_readRowGroupColumnar_NoBitmap(t *testing.T) {
 		"body":                true,
 	}
 
-	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil)
+	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil, nil, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -740,7 +740,7 @@ func TestS3_readRowGroupColumnar_TimeRangeFilter(t *testing.T) {
 		"body":                true,
 	}
 
-	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil)
+	db := readRowGroupColumnar(f, rgs[0], cols, reg, startNs, endNs, nil, nil, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -917,7 +917,7 @@ func TestS3_readRowGroupWithProjection_OnlyConstantCols(t *testing.T) {
 	err = s.readRowGroupWithProjection(f, rgs[0], startNs, endNs, cols, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
-		}, nil)
+		}, nil, nil)
 	if err != nil {
 		t.Fatalf("readRowGroupWithProjection: %v", err)
 	}
@@ -965,7 +965,7 @@ func TestS3_readRowGroupWithProjection_PrewhereFilter(t *testing.T) {
 	err = s.readRowGroupWithProjection(f, rgs[0], startNs, endNs, cols, resolvedPdf,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
-		}, nil)
+		}, nil, nil)
 	if err != nil {
 		t.Fatalf("readRowGroupWithProjection with prewhere: %v", err)
 	}
@@ -1005,7 +1005,7 @@ func TestS3_readRowGroupWithProjection_TraceIDCollection(t *testing.T) {
 	err = s.readRowGroupWithProjection(f, rgs[0], startNs, endNs, cols, nil,
 		func(_ uint, db *logstorage.DataBlock) {
 			blocks = append(blocks, db)
-		}, &traceIDs)
+		}, &traceIDs, nil)
 	if err != nil {
 		t.Fatalf("readRowGroupWithProjection: %v", err)
 	}

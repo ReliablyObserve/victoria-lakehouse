@@ -178,11 +178,14 @@
   since: v0.18.1
   area: query
   surfaces: [storage]
+  rows: [lh.rows.field_set_logs, lh.rows.field_set_traces]
   tests:
     - internal/storage/parquets3/projection_test.go
     - internal/storage/parquets3/reader_projected_test.go
     - lakehouse-traces/internal/storage/parquets3/projection_test.go
     - lakehouse-traces/internal/storage/parquets3/reader_projected_test.go
+    - internal/storage/parquets3/cold_row_fields_test.go
+    - lakehouse-traces/internal/storage/parquets3/cold_row_fields_test.go
   docs:
     - docs/performance.md
     - docs/read-path.md
