@@ -1409,7 +1409,7 @@ A fast wrong answer is not a benchmark result. The harness validates every itera
 
 ### ✅ print-default-config and the config-drift gate
 
-`lh.feature.ops.config_drift_gate` · status: shipped · since: the release after v0.142.6 · surfaces: flag
+`lh.feature.ops.config_drift_gate` · status: shipped · since: the release after v0.142.7 · surfaces: flag
 
 **Config drift gate**: `print-default-config` emits every config key with its default, merge rule, profile overrides and flag as JSON, and CI regenerates the docs and Helm values from it so a hand-edit that disagrees with the code defaults fails the build.
 
@@ -1417,7 +1417,7 @@ The code defaults are the single source of truth for configuration. `print-defau
 
 - Verification: rows: `lh.flag.print_default_config` (pass, pending) · tests: `cmd/lakehouse-logs/config_surface_test.go`, `lakehouse-traces/config_surface_test.go`, `internal/config/surface_test.go`, `internal/config/field_docs_test.go`, `internal/config/docs_examples_test.go`
 - Docs: `docs/configuration.md`
-- Changelog: the release after `0.142.6`
+- Changelog: the release after `0.142.7`
 
 ### ✅ Configuration profiles
 
