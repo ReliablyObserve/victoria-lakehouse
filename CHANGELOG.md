@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A changelog entry can no longer claim a release that does not contain it.**
+
+  A `## [x.y.z]` section asserts that its bullets describe what tag `vx.y.z` holds, and nothing
+  checked it. The claim breaks without anyone making a mistake: a release is cut from one
+  commit, and the release-metadata PR that files `[Unreleased]` under the new heading is
+  prepared later, so every bullet that lands on main in between is attributed to a tag whose
+  tree does not have it. That is how the loki-vl-proxy bump came to sit under 0.142.7, whose tag
+  (#220, test-only) does not contain it; it shipped in 0.142.8.
+
+  `TestChangelogSectionsDescribeTheirTag` now checks the weakest invariant that catches this:
+  every bullet filed under `[x.y.z]` must already appear in CHANGELOG.md AT tag `vx.y.z`, where
+  the PR that introduced it would have left it under `[Unreleased]`. Section-level equality with
+  `[Unreleased]`-at-tag is too strict to be useful — releases here are also backfilled,
+  consolidated and annotated by hand, and 31 of 74 tagged sections legitimately differ that way.
+
+  The 22 entries that already violated the rule are baselined rather than re-filed in one sweep,
+  the way `tests/parity/known_failures.txt` records known failures: the list only shrinks, a
+  stale line fails the test, and a NEW violation fails the build. 236 bullets are checked across
+  every tagged section, and the gate refuses to pass if it checked none.
+
 ## [0.142.10] - 2026-09-23
 
 ### Security
@@ -75,8 +97,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.142.7] - 2026-09-15
 
 Cut from #220, a test-only change, so this release carries no user-facing change of its own.
-A release run for #223 started while this one was still running and published 0.142.8 twelve
-minutes later: the loki-vl-proxy bump is in THAT tag's tree, not this one.
+The next push to main (#223) was released as 0.142.8 twelve minutes later, so the
+loki-vl-proxy bump is in THAT tag's tree, not this one. The two runs did not race —
+they queued correctly on the `auto-release` concurrency group; this section briefly
+carried that bump because the release-metadata PR was resolved against main's
+`[Unreleased]` as it stood later, rather than as it stood at this tag.
 
 ## [0.142.6] - 2026-09-15
 
