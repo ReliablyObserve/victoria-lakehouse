@@ -125,15 +125,28 @@ def logical_bullets(lines: list[str]) -> list[str]:
             bullets.append(" ".join(" ".join(current).split()))
         current = None
 
+    blanks = 0
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("- "):
             flush()
             current = [stripped]
-        elif current is not None and stripped and not HEADING_RE.match(stripped):
-            current.append(stripped)
+            blanks = 0
+        elif not stripped:
+            # A blank line does NOT end a bullet on its own: a long entry is
+            # broken into paragraphs, and a paragraph break inside a list item
+            # is a blank line followed by an INDENTED continuation. Only a
+            # blank line followed by something unindented ends the item.
+            blanks += 1
+        elif current is not None and not HEADING_RE.match(stripped):
+            if blanks and not line.startswith(" "):
+                flush()
+            else:
+                current.append(stripped)
+            blanks = 0
         else:
             flush()
+            blanks = 0
     flush()
     return bullets
 
