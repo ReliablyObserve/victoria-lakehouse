@@ -109,9 +109,10 @@ func logsqlPipeKeywords() map[string]bool {
 // TestNotLogsQLExemptionsAreStillNeeded deletes entries that stop matching
 // anything.
 var notLogsQL = map[string]string{
-	"_time:5m | error":                      "deliberately-broken fixture: quoted in this file's doc comment and asserted as rejected by TestLogsQLPipeGrammarContract",
-	"_time:5m | stats count() rows | error": "deliberately-broken fixture of TestLogsQLPipeGrammarContract",
-	"_time:5m | myservice":                  "deliberately-broken fixture of TestLogsQLPipeGrammarContract",
+	"_time:5m | error":                       "deliberately-broken fixture: quoted in this file's doc comment and asserted as rejected by TestLogsQLPipeGrammarContract",
+	"_time:5m | stats count() rows | error":  "deliberately-broken fixture of TestLogsQLPipeGrammarContract",
+	"_time:5m | myservice":                   "deliberately-broken fixture of TestLogsQLPipeGrammarContract",
+	"_time:30d | service.name=foo | count()": "the pre-1.51.0 form CHANGELOG.md quotes as the one query the literal sweep found and fixed; the corrected form sits beside it in the same sentence",
 }
 
 type logsqlLiteral struct {
