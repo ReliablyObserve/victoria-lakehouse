@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Documented config examples that did not load.** Per-tenant retention overrides in `README.md` and `docs/multi-tenancy.md` were written as `retention: 720h`; the type is `retention: {keep: 720h}`, so a copied example stopped the binary at startup. `docs/deletion-strategy.md`, `docs/write-path.md`, `docs/operations.md`, `docs/bloom-index.md` and `docs/architecture/field-value-catalog.md` used config keys that do not exist. `deployment/docker/lakehouse-benchmark-config.yml`, which nothing mounted and whose keys both binaries ignored (no `lakehouse:` root), is removed.
 
-## [0.142.7] - 2026-09-15
+## [0.142.8] - 2026-09-15
 
 ### Changed
 
@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified by building the image and checking the baked binary's SHA256 against the published
   release asset, and by probing all fourteen flags the composes pass: every one is still defined
   at 1.76.0.
+
+## [0.142.7] - 2026-09-15
+
+Cut from #220, a test-only change, so this release carries no user-facing change of its own.
+A release run for #223 started while this one was still running and published 0.142.8 twelve
+minutes later: the loki-vl-proxy bump is in THAT tag's tree, not this one.
+
 ## [0.142.6] - 2026-09-15
 
 ### Fixed
