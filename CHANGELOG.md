@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified by building the image and checking the baked binary's SHA256 against the published
   release asset, and by probing all fourteen flags the composes pass: every one is still defined
   at 1.76.0.
+
+## [0.142.7] - 2026-09-15
+
+Cut from #220, a test-only change, so this release carries no user-facing change of its own.
+A release run for #223 started while this one was still running and published 0.142.8 twelve
+minutes later: the loki-vl-proxy bump is in THAT tag's tree, not this one.
+
 ## [0.142.6] - 2026-09-15
 
 ### Fixed
