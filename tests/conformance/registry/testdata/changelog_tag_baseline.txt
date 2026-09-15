@@ -1,0 +1,41 @@
+# Entries filed under a release whose tag does not contain them.
+#
+# A `## [x.y.z]` section claims its bullets describe what tag vx.y.z holds.
+# TestChangelogSectionsDescribeTheirTag checks that by looking for each bullet's
+# bold lead-in in CHANGELOG.md AT that tag — where the PR that introduced the
+# change would have left it, under [Unreleased].
+#
+# The lines below already violated that when the gate was added. They are here
+# so a NEW violation fails the build instead of joining them. This list only
+# shrinks: fixing an entry's placement (or deleting the line once it no longer
+# violates) is the only allowed direction, and the test fails on a stale line.
+#
+# How they got here, without anyone making a mistake: a release is cut from one
+# commit and its metadata PR files [Unreleased] under the new heading later, so
+# every bullet that lands on main in between is attributed to a tag whose tree
+# does not have it. Whether each line below is worth re-filing is a judgement
+# call about history; the gate's job is to stop the list growing.
+#
+# Format: <version> :: <bold lead-in>
+0.122.1 :: Releases no longer race or over-bump.
+0.142.5 :: Long changelog entries are broken into paragraphs instead of one wall of prose.
+0.37.3 :: VictoriaTraces parity milestone — cold-tier Tempo `/api/v2/traces/<id>` fast path + Loki → Tempo drilldown (PR #105)
+0.39.0 ::  §6.2
+0.39.0 :: Bump loki-vl-proxy from v1.56.1 to v1.57.0
+0.39.0 :: Cold Jaeger search returned 0 traces at 12h while hot returned 20
+0.39.0 :: Hot/cold parity unit job
+0.39.0 :: Option B — logstorage-native queryable buffer (cold-tier recently-flushed parity).
+0.59.0 :: PERF-2 — manifest count-pushdown for `stats by (field) count()` (logs + traces).
+0.7.0 :: GetPartitions()
+0.7.0 :: Manifest partitions API
+0.7.0 :: PartitionsHandler
+0.79.0 :: pmeta bloom read-flip — `checkFileBloom` consults the in-RAM bloom facet before a per-file `.bloom` S3 GET (`--pmeta`, logs + traces).
+0.79.0 :: pmeta file-meta read-flip — the manifest enriches `FileInfo` from the in-RAM bundle, not the S3 sidecars (flip phase 1, `--pmeta`).
+0.79.0 :: pmeta labels `field_names` read-flip — `GetFieldNames` serves from the catalog before the legacy labelIndex (`--pmeta`, logs + traces).
+0.85.0 :: Compression step 4 — 2× row groups on L2+ rollups: `compaction.row_group_size_by_output_level` (both modules).
+0.85.0 :: Multi-engine parquet readback CI gate (`parquet-readback` job): every parquet encoding change now ships behind a pyarrow + duckdb readback proof.
+0.9.0 :: Alerting rules
+0.9.0 :: Circuit breaker
+0.9.0 :: Grafana dashboards
+0.9.0 :: Prometheus metrics instrumentation
+0.9.0 :: Startup warmup sequence
