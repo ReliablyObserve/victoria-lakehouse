@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **loki-vl-proxy 1.58.0 → 1.76.0 in the e2e and benchmark composes.**
+
   `deployment/docker/Dockerfile.loki-vl-proxy` pins the binary all four proxy services run (e2e
   hot + cold, benchmark lh + vl-lh). The releases in between are largely Loki-parity corrections
   on the paths Grafana and Drilldown drive: invalid queries answer Loki's `400 bad_data` instead
@@ -17,17 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `query_range` rejects more than 11,000 points; `| json` / `| logfmt` parsed labels survive
   windowed and `-stream-response` log queries; and `/labels` and `/label/{name}/values` return
   every name and value with data in the requested range, with versioned cache keys and a marker
-  on answers served stale after a backend failure. Two releases change behaviour, and neither is
-  behaviour this repository depends on — checked before the bump rather than assumed: 1.75.0
-  makes a multi-tenant request fail as a whole when any tenant fails, as Loki does, dropping the
-  `X-Multi-Tenant-Partial-Failures` header and the partial `warnings` (nothing here reads
-  either); and 1.76.0 reports `/loki/api/v1/index/volume` and `/index/volume_range` in BYTES
-  rather than line counts, with Loki's bucket stamping (no dashboard, alert, test or script here
-  reads those endpoints, but anything added later that graphs volume must be written against
-  bytes). Verified by building the image and checking the baked binary's SHA256 against the
-  published release asset, and by probing all fourteen flags the composes pass: every one is
-  still defined at 1.76.0.
+  on answers served stale after a backend failure.
 
+  Two releases change behaviour, and neither is behaviour this repository depends on — checked
+  before the bump rather than assumed: 1.75.0 makes a multi-tenant request fail as a whole when
+  any tenant fails, as Loki does, dropping the `X-Multi-Tenant-Partial-Failures` header and the
+  partial `warnings` (nothing here reads either); and 1.76.0 reports `/loki/api/v1/index/volume`
+  and `/index/volume_range` in BYTES rather than line counts, with Loki's bucket stamping (no
+  dashboard, alert, test or script here reads those endpoints, but anything added later that
+  graphs volume must be written against bytes).
+
+  Verified by building the image and checking the baked binary's SHA256 against the published
+  release asset, and by probing all fourteen flags the composes pass: every one is still defined
+  at 1.76.0.
 ## [0.142.6] - 2026-09-15
 
 ### Fixed
