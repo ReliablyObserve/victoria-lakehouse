@@ -288,6 +288,33 @@ class LogicalBulletTests(unittest.TestCase):
         )
 
 
+    def test_a_paragraph_break_does_not_end_a_bullet(self):
+        """A long entry is broken into paragraphs, and a paragraph break inside
+        a list item is a blank line plus an INDENTED continuation. Ending the
+        bullet there would split one entry into several and make every
+        restructured entry look new to the release gate."""
+        lines = [
+            "- **Title.**",
+            "",
+            "  First paragraph.",
+            "",
+            "  Second paragraph.",
+        ]
+        self.assertEqual(
+            logical_bullets(lines),
+            ["- **Title.** First paragraph. Second paragraph."],
+        )
+
+    def test_a_blank_line_then_unindented_text_still_ends_a_bullet(self):
+        lines = ["- first", "", "loose prose under the heading"]
+        self.assertEqual(logical_bullets(lines), ["- first"])
+
+    def test_a_paragraph_broken_entry_equals_its_one_line_form(self):
+        one = ["- **Title.** First paragraph. Second paragraph."]
+        many = ["- **Title.**", "", "  First paragraph.", "", "  Second paragraph."]
+        self.assertEqual(logical_bullets(one), logical_bullets(many))
+
+
 class ReflowIsInvisibleToTheGatesTests(unittest.TestCase):
     def test_rewrapping_a_released_bullet_is_not_a_new_versioned_entry(self):
         base = (

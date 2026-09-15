@@ -21,7 +21,31 @@ FROM alpine:3.21
 # operator clears the whole fleet from one admin instance. Without
 # ?peers the endpoint is local-only (unchanged). Used by all four
 # loki-vl-proxy services (e2e hot+cold, benchmark lh + vl-lh).
-ARG VERSION=1.58.0
+#
+# 1.58.0 -> 1.76.0. The releases in between are largely Loki-parity
+# corrections on paths Grafana and Drilldown drive: invalid queries answer
+# Loki's 400 bad_data instead of 502 (1.74.0); sliding range metrics and bare
+# parser range metrics return the samples Loki returns, and query_range
+# rejects (end-start)/step above 11,000 points (1.70.0, 1.73.0); `| json` /
+# `| logfmt` parsed labels survive windowed and -stream-response log queries
+# (1.72.0); /labels and /label/{name}/values return every name and value with
+# data in the requested range, with versioned cache keys and a marker on
+# answers served stale after a backend failure (1.71.0).
+#
+# Two of them change behaviour we do not depend on today, both verified
+# against this repository before the bump:
+#
+#   - 1.75.0 makes a multi-tenant request fail as a whole when any tenant
+#     fails, as Loki does, and removes the X-Multi-Tenant-Partial-Failures
+#     header and the partial `warnings`. Nothing here reads that header or
+#     relies on a partial answer.
+#   - 1.76.0 reports /loki/api/v1/index/volume and /index/volume_range in
+#     BYTES (Loki v3.7 semantics, via VictoriaLogs sum_len(_msg)) rather than
+#     line counts, and restamps the buckets to Loki's convention. No
+#     dashboard, alert, test or script here reads those endpoints, so there is
+#     nothing to adjust — but anything added later that graphs volume must be
+#     written against bytes.
+ARG VERSION=1.76.0
 ARG TARGETARCH=amd64
 RUN wget -qO /usr/local/bin/loki-vl-proxy \
       "https://github.com/ReliablyObserve/loki-vl-proxy/releases/download/v${VERSION}/loki-vl-proxy-linux-${TARGETARCH}" \
