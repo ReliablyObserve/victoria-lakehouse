@@ -127,11 +127,20 @@ jobs:
       # periods of the parity compose.
       - name: Wait for LH to flush and settle
         run: |
-          # Probes run from inside the network (the stack publishes no
-          # host ports); victorialogs' image carries wget.
+          # Probes run from inside the network (the stack publishes no host
+          # ports). The published VictoriaLogs image is DISTROLESS from v1.51.0
+          # — no shell, no wget, only the product binary — so the probe must be
+          # the static busybox Dockerfile.upstream-probe copies in, invoked by
+          # its absolute path exactly as the healthchecks do. A bare `wget`
+          # here exits 126 with "executable file not found", which 2>/dev/null
+          # then hides: every probe reports 0, no tier ever agrees on a
+          # positive count, and the step spends its full 300s budget before
+          # failing with counts that look like an unflushed cold tier rather
+          # than a probe that never ran.
+          BUSYBOX=/probe/busybox
           probe() { # probe <host:port> <logsql query> <AccountID>
             out=$(docker compose -f tests/parity/docker-compose.yml exec -T victorialogs \
-              wget -qO- --header="Content-Type: application/x-www-form-urlencoded" \
+              "$BUSYBOX" wget -qO- --header="Content-Type: application/x-www-form-urlencoded" \
               --header="AccountID: $3" --header="ProjectID: 0" \
               --post-data="query=$2" "http://$1/select/logsql/stats_query" 2>/dev/null \
               | jq -r '.data.result[0].value[1] // empty' 2>/dev/null) || out=""
@@ -140,6 +149,16 @@ jobs:
             # two failed probes can never compare equal as "settled".
             echo "${out:-0}"
           }
+          # Prove the probe itself works before reading anything into its
+          # answers: run it once with stderr attached, so a missing binary or
+          # an unroutable host fails HERE, in one second, naming the cause —
+          # instead of being swallowed into a 0 that looks like missing data.
+          if ! docker compose -f tests/parity/docker-compose.yml exec -T victorialogs \
+                 "$BUSYBOX" wget -qO- "http://victorialogs:9428/health" >/dev/null; then
+            echo "settle probe is not usable: $BUSYBOX wget cannot reach victorialogs:9428." >&2
+            echo "Every count below would read 0 and mean nothing. See deployment/docker/Dockerfile.upstream-probe." >&2
+            exit 1
+          fi
           # A tier agrees only on a positive count: 0 is what an unseeded
           # or unreachable tier reports, and 0 == 0 proves nothing.
           agree() { # agree <hot> <cold>
