@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
 - **Long changelog entries are broken into paragraphs instead of one wall of prose.**
 
   Wrapping the file at 96 columns fixed the line length but not the shape: an entry was still
@@ -21,8 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule — a blank line inside a list item is a paragraph break, not the end of the bullet, so a
   restructured entry is still the same bullet and the release gate does not read it as new.
   Only a blank line followed by UNINDENTED text ends an item.
-
-### Changed
 
 - **The changelog is wrapped, and the gates that read it now understand a wrapped entry.**
 
