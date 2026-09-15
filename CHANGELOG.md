@@ -13,8 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **loki-vl-proxy 1.58.0 → 1.76.0 in the e2e and benchmark composes.** `deployment/docker/Dockerfile.loki-vl-proxy` pins the binary all four proxy services run (e2e hot + cold, benchmark lh + vl-lh). The releases in between are largely Loki-parity corrections on the paths Grafana and Drilldown drive: invalid queries answer Loki's `400 bad_data` instead of `502`; sliding and bare-parser range metrics return the samples Loki returns, and `query_range` rejects more than 11,000 points; `| json` / `| logfmt` parsed labels survive windowed and `-stream-response` log queries; and `/labels` and `/label/{name}/values` return every name and value with data in the requested range, with versioned cache keys and a marker on answers served stale after a backend failure. Two releases change behaviour, and neither is behaviour this repository depends on — checked before the bump rather than assumed: 1.75.0 makes a multi-tenant request fail as a whole when any tenant fails, as Loki does, dropping the `X-Multi-Tenant-Partial-Failures` header and the partial `warnings` (nothing here reads either); and 1.76.0 reports `/loki/api/v1/index/volume` and `/index/volume_range` in BYTES rather than line counts, with Loki's bucket stamping (no dashboard, alert, test or script here reads those endpoints, but anything added later that graphs volume must be written against bytes). Verified by building the image and checking the baked binary's SHA256 against the published release asset, and by probing all fourteen flags the composes pass: every one is still defined at 1.76.0.
-
 - **Helm chart defaults follow the code defaults.** Two values change what chart deployments run:
 
 - **Flag help states the real defaults.** Eleven `-lakehouse.*` usage strings claimed defaults the code does not use — among them `-lakehouse.query.file-workers` (said 8, code 64), `-lakehouse.cache.memory-mb` (256, code 512), `-lakehouse.cache.disk-max-mb` (1024, code 51200), `-lakehouse.query.max-files-per-query` (500, code unlimited) and `-lakehouse.tenant.header-account` (AccountID, code X-Scope-AccountID). `-lakehouse.compaction.enabled` and `-lakehouse.traces.jaeger-enabled` now say that `false` does not turn the feature off, and `-lakehouse.profile` says it only fills keys left at zero.
@@ -27,6 +25,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Documented config examples that did not load.** Per-tenant retention overrides in `README.md` and `docs/multi-tenancy.md` were written as `retention: 720h`; the type is `retention: {keep: 720h}`, so a copied example stopped the binary at startup. `docs/deletion-strategy.md`, `docs/write-path.md`, `docs/operations.md`, `docs/bloom-index.md` and `docs/architecture/field-value-catalog.md` used config keys that do not exist. `deployment/docker/lakehouse-benchmark-config.yml`, which nothing mounted and whose keys both binaries ignored (no `lakehouse:` root), is removed.
 
+## [0.142.7] - 2026-09-15
+
+### Changed
+
+- **loki-vl-proxy 1.58.0 → 1.76.0 in the e2e and benchmark composes.**
+
+  `deployment/docker/Dockerfile.loki-vl-proxy` pins the binary all four proxy services run (e2e
+  hot + cold, benchmark lh + vl-lh). The releases in between are largely Loki-parity corrections
+  on the paths Grafana and Drilldown drive: invalid queries answer Loki's `400 bad_data` instead
+  of `502`; sliding and bare-parser range metrics return the samples Loki returns, and
+  `query_range` rejects more than 11,000 points; `| json` / `| logfmt` parsed labels survive
+  windowed and `-stream-response` log queries; and `/labels` and `/label/{name}/values` return
+  every name and value with data in the requested range, with versioned cache keys and a marker
+  on answers served stale after a backend failure.
+
+  Two releases change behaviour, and neither is behaviour this repository depends on — checked
+  before the bump rather than assumed: 1.75.0 makes a multi-tenant request fail as a whole when
+  any tenant fails, as Loki does, dropping the `X-Multi-Tenant-Partial-Failures` header and the
+  partial `warnings` (nothing here reads either); and 1.76.0 reports `/loki/api/v1/index/volume`
+  and `/index/volume_range` in BYTES rather than line counts, with Loki's bucket stamping (no
+  dashboard, alert, test or script here reads those endpoints, but anything added later that
+  graphs volume must be written against bytes).
+
+  Verified by building the image and checking the baked binary's SHA256 against the published
+  release asset, and by probing all fourteen flags the composes pass: every one is still defined
+  at 1.76.0.
 ## [0.142.6] - 2026-09-15
 
 ### Fixed
