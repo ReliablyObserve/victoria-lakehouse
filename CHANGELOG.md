@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A changelog entry can no longer claim a release that does not contain it.**
+
+  A `## [x.y.z]` section asserts that its bullets describe what tag `vx.y.z` holds, and nothing
+  checked it. The claim breaks without anyone making a mistake: a release is cut from one
+  commit, and the release-metadata PR that files `[Unreleased]` under the new heading is
+  prepared later, so every bullet that lands on main in between is attributed to a tag whose
+  tree does not have it. That is how the loki-vl-proxy bump came to sit under 0.142.7, whose tag
+  (#220, test-only) does not contain it; it shipped in 0.142.8.
+
+  `TestChangelogSectionsDescribeTheirTag` now checks the weakest invariant that catches this:
+  every bullet filed under `[x.y.z]` must already appear in CHANGELOG.md AT tag `vx.y.z`, where
+  the PR that introduced it would have left it under `[Unreleased]`. Section-level equality with
+  `[Unreleased]`-at-tag is too strict to be useful — releases here are also backfilled,
+  consolidated and annotated by hand, and 31 of 74 tagged sections legitimately differ that way.
+
+  The 22 entries that already violated the rule are baselined rather than re-filed in one sweep,
+  the way `tests/parity/known_failures.txt` records known failures: the list only shrinks, a
+  stale line fails the test, and a NEW violation fails the build. 236 bullets are checked across
+  every tagged section, and the gate refuses to pass if it checked none.
+
 ### Added
 
 - **`print-default-config` and a config drift gate: the code defaults are the one source of truth.** Both binaries gain a `print-default-config` subcommand (also accepted as `-print-default-config`) that prints the whole configuration surface as JSON: all 237 config keys with their default and how a config-file value is merged, every profile as the keys it overrides, and every flag (77 `-lakehouse.*` flags on `lakehouse-logs`, 79 on `lakehouse-traces`) with the key it writes and its effect — found by probing each binary's own flag handling, not a hand-kept mapping. Golden tests pin both outputs, and every config key and section now carries a doc comment. `docs/configuration.md` gains a reference generated from the code (type, default, config-file merge rule, flags, profile overrides and description of every key), a generated flag table, every profile as its explicit override set and a "Profile flag gaps" table; the profile summary in `README.md` and `docs/getting-started.md` and the key tables on topic pages are generated too, and keys that no binary reads are marked. The `helm-config-drift` CI job now also fails when a chart value, schema default or template fallback differs from the code default without a recorded `override` line (with a reason, in `scripts/ci/helm-drift-allowlist.txt`, stale as soon as either side changes), when docs name a flag or key that does not exist, quote a wrong default or set a key the binaries ignore without saying so, when a flag usage string claims a wrong default, when a deployment config is malformed, or when a generated block is stale; every documented `lakehouse:` example must load strictly. Run it locally with `make config-drift`; regenerate with `make config-docs`. Tooling and docs; no runtime or perf change.
@@ -55,8 +77,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.142.7] - 2026-09-15
 
 Cut from #220, a test-only change, so this release carries no user-facing change of its own.
-A release run for #223 started while this one was still running and published 0.142.8 twelve
-minutes later: the loki-vl-proxy bump is in THAT tag's tree, not this one.
+The next push to main (#223) was released as 0.142.8 twelve minutes later, so the
+loki-vl-proxy bump is in THAT tag's tree, not this one. The two runs did not race —
+they queued correctly on the `auto-release` concurrency group; this section briefly
+carried that bump because the release-metadata PR was resolved against main's
+`[Unreleased]` as it stood later, rather than as it stood at this tag.
 
 ## [0.142.6] - 2026-09-15
 
