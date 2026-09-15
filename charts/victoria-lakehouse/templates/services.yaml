@@ -24,7 +24,7 @@ spec:
       port: {{ default $port $roleVals.service.port }}
       targetPort: http
       protocol: TCP
-    {{- if and (eq $signal "traces") (eq $role "select") (dig "jaeger_enabled" false $signalVals.config) }}
+    {{- if and (eq $signal "traces") (eq $role "select") (dig "jaeger_enabled" true $signalVals.config) }}
     - name: jaeger-grpc
       port: {{ dig "jaeger_grpc_port" 16685 $signalVals.config }}
       targetPort: jaeger-grpc

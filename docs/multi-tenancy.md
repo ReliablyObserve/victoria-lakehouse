@@ -307,7 +307,8 @@ lakehouse:
       # Key is either "account:project" (integer-keyed, deterministic)
       # or an OrgID alias (resolved at startup + on every alias-sync tick).
       "1002:0":
-        retention: 2160h            # 90 days — overrides global retention
+        retention:
+          keep: 2160h               # 90 days — overrides global retention
         cardinality:
           max_streams: 5000         # per-tenant distinct-stream cap
           max_fields:  1000         # per-tenant distinct-field cap
@@ -323,12 +324,13 @@ lakehouse:
           compression_level_by_output_level: [3, 11, 11]  # invest more CPU at L1 than the global default
 
       acme-corp:                    # alias-keyed entry — resolves once acme-corp is registered
-        retention: 720h             # 30 days
+        retention:
+          keep: 720h                # 30 days
         compaction:
           compression_level_by_output_level: [1]          # ingest-fast tenant — uniform fast zstd, accept larger files
 ```
 
-Every field is optional. Zero or missing means "inherit the global setting" — there is no special inheritance keyword. This makes config diffs honest: `retention: 0` does not silently mean "use 30 days from elsewhere"; it means "follow whatever the global retention is right now."
+Every field is optional. Zero or missing means "inherit the global setting" — there is no special inheritance keyword. This makes config diffs honest: an empty `retention.keep` does not silently mean "use 30 days from elsewhere"; it means "follow whatever the global retention is right now."
 
 ### Consumers
 
@@ -336,7 +338,7 @@ Each override flows to exactly one subsystem:
 
 | Override | Consumer | Behavior |
 |---|---|---|
-| `retention` | `retention.Manager` | synthesizes a match rule on the file's `account_id`/`project_id` manifest labels; the existing rules engine handles eviction. No special-case code path. |
+| `retention` (`keep`) | `retention.Manager` | synthesizes a match rule on the file's `account_id`/`project_id` manifest labels; the existing rules engine handles eviction. No special-case code path. |
 | `cardinality.max_streams` / `max_fields` | `tenant.CardinalityLimiter` mounted as `TenantCardinalityGate` on the vlstorage insert paths (logs + traces) | per-tenant distinct counters with fast-path RLock for known entries; overflow drops at the boundary before the writer sees the row. |
 | `ingest.max_bytes_per_sec` / `max_rows_per_sec` | `tenant.IngestRateLimiter` + `tenant.RateLimitMiddleware` | independent byte/sec + row/sec token buckets per tenant; pre-flight Content-Length check returns `429 Too Many Requests` + `X-RateLimit-Limit-Bytes` / `X-RateLimit-Remaining-Bytes` / `X-RateLimit-Retry-After-Ms` headers. |
 | `lifecycle` | `delete.StorageClassDetector.SetTenantRules` consumed by both the manual `predict` handler and the background rewriter scheduler | tenant-keyed rule lookup parses `(account, project)` from the file's S3 key prefix, so manual predictions and the rewriter agree on what storage class a file should end up in. |
@@ -416,7 +418,7 @@ The PolicyRegistry caches resolved entries in a `sync.Map` keyed by `(account, p
 |---|---|---|
 | `--lakehouse.tenant.prefix-template` | `{AccountID}/{ProjectID}/` | S3 prefix pattern. Must contain `{AccountID}` and `{ProjectID}` (both are expanded; any other placeholder is rejected at startup). Empty = the single-tenant legacy layout |
 | `--lakehouse.tenant.isolation` | `prefix` | Isolation mode: `prefix` (shared bucket) or `bucket` (separate buckets) |
-| `--lakehouse.tenant.bucket-template` | (empty) | Bucket name pattern for `bucket` isolation mode |
+| `--lakehouse.tenant.bucket-template` | `""` | Bucket name pattern for `bucket` isolation mode |
 | `--lakehouse.tenant.default-account` | `0` | Default AccountID when header is absent (single-tenant mode) |
 | `--lakehouse.tenant.default-project` | `0` | Default ProjectID when header is absent (single-tenant mode) |
 | `--lakehouse.tenant.header-account` | `X-Scope-AccountID` | HTTP header for AccountID extraction |
@@ -425,9 +427,9 @@ The PolicyRegistry caches resolved entries in a `sync.Map` keyed by `(account, p
 | `--lakehouse.tenant.metrics-format` | `id` | Prometheus tenant label format: `id`, `name`, or `both` |
 | `--lakehouse.tenant.auto-register` | `false` | Auto-register unknown X-Scope-OrgID values as new aliases |
 | `--lakehouse.tenant.alias-sync-interval` | `30s` | Fleet sync interval for runtime-added aliases |
-| `--lakehouse.tenant.global-read-header` | (empty, disabled) | HTTP header name to trigger global read across all tenants |
-| `--lakehouse.tenant.global-read-value` | (empty) | Required value for the global read header (acts as a shared secret) |
-| `--lakehouse.tenant.global-read-token` | (empty, disabled) | Bearer token for global read via `Authorization: Bearer <token>` header |
+| `--lakehouse.tenant.global-read-header` | `""` (disabled) | HTTP header name to trigger global read across all tenants |
+| `--lakehouse.tenant.global-read-value` | `""` | Required value for the global read header (acts as a shared secret) |
+| `--lakehouse.tenant.global-read-token` | `""` (disabled) | Bearer token for global read via `Authorization: Bearer <token>` header |
 
 ### YAML
 

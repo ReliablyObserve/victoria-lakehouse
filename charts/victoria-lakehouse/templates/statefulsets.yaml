@@ -74,7 +74,7 @@ spec:
             - name: http
               containerPort: {{ include "victoria-lakehouse.signalPort" (dict "signal" $signal) }}
               protocol: TCP
-            {{- if and (eq $signal "traces") (eq $role "select") (dig "jaeger_enabled" false $signalVals.config) }}
+            {{- if and (eq $signal "traces") (eq $role "select") (dig "jaeger_enabled" true $signalVals.config) }}
             - name: jaeger-grpc
               containerPort: {{ dig "jaeger_grpc_port" 16685 $signalVals.config }}
               protocol: TCP

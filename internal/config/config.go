@@ -39,14 +39,24 @@ const (
 )
 
 type Config struct {
-	Mode     Mode     `yaml:"mode"`
-	Role     Role     `yaml:"role"`
+	// Mode is the signal this binary serves: logs or traces. Each binary sets
+	// its own mode, so a value in the config file is ignored.
+	Mode Mode `yaml:"mode"`
+	// Role selects the components to run: all, insert or select.
+	Role Role `yaml:"role"`
+	// Topology selects how the hot tier is found: auto, storage-node, direct
+	// or loki-proxy.
 	Topology Topology `yaml:"topology"`
-	Profile  Profile  `yaml:"profile"`
+	// Profile names the profile the config file is merged over: balanced,
+	// max-performance, max-durability, max-cost-savings or dev. A per-signal
+	// or per-role profile takes precedence.
+	Profile Profile `yaml:"profile"`
 
-	S3          S3Config          `yaml:"s3"`
-	Cache       CacheConfig       `yaml:"cache"`
-	Discovery   DiscoveryConfig   `yaml:"discovery"`
+	S3        S3Config        `yaml:"s3"`
+	Cache     CacheConfig     `yaml:"cache"`
+	Discovery DiscoveryConfig `yaml:"discovery"`
+	// HotBoundary fixes the hot/cold boundary at an age such as 7d or 168h
+	// instead of discovering it from the hot storage nodes.
 	HotBoundary string            `yaml:"hot_boundary"`
 	Manifest    ManifestConfig    `yaml:"manifest"`
 	Prefetch    PrefetchConfig    `yaml:"prefetch"`
@@ -113,26 +123,48 @@ type PromotedAttribute struct {
 	Bloom bool   `yaml:"bloom"`
 }
 
+// LogsModeConfig holds settings that apply only to lakehouse-logs.
 type LogsModeConfig struct {
-	BloomColumns       []string            `yaml:"bloom_columns"`
+	// BloomColumns are extra columns to bloom-index for logs; the built-in log
+	// bloom columns are always included.
+	BloomColumns []string `yaml:"bloom_columns"`
+	// PromotedAttributes are custom attributes promoted into dedicated Parquet
+	// columns, each {name, bloom}.
 	PromotedAttributes []PromotedAttribute `yaml:"promoted_attributes"`
-	DeletePrefix       string              `yaml:"delete_prefix"`
-	CompatVersion      string              `yaml:"compat_version"`
-	Profile            Profile             `yaml:"profile"`
-	Insert             RoleProfileRef      `yaml:"insert"`
-	Select             RoleProfileRef      `yaml:"select"`
+	// DeletePrefix is the path prefix of the logs delete API.
+	DeletePrefix string `yaml:"delete_prefix"`
+	// CompatVersion is the VictoriaLogs version the API reports; empty reports
+	// the built-in one.
+	CompatVersion string `yaml:"compat_version"`
+	// Profile is the profile for the logs signal; it takes precedence over
+	// profile.
+	Profile Profile        `yaml:"profile"`
+	Insert  RoleProfileRef `yaml:"insert"`
+	Select  RoleProfileRef `yaml:"select"`
 }
 
+// TracesModeConfig holds settings that apply only to lakehouse-traces.
 type TracesModeConfig struct {
-	BloomColumns       []string            `yaml:"bloom_columns"`
+	// BloomColumns are extra columns to bloom-index for traces; the built-in
+	// trace bloom columns are always included.
+	BloomColumns []string `yaml:"bloom_columns"`
+	// PromotedAttributes are custom attributes promoted into dedicated Parquet
+	// columns, each {name, bloom}.
 	PromotedAttributes []PromotedAttribute `yaml:"promoted_attributes"`
-	DeletePrefix       string              `yaml:"delete_prefix"`
-	CompatVersion      string              `yaml:"compat_version"`
-	JaegerEnabled      bool                `yaml:"jaeger_enabled"`
-	JaegerGRPCAddr     string              `yaml:"jaeger_grpc_addr"`
-	Profile            Profile             `yaml:"profile"`
-	Insert             RoleProfileRef      `yaml:"insert"`
-	Select             RoleProfileRef      `yaml:"select"`
+	// DeletePrefix is the path prefix of the traces delete API.
+	DeletePrefix string `yaml:"delete_prefix"`
+	// CompatVersion is the VictoriaTraces version the API reports; empty
+	// reports the built-in one.
+	CompatVersion string `yaml:"compat_version"`
+	// JaegerEnabled serves the Jaeger query API.
+	JaegerEnabled bool `yaml:"jaeger_enabled"`
+	// JaegerGRPCAddr is the listen address of the Jaeger gRPC API.
+	JaegerGRPCAddr string `yaml:"jaeger_grpc_addr"`
+	// Profile is the profile for the traces signal; it takes precedence over
+	// profile.
+	Profile Profile        `yaml:"profile"`
+	Insert  RoleProfileRef `yaml:"insert"`
+	Select  RoleProfileRef `yaml:"select"`
 }
 
 // ActivePromotedAttributes returns the operator-configured Tier-2 custom
@@ -218,21 +250,44 @@ func (c *Config) ActiveCompatVersion() string {
 	return ""
 }
 
+// InsertConfig controls buffering and flushing on the write path.
 type InsertConfig struct {
-	FlushInterval    time.Duration `yaml:"flush_interval"`
-	MaxBufferRows    int           `yaml:"max_buffer_rows"`
-	MaxBufferBytes   string        `yaml:"max_buffer_bytes"`
-	TargetFileSize   string        `yaml:"target_file_size"`
-	RowGroupSize     int           `yaml:"row_group_size"`
-	BloomColumns     []string      `yaml:"bloom_columns"`
-	CompressionLevel int           `yaml:"compression_level"`
+	// FlushInterval is the interval at which buffered rows are flushed to
+	// Parquet on S3.
+	FlushInterval time.Duration `yaml:"flush_interval"`
+	// MaxBufferRows is the number of rows a partition buffer holds before it
+	// flushes.
+	MaxBufferRows int `yaml:"max_buffer_rows"`
+	// MaxBufferBytes is the total buffer memory across partitions, as a size
+	// string.
+	MaxBufferBytes string `yaml:"max_buffer_bytes"`
+	// TargetFileSize is the target Parquet file size, as a size string; a
+	// buffer reaching it flushes early.
+	TargetFileSize string `yaml:"target_file_size"`
+	// RowGroupSize is the number of rows per Parquet row group in freshly
+	// written files.
+	RowGroupSize int `yaml:"row_group_size"`
+	// BloomColumns are extra columns to bloom-index on write, in addition to
+	// the signal's built-in bloom columns.
+	BloomColumns []string `yaml:"bloom_columns"`
+	// CompressionLevel is the zstd level (1-22) of freshly written files;
+	// compaction recompresses older files per
+	// compaction.compression_level_by_output_level.
+	CompressionLevel int `yaml:"compression_level"`
 
-	AckMode              string        `yaml:"ack_mode"`
-	FlushLinger          time.Duration `yaml:"flush_linger"`
-	FlushMaxRows         int           `yaml:"flush_max_rows"`
-	PeerReplicate        bool          `yaml:"peer_replicate"`
+	// AckMode selects when an insert is acknowledged: buffer (once buffered),
+	// wal or flush-sync (once S3 confirms the write).
+	AckMode string `yaml:"ack_mode"`
+	// FlushLinger delays a flush to coalesce small writes.
+	FlushLinger time.Duration `yaml:"flush_linger"`
+	// FlushMaxRows caps the rows of one flush batch.
+	FlushMaxRows int `yaml:"flush_max_rows"`
+	// PeerReplicate replicates inserts to peer insert pods.
+	PeerReplicate bool `yaml:"peer_replicate"`
+	// PeerReplicateTimeout bounds one peer replication.
 	PeerReplicateTimeout time.Duration `yaml:"peer_replicate_timeout"`
-	PeerReplicateTTL     time.Duration `yaml:"peer_replicate_ttl"`
+	// PeerReplicateTTL is how long replicated rows are kept on peers.
+	PeerReplicateTTL time.Duration `yaml:"peer_replicate_ttl"`
 
 	// BufferEngine selects how the insert buffer (recently-ingested,
 	// not-yet-flushed rows) is held and queried (Option B):
@@ -286,9 +341,14 @@ func (c *InsertConfig) TargetFileSizeN() int64 {
 	return n
 }
 
+// GCConfig controls garbage collection of orphan files.
 type GCConfig struct {
-	Enabled           bool          `yaml:"enabled"`
-	Interval          time.Duration `yaml:"interval"`
+	// Enabled runs garbage collection of orphan files.
+	Enabled bool `yaml:"enabled"`
+	// Interval is the garbage collection scan interval.
+	Interval time.Duration `yaml:"interval"`
+	// OrphanGracePeriod is the age an unreferenced file must reach before
+	// garbage collection deletes it.
 	OrphanGracePeriod time.Duration `yaml:"orphan_grace_period"`
 }
 
@@ -300,27 +360,54 @@ func (c *Config) SelectEnabled() bool {
 	return c.Role == RoleAll || c.Role == RoleSelect
 }
 
+// SelectConfig controls how select pods read rows not yet flushed to S3.
 type SelectConfig struct {
-	BufferQueryEnabled    bool          `yaml:"buffer_query_enabled"`
-	InsertHeadlessService string        `yaml:"insert_headless_service"`
-	BufferQueryTimeout    time.Duration `yaml:"buffer_query_timeout"`
-	AZAware               bool          `yaml:"az_aware"`
-	CrossAZFallback       bool          `yaml:"cross_az_fallback"`
+	// BufferQueryEnabled queries the insert pods for rows not yet flushed to
+	// S3.
+	BufferQueryEnabled bool `yaml:"buffer_query_enabled"`
+	// InsertHeadlessService is the Kubernetes headless service that resolves
+	// the insert pods for buffer queries.
+	InsertHeadlessService string `yaml:"insert_headless_service"`
+	// BufferQueryTimeout bounds a buffer query to the insert pods.
+	BufferQueryTimeout time.Duration `yaml:"buffer_query_timeout"`
+	// AZAware prefers insert pods in the select pod's own availability zone
+	// for buffer queries.
+	AZAware bool `yaml:"az_aware"`
+	// CrossAZFallback queries insert pods in other zones when no same-zone pod
+	// answers.
+	CrossAZFallback bool `yaml:"cross_az_fallback"`
 }
 
+// S3Config is the object storage the Parquet files live in.
 type S3Config struct {
-	Bucket                 string        `yaml:"bucket"`
-	Region                 string        `yaml:"region"`
-	Prefix                 string        `yaml:"prefix"`
-	Endpoint               string        `yaml:"endpoint"`
-	AccessKey              string        `yaml:"access_key"`
-	SecretKey              string        `yaml:"secret_key"`
-	ForcePathStyle         bool          `yaml:"force_path_style"`
-	MaxConnections         int           `yaml:"max_connections"`
-	Timeout                time.Duration `yaml:"timeout"`
-	RetryMax               int           `yaml:"retry_max"`
-	RetryBaseDelay         time.Duration `yaml:"retry_base_delay"`
-	MaxConcurrentDownloads int           `yaml:"max_concurrent_downloads"`
+	// Bucket is the S3 bucket holding the Parquet files. Required.
+	Bucket string `yaml:"bucket"`
+	// Region is the AWS region of the bucket.
+	Region string `yaml:"region"`
+	// Prefix is the S3 key prefix. Empty derives it from the tenant prefix and
+	// the signal (logs/ or traces/).
+	Prefix string `yaml:"prefix"`
+	// Endpoint is a custom S3-compatible endpoint URL (MinIO, R2); http or
+	// https only.
+	Endpoint string `yaml:"endpoint"`
+	// AccessKey is a static S3 access key. Prefer IAM roles or IRSA.
+	AccessKey string `yaml:"access_key"`
+	// SecretKey is the static S3 secret key paired with AccessKey.
+	SecretKey string `yaml:"secret_key"`
+	// ForcePathStyle uses path-style S3 URLs, which MinIO requires.
+	ForcePathStyle bool `yaml:"force_path_style"`
+	// MaxConnections caps concurrent HTTP connections to S3.
+	MaxConnections int `yaml:"max_connections"`
+	// Timeout bounds a single S3 request.
+	Timeout time.Duration `yaml:"timeout"`
+	// RetryMax caps retries of a failed S3 request.
+	RetryMax int `yaml:"retry_max"`
+	// RetryBaseDelay is the first retry backoff; it doubles on every retry.
+	RetryBaseDelay time.Duration `yaml:"retry_base_delay"`
+	// MaxConcurrentDownloads is the deprecated flat S3 download concurrency,
+	// used as request and limit when concurrent_downloads_request and
+	// concurrent_downloads_limit are both unset.
+	MaxConcurrentDownloads int `yaml:"max_concurrent_downloads"`
 	// K8s-style request/limit/scaling for S3 download concurrency
 	// (request = always-reserved baseline, limit = hard ceiling,
 	// scaling = ramp policy). When any of these are non-zero they
@@ -328,11 +415,21 @@ type S3Config struct {
 	// a deprecated alias (logs a startup warning once). When all
 	// three are zero, MaxConcurrentDownloads is the live value
 	// (legacy flat behaviour). See internal/resourcebounds.
-	ConcurrentDownloadsRequest int    `yaml:"concurrent_downloads_request"`
-	ConcurrentDownloadsLimit   int    `yaml:"concurrent_downloads_limit"`
+	ConcurrentDownloadsRequest int `yaml:"concurrent_downloads_request"`
+	// ConcurrentDownloadsLimit is the hard ceiling on concurrent S3 downloads.
+	// 0 falls back to the request, or to max_concurrent_downloads when both
+	// are unset.
+	ConcurrentDownloadsLimit int `yaml:"concurrent_downloads_limit"`
+	// ConcurrentDownloadsScaling is the ramp policy from request to limit:
+	// fixed, linear or expbackoff. Empty means fixed.
 	ConcurrentDownloadsScaling string `yaml:"concurrent_downloads_scaling"`
-	ReadAheadBytes             int    `yaml:"read_ahead_bytes"`
-	CoalesceGapBytes           int    `yaml:"coalesce_gap_bytes"`
+	// ReadAheadBytes is the base read-ahead window, in bytes, for sequential
+	// S3 range reads; the adaptive window grows from it up to
+	// read_ahead_max_bytes.
+	ReadAheadBytes int `yaml:"read_ahead_bytes"`
+	// CoalesceGapBytes merges S3 range reads separated by fewer bytes than
+	// this into one GET.
+	CoalesceGapBytes int `yaml:"coalesce_gap_bytes"`
 
 	// ReadAheadMaxBytes is the ceiling for the ADAPTIVE read-ahead window.
 	// The window starts at ReadAheadBytes and doubles (up to this max) after
@@ -451,18 +548,38 @@ const (
 	ProjectedFetchModeWindow  = "window"
 )
 
+// CacheConfig sizes the L1 in-memory and L2 disk caches of footers, blooms and pages.
 type CacheConfig struct {
-	MemoryLimit       string        `yaml:"memory_limit"`
-	DiskPath          string        `yaml:"disk_path"`
-	DiskLimit         string        `yaml:"disk_limit"`
-	EvictionWatermark float64       `yaml:"eviction_watermark"`
-	FooterTTL         time.Duration `yaml:"footer_ttl"`
-	BloomTTL          time.Duration `yaml:"bloom_ttl"`
-	PageTTL           time.Duration `yaml:"page_ttl"`
-	WarmupPartitions  int           `yaml:"warmup_partitions"`
-	WarmupMaxFiles    int           `yaml:"warmup_max_files"`
-	WarmupConcurrency int           `yaml:"warmup_concurrency"`
-	PartitionMode     string        `yaml:"partition_mode"` // "az-local" (default), "global", "distributed"
+	// MemoryLimit is the deprecated L1 in-memory cache budget, as a size
+	// string such as 512MB, used when memory_request and memory_limit_v2 are
+	// unset.
+	MemoryLimit string `yaml:"memory_limit"`
+	// DiskPath is the L2 disk cache directory.
+	DiskPath string `yaml:"disk_path"`
+	// DiskLimit is the L2 disk cache size, as a size string such as 50GB.
+	DiskLimit string `yaml:"disk_limit"`
+	// EvictionWatermark is the fraction of disk_limit, in (0, 1], at which L2
+	// eviction starts.
+	EvictionWatermark float64 `yaml:"eviction_watermark"`
+	// FooterTTL is how long a cached Parquet footer stays valid.
+	FooterTTL time.Duration `yaml:"footer_ttl"`
+	// BloomTTL is how long cached bloom filter data stays valid.
+	BloomTTL time.Duration `yaml:"bloom_ttl"`
+	// PageTTL is how long a cached Parquet data page stays valid.
+	PageTTL time.Duration `yaml:"page_ttl"`
+	// WarmupPartitions is the number of recent hourly partitions warmed at
+	// startup. Warmup runs only when this or warmup_max_files is set; 0 means
+	// 6 when it runs.
+	WarmupPartitions int `yaml:"warmup_partitions"`
+	// WarmupMaxFiles caps the files warmed at startup. Warmup runs only when
+	// this or warmup_partitions is set; 0 means 500 when it runs.
+	WarmupMaxFiles int `yaml:"warmup_max_files"`
+	// WarmupConcurrency is the number of concurrent startup warmup downloads;
+	// 0 means 16.
+	WarmupConcurrency int `yaml:"warmup_concurrency"`
+	// PartitionMode scopes the peer cache ring: az-local (peers in the pod's
+	// availability zone), global (every peer) or distributed.
+	PartitionMode string `yaml:"partition_mode"`
 
 	// FooterMaxItems is the upper bound on the parquet footer cache.
 	// Each entry is ~5 KB so the default 10K caps the working set at
@@ -494,59 +611,123 @@ type CacheConfig struct {
 	// are accepted as Go size strings (e.g. "256MB"). See
 	// internal/resourcebounds.
 	MemoryRequest string `yaml:"memory_request"`
+	// MemoryLimitV2 is the hard ceiling of the L1 in-memory cache budget, as a
+	// size string.
 	MemoryLimitV2 string `yaml:"memory_limit_v2"`
+	// MemoryScaling is the ramp policy from memory_request to memory_limit_v2:
+	// fixed, linear or expbackoff. Empty means fixed.
 	MemoryScaling string `yaml:"memory_scaling"`
 }
 
+// DiscoveryConfig finds the hot storage nodes and the peer fleet.
 type DiscoveryConfig struct {
-	HeadlessService       string        `yaml:"headless_service"`
-	StorageNodes          []string      `yaml:"storage_nodes"`
-	PartitionAuthKey      string        `yaml:"partition_auth_key"`
-	RefreshInterval       time.Duration `yaml:"refresh_interval"`
-	Timeout               time.Duration `yaml:"timeout"`
-	PeerHeadlessService   string        `yaml:"peer_headless_service"`
-	PeerRefreshInterval   time.Duration `yaml:"peer_refresh_interval"`
+	// HeadlessService is the Kubernetes headless service that resolves the hot
+	// VictoriaLogs/VictoriaTraces storage nodes.
+	HeadlessService string `yaml:"headless_service"`
+	// StorageNodes is a static list of hot storage node addresses, used
+	// instead of headless_service.
+	StorageNodes []string `yaml:"storage_nodes"`
+	// PartitionAuthKey is the auth key sent to the storage nodes'
+	// /internal/partition/list endpoint.
+	PartitionAuthKey string `yaml:"partition_auth_key"`
+	// RefreshInterval is how often the storage nodes and their partitions are
+	// refreshed.
+	RefreshInterval time.Duration `yaml:"refresh_interval"`
+	// Timeout bounds a single storage node discovery request.
+	Timeout time.Duration `yaml:"timeout"`
+	// PeerHeadlessService is the Kubernetes headless service that resolves the
+	// peer fleet for the distributed cache and stats gossip.
+	PeerHeadlessService string `yaml:"peer_headless_service"`
+	// PeerRefreshInterval is how often peer ring membership is refreshed.
+	PeerRefreshInterval time.Duration `yaml:"peer_refresh_interval"`
+	// RingStabilizeDuration keeps departed peers in the ring as a shadow set
+	// during scaling, so both old and new assignments resolve.
 	RingStabilizeDuration time.Duration `yaml:"ring_stabilize_duration"`
-	RingChangeNotify      bool          `yaml:"ring_change_notify"`
+	// RingChangeNotify notifies subscribers when ring membership changes.
+	RingChangeNotify bool `yaml:"ring_change_notify"`
 }
 
+// ManifestConfig controls the index of Parquet files and its local snapshot.
 type ManifestConfig struct {
+	// RefreshInterval is how often the manifest is fully re-listed from S3.
 	RefreshInterval time.Duration `yaml:"refresh_interval"`
-	SQSQueueURL     string        `yaml:"sqs_queue_url"`
-	SQSRegion       string        `yaml:"sqs_region"`
-	SQSWaitTime     time.Duration `yaml:"sqs_wait_time"`
-	PersistPath     string        `yaml:"persist_path"`
+	// SQSQueueURL is an SQS queue receiving S3 event notifications for
+	// near-real-time manifest updates.
+	SQSQueueURL string `yaml:"sqs_queue_url"`
+	// SQSRegion is the AWS region of the SQS queue.
+	SQSRegion string `yaml:"sqs_region"`
+	// SQSWaitTime is the long-poll wait of an SQS receive.
+	SQSWaitTime time.Duration `yaml:"sqs_wait_time"`
+	// PersistPath is the directory holding the manifest snapshot, index and
+	// footer-cache snapshot.
+	PersistPath string `yaml:"persist_path"`
+	// PersistInterval is how often the manifest snapshot is written to
+	// persist_path.
 	PersistInterval time.Duration `yaml:"persist_interval"`
 }
 
+// PrefetchConfig controls proactive cache warming ahead of queries.
 type PrefetchConfig struct {
-	Correlated     bool `yaml:"correlated"`
-	ReadAheadDepth int  `yaml:"read_ahead_depth"`
-	MaxConcurrent  int  `yaml:"max_concurrent"`
-	MaxQueue       int  `yaml:"max_queue"`
+	// Correlated enables correlated logs-to-traces prefetch by trace_id.
+	Correlated bool `yaml:"correlated"`
+	// ReadAheadDepth is the number of partitions prefetched ahead of a
+	// sequential scan.
+	ReadAheadDepth int `yaml:"read_ahead_depth"`
+	// MaxConcurrent caps concurrent prefetch downloads.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// MaxQueue caps pending prefetch tasks.
+	MaxQueue int `yaml:"max_queue"`
 }
 
+// PeerConfig controls the distributed peer cache.
 type PeerConfig struct {
-	AuthKey         string        `yaml:"auth_key"`
-	Timeout         time.Duration `yaml:"timeout"`
-	MaxConnections  int           `yaml:"max_connections"`
-	AZAware         bool          `yaml:"az_aware"`
-	AZMode          string        `yaml:"az_mode"`
-	CrossAZFallback bool          `yaml:"cross_az_fallback"`
-	AZEnvVar        string        `yaml:"az_env_var"`
-	AZMinPeersPerAZ int           `yaml:"az_min_peers_per_az"`
+	// AuthKey is the bearer key protecting the peer cache HTTP endpoints.
+	AuthKey string `yaml:"auth_key"`
+	// Timeout bounds a single peer cache fetch.
+	Timeout time.Duration `yaml:"timeout"`
+	// MaxConnections caps HTTP connections per peer.
+	MaxConnections int `yaml:"max_connections"`
+	// AZAware prefers peers in the pod's own availability zone.
+	AZAware bool `yaml:"az_aware"`
+	// AZMode is preferred (fall back to other zones) or strict (require
+	// az_min_peers_per_az peers in the same zone).
+	AZMode string `yaml:"az_mode"`
+	// CrossAZFallback allows fetching from another zone when no same-zone peer
+	// is available.
+	CrossAZFallback bool `yaml:"cross_az_fallback"`
+	// AZEnvVar names the environment variable that overrides the detected
+	// availability zone.
+	AZEnvVar string `yaml:"az_env_var"`
+	// AZMinPeersPerAZ is the minimum number of same-zone peers strict mode
+	// requires.
+	AZMinPeersPerAZ int `yaml:"az_min_peers_per_az"`
 }
 
+// StartupConfig controls warmup and readiness when a pod starts.
 type StartupConfig struct {
-	ServeStale          bool          `yaml:"serve_stale"`
-	WarmupWindow        time.Duration `yaml:"warmup_window"`
-	MaxWarmupTime       time.Duration `yaml:"max_warmup_time"`
-	PeerSyncTimeout     time.Duration `yaml:"peer_sync_timeout"`
-	RequireManifestSync bool          `yaml:"require_manifest_sync"`
-	StaleThreshold      time.Duration `yaml:"stale_threshold"`
-	WALReconciliation   bool          `yaml:"wal_reconciliation"`
-	CacheRevalidation   bool          `yaml:"cache_revalidation"`
-	MaxResyncTime       time.Duration `yaml:"max_resync_time"`
+	// ServeStale serves persisted local state before the S3 refresh completes.
+	ServeStale bool `yaml:"serve_stale"`
+	// WarmupWindow is the age of the recent data whose footers and blooms are
+	// pre-cached at startup.
+	WarmupWindow time.Duration `yaml:"warmup_window"`
+	// MaxWarmupTime bounds startup warmup before the pod reports ready.
+	MaxWarmupTime time.Duration `yaml:"max_warmup_time"`
+	// PeerSyncTimeout bounds syncing state from peers at startup.
+	PeerSyncTimeout time.Duration `yaml:"peer_sync_timeout"`
+	// RequireManifestSync requires a manifest sync before the pod reports
+	// ready.
+	RequireManifestSync bool `yaml:"require_manifest_sync"`
+	// StaleThreshold is the age after which persisted state, for example after
+	// a volume reattach, is treated as stale.
+	StaleThreshold time.Duration `yaml:"stale_threshold"`
+	// WALReconciliation reconciles persisted write state against the manifest
+	// on a stale start.
+	WALReconciliation bool `yaml:"wal_reconciliation"`
+	// CacheRevalidation revalidates cache entries on a stale start.
+	CacheRevalidation bool `yaml:"cache_revalidation"`
+	// MaxResyncTime bounds the stale-state resync before the pod reports ready
+	// anyway.
+	MaxResyncTime time.Duration `yaml:"max_resync_time"`
 
 	// MinManifestFiles is the lower-bound the lifecycle manager
 	// requires before /ready can return 200. Counters the
@@ -568,26 +749,47 @@ type StartupConfig struct {
 	ServeWhileWarming bool `yaml:"serve_while_warming"`
 }
 
+// ShutdownConfig bounds the phases of a graceful shutdown.
 type ShutdownConfig struct {
-	Delay          time.Duration `yaml:"delay"`
-	MaxGraceful    time.Duration `yaml:"max_graceful_duration"`
-	FlushTimeout   time.Duration `yaml:"flush_timeout"`
+	// Delay is the pause before the HTTP server stops, so load balancers drain
+	// the pod. The Helm chart passes it to -http.shutdownDelay.
+	Delay time.Duration `yaml:"delay"`
+	// MaxGraceful is the time in-flight HTTP requests get to finish. The Helm
+	// chart passes it to -http.maxGracefulShutdownDuration.
+	MaxGraceful time.Duration `yaml:"max_graceful_duration"`
+	// FlushTimeout bounds flushing buffered rows to S3 during shutdown.
+	FlushTimeout time.Duration `yaml:"flush_timeout"`
+	// PersistTimeout bounds writing the manifest, footer-cache and stats
+	// snapshots during shutdown; 0 means 30s.
 	PersistTimeout time.Duration `yaml:"persist_timeout"`
+	// ReleaseTimeout bounds notifying peers during shutdown.
 	ReleaseTimeout time.Duration `yaml:"release_timeout"`
 }
 
+// QueryConfig bounds the cost of select queries.
 type QueryConfig struct {
-	MaxConcurrent    int           `yaml:"max_concurrent"`
-	FileWorkers      int           `yaml:"file_workers"`
-	Timeout          time.Duration `yaml:"timeout"`
-	MaxRows          int64         `yaml:"max_rows"`
-	MaxFilesPerQuery int           `yaml:"max_files_per_query"`
+	// MaxConcurrent caps concurrent select queries; a query over the cap gets
+	// HTTP 429.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// FileWorkers is the deprecated per-query pool of parallel Parquet file
+	// readers, used as request and limit when file_workers_request and
+	// file_workers_limit are unset.
+	FileWorkers int `yaml:"file_workers"`
+	// Timeout bounds a single query.
+	Timeout time.Duration `yaml:"timeout"`
+	// MaxRows is the deprecated per-query row ceiling, used when
+	// max_rows_limit is unset.
+	MaxRows int64 `yaml:"max_rows"`
+	// MaxFilesPerQuery rejects a query that matches more S3 files than this; 0
+	// means unlimited, leaving the memory budget as the safety net.
+	MaxFilesPerQuery int `yaml:"max_files_per_query"`
 	// MaxLiveBytes is a per-query ceiling on the bytes of in-flight
 	// DataBlocks currently held by RunQuery before writeBlock has consumed
 	// them. When exceeded, the query context is cancelled, returning a
 	// partial result instead of OOM-killing the container. 0 means use the
 	// default (defaultMaxLiveBytes in storage/parquets3).
-	MaxLiveBytes  int64         `yaml:"max_live_bytes"`
+	MaxLiveBytes int64 `yaml:"max_live_bytes"`
+	// SlowThreshold logs queries that run longer than this.
 	SlowThreshold time.Duration `yaml:"slow_threshold"`
 
 	// K8s-style request/limit/scaling for file workers (process-wide
@@ -596,8 +798,11 @@ type QueryConfig struct {
 	// these take precedence over FileWorkers which becomes a
 	// deprecated alias logged once at startup. See
 	// internal/resourcebounds.
-	FileWorkersRequest int    `yaml:"file_workers_request"`
-	FileWorkersLimit   int    `yaml:"file_workers_limit"`
+	FileWorkersRequest int `yaml:"file_workers_request"`
+	// FileWorkersLimit is the hard ceiling on concurrent Parquet file readers.
+	FileWorkersLimit int `yaml:"file_workers_limit"`
+	// FileWorkersScaling is the ramp policy from file_workers_request to
+	// file_workers_limit: fixed, linear or expbackoff. Empty means fixed.
 	FileWorkersScaling string `yaml:"file_workers_scaling"`
 
 	// K8s-style request/limit/scaling for the per-query row ceiling.
@@ -605,29 +810,59 @@ type QueryConfig struct {
 	// fallback when MaxRowsLimit is zero); MaxRowsRequest is an
 	// operator-visible baseline. Streaming hits the ceiling at
 	// MaxRowsLimit (or MaxRows if not set) regardless of Request.
-	MaxRowsRequest int64  `yaml:"max_rows_request"`
-	MaxRowsLimit   int64  `yaml:"max_rows_limit"`
+	MaxRowsRequest int64 `yaml:"max_rows_request"`
+	// MaxRowsLimit is the hard per-query row ceiling.
+	MaxRowsLimit int64 `yaml:"max_rows_limit"`
+	// MaxRowsScaling is the ramp policy from max_rows_request to
+	// max_rows_limit: fixed, linear or expbackoff. Empty means fixed.
 	MaxRowsScaling string `yaml:"max_rows_scaling"`
 }
 
+// TenantConfig controls multi-tenant routing, isolation and per-tenant overrides.
 type TenantConfig struct {
-	DefaultPrefix     string                 `yaml:"default_prefix"`
-	PrefixTemplate    string                 `yaml:"prefix_template"`
-	Isolation         string                 `yaml:"isolation"`
-	BucketTemplate    string                 `yaml:"bucket_template"`
-	DefaultAccount    string                 `yaml:"default_account"`
-	DefaultProject    string                 `yaml:"default_project"`
-	HeaderAccount     string                 `yaml:"header_account"`
-	HeaderProject     string                 `yaml:"header_project"`
-	GlobalReadHeader  string                 `yaml:"global_read_header"`
-	GlobalReadValue   string                 `yaml:"global_read_value"`
-	GlobalReadToken   string                 `yaml:"global_read_token"`
-	KnownTenants      []KnownTenant          `yaml:"known_tenants"`
-	OrgIDHeader       string                 `yaml:"orgid_header"`
-	MetricsFormat     string                 `yaml:"metrics_format"`
-	AutoRegister      bool                   `yaml:"auto_register"`
-	AliasSyncInterval time.Duration          `yaml:"alias_sync_interval"`
-	Aliases           map[string]AliasTarget `yaml:"aliases"`
+	// DefaultPrefix is a static S3 key prefix that replaces prefix_template.
+	DefaultPrefix string `yaml:"default_prefix"`
+	// PrefixTemplate is the S3 prefix of a tenant; {AccountID} and {ProjectID}
+	// are replaced from the request.
+	PrefixTemplate string `yaml:"prefix_template"`
+	// Isolation is prefix (tenants share the bucket under prefix_template) or
+	// bucket (each tenant gets the bucket named by bucket_template).
+	Isolation string `yaml:"isolation"`
+	// BucketTemplate names a tenant's bucket in bucket isolation; required
+	// when isolation is bucket.
+	BucketTemplate string `yaml:"bucket_template"`
+	// DefaultAccount is the AccountID of a request that carries no tenant
+	// header.
+	DefaultAccount string `yaml:"default_account"`
+	// DefaultProject is the ProjectID of a request that carries no tenant
+	// header.
+	DefaultProject string `yaml:"default_project"`
+	// HeaderAccount is the HTTP header carrying the AccountID.
+	HeaderAccount string `yaml:"header_account"`
+	// HeaderProject is the HTTP header carrying the ProjectID.
+	HeaderProject string `yaml:"header_project"`
+	// GlobalReadHeader is the header that, carrying global_read_value, grants
+	// a cross-tenant read.
+	GlobalReadHeader string `yaml:"global_read_header"`
+	// GlobalReadValue is the value global_read_header must carry.
+	GlobalReadValue string `yaml:"global_read_value"`
+	// GlobalReadToken is a bearer token that grants a cross-tenant read.
+	GlobalReadToken string `yaml:"global_read_token"`
+	// KnownTenants lists tenants with their own lifecycle rules and prices,
+	// for bucket isolation.
+	KnownTenants []KnownTenant `yaml:"known_tenants"`
+	// OrgIDHeader is the header carrying a string tenant id (the Loki/Tempo
+	// X-Scope-OrgID), resolved through the aliases.
+	OrgIDHeader string `yaml:"orgid_header"`
+	// MetricsFormat is the tenant label of metrics: id, name or both.
+	MetricsFormat string `yaml:"metrics_format"`
+	// AutoRegister registers an unknown string tenant id as a new alias.
+	AutoRegister bool `yaml:"auto_register"`
+	// AliasSyncInterval is how often runtime aliases and tenant policies sync
+	// across the fleet.
+	AliasSyncInterval time.Duration `yaml:"alias_sync_interval"`
+	// Aliases maps string tenant ids to an AccountID and ProjectID.
+	Aliases map[string]AliasTarget `yaml:"aliases"`
 
 	// Overrides keys: either "<account>:<project>" (e.g. "1:1") or a
 	// string OrgID alias (e.g. "acme-corp"). String keys are resolved
@@ -719,23 +954,48 @@ type KnownTenant struct {
 	PricePerGB     map[string]float64    `yaml:"price_per_gb"`
 }
 
+// StatsConfig controls tenant statistics, storage class tracking and cost estimates.
 type StatsConfig struct {
-	Enabled                     bool                  `yaml:"enabled"`
-	PushInterval                time.Duration         `yaml:"push_interval"`
-	PushCompression             bool                  `yaml:"push_compression"`
-	SnapshotInterval            time.Duration         `yaml:"snapshot_interval"`
-	SnapshotPrefix              string                `yaml:"snapshot_prefix"`
-	MetaBucket                  string                `yaml:"meta_bucket"`
-	MaxDeltaCount               int                   `yaml:"max_delta_count"`
-	MetricsCardinalityLimit     int                   `yaml:"metrics_cardinality_limit"`
-	CardinalityWarningThreshold int                   `yaml:"cardinality_warning_threshold"`
-	BreakdownLabels             []string              `yaml:"breakdown_labels"`
-	S3LifecycleRules            []LifecycleRuleConfig `yaml:"s3_lifecycle_rules"`
-	S3PricePerGB                map[string]float64    `yaml:"s3_price_per_gb"`
-	S3RequestPrices             map[string]float64    `yaml:"s3_request_prices"`
-	S3InventoryBucket           string                `yaml:"s3_inventory_bucket"`
-	HeadObjectSampleInterval    time.Duration         `yaml:"headobject_sample_interval"`
-	HeadObjectMaxPerRefresh     int                   `yaml:"headobject_max_per_refresh"`
+	// Enabled collects tenant statistics and syncs them across the fleet.
+	Enabled bool `yaml:"enabled"`
+	// PushInterval is how often stat deltas are broadcast to peers.
+	PushInterval time.Duration `yaml:"push_interval"`
+	// PushCompression zstd-compresses delta broadcasts.
+	PushCompression bool `yaml:"push_compression"`
+	// SnapshotInterval is how often the full registry snapshot is written to
+	// S3.
+	SnapshotInterval time.Duration `yaml:"snapshot_interval"`
+	// SnapshotPrefix is the S3 key prefix of the registry snapshot.
+	SnapshotPrefix string `yaml:"snapshot_prefix"`
+	// MetaBucket is a dedicated bucket for metadata in bucket isolation; empty
+	// uses s3.bucket.
+	MetaBucket string `yaml:"meta_bucket"`
+	// MaxDeltaCount is the number of deltas after which a full sync is forced.
+	MaxDeltaCount int `yaml:"max_delta_count"`
+	// MetricsCardinalityLimit caps distinct tenant label values in metrics.
+	MetricsCardinalityLimit int `yaml:"metrics_cardinality_limit"`
+	// CardinalityWarningThreshold is the field cardinality that raises a
+	// high-cardinality warning.
+	CardinalityWarningThreshold int `yaml:"cardinality_warning_threshold"`
+	// BreakdownLabels are the dimensions offered by the stats breakdown.
+	BreakdownLabels []string `yaml:"breakdown_labels"`
+	// S3LifecycleRules are the bucket lifecycle rules used to predict storage
+	// classes without API calls.
+	S3LifecycleRules []LifecycleRuleConfig `yaml:"s3_lifecycle_rules"`
+	// S3PricePerGB is the storage price per GB-month of each storage class,
+	// for cost estimates.
+	S3PricePerGB map[string]float64 `yaml:"s3_price_per_gb"`
+	// S3RequestPrices is the price per 1000 requests of each request type, for
+	// cost estimates.
+	S3RequestPrices map[string]float64 `yaml:"s3_request_prices"`
+	// S3InventoryBucket is an S3 Inventory bucket used to verify storage
+	// classes exactly.
+	S3InventoryBucket string `yaml:"s3_inventory_bucket"`
+	// HeadObjectSampleInterval is the interval of HeadObject spot checks near
+	// lifecycle transitions.
+	HeadObjectSampleInterval time.Duration `yaml:"headobject_sample_interval"`
+	// HeadObjectMaxPerRefresh caps HeadObject calls per refresh.
+	HeadObjectMaxPerRefresh int `yaml:"headobject_max_per_refresh"`
 	// NodeMetaTTL bounds how long a peer's gossiped metadata footprint stays in
 	// the fleet view (/stats/instances + the cluster-wide Overview sum) without a
 	// refresh. The node id is the (ephemeral) container hostname, so without this
@@ -745,11 +1005,17 @@ type StatsConfig struct {
 	NodeMetaTTL time.Duration `yaml:"node_meta_ttl"`
 }
 
+// UIConfig controls the Lakehouse Explorer web UI.
 type UIConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	VMUITab        bool   `yaml:"vmui_tab"`
-	RefreshDefault int    `yaml:"refresh_default"`
-	Theme          string `yaml:"theme"`
+	// Enabled serves the Lakehouse Explorer at /lakehouse/ui/.
+	Enabled bool `yaml:"enabled"`
+	// VMUITab adds a Lakehouse tab to the VictoriaLogs/VictoriaTraces VMUI.
+	VMUITab bool `yaml:"vmui_tab"`
+	// RefreshDefault is the default auto-refresh interval in seconds; 0
+	// disables it.
+	RefreshDefault int `yaml:"refresh_default"`
+	// Theme is the UI theme: auto, dark or light.
+	Theme string `yaml:"theme"`
 }
 
 func (t TenantConfig) ResolvedPrefix() string {
@@ -763,23 +1029,35 @@ func (t TenantConfig) ResolvedPrefix() string {
 	return r.Replace(t.PrefixTemplate)
 }
 
+// CompactionConfig controls background Parquet compaction.
 type CompactionConfig struct {
-	Enabled        bool          `yaml:"enabled"`
-	Interval       time.Duration `yaml:"interval"`
-	MaxConcurrent  int           `yaml:"max_concurrent"`
-	MinFilesL0     int           `yaml:"min_files_l0"`
-	MinFilesL1     int           `yaml:"min_files_l1"`
-	MinAge         time.Duration `yaml:"min_age"`
+	// Enabled runs the compaction scheduler. Every pod runs it; HRW ownership
+	// assigns each partition to exactly one pod.
+	Enabled bool `yaml:"enabled"`
+	// Interval is the compaction scan interval.
+	Interval time.Duration `yaml:"interval"`
+	// MaxConcurrent is the number of partitions a pod compacts concurrently.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// MinFilesL0 is the number of L0 files a partition needs before L0 to L1
+	// compaction; at least 2.
+	MinFilesL0 int `yaml:"min_files_l0"`
+	// MinFilesL1 is the number of L1 files a partition needs before L1 to L2
+	// compaction; at least 2.
+	MinFilesL1 int `yaml:"min_files_l1"`
+	// MinAge keeps files younger than this out of compaction.
+	MinAge time.Duration `yaml:"min_age"`
+	// DailyRollupAge is the partition age after which L1 files roll up into
+	// daily files.
 	DailyRollupAge time.Duration `yaml:"daily_rollup_age"`
 
 	// CompressionLevelByOutputLevel sets the zstd level used when
 	// emitting a compacted file at output level i (index 0 = L0
-	// rewrite, 1 = L0→L1, 2 = L1→L2, ...). Default is a progressive
-	// schedule [7, 11, 15, 18, 22] — fresh writes optimize for
-	// CPU/ingest, while older cold rollups invest more CPU to shrink
-	// long-term storage. Out-of-range output levels fall back to the
-	// last configured slot, or to Insert.CompressionLevel if the slice
-	// is empty.
+	// rewrite, 1 = L0→L1, 2 = L1→L2, ...). The default is a progressive
+	// schedule (see Default) — fresh writes optimize for CPU/ingest,
+	// while older cold rollups invest more CPU to shrink long-term
+	// storage. Out-of-range output levels fall back to the last
+	// configured slot, or to Insert.CompressionLevel if the slice is
+	// empty.
 	CompressionLevelByOutputLevel []int `yaml:"compression_level_by_output_level"`
 
 	// RowGroupSizeByOutputLevel sets the Parquet row-group size (max
@@ -839,18 +1117,36 @@ func (c *CompactionConfig) RowGroupSizeForOutput(outputLevel int) int {
 	return c.RowGroupSizeByOutputLevel[outputLevel]
 }
 
+// DeleteConfig controls the delete API, tombstones and file rewrites.
 type DeleteConfig struct {
-	Enabled              bool                  `yaml:"enabled"`
-	DefaultMode          string                `yaml:"default_mode"`
-	AutoRewriteClasses   []string              `yaml:"auto_rewrite_classes"`
-	RewriteDelay         time.Duration         `yaml:"rewrite_delay"`
-	RewriteBatchSize     int                   `yaml:"rewrite_batch_size"`
-	RewriteMaxConcurrent int                   `yaml:"rewrite_max_concurrent"`
-	PersistPath          string                `yaml:"persist_path"`
-	CostWarningThreshold float64               `yaml:"cost_warning_threshold"`
-	ForceGlacierHeader   string                `yaml:"force_glacier_header"`
-	VerifyInterval       time.Duration         `yaml:"verify_interval"`
-	LifecycleRules       []LifecycleRuleConfig `yaml:"lifecycle_rules"`
+	// Enabled serves the delete API.
+	Enabled bool `yaml:"enabled"`
+	// DefaultMode is the delete mode of a request that names none: hide,
+	// permanent or auto.
+	DefaultMode string `yaml:"default_mode"`
+	// AutoRewriteClasses are the S3 storage classes whose files auto mode
+	// rewrites.
+	AutoRewriteClasses []string `yaml:"auto_rewrite_classes"`
+	// RewriteDelay is the wait after a tombstone before files are rewritten,
+	// so tombstones batch.
+	RewriteDelay time.Duration `yaml:"rewrite_delay"`
+	// RewriteBatchSize is the number of files per rewrite batch.
+	RewriteBatchSize int `yaml:"rewrite_batch_size"`
+	// RewriteMaxConcurrent is the number of concurrent rewrite workers.
+	RewriteMaxConcurrent int `yaml:"rewrite_max_concurrent"`
+	// PersistPath is the directory tombstones persist to.
+	PersistPath string `yaml:"persist_path"`
+	// CostWarningThreshold is the estimated rewrite cost, in dollars, above
+	// which a delete warns.
+	CostWarningThreshold float64 `yaml:"cost_warning_threshold"`
+	// ForceGlacierHeader is the header that forces rewriting files in Glacier
+	// storage classes.
+	ForceGlacierHeader string `yaml:"force_glacier_header"`
+	// VerifyInterval is how often completed deletes are verified again.
+	VerifyInterval time.Duration `yaml:"verify_interval"`
+	// LifecycleRules are the bucket lifecycle rules used to predict storage
+	// classes for delete cost estimates.
+	LifecycleRules []LifecycleRuleConfig `yaml:"lifecycle_rules"`
 }
 
 type LifecycleRuleConfig struct {
@@ -858,40 +1154,75 @@ type LifecycleRuleConfig struct {
 	StorageClass   string `yaml:"storage_class" json:"storage_class"`
 }
 
+// SmartCacheConfig controls how cached data is pinned, aged and sized.
 type SmartCacheConfig struct {
-	MaxAge             time.Duration `yaml:"max_age"`
-	SnapshotInterval   time.Duration `yaml:"snapshot_interval"`
-	QueryGracePeriod   time.Duration `yaml:"query_grace_period"`
-	HotAccessThreshold int           `yaml:"hot_access_threshold"`
-	HotWindow          time.Duration `yaml:"hot_window"`
-	TargetHours        int           `yaml:"target_hours"`
-	DiskLimitMax       string        `yaml:"disk_limit_max"`
-	IngestionRateHint  string        `yaml:"ingestion_rate_hint"`
+	// MaxAge is the maximum age of a cached entry.
+	MaxAge time.Duration `yaml:"max_age"`
+	// SnapshotInterval is how often cache metadata is persisted to disk.
+	SnapshotInterval time.Duration `yaml:"snapshot_interval"`
+	// QueryGracePeriod is how long entries stay pinned after their query ends.
+	QueryGracePeriod time.Duration `yaml:"query_grace_period"`
+	// HotAccessThreshold is the number of accesses within hot_window that
+	// marks an entry hot.
+	HotAccessThreshold int `yaml:"hot_access_threshold"`
+	// HotWindow is the window over which hot accesses are counted.
+	HotWindow time.Duration `yaml:"hot_window"`
+	// TargetHours is the number of hours of recent data the cache sizes itself
+	// to hold.
+	TargetHours int `yaml:"target_hours"`
+	// DiskLimitMax is the deprecated smart-cache disk budget, as a size
+	// string, used when disk_request and disk_limit are unset.
+	DiskLimitMax string `yaml:"disk_limit_max"`
+	// IngestionRateHint is an ingestion rate such as 500MB that seeds cache
+	// sizing; empty detects it.
+	IngestionRateHint string `yaml:"ingestion_rate_hint"`
 
 	// K8s-style request/limit/scaling for the smart-cache disk budget.
 	// When non-zero, these take precedence over DiskLimitMax which
 	// becomes a deprecated alias logged once at startup. Sizes accepted
 	// as Go size strings (e.g. "50GB"). See internal/resourcebounds.
 	DiskRequest string `yaml:"disk_request"`
-	DiskLimit   string `yaml:"disk_limit"`
+	// DiskLimit is the hard ceiling of the smart-cache disk budget, as a size
+	// string.
+	DiskLimit string `yaml:"disk_limit"`
+	// DiskScaling is the ramp policy from disk_request to disk_limit: fixed,
+	// linear or expbackoff. Empty means fixed.
 	DiskScaling string `yaml:"disk_scaling"`
 }
 
+// CrossSignalConfig controls prefetch and eviction hints between the logs and traces lakehouses.
 type CrossSignalConfig struct {
-	Enabled         bool          `yaml:"enabled"`
-	Endpoint        string        `yaml:"endpoint"`
-	HeadlessService string        `yaml:"headless_service"`
-	AuthKey         string        `yaml:"auth_key"`
-	Timeout         time.Duration `yaml:"timeout"`
-	MaxBatch        int           `yaml:"max_batch"`
-	BatchInterval   time.Duration `yaml:"batch_interval"`
+	// Enabled sends prefetch and eviction hints to the other signal's
+	// lakehouse.
+	Enabled bool `yaml:"enabled"`
+	// Endpoint is the URL of the other signal's lakehouse.
+	Endpoint string `yaml:"endpoint"`
+	// HeadlessService is the Kubernetes headless service that resolves the
+	// other signal's pods, used instead of endpoint.
+	HeadlessService string `yaml:"headless_service"`
+	// AuthKey is the shared key of cross-signal requests.
+	AuthKey string `yaml:"auth_key"`
+	// Timeout bounds a cross-signal request.
+	Timeout time.Duration `yaml:"timeout"`
+	// MaxBatch is the number of trace ids per hint batch.
+	MaxBatch int `yaml:"max_batch"`
+	// BatchInterval is how often hint batches are sent.
+	BatchInterval time.Duration `yaml:"batch_interval"`
 }
 
+// RetentionConfig controls automatic deletion of expired data.
 type RetentionConfig struct {
-	Enabled       bool            `yaml:"enabled"`
-	Default       string          `yaml:"default"`
-	CheckInterval string          `yaml:"check_interval"`
-	Rules         []RetentionRule `yaml:"rules"`
+	// Enabled deletes data older than its retention period.
+	Enabled bool `yaml:"enabled"`
+	// Default is the retention period of data no rule matches, as a duration
+	// such as 90d.
+	Default string `yaml:"default"`
+	// CheckInterval is how often expired data is looked for, as a duration
+	// such as 1h.
+	CheckInterval string `yaml:"check_interval"`
+	// Rules are per-stream retention periods: a label match and a keep
+	// duration.
+	Rules []RetentionRule `yaml:"rules"`
 }
 
 type RetentionRule struct {
@@ -899,7 +1230,10 @@ type RetentionRule struct {
 	Keep  string            `yaml:"keep"`
 }
 
+// RoleProfileRef selects a profile for one role of a signal.
 type RoleProfileRef struct {
+	// Profile is the profile for this role (insert or select) of the signal;
+	// it takes precedence over the signal's profile.
 	Profile Profile `yaml:"profile"`
 }
 
@@ -1222,11 +1556,21 @@ func LoadWithMode(path string, mode Mode, role Role) (*Config, error) {
 		return nil, fmt.Errorf("read config file %s: %w", path, err)
 	}
 
+	cfg, err := loadConfigBytes(data, mode, role)
+	if err != nil {
+		return nil, fmt.Errorf("parse config file %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// loadConfigBytes is LoadWithMode for an already-read config file: the
+// file's `lakehouse:` document is merged over the profile it selects.
+func loadConfigBytes(data []byte, mode Mode, role Role) (*Config, error) {
 	var wrapper struct {
 		Lakehouse Config `yaml:"lakehouse"`
 	}
 	if err := yaml.Unmarshal(data, &wrapper); err != nil {
-		return nil, fmt.Errorf("parse config file %s: %w", path, err)
+		return nil, err
 	}
 
 	fileConfig := &wrapper.Lakehouse

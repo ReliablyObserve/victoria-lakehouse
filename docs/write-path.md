@@ -67,21 +67,14 @@ Rows accumulate in per-partition memory buffers. Partition key: `dt=YYYY-MM-DD/h
 lakehouse:
   insert:
     flush_interval: 10s       # Time-based flush trigger
-    flush_linger: 200ms       # Coalesce delay before flushing
     max_buffer_rows: 50000    # Per-partition row limit
-    max_buffer_bytes: 256MB   # Total memory budget
     target_file_size: 128MB   # Target Parquet file size
-    ack_mode: buffer          # When to ack: "buffer" or "flush-sync"
 ```
 
-**Acknowledgement modes:**
-
-| Mode | HTTP 200 After | Data at Risk | Profile |
-|---|---|---|---|
-| `buffer` (default) | Buffered in memory | Until next flush (10s default) | balanced, max-performance, dev |
-| `flush-sync` | S3 confirms write | Zero | max-durability |
-
-The `flush_linger` setting controls how long to wait after receiving a row before flushing, to coalesce small writes. Set to `0` for immediate flush (max-durability), `100ms` for low-latency (max-performance), or `1s` to batch aggressively (max-cost-savings).
+**Acknowledgements:** every insert is acknowledged once it is buffered. `insert.ack_mode`
+(`buffer` or `flush-sync`), `insert.flush_linger` and `insert.max_buffer_bytes` are
+accepted and validated, and profiles set them, but no binary reads them in this release;
+see [Configuration — Known limitations](configuration.md#known-limitations-of-this-release).
 
 **Flush triggers (any one fires):**
 - Timer: `flush_interval` elapsed since last flush (default 10s)
@@ -176,21 +169,21 @@ Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a spec
 
 ## Compaction
 
-After initial flush, small files (e.g., from 10s flush intervals during low traffic) are merged by the background compactor (M9):
+After initial flush, small files are merged by the background compactor:
 
-- **Size-tiered policy**: files <10MB in the same partition are merged into larger files
-- **Only recent files**: compaction targets files from the last few hours, never touching old optimally-sized data
+- **Level policy**: once a partition holds `compaction.min_files_l0` L0 files older than `compaction.min_age`, they merge into an L1 file; `compaction.min_files_l1` L1 files merge into L2; partitions older than `compaction.daily_rollup_age` roll up daily
+- **Ownership**: every pod runs the scheduler and HRW ownership assigns each partition to exactly one pod
 - **Safe for S3-IA/Glacier**: once a file reaches target size, it's never read or rewritten — lifecycle transitions are safe
 - **Manifest-atomic**: old files removed from manifest only after new merged file is registered
 
 ```yaml
 lakehouse:
   compaction:
-    enabled: true
-    min_file_size: 10MB      # Files below this are candidates
-    target_file_size: 128MB  # Merge target
-    max_concurrent: 2        # Parallel compaction jobs
-    interval: 5m             # Check frequency
+    min_files_l0: 10         # L0 files that trigger L0 -> L1
+    min_files_l1: 10         # L1 files that trigger L1 -> L2
+    min_age: 1h              # younger files are not compacted
+    max_concurrent: 2        # partitions compacted concurrently per pod
+    interval: 5m             # scan frequency
 ```
 
 ## Deployment Considerations
@@ -218,6 +211,6 @@ Lakehouse write amplification is **1x for most data**:
 | Failure | Impact | Recovery |
 |---|---|---|
 | Insert pod crash (`logstore` engine) | logstorage parts on disk | Buffer restores its parts on restart; the flush watermark re-flushes any un-flushed window — crash-loss window matches hot VT/VL |
-| Insert pod crash (`buffer` engine) | In-flight buffer lost | Use `ack_mode: flush-sync` for zero loss, or the `logstore` engine |
+| Insert pod crash (`buffer` engine) | In-flight buffer lost | Use the `logstore` engine |
 | S3 unreachable | Buffer grows in memory | Backpressure when max_buffer_bytes hit, retries with exponential backoff |
 | Select pod crash | Stateless, no data | Restart, re-read manifest from disk/S3 |

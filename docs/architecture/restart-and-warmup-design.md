@@ -203,12 +203,10 @@ startup:
   # Honesty gate. Refuse /ready=200 until manifest holds this
   # many files. 0 = gate off (legacy, fine for dev/CI). At PB
   # scale set this above smallest healthy partition count.
-  min_manifest_files: 10000
-
-  # Allow /ready=204 during background warmup. Off by default
+  min_manifest_files: 10000  # not read from the config file in this release
   # (strict 200-or-503). Soft routers (vtselect peer fan-out,
   # k8s with successThreshold=1) can opt in for faster fan-in.
-  serve_while_warming: true
+  serve_while_warming: true  # not read from the config file in this release
 
   max_warmup_time: 5m              # background goroutine budget
   serve_stale: false               # legacy; superseded by gate above
@@ -222,9 +220,9 @@ shutdown:
   persist_timeout: 30s             # bound the SIGTERM snapshot save
 
 cache:
-  footer_max_items: 100000         # traces: auto-tuned to manifest size when unset; logs: fixed at 10000 today
-  warmup_partitions: 12            # most-recent N partitions to pre-load
-  warmup_max_files: 2000
+  footer_max_items: 100000         # traces: auto-tuned to manifest size when unset; logs: fixed at 10000 today; not read from the config file in this release
+  warmup_partitions: 12            # most-recent N partitions to pre-load; not read from the config file in this release
+  warmup_max_files: 2000  # not read from the config file in this release
 ```
 
 ### Sizing matrix (current defaults vs PB-scale recommendations)

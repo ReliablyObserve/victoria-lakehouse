@@ -26,8 +26,12 @@ ALB target group health checks) wait for full warmup.
 ```yaml
 # config.yaml
 startup:
-  serve_while_warming: true   # default false (strict 200-or-503)
+  serve_while_warming: true   # not read from the config file in this release
 ```
+
+This release does not read `startup.serve_while_warming` or `startup.min_manifest_files`
+from the config file, and neither has a flag, so both stay at their defaults (strict
+200-or-503, gate off).
 
 When `serve_while_warming: true`, /ready returns 204 once
 `ServingReady` is true. Otherwise it stays at 503 until 200.
@@ -77,12 +81,12 @@ startup:
   #   tiny dev cluster  →  100
   #   single-node prod  →  1000
   #   PB-scale fleet    → 10000+
-  min_manifest_files: 10000
+  min_manifest_files: 10000  # not read from the config file in this release
 
   # If true, /ready returns 204 ("warming") instead of 503
   # while background warmup runs. k8s `successThreshold: 1`
   # routes 204 traffic; AWS ALB requires 200 by default.
-  serve_while_warming: true
+  serve_while_warming: true  # not read from the config file in this release
 
   # Existing settings still apply:
   warmup_window: 5m

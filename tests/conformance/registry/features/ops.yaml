@@ -314,3 +314,26 @@
     Every e2e and benchmark claim in this repo is only as honest as its seed. The generator emits
     logs and traces that correlate, span services, and carry the cardinality real telemetry has,
     which is what makes service-graph and cross-signal tests meaningful.
+
+- id: lh.feature.ops.config_drift_gate
+  title: print-default-config and the config-drift gate
+  status: shipped
+  area: ops
+  surfaces: [flag]
+  rows: [lh.flag.print_default_config]
+  tests:
+    - cmd/lakehouse-logs/config_surface_test.go
+    - lakehouse-traces/config_surface_test.go
+    - internal/config/surface_test.go
+    - internal/config/field_docs_test.go
+    - internal/config/docs_examples_test.go
+  docs:
+    - docs/configuration.md
+  changelog_bullets:
+    - '`print-default-config` and a config drift gate: the code defaults are the one source of truth.'
+  highlight: >-
+    **Config drift gate**: `print-default-config` emits every config key with its default, merge rule, profile overrides and flag as JSON, and CI regenerates the docs and Helm values from it so a hand-edit that disagrees with the code defaults fails the build.
+  description: >-
+    The code defaults are the single source of truth for configuration. `print-default-config`
+    renders the whole surface as JSON, and a CI gate regenerates the documentation and Helm values
+    from it, so a hand-edit that disagrees with the code fails the build instead of misleading operators.

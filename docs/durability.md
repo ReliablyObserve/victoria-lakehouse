@@ -59,9 +59,9 @@ flowchart LR
 > (`buffer_flush_enabled`) is **off by default** and the LH WAL is deleted. So in
 > the *default* configuration the in-flight window is held in the buffer for
 > `buffer_retention` and served to reads, but is **not** re-flushed to S3 by the
-> legacy path on crash. The two clean end-states are: **enable the flip** (full
-> crash-safety, no WAL) or, if you need the legacy path authoritative,
-> **`ack_mode: flush-sync`** (200 only after S3 confirms). See
+> legacy path on crash. The clean end-state is to **enable the flip** (full
+> crash-safety, no WAL). `ack_mode: flush-sync` (200 only after S3 confirms) is
+> not an alternative in this release: no binary reads `insert.ack_mode`. See
 > [Configuration](#7-configuration).
 
 ---
@@ -310,7 +310,7 @@ engine that owns the flushed data.
 | `insert.buffer_flush_enabled` | `false` | When `true`, the buffer is the **authoritative** Parquet producer (the WAL cutover). Requires `buffer_engine: logstore`. |
 | `insert.buffer_flush_interval` | `5m` | The object-store flush **cap** (max-linger). The flusher flushes on `target_file_size` OR this, whichever first. Must be `<< buffer_retention`. |
 | `insert.target_file_size` | `128MB` | The size trigger for a flush and the compaction target. |
-| `insert.ack_mode` | `buffer` | `buffer` acks after the in-memory/buffer add; `flush-sync` acks only after S3 confirms (zero-loss for the legacy path). |
+| `insert.ack_mode` | `buffer` | Designed as `buffer` (ack after the buffer add) or `flush-sync` (ack only after S3 confirms). **Not read by either binary in this release** — it is validated and a profile sets it, but no code path acts on it, so every insert is acknowledged once buffered. |
 | `delete.persist_path` | `/data/lakehouse/tombstones` | Directory holding the local tombstone copy. **Must be a durable volume** — it is the copy that survives a `kill -9` when S3 is also unreachable. |
 
 ---

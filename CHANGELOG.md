@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`print-default-config` and a config drift gate: the code defaults are the one source of truth.** Both binaries gain a `print-default-config` subcommand (also accepted as `-print-default-config`) that prints the whole configuration surface as JSON: all 237 config keys with their default and how a config-file value is merged, every profile as the keys it overrides, and every flag (77 `-lakehouse.*` flags on `lakehouse-logs`, 79 on `lakehouse-traces`) with the key it writes and its effect — found by probing each binary's own flag handling, not a hand-kept mapping. Golden tests pin both outputs, and every config key and section now carries a doc comment. `docs/configuration.md` gains a reference generated from the code (type, default, config-file merge rule, flags, profile overrides and description of every key), a generated flag table, every profile as its explicit override set and a "Profile flag gaps" table; the profile summary in `README.md` and `docs/getting-started.md` and the key tables on topic pages are generated too, and keys that no binary reads are marked. The `helm-config-drift` CI job now also fails when a chart value, schema default or template fallback differs from the code default without a recorded `override` line (with a reason, in `scripts/ci/helm-drift-allowlist.txt`, stale as soon as either side changes), when docs name a flag or key that does not exist, quote a wrong default or set a key the binaries ignore without saying so, when a flag usage string claims a wrong default, when a deployment config is malformed, or when a generated block is stale; every documented `lakehouse:` example must load strictly. Run it locally with `make config-drift`; regenerate with `make config-docs`. Tooling and docs; no runtime or perf change.
+
+### Changed
+
+- **Helm chart defaults follow the code defaults.** Two values change what chart deployments run:
+
+- **Flag help states the real defaults.** Eleven `-lakehouse.*` usage strings claimed defaults the code does not use — among them `-lakehouse.query.file-workers` (said 8, code 64), `-lakehouse.cache.memory-mb` (256, code 512), `-lakehouse.cache.disk-max-mb` (1024, code 51200), `-lakehouse.query.max-files-per-query` (500, code unlimited) and `-lakehouse.tenant.header-account` (AccountID, code X-Scope-AccountID). `-lakehouse.compaction.enabled` and `-lakehouse.traces.jaeger-enabled` now say that `false` does not turn the feature off, and `-lakehouse.profile` says it only fills keys left at zero.
+
+- **Configuration docs describe what the binaries actually do.** The hand-written tables in `docs/configuration.md` documented 110 flags that do not exist and contradicted each other (compaction both on and off by default; the `balanced` profile with compaction off and zstd 7); the generated reference replaces them. Across the docs: compaction is on by default in both binaries and partitions are assigned by HRW ownership (the leader-election flags, Lease RBAC and troubleshooting steps no longer exist); `insert.ack_mode` and 45 other keys are accepted but not read by either binary, so the `flush-sync` zero-loss acknowledgement described in `docs/cross-az-optimization.md`, `docs/write-path.md`, `docs/durability.md`, `docs/cost-comparison.md` and `README.md` is not in effect — use the `logstore` buffer engine for crash durability; `--lakehouse.profile` (which the chart uses) applies only the keys the loaded config leaves at zero, so for example `max-cost-savings` selected that way keeps compaction on; `startup.min_manifest_files`, `startup.serve_while_warming`, `cache.footer_max_items`, the `cache.warmup_*` keys, `pmeta.*` and `promoted_attributes` are not read from the config file, and the examples that set them now say so.
+
+### Fixed
+
+- **Chart deployments following the documented `--set lakehouseConfig.mode=...` no longer fail to start.** The config map already writes `mode` for each signal, so the extra value rendered a duplicate `mode` key that the binaries reject; the chart now drops a user-set `lakehouseConfig.mode`, and `docs/kubernetes-deployment.md` installs the traces release with `logs.enabled=false` / `traces.enabled=true`.
+
+- **Documented config examples that did not load.** Per-tenant retention overrides in `README.md` and `docs/multi-tenancy.md` were written as `retention: 720h`; the type is `retention: {keep: 720h}`, so a copied example stopped the binary at startup. `docs/deletion-strategy.md`, `docs/write-path.md`, `docs/operations.md`, `docs/bloom-index.md` and `docs/architecture/field-value-catalog.md` used config keys that do not exist. `deployment/docker/lakehouse-benchmark-config.yml`, which nothing mounted and whose keys both binaries ignored (no `lakehouse:` root), is removed.
+
 ## [0.142.8] - 2026-09-15
 
 ### Changed

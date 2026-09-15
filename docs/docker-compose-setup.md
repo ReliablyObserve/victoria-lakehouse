@@ -179,7 +179,6 @@ Serves VictoriaLogs-compatible select APIs backed by Parquet files on MinIO. Pre
 ```yaml
 lakehouse-traces:
   command:
-    - "-lakehouse.mode=traces"
     - "-lakehouse.s3.endpoint=http://minio:9000"
     - "-lakehouse.s3.force-path-style=true"
 ```

@@ -163,7 +163,14 @@ graph TD
 
 ### Write Path Durability — AZ Failure Protection
 
-The insert path buffers data in memory before flushing to S3 as Parquet. The **acknowledge mode** (`ack_mode`) controls when Lakehouse tells the client "your data is safe" — this single setting determines your durability guarantee for every failure scenario.
+The insert path buffers data in memory before flushing to S3 as Parquet. The **acknowledge mode** (`ack_mode`) is designed to control when Lakehouse tells the client "your data is safe".
+
+> **Not implemented in this release.** `insert.ack_mode` is accepted and validated, and the
+> `max-durability` profile sets it to `flush-sync`, but neither binary reads it: every
+> insert is acknowledged once it is buffered, whatever the setting. The `flush-sync` flow
+> below describes the design. For crash durability today, use the `logstore` buffer engine
+> (see [Persistence & Durability](durability.md)); the configuration reference marks every
+> key no binary reads.
 
 #### Choose Your Durability Level
 
@@ -285,29 +292,17 @@ For observability data where 100-500ms insert latency is acceptable (and it almo
 # Helm values.yaml
 lakehouseConfig:
   insert:
-    ack_mode: "buffer"           # buffer (default) | flush-sync  ("wal" is a vestigial alias)
-    # buffer mode settings:
-    flush_interval: "10s"        # periodic flush to S3 (buffer mode)
-    # flush-sync mode settings:
-    flush_linger: "200ms"        # max time to accumulate rows before S3 write
-    flush_max_rows: 5000         # force flush after N rows even if linger not reached
-    # durable-buffer (crash recovery, no WAL):
-    buffer_engine: "logstore"    # on-disk parts, restored on open
-    buffer_dir: "/data/lakehouse/buffer"
+    flush_interval: 1m           # periodic flush to S3
+    # durable buffer (crash recovery, no WAL):
+    buffer_engine: logstore      # on-disk parts, restored on open
+    buffer_dir: /data/lakehouse/buffer
+    # ack_mode (buffer | wal | flush-sync), flush_linger and flush_max_rows are
+    # accepted but not read by the binaries in this release.
 ```
 
 ```bash
-# CLI — zero-loss mode
-lakehouse --lakehouse.insert.ack-mode=flush-sync \
-          --lakehouse.insert.flush-linger=200ms
-
-# CLI — fast mode with shorter risk window
-lakehouse --lakehouse.insert.ack-mode=buffer \
-          --lakehouse.insert.flush-interval=2s
-
-# CLI — durable buffer (survives pod crashes, no WAL)
-lakehouse --lakehouse.insert.buffer-engine=logstore \
-          --lakehouse.insert.buffer-dir=/data/lakehouse/buffer
+# CLI — shorter flush interval (the buffer settings have no flags; set them in the config file)
+lakehouse-logs -lakehouse.insert.flush-interval=2s
 ```
 
 #### Recommendation

@@ -19,20 +19,20 @@ Victoria Lakehouse ships a production-ready Helm chart at `charts/victoria-lakeh
 ```bash
 # Logs mode
 helm install lakehouse-logs oci://ghcr.io/reliablyobserve/charts/victoria-lakehouse \
-  --set lakehouseConfig.mode=logs \
   --set lakehouseConfig.s3.bucket=obs-archive \
   --set lakehouseConfig.s3.region=us-east-1
 
 # Traces mode (separate release)
 helm install lakehouse-traces oci://ghcr.io/reliablyobserve/charts/victoria-lakehouse \
-  --set lakehouseConfig.mode=traces \
+  --set logs.enabled=false \
+  --set traces.enabled=true \
   --set lakehouseConfig.s3.bucket=obs-archive \
   --set lakehouseConfig.s3.region=us-east-1
 ```
 
 ## Configuration Profiles
 
-Set a profile globally or per-signal/per-role to tune 40+ settings with one value:
+Set a profile globally or per-signal/per-role:
 
 ```yaml
 # values.yaml — global profile
@@ -55,7 +55,7 @@ logs:
     profile: max-performance
 ```
 
-Resolution order: per-role > per-signal > global. See [Getting Started — Configuration Profiles](getting-started.md#configuration-profiles) for the full profile reference.
+Resolution order: per-role > per-signal > global. The global `lakehouseConfig.profile` is written into the rendered config file, where every non-zero value the chart sets wins over it; the per-signal and per-role profiles reach the pods only as `--lakehouse.profile`, which applies only the keys the rendered config leaves at zero — see [Configuration — Configuration profiles](configuration.md#configuration-profiles) and [Profile flag gaps](configuration.md#profile-flag-gaps). See [Getting Started — Configuration Profiles](getting-started.md#configuration-profiles) for the full profile reference.
 
 ## Architecture
 
@@ -103,7 +103,6 @@ The Helm chart deploys these Kubernetes resources:
 | `servicemonitor.yaml` | ServiceMonitor | Prometheus scraping (optional) |
 | `ingress.yaml` | Ingress | External access (optional) |
 | `serviceaccount.yaml` | ServiceAccount | Per-component service accounts |
-| `compaction-rbac.yaml` | Role/RoleBinding | RBAC for K8s Lease leader election |
 
 ## Key Values
 
@@ -111,7 +110,6 @@ The Helm chart deploys these Kubernetes resources:
 
 ```yaml
 lakehouseConfig:
-  mode: logs          # "logs" or "traces"
   s3:
     bucket: obs-archive
     region: us-east-1
@@ -209,16 +207,19 @@ lakehouseConfig:
 ### Compaction
 
 ```yaml
-compaction:
-  enabled: true
-  interval: 5m
-  leaderElection: auto           # auto, k8s, s3, none
-  minFilesL0: 10
-  minFilesL1: 10
-  minAge: 1h
+lakehouseConfig:
+  compaction:
+    enabled: true
+    interval: 5m
+    min_files_l0: 10
+    min_files_l1: 10
+    min_age: 1h
 ```
 
-When `leaderElection` is `auto` or `k8s`, the chart creates RBAC resources (`compaction-rbac.yaml`) granting `get/create/update` on Lease objects in the `coordination.k8s.io/v1` API group.
+Every insert pod runs the compaction scheduler; HRW ownership assigns each partition to
+exactly one pod, so the chart needs no Lease objects or RBAC for it. Setting
+`enabled: false` does not turn compaction off — see
+[Configuration — Compaction on or off](configuration.md#compaction-on-or-off).
 
 ## Multi-AZ Topology
 

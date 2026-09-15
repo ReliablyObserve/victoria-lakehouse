@@ -21,7 +21,7 @@ spec:
         {{- if .Values.traces.enabled }}
         - port: 10428
           protocol: TCP
-        {{- if (dig "jaeger_enabled" false .Values.traces.config) }}
+        {{- if (dig "jaeger_enabled" true .Values.traces.config) }}
         - port: {{ dig "jaeger_grpc_port" 16685 .Values.traces.config }}
           protocol: TCP
         {{- end }}

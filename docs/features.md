@@ -18,10 +18,10 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
-| Ops | 13 | 0 | 0 | 0 | 13 |
+| Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **128** | **1** | **3** | **8** | **140** |
+| **Total** | **129** | **1** | **3** | **8** | **141** |
 
 ## Coverage gaps
 
@@ -1392,7 +1392,7 @@ Cold-query latency is a sum of many small object-store operations, which aggrega
 - Verification: tests: `internal/telemetry/telemetry_test.go`, `internal/telemetry/traced_storage_test.go`, `internal/telemetry/traced_writer_test.go`, `internal/config/telemetry_test.go`
 - Docs: `docs/telemetry.md`
 
-## Ops (13)
+## Ops (14)
 
 ### ✅ Validated benchmark harness
 
@@ -1406,6 +1406,18 @@ A fast wrong answer is not a benchmark result. The harness validates every itera
 - Docs: `docs/benchmarks.md`, `docs/benchmarks/full-scope-s3.md`
 - Changelog: `0.79.0`
 - Note: The linked harness tests are not run in CI; they are run by hand alongside the benchmarks.
+
+### ✅ print-default-config and the config-drift gate
+
+`lh.feature.ops.config_drift_gate` · status: shipped · since: the release after v0.142.8 · surfaces: flag
+
+**Config drift gate**: `print-default-config` emits every config key with its default, merge rule, profile overrides and flag as JSON, and CI regenerates the docs and Helm values from it so a hand-edit that disagrees with the code defaults fails the build.
+
+The code defaults are the single source of truth for configuration. `print-default-config` renders the whole surface as JSON, and a CI gate regenerates the documentation and Helm values from it, so a hand-edit that disagrees with the code fails the build instead of misleading operators.
+
+- Verification: rows: `lh.flag.print_default_config` (pass, pending) · tests: `cmd/lakehouse-logs/config_surface_test.go`, `lakehouse-traces/config_surface_test.go`, `internal/config/surface_test.go`, `internal/config/field_docs_test.go`, `internal/config/docs_examples_test.go`
+- Docs: `docs/configuration.md`
+- Changelog: the release after `0.142.8`
 
 ### ✅ Configuration profiles
 

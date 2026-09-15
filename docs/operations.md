@@ -189,32 +189,29 @@ Alert: `LakehouseS3CircuitBreakerOpen`.
 
 ## Compaction
 
-### Enabling Compaction
+### Compaction on or off
 
-Compaction is disabled by default. Enable it for production deployments:
-
-```bash
-lakehouse \
-  --lakehouse.compaction.enabled=true \
-  --lakehouse.compaction.leader-election=auto \
-  --lakehouse.compaction.min-files-l0=10 \
-  --lakehouse.compaction.min-files-l1=10
-```
-
-Or in YAML:
+Compaction is on by default in both binaries. Every pod runs the scheduler, and
+highest-random-weight (HRW) ownership over the live peer set assigns each partition to
+exactly one pod, so no leader election is involved. Tune it in the config file:
 
 ```yaml
 lakehouse:
   compaction:
-    enabled: true
-    leader_election: auto
+    interval: 5m
+    max_concurrent: 1
     min_files_l0: 10
     min_files_l1: 10
-    interval: 5m
     min_age: 1h
 ```
 
-Compaction is only meaningful when inserts are active. For read-only (select-only) instances, leave compaction disabled.
+The scan interval, daily rollup age and row-group schedule also have flags, for example
+`-lakehouse.compaction.interval=5m`. `compaction.enabled: false` in the config file and
+`-lakehouse.compaction.enabled=false` do not turn compaction off; a config file that
+selects the `max-cost-savings` or `dev` profile does. See
+[Configuration — Compaction on or off](configuration.md#compaction-on-or-off).
+
+Compaction is only meaningful where inserts are active.
 
 ### Monitoring Compaction
 
@@ -225,7 +222,7 @@ Key metrics to watch:
 | `lakehouse_compaction_errors_total` (rate) | Any sustained errors |
 | `lakehouse_compaction_level_files{level="0"}` | Should trend down over time |
 | `lakehouse_compaction_duration_seconds` (p95) | >60s may indicate S3 saturation |
-| `lakehouse_election_leader` | Should be 1 on exactly one instance in the fleet |
+| `lakehouse_compaction_dual_ownership_total` (rate) | Any increase: two pods compacted the same partition (ring flap or DNS lag) |
 
 ### Compaction Hints & Stats
 
@@ -289,21 +286,18 @@ It runs the **same merge path** as a scheduled compaction (synchronously) and ho
 | `403` | This instance is not the HRW owner of the partition (body names the owner) |
 | `503` | Compaction is disabled on this instance |
 
-### Leader Election Troubleshooting
+### Ownership Troubleshooting
 
-**K8s mode — "not becoming leader"**
+**A partition is never compacted.** Check `lakehouse_compaction_ownership_empty_peers_total`
+(the pod saw an empty peer set) and `lakehouse_compaction_ownership_self_in_peers` (should
+be 1: the pod is part of its own ring). A pod missing from peer discovery
+(`discovery.peer_headless_service`) cannot own partitions other pods expect it to.
 
-1. Check that the Helm chart RBAC was applied: the ServiceAccount needs `get/create/update` on `leases.coordination.k8s.io`.
-2. Check `lakehouse_election_transitions_total` — transitions should occur when pods restart.
-3. Increase `--lakehouse.compaction.lease-duration` if instances are losing leadership due to transient API server latency.
-
-**S3 mode — lock not being released after crash**
-
-The lock TTL (`--lakehouse.compaction.s3-lock-ttl`, default 60s) controls when a stale lock may be stolen. After a crash, the next instance will take over within one TTL. To recover faster, reduce the TTL or manually delete the lock file `{prefix}.election-lock`.
-
-**`none` mode — multiple instances all compact**
-
-This is expected for `none` mode. Only use `none` for single-instance deployments. For fleets, use `auto`, `k8s`, or `s3`.
+**Two pods compact the same partition.** `lakehouse_compaction_dual_ownership_total`
+increases while the ring changes (scaling, restarts, DNS lag);
+`lakehouse_compaction_ownership_changes_total` shows how often. Keep the HPA scale-down
+stabilization window longer than the peer ring's 60-second stabilization period (the
+`discovery.ring_stabilize_duration` key is not read in this release).
 
 ## Deletion Operations
 

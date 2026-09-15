@@ -62,17 +62,21 @@ lakehouseConfig:
   # is the metadata layer post-consolidation; the legacy per-partition sidecars
   # are no longer written. Disabling is a degraded mode: no catalog/bloom for new
   # files, cold restarts warm from Parquet footers only.
+  # Note: this release does not read pmeta.* from the config file, and the
+  # --lakehouse.pmeta.enabled flag (default true) always wins; set these with
+  # the --lakehouse.pmeta.* flags in <signal>.<role>.extraArgs.
   pmeta:
     # --lakehouse.pmeta.enabled
     enabled: true
     # -- Distinct-values cap per field before it turns high-cardinality
-    # (not enumerable; reads fall through to the exact scan). 0 = default 50000.
+    # (not enumerable; reads fall through to the exact scan). 0 = the built-in
+    # cap of 50000.
     # --lakehouse.pmeta.cardinality-threshold
     cardinality_threshold: 0
-    # -- Id-like columns to sketch (HLL cardinality) instead of enumerate.
-    # trace_id/span_id are the supported taps.
+    # -- Extra id-like columns to sketch (HLL cardinality) instead of
+    # enumerate. trace_id and span_id are always sketched.
     # --lakehouse.pmeta.always-sketch-fields
-    always_sketch_fields: ["trace_id", "span_id"]
+    always_sketch_fields: []
     # -- Return empty for always-sketch field_values instead of scanning
     # (matches VL/VT behavior for id columns).
     # --lakehouse.pmeta.refuse-sketch-enumeration
@@ -109,40 +113,45 @@ lakehouseConfig:
     # value is still honored (request=limit=alias). Removed in v1.0.
     max_concurrent_downloads: 16
     # -- K8s-style request: always-reserved baseline S3 download concurrency.
-    # Defaults to limit/4 when only legacy max_concurrent_downloads is set.
+    # Deployment override: the binaries default to 0 (unset), which falls back
+    # to max_concurrent_downloads and logs its deprecation warning at startup.
+    # The chart sets the triple instead; the effective bounds are the same
+    # (request 4 = limit/4, limit 16).
     concurrent_downloads_request: 4
-    # -- K8s-style limit: hard ceiling on concurrent S3 downloads.
+    # -- K8s-style limit: hard ceiling on concurrent S3 downloads (deployment
+    # override, see concurrent_downloads_request).
     concurrent_downloads_limit: 16
-    # -- K8s-style scaling policy: fixed (default) | linear | expbackoff.
-    # Linear and expbackoff are reserved for future signal-driven scaling
-    # (queue depth, in-flight pressure); fixed behaves as flat ceiling at limit.
-    concurrent_downloads_scaling: fixed
-    # -- S3 read-ahead BASE window in bytes (0 = use default 2MB). The window
-    # adapts upward on sequential scans — see read_ahead_max_bytes.
-    read_ahead_bytes: 0
-    # -- Merge S3 range reads with gaps smaller than this in bytes (0 = use
-    # default 1MB). BDP-priced: at ~100ms S3 first-byte latency, over-fetching
-    # a 1MB gap costs ~10-20ms of transfer but saves a ~100ms round trip.
-    coalesce_gap_bytes: 0
-    # -- Ceiling for the ADAPTIVE read-ahead window in bytes (0 = use default
-    # 8MB). The window doubles from read_ahead_bytes after 2+ consecutive
+    # -- K8s-style scaling policy: fixed | linear | expbackoff; empty means
+    # fixed. Linear and expbackoff are reserved for future signal-driven
+    # scaling (queue depth, in-flight pressure); fixed behaves as a flat
+    # ceiling at limit.
+    concurrent_downloads_scaling: ""
+    # -- S3 read-ahead BASE window in bytes (2 MiB). The window adapts upward
+    # on sequential scans — see read_ahead_max_bytes. 0 is treated as unset.
+    read_ahead_bytes: 2097152
+    # -- Merge S3 range reads with gaps smaller than this in bytes (1 MiB).
+    # BDP-priced: at ~100ms S3 first-byte latency, over-fetching a 1MB gap
+    # costs ~10-20ms of transfer but saves a ~100ms round trip.
+    coalesce_gap_bytes: 1048576
+    # -- Ceiling for the ADAPTIVE read-ahead window in bytes (8 MiB). The
+    # window doubles from read_ahead_bytes after 2+ consecutive
     # forward-sequential misses (wide scan) and resets on a random seek
     # (needle query). Per-signal tuning: scan-heavy logs deployments benefit
     # from 8-16MB; needle-heavy traces deployments can pin 4MB to bound
     # over-fetch.
-    read_ahead_max_bytes: 0
-    # -- Waste-feedback threshold for the ADAPTIVE read-ahead window (0 = use
-    # default 0.5). When a window is evicted with MORE than this fraction of
-    # its bytes never read, the next window HALVES toward read_ahead_bytes
-    # instead of growing, and growth resumes only after consecutive efficient
-    # windows. Catches sparse forward hops the grow/reset state machine
-    # misclassifies as scans (measured 46 MB/query never-read fetch on
-    # filtered counts). Values >= 1 disable waste feedback.
-    read_ahead_waste_threshold: 0
-    # -- Parquet page read buffer for ranged S3 opens in bytes (0 = use
-    # default 1MB). parquet-go's own default is 4KB — sized for local disk,
-    # far too small for network storage (hundreds of tiny reads per chunk).
-    read_buffer_size: 0
+    read_ahead_max_bytes: 8388608
+    # -- Waste-feedback threshold for the ADAPTIVE read-ahead window. When a
+    # window is evicted with MORE than this fraction of its bytes never read,
+    # the next window HALVES toward read_ahead_bytes instead of growing, and
+    # growth resumes only after consecutive efficient windows. Catches sparse
+    # forward hops the grow/reset state machine misclassifies as scans
+    # (measured 46 MB/query never-read fetch on filtered counts). Values >= 1
+    # disable waste feedback; 0 is treated as unset.
+    read_ahead_waste_threshold: 0.5
+    # -- Parquet page read buffer for ranged S3 opens in bytes (1 MiB).
+    # parquet-go's own default is 4KB — sized for local disk, far too small
+    # for network storage (hundreds of tiny reads per chunk).
+    read_buffer_size: 1048576
     # -- Parquet page read mode on ranged S3 opens: async (default — pages
     # are read ahead by a per-column goroutine, hiding S3 latency behind
     # decode; memory bounded at ~1 page in flight per column reader) or sync
@@ -159,22 +168,22 @@ lakehouseConfig:
     # (non-projected) reads always use the window stack.
     projected_fetch_mode: window
     # -- DEPRECATED: the per-PLAN cap is retired (planned-fetch v2 slice 1
-    # cap re-scope). Kept parsed for compatibility; plans are admitted via
-    # the memory ledger (absolute ceiling = the file size) and bounded
-    # per-SPAN by planned_fetch_span_cap_bytes below.
-    projected_fetch_max_bytes: 0
+    # cap re-scope). Kept parsed for compatibility and no longer read; plans
+    # are admitted via the memory ledger (absolute ceiling = the file size)
+    # and bounded per-SPAN by planned_fetch_span_cap_bytes below.
+    projected_fetch_max_bytes: 16777216
     # -- Concurrent span GETs per file on the PLANNED projected-read path:
-    # min(k, spans) in flight (0 = default 16). The planned-v1 live verdict
-    # measured 13-15 spans/file drained 4-at-a-time into ~4 serial RTT
-    # waves; k=16 fetches a typical per-file plan in one wave while
-    # 8 file workers x 16 stays at the HTTP/1.1 connection-pool ceiling.
-    # Only the opt-in planned mode reads this; window mode is untouched.
-    planned_fetch_max_inflight: 0
-    # -- Per-SPAN byte cap on the PLANNED projected-read path (0 = default
-    # 16MB) — ClickHouse's bytes_per_read_task scope: a coalesced span
-    # above the cap is SPLIT into cap-sized concurrent GETs instead of the
-    # plan falling back to the window path. Only planned mode reads this.
-    planned_fetch_span_cap_bytes: 0
+    # min(k, spans) in flight. The planned-v1 live verdict measured 13-15
+    # spans/file drained 4-at-a-time into ~4 serial RTT waves; k=16 fetches a
+    # typical per-file plan in one wave while 8 file workers x 16 stays at
+    # the HTTP/1.1 connection-pool ceiling. Only the opt-in planned mode
+    # reads this; window mode is untouched.
+    planned_fetch_max_inflight: 16
+    # -- Per-SPAN byte cap on the PLANNED projected-read path (16 MiB) —
+    # ClickHouse's bytes_per_read_task scope: a coalesced span above the cap
+    # is SPLIT into cap-sized concurrent GETs instead of the plan falling
+    # back to the window path. Only planned mode reads this.
+    planned_fetch_span_cap_bytes: 16777216
     # -- S* whole-file threshold for the PLANNED projected-read path (0 =
     # per-signal default: logs 5MB, traces 8MB). A cold-footer file below
     # the threshold is downloaded whole through the smart-cache path — the
@@ -220,8 +229,8 @@ lakehouseConfig:
     memory_request: ""
     # -- K8s-style limit: hard ceiling on L1 memory cache.
     memory_limit_v2: ""
-    # -- K8s-style scaling policy: fixed | linear | expbackoff.
-    memory_scaling: fixed
+    # -- K8s-style scaling policy: fixed | linear | expbackoff; empty means fixed.
+    memory_scaling: ""
     # -- L2 disk cache directory path.
     disk_path: /data/lakehouse/cache
     # -- L2 disk cache size limit.
@@ -234,12 +243,17 @@ lakehouseConfig:
     bloom_ttl: 1h
     # -- TTL for cached Parquet data pages.
     page_ttl: 10m
-    # -- Number of recent hourly partitions to warm on startup (0=disabled).
+    # -- Startup cache warmup runs only when warmup_partitions or
+    # warmup_max_files is set. Number of recent hourly partitions to warm
+    # (0 = 6 when warmup runs). Note: this release does not read the three
+    # warmup keys from the config file; set them with
+    # --lakehouse.cache.warmup-partitions / --lakehouse.cache.warmup-max-files
+    # in extraArgs.
     warmup_partitions: 0
-    # -- Maximum files to warm on startup.
-    warmup_max_files: 500
-    # -- Maximum concurrent warmup downloads.
-    warmup_concurrency: 4
+    # -- Maximum files to warm on startup (0 = 500 when warmup runs).
+    warmup_max_files: 0
+    # -- Maximum concurrent warmup downloads (0 = 16).
+    warmup_concurrency: 0
     # -- Cache partition mode: az-local (AZ-scoped ring), global (full ring), distributed.
     partition_mode: az-local
 
@@ -248,7 +262,7 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   insert:
     # -- Periodic flush interval. Lower = less read delay, more S3 PUTs.
-    flush_interval: 30s
+    flush_interval: 1m
     # -- Max rows per partition buffer before triggering flush.
     max_buffer_rows: 50000
     # -- Total buffer memory limit across all partitions.
@@ -261,11 +275,14 @@ lakehouseConfig:
     bloom_columns:
       - service.name
       - trace_id
-    # -- ZSTD compression level (1=fast, 22=max compression).
-    compression_level: 7
+    # -- ZSTD level for fresh writes (1=fast, 22=max compression). Compaction
+    # recompresses older files per compaction.compression_level_by_output_level.
+    compression_level: 3
     # -- Insert buffer engine. "buffer" = legacy in-memory staging; "logstore" =
     # durable logstorage-native buffer (on-disk parts, restored on open) — crash
     # recovery WITHOUT a separate WAL. See docs/durability.md.
+    # Deployment override: the binaries default to "buffer"; the chart runs
+    # "logstore" on its persistent /data/lakehouse volume.
     buffer_engine: logstore
     # -- Buffer parts directory. MUST be a durable volume (not tmpfs) for crash
     # recovery.
@@ -360,9 +377,9 @@ lakehouseConfig:
     # -- Number of partitions to read ahead during sequential scans.
     read_ahead_depth: 2
     # -- Maximum concurrent prefetch downloads.
-    max_concurrent: 4
+    max_concurrent: 8
     # -- Maximum pending prefetch tasks in queue.
-    max_queue: 64
+    max_queue: 128
 
   # ---------------------------------------------------------------------------
   # Smart Cache — Unified cache controller (L1→L4 orchestration)
@@ -387,8 +404,8 @@ lakehouseConfig:
     disk_request: ""
     # -- K8s-style limit: hard ceiling on smart-cache disk.
     disk_limit: ""
-    # -- K8s-style scaling policy: fixed | linear | expbackoff.
-    disk_scaling: fixed
+    # -- K8s-style scaling policy: fixed | linear | expbackoff; empty means fixed.
+    disk_scaling: ""
     # -- Manual ingestion rate hint for sizing (e.g., "100MB"). Empty = auto-detect.
     ingestion_rate_hint: ""
 
@@ -422,7 +439,7 @@ lakehouseConfig:
     # Maps to -http.maxGracefulShutdownDuration flag.
     max_graceful_duration: 7s
     # -- Timeout for flushing buffered data to S3 during shutdown.
-    flush_timeout: 15s
+    flush_timeout: 30s
     # -- Timeout for persisting manifest/cache/stats snapshots during shutdown.
     persist_timeout: 10s
     # -- Timeout for releasing leader lease and notifying peers during shutdown.
@@ -443,21 +460,27 @@ lakehouseConfig:
     max_rows_request: 0
     # -- K8s-style limit: hard ceiling on rows per query.
     max_rows_limit: 0
-    # -- K8s-style scaling policy: fixed | linear | expbackoff.
-    max_rows_scaling: fixed
+    # -- K8s-style scaling policy: fixed | linear | expbackoff; empty means fixed.
+    max_rows_scaling: ""
     # -- Slow query logging threshold.
     slow_threshold: 5s
     # -- DEPRECATED: use file_workers_request/file_workers_limit (the K8s-style triple).
     # Honored as request=limit=alias when triple unset. Removed in v1.0.
+    # Deployment override: the binaries default to 64; the chart keeps 8
+    # because 64 parallel file readers fanned out S3 downloads and parquet
+    # decode buffers wide enough to OOM a 2 GiB container on wildcard queries.
     file_workers: 8
     # -- K8s-style request: always-reserved baseline file workers.
     file_workers_request: 0
     # -- K8s-style limit: hard ceiling on file workers.
     file_workers_limit: 0
-    # -- K8s-style scaling policy: fixed | linear | expbackoff.
-    file_workers_scaling: fixed
-    # -- Maximum S3 files a single query may scan (0 = use default 500). Queries exceeding this return an error instead of OOM.
-    max_files_per_query: 500
+    # -- K8s-style scaling policy: fixed | linear | expbackoff; empty means fixed.
+    file_workers_scaling: ""
+    # -- Maximum S3 files a single query may scan; queries exceeding it return an
+    # error. 0 = unlimited (the memory budget is the safety net). Note: this
+    # release does not read the key from the config file; set it with
+    # --lakehouse.query.max-files-per-query in extraArgs.
+    max_files_per_query: 0
 
   # ---------------------------------------------------------------------------
   # Startup — Warmup and readiness behavior
@@ -478,21 +501,7 @@ lakehouseConfig:
     # -- Revalidate cache entries on stale startup.
     cache_revalidation: true
     # -- Maximum time for stale PV resync before marking ready anyway.
-    max_resync_time: 2m
-
-  # ---------------------------------------------------------------------------
-  # Schema — Parquet column extensibility
-  # ---------------------------------------------------------------------------
-  # ---------------------------------------------------------------------------
-  # Circuit Breaker — S3 failure protection
-  # ---------------------------------------------------------------------------
-  circuit_breaker:
-    # -- Number of consecutive failures to open circuit.
-    threshold: 5
-    # -- Duration circuit stays open before half-open probe.
-    timeout: 30s
-    # -- Successful probes required to close circuit.
-    success_threshold: 2
+    max_resync_time: 10m
 
   # ---------------------------------------------------------------------------
   # Tenant — Multi-tenancy routing and isolation
@@ -680,12 +689,15 @@ logs:
 
   # -- Logs-specific lakehouse configuration (merged with shared lakehouseConfig).
   config:
-    # -- Bloom filter columns for logs mode.
+    # -- Extra bloom filter columns for logs mode. service.name and trace_id
+    # are always bloom-indexed.
     bloom_columns:
       - service.name
+      - trace_id
     # -- Tier-2 custom attribute promotions (operator-declared). Each {name,
     # -- bloom} lifts a custom attribute out of the map into a dedicated slot
     # -- column (up to 8/signal); set bloom:true only for high-cardinality keys.
+    # -- Note: this release does not read promoted_attributes from the config file.
     promoted_attributes: []
     # -- Delete API endpoint prefix for logs mode.
     delete_prefix: /delete/logsql
@@ -907,6 +919,7 @@ traces:
   config:
     # -- Bloom filter columns for traces mode.
     # -- Tier-2 custom attribute promotions (see logs.promoted_attributes).
+    # -- Note: this release does not read promoted_attributes from the config file.
     promoted_attributes: []
     bloom_columns:
       - trace_id
@@ -920,6 +933,8 @@ traces:
     # -- Jaeger gRPC listen address.
     jaeger_grpc_addr: ":16685"
     # -- Jaeger gRPC port for K8s service/container (matches jaeger_grpc_addr).
+    # A chart-only input for the Service and container port; not a binary
+    # config key.
     jaeger_grpc_port: 16685
 
   # -- Traces select component (read path).
