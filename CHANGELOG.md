@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published release asset, and by probing all fourteen flags the composes pass: every one is
   still defined at 1.76.0.
 
+## [0.142.6] - 2026-09-15
+
 ### Fixed
 
 - **The hot/cold parity suite was measuring two broken tests and a stale allowlist.**
