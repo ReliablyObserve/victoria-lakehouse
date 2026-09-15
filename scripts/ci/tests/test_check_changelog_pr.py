@@ -10,6 +10,7 @@ from scripts.ci.check_changelog_pr import (
     is_release_metadata_sync,
     should_require_changelog,
     adds_version_section,
+    logical_bullets,
     version_headings,
     versioned_bullets,
 )
@@ -231,6 +232,106 @@ class CheckChangelogPRTests(unittest.TestCase):
         base = "## [Unreleased]\n\n## [0.122.0] - 2026-09-14\n\n- a\n"
         head = "## [Unreleased]\n\n## [0.122.0] - 2026-09-14\n\n- a\n- b\n"
         self.assertFalse(adds_version_section(head, base))
+
+
+class LogicalBulletTests(unittest.TestCase):
+    """A bullet is a paragraph, not a line.
+
+    The entries are long enough that the file is wrapped, so the gates must
+    read a wrapped bullet and the one-line bullet it came from as the SAME
+    bullet. Otherwise re-wrapping an entry reads as adding a new one and the
+    release gates fire on a purely cosmetic edit.
+    """
+
+    def test_wrapped_bullet_equals_its_single_line_form(self):
+        one_line = ["- **Title.** body text that goes on and on and on."]
+        wrapped = [
+            "- **Title.** body text that goes",
+            "  on and on and on.",
+        ]
+        self.assertEqual(logical_bullets(one_line), logical_bullets(wrapped))
+
+    def test_a_blank_line_ends_a_bullet(self):
+        lines = ["- first", "  still first", "", "not a bullet any more"]
+        self.assertEqual(logical_bullets(lines), ["- first still first"])
+
+    def test_the_next_marker_starts_a_new_bullet(self):
+        lines = ["- first", "  wrapped", "- second"]
+        self.assertEqual(logical_bullets(lines), ["- first wrapped", "- second"])
+
+    def test_indented_sub_bullet_is_its_own_bullet(self):
+        lines = ["- parent", "  - child", "    wrapped child"]
+        self.assertEqual(
+            logical_bullets(lines), ["- parent", "- child wrapped child"]
+        )
+
+    def test_a_heading_ends_a_bullet(self):
+        lines = ["- first", "### Fixed", "- second"]
+        self.assertEqual(logical_bullets(lines), ["- first", "- second"])
+
+    def test_a_wrapped_line_may_begin_with_a_hash(self):
+        """`#502)` is an issue reference, not a heading.
+
+        Treating any leading '#' as a heading cut the bullet short there and
+        dropped everything after it from the bullet's identity — which made a
+        reflowed entry look like a different entry.
+        """
+        lines = ["- **Title.** saw a regression in", "#502) and fixed it"]
+        self.assertEqual(
+            logical_bullets(lines), ["- **Title.** saw a regression in #502) and fixed it"]
+        )
+
+    def test_whitespace_differences_do_not_make_a_new_bullet(self):
+        self.assertEqual(
+            logical_bullets(["-   spaced    out   text"]),
+            logical_bullets(["- spaced out text"]),
+        )
+
+
+    def test_a_paragraph_break_does_not_end_a_bullet(self):
+        """A long entry is broken into paragraphs, and a paragraph break inside
+        a list item is a blank line plus an INDENTED continuation. Ending the
+        bullet there would split one entry into several and make every
+        restructured entry look new to the release gate."""
+        lines = [
+            "- **Title.**",
+            "",
+            "  First paragraph.",
+            "",
+            "  Second paragraph.",
+        ]
+        self.assertEqual(
+            logical_bullets(lines),
+            ["- **Title.** First paragraph. Second paragraph."],
+        )
+
+    def test_a_blank_line_then_unindented_text_still_ends_a_bullet(self):
+        lines = ["- first", "", "loose prose under the heading"]
+        self.assertEqual(logical_bullets(lines), ["- first"])
+
+    def test_a_paragraph_broken_entry_equals_its_one_line_form(self):
+        one = ["- **Title.** First paragraph. Second paragraph."]
+        many = ["- **Title.**", "", "  First paragraph.", "", "  Second paragraph."]
+        self.assertEqual(logical_bullets(one), logical_bullets(many))
+
+
+class ReflowIsInvisibleToTheGatesTests(unittest.TestCase):
+    def test_rewrapping_a_released_bullet_is_not_a_new_versioned_entry(self):
+        base = (
+            "## [1.0.0]\n\n"
+            "- **Shipped.** a long body that was written on one physical line.\n"
+        )
+        head = (
+            "## [1.0.0]\n\n"
+            "- **Shipped.** a long body that was\n"
+            "  written on one physical line.\n"
+        )
+        self.assertFalse(has_new_versioned_entries(head, base))
+
+    def test_a_genuinely_new_released_bullet_is_still_caught(self):
+        base = "## [1.0.0]\n\n- **Shipped.** old body.\n"
+        head = "## [1.0.0]\n\n- **Shipped.** old body.\n- **Also shipped.** new body.\n"
+        self.assertTrue(has_new_versioned_entries(head, base))
 
 
 if __name__ == "__main__":

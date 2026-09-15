@@ -96,8 +96,63 @@ def extract_unreleased_section(text: str) -> str:
     return match.group("body").strip()
 
 
+# A markdown heading is one to six '#' followed by whitespace. A bare '#' that
+# starts a wrapped line is ordinary text — an issue reference such as `#502)` —
+# and treating it as a heading would cut the bullet short there, losing
+# everything after it from the bullet's identity.
+HEADING_RE = re.compile(r"#{1,6}\s")
+
+
+def logical_bullets(lines: list[str]) -> list[str]:
+    """Bullets as whole units, one per ``- `` line plus its wrapped remainder.
+
+    A changelog bullet here is a paragraph, not a line: the entries are long
+    enough that leaving them on one physical line makes the file unreadable in
+    a diff or an editor, so bodies are wrapped. Wrapping must not change what a
+    bullet IS, or re-wrapping an existing entry would read as adding a new one
+    and the release gates below would fire on a purely cosmetic edit.
+
+    So a bullet runs from its ``- `` marker to the next marker, heading or
+    blank line, and its text is whitespace-normalised. Two bullets that differ
+    only in where their lines break are the same bullet.
+    """
+    bullets: list[str] = []
+    current: list[str] | None = None
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            bullets.append(" ".join(" ".join(current).split()))
+        current = None
+
+    blanks = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            flush()
+            current = [stripped]
+            blanks = 0
+        elif not stripped:
+            # A blank line does NOT end a bullet on its own: a long entry is
+            # broken into paragraphs, and a paragraph break inside a list item
+            # is a blank line followed by an INDENTED continuation. Only a
+            # blank line followed by something unindented ends the item.
+            blanks += 1
+        elif current is not None and not HEADING_RE.match(stripped):
+            if blanks and not line.startswith(" "):
+                flush()
+            else:
+                current.append(stripped)
+            blanks = 0
+        else:
+            flush()
+            blanks = 0
+    flush()
+    return bullets
+
+
 def extract_bullet_points(text: str) -> set[str]:
-    return {line.strip() for line in text.splitlines() if line.strip().startswith("- ")}
+    return set(logical_bullets(text.splitlines()))
 
 
 def has_genuinely_new_unreleased_entries(head_unreleased: str, base_full_changelog: str) -> bool:
@@ -112,15 +167,15 @@ def versioned_bullets(text: str) -> set[str]:
     Excludes the ``## [Unreleased]`` section so the two documentation paths
     (Unreleased vs. a materialized/backfilled version section) stay distinct.
     """
-    bullets: set[str] = set()
+    versioned: list[str] = []
     in_versioned = False
     for line in text.splitlines():
         if line.startswith("## ["):
             in_versioned = not line.startswith("## [Unreleased]")
             continue
-        if in_versioned and line.strip().startswith("- "):
-            bullets.add(line.strip())
-    return bullets
+        if in_versioned:
+            versioned.append(line)
+    return set(logical_bullets(versioned))
 
 
 def has_new_versioned_entries(head_full_changelog: str, base_full_changelog: str) -> bool:

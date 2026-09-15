@@ -115,6 +115,37 @@ func referenceRowTime(t *testing.T, params url.Values, query string) time.Time {
 	return ts
 }
 
+// seededTracesValue returns one value the HOT traces tier actually holds for
+// field, so a filter built from it cannot match an empty corpus.
+//
+// cmd/datagen assigns each service its resource attributes by drawing from a
+// fixed list with an rng seeded from the wall clock (cmd/datagen/main.go), so
+// no particular value is guaranteed to be in any given seed: five services
+// drawing a region from three candidates leave a named region absent from
+// roughly one seed in eight. A case that hard-codes one therefore compares two
+// empty answers and proves nothing — the failure mode requireNonEmptyReference
+// exists to catch. Asking the reference which values it holds keeps the case
+// testing the filter instead of the dice.
+func seededTracesValue(t *testing.T, field string) string {
+	t.Helper()
+	p := seedWindowParams()
+	p.Set("query", fmt.Sprintf("span_id:* | stats by (%s) count() n | first 1", field))
+	r := fetch(t, vtBaseURL, queryEndpoint(), p)
+	if r.StatusCode != 200 {
+		t.Fatalf("seeded-value lookup for %s returned status %d: %s", field, r.StatusCode, string(r.Body))
+	}
+	for _, row := range parseNDJSON(r.Body) {
+		// The grouped column comes back under the field's own name, with the
+		// backticks the query needed stripped.
+		if v, ok := rowValue(row, strings.Trim(field, "`")); ok && v != "" {
+			return v
+		}
+	}
+	t.Fatalf("the hot tier holds no value for %s — seed defect, not parity: "+
+		"every case built on this field would compare two empty answers", field)
+	return ""
+}
+
 // requireNonEmptyReference fails when the reference tier returned nothing to
 // compare against. Every set / row / bucket comparison is vacuously true
 // against an empty reference, so a silent pass there means the seed or the
@@ -480,4 +511,64 @@ func extractRowKeys(rows []map[string]any, skipFields []string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// internalParquetColumns are the storage-bookkeeping Parquet columns of the
+// Lakehouse row schemas. None of them is a field on hot VictoriaLogs /
+// VictoriaTraces, so a cold response row carrying one is a divergence.
+// Mirrors schema.InternalColumns (the tests module does not import it).
+var internalParquetColumns = []string{"account_id", "project_id"}
+
+// serviceGraphColumns are the VictoriaTraces service-graph edge fields. They
+// belong on service-graph rows only; a span row carrying them is a leak of the
+// Parquet layout into the response.
+var serviceGraphColumns = []string{"parent", "child", "callCount"}
+
+// isDedicatedSlotField reports whether a field name is a raw Tier-2 spare slot
+// column (ded_s01..ded_s08). A slot must surface under its operator-configured
+// attribute name or not at all.
+func isDedicatedSlotField(name string) bool {
+	return len(name) == 7 && strings.HasPrefix(name, "ded_s")
+}
+
+// assertNoInternalFields is the shared response-hygiene assertion: no response
+// row may carry a "<null>" placeholder value or a storage-internal field name.
+// Cold used to return every Parquet leaf column on every row — nulls rendered as
+// the literal "<null>", plus the tenant columns and the unmapped spare slots.
+// Reused by every parity test that looks at response rows so a regression in any
+// endpoint fires here.
+func assertNoInternalFields(t *testing.T, label string, rows []map[string]any) {
+	t.Helper()
+	for i, row := range rows {
+		for name, value := range row {
+			if s, ok := value.(string); ok && s == "<null>" {
+				t.Errorf("%s: row %d field %q has the literal placeholder \"<null>\" — a NULL "+
+					"Parquet cell leaked into the response instead of being omitted", label, i, name)
+			}
+			for _, internal := range internalParquetColumns {
+				if name == internal {
+					t.Errorf("%s: row %d carries storage bookkeeping field %q=%v; hot has no such field",
+						label, i, name, value)
+				}
+			}
+			if isDedicatedSlotField(name) {
+				t.Errorf("%s: row %d carries raw Tier-2 slot column %q=%v; a slot must surface "+
+					"under its configured attribute name or not at all", label, i, name, value)
+			}
+		}
+	}
+}
+
+// assertNoServiceGraphFields asserts that span rows do not carry the
+// service-graph edge columns.
+func assertNoServiceGraphFields(t *testing.T, label string, rows []map[string]any) {
+	t.Helper()
+	for i, row := range rows {
+		for _, sg := range serviceGraphColumns {
+			if v, ok := row[sg]; ok {
+				t.Errorf("%s: row %d carries service-graph column %q=%v on a plain span",
+					label, i, sg, v)
+			}
+		}
+	}
 }

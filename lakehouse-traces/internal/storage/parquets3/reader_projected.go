@@ -159,6 +159,18 @@ func readRowGroupProjectedBitmap(f *parquet.File, rg parquet.RowGroup, wantCols 
 }
 
 func parquetValueToInterface(v parquet.Value) any {
+	// A NULL cell (an `optional` column the span never set) has no Kind, so the
+	// switch below would fall through to parquet.Value.String(), which renders
+	// it as the literal "<null>". That string then became the value of every
+	// unset dedicated/slot/service-graph column on every cold span.
+	// VictoriaLogs treats an empty value as a non-existing field ("skip empty
+	// fields, since they equal to non-existing fields" —
+	// app/vlselect/logsql/logsql.go), so mapping NULL to "" makes the cold span
+	// carry exactly the fields the hot span carries. Sibling guard of
+	// parquetValueToString / parquetValueToAny / valueToString.
+	if v.IsNull() {
+		return ""
+	}
 	switch v.Kind() {
 	case parquet.ByteArray:
 		return string(v.ByteArray())

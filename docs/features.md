@@ -427,7 +427,7 @@ Point lookups over an object store are a file-skipping problem. Blooms answer "t
 
 The projection is derived from the query's fields, filters and stats, then handed to the reader so the fetch planner can turn it into byte ranges. A `fields`-limited scan pays for those columns and nothing else.
 
-- Verification: tests: `internal/storage/parquets3/projection_test.go`, `internal/storage/parquets3/reader_projected_test.go`, `lakehouse-traces/internal/storage/parquets3/projection_test.go`, `lakehouse-traces/internal/storage/parquets3/reader_projected_test.go` · bench: `scan`
+- Verification: rows: `lh.rows.field_set_logs` (pass, pending), `lh.rows.field_set_traces` (pass, pending) · tests: `internal/storage/parquets3/projection_test.go`, `internal/storage/parquets3/reader_projected_test.go`, `lakehouse-traces/internal/storage/parquets3/projection_test.go`, `lakehouse-traces/internal/storage/parquets3/reader_projected_test.go`, `internal/storage/parquets3/cold_row_fields_test.go`, `lakehouse-traces/internal/storage/parquets3/cold_row_fields_test.go` · bench: `scan`
 - Docs: `docs/performance.md`, `docs/read-path.md`
 
 ### ✅ Count and grouped-count pushdown to metadata
@@ -1409,7 +1409,7 @@ A fast wrong answer is not a benchmark result. The harness validates every itera
 
 ### ✅ print-default-config and the config-drift gate
 
-`lh.feature.ops.config_drift_gate` · status: shipped · since: the release after v0.142.3 · surfaces: flag
+`lh.feature.ops.config_drift_gate` · status: shipped · since: the release after v0.142.6 · surfaces: flag
 
 **Config drift gate**: `print-default-config` emits every config key with its default, merge rule, profile overrides and flag as JSON, and CI regenerates the docs and Helm values from it so a hand-edit that disagrees with the code defaults fails the build.
 
@@ -1417,7 +1417,7 @@ The code defaults are the single source of truth for configuration. `print-defau
 
 - Verification: rows: `lh.flag.print_default_config` (pass, pending) · tests: `cmd/lakehouse-logs/config_surface_test.go`, `lakehouse-traces/config_surface_test.go`, `internal/config/surface_test.go`, `internal/config/field_docs_test.go`, `internal/config/docs_examples_test.go`
 - Docs: `docs/configuration.md`
-- Changelog: the release after `0.142.3`
+- Changelog: the release after `0.142.6`
 
 ### ✅ Configuration profiles
 

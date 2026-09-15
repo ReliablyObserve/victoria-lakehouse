@@ -1030,8 +1030,10 @@ def flag_label(flag: Flag) -> str:
 
 def gen_reference(truth: Truth) -> str:
     lines = [
-        "The **Config file** column says how a value written in the `--lakehouse.config` file is merged over the "
-        "profile the file selects:",
+        # Explicit +: two adjacent literals concatenate implicitly, which reads
+        # exactly like a list whose comma was forgotten.
+        ("The **Config file** column says how a value written in the `--lakehouse.config` file is merged over the "
+         + "profile the file selects:"),
         "",
     ]
     for name, text in FILE_MERGE_LEGEND.items():
@@ -1095,8 +1097,9 @@ def gen_profiles(truth: Truth) -> str:
     names = [p for p in PROFILE_ORDER if p != "balanced" and p in truth.profiles]
     keys = sorted({k for p in names for k in truth.profiles[p]})
     lines = [
-        "`balanced` is the built-in defaults and overrides nothing. Every other profile is exactly the set of keys "
-        "below; an empty cell means the profile keeps the default.",
+        # Explicit +, same reason as gen_reference above.
+        ("`balanced` is the built-in defaults and overrides nothing. Every other profile is exactly the set of keys "
+         + "below; an empty cell means the profile keeps the default."),
         "",
         "| Key | Default | " + " | ".join(f"`{p}`" for p in names) + " |",
         "|---|---|" + "---|" * len(names),

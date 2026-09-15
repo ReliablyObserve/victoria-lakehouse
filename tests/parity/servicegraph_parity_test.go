@@ -175,30 +175,79 @@ func TestServiceGraphParity_JoinPipeWorksOnCold(t *testing.T) {
 		"| fields span_id, `resource_attr:service.name` " +
 		"| rename `resource_attr:service.name` as parent" +
 		`) inner ` +
-		`| NOT parent:eq_field(child) ` +
+		// `filter` is not optional: upstream builds this step as
+		// "| filter NOT <parent>:eq_field(<child>)"
+		// (VictoriaTraces app/vtselect/traces/query/query.go), and LogsQL has
+		// no bare `NOT` pipe — without it BOTH tiers answer 400, so the case
+		// failed on a malformed query rather than on a cold-tier divergence.
+		`| filter NOT parent:eq_field(child) ` +
 		`| stats by (parent, child) count() callCount`
 
-	res := fetch(t, lhtBaseURL, "/select/logsql/query", url.Values{"query": {q}})
-	if res.StatusCode != 200 {
-		t.Fatalf("cold LogsQL join query: %d, %s", res.StatusCode, string(res.Body))
+	// Both tiers answer the SAME query. Checking only that cold returns
+	// well-shaped rows would pass on a join that silently dropped or
+	// duplicated edges; hot VictoriaTraces is the reference for what this
+	// query means, so the edge sets must be identical, call counts included.
+	hot := serviceGraphEdges(t, vtBaseURL, q)
+	if len(hot) == 0 {
+		t.Fatal("the hot tier produced no service-graph edges — seed or query " +
+			"defect, not parity: an empty reference makes the comparison below " +
+			"vacuous. Check that datagen seeded parent/child spans in the window.")
 	}
-	body := strings.TrimSpace(string(res.Body))
-	if body == "" {
+	cold := serviceGraphEdges(t, lhtBaseURL, q)
+	if len(cold) == 0 {
 		t.Fatal("cold join query returned empty output — RunQueryExternal is " +
 			"not preprocessing the inner subquery via initJoinMaps. Check " +
 			"patches/vl-traces/external_query.go.src and the 6 caller sites.")
 	}
-	// Each output row is one JSON object per (parent, child) pair.
-	lines := strings.Split(body, "\n")
-	for _, line := range lines {
-		var row map[string]any
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
+
+	for edge, hotCount := range hot {
+		coldCount, ok := cold[edge]
+		if !ok {
+			t.Errorf("cold lost the service-graph edge %s that hot reports with callCount=%s", edge, hotCount)
 			continue
 		}
-		if row["parent"] == nil || row["child"] == nil {
-			t.Errorf("join output row missing parent or child: %s", line)
+		if coldCount != hotCount {
+			t.Errorf("service-graph edge %s: cold callCount=%s, hot callCount=%s", edge, coldCount, hotCount)
 		}
 	}
+	for edge, coldCount := range cold {
+		if _, ok := hot[edge]; !ok {
+			t.Errorf("cold invented the service-graph edge %s (callCount=%s) that hot does not report", edge, coldCount)
+		}
+	}
+	t.Logf("service-graph edges compared: %d (hot) vs %d (cold)", len(hot), len(cold))
+}
+
+// serviceGraphEdges runs the upstream service-graph task query against one
+// tier and returns "parent->child" => callCount. Every output row is one JSON
+// object per (parent, child) pair; a row missing either key is a malformed
+// answer, not an edge, and fails here rather than being skipped into an
+// accidentally-equal set.
+func serviceGraphEdges(t *testing.T, baseURL, query string) map[string]string {
+	t.Helper()
+	res := fetch(t, baseURL, "/select/logsql/query", url.Values{"query": {query}})
+	if res.StatusCode != 200 {
+		t.Fatalf("%s LogsQL join query: %d, %s", baseURL, res.StatusCode, string(res.Body))
+	}
+	edges := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(res.Body)), "\n") {
+		if line == "" {
+			continue
+		}
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatalf("%s: join output line is not JSON: %s", baseURL, line)
+		}
+		parent, pok := rowValue(row, "parent")
+		child, cok := rowValue(row, "child")
+		if !pok || !cok {
+			t.Errorf("%s: join output row missing parent or child: %s", baseURL, line)
+			continue
+		}
+		count, _ := rowValue(row, "callCount")
+		edges[parent+"->"+child] = count
+	}
+	return edges
 }
 
 // TestServiceGraphParity_TraceQLSearch pins the related TraceQL gap that

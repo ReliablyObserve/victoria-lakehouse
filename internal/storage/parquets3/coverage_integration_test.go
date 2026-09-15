@@ -998,7 +998,7 @@ func TestInteg_projectedFieldsToDataBlock_Basic(t *testing.T) {
 	startNs := now - int64(time.Minute)
 	endNs := now + int64(time.Hour)
 
-	db := s.projectedFieldsToDataBlock(rows, startNs, endNs)
+	db := s.projectedFieldsToDataBlock(rows, startNs, endNs, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -1009,7 +1009,7 @@ func TestInteg_projectedFieldsToDataBlock_Basic(t *testing.T) {
 
 func TestInteg_projectedFieldsToDataBlock_Empty(t *testing.T) {
 	s := testStorage()
-	db := s.projectedFieldsToDataBlock(nil, 0, int64(time.Hour))
+	db := s.projectedFieldsToDataBlock(nil, 0, int64(time.Hour), nil)
 	if db != nil {
 		t.Error("expected nil for empty input")
 	}
@@ -1033,7 +1033,7 @@ func TestInteg_projectedFieldsToDataBlock_TimeFilter(t *testing.T) {
 	startNs := base - int64(time.Minute)
 	endNs := base + int64(time.Minute)
 
-	db := s.projectedFieldsToDataBlock(rows, startNs, endNs)
+	db := s.projectedFieldsToDataBlock(rows, startNs, endNs, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -1057,7 +1057,7 @@ func TestInteg_projectedFieldsToDataBlock_MapValues(t *testing.T) {
 	startNs := now - int64(time.Minute)
 	endNs := now + int64(time.Hour)
 
-	db := s.projectedFieldsToDataBlock(rows, startNs, endNs)
+	db := s.projectedFieldsToDataBlock(rows, startNs, endNs, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -1101,7 +1101,7 @@ func TestInteg_projectedFieldsToDataBlock_MixedRows(t *testing.T) {
 	startNs := now - int64(time.Minute)
 	endNs := now + int64(time.Hour)
 
-	db := s.projectedFieldsToDataBlock(rows, startNs, endNs)
+	db := s.projectedFieldsToDataBlock(rows, startNs, endNs, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -2543,7 +2543,7 @@ func TestInteg_projectedFieldsToDataBlock_ScopeAttributes(t *testing.T) {
 	startNs := now - int64(time.Minute)
 	endNs := now + int64(time.Hour)
 
-	db := s.projectedFieldsToDataBlock(rows, startNs, endNs)
+	db := s.projectedFieldsToDataBlock(rows, startNs, endNs, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}
@@ -2578,7 +2578,7 @@ func TestInteg_projectedFieldsToDataBlock_CustomPrefix(t *testing.T) {
 	startNs := now - int64(time.Minute)
 	endNs := now + int64(time.Hour)
 
-	db := s.projectedFieldsToDataBlock(rows, startNs, endNs)
+	db := s.projectedFieldsToDataBlock(rows, startNs, endNs, nil)
 	if db == nil {
 		t.Fatal("expected non-nil DataBlock")
 	}

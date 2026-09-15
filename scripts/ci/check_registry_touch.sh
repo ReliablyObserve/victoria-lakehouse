@@ -121,9 +121,33 @@ feature_signals=""
 # and a bullet has a lead-in when its line opens with `- **` in column 0.
 added_leadins() {
   git show "$1:CHANGELOG.md" 2>/dev/null | awk '
-    /^## \[/ { sec = ""; next }
-    /^### /  { sec = $0; sub(/^### +/, "", sec); sub(/[ \t]+$/, "", sec); next }
-    sec == "Added" && /^- \*\*/ { s = substr($0, 5); sub(/\*\*.*$/, "", s); print s }
+    # A lead-in may be WRAPPED: the entries are long and the file is wrapped at
+    # 96 columns, so the closing ** can sit on a later line. Reading only the
+    # first line then gives a truncated fragment as the feature key — silently,
+    # and differently before and after any re-wrap. So accumulate lines until
+    # the closing ** is seen, then take the text between the markers.
+    /^## \[/ { sec = ""; acc = ""; next }
+    /^### /  { sec = $0; sub(/^### +/, "", sec); sub(/[ \t]+$/, "", sec); acc = ""; next }
+    sec != "Added" { acc = ""; next }
+    acc != "" {
+      cont = $0
+      sub(/^[ \t]+/, "", cont)          # the wrap indent is not part of the title
+      if (cont == "") { acc = ""; next }
+      acc = acc " " cont
+      if (acc ~ /\*\*/) {
+        sub(/\*\*.*$/, "", acc)
+        gsub(/[ \t]+/, " ", acc)        # one space per break, whatever the indent was
+        sub(/[ \t]+$/, "", acc)
+        print acc
+        acc = ""
+      }
+      next
+    }
+    /^- \*\*/ {
+      s = substr($0, 5)
+      if (s ~ /\*\*/) { sub(/\*\*.*$/, "", s); print s }
+      else { acc = s }   # lead-in continues on the next line
+    }
   ' | sort -u || true
 }
 

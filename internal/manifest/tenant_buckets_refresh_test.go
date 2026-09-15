@@ -25,6 +25,42 @@ type multiBucketS3 struct {
 	// inflight/maxInflight record the LIST concurrency the refresh drives.
 	inflight    int
 	maxInflight int
+	// rendezvous makes that concurrency OBSERVED rather than hoped for: the
+	// first rendezvousN requests block until all of them have arrived, so they
+	// are provably in flight together. Reading maxInflight without it asks the
+	// Go scheduler to interleave two goroutines and calls the test failed when
+	// it does not — which is why this test failed only under full-suite load,
+	// where one LIST can finish before the next one starts.
+	rendezvousN   int
+	rendezvousCh  chan struct{}
+	arrived       int
+	defaultBucket string
+}
+
+// rendezvous blocks until rendezvousN callers have arrived, or until the
+// deadline passes. The deadline is the SERIAL case: an implementation that
+// issues the LISTs one at a time can never assemble the group, and must not
+// hang the suite — it falls through, maxInflight stays 1, and the assertion
+// reports exactly that.
+func (m *multiBucketS3) rendezvous(bucket string) {
+	m.mu.Lock()
+	// Only the DEDICATED-bucket LISTs are the parallel group. The default
+	// bucket is listed on its own, so holding it here would wait out the whole
+	// deadline on every run for nothing.
+	if m.rendezvousN == 0 || m.rendezvousCh == nil || bucket == m.defaultBucket {
+		m.mu.Unlock()
+		return
+	}
+	m.arrived++
+	if m.arrived == m.rendezvousN {
+		close(m.rendezvousCh)
+	}
+	ch := m.rendezvousCh
+	m.mu.Unlock()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+	}
 }
 
 func newMultiBucketS3(t *testing.T, buckets map[string]map[string]int64) (*multiBucketS3, *httptest.Server) {
@@ -48,6 +84,7 @@ func newMultiBucketS3(t *testing.T, buckets map[string]map[string]int64) (*multi
 			m.inflight--
 			m.mu.Unlock()
 		}()
+		m.rendezvous(bucket)
 		if delay > 0 {
 			time.Sleep(delay)
 		}
@@ -307,6 +344,13 @@ func TestRefresh_TenantBucketListsAreBoundedAndOrdered(t *testing.T) {
 	// A (registered before B) answers last; a merge that followed completion
 	// order would keep A's copy.
 	s3m.delay["bucket-tenant-A"] = 60 * time.Millisecond
+	// Hold the first two LISTs together so they are provably concurrent. Two,
+	// not more: tenantBucketListMaxParallel caps how many the refresh runs at
+	// once, and a rendezvous wider than that cap would deadlock on a correct
+	// implementation.
+	s3m.rendezvousN = 2
+	s3m.rendezvousCh = make(chan struct{})
+	s3m.defaultBucket = "test-bucket"
 	s3m.mu.Unlock()
 
 	m := tenantBucketManifest()

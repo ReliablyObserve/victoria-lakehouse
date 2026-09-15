@@ -299,7 +299,7 @@ func BenchmarkReadRowGroupColumnar_Projected(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for b.Loop() {
-			readRowGroupColumnar(f, rg, narrowCols, reg, startNs, endNs, nil)
+			readRowGroupColumnar(f, rg, narrowCols, reg, startNs, endNs, nil, nil)
 		}
 	})
 
@@ -316,7 +316,7 @@ func BenchmarkReadRowGroupColumnar_Projected(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for b.Loop() {
-			readRowGroupColumnar(f, rg, mediumCols, reg, startNs, endNs, nil)
+			readRowGroupColumnar(f, rg, mediumCols, reg, startNs, endNs, nil, nil)
 		}
 	})
 
@@ -326,7 +326,7 @@ func BenchmarkReadRowGroupColumnar_Projected(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for b.Loop() {
-			readRowGroupColumnar(f, rg, allCols, reg, startNs, endNs, nil)
+			readRowGroupColumnar(f, rg, allCols, reg, startNs, endNs, nil, nil)
 		}
 	})
 }

@@ -1044,6 +1044,10 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
 	projectedCols := queryColumns(queryStr, s.registry, pipeFields)
+	// Promoted columns whose parquet spelling the query uses directly must be
+	// emitted under that spelling too, or the filter matches nothing. Every
+	// other query gets the VT field names alone — see emitParquetNameAlias.
+	aliasCols := queryParquetNameAliases(queryStr, s.registry, pipeFields)
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
 		// Timestamp-only is safe ONLY for an UNFILTERED count/hits. A free-text
 		// _msg word filter (e.g. `error | stats count()`) has no bloom to push
@@ -1187,7 +1191,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 			return ctx.Err()
 		}
 		metrics.ParquetRowGroupsScanned.Inc()
-		if err := s.readOneRowGroup(f, m.rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
+		if err := s.readOneRowGroup(f, m.rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr, aliasCols); err != nil {
 			return err
 		}
 	}
@@ -1203,16 +1207,23 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	return nil
 }
 
-func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, aliasCols map[string]bool) error {
 	if projectedCols == nil {
 		projectedCols = allLeafColumns(f)
 	}
-	return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs)
+	return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs, aliasCols)
 }
 
+// allLeafColumns is the projection used by an unprojected (wildcard) scan. It
+// deliberately omits the storage-bookkeeping columns (schema.InternalColumns):
+// they are not query fields on hot VT, so reading them only costs bytes and
+// risks leaking them into the emitted DataBlock.
 func allLeafColumns(f *parquet.File) map[string]bool {
 	cols := make(map[string]bool)
 	for _, path := range f.Schema().Columns() {
+		if schema.IsInternalColumn(path[0]) {
+			continue
+		}
 		cols[path[0]] = true
 	}
 	return cols
@@ -1243,7 +1254,7 @@ func withFileSlots[T any](base func(*T, []field) []field, slotMap schema.SlotMap
 func remapSlotFields(fields []field, slotMap schema.SlotMapping) []field {
 	out := fields[:0]
 	for _, fld := range fields {
-		if len(fld.name) == 7 && fld.name[:5] == "ded_s" {
+		if schema.IsDedicatedSlotColumn(fld.name) {
 			if name, ok := slotMap[fld.name]; ok && name != "" {
 				out = append(out, field{name, fld.value})
 			}
@@ -1291,7 +1302,7 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 	return nil
 }
 
-func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, aliasCols map[string]bool) error {
 	// Bound concurrent row-group decoders process-wide. Each decode buffers
 	// a full row group's projected columns (~30-50 MiB at production scale
 	// per the near-OOM heap-diff). Without this gate, 16 file workers
@@ -1317,6 +1328,15 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 		})
 	}
 
+	// Tier-2 slot binding for THIS file (footer KV first, live config as the
+	// fallback for files written before the KV existed) — the same resolution
+	// readRowGroup does for the typed path. Both scan paths below name and drop
+	// slot columns through it, so a slot never surfaces as raw `ded_sNN`.
+	slots := fileSlotMapping(f)
+	if slots == nil {
+		slots = activeSlotResolver.Mapping()
+	}
+
 	constants := detectConstantColumns(f, rg, cols)
 
 	readCols := cols
@@ -1334,7 +1354,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 
 	// Fast path: columnar reading when no constant columns need merging.
 	if len(constants) == 0 && len(readCols) > 0 {
-		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap)
+		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap, slots, aliasCols)
 		emit(db)
 		return nil
 	}
@@ -1369,12 +1389,12 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 		}
 	}
 
-	db := s.projectedFieldsToDataBlock(allFields, startNs, endNs)
+	db := s.projectedFieldsToDataBlock(allFields, startNs, endNs, slots, aliasCols)
 	emit(db)
 	return nil
 }
 
-func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int64) *logstorage.DataBlock {
+func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int64, slots schema.SlotMapping, aliasCols map[string]bool) *logstorage.DataBlock {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -1433,21 +1453,21 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 		for _, fld := range fields {
 			if mapVal, ok := fld.value.(map[string]string); ok {
-				prefix := mapColumnToAttrPrefix(fld.name)
 				for k, v := range mapVal {
 					if v == "" {
 						continue
 					}
-					var effectivePrefix string
-					if schema.VTTopLevelSpanAttrKeys[k] {
-						effectivePrefix = ""
-					} else {
-						if scalarFieldNames[k] {
-							continue
-						}
-						effectivePrefix = prefix
+					if !schema.VTTopLevelSpanAttrKeys[k] && scalarFieldNames[k] {
+						continue
 					}
-					attrName := bytesutil.InternString(effectivePrefix + k)
+					// Same naming rule the scalar columns go through
+					// (mapAttrFieldName / queryFieldName share
+					// emittableFieldName), so a MAP key cannot introduce a
+					// field name a column is forbidden to produce.
+					attrName, ok := mapAttrFieldName(fld.name, k, schema.VTTopLevelSpanAttrKeys)
+					if !ok {
+						continue
+					}
 					idx := getCol(attrName)
 					for idx >= len(seenBitmap) {
 						seenBitmap = append(seenBitmap, false)
@@ -1464,9 +1484,13 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 				continue
 			}
 
-			internalName := fld.name
-			if m := s.registry.ResolveFromParquet(fld.name); m != nil {
-				internalName = m.InternalName
+			// Shared naming/suppression rule with the columnar fast path
+			// (readRowGroupColumnar): bookkeeping columns and unmapped
+			// slots never surface, slots are named from the file's footer
+			// KV, and the registry resolves the rest to VT field names.
+			internalName, ok := queryFieldName(fld.name, s.registry, slots)
+			if !ok {
+				continue
 			}
 
 			formatted := s.registry.FormatField(internalName, fld.value)
@@ -1488,19 +1512,11 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 				cols[idx].values = append(cols[idx].values, formatted)
 			}
 			emitCol(internalName)
-			// Dual emission for promoted columns whose parquet name
-			// differs from the internal alias (e.g. parquet
-			// `service.name` ↔ internal `resource_attr:service.name`).
-			// A user-typed filter spelling either dialect must
-			// resolve to a column the DataBlock actually carries;
-			// without this, `service.name:="X"` resolves to a column
-			// that doesn't exist in the block and matches zero rows
-			// even though `_stream:{resource_attr:service.name="X"}`
-			// finds 78k rows in the same time window. Mirrors a5576bf
-			// (which fixed the same asymmetry in parquetRowToFields
-			// used by /select/logsql/values) for the slow scan path
-			// here, sibling of the same defense in readRowGroupColumnar.
-			if fld.name != "" && fld.name != internalName {
+			// Alias emission for promoted columns whose parquet name
+			// differs from the internal name — sibling of the same
+			// defense in readRowGroupColumnar, gated the same way on the
+			// query actually spelling the parquet name.
+			if emitParquetNameAlias(fld.name, internalName, aliasCols) {
 				emitCol(fld.name)
 			}
 		}
