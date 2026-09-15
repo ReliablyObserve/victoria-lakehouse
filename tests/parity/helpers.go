@@ -115,6 +115,37 @@ func referenceRowTime(t *testing.T, params url.Values, query string) time.Time {
 	return ts
 }
 
+// seededTracesValue returns one value the HOT traces tier actually holds for
+// field, so a filter built from it cannot match an empty corpus.
+//
+// cmd/datagen assigns each service its resource attributes by drawing from a
+// fixed list with an rng seeded from the wall clock (cmd/datagen/main.go), so
+// no particular value is guaranteed to be in any given seed: five services
+// drawing a region from three candidates leave a named region absent from
+// roughly one seed in eight. A case that hard-codes one therefore compares two
+// empty answers and proves nothing — the failure mode requireNonEmptyReference
+// exists to catch. Asking the reference which values it holds keeps the case
+// testing the filter instead of the dice.
+func seededTracesValue(t *testing.T, field string) string {
+	t.Helper()
+	p := seedWindowParams()
+	p.Set("query", fmt.Sprintf("span_id:* | stats by (%s) count() n | first 1", field))
+	r := fetch(t, vtBaseURL, queryEndpoint(), p)
+	if r.StatusCode != 200 {
+		t.Fatalf("seeded-value lookup for %s returned status %d: %s", field, r.StatusCode, string(r.Body))
+	}
+	for _, row := range parseNDJSON(r.Body) {
+		// The grouped column comes back under the field's own name, with the
+		// backticks the query needed stripped.
+		if v, ok := rowValue(row, strings.Trim(field, "`")); ok && v != "" {
+			return v
+		}
+	}
+	t.Fatalf("the hot tier holds no value for %s — seed defect, not parity: "+
+		"every case built on this field would compare two empty answers", field)
+	return ""
+}
+
 // requireNonEmptyReference fails when the reference tier returned nothing to
 // compare against. Every set / row / bucket comparison is vacuously true
 // against an empty reference, so a silent pass there means the seed or the
