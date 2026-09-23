@@ -369,3 +369,16 @@
   layers: [api]
   pending: true
   notes: "Default off on both sides. The traces binary carries a verbatim copy of VT's gate (lakehouse-traces/internal_delete.go), drift-tested against the vendored vtselect/main.go."
+
+- id: vt.flag.delete_enable
+  title: "-delete.enable — upstream's delete API on the cold tier, VictoriaTraces' definition"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "The traces binary registers VictoriaTraces' definition and gates /delete/* with a copy of VT's handler, drift-tested against the vendored source (lakehouse-traces/public_delete.go). With it on, the cold tier also needs delete.enabled, and a task becomes a tenant-scoped tombstone: its rows are hidden at once and removed by the rewriter per delete.default_mode, and active_tasks lists it until the tombstone retires. See docs/deletion-strategy.md."
+  targets: [hot, cold]
+  upstream: { flag: delete.enable }
+  compare: { type: status }
+  layers: [api]
+  pending: true

@@ -34,7 +34,8 @@ func TestCheckUpstreamFlagsHonoured_RefusesEverySetFlag(t *testing.T) {
 		fs.String(name, "", "")
 	}
 	fs.Bool("internaldelete.enable", false, "")
-	args := []string{"-internaldelete.enable=true"}
+	fs.Bool("delete.enable", false, "")
+	args := []string{"-internaldelete.enable=true", "-delete.enable=true"}
 	for _, name := range vlselectFlagsNotHonoured {
 		args = append(args, "-"+name+"=1")
 	}
@@ -52,5 +53,8 @@ func TestCheckUpstreamFlagsHonoured_RefusesEverySetFlag(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "internaldelete.enable") {
 		t.Errorf("refusal names -internaldelete.enable, which this binary honours: %q", err)
+	}
+	if strings.Contains(err.Error(), "-delete.enable") {
+		t.Errorf("refusal names -delete.enable, which this binary honours (mountPublicDelete): %q", err)
 	}
 }

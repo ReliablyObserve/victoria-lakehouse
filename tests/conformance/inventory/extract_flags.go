@@ -58,11 +58,12 @@ var LinkedIntoLH = map[string]bool{
 
 // HonouredFlags lists, per surface, flags the Lakehouse honours although their
 // package is marked false in LinkedIntoLH. internaldelete.enable gates
-// /internal/delete/*: the logs binary gets it from vlselect itself, the traces
-// binary registers VictoriaTraces' own definition (lakehouse-traces/internal_delete.go).
+// /internal/delete/* and delete.enable gates /delete/*: the logs binary gets
+// both from vlselect itself, the traces binary registers VictoriaTraces' own
+// definitions (lakehouse-traces/internal_delete.go, public_delete.go).
 var HonouredFlags = map[string]map[string]bool{
-	"vl": {"internaldelete.enable": true},
-	"vt": {"internaldelete.enable": true},
+	"vl": {"internaldelete.enable": true, "delete.enable": true},
+	"vt": {"internaldelete.enable": true, "delete.enable": true},
 }
 
 // ExtractFlags scans the non-test .go files directly inside each pkgDir (and, for

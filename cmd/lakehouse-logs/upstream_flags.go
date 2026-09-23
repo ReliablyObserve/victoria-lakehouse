@@ -16,8 +16,11 @@ import (
 // -select.disable would be worse than one that refuses to start. Before
 // vlselect was linked, setting any of them already failed startup ("flag
 // provided but not defined"), so rejecting them changes nothing for operators.
+//
+// -internaldelete.enable and -delete.enable are honoured: /internal/delete/* and
+// /delete/* are served through vlselect.RequestHandler (mountInternalProtocol,
+// mountPublicDelete).
 var vlselectFlagsNotHonoured = []string{
-	"delete.enable",
 	"internalselect.disable",
 	"search.logSlowQueryDuration",
 	"search.maxConcurrentRequests",

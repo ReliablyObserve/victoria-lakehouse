@@ -301,7 +301,7 @@ traceql: 9/9 covered by at least one registry row.
 
 ## Upstream flag (181)
 
-flag: 28/181 covered by at least one registry row.
+flag: 29/181 covered by at least one registry row.
 
 | flag | Source | Rows | Status |
 |---|---|---|---|
@@ -312,8 +312,8 @@ flag: 28/181 covered by at least one registry row.
 | `defaultMsgValue` | `app/vtinsert/insertutil/common_params.go` |  | ⚪ no row |
 | `defaultParallelReaders` | `app/vlstorage/main.go` |  | ⚪ no row |
 | `defaultParallelReaders` | `app/vtstorage/main.go` |  | ⚪ no row |
-| `delete.enable` | `app/vlselect/main.go` | vl.flag.delete_enable | 🔁 differs: Registered by upstream's vlselect and gating /delete/* exactly as upstream. With it on, the cold tier also needs delete.enabled, and a task becomes a tenant-scoped tombstone: its rows are hidden at once and removed by the rewriter per delete.default_mode, and active_tasks lists it until the tombstone retires rather than until a background pass finishes. See docs/deletion-strategy.md and docs/parity-and-gaps.md. (declared, not yet executed) (package not linked into LH) |
-| `delete.enable` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
+| `delete.enable` | `app/vlselect/main.go` | vl.flag.delete_enable | 🔁 differs: Registered by upstream's vlselect and gating /delete/* exactly as upstream. With it on, the cold tier also needs delete.enabled, and a task becomes a tenant-scoped tombstone: its rows are hidden at once and removed by the rewriter per delete.default_mode, and active_tasks lists it until the tombstone retires rather than until a background pass finishes. See docs/deletion-strategy.md and docs/parity-and-gaps.md. (declared, not yet executed) |
+| `delete.enable` | `app/vtselect/main.go` | vt.flag.delete_enable | 🔁 differs: The traces binary registers VictoriaTraces' definition and gates /delete/* with a copy of VT's handler, drift-tested against the vendored source (lakehouse-traces/public_delete.go). With it on, the cold tier also needs delete.enabled, and a task becomes a tenant-scoped tombstone: its rows are hidden at once and removed by the rewriter per delete.default_mode, and active_tasks lists it until the tombstone retires. See docs/deletion-strategy.md. (declared, not yet executed) |
 | `elasticsearch.version` | `app/vlinsert/elasticsearch/elasticsearch.go` |  | ⚪ no row |
 | `forceFlushAuthKey` | `app/vlstorage/main.go` |  | ⚪ no row |
 | `forceFlushAuthKey` | `app/vtstorage/main.go` |  | ⚪ no row |

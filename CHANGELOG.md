@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The delete API answers for the request's tenant.** `/delete/{logsql,tracessql}/tombstones`, `tombstone/{id}`, `verify`, `estimate` and `leftovers` cover only the requesting tenant's tombstones and objects and report `"scope": "tenant"`; any other tombstone id answers `404`. A request with the global-read credential gets the whole instance (`"scope": "instance"`). Tombstones written by earlier releases carry no tenant and are listed and removable only with that credential; `lakehouse_delete_tombstones_instance_wide` counts them. Rolling back past this release applies tenant-scoped tombstones to every tenant; see `docs/operations.md` (Rolling back).
 
+### Security
+
+- **A delete acts only on the requesting tenant's data.** Tombstones were instance-wide: a delete issued through `/delete/{logsql,tracessql}/delete` by any tenant hid the matching rows of every tenant and, in `permanent` and `auto` mode, had the rewriter and compaction remove them; any tenant could also list, read and un-delete every other tenant's deletes. A tombstone now names the tenant the request resolves to (headers or `X-Scope-OrgID` alias, `0:0` without), and query-time suppression, field enumeration, the count and metadata fast paths, buffered rows, the rewriter and compaction apply it only to that tenant's objects and rows. A tombstone of one tenant no longer costs other tenants their fast paths.
+
 ## [0.142.11] - 2026-09-23
 
 ### Fixed
