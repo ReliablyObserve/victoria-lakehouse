@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 )
@@ -21,7 +24,7 @@ func TestMountInternalProtocol_DeleteIsGatedByDefault(t *testing.T) {
 
 		for _, path := range []string{"/internal/delete/run_task", "/internal/delete/stop_task", "/internal/delete/active_tasks"} {
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+			mux.ServeHTTP(rec, boundedRequest(t, path))
 			if rec.Code != http.StatusBadRequest || rec.Body.String() != internalDeleteDisabledMessage+"\n" {
 				t.Fatalf("delete.enabled=%v %s: got %d %q, want upstream's disabled answer", deleteEnabled, path, rec.Code, rec.Body.String())
 			}
@@ -36,7 +39,7 @@ func TestMountInternalProtocol_DeleteNeedsTheDeleteFeature(t *testing.T) {
 	mountInternalProtocol(mux, false)
 
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/delete/run_task", nil))
+	mux.ServeHTTP(rec, boundedRequest(t, "/internal/delete/run_task"))
 	if rec.Code != http.StatusBadRequest || rec.Body.String() != internaldelete.DeleteDisabledMessage+"\n" {
 		t.Fatalf("got %d %q, want the delete.enabled refusal", rec.Code, rec.Body.String())
 	}
@@ -56,7 +59,13 @@ func TestUpstreamInternalDelete_MatchesVendoredVTSelect(t *testing.T) {
 	// Fold Go string concatenation ("a "+\n "b") so literals compare whole.
 	joined := regexp.MustCompile(`"\s*\+\s*"`).ReplaceAllString(string(src), "")
 
-	wantFlag := `flag.Bool("internaldelete.enable", false, "Whether to enable /internal/delete/* HTTP endpoints, which are used by vtselect for deleting spans via delete API at vtstorage nodes")`
+	// Build the expectation from what THIS binary registers, so a change to
+	// the copy (not only to upstream) fails the test.
+	f := flag.Lookup("internaldelete.enable")
+	if f == nil {
+		t.Fatal("-internaldelete.enable is not registered in lakehouse-traces")
+	}
+	wantFlag := `flag.Bool("internaldelete.enable", ` + f.DefValue + `, "` + f.Usage + `")`
 	if !strings.Contains(joined, wantFlag) {
 		t.Errorf("VT's -internaldelete.enable registration changed; update internal_delete.go\nwant: %s", wantFlag)
 	}
@@ -68,4 +77,15 @@ func TestUpstreamInternalDelete_MatchesVendoredVTSelect(t *testing.T) {
 		!strings.Contains(joined, `if !*enableInternalDelete {`) || !strings.Contains(joined, `internalselect.RequestHandler(r.Context(), w, r)`) {
 		t.Error("VT's /internal/delete/ branch no longer gates on the flag then calls internalselect; re-check internal_delete.go")
 	}
+}
+
+// boundedRequest carries a deadline: if a regression let the request through to
+// internalselect (whose concurrency gate waits on the request context), the test
+// fails in seconds with the wrong answer instead of hanging until the go test
+// timeout.
+func boundedRequest(t *testing.T, path string) *http.Request {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	return httptest.NewRequest(http.MethodPost, path, nil).WithContext(ctx)
 }
