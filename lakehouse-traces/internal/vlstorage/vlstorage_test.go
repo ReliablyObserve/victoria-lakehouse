@@ -273,21 +273,21 @@ func TestDeleteActiveTasks_UpstreamShape(t *testing.T) {
 	ts := delete.NewTombstoneStore()
 	created := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	ts.Add(delete.Tombstone{ID: "scoped", Query: "level:error", EndNs: 1, CreatedAt: created, Mode: "hide", Tenants: []delete.TenantRef{{AccountID: 7, ProjectID: 3}}})
-	ts.Add(delete.Tombstone{ID: "legacy", Query: "*", EndNs: 1, CreatedAt: created.Add(time.Hour), Mode: "hide"})
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{AccountID: 1}, {AccountID: 2}}, ID: "multi", Query: "*", EndNs: 1, CreatedAt: created.Add(time.Hour), Mode: "hide"})
 	a := &adapter{store: mockStore{}, tombstones: ts}
 	tasks, err := a.DeleteActiveTasks(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 2 || tasks[0].TaskID != "scoped" || tasks[1].TaskID != "legacy" {
-		t.Fatalf("tasks = %+v, want scoped then legacy (oldest first)", tasks)
+	if len(tasks) != 2 || tasks[0].TaskID != "scoped" || tasks[1].TaskID != "multi" {
+		t.Fatalf("tasks = %+v, want scoped then multi (oldest first)", tasks)
 	}
 	if tasks[0].Filter != "level:error" || !tasks[0].StartTime.Equal(created) ||
 		len(tasks[0].TenantIDs) != 1 || tasks[0].TenantIDs[0] != (logstorage.TenantID{AccountID: 7, ProjectID: 3}) {
 		t.Fatalf("scoped task = %+v", tasks[0])
 	}
-	if len(tasks[1].TenantIDs) != 0 {
-		t.Fatalf("an instance-wide legacy record has no tenants to list, got %v", tasks[1].TenantIDs)
+	if len(tasks[1].TenantIDs) != 2 {
+		t.Fatalf("a multi-tenant task lists both tenants, got %v", tasks[1].TenantIDs)
 	}
 	data := string(logstorage.MarshalDeleteTasksToJSON(tasks))
 	if !strings.Contains(data, `"task_id":"scoped"`) || !strings.Contains(data, `"filter":"level:error"`) {
@@ -297,7 +297,7 @@ func TestDeleteActiveTasks_UpstreamShape(t *testing.T) {
 
 func TestDeleteStopTask_RemovesTombstone(t *testing.T) {
 	ts := delete.NewTombstoneStore()
-	ts.Add(delete.Tombstone{ID: "t-1", Query: "*", Mode: "auto"})
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "t-1", Query: "*", Mode: "auto"})
 	a := &adapter{store: mockStore{}, tombstones: ts}
 
 	err := a.DeleteStopTask(context.Background(), "t-1")
@@ -322,8 +322,8 @@ func TestDeleteActiveTasks_NilTombstones(t *testing.T) {
 
 func TestDeleteActiveTasks_ReturnsTombstones(t *testing.T) {
 	ts := delete.NewTombstoneStore()
-	ts.Add(delete.Tombstone{ID: "t-1", Query: "*", Mode: "auto"})
-	ts.Add(delete.Tombstone{ID: "t-2", Query: "*", Mode: "hide"})
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "t-1", Query: "*", Mode: "auto"})
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "t-2", Query: "*", Mode: "hide"})
 
 	a := &adapter{store: mockStore{}, tombstones: ts}
 	tasks, err := a.DeleteActiveTasks(context.Background())
@@ -421,7 +421,7 @@ func TestRunQuery_PreservesPipesToStorage(t *testing.T) {
 // same as the delete API's un-delete.
 func TestDeleteStopTask_RefusedWhileARewriteIsUnfinished(t *testing.T) {
 	ts := delete.NewTombstoneStore()
-	ts.Add(delete.Tombstone{ID: "task-busy", Query: "*", Mode: "auto",
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "task-busy", Query: "*", Mode: "auto",
 		Superseded: map[string]delete.Supersession{
 			"logs/dt=2026-03-01/hour=07/src.parquet": {NewKey: "logs/dt=2026-03-01/hour=07/repl.parquet", State: delete.SupersessionPublished},
 		}})

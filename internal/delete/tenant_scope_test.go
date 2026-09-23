@@ -2,7 +2,7 @@ package delete
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -36,14 +36,13 @@ func TestTenantRef_StringAndNormalize(t *testing.T) {
 		}
 	}
 	if NormalizeTenants(nil) != nil {
-		t.Error("NormalizeTenants(nil) must stay nil: an empty scope is the legacy instance-wide record")
+		t.Error("NormalizeTenants(nil) must stay nil")
 	}
 }
 
 func TestTombstone_AppliesToTenantAndKey(t *testing.T) {
 	a := scopedSample("a", TenantRef{AccountID: 1001})
 	zero := scopedSample("z", TenantRef{})
-	wide := sampleTombstone("w")
 	orgID := func(key string) (string, string, bool) { // {OrgID}-shaped template: no project segment
 		acc, _, ok := strings.Cut(key, "/")
 		if !ok || acc == "logs" {
@@ -62,11 +61,10 @@ func TestTombstone_AppliesToTenantAndKey(t *testing.T) {
 		{"own tenant key", a, nil, "1001/0/logs/dt=x/a.parquet", true},
 		{"other tenant key", a, nil, "1002/0/logs/dt=x/a.parquet", false},
 		{"other project of the same account", a, nil, "1001/1/logs/dt=x/a.parquet", false},
-		{"legacy key is the default tenant's", a, nil, "logs/dt=x/a.parquet", false},
-		{"legacy key under a 0:0 delete", zero, nil, "logs/dt=x/a.parquet", true},
+		{"untenanted key is the default tenant's", a, nil, "logs/dt=x/a.parquet", false},
+		{"untenanted key under a 0:0 delete", zero, nil, "logs/dt=x/a.parquet", true},
 		{"account-only template matches on the account", a, orgID, "1001/logs/dt=x/a.parquet", true},
 		{"account-only template, other account", a, orgID, "1002/logs/dt=x/a.parquet", false},
-		{"unscoped legacy record acts on every key", wide, nil, "1002/0/logs/dt=x/a.parquet", true},
 		{"explicit default parser", a, DefaultKeyTenant, "1001/0/logs/dt=x/a.parquet", true},
 	}
 	for _, tc := range cases {
@@ -78,15 +76,30 @@ func TestTombstone_AppliesToTenantAndKey(t *testing.T) {
 	if !a.AppliesToTenant(1001, 0) || a.AppliesToTenant(1001, 1) || a.AppliesToTenant(0, 0) {
 		t.Error("AppliesToTenant must match exactly the listed tenant")
 	}
-	if !wide.AppliesToTenant(42, 42) {
-		t.Error("an unscoped legacy record acts on every tenant")
-	}
-	if !a.ScopedExactlyTo(1001, 0) || a.ScopedExactlyTo(0, 0) || wide.ScopedExactlyTo(0, 0) {
+	if !a.ScopedExactlyTo(1001, 0) || a.ScopedExactlyTo(0, 0) {
 		t.Error("ScopedExactlyTo must be true only for a single-tenant scope naming that tenant")
 	}
 	two := scopedSample("two", TenantRef{AccountID: 1}, TenantRef{AccountID: 2})
 	if two.ScopedExactlyTo(1, 0) {
 		t.Error("a two-tenant tombstone is no single tenant's own")
+	}
+}
+
+// A record naming no tenant is not a tombstone: it is invalid, and should one
+// reach the store anyway it acts on nothing — never on every tenant.
+func TestTombstone_UnscopedIsInvalidAndActsOnNothing(t *testing.T) {
+	ts := scopedSample("none")
+	if err := ts.Validate(); !errors.Is(err, ErrNoTenantScope) {
+		t.Fatalf("Validate = %v, want ErrNoTenantScope", err)
+	}
+	if ts.AppliesToTenant(0, 0) || ts.AppliesToKey(nil, "logs/dt=x/a.parquet") || ts.AppliesToKey(nil, "0/0/logs/x") {
+		t.Fatal("an unscoped record must act on no tenant and no object")
+	}
+	if got := ForTenant([]Tombstone{ts}, 0, 0); len(got) != 0 {
+		t.Fatalf("ForTenant kept an unscoped record: %v", got)
+	}
+	if got := ForKey([]Tombstone{ts}, nil, "logs/x"); len(got) != 0 {
+		t.Fatalf("ForKey kept an unscoped record: %v", got)
 	}
 }
 
@@ -109,27 +122,22 @@ func TestKeyTenantParserOf(t *testing.T) {
 }
 
 func TestForKeyForTenant(t *testing.T) {
-	wide := []Tombstone{sampleTombstone("w1"), sampleTombstone("w2")}
-	if got := ForKey(wide, nil, "1/0/logs/x"); &got[0] != &wide[0] {
-		t.Error("with no tenant-scoped tombstone ForKey must return the input without copying")
-	}
-	if got := ForTenant(wide, 1, 0); &got[0] != &wide[0] {
-		t.Error("with no tenant-scoped tombstone ForTenant must return the input without copying")
-	}
 	if ForKey(nil, nil, "k") != nil || ForTenant(nil, 0, 0) != nil {
 		t.Error("empty input must give nil")
 	}
-	mixed := []Tombstone{sampleTombstone("w"), scopedSample("a", TenantRef{AccountID: 1}), scopedSample("b", TenantRef{AccountID: 2})}
-	if got := ForKey(mixed, nil, "2/0/logs/x"); len(got) != 2 || got[0].ID != "w" || got[1].ID != "b" {
-		t.Errorf("ForKey = %v, want the instance-wide record and tenant 2's", got)
+	tss := []Tombstone{scopedSample("zero", TenantRef{}), scopedSample("a", TenantRef{AccountID: 1}), scopedSample("b", TenantRef{AccountID: 2})}
+	if got := ForKey(tss, nil, "2/0/logs/x"); len(got) != 1 || got[0].ID != "b" {
+		t.Errorf("ForKey = %v, want only tenant 2's", got)
 	}
-	if got := ForTenant(mixed, 1, 0); len(got) != 2 || got[1].ID != "a" {
-		t.Errorf("ForTenant = %v, want the instance-wide record and tenant 1's", got)
+	if got := ForKey(tss, nil, "logs/x"); len(got) != 1 || got[0].ID != "zero" {
+		t.Errorf("ForKey(untenanted) = %v, want only tenant 0:0's", got)
+	}
+	if got := ForTenant(tss, 1, 0); len(got) != 1 || got[0].ID != "a" {
+		t.Errorf("ForTenant = %v, want only tenant 1's", got)
 	}
 }
 
-// Persistence round-trips the scope through both durable copies, and a record
-// written without it (by a release that had no tenant scope) stays instance-wide.
+// Persistence round-trips the scope through both durable copies.
 func TestTenantScope_PersistsThroughDiskAndS3(t *testing.T) {
 	dir := t.TempDir()
 	pool := newMockS3Pool()
@@ -138,7 +146,6 @@ func TestTenantScope_PersistsThroughDiskAndS3(t *testing.T) {
 	store := NewTombstoneStore()
 	store.EnablePersistence(cfg)
 	store.Add(scopedSample("ts-a", TenantRef{AccountID: 1001}, TenantRef{AccountID: 2002, ProjectID: 7}))
-	store.Add(sampleTombstone("ts-legacy"))
 	if n := store.FlushPending(context.Background()); n != 0 {
 		t.Fatalf("%d records still owed to S3", n)
 	}
@@ -158,99 +165,63 @@ func TestTenantScope_PersistsThroughDiskAndS3(t *testing.T) {
 		if !ok || len(got.Tenants) != 2 || !got.AppliesToTenant(2002, 7) || got.AppliesToTenant(0, 0) {
 			t.Errorf("%s restore lost the tenant scope: %+v", name, got.Tenants)
 		}
-		legacy, ok := st.Get("ts-legacy")
-		if !ok || legacy.Scoped() || !legacy.AppliesToTenant(9, 9) {
-			t.Errorf("%s restore: the unscoped record must stay instance-wide: %+v", name, legacy)
-		}
 	}
-
-	// The unscoped record's persisted form carries no Tenants key at all, so it
-	// is byte-for-byte what a release without tenant scope wrote and reads.
-	data, _ := pool.Get(TombstonePrefix("logs/") + "ts-legacy.json")
-	if strings.Contains(string(data), "Tenants") {
-		t.Errorf("an unscoped record must persist without a Tenants field: %s", data)
-	}
-	data, _ = pool.Get(TombstonePrefix("logs/") + "ts-a.json")
+	data, _ := pool.Get(TombstonePrefix("logs/") + "ts-a.json")
 	if !strings.Contains(string(data), `"Tenants"`) {
-		t.Errorf("a scoped record must persist its tenants: %s", data)
+		t.Errorf("a record must persist its tenants: %s", data)
 	}
 }
 
-// Restore unions the disk and S3 copies; losing the scope in one copy must
-// never widen the delete to every tenant.
-func TestTenantScope_RestoreMergeNeverWidens(t *testing.T) {
+// A persisted record naming no tenant (only a hand-written or corrupted object
+// can be one) is rejected on restore from either copy: counted, logged, not
+// applied — and it does not fail the restore of the valid records next to it.
+func TestTenantScope_UnscopedRecordIsRejectedOnRestore(t *testing.T) {
 	dir := t.TempDir()
 	pool := newMockS3Pool()
 
 	disk := NewTombstoneStore()
-	disk.Add(scopedSample("ts-m", TenantRef{AccountID: 1001}))
+	disk.Add(scopedSample("ts-disk-none")) // Add does not validate; the loader must
+	disk.Add(scopedSample("ts-ok", TenantRef{AccountID: 5}))
 	if err := disk.PersistToDisk(dir); err != nil {
 		t.Fatalf("PersistToDisk: %v", err)
 	}
-	// The S3 copy of the same record lost the field (a release without tenant
-	// scope rewrote it).
-	storeTombstoneInS3(t, pool, "logs/", sampleTombstone("ts-m"))
-	// And a second record whose two copies name different tenants.
-	disk2 := scopedSample("ts-u", TenantRef{AccountID: 1})
+	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-s3-none"))
+
+	before := metrics.DeleteStartupInconsistencies.Get("unscoped_tombstone")
+	store := NewTombstoneStore()
+	if _, err := store.Restore(context.Background(), PersistenceConfig{Dir: dir, Pool: pool, Prefix: "logs/"}); err != nil {
+		t.Fatalf("Restore must not fail over rejected records: %v", err)
+	}
+	if store.S3RestorePending() {
+		t.Fatal("a rejected record must not leave the S3 restore pending")
+	}
+	for _, id := range []string{"ts-disk-none", "ts-s3-none"} {
+		if _, ok := store.Get(id); ok {
+			t.Errorf("unscoped record %s was applied", id)
+		}
+	}
+	if ts, ok := store.Get("ts-ok"); !ok || !ts.ScopedExactlyTo(5, 0) {
+		t.Errorf("the valid record next to them was lost: %+v", ts)
+	}
+	if got := metrics.DeleteStartupInconsistencies.Get("unscoped_tombstone") - before; got != 2 {
+		t.Errorf("lakehouse_delete_startup_inconsistencies_total{kind=\"unscoped_tombstone\"} moved by %d, want 2", got)
+	}
+}
+
+// Restore unions the scopes of a record's two copies.
+func TestTenantScope_RestoreMergeUnionsTenants(t *testing.T) {
+	dir := t.TempDir()
+	pool := newMockS3Pool()
 	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-u", TenantRef{AccountID: 2}))
 
 	store := NewTombstoneStore()
-	store.Add(disk2)
+	store.Add(scopedSample("ts-u", TenantRef{AccountID: 1}))
 	if _, err := store.Restore(context.Background(), PersistenceConfig{Dir: dir, Pool: pool, Prefix: "logs/"}); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-	got, _ := store.Get("ts-m")
-	if !got.Scoped() || got.AppliesToTenant(0, 0) || !got.AppliesToTenant(1001, 0) {
-		t.Errorf("a copy without tenants widened the restored record: %+v", got.Tenants)
-	}
 	u, _ := store.Get("ts-u")
 	if !u.AppliesToTenant(1, 0) || !u.AppliesToTenant(2, 0) || u.AppliesToTenant(3, 0) {
-		t.Errorf("two scoped copies must union their tenants, got %+v", u.Tenants)
-	}
-
-	if merged := mergeTenants(nil, nil); merged != nil {
-		t.Errorf("mergeTenants(nil, nil) = %v, want nil", merged)
-	}
-}
-
-// Rollback hazard pinned: a release without tenant scope reads a scoped S3
-// record as instance-wide, because it has no field for the tenants. The
-// operator instruction that follows (drain or remove tenant-scoped tombstones
-// before rolling back past this release) is in docs/operations.md.
-func TestRollback_ThePreviousReleaseReadsAScopedRecordAsInstanceWide(t *testing.T) {
-	data, err := json.Marshal(scopedSample("ts-scoped", TenantRef{AccountID: 1001}))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var old legacyTombstone
-	if err := json.Unmarshal(data, &old); err != nil {
-		t.Fatalf("the previous release can no longer read the S3 copy: %v", err)
-	}
-	roundTripped, _ := json.Marshal(old)
-	var afterRollback Tombstone
-	if err := json.Unmarshal(roundTripped, &afterRollback); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if afterRollback.Scoped() {
-		t.Fatal("the legacy type in this test is not the previous release's: it kept the tenant scope; " +
-			"if the previous release now carries it, update the rollback note in docs/operations.md")
-	}
-}
-
-func TestTenantScope_InstanceWideGauge(t *testing.T) {
-	store := NewTombstoneStore()
-	store.Add(scopedSample("s1", TenantRef{AccountID: 1}))
-	store.Add(sampleTombstone("w1"))
-	store.Add(sampleTombstone("w2"))
-	if got := metrics.DeleteTombstonesInstanceWide.Get(); got != 2 {
-		t.Errorf("lakehouse_delete_tombstones_instance_wide = %d, want 2", got)
-	}
-	if got := metrics.DeleteTombstonesActive.Get(); got != 3 {
-		t.Errorf("lakehouse_delete_tombstones_active = %d, want 3", got)
-	}
-	store.Remove("w1")
-	if got := metrics.DeleteTombstonesInstanceWide.Get(); got != 1 {
-		t.Errorf("after removing one: lakehouse_delete_tombstones_instance_wide = %d, want 1", got)
+		t.Errorf("two copies must union their tenants, got %+v", u.Tenants)
 	}
 }
 

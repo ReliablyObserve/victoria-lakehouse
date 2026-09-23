@@ -12,8 +12,8 @@ import (
 
 // Tenant-scoped tombstones on the read path.
 //
-// A tombstone names the tenants whose rows it hides (delete.Tombstone.Tenants;
-// empty = a record from before tenant scope, acting on every tenant). The read
+// A tombstone names the tenants whose rows it hides (delete.Tombstone.Tenants).
+// The read
 // path attributes rows to tenants the same way it selects objects: by the
 // object's key (filesForScope), or by the tenant a buffered row carries. Every
 // place that applies a tombstone first narrows the list to the tombstones that
@@ -42,9 +42,10 @@ func (s *Storage) scopeTombstones(scope tenantScope, startNs, endNs int64) []tom
 	if scope.all {
 		return tss
 	}
+	accountOnly := s.AccountOnlyTenantKeys()
 	out := tss[:0]
 	for i := range tss {
-		if tombstoneActsOnScope(&tss[i], scope) {
+		if tombstoneActsOnScope(&tss[i], scope, accountOnly) {
 			out = append(out, tss[i])
 		}
 	}
@@ -54,11 +55,16 @@ func (s *Storage) scopeTombstones(scope tenantScope, startNs, endNs int64) []tom
 	return out
 }
 
-// tombstoneActsOnScope reports whether ts acts on any tenant of a non-global
-// scope. The scope's tenants come from numeric VL tenant ids, so they always
-// parse.
-func tombstoneActsOnScope(ts *tombstone, scope tenantScope) bool {
-	if !ts.Scoped() || scope.all {
+// tombstoneActsOnScope reports whether ts acts on any tenant of scope. A
+// non-global scope's tenants come from numeric VL tenant ids, so they parse.
+//
+// accountOnly is the {OrgID} key layout, where an object belongs to every
+// project of its account (tenantOwnsKey) and a tombstone is always scoped to
+// ProjectID 0 (delete.CheckTenantsForKeyLayout): a request of any project of
+// the account then reads the account's objects, so it gets the account's
+// tombstones too.
+func tombstoneActsOnScope(ts *tombstone, scope tenantScope, accountOnly bool) bool {
+	if scope.all {
 		return true
 	}
 	for _, p := range scope.pairs() {
@@ -69,6 +75,9 @@ func tombstoneActsOnScope(ts *tombstone, scope tenantScope) bool {
 		project, err := strconv.ParseUint(p.project, 10, 32)
 		if err != nil {
 			continue
+		}
+		if accountOnly {
+			project = 0
 		}
 		if ts.AppliesToTenant(uint32(account), uint32(project)) {
 			return true
@@ -95,17 +104,18 @@ func tombstonesForKey(tss []tombstone, parse keyTenantFunc, key string) []tombst
 // a buffered tenant's rows — the write function that applies exactly the
 // tombstones acting on that source's tenant.
 //
-// While the scope is a single tenant (every select request), or no overlapping
-// tombstone is tenant-scoped, attribution cannot change the answer and every
-// source gets the same function. Only a multi-tenant read (VL's internal select
-// protocol, a validated global read) with a tenant-scoped tombstone in play
-// builds per-tenant functions, cached for the life of the query.
+// While the scope is a single tenant (every select request), or no tombstone
+// overlaps, attribution cannot change the answer and every source gets the same
+// function. Only a multi-tenant read (VL's internal select protocol, a
+// validated global read) with a tombstone in play builds per-tenant functions,
+// cached for the life of the query.
 type tombstoneSink struct {
-	uniform   logstorage.WriteDataBlockFunc
-	perTenant bool
-	tss       []tombstone
-	parse     keyTenantFunc
-	build     func([]tombstone) logstorage.WriteDataBlockFunc
+	uniform     logstorage.WriteDataBlockFunc
+	perTenant   bool
+	tss         []tombstone
+	parse       keyTenantFunc
+	accountOnly bool
+	build       func([]tombstone) logstorage.WriteDataBlockFunc
 
 	mu    sync.Mutex
 	cache map[string]logstorage.WriteDataBlockFunc
@@ -113,32 +123,25 @@ type tombstoneSink struct {
 
 // newTombstoneSink builds the sink for a query whose scope-filtered tombstones
 // are tss. build turns a tombstone list into the query's write function.
-func newTombstoneSink(scope tenantScope, tss []tombstone, parse keyTenantFunc, build func([]tombstone) logstorage.WriteDataBlockFunc) *tombstoneSink {
+// accountOnly is the {OrgID} key layout (see tombstoneActsOnScope).
+func newTombstoneSink(scope tenantScope, tss []tombstone, parse keyTenantFunc, accountOnly bool, build func([]tombstone) logstorage.WriteDataBlockFunc) *tombstoneSink {
 	sk := &tombstoneSink{uniform: build(tss)}
-	if scope.single() || !anyScoped(tss) {
+	if scope.single() || len(tss) == 0 {
 		return sk
 	}
 	sk.perTenant = true
 	sk.tss = tss
 	sk.parse = parse
+	sk.accountOnly = accountOnly
 	sk.build = build
 	sk.cache = make(map[string]logstorage.WriteDataBlockFunc, 2)
 	return sk
 }
 
 // uniformSink is a sink that hands every source the same function — for
-// callers with no tenant-scoped tombstones to attribute.
+// callers with no tombstones to attribute.
 func uniformSink(wb logstorage.WriteDataBlockFunc) *tombstoneSink {
 	return &tombstoneSink{uniform: wb}
-}
-
-func anyScoped(tss []tombstone) bool {
-	for i := range tss {
-		if tss[i].Scoped() {
-			return true
-		}
-	}
-	return false
 }
 
 // forKey is the write function for rows read from the object at key.
@@ -159,8 +162,12 @@ func (sk *tombstoneSink) forTenant(tid logstorage.TenantID) logstorage.WriteData
 	if !sk.perTenant {
 		return sk.uniform
 	}
-	cacheKey := "t:" + strconv.FormatUint(uint64(tid.AccountID), 10) + "/" + strconv.FormatUint(uint64(tid.ProjectID), 10)
-	return sk.cached(cacheKey, func() []tombstone { return delete.ForTenant(sk.tss, tid.AccountID, tid.ProjectID) })
+	project := tid.ProjectID
+	if sk.accountOnly {
+		project = 0
+	}
+	cacheKey := "t:" + strconv.FormatUint(uint64(tid.AccountID), 10) + "/" + strconv.FormatUint(uint64(project), 10)
+	return sk.cached(cacheKey, func() []tombstone { return delete.ForTenant(sk.tss, tid.AccountID, project) })
 }
 
 func (sk *tombstoneSink) cached(key string, pick func() []tombstone) logstorage.WriteDataBlockFunc {
@@ -231,6 +238,12 @@ func groupRowsByTenant[R any](rows []R, tenantOf func(*R) logstorage.TenantID) (
 		groups[tid] = append(groups[tid], rows[i])
 	}
 	return order, groups
+}
+
+// AccountOnlyTenantKeys reports whether object keys carry the account alone
+// ({OrgID} layout), so a delete task cannot be scoped to a single project.
+func (s *Storage) AccountOnlyTenantKeys() bool {
+	return s.manifest != nil && s.manifest.AccountOnlyTenantKeys()
 }
 
 // TenantFileKeys lists the cold-tier objects of exactly the given tenants whose

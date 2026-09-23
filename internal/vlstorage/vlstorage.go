@@ -149,18 +149,20 @@ func (a *adapter) DeleteRunTask(_ context.Context, taskID string, timestamp int6
 	if f == nil {
 		return errors.New("missing filter")
 	}
-	return delete.RunTask(a.tombstones, delete.TaskFilesOf(a.store), taskID, timestamp, delete.TenantRefsOf(tenantIDs), f.String(), taskMode())
+	return delete.RunTask(a.tombstones, delete.TaskFilesOf(a.store), delete.AccountOnlyKeys(a.store), taskID, timestamp, delete.TenantRefsOf(tenantIDs), f.String(), taskMode())
 }
 
 // DeleteStopTask removes the task's tombstone by id (an un-delete; refused while
-// a rewrite of its files is unfinished). Stopping an unknown task is a no-op.
-func (a *adapter) DeleteStopTask(_ context.Context, taskID string) error {
-	return delete.StopTask(a.tombstones, taskID)
+// a rewrite of its files is unfinished). Stopping an unknown task is a no-op; so
+// is stopping another tenant's task from the public API (delete.StopTask).
+func (a *adapter) DeleteStopTask(ctx context.Context, taskID string) error {
+	return delete.StopTask(ctx, a.tombstones, taskID)
 }
 
-// DeleteActiveTasks lists the active tombstones in upstream's DeleteTask shape.
-func (a *adapter) DeleteActiveTasks(_ context.Context) ([]*logstorage.DeleteTask, error) {
-	return delete.ActiveTasks(a.tombstones), nil
+// DeleteActiveTasks lists the active tombstones in upstream's DeleteTask shape,
+// only the caller's own for a tenant caller of the public API.
+func (a *adapter) DeleteActiveTasks(ctx context.Context) ([]*logstorage.DeleteTask, error) {
+	return delete.ActiveTasks(ctx, a.tombstones), nil
 }
 
 // filterValuesBySubstring filters results to only include values containing the substring.

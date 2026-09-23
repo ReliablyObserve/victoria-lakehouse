@@ -95,7 +95,7 @@ func TestInternalDelete_EnabledRunTaskIsTenantScoped(t *testing.T) {
 func TestInternalDelete_EnabledStopAndListStillWork(t *testing.T) {
 	ts := delete.NewTombstoneStore()
 	h := internalDeleteServer(t, ts, true, true)
-	ts.Add(delete.Tombstone{ID: "t1", Query: "level:error", EndNs: time.Now().UnixNano(), CreatedAt: time.Now(), Mode: "hide"})
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "t1", Query: "level:error", EndNs: time.Now().UnixNano(), CreatedAt: time.Now(), Mode: "hide"})
 
 	rec := postForm(h, "/internal/delete/active_tasks", url.Values{"version": {netselect.DeleteActiveTasksProtocolVersion}})
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"t1"`) {

@@ -48,7 +48,7 @@ func newSpanFixture(t *testing.T) *spanFixture {
 	}
 
 	store := delete.NewTombstoneStore()
-	store.Add(delete.Tombstone{ID: "edge", Query: "*", StartNs: early.UnixNano(), EndNs: early.Add(time.Second).UnixNano(), Mode: "hide"})
+	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "edge", Query: "*", StartNs: early.UnixNano(), EndNs: early.Add(time.Second).UnixNano(), Mode: "hide"})
 	s.SetTombstoneStore(store)
 
 	return &spanFixture{
@@ -123,7 +123,7 @@ func TestFieldValues_LabelIndexGatedByATombstoneAnywhere(t *testing.T) {
 	s.labelIndex.Add("service.name", []string{"secret-svc", "web"})
 
 	store := delete.NewTombstoneStore()
-	store.Add(delete.Tombstone{ID: "yesterday", Query: `service.name:="secret-svc"`,
+	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "yesterday", Query: `service.name:="secret-svc"`,
 		StartNs: yesterday.Add(-time.Minute).UnixNano(), EndNs: yesterday.Add(time.Minute).UnixNano(), Mode: "hide"})
 	s.SetTombstoneStore(store)
 

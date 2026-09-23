@@ -55,12 +55,17 @@ type Tombstone struct {
 	// or undo every rewrite a crash interrupted. See ResolveInterruptedRewrites.
 	Superseded map[string]Supersession `json:",omitempty"`
 
+	// FilterAt is the time (unix nanoseconds) the query's relative time filters
+	// (`_time:5m`) are evaluated at: when the delete was issued, as upstream
+	// evaluates a delete task at its start time. Zero evaluates them at parse
+	// time.
+	FilterAt int64 `json:",omitempty"`
+
 	// Tenants limits the tombstone to the rows of these tenants: query-time
 	// suppression, field listings, rewrites, compaction and the delete API all
-	// act only on objects and rows of a tenant listed here. Every delete issued
-	// by this release carries its tenants. An EMPTY list is a record from a
-	// release without tenant scope and keeps acting on every tenant, as it did
-	// when it was issued; see Scoped.
+	// act only on objects and rows of a tenant listed here. At least one is
+	// required (Validate); a persisted record without any is rejected on
+	// restore rather than applied.
 	Tenants []TenantRef `json:",omitempty"`
 }
 
@@ -107,7 +112,7 @@ func (t *Tombstone) MatchesRow(row map[string]string, timestampNs int64) bool {
 	if t.Query == "" || t.Query == "*" {
 		return true
 	}
-	f := parseFilterCached(t.Query)
+	f := parseFilterCached(t.Query, t.FilterAt)
 	if f == nil {
 		return false
 	}
@@ -129,7 +134,7 @@ func (t *Tombstone) MatchesFields(fields []logstorage.Field, timestampNs int64) 
 	if t.Query == "" || t.Query == "*" {
 		return true
 	}
-	f := parseFilterCached(t.Query)
+	f := parseFilterCached(t.Query, t.FilterAt)
 	if f == nil {
 		return false
 	}
@@ -145,7 +150,7 @@ func (t *Tombstone) Filter() *logstorage.Filter {
 	if t.Query == "" || t.Query == "*" {
 		return nil
 	}
-	return parseFilterCached(t.Query)
+	return parseFilterCached(t.Query, t.FilterAt)
 }
 
 // EligibleForPhysicalRemoval reports whether rows matching this tombstone may
@@ -313,6 +318,10 @@ func (s *TombstoneStore) UnfinishedRewrites() int {
 // ErrRewriteInProgress is returned by TryRemove for a tombstone with a rewrite
 // that has not finished.
 var ErrRewriteInProgress = errors.New("a rewrite of this tombstone's files is in progress; retry once it finishes")
+
+// ErrNoTenantScope rejects a tombstone that names no tenant: every tombstone
+// acts on the tenants it names and on nothing else.
+var ErrNoTenantScope = errors.New("tombstone names no tenant")
 
 // ErrTombstoneNotFound is returned by TryRemove for an unknown id.
 var ErrTombstoneNotFound = errors.New("tombstone not found")
@@ -621,19 +630,9 @@ func (s *TombstoneStore) ForRange(startNs, endNs int64) []Tombstone {
 	return result
 }
 
-// updateActiveGauges publishes the number of active tombstones, and how many
-// of them are instance-wide (carry no tenant scope).
+// updateActiveGauges publishes the number of active tombstones.
 func (s *TombstoneStore) updateActiveGauges() {
-	s.mu.RLock()
-	n, wide := len(s.tombstones), 0
-	for _, ts := range s.tombstones {
-		if !ts.Scoped() {
-			wide++
-		}
-	}
-	s.mu.RUnlock()
-	metrics.DeleteTombstonesActive.Set(int64(n))
-	metrics.DeleteTombstonesInstanceWide.Set(int64(wide))
+	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
 }
 
 // Count returns the number of tombstones in the store.
@@ -732,7 +731,7 @@ func (s *TombstoneStore) LoadFromDisk(dir string) error {
 	}
 	stale := s.dropStaleLocked()
 	for _, ts := range loaded.Tombstones {
-		if s.supersededByMarkerLocked(ts) {
+		if s.supersededByMarkerLocked(ts) || rejectUnscoped(ts, "disk") {
 			continue
 		}
 		s.mergeLoadedLocked(ts)
@@ -822,6 +821,9 @@ func (s *TombstoneStore) LoadFromS3(ctx context.Context, pool S3Pool, _ /*bucket
 			stale = append(stale, ts.ID)
 			continue
 		}
+		if rejectUnscoped(ts, "s3") {
+			continue
+		}
 		s.mergeLoadedLocked(ts)
 	}
 	s.owePendingS3DeletesLocked(stale)
@@ -893,8 +895,11 @@ func (t *Tombstone) Validate() error {
 	if t.StartNs > t.EndNs {
 		return fmt.Errorf("time range is inverted: start %d is after end %d", t.StartNs, t.EndNs)
 	}
+	if len(t.Tenants) == 0 {
+		return ErrNoTenantScope
+	}
 	if t.Query != "" && t.Query != "*" {
-		if _, err := logstorage.ParseFilter(t.Query); err != nil {
+		if _, err := parseFilterAt(t.Query, t.FilterAt); err != nil {
 			return fmt.Errorf("query does not parse as LogsQL: %w", err)
 		}
 	}

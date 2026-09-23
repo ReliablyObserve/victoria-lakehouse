@@ -23,8 +23,8 @@ import (
 // fast path to, tenant B. Every query class that applies tombstones is checked
 // with the tenant-scope fixture (three tenants plus the legacy untenanted
 // object in one partition and window), for single-tenant, multi-tenant and
-// global-read requests. A legacy record without tenants keeps hiding rows of
-// every tenant.
+// global-read requests. A record without tenants is invalid and hides
+// nothing.
 //
 // Twin of lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go.
 // ---------------------------------------------------------------------------
@@ -104,12 +104,14 @@ func TestTombstoneScope_DefaultTenantCoversLegacyObjects(t *testing.T) {
 	}
 }
 
-func TestTombstoneScope_LegacyUnscopedRecordStaysInstanceWide(t *testing.T) {
+// A record naming no tenant is invalid and never created; should one reach the
+// store anyway it hides nothing — it never acts on every tenant.
+func TestTombstoneScope_UnscopedRecordHidesNothing(t *testing.T) {
 	f := newTenantScopeFixture(t)
-	withTombstones(f, scopedTombstone(f, "legacy-wide")) // no tenants: a record from before tenant scope
+	withTombstones(f, scopedTombstone(f, "unscoped")) // no tenants
 	for _, tc := range tsCases() {
-		if rows, _ := f.runQuery(f.ctx(tc.globalRead), tc.tenantIDs, "*"); rows != 0 {
-			t.Errorf("%s: an instance-wide legacy tombstone must keep hiding every tenant's rows, got %d", tc.name, rows)
+		if rows, _ := f.runQuery(f.ctx(tc.globalRead), tc.tenantIDs, "*"); rows != f.expectedRows(tc.tenantIDs, tc.globalRead) {
+			t.Errorf("%s: an unscoped record hid rows: got %d, want %d", tc.name, rows, f.expectedRows(tc.tenantIDs, tc.globalRead))
 		}
 	}
 }
@@ -278,7 +280,7 @@ func TestTombstoneScope_BridgeRowsAttributedPerTenant(t *testing.T) {
 				}
 			}
 		}
-		return newTombstoneSink(tenantScope{all: true}, tss, delete.DefaultKeyTenant, build), n
+		return newTombstoneSink(tenantScope{all: true}, tss, delete.DefaultKeyTenant, false, build), n
 	}
 
 	sink, n := collect()
@@ -307,11 +309,10 @@ func TestTombstoneSink_UniformWhenAttributionCannotMatter(t *testing.T) {
 		return func(uint, *logstorage.DataBlock) {}
 	}
 	scoped := []delete.Tombstone{{ID: "s", Tenants: []delete.TenantRef{{AccountID: 5}}}}
-	wide := []delete.Tombstone{{ID: "w"}}
 
 	for name, sk := range map[string]*tombstoneSink{
-		"single-tenant scope": newTombstoneSink(resolveTenantScope(tenant1001), scoped, delete.DefaultKeyTenant, build),
-		"no scoped tombstone": newTombstoneSink(tenantScope{all: true}, wide, delete.DefaultKeyTenant, build),
+		"single-tenant scope": newTombstoneSink(resolveTenantScope(tenant1001), scoped, delete.DefaultKeyTenant, false, build),
+		"no tombstone":        newTombstoneSink(tenantScope{all: true}, nil, delete.DefaultKeyTenant, false, build),
 		"uniformSink":         uniformSink(func(uint, *logstorage.DataBlock) {}),
 	} {
 		if sk.perTenant {
@@ -323,7 +324,7 @@ func TestTombstoneSink_UniformWhenAttributionCannotMatter(t *testing.T) {
 	}
 
 	builds = 0
-	sk := newTombstoneSink(tenantScope{all: true}, scoped, delete.DefaultKeyTenant, build)
+	sk := newTombstoneSink(tenantScope{all: true}, scoped, delete.DefaultKeyTenant, false, build)
 	for i := 0; i < 3; i++ {
 		sk.forKey("5/0/logs/" + strconv.Itoa(i) + ".parquet")
 		sk.forKey("logs/legacy-" + strconv.Itoa(i) + ".parquet")
@@ -337,7 +338,7 @@ func TestTombstoneSink_UniformWhenAttributionCannotMatter(t *testing.T) {
 
 func TestTombstoneActsOnScope(t *testing.T) {
 	a := delete.Tombstone{Tenants: []delete.TenantRef{{AccountID: 1001}}}
-	wide := delete.Tombstone{}
+	unscoped := delete.Tombstone{}
 	cases := []struct {
 		name  string
 		ts    delete.Tombstone
@@ -348,12 +349,12 @@ func TestTombstoneActsOnScope(t *testing.T) {
 		{"other tenant", a, resolveTenantScope(tenant00), false},
 		{"list containing it", a, resolveTenantScope([]logstorage.TenantID{{}, {AccountID: 1001}}), true},
 		{"global read", a, tenantScope{all: true}, true},
-		{"unscoped legacy acts everywhere", wide, resolveTenantScope(tenant2002), true},
+		{"unscoped record acts nowhere", unscoped, resolveTenantScope(tenant2002), false},
 		{"non-numeric scope pair ignored", a, tenantScope{account: "acme", project: "0"}, false},
 		{"non-numeric project ignored", a, tenantScope{account: "1001", project: "x"}, false},
 	}
 	for _, tc := range cases {
-		if got := tombstoneActsOnScope(&tc.ts, tc.scope); got != tc.want {
+		if got := tombstoneActsOnScope(&tc.ts, tc.scope, false); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -447,7 +448,7 @@ func TestDeleteTask_HidesOnlyTheTaskTenant(t *testing.T) {
 	f := newTenantScopeFixture(t)
 	store := delete.NewTombstoneStore()
 	f.s.SetTombstoneStore(store)
-	err := delete.RunTask(store, delete.TaskFilesOf(f.s), "task-7", f.endNs,
+	err := delete.RunTask(store, delete.TaskFilesOf(f.s), false, "task-7", f.endNs,
 		delete.TenantRefsOf(tenant2002), strconv.Quote(f.svcCol)+`:="svc-tenant-2002-7"`, "hide")
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
@@ -462,10 +463,63 @@ func TestDeleteTask_HidesOnlyTheTaskTenant(t *testing.T) {
 	if want := tsRowsT0 + tsRowsT1001; rows != want || svcs["svc-tenant-2002-7"] != 0 {
 		t.Errorf("global read after the task: rows=%d svcs=%v, want %d", rows, svcs, want)
 	}
-	if err := delete.StopTask(store, "task-7"); err != nil {
+	if err := delete.StopTask(context.Background(), store, "task-7"); err != nil {
 		t.Fatalf("StopTask: %v", err)
 	}
 	if rows, _ := f.runQuery(context.Background(), tenant2002, "*"); rows != tsRowsT2002 {
 		t.Errorf("after stop_task tenant 2002:7 sees %d rows, want %d back", rows, tsRowsT2002)
+	}
+}
+
+// The {OrgID} key layout ({OrgID}/ template: the first key segment is the
+// account and no project segment exists). An object belongs to every project of
+// its account, so a tombstone (always ProjectID 0 there) hides the account's
+// rows for every project of that account and for no other account.
+//
+// The binaries refuse an {OrgID} prefix template for writing
+// (config.validateTenantPrefixTemplate), and a per-tenant read resolves no
+// objects under it (the manifest's tenant aggregates carry no project); the
+// layout is reached through a validated global read, which is what this test
+// drives, plus the per-account attribution the sink applies to buffered rows.
+func TestTombstoneScope_OrgIDKeyLayout(t *testing.T) {
+	f := newEmptyTenantScopeFixture(t, tsLayoutPrefix, "{OrgID}/")
+	now := tsNow()
+	f.put(now, tsDefaultBucket, "1001/logs/"+tsPartition+"/a.parquet", "svc-org-1001", 4)
+	f.put(now, tsDefaultBucket, "2002/logs/"+tsPartition+"/b.parquet", "svc-org-2002", 3)
+	if !f.s.AccountOnlyTenantKeys() {
+		t.Fatal("fixture: the {OrgID}/ template must report account-only keys")
+	}
+	withTombstones(f, scopedTombstone(f, "del-1001", delete.TenantRef{AccountID: 1001}))
+	if got := f.s.scopeTombstones(resolveTenantScope([]logstorage.TenantID{{AccountID: 1001, ProjectID: 3}}), f.startNs, f.endNs); len(got) != 1 {
+		t.Errorf("a request by project 3 of account 1001 reads the account's objects, so it gets the account's tombstone; got %v", got)
+	}
+	if got := f.s.scopeTombstones(resolveTenantScope([]logstorage.TenantID{{AccountID: 2002}}), f.startNs, f.endNs); got != nil {
+		t.Errorf("account 2002 must see no tombstone of account 1001, got %v", got)
+	}
+	rows, svcs := f.runQuery(f.ctx(true), tenant00, "*")
+	if rows != 3 || svcs["svc-org-1001"] != 0 {
+		t.Errorf("global read: rows=%d svcs=%v, want only account 2002's 3 rows", rows, svcs)
+	}
+	q := mustParseQueryWithTime(t, "*", f.startNs, f.endNs)
+	vals, err := f.s.GetFieldValues(f.ctx(true), tenant00, q, "service.name", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := valuesToCounts(vals); got["svc-org-1001"] != 0 || got["svc-org-2002"] == 0 {
+		t.Errorf("global field_values = %v, want account 2002's value only", got)
+	}
+	// Buffered rows of any project of the account follow the same rule.
+	sink := newTombstoneSink(tenantScope{all: true}, f.s.scopeTombstones(tenantScope{all: true}, f.startNs, f.endNs),
+		f.s.keyTenantParser(), true, func(tss []tombstone) logstorage.WriteDataBlockFunc {
+			return func(uint, *logstorage.DataBlock) {}
+		})
+	if got := len(delete.ForTenant(sink.tss, 1001, 0)); got != 1 {
+		t.Fatalf("fixture: %d tombstones for 1001:0", got)
+	}
+	if sink.forTenant(logstorage.TenantID{AccountID: 1001, ProjectID: 3}) == nil {
+		t.Fatal("no write function for project 3")
+	}
+	if len(sink.cache) != 1 {
+		t.Errorf("buffered rows of 1001:3 must be filtered like 1001:0 on the {OrgID} layout (cache %v)", len(sink.cache))
 	}
 }

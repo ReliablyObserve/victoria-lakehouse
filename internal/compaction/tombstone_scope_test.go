@@ -2,6 +2,7 @@ package compaction
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,31 +111,25 @@ func TestCompaction_TenantScopedTombstoneDropsOnlyItsTenantsRows(t *testing.T) {
 
 func TestKeyScope_AppliesOnlyWhenEveryInputBelongsToTheTombstonesTenants(t *testing.T) {
 	scoped := delete.Tombstone{ID: "s", Tenants: []delete.TenantRef{{AccountID: 1001}}}
-	wide := delete.Tombstone{ID: "w"}
+	unscoped := delete.Tombstone{ID: "n"} // invalid; must never apply
 	cases := []struct {
 		name string
 		ks   keyScope
 		want []string
 	}{
-		{"own tenant's inputs", keyScope{keys: []string{"1001/0/logs/a", "1001/0/logs/b"}}, []string{"s", "w"}},
-		{"another tenant's inputs", keyScope{keys: []string{"2002/0/logs/a"}}, []string{"w"}},
-		{"a group mixing tenants withholds the scoped tombstone", keyScope{keys: []string{"1001/0/logs/a", "2002/0/logs/b"}}, []string{"w"}},
-		{"no inputs named: only instance-wide records apply", keyScope{}, []string{"w"}},
+		{"own tenant's inputs", keyScope{keys: []string{"1001/0/logs/a", "1001/0/logs/b"}}, []string{"s"}},
+		{"another tenant's inputs", keyScope{keys: []string{"2002/0/logs/a"}}, nil},
+		{"a group mixing tenants withholds the tombstone", keyScope{keys: []string{"1001/0/logs/a", "2002/0/logs/b"}}, nil},
+		{"no inputs named", keyScope{}, nil},
 	}
 	for _, tc := range cases {
-		got := tc.ks.tombstones([]delete.Tombstone{scoped, wide})
+		got := tc.ks.tombstones([]delete.Tombstone{scoped, unscoped})
 		var ids []string
 		for _, ts := range got {
 			ids = append(ids, ts.ID)
 		}
-		if len(ids) != len(tc.want) {
+		if strings.Join(ids, ",") != strings.Join(tc.want, ",") {
 			t.Errorf("%s: applied %v, want %v", tc.name, ids, tc.want)
-			continue
-		}
-		for i := range ids {
-			if ids[i] != tc.want[i] {
-				t.Errorf("%s: applied %v, want %v", tc.name, ids, tc.want)
-			}
 		}
 	}
 }

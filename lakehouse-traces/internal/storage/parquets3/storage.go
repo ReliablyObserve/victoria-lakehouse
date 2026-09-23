@@ -793,20 +793,11 @@ func (s *Storage) PmetaCardinality(field string) uint64 {
 	return s.catalog.FieldCardinality(field)
 }
 
-// filterTombstonedRows removes rows from a DataBlock that match any active
-// tombstone in the given time range, whatever tenant it is scoped to. Returns
-// nil if all rows are suppressed. The query path does not use it: it applies
-// the tombstones of each source's own tenant (see tombstoneSink).
-func (s *Storage) filterTombstonedRows(db *logstorage.DataBlock, startNs, endNs int64) *logstorage.DataBlock {
-	if s.tombstones == nil {
-		return db
-	}
-	return suppressTombstonedRows(db, s.tombstones.ForRange(startNs, endNs))
-}
-
 // suppressTombstonedRows removes the rows of db that match any of tombstones.
-// The caller has already narrowed tombstones to those acting on db's tenant.
-// Returns nil if all rows are suppressed.
+// The caller has already narrowed tombstones to those acting on db's tenant
+// (scopeTombstones, tombstoneSink); there is deliberately no variant that takes
+// a time range alone, which would apply every tenant's tombstones. Returns nil
+// if all rows are suppressed.
 func suppressTombstonedRows(db *logstorage.DataBlock, tombstones []tombstone) *logstorage.DataBlock {
 	if len(tombstones) == 0 {
 		return db

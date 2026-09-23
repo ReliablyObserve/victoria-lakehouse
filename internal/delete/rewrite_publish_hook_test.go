@@ -196,7 +196,7 @@ func TestRewriter_UsesTheInjectedWriters(t *testing.T) {
 	}
 
 	res, err := rw.RewriteFile(context.Background(), key, []Tombstone{
-		{ID: "t", Query: `severity_text:="error"`, StartNs: 0, EndNs: 9000},
+		{Tenants: []TenantRef{{}}, ID: "t", Query: `severity_text:="error"`, StartNs: 0, EndNs: 9000},
 	})
 	if err != nil {
 		t.Fatalf("RewriteFile: %v", err)
@@ -228,7 +228,7 @@ func TestRewriter_UsesTheInjectedTraceWriter(t *testing.T) {
 		t.Error("only one writer is set; this must not count as a production configuration")
 	}
 	if _, err := rw.RewriteFile(context.Background(), key, []Tombstone{
-		{ID: "t", Query: `service.name:="drop"`, StartNs: 0, EndNs: 9000},
+		{Tenants: []TenantRef{{}}, ID: "t", Query: `service.name:="drop"`, StartNs: 0, EndNs: 9000},
 	}); err != nil {
 		t.Fatalf("RewriteFile: %v", err)
 	}

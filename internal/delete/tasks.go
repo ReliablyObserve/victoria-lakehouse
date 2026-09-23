@@ -1,6 +1,7 @@
 package delete
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -23,6 +24,12 @@ import (
 // registers the same task as a tombstone with that id, scoped to those tenants,
 // covering (-inf, timestamp]. stop_task removes it by id, and active_tasks lists
 // tombstones in upstream's DeleteTask shape.
+//
+// The public API (/delete/*) is tenant-scoped like the lakehouse delete API: the
+// request's caller rides the context (ScopeTaskRequests), and a tenant lists and
+// stops only the tasks scoped exactly to it. The cluster protocol
+// (/internal/delete/*) carries no caller and stays unscoped, as upstream: it is
+// the storage-node side of a vlselect/vtselect fan-out.
 
 // TaskFiles lists the objects that may hold rows of the given tenants in
 // [startNs, endNs] — the storage's tenant-scoped file listing.
@@ -90,9 +97,12 @@ func (e taskExistsError) Is(target error) bool { return target == ErrTaskExists 
 // A task that names no tenant deletes nothing upstream — its search has no
 // tenant to match — and is accepted. It is accepted here too and creates
 // nothing: an empty tenant list on a tombstone would mean "every tenant".
-func RunTask(store *TombstoneStore, files TaskFiles, taskID string, timestamp int64, tenants []TenantRef, filter, mode string) error {
+func RunTask(store *TombstoneStore, files TaskFiles, accountOnlyKeys bool, taskID string, timestamp int64, tenants []TenantRef, filter, mode string) error {
 	if store == nil {
 		return fmt.Errorf("the lakehouse delete feature is disabled; set delete.enabled: true in the lakehouse config")
+	}
+	if err := CheckTenantsForKeyLayout(tenants, accountOnlyKeys); err != nil {
+		return err
 	}
 	tenants = NormalizeTenants(tenants)
 	if len(tenants) == 0 {
@@ -119,6 +129,7 @@ func RunTask(store *TombstoneStore, files TaskFiles, taskID string, timestamp in
 		CreatedBy: "delete_task",
 		Mode:      mode,
 		Tenants:   tenants,
+		FilterAt:  timestamp,
 	}
 	if err := ts.Validate(); err != nil {
 		return fmt.Errorf("invalid delete task: %w", err)
@@ -132,21 +143,26 @@ func RunTask(store *TombstoneStore, files TaskFiles, taskID string, timestamp in
 	return nil
 }
 
-// ActiveTasks lists every active tombstone as one of upstream's delete tasks
-// (task id, tenants, filter, start time), oldest first. A record without tenant
-// scope has no tenants to list.
-func ActiveTasks(store *TombstoneStore) []*logstorage.DeleteTask {
+// ActiveTasks lists the active tombstones as upstream's delete tasks (task id,
+// tenants, filter, start time), oldest first: every tombstone for the cluster
+// protocol and the operator, only the caller's own for a tenant caller of the
+// public API.
+func ActiveTasks(ctx context.Context, store *TombstoneStore) []*logstorage.DeleteTask {
 	if store == nil {
 		return nil
 	}
+	caller, scoped := taskCallerFrom(ctx)
 	active := store.Active()
 	out := make([]*logstorage.DeleteTask, 0, len(active))
-	for _, ts := range active {
+	for i, ts := range active {
+		if scoped && !caller.sees(&active[i]) {
+			continue
+		}
 		out = append(out, &logstorage.DeleteTask{
 			TaskID:    ts.ID,
 			TenantIDs: TenantIDsOf(ts.Tenants),
 			Filter:    ts.Query,
-			StartTime: ts.CreatedAt,
+			StartTime: taskStartTime(&active[i]),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -158,12 +174,30 @@ func ActiveTasks(store *TombstoneStore) []*logstorage.DeleteTask {
 	return out
 }
 
+// taskStartTime is a task's start_time as upstream reports it: the task's own
+// timestamp (lib/logstorage/delete_task.go, newDeleteTask), which a delete task
+// records as the tombstone's FilterAt. A tombstone from the lakehouse API
+// reports when it was issued. CreatedAt stays this node's accept time, which the
+// un-delete window runs from.
+func taskStartTime(ts *Tombstone) time.Time {
+	if ts.FilterAt != 0 {
+		return time.Unix(0, ts.FilterAt).UTC()
+	}
+	return ts.CreatedAt
+}
+
 // StopTask removes the task's tombstone by id: an un-delete, refused while a
 // rewrite of its files is unfinished. Stopping an unknown task is a no-op, as
-// upstream.
-func StopTask(store *TombstoneStore, taskID string) error {
+// upstream — and so is stopping another tenant's task from the public API: the
+// answer is the unknown-task answer, so a task's existence does not leak.
+func StopTask(ctx context.Context, store *TombstoneStore, taskID string) error {
 	if store == nil {
 		return nil
+	}
+	if caller, scoped := taskCallerFrom(ctx); scoped {
+		if ts, ok := store.Get(taskID); !ok || !caller.sees(&ts) {
+			return nil
+		}
 	}
 	if err := store.TryRemove(taskID); err != nil && !errors.Is(err, ErrTombstoneNotFound) {
 		return err

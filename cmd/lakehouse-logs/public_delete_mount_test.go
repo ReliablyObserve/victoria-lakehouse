@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
@@ -40,7 +41,7 @@ func publicDeleteRequest(mux http.Handler, method, path string, form url.Values,
 func TestMountPublicDelete_GatedByDefault(t *testing.T) {
 	for _, deleteEnabled := range []bool{true, false} {
 		mux := http.NewServeMux()
-		mountPublicDelete(mux, deleteEnabled)
+		mountPublicDelete(mux, deleteEnabled, nil)
 		for _, path := range []string{"/delete/run_task", "/delete/stop_task", "/delete/active_tasks", "/delete/anything"} {
 			rec := publicDeleteRequest(mux, http.MethodPost, path, url.Values{}, nil)
 			if rec.Code != http.StatusBadRequest || rec.Body.String() != upstreamPublicDeleteDisabled {
@@ -62,7 +63,7 @@ func TestPublicDeleteFlag_IsUpstreams(t *testing.T) {
 func TestMountPublicDelete_NeedsTheDeleteFeature(t *testing.T) {
 	enablePublicDelete(t)
 	mux := http.NewServeMux()
-	mountPublicDelete(mux, false)
+	mountPublicDelete(mux, false, nil)
 	rec := publicDeleteRequest(mux, http.MethodPost, "/delete/run_task", url.Values{"filter": {"*"}}, nil)
 	if rec.Code != http.StatusBadRequest || rec.Body.String() != internaldelete.PublicDeleteDisabledMessage+"\n" {
 		t.Fatalf("got %d %q, want the delete.enabled refusal", rec.Code, rec.Body.String())
@@ -114,7 +115,7 @@ func TestMountPublicDelete_RunTaskIsTenantScoped(t *testing.T) {
 	store := delete.NewTombstoneStore()
 	internalvlstorage.SetStorage(nopStorage{}, store)
 	mux := http.NewServeMux()
-	mountPublicDelete(mux, true)
+	mountPublicDelete(mux, true, testGlobalRead)
 	delete.NewHandler(store, &manifestQuerierAdapter{m: manifest.New("test-bucket", "")}, delete.NewStorageClassDetector(nil), &config.DeleteConfig{Enabled: true, DefaultMode: "hide"}, "logs").Register(mux)
 
 	rec := publicDeleteRequest(mux, http.MethodPost, "/delete/run_task", url.Values{"filter": {"level:error"}}, map[string]string{"AccountID": "1001"})
@@ -132,7 +133,7 @@ func TestMountPublicDelete_RunTaskIsTenantScoped(t *testing.T) {
 		t.Fatalf("tombstone = %+v, want level:error scoped to exactly 1001:0", ts)
 	}
 
-	rec = publicDeleteRequest(mux, http.MethodGet, "/delete/active_tasks", url.Values{}, nil)
+	rec = publicDeleteRequest(mux, http.MethodGet, "/delete/active_tasks", url.Values{}, map[string]string{"AccountID": "1001"})
 	var tasks []*logstorage.DeleteTask
 	if err := json.Unmarshal(rec.Body.Bytes(), &tasks); err != nil || len(tasks) != 1 || tasks[0].TaskID != resp.TaskID ||
 		len(tasks[0].TenantIDs) != 1 || tasks[0].TenantIDs[0].AccountID != 1001 || tasks[0].Filter != "level:error" {
@@ -145,7 +146,7 @@ func TestMountPublicDelete_RunTaskIsTenantScoped(t *testing.T) {
 		t.Fatalf("/delete/logsql/tombstones as 1001:0 = %d %q, want the lakehouse listing with the task", rec.Code, rec.Body.String())
 	}
 
-	rec = publicDeleteRequest(mux, http.MethodPost, "/delete/stop_task", url.Values{"task_id": {resp.TaskID}}, nil)
+	rec = publicDeleteRequest(mux, http.MethodPost, "/delete/stop_task", url.Values{"task_id": {resp.TaskID}}, map[string]string{"AccountID": "1001"})
 	if rec.Code != http.StatusOK || rec.Body.String() != `{"status":"ok"}` {
 		t.Fatalf("stop_task: %d %q", rec.Code, rec.Body.String())
 	}
@@ -159,5 +160,66 @@ func TestMountPublicDelete_RunTaskIsTenantScoped(t *testing.T) {
 	rec = publicDeleteRequest(mux, http.MethodPost, "/delete/run_task", url.Values{"filter": {"level:("}}, nil)
 	if rec.Code != http.StatusBadRequest || !strings.HasPrefix(rec.Body.String(), "cannot parse filter [level:(]") {
 		t.Fatalf("run_task with a bad filter: %d %q, want upstream's answer", rec.Code, rec.Body.String())
+	}
+}
+
+// testGlobalRead is the operator credential in these tests.
+func testGlobalRead(r *http.Request) bool {
+	return r.Header.Get("X-Lakehouse-Global-Read") == "letmein"
+}
+
+// The public stop_task and active_tasks act for the caller's tenant only:
+// tenant B can neither list nor stop tenant A's task, and stopping it answers
+// byte for byte what stopping an unknown task answers. The global-read
+// credential lists and stops every task.
+func TestMountPublicDelete_TasksAreTenantScoped(t *testing.T) {
+	enablePublicDelete(t)
+	store := delete.NewTombstoneStore()
+	internalvlstorage.SetStorage(nopStorage{}, store)
+	mux := http.NewServeMux()
+	mountPublicDelete(mux, true, testGlobalRead)
+
+	asA := map[string]string{"AccountID": "1001"}
+	asB := map[string]string{"AccountID": "2002"}
+	global := map[string]string{"X-Lakehouse-Global-Read": "letmein"}
+	run := func(headers map[string]string) string {
+		t.Helper()
+		rec := publicDeleteRequest(mux, http.MethodPost, "/delete/run_task", url.Values{"filter": {"level:error"}}, headers)
+		var resp struct {
+			TaskID string `json:"task_id"`
+		}
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &resp) != nil || resp.TaskID == "" {
+			t.Fatalf("run_task: %d %q", rec.Code, rec.Body.String())
+		}
+		return resp.TaskID
+	}
+	taskA := run(asA)
+	time.Sleep(time.Microsecond) // upstream's task id is the issue time in nanoseconds
+	taskB := run(asB)
+
+	list := func(headers map[string]string) string {
+		return publicDeleteRequest(mux, http.MethodGet, "/delete/active_tasks", url.Values{}, headers).Body.String()
+	}
+	if got := list(asB); !strings.Contains(got, taskB) || strings.Contains(got, taskA) {
+		t.Fatalf("tenant 2002 lists %s, want only its own task %s", got, taskB)
+	}
+	if got := list(global); !strings.Contains(got, taskA) || !strings.Contains(got, taskB) {
+		t.Fatalf("the operator lists %s, want both tasks", got)
+	}
+
+	foreign := publicDeleteRequest(mux, http.MethodPost, "/delete/stop_task", url.Values{"task_id": {taskA}}, asB)
+	unknown := publicDeleteRequest(mux, http.MethodPost, "/delete/stop_task", url.Values{"task_id": {"1"}}, asB)
+	if foreign.Code != unknown.Code || foreign.Body.String() != unknown.Body.String() ||
+		foreign.Header().Get("Content-Type") != unknown.Header().Get("Content-Type") {
+		t.Fatalf("stopping another tenant's task answered %d %q, an unknown task %d %q: they must be identical",
+			foreign.Code, foreign.Body.String(), unknown.Code, unknown.Body.String())
+	}
+	if _, ok := store.Get(taskA); !ok {
+		t.Fatal("tenant 2002 stopped tenant 1001's task")
+	}
+	publicDeleteRequest(mux, http.MethodPost, "/delete/stop_task", url.Values{"task_id": {taskA}}, global)
+	publicDeleteRequest(mux, http.MethodPost, "/delete/stop_task", url.Values{"task_id": {taskB}}, global)
+	if store.Count() != 0 {
+		t.Fatalf("the operator could not stop every task; %d left", store.Count())
 	}
 }

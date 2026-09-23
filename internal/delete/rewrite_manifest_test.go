@@ -54,6 +54,7 @@ func newRewriteFixture(t *testing.T) *rewriteFixture {
 
 	store := NewTombstoneStore()
 	store.Add(Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "ts-fixture",
 		Query:        `severity_text:="error"`,
 		StartNs:      0,
@@ -458,7 +459,7 @@ func TestRewrite_PreservesTheDedicatedSlotFooterBinding(t *testing.T) {
 
 	rw := NewRewriter(pool, "logs/", 100, "logs")
 	res, err := rw.RewriteFile(context.Background(), key, []Tombstone{
-		{ID: "t", Query: `severity_text:="error"`, StartNs: 0, EndNs: 9000},
+		{Tenants: []TenantRef{{}}, ID: "t", Query: `severity_text:="error"`, StartNs: 0, EndNs: 9000},
 	})
 	if err != nil {
 		t.Fatalf("RewriteFile: %v", err)

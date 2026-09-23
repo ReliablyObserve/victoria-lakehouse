@@ -412,6 +412,19 @@ func (m *Manifest) TenantKeyParser() func(key string) (account, project string, 
 	}
 }
 
+// AccountOnlyTenantKeys reports whether object keys carry the account alone —
+// an {OrgID} prefix template without {ProjectID} — so a key names no project.
+func (m *Manifest) AccountOnlyTenantKeys() bool {
+	m.mu.RLock()
+	segments := m.templateSegments
+	tmpl := m.prefixTemplate
+	m.mu.RUnlock()
+	if segments == 0 {
+		return strings.Contains(tmpl, "{OrgID}") && !strings.Contains(tmpl, "{ProjectID}")
+	}
+	return segments == 1
+}
+
 // TenantKeyPrefix returns the S3 key prefix that isolates (account, project)
 // under the manifest's configured prefix template.
 func (m *Manifest) TenantKeyPrefix(account, project string) string {

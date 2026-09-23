@@ -122,6 +122,11 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := CheckTenantsForKeyLayout([]TenantRef{caller.tenant}, AccountOnlyKeys(h.manifest)); err != nil {
+		http.Error(w, "invalid delete request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// The delete is the caller's: scoped to its tenant, over its objects.
 	files := h.tenantFiles(caller.tenant, startNs, endNs)
 	affectedKeys := make([]string, 0, len(files))
@@ -129,15 +134,18 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		affectedKeys = append(affectedKeys, f.Key)
 	}
 
+	now := time.Now()
 	ts := Tombstone{
 		ID:           uuid.New().String(),
 		Query:        query,
 		StartNs:      startNs,
 		EndNs:        endNs,
 		AffectedKeys: affectedKeys,
-		CreatedAt:    time.Now(),
+		CreatedAt:    now,
 		Mode:         mode,
 		Tenants:      []TenantRef{caller.tenant},
+		// Relative time filters are evaluated when the delete is issued.
+		FilterAt: now.UnixNano(),
 	}
 
 	// Reject before storing. An unenforceable tombstone that is accepted looks

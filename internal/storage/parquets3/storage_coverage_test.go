@@ -535,7 +535,7 @@ func TestFilterTombstonedRows_NilTombstoneStore(t *testing.T) {
 		{Name: "_msg", Values: []string{"hello"}},
 	})
 
-	result := s.filterTombstonedRows(db, 0, 2000)
+	result := suppressAllTenants(s, db, 0, 2000)
 	if result != db {
 		t.Error("with nil tombstone store, should return same pointer")
 	}
@@ -546,6 +546,7 @@ func TestFilterTombstonedRows_EmptyForRange(t *testing.T) {
 	ts := delete.NewTombstoneStore()
 	// Add tombstone for a range outside query range
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "far-away",
 		Query:   "*",
 		StartNs: 100000,
@@ -559,7 +560,7 @@ func TestFilterTombstonedRows_EmptyForRange(t *testing.T) {
 		{Name: "_msg", Values: []string{"hello"}},
 	})
 
-	result := s.filterTombstonedRows(db, 0, 1000)
+	result := suppressAllTenants(s, db, 0, 1000)
 	if result != db {
 		t.Error("with no matching tombstones, should return same pointer")
 	}
@@ -571,6 +572,7 @@ func TestFilterTombstonedRows_AllRowsSuppressed(t *testing.T) {
 
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-all",
 		Query:   "*",
 		StartNs: now.Add(-time.Hour).UnixNano(),
@@ -587,7 +589,7 @@ func TestFilterTombstonedRows_AllRowsSuppressed(t *testing.T) {
 		{Name: "_msg", Values: []string{"msg1", "msg2"}},
 	})
 
-	result := s.filterTombstonedRows(db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	result := suppressAllTenants(s, db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if result != nil {
 		t.Error("expected nil when all rows are suppressed")
 	}
@@ -599,6 +601,7 @@ func TestFilterTombstonedRows_PartialSuppression(t *testing.T) {
 
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-partial",
 		Query:   `_msg:="delete-me"`,
 		StartNs: now.Add(-time.Hour).UnixNano(),
@@ -616,7 +619,7 @@ func TestFilterTombstonedRows_PartialSuppression(t *testing.T) {
 		{Name: "_msg", Values: []string{"keep-me", "delete-me", "also-keep"}},
 	})
 
-	result := s.filterTombstonedRows(db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	result := suppressAllTenants(s, db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if result == nil {
 		t.Fatal("expected non-nil result (partial suppression)")
 	}
@@ -643,6 +646,7 @@ func TestFilterTombstonedRows_NoTimestampColumn(t *testing.T) {
 	// Tombstone with "*" query matches all rows regardless of timestamp
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-no-ts",
 		Query:   "*",
 		StartNs: 0,
@@ -656,7 +660,7 @@ func TestFilterTombstonedRows_NoTimestampColumn(t *testing.T) {
 		{Name: "_msg", Values: []string{"hello"}},
 	})
 
-	result := s.filterTombstonedRows(db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	result := suppressAllTenants(s, db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	// With "*" query and timestamp 0 falling within [0, 1<<62], all rows should be suppressed
 	if result != nil {
 		t.Error("expected nil when all rows match tombstone")
@@ -669,6 +673,7 @@ func TestFilterTombstonedRows_NoMatchingRows(t *testing.T) {
 
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-no-match",
 		Query:   `_msg:="nonexistent"`,
 		StartNs: now.Add(-time.Hour).UnixNano(),
@@ -685,7 +690,7 @@ func TestFilterTombstonedRows_NoMatchingRows(t *testing.T) {
 		{Name: "_msg", Values: []string{"msg1", "msg2"}},
 	})
 
-	result := s.filterTombstonedRows(db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	result := suppressAllTenants(s, db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if result != db {
 		t.Error("when no rows match tombstone, should return original DataBlock")
 	}
@@ -1702,6 +1707,7 @@ func TestFilterTombstonedRows_TimestampUnixNanoColumn(t *testing.T) {
 
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-col-name",
 		Query:   "*",
 		StartNs: now.Add(-time.Hour).UnixNano(),
@@ -1717,7 +1723,7 @@ func TestFilterTombstonedRows_TimestampUnixNanoColumn(t *testing.T) {
 		{Name: "_msg", Values: []string{"hello"}},
 	})
 
-	result := s.filterTombstonedRows(db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+	result := suppressAllTenants(s, db, now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if result != nil {
 		t.Error("expected nil when all rows match tombstone with timestamp_unix_nano column")
 	}

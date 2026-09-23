@@ -130,7 +130,7 @@ func TestDeleteAPI_ListGetUndeleteVerifyAreTenantScoped(t *testing.T) {
 	store.Add(Tombstone{ID: "own-1001", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}}})
 	store.Add(Tombstone{ID: "own-2002", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 2002}}})
 	store.Add(Tombstone{ID: "two-tenants", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}, {AccountID: 2002}}})
-	store.Add(Tombstone{ID: "legacy-wide", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide"})
+	store.Add(Tombstone{ID: "other-3003", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 3003}}})
 
 	list := func(headers map[string]string) map[string]any {
 		t.Helper()
@@ -155,14 +155,14 @@ func TestDeleteAPI_ListGetUndeleteVerifyAreTenantScoped(t *testing.T) {
 		t.Errorf("2002:0 (via alias) lists %q, want only its own tombstone", ids(b))
 	}
 	if b := list(nil); ids(b) != "" {
-		t.Errorf("0:0 lists %q: an instance-wide or other tenant's record is not the default tenant's", ids(b))
+		t.Errorf("0:0 lists %q: other tenants' records are not the default tenant's", ids(b))
 	}
-	if b := list(asGlobal); ids(b) != "legacy-wide,own-1001,own-2002,two-tenants" || b["scope"] != "instance" {
+	if b := list(asGlobal); ids(b) != "other-3003,own-1001,own-2002,two-tenants" || b["scope"] != "instance" {
 		t.Errorf("operator lists %q (scope %v), want every tombstone", ids(b), b["scope"])
 	}
 
 	// Another tenant's tombstone is not found — to read or to un-delete.
-	for _, id := range []string{"own-2002", "two-tenants", "legacy-wide"} {
+	for _, id := range []string{"own-2002", "two-tenants", "other-3003"} {
 		for _, method := range []string{http.MethodGet, http.MethodDelete} {
 			rec := scopeReq{method: method, path: "/delete/logsql/tombstone/" + id, headers: as1001}.do(srv)
 			if rec.Code != http.StatusNotFound {
@@ -190,9 +190,9 @@ func TestDeleteAPI_ListGetUndeleteVerifyAreTenantScoped(t *testing.T) {
 		t.Errorf("verify as 0:0 = %v, want nothing verified", b)
 	}
 
-	// The operator may un-delete a record no tenant owns.
-	if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/legacy-wide", headers: asGlobal}).do(srv); rec.Code != http.StatusOK {
-		t.Errorf("operator un-delete of the instance-wide record = %d %s", rec.Code, rec.Body.String())
+	// The operator may un-delete a record the caller does not own.
+	if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/two-tenants", headers: asGlobal}).do(srv); rec.Code != http.StatusOK {
+		t.Errorf("operator un-delete of a multi-tenant record = %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/own-1001", headers: as1001}).do(srv); rec.Code != http.StatusOK {
 		t.Errorf("tenant un-delete of its own tombstone = %d", rec.Code)
@@ -271,10 +271,12 @@ func TestDeleteAPI_UnparseableTenantIsRefused(t *testing.T) {
 // Without a configured global-read credential no request is the operator.
 func TestDeleteAPI_NoCredentialConfiguredMeansNoOperator(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "legacy-wide", Query: "*", EndNs: 10, Mode: "hide"})
+	store.Add(Tombstone{ID: "other-3003", Query: "*", EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 3003}}})
 	h := NewHandler(store, &mockManifest{}, NewStorageClassDetector(nil), defaultCfg(), "logs")
 	rec := scopeReq{method: http.MethodGet, path: "/delete/logsql/tombstones", headers: asGlobal}.do(http.HandlerFunc(h.handleListTombstones))
 	if body := decodeJSON(t, rec.Body); body["count"] != float64(0) || body["scope"] != "tenant" {
 		t.Errorf("listing without a configured credential = %v, want the tenant view", body)
 	}
 }
+
+func (s *scopedManifest) AccountOnlyTenantKeys() bool { return s.m.AccountOnlyTenantKeys() }

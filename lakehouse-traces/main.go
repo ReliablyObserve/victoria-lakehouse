@@ -1128,11 +1128,23 @@ func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
 // -delete.enable gate and delete handler (public_delete.go) — whose storage
 // calls land in the lakehouse adapter, which registers each task as a
 // tombstone scoped to the request's tenant. internaldelete.PublicHandler only
-// adds the lakehouse delete.enabled requirement after upstream's flag. Any
-// other /delete/* path the lakehouse does not serve itself gets upstream's
-// answer too, as on a VictoriaTraces node.
-func mountPublicDelete(mux *http.ServeMux, deleteEnabled bool) {
-	mux.HandleFunc("/delete/", internaldelete.PublicHandler(internaldelete.PublicFlagEnabled, deleteEnabled, upstreamPublicDelete))
+// adds the lakehouse delete.enabled requirement after upstream's flag, and
+// delete.ScopeTaskRequests the caller, so stop_task and active_tasks act only on
+// the caller's own tasks (globalRead: the operator view). Any other /delete/*
+// path the lakehouse does not serve itself gets upstream's answer too, as on a
+// VictoriaTraces node.
+func mountPublicDelete(mux *http.ServeMux, deleteEnabled bool, globalRead func(*http.Request) bool) {
+	mux.HandleFunc("/delete/", internaldelete.PublicHandler(internaldelete.PublicFlagEnabled, deleteEnabled,
+		delete.ScopeTaskRequests(globalRead, upstreamPublicDelete)))
+}
+
+// globalReadAuthorizer validates the operator credential that widens a delete
+// API request to every tenant's tombstones — the credential that widens a
+// select to every tenant. Nil-safe: without a configured credential it
+// authorizes nothing.
+func globalReadAuthorizer(cfg *config.Config) func(*http.Request) bool {
+	auth := tenant.NewGlobalReadAuth(cfg.Tenant.GlobalReadHeader, cfg.Tenant.GlobalReadValue, cfg.Tenant.GlobalReadToken)
+	return func(r *http.Request) bool { return auth.Enabled() && auth.Authorize(r) }
 }
 
 func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
@@ -1248,7 +1260,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	if cfg.SelectEnabled() {
 		internalselect.Init()
 		mountInternalProtocol(mux, cfg.Delete.Enabled)
-		mountPublicDelete(mux, cfg.Delete.Enabled)
+		mountPublicDelete(mux, cfg.Delete.Enabled, globalReadAuthorizer(cfg))
 
 		publicHandler := selectapi.NewHandler(store, cfg)
 		publicHandler.Register(mux)
@@ -1329,9 +1341,8 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mq := &manifestQuerierAdapter{m: store.Manifest()}
 		// Tenant callers manage only their own tombstones; the global-read
 		// credential (the one that widens a select) is the operator's view.
-		globalRead := tenant.NewGlobalReadAuth(cfg.Tenant.GlobalReadHeader, cfg.Tenant.GlobalReadValue, cfg.Tenant.GlobalReadToken)
 		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, "traces",
-			delete.WithGlobalReadAuthorizer(func(r *http.Request) bool { return globalRead.Enabled() && globalRead.Authorize(r) }))
+			delete.WithGlobalReadAuthorizer(globalReadAuthorizer(cfg)))
 		dh.Register(mux)
 	}
 
@@ -2245,6 +2256,10 @@ func (a *manifestQuerierAdapter) PendingKeys() []manifest.PendingKey { return a.
 func (a *manifestQuerierAdapter) TenantKeyParser() func(key string) (account, project string, ok bool) {
 	return a.m.TenantKeyParser()
 }
+
+// AccountOnlyTenantKeys tells the delete API that keys carry the account alone,
+// so it refuses a delete scoped to a ProjectID other than 0.
+func (a *manifestQuerierAdapter) AccountOnlyTenantKeys() bool { return a.m.AccountOnlyTenantKeys() }
 
 func (a *manifestQuerierAdapter) GetFilesForRange(startNs, endNs int64) []delete.FileInfo {
 	mFiles := a.m.GetFilesForRange(startNs, endNs)

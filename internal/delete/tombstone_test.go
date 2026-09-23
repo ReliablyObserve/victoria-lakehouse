@@ -98,6 +98,7 @@ func (m *mockS3Pool) Delete(_ context.Context, key string) error {
 
 func TestMatchesRow_WithinRangeMatchingField(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		Query:   `level:="error"`,
 		StartNs: 1000,
@@ -112,6 +113,7 @@ func TestMatchesRow_WithinRangeMatchingField(t *testing.T) {
 
 func TestMatchesRow_OutsideTimeRange(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		Query:   `level:="error"`,
 		StartNs: 1000,
@@ -126,6 +128,7 @@ func TestMatchesRow_OutsideTimeRange(t *testing.T) {
 
 func TestMatchesRow_DifferentFieldValue(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		Query:   `level:="error"`,
 		StartNs: 1000,
@@ -140,6 +143,7 @@ func TestMatchesRow_DifferentFieldValue(t *testing.T) {
 
 func TestMatchesRow_SubstringQuery(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		Query:   `body:"timeout"`,
 		StartNs: 1000,
@@ -159,6 +163,7 @@ func TestMatchesRow_SubstringQuery(t *testing.T) {
 
 func TestMatchesRow_WildcardQuery(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		Query:   "*",
 		StartNs: 1000,
@@ -173,6 +178,7 @@ func TestMatchesRow_WildcardQuery(t *testing.T) {
 
 func TestMatchesRow_EmptyQuery(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		Query:   "",
 		StartNs: 1000,
@@ -187,6 +193,7 @@ func TestMatchesRow_EmptyQuery(t *testing.T) {
 
 func TestMatchesRow_BareWordMatchesMsgField(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		Query:   "panic",
 		StartNs: 1000,
@@ -206,6 +213,7 @@ func TestMatchesRow_BareWordMatchesMsgField(t *testing.T) {
 
 func TestAffectsFile_Overlapping(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		StartNs: 1000,
 		EndNs:   2000,
@@ -234,6 +242,7 @@ func TestAffectsFile_Overlapping(t *testing.T) {
 
 func TestAffectsFile_NonOverlapping(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		StartNs: 1000,
 		EndNs:   2000,
@@ -253,8 +262,8 @@ func TestAffectsFile_NonOverlapping(t *testing.T) {
 func TestTombstoneStore_AddAndActive(t *testing.T) {
 	store := NewTombstoneStore()
 
-	ts1 := Tombstone{ID: "t1", Query: "*", StartNs: 1000, EndNs: 2000, CreatedAt: time.Now()}
-	ts2 := Tombstone{ID: "t2", Query: `level:="error"`, StartNs: 3000, EndNs: 4000, CreatedAt: time.Now()}
+	ts1 := Tombstone{Tenants: []TenantRef{{}}, ID: "t1", Query: "*", StartNs: 1000, EndNs: 2000, CreatedAt: time.Now()}
+	ts2 := Tombstone{Tenants: []TenantRef{{}}, ID: "t2", Query: `level:="error"`, StartNs: 3000, EndNs: 4000, CreatedAt: time.Now()}
 
 	store.Add(ts1)
 	store.Add(ts2)
@@ -272,8 +281,8 @@ func TestTombstoneStore_AddAndActive(t *testing.T) {
 func TestTombstoneStore_Remove(t *testing.T) {
 	store := NewTombstoneStore()
 
-	ts1 := Tombstone{ID: "t1", Query: "*", StartNs: 1000, EndNs: 2000}
-	ts2 := Tombstone{ID: "t2", Query: "*", StartNs: 3000, EndNs: 4000}
+	ts1 := Tombstone{Tenants: []TenantRef{{}}, ID: "t1", Query: "*", StartNs: 1000, EndNs: 2000}
+	ts2 := Tombstone{Tenants: []TenantRef{{}}, ID: "t2", Query: "*", StartNs: 3000, EndNs: 4000}
 
 	store.Add(ts1)
 	store.Add(ts2)
@@ -301,9 +310,9 @@ func TestTombstoneStore_Remove(t *testing.T) {
 func TestTombstoneStore_ForRange(t *testing.T) {
 	store := NewTombstoneStore()
 
-	store.Add(Tombstone{ID: "t1", StartNs: 1000, EndNs: 2000})
-	store.Add(Tombstone{ID: "t2", StartNs: 3000, EndNs: 4000})
-	store.Add(Tombstone{ID: "t3", StartNs: 5000, EndNs: 6000})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t1", StartNs: 1000, EndNs: 2000})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t2", StartNs: 3000, EndNs: 4000})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t3", StartNs: 5000, EndNs: 6000})
 
 	// Query range that overlaps t1 and t2 only
 	result := store.ForRange(1500, 3500)
@@ -335,6 +344,7 @@ func TestTombstoneStore_ForRange(t *testing.T) {
 func TestPersistAndLoadFromDisk_RoundTrip(t *testing.T) {
 	store := NewTombstoneStore()
 	store.Add(Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t1",
 		Query:   `level:="error"`,
 		StartNs: 1000,
@@ -342,6 +352,7 @@ func TestPersistAndLoadFromDisk_RoundTrip(t *testing.T) {
 		Mode:    "hide",
 	})
 	store.Add(Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "t2",
 		Query:   "*",
 		StartNs: 3000,
@@ -417,7 +428,7 @@ func TestPersistToDisk_DirIsFile_Error(t *testing.T) {
 
 func TestPersistToDisk_CreatesDir(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "t1", Query: "*", StartNs: 100, EndNs: 200})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t1", Query: "*", StartNs: 100, EndNs: 200})
 
 	dir := filepath.Join(t.TempDir(), "sub", "deep")
 
@@ -437,7 +448,7 @@ func TestPersistToDisk_CreatesDir(t *testing.T) {
 
 func TestPersistToDisk_AtomicWrite(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "t1", Query: "*", StartNs: 100, EndNs: 200})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t1", Query: "*", StartNs: 100, EndNs: 200})
 
 	dir := t.TempDir()
 	if err := store.PersistToDisk(dir); err != nil {
@@ -462,6 +473,7 @@ func TestPersistToDisk_AtomicWrite(t *testing.T) {
 func TestSyncAndLoadFromS3_RoundTrip(t *testing.T) {
 	store := NewTombstoneStore()
 	store.Add(Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "s1",
 		Query:   `app:="web"`,
 		StartNs: 5000,
@@ -469,6 +481,7 @@ func TestSyncAndLoadFromS3_RoundTrip(t *testing.T) {
 		Mode:    "auto",
 	})
 	store.Add(Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "s2",
 		Query:   "timeout",
 		StartNs: 7000,
@@ -525,7 +538,7 @@ func TestLoadFromS3_EmptyPrefix(t *testing.T) {
 
 	store := NewTombstoneStore()
 	// Add something first to verify it stays empty after load
-	store.Add(Tombstone{ID: "existing", Query: "*", StartNs: 1, EndNs: 2})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "existing", Query: "*", StartNs: 1, EndNs: 2})
 
 	// LoadFromS3 with empty prefix (no keys) should return nil
 	err := store.LoadFromS3(ctx, pool, "mybucket", "empty-tenant")

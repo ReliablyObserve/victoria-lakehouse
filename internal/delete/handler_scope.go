@@ -1,6 +1,7 @@
 package delete
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -44,24 +45,55 @@ type deleteCaller struct {
 	tenant TenantRef
 	// global: the request proved the global-read credential.
 	global bool
+	// none: the tenant headers did not parse; the caller sees nothing.
+	none bool
+}
+
+type taskCallerKey struct{}
+
+// ScopeTaskRequests puts the caller of a public delete-API request
+// (/delete/run_task, /delete/stop_task, /delete/active_tasks) on its context,
+// resolved exactly like a lakehouse delete-API caller, so the storage calls
+// upstream's handler makes (DeleteStopTask, DeleteActiveTasks) act for that
+// tenant only. It never answers itself: an unparseable tenant is left to
+// upstream's handler (run_task answers "cannot obtain tenantID") and sees no
+// task. globalRead validates the operator credential; nil means no operator.
+func ScopeTaskRequests(globalRead func(*http.Request) bool, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		c, err := resolveCaller(r, globalRead)
+		if err != nil {
+			c = deleteCaller{none: true}
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), taskCallerKey{}, c)))
+	}
+}
+
+// taskCallerFrom returns the public-API caller on ctx; ok=false for a request
+// that carries none (the cluster delete protocol), which is not scoped.
+func taskCallerFrom(ctx context.Context) (deleteCaller, bool) {
+	if ctx == nil {
+		return deleteCaller{}, false
+	}
+	c, ok := ctx.Value(taskCallerKey{}).(deleteCaller)
+	return c, ok
 }
 
 // resolveCaller resolves the request's tenant the way the select path does.
-func (h *Handler) resolveCaller(r *http.Request) (deleteCaller, error) {
+func resolveCaller(r *http.Request, globalRead func(*http.Request) bool) (deleteCaller, error) {
 	tid, err := logstorage.GetTenantIDFromRequest(r)
 	if err != nil {
 		return deleteCaller{}, fmt.Errorf("cannot obtain tenantID: %w", err)
 	}
 	return deleteCaller{
 		tenant: TenantRef{AccountID: tid.AccountID, ProjectID: tid.ProjectID},
-		global: h.globalRead != nil && h.globalRead(r),
+		global: globalRead != nil && globalRead(r),
 	}, nil
 }
 
 // callerOrError resolves the caller, answering 400 when the tenant headers do
 // not parse. ok=false means the response has been written.
 func (h *Handler) callerOrError(w http.ResponseWriter, r *http.Request) (deleteCaller, bool) {
-	c, err := h.resolveCaller(r)
+	c, err := resolveCaller(r, h.globalRead)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return deleteCaller{}, false
@@ -71,6 +103,9 @@ func (h *Handler) callerOrError(w http.ResponseWriter, r *http.Request) (deleteC
 
 // sees reports whether the caller may see and manage ts.
 func (c deleteCaller) sees(ts *Tombstone) bool {
+	if c.none {
+		return false
+	}
 	return c.global || ts.ScopedExactlyTo(c.tenant.AccountID, c.tenant.ProjectID)
 }
 

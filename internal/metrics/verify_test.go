@@ -138,7 +138,6 @@ func TestVerifyMetrics_AllGaugesExist(t *testing.T) {
 		{"MetricsCardinalityLimit", MetricsCardinalityLimit},
 		{"MetricsCardinalityTracked", MetricsCardinalityTracked},
 		{"DeleteTombstonesActive", DeleteTombstonesActive},
-		{"DeleteTombstonesInstanceWide", DeleteTombstonesInstanceWide},
 		{"FooterCacheEntries", FooterCacheEntries},
 	}
 

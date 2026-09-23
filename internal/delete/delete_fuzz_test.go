@@ -27,6 +27,7 @@ func FuzzTombstoneMatchesRow(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, query, fieldName, fieldValue string, tsNs int64) {
 		ts := Tombstone{
+			Tenants: []TenantRef{{}},
 			ID:      "fuzz",
 			Query:   query,
 			StartNs: 0,
@@ -47,7 +48,7 @@ func FuzzTombstoneMatchesRow(f *testing.F) {
 		// A row outside the tombstone's window can never match, whatever the
 		// query says. Time bounding is what keeps a delete from spilling
 		// outside the range the operator asked for.
-		bounded := Tombstone{ID: "fuzz", Query: query, StartNs: 10, EndNs: 20}
+		bounded := Tombstone{Tenants: []TenantRef{{}}, ID: "fuzz", Query: query, StartNs: 10, EndNs: 20}
 		if tsNs < 10 || tsNs > 20 {
 			if bounded.MatchesRow(row, tsNs) {
 				t.Fatalf("a row at %d matched a tombstone bounded to [10, 20]", tsNs)
@@ -55,7 +56,7 @@ func FuzzTombstoneMatchesRow(f *testing.F) {
 		}
 
 		// An inverted window matches nothing.
-		inverted := Tombstone{ID: "fuzz", Query: query, StartNs: 20, EndNs: 10}
+		inverted := Tombstone{Tenants: []TenantRef{{}}, ID: "fuzz", Query: query, StartNs: 20, EndNs: 10}
 		if inverted.MatchesRow(row, tsNs) {
 			t.Fatalf("a tombstone with StartNs > EndNs matched a row at %d", tsNs)
 		}
@@ -136,6 +137,7 @@ func FuzzTombstoneRoundTrip(f *testing.F) {
 		states := []string{SupersessionPrepared, SupersessionPublished, SupersessionDiscarded}
 		replacement := key + ".replacement"
 		original := Tombstone{
+			Tenants:      []TenantRef{{}},
 			ID:           id,
 			Query:        query,
 			StartNs:      startNs,

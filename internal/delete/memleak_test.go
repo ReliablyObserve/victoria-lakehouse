@@ -24,6 +24,7 @@ func TestMemLeak_TombstoneStore_AddRemoveCycles(t *testing.T) {
 		for i := 0; i < itemsPerCycle; i++ {
 			id := fmt.Sprintf("tombstone-%d-%d", c, i)
 			store.Add(Tombstone{
+				Tenants:   []TenantRef{{}},
 				ID:        id,
 				Query:     "level:error",
 				StartNs:   time.Now().UnixNano() - int64(time.Hour),
@@ -62,6 +63,7 @@ func TestMemLeak_TombstoneStore_ForRangeCycles(t *testing.T) {
 	now := time.Now().UnixNano()
 	for i := 0; i < 20; i++ {
 		store.Add(Tombstone{
+			Tenants:   []TenantRef{{}},
 			ID:        fmt.Sprintf("ts-%d", i),
 			Query:     "*",
 			StartNs:   now - int64(time.Hour),
@@ -122,6 +124,7 @@ func TestMemLeak_TombstoneStore_ConcurrentAddCheck(t *testing.T) {
 			for i := 0; i < opsPerGoroutine; i++ {
 				id := fmt.Sprintf("g%d-ts%d", gID, i)
 				store.Add(Tombstone{
+					Tenants:   []TenantRef{{}},
 					ID:        id,
 					Query:     "app:myapp",
 					StartNs:   now - int64(time.Hour),
@@ -160,6 +163,7 @@ func TestMemLeak_TombstoneStore_ActiveCycles(t *testing.T) {
 	now := time.Now().UnixNano()
 	for i := 0; i < 10; i++ {
 		store.Add(Tombstone{
+			Tenants:   []TenantRef{{}},
 			ID:        fmt.Sprintf("active-%d", i),
 			Query:     "*",
 			StartNs:   now - int64(time.Hour),

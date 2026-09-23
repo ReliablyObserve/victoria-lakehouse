@@ -1486,6 +1486,7 @@ func TestTombstone_MatchingRowsSuppressed(t *testing.T) {
 	// Set up tombstone that matches service.name="worker"
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-1",
 		Query:   `service.name:="worker"`,
 		StartNs: now.Add(-time.Minute).UnixNano(),
@@ -1500,7 +1501,7 @@ func TestTombstone_MatchingRowsSuppressed(t *testing.T) {
 
 	// Use filterTombstonedRows directly since queryLocalFile doesn't go through RunQuery's wrapper
 	err := s.queryLocalFile(path, info.Size(), startNs, endNs, "", func(_ uint, db *logstorage.DataBlock) {
-		filtered := s.filterTombstonedRows(db, startNs, endNs)
+		filtered := suppressAllTenants(s, db, startNs, endNs)
 		if filtered != nil && filtered.RowsCount() > 0 {
 			blocks = append(blocks, filtered)
 		}
@@ -1552,6 +1553,7 @@ func TestTombstone_PartialMatch_OnlyMatchingRowsSuppressed(t *testing.T) {
 	// Tombstone matches worker service
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-partial",
 		Query:   `service.name:="worker"`,
 		StartNs: now.Add(-time.Minute).UnixNano(),
@@ -1559,7 +1561,7 @@ func TestTombstone_PartialMatch_OnlyMatchingRowsSuppressed(t *testing.T) {
 	})
 	s.SetTombstoneStore(ts)
 
-	filtered := s.filterTombstonedRows(db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
+	filtered := suppressAllTenants(s, db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
 
 	if filtered == nil {
 		t.Fatal("expected non-nil result (partial match)")
@@ -1598,6 +1600,7 @@ func TestTombstone_AllRowsSuppressed_ReturnsNil(t *testing.T) {
 	// Tombstone matches all rows
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-all",
 		Query:   `service.name:="worker"`,
 		StartNs: now.Add(-time.Minute).UnixNano(),
@@ -1605,7 +1608,7 @@ func TestTombstone_AllRowsSuppressed_ReturnsNil(t *testing.T) {
 	})
 	s.SetTombstoneStore(ts)
 
-	filtered := s.filterTombstonedRows(db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
+	filtered := suppressAllTenants(s, db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
 
 	if filtered != nil {
 		t.Errorf("expected nil when all rows suppressed, got %+v", filtered)
@@ -1623,7 +1626,7 @@ func TestTombstone_NilStore_PassThrough(t *testing.T) {
 		{Name: "_msg", Values: []string{"hello"}},
 	})
 
-	filtered := s.filterTombstonedRows(db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
+	filtered := suppressAllTenants(s, db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
 	if filtered != db {
 		t.Error("with nil tombstone store, should return original DataBlock pointer")
 	}
@@ -1642,6 +1645,7 @@ func TestTombstone_EmptyForRange_PassThrough(t *testing.T) {
 	// Tombstone outside the query range
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-outside",
 		Query:   "*",
 		StartNs: now.Add(time.Hour).UnixNano(),
@@ -1649,7 +1653,7 @@ func TestTombstone_EmptyForRange_PassThrough(t *testing.T) {
 	})
 	s.SetTombstoneStore(ts)
 
-	filtered := s.filterTombstonedRows(db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
+	filtered := suppressAllTenants(s, db, now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
 	if filtered != db {
 		t.Error("with no matching tombstones in range, should return original DataBlock pointer")
 	}
@@ -1677,6 +1681,7 @@ func TestTombstone_RunQuery_Integration(t *testing.T) {
 	// Set up tombstone
 	ts := delete.NewTombstoneStore()
 	ts.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-integration",
 		Query:   `service.name:="worker"`,
 		StartNs: now.Add(-time.Minute).UnixNano(),

@@ -780,10 +780,6 @@ var (
 // Delete metrics
 var (
 	DeleteTombstonesActive = NewGauge("lakehouse_delete_tombstones_active")
-	// DeleteTombstonesInstanceWide is the number of active tombstones that carry
-	// no tenant scope: records issued by a release before tenant-scoped deletes,
-	// which keep acting on every tenant. New deletes are always tenant-scoped.
-	DeleteTombstonesInstanceWide = NewGauge("lakehouse_delete_tombstones_instance_wide")
 	// DeleteTenantScopeSkips counts objects a tenant-scoped tombstone was kept
 	// away from because they belong to another tenant, by site. Non-zero means a
 	// tombstone record named another tenant's object (a defect or a hand edit);

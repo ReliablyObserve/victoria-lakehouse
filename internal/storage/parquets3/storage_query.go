@@ -187,7 +187,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	scope := scopeFor(ctx, tenantIDs)
 	queryTombstones := s.scopeTombstones(scope, startNs, endNs)
 	hasTombstones := len(queryTombstones) > 0
-	sink := newTombstoneSink(scope, queryTombstones, s.keyTenantParser(), writeBlockWith)
+	sink := newTombstoneSink(scope, queryTombstones, s.keyTenantParser(), s.AccountOnlyTenantKeys(), writeBlockWith)
 	filteredWriteBlock := sink.uniform
 
 	// Tenant-scoped file enumeration. VL hands us exactly one tenant per

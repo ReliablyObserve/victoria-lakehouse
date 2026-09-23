@@ -59,6 +59,7 @@ func newTraceFieldsTombstoneFixture(t *testing.T, withCatalog bool) *traceFields
 func (f *traceFieldsTombstoneFixture) addTombstone() {
 	store := delete.NewTombstoneStore()
 	store.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-trace-fields",
 		Query:   `service.name:="order-service"`,
 		StartNs: f.startNs,
@@ -225,7 +226,7 @@ func TestTraceFieldsTombstones_EmptyStoreAndNonOverlappingWindow(t *testing.T) {
 		t.Errorf("an empty store must report none, got %v", got)
 	}
 
-	store.Add(delete.Tombstone{ID: "ts", Query: "*", StartNs: 100, EndNs: 200, Mode: "hide"})
+	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "ts", Query: "*", StartNs: 100, EndNs: 200, Mode: "hide"})
 	if got := s.fieldsTombstones(tenantScope{all: true}, 1000, 2000); got != nil {
 		t.Errorf("a tombstone outside the window must report none, got %v", got)
 	}

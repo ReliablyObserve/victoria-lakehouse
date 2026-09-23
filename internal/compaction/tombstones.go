@@ -99,13 +99,13 @@ type keyScope struct {
 	parse delete.KeyTenantFunc
 }
 
-// tombstones keeps the tombstones that act on EVERY input of the merge. A
-// tenant-scoped tombstone is applied only when all inputs belong to one of its
-// tenants; with no inputs named, only instance-wide tombstones apply. A merge
-// normally reads one tenant's objects (see groupFilesByTenant), so this only
-// ever withholds a tombstone from a group whose keys do not attribute to one
-// tenant — its rows are then carried forward and left to the rewriter, which
-// judges the output by its own key.
+// tombstones keeps the tombstones that act on EVERY input of the merge: a
+// tombstone is applied only when all inputs belong to one of its tenants, and
+// never to a merge that names no inputs. A merge normally reads one tenant's
+// objects (see groupFilesByTenant), so this only ever withholds a tombstone
+// from a group whose keys do not attribute to one tenant — its rows are then
+// carried forward and left to the rewriter, which judges the output by its own
+// key.
 func (ks keyScope) tombstones(tss []delete.Tombstone) []delete.Tombstone {
 	out := tss[:0:0]
 	for i := range tss {
@@ -117,9 +117,6 @@ func (ks keyScope) tombstones(tss []delete.Tombstone) []delete.Tombstone {
 }
 
 func (ks keyScope) appliesToAll(ts *delete.Tombstone) bool {
-	if !ts.Scoped() {
-		return true
-	}
 	if len(ks.keys) == 0 {
 		return false
 	}

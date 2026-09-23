@@ -1,8 +1,14 @@
 package delete
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 	"strconv"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 // TenantRef names one tenant a tombstone acts on, in the numeric form VL and VT
@@ -73,19 +79,10 @@ func KeyTenantParserOf(m any) KeyTenantFunc {
 	return DefaultKeyTenant
 }
 
-// Scoped reports whether the tombstone is limited to the tenants it names. A
-// tombstone without tenants is a record from a release that had no tenant
-// scope: it keeps acting on every tenant, exactly as it did when it was issued.
-func (t *Tombstone) Scoped() bool {
-	return len(t.Tenants) > 0
-}
-
 // AppliesToTenant reports whether the tombstone acts on rows of the tenant
-// accountID:projectID.
+// accountID:projectID. A tombstone acts only on the tenants it names; a record
+// naming none is invalid (Validate) and acts on nothing.
 func (t *Tombstone) AppliesToTenant(accountID, projectID uint32) bool {
-	if !t.Scoped() {
-		return true
-	}
 	for _, tn := range t.Tenants {
 		if tn.AccountID == accountID && tn.ProjectID == projectID {
 			return true
@@ -97,12 +94,9 @@ func (t *Tombstone) AppliesToTenant(accountID, projectID uint32) bool {
 // AppliesToKey reports whether the tombstone acts on the rows of the object at
 // key. The tenant is read from the key the same way the read path attributes an
 // object to a tenant (see tenantOwnsKey in internal/storage/parquets3): an
-// untenanted legacy key is the default tenant's data, and a key without a
-// project segment matches on the account alone.
+// untenanted key is the default tenant's data, and a key without a project
+// segment matches on the account alone.
 func (t *Tombstone) AppliesToKey(parse KeyTenantFunc, key string) bool {
-	if !t.Scoped() {
-		return true
-	}
 	return anyTenantOwnsKey(t.Tenants, parse, key)
 }
 
@@ -137,21 +131,15 @@ func anyTenantOwnsKey(tenants []TenantRef, parse KeyTenantFunc, key string) bool
 // ScopedExactlyTo reports whether the tombstone acts on exactly one tenant, and
 // that tenant is accountID:projectID. It is what makes a tombstone a tenant's
 // own: a tenant caller of the delete API may see and remove only these. A
-// tombstone spanning several tenants, or a legacy instance-wide one, belongs to
-// the operator, because removing it would un-delete other tenants' rows.
+// tombstone spanning several tenants (a cluster delete task) belongs to the
+// operator, because removing it would un-delete other tenants' rows.
 func (t *Tombstone) ScopedExactlyTo(accountID, projectID uint32) bool {
 	return len(t.Tenants) == 1 && t.Tenants[0].AccountID == accountID && t.Tenants[0].ProjectID == projectID
 }
 
 // ForTenant keeps the tombstones that act on accountID:projectID. The input is
-// not modified; when no tombstone is tenant-scoped it is returned as is.
+// not modified.
 func ForTenant(tss []Tombstone, accountID, projectID uint32) []Tombstone {
-	if len(tss) == 0 {
-		return nil
-	}
-	if !anyScoped(tss) {
-		return tss
-	}
 	var out []Tombstone
 	for i := range tss {
 		if tss[i].AppliesToTenant(accountID, projectID) {
@@ -162,14 +150,8 @@ func ForTenant(tss []Tombstone, accountID, projectID uint32) []Tombstone {
 }
 
 // ForKey keeps the tombstones that act on the object at key. The input is not
-// modified; when no tombstone is tenant-scoped it is returned as is.
+// modified.
 func ForKey(tss []Tombstone, parse KeyTenantFunc, key string) []Tombstone {
-	if len(tss) == 0 {
-		return nil
-	}
-	if !anyScoped(tss) {
-		return tss
-	}
 	var out []Tombstone
 	for i := range tss {
 		if tss[i].AppliesToKey(parse, key) {
@@ -179,27 +161,51 @@ func ForKey(tss []Tombstone, parse KeyTenantFunc, key string) []Tombstone {
 	return out
 }
 
-func anyScoped(tss []Tombstone) bool {
-	for i := range tss {
-		if tss[i].Scoped() {
-			return true
+// AccountOnlyKeys reports whether v (a manifest, or a storage over one) keys
+// objects by account alone — the {OrgID} prefix template, with no project
+// segment. False when v cannot tell.
+func AccountOnlyKeys(v any) bool {
+	l, ok := v.(interface{ AccountOnlyTenantKeys() bool })
+	return ok && l.AccountOnlyTenantKeys()
+}
+
+// ErrProjectNotInKeyLayout refuses a delete for a non-zero ProjectID where
+// object keys carry the account alone: the rows of every project of the
+// account share one key space, so a tombstone scoped to one project could not
+// be applied to that project only.
+var ErrProjectNotInKeyLayout = errors.New("object keys carry only the account ({OrgID} prefix template), so a delete cannot be scoped to a ProjectID other than 0")
+
+// CheckTenantsForKeyLayout refuses tenants a tombstone could not be scoped to
+// honestly under the object key layout.
+func CheckTenantsForKeyLayout(tenants []TenantRef, accountOnlyKeys bool) error {
+	if !accountOnlyKeys {
+		return nil
+	}
+	for _, tn := range tenants {
+		if tn.ProjectID != 0 {
+			return fmt.Errorf("tenant %s: %w", tn, ErrProjectNotInKeyLayout)
 		}
 	}
-	return false
+	return nil
+}
+
+// rejectUnscoped reports whether a restored record names no tenant, and so is
+// not a tombstone: it is logged and counted
+// (lakehouse_delete_startup_inconsistencies_total{kind="unscoped_tombstone"})
+// and not applied. Nothing creates such a record; one can only come from a
+// hand-written or corrupted object.
+func rejectUnscoped(ts Tombstone, source string) bool {
+	if len(ts.Tenants) > 0 {
+		return false
+	}
+	metrics.DeleteStartupInconsistencies.Inc("unscoped_tombstone")
+	logger.Errorf("tombstone restore: %s record %q names no tenant; rejected, not applied", source, ts.ID)
+	return true
 }
 
 // mergeTenants combines two copies' tenant scopes for the same tombstone id.
-//
-// A scope is fixed when the delete is issued, so two copies differ only when
-// one of them lost the field — a record rewritten by a release that did not
-// know it. Losing the field must never widen the delete to every tenant, so a
-// scoped copy wins over an unscoped one, and two scoped copies union.
+// A scope is fixed when the delete is issued, so the copies agree; the union
+// keeps the merge a union like the rest of mergeLoadedLocked.
 func mergeTenants(a, b []TenantRef) []TenantRef {
-	switch {
-	case len(a) == 0:
-		return NormalizeTenants(b)
-	case len(b) == 0:
-		return NormalizeTenants(a)
-	}
 	return NormalizeTenants(append(append([]TenantRef(nil), a...), b...))
 }
