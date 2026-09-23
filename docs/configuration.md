@@ -865,6 +865,7 @@ binary reads; that list is informational and drives the "Not read." marks above.
 |---|---|---|
 | `--httpListenAddr` | `:9428` / `:10428` (auto) | HTTP listen address |
 | `--loggerLevel` | `INFO` | Log level (DEBUG, INFO, WARN, ERROR) |
+| `--internaldelete.enable` | `false` | Serve the cluster delete protocol (`/internal/delete/*`), as upstream. Off: every request answers upstream's "disabled" error. On: also needs `delete.enabled: true`; `run_task` is refused until tombstones are tenant-scoped (see [deletion-strategy.md](deletion-strategy.md#cluster-delete-protocol-internaldelete)) |
 
 ## Timeout Summary
 

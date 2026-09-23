@@ -20,6 +20,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/lifecycle"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
@@ -1149,6 +1150,19 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
+// mountInternalProtocol mounts VL's cluster protocol handler (internalselect)
+// for /internal/select/* and /internal/delete/*. Upstream serves
+// /internal/delete/* only behind -internaldelete.enable (default off); mounting
+// internalselect directly skips upstream's own check, so internaldelete.Handler
+// repeats it, plus the lakehouse delete.enabled requirement.
+func mountInternalProtocol(mux *http.ServeMux, internalDeleteEnabled, deleteEnabled bool) {
+	internalHandler := func(w http.ResponseWriter, r *http.Request) {
+		internalselect.RequestHandler(r.Context(), w, r)
+	}
+	mux.HandleFunc("/internal/select/", internalHandler)
+	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internalDeleteEnabled, deleteEnabled, internalHandler))
+}
+
 func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -1206,12 +1220,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	if cfg.SelectEnabled() {
 		internalselect.Init()
-
-		internalHandler := func(w http.ResponseWriter, r *http.Request) {
-			internalselect.RequestHandler(r.Context(), w, r)
-		}
-		mux.HandleFunc("/internal/select/", internalHandler)
-		mux.HandleFunc("/internal/delete/", internalHandler)
+		mountInternalProtocol(mux, internaldelete.Enabled(), cfg.Delete.Enabled)
 
 		publicHandler := selectapi.NewHandler(store, cfg, selectapi.WithResolver(resolver))
 		publicHandler.Register(mux)

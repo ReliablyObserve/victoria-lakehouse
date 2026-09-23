@@ -278,7 +278,7 @@ graph LR
         SA -->|GetFieldNames| STOR
         SA -->|GetFieldValues| STOR
         SA -->|GetStreams| STOR
-        SA -->|DeleteRunTask| TS[TombstoneStore]
+        SA -->|"DeleteStopTask, DeleteActiveTasks"| TS[TombstoneStore]
     end
 ```
 

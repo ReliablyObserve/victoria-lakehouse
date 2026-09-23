@@ -273,6 +273,29 @@ Tombstone-based deletion **satisfies GDPR right to erasure** requirements becaus
 | Un-delete | Remove tombstone | Not possible | Not possible |
 | Delete cost estimation | Built-in API | N/A | N/A |
 
+## Cluster Delete Protocol (`/internal/delete/*`)
+
+A VictoriaLogs or VictoriaTraces cluster deletes through its storage nodes:
+`vlselect`/`vtselect` fans `/internal/delete/run_task`, `stop_task` and
+`active_tasks` out to every storage node. The lakehouse serves this protocol
+the way an upstream storage node does, behind the same switch:
+
+- **`-internaldelete.enable`** (default `false`, same name and default as
+  upstream). While it is off, every `/internal/delete/*` request answers
+  upstream's own error — `400 requests to /internal/delete/* are disabled; pass
+  -internaldelete.enable command-line flag for enabling them` — exactly like a
+  VictoriaLogs node started with its defaults.
+- With the flag on, the lakehouse also requires **`delete.enabled: true`**,
+  because the protocol writes into the lakehouse tombstone store.
+- **`run_task` is refused** even when both are on. Upstream applies a delete task
+  only to the request's `tenant_ids`, while lakehouse tombstones are
+  instance-wide (see [Tombstone Management](operations.md#tombstone-management)),
+  so honouring the task would hide matching rows of every tenant. The request
+  fails with an error instead of being widened; tenant-scoped tombstones are
+  the prerequisite for serving it. `stop_task` and `active_tasks` work.
+
+Use the lakehouse delete API above for deletes against the cold tier.
+
 ## Traces Delete Support
 
 The same three-tier deletion strategy applies to `lakehouse-traces`. All endpoints use the `/delete/tracessql/*` prefix instead of `/delete/logsql/*`.

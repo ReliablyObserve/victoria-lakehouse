@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`/internal/delete/*` is gated like upstream.**
+  The cluster delete protocol is now served only with `-internaldelete.enable` (default `false`:
+  the same flag, default and error answer as VictoriaLogs and VictoriaTraces), and additionally
+  requires `delete.enabled: true`. Both binaries used to serve it unconditionally. `run_task` is
+  refused even when enabled, because lakehouse tombstones are instance-wide and cannot be
+  limited to the request's `tenant_ids`; `stop_task` and `active_tasks` work. Deletes against
+  the cold tier use the lakehouse delete API.
+
 ## [0.142.9] - 2026-09-15
 
 ### Added
