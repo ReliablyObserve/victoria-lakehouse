@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -100,8 +101,7 @@ func TestFieldValues_CatalogServesWhenComplete(t *testing.T) {
 
 // TestFieldValues_ScanIsConfinedToTheWindow: one file holds INFO at 10:15 and
 // ERROR at 10:45; a window of [10:00, 10:30] must list INFO only, with the
-// in-window hit count — unfiltered and filtered alike (the filter handed to the
-// scan carries no time bound of its own).
+// in-window hit count — unfiltered and filtered alike.
 func TestFieldValues_ScanIsConfinedToTheWindow(t *testing.T) {
 	s, bw := newFieldValuesStorage(t, nil)
 	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
@@ -127,6 +127,54 @@ func TestFieldValues_ScanIsConfinedToTheWindow(t *testing.T) {
 	if want := []string{"ERROR", "INFO"}; !equalStrings(got, want) {
 		t.Errorf("whole-hour window = %v, want %v", got, want)
 	}
+}
+
+// TestFieldValues_ScanWindowBoundsAreInclusive: the window is [startNs, endNs]
+// inclusive at both ends, like VictoriaLogs' `_time:[a, b]`. One file holds a
+// row 1 ns before the window, one at each bound and one 1 ns after it; the scan
+// lists exactly the two bound rows, each with one hit, on all three row paths:
+//   - unfiltered (the fast path, no row materialisation);
+//   - a user filter (the filter keeps the query's time bound and also checks it);
+//   - unfiltered while an unrelated tombstone is active, which materialises
+//     rows with NO filter at all — the only thing bounding them is the window.
+func TestFieldValues_ScanWindowBoundsAreInclusive(t *testing.T) {
+	s, bw := newFieldValuesStorage(t, nil)
+	startNs := time.Date(2026, 6, 9, 10, 10, 0, 0, time.UTC).UnixNano()
+	endNs := time.Date(2026, 6, 9, 10, 20, 0, 0, time.UTC).UnixNano()
+	row := func(ts int64, lvl string) schema.LogRow {
+		return schema.LogRow{TimestampUnixNano: ts, Body: "row", ServiceName: "svc", SeverityText: lvl}
+	}
+	bw.AddLogRows([]schema.LogRow{
+		row(startNs-1, "BEFORE"), row(startNs, "AT_START"), row(endNs, "AT_END"), row(endNs+1, "AFTER"),
+	})
+	bw.triggerFlush()
+	if n := len(s.manifest.GetFilesForRange(startNs, endNs)); n != 1 {
+		t.Fatalf("fixture: want one file straddling both bounds, got %d", n)
+	}
+
+	check := func(name, query string) {
+		t.Helper()
+		q := mustParseQueryWithTime(t, query, startNs, endNs)
+		vals, err := s.GetFieldValues(context.Background(), nil, q, "level", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]uint64{}
+		for _, v := range vals {
+			got[v.Value] = v.Hits
+		}
+		if len(got) != 2 || got["AT_START"] != 1 || got["AT_END"] != 1 {
+			t.Errorf("%s: field_values level over [startNs, endNs] = %v, want exactly {AT_START:1 AT_END:1}", name, got)
+		}
+	}
+	check("unfiltered", "*")
+	check("filtered", `service.name:="svc"`)
+
+	store := delete.NewTombstoneStore()
+	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "unrelated", Query: `service.name:="other"`,
+		StartNs: startNs - int64(time.Minute), EndNs: endNs + int64(time.Minute), Mode: "hide"})
+	s.SetTombstoneStore(store)
+	check("unfiltered with an active tombstone", "*")
 }
 
 // TestStreams_ScanIsConfinedToTheWindow: streams and stream_ids use the same

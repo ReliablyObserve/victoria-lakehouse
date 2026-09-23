@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -109,6 +110,51 @@ func TestFieldValues_ScanIsConfinedToTheWindow(t *testing.T) {
 	if want := []string{"GET /a", "POST /b"}; !equalStrings(got, want) {
 		t.Errorf("whole-hour window = %v, want %v", got, want)
 	}
+}
+
+// TestFieldValues_ScanWindowBoundsAreInclusive: the window is [startNs, endNs]
+// inclusive at both ends. One file holds a span 1 ns before the window, one at
+// each bound and one 1 ns after it; the scan lists exactly the two bound spans,
+// each with one hit — unfiltered, with a user filter, and unfiltered while an
+// unrelated tombstone is active (rows materialised with no filter at all).
+func TestFieldValues_ScanWindowBoundsAreInclusive(t *testing.T) {
+	s, bw := newFieldValuesStorage(t, nil)
+	startNs := time.Date(2026, 6, 9, 10, 10, 0, 0, time.UTC).UnixNano()
+	endNs := time.Date(2026, 6, 9, 10, 20, 0, 0, time.UTC).UnixNano()
+	row := func(ts int64, name string) schema.TraceRow {
+		return schema.TraceRow{TimestampUnixNano: ts, ServiceName: "svc", SpanName: name, TraceID: "t-" + name, SpanID: "s-" + name}
+	}
+	bw.AddTraceRows([]schema.TraceRow{
+		row(startNs-1, "BEFORE"), row(startNs, "AT_START"), row(endNs, "AT_END"), row(endNs+1, "AFTER"),
+	})
+	bw.triggerFlush()
+	if n := len(s.manifest.GetFilesForRange(startNs, endNs)); n != 1 {
+		t.Fatalf("fixture: want one file straddling both bounds, got %d", n)
+	}
+
+	check := func(name, query string) {
+		t.Helper()
+		q := mustParseQueryWithTime(t, query, startNs, endNs)
+		vals, err := s.GetFieldValues(context.Background(), nil, q, "name", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]uint64{}
+		for _, v := range vals {
+			got[v.Value] = v.Hits
+		}
+		if len(got) != 2 || got["AT_START"] != 1 || got["AT_END"] != 1 {
+			t.Errorf("%s: field_values name over [startNs, endNs] = %v, want exactly {AT_START:1 AT_END:1}", name, got)
+		}
+	}
+	check("unfiltered", "*")
+	check("filtered", `service.name:="svc"`)
+
+	store := delete.NewTombstoneStore()
+	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "unrelated", Query: `service.name:="other"`,
+		StartNs: startNs - int64(time.Minute), EndNs: endNs + int64(time.Minute), Mode: "hide"})
+	s.SetTombstoneStore(store)
+	check("unfiltered with an active tombstone", "*")
 }
 
 func TestStreams_ScanIsConfinedToTheWindow(t *testing.T) {

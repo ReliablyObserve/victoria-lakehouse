@@ -330,9 +330,11 @@ func (s *Storage) scanProjectedFieldValues(
 
 	// The scan reads whole row groups, and a file can straddle the query
 	// window: a row outside the window must contribute neither a value nor a
-	// hit (the filter handed in carries no time bound — parseFilterFromQuery
-	// strips it). A file wholly inside the window needs no per-row check, so
-	// the timestamp column is projected only when it is needed.
+	// hit. The filter handed in bounds nothing on its own when the query is
+	// unfiltered or time-only (parseFilterFromQuery returns nil then), and an
+	// unfiltered scan still materialises rows while a tombstone is active. A
+	// file wholly inside the window needs no per-row check, so the timestamp
+	// column is projected only when it is needed.
 	winLo, winHi := int64(math.MinInt64), int64(math.MaxInt64)
 	if !fileWithinWindow(fi, startNs, endNs) {
 		winLo, winHi = startNs, endNs

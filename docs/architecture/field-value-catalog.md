@@ -277,6 +277,17 @@ high-card there). Otherwise it returns nil and the request is answered by the
 row scan. A field no partition holds any value for (a MAP attribute, a
 non-label column) is also answered by the scan.
 
+**Other writers' files.** The catalog learns a file from this process's own
+flushes and compactions (`OnFileFlush`), and from the manifest and persisted
+bundles only at startup (`WarmCatalogFromS3`, then `WarmCatalog` replays the
+enriched manifest). The periodic `RefreshManifest` adds files another pod
+flushed to the manifest but does not replay them into the catalog. On a
+multi-writer or autoscaled deployment `CatalogCoversFile` therefore stays false
+for those files until restart, and `field_values` over a range that includes
+them is answered by the row scan: exact, and slower. Replaying refreshed files
+(with their labels from the file-meta sidecar or bundle) belongs with the
+per-peer pmeta shards work.
+
 **Granularity.** A partition's value set covers the whole partition hour. A
 window that cuts an hour lists every value of that hour; the row scan, by
 contrast, checks each row against the window. Catalog answers carry `hits` 1
