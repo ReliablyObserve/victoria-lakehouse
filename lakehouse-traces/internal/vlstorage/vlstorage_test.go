@@ -438,3 +438,41 @@ func TestDeleteStopTask_RefusedWhileARewriteIsUnfinished(t *testing.T) {
 		t.Fatalf("stopping an unknown task: %v", err)
 	}
 }
+
+// namesErrStore fails the field-name enumerations, so the adapter's error
+// propagation is exercised.
+type namesErrStore struct {
+	mockStore
+	err error
+}
+
+func (s namesErrStore) GetFieldNames(context.Context, []logstorage.TenantID, *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+	return nil, s.err
+}
+
+func (s namesErrStore) GetStreamFieldNames(context.Context, []logstorage.TenantID, *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+	return nil, s.err
+}
+
+func TestFieldNames_PropagateStorageErrors(t *testing.T) {
+	want := errors.New("storage error")
+	a := &adapter{store: namesErrStore{err: want}}
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+	if got, err := a.GetFieldNames(qctx, ""); !errors.Is(err, want) || got != nil {
+		t.Errorf("GetFieldNames = %v, %v; want the storage error", got, err)
+	}
+	if got, err := a.GetStreamFieldNames(qctx, ""); !errors.Is(err, want) || got != nil {
+		t.Errorf("GetStreamFieldNames = %v, %v; want the storage error", got, err)
+	}
+}
+
+func TestFilterValuesBySubstring(t *testing.T) {
+	in := []logstorage.ValueWithHits{{Value: "checkout"}, {Value: "cart"}, {Value: "payments"}}
+	if got := filterValuesBySubstring(in, ""); len(got) != 3 {
+		t.Errorf("empty filter must keep every value, got %v", got)
+	}
+	got := filterValuesBySubstring(in, "ca")
+	if len(got) != 1 || got[0].Value != "cart" {
+		t.Errorf("filter %q = %v, want [cart]", "ca", got)
+	}
+}
