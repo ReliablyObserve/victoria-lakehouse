@@ -208,20 +208,111 @@ func TestTenantScope_UnscopedRecordIsRejectedOnRestore(t *testing.T) {
 	}
 }
 
-// Restore unions the scopes of a record's two copies.
-func TestTenantScope_RestoreMergeUnionsTenants(t *testing.T) {
-	dir := t.TempDir()
+// Restore merges a record's two copies failing closed: the scope is the
+// intersection (a copy can only narrow it), and copies with no tenant in common
+// leave a record naming none, which is rejected and counted.
+func TestTenantScope_RestoreMergeIntersectsTenants(t *testing.T) {
 	pool := newMockS3Pool()
-	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-u", TenantRef{AccountID: 2}))
+	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-narrow", TenantRef{AccountID: 2}))
+	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-disjoint", TenantRef{AccountID: 3}))
 
 	store := NewTombstoneStore()
-	store.Add(scopedSample("ts-u", TenantRef{AccountID: 1}))
-	if _, err := store.Restore(context.Background(), PersistenceConfig{Dir: dir, Pool: pool, Prefix: "logs/"}); err != nil {
+	store.Add(scopedSample("ts-narrow", TenantRef{AccountID: 1}, TenantRef{AccountID: 2}))
+	store.Add(scopedSample("ts-disjoint", TenantRef{AccountID: 1}))
+	before := metrics.DeleteStartupInconsistencies.Get("unscoped_tombstone")
+	if _, err := store.Restore(context.Background(), PersistenceConfig{Dir: t.TempDir(), Pool: pool, Prefix: "logs/"}); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-	u, _ := store.Get("ts-u")
-	if !u.AppliesToTenant(1, 0) || !u.AppliesToTenant(2, 0) || u.AppliesToTenant(3, 0) {
-		t.Errorf("two copies must union their tenants, got %+v", u.Tenants)
+	n, _ := store.Get("ts-narrow")
+	if !n.ScopedExactlyTo(2, 0) {
+		t.Errorf("a copy may only narrow the scope: got %v, want exactly 2:0", n.Tenants)
+	}
+	if _, ok := store.Get("ts-disjoint"); ok {
+		t.Error("copies naming no tenant in common must leave no tombstone")
+	}
+	if got := metrics.DeleteStartupInconsistencies.Get("unscoped_tombstone") - before; got != 1 {
+		t.Errorf("unscoped_tombstone moved by %d, want 1", got)
+	}
+	if got := mergeTenants([]TenantRef{{AccountID: 1}}, nil); got != nil {
+		t.Errorf("mergeTenants with an empty copy = %v, want nil (fail closed)", got)
+	}
+}
+
+// A rejected object that stays in the bucket is counted once per process, not
+// on every restore.
+func TestTenantScope_RejectedRecordCountedOncePerProcess(t *testing.T) {
+	pool := newMockS3Pool()
+	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-once"))
+	before := metrics.DeleteStartupInconsistencies.Get("unscoped_tombstone")
+	for i := 0; i < 3; i++ {
+		store := NewTombstoneStore()
+		if err := store.LoadFromS3(context.Background(), pool, "", "logs/"); err != nil {
+			t.Fatalf("LoadFromS3: %v", err)
+		}
+	}
+	if got := metrics.DeleteStartupInconsistencies.Get("unscoped_tombstone") - before; got != 1 {
+		t.Errorf("unscoped_tombstone moved by %d over three restores, want 1", got)
+	}
+}
+
+func parsedFilterCount() int {
+	n := 0
+	parsedFilters.Range(func(any, any) bool { n++; return true })
+	return n
+}
+
+// The filter cache holds exactly the filters of live tombstones: removing,
+// un-deleting, retiring or redefining the last tombstone using a filter evicts
+// it, and a filter still used by another tombstone stays.
+func TestFilterCache_EvictedWithTheLastTombstoneUsingIt(t *testing.T) {
+	store := NewTombstoneStore()
+	mk := func(id, q string) Tombstone {
+		ts := scopedSample(id, TenantRef{})
+		ts.Query, ts.FilterAt, ts.Mode = q, 424242, "permanent"
+		return ts
+	}
+	warm := func(ids ...string) {
+		for _, id := range ids {
+			ts, _ := store.Get(id)
+			ts.Filter()
+		}
+	}
+	store.Add(mk("a", `level:="evict-a"`))
+	store.Add(mk("a2", `level:="evict-a"`)) // shares a's filter
+	store.Add(mk("b", `level:="evict-b"`))
+	store.Add(mk("c", `level:="evict-c"`))
+	store.Add(mk("d", `level:="evict-d"`))
+	warm("a", "a2", "b", "c", "d")
+	base := parsedFilterCount()
+
+	store.Remove("a")
+	if got := parsedFilterCount(); got != base {
+		t.Fatalf("a filter still used by another tombstone was evicted: %d -> %d", base, got)
+	}
+	store.Remove("a2")
+	if got := parsedFilterCount(); got != base-1 {
+		t.Fatalf("Remove of the last user: cache %d -> %d, want one fewer", base, got)
+	}
+	if err := store.TryRemove("b"); err != nil {
+		t.Fatal(err)
+	}
+	if got := parsedFilterCount(); got != base-2 {
+		t.Fatalf("TryRemove: cache %d, want %d", got, base-2)
+	}
+	store.Update("c", func(ts *Tombstone) bool {
+		ts.AffectedKeys = []string{"k"}
+		ts.Reaped = map[string]bool{"k": true}
+		return true
+	})
+	if !store.Complete("c") {
+		t.Fatal("fixture: c must complete")
+	}
+	if got := parsedFilterCount(); got != base-3 {
+		t.Fatalf("Complete: cache %d, want %d", got, base-3)
+	}
+	store.Add(mk("d", `level:="evict-d2"`)) // redefined under the same id
+	if got := parsedFilterCount(); got != base-4 {
+		t.Fatalf("redefinition: cache %d, want %d", got, base-4)
 	}
 }
 

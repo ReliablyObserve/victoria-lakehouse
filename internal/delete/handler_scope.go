@@ -24,11 +24,9 @@ import (
 //
 // A request that presents the validated global-read credential (the same one
 // that widens a select request to every tenant) is the operator: it sees and
-// may un-delete every tombstone — including records from earlier releases that
-// carry no tenant scope and act on every tenant, and tombstones a cluster
-// delete task scoped to several tenants — and the instance-wide leftovers. Its
-// deletes are still scoped to the tenant in its headers: no request creates an
-// instance-wide tombstone.
+// may un-delete every tombstone — including tombstones a cluster delete task
+// scoped to several tenants — and the instance-wide leftovers. Its deletes are
+// still scoped to the tenant in its headers.
 
 // HandlerOption configures a Handler.
 type HandlerOption func(*Handler)

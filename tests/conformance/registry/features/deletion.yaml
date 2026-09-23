@@ -258,7 +258,9 @@
     - lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_OrgIDKeyLayout
     - internal/delete/tenant_scope_test.go#TestTenantScope_PersistsThroughDiskAndS3
     - internal/delete/tenant_scope_test.go#TestTenantScope_UnscopedRecordIsRejectedOnRestore
-    - internal/delete/tenant_scope_test.go#TestTenantScope_RestoreMergeUnionsTenants
+    - internal/delete/tenant_scope_test.go#TestTenantScope_RestoreMergeIntersectsTenants
+    - internal/delete/tenant_scope_test.go#TestTenantScope_RejectedRecordCountedOncePerProcess
+    - internal/delete/tenant_scope_test.go#TestFilterCache_EvictedWithTheLastTombstoneUsingIt
     - internal/delete/tenant_scope_test.go#TestTombstone_UnscopedIsInvalidAndActsOnNothing
     - internal/delete/tenant_scope_test.go#TestScheduler_TenantScopedTombstoneRewritesOnlyItsTenant
     - internal/compaction/tombstone_scope_test.go#TestCompaction_TenantScopedTombstoneDropsOnlyItsTenantsRows

@@ -430,7 +430,11 @@ func (s *TombstoneStore) Add(ts Tombstone) {
 			next.Superseded[source] = rec
 		}
 	}
+	prev, replaced := s.tombstones[ts.ID]
 	s.tombstones[ts.ID] = next
+	if replaced && (prev.Query != next.Query || prev.FilterAt != next.FilterAt) {
+		s.forgetFilterLocked(prev)
+	}
 	// A new delete reusing a removed id stands; its marker no longer applies.
 	delete(s.removed, ts.ID)
 	ver := s.bumpLocked(ts.ID)
@@ -530,7 +534,11 @@ func cloneTombstone(ts Tombstone) Tombstone {
 // that happens before a failed S3 delete is retried (see tombstone_removed.go).
 func (s *TombstoneStore) Remove(id string) {
 	s.mu.Lock()
+	old, had := s.tombstones[id]
 	delete(s.tombstones, id)
+	if had {
+		s.forgetFilterLocked(old)
+	}
 	s.markRemovedLocked(id, time.Now())
 	ver := s.bumpLocked(id)
 	p := s.persist
@@ -557,6 +565,7 @@ func (s *TombstoneStore) TryRemove(id string) error {
 		return ErrRewriteInProgress
 	}
 	delete(s.tombstones, id)
+	s.forgetFilterLocked(ts)
 	s.markRemovedLocked(id, time.Now())
 	ver := s.bumpLocked(id)
 	p := s.persist
@@ -582,6 +591,7 @@ func (s *TombstoneStore) Complete(id string) bool {
 		return false
 	}
 	delete(s.tombstones, id)
+	s.forgetFilterLocked(ts)
 	s.markRemovedLocked(id, time.Now())
 	ver := s.bumpLocked(id)
 	p := s.persist

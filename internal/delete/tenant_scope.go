@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
@@ -198,14 +199,38 @@ func rejectUnscoped(ts Tombstone, source string) bool {
 	if len(ts.Tenants) > 0 {
 		return false
 	}
-	metrics.DeleteStartupInconsistencies.Inc("unscoped_tombstone")
-	logger.Errorf("tombstone restore: %s record %q names no tenant; rejected, not applied", source, ts.ID)
+	noteUnscoped(ts.ID, source)
 	return true
 }
 
-// mergeTenants combines two copies' tenant scopes for the same tombstone id.
-// A scope is fixed when the delete is issued, so the copies agree; the union
-// keeps the merge a union like the rest of mergeLoadedLocked.
+// rejectedUnscoped remembers the ids already reported, so a rejected record
+// that stays in the bucket is counted and logged once per process, not on
+// every restore retry.
+var rejectedUnscoped sync.Map
+
+func noteUnscoped(id, source string) {
+	if _, seen := rejectedUnscoped.LoadOrStore(id, true); seen {
+		return
+	}
+	metrics.DeleteStartupInconsistencies.Inc("unscoped_tombstone")
+	logger.Errorf("tombstone restore: %s record %q names no tenant; rejected, not applied — delete its _tombstones/%s.json object", source, id, id)
+}
+
+// mergeTenants combines two copies' tenant scopes for the same tombstone id,
+// failing closed: the result is the intersection, so a copy can only narrow a
+// scope, never widen it. A scope is fixed when the delete is issued, so honest
+// copies agree; an empty intersection means the copies contradict each other
+// and the record names no tenant any copy agrees on — the caller rejects it.
 func mergeTenants(a, b []TenantRef) []TenantRef {
-	return NormalizeTenants(append(append([]TenantRef(nil), a...), b...))
+	in := make(map[TenantRef]bool, len(a))
+	for _, t := range a {
+		in[t] = true
+	}
+	var out []TenantRef
+	for _, t := range b {
+		if in[t] {
+			out = append(out, t)
+		}
+	}
+	return NormalizeTenants(out)
 }

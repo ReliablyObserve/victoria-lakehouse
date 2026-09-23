@@ -347,7 +347,7 @@ and logs plus counts every disagreement under
 | `pending_key_missing_from_manifest` | the manifest snapshot does not list a key the tombstone still has work for | nothing is inferred from it: the scheduler waits for a bucket listing in this process (and, for a key an undo restored, for a listing that began after the undo) before treating the object as gone |
 | `removed_tombstone_still_in_s3` | an un-deleted or retired tombstone's S3 copy survived a crash | the stale copy is ignored and its delete re-issued (see *Un-Delete*) |
 | `unreadable_tombstone_object` | an object under `_tombstones/` could not be parsed | that one record was skipped |
-| `unscoped_tombstone` | a restored record (disk or S3) names no tenant | it is not a tombstone: rejected, not applied; the other records restore normally |
+| `unscoped_tombstone` | a restored record (disk or S3) names no tenant, or its two copies name no tenant in common | not a tombstone: rejected, not applied, counted once per process; the other records restore normally. Delete the rejected `_tombstones/{id}.json` object, or it is rejected again on every restart |
 
 Before the self-check, every **interrupted rewrite** is resolved against the
 restored manifest (see *Background Rewriter*), counted as
@@ -442,8 +442,13 @@ rewrite is in flight:
 
 - **Old files, new binary:** this release decodes the previous releases'
   `tombstones.json` and `_tombstones/{id}.json` formats, but a record that names
-  no tenant is rejected, not applied (`kind="unscoped_tombstone"`): re-issue such
-  a delete for its tenant.
+  no tenant is rejected, not applied (`kind="unscoped_tombstone"`, counted and
+  logged once per process). Nothing removes a rejected object: an
+  `_tombstones/{id}.json` object stays in the bucket and is rejected again on
+  every restart until you delete it (the log line names it). Re-issue such a
+  delete for its tenant, then delete the object. The same applies when a
+  record's disk and S3 copies name no tenant in common: the copies can only
+  narrow a scope, never widen it, so such a record is rejected too.
 - **New files, old binary:** the previous release cannot read this release's
   `tombstones.json` envelope at all (it carries the removed-tombstone markers),
   and the per-id S3 objects it *can* read lose the rewrite records

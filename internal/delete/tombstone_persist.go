@@ -533,6 +533,13 @@ func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
 	}
 	merged.Superseded = mergeSupersessions(merged.Superseded, ts.Superseded, merged.Reaped)
 	merged.Tenants = mergeTenants(merged.Tenants, ts.Tenants)
+	if len(merged.Tenants) == 0 {
+		// The copies name no tenant in common: fail closed.
+		delete(s.tombstones, ts.ID)
+		s.forgetFilterLocked(cur)
+		noteUnscoped(ts.ID, "merged disk/S3")
+		return
+	}
 	s.tombstones[ts.ID] = merged
 }
 
