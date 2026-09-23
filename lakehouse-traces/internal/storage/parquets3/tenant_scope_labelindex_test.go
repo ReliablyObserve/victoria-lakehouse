@@ -121,7 +121,7 @@ func TestTenantScope_LabelIndex_SingleTenantManifest(t *testing.T) {
 		start, end time.Time
 	}{
 		{"window-with-objects", tsNow().Add(-time.Hour), tsNow().Add(time.Hour)},
-		// No object in range: GetFieldNames takes the label index branch.
+		// No object in range: nothing to answer, whatever the label index holds.
 		{"window-without-objects", tsNow().Add(48 * time.Hour), tsNow().Add(49 * time.Hour)},
 	}
 	for _, layout := range tsLayouts() {
@@ -155,13 +155,13 @@ func TestTenantScope_LabelIndex_SingleTenantManifest(t *testing.T) {
 	}
 }
 
-// TestTenantScope_LabelIndex_KeptForSoleTenant is the positive side: the sole
-// tenant — including 0:0 in a deployment that still holds legacy objects next
-// to its 0:0-prefixed ones — keeps the label index fast path for field NAMES,
-// so a field_names request outside the object window is still answered from
-// RAM. field_values never answers from the label index (its values are a
-// sample and not time-scoped): outside the object window it has no values, as
-// on VictoriaLogs.
+// TestTenantScope_LabelIndex_KeptForSoleTenant is the positive side of the
+// gate: the sole tenant — including 0:0 in a deployment that still holds legacy
+// objects next to its 0:0-prefixed ones — may still read the label index (the
+// degraded field_names fallback when footers cannot be read). Neither
+// field_names nor field_values answers from it for a window holding no
+// objects: it is a sample and not time-scoped, so such a window is empty, as on
+// VictoriaLogs — and answering it touches no bucket.
 func TestTenantScope_LabelIndex_KeptForSoleTenant(t *testing.T) {
 	for _, layout := range tsLayouts() {
 		for _, lm := range labelIndexManifests() {
@@ -176,8 +176,8 @@ func TestTenantScope_LabelIndex_KeptForSoleTenant(t *testing.T) {
 				if err != nil {
 					t.Fatalf("GetFieldNames: %v", err)
 				}
-				if got := valuesToCounts(names); len(got) == 0 {
-					t.Error("sole tenant's field names not served from the label index outside the object window")
+				if len(names) != 0 {
+					t.Errorf("field_names outside the object window = %v, want none (the label index is not an answer)", valuesToCounts(names))
 				}
 				values, err := f.s.GetFieldValues(context.Background(), owner, q, "service.name", 100)
 				if err != nil {

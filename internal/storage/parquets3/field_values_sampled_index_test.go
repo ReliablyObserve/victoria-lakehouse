@@ -221,6 +221,12 @@ func TestCatalogFieldKey(t *testing.T) {
 		"account_id":         "account_id", // catalogued under its own name
 		"log_attr:user.id":   "log_attr:user.id",
 		"some.map.attribute": "some.map.attribute",
+		// Non-label promoted columns resolve too, so a column catalogued later
+		// cannot silently miss.
+		"_msg":       "body",
+		"_stream":    "_stream",
+		"_stream_id": "_stream_id",
+		"_time":      "timestamp_unix_nano",
 	} {
 		if got := s.catalogFieldKey(in); got != want {
 			t.Errorf("catalogFieldKey(%q) = %q, want %q", in, got, want)

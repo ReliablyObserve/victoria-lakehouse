@@ -101,6 +101,7 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 | **Bucket-per-tenant manifest refresh** | Resolved | — | The periodic refresh listed only the default bucket, so objects that lived solely in a dedicated tenant bucket left the manifest at the next refresh. It now lists each override bucket under its tenant prefix as well. |
 | **`isolation: bucket` + `bucket_template`** | Open | Functional-degradation | Validated at startup but not wired to bucket routing; per-tenant `overrides[].s3.bucket` is the working form. |
 | **Stats snapshot vs manifest divergence** | Reconciled at API layer | Resolved | `/api/v1/tenants` now overlays manifest truth on registry entries; `LiveAggregateWindow` is the single source for time-bounded totals. |
+| **`field_values` from the pmeta catalog** | Open | UX-degradation | When every partition in range is catalogued, low-card and complete, `field_values` answers from the catalog in RAM. That answer differs from hot VL/VT in three ways: every value carries `hits` 1 (hot returns the number of matching rows, and returns 0 for every value once the result exceeds `limit`); with a `limit`, the catalog returns the first `limit` values in sort order, where hot returns whichever values its search met first; and the value set is hour-granular — a window that cuts a partition hour lists the values of the whole hour. Requests the catalog cannot answer exactly go to the row scan, which counts hits per row inside the window. |
 | **Cold row field set** | **Resolved** | UX-degradation | Cold rows used to carry every Parquet leaf column — unset ones as the literal `"<null>"` — plus the tenant columns, the unmapped spare slots, and (on traces) a duplicate of every promoted attribute under its raw Parquet name and the service-graph edge columns. A cold row now carries exactly its ingested fields, under the same names hot returns. See the Closed section below. |
 
 ## Known divergences under investigation
@@ -237,18 +238,55 @@ name (`level`), so every aliased field missed it — `level` on logs; `name`,
 through to the in-memory label index, whose values are a sample of the first
 rows of whichever file the process's first query opened, and that sample was
 returned as the whole answer; which file came first depended on query order.
-The catalog lookup now resolves the name through the schema registry, and
-`field_values` never answers from the label index: a catalog miss is answered by
-the column-projected row scan, which is exact and bound to the query window (as
-on VictoriaLogs; the label index also answered windows holding no rows).
-Regression tests: `TestFieldValues_AliasedField_ServedFromCatalog`,
+
+Fixed together:
+
+- the catalog lookup resolves the name through the schema registry
+  (`catalogFieldKey`);
+- `field_values` never answers from the label index;
+- the catalog answers only when it holds the complete value set of every
+  partition in range. A partition without a catalog, a partition where the field
+  is high-card, or a file whose labels never reached the catalog sends the
+  request to the row scan; unioning the remaining partitions returned a subset;
+- the row scan behind `field_values`, `streams` and `stream_ids` applies the
+  query window per row, so a file straddling a window edge no longer contributes
+  values or hits from rows outside it;
+- `field_names` over a window holding no objects is empty (both binaries).
+
+Not part of this fix: the `field_names` gap the same parity run logged (cold 35
+fields, hot 42) is B2 — cold field names come from Parquet columns only and map
+keys are not expanded. The catalog path's remaining differences from upstream are
+recorded in the cross-cutting table above.
+
+Regression tests (both modules): `TestFieldValues_AliasedField_ServedFromCatalog`,
 `TestFieldValues_SampledLabelIndexIsNeverTheAnswer`,
-`TestFieldValues_AliasedField_CatalogStaysTenantScoped` (both modules).
-`BenchmarkFieldValues_Level` (24 hourly partitions × 400 rows, Apple M5 Pro,
-`-benchtime 2000x -count 5`, median): pmeta on 7.5 µs → 10.0 µs per request (a
-catalog answer instead of a catalog miss plus a label-index read); pmeta off
-74 ns → 3.0 ms (a projected scan of 24 files from the local mock S3 instead of
-the sampled index).
+`TestFieldValues_AliasedField_CatalogStaysTenantScoped`,
+`TestFieldValues_CatalogUnionWithAHighCardPartitionScans`,
+`TestFieldValues_CatalogMissingAFileScans`, `TestFieldValues_ScanIsConfinedToTheWindow`,
+`TestStreams_ScanIsConfinedToTheWindow`, `TestFieldNames_EmptyWindowIsEmpty`,
+`TestCatalogFieldKey`; `internal/pmeta`: `TestFieldValuesExact_DistinguishesAbsentFromHighCard`,
+`TestCatalogCoversFile`. Cost: see `BenchmarkFieldValues_Level` below.
+
+`BenchmarkFieldValues_Level` (`internal/storage/parquets3`, 24 hourly partitions
+× 400 rows, 4 levels, Apple M5 Pro, `-benchtime 2000x`; `window=cut` starts and
+ends mid-hour so two files straddle it). Against `origin/main`, pmeta on went
+from 7.5 µs to 10.0 µs per request: the request is now a catalog answer instead
+of a catalog miss plus a label-index read. pmeta off went from 74 ns (the
+sampled index) to 3.0 ms (a projected scan of 24 files from the local mock S3).
+The completeness checks and the per-row window, measured interleaved against the
+first commit of the fix (2 × 5 runs each, medians, host load average 12–22, so
+treat single-digit percentages as noise):
+
+| Case | first commit | with completeness + window |
+|---|---|---|
+| pmeta on, whole window | 18.5 µs | 20.6 µs |
+| pmeta on, cut window | 18.4 µs | 19.8 µs |
+| pmeta off, whole window | 5.9 ms | 6.3 ms |
+| pmeta off, cut window | 6.8 ms | 5.3 ms |
+
+The catalog path pays one file-meta lookup per file in range (about 7–12% here);
+the scan's per-row window check applies only to the files that straddle the
+window and is within the noise of this host.
 
 **Service Graph** — PR #121
 

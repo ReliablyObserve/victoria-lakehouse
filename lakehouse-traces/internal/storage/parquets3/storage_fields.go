@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -103,17 +104,12 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 			return result, nil
 		}
 	}
-	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
-		names := s.labelIndex.GetFieldNames()
-		result := make([]logstorage.ValueWithHits, len(names))
-		for i, name := range names {
-			result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
-		}
-		return result, nil
-	}
-
 	startNs, endNs := q.GetFilterTimeRange()
 
+	// A window holding no objects has no field names, as on VictoriaTraces.
+	// The in-memory label index is not time-scoped — it remembers names from
+	// any hour — so it is consulted only below, for a window that has objects
+	// whose footers could not name their columns.
 	files := s.filesForScope("field_names", startNs, endNs, scope)
 	if len(files) == 0 {
 		return nil, nil
@@ -172,6 +168,7 @@ func (s *Storage) scanProjectedFieldValues(
 	filter *logstorage.Filter,
 	tombstones []tombstone,
 	seen map[string]uint64,
+	startNs, endNs int64,
 ) error {
 	projectedCols := map[string]bool{targetParquetCol: true}
 	if filter != nil {
@@ -186,6 +183,17 @@ func (s *Storage) scanProjectedFieldValues(
 	// A tombstone predicate can only be evaluated against columns that are in
 	// the projection — including the timestamp it is bounded by.
 	s.addTombstoneProjection(tombstones, projectedCols)
+
+	// The scan reads whole row groups, and a file can straddle the query
+	// window: a row outside the window must contribute neither a value nor a
+	// hit (the filter handed in carries no time bound — parseFilterFromQuery
+	// strips it). A file wholly inside the window needs no per-row check, so
+	// the timestamp column is projected only when it is needed.
+	winLo, winHi := int64(math.MinInt64), int64(math.MaxInt64)
+	if !fileWithinWindow(fi, startNs, endNs) {
+		winLo, winHi = startNs, endNs
+		projectedCols[timestampColumn] = true
+	}
 
 	// Plan-then-fetch (S3 Tier-2): this path reads EVERY row group's
 	// projected chunks, so the plan covers all row groups — armed right
@@ -242,7 +250,7 @@ func (s *Storage) scanProjectedFieldValues(
 		for {
 			n, err := rows.ReadRows(buf)
 			if n > 0 {
-				collectFilteredValues(buf[:n], projectedNames, targetInProjection, filter, tombstones, s, seen)
+				collectFilteredValuesInWindow(buf[:n], projectedNames, targetInProjection, filter, tombstones, s, seen, winLo, winHi)
 			}
 			if err != nil {
 				break
@@ -351,7 +359,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 				// Column-projected read: fetches only (target + filter cols)
 				// chunk data from S3 rather than the entire file body.
 				localSeen := make(map[string]uint64)
-				if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, tombstonesForKey(tombstones, parse, fi.Key), localSeen); err != nil {
+				if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, tombstonesForKey(tombstones, parse, fi.Key), localSeen, startNs, endNs); err != nil {
 					logger.Warnf("scan projected field values: %s; key=%s", err, fi.Key)
 					continue
 				}
@@ -428,7 +436,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 			return nil, err
 		}
 
-		if err := s.scanProjectedFieldValues(ctx, fi, streamColName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen); err != nil {
+		if err := s.scanProjectedFieldValues(ctx, fi, streamColName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen, startNs, endNs); err != nil {
 			logger.Warnf("scan projected streams: %s; key=%s", err, fi.Key)
 			continue
 		}
@@ -481,7 +489,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 			return nil, err
 		}
 
-		if err := s.scanProjectedFieldValues(ctx, fi, colName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen); err != nil {
+		if err := s.scanProjectedFieldValues(ctx, fi, colName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen, startNs, endNs); err != nil {
 			logger.Warnf("scan projected stream_ids: %s; key=%s", err, fi.Key)
 			continue
 		}
@@ -505,6 +513,15 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 // Uses VL's Filter.MatchRow() for full LogsQL evaluation.
 // When filter is nil, all rows contribute values (no filtering).
 func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, tombstones []tombstone, s *Storage, seen map[string]uint64) {
+	collectFilteredValuesInWindow(rows, colNames, targetColIdx, filter, tombstones, s, seen, math.MinInt64, math.MaxInt64)
+}
+
+// collectFilteredValuesInWindow is collectFilteredValues restricted to rows
+// whose timestamp lies in [startNs, endNs] (inclusive, as the query's time
+// filter). An unbounded window (MinInt64, MaxInt64) skips the per-row check;
+// a bounded one needs the timestamp column among colNames — a row whose
+// timestamp is not projected counts as outside a bounded window.
+func collectFilteredValuesInWindow(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, tombstones []tombstone, s *Storage, seen map[string]uint64, startNs, endNs int64) {
 	var targetMapping *schema.FieldMapping
 	if s != nil && targetColIdx >= 0 && targetColIdx < len(colNames) {
 		targetMapping = s.registry.ResolveFromParquet(colNames[targetColIdx])
@@ -516,11 +533,23 @@ func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx i
 		return valueToString(v)
 	}
 
+	tsColIdx := -1
+	for i, name := range colNames {
+		if name == timestampColumn {
+			tsColIdx = i
+			break
+		}
+	}
+	windowed := startNs != math.MinInt64 || endNs != math.MaxInt64
+
 	// Mirror of the logs module: the unfiltered fast path is available only
 	// when no tombstone overlaps, otherwise a deleted value stays visible in
 	// exactly the unfiltered enumeration a dropdown sends.
 	if filter == nil && len(tombstones) == 0 {
 		for _, row := range rows {
+			if windowed && !rowInWindow(row, tsColIdx, startNs, endNs) {
+				continue
+			}
 			if targetColIdx < len(row) {
 				val := formatTarget(row[targetColIdx])
 				if val != "" {
@@ -531,15 +560,10 @@ func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx i
 		return
 	}
 
-	tsColIdx := -1
-	for i, name := range colNames {
-		if name == timestampColumn {
-			tsColIdx = i
-			break
-		}
-	}
-
 	for _, row := range rows {
+		if windowed && !rowInWindow(row, tsColIdx, startNs, endNs) {
+			continue
+		}
 		fields := parquetRowToFields(row, colNames, tsColIdx, s)
 		if filter != nil && !filter.MatchRow(fields) {
 			continue
@@ -609,4 +633,24 @@ func parquetRowToFields(row parquet.Row, colNames []string, tsColIdx int, s *Sto
 		}
 	}
 	return fields
+}
+
+// fileWithinWindow reports whether every row of a file lies inside
+// [startNs, endNs] by its manifest bounds. Unknown bounds (either end zero)
+// never qualify: the file could hold rows from any time.
+func fileWithinWindow(fi manifest.FileInfo, startNs, endNs int64) bool {
+	if fi.MinTimeNs == 0 || fi.MaxTimeNs == 0 {
+		return false
+	}
+	return fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs
+}
+
+// rowInWindow reports whether a projected row's timestamp lies in
+// [startNs, endNs]. A row whose timestamp column is not projected is outside.
+func rowInWindow(row parquet.Row, tsColIdx int, startNs, endNs int64) bool {
+	if tsColIdx < 0 || tsColIdx >= len(row) {
+		return false
+	}
+	ts := row[tsColIdx].Int64()
+	return ts >= startNs && ts <= endNs
 }

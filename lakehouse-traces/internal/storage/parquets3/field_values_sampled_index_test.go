@@ -26,6 +26,8 @@ import (
 var (
 	fvSpanNames = []string{"DELETE /d", "GET /a", "POST /b", "PUT /c"}
 	fvServices  = []string{"svc-a", "svc-b", "svc-c", "svc-d"}
+	fvStatuses  = []string{"status-a", "status-b", "status-c", "status-d"}
+	fvMethods   = []string{"DELETE", "GET", "POST", "PUT"}
 )
 
 // seedSampledSpanIndex flushes a one-span partition and a four-span partition
@@ -45,11 +47,13 @@ func seedSampledSpanIndex(t *testing.T, pmetaOn bool) (s *Storage, lo, hi int64,
 
 	small = time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
 	full := small.Add(2 * time.Hour)
-	rows := []schema.TraceRow{{TimestampUnixNano: small.UnixNano(), ServiceName: "svc-a", SpanName: "GET /a", TraceID: "t0", SpanID: "s0"}}
+	rows := []schema.TraceRow{{TimestampUnixNano: small.UnixNano(), ServiceName: "svc-a", SpanName: "GET /a",
+		StatusMessage: "status-a", HTTPMethod: "GET", TraceID: "t0", SpanID: "s0"}}
 	for i := range fvSpanNames {
 		rows = append(rows, schema.TraceRow{
 			TimestampUnixNano: full.Add(time.Duration(i) * time.Second).UnixNano(),
 			ServiceName:       fvServices[i], SpanName: fvSpanNames[i],
+			StatusMessage: fvStatuses[i], HTTPMethod: fvMethods[i],
 			TraceID: "t" + fvServices[i], SpanID: "s" + fvServices[i],
 		})
 	}
@@ -107,6 +111,10 @@ func TestFieldValues_AliasedField_ServedFromCatalog(t *testing.T) {
 		{"span.name", fvSpanNames},
 		{"resource_attr:service.name", fvServices},
 		{"service.name", fvServices},
+		{"status_message", fvStatuses},
+		{"status.message", fvStatuses},
+		{"span_attr:http.method", fvMethods},
+		{"http.method", fvMethods},
 	}
 	before := metrics.CatalogValueLookups.Get("catalog")
 	for _, tc := range cases {
@@ -124,11 +132,12 @@ func TestFieldValues_AliasedField_ServedFromCatalog(t *testing.T) {
 func TestFieldValues_SampledLabelIndexIsNeverTheAnswer(t *testing.T) {
 	s, lo, hi, small := seedSampledSpanIndex(t, false)
 
-	for _, field := range []string{"name", "resource_attr:service.name"} {
-		want := fvSpanNames
-		if field != "name" {
-			want = fvServices
-		}
+	for field, want := range map[string][]string{
+		"name":                       fvSpanNames,
+		"resource_attr:service.name": fvServices,
+		"status_message":             fvStatuses,
+		"span_attr:http.method":      fvMethods,
+	} {
 		for _, limit := range []uint64{0, 1000} {
 			if got := fieldValueSet(t, s, lo, hi, field, limit); !equalStrings(got, want) {
 				t.Errorf("field_values %s (limit=%d) = %v, want %v", field, limit, got, want)
@@ -218,6 +227,11 @@ func TestCatalogFieldKey(t *testing.T) {
 		"span_attr:http.method":      "http.method",
 		"resource_attr:custom.key":   "resource_attr:custom.key",
 		"account_id":                 "account_id",
+		// Non-label promoted columns resolve too, so a column catalogued later
+		// cannot silently miss.
+		"_stream":    "_stream",
+		"_stream_id": "_stream_id",
+		"_time":      "timestamp_unix_nano",
 	} {
 		if got := s.catalogFieldKey(in); got != want {
 			t.Errorf("catalogFieldKey(%q) = %q, want %q", in, got, want)

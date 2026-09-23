@@ -268,6 +268,21 @@ the field the upstream way (`level`, `name`, `resource_attr:service.name`), so
 (`catalogFieldKey`, both modules); only promoted columns are translated. Before
 that resolution every aliased field missed the catalog.
 
+**Completeness.** A union over partitions is exact only if every partition's
+set is. `catalogFieldValues` therefore answers only when, for every file in the
+query range, `Store.CatalogCoversFile` holds (the file-meta facet has the file
+and it carried labels) and `Store.FieldValuesExact` reports the field
+enumerable in the file's partition (a facet exists and the field is not
+high-card there). Otherwise it returns nil and the request is answered by the
+row scan. A field no partition holds any value for (a MAP attribute, a
+non-label column) is also answered by the scan.
+
+**Granularity.** A partition's value set covers the whole partition hour. A
+window that cuts an hour lists every value of that hour; the row scan, by
+contrast, checks each row against the window. Catalog answers carry `hits` 1
+per value and, with a `limit`, the first `limit` values in sort order (see the
+cross-cutting table in `docs/parity-and-gaps.md`).
+
 ## 3. Data structure — extend, don't rebuild
 
 ### Extend

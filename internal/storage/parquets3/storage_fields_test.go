@@ -79,37 +79,6 @@ func testFieldStorage(t *testing.T, rows []fullLogRow) (*Storage, string) {
 
 // --- GetFieldNames tests ---
 
-func TestGetFieldNames_FromLabelIndex(t *testing.T) {
-	s := testStorage()
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api", "web"})
-	s.labelIndex.Add("level", []string{"info", "error"})
-	s.labelIndex.Add("host.name", nil)
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-
-	fields, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fields) != 3 {
-		t.Errorf("expected 3 fields, got %d", len(fields))
-	}
-
-	nameSet := make(map[string]bool)
-	for _, f := range fields {
-		nameSet[f.Value] = true
-	}
-	for _, expected := range []string{"service.name", "level", "host.name"} {
-		if !nameSet[expected] {
-			t.Errorf("missing field %q", expected)
-		}
-	}
-}
-
 func TestGetFieldNames_FromParquetFile(t *testing.T) {
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
 	rows := []fullLogRow{

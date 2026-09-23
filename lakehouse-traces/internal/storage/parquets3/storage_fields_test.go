@@ -79,47 +79,6 @@ func testFieldStorageTraces(t *testing.T, rows []fullTraceRow) *Storage {
 	return s
 }
 
-func TestGetFieldNames_FromLabelIndex(t *testing.T) {
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	s := &Storage{
-		cfg:        cfg,
-		manifest:   manifest.New("test", "traces/"),
-		registry:   schema.NewRegistry(schema.TracesProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-	}
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api", "web"})
-	s.labelIndex.Add("span_name", []string{"GET /", "POST /api"})
-	s.labelIndex.Add("trace_id", nil)
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-
-	fields, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fields) != 3 {
-		t.Errorf("expected 3 fields, got %d", len(fields))
-	}
-
-	nameSet := make(map[string]bool)
-	for _, f := range fields {
-		nameSet[f.Value] = true
-	}
-	for _, expected := range []string{"service.name", "span_name", "trace_id"} {
-		if !nameSet[expected] {
-			t.Errorf("missing field %q", expected)
-		}
-	}
-}
-
 func TestGetFieldNames_FromParquetFile(t *testing.T) {
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
 	rows := []fullTraceRow{
