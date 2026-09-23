@@ -354,50 +354,50 @@
   layers: [api]
   pending: true
 
-- id: vl.delete.run_task.differ
-  title: "/delete/run_task — delete dispatcher not mounted on LH"
+- id: vl.delete.run_task.status
+  title: "/delete/run_task — upstream's delete API, gated by -delete.enable"
   surface: vl
   kind: admin
   origin: native
-  expect: differ
-  differ_note: "Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR."
+  expect: pass
   targets: [hot, cold]
   seed: [logs.base]
   upstream: { route: /delete/run_task }
-  request: { method: POST, path: /delete/run_task, params: { query: "service.name:checkout" } }
-  compare: { type: status }
+  request: { method: POST, path: /delete/run_task, params: { filter: "service.name:checkout" } }
+  compare: { type: error, options: { hot_status: "400", cold_status: "400", body_prefix: "requests to /delete/* are disabled" } }
   layers: [api]
   pending: true
+  notes: "Default (no -delete.enable) must answer exactly like a VictoriaLogs node started with its defaults: 400 with upstream's disabled message. LH serves /delete/* through upstream's own vlselect.RequestHandler (mountPublicDelete). With -delete.enable and delete.enabled the task becomes a tombstone scoped to the request's tenant (docs/deletion-strategy.md)."
 
-- id: vl.delete.stop_task.differ
-  title: "/delete/stop_task — delete dispatcher not mounted on LH"
+- id: vl.delete.stop_task.status
+  title: "/delete/stop_task — upstream's delete API, gated by -delete.enable"
   surface: vl
   kind: admin
   origin: native
-  expect: differ
-  differ_note: "Same dispatcher gap as run_task (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR."
+  expect: pass
   targets: [hot, cold]
   seed: [logs.base]
   upstream: { route: /delete/stop_task }
-  request: { method: POST, path: /delete/stop_task, params: { taskID: "1" } }
-  compare: { type: status }
+  request: { method: POST, path: /delete/stop_task, params: { task_id: "1" } }
+  compare: { type: error, options: { hot_status: "400", cold_status: "400", body_prefix: "requests to /delete/* are disabled" } }
   layers: [api]
   pending: true
+  notes: "Default (no -delete.enable) must answer exactly like a VictoriaLogs node started with its defaults: 400 with upstream's disabled message. LH serves /delete/* through upstream's own vlselect.RequestHandler (mountPublicDelete)."
 
-- id: vl.delete.active_tasks.differ
-  title: "/delete/active_tasks — delete dispatcher not mounted on LH"
+- id: vl.delete.active_tasks.status
+  title: "/delete/active_tasks — upstream's delete API, gated by -delete.enable"
   surface: vl
   kind: admin
   origin: native
-  expect: differ
-  differ_note: "Same dispatcher gap as run_task/stop_task (docs/parity-and-gaps.md); hot returns the task list, cold 404 until the dispatcher PR."
+  expect: pass
   targets: [hot, cold]
   seed: [logs.base]
   upstream: { route: /delete/active_tasks }
   request: { method: GET, path: /delete/active_tasks }
-  compare: { type: status }
+  compare: { type: error, options: { hot_status: "400", cold_status: "400", body_prefix: "requests to /delete/* are disabled" } }
   layers: [api]
   pending: true
+  notes: "Default (no -delete.enable) must answer exactly like a VictoriaLogs node started with its defaults: 400 with upstream's disabled message. LH serves /delete/* through upstream's own vlselect.RequestHandler (mountPublicDelete)."
 
 - id: vl.select.query.bad_query
   title: "/select/logsql/query — invalid LogsQL rejected the same way on both tiers"

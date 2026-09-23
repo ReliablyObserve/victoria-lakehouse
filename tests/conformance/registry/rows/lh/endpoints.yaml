@@ -172,7 +172,7 @@
   compare: { type: status }
   layers: [api]
   pending: true
-  notes: "Read-only and instance-wide (not tenant-scoped); the delete alerts point at it to name the objects they warn about."
+  notes: "Read-only. A tenant caller sees its own objects' entries and its own tombstones' rewrites (scope: tenant); the validated global-read credential sees the whole instance (scope: instance). The delete alerts point at it to name the objects they warn about."
 
 - id: lh.delete.verify.status
   title: "LH delete verify — confirm a query's matching rows are gone"
@@ -291,6 +291,21 @@
   layers: [api]
   pending: true
   notes: "After the background rewriter processes the tombstone, a query over the same window must still return every row the delete did not match, exactly once, and none that it did. The rewritten object must be registered in the manifest under the source's own tenant directory and the superseded key must be gone from it — and stay gone through every manifest refresh, including after a restart that interrupted the rewrite and when a compaction of the same file races it. Covered at unit level by internal/delete/rewrite_manifest_test.go (TestRewrite_PublishesReplacementIntoManifest), internal/delete/rewrite_crash_refresh_test.go (TestRewriteCrashMatrix_WithManifestRefresh), internal/delete/rewrite_tenant_key_test.go, internal/compaction/delete_race_test.go (TestDeleteRace_*), internal/compaction/delete_refresh_test.go (TestDeleteRefresh_*) and internal/compaction/delete_property_test.go (TestDeleteLifecycleProperties); this row is the end-to-end expectation the runner will execute."
+
+- id: lh.delete.tenant_scoped
+  title: "LH delete — a tenant's delete hides only that tenant's rows"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  request: { method: POST, path: /delete/logsql/delete, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", mode: "hide" }, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/deletion-strategy.md, tests: [internal/storage/parquets3/tombstone_scope_test.go, internal/delete/handler_scope_test.go, internal/compaction/tombstone_scope_test.go] }
+  notes: "The tombstone is scoped to the request's tenant: a query by that tenant returns no rows of the window, while queries by every other tenant (and a global read, except for the deleted tenant's rows) return exactly what they did before; field_values, the count fast paths, the buffer and the rewriter behave the same way. Another tenant's GET/DELETE /delete/logsql/tombstone/{id} of it answers 404. Covered at unit level by the listed tests; this row is the end-to-end expectation the runner will execute."
 
 - id: lh.delete.hide_survives_crash
   title: "LH hide-mode delete — suppression survives a non-graceful restart"

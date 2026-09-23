@@ -76,3 +76,45 @@ func TestFlagEnabled_ReadsTheRegisteredFlag(t *testing.T) {
 		t.Fatal("FlagEnabled() = false after -internaldelete.enable=true")
 	}
 }
+
+// The public delete API (/delete/*) is gated the same way: upstream's
+// -delete.enable first, then the lakehouse delete.enabled requirement.
+func TestPublicHandler_GatesLikeHandler(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		flagOn        func() bool
+		deleteEnabled bool
+		wantUpstream  bool
+	}{
+		{"flag off, feature on", off, true, true},
+		{"flag off, feature off", off, false, true},
+		{"flag on, feature off", on, false, false},
+		{"flag on, feature on", on, true, true},
+	} {
+		reached := false
+		rec := serve(PublicHandler(tc.flagOn, tc.deleteEnabled, upstreamStub(&reached)))
+		if reached != tc.wantUpstream {
+			t.Fatalf("%s: upstream reached=%v, want %v", tc.name, reached, tc.wantUpstream)
+		}
+		if !tc.wantUpstream && rec.Body.String() != PublicDeleteDisabledMessage+"\n" {
+			t.Fatalf("%s: body = %q, want the public delete.enabled refusal", tc.name, rec.Body.String())
+		}
+	}
+}
+
+func TestPublicFlagEnabled_ReadsTheRegisteredFlag(t *testing.T) {
+	if PublicFlagEnabled() {
+		t.Fatal("PublicFlagEnabled() = true before the flag is registered")
+	}
+	flag.Bool(PublicFlagName, false, "test registration")
+	if PublicFlagEnabled() {
+		t.Fatal("PublicFlagEnabled() = true with the flag at its default")
+	}
+	if err := flag.Set(PublicFlagName, "true"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = flag.Set(PublicFlagName, "false") })
+	if !PublicFlagEnabled() {
+		t.Fatal("PublicFlagEnabled() = false after -delete.enable=true")
+	}
+}

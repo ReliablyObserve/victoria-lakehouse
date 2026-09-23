@@ -1123,6 +1123,18 @@ func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
 	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled, upstreamInternalDelete))
 }
 
+// mountPublicDelete serves upstream's public delete API (/delete/run_task,
+// /delete/stop_task, /delete/active_tasks) through upstreamPublicDelete — VT's
+// -delete.enable gate and delete handler (public_delete.go) — whose storage
+// calls land in the lakehouse adapter, which registers each task as a
+// tombstone scoped to the request's tenant. internaldelete.PublicHandler only
+// adds the lakehouse delete.enabled requirement after upstream's flag. Any
+// other /delete/* path the lakehouse does not serve itself gets upstream's
+// answer too, as on a VictoriaTraces node.
+func mountPublicDelete(mux *http.ServeMux, deleteEnabled bool) {
+	mux.HandleFunc("/delete/", internaldelete.PublicHandler(internaldelete.PublicFlagEnabled, deleteEnabled, upstreamPublicDelete))
+}
+
 func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -1236,6 +1248,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	if cfg.SelectEnabled() {
 		internalselect.Init()
 		mountInternalProtocol(mux, cfg.Delete.Enabled)
+		mountPublicDelete(mux, cfg.Delete.Enabled)
 
 		publicHandler := selectapi.NewHandler(store, cfg)
 		publicHandler.Register(mux)

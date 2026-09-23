@@ -162,12 +162,12 @@
   pending: true
 
 - id: vl.flag.delete_enable
-  title: "-delete.enable — cold delete dispatcher gap"
+  title: "-delete.enable — upstream's delete API on the cold tier"
   surface: vl
   kind: flag
   origin: native
   expect: differ
-  differ_note: "Even with delete.enable=true, the /delete/* family isn't routed on cold until the dispatcher PR lands. See docs/parity-and-gaps.md."
+  differ_note: "Registered by upstream's vlselect and gating /delete/* exactly as upstream. With it on, the cold tier also needs delete.enabled, and a task becomes a tenant-scoped tombstone: its rows are hidden at once and removed by the rewriter per delete.default_mode, and active_tasks lists it until the tombstone retires rather than until a background pass finishes. See docs/deletion-strategy.md and docs/parity-and-gaps.md."
   targets: [hot, cold]
   upstream: { flag: delete.enable }
   compare: { type: status }
