@@ -143,7 +143,8 @@ func TestPublicDeleteFlag_IsVTs(t *testing.T) {
 // public_delete.go is a copy of VT's /delete/* handling until this binary can
 // mount vtselect.RequestHandler. Fail the moment the vendored VT source stops
 // matching it: the flag, the disabled answer, the counters, and the four
-// handler functions (whose only intended difference is the storage package).
+// handler functions (whose intended differences are the storage package and
+// the explicitly discarded write results).
 func TestUpstreamPublicDelete_MatchesVendoredVTSelect(t *testing.T) {
 	mainSrc, err := os.ReadFile("deps/VictoriaTraces/app/vtselect/main.go")
 	if err != nil {
@@ -170,23 +171,25 @@ func TestUpstreamPublicDelete_MatchesVendoredVTSelect(t *testing.T) {
 			t.Errorf("VT's request counter for %s changed; update public_delete.go", counter)
 		}
 	}
-	ours, err := os.ReadFile("public_delete.go")
+	ourSrc, err := os.ReadFile("public_delete.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	upstreamFuncs := funcSources(t, "logsql.go", logsqlSrc)
-	ourFuncs := funcSources(t, "public_delete.go", ours)
+	ourFuncs := funcSources(t, "public_delete.go", ourSrc)
 	for _, name := range []string{"deleteHandler", "processDeleteRunTaskRequest", "processDeleteStopTaskRequest", "processDeleteActiveTasksRequest"} {
 		up, ok := upstreamFuncs[name]
 		if !ok {
 			t.Errorf("vendored VT no longer has %s; re-check public_delete.go", name)
 			continue
 		}
-		// The one intended difference: VT's storage package is vtstorage, this
-		// binary's dispatch into the lakehouse storage is VictoriaLogs' vlstorage.
+		// The intended differences: VT's storage package is vtstorage, this
+		// binary's dispatch into the lakehouse storage is VictoriaLogs'
+		// vlstorage; and the copy discards fmt.Fprintf's result explicitly.
 		up = strings.ReplaceAll(up, "vtstorage.", "vlstorage.")
-		if ourFuncs[name] != up {
-			t.Errorf("%s drifted from vendored VT; update public_delete.go\nupstream:\n%s\nours:\n%s", name, up, ourFuncs[name])
+		ours := strings.ReplaceAll(ourFuncs[name], "_, _ = fmt.Fprintf(", "fmt.Fprintf(")
+		if ours != up {
+			t.Errorf("%s drifted from vendored VT; update public_delete.go\nupstream:\n%s\nours:\n%s", name, up, ours)
 		}
 	}
 }

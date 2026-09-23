@@ -526,8 +526,8 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 	startNs, endNs := q.GetFilterTimeRange()
 
+	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
 	scope := scopeFor(ctx, tenantIDs)
-	files := s.filesForScope("streams", startNs, endNs, scope)
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -581,8 +581,8 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 
 	startNs, endNs := q.GetFilterTimeRange()
 
+	files := s.filesForTenants(ctx, "stream_ids", startNs, endNs, tenantIDs)
 	scope := scopeFor(ctx, tenantIDs)
-	files := s.filesForScope("stream_ids", startNs, endNs, scope)
 	if len(files) == 0 {
 		return nil, nil
 	}

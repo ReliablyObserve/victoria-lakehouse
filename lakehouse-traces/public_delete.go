@@ -23,8 +23,9 @@ import (
 // upstream-divergence: the three storage calls go to VictoriaLogs'
 // app/vlstorage, which this binary routes into the lakehouse storage (the same
 // dispatch /internal/delete/* reaches), instead of VT's app/vtstorage, whose
-// delete functions are not routed to external storage. The request handling,
-// flag, answers and metrics are VT's.
+// delete functions are not routed to external storage; and the response writes
+// discard fmt.Fprintf's result explicitly (`_, _ =`) for this repository's
+// errcheck. The request handling, flag, answers and metrics are VT's.
 //
 // The logs binary mounts vlselect.RequestHandler instead of copying anything.
 // This binary cannot import vtselect yet (see internal_delete.go); once it
@@ -93,7 +94,7 @@ func processDeleteRunTaskRequest(ctx context.Context, w http.ResponseWriter, r *
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"task_id":%q}`, taskID)
+	_, _ = fmt.Fprintf(w, `{"task_id":%q}`, taskID)
 }
 
 func processDeleteStopTaskRequest(ctx context.Context, w http.ResponseWriter, r *http.Request) {
@@ -109,7 +110,7 @@ func processDeleteStopTaskRequest(ctx context.Context, w http.ResponseWriter, r 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok"}`)
+	_, _ = fmt.Fprintf(w, `{"status":"ok"}`)
 }
 
 func processDeleteActiveTasksRequest(ctx context.Context, w http.ResponseWriter, r *http.Request) {
@@ -122,5 +123,5 @@ func processDeleteActiveTasksRequest(ctx context.Context, w http.ResponseWriter,
 	data := logstorage.MarshalDeleteTasksToJSON(tasks)
 
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, "%s", data)
+	_, _ = fmt.Fprintf(w, "%s", data)
 }
