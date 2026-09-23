@@ -535,10 +535,9 @@ func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
 	merged.Tenants = mergeTenants(merged.Tenants, ts.Tenants)
 	if len(merged.Tenants) == 0 {
 		// The copies name no tenant in common: fail closed. The id is not
-		// bumped — the record is dropped, not changed.
-		delete(s.tombstones, ts.ID)
-		s.forgetFilterLocked(cur)
-		s.rejectLocked(ts.ID, "the record's disk and S3 copies name no common tenant")
+		// bumped — the record is dropped, not changed. One of the two copies
+		// is in the store already, so rejectLocked owes its S3 delete.
+		s.rejectLocked(ts.ID, "the record's disk and S3 copies name no common tenant", true)
 		return
 	}
 	s.tombstones[ts.ID] = merged

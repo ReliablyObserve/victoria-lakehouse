@@ -449,6 +449,12 @@ rewrite is in flight:
   back. Re-issue such a delete for its tenant. The same applies when a record's
   disk and S3 copies name no tenant in common: the copies can only narrow a
   scope, never widen it, so such a record is rejected and removed too.
+  Delete-task ids come from upstream (`vlselect`/`vtselect` or a
+  `/delete/run_task` caller), so such a pair can be two peers' registrations of
+  one id rather than a corrupted copy: the node that rejects the pair deletes
+  the shared S3 object and keeps the rejection as a marker on its own disk,
+  while the peer keeps its record from its own disk copy (markers are per
+  node). Re-issue the task under a fresh id if both scopes are wanted.
 - **New files, old binary:** the previous release cannot read this release's
   `tombstones.json` envelope at all (it carries the removed-tombstone markers),
   and the per-id S3 objects it *can* read lose the rewrite records

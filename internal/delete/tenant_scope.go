@@ -199,7 +199,7 @@ func (s *TombstoneStore) rejectUnscopedLocked(ts Tombstone, source string) bool 
 	if len(ts.Tenants) > 0 {
 		return false
 	}
-	s.rejectLocked(ts.ID, source+" record names no tenant")
+	s.rejectLocked(ts.ID, source+" record names no tenant", source == "s3")
 	return true
 }
 
@@ -209,16 +209,29 @@ func (s *TombstoneStore) rejectUnscopedLocked(ts Tombstone, source string) bool 
 var rejectedUnscoped sync.Map
 
 // rejectLocked refuses a restored record that is not a tombstone: it is not
-// applied, it is counted
+// applied (any copy of it already in the store is dropped too — a copy can
+// only narrow a scope, and an unscoped copy leaves nothing), it is counted
 // (lakehouse_delete_startup_inconsistencies_total{kind="unscoped_tombstone"},
 // once per process) and logged, and it gets a removal marker. The marker is
 // persisted with the disk copy, so the rejection survives a restart that loads
-// only one copy, and the record's S3 object is owed a delete through the same
-// path as any removed tombstone (removed_tombstone_still_in_s3). Caller holds
-// s.mu.
-func (s *TombstoneStore) rejectLocked(id, why string) {
+// only one copy.
+//
+// The record's S3 object is owed a delete through the path any removed
+// tombstone's is (removed_tombstone_still_in_s3) only where one is known to
+// exist: seenInS3 (the rejected copy came from S3), or a copy already in the
+// store (loaded from S3, or written through to it). A disk-only rejection
+// owes nothing; if the S3 copy exists, the S3 pass finds it superseded by the
+// marker and owes it then — once. Caller holds s.mu.
+func (s *TombstoneStore) rejectLocked(id, why string, seenInS3 bool) {
+	if cur, ok := s.tombstones[id]; ok {
+		delete(s.tombstones, id)
+		s.forgetFilterLocked(cur)
+		seenInS3 = true
+	}
 	s.markRemovedLocked(id, time.Now())
-	s.owePendingS3DeletesLocked([]string{id})
+	if seenInS3 {
+		s.owePendingS3DeletesLocked([]string{id})
+	}
 	if _, seen := rejectedUnscoped.LoadOrStore(id, true); seen {
 		return
 	}

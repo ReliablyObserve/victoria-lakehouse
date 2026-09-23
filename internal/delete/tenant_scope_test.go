@@ -399,6 +399,89 @@ func TestFilterCache_EvictedWithTheLastTombstoneUsingIt(t *testing.T) {
 	if got := parsedFilterCount(); got != base-4 {
 		t.Fatalf("redefinition: cache %d, want %d", got, base-4)
 	}
+
+	// A record loaded from S3 that a disk removal marker post-dates is dropped
+	// by the disk load (dropStaleLocked), and its filter goes with it.
+	pool := newMockS3Pool()
+	stale := mk("stale", `level:="evict-stale"`)
+	storeTombstoneInS3(t, pool, "logs/", stale)
+	markers := NewTombstoneStore()
+	markers.Add(stale)
+	markers.Remove("stale") // marker at now, after the record's CreatedAt
+	dir := t.TempDir()
+	if err := markers.PersistToDisk(dir); err != nil {
+		t.Fatal(err)
+	}
+	restored := NewTombstoneStore()
+	if err := restored.LoadFromS3(context.Background(), pool, "", "logs/"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := restored.Get("stale")
+	loaded.Filter()
+	withStale := parsedFilterCount()
+	if err := restored.LoadFromDisk(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := restored.Get("stale"); ok {
+		t.Fatal("fixture: the marker must drop the S3-loaded record")
+	}
+	if got := parsedFilterCount(); got != withStale-1 {
+		t.Fatalf("dropping a stale S3-loaded record left its filter cached: %d -> %d", withStale, got)
+	}
+}
+
+// removed_tombstone_still_in_s3 moves exactly once per rejected record that
+// has an S3 copy, and not at all when it has none.
+func TestTenantScope_RejectionOwesAnS3DeleteOncePerObject(t *testing.T) {
+	forgetRejected(t, "ts-disk-with-s3", "ts-disk-only")
+	ctx := context.Background()
+	count := func() uint64 { return metrics.DeleteStartupInconsistencies.Get("removed_tombstone_still_in_s3") }
+
+	// An unscoped disk record whose same-id S3 copy exists: one object, one.
+	dir := t.TempDir()
+	pool := newMockS3Pool()
+	disk := NewTombstoneStore()
+	disk.Add(scopedSample("ts-disk-with-s3"))
+	if err := disk.PersistToDisk(dir); err != nil {
+		t.Fatal(err)
+	}
+	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-disk-with-s3", TenantRef{AccountID: 4}))
+	before := count()
+	store := NewTombstoneStore()
+	cfg := PersistenceConfig{Dir: dir, Pool: pool, Prefix: "logs/"}
+	if _, err := store.Restore(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := count() - before; got != 1 {
+		t.Errorf("one S3 object behind a rejected record moved the counter by %d, want 1", got)
+	}
+	if _, ok := store.Get("ts-disk-with-s3"); ok {
+		t.Error("the S3 copy of a rejected record was installed")
+	}
+	store.EnablePersistence(cfg)
+	store.FlushPending(ctx)
+	if _, ok := pool.Get(TombstonePrefix("logs/") + "ts-disk-with-s3.json"); ok {
+		t.Error("the rejected record's S3 object was not deleted")
+	}
+
+	// An unscoped disk record with no S3 copy at all: no S3 delete is owed.
+	dir2 := t.TempDir()
+	disk2 := NewTombstoneStore()
+	disk2.Add(scopedSample("ts-disk-only"))
+	if err := disk2.PersistToDisk(dir2); err != nil {
+		t.Fatal(err)
+	}
+	before = count()
+	store2 := NewTombstoneStore()
+	if _, err := store2.Restore(ctx, PersistenceConfig{Dir: dir2, Pool: newMockS3Pool(), Prefix: "logs/"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := count() - before; got != 0 {
+		t.Errorf("a disk-only rejection claimed an S3 copy: counter moved by %d, want 0", got)
+	}
+	if n := store2.PendingS3Writes(); n != 0 {
+		t.Errorf("a disk-only rejection queued %d S3 writes, want 0", n)
+	}
 }
 
 func TestTenantScope_CloneIsDeep(t *testing.T) {
