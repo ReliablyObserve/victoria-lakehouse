@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
@@ -146,37 +146,45 @@ func (a *adapter) GetTenantIDs(_ context.Context, start, end int64) ([]logstorag
 	return []logstorage.TenantID{{AccountID: 0, ProjectID: 0}}, nil
 }
 
-func (a *adapter) DeleteRunTask(_ context.Context, _ string, _ int64, _ []logstorage.TenantID, _ *logstorage.Filter) error {
-	// Refused, never widened: a tombstone would apply to every tenant, while
-	// the task names only tenant_ids. See internaldelete.ErrRunTaskNotTenantScoped.
-	return internaldelete.ErrRunTaskNotTenantScoped
+// deleteTaskMode is the lakehouse delete mode (delete.default_mode) the
+// tombstone of a delete task gets; unset, a task hides its rows (the reversible
+// mode). Set once at startup by SetDeleteTaskMode.
+var deleteTaskMode atomic.Pointer[string]
+
+// SetDeleteTaskMode sets the delete mode for tombstones created by upstream's
+// delete API (/delete/run_task, /internal/delete/run_task).
+func SetDeleteTaskMode(mode string) {
+	deleteTaskMode.Store(&mode)
 }
 
-func (a *adapter) DeleteStopTask(_ context.Context, taskID string) error {
-	if a.tombstones == nil {
-		return nil
+func taskMode() string {
+	if p := deleteTaskMode.Load(); p != nil {
+		return *p
 	}
-	// Stopping a task is an un-delete: refused while a rewrite of the
-	// tombstone's files is unfinished, because the tombstone carries that
-	// rewrite's durable record. Stopping an unknown task stays a no-op.
-	if err := a.tombstones.TryRemove(taskID); err != nil && !errors.Is(err, delete.ErrTombstoneNotFound) {
-		return err
-	}
-	return nil
+	return ""
 }
 
-func (a *adapter) DeleteActiveTasks(_ context.Context) ([]*logstorage.DeleteTask, error) {
-	if a.tombstones == nil {
-		return nil, nil
+// DeleteRunTask registers the task as a tombstone scoped to exactly the task's
+// tenant_ids (see delete.RunTask). Upstream's /delete/run_task passes the
+// request's tenant; the cluster protocol passes the list the frontend sent.
+func (a *adapter) DeleteRunTask(_ context.Context, taskID string, timestamp int64, tenantIDs []logstorage.TenantID, f *logstorage.Filter) error {
+	if f == nil {
+		return errors.New("missing filter")
 	}
-	active := a.tombstones.Active()
-	result := make([]*logstorage.DeleteTask, 0, len(active))
-	for _, t := range active {
-		result = append(result, &logstorage.DeleteTask{
-			TaskID: t.ID,
-		})
-	}
-	return result, nil
+	return delete.RunTask(a.tombstones, delete.TaskFilesOf(a.store), delete.AccountOnlyKeys(a.store), taskID, timestamp, delete.TenantRefsOf(tenantIDs), f.String(), taskMode())
+}
+
+// DeleteStopTask removes the task's tombstone by id (an un-delete; refused while
+// a rewrite of its files is unfinished). Stopping an unknown task is a no-op; so
+// is stopping another tenant's task from the public API (delete.StopTask).
+func (a *adapter) DeleteStopTask(ctx context.Context, taskID string) error {
+	return delete.StopTask(ctx, a.tombstones, taskID)
+}
+
+// DeleteActiveTasks lists the active tombstones in upstream's DeleteTask shape,
+// only the caller's own for a tenant caller of the public API.
+func (a *adapter) DeleteActiveTasks(ctx context.Context) ([]*logstorage.DeleteTask, error) {
+	return delete.ActiveTasks(ctx, a.tombstones), nil
 }
 
 // wrapHiddenFields wraps writeBlock to strip columns matching HiddenFieldsFilters.

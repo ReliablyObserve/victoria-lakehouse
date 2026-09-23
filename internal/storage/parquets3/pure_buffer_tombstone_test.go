@@ -79,7 +79,7 @@ func TestRunQuery_PureBufferWindowHonoursTombstones(t *testing.T) {
 	}
 
 	store := delete.NewTombstoneStore()
-	store.Add(delete.Tombstone{ID: "recent", Query: `service.name:="secret"`, StartNs: startNs, EndNs: endNs, Mode: "hide"})
+	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "recent", Query: `service.name:="secret"`, StartNs: startNs, EndNs: endNs, Mode: "hide"})
 	s.SetTombstoneStore(store)
 
 	if got := count(); got != 4 {

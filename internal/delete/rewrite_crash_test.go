@@ -115,6 +115,7 @@ func TestRewriteCrash_TombstoneBookkeepingLost(t *testing.T) {
 	// Rewind the tombstone to its pre-rewrite state, as a restart from an older
 	// persisted copy would.
 	f.store.Add(Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "ts-fixture",
 		Query:        `severity_text:="error"`,
 		StartNs:      0,
@@ -374,6 +375,7 @@ func runRandomDeleteSequence(t *testing.T, rng *rand.Rand) {
 				continue
 			}
 			store.Add(Tombstone{
+				Tenants:      []TenantRef{{}},
 				ID:           fmt.Sprintf("ts-%d", step),
 				Query:        fmt.Sprintf(`severity_text:=%q`, sev),
 				StartNs:      0,

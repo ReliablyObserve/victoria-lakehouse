@@ -42,7 +42,8 @@ func TestRewrite_ReplacementStaysInTheSourceDirectory(t *testing.T) {
 
 			rw := NewRewriter(pool, tc.prefix, 1000, "logs")
 			res, err := rw.RewriteFile(context.Background(), tc.key, []Tombstone{{
-				ID: "t", Query: `severity_text:="error"`, StartNs: 0, EndNs: 10000, Mode: "permanent",
+				Tenants: []TenantRef{{}},
+				ID:      "t", Query: `severity_text:="error"`, StartNs: 0, EndNs: 10000, Mode: "permanent",
 			}})
 			if err != nil {
 				t.Fatalf("rewrite: %v", err)
@@ -85,7 +86,8 @@ func TestRewrite_TenantFileStaysWithItsTenantInTheManifest(t *testing.T) {
 
 	store := NewTombstoneStore()
 	store.Add(Tombstone{
-		ID: "ts-tenant", Query: `severity_text:="error"`, StartNs: 0, EndNs: 10000,
+		Tenants: []TenantRef{{AccountID: 1002}},
+		ID:      "ts-tenant", Query: `severity_text:="error"`, StartNs: 0, EndNs: 10000,
 		AffectedKeys: []string{key}, CreatedAt: time.Now().Add(-2 * time.Hour),
 		Mode: "permanent", Reaped: map[string]bool{},
 	})

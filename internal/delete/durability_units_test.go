@@ -139,7 +139,8 @@ func newCommitFixture(t *testing.T) *commitFixture {
 	store := NewTombstoneStore()
 	store.EnablePersistence(PersistenceConfig{Dir: t.TempDir(), Pool: uploadFailPool{newMockS3Pool()}, Prefix: "logs/"})
 	store.Add(Tombstone{
-		ID: "ts-commit", Query: `severity_text:="error"`, StartNs: 0, EndNs: 1 << 40,
+		Tenants: []TenantRef{{}},
+		ID:      "ts-commit", Query: `severity_text:="error"`, StartNs: 0, EndNs: 1 << 40,
 		AffectedKeys: []string{source}, CreatedAt: time.Now().Add(-2 * time.Hour),
 		Mode: "permanent", Reaped: map[string]bool{},
 	})
@@ -219,7 +220,8 @@ func TestRewriteOne_RefusesToUploadWhileTheIntentIsNotDurable(t *testing.T) {
 	store := NewTombstoneStore()
 	store.EnablePersistence(PersistenceConfig{Dir: t.TempDir(), Pool: uploadFailPool{newMockS3Pool()}, Prefix: "logs/"})
 	store.Add(Tombstone{
-		ID: "ts-intent", Query: `severity_text:="error"`, StartNs: 0, EndNs: 1 << 40,
+		Tenants: []TenantRef{{}},
+		ID:      "ts-intent", Query: `severity_text:="error"`, StartNs: 0, EndNs: 1 << 40,
 		AffectedKeys: []string{source}, CreatedAt: time.Now().Add(-2 * time.Hour),
 		Mode: "permanent", Reaped: map[string]bool{},
 	})
@@ -318,7 +320,8 @@ func TestResumeRewrites_ActsOnTheRecordAsItIsUnderTheClaim(t *testing.T) {
 
 	store := NewTombstoneStore()
 	store.Add(Tombstone{
-		ID: "ts-resume", Query: `severity_text:="error"`, StartNs: 0, EndNs: 1 << 40,
+		Tenants: []TenantRef{{}},
+		ID:      "ts-resume", Query: `severity_text:="error"`, StartNs: 0, EndNs: 1 << 40,
 		AffectedKeys: []string{sourceA, sourceB}, CreatedAt: time.Now().Add(-2 * time.Hour),
 		Mode: "permanent", Reaped: map[string]bool{},
 	})

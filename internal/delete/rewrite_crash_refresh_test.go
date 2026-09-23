@@ -118,7 +118,8 @@ func newCrashWorld(t *testing.T) *crashWorld {
 	w.store = NewTombstoneStore()
 	w.store.EnablePersistence(w.persistence(w.diskDir))
 	w.store.Add(Tombstone{
-		ID: crashTombstone, Query: `severity_text:="error"`,
+		Tenants: []TenantRef{{}},
+		ID:      crashTombstone, Query: `severity_text:="error"`,
 		StartNs: crashHourStart.UnixNano(), EndNs: crashHourStart.Add(time.Hour).UnixNano() - 1,
 		AffectedKeys: []string{crashSource}, CreatedAt: time.Now().Add(-2 * time.Hour),
 		Mode: "permanent", Reaped: map[string]bool{},

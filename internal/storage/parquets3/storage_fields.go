@@ -195,7 +195,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	// The check covers every row the counts came from: the column index of a
 	// whole file, whose rows can extend past the query window, so a tombstone
 	// just outside the window but inside a counted file still taints the count.
-	if tsLo, tsHi := filesTimeSpan(files, startNs, endNs); len(s.fieldsTombstones(tsLo, tsHi)) > 0 {
+	if tsLo, tsHi := filesTimeSpan(files, startNs, endNs); len(s.fieldsTombstones(scope, tsLo, tsHi)) > 0 {
 		noteFieldsScanFallback("field_names")
 		names := make([]string, 0, len(hits))
 		for name := range hits {
@@ -422,7 +422,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	gaveUpFastPath := false
 
 	if filter == nil && s.catalog != nil {
-		if len(s.fieldsTombstones(partitionHourBounds(startNs, endNs))) > 0 {
+		if hLo, hHi := partitionHourBounds(startNs, endNs); len(s.fieldsTombstones(scope, hLo, hHi)) > 0 {
 			gaveUpFastPath = true
 		} else {
 			if s.refuseEnumeration(fieldName) {
@@ -435,7 +435,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	}
 
 	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
-		if len(s.allTombstones()) > 0 {
+		if len(s.allTombstones(scope)) > 0 {
 			gaveUpFastPath = true
 		} else if vals := s.labelIndex.GetFieldValues(fieldName, limit); len(vals) > 0 {
 			result := make([]logstorage.ValueWithHits, len(vals))
@@ -466,7 +466,10 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	// The scan reads every row of every overlapping file, including the rows
 	// that lie outside the query window, so it must apply every tombstone
 	// overlapping those files — not only the ones overlapping the window.
-	tombstones := s.fieldsTombstones(filesTimeSpan(files, startNs, endNs))
+	spanLo, spanHi := filesTimeSpan(files, startNs, endNs)
+	tombstones := s.fieldsTombstones(scope, spanLo, spanHi)
+	// Each object gets only the tombstones of its own tenant.
+	parse := s.keyTenantParser()
 
 	mapping := s.registry.ResolveToParquet(fieldName)
 	if mapping == nil {
@@ -485,7 +488,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 
 		// Column-projected read: fetches only (target + filter cols)
 		// chunk data from S3 rather than the entire file body.
-		if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, tombstones, seen); err != nil {
+		if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, tombstonesForKey(tombstones, parse, fi.Key), seen); err != nil {
 			logger.Warnf("scan projected field values: %s; key=%s", err, fi.Key)
 			continue
 		}
@@ -524,13 +527,17 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 	startNs, endNs := q.GetFilterTimeRange()
 
 	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
+	scope := scopeFor(ctx, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
 	}
 
 	// Whole files are scanned: apply every tombstone overlapping their rows,
 	// not only those overlapping the query window.
-	tombstones := s.fieldsTombstones(filesTimeSpan(files, startNs, endNs))
+	spanLo, spanHi := filesTimeSpan(files, startNs, endNs)
+	tombstones := s.fieldsTombstones(scope, spanLo, spanHi)
+	// Each object gets only the tombstones of its own tenant.
+	parse := s.keyTenantParser()
 	if len(tombstones) > 0 {
 		noteFieldsScanFallback("streams")
 	}
@@ -549,7 +556,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 		// Column-projected read: fetches only (_stream + filter cols)
 		// chunk data from S3 rather than the entire file body.
-		if err := s.scanProjectedFieldValues(ctx, fi, streamColName, filter, tombstones, seen); err != nil {
+		if err := s.scanProjectedFieldValues(ctx, fi, streamColName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen); err != nil {
 			logger.Warnf("scan projected streams: %s; key=%s", err, fi.Key)
 			continue
 		}
@@ -575,13 +582,17 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 	startNs, endNs := q.GetFilterTimeRange()
 
 	files := s.filesForTenants(ctx, "stream_ids", startNs, endNs, tenantIDs)
+	scope := scopeFor(ctx, tenantIDs)
 	if len(files) == 0 {
 		return nil, nil
 	}
 
 	// Whole files are scanned: apply every tombstone overlapping their rows,
 	// not only those overlapping the query window.
-	tombstones := s.fieldsTombstones(filesTimeSpan(files, startNs, endNs))
+	spanLo, spanHi := filesTimeSpan(files, startNs, endNs)
+	tombstones := s.fieldsTombstones(scope, spanLo, spanHi)
+	// Each object gets only the tombstones of its own tenant.
+	parse := s.keyTenantParser()
 	if len(tombstones) > 0 {
 		noteFieldsScanFallback("stream_ids")
 	}
@@ -600,7 +611,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 
 		// Column-projected read: fetches only (_stream_id + filter cols)
 		// chunk data from S3 rather than the entire file body.
-		if err := s.scanProjectedFieldValues(ctx, fi, colName, filter, tombstones, seen); err != nil {
+		if err := s.scanProjectedFieldValues(ctx, fi, colName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen); err != nil {
 			logger.Warnf("scan projected stream_ids: %s; key=%s", err, fi.Key)
 			continue
 		}

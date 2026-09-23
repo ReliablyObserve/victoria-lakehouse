@@ -14,7 +14,7 @@ import (
 // and un-deleting it — always 404'd on the traces binary.
 func TestHandler_TraceMode_TombstoneByIDAndUndelete(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "trace-ts-1", Query: `service.name:="x"`, StartNs: 0, EndNs: 10, Mode: "hide"})
+	store.Add(Tombstone{ID: "trace-ts-1", Query: `service.name:="x"`, StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	h := NewHandler(store, &mockManifest{}, NewStorageClassDetector(nil), defaultCfg(), "traces")
 	mux := http.NewServeMux()
@@ -38,7 +38,7 @@ func TestHandler_TraceMode_TombstoneByIDAndUndelete(t *testing.T) {
 
 func TestHandler_LogsMode_TombstoneByIDStillWorks(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "logs-ts-1", Query: "*", StartNs: 0, EndNs: 10, Mode: "hide"})
+	store.Add(Tombstone{ID: "logs-ts-1", Query: "*", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{}}})
 	h := NewHandler(store, &mockManifest{}, NewStorageClassDetector(nil), defaultCfg(), "logs")
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -64,7 +64,7 @@ func TestHandler_ListTombstones_ReportsDurability(t *testing.T) {
 	pool := newFlakyS3Pool()
 	pool.failUploads = 1
 	store.EnablePersistence(PersistenceConfig{Dir: t.TempDir(), Pool: pool, Prefix: "logs/"})
-	store.Add(Tombstone{ID: "ts", Query: "*", StartNs: 0, EndNs: 10, Mode: "hide"})
+	store.Add(Tombstone{ID: "ts", Query: "*", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	h := NewHandler(store, &mockManifest{}, NewStorageClassDetector(nil), defaultCfg(), "logs")
 	mux := http.NewServeMux()

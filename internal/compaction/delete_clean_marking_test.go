@@ -68,6 +68,7 @@ func TestDeleteRace_TombstoneIssuedDuringTheMerge(t *testing.T) {
 	}()
 	<-reached
 	w.store.Add(delete.Tombstone{
+		Tenants:      []delete.TenantRef{{}},
 		ID:           "ts-late",
 		Query:        `service.name:="web"`,
 		StartNs:      raceHour.UnixNano(),
@@ -96,7 +97,7 @@ func assertOutputStillPending(t *testing.T, w *raceWorld, id, output, query stri
 	if rerr != nil {
 		t.Fatalf("read output: %v", rerr)
 	}
-	probe := delete.Tombstone{ID: "probe", Query: query, StartNs: raceHour.UnixNano(), EndNs: raceHour.Add(time.Hour).UnixNano()}
+	probe := delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "probe", Query: query, StartNs: raceHour.UnixNano(), EndNs: raceHour.Add(time.Hour).UnixNano()}
 	var matching int
 	for i := range rows {
 		if probe.MatchesFields(delete.LogRowFields(&rows[i]), rows[i].TimestampUnixNano) {

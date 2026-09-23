@@ -45,10 +45,14 @@ type RewriteSchedulerConfig struct {
 // RewriteScheduler periodically processes pending tombstones by rewriting
 // affected Parquet files to permanently remove deleted rows.
 type RewriteScheduler struct {
-	store          *TombstoneStore
-	rewriter       *Rewriter
-	detector       *StorageClassDetector
-	manifest       ManifestUpdater
+	store    *TombstoneStore
+	rewriter *Rewriter
+	detector *StorageClassDetector
+	manifest ManifestUpdater
+	// keyTenant attributes an object key to its tenant, the way the read path
+	// does, so a tenant-scoped tombstone is only ever applied to its tenants'
+	// objects.
+	keyTenant      KeyTenantFunc
 	onPublished    func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
 	rewriteDelay   time.Duration
 	allowedClasses map[string]bool
@@ -103,6 +107,7 @@ func NewRewriteScheduler(cfg RewriteSchedulerConfig) *RewriteScheduler {
 		rewriter:       cfg.Rewriter,
 		detector:       cfg.Detector,
 		manifest:       cfg.Manifest,
+		keyTenant:      KeyTenantParserOf(cfg.Manifest),
 		onPublished:    cfg.OnPublished,
 		rewriteDelay:   cfg.RewriteDelay,
 		allowedClasses: allowed,
@@ -217,6 +222,20 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 		if _, recorded := ts.Superseded[key]; recorded {
 			continue // resumeRewrites owns it until its record clears
 		}
+		// A tenant-scoped tombstone never rewrites another tenant's object.
+		// Nothing lists one (the delete API and discovery attribute keys by
+		// tenant), so reaching here means a record was edited by hand or
+		// written by a defect: the object holds none of this tombstone's rows
+		// by definition, so it is recorded clean instead of rewritten.
+		if !ts.AppliesToKey(s.keyTenant, key) {
+			metrics.DeleteTenantScopeSkips.Inc("rewrite")
+			logger.Errorf("tenant-scoped tombstone lists another tenant's object; not rewriting it; tombstone=%s, tenants=%v, key=%s", id, ts.Tenants, key)
+			s.store.Update(id, func(cur *Tombstone) bool {
+				cur.SetClean(key, true)
+				return true
+			})
+			continue
+		}
 
 		// A key that is no longer in the manifest was rewritten already (a
 		// crash lost the bookkeeping) or merged by compaction. Either way the
@@ -308,6 +327,10 @@ func (s *RewriteScheduler) discoverAffectedKeys(id string) int {
 			listed[k] = true
 		}
 		for _, fi := range files {
+			// Only objects of a tenant the tombstone acts on can hold its rows.
+			if !cur.AppliesToKey(s.keyTenant, fi.Key) {
+				continue
+			}
 			// A key recorded as reaped means "its object is gone", so a
 			// manifested one is a contradiction — a key that came back when an
 			// interrupted rewrite was undone, or another node's copy of the

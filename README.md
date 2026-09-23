@@ -417,8 +417,10 @@ Each binary supports three roles for independent scaling:
 - **Cost estimation**: `/delete/logsql/estimate` (or `/delete/tracessql/estimate`) returns per-storage-class cost breakdown before executing.
 - **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
 - **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
+- **Tenant-scoped deletes**: a tombstone names the tenant that issued it (integer AccountID/ProjectID, or a string X-Scope-OrgID through the aliases) and never hides, rewrites or compacts away another tenant's rows; each tenant lists, stops and un-deletes only its own.
 - **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
 - **Un-delete**: remove a tombstone to restore data visibility instantly.
+- **Upstream delete API**: VictoriaLogs' and VictoriaTraces' `/delete/run_task`, `stop_task` and `active_tasks`, behind upstream's `-delete.enable`; a task becomes a tombstone scoped to the requesting tenant.
 - **Verification**: `/delete/logsql/verify` (or `/delete/tracessql/verify`) confirms tombstoned data is invisible (normal mode) or physically deleted (deep mode).
 
 ### Loki Drilldown Compatibility

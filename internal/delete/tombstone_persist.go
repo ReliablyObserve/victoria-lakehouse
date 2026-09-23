@@ -358,7 +358,7 @@ func (s *TombstoneStore) Restore(ctx context.Context, cfg PersistenceConfig) (in
 		}
 	}
 	n := s.Count()
-	metrics.DeleteTombstonesActive.Set(int64(n))
+	s.updateActiveGauges()
 	if len(errs) > 0 {
 		return n, fmt.Errorf("restore tombstones: %s", strings.Join(errs, "; "))
 	}
@@ -433,7 +433,7 @@ func (s *TombstoneStore) RetryS3Restore(ctx context.Context) bool {
 	s.mu.Unlock()
 	metrics.DeleteTombstoneRestorePending.Set(0)
 	metrics.DeleteTombstoneRestoreAttempts.Inc("recovered")
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	logger.Infof("tombstone restore from S3 succeeded on retry; tombstones=%d", s.Count())
 	return true
 }
@@ -482,10 +482,10 @@ func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
 	// delete its source on the strength of a record S3 does not hold. The
 	// write-back is lazy: EnsureDurable issues it for the ids something acts
 	// on, so a boot does not rewrite every record it restored.
-	defer s.bumpLocked(ts.ID)
 	cur, ok := s.tombstones[ts.ID]
 	if !ok {
 		s.tombstones[ts.ID] = ts
+		s.bumpLocked(ts.ID)
 		return
 	}
 	merged := cloneTombstone(cur)
@@ -532,7 +532,16 @@ func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
 		}
 	}
 	merged.Superseded = mergeSupersessions(merged.Superseded, ts.Superseded, merged.Reaped)
+	merged.Tenants = mergeTenants(merged.Tenants, ts.Tenants)
+	if len(merged.Tenants) == 0 {
+		// The copies name no tenant in common: fail closed. The id is not
+		// bumped — the record is dropped, not changed. One of the two copies
+		// is in the store already, so rejectLocked owes its S3 delete.
+		s.rejectLocked(ts.ID, "the record's disk and S3 copies name no common tenant", true)
+		return
+	}
 	s.tombstones[ts.ID] = merged
+	s.bumpLocked(ts.ID)
 }
 
 // mergeSupersessions unions two copies' rewrite records without walking one

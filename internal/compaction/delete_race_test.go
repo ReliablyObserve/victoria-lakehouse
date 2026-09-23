@@ -85,6 +85,7 @@ func newRaceWorld(t *testing.T) *raceWorld {
 	keys := []string{w.files[0].Key, w.files[1].Key}
 	markListed(t, w.manifest, keys)
 	w.store.Add(delete.Tombstone{
+		Tenants:      []delete.TenantRef{{}},
 		ID:           "ts-race",
 		Query:        `service.name:="leaky"`,
 		StartNs:      raceHour.UnixNano(),

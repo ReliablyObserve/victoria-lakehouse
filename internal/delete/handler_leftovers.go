@@ -20,10 +20,10 @@ import (
 // unfinished rewrite could only be found by reading `tombstones.json`.
 //
 // GET {prefix}/leftovers answers exactly that question, read-only: it reports
-// what this instance is still holding on to and why. It is INSTANCE-WIDE, not
-// tenant-scoped — tombstones and the retired/pending sets are per instance, not
-// per tenant (see docs/operations.md), so the endpoint is for operators, the
-// same audience as the tombstone listing it sits next to.
+// what this instance is still holding on to and why. A tenant caller sees the
+// entries of its own objects and tombstones ("scope": "tenant"); only the
+// validated global-read credential sees the whole instance ("scope":
+// "instance"), the same split as the tombstone listing (handler_scope.go).
 
 // LeftoverLister is the slice of the manifest the leftovers endpoint needs. The
 // handler takes it from its ManifestQuerier when that value provides it, so an
@@ -98,6 +98,11 @@ func (h *Handler) handleLeftovers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	caller, ok := h.callerOrError(w, r)
+	if !ok {
+		return
+	}
+	parse := h.keyTenant()
 	limit := defaultLeftoverLimit
 	if v := r.FormValue("limit"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -116,7 +121,12 @@ func (h *Handler) handleLeftovers(w http.ResponseWriter, r *http.Request) {
 		nPending           int
 	)
 	if lister, ok := h.manifest.(LeftoverLister); ok {
-		all := lister.RetiredKeys()
+		var all []manifest.RetiredKey
+		for _, rk := range lister.RetiredKeys() {
+			if caller.ownsKey(parse, rk.Key) {
+				all = append(all, rk)
+			}
+		}
 		nRetired = len(all)
 		for _, rk := range all {
 			if rk.Reclaim {
@@ -132,7 +142,12 @@ func (h *Handler) handleLeftovers(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 		}
-		allPending := lister.PendingKeys()
+		var allPending []manifest.PendingKey
+		for _, pk := range lister.PendingKeys() {
+			if caller.ownsKey(parse, pk.Key) {
+				allPending = append(allPending, pk)
+			}
+		}
 		nPending = len(allPending)
 		for _, pk := range allPending {
 			if pk.Held {
@@ -144,16 +159,21 @@ func (h *Handler) handleLeftovers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rewrites := h.store.UnfinishedRewriteRecords()
+	var rewrites []RewriteRecord
+	for _, rec := range h.store.UnfinishedRewriteRecords() {
+		if ts, found := h.store.Get(rec.Tombstone); caller.global || (found && caller.sees(&ts)) {
+			rewrites = append(rewrites, rec)
+		}
+	}
 	nRewrites := len(rewrites)
 	if len(rewrites) > limit {
 		rewrites = rewrites[:limit]
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		// Instance-wide, not tenant-scoped: say so in the payload, so a caller
-		// cannot mistake it for a tenant's own view.
-		"scope":               "instance",
+		// Say which view this is, so a tenant's own view is never mistaken
+		// for the instance's.
+		"scope":               caller.scopeName(),
 		"retired_keys":        retired,
 		"pending_keys":        pending,
 		"unfinished_rewrites": rewrites,

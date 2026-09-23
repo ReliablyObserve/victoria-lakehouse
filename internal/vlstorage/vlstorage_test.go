@@ -3,13 +3,13 @@ package vlstorage
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
@@ -77,37 +77,98 @@ func TestGetTenantIDs_NoDataReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestDeleteRunTask_NilTombstones_IsRefused(t *testing.T) {
-	a := &adapter{store: mockStore{}, tombstones: nil}
-	err := a.DeleteRunTask(context.Background(), "task-1", time.Now().UnixNano(), nil, nil)
-	if !errors.Is(err, internaldelete.ErrRunTaskNotTenantScoped) {
-		t.Fatalf("err = %v, want ErrRunTaskNotTenantScoped", err)
-	}
-}
-
-// A delete task names tenant_ids, but a tombstone applies to every tenant.
-// Honouring the task would let one tenant hide another tenant's rows, so it is
-// refused and no tombstone is written — whatever tenants the task names.
-func TestDeleteRunTask_IsRefusedAndHidesNothing(t *testing.T) {
-	ts := delete.NewTombstoneStore()
-	a := &adapter{store: mockStore{}, tombstones: ts}
+func TestDeleteRunTask_RefusedWithoutStoreOrFilter(t *testing.T) {
 	f, err := logstorage.ParseFilter("level:error")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tenants := range [][]logstorage.TenantID{
-		nil,
-		{{AccountID: 0, ProjectID: 0}},
-		{{AccountID: 7, ProjectID: 3}},
-		{{AccountID: 0, ProjectID: 0}, {AccountID: 7, ProjectID: 3}},
-	} {
-		err := a.DeleteRunTask(context.Background(), "delete-task-42", time.Now().UnixNano(), tenants, f)
-		if !errors.Is(err, internaldelete.ErrRunTaskNotTenantScoped) {
-			t.Fatalf("tenants %v: err = %v, want ErrRunTaskNotTenantScoped", tenants, err)
-		}
+	one := []logstorage.TenantID{{AccountID: 1}}
+	a := &adapter{store: mockStore{}, tombstones: nil}
+	if err := a.DeleteRunTask(context.Background(), "task-1", time.Now().UnixNano(), one, f); err == nil {
+		t.Fatal("a task must be refused while the delete feature (the tombstone store) is off")
 	}
-	if n := ts.Count(); n != 0 {
-		t.Fatalf("tombstones = %d, want 0: a refused task must not hide anything", n)
+	a = &adapter{store: mockStore{}, tombstones: delete.NewTombstoneStore()}
+	if err := a.DeleteRunTask(context.Background(), "task-1", time.Now().UnixNano(), one, nil); err == nil {
+		t.Fatal("a task without a filter must be refused")
+	}
+}
+
+// keyListingStore is a storage that lists its objects by tenant, like
+// parquets3.Storage.
+type keyListingStore struct {
+	mockStore
+	asked []logstorage.TenantID
+}
+
+func (s *keyListingStore) TenantFileKeys(ids []logstorage.TenantID, _, _ int64) []string {
+	s.asked = ids
+	return []string{"7/3/logs/dt=2026-01-01/hour=00/a.parquet"}
+}
+
+// A delete task becomes a tombstone scoped to exactly the task's tenant_ids,
+// recording only those tenants' objects; the default delete mode applies.
+func TestDeleteRunTask_ScopesTheTombstoneToTheTaskTenants(t *testing.T) {
+	SetDeleteTaskMode("permanent")
+	t.Cleanup(func() { SetDeleteTaskMode("") })
+	ts := delete.NewTombstoneStore()
+	st := &keyListingStore{}
+	a := &adapter{store: st, tombstones: ts}
+	f, err := logstorage.ParseFilter("level:error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixNano()
+	if err := a.DeleteRunTask(context.Background(), "task-42", now, []logstorage.TenantID{{AccountID: 7, ProjectID: 3}}, f); err != nil {
+		t.Fatalf("DeleteRunTask: %v", err)
+	}
+	got, ok := ts.Get("task-42")
+	if !ok {
+		t.Fatal("no tombstone registered")
+	}
+	if !got.ScopedExactlyTo(7, 3) || got.Mode != "permanent" || got.EndNs != now || got.CreatedBy != "delete_task" {
+		t.Fatalf("tombstone = %+v, want 7:3 only, mode permanent, ending at the task timestamp", got)
+	}
+	if len(got.AffectedKeys) != 1 || len(st.asked) != 1 || st.asked[0] != (logstorage.TenantID{AccountID: 7, ProjectID: 3}) {
+		t.Fatalf("affected keys %v listed for tenants %v, want only 7:3's objects", got.AffectedKeys, st.asked)
+	}
+
+	// No tenants: accepted, nothing created (it would act on every tenant).
+	if err := a.DeleteRunTask(context.Background(), "task-none", now, nil, f); err != nil {
+		t.Fatalf("a task naming no tenant must be accepted like upstream: %v", err)
+	}
+	if ts.Count() != 1 {
+		t.Fatalf("tombstones = %d, want 1", ts.Count())
+	}
+	// A registered id is refused, as upstream.
+	if err := a.DeleteRunTask(context.Background(), "task-42", now, []logstorage.TenantID{{AccountID: 1}}, f); !errors.Is(err, delete.ErrTaskExists) {
+		t.Fatalf("duplicate task id: err = %v, want ErrTaskExists", err)
+	}
+}
+
+// active_tasks reports tombstones in upstream's DeleteTask shape.
+func TestDeleteActiveTasks_UpstreamShape(t *testing.T) {
+	ts := delete.NewTombstoneStore()
+	created := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	ts.Add(delete.Tombstone{ID: "scoped", Query: "level:error", EndNs: 1, CreatedAt: created, Mode: "hide", Tenants: []delete.TenantRef{{AccountID: 7, ProjectID: 3}}})
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{AccountID: 1}, {AccountID: 2}}, ID: "multi", Query: "*", EndNs: 1, CreatedAt: created.Add(time.Hour), Mode: "hide"})
+	a := &adapter{store: mockStore{}, tombstones: ts}
+	tasks, err := a.DeleteActiveTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 || tasks[0].TaskID != "scoped" || tasks[1].TaskID != "multi" {
+		t.Fatalf("tasks = %+v, want scoped then multi (oldest first)", tasks)
+	}
+	if tasks[0].Filter != "level:error" || !tasks[0].StartTime.Equal(created) ||
+		len(tasks[0].TenantIDs) != 1 || tasks[0].TenantIDs[0] != (logstorage.TenantID{AccountID: 7, ProjectID: 3}) {
+		t.Fatalf("scoped task = %+v", tasks[0])
+	}
+	if len(tasks[1].TenantIDs) != 2 {
+		t.Fatalf("a multi-tenant task lists both tenants, got %v", tasks[1].TenantIDs)
+	}
+	data := string(logstorage.MarshalDeleteTasksToJSON(tasks))
+	if !strings.Contains(data, `"task_id":"scoped"`) || !strings.Contains(data, `"filter":"level:error"`) {
+		t.Fatalf("upstream JSON = %s", data)
 	}
 }
 
@@ -121,7 +182,7 @@ func TestDeleteStopTask_NilTombstones_NoPanic(t *testing.T) {
 
 func TestDeleteStopTask_RemovesTombstone(t *testing.T) {
 	ts := delete.NewTombstoneStore()
-	ts.Add(delete.Tombstone{ID: "task-99", Query: "*", Mode: "auto"})
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "task-99", Query: "*", Mode: "auto"})
 	a := &adapter{store: mockStore{}, tombstones: ts}
 
 	if ts.Count() != 1 {
@@ -400,8 +461,8 @@ func TestGetFieldNames_HiddenFieldsFilters(t *testing.T) {
 
 func TestDeleteActiveTasks_ReturnsTombstones(t *testing.T) {
 	ts := delete.NewTombstoneStore()
-	ts.Add(delete.Tombstone{ID: "t-1", Query: "*", Mode: "auto"})
-	ts.Add(delete.Tombstone{ID: "t-2", Query: "*", Mode: "hide"})
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "t-1", Query: "*", Mode: "auto"})
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "t-2", Query: "*", Mode: "hide"})
 
 	a := &adapter{store: mockStore{}, tombstones: ts}
 	tasks, err := a.DeleteActiveTasks(context.Background())
@@ -770,7 +831,7 @@ func TestRunQuery_PipeReferencedFieldsReachProjection(t *testing.T) {
 // same as the delete API's un-delete.
 func TestDeleteStopTask_RefusedWhileARewriteIsUnfinished(t *testing.T) {
 	ts := delete.NewTombstoneStore()
-	ts.Add(delete.Tombstone{ID: "task-busy", Query: "*", Mode: "auto",
+	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "task-busy", Query: "*", Mode: "auto",
 		Superseded: map[string]delete.Supersession{
 			"logs/dt=2026-03-01/hour=07/src.parquet": {NewKey: "logs/dt=2026-03-01/hour=07/repl.parquet", State: delete.SupersessionPublished},
 		}})
@@ -785,5 +846,32 @@ func TestDeleteStopTask_RefusedWhileARewriteIsUnfinished(t *testing.T) {
 	// Stopping a task that does not exist stays a no-op.
 	if err := a.DeleteStopTask(context.Background(), "no-such-task"); err != nil {
 		t.Fatalf("stopping an unknown task: %v", err)
+	}
+}
+
+// namesErrStore fails the field-name enumerations, so the adapter's error
+// propagation is exercised.
+type namesErrStore struct {
+	mockStore
+	err error
+}
+
+func (s namesErrStore) GetFieldNames(context.Context, []logstorage.TenantID, *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+	return nil, s.err
+}
+
+func (s namesErrStore) GetStreamFieldNames(context.Context, []logstorage.TenantID, *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+	return nil, s.err
+}
+
+func TestFieldNames_PropagateStorageErrors(t *testing.T) {
+	want := errors.New("storage error")
+	a := &adapter{store: namesErrStore{err: want}}
+	qctx := &logstorage.QueryContext{Context: context.Background()}
+	if got, err := a.GetFieldNames(qctx, ""); !errors.Is(err, want) || got != nil {
+		t.Errorf("GetFieldNames = %v, %v; want the storage error", got, err)
+	}
+	if got, err := a.GetStreamFieldNames(qctx, ""); !errors.Is(err, want) || got != nil {
+		t.Errorf("GetStreamFieldNames = %v, %v; want the storage error", got, err)
 	}
 }

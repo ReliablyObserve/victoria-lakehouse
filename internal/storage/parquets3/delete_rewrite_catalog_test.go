@@ -83,6 +83,7 @@ func TestDeleteRewrite_CatalogForgetsTheDeletedValue(t *testing.T) {
 
 			store := delete.NewTombstoneStore()
 			store.Add(delete.Tombstone{
+				Tenants:      []delete.TenantRef{{}},
 				ID:           "ts-e2e",
 				Query:        `service.name:="order-service"`,
 				StartNs:      startNs,

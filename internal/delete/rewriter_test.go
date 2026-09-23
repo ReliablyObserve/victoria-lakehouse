@@ -125,6 +125,7 @@ func TestRewriteFile_MatchingRowsRemoved(t *testing.T) {
 
 	tombstones := []Tombstone{
 		{
+			Tenants: []TenantRef{{}},
 			ID:      "t1",
 			Query:   `severity_text:="error"`,
 			StartNs: 0,
@@ -222,6 +223,7 @@ func TestRewriteFile_NoMatchingRows(t *testing.T) {
 
 	tombstones := []Tombstone{
 		{
+			Tenants: []TenantRef{{}},
 			ID:      "t1",
 			Query:   `severity_text:="error"`,
 			StartNs: 0,
@@ -274,6 +276,7 @@ func TestRewriteFile_AllRowsMatching(t *testing.T) {
 
 	tombstones := []Tombstone{
 		{
+			Tenants: []TenantRef{{}},
 			ID:      "t1",
 			Query:   `severity_text:="error"`,
 			StartNs: 0,
@@ -339,12 +342,14 @@ func TestRewriteFile_MultipleTombstones(t *testing.T) {
 	// Two tombstones: one removes errors, one removes service=db rows.
 	tombstones := []Tombstone{
 		{
+			Tenants: []TenantRef{{}},
 			ID:      "t1",
 			Query:   `severity_text:="error"`,
 			StartNs: 0,
 			EndNs:   5000,
 		},
 		{
+			Tenants: []TenantRef{{}},
 			ID:      "t2",
 			Query:   `service.name:="db"`,
 			StartNs: 0,
@@ -384,6 +389,7 @@ func TestRewriteFile_TimeRangeFiltering(t *testing.T) {
 	// Tombstone only covers [0, 2000] — should only match first row.
 	tombstones := []Tombstone{
 		{
+			Tenants: []TenantRef{{}},
 			ID:      "t1",
 			Query:   `severity_text:="error"`,
 			StartNs: 0,
@@ -517,7 +523,7 @@ func TestRewriteFile_DownloadError(t *testing.T) {
 	// Don't add any file — download will fail.
 
 	rw := NewRewriter(pool, "logs/", 100, "logs")
-	tombstones := []Tombstone{{ID: "t1", Query: "*", StartNs: 0, EndNs: 5000}}
+	tombstones := []Tombstone{{Tenants: []TenantRef{{}}, ID: "t1", Query: "*", StartNs: 0, EndNs: 5000}}
 
 	_, err := rw.RewriteFile(ctx, "nonexistent/file.parquet", tombstones)
 	if err == nil {
@@ -541,7 +547,7 @@ func TestRewriteFile_WildcardTombstone(t *testing.T) {
 
 	// Wildcard tombstone removes all rows within time range.
 	tombstones := []Tombstone{
-		{ID: "t1", Query: "*", StartNs: 0, EndNs: 5000},
+		{Tenants: []TenantRef{{}}, ID: "t1", Query: "*", StartNs: 0, EndNs: 5000},
 	}
 
 	result, err := rw.RewriteFile(ctx, key, tombstones)
@@ -641,7 +647,7 @@ func TestRewriteFile_Traces_MatchingRowsRemoved(t *testing.T) {
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 
 	tombstones := []Tombstone{
-		{ID: "ts1", Query: `service.name:="order-svc"`, StartNs: 0, EndNs: 10000},
+		{Tenants: []TenantRef{{}}, ID: "ts1", Query: `service.name:="order-svc"`, StartNs: 0, EndNs: 10000},
 	}
 
 	result, err := rw.RewriteFile(ctx, key, tombstones)
@@ -687,7 +693,7 @@ func TestRewriteFile_Traces_AllRowsRemoved(t *testing.T) {
 
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 	tombstones := []Tombstone{
-		{ID: "ts1", Query: `service.name:="svc-a"`, StartNs: 0, EndNs: 10000},
+		{Tenants: []TenantRef{{}}, ID: "ts1", Query: `service.name:="svc-a"`, StartNs: 0, EndNs: 10000},
 	}
 
 	result, err := rw.RewriteFile(ctx, key, tombstones)
@@ -726,7 +732,7 @@ func TestRewriteFile_Traces_NoMatch(t *testing.T) {
 
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 	tombstones := []Tombstone{
-		{ID: "ts1", Query: `service.name:="nonexistent"`, StartNs: 0, EndNs: 10000},
+		{Tenants: []TenantRef{{}}, ID: "ts1", Query: `service.name:="nonexistent"`, StartNs: 0, EndNs: 10000},
 	}
 
 	result, err := rw.RewriteFile(ctx, key, tombstones)
@@ -757,7 +763,7 @@ func TestRewriteFile_Traces_ByTraceID(t *testing.T) {
 
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 	tombstones := []Tombstone{
-		{ID: "ts1", Query: `trace_id:="trace-abc"`, StartNs: 0, EndNs: 10000},
+		{Tenants: []TenantRef{{}}, ID: "ts1", Query: `trace_id:="trace-abc"`, StartNs: 0, EndNs: 10000},
 	}
 
 	result, err := rw.RewriteFile(ctx, key, tombstones)
@@ -788,7 +794,7 @@ func TestRewriteFile_Traces_BySpanName(t *testing.T) {
 
 	rw := NewRewriter(pool, "traces/", 1000, "traces")
 	tombstones := []Tombstone{
-		{ID: "ts1", Query: `span.name:"HTTP"`, StartNs: 0, EndNs: 10000},
+		{Tenants: []TenantRef{{}}, ID: "ts1", Query: `span.name:"HTTP"`, StartNs: 0, EndNs: 10000},
 	}
 
 	result, err := rw.RewriteFile(ctx, key, tombstones)

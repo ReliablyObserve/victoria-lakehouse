@@ -1063,6 +1063,7 @@ items:
       surface: vl
       name: delete.enable
       source: app/vlselect/main.go
+      linked: true
     - kind: flag
       surface: vl
       name: elasticsearch.version
@@ -1570,6 +1571,7 @@ items:
       surface: vt
       name: delete.enable
       source: app/vtselect/main.go
+      linked: true
     - kind: flag
       surface: vt
       name: forceFlushAuthKey

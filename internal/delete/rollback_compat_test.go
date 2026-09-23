@@ -74,16 +74,16 @@ func TestRollback_ThePreviousReleaseCannotReadTheV2DiskCopy(t *testing.T) {
 	}
 }
 
-// TestRollback_ThisReleaseReadsThePreviousReleasesDiskCopy is the direction that
-// does work: upgrading never loses a delete.
-func TestRollback_ThisReleaseReadsThePreviousReleasesDiskCopy(t *testing.T) {
+// TestRollback_ThePreviousReleasesRecordsAreRejected: the previous release's
+// disk copy (a bare id → record map) still decodes, but its records name no
+// tenant, so none is applied — an unscoped record is not a tombstone.
+func TestRollback_ThePreviousReleasesRecordsAreRejected(t *testing.T) {
 	dir := t.TempDir()
 	legacy := map[string]legacyTombstone{
 		"ts-old": {
 			ID: "ts-old", Query: `service.name:="leaked"`, StartNs: 1, EndNs: 1 << 40,
 			AffectedKeys: []string{"logs/dt=2026-03-01/hour=07/a.parquet"},
 			CreatedAt:    time.Now().Add(-time.Hour), Mode: "permanent",
-			Reaped: map[string]bool{"logs/dt=2026-03-01/hour=07/gone.parquet": true},
 		},
 	}
 	data, err := json.Marshal(legacy)
@@ -98,15 +98,8 @@ func TestRollback_ThisReleaseReadsThePreviousReleasesDiskCopy(t *testing.T) {
 	if err := store.LoadFromDisk(dir); err != nil {
 		t.Fatalf("LoadFromDisk on the previous release's format: %v", err)
 	}
-	got, ok := store.Get("ts-old")
-	if !ok {
-		t.Fatal("the previous release's record was not restored")
-	}
-	if got.Query != legacy["ts-old"].Query || got.Mode != "permanent" {
-		t.Errorf("restored record does not match: %+v", got)
-	}
-	if !got.Reaped["logs/dt=2026-03-01/hour=07/gone.parquet"] {
-		t.Error("the previous release's rewrite progress was dropped")
+	if _, ok := store.Get("ts-old"); ok {
+		t.Fatal("an unscoped record from the previous release was applied")
 	}
 }
 

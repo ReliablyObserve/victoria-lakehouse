@@ -61,6 +61,7 @@ func TestSchedulerRunOnce_EligibleTombstone(t *testing.T) {
 	pool.Put(key, buildTestParquet(t, rows))
 
 	ts := Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "ts-1",
 		Query:        `severity_text:="error"`,
 		StartNs:      0,
@@ -111,6 +112,7 @@ func TestSchedulerRunOnce_HideMode(t *testing.T) {
 	detector := NewStorageClassDetector(nil)
 
 	ts := Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "ts-hide",
 		Query:        "*",
 		StartNs:      0,
@@ -149,6 +151,7 @@ func TestSchedulerRunOnce_TooRecent(t *testing.T) {
 	detector := NewStorageClassDetector(nil)
 
 	ts := Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "ts-recent",
 		Query:        "*",
 		StartNs:      0,
@@ -191,6 +194,7 @@ func TestSchedulerRunOnce_GlacierClassSkipped(t *testing.T) {
 	})
 
 	ts := Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "ts-glacier",
 		Query:        "*",
 		StartNs:      0,
@@ -232,6 +236,7 @@ func TestSchedulerRunOnce_ReapedKeyTheManifestStillServesIsMadePendingAgain(t *t
 	detector := NewStorageClassDetector(nil)
 
 	store.Add(Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "ts-reaped",
 		Query:        "*",
 		StartNs:      0,
@@ -297,8 +302,8 @@ func TestSchedulerVerify(t *testing.T) {
 	detector := NewStorageClassDetector(nil)
 
 	// Add two tombstones.
-	store.Add(Tombstone{ID: "v1", Mode: "permanent", CreatedAt: time.Now()})
-	store.Add(Tombstone{ID: "v2", Mode: "hide", CreatedAt: time.Now()})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "v1", Mode: "permanent", CreatedAt: time.Now()})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "v2", Mode: "hide", CreatedAt: time.Now()})
 
 	sched := buildSchedulerForTest(t, store, detector, pool, []string{"STANDARD"})
 
@@ -329,6 +334,7 @@ func TestSchedulerRunOnce_AutoMode(t *testing.T) {
 	pool.Put(key, buildTestParquet(t, rows))
 
 	ts := Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "ts-auto",
 		Query:        `severity_text:="error"`,
 		StartNs:      0,
@@ -387,6 +393,7 @@ func TestSchedulerRunOnce_RewriteError(t *testing.T) {
 	// Don't add data to pool — Download will fail.
 
 	ts := Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "ts-err",
 		Query:        "*",
 		StartNs:      0,

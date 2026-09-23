@@ -154,6 +154,14 @@ groups:
           summary: "Delete rewrites refused: no manifest wired into the scheduler"
           description: "Permanent and auto deletes stay hidden at query time but are never physically removed. This is a deployment wiring problem."
 
+      - alert: LakehouseDeleteTenantScopeViolation
+        expr: sum by (site) (increase(lakehouse_delete_tenant_scope_skips_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A tenant-scoped tombstone named another tenant's object ({{ $labels.site }})"
+          description: "A tombstone record listed an object of a tenant it is not scoped to. The object was left untouched and recorded clean for that tombstone, so no rows were removed, but the record was written by a defect or edited by hand. Inspect it with GET /delete/logsql/tombstones (traces: /delete/tracessql/tombstones) using the global-read credential."
+
       - alert: LakehouseDeleteStateInconsistent
         expr: sum by (kind) (increase(lakehouse_delete_startup_inconsistencies_total{kind!="persistence_disabled"}[1h])) > 0
         labels:

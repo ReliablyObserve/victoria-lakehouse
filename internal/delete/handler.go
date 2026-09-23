@@ -16,6 +16,9 @@ import (
 )
 
 // ManifestQuerier abstracts manifest lookups to avoid direct manifest imports.
+// A querier that also has TenantKeyParser (as the manifest does) lends the
+// handler its key → tenant attribution; otherwise the default
+// {AccountID}/{ProjectID} layout is assumed.
 type ManifestQuerier interface {
 	GetFilesForRange(startNs, endNs int64) []FileInfo
 }
@@ -35,6 +38,8 @@ type Handler struct {
 	detector *StorageClassDetector
 	cfg      *config.DeleteConfig
 	mode     string
+	// globalRead validates the operator credential (see handler_scope.go).
+	globalRead func(*http.Request) bool
 }
 
 // routePrefix is the URL prefix every delete route of this binary lives under.
@@ -47,17 +52,21 @@ func (h *Handler) routePrefix() string {
 
 // NewHandler creates a Handler with the given dependencies.
 // Mode should be "logs" or "traces" and determines the URL prefix.
-func NewHandler(store *TombstoneStore, manifest ManifestQuerier, detector *StorageClassDetector, cfg *config.DeleteConfig, mode string) *Handler {
+func NewHandler(store *TombstoneStore, manifest ManifestQuerier, detector *StorageClassDetector, cfg *config.DeleteConfig, mode string, opts ...HandlerOption) *Handler {
 	if mode == "" {
 		mode = "logs"
 	}
-	return &Handler{
+	h := &Handler{
 		store:    store,
 		manifest: manifest,
 		detector: detector,
 		cfg:      cfg,
 		mode:     mode,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // Register mounts all delete endpoints on the given ServeMux.
@@ -78,6 +87,10 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.cfg.Enabled {
 		http.Error(w, "delete feature is disabled", http.StatusForbidden)
+		return
+	}
+	caller, ok := h.callerOrError(w, r)
+	if !ok {
 		return
 	}
 
@@ -109,20 +122,30 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files := h.manifest.GetFilesForRange(startNs, endNs)
+	if err := CheckTenantsForKeyLayout([]TenantRef{caller.tenant}, AccountOnlyKeys(h.manifest)); err != nil {
+		http.Error(w, "invalid delete request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// The delete is the caller's: scoped to its tenant, over its objects.
+	files := h.tenantFiles(caller.tenant, startNs, endNs)
 	affectedKeys := make([]string, 0, len(files))
 	for _, f := range files {
 		affectedKeys = append(affectedKeys, f.Key)
 	}
 
+	now := time.Now()
 	ts := Tombstone{
 		ID:           uuid.New().String(),
 		Query:        query,
 		StartNs:      startNs,
 		EndNs:        endNs,
 		AffectedKeys: affectedKeys,
-		CreatedAt:    time.Now(),
+		CreatedAt:    now,
 		Mode:         mode,
+		Tenants:      []TenantRef{caller.tenant},
+		// Relative time filters are evaluated when the delete is issued.
+		FilterAt: now.UnixNano(),
 	}
 
 	// Reject before storing. An unenforceable tombstone that is accepted looks
@@ -134,12 +157,13 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	h.store.Add(ts)
 	metrics.DeleteTombstonesTotal.Inc()
-	metrics.DeleteTombstonesActive.Set(int64(h.store.Count()))
+	h.store.updateActiveGauges()
 
-	logger.Infof("tombstone created; id=%s, query=%s, mode=%s, affected_files=%d", ts.ID, query, mode, len(affectedKeys))
+	logger.Infof("tombstone created; id=%s, tenant=%s, query=%s, mode=%s, affected_files=%d", ts.ID, caller.tenant, query, mode, len(affectedKeys))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tombstone_id":   ts.ID,
+		"tenant":         caller.tenant.String(),
 		"affected_files": len(affectedKeys),
 		"mode":           mode,
 		"message":        "tombstone created successfully",
@@ -149,6 +173,10 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleEstimate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	caller, ok := h.callerOrError(w, r)
+	if !ok {
 		return
 	}
 
@@ -169,7 +197,8 @@ func (h *Handler) handleEstimate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files := h.manifest.GetFilesForRange(startNs, endNs)
+	// What a delete by this caller would act on: its tenant's objects.
+	files := h.tenantFiles(caller.tenant, startNs, endNs)
 
 	classMap := make(map[string]int)
 	for _, f := range files {
@@ -203,6 +232,7 @@ func (h *Handler) handleEstimate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
+		"tenant":           caller.tenant.String(),
 		"affected_files":   len(files),
 		"storage_classes":  classMap,
 		"recommended_mode": recommended,
@@ -216,8 +246,16 @@ func (h *Handler) handleListTombstones(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tombstones := h.store.Active()
+	caller, ok := h.callerOrError(w, r)
+	if !ok {
+		return
+	}
+
+	tombstones := caller.visibleTombstones(h.store.Active())
 	writeJSON(w, http.StatusOK, map[string]any{
+		// "tenant": the caller's own tombstones; "instance": every tombstone
+		// (the validated global-read credential).
+		"scope":      caller.scopeName(),
 		"tombstones": tombstones,
 		"count":      len(tombstones),
 		// Whether what is listed would survive a pod loss: write-through
@@ -237,6 +275,16 @@ func (h *Handler) handleTombstoneByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, h.routePrefix()+"/tombstone/")
 	if id == "" || id == r.URL.Path {
 		http.Error(w, "missing tombstone id", http.StatusBadRequest)
+		return
+	}
+	caller, ok := h.callerOrError(w, r)
+	if !ok {
+		return
+	}
+	// Another tenant's tombstone is "not found": its existence is not the
+	// caller's to learn, and removing it would un-delete another tenant's rows.
+	if ts, found := h.store.Get(id); found && !caller.sees(&ts) {
+		http.Error(w, "tombstone not found", http.StatusNotFound)
 		return
 	}
 
@@ -260,7 +308,7 @@ func (h *Handler) handleTombstoneByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		metrics.DeleteTombstonesActive.Set(int64(h.store.Count()))
+		h.store.updateActiveGauges()
 
 		logger.Infof("tombstone removed; id=%s", id)
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -276,6 +324,11 @@ func (h *Handler) handleTombstoneByID(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleVerify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	caller, ok := h.callerOrError(w, r)
+	if !ok {
 		return
 	}
 
@@ -296,8 +349,9 @@ func (h *Handler) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find tombstones that overlap with the requested range and match the query.
-	candidates := h.store.ForRange(startNs, endNs)
+	// Find the caller's tombstones that overlap the requested range and match
+	// the query.
+	candidates := caller.visibleTombstones(h.store.ForRange(startNs, endNs))
 	var matchingIDs []string
 	for _, ts := range candidates {
 		if ts.Query == query || ts.Query == "*" {

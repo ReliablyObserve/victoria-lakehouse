@@ -22,7 +22,10 @@ const timestampColumn = "timestamp_unix_nano"
 // lets that file name the type without importing it.
 type tombstone = delete.Tombstone
 
-// fieldsTombstones returns the tombstones overlapping [startNs, endNs], or nil.
+// fieldsTombstones returns the tombstones overlapping [startNs, endNs] that act
+// on a tenant of scope, or nil. A scan applies them per object through
+// tombstonesForKey, so a multi-tenant scan hides each tenant's deleted rows
+// only in that tenant's objects.
 //
 // The field-enumeration endpoints (field_names, field_values, streams,
 // stream_ids, and the hit counts they carry) used to be entirely tombstone
@@ -30,22 +33,16 @@ type tombstone = delete.Tombstone
 // hide-mode delete therefore removed rows from the log view while the value it
 // deleted stayed in every Grafana dropdown and every field-cardinality panel —
 // a "deleted" value the user could still see and still select.
-func (s *Storage) fieldsTombstones(startNs, endNs int64) []tombstone {
-	if s.tombstones == nil {
-		return nil
-	}
-	ts := s.tombstones.ForRange(startNs, endNs)
-	if len(ts) == 0 {
-		return nil
-	}
-	return ts
+func (s *Storage) fieldsTombstones(scope tenantScope, startNs, endNs int64) []tombstone {
+	return s.scopeTombstones(scope, startNs, endNs)
 }
 
-// allTombstones returns every active tombstone, or nil. It gates answers that
-// are not time-scoped at all — the in-memory label index lists every value any
-// file ever carried, so a tombstone in any hour can cover a value it serves.
-func (s *Storage) allTombstones() []tombstone {
-	return s.fieldsTombstones(math.MinInt64, math.MaxInt64)
+// allTombstones returns every active tombstone acting on a tenant of scope, or
+// nil. It gates answers that are not time-scoped at all — the in-memory label
+// index lists every value any file ever carried, so a tombstone in any hour can
+// cover a value it serves.
+func (s *Storage) allTombstones(scope tenantScope) []tombstone {
+	return s.fieldsTombstones(scope, math.MinInt64, math.MaxInt64)
 }
 
 // filesTimeSpan returns the time range covered by the given files' rows,

@@ -9,6 +9,7 @@ import (
 // AffectsFile implementation has no validation for StartNs < EndNs.
 func TestAffectsFile_InvertedRange(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "inverted",
 		StartNs: 1000,
 		EndNs:   500, // EndNs < StartNs = inverted
@@ -32,6 +33,7 @@ func TestAffectsFile_InvertedRange(t *testing.T) {
 // correctly affects files containing that exact timestamp.
 func TestAffectsFile_ZeroRange(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "point",
 		StartNs: 500,
 		EndNs:   500,
@@ -61,6 +63,7 @@ func TestAffectsFile_ZeroRange(t *testing.T) {
 // TestAffectsFile_EpochZero verifies tombstones at epoch 0 work correctly.
 func TestAffectsFile_EpochZero(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "epoch-zero",
 		StartNs: 0,
 		EndNs:   100,
@@ -84,6 +87,7 @@ func TestAffectsFile_EpochZero(t *testing.T) {
 func TestAffectsFile_MaxInt64(t *testing.T) {
 	maxNs := int64(1<<63 - 1) // math.MaxInt64
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "max-ts",
 		StartNs: maxNs - 100,
 		EndNs:   maxNs,
@@ -103,6 +107,7 @@ func TestAffectsFile_MaxInt64(t *testing.T) {
 // timestamps when StartNs > EndNs, since no value can be both >= 1000 and <= 500.
 func TestMatchesRow_InvertedRange(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "inverted-match",
 		Query:   "*",
 		StartNs: 1000,
@@ -123,6 +128,7 @@ func TestMatchesRow_InvertedRange(t *testing.T) {
 // correctly matched by a tombstone covering epoch zero.
 func TestMatchesRow_EpochZero(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "epoch-zero-match",
 		Query:   "*",
 		StartNs: 0,
@@ -148,6 +154,7 @@ func TestMatchesRow_EpochZero(t *testing.T) {
 // EndNs=0 (point tombstone at epoch zero) correctly handles epoch-zero files.
 func TestAffectsFile_BothZero(t *testing.T) {
 	ts := Tombstone{
+		Tenants: []TenantRef{{}},
 		ID:      "both-zero",
 		StartNs: 0,
 		EndNs:   0,
@@ -167,9 +174,9 @@ func TestForRange_InvertedRange(t *testing.T) {
 	store := NewTombstoneStore()
 
 	// Add a tombstone with inverted range
-	store.Add(Tombstone{ID: "inverted", StartNs: 1000, EndNs: 500})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "inverted", StartNs: 1000, EndNs: 500})
 	// Add a normal tombstone for comparison
-	store.Add(Tombstone{ID: "normal", StartNs: 200, EndNs: 800})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "normal", StartNs: 200, EndNs: 800})
 
 	// The inverted tombstone's AffectsFile check (1000 <= fileMax && 500 >= fileMin)
 	// may accidentally match when it shouldn't. Test this.

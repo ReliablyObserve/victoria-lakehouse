@@ -52,6 +52,7 @@ func (f *flakyS3Pool) Delete(ctx context.Context, key string) error {
 
 func sampleTombstone(id string) Tombstone {
 	return Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           id,
 		Query:        `service.name:="leaked"`,
 		StartNs:      1000,
@@ -392,7 +393,7 @@ func TestTombstoneDurability_ConcurrentMutationsAreAllPersisted(t *testing.T) {
 // --- filter parse cache -------------------------------------------------------
 
 func TestTombstoneFilterIsParsedOnce(t *testing.T) {
-	ts := Tombstone{Query: `severity_text:="error"`, StartNs: 0, EndNs: 100}
+	ts := Tombstone{Tenants: []TenantRef{{}}, Query: `severity_text:="error"`, StartNs: 0, EndNs: 100}
 	first := ts.Filter()
 	if first == nil {
 		t.Fatal("a valid query must parse")
@@ -403,7 +404,7 @@ func TestTombstoneFilterIsParsedOnce(t *testing.T) {
 }
 
 func TestTombstoneUnparseableQueryMatchesNothing(t *testing.T) {
-	ts := Tombstone{Query: `severity_text:=="`, StartNs: 0, EndNs: 100}
+	ts := Tombstone{Tenants: []TenantRef{{}}, Query: `severity_text:=="`, StartNs: 0, EndNs: 100}
 	if ts.Filter() != nil {
 		t.Error("an unparseable query has no filter")
 	}
@@ -418,7 +419,7 @@ func TestTombstoneUnparseableQueryMatchesNothing(t *testing.T) {
 }
 
 func TestTombstoneMatchesFieldsAgreesWithMatchesRow(t *testing.T) {
-	ts := Tombstone{Query: `service.name:="web"`, StartNs: 0, EndNs: 100}
+	ts := Tombstone{Tenants: []TenantRef{{}}, Query: `service.name:="web"`, StartNs: 0, EndNs: 100}
 	row := map[string]string{"service.name": "web"}
 	fields := fieldsFromMap(row)
 
@@ -431,7 +432,7 @@ func TestTombstoneMatchesFieldsAgreesWithMatchesRow(t *testing.T) {
 }
 
 func TestTombstoneFullyReaped(t *testing.T) {
-	ts := Tombstone{AffectedKeys: []string{"a", "b"}, Reaped: map[string]bool{"a": true}}
+	ts := Tombstone{Tenants: []TenantRef{{}}, AffectedKeys: []string{"a", "b"}, Reaped: map[string]bool{"a": true}}
 	if ts.FullyReaped() {
 		t.Error("one of two keys reaped is not fully reaped")
 	}
@@ -451,7 +452,7 @@ func TestTombstoneFullyReaped(t *testing.T) {
 
 func TestTombstoneValidate(t *testing.T) {
 	base := func() Tombstone {
-		return Tombstone{ID: "id", Query: `severity_text:="error"`, StartNs: 0, EndNs: 10, Mode: "hide"}
+		return Tombstone{Tenants: []TenantRef{{}}, ID: "id", Query: `severity_text:="error"`, StartNs: 0, EndNs: 10, Mode: "hide"}
 	}
 
 	ok := base()
@@ -508,7 +509,7 @@ func TestTombstoneValidate(t *testing.T) {
 // stored. It must be refused at the door rather than mutated behind the user's
 // back.
 func TestTombstoneValidate_RejectsWhatTheEncodingCannotCarry(t *testing.T) {
-	ts := Tombstone{ID: "id", Query: "\xb3", StartNs: 0, EndNs: 10, Mode: "hide"}
+	ts := Tombstone{Tenants: []TenantRef{{}}, ID: "id", Query: "\xb3", StartNs: 0, EndNs: 10, Mode: "hide"}
 	if err := ts.Validate(); err == nil {
 		t.Fatal("a query that cannot be persisted faithfully must be rejected")
 	}
@@ -535,7 +536,7 @@ func TestTombstoneValidate_RejectsWhatTheEncodingCannotCarry(t *testing.T) {
 // tombstone to an output that still holds its rows.
 func TestTombstoneStore_UpdateLosesNoConcurrentChange(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "ts", Mode: "permanent", Reaped: map[string]bool{}})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "ts", Mode: "permanent", Reaped: map[string]bool{}})
 
 	const writers = 32
 	var wg sync.WaitGroup
@@ -569,7 +570,7 @@ func TestTombstoneStore_UpdateSemantics(t *testing.T) {
 		t.Error("updating an unknown id must report false")
 	}
 
-	store.Add(Tombstone{ID: "ts", Query: "a", Reaped: map[string]bool{"k": false}})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "ts", Query: "a", Reaped: map[string]bool{"k": false}})
 	before, _ := store.Get("ts")
 	if _, ok := store.Update("ts", func(ts *Tombstone) bool {
 		ts.Query = "changed"
@@ -592,7 +593,7 @@ func TestTombstoneStore_UpdateSemantics(t *testing.T) {
 // -race this fails if the store ever mutates a map it has handed out.
 func TestTombstoneStore_ReadersNeverShareMutableStateWithWriters(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "ts", Mode: "permanent", AffectedKeys: []string{"a"}, Reaped: map[string]bool{}})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "ts", Mode: "permanent", AffectedKeys: []string{"a"}, Reaped: map[string]bool{}})
 
 	stop := make(chan struct{})
 	var readers sync.WaitGroup
@@ -627,7 +628,7 @@ func TestTombstoneStore_ReadersNeverShareMutableStateWithWriters(t *testing.T) {
 }
 
 func TestCloneTombstoneIsDeep(t *testing.T) {
-	orig := Tombstone{ID: "x", AffectedKeys: []string{"a"}, Reaped: map[string]bool{"a": true}}
+	orig := Tombstone{Tenants: []TenantRef{{}}, ID: "x", AffectedKeys: []string{"a"}, Reaped: map[string]bool{"a": true}}
 	c := cloneTombstone(orig)
 	c.AffectedKeys[0] = "changed"
 	c.Reaped["a"] = false
@@ -635,7 +636,7 @@ func TestCloneTombstoneIsDeep(t *testing.T) {
 	if orig.AffectedKeys[0] != "a" || !orig.Reaped["a"] || orig.Reaped["b"] {
 		t.Fatalf("clone shares state with the original: %+v", orig)
 	}
-	empty := cloneTombstone(Tombstone{ID: "y"})
+	empty := cloneTombstone(Tombstone{Tenants: []TenantRef{{}}, ID: "y"})
 	if empty.AffectedKeys != nil || empty.Reaped != nil {
 		t.Fatal("cloning nil collections must keep them nil")
 	}

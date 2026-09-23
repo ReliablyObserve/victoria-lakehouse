@@ -77,7 +77,8 @@ func newCollisionWorld(t *testing.T) *collisionWorld {
 
 	store := NewTombstoneStore()
 	store.Add(Tombstone{
-		ID: "ts-collision", Query: `severity_text:="error"`,
+		Tenants: []TenantRef{{}},
+		ID:      "ts-collision", Query: `severity_text:="error"`,
 		StartNs: 0, EndNs: 1 << 40, AffectedKeys: []string{source},
 		CreatedAt: time.Now().Add(-2 * time.Hour), Mode: "permanent", Reaped: map[string]bool{},
 	})

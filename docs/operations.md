@@ -314,7 +314,14 @@ storage before the API call returns:
   deployment's S3 prefix — `s3.prefix`, or else the default tenant prefix plus
   the signal, e.g. `logs/`) is attempted in the same call. Tombstones are not
   stored per tenant: in multi-tenant mode every tenant's tombstones live under
-  the one prefix (typically `logs/_tombstones/` or `traces/_tombstones/`). If S3 is unavailable the record is queued,
+  the one prefix (typically `logs/_tombstones/` or `traces/_tombstones/`), and
+  each record names the tenants it acts on (`Tenants`). A tombstone only ever
+  hides, rewrites or compacts away rows of its own tenants, and the delete API
+  shows each tenant only its own (see
+  [deletion-strategy.md → Tenant Scope](deletion-strategy.md#tenant-scope)).
+  A record without `Tenants` is not a tombstone: nothing creates one, and a
+  restore rejects it (logged, counted as `kind="unscoped_tombstone"` below) instead
+  of applying it. If S3 is unavailable the record is queued,
   `lakehouse_delete_tombstone_persist_pending` rises above zero, and the write
   is retried on the next mutation, on every rewrite-scheduler tick, and at
   shutdown. The disk copy is authoritative for that node in the meantime.
@@ -340,6 +347,7 @@ and logs plus counts every disagreement under
 | `pending_key_missing_from_manifest` | the manifest snapshot does not list a key the tombstone still has work for | nothing is inferred from it: the scheduler waits for a bucket listing in this process (and, for a key an undo restored, for a listing that began after the undo) before treating the object as gone |
 | `removed_tombstone_still_in_s3` | an un-deleted or retired tombstone's S3 copy survived a crash | the stale copy is ignored and its delete re-issued (see *Un-Delete*) |
 | `unreadable_tombstone_object` | an object under `_tombstones/` could not be parsed | that one record was skipped |
+| `unscoped_tombstone` | a restored record (disk or S3) names no tenant, or its two copies name no tenant in common | not a tombstone: rejected, not applied, counted once per process, marked removed and its `_tombstones/{id}.json` object deleted (also counted as `removed_tombstone_still_in_s3`); the other records restore normally |
 
 Before the self-check, every **interrupted rewrite** is resolved against the
 restored manifest (see *Background Rewriter*), counted as
@@ -379,7 +387,8 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_manifest_retired_settled_total` — retired keys an accepted listing proved gone. This is the drain signal: on a node compacting faster than it refreshes the gauge above never reads zero even while draining perfectly, so alert on this counter standing still, not on the gauge being non-zero
 - `lakehouse_delete_tombstone_removed_markers_evicted_total` — removed-tombstone markers dropped by their TTL or cap (never while their S3 delete is owed)
 - `lakehouse_delete_compaction_rows_removed_total` / `lakehouse_delete_compaction_keys_reaped_total` — rows and source keys compaction reaped
-- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`)
+- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`). Only tombstones acting on the request's own tenants count
+- `lakehouse_delete_tenant_scope_skips_total{site="rewrite"}` — objects of another tenant a tombstone record named, left untouched and recorded clean; non-zero means a defect or a hand-edited record (alert `LakehouseDeleteTenantScopeViolation`)
 
 **Alert on** a sustained non-zero `lakehouse_delete_tombstone_persist_pending`
 (only the local disk copy would survive a pod move), on any increase in
@@ -418,20 +427,34 @@ the alerts above tell an operator to look at:
 - `tombstone_store` — whether write-through persistence is armed, how many
   records are owed to S3, and whether the S3 restore is still pending.
 
-It is **instance-wide, not tenant-scoped** (`"scope": "instance"` in the
-payload) — like the tombstone listing next to it, because tombstones and the
-retired/pending sets are per instance, not per tenant. Treat it as an operator
-endpoint. It is read-only: nothing here deletes or repairs anything, because
-every repair is a data movement that belongs to the scheduler's retry path.
+It is **tenant-scoped** like the tombstone listing next to it: a tenant caller
+sees the entries of its own objects and the rewrites of its own tombstones
+(`"scope": "tenant"` in the payload); only a request presenting the global-read
+credential sees the whole instance (`"scope": "instance"`), which is what the
+alerts above need. It is read-only: nothing here deletes or repairs anything,
+because every repair is a data movement that belongs to the scheduler's retry
+path.
 
 ### Rolling back
 
 Upgrading is safe in one direction only, and the difference matters when a
 rewrite is in flight:
 
-- **Old files, new binary:** this release reads the previous release's
-  `tombstones.json` (a bare id → record map) and its `_tombstones/{id}.json`
-  objects unchanged. Nothing to do.
+- **Old files, new binary:** this release decodes the previous releases'
+  `tombstones.json` and `_tombstones/{id}.json` formats, but a record that names
+  no tenant is rejected, not applied (`kind="unscoped_tombstone"`, counted and
+  logged once per process). The rejection is recorded as a removal marker in
+  the disk copy and the record's `_tombstones/{id}.json` object is deleted, the
+  same way an un-deleted tombstone's is, so a later restart does not bring it
+  back. Re-issue such a delete for its tenant. The same applies when a record's
+  disk and S3 copies name no tenant in common: the copies can only narrow a
+  scope, never widen it, so such a record is rejected and removed too.
+  Delete-task ids come from upstream (`vlselect`/`vtselect` or a
+  `/delete/run_task` caller), so such a pair can be two peers' registrations of
+  one id rather than a corrupted copy: the node that rejects the pair deletes
+  the shared S3 object and keeps the rejection as a marker on its own disk,
+  while the peer keeps its record from its own disk copy (markers are per
+  node). Re-issue the task under a fresh id if both scopes are wanted.
 - **New files, old binary:** the previous release cannot read this release's
   `tombstones.json` envelope at all (it carries the removed-tombstone markers),
   and the per-id S3 objects it *can* read lose the rewrite records

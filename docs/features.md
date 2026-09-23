@@ -13,7 +13,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Query | 13 | 1 | 0 | 1 | 15 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 6 | 0 | 0 | 1 | 7 |
-| Deletion | 9 | 0 | 0 | 0 | 9 |
+| Deletion | 11 | 0 | 0 | 0 | 11 |
 | Traces | 8 | 0 | 0 | 3 | 11 |
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **129** | **1** | **3** | **8** | **141** |
+| **Total** | **131** | **1** | **3** | **8** | **143** |
 
 ## Coverage gaps
 
@@ -807,7 +807,7 @@ Aged data is scanned in bulk and pruned coarsely, so larger row groups are stric
 - Docs: `docs/configuration.md`, `docs/performance.md`
 - Changelog: `0.85.0`
 
-## Deletion (9)
+## Deletion (11)
 
 ### ✅ Glacier-safe, GDPR-compatible deletion
 
@@ -826,9 +826,9 @@ The two constraints that usually conflict — "erase it now" and "do not pay to 
 
 **`lakehouse-logs`**: `/delete/logsql/*` endpoints. **`lakehouse-traces`**: `/delete/tracessql/*` endpoints.
 
-Both binaries expose the same delete surface in their own query language, including listing active tombstones and addressing one by id, so deletion is scriptable and auditable rather than an out-of-band S3 operation. The upstream cluster delete protocol (`/internal/delete/*`) is served through upstream's own handler (VictoriaLogs' vlselect in the logs binary): only with `-internaldelete.enable` (default off), plus `delete.enabled`, and `run_task` is refused because tombstones are not tenant-scoped.
+Both binaries expose the same delete surface in their own query language, including listing active tombstones and addressing one by id, so deletion is scriptable and auditable rather than an out-of-band S3 operation. The upstream cluster delete protocol (`/internal/delete/*`) is served through upstream's own handler (VictoriaLogs' vlselect in the logs binary): only with `-internaldelete.enable` (default off), plus `delete.enabled`; a delete task becomes a tombstone scoped to the task's tenants.
 
-- Verification: rows: `lh.delete.tombstones.status` (pass, pending), `lh.delete.tombstone_by_id.status` (pass, pending) · tests: `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `internal/delete/handler_test.go#TestHandler_handleListTombstones_WithTombstones`, `internal/delete/handler_test.go#TestHandler_TraceMode_Delete`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`, `internal/internaldelete/gate_test.go#TestHandler_FlagOffLeavesTheAnswerToUpstream`, `internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_DefaultAnswersLikeUpstreamAndHidesNothing`, `internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsRefusedNotWidened`, `lakehouse-traces/internal_delete_mount_test.go#TestUpstreamInternalDelete_MatchesVendoredVTSelect`, `cmd/lakehouse-logs/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault`, `lakehouse-traces/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault`
+- Verification: rows: `lh.delete.tombstones.status` (pass, pending), `lh.delete.tombstone_by_id.status` (pass, pending) · tests: `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `internal/delete/handler_test.go#TestHandler_handleListTombstones_WithTombstones`, `internal/delete/handler_test.go#TestHandler_TraceMode_Delete`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`, `internal/internaldelete/gate_test.go#TestHandler_FlagOffLeavesTheAnswerToUpstream`, `internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_DefaultAnswersLikeUpstreamAndHidesNothing`, `internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsTenantScoped`, `lakehouse-traces/internal_delete_mount_test.go#TestUpstreamInternalDelete_MatchesVendoredVTSelect`, `cmd/lakehouse-logs/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault`, `lakehouse-traces/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault`
 - Docs: `docs/deletion-strategy.md`
 
 ### ✅ Delete cost estimation
@@ -848,9 +848,9 @@ A delete over cold storage can be free or expensive depending on where the match
 
 **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
 
-The alerts on retired-key eviction, non-durable tombstone records and unfinished rewrites all ask an operator to act on specific objects, which until now no API could name. The listing is read-only and instance-wide (not tenant-scoped, like the tombstone listing beside it), bounded by a limit, and reports for each entry why it is still there — the delete that is owed, the upload that is held, or the rewrite state a restart would resolve from.
+The alerts on retired-key eviction, non-durable tombstone records and unfinished rewrites all ask an operator to act on specific objects, which until now no API could name. The listing is read-only, bounded by a limit, and reports for each entry why it is still there — the delete that is owed, the upload that is held, or the rewrite state a restart would resolve from. Like the tombstone listing beside it, a tenant sees its own objects and tombstones and the global-read credential the whole instance.
 
-- Verification: rows: `lh.delete.leftovers.status` (pass, pending) · tests: `internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded`, `internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered`, `internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere`
+- Verification: rows: `lh.delete.leftovers.status` (pass, pending) · tests: `internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded`, `internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET`, `internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered`, `internal/delete/handler_scope_test.go#TestDeleteAPI_LeftoversTenantView`, `internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere`
 - Docs: `docs/deletion-strategy.md`, `docs/operations.md#what-this-instance-still-owes-prefixleftovers`, `docs/operations.md#rolling-back`
 - Changelog: `0.132.1`
 
@@ -864,6 +864,17 @@ The mode is the operator's statement about intent and budget: `hide` never touch
 
 - Verification: tests: `internal/delete/handler_test.go#TestHandler_handleDelete_ModeHide`, `internal/delete/handler_test.go#TestHandler_handleDelete_ModePermanent`, `internal/delete/handler_test.go#TestHandler_handleDelete_ModeAuto`, `internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite`
 - Docs: `docs/deletion-strategy.md`, `docs/configuration.md`
+
+### ✅ Tenant-scoped deletes
+
+`lh.feature.deletion.tenant_scoped` · status: shipped · surfaces: api, storage
+
+**Tenant-scoped deletes**: a tombstone names the tenant that issued it (integer AccountID/ProjectID, or a string X-Scope-OrgID through the aliases) and never hides, rewrites or compacts away another tenant's rows; each tenant lists, stops and un-deletes only its own.
+
+A delete is resolved to its tenant exactly like a select — integer tenants as upstream, string OrgIDs through the aliases as a lakehouse extension — and the tombstone it creates acts only on objects and buffered rows of that tenant: on every read path, in the rewriter and in compaction, so one tenant's delete can neither hide nor remove another's data, nor cost it a metadata fast path. The lakehouse delete API and upstream's stop_task and active_tasks show each tenant only its own; the global-read credential is the operator view. A record naming no tenant is not a tombstone: it is never created and is rejected on restore.
+
+- Verification: rows: `lh.delete.tenant_scoped` (pass, pending), `lh.delete.string_tenant_scoped` (pass, pending), `lh.delete.upstream_tasks_tenant_scoped` (pass, pending) · tests: `internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_ScanHidesOnlyTheScopedTenant`, `internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_FastPathsForOtherTenantsStayExact`, `internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_FieldEnumerationHidesOnlyTheScopedTenant`, `internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_PureBufferWindow`, `internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_BridgeRowsAttributedPerTenant`, `internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_ConcurrentDeletesNeverTouchOtherTenants`, `internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_UnscopedRecordHidesNothing`, `internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_OrgIDKeyLayout`, `lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_ScanHidesOnlyTheScopedTenant`, `lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_OrgIDKeyLayout`, `internal/delete/tenant_scope_test.go#TestTenantScope_PersistsThroughDiskAndS3`, `internal/delete/tenant_scope_test.go#TestTenantScope_UnscopedRecordIsRejectedOnRestore`, `internal/delete/tenant_scope_test.go#TestTenantScope_RestoreMergeIntersectsTenants`, `internal/delete/tenant_scope_test.go#TestTenantScope_RejectedRecordCountedOncePerProcess`, `internal/delete/tenant_scope_test.go#TestTenantScope_RejectedRecordStaysGoneAcrossRestarts`, `internal/delete/tenant_scope_test.go#TestTenantScope_RejectionOwesAnS3DeleteOncePerObject`, `internal/delete/tenant_scope_test.go#TestFilterCache_EvictedWithTheLastTombstoneUsingIt`, `internal/delete/tenant_scope_test.go#TestTombstone_UnscopedIsInvalidAndActsOnNothing`, `internal/delete/tenant_scope_test.go#TestScheduler_TenantScopedTombstoneRewritesOnlyItsTenant`, `internal/compaction/tombstone_scope_test.go#TestCompaction_TenantScopedTombstoneDropsOnlyItsTenantsRows`, `internal/delete/handler_scope_test.go#TestDeleteAPI_CreateIsScopedToTheCallersTenant`, `internal/delete/handler_scope_test.go#TestDeleteAPI_ListGetUndeleteVerifyAreTenantScoped`, `internal/delete/handler_tenant_forms_test.go#TestDeleteAPI_BothTenantFormsOnBothKeyLayouts`, `internal/delete/handler_tenant_forms_test.go#TestDeleteAPI_UnknownOrgIDAnswersLikeSelect`, `internal/delete/handler_tenant_forms_test.go#TestDeleteAPI_IntTenantAnswerIndependentOfAliases`, `internal/delete/handler_tenant_forms_test.go#TestDeleteAPI_OrgIDLayoutRefusesNonZeroProject`, `internal/delete/tasks_test.go#TestPublicTasks_AreTenantScoped`, `internal/delete/tasks_test.go#TestRunTask_RelativeTimeFilterIsPinnedToTheTaskTimestamp`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_TasksAreTenantScoped`, `lakehouse-traces/public_delete_test.go#TestMountPublicDelete_TasksAreTenantScoped`, `cmd/lakehouse-logs/public_delete_tenant_forms_test.go#TestMountPublicDelete_StringTenants`, `cmd/lakehouse-logs/public_delete_tenant_forms_test.go#TestMountPublicDelete_IntTenantAnswerIndependentOfAliases`, `lakehouse-traces/public_delete_tenant_forms_test.go#TestMountPublicDelete_StringTenants`, `lakehouse-traces/public_delete_tenant_forms_test.go#TestMountPublicDelete_IntTenantAnswerIndependentOfAliases`
+- Docs: `docs/deletion-strategy.md#tenant-scope`, `docs/multi-tenancy.md#delete-path`, `docs/operations.md#tombstone-management`
 
 ### ✅ Three-tier deletion strategy
 
@@ -884,7 +895,7 @@ Deleting from an object store costs money and, on archival classes, retrieval fe
 
 The tombstone store is consulted on every query path, including the ones that answer from metadata, so a tombstoned row cannot reappear through a fast path. Physical removal, when requested, happens afterwards on its own schedule.
 
-- Verification: rows: `lh.delete.hide_survives_crash` (pass, pending) · tests: `internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive`, `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`, `internal/delete/tombstone_durability_test.go#TestTombstoneDurability_SurvivesACrashViaDisk`, `internal/delete/tombstone_durability_test.go#TestTombstoneDurability_RestoreUnionsDiskAndS3`, `internal/storage/parquets3/fields_tombstones_test.go#TestFieldValues_TombstonedValueDisappears`, `internal/storage/parquets3/fields_tombstones_span_test.go#TestFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow`, `internal/storage/parquets3/pure_buffer_tombstone_test.go#TestRunQuery_PureBufferWindowHonoursTombstones`, `lakehouse-traces/internal/storage/parquets3/fields_tombstones_span_test.go#TestTraceFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow`, `internal/compaction/tombstones_test.go#TestCompaction_HideModeRowsAreCarriedForward`
+- Verification: rows: `lh.delete.hide_survives_crash` (pass, pending) · tests: `internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive`, `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`, `internal/delete/tombstone_durability_test.go#TestTombstoneDurability_SurvivesACrashViaDisk`, `internal/delete/tombstone_durability_test.go#TestTombstoneDurability_RestoreUnionsDiskAndS3`, `internal/storage/parquets3/fields_tombstones_test.go#TestFieldValues_TombstonedValueDisappears`, `internal/storage/parquets3/fields_tombstones_span_test.go#TestFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow`, `internal/storage/parquets3/pure_buffer_tombstone_test.go#TestRunQuery_PureBufferWindowHonoursTombstones`, `lakehouse-traces/internal/storage/parquets3/fields_tombstones_span_test.go#TestTraceFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow`, `internal/compaction/tombstones_test.go#TestCompaction_HideModeRowsAreCarriedForward`, `internal/delete/tenant_scope_test.go#TestTenantScope_UnscopedRecordIsRejectedOnRestore`
 - Docs: `docs/deletion-strategy.md`, `docs/operations.md#tombstone-management`, `docs/operations.md#where-tombstones-are-applied`, `docs/durability.md#31-deletes-and-rewrites`
 
 ### ✅ Un-delete by removing a tombstone
@@ -897,6 +908,18 @@ Because a hide-mode delete never touched the data, it is reversible: deleting th
 
 - Verification: tests: `internal/delete/integration_test.go#TestIntegration_Undelete`, `internal/delete/handler_test.go#TestHandler_handleTombstoneByID_DeleteExisting`, `internal/delete/tombstone_test.go#TestTombstoneStore_Remove`, `internal/delete/tombstone_removal_test.go#TestUndelete_SurvivesACrashWhileTheS3DeleteIsPending`, `internal/delete/intents_test.go#TestHandler_UndeleteMidRewriteIsAConflict`
 - Docs: `docs/deletion-strategy.md`, `docs/operations.md#un-delete-restoring-data`
+
+### ✅ Upstream delete API (`/delete/run_task`, `stop_task`, `active_tasks`)
+
+`lh.feature.deletion.upstream_api` · status: shipped · since: the release after v0.142.11 · surfaces: api, flag
+
+**Upstream delete API**: VictoriaLogs' and VictoriaTraces' `/delete/run_task`, `stop_task` and `active_tasks`, behind upstream's `-delete.enable`; a task becomes a tombstone scoped to the requesting tenant.
+
+A client written for VictoriaLogs or VictoriaTraces deletes through the same routes on the lakehouse: off by default with upstream's own answer, served through upstream's handler (a drift-tested copy of VictoriaTraces' in the traces binary) when `-delete.enable` and the lakehouse `delete.enabled` are both on. Each task is registered as a tombstone scoped to the requesting tenant, hidden at once and physically removed per `delete.default_mode`.
+
+- Verification: rows: `vl.delete.run_task.status` (pass, pending), `vl.delete.stop_task.status` (pass, pending), `vl.delete.active_tasks.status` (pass, pending), `vt.delete.run_task.status` (pass, pending), `vt.delete.stop_task.status` (pass, pending), `vt.delete.active_tasks.status` (pass, pending) · tests: `internal/internaldelete/gate_test.go#TestPublicHandler_GatesLikeHandler`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_GatedByDefault`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestPublicDeleteFlag_IsUpstreams`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_RunTaskIsTenantScoped`, `lakehouse-traces/public_delete_test.go#TestMountPublicDelete_GatedByDefault`, `lakehouse-traces/public_delete_test.go#TestMountPublicDelete_RunTaskIsTenantScoped`, `lakehouse-traces/public_delete_test.go#TestUpstreamPublicDelete_MatchesVendoredVTSelect`, `internal/delete/tasks_test.go#TestRunTask_RegistersATenantScopedTombstone`, `internal/delete/tasks_test.go#TestRunTask_EdgeCases`, `lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsTenantScoped`
+- Docs: `docs/deletion-strategy.md#upstream-delete-api-delete`, `docs/deletion-strategy.md#cluster-delete-protocol-internaldelete`, `docs/configuration.md`
+- Changelog: the release after `0.142.11`
 
 ### ✅ Delete verification
 

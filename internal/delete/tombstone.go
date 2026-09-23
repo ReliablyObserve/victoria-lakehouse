@@ -54,6 +54,19 @@ type Tombstone struct {
 	// restart — on this node or on one that only has the S3 copy — can finish
 	// or undo every rewrite a crash interrupted. See ResolveInterruptedRewrites.
 	Superseded map[string]Supersession `json:",omitempty"`
+
+	// FilterAt is the time (unix nanoseconds) the query's relative time filters
+	// (`_time:5m`) are evaluated at: when the delete was issued, as upstream
+	// evaluates a delete task at its start time. Zero evaluates them at parse
+	// time.
+	FilterAt int64 `json:",omitempty"`
+
+	// Tenants limits the tombstone to the rows of these tenants: query-time
+	// suppression, field listings, rewrites, compaction and the delete API all
+	// act only on objects and rows of a tenant listed here. At least one is
+	// required (Validate); a persisted record without any is rejected on
+	// restore rather than applied.
+	Tenants []TenantRef `json:",omitempty"`
 }
 
 // Supersession states, in the order a rewrite passes through them.
@@ -99,7 +112,7 @@ func (t *Tombstone) MatchesRow(row map[string]string, timestampNs int64) bool {
 	if t.Query == "" || t.Query == "*" {
 		return true
 	}
-	f := parseFilterCached(t.Query)
+	f := parseFilterCached(t.Query, t.FilterAt)
 	if f == nil {
 		return false
 	}
@@ -121,7 +134,7 @@ func (t *Tombstone) MatchesFields(fields []logstorage.Field, timestampNs int64) 
 	if t.Query == "" || t.Query == "*" {
 		return true
 	}
-	f := parseFilterCached(t.Query)
+	f := parseFilterCached(t.Query, t.FilterAt)
 	if f == nil {
 		return false
 	}
@@ -137,7 +150,7 @@ func (t *Tombstone) Filter() *logstorage.Filter {
 	if t.Query == "" || t.Query == "*" {
 		return nil
 	}
-	return parseFilterCached(t.Query)
+	return parseFilterCached(t.Query, t.FilterAt)
 }
 
 // EligibleForPhysicalRemoval reports whether rows matching this tombstone may
@@ -306,6 +319,10 @@ func (s *TombstoneStore) UnfinishedRewrites() int {
 // that has not finished.
 var ErrRewriteInProgress = errors.New("a rewrite of this tombstone's files is in progress; retry once it finishes")
 
+// ErrNoTenantScope rejects a tombstone that names no tenant: every tombstone
+// acts on the tenants it names and on nothing else.
+var ErrNoTenantScope = errors.New("tombstone names no tenant")
+
 // ErrTombstoneNotFound is returned by TryRemove for an unknown id.
 var ErrTombstoneNotFound = errors.New("tombstone not found")
 
@@ -413,15 +430,39 @@ func (s *TombstoneStore) Add(ts Tombstone) {
 			next.Superseded[source] = rec
 		}
 	}
+	prev, replaced := s.tombstones[ts.ID]
 	s.tombstones[ts.ID] = next
+	if replaced && (prev.Query != next.Query || prev.FilterAt != next.FilterAt) {
+		s.forgetFilterLocked(prev)
+	}
 	// A new delete reusing a removed id stands; its marker no longer applies.
 	delete(s.removed, ts.ID)
 	ver := s.bumpLocked(ts.ID)
 	p := s.persist
 	s.mu.Unlock()
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	metrics.DeleteRewritesUnfinished.Set(int64(s.UnfinishedRewrites()))
 	s.persistChange(p, ts.ID, pendingUpsert, ver)
+}
+
+// AddIfAbsent inserts ts unless a tombstone with its id already exists, in one
+// critical section, and persists it. It is how a delete task is registered:
+// upstream refuses a task id that is already registered, and a check-then-Add
+// would let two concurrent registrations of the same id both succeed.
+func (s *TombstoneStore) AddIfAbsent(ts Tombstone) bool {
+	s.mu.Lock()
+	if _, ok := s.tombstones[ts.ID]; ok {
+		s.mu.Unlock()
+		return false
+	}
+	s.tombstones[ts.ID] = cloneTombstone(ts)
+	delete(s.removed, ts.ID)
+	ver := s.bumpLocked(ts.ID)
+	p := s.persist
+	s.mu.Unlock()
+	s.updateActiveGauges()
+	s.persistChange(p, ts.ID, pendingUpsert, ver)
+	return true
 }
 
 // Update applies fn to a private copy of the CURRENT record for id, under the
@@ -482,6 +523,9 @@ func cloneTombstone(ts Tombstone) Tombstone {
 		}
 		ts.Superseded = sup
 	}
+	if ts.Tenants != nil {
+		ts.Tenants = append([]TenantRef(nil), ts.Tenants...)
+	}
 	return ts
 }
 
@@ -490,12 +534,16 @@ func cloneTombstone(ts Tombstone) Tombstone {
 // that happens before a failed S3 delete is retried (see tombstone_removed.go).
 func (s *TombstoneStore) Remove(id string) {
 	s.mu.Lock()
+	old, had := s.tombstones[id]
 	delete(s.tombstones, id)
+	if had {
+		s.forgetFilterLocked(old)
+	}
 	s.markRemovedLocked(id, time.Now())
 	ver := s.bumpLocked(id)
 	p := s.persist
 	s.mu.Unlock()
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	metrics.DeleteRewritesUnfinished.Set(int64(s.UnfinishedRewrites()))
 	s.persistChange(p, id, pendingDelete, ver)
 }
@@ -517,11 +565,12 @@ func (s *TombstoneStore) TryRemove(id string) error {
 		return ErrRewriteInProgress
 	}
 	delete(s.tombstones, id)
+	s.forgetFilterLocked(ts)
 	s.markRemovedLocked(id, time.Now())
 	ver := s.bumpLocked(id)
 	p := s.persist
 	s.mu.Unlock()
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	s.persistChange(p, id, pendingDelete, ver)
 	return nil
 }
@@ -542,6 +591,7 @@ func (s *TombstoneStore) Complete(id string) bool {
 		return false
 	}
 	delete(s.tombstones, id)
+	s.forgetFilterLocked(ts)
 	s.markRemovedLocked(id, time.Now())
 	ver := s.bumpLocked(id)
 	p := s.persist
@@ -549,7 +599,7 @@ func (s *TombstoneStore) Complete(id string) bool {
 	s.mu.Unlock()
 
 	metrics.DeleteTombstonesCompleted.Inc()
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	logger.Infof("tombstone completed; id=%s, query=%s, keys=%d", ts.ID, ts.Query, len(ts.AffectedKeys))
 	if observer != nil {
 		observer(ts)
@@ -588,6 +638,11 @@ func (s *TombstoneStore) ForRange(startNs, endNs int64) []Tombstone {
 		}
 	}
 	return result
+}
+
+// updateActiveGauges publishes the number of active tombstones.
+func (s *TombstoneStore) updateActiveGauges() {
+	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
 }
 
 // Count returns the number of tombstones in the store.
@@ -686,7 +741,7 @@ func (s *TombstoneStore) LoadFromDisk(dir string) error {
 	}
 	stale := s.dropStaleLocked()
 	for _, ts := range loaded.Tombstones {
-		if s.supersededByMarkerLocked(ts) {
+		if s.supersededByMarkerLocked(ts) || s.rejectUnscopedLocked(ts, "disk") {
 			continue
 		}
 		s.mergeLoadedLocked(ts)
@@ -776,6 +831,9 @@ func (s *TombstoneStore) LoadFromS3(ctx context.Context, pool S3Pool, _ /*bucket
 			stale = append(stale, ts.ID)
 			continue
 		}
+		if s.rejectUnscopedLocked(ts, "s3") {
+			continue
+		}
 		s.mergeLoadedLocked(ts)
 	}
 	s.owePendingS3DeletesLocked(stale)
@@ -847,8 +905,11 @@ func (t *Tombstone) Validate() error {
 	if t.StartNs > t.EndNs {
 		return fmt.Errorf("time range is inverted: start %d is after end %d", t.StartNs, t.EndNs)
 	}
+	if len(t.Tenants) == 0 {
+		return ErrNoTenantScope
+	}
 	if t.Query != "" && t.Query != "*" {
-		if _, err := logstorage.ParseFilter(t.Query); err != nil {
+		if _, err := parseFilterAt(t.Query, t.FilterAt); err != nil {
 			return fmt.Errorf("query does not parse as LogsQL: %w", err)
 		}
 	}

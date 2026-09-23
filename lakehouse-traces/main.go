@@ -1123,6 +1123,30 @@ func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
 	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled, upstreamInternalDelete))
 }
 
+// mountPublicDelete serves upstream's public delete API (/delete/run_task,
+// /delete/stop_task, /delete/active_tasks) through upstreamPublicDelete — VT's
+// -delete.enable gate and delete handler (public_delete.go) — whose storage
+// calls land in the lakehouse adapter, which registers each task as a
+// tombstone scoped to the request's tenant. internaldelete.PublicHandler only
+// adds the lakehouse delete.enabled requirement after upstream's flag, and
+// delete.ScopeTaskRequests the caller, so stop_task and active_tasks act only on
+// the caller's own tasks (globalRead: the operator view). Any other /delete/*
+// path the lakehouse does not serve itself gets upstream's answer too, as on a
+// VictoriaTraces node.
+func mountPublicDelete(mux *http.ServeMux, deleteEnabled bool, globalRead func(*http.Request) bool) {
+	mux.HandleFunc("/delete/", internaldelete.PublicHandler(internaldelete.PublicFlagEnabled, deleteEnabled,
+		delete.ScopeTaskRequests(globalRead, upstreamPublicDelete)))
+}
+
+// globalReadAuthorizer validates the operator credential that widens a delete
+// API request to every tenant's tombstones — the credential that widens a
+// select to every tenant. Nil-safe: without a configured credential it
+// authorizes nothing.
+func globalReadAuthorizer(cfg *config.Config) func(*http.Request) bool {
+	auth := tenant.NewGlobalReadAuth(cfg.Tenant.GlobalReadHeader, cfg.Tenant.GlobalReadValue, cfg.Tenant.GlobalReadToken)
+	return func(r *http.Request) bool { return auth.Enabled() && auth.Authorize(r) }
+}
+
 func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -1189,6 +1213,9 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		} else {
 			internalvlstorage.SetStorage(store, tombstoneStore)
 		}
+		// Tombstones created by upstream's delete API (/delete/run_task and
+		// the cluster protocol) take the configured default delete mode.
+		internalvlstorage.SetDeleteTaskMode(cfg.Delete.DefaultMode)
 		// Wire a tenant lister so VT's per-tenant background tasks
 		// (notably servicegraph) iterate every tenant the LH process
 		// holds in cold storage, not just the legacy {0,0}.
@@ -1233,6 +1260,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	if cfg.SelectEnabled() {
 		internalselect.Init()
 		mountInternalProtocol(mux, cfg.Delete.Enabled)
+		mountPublicDelete(mux, cfg.Delete.Enabled, globalReadAuthorizer(cfg))
 
 		publicHandler := selectapi.NewHandler(store, cfg)
 		publicHandler.Register(mux)
@@ -1311,7 +1339,10 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	if cfg.Delete.Enabled && tombstoneStore != nil {
 		mq := &manifestQuerierAdapter{m: store.Manifest()}
-		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, "traces")
+		// Tenant callers manage only their own tombstones; the global-read
+		// credential (the one that widens a select) is the operator's view.
+		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, "traces",
+			delete.WithGlobalReadAuthorizer(globalReadAuthorizer(cfg)))
 		dh.Register(mux)
 	}
 
@@ -2219,6 +2250,16 @@ type manifestQuerierAdapter struct {
 func (a *manifestQuerierAdapter) RetiredKeys() []manifest.RetiredKey { return a.m.RetiredKeys() }
 
 func (a *manifestQuerierAdapter) PendingKeys() []manifest.PendingKey { return a.m.PendingKeys() }
+
+// TenantKeyParser lends the delete API the manifest's key → tenant attribution,
+// so a tenant's delete, estimate and leftovers cover exactly its own objects.
+func (a *manifestQuerierAdapter) TenantKeyParser() func(key string) (account, project string, ok bool) {
+	return a.m.TenantKeyParser()
+}
+
+// AccountOnlyTenantKeys tells the delete API that keys carry the account alone,
+// so it refuses a delete scoped to a ProjectID other than 0.
+func (a *manifestQuerierAdapter) AccountOnlyTenantKeys() bool { return a.m.AccountOnlyTenantKeys() }
 
 func (a *manifestQuerierAdapter) GetFilesForRange(startNs, endNs int64) []delete.FileInfo {
 	mFiles := a.m.GetFilesForRange(startNs, endNs)

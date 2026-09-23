@@ -104,7 +104,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// of queuing blocks in a deep channel that lets producer fanout balloon
 	// resident memory beyond the container's mem_limit.
 	var writeBlockPanic atomic.Bool
-	preFilter := func(db *logstorage.DataBlock) *logstorage.DataBlock {
+	preFilter := func(db *logstorage.DataBlock, tss []tombstone) *logstorage.DataBlock {
 		if writeBlockPanic.Load() {
 			return nil
 		}
@@ -123,8 +123,8 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		if db == nil || db.RowsCount() == 0 {
 			return nil
 		}
-		if s.tombstones != nil {
-			db = s.filterTombstonedRows(db, startNs, endNs)
+		if len(tss) > 0 {
+			db = suppressTombstonedRows(db, tss)
 			if db == nil || db.RowsCount() == 0 {
 				return nil
 			}
@@ -150,33 +150,45 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	var wbMu sync.Mutex
-	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
-		db = preFilter(db)
-		if db == nil {
-			return
-		}
-		rowsEmitted.Add(int64(db.RowsCount()))
-		sz := dataBlockApproxBytes(db)
-		liveBytes.Add(sz)
-		wbMu.Lock()
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					writeBlockPanic.Store(true)
-					logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
-				}
+	writeBlockWith := func(tss []tombstone) logstorage.WriteDataBlockFunc {
+		return func(workerID uint, db *logstorage.DataBlock) {
+			db = preFilter(db, tss)
+			if db == nil {
+				return
+			}
+			rowsEmitted.Add(int64(db.RowsCount()))
+			sz := dataBlockApproxBytes(db)
+			liveBytes.Add(sz)
+			wbMu.Lock()
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						writeBlockPanic.Store(true)
+						logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
+					}
+				}()
+				writeBlock(workerID, db)
 			}()
-			writeBlock(workerID, db)
-		}()
-		wbMu.Unlock()
-		liveBytes.Add(-sz)
+			wbMu.Unlock()
+			liveBytes.Add(-sz)
+		}
 	}
 
 	// Tombstones are applied to the blocks this function emits, so every path
 	// that emits something other than raw rows — manifest-answered counts,
 	// label-aggregate pushdown, and the pure-buffer path's aggregated result —
 	// is only usable while no tombstone overlaps the window.
-	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+	//
+	// Only the tombstones acting on this request's tenants count: another
+	// tenant's delete changes nothing here, so it must not cost this request
+	// its fast paths either. Each emission source — an object, a buffered
+	// tenant — gets the write function that applies its own tenant's
+	// tombstones (tombstoneSink).
+	scope := scopeFor(ctx, tenantIDs)
+	queryTombstones := s.scopeTombstones(scope, startNs, endNs)
+	hasTombstones := len(queryTombstones) > 0
+	sink := newTombstoneSink(scope, queryTombstones, s.keyTenantParser(), s.AccountOnlyTenantKeys(), writeBlockWith)
+	filteredWriteBlock := sink.uniform
 
 	// Tenant-scoped file enumeration. VL hands us exactly one tenant per
 	// request (0:0 when no headers are present); only a validated global-read
@@ -184,7 +196,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// count pushdown, the scan, and the buffer bridge — works off THIS list, so
 	// no other tenant's object can enter the answer. Twin of
 	// lakehouse-traces/internal/storage/parquets3/storage_query.go.
-	scope := scopeFor(ctx, tenantIDs)
 	files := s.filesForScope("query", startNs, endNs, scope)
 	if len(files) == 0 {
 		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
@@ -202,7 +213,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		if s.servePureBufferQuery(ctx, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
 		}
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 		return nil
 	}
 
@@ -240,7 +251,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
-			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 			return nil
 		}
 		files = remaining
@@ -255,7 +266,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
-			s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 			return nil
 		}
 		files = remaining
@@ -263,7 +274,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 		return nil
 	}
 
@@ -317,12 +328,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		wg.Add(1)
 		go func(workerIdx int) {
 			defer wg.Done()
-			s.fileWorkerLoop(ctx, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+			s.fileWorkerLoop(ctx, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink)
 		}(i)
 	}
 	wg.Wait()
 
-	s.queryBufferBridge(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -370,7 +381,7 @@ func (s *Storage) acquireQueryMaxRowsBudget(ctx context.Context, maxRows int64) 
 // run the I/O. The bound's Acquire is scoped tightly around the
 // processOneFile call via an immediately-invoked closure with deferred
 // release.
-func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, sink *tombstoneSink) {
 	for fi := range taskCh {
 		if err := ctx.Err(); err != nil {
 			firstErr.CompareAndSwap(nil, err)
@@ -387,11 +398,11 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 			}
 			func() {
 				defer rel()
-				s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+				s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink.forKey(fi.Key))
 			}()
 			continue
 		}
-		s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+		s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink.forKey(fi.Key))
 	}
 }
 
@@ -496,7 +507,16 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query,
 	return true
 }
 
+// queryBufferBridge is queryBufferBridgeTo for a caller with one write
+// function for every tenant.
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
+	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, rowsEmitted, wm, q, tenantIDs, uniformSink(writeBlock))
+}
+
+// queryBufferBridgeTo serves the unflushed rows of the request's tenants.
+// Each tenant's rows go through sink.forTenant, so a tenant-scoped
+// tombstone only hides the buffered rows of its own tenants.
+func (s *Storage) queryBufferBridgeTo(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
 	if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 		return
 	}
@@ -536,7 +556,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 			qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
 			qBuf.DropAllPipes()
 			qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, qBuf, false, nil)
-			if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
+			if err := s.localBuffer.RunQuery(qctx, sink.forTenant(id)); err != nil {
 				logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
 			}
 		}
@@ -561,21 +581,11 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, m
 	case config.ModeLogs:
 		bufRows, _ := s.bufferBridge.QueryLogs(ctx, fetchStartNs, endNs, scope)
 		bufRows = logRowsAfterWatermarks(bufRows, startNs, wm)
-		if len(bufRows) > 0 {
-			db := s.logRowsToDataBlock(scope, "bridge_logs", bufRows)
-			if db != nil && db.RowsCount() > 0 {
-				writeBlock(0, db)
-			}
-		}
+		s.emitBridgeLogRows(scope, bufRows, sink)
 	case config.ModeTraces:
 		bufRows, _ := s.bufferBridge.QueryTraces(ctx, fetchStartNs, endNs, scope)
 		bufRows = traceRowsAfterWatermarks(bufRows, startNs, wm)
-		if len(bufRows) > 0 {
-			db := s.traceRowsToDataBlock(scope, "bridge_traces", bufRows)
-			if db != nil && db.RowsCount() > 0 {
-				writeBlock(0, db)
-			}
-		}
+		s.emitBridgeTraceRows(scope, bufRows, sink)
 	}
 }
 

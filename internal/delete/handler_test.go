@@ -345,9 +345,10 @@ func TestHandler_handleListTombstones_Empty(t *testing.T) {
 func TestHandler_handleListTombstones_WithTombstones(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
 
-	// Add some tombstones
-	h.store.Add(Tombstone{ID: "ts-1", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide"})
-	h.store.Add(Tombstone{ID: "ts-2", Query: "warn", StartNs: 2000, EndNs: 6000, Mode: "permanent"})
+	// Add some tombstones of the default tenant (the caller below sends no
+	// tenant headers).
+	h.store.Add(Tombstone{ID: "ts-1", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
+	h.store.Add(Tombstone{ID: "ts-2", Query: "warn", StartNs: 2000, EndNs: 6000, Mode: "permanent", Tenants: []TenantRef{{}}})
 
 	w := getRequest(h.handleListTombstones, "/delete/logsql/tombstones")
 
@@ -364,7 +365,7 @@ func TestHandler_handleListTombstones_WithTombstones(t *testing.T) {
 
 func TestHandler_handleTombstoneByID_GetExisting(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-abc", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide"})
+	h.store.Add(Tombstone{ID: "ts-abc", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	w := getRequest(h.handleTombstoneByID, "/delete/logsql/tombstone/ts-abc")
 
@@ -389,7 +390,7 @@ func TestHandler_handleTombstoneByID_GetMissing(t *testing.T) {
 
 func TestHandler_handleTombstoneByID_DeleteExisting(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-del", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide"})
+	h.store.Add(Tombstone{ID: "ts-del", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	w := deleteRequest(h.handleTombstoneByID, "/delete/logsql/tombstone/ts-del")
 
@@ -424,7 +425,7 @@ func TestHandler_handleTombstoneByID_DeleteMissing(t *testing.T) {
 
 func TestHandler_handleVerify_WithMatchingTombstone(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-v1", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide"})
+	h.store.Add(Tombstone{ID: "ts-v1", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	params := url.Values{
 		"query": {"error"},
@@ -471,7 +472,7 @@ func TestHandler_handleVerify_WithoutMatchingTombstone(t *testing.T) {
 func TestHandler_handleVerify_PartialCoverage(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
 	// Tombstone covers only half the range
-	h.store.Add(Tombstone{ID: "ts-partial", Query: "error", StartNs: 1000, EndNs: 3000, Mode: "hide"})
+	h.store.Add(Tombstone{ID: "ts-partial", Query: "error", StartNs: 1000, EndNs: 3000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	params := url.Values{
 		"query": {"error"},
@@ -573,7 +574,7 @@ func TestHandler_handleEstimate_InvalidEnd(t *testing.T) {
 
 func TestHandler_handleVerify_ZeroRange(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-zero", Query: "error", StartNs: 1000, EndNs: 1000, Mode: "hide"})
+	h.store.Add(Tombstone{ID: "ts-zero", Query: "error", StartNs: 1000, EndNs: 1000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	params := url.Values{
 		"query": {"error"},
@@ -713,7 +714,7 @@ func TestHandler_Register(t *testing.T) {
 
 func TestHandler_handleVerify_WildcardTombstone(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-wild", Query: "*", StartNs: 0, EndNs: 100000, Mode: "hide"})
+	h.store.Add(Tombstone{ID: "ts-wild", Query: "*", StartNs: 0, EndNs: 100000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	params := url.Values{
 		"query": {"anything"},

@@ -66,12 +66,12 @@ func TestRestore_NeverUndoesAFinishedRewriteFromAStaleCopy(t *testing.T) {
 
 	stale := NewTombstoneStore()
 	stale.EnablePersistence(PersistenceConfig{Pool: s3, Prefix: "logs/"})
-	stale.Add(Tombstone{ID: "t", Mode: "permanent", AffectedKeys: []string{"src"},
+	stale.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t", Mode: "permanent", AffectedKeys: []string{"src"},
 		Superseded: map[string]Supersession{"src": {NewKey: "repl", State: SupersessionPrepared, At: time.Now()}}})
 
 	fresh := NewTombstoneStore()
 	fresh.EnablePersistence(PersistenceConfig{Dir: dir})
-	fresh.Add(Tombstone{ID: "t", Mode: "permanent", AffectedKeys: []string{"src", "repl", "other"},
+	fresh.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t", Mode: "permanent", AffectedKeys: []string{"src", "repl", "other"},
 		Reaped: map[string]bool{"src": true}, Clean: map[string]bool{"repl": true}})
 
 	restored := NewTombstoneStore()
@@ -91,7 +91,7 @@ func TestRestore_NeverUndoesAFinishedRewriteFromAStaleCopy(t *testing.T) {
 }
 
 func TestTombstoneValidate_RejectsMalformedRewriteRecords(t *testing.T) {
-	base := Tombstone{ID: "t", Query: "*", StartNs: 0, EndNs: 1, Mode: "permanent"}
+	base := Tombstone{Tenants: []TenantRef{{}}, ID: "t", Query: "*", StartNs: 0, EndNs: 1, Mode: "permanent"}
 	bad := base
 	bad.Superseded = map[string]Supersession{"src": {NewKey: "n", State: "half-done"}}
 	if err := bad.Validate(); err == nil {
@@ -116,7 +116,7 @@ func TestTombstoneValidate_RejectsMalformedRewriteRecords(t *testing.T) {
 }
 
 func TestTombstone_HandledReapedAndClean(t *testing.T) {
-	ts := Tombstone{AffectedKeys: []string{"src", "repl"}}
+	ts := Tombstone{Tenants: []TenantRef{{}}, AffectedKeys: []string{"src", "repl"}}
 	ts.MarkReaped("src")
 	ts.SetClean("repl", true)
 	if !ts.Handled("src") || !ts.Handled("repl") || ts.Handled("other") || !ts.FullyReaped() {
@@ -144,7 +144,7 @@ func TestTryRemove(t *testing.T) {
 	if err := store.TryRemove("missing"); !errors.Is(err, ErrTombstoneNotFound) {
 		t.Fatalf("missing id: %v", err)
 	}
-	store.Add(Tombstone{ID: "busy", Mode: "permanent",
+	store.Add(Tombstone{ID: "busy", Mode: "permanent", Tenants: []TenantRef{{}},
 		Superseded: map[string]Supersession{"src": {NewKey: "n", State: SupersessionPublished}}})
 	if err := store.TryRemove("busy"); !errors.Is(err, ErrRewriteInProgress) {
 		t.Fatalf("an un-delete mid-rewrite must be refused: %v", err)
@@ -152,7 +152,7 @@ func TestTryRemove(t *testing.T) {
 	if _, ok := store.Get("busy"); !ok {
 		t.Fatal("a refused un-delete must leave the tombstone")
 	}
-	store.Add(Tombstone{ID: "idle", Mode: "hide"})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "idle", Mode: "hide"})
 	if err := store.TryRemove("idle"); err != nil {
 		t.Fatalf("an idle tombstone is removable: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestTryRemove(t *testing.T) {
 
 func TestHandler_UndeleteMidRewriteIsAConflict(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "busy", Mode: "permanent",
+	store.Add(Tombstone{ID: "busy", Mode: "permanent", Tenants: []TenantRef{{}},
 		Superseded: map[string]Supersession{"src": {NewKey: "n", State: SupersessionPrepared}}})
 	h := NewHandler(store, &mockManifest{}, nil, nil, "logs")
 	mux := http.NewServeMux()
@@ -209,7 +209,7 @@ func TestResolveInterruptedRewrites_EachState(t *testing.T) {
 	m.Retire(key("promoted-repl"), key("compacted"), true)
 
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "t", Mode: "permanent", Superseded: map[string]Supersession{
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t", Mode: "permanent", Superseded: map[string]Supersession{
 		key("undone-src"):    {NewKey: key("undone-repl"), State: SupersessionPrepared},
 		key("swapped-src"):   {NewKey: key("swapped-repl"), State: SupersessionPrepared},
 		key("published-src"): {NewKey: key("published-repl"), State: SupersessionPublished},
@@ -295,9 +295,9 @@ func TestResumeRewrites_RetriesUntilTheDeleteLands(t *testing.T) {
 // definition — dropping them would lose the only trace of a replacement.
 func TestAdd_ReaddingATombstoneKeepsItsUnfinishedRewriteRecords(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "task", Query: "*", Mode: "auto",
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "task", Query: "*", Mode: "auto",
 		Superseded: map[string]Supersession{"src": {NewKey: "repl", State: SupersessionPrepared}}})
-	store.Add(Tombstone{ID: "task", Query: `service.name:="x"`, Mode: "auto"})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "task", Query: `service.name:="x"`, Mode: "auto"})
 
 	got, _ := store.Get("task")
 	if got.Query != `service.name:="x"` {

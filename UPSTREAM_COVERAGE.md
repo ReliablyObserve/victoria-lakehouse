@@ -16,12 +16,12 @@ route: 140/140 covered by at least one registry row.
 |---|---|---|---|
 | `/api/v1/validate` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v1_validate.status | 🟡 declared, not yet executed |
 | `/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v2_logs.count | 🟡 declared, not yet executed |
-| `/delete/active_tasks` | `app/vlselect/main.go` | vl.delete.active_tasks.differ | 🔁 differs: Same dispatcher gap as run_task/stop_task (docs/parity-and-gaps.md); hot returns the task list, cold 404 until the dispatcher PR. (declared, not yet executed) |
-| `/delete/active_tasks` | `app/vtselect/logsql.go` | vt.delete.active_tasks.differ | 🔁 differs: Same dispatcher gap as run_task/stop_task (docs/parity-and-gaps.md); hot returns the task list, cold 404 until the dispatcher PR. (declared, not yet executed) |
-| `/delete/run_task` | `app/vlselect/main.go` | vl.delete.run_task.differ | 🔁 differs: Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
-| `/delete/run_task` | `app/vtselect/logsql.go` | vt.delete.run_task.differ | 🔁 differs: Delete-task lifecycle isn't wired into the LH dispatcher (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
-| `/delete/stop_task` | `app/vlselect/main.go` | vl.delete.stop_task.differ | 🔁 differs: Same dispatcher gap as run_task (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
-| `/delete/stop_task` | `app/vtselect/logsql.go` | vt.delete.stop_task.differ | 🔁 differs: Same dispatcher gap as run_task (docs/parity-and-gaps.md); hot accepts, cold 404 until the dispatcher PR. (declared, not yet executed) |
+| `/delete/active_tasks` | `app/vlselect/main.go` | vl.delete.active_tasks.status, lh.delete.upstream_tasks_tenant_scoped | 🟡 declared, not yet executed |
+| `/delete/active_tasks` | `app/vtselect/logsql.go` | vt.delete.active_tasks.status, lh.delete.upstream_tasks_tenant_scoped | 🟡 declared, not yet executed |
+| `/delete/run_task` | `app/vlselect/main.go` | vl.delete.run_task.status | 🟡 declared, not yet executed |
+| `/delete/run_task` | `app/vtselect/logsql.go` | vt.delete.run_task.status | 🟡 declared, not yet executed |
+| `/delete/stop_task` | `app/vlselect/main.go` | vl.delete.stop_task.status | 🟡 declared, not yet executed |
+| `/delete/stop_task` | `app/vtselect/logsql.go` | vt.delete.stop_task.status | 🟡 declared, not yet executed |
 | `/insert/datadog/` | `app/vlinsert/main.go` | vl.insert.datadog_logs.count, vl.insert.datadog_validate.status | 🟡 declared, not yet executed |
 | `/insert/datadog/api/v1/validate` | `app/vlinsert/datadog/datadog.go` | vl.insert.datadog_validate.status | 🟡 declared, not yet executed |
 | `/insert/datadog/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.datadog_logs.count | 🟡 declared, not yet executed |
@@ -301,7 +301,7 @@ traceql: 9/9 covered by at least one registry row.
 
 ## Upstream flag (181)
 
-flag: 28/181 covered by at least one registry row.
+flag: 29/181 covered by at least one registry row.
 
 | flag | Source | Rows | Status |
 |---|---|---|---|
@@ -312,8 +312,8 @@ flag: 28/181 covered by at least one registry row.
 | `defaultMsgValue` | `app/vtinsert/insertutil/common_params.go` |  | ⚪ no row |
 | `defaultParallelReaders` | `app/vlstorage/main.go` |  | ⚪ no row |
 | `defaultParallelReaders` | `app/vtstorage/main.go` |  | ⚪ no row |
-| `delete.enable` | `app/vlselect/main.go` | vl.flag.delete_enable | 🔁 differs: Even with delete.enable=true, the /delete/* family isn't routed on cold until the dispatcher PR lands. See docs/parity-and-gaps.md. (declared, not yet executed) (package not linked into LH) |
-| `delete.enable` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
+| `delete.enable` | `app/vlselect/main.go` | vl.flag.delete_enable | 🔁 differs: Registered by upstream's vlselect and gating /delete/* exactly as upstream. With it on, the cold tier also needs delete.enabled, and a task becomes a tenant-scoped tombstone: its rows are hidden at once and removed by the rewriter per delete.default_mode, and active_tasks lists it until the tombstone retires rather than until a background pass finishes. stop_task and active_tasks act for the request tenant only (lh.delete.upstream_tasks_tenant_scoped). See docs/deletion-strategy.md and docs/parity-and-gaps.md. (declared, not yet executed) |
+| `delete.enable` | `app/vtselect/main.go` | vt.flag.delete_enable | 🔁 differs: The traces binary registers VictoriaTraces' definition and gates /delete/* with a copy of VT's handler, drift-tested against the vendored source (lakehouse-traces/public_delete.go). With it on, the cold tier also needs delete.enabled, and a task becomes a tenant-scoped tombstone: its rows are hidden at once and removed by the rewriter per delete.default_mode, and active_tasks lists it until the tombstone retires. stop_task and active_tasks act for the request tenant only (lh.delete.upstream_tasks_tenant_scoped). See docs/deletion-strategy.md. (declared, not yet executed) |
 | `elasticsearch.version` | `app/vlinsert/elasticsearch/elasticsearch.go` |  | ⚪ no row |
 | `forceFlushAuthKey` | `app/vlstorage/main.go` |  | ⚪ no row |
 | `forceFlushAuthKey` | `app/vtstorage/main.go` |  | ⚪ no row |
@@ -498,6 +498,8 @@ flag: 28/181 covered by at least one registry row.
 | `lh.delete.leftovers.status` | LH delete leftovers — list retired/pending keys and unfinished rewrites | admin | 🟡 declared, not yet executed |
 | `lh.delete.logsql.estimate.status` | LH delete estimate — dry-run row count before a LogsQL delete | admin | 🟡 declared, not yet executed |
 | `lh.delete.rewrite_keeps_kept_rows` | LH delete rewrite — the rows a delete did NOT match stay queryable afterwards | admin | 🟡 declared, not yet executed |
+| `lh.delete.string_tenant_scoped` | Delete with a string tenant (X-Scope-OrgID alias) is scoped like its integer tenant | admin | 🟡 declared, not yet executed |
+| `lh.delete.tenant_scoped` | LH delete — a tenant's delete hides only that tenant's rows | admin | 🟡 declared, not yet executed |
 | `lh.delete.tombstone_by_id.status` | LH delete tombstone by id — lookup one tombstone's status | admin | 🟡 declared, not yet executed |
 | `lh.delete.tombstones.status` | LH delete tombstones — list active LogsQL delete tombstones | admin | 🟡 declared, not yet executed |
 | `lh.delete.verify.status` | LH delete verify — confirm a query's matching rows are gone | admin | 🟡 declared, not yet executed |

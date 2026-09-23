@@ -19,7 +19,7 @@ func resumeWorld(t *testing.T, records map[string]Supersession) (*RewriteSchedul
 	pool := newFaultPool(newMockRewriterPool())
 	m := lhmanifest.New("test-bucket", "")
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "t", Mode: "permanent", Query: "*", StartNs: 0, EndNs: 1,
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t", Mode: "permanent", Query: "*", StartNs: 0, EndNs: 1,
 		CreatedAt: time.Now().Add(-2 * time.Hour), Superseded: records})
 	s := NewRewriteScheduler(RewriteSchedulerConfig{
 		Store: store, Rewriter: NewRewriter(pool, "logs/", 100, "logs"),
@@ -110,7 +110,7 @@ func TestRecordHelpers_OnAMissingOrChangedRecord(t *testing.T) {
 	if recordPublished(store, "missing", "src", "repl") {
 		t.Fatal("recording on a missing tombstone reports failure")
 	}
-	store.Add(Tombstone{ID: "t", Superseded: map[string]Supersession{"src": {NewKey: "second-attempt", State: SupersessionPrepared}}})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "t", Superseded: map[string]Supersession{"src": {NewKey: "second-attempt", State: SupersessionPrepared}}})
 	clearRecord(store, "t", "src", "first-attempt")
 	if ts, _ := store.Get("t"); ts.Superseded["src"].NewKey != "second-attempt" {
 		t.Fatal("clearing an older attempt's record must not drop a newer one")

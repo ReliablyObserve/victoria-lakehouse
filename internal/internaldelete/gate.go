@@ -11,10 +11,13 @@
 // What the lakehouse adds is one requirement, checked after upstream's flag: the
 // delete protocol writes into the lakehouse tombstone store, so it also needs
 // the delete feature (delete.enabled in the lakehouse config) to be on.
+//
+// Upstream's public delete API (/delete/run_task, /delete/stop_task,
+// /delete/active_tasks, behind -delete.enable) is served the same way and gets
+// the same requirement: see PublicHandler.
 package internaldelete
 
 import (
-	"errors"
 	"flag"
 	"net/http"
 
@@ -29,17 +32,31 @@ const FlagName = "internaldelete.enable"
 // the delete feature the protocol writes into is off.
 const DeleteDisabledMessage = "requests to /internal/delete/* need the lakehouse delete feature; set delete.enabled: true in the lakehouse config"
 
-// ErrRunTaskNotTenantScoped refuses /internal/delete/run_task. Upstream applies
-// a delete task only to the request's tenant_ids, but lakehouse tombstones are
-// instance-wide: honouring the task would hide matching rows of every tenant.
-// Until tombstones carry a tenant scope the task is refused rather than widened.
-var ErrRunTaskNotTenantScoped = errors.New("/internal/delete/run_task is not supported yet: lakehouse tombstones are instance-wide " +
-	"and cannot be limited to the requested tenant_ids")
-
 // FlagEnabled reports upstream's -internaldelete.enable as registered in this
 // binary. A binary that has not registered the flag reports false.
 func FlagEnabled() bool {
-	f := flag.Lookup(FlagName)
+	return flagIsTrue(FlagName)
+}
+
+// PublicFlagName is upstream's flag for the public delete API (/delete/*). It
+// is registered by upstream's vlselect package (logs) or by lakehouse-traces
+// (traces), never here. It is not the lakehouse delete.enabled setting, which
+// governs the lakehouse's own delete API (/delete/logsql/*,
+// /delete/tracessql/*) and the tombstone machinery both APIs write into.
+const PublicFlagName = "delete.enable"
+
+// PublicDeleteDisabledMessage is the lakehouse's answer when upstream's
+// -delete.enable is on but the delete feature is off.
+const PublicDeleteDisabledMessage = "requests to /delete/* need the lakehouse delete feature; set delete.enabled: true in the lakehouse config"
+
+// PublicFlagEnabled reports upstream's -delete.enable as registered in this
+// binary. A binary that has not registered the flag reports false.
+func PublicFlagEnabled() bool {
+	return flagIsTrue(PublicFlagName)
+}
+
+func flagIsTrue(name string) bool {
+	f := flag.Lookup(name)
 	return f != nil && f.Value.String() == "true"
 }
 
@@ -52,9 +69,21 @@ func FlagEnabled() bool {
 // delete.enabled says. Only a request upstream would serve is refused here when
 // the delete feature is off.
 func Handler(flagOn func() bool, deleteEnabled bool, upstream http.HandlerFunc) http.HandlerFunc {
+	return gate(flagOn, deleteEnabled, DeleteDisabledMessage, upstream)
+}
+
+// PublicHandler is Handler for upstream's public delete API: upstream, the
+// handler owning /delete/* (upstream's -delete.enable check followed by its
+// delete handler), is refused only when upstream would serve the request and
+// the lakehouse delete feature is off.
+func PublicHandler(flagOn func() bool, deleteEnabled bool, upstream http.HandlerFunc) http.HandlerFunc {
+	return gate(flagOn, deleteEnabled, PublicDeleteDisabledMessage, upstream)
+}
+
+func gate(flagOn func() bool, deleteEnabled bool, message string, upstream http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if flagOn() && !deleteEnabled {
-			httpserver.Errorf(w, r, "%s", DeleteDisabledMessage)
+			httpserver.Errorf(w, r, "%s", message)
 			return
 		}
 		upstream(w, r)

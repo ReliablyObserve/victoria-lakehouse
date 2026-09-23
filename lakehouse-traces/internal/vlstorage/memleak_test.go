@@ -32,7 +32,7 @@ func TestMemLeak_TracesAdapter_TombstoneAddRemoveCycles(t *testing.T) {
 			id := fmt.Sprintf("task-%d-%d", c, i)
 			// run_task is refused (tombstones are not tenant-scoped), so the
 			// cycle adds through the store and removes through the adapter.
-			store.Add(delete.Tombstone{ID: id, Query: "level:error", EndNs: time.Now().UnixNano(), CreatedAt: time.Now(), Mode: "auto"})
+			store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: id, Query: "level:error", EndNs: time.Now().UnixNano(), CreatedAt: time.Now(), Mode: "auto"})
 		}
 		for i := 0; i < itemsPerCycle; i++ {
 			id := fmt.Sprintf("task-%d-%d", c, i)
@@ -70,6 +70,7 @@ func TestMemLeak_TracesAdapter_DeleteActiveTasksCycles(t *testing.T) {
 	// Pre-populate
 	for i := 0; i < 10; i++ {
 		store.Add(delete.Tombstone{
+			Tenants:   []delete.TenantRef{{}},
 			ID:        fmt.Sprintf("active-%d", i),
 			Query:     "*",
 			StartNs:   time.Now().Add(-time.Hour).UnixNano(),

@@ -84,7 +84,7 @@ func TestDiscoverAffectedKeys_AddsOverlappingFilesOnce(t *testing.T) {
 		})
 	}
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "ts", Mode: "permanent", StartNs: hour.UnixNano(), EndNs: hour.Add(time.Hour).UnixNano(),
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "ts", Mode: "permanent", StartNs: hour.UnixNano(), EndNs: hour.Add(time.Hour).UnixNano(),
 		AffectedKeys: []string{listed}, Reaped: map[string]bool{}})
 	s := NewRewriteScheduler(RewriteSchedulerConfig{Store: store, Rewriter: NewRewriter(newMockRewriterPool(), "logs/", 100, "logs"),
 		Detector: NewStorageClassDetector(nil), Manifest: m})
@@ -190,7 +190,7 @@ func TestRowFields_AgreeWithTheMapForm(t *testing.T) {
 
 func TestTombstoneFilter_MatchAllHasNoFilter(t *testing.T) {
 	for _, q := range []string{"", "*"} {
-		ts := Tombstone{Query: q}
+		ts := Tombstone{Tenants: []TenantRef{{}}, Query: q}
 		if ts.Filter() != nil {
 			t.Errorf("query %q is match-all and has no filter", q)
 		}
@@ -202,9 +202,9 @@ func TestMergeLoaded_KeepsTheEarliestCreationAndTheUnionOfKeys(t *testing.T) {
 	later := time.Now()
 	earlier := later.Add(-time.Hour)
 	store.mu.Lock()
-	store.mergeLoadedLocked(Tombstone{ID: "x", CreatedAt: later, AffectedKeys: []string{"a", "only-on-disk"}})
-	store.mergeLoadedLocked(Tombstone{ID: "x", CreatedAt: earlier, AffectedKeys: []string{"a", "b"}, Reaped: map[string]bool{"a": true, "b": false}})
-	store.mergeLoadedLocked(Tombstone{ID: "x", CreatedAt: time.Time{}})
+	store.mergeLoadedLocked(Tombstone{Tenants: []TenantRef{{}}, ID: "x", CreatedAt: later, AffectedKeys: []string{"a", "only-on-disk"}})
+	store.mergeLoadedLocked(Tombstone{Tenants: []TenantRef{{}}, ID: "x", CreatedAt: earlier, AffectedKeys: []string{"a", "b"}, Reaped: map[string]bool{"a": true, "b": false}})
+	store.mergeLoadedLocked(Tombstone{Tenants: []TenantRef{{}}, ID: "x", CreatedAt: time.Time{}})
 	store.mu.Unlock()
 
 	got, _ := store.Get("x")
@@ -235,7 +235,7 @@ func TestPersistence_DiskFailureIsCountedNotFatal(t *testing.T) {
 	}
 	store := NewTombstoneStore()
 	store.EnablePersistence(PersistenceConfig{Dir: blocker})
-	store.Add(Tombstone{ID: "ts", Query: "*"}) // must not panic
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "ts", Query: "*"}) // must not panic
 	if store.Count() != 1 {
 		t.Fatal("a disk failure must not lose the in-memory tombstone")
 	}
@@ -250,7 +250,7 @@ func TestSelfCheck_NilInputs(t *testing.T) {
 	}
 	store := NewTombstoneStore()
 	store.EnablePersistence(PersistenceConfig{Dir: t.TempDir()})
-	store.Add(Tombstone{ID: "ts", AffectedKeys: []string{"k"}})
+	store.Add(Tombstone{Tenants: []TenantRef{{}}, ID: "ts", AffectedKeys: []string{"k"}})
 	if got := SelfCheck(store, nil); len(got) != 0 {
 		t.Errorf("without a manifest only persistence can be checked, got %v", got)
 	}

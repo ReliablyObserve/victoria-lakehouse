@@ -21,18 +21,56 @@ import (
 // tombstone costs one parse, not one per row. A nil filter never matches, which
 // is the fail-closed direction: a tombstone we cannot evaluate hides nothing
 // rather than hiding everything.
-var parsedFilters sync.Map // query string -> *logstorage.Filter (nil when unparseable)
+//
+// A tombstone's relative time filters (`_time:5m`) are evaluated at the
+// timestamp the delete was issued at (Tombstone.FilterAt), exactly as upstream
+// evaluates a delete task's filter at the task's start time
+// (lib/logstorage/storage.go, processDeleteTask: ParseFilterAtTimestamp). The
+// cache is keyed by (query, timestamp), so the parse stays pure and the window
+// a tombstone covers never drifts with the clock or a restart.
+var parsedFilters sync.Map // filterKey -> *logstorage.Filter (nil when unparseable)
 
-func parseFilterCached(query string) *logstorage.Filter {
-	if v, ok := parsedFilters.Load(query); ok {
+type filterKey struct {
+	query string
+	at    int64
+}
+
+func parseFilterCached(query string, at int64) *logstorage.Filter {
+	k := filterKey{query: query, at: at}
+	if v, ok := parsedFilters.Load(k); ok {
 		f, _ := v.(*logstorage.Filter)
 		return f
 	}
-	f, err := logstorage.ParseFilter(query)
+	f, err := parseFilterAt(query, at)
 	if err != nil {
-		parsedFilters.Store(query, (*logstorage.Filter)(nil))
+		parsedFilters.Store(k, (*logstorage.Filter)(nil))
 		return nil
 	}
-	parsedFilters.Store(query, f)
+	parsedFilters.Store(k, f)
 	return f
+}
+
+// forgetFilterLocked drops the cached parse of ts's filter unless another
+// tombstone of the store still uses it, which keeps the cache bounded by the
+// live tombstones. It is not exact — the cache is process-wide, and a reader
+// holding a snapshot copy of a removed tombstone can repopulate an entry — but
+// an entry is a pure function of (query, timestamp), so it can never produce a
+// wrong match. Caller holds s.mu (write) and has already removed ts.
+func (s *TombstoneStore) forgetFilterLocked(ts Tombstone) {
+	k := filterKey{query: ts.Query, at: ts.FilterAt}
+	for _, other := range s.tombstones {
+		if other.Query == k.query && other.FilterAt == k.at {
+			return
+		}
+	}
+	parsedFilters.Delete(k)
+}
+
+// parseFilterAt parses query with relative time filters evaluated at at (unix
+// nanoseconds), upstream's ParseFilterAtTimestamp; at == 0 is "now".
+func parseFilterAt(query string, at int64) (*logstorage.Filter, error) {
+	if at == 0 {
+		return logstorage.ParseFilter(query)
+	}
+	return logstorage.ParseFilterAtTimestamp(query, at)
 }

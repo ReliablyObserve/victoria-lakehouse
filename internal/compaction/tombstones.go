@@ -32,12 +32,17 @@ import (
 // tombstones the output may later be recorded clean for (see
 // reconcileTombstones). A tombstone that becomes eligible, or is issued, after
 // this call was not applied, whatever the clock says by bookkeeping time.
-func dropTombstonedLogRows(store *delete.TombstoneStore, rows []schema.LogRow, now time.Time, rewriteDelay time.Duration) ([]schema.LogRow, int, map[string]bool) {
+//
+// Only the tombstones that act on the merge's tenant are applied (see
+// keyScope.tombstones): a tenant-scoped delete never removes another tenant's
+// rows, and a tombstone that is not applied is not reported applied, so the
+// output stays pending for it.
+func dropTombstonedLogRows(store *delete.TombstoneStore, rows []schema.LogRow, now time.Time, rewriteDelay time.Duration, scope keyScope) ([]schema.LogRow, int, map[string]bool) {
 	if store == nil || len(rows) == 0 {
 		return rows, 0, nil
 	}
 	minNs, maxNs := schema.LogRowTimeBounds(rows)
-	tss := eligibleTombstones(store.ForRange(minNs, maxNs), now, rewriteDelay)
+	tss := scope.tombstones(eligibleTombstones(store.ForRange(minNs, maxNs), now, rewriteDelay))
 	if len(tss) == 0 {
 		return rows, 0, nil
 	}
@@ -59,12 +64,12 @@ func dropTombstonedLogRows(store *delete.TombstoneStore, rows []schema.LogRow, n
 }
 
 // dropTombstonedTraceRows is dropTombstonedLogRows for spans.
-func dropTombstonedTraceRows(store *delete.TombstoneStore, rows []schema.TraceRow, now time.Time, rewriteDelay time.Duration) ([]schema.TraceRow, int, map[string]bool) {
+func dropTombstonedTraceRows(store *delete.TombstoneStore, rows []schema.TraceRow, now time.Time, rewriteDelay time.Duration, scope keyScope) ([]schema.TraceRow, int, map[string]bool) {
 	if store == nil || len(rows) == 0 {
 		return rows, 0, nil
 	}
 	minNs, maxNs := schema.TraceRowTimeBounds(rows)
-	tss := eligibleTombstones(store.ForRange(minNs, maxNs), now, rewriteDelay)
+	tss := scope.tombstones(eligibleTombstones(store.ForRange(minNs, maxNs), now, rewriteDelay))
 	if len(tss) == 0 {
 		return rows, 0, nil
 	}
@@ -83,6 +88,44 @@ func dropTombstonedTraceRows(store *delete.TombstoneStore, rows []schema.TraceRo
 		logger.Infof("compaction dropped tombstoned spans; dropped=%d, kept=%d", dropped, len(kept))
 	}
 	return kept, dropped, appliedIDs(tss)
+}
+
+// keyScope names the objects a merge reads, so the tombstones it applies can be
+// attributed to their tenant the way the read path attributes objects: by key.
+// parse is the manifest's tenant key parser (nil: the default
+// {AccountID}/{ProjectID} layout).
+type keyScope struct {
+	keys  []string
+	parse delete.KeyTenantFunc
+}
+
+// tombstones keeps the tombstones that act on EVERY input of the merge: a
+// tombstone is applied only when all inputs belong to one of its tenants, and
+// never to a merge that names no inputs. A merge normally reads one tenant's
+// objects (see groupFilesByTenant), so this only ever withholds a tombstone
+// from a group whose keys do not attribute to one tenant — its rows are then
+// carried forward and left to the rewriter, which judges the output by its own
+// key.
+func (ks keyScope) tombstones(tss []delete.Tombstone) []delete.Tombstone {
+	out := tss[:0:0]
+	for i := range tss {
+		if ks.appliesToAll(&tss[i]) {
+			out = append(out, tss[i])
+		}
+	}
+	return out
+}
+
+func (ks keyScope) appliesToAll(ts *delete.Tombstone) bool {
+	if len(ks.keys) == 0 {
+		return false
+	}
+	for _, k := range ks.keys {
+		if !ts.AppliesToKey(ks.parse, k) {
+			return false
+		}
+	}
+	return true
 }
 
 // appliedIDs is the ID set of the tombstones a drop evaluated.
@@ -163,7 +206,10 @@ func eligibleTombstones(tss []delete.Tombstone, now time.Time, rewriteDelay time
 // while the manifest has not listed the bucket in this process or the tombstone
 // store was not fully restored: the bookkeeping is still recorded, but nothing
 // is retired on a file set that may be incomplete.
-func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outputKey string, neverDelete []string, applied map[string]bool, canRetire bool) {
+//
+// A tombstone follows its rows only onto an output of a tenant it acts on;
+// parse attributes the output key to its tenant (nil: the default layout).
+func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outputKey string, neverDelete []string, applied map[string]bool, canRetire bool, parse delete.KeyTenantFunc) {
 	if store == nil || len(inputKeys) == 0 {
 		return
 	}
@@ -200,7 +246,7 @@ func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outpu
 			if !touched {
 				return false
 			}
-			if outputKey != "" {
+			if outputKey != "" && ts.AppliesToKey(parse, outputKey) {
 				if !containsKey(ts.AffectedKeys, outputKey) {
 					ts.AffectedKeys = append(ts.AffectedKeys, outputKey)
 				}

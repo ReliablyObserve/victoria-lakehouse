@@ -217,6 +217,7 @@ func (w *lifecycleWorld) deleteRows(mode string, pastWindow bool) string {
 	}
 	sort.Strings(keys)
 	w.store.Add(delete.Tombstone{
+		Tenants:      []delete.TenantRef{{}},
 		ID:           id,
 		Query:        fmt.Sprintf(`service.name:=%q`, svc),
 		StartNs:      propertyHour.UnixNano(),

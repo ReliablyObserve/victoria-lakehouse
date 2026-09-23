@@ -69,6 +69,7 @@ func seedFieldRows(t *testing.T, bw *BatchWriter) {
 func (f *fieldsTombstoneFixture) addTombstone() {
 	store := delete.NewTombstoneStore()
 	store.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}},
 		ID:      "ts-fields",
 		Query:   f.tombstoneQry,
 		StartNs: f.startNs,
@@ -143,7 +144,8 @@ func TestFieldValues_NonOverlappingTombstoneKeepsTheFastPath(t *testing.T) {
 
 	store := delete.NewTombstoneStore()
 	store.Add(delete.Tombstone{
-		ID: "ts-elsewhere", Query: f.tombstoneQry,
+		Tenants: []delete.TenantRef{{}},
+		ID:      "ts-elsewhere", Query: f.tombstoneQry,
 		StartNs: 1, EndNs: 2, Mode: "hide",
 	})
 	f.storage.SetTombstoneStore(store)
@@ -232,11 +234,11 @@ func TestFieldNames_HitsAreUnknownUnderATombstone(t *testing.T) {
 
 func TestFieldsTombstones_NilStoreAndEmptyRange(t *testing.T) {
 	s := testStorage()
-	if got := s.fieldsTombstones(0, 1<<62); got != nil {
+	if got := s.fieldsTombstones(tenantScope{all: true}, 0, 1<<62); got != nil {
 		t.Errorf("a storage with no tombstone store must report none, got %v", got)
 	}
 	s.SetTombstoneStore(delete.NewTombstoneStore())
-	if got := s.fieldsTombstones(0, 1<<62); got != nil {
+	if got := s.fieldsTombstones(tenantScope{all: true}, 0, 1<<62); got != nil {
 		t.Errorf("an empty store must report none, got %v", got)
 	}
 }
@@ -569,7 +571,7 @@ func TestFieldValues_TombstoneInTheSameHourGatesTheCatalog(t *testing.T) {
 	}
 
 	store := delete.NewTombstoneStore()
-	store.Add(delete.Tombstone{ID: "same-hour", Query: "*", StartNs: tsStart, EndNs: tsEnd, Mode: "hide"})
+	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "same-hour", Query: "*", StartNs: tsStart, EndNs: tsEnd, Mode: "hide"})
 	f.storage.SetTombstoneStore(store)
 
 	q := mustParseQueryWithTime(t, "*", windowStart, windowEnd)
@@ -648,7 +650,7 @@ func TestFieldNames_TombstoneInsideACountedFileButOutsideTheWindow(t *testing.T)
 	// A tombstone over the early row only: outside the query window, inside the
 	// counted file.
 	store := delete.NewTombstoneStore()
-	store.Add(delete.Tombstone{ID: "edge", Query: "*", StartNs: early.UnixNano(), EndNs: early.Add(time.Second).UnixNano(), Mode: "hide"})
+	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "edge", Query: "*", StartNs: early.UnixNano(), EndNs: early.Add(time.Second).UnixNano(), Mode: "hide"})
 	s.SetTombstoneStore(store)
 
 	after, err := s.GetFieldNames(context.Background(), nil, q)

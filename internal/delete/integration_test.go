@@ -668,6 +668,7 @@ func TestIntegration_TraceDelete_ByTraceID(t *testing.T) {
 
 	// Create tombstone for specific trace ID
 	ts := Tombstone{
+		Tenants:      []TenantRef{{}},
 		ID:           "del-trace",
 		Query:        `trace_id:="trace-aaa"`,
 		StartNs:      0,

@@ -197,6 +197,7 @@ func TestVerifyMetrics_CounterVecsExist(t *testing.T) {
 		{"BloomQueriesTotal", BloomQueriesTotal},
 		{"BloomTierTransitions", BloomTierTransitions},
 		{"BloomControllerAdj", BloomControllerAdj},
+		{"DeleteTenantScopeSkips", DeleteTenantScopeSkips},
 		{"TenantRowsTotal", TenantRowsTotal},
 		{"TenantIngestionBytesTotal", TenantIngestionBytesTotal},
 		{"TenantQueriesTotal", TenantQueriesTotal},
