@@ -36,3 +36,28 @@ func TestTracedStorage_TenantIDsForRange_InnerWithoutEnumeration(t *testing.T) {
 		t.Errorf("TenantIDsForRange = %+v, want nil when the inner storage cannot enumerate tenants", got)
 	}
 }
+
+// fileListingStorage lists its objects by tenant, like the Parquet storage does
+// for a delete task's affected keys.
+type fileListingStorage struct {
+	mockStorage
+	gotIDs []logstorage.TenantID
+}
+
+func (s *fileListingStorage) TenantFileKeys(ids []logstorage.TenantID, _, _ int64) []string {
+	s.gotIDs = ids
+	return []string{"1001/0/logs/dt=x/a.parquet"}
+}
+
+// The telemetry wrapper must forward the tenant-scoped object listing, or a
+// delete task records no affected keys whenever tracing is enabled.
+func TestTracedStorage_TenantFileKeys_Forwards(t *testing.T) {
+	inner := &fileListingStorage{}
+	got := NewTracedStorage(inner).TenantFileKeys([]logstorage.TenantID{{AccountID: 1001}}, 0, 1)
+	if len(got) != 1 || len(inner.gotIDs) != 1 || inner.gotIDs[0].AccountID != 1001 {
+		t.Errorf("TenantFileKeys = %v (inner saw %v), want the inner storage's answer for 1001:0", got, inner.gotIDs)
+	}
+	if got := NewTracedStorage(&mockStorage{}).TenantFileKeys(nil, 0, 1); got != nil {
+		t.Errorf("TenantFileKeys = %v, want nil when the inner storage cannot list by tenant", got)
+	}
+}

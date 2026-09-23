@@ -1222,6 +1222,9 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		} else {
 			internalvlstorage.SetStorage(store, tombstoneStore)
 		}
+		// Tombstones created by upstream's delete API (/delete/run_task and
+		// the cluster protocol) take the configured default delete mode.
+		internalvlstorage.SetDeleteTaskMode(cfg.Delete.DefaultMode)
 	}
 
 	if cfg.SelectEnabled() {

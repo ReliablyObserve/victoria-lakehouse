@@ -432,6 +432,26 @@ func (s *TombstoneStore) Add(ts Tombstone) {
 	s.persistChange(p, ts.ID, pendingUpsert, ver)
 }
 
+// AddIfAbsent inserts ts unless a tombstone with its id already exists, in one
+// critical section, and persists it. It is how a delete task is registered:
+// upstream refuses a task id that is already registered, and a check-then-Add
+// would let two concurrent registrations of the same id both succeed.
+func (s *TombstoneStore) AddIfAbsent(ts Tombstone) bool {
+	s.mu.Lock()
+	if _, ok := s.tombstones[ts.ID]; ok {
+		s.mu.Unlock()
+		return false
+	}
+	s.tombstones[ts.ID] = cloneTombstone(ts)
+	delete(s.removed, ts.ID)
+	ver := s.bumpLocked(ts.ID)
+	p := s.persist
+	s.mu.Unlock()
+	s.updateActiveGauges()
+	s.persistChange(p, ts.ID, pendingUpsert, ver)
+	return true
+}
+
 // Update applies fn to a private copy of the CURRENT record for id, under the
 // store lock, and stores the result. fn returns false to abandon the change.
 // Returns the record after the call and whether a change was stored.

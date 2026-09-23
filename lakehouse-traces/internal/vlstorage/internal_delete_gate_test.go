@@ -1,6 +1,7 @@
 package vlstorage
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -47,24 +48,45 @@ func runTaskForm(tenants string) url.Values {
 	}
 }
 
-func TestInternalDelete_EnabledRunTaskIsRefusedNotWidened(t *testing.T) {
+// With both switches on, /internal/delete/run_task registers a tombstone scoped
+// to exactly the task's tenant_ids. A task naming no tenant deletes nothing, as
+// upstream (its search has no tenant to match), and a task id that is already
+// registered gets upstream's refusal.
+func TestInternalDelete_EnabledRunTaskIsTenantScoped(t *testing.T) {
 	ts := delete.NewTombstoneStore()
 	h := internalDeleteServer(t, ts, true, true)
 
-	for _, tenants := range []string{`[{"account_id":7,"project_id":3}]`, `[{"account_id":0,"project_id":0}]`, `[]`} {
-		rec := postForm(h, "/internal/delete/run_task", runTaskForm(tenants))
-		// The status is upstream's for a failed storage call: 400 on the
-		// traces pin, 502 on VL v1.52+ (internalselect.go wraps it so vlselect
-		// propagates it). Either way an error, never a 2xx.
-		if rec.Code < http.StatusBadRequest {
-			t.Fatalf("tenant_ids=%s: status = %d, want an error status", tenants, rec.Code)
-		}
-		if !strings.Contains(rec.Body.String(), internaldelete.ErrRunTaskNotTenantScoped.Error()) {
-			t.Fatalf("tenant_ids=%s: body = %q, want the tenant-scope refusal", tenants, rec.Body.String())
-		}
+	rec := postForm(h, "/internal/delete/run_task", runTaskForm(`[{"account_id":7,"project_id":3},{"account_id":7,"project_id":3}]`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run_task: got %d %q, want 200", rec.Code, rec.Body.String())
 	}
-	if n := ts.Count(); n != 0 {
-		t.Fatalf("tombstones = %d, want 0: a refused task must not hide anything", n)
+	got, ok := ts.Get("task-from-vlselect")
+	if !ok {
+		t.Fatal("run_task registered no tombstone")
+	}
+	if !got.ScopedExactlyTo(7, 3) || got.AppliesToTenant(0, 0) {
+		t.Fatalf("tombstone tenants = %v, want exactly 7:3", got.Tenants)
+	}
+	if got.Query != "level:error" || got.EndNs != 1700000000000000000 || got.StartNs != math.MinInt64 {
+		t.Fatalf("tombstone = %+v, want filter level:error over (-inf, task timestamp]", got)
+	}
+
+	rec = postForm(h, "/internal/delete/run_task", runTaskForm(`[{"account_id":1,"project_id":0}]`))
+	if rec.Code < http.StatusBadRequest || !strings.Contains(rec.Body.String(), `the delete task with task_id="task-from-vlselect" is already registered`) {
+		t.Fatalf("duplicate task_id: got %d %q, want upstream's refusal", rec.Code, rec.Body.String())
+	}
+	if again, _ := ts.Get("task-from-vlselect"); !again.ScopedExactlyTo(7, 3) {
+		t.Fatalf("a refused duplicate replaced the registered task's scope: %v", again.Tenants)
+	}
+
+	empty := runTaskForm(`[]`)
+	empty.Set("task_id", "task-no-tenants")
+	rec = postForm(h, "/internal/delete/run_task", empty)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run_task with no tenants: got %d %q, want 200 as upstream", rec.Code, rec.Body.String())
+	}
+	if _, ok := ts.Get("task-no-tenants"); ok || ts.Count() != 1 {
+		t.Fatalf("a task naming no tenant must create nothing (it would act on every tenant); tombstones=%d", ts.Count())
 	}
 }
 

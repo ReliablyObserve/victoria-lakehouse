@@ -71,6 +71,17 @@ func (t *TracedStorage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage
 }
 
 // HasDataForRange delegates without a span (hot path, called constantly).
+// TenantFileKeys forwards the optional tenant-scoped object listing a delete
+// task records its affected keys from.
+func (t *TracedStorage) TenantFileKeys(tenantIDs []logstorage.TenantID, startNs, endNs int64) []string {
+	if l, ok := t.inner.(interface {
+		TenantFileKeys(tenantIDs []logstorage.TenantID, startNs, endNs int64) []string
+	}); ok {
+		return l.TenantFileKeys(tenantIDs, startNs, endNs)
+	}
+	return nil
+}
+
 // TenantIDsForRange forwards the optional tenant-enumeration interface so
 // /select/tenant_ids keeps reporting real tenants when telemetry wraps the
 // storage.

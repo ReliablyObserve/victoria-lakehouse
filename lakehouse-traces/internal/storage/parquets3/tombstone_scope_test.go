@@ -413,3 +413,59 @@ func TestTombstoneScope_ConcurrentDeletesNeverTouchOtherTenants(t *testing.T) {
 	close(stop)
 	writers.Wait()
 }
+
+// A delete task records exactly its tenants' objects — the listing the read
+// path serves those tenants from, the legacy object included for 0:0.
+func TestTenantFileKeys_ListsOnlyTheNamedTenants(t *testing.T) {
+	f := newTenantScopeFixture(t)
+	f.addLegacyObject()
+	keys := func(ids []logstorage.TenantID) map[string]bool {
+		out := map[string]bool{}
+		for _, k := range f.s.TenantFileKeys(ids, math.MinInt64, f.endNs) {
+			out[k] = true
+		}
+		return out
+	}
+	if got := keys(tenant1001); len(got) != 1 || !got[f.tenants[1].key] {
+		t.Errorf("1001:0 keys = %v, want only %s", got, f.tenants[1].key)
+	}
+	if got := keys(tenant00); len(got) != 2 || !got[f.tenants[0].key] || !got[f.legacy.key] {
+		t.Errorf("0:0 keys = %v, want the 0/0 object and the legacy object", got)
+	}
+	if got := keys([]logstorage.TenantID{{AccountID: 1001}, {AccountID: 2002, ProjectID: 7}}); len(got) != 2 {
+		t.Errorf("1001:0+2002:7 keys = %v, want both tenants' objects", got)
+	}
+	if got := f.s.TenantFileKeys(nil, math.MinInt64, f.endNs); got != nil {
+		t.Errorf("no tenants must list nothing, got %v", got)
+	}
+}
+
+// A delete task end to end on the storage: registered for tenant 2002:7 with
+// this storage's object listing, it hides that tenant's matching rows and
+// nothing else, and stopping it brings them back.
+func TestDeleteTask_HidesOnlyTheTaskTenant(t *testing.T) {
+	f := newTenantScopeFixture(t)
+	store := delete.NewTombstoneStore()
+	f.s.SetTombstoneStore(store)
+	err := delete.RunTask(store, delete.TaskFilesOf(f.s), "task-7", f.endNs,
+		delete.TenantRefsOf(tenant2002), strconv.Quote(f.svcCol)+`:="svc-tenant-2002-7"`, "hide")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if ts, _ := store.Get("task-7"); len(ts.AffectedKeys) != 1 || ts.AffectedKeys[0] != f.tenants[2].key {
+		t.Fatalf("task affected keys = %v, want only tenant 2002:7's object", ts.AffectedKeys)
+	}
+	if rows, _ := f.runQuery(context.Background(), tenant2002, "*"); rows != 0 {
+		t.Errorf("tenant 2002:7 still sees %d rows after its delete task", rows)
+	}
+	rows, svcs := f.runQuery(f.ctx(true), tenant00, "*")
+	if want := tsRowsT0 + tsRowsT1001; rows != want || svcs["svc-tenant-2002-7"] != 0 {
+		t.Errorf("global read after the task: rows=%d svcs=%v, want %d", rows, svcs, want)
+	}
+	if err := delete.StopTask(store, "task-7"); err != nil {
+		t.Fatalf("StopTask: %v", err)
+	}
+	if rows, _ := f.runQuery(context.Background(), tenant2002, "*"); rows != tsRowsT2002 {
+		t.Errorf("after stop_task tenant 2002:7 sees %d rows, want %d back", rows, tsRowsT2002)
+	}
+}

@@ -14,7 +14,6 @@
 package internaldelete
 
 import (
-	"errors"
 	"flag"
 	"net/http"
 
@@ -28,13 +27,6 @@ const FlagName = "internaldelete.enable"
 // DeleteDisabledMessage is the lakehouse's answer when upstream's flag is on but
 // the delete feature the protocol writes into is off.
 const DeleteDisabledMessage = "requests to /internal/delete/* need the lakehouse delete feature; set delete.enabled: true in the lakehouse config"
-
-// ErrRunTaskNotTenantScoped refuses /internal/delete/run_task. Upstream applies
-// a delete task only to the request's tenant_ids, but lakehouse tombstones are
-// instance-wide: honouring the task would hide matching rows of every tenant.
-// Until tombstones carry a tenant scope the task is refused rather than widened.
-var ErrRunTaskNotTenantScoped = errors.New("/internal/delete/run_task is not supported yet: lakehouse tombstones are instance-wide " +
-	"and cannot be limited to the requested tenant_ids")
 
 // FlagEnabled reports upstream's -internaldelete.enable as registered in this
 // binary. A binary that has not registered the flag reports false.

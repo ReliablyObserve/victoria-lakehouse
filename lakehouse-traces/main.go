@@ -1189,6 +1189,9 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		} else {
 			internalvlstorage.SetStorage(store, tombstoneStore)
 		}
+		// Tombstones created by upstream's delete API (/delete/run_task and
+		// the cluster protocol) take the configured default delete mode.
+		internalvlstorage.SetDeleteTaskMode(cfg.Delete.DefaultMode)
 		// Wire a tenant lister so VT's per-tenant background tasks
 		// (notably servicegraph) iterate every tenant the LH process
 		// holds in cold storage, not just the legacy {0,0}.

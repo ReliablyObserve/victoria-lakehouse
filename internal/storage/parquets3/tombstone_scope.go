@@ -232,3 +232,19 @@ func groupRowsByTenant[R any](rows []R, tenantOf func(*R) logstorage.TenantID) (
 	}
 	return order, groups
 }
+
+// TenantFileKeys lists the cold-tier objects of exactly the given tenants whose
+// rows may fall in [startNs, endNs] — the same tenant-scoped listing the read
+// path serves them from, legacy untenanted objects included for 0:0. It is what
+// a delete task records as the tombstone's affected keys.
+func (s *Storage) TenantFileKeys(tenantIDs []logstorage.TenantID, startNs, endNs int64) []string {
+	if len(tenantIDs) == 0 {
+		return nil
+	}
+	files := s.filesForScope("delete_task", startNs, endNs, resolveTenantScope(tenantIDs))
+	keys := make([]string, 0, len(files))
+	for i := range files {
+		keys = append(keys, files[i].Key)
+	}
+	return keys
+}
