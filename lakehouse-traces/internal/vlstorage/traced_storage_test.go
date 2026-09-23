@@ -205,3 +205,22 @@ func TestTracedStorage_TenantFileKeys_Forwards(t *testing.T) {
 		t.Errorf("TenantFileKeys = %v, want nil when the inner storage cannot list by tenant", got)
 	}
 }
+
+type layoutStorage struct {
+	mockStorage
+	accountOnly bool
+}
+
+func (s *layoutStorage) AccountOnlyTenantKeys() bool { return s.accountOnly }
+
+// The telemetry wrapper must forward the key-layout report, or a delete task
+// for a non-zero ProjectID would not be refused on an {OrgID} layout whenever
+// tracing is enabled.
+func TestTracedStorage_AccountOnlyTenantKeys_Forwards(t *testing.T) {
+	if !NewTracedStorage(&layoutStorage{accountOnly: true}).AccountOnlyTenantKeys() {
+		t.Error("an account-only inner storage must be reported")
+	}
+	if NewTracedStorage(&layoutStorage{}).AccountOnlyTenantKeys() || NewTracedStorage(&mockStorage{}).AccountOnlyTenantKeys() {
+		t.Error("a two-segment or silent inner storage must not be reported account-only")
+	}
+}
