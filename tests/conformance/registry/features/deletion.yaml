@@ -260,6 +260,7 @@
     - internal/delete/tenant_scope_test.go#TestTenantScope_UnscopedRecordIsRejectedOnRestore
     - internal/delete/tenant_scope_test.go#TestTenantScope_RestoreMergeIntersectsTenants
     - internal/delete/tenant_scope_test.go#TestTenantScope_RejectedRecordCountedOncePerProcess
+    - internal/delete/tenant_scope_test.go#TestTenantScope_RejectedRecordStaysGoneAcrossRestarts
     - internal/delete/tenant_scope_test.go#TestFilterCache_EvictedWithTheLastTombstoneUsingIt
     - internal/delete/tenant_scope_test.go#TestTombstone_UnscopedIsInvalidAndActsOnNothing
     - internal/delete/tenant_scope_test.go#TestScheduler_TenantScopedTombstoneRewritesOnlyItsTenant

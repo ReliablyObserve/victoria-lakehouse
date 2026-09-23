@@ -51,8 +51,11 @@ func parseFilterCached(query string, at int64) *logstorage.Filter {
 }
 
 // forgetFilterLocked drops the cached parse of ts's filter unless another
-// tombstone of the store still uses it, so the cache holds exactly the filters
-// of live tombstones. Caller holds s.mu (write) and has already removed ts.
+// tombstone of the store still uses it, which keeps the cache bounded by the
+// live tombstones. It is not exact — the cache is process-wide, and a reader
+// holding a snapshot copy of a removed tombstone can repopulate an entry — but
+// an entry is a pure function of (query, timestamp), so it can never produce a
+// wrong match. Caller holds s.mu (write) and has already removed ts.
 func (s *TombstoneStore) forgetFilterLocked(ts Tombstone) {
 	k := filterKey{query: ts.Query, at: ts.FilterAt}
 	for _, other := range s.tombstones {

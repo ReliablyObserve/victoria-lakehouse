@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
@@ -190,30 +191,39 @@ func CheckTenantsForKeyLayout(tenants []TenantRef, accountOnlyKeys bool) error {
 	return nil
 }
 
-// rejectUnscoped reports whether a restored record names no tenant, and so is
-// not a tombstone: it is logged and counted
-// (lakehouse_delete_startup_inconsistencies_total{kind="unscoped_tombstone"})
-// and not applied. Nothing creates such a record; one can only come from a
-// hand-written or corrupted object.
-func rejectUnscoped(ts Tombstone, source string) bool {
+// rejectUnscopedLocked reports whether a restored record names no tenant, and
+// so is not a tombstone; such a record is rejected (rejectLocked). Nothing
+// creates one; it can only come from a hand-written or corrupted object.
+// Caller holds s.mu.
+func (s *TombstoneStore) rejectUnscopedLocked(ts Tombstone, source string) bool {
 	if len(ts.Tenants) > 0 {
 		return false
 	}
-	noteUnscoped(ts.ID, source)
+	s.rejectLocked(ts.ID, source+" record names no tenant")
 	return true
 }
 
-// rejectedUnscoped remembers the ids already reported, so a rejected record
-// that stays in the bucket is counted and logged once per process, not on
-// every restore retry.
+// rejectedUnscoped remembers the ids already reported, so a record rejected
+// again (a restore retry, or another store in the same process) is counted and
+// logged once per process.
 var rejectedUnscoped sync.Map
 
-func noteUnscoped(id, source string) {
+// rejectLocked refuses a restored record that is not a tombstone: it is not
+// applied, it is counted
+// (lakehouse_delete_startup_inconsistencies_total{kind="unscoped_tombstone"},
+// once per process) and logged, and it gets a removal marker. The marker is
+// persisted with the disk copy, so the rejection survives a restart that loads
+// only one copy, and the record's S3 object is owed a delete through the same
+// path as any removed tombstone (removed_tombstone_still_in_s3). Caller holds
+// s.mu.
+func (s *TombstoneStore) rejectLocked(id, why string) {
+	s.markRemovedLocked(id, time.Now())
+	s.owePendingS3DeletesLocked([]string{id})
 	if _, seen := rejectedUnscoped.LoadOrStore(id, true); seen {
 		return
 	}
 	metrics.DeleteStartupInconsistencies.Inc("unscoped_tombstone")
-	logger.Errorf("tombstone restore: %s record %q names no tenant; rejected, not applied — delete its _tombstones/%s.json object", source, id, id)
+	logger.Errorf("tombstone restore: %s (id %q); rejected, not applied, and its S3 copy deleted", why, id)
 }
 
 // mergeTenants combines two copies' tenant scopes for the same tombstone id,

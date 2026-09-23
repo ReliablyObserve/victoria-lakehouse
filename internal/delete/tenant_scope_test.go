@@ -176,6 +176,7 @@ func TestTenantScope_PersistsThroughDiskAndS3(t *testing.T) {
 // can be one) is rejected on restore from either copy: counted, logged, not
 // applied — and it does not fail the restore of the valid records next to it.
 func TestTenantScope_UnscopedRecordIsRejectedOnRestore(t *testing.T) {
+	forgetRejected(t, "ts-disk-none", "ts-s3-none")
 	dir := t.TempDir()
 	pool := newMockS3Pool()
 
@@ -212,6 +213,7 @@ func TestTenantScope_UnscopedRecordIsRejectedOnRestore(t *testing.T) {
 // intersection (a copy can only narrow it), and copies with no tenant in common
 // leave a record naming none, which is rejected and counted.
 func TestTenantScope_RestoreMergeIntersectsTenants(t *testing.T) {
+	forgetRejected(t, "ts-narrow", "ts-disjoint")
 	pool := newMockS3Pool()
 	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-narrow", TenantRef{AccountID: 2}))
 	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-disjoint", TenantRef{AccountID: 3}))
@@ -241,6 +243,7 @@ func TestTenantScope_RestoreMergeIntersectsTenants(t *testing.T) {
 // A rejected object that stays in the bucket is counted once per process, not
 // on every restore.
 func TestTenantScope_RejectedRecordCountedOncePerProcess(t *testing.T) {
+	forgetRejected(t, "ts-once")
 	pool := newMockS3Pool()
 	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-once"))
 	before := metrics.DeleteStartupInconsistencies.Get("unscoped_tombstone")
@@ -252,6 +255,88 @@ func TestTenantScope_RejectedRecordCountedOncePerProcess(t *testing.T) {
 	}
 	if got := metrics.DeleteStartupInconsistencies.Get("unscoped_tombstone") - before; got != 1 {
 		t.Errorf("unscoped_tombstone moved by %d over three restores, want 1", got)
+	}
+}
+
+// forgetRejected clears the process-wide once-per-process record of the given
+// ids, before and after the test, so the counting assertions hold under
+// -count=N.
+func forgetRejected(t *testing.T, ids ...string) {
+	t.Helper()
+	clear := func() {
+		for _, id := range ids {
+			rejectedUnscoped.Delete(id)
+		}
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
+// A rejected record stays rejected across restarts: the rejection is persisted
+// as a removal marker with the disk copy and the record's S3 object is deleted,
+// so a boot that finds the S3 copy alone does not install it silently.
+func TestTenantScope_RejectedRecordStaysGoneAcrossRestarts(t *testing.T) {
+	forgetRejected(t, "ts-2boot")
+	ctx := context.Background()
+	dir := t.TempDir()
+	pool := newMockS3Pool()
+	cfg := PersistenceConfig{Dir: dir, Pool: pool, Prefix: "logs/"}
+	key := TombstonePrefix("logs/") + "ts-2boot.json"
+
+	disk := NewTombstoneStore()
+	disk.Add(scopedSample("ts-2boot", TenantRef{AccountID: 1}))
+	if err := disk.PersistToDisk(dir); err != nil {
+		t.Fatal(err)
+	}
+	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-2boot", TenantRef{AccountID: 3}))
+
+	// Boot 1: the copies name no common tenant — rejected, S3 delete issued,
+	// the marker persisted.
+	before := metrics.DeleteStartupInconsistencies.Get("removed_tombstone_still_in_s3")
+	boot1 := NewTombstoneStore()
+	if _, err := boot1.Restore(ctx, cfg); err != nil {
+		t.Fatalf("boot 1 restore: %v", err)
+	}
+	boot1.EnablePersistence(cfg)
+	if _, ok := boot1.Get("ts-2boot"); ok {
+		t.Fatal("boot 1 applied a record whose copies name no common tenant")
+	}
+	if n := boot1.FlushPending(ctx); n != 0 {
+		t.Fatalf("%d S3 writes still owed after the flush", n)
+	}
+	if _, ok := pool.Get(key); ok {
+		t.Fatal("boot 1 did not delete the rejected record's S3 object")
+	}
+	if got := metrics.DeleteStartupInconsistencies.Get("removed_tombstone_still_in_s3") - before; got < 1 {
+		t.Errorf("the S3 delete was not owed through removed_tombstone_still_in_s3 (moved by %d)", got)
+	}
+	if err := boot1.PersistToDisk(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Boot 2: nothing comes back.
+	boot2 := NewTombstoneStore()
+	if _, err := boot2.Restore(ctx, cfg); err != nil {
+		t.Fatalf("boot 2 restore: %v", err)
+	}
+	if ts, ok := boot2.Get("ts-2boot"); ok {
+		t.Fatalf("boot 2 installed the rejected record: %+v", ts)
+	}
+
+	// Boot 3: the S3 delete had not landed (the object is back); the persisted
+	// marker still keeps it out and the delete is owed again.
+	storeTombstoneInS3(t, pool, "logs/", scopedSample("ts-2boot", TenantRef{AccountID: 3}))
+	boot3 := NewTombstoneStore()
+	if _, err := boot3.Restore(ctx, cfg); err != nil {
+		t.Fatalf("boot 3 restore: %v", err)
+	}
+	if ts, ok := boot3.Get("ts-2boot"); ok {
+		t.Fatalf("boot 3 installed the S3 copy of a rejected record: %+v", ts)
+	}
+	boot3.EnablePersistence(cfg)
+	boot3.FlushPending(ctx)
+	if _, ok := pool.Get(key); ok {
+		t.Fatal("boot 3 did not re-issue the S3 delete")
 	}
 }
 

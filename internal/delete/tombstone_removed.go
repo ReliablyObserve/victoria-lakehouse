@@ -113,6 +113,7 @@ func (s *TombstoneStore) dropStaleLocked() []string {
 	for id, ts := range s.tombstones {
 		if s.supersededByMarkerLocked(ts) {
 			delete(s.tombstones, id)
+			s.forgetFilterLocked(ts)
 			stale = append(stale, id)
 		}
 	}

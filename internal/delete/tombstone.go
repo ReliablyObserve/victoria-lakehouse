@@ -741,7 +741,7 @@ func (s *TombstoneStore) LoadFromDisk(dir string) error {
 	}
 	stale := s.dropStaleLocked()
 	for _, ts := range loaded.Tombstones {
-		if s.supersededByMarkerLocked(ts) || rejectUnscoped(ts, "disk") {
+		if s.supersededByMarkerLocked(ts) || s.rejectUnscopedLocked(ts, "disk") {
 			continue
 		}
 		s.mergeLoadedLocked(ts)
@@ -831,7 +831,7 @@ func (s *TombstoneStore) LoadFromS3(ctx context.Context, pool S3Pool, _ /*bucket
 			stale = append(stale, ts.ID)
 			continue
 		}
-		if rejectUnscoped(ts, "s3") {
+		if s.rejectUnscopedLocked(ts, "s3") {
 			continue
 		}
 		s.mergeLoadedLocked(ts)

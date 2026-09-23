@@ -482,10 +482,10 @@ func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
 	// delete its source on the strength of a record S3 does not hold. The
 	// write-back is lazy: EnsureDurable issues it for the ids something acts
 	// on, so a boot does not rewrite every record it restored.
-	defer s.bumpLocked(ts.ID)
 	cur, ok := s.tombstones[ts.ID]
 	if !ok {
 		s.tombstones[ts.ID] = ts
+		s.bumpLocked(ts.ID)
 		return
 	}
 	merged := cloneTombstone(cur)
@@ -534,13 +534,15 @@ func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
 	merged.Superseded = mergeSupersessions(merged.Superseded, ts.Superseded, merged.Reaped)
 	merged.Tenants = mergeTenants(merged.Tenants, ts.Tenants)
 	if len(merged.Tenants) == 0 {
-		// The copies name no tenant in common: fail closed.
+		// The copies name no tenant in common: fail closed. The id is not
+		// bumped — the record is dropped, not changed.
 		delete(s.tombstones, ts.ID)
 		s.forgetFilterLocked(cur)
-		noteUnscoped(ts.ID, "merged disk/S3")
+		s.rejectLocked(ts.ID, "the record's disk and S3 copies name no common tenant")
 		return
 	}
 	s.tombstones[ts.ID] = merged
+	s.bumpLocked(ts.ID)
 }
 
 // mergeSupersessions unions two copies' rewrite records without walking one
