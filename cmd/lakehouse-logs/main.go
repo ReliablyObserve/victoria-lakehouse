@@ -191,6 +191,9 @@ func main() {
 	envflag.Parse()
 
 	logger.InitNoLogFlags()
+	if err := checkUpstreamFlagsHonoured(flag.CommandLine); err != nil {
+		logger.Fatalf("%s", err)
+	}
 	vlMemoryAllowed := memory.Allowed()
 
 	// Tell Go's GC the soft memory ceiling. Without this, transient

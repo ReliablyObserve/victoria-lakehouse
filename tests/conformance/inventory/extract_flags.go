@@ -45,13 +45,24 @@ func ScanFlagNames(dir string) (map[string]string, error) {
 var VLFlagPackages = []string{"app/vlselect", "app/vlselect/logsql", "app/vlselect/internalselect", "app/vlinsert", "app/vlstorage"}
 var VTFlagPackages = []string{"app/vtselect", "app/vtselect/logsql", "app/vtselect/internalselect", "app/vtselect/traces/tracecommon", "app/vtinsert", "app/vtstorage", "app/victoria-traces/servicegraph"}
 
-// LinkedIntoLH records which upstream packages the Lakehouse binaries import.
-// A flag defined in a package that is not linked (for example app/vlselect, whose
-// request dispatcher Lakehouse does not mount) is not honored by Lakehouse;
-// the coverage report marks such flags accordingly.
+// LinkedIntoLH records, per upstream package, whether the Lakehouse binaries
+// honour its flags. A package marked false either is not linked at all or is
+// linked but its flags are not acted on: the logs binary links app/vlselect only
+// to serve /internal/delete/* through vlselect.RequestHandler, and refuses the
+// package's other flags at startup when set (cmd/lakehouse-logs/upstream_flags.go).
+// HonouredFlags lists the exceptions inside such packages.
 var LinkedIntoLH = map[string]bool{
 	"app/vlselect": false, "app/vlselect/logsql": true, "app/vlselect/internalselect": true, "app/vlinsert": true, "app/vlstorage": true,
 	"app/vtselect": false, "app/vtselect/logsql": false, "app/vtselect/internalselect": false, "app/vtselect/traces/tracecommon": true, "app/vtinsert": true, "app/vtstorage": true, "app/victoria-traces/servicegraph": true,
+}
+
+// HonouredFlags lists, per surface, flags the Lakehouse honours although their
+// package is marked false in LinkedIntoLH. internaldelete.enable gates
+// /internal/delete/*: the logs binary gets it from vlselect itself, the traces
+// binary registers VictoriaTraces' own definition (lakehouse-traces/internal_delete.go).
+var HonouredFlags = map[string]map[string]bool{
+	"vl": {"internaldelete.enable": true},
+	"vt": {"internaldelete.enable": true},
 }
 
 // ExtractFlags scans the non-test .go files directly inside each pkgDir (and, for
@@ -85,7 +96,7 @@ func ExtractFlags(root string, pkgDirs []string, linked map[string]bool, surface
 					continue
 				}
 				rel, _ := filepath.Rel(root, filepath.Join(d, file))
-				seen[name] = Item{Kind: "flag", Surface: surface, Name: name, Source: filepath.ToSlash(rel), Linked: linked[pkg]}
+				seen[name] = Item{Kind: "flag", Surface: surface, Name: name, Source: filepath.ToSlash(rel), Linked: linked[pkg] || HonouredFlags[surface][name]}
 			}
 		}
 	}

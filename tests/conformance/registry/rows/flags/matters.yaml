@@ -343,3 +343,29 @@
   layers: [api]
   pending: true
   notes: "The VictoriaLogs counterpart of vt.flag.nativeinsert_max_request_size, rowed alongside it so the native-ingest admission cap is covered on both surfaces. lakehouse-logs mounts vlinsert's handler, so the cap is enforced by upstream before any Lakehouse code runs."
+
+- id: vl.flag.internaldelete_enable
+  title: "-internaldelete.enable — /internal/delete/* gate, served by upstream's vlselect handler"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: internaldelete.enable }
+  compare: { type: error, options: { hot_status: "400", cold_status: "400", body_prefix: "requests to /internal/delete/* are disabled" } }
+  layers: [api]
+  pending: true
+  notes: "Default off on both sides. The logs binary mounts vlselect.RequestHandler for /internal/delete/*, so the flag and its answers are upstream's."
+
+- id: vt.flag.internaldelete_enable
+  title: "-internaldelete.enable — /internal/delete/* gate, VictoriaTraces' definition"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: internaldelete.enable }
+  compare: { type: error, options: { hot_status: "400", cold_status: "400", body_prefix: "requests to /internal/delete/* are disabled" } }
+  layers: [api]
+  pending: true
+  notes: "Default off on both sides. The traces binary carries a verbatim copy of VT's gate (lakehouse-traces/internal_delete.go), drift-tested against the vendored vtselect/main.go."

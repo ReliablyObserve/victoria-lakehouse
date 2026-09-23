@@ -59,10 +59,12 @@ func TestHandler_FlagOnAndDeleteFeatureOnReachesUpstream(t *testing.T) {
 }
 
 func TestFlagEnabled_ReadsTheRegisteredFlag(t *testing.T) {
-	if FlagEnabled() {
-		t.Fatal("FlagEnabled() = true before the flag is registered")
+	if flag.Lookup(FlagName) == nil {
+		if FlagEnabled() {
+			t.Fatal("FlagEnabled() = true before the flag is registered")
+		}
+		flag.Bool(FlagName, false, "test registration")
 	}
-	flag.Bool(FlagName, false, "test registration")
 	if FlagEnabled() {
 		t.Fatal("FlagEnabled() = true with the flag at its default")
 	}

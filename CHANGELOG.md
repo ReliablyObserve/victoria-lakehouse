@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `run_task` is refused even when enabled, because lakehouse tombstones are instance-wide and
   cannot be limited to the request's `tenant_ids`; `stop_task` and `active_tasks` work. The logs
   binary's `-help` now also lists VictoriaLogs' select flags (`-search.maxQueryDuration`,
-  `-select.disable`, …), which the lakehouse `/select/*` path does not honour yet.
+  `-select.disable`, …); the lakehouse `/select/*` path does not read them yet, so setting one
+  makes lakehouse-logs refuse to start rather than ignore it.
 
 ## [0.142.9] - 2026-09-15
 

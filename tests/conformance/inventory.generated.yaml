@@ -1117,6 +1117,7 @@ items:
       surface: vl
       name: internaldelete.enable
       source: app/vlselect/main.go
+      linked: true
     - kind: flag
       surface: vl
       name: internalinsert.disable
@@ -1618,6 +1619,7 @@ items:
       surface: vt
       name: internaldelete.enable
       source: app/vtselect/main.go
+      linked: true
     - kind: flag
       surface: vt
       name: internalinsert.disable

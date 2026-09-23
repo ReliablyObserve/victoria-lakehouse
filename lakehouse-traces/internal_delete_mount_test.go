@@ -64,7 +64,8 @@ func TestUpstreamInternalDelete_MatchesVendoredVTSelect(t *testing.T) {
 	if !strings.Contains(joined, wantAnswer) {
 		t.Errorf("VT's /internal/delete/* disabled answer changed; update internal_delete.go\nwant: %s", wantAnswer)
 	}
-	if !strings.Contains(joined, `if !*enableInternalDelete {`) || !strings.Contains(joined, `internalselect.RequestHandler(r.Context(), w, r)`) {
+	if !strings.Contains(joined, `if strings.HasPrefix(path, "/internal/delete/") {`) ||
+		!strings.Contains(joined, `if !*enableInternalDelete {`) || !strings.Contains(joined, `internalselect.RequestHandler(r.Context(), w, r)`) {
 		t.Error("VT's /internal/delete/ branch no longer gates on the flag then calls internalselect; re-check internal_delete.go")
 	}
 }

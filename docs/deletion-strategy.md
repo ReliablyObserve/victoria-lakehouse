@@ -307,10 +307,13 @@ Mounting `vlselect.RequestHandler` also registers VictoriaLogs' other select
 flags in the logs binary, so `-help` lists `-search.maxQueryDuration`,
 `-search.maxConcurrentRequests`, `-search.maxQueueDuration`, `-select.disable`,
 `-internalselect.disable`, `-delete.enable`, `-search.logSlowQueryDuration` and
-`-vmalert.proxyURL`. The lakehouse's own `/select/*` handling does not honour
-them yet: `query.timeout` and `query.max_concurrent` govern the lakehouse select
-path today, and `/delete/*` answers `404`. Moving `/select/*` onto upstream's
-handler, which will honour them, is tracked separately.
+`-vmalert.proxyURL`. The lakehouse's own `/select/*` handling does not read them
+yet — `query.timeout` and `query.max_concurrent` govern the lakehouse select path,
+and the lakehouse delete API under `/delete/logsql/*` is governed by
+`delete.enabled`, not `-delete.enable` — so setting any of them makes
+lakehouse-logs refuse to start instead of silently ignoring it (as before
+vlselect was linked, when they were undefined). Moving `/select/*` onto
+upstream's handler, which will honour them, is tracked separately.
 
 ## Traces Delete Support
 
