@@ -98,6 +98,41 @@ For data on S3-IA, Glacier Instant, or Glacier Deep:
 
 The delete API uses a mode-specific prefix: `/delete/logsql/*` for logs mode, `/delete/tracessql/*` for traces mode. All endpoints accept the same parameters.
 
+### Tenant Scope
+
+Every delete belongs to a tenant. A request is resolved to its tenant exactly
+like a select request: the `AccountID` / `ProjectID` headers, which the tenant
+middleware fills from `X-Scope-OrgID` (aliases) or the
+`X-Scope-AccountID` / `X-Scope-ProjectID` pair; a request without them is the
+default tenant `0:0`. An unparseable tenant header is `400 cannot obtain
+tenantID`, as for a select. That tenant:
+
+- **creates** tombstones scoped to itself, over its own objects (for `0:0`
+  that includes objects written before tenant prefixes existed, which the read
+  path also serves to `0:0`);
+- **lists, reads, verifies against and un-deletes** only its own tombstones —
+  those scoped to exactly that tenant. Any other id answers `404`, so another
+  tenant's delete can be neither read nor removed;
+- **estimates** over its own objects and sees the **leftovers** of its own
+  objects and tombstones (`"scope": "tenant"`).
+
+A request that presents the global-read credential
+(`tenant.global_read_header` / `global_read_value`, or `global_read_token` —
+the credential that widens a select to every tenant) is the operator view
+(`"scope": "instance"`): it sees and may un-delete every tombstone, including
+records from releases before tenant scope (which carry no tenant and act on
+every tenant) and cluster delete tasks that name several tenants, and the
+instance-wide leftovers. Its deletes are still scoped to the tenant in its
+headers: no request creates an instance-wide tombstone. Without a configured
+credential there is no operator view.
+
+A tombstone's tenants limit everything it does: query-time suppression (rows,
+field values, streams, the count and metadata fast paths, buffered rows), the
+rewriter (it only ever lists and rewrites objects of its tenants) and
+compaction (it drops a tombstone's rows only while merging that tenant's
+objects). Objects are attributed to tenants by their key, the same way the read
+path selects them. A tombstone of tenant A never costs tenant B a fast path.
+
 ### Delete Endpoint
 
 ```
@@ -167,6 +202,11 @@ GET /delete/{logsql|tracessql}/tombstone/{id}/status
   # Shows rewrite progress for this tombstone
 ```
 
+The listing reports `"scope": "tenant"` (the caller's own tombstones) or
+`"scope": "instance"` (every tombstone, global-read credential). Each record
+carries `Tenants`, the tenants it acts on; a record without it is from a release
+before tenant scope and acts on every tenant.
+
 ### Leftovers Endpoint
 
 ```
@@ -180,8 +220,10 @@ ones whose objects are still in the bucket and this process owes; `deleted`
 marks the ones already gone, held only until a listing older than the delete
 can no longer be applied), uploads claimed but not published (`held` marks a
 replacement whose swap is not durable yet), and the durable records of
-unfinished rewrites with their state. It is instance-wide, not tenant-scoped
-(`"scope": "instance"`), like the tombstone listing. The alerts on retired-key
+unfinished rewrites with their state. A tenant caller sees the entries of its
+own objects and the rewrites of its own tombstones (`"scope": "tenant"`); the
+global-read credential sees the whole instance (`"scope": "instance"`), like
+the tombstone listing. The alerts on retired-key
 eviction, on non-durable records and on unfinished rewrites all point at it; see
 [Operations → What this instance still owes](operations.md#what-this-instance-still-owes-prefixleftovers).
 
@@ -294,26 +336,65 @@ binary.
   `delete.enabled` says.
 - With the flag on, the lakehouse also requires **`delete.enabled: true`**,
   because the protocol writes into the lakehouse tombstone store.
-- **`run_task` is refused** even when both are on. Upstream applies a delete task
-  only to the request's `tenant_ids`, while lakehouse tombstones are
-  instance-wide (see [Tombstone Management](operations.md#tombstone-management)),
-  so honouring the task would hide matching rows of every tenant. The request
-  fails with an error instead of being widened; tenant-scoped tombstones are
-  the prerequisite for serving it. `stop_task` and `active_tasks` work.
-
-Use the lakehouse delete API above for deletes against the cold tier.
+- **`run_task`** registers a tombstone with the task's id, scoped to exactly
+  the task's `tenant_ids`, over every row not newer than the task's timestamp
+  that matches its filter (upstream's semantics), with `delete.default_mode`.
+  A task naming no tenant is accepted and deletes nothing, as upstream; no
+  tombstone is created for it (an empty scope would act on every tenant). A
+  task id that is already registered is refused with upstream's error.
+- **`stop_task`** removes the task's tombstone by id — an un-delete, refused
+  while a rewrite of its files is unfinished; an unknown id is a no-op, as
+  upstream. **`active_tasks`** lists the active tombstones in upstream's task
+  shape (`task_id`, `tenant_ids`, `filter`, `start_time`).
 
 Mounting `vlselect.RequestHandler` also registers VictoriaLogs' other select
 flags in the logs binary, so `-help` lists `-search.maxQueryDuration`,
 `-search.maxConcurrentRequests`, `-search.maxQueueDuration`, `-select.disable`,
 `-internalselect.disable`, `-delete.enable`, `-search.logSlowQueryDuration` and
-`-vmalert.proxyURL`. The lakehouse's own `/select/*` handling does not read them
-yet — `query.timeout` and `query.max_concurrent` govern the lakehouse select path,
-and the lakehouse delete API under `/delete/logsql/*` is governed by
-`delete.enabled`, not `-delete.enable` — so setting any of them makes
-lakehouse-logs refuse to start instead of silently ignoring it (as before
-vlselect was linked, when they were undefined). Moving `/select/*` onto
-upstream's handler, which will honour them, is tracked separately.
+`-vmalert.proxyURL`. The lakehouse's own `/select/*` handling does not read the
+search and select ones yet — `query.timeout` and `query.max_concurrent` govern
+the lakehouse select path — so setting any of them makes lakehouse-logs refuse
+to start instead of silently ignoring it (as before vlselect was linked, when
+they were undefined). Moving `/select/*` onto upstream's handler, which will
+honour them, is tracked separately. `-delete.enable` is honoured: see the next
+section.
+
+## Upstream Delete API (`/delete/*`)
+
+VictoriaLogs and VictoriaTraces delete through `/delete/run_task`,
+`/delete/stop_task` and `/delete/active_tasks`. The lakehouse serves them
+through upstream's code as well: the logs binary mounts VictoriaLogs'
+`vlselect.RequestHandler` for `/delete/`, the traces binary a copy of
+VictoriaTraces' gate and delete handler, held to the vendored source by a test,
+whose storage calls go through the same dispatch as the cluster protocol.
+
+- **`-delete.enable`** (default `false`; upstream's name, default and help).
+  While it is off, every `/delete/*` path the lakehouse does not serve itself
+  answers upstream's own error — `400 requests to /delete/* are disabled; pass
+  -delete.enable command-line flag for enabling them` — exactly like an
+  upstream node started with its defaults.
+- With the flag on, the lakehouse also requires **`delete.enabled: true`**.
+- **`run_task`** takes upstream's parameters (`filter`, the tenant from the
+  request headers) and answers upstream's `{"task_id":"…"}`; the task becomes a
+  tombstone scoped to the request's tenant, exactly as a cluster `run_task` for
+  that one tenant. `stop_task` and `active_tasks` behave as in the cluster
+  protocol above.
+
+`-delete.enable` and `delete.enabled` are different switches. `delete.enabled`
+(lakehouse config) turns on the tombstone machinery — query-time suppression,
+the rewriter — and the lakehouse's own API under `/delete/logsql/*` and
+`/delete/tracessql/*`. `-delete.enable` (upstream flag) additionally serves
+upstream's API, which writes into the same tombstone store. As upstream,
+`stop_task` and `active_tasks` are not tenant-scoped — the upstream API is an
+administrator's surface — while every task `run_task` creates is scoped to the
+requesting tenant. Expose `/delete/*` only to administrators when the flag is
+on; tenants use the lakehouse API, which is tenant-scoped throughout.
+
+Differences from upstream once enabled: rows are hidden the moment the task is
+registered and removed physically by the rewriter according to
+`delete.default_mode` (upstream removes them in a background pass), and
+`active_tasks` lists a task until its tombstone retires rather than until the
+background pass finishes.
 
 ## Traces Delete Support
 

@@ -51,7 +51,7 @@
     - tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery
     - internal/internaldelete/gate_test.go#TestHandler_FlagOffLeavesTheAnswerToUpstream
     - internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_DefaultAnswersLikeUpstreamAndHidesNothing
-    - internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsRefusedNotWidened
+    - internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsTenantScoped
     - lakehouse-traces/internal_delete_mount_test.go#TestUpstreamInternalDelete_MatchesVendoredVTSelect
     - cmd/lakehouse-logs/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault
     - lakehouse-traces/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault
@@ -64,8 +64,8 @@
     active tombstones and addressing one by id, so deletion is scriptable and auditable rather
     than an out-of-band S3 operation. The upstream cluster delete protocol (`/internal/delete/*`)
     is served through upstream's own handler (VictoriaLogs' vlselect in the logs binary): only with
-    `-internaldelete.enable` (default off), plus `delete.enabled`, and `run_task` is refused because
-    tombstones are not tenant-scoped.
+    `-internaldelete.enable` (default off), plus `delete.enabled`; a delete task becomes a tombstone
+    scoped to the task's tenants.
 
 - id: lh.feature.deletion.tombstones
   title: Tombstones and query-time suppression
@@ -85,6 +85,7 @@
     - internal/storage/parquets3/pure_buffer_tombstone_test.go#TestRunQuery_PureBufferWindowHonoursTombstones
     - lakehouse-traces/internal/storage/parquets3/fields_tombstones_span_test.go#TestTraceFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow
     - internal/compaction/tombstones_test.go#TestCompaction_HideModeRowsAreCarriedForward
+    - internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_LegacyUnscopedRecordStaysInstanceWide
   docs:
     - docs/deletion-strategy.md
     - docs/operations.md#tombstone-management
@@ -219,6 +220,7 @@
     - internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded
     - internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET
     - internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered
+    - internal/delete/handler_scope_test.go#TestDeleteAPI_LeftoversTenantView
     - internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere
   docs:
     - docs/deletion-strategy.md
@@ -231,6 +233,82 @@
   description: >-
     The alerts on retired-key eviction, non-durable tombstone records and unfinished rewrites all
     ask an operator to act on specific objects, which until now no API could name. The listing is
-    read-only and instance-wide (not tenant-scoped, like the tombstone listing beside it), bounded
-    by a limit, and reports for each entry why it is still there — the delete that is owed, the
-    upload that is held, or the rewrite state a restart would resolve from.
+    read-only, bounded by a limit, and reports for each entry why it is still there — the delete
+    that is owed, the upload that is held, or the rewrite state a restart would resolve from. Like
+    the tombstone listing beside it, a tenant sees its own objects and tombstones and the
+    global-read credential the whole instance.
+
+- id: lh.feature.deletion.tenant_scoped
+  title: Tenant-scoped deletes
+  status: shipped
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api, storage]
+  rows: [lh.delete.tenant_scoped]
+  tests:
+    - internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_ScanHidesOnlyTheScopedTenant
+    - internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_FastPathsForOtherTenantsStayExact
+    - internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_FieldEnumerationHidesOnlyTheScopedTenant
+    - internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_PureBufferWindow
+    - internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_BridgeRowsAttributedPerTenant
+    - internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_ConcurrentDeletesNeverTouchOtherTenants
+    - lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_ScanHidesOnlyTheScopedTenant
+    - internal/delete/tenant_scope_test.go#TestTenantScope_PersistsThroughDiskAndS3
+    - internal/delete/tenant_scope_test.go#TestTenantScope_RestoreMergeNeverWidens
+    - internal/delete/tenant_scope_test.go#TestScheduler_TenantScopedTombstoneRewritesOnlyItsTenant
+    - internal/compaction/tombstone_scope_test.go#TestCompaction_TenantScopedTombstoneDropsOnlyItsTenantsRows
+    - internal/delete/handler_scope_test.go#TestDeleteAPI_CreateIsScopedToTheCallersTenant
+    - internal/delete/handler_scope_test.go#TestDeleteAPI_ListGetUndeleteVerifyAreTenantScoped
+  docs:
+    - docs/deletion-strategy.md#tenant-scope
+    - docs/multi-tenancy.md#delete-path
+    - docs/operations.md#tombstone-management
+    - docs/operations.md#rolling-back
+  highlight: >-
+    **Tenant-scoped deletes**: a tombstone names the tenant that issued it and never hides, rewrites or compacts away another tenant's rows; each tenant lists and un-deletes only its own.
+  description: >-
+    A delete is resolved to its tenant exactly like a select, and the tombstone it creates acts
+    only on objects and buffered rows of that tenant — on every read path, in the rewriter and in
+    compaction — so one tenant's delete can neither hide nor remove another's data, nor cost it a
+    metadata fast path. The delete API shows each tenant only its own tombstones; the global-read
+    credential is the operator view. Records from releases before tenant scope keep acting on every
+    tenant and are counted by lakehouse_delete_tombstones_instance_wide.
+
+- id: lh.feature.deletion.upstream_api
+  title: Upstream delete API (`/delete/run_task`, `stop_task`, `active_tasks`)
+  status: shipped
+  area: deletion
+  readme_section: Deletion
+  surfaces: [api, flag]
+  rows:
+    - vl.delete.run_task.status
+    - vl.delete.stop_task.status
+    - vl.delete.active_tasks.status
+    - vt.delete.run_task.status
+    - vt.delete.stop_task.status
+    - vt.delete.active_tasks.status
+  tests:
+    - internal/internaldelete/gate_test.go#TestPublicHandler_GatesLikeHandler
+    - cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_GatedByDefault
+    - cmd/lakehouse-logs/public_delete_mount_test.go#TestPublicDeleteFlag_IsUpstreams
+    - cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_RunTaskIsTenantScoped
+    - lakehouse-traces/public_delete_test.go#TestMountPublicDelete_GatedByDefault
+    - lakehouse-traces/public_delete_test.go#TestMountPublicDelete_RunTaskIsTenantScoped
+    - lakehouse-traces/public_delete_test.go#TestUpstreamPublicDelete_MatchesVendoredVTSelect
+    - internal/delete/tasks_test.go#TestRunTask_RegistersATenantScopedTombstone
+    - internal/delete/tasks_test.go#TestRunTask_EdgeCases
+    - lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsTenantScoped
+  docs:
+    - docs/deletion-strategy.md#upstream-delete-api-delete
+    - docs/deletion-strategy.md#cluster-delete-protocol-internaldelete
+    - docs/configuration.md
+  changelog_bullets:
+    - "Upstream's delete API: `/delete/run_task`, `/delete/stop_task` and `/delete/active_tasks`."
+  highlight: >-
+    **Upstream delete API**: VictoriaLogs' and VictoriaTraces' `/delete/run_task`, `stop_task` and `active_tasks`, behind upstream's `-delete.enable`; a task becomes a tombstone scoped to the requesting tenant.
+  description: >-
+    A client written for VictoriaLogs or VictoriaTraces deletes through the same routes on the
+    lakehouse: off by default with upstream's own answer, served through upstream's handler (a
+    drift-tested copy of VictoriaTraces' in the traces binary) when `-delete.enable` and the
+    lakehouse `delete.enabled` are both on. Each task is registered as a tombstone scoped to the
+    requesting tenant, hidden at once and physically removed per `delete.default_mode`.

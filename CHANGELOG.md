@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Upstream's delete API: `/delete/run_task`, `/delete/stop_task` and `/delete/active_tasks`.** Both binaries now serve upstream's public delete routes behind upstream's `-delete.enable` (default `false`, same name, default and help): the logs binary through VictoriaLogs' `vlselect.RequestHandler`, the traces binary through a copy of VictoriaTraces' gate and delete handler that a test holds to the vendored source. Flag off, every `/delete/*` path the lakehouse does not serve itself answers upstream's `400 requests to /delete/* are disabled` (it was a `404`). Flag on, `delete.enabled: true` is also required, and `run_task` registers a tombstone scoped to the request's tenant; `stop_task` removes one by id and `active_tasks` lists them in upstream's task shape. `-delete.enable` is upstream's switch for this API; `delete.enabled` stays the switch for tombstones and the lakehouse's own `/delete/logsql/*` and `/delete/tracessql/*` API.
+
+### Changed
+
+- **Delete tasks of the cluster protocol are served instead of refused.** With `-internaldelete.enable` and `delete.enabled`, `/internal/delete/run_task` registers a tombstone with the task's id, scoped to exactly the task's `tenant_ids`, over the rows not newer than the task's timestamp that match its filter, in `delete.default_mode`. As upstream, a task naming no tenant is accepted and deletes nothing, and a task id that is already registered is refused. `active_tasks` now reports each task's tenants, filter and start time.
+
+- **The delete API answers for the request's tenant.** `/delete/{logsql,tracessql}/tombstones`, `tombstone/{id}`, `verify`, `estimate` and `leftovers` cover only the requesting tenant's tombstones and objects and report `"scope": "tenant"`; any other tombstone id answers `404`. A request with the global-read credential gets the whole instance (`"scope": "instance"`). Tombstones written by earlier releases carry no tenant and are listed and removable only with that credential; `lakehouse_delete_tombstones_instance_wide` counts them. Rolling back past this release applies tenant-scoped tombstones to every tenant; see `docs/operations.md` (Rolling back).
+
 ## [0.142.11] - 2026-09-23
 
 ### Fixed

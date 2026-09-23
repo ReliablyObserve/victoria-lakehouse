@@ -578,7 +578,15 @@ Every read (`RunQuery` and the field/stream enumeration calls) resolves the tena
 
 ### Delete Path
 
-Tombstones are tenant-scoped. Each tenant's tombstones are stored at `s3://{bucket}/{tenant}/_tombstones/`. A delete request for tenant-A cannot affect tenant-B's data.
+Tombstones are tenant-scoped. A delete request is resolved to its tenant like a select (headers,
+`X-Scope-OrgID` aliases, `0:0` without headers) and its tombstone names that tenant; query-time
+suppression, field enumeration, the rewriter and compaction apply a tombstone only to objects
+(attributed by key, as the read path does) and buffered rows of its own tenants, so a delete by
+tenant A cannot hide or remove tenant B's data. The delete API lists, verifies and un-deletes only
+the caller's own tombstones; the global-read credential sees all of them. The records themselves
+live under the deployment's one prefix (`{prefix}_tombstones/{id}.json`), each carrying its
+`Tenants`. Records written by a release before tenant scope carry none and act on every tenant.
+See [deletion-strategy.md → Tenant Scope](deletion-strategy.md#tenant-scope).
 
 ### Compaction
 

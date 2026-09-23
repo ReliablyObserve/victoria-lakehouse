@@ -314,7 +314,14 @@ storage before the API call returns:
   deployment's S3 prefix — `s3.prefix`, or else the default tenant prefix plus
   the signal, e.g. `logs/`) is attempted in the same call. Tombstones are not
   stored per tenant: in multi-tenant mode every tenant's tombstones live under
-  the one prefix (typically `logs/_tombstones/` or `traces/_tombstones/`). If S3 is unavailable the record is queued,
+  the one prefix (typically `logs/_tombstones/` or `traces/_tombstones/`), and
+  each record names the tenants it acts on (`Tenants`). A tombstone only ever
+  hides, rewrites or compacts away rows of its own tenants, and the delete API
+  shows each tenant only its own (see
+  [deletion-strategy.md → Tenant Scope](deletion-strategy.md#tenant-scope)).
+  A record without `Tenants` was written by a release before tenant scope and
+  keeps acting on every tenant; `lakehouse_delete_tombstones_instance_wide`
+  counts them, and only the global-read credential can list or remove them. If S3 is unavailable the record is queued,
   `lakehouse_delete_tombstone_persist_pending` rises above zero, and the write
   is retried on the next mutation, on every rewrite-scheduler tick, and at
   shutdown. The disk copy is authoritative for that node in the meantime.
@@ -379,7 +386,9 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_manifest_retired_settled_total` — retired keys an accepted listing proved gone. This is the drain signal: on a node compacting faster than it refreshes the gauge above never reads zero even while draining perfectly, so alert on this counter standing still, not on the gauge being non-zero
 - `lakehouse_delete_tombstone_removed_markers_evicted_total` — removed-tombstone markers dropped by their TTL or cap (never while their S3 delete is owed)
 - `lakehouse_delete_compaction_rows_removed_total` / `lakehouse_delete_compaction_keys_reaped_total` — rows and source keys compaction reaped
-- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`)
+- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`). Only tombstones acting on the request's own tenants count
+- `lakehouse_delete_tombstones_instance_wide` — active tombstones without a tenant scope (records from releases before tenant scope); they act on every tenant
+- `lakehouse_delete_tenant_scope_skips_total{site="rewrite"}` — objects of another tenant a tombstone record named, left untouched and recorded clean; non-zero means a defect or a hand-edited record (alert `LakehouseDeleteTenantScopeViolation`)
 
 **Alert on** a sustained non-zero `lakehouse_delete_tombstone_persist_pending`
 (only the local disk copy would survive a pod move), on any increase in
@@ -418,11 +427,13 @@ the alerts above tell an operator to look at:
 - `tombstone_store` — whether write-through persistence is armed, how many
   records are owed to S3, and whether the S3 restore is still pending.
 
-It is **instance-wide, not tenant-scoped** (`"scope": "instance"` in the
-payload) — like the tombstone listing next to it, because tombstones and the
-retired/pending sets are per instance, not per tenant. Treat it as an operator
-endpoint. It is read-only: nothing here deletes or repairs anything, because
-every repair is a data movement that belongs to the scheduler's retry path.
+It is **tenant-scoped** like the tombstone listing next to it: a tenant caller
+sees the entries of its own objects and the rewrites of its own tombstones
+(`"scope": "tenant"` in the payload); only a request presenting the global-read
+credential sees the whole instance (`"scope": "instance"`), which is what the
+alerts above need. It is read-only: nothing here deletes or repairs anything,
+because every repair is a data movement that belongs to the scheduler's retry
+path.
 
 ### Rolling back
 
@@ -438,6 +449,11 @@ rewrite is in flight:
   (`Superseded`). A rewrite that is half-finished when you roll back is then
   never resolved: a replacement stays unmanifested until the orphan sweep
   reclaims it, or a superseded object keeps its rows.
+- **Tenant scope:** a release before tenant-scoped deletes reads a tombstone's
+  S3 object but not its `Tenants`, so it treats every tenant-scoped tombstone
+  as **instance-wide**: it hides the matching rows of every tenant and, for
+  `permanent` and `auto` records, its rewriter rewrites every tenant's objects
+  that match.
 
 So before rolling back to a release older than this one:
 
@@ -448,6 +464,11 @@ So before rolling back to a release older than this one:
 3. Check `lakehouse_manifest_retired_delete_owed` is 0, or delete the listed
    objects yourself: the old binary does not carry the retired set forward in
    its snapshot, and a refresh would serve those objects again.
+4. When rolling back past tenant-scoped deletes, list the tombstones with the
+   global-read credential and remove (un-delete) every one that carries
+   `Tenants` in a multi-tenant deployment, or accept that the old binary applies
+   them to every tenant. A single-tenant deployment (every record scoped to
+   `0:0`, nothing else stored) is unaffected.
 
 **Configuration:**
 
