@@ -257,11 +257,24 @@ func sketchSet(fields []string) map[string]bool {
 
 // catalogFieldValues unions a field's distinct values across the partitions
 // overlapping the query's time range, served from the pmeta catalog in RAM.
-// Returns nil when the catalog has nothing for the range (cold or field not
-// catalogued) so the caller falls through to the legacy labelIndex/scan path.
+// Returns nil — and the caller answers with the row scan — unless the catalog
+// can vouch for the COMPLETE value set of every partition in range:
+//   - a partition without a catalog facet, or in which the field is high-card
+//     (threshold crossed, truncated extractor list, always-sketch), holds no
+//     enumerable values; unioning the other partitions would be a subset;
+//   - a file in range whose labels never reached the catalog (flushed by
+//     another writer, or listed from S3 before enrichment) is missing from its
+//     partition's value set;
+//   - a field the catalog holds no value for at all (a MAP attribute, a
+//     non-label column) is answered by the scan.
+//
+// The answer is hour-granular by design: a partition's value set covers the
+// whole partition hour, so a window that cuts an hour lists the values of the
+// entire hour. Hits are not counted (every value carries 1).
 // Caller guarantees s.catalog != nil.
 func (s *Storage) catalogFieldValues(q *logstorage.Query, scope tenantScope, fieldName string, limit uint64) []logstorage.ValueWithHits {
 	startNs, endNs := q.GetFilterTimeRange()
+	key := s.catalogFieldKey(fieldName)
 	seen := make(map[string]struct{}, 16)
 	valset := make(map[string]struct{})
 	// Bounded uint64→int conversion (the facet API takes int; limit can originate
@@ -277,11 +290,20 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, scope tenantScope, fie
 	// partitions' facets.
 	for _, fi := range s.filesForScope("catalog_field_values", startNs, endNs, scope) {
 		p := manifest.ExtractTenantPartition(fi.Key)
+		if !s.catalog.CatalogCoversFile(p, fi.Key) {
+			metrics.CatalogValueLookups.Add("scan", 1) // incomplete catalog → exact scan
+			return nil
+		}
 		if _, ok := seen[p]; ok {
 			continue
 		}
 		seen[p] = struct{}{}
-		for _, v := range s.catalog.FieldValues(p, fieldName, "", catLimit) {
+		vals, exact := s.catalog.FieldValuesExact(p, key, "", catLimit)
+		if !exact {
+			metrics.CatalogValueLookups.Add("scan", 1) // not enumerable here → exact scan
+			return nil
+		}
+		for _, v := range vals {
 			valset[v] = struct{}{}
 		}
 	}
@@ -303,6 +325,26 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, scope tenantScope, fie
 	}
 	metrics.CatalogValueLookups.Add("catalog", 1) // served from RAM
 	return out
+}
+
+// catalogFieldKey maps a requested field name to the name the catalog facet is
+// keyed by. The facet is fed from the flush-time label sets, which name each
+// dimension by its PARQUET column (schema.LogLabelColumns / TraceLabelColumns),
+// while a request names it the way the VictoriaLogs / VictoriaTraces API does —
+// `level` for the `severity_text` column, `name` for `span.name`,
+// `resource_attr:service.name` for `service.name`. Looking the request name up
+// verbatim missed every aliased field, and the miss fell through to paths that
+// could not answer it exactly. Only a promoted column is translated: a MAP
+// attribute (MapKey set) is not a catalogued dimension, and names outside the
+// registry (account_id, project_id) are catalogued under their own name.
+func (s *Storage) catalogFieldKey(fieldName string) string {
+	if s.registry == nil {
+		return fieldName
+	}
+	if m := s.registry.ResolveToParquet(fieldName); m != nil && m.MapKey == "" && m.ParquetColumn != "" {
+		return m.ParquetColumn
+	}
+	return fieldName
 }
 
 // catalogFieldNames unions the field names across the partitions overlapping the

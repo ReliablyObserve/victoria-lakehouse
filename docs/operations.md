@@ -606,7 +606,7 @@ while a compacted file still holds its rows. Keys under a never-delete prefix
 |------|-----------|
 | log/span query results | rows matching an active tombstone are filtered out |
 | aggregates over the unflushed window (`stats`, counts) | the pure-buffer fast path — the whole query, pipes included, run in the co-located buffer's engine — is skipped while a tombstone overlaps the window, because its aggregated result carries no row the tombstone filter could drop; the raw rows are filtered instead (`lakehouse_delete_fields_scan_fallback_total{endpoint="pure_buffer"}`) |
-| `field_values`, `streams`, `stream_ids` | a tombstoned row's values are not enumerated. The row scans read whole files, so they apply every tombstone overlapping the scanned files' rows, not only the query window. The pmeta catalog is bypassed while a tombstone overlaps the partition hours the query touches (it answers with whole-hour value sets), and the label index — which is not time-scoped — while any tombstone is active; these requests then fall back to a column-projected row scan until the tombstone retires — counted in `lakehouse_delete_fields_scan_fallback_total{endpoint}` |
+| `field_values`, `streams`, `stream_ids` | a tombstoned row's values are not enumerated. The row scans read whole files, so they apply every tombstone overlapping the scanned files' rows, not only the query window. The pmeta catalog is bypassed while a tombstone overlaps the partition hours the query touches (it answers with whole-hour value sets); these requests then fall back to a column-projected row scan until the tombstone retires — counted in `lakehouse_delete_fields_scan_fallback_total{endpoint}` |
 | `field_names` | names are still returned. On the logs binary hit **counts** are reported as unknown (`0`) whenever a tombstone overlaps the rows they were counted from — the whole of every counted file, which can extend past the query window — rather than counts that still include the deleted rows. The traces binary never reports per-field counts (every name carries `1`), so there is no count a tombstone could make wrong |
 | compaction output | rows of tombstones eligible for physical removal are dropped; `hide` and in-window rows are carried forward |
 
@@ -618,11 +618,6 @@ while a compacted file still holds its rows. Keys under a never-delete prefix
   so applying a per-row predicate there would turn a footer walk into a full
   scan of every candidate file. Reporting the counts as unknown is the honest
   answer; the names settle once the background rewriter runs.
-- The legacy label index (used when pmeta is off) is not time-scoped: it lists
-  values seen at any time, including values that do not occur in the queried
-  window. While any tombstone is active it is not consulted at all, so it can
-  no longer list a deleted value; the cost is a row scan for unfiltered
-  `field_values` requests until every tombstone has retired.
 - A tombstone whose range overlaps a file in a storage class the rewriter does
   not touch (`auto_rewrite_classes`, Glacier or IA by default) never retires:
   that file is skipped every pass and keeps the tombstone active, which is what

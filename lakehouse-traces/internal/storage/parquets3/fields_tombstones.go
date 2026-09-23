@@ -37,14 +37,6 @@ func (s *Storage) fieldsTombstones(scope tenantScope, startNs, endNs int64) []to
 	return s.scopeTombstones(scope, startNs, endNs)
 }
 
-// allTombstones returns every active tombstone acting on a tenant of scope, or
-// nil. It gates answers that are not time-scoped at all — the in-memory label
-// index lists every value any file ever carried, so a tombstone in any hour can
-// cover a value it serves.
-func (s *Storage) allTombstones(scope tenantScope) []tombstone {
-	return s.fieldsTombstones(scope, math.MinInt64, math.MaxInt64)
-}
-
 // filesTimeSpan returns the time range covered by the given files' rows,
 // widened to include the query window. The enumeration scans read every row of
 // every file they open — including rows outside the query window — so the

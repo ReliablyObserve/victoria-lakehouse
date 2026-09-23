@@ -57,7 +57,10 @@ matching values?").
    and never serves a truncated list.** For a field above the threshold (or in
    `always_sketch_fields`) the catalog stops storing values (bounding RAM) and
    its `Values()` returns nil, so `field_values` **falls through to the exact
-   legacy scan** — the answer is still exact, just slower. With
+   legacy scan** — the answer is still exact, just slower. The in-memory label
+   index is never consulted for values on that path: its values are a sample
+   (the first rows of the first files a query opened) and not time-scoped, so
+   it cannot stand in for the scan. With
    `refuse_sketch_enumeration` on, a declared `always_sketch_fields` id column
    returns *empty* instead of scanning (identical to VL/VT, which don't
    enumerate these either; threshold-crossers are NOT refused). The field's
@@ -257,6 +260,39 @@ streams the configured `always_sketch_fields` id columns into `Store.AddCardinal
 `Store.Cardinality(field)` + the gauge read it. Verified e2e
 (`TestInteg_PmetaCatalog_CardinalityTapE2E`): a real `BatchWriter` flush of 5,000
 `trace_id`s → `Cardinality` within 3 % and the gauge published.
+
+**Field names.** Facets are keyed by the Parquet column name the flush-time
+label sets use (`severity_text`, `span.name`, `service.name`). A request names
+the field the upstream way (`level`, `name`, `resource_attr:service.name`), so
+`catalogFieldValues` resolves it through the schema registry first
+(`catalogFieldKey`, both modules); only promoted columns are translated. Before
+that resolution every aliased field missed the catalog.
+
+**Completeness.** A union over partitions is exact only if every partition's
+set is. `catalogFieldValues` therefore answers only when, for every file in the
+query range, `Store.CatalogCoversFile` holds (the file-meta facet has the file
+and it carried labels) and `Store.FieldValuesExact` reports the field
+enumerable in the file's partition (a facet exists and the field is not
+high-card there). Otherwise it returns nil and the request is answered by the
+row scan. A field no partition holds any value for (a MAP attribute, a
+non-label column) is also answered by the scan.
+
+**Other writers' files.** The catalog learns a file from this process's own
+flushes and compactions (`OnFileFlush`), and from the manifest and persisted
+bundles only at startup (`WarmCatalogFromS3`, then `WarmCatalog` replays the
+enriched manifest). The periodic `RefreshManifest` adds files another pod
+flushed to the manifest but does not replay them into the catalog. On a
+multi-writer or autoscaled deployment `CatalogCoversFile` therefore stays false
+for those files until restart, and `field_values` over a range that includes
+them is answered by the row scan: exact, and slower. Replaying refreshed files
+(with their labels from the file-meta sidecar or bundle) belongs with the
+per-peer pmeta shards work.
+
+**Granularity.** A partition's value set covers the whole partition hour. A
+window that cuts an hour lists every value of that hour; the row scan, by
+contrast, checks each row against the window. Catalog answers carry `hits` 1
+per value and, with a `limit`, the first `limit` values in sort order (see the
+cross-cutting table in `docs/parity-and-gaps.md`).
 
 ## 3. Data structure — extend, don't rebuild
 

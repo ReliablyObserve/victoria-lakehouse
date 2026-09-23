@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cold `field_values` lists every value in range, not a sample.**
+  The pmeta catalog is keyed by Parquet column name and was looked up with the request's field
+  name, so every aliased field missed it: `level` (stored as `severity_text`) on the logs binary;
+  `name`, `status_message`, `resource_attr:*` and `span_attr:*` on the traces binary. The miss
+  fell through to the in-memory label index, whose values are sampled from the first rows of
+  whichever file the first query opened, and that sample was returned as the answer. That is why
+  the parity suite intermittently saw cold `field_values?field=level` return 3 of hot's 4 values.
+  The catalog lookup now resolves the name through the schema registry, and `field_values` no
+  longer answers from the label index on either binary. The catalog answers only when it holds the
+  complete value set of every partition in range: a partition without a catalog, a partition where
+  the field is high-card (more than `cardinality_threshold` values, or more than 100 in one flushed
+  file), or a file in range whose labels never reached the catalog now sends the request to the
+  column-projected row scan instead of returning the union of the remaining partitions. A catalog
+  answer lists the values of every partition hour the window touches and carries a hit count of 1
+  per value.
+
+- **Cold `field_values`, `streams` and `stream_ids` scans stay inside the query window.**
+  The row scan behind these endpoints read every row of every file overlapping the window, so a
+  file straddling a window edge contributed values, and hits, from rows outside it. Rows are now
+  checked against the window's timestamps; a file wholly inside the window is read without the
+  timestamp column, as before.
+
+- **Cold `field_names` over a window holding no objects is empty.**
+  The logs binary answered such a window from the in-memory label index, and the traces binary
+  answered every unfiltered request from it before looking at the window: names seen at any time,
+  whether or not any row in the window carries them. The parity suite's `field_names` gap (cold
+  lists 35 fields where hot lists 42) is a separate, known divergence (B2: cold field names come
+  from Parquet columns only, map keys are not expanded) and is not changed by this fix.
+
 ## [0.143.0] - 2026-09-23
 
 ### Added

@@ -107,6 +107,22 @@ func (s *Store) FieldValues(partition, field, substr string, limit int) []string
 	return nil
 }
 
+// FieldValuesExact is FieldValues with a verdict on whether the answer is the
+// partition's complete value set for the field. ok is false when the partition
+// has no catalog facet, or when the field is high-card there (it crossed the
+// cardinality threshold, arrived as a truncated extractor list, or is an
+// always-sketch field): the catalog then holds no enumerable values for it, and
+// a caller unioning partitions must not read that as "no values". ok is true
+// with no values when the partition is catalogued and simply carries no value
+// for the field.
+func (s *Store) FieldValuesExact(partition, field, substr string, limit int) ([]string, bool) {
+	c, ok := s.catalog(partition)
+	if !ok {
+		return nil, false
+	}
+	return c.valuesExact(field, substr, limit)
+}
+
 // FieldNames returns the field names present in a partition (for field_names),
 // from the catalog facet; empty if absent.
 func (s *Store) FieldNames(partition string) []string {
@@ -277,14 +293,23 @@ func (f *fieldCatalogFacet) IsHighCard(field string) bool {
 // filtered to those containing substr (empty = all), sorted, capped at limit
 // (limit <= 0 = no cap). The dropdown / typeahead answer — exact, from RAM.
 func (f *fieldCatalogFacet) Values(field, substr string, limit int) []string {
+	out, _ := f.valuesExact(field, substr, limit)
+	return out
+}
+
+// valuesExact is Values plus whether the field is enumerable here (false for a
+// high-card field). The high-card check and the value copy happen under one
+// read lock, so a concurrent Merge that tips the field high-card cannot slip
+// between them and turn "not enumerable" into "no values".
+func (f *fieldCatalogFacet) valuesExact(field, substr string, limit int) ([]string, bool) {
 	fid, ok := f.dict.fieldID(field)
 	if !ok {
-		return nil
+		return nil, true // never seen anywhere: no values, and none withheld
 	}
 	f.mu.RLock()
 	if f.highCard[fid] {
 		f.mu.RUnlock()
-		return nil // high-card: not enumerable → caller falls through to scan
+		return nil, false // high-card: not enumerable → caller falls through to scan
 	}
 	vs := f.byField[fid]
 	var ids []uint32
@@ -296,7 +321,7 @@ func (f *fieldCatalogFacet) Values(field, substr string, limit int) []string {
 	}
 	f.mu.RUnlock()
 	if ids == nil {
-		return nil
+		return nil, true
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -309,7 +334,7 @@ func (f *fieldCatalogFacet) Values(field, substr string, limit int) []string {
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
-	return out
+	return out, true
 }
 
 // Fields returns the field names present in this partition (for field_names),

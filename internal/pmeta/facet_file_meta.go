@@ -143,6 +143,16 @@ type FileMetaView struct {
 }
 
 // FileMeta returns a file's metadata from its partition's FacetFileMeta, if loaded.
+// CatalogCoversFile reports whether a file's label contribution was folded into
+// its partition's facets: the file-meta facet holds the file and it carried
+// labels. A file that reached the manifest without labels (flushed by another
+// writer, listed from S3 before enrichment) contributes nothing to the value
+// catalog, so a catalog answer over a range that includes it would be partial.
+func (s *Store) CatalogCoversFile(partition, fileKey string) bool {
+	v, ok := s.FileMeta(partition, fileKey)
+	return ok && v.Labels != nil
+}
+
 func (s *Store) FileMeta(partition, fileKey string) (FileMetaView, bool) {
 	fc, ok := s.Get(partition, FacetFileMeta)
 	if !ok {

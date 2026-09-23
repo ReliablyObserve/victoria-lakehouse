@@ -891,43 +891,6 @@ func TestUpdateLabelIndex(t *testing.T) {
 	}
 }
 
-func TestGetFieldNames_UsesLabelIndex(t *testing.T) {
-	s := testStorage()
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api", "web"})
-	s.labelIndex.Add("level", []string{"info", "error"})
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-	fields, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fields) != 2 {
-		t.Errorf("expected 2 fields from label index, got %d", len(fields))
-	}
-}
-
-func TestGetFieldValues_UsesLabelIndex(t *testing.T) {
-	s := testStorage()
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-	vals, err := s.GetFieldValues(context.Background(), nil, q, "service.name", uint64(10))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vals) != 3 {
-		t.Errorf("expected 3 values from label index, got %d", len(vals))
-	}
-}
-
 func TestMemCacheStats(t *testing.T) {
 	s := testStorage()
 	s.memCache.Put("k", []byte("v"))

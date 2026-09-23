@@ -79,47 +79,6 @@ func testFieldStorageTraces(t *testing.T, rows []fullTraceRow) *Storage {
 	return s
 }
 
-func TestGetFieldNames_FromLabelIndex(t *testing.T) {
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	s := &Storage{
-		cfg:        cfg,
-		manifest:   manifest.New("test", "traces/"),
-		registry:   schema.NewRegistry(schema.TracesProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-	}
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api", "web"})
-	s.labelIndex.Add("span_name", []string{"GET /", "POST /api"})
-	s.labelIndex.Add("trace_id", nil)
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-
-	fields, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fields) != 3 {
-		t.Errorf("expected 3 fields, got %d", len(fields))
-	}
-
-	nameSet := make(map[string]bool)
-	for _, f := range fields {
-		nameSet[f.Value] = true
-	}
-	for _, expected := range []string{"service.name", "span_name", "trace_id"} {
-		if !nameSet[expected] {
-			t.Errorf("missing field %q", expected)
-		}
-	}
-}
-
 func TestGetFieldNames_FromParquetFile(t *testing.T) {
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
 	rows := []fullTraceRow{
@@ -181,61 +140,40 @@ func TestGetFieldNames_EmptyManifest_WithFilter(t *testing.T) {
 	}
 }
 
-func TestGetFieldValues_FromLabelIndex(t *testing.T) {
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	s := &Storage{
-		cfg:        cfg,
-		manifest:   manifest.New("test", "traces/"),
-		registry:   schema.NewRegistry(schema.TracesProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-	}
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
+// TestGetFieldValues_LabelIndexIsNotAnAnswer: the in-RAM label index holds a
+// sample of values from any time, so field_values never answers from it. A
+// window holding no spans has no values (VictoriaTraces semantics), whatever
+// the label index remembers — with and without a limit.
+func TestGetFieldValues_LabelIndexIsNotAnAnswer(t *testing.T) {
+	for _, limit := range []uint64{0, 2, 10} {
+		cfg := config.Default()
+		cfg.Mode = config.ModeTraces
+		s := &Storage{
+			cfg:        cfg,
+			manifest:   manifest.New("test", "traces/"),
+			registry:   schema.NewRegistry(schema.TracesProfile),
+			memCache:   cache.NewLRU(64 * 1024 * 1024),
+			sfGroup:    cache.NewGroup(),
+			labelIndex: cache.NewLabelIndex(),
+			discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
+		}
+		soleTenantManifest(t, s)
+		s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
+		s.labelIndex.Add("span_name", []string{"GET /", "POST /", "PUT /", "DELETE /", "PATCH /"})
 
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-
-	vals, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vals) != 3 {
-		t.Errorf("expected 3 values, got %d", len(vals))
-	}
-}
-
-func TestGetFieldValues_FromLabelIndex_WithLimit(t *testing.T) {
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	s := &Storage{
-		cfg:        cfg,
-		manifest:   manifest.New("test", "traces/"),
-		registry:   schema.NewRegistry(schema.TracesProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-	}
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("span_name", []string{"GET /", "POST /", "PUT /", "DELETE /", "PATCH /"})
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-
-	vals, err := s.GetFieldValues(context.Background(), nil, q, "span_name", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vals) != 2 {
-		t.Errorf("expected 2 values (limited), got %d", len(vals))
+		q := mustParseQueryWithTime(t, "*",
+			time.Now().Add(-time.Hour).UnixNano(),
+			time.Now().UnixNano(),
+		)
+		for _, field := range []string{"service.name", "resource_attr:service.name", "span_name"} {
+			vals, err := s.GetFieldValues(context.Background(), nil, q, field, limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(vals) != 0 {
+				t.Errorf("limit=%d %s: a window with no spans answered %v from the label index", limit, field, vals)
+			}
+		}
 	}
 }
 
@@ -460,23 +398,14 @@ func TestGetStreamIDs_CancelledContext(t *testing.T) {
 }
 
 func TestGetStreamFieldValues_DelegatesToGetFieldValues(t *testing.T) {
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	s := &Storage{
-		cfg:        cfg,
-		manifest:   manifest.New("test", "traces/"),
-		registry:   schema.NewRegistry(schema.TracesProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-	}
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api"})
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	s := testFieldStorageTraces(t, []fullTraceRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "span1", ServiceName: "api", SpanName: "GET /", TraceID: "t1", SpanID: "s1", Duration: 100000000},
+	})
 
 	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
+		time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC).UnixNano(),
+		time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano(),
 	)
 
 	vals, err := s.GetStreamFieldValues(context.Background(), nil, q, "service.name", 10)

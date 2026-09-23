@@ -22,7 +22,7 @@ import (
 // catalog no longer listing it. The catalog is a union that only grows, so
 // dropping the superseded file's per-file facets (what compaction's hook does)
 // is not enough; the rewrite hook in both binaries, PmetaOnRewritten, rebuilds
-// the value sets from the files that survive. The negative controls prove this
+// the value sets from the files that survive. The negative control proves this
 // test notices when that rebuild is missing.
 func TestDeleteRewrite_CatalogForgetsTheDeletedValue(t *testing.T) {
 	for _, tc := range []struct {
@@ -34,8 +34,10 @@ func TestDeleteRewrite_CatalogForgetsTheDeletedValue(t *testing.T) {
 		// Negative control: compaction's hook drops per-file facets but the
 		// catalog union keeps the deleted value.
 		{name: "negative control: compaction hook only", hook: "compacted", wantValue: []string{"api-gateway", "order-service"}},
-		// Negative control: no hook at all.
-		{name: "negative control: no hook", hook: "", wantValue: []string{"api-gateway", "order-service"}},
+		// No hook at all: the replacement file never reaches the catalog, so
+		// the catalog does not cover the range and field_values answers from
+		// the rows (catalogFieldValues' coverage check) — correct, not stale.
+		{name: "no hook: uncovered replacement is scanned", hook: "", wantValue: []string{"api-gateway"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mock := newMockS3Server()
