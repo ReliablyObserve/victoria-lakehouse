@@ -358,7 +358,7 @@ func (s *TombstoneStore) Restore(ctx context.Context, cfg PersistenceConfig) (in
 		}
 	}
 	n := s.Count()
-	metrics.DeleteTombstonesActive.Set(int64(n))
+	s.updateActiveGauges()
 	if len(errs) > 0 {
 		return n, fmt.Errorf("restore tombstones: %s", strings.Join(errs, "; "))
 	}
@@ -433,7 +433,7 @@ func (s *TombstoneStore) RetryS3Restore(ctx context.Context) bool {
 	s.mu.Unlock()
 	metrics.DeleteTombstoneRestorePending.Set(0)
 	metrics.DeleteTombstoneRestoreAttempts.Inc("recovered")
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	logger.Infof("tombstone restore from S3 succeeded on retry; tombstones=%d", s.Count())
 	return true
 }
@@ -532,6 +532,7 @@ func (s *TombstoneStore) mergeLoadedLocked(ts Tombstone) {
 		}
 	}
 	merged.Superseded = mergeSupersessions(merged.Superseded, ts.Superseded, merged.Reaped)
+	merged.Tenants = mergeTenants(merged.Tenants, ts.Tenants)
 	s.tombstones[ts.ID] = merged
 }
 

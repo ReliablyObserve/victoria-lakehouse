@@ -138,6 +138,7 @@ func TestVerifyMetrics_AllGaugesExist(t *testing.T) {
 		{"MetricsCardinalityLimit", MetricsCardinalityLimit},
 		{"MetricsCardinalityTracked", MetricsCardinalityTracked},
 		{"DeleteTombstonesActive", DeleteTombstonesActive},
+		{"DeleteTombstonesInstanceWide", DeleteTombstonesInstanceWide},
 		{"FooterCacheEntries", FooterCacheEntries},
 	}
 
@@ -197,6 +198,7 @@ func TestVerifyMetrics_CounterVecsExist(t *testing.T) {
 		{"BloomQueriesTotal", BloomQueriesTotal},
 		{"BloomTierTransitions", BloomTierTransitions},
 		{"BloomControllerAdj", BloomControllerAdj},
+		{"DeleteTenantScopeSkips", DeleteTenantScopeSkips},
 		{"TenantRowsTotal", TenantRowsTotal},
 		{"TenantIngestionBytesTotal", TenantIngestionBytesTotal},
 		{"TenantQueriesTotal", TenantQueriesTotal},

@@ -289,7 +289,7 @@ func TestReconcileTombstones_HonoursNeverDeletePrefixes(t *testing.T) {
 		CreatedAt:    time.Now().Add(-time.Hour),
 	})
 
-	reconcileTombstones(store, []string{protected, normal}, output, defaultNeverDeletePrefixes(), map[string]bool{"ts": true}, true)
+	reconcileTombstones(store, []string{protected, normal}, output, defaultNeverDeletePrefixes(), map[string]bool{"ts": true}, true, nil)
 
 	ts, ok := store.Get("ts")
 	if !ok {
@@ -333,11 +333,11 @@ func TestReconcileTombstones_OutputCleanOnlyForTombstonesTheMergeApplied(t *test
 	}
 
 	store := newStore()
-	kept, dropped, applied := dropTombstonedLogRows(store, rows(), tDrop, delay)
+	kept, dropped, applied := dropTombstonedLogRows(store, rows(), tDrop, delay, keyScope{})
 	if dropped != 0 || len(kept) != 2 || applied["t"] {
 		t.Fatalf("fixture: the tombstone is not eligible at the drop, got dropped=%d applied=%v", dropped, applied)
 	}
-	reconcileTombstones(store, []string{src}, out, nil, applied, true)
+	reconcileTombstones(store, []string{src}, out, nil, applied, true, nil)
 	ts, active := store.Get("t")
 	if !active {
 		t.Fatalf("tombstone retired although its rows were carried into %s unfiltered", out)
@@ -349,11 +349,11 @@ func TestReconcileTombstones_OutputCleanOnlyForTombstonesTheMergeApplied(t *test
 	// The same merge one minute later applies the tombstone: now the output is
 	// clean and, with every key handled, the tombstone retires.
 	store = newStore()
-	_, dropped, applied = dropTombstonedLogRows(store, rows(), tDrop.Add(time.Minute), delay)
+	_, dropped, applied = dropTombstonedLogRows(store, rows(), tDrop.Add(time.Minute), delay, keyScope{})
 	if dropped != 1 || !applied["t"] {
 		t.Fatalf("fixture: the tombstone is eligible a minute later, got dropped=%d applied=%v", dropped, applied)
 	}
-	reconcileTombstones(store, []string{src}, out, nil, applied, true)
+	reconcileTombstones(store, []string{src}, out, nil, applied, true, nil)
 	if _, still := store.Get("t"); still {
 		t.Fatal("an output the merge filtered is clean; the tombstone must retire")
 	}
@@ -370,7 +370,7 @@ func TestReconcileTombstones_UntouchedTombstonesAreLeftAlone(t *testing.T) {
 	})
 
 	reconcileTombstones(store, []string{"logs/dt=2026-07-01/hour=00/a.parquet"},
-		"logs/dt=2026-07-01/hour=00/out.parquet", nil, map[string]bool{"other": true}, true)
+		"logs/dt=2026-07-01/hour=00/out.parquet", nil, map[string]bool{"other": true}, true, nil)
 
 	ts, _ := store.Get("other")
 	if len(ts.AffectedKeys) != 1 || len(ts.Reaped) != 0 {
@@ -379,10 +379,10 @@ func TestReconcileTombstones_UntouchedTombstonesAreLeftAlone(t *testing.T) {
 }
 
 func TestReconcileTombstones_NilStoreAndEmptyInputAreNoOps(t *testing.T) {
-	reconcileTombstones(nil, []string{"a"}, "out", nil, nil, true)
+	reconcileTombstones(nil, []string{"a"}, "out", nil, nil, true, nil)
 	store := delete.NewTombstoneStore()
-	reconcileTombstones(store, nil, "out", nil, nil, true)
-	reconcileTombstones(store, []string{"logs/_meta/x"}, "out", defaultNeverDeletePrefixes(), nil, true)
+	reconcileTombstones(store, nil, "out", nil, nil, true, nil)
+	reconcileTombstones(store, []string{"logs/_meta/x"}, "out", defaultNeverDeletePrefixes(), nil, true, nil)
 	if store.Count() != 0 {
 		t.Error("no tombstone should have been created")
 	}
@@ -531,25 +531,25 @@ func TestCompaction_DropsTombstonedSpans(t *testing.T) {
 func TestDropTombstonedRows_NilStoreAndEmptyInputAreNoOps(t *testing.T) {
 	now := time.Now()
 	logs := []schema.LogRow{{TimestampUnixNano: 1, Body: "a"}}
-	if got, n, _ := dropTombstonedLogRows(nil, logs, now, 0); len(got) != 1 || n != 0 {
+	if got, n, _ := dropTombstonedLogRows(nil, logs, now, 0, keyScope{}); len(got) != 1 || n != 0 {
 		t.Errorf("a nil store must leave the rows alone, got %d rows, %d dropped", len(got), n)
 	}
-	if got, n, _ := dropTombstonedLogRows(delete.NewTombstoneStore(), nil, now, 0); got != nil || n != 0 {
+	if got, n, _ := dropTombstonedLogRows(delete.NewTombstoneStore(), nil, now, 0, keyScope{}); got != nil || n != 0 {
 		t.Errorf("no rows in, no rows out, got %v, %d dropped", got, n)
 	}
 	// A store with no tombstone covering the range must not copy the slice.
-	if got, n, applied := dropTombstonedLogRows(delete.NewTombstoneStore(), logs, now, 0); len(got) != 1 || n != 0 || len(applied) != 0 {
+	if got, n, applied := dropTombstonedLogRows(delete.NewTombstoneStore(), logs, now, 0, keyScope{}); len(got) != 1 || n != 0 || len(applied) != 0 {
 		t.Errorf("an empty store must leave the rows alone, got %d rows, %d dropped", len(got), n)
 	}
 
 	spans := []schema.TraceRow{{TimestampUnixNano: 1, SpanID: "s"}}
-	if got, n, _ := dropTombstonedTraceRows(nil, spans, now, 0); len(got) != 1 || n != 0 {
+	if got, n, _ := dropTombstonedTraceRows(nil, spans, now, 0, keyScope{}); len(got) != 1 || n != 0 {
 		t.Errorf("a nil store must leave the spans alone, got %d spans, %d dropped", len(got), n)
 	}
-	if got, n, _ := dropTombstonedTraceRows(delete.NewTombstoneStore(), nil, now, 0); got != nil || n != 0 {
+	if got, n, _ := dropTombstonedTraceRows(delete.NewTombstoneStore(), nil, now, 0, keyScope{}); got != nil || n != 0 {
 		t.Errorf("no spans in, no spans out, got %v, %d dropped", got, n)
 	}
-	if got, n, applied := dropTombstonedTraceRows(delete.NewTombstoneStore(), spans, now, 0); len(got) != 1 || n != 0 || len(applied) != 0 {
+	if got, n, applied := dropTombstonedTraceRows(delete.NewTombstoneStore(), spans, now, 0, keyScope{}); len(got) != 1 || n != 0 || len(applied) != 0 {
 		t.Errorf("an empty store must leave the spans alone, got %d spans, %d dropped", len(got), n)
 	}
 }
@@ -581,7 +581,7 @@ func TestDropTombstonedRows_OnlyEligibleTombstonesDrop(t *testing.T) {
 				{TimestampUnixNano: 10, ServiceName: "gone"},
 				{TimestampUnixNano: 20, ServiceName: "stays"},
 			}
-			_, n, applied := dropTombstonedLogRows(store, logs, now, time.Hour)
+			_, n, applied := dropTombstonedLogRows(store, logs, now, time.Hour, keyScope{})
 			if n != tc.wantDrop {
 				t.Errorf("logs: dropped %d, want %d", n, tc.wantDrop)
 			}
@@ -594,7 +594,7 @@ func TestDropTombstonedRows_OnlyEligibleTombstonesDrop(t *testing.T) {
 				{TimestampUnixNano: 10, ServiceName: "gone", SpanID: "a"},
 				{TimestampUnixNano: 20, ServiceName: "stays", SpanID: "b"},
 			}
-			_, n, applied = dropTombstonedTraceRows(store, spans, now, time.Hour)
+			_, n, applied = dropTombstonedTraceRows(store, spans, now, time.Hour, keyScope{})
 			if n != tc.wantDrop {
 				t.Errorf("traces: dropped %d, want %d", n, tc.wantDrop)
 			}

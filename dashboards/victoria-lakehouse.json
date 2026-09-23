@@ -375,6 +375,10 @@
           "legendFormat": "active"
         },
         {
+          "expr": "lakehouse_delete_tombstones_instance_wide{instance=~\"$instance\"}",
+          "legendFormat": "instance-wide (no tenant scope)"
+        },
+        {
           "expr": "rate(lakehouse_delete_tombstones_completed_total{instance=~\"$instance\"}[5m])",
           "legendFormat": "retired/s"
         }

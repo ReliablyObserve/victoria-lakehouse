@@ -241,6 +241,17 @@ func (c *Compactor) claimOutputKey(prefix, partition string, level int) (string,
 	return "", false
 }
 
+// keyScope attributes a merge's inputs to their tenant with the manifest's own
+// key parser, so compaction applies a tenant-scoped tombstone to exactly the
+// objects the read path serves to that tenant.
+func (c *Compactor) keyScope(keys []string) keyScope {
+	ks := keyScope{keys: keys}
+	if c.manifest != nil {
+		ks.parse = c.manifest.TenantKeyParser()
+	}
+	return ks
+}
+
 func groupFilesByTenant(files []manifest.FileInfo) []tenantFileGroup {
 	type groupKey struct {
 		Prefix string
@@ -383,7 +394,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		// manifest, and deriving them from rows that are about to be dropped
 		// would publish metadata describing data the output does not contain.
 		var dropped int
-		merged, dropped, appliedTombstones = dropTombstonedLogRows(c.tombstones, merged, now, c.tombstoneDelay)
+		merged, dropped, appliedTombstones = dropTombstonedLogRows(c.tombstones, merged, now, c.tombstoneDelay, c.keyScope(inputKeys))
 		if dropped > 0 {
 			survivors = &survivorMeta{
 				labels:   schema.ExtractLogLabels(merged),
@@ -423,7 +434,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		}
 		// See the logs branch: suppression happens before any derived metadata.
 		var dropped int
-		merged, dropped, appliedTombstones = dropTombstonedTraceRows(c.tombstones, merged, now, c.tombstoneDelay)
+		merged, dropped, appliedTombstones = dropTombstonedTraceRows(c.tombstones, merged, now, c.tombstoneDelay, c.keyScope(inputKeys))
 		if dropped > 0 {
 			survivors = &survivorMeta{
 				labels:   schema.ExtractTraceLabels(merged),
@@ -577,7 +588,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// manifest that has listed the bucket (the file set it is judged against
 	// must be real) and for a tombstone store that was restored completely.
 	canRetire := c.manifest.Listed() && (c.tombstones == nil || !c.tombstones.S3RestorePending())
-	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, appliedTombstones, canRetire)
+	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, appliedTombstones, canRetire, c.keyScope(nil).parse)
 
 	return &compactGroupResult{
 		InputKeys:    inputKeys,

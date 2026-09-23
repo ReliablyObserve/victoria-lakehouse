@@ -54,6 +54,14 @@ type Tombstone struct {
 	// restart — on this node or on one that only has the S3 copy — can finish
 	// or undo every rewrite a crash interrupted. See ResolveInterruptedRewrites.
 	Superseded map[string]Supersession `json:",omitempty"`
+
+	// Tenants limits the tombstone to the rows of these tenants: query-time
+	// suppression, field listings, rewrites, compaction and the delete API all
+	// act only on objects and rows of a tenant listed here. Every delete issued
+	// by this release carries its tenants. An EMPTY list is a record from a
+	// release without tenant scope and keeps acting on every tenant, as it did
+	// when it was issued; see Scoped.
+	Tenants []TenantRef `json:",omitempty"`
 }
 
 // Supersession states, in the order a rewrite passes through them.
@@ -419,7 +427,7 @@ func (s *TombstoneStore) Add(ts Tombstone) {
 	ver := s.bumpLocked(ts.ID)
 	p := s.persist
 	s.mu.Unlock()
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	metrics.DeleteRewritesUnfinished.Set(int64(s.UnfinishedRewrites()))
 	s.persistChange(p, ts.ID, pendingUpsert, ver)
 }
@@ -482,6 +490,9 @@ func cloneTombstone(ts Tombstone) Tombstone {
 		}
 		ts.Superseded = sup
 	}
+	if ts.Tenants != nil {
+		ts.Tenants = append([]TenantRef(nil), ts.Tenants...)
+	}
 	return ts
 }
 
@@ -495,7 +506,7 @@ func (s *TombstoneStore) Remove(id string) {
 	ver := s.bumpLocked(id)
 	p := s.persist
 	s.mu.Unlock()
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	metrics.DeleteRewritesUnfinished.Set(int64(s.UnfinishedRewrites()))
 	s.persistChange(p, id, pendingDelete, ver)
 }
@@ -521,7 +532,7 @@ func (s *TombstoneStore) TryRemove(id string) error {
 	ver := s.bumpLocked(id)
 	p := s.persist
 	s.mu.Unlock()
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	s.persistChange(p, id, pendingDelete, ver)
 	return nil
 }
@@ -549,7 +560,7 @@ func (s *TombstoneStore) Complete(id string) bool {
 	s.mu.Unlock()
 
 	metrics.DeleteTombstonesCompleted.Inc()
-	metrics.DeleteTombstonesActive.Set(int64(s.Count()))
+	s.updateActiveGauges()
 	logger.Infof("tombstone completed; id=%s, query=%s, keys=%d", ts.ID, ts.Query, len(ts.AffectedKeys))
 	if observer != nil {
 		observer(ts)
@@ -588,6 +599,21 @@ func (s *TombstoneStore) ForRange(startNs, endNs int64) []Tombstone {
 		}
 	}
 	return result
+}
+
+// updateActiveGauges publishes the number of active tombstones, and how many
+// of them are instance-wide (carry no tenant scope).
+func (s *TombstoneStore) updateActiveGauges() {
+	s.mu.RLock()
+	n, wide := len(s.tombstones), 0
+	for _, ts := range s.tombstones {
+		if !ts.Scoped() {
+			wide++
+		}
+	}
+	s.mu.RUnlock()
+	metrics.DeleteTombstonesActive.Set(int64(n))
+	metrics.DeleteTombstonesInstanceWide.Set(int64(wide))
 }
 
 // Count returns the number of tombstones in the store.

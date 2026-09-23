@@ -121,7 +121,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// Pre-filter runs in each worker goroutine without locks.
 	// Only the final writeBlock call is serialized.
 	var writeBlockPanic atomic.Bool
-	preFilter := func(db *logstorage.DataBlock) *logstorage.DataBlock {
+	preFilter := func(db *logstorage.DataBlock, tss []tombstone) *logstorage.DataBlock {
 		if writeBlockPanic.Load() {
 			return nil
 		}
@@ -140,8 +140,8 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		if db == nil || db.RowsCount() == 0 {
 			return nil
 		}
-		if s.tombstones != nil {
-			db = s.filterTombstonedRows(db, startNs, endNs)
+		if len(tss) > 0 {
+			db = suppressTombstonedRows(db, tss)
 			if db == nil || db.RowsCount() == 0 {
 				return nil
 			}
@@ -150,40 +150,51 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	var wbMu sync.Mutex
-	filteredWriteBlock := func(workerID uint, db *logstorage.DataBlock) {
-		db = preFilter(db)
-		if db == nil {
-			return
-		}
-		rowsEmitted.Add(int64(db.RowsCount()))
-		sz := dataBlockApproxBytes(db)
-		liveBytes.Add(sz)
-		wbMu.Lock()
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					writeBlockPanic.Store(true)
-					logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
-				}
+	writeBlockWith := func(tss []tombstone) logstorage.WriteDataBlockFunc {
+		return func(workerID uint, db *logstorage.DataBlock) {
+			db = preFilter(db, tss)
+			if db == nil {
+				return
+			}
+			rowsEmitted.Add(int64(db.RowsCount()))
+			sz := dataBlockApproxBytes(db)
+			liveBytes.Add(sz)
+			wbMu.Lock()
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						writeBlockPanic.Store(true)
+						logger.Warnf("writeBlock panic recovered (unsupported pipe in query): %v", r)
+					}
+				}()
+				writeBlock(workerID, db)
 			}()
-			writeBlock(workerID, db)
-		}()
-		wbMu.Unlock()
-		liveBytes.Add(-sz)
+			wbMu.Unlock()
+			liveBytes.Add(-sz)
+		}
 	}
 
 	// Tombstones are applied to the blocks this function emits, so every path
 	// that emits something other than raw rows — manifest-answered counts,
 	// label-aggregate pushdown, and the pure-buffer path's aggregated result —
 	// is only usable while no tombstone overlaps the window.
-	hasTombstones := s.tombstones != nil && len(s.tombstones.ForRange(startNs, endNs)) > 0
+	//
+	// Only the tombstones acting on this request's tenants count: another
+	// tenant's delete changes nothing here, so it must not cost this request
+	// its fast paths either. Each emission source — an object, a buffered
+	// tenant — gets the write function that applies its own tenant's
+	// tombstones (tombstoneSink).
+	scope := scopeFor(ctx, tenantIDs)
+	queryTombstones := s.scopeTombstones(scope, startNs, endNs)
+	hasTombstones := len(queryTombstones) > 0
+	sink := newTombstoneSink(scope, queryTombstones, s.keyTenantParser(), writeBlockWith)
+	filteredWriteBlock := sink.uniform
 
 	// Tenant-scoped file enumeration. VT/VL hand us exactly one tenant per
 	// request (0:0 when no headers are present); only a validated global-read
 	// caller widens the scope. Everything downstream — the fast paths, the scan
 	// and the buffer bridge — works off THIS list. Twin of
 	// internal/storage/parquets3/storage_query.go.
-	scope := scopeFor(ctx, tenantIDs)
 	files := s.filesForScope("query", startNs, endNs, scope)
 	if len(files) == 0 {
 		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
@@ -206,7 +217,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet (Jaeger's GetTrace narrow-window lookup against trace_ids
 		// just observed in the previous search step is the canonical case).
 		// Falling through here keeps the buffer query in the flow.
-		s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 		return nil
 	}
 
@@ -236,7 +247,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 			return nil
 		}
 		files = remaining
@@ -253,7 +264,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 			return nil
 		}
 		files = remaining
@@ -262,7 +273,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.preFilterFiles(files, queryStr)
 
 	if len(files) == 0 {
-		s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 		return nil
 	}
 
@@ -280,7 +291,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 {
 		files = s.filterFilesByTraceIdx(ctx, files, tids)
 		if len(files) == 0 {
-			s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 			return nil
 		}
 	}
@@ -335,7 +346,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.fileWorkerLoop(ctx, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+			s.fileWorkerLoop(ctx, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink)
 		}()
 	}
 	wg.Wait()
@@ -350,7 +361,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	s.queryBufferBridge(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, filteredWriteBlock)
+	s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
 
 	return nil
 }
@@ -360,7 +371,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 // drains one file from taskCh, traverses the K8s-style FileWorkers
 // bound (when configured), and invokes processOneFile to run the I/O.
 // Mirror of the logs module helper.
-func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, sink *tombstoneSink) {
 	for fi := range taskCh {
 		if err := ctx.Err(); err != nil {
 			firstErr.CompareAndSwap(nil, err)
@@ -382,11 +393,11 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 			}
 			func() {
 				defer rel()
-				s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+				s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink.forKey(fi.Key))
 			}()
 			continue
 		}
-		s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, filteredWriteBlock)
+		s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink.forKey(fi.Key))
 	}
 }
 
@@ -831,7 +842,16 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query,
 	return true
 }
 
+// queryBufferBridge is queryBufferBridgeTo for a caller with one write
+// function for every tenant.
 func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+	s.queryBufferBridgeTo(ctx, startNs, endNs, wm, q, tenantIDs, uniformSink(filteredWriteBlock))
+}
+
+// queryBufferBridgeTo serves the unflushed rows of the request's tenants.
+// Each tenant's rows go through sink.forTenant, so a tenant-scoped
+// tombstone only hides the buffered rows of its own tenants.
+func (s *Storage) queryBufferBridgeTo(ctx context.Context, startNs, endNs int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
 	// The watermark boundary exists ONLY to stop aggregation queries
 	// (count()/stats) from counting a row twice across the buffer↔Parquet
 	// overlap. trace_id-filtered queries are span/log RETRIEVAL (Jaeger/Tempo
@@ -868,7 +888,7 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, w
 			qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
 			qBuf.DropAllPipes()
 			qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, qBuf, false, nil)
-			if err := s.localBuffer.RunQuery(qctx, filteredWriteBlock); err != nil {
+			if err := s.localBuffer.RunQuery(qctx, sink.forTenant(id)); err != nil {
 				logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
 			}
 		}
@@ -893,21 +913,11 @@ func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, w
 	case config.ModeLogs:
 		bufRows, _ := s.bufferBridge.QueryLogs(ctx, fetchStartNs, endNs, scope)
 		bufRows = logRowsAfterWatermarks(bufRows, startNs, wm)
-		if len(bufRows) > 0 {
-			db := s.logRowsToDataBlock(scope, "bridge_logs", bufRows)
-			if db != nil && db.RowsCount() > 0 {
-				filteredWriteBlock(0, db)
-			}
-		}
+		s.emitBridgeLogRows(scope, bufRows, sink)
 	case config.ModeTraces:
 		bufRows, _ := s.bufferBridge.QueryTraces(ctx, fetchStartNs, endNs, scope)
 		bufRows = traceRowsAfterWatermarks(bufRows, startNs, wm)
-		if len(bufRows) > 0 {
-			db := s.traceRowsToDataBlock(scope, "bridge_traces", bufRows)
-			if db != nil && db.RowsCount() > 0 {
-				filteredWriteBlock(0, db)
-			}
-		}
+		s.emitBridgeTraceRows(scope, bufRows, sink)
 	}
 }
 

@@ -134,7 +134,7 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	h.store.Add(ts)
 	metrics.DeleteTombstonesTotal.Inc()
-	metrics.DeleteTombstonesActive.Set(int64(h.store.Count()))
+	h.store.updateActiveGauges()
 
 	logger.Infof("tombstone created; id=%s, query=%s, mode=%s, affected_files=%d", ts.ID, query, mode, len(affectedKeys))
 
@@ -260,7 +260,7 @@ func (h *Handler) handleTombstoneByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		metrics.DeleteTombstonesActive.Set(int64(h.store.Count()))
+		h.store.updateActiveGauges()
 
 		logger.Infof("tombstone removed; id=%s", id)
 		writeJSON(w, http.StatusOK, map[string]any{

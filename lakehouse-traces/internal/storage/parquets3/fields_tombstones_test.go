@@ -182,7 +182,7 @@ func TestTraceRowTombstoned(t *testing.T) {
 
 func TestTraceFieldsTombstones_NilStore(t *testing.T) {
 	s := testStorage()
-	if got := s.fieldsTombstones(0, 1<<62); got != nil {
+	if got := s.fieldsTombstones(tenantScope{all: true}, 0, 1<<62); got != nil {
 		t.Errorf("a storage with no tombstone store must report none, got %v", got)
 	}
 }
@@ -221,15 +221,15 @@ func TestTraceFieldsTombstones_EmptyStoreAndNonOverlappingWindow(t *testing.T) {
 	store := delete.NewTombstoneStore()
 	s.SetTombstoneStore(store)
 
-	if got := s.fieldsTombstones(0, 1<<62); got != nil {
+	if got := s.fieldsTombstones(tenantScope{all: true}, 0, 1<<62); got != nil {
 		t.Errorf("an empty store must report none, got %v", got)
 	}
 
 	store.Add(delete.Tombstone{ID: "ts", Query: "*", StartNs: 100, EndNs: 200, Mode: "hide"})
-	if got := s.fieldsTombstones(1000, 2000); got != nil {
+	if got := s.fieldsTombstones(tenantScope{all: true}, 1000, 2000); got != nil {
 		t.Errorf("a tombstone outside the window must report none, got %v", got)
 	}
-	if got := s.fieldsTombstones(150, 160); len(got) != 1 {
+	if got := s.fieldsTombstones(tenantScope{all: true}, 150, 160); len(got) != 1 {
 		t.Errorf("an overlapping tombstone must be reported, got %v", got)
 	}
 }

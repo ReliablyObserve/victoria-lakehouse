@@ -232,11 +232,11 @@ func TestFieldNames_HitsAreUnknownUnderATombstone(t *testing.T) {
 
 func TestFieldsTombstones_NilStoreAndEmptyRange(t *testing.T) {
 	s := testStorage()
-	if got := s.fieldsTombstones(0, 1<<62); got != nil {
+	if got := s.fieldsTombstones(tenantScope{all: true}, 0, 1<<62); got != nil {
 		t.Errorf("a storage with no tombstone store must report none, got %v", got)
 	}
 	s.SetTombstoneStore(delete.NewTombstoneStore())
-	if got := s.fieldsTombstones(0, 1<<62); got != nil {
+	if got := s.fieldsTombstones(tenantScope{all: true}, 0, 1<<62); got != nil {
 		t.Errorf("an empty store must report none, got %v", got)
 	}
 }
