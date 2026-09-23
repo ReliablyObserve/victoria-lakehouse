@@ -20,6 +20,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/lifecycle"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -1111,6 +1112,17 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
+// mountInternalProtocol mounts the cluster protocol for /internal/select/* and
+// /internal/delete/*. /internal/delete/* goes through upstreamInternalDelete
+// (VT's gate, internal_delete.go); internaldelete.Handler only adds the
+// lakehouse delete.enabled requirement after upstream's flag.
+func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
+	mux.HandleFunc("/internal/select/", func(w http.ResponseWriter, r *http.Request) {
+		internalselect.RequestHandler(r.Context(), w, r)
+	})
+	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled, upstreamInternalDelete))
+}
+
 func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -1220,12 +1232,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	if cfg.SelectEnabled() {
 		internalselect.Init()
-
-		internalHandler := func(w http.ResponseWriter, r *http.Request) {
-			internalselect.RequestHandler(r.Context(), w, r)
-		}
-		mux.HandleFunc("/internal/select/", internalHandler)
-		mux.HandleFunc("/internal/delete/", internalHandler)
+		mountInternalProtocol(mux, cfg.Delete.Enabled)
 
 		publicHandler := selectapi.NewHandler(store, cfg)
 		publicHandler.Register(mux)

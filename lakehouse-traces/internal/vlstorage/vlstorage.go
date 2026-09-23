@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
@@ -146,19 +146,10 @@ func (a *adapter) GetTenantIDs(_ context.Context, start, end int64) ([]logstorag
 	return []logstorage.TenantID{{AccountID: 0, ProjectID: 0}}, nil
 }
 
-func (a *adapter) DeleteRunTask(_ context.Context, taskID string, timestamp int64, _ []logstorage.TenantID, f *logstorage.Filter) error {
-	if a.tombstones == nil {
-		return nil
-	}
-	a.tombstones.Add(delete.Tombstone{
-		ID:        taskID,
-		Query:     f.String(),
-		StartNs:   0,
-		EndNs:     timestamp,
-		CreatedAt: time.Now(),
-		Mode:      "auto",
-	})
-	return nil
+func (a *adapter) DeleteRunTask(_ context.Context, _ string, _ int64, _ []logstorage.TenantID, _ *logstorage.Filter) error {
+	// Refused, never widened: a tombstone would apply to every tenant, while
+	// the task names only tenant_ids. See internaldelete.ErrRunTaskNotTenantScoped.
+	return internaldelete.ErrRunTaskNotTenantScoped
 }
 
 func (a *adapter) DeleteStopTask(_ context.Context, taskID string) error {

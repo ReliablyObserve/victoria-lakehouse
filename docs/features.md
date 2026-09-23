@@ -826,9 +826,9 @@ The two constraints that usually conflict — "erase it now" and "do not pay to 
 
 **`lakehouse-logs`**: `/delete/logsql/*` endpoints. **`lakehouse-traces`**: `/delete/tracessql/*` endpoints.
 
-Both binaries expose the same delete surface in their own query language, including listing active tombstones and addressing one by id, so deletion is scriptable and auditable rather than an out-of-band S3 operation.
+Both binaries expose the same delete surface in their own query language, including listing active tombstones and addressing one by id, so deletion is scriptable and auditable rather than an out-of-band S3 operation. The upstream cluster delete protocol (`/internal/delete/*`) is served through upstream's own handler (VictoriaLogs' vlselect in the logs binary): only with `-internaldelete.enable` (default off), plus `delete.enabled`, and `run_task` is refused because tombstones are not tenant-scoped.
 
-- Verification: rows: `lh.delete.tombstones.status` (pass, pending), `lh.delete.tombstone_by_id.status` (pass, pending) · tests: `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `internal/delete/handler_test.go#TestHandler_handleListTombstones_WithTombstones`, `internal/delete/handler_test.go#TestHandler_TraceMode_Delete`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`
+- Verification: rows: `lh.delete.tombstones.status` (pass, pending), `lh.delete.tombstone_by_id.status` (pass, pending) · tests: `internal/delete/handler_test.go#TestHandler_handleDelete_Valid`, `internal/delete/handler_test.go#TestHandler_handleListTombstones_WithTombstones`, `internal/delete/handler_test.go#TestHandler_TraceMode_Delete`, `tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery`, `internal/internaldelete/gate_test.go#TestHandler_FlagOffLeavesTheAnswerToUpstream`, `internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_DefaultAnswersLikeUpstreamAndHidesNothing`, `internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsRefusedNotWidened`, `lakehouse-traces/internal_delete_mount_test.go#TestUpstreamInternalDelete_MatchesVendoredVTSelect`, `cmd/lakehouse-logs/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault`, `lakehouse-traces/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault`
 - Docs: `docs/deletion-strategy.md`
 
 ### ✅ Delete cost estimation
@@ -1409,7 +1409,7 @@ A fast wrong answer is not a benchmark result. The harness validates every itera
 
 ### ✅ print-default-config and the config-drift gate
 
-`lh.feature.ops.config_drift_gate` · status: shipped · since: the release after v0.142.8 · surfaces: flag
+`lh.feature.ops.config_drift_gate` · status: shipped · since: v0.142.9 · surfaces: flag
 
 **Config drift gate**: `print-default-config` emits every config key with its default, merge rule, profile overrides and flag as JSON, and CI regenerates the docs and Helm values from it so a hand-edit that disagrees with the code defaults fails the build.
 
@@ -1417,7 +1417,7 @@ The code defaults are the single source of truth for configuration. `print-defau
 
 - Verification: rows: `lh.flag.print_default_config` (pass, pending) · tests: `cmd/lakehouse-logs/config_surface_test.go`, `lakehouse-traces/config_surface_test.go`, `internal/config/surface_test.go`, `internal/config/field_docs_test.go`, `internal/config/docs_examples_test.go`
 - Docs: `docs/configuration.md`
-- Changelog: the release after `0.142.8`
+- Changelog: `0.142.9`
 
 ### ✅ Configuration profiles
 

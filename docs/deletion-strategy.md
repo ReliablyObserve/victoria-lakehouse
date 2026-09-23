@@ -273,6 +273,48 @@ Tombstone-based deletion **satisfies GDPR right to erasure** requirements becaus
 | Un-delete | Remove tombstone | Not possible | Not possible |
 | Delete cost estimation | Built-in API | N/A | N/A |
 
+## Cluster Delete Protocol (`/internal/delete/*`)
+
+A VictoriaLogs or VictoriaTraces cluster deletes through its storage nodes:
+`vlselect`/`vtselect` fans `/internal/delete/run_task`, `stop_task` and
+`active_tasks` out to every storage node. The lakehouse serves this protocol
+through upstream's own code, behind the same switch: the logs binary mounts
+VictoriaLogs' `vlselect.RequestHandler` for `/internal/delete/*`, so the flag,
+its help text and its answers are upstream's. The traces binary carries a
+verbatim copy of VictoriaTraces' gate (checked against the vendored source by a
+test) until it serves `/select/*` through `vtselect` as well — VT's and VL's
+select packages register the same flag names and cannot be linked into one
+binary.
+
+- **`-internaldelete.enable`** (default `false`, same name and default as
+  upstream). While it is off, every `/internal/delete/*` request answers
+  upstream's own error — `400 requests to /internal/delete/* are disabled; pass
+  -internaldelete.enable command-line flag for enabling them` — exactly like a
+  VictoriaLogs or VictoriaTraces node started with its defaults, whatever
+  `delete.enabled` says.
+- With the flag on, the lakehouse also requires **`delete.enabled: true`**,
+  because the protocol writes into the lakehouse tombstone store.
+- **`run_task` is refused** even when both are on. Upstream applies a delete task
+  only to the request's `tenant_ids`, while lakehouse tombstones are
+  instance-wide (see [Tombstone Management](operations.md#tombstone-management)),
+  so honouring the task would hide matching rows of every tenant. The request
+  fails with an error instead of being widened; tenant-scoped tombstones are
+  the prerequisite for serving it. `stop_task` and `active_tasks` work.
+
+Use the lakehouse delete API above for deletes against the cold tier.
+
+Mounting `vlselect.RequestHandler` also registers VictoriaLogs' other select
+flags in the logs binary, so `-help` lists `-search.maxQueryDuration`,
+`-search.maxConcurrentRequests`, `-search.maxQueueDuration`, `-select.disable`,
+`-internalselect.disable`, `-delete.enable`, `-search.logSlowQueryDuration` and
+`-vmalert.proxyURL`. The lakehouse's own `/select/*` handling does not read them
+yet — `query.timeout` and `query.max_concurrent` govern the lakehouse select path,
+and the lakehouse delete API under `/delete/logsql/*` is governed by
+`delete.enabled`, not `-delete.enable` — so setting any of them makes
+lakehouse-logs refuse to start instead of silently ignoring it (as before
+vlselect was linked, when they were undefined). Moving `/select/*` onto
+upstream's handler, which will honour them, is tracked separately.
+
 ## Traces Delete Support
 
 The same three-tier deletion strategy applies to `lakehouse-traces`. All endpoints use the `/delete/tracessql/*` prefix instead of `/delete/logsql/*`.

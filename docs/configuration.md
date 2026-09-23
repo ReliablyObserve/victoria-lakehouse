@@ -865,6 +865,7 @@ binary reads; that list is informational and drives the "Not read." marks above.
 |---|---|---|
 | `--httpListenAddr` | `:9428` / `:10428` (auto) | HTTP listen address |
 | `--loggerLevel` | `INFO` | Log level (DEBUG, INFO, WARN, ERROR) |
+| `--internaldelete.enable` | `false` | Upstream's flag: serve the cluster delete protocol (`/internal/delete/*`). Off: every request gets upstream's "disabled" answer. On: also needs `delete.enabled: true`; `run_task` is refused until tombstones are tenant-scoped (see [deletion-strategy.md](deletion-strategy.md#cluster-delete-protocol-internaldelete)). The logs binary also lists VictoriaLogs' other select flags (`-search.maxQueryDuration`, `-select.disable`, …); the lakehouse `/select/*` path does not read them yet, so setting one makes lakehouse-logs refuse to start |
 
 ## Timeout Summary
 

@@ -30,11 +30,9 @@ func TestMemLeak_Adapter_TombstoneAddRemoveCycles(t *testing.T) {
 	for c := 0; c < cycles; c++ {
 		for i := 0; i < itemsPerCycle; i++ {
 			id := fmt.Sprintf("task-%d-%d", c, i)
-			q, _ := logstorage.ParseFilter("level:error")
-			err := a.DeleteRunTask(context.Background(), id, time.Now().UnixNano(), nil, q)
-			if err != nil {
-				t.Fatalf("DeleteRunTask failed: %v", err)
-			}
+			// run_task is refused (tombstones are not tenant-scoped), so the
+			// cycle adds through the store and removes through the adapter.
+			store.Add(delete.Tombstone{ID: id, Query: "level:error", EndNs: time.Now().UnixNano(), CreatedAt: time.Now(), Mode: "auto"})
 		}
 		for i := 0; i < itemsPerCycle; i++ {
 			id := fmt.Sprintf("task-%d-%d", c, i)

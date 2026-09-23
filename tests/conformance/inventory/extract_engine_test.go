@@ -95,8 +95,8 @@ func TestExtractFlags_Fixture(t *testing.T) {
 		t.Fatalf("flags missing: %v", items)
 	}
 	for _, it := range items {
-		if it.Linked {
-			t.Fatalf("vlselect is not linked into LH; got Linked=true for %v", it)
+		if it.Linked && !HonouredFlags["vl"][it.Name] {
+			t.Fatalf("vlselect's flags are not honoured by LH (only HonouredFlags are); got Linked=true for %v", it)
 		}
 	}
 }

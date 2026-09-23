@@ -49,6 +49,12 @@
     - internal/delete/handler_test.go#TestHandler_handleListTombstones_WithTombstones
     - internal/delete/handler_test.go#TestHandler_TraceMode_Delete
     - tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery
+    - internal/internaldelete/gate_test.go#TestHandler_FlagOffLeavesTheAnswerToUpstream
+    - internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_DefaultAnswersLikeUpstreamAndHidesNothing
+    - internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsRefusedNotWidened
+    - lakehouse-traces/internal_delete_mount_test.go#TestUpstreamInternalDelete_MatchesVendoredVTSelect
+    - cmd/lakehouse-logs/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault
+    - lakehouse-traces/internal_delete_mount_test.go#TestMountInternalProtocol_DeleteIsGatedByDefault
   docs:
     - docs/deletion-strategy.md
   highlight: >-
@@ -56,7 +62,10 @@
   description: >-
     Both binaries expose the same delete surface in their own query language, including listing
     active tombstones and addressing one by id, so deletion is scriptable and auditable rather
-    than an out-of-band S3 operation.
+    than an out-of-band S3 operation. The upstream cluster delete protocol (`/internal/delete/*`)
+    is served through upstream's own handler (VictoriaLogs' vlselect in the logs binary): only with
+    `-internaldelete.enable` (default off), plus `delete.enabled`, and `run_task` is refused because
+    tombstones are not tenant-scoped.
 
 - id: lh.feature.deletion.tombstones
   title: Tombstones and query-time suppression

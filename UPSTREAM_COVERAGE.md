@@ -301,7 +301,7 @@ traceql: 9/9 covered by at least one registry row.
 
 ## Upstream flag (181)
 
-flag: 26/181 covered by at least one registry row.
+flag: 28/181 covered by at least one registry row.
 
 | flag | Source | Rows | Status |
 |---|---|---|---|
@@ -333,8 +333,8 @@ flag: 26/181 covered by at least one registry row.
 | `insert.maxFieldsPerLine` | `app/vlinsert/insertutil/flags.go` | vl.flag.insert_max_fields_per_line | 🟡 declared, not yet executed |
 | `insert.maxFieldsPerLine` | `app/vtinsert/insertutil/flags.go` |  | ⚪ no row |
 | `insert.maxLineSizeBytes` | `app/vlinsert/insertutil/flags.go` | vl.flag.insert_max_line_size_bytes | 🟡 declared, not yet executed |
-| `internaldelete.enable` | `app/vlselect/main.go` |  | ⚪ not linked into LH, no row |
-| `internaldelete.enable` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
+| `internaldelete.enable` | `app/vlselect/main.go` | vl.flag.internaldelete_enable | 🟡 declared, not yet executed |
+| `internaldelete.enable` | `app/vtselect/main.go` | vt.flag.internaldelete_enable | 🟡 declared, not yet executed |
 | `internalinsert.disable` | `app/vlinsert/main.go` |  | ⚪ no row |
 | `internalinsert.disable` | `app/vtinsert/main.go` |  | ⚪ no row |
 | `internalinsert.maxRequestSize` | `app/vlinsert/internalinsert/internalinsert.go` |  | ⚪ no row |

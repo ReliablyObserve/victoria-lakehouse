@@ -2,12 +2,14 @@ package vlstorage
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
@@ -198,34 +200,37 @@ func TestGetFieldNames_HiddenFieldsFilters(t *testing.T) {
 	}
 }
 
-func TestDeleteRunTask_NilTombstones_NoPanic(t *testing.T) {
+func TestDeleteRunTask_NilTombstones_IsRefused(t *testing.T) {
 	a := &adapter{store: mockStore{}, tombstones: nil}
 	err := a.DeleteRunTask(context.Background(), "task-1", time.Now().UnixNano(), nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, internaldelete.ErrRunTaskNotTenantScoped) {
+		t.Fatalf("err = %v, want ErrRunTaskNotTenantScoped", err)
 	}
 }
 
-func TestDeleteRunTask_AddsTombstone(t *testing.T) {
+// A delete task names tenant_ids, but a tombstone applies to every tenant.
+// Honouring the task would let one tenant hide another tenant's rows, so it is
+// refused and no tombstone is written — whatever tenants the task names.
+func TestDeleteRunTask_IsRefusedAndHidesNothing(t *testing.T) {
 	ts := delete.NewTombstoneStore()
 	a := &adapter{store: mockStore{}, tombstones: ts}
-
-	taskID := "delete-task-42"
-	timestamp := time.Now().UnixNano()
-
-	err := a.DeleteRunTask(context.Background(), taskID, timestamp, nil, nil)
+	f, err := logstorage.ParseFilter("level:error")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
-	if ts.Count() != 1 {
-		t.Fatalf("expected 1 tombstone, got %d", ts.Count())
+	for _, tenants := range [][]logstorage.TenantID{
+		nil,
+		{{AccountID: 0, ProjectID: 0}},
+		{{AccountID: 7, ProjectID: 3}},
+		{{AccountID: 0, ProjectID: 0}, {AccountID: 7, ProjectID: 3}},
+	} {
+		err := a.DeleteRunTask(context.Background(), "delete-task-42", time.Now().UnixNano(), tenants, f)
+		if !errors.Is(err, internaldelete.ErrRunTaskNotTenantScoped) {
+			t.Fatalf("tenants %v: err = %v, want ErrRunTaskNotTenantScoped", tenants, err)
+		}
 	}
-	stored, ok := ts.Get(taskID)
-	if !ok {
-		t.Fatal("tombstone not found")
-	}
-	if stored.EndNs != timestamp {
-		t.Errorf("EndNs = %d, want %d", stored.EndNs, timestamp)
+	if n := ts.Count(); n != 0 {
+		t.Fatalf("tombstones = %d, want 0: a refused task must not hide anything", n)
 	}
 }
 
