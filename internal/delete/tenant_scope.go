@@ -103,14 +103,27 @@ func (t *Tombstone) AppliesToKey(parse KeyTenantFunc, key string) bool {
 	if !t.Scoped() {
 		return true
 	}
+	return anyTenantOwnsKey(t.Tenants, parse, key)
+}
+
+// KeyBelongsTo reports whether the object at key is tenant's data, attributed
+// the way the read path attributes objects (see AppliesToKey).
+func KeyBelongsTo(parse KeyTenantFunc, key string, tenant TenantRef) bool {
+	return anyTenantOwnsKey([]TenantRef{tenant}, parse, key)
+}
+
+func anyTenantOwnsKey(tenants []TenantRef, parse KeyTenantFunc, key string) bool {
 	if parse == nil {
 		parse = DefaultKeyTenant
 	}
 	account, project, ok := parse(key)
-	if !ok {
-		return t.AppliesToTenant(0, 0)
-	}
-	for _, tn := range t.Tenants {
+	for _, tn := range tenants {
+		if !ok {
+			if tn.AccountID == 0 && tn.ProjectID == 0 {
+				return true // an untenanted legacy key is the default tenant's
+			}
+			continue
+		}
 		if account != strconv.FormatUint(uint64(tn.AccountID), 10) {
 			continue
 		}

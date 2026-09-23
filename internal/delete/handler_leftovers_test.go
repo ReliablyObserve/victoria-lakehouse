@@ -34,7 +34,10 @@ func newLeftoverHandler(t *testing.T) (*Handler, *lhmanifest.Manifest, *Tombston
 	t.Helper()
 	m := newTestManifest(t, map[string]int64{"logs/dt=2026-03-01/hour=07/live.parquet": 10})
 	store := NewTombstoneStore()
-	h := NewHandler(store, &leftoverManifest{m: m}, NewStorageClassDetector(nil), defaultCfg(), "logs")
+	// The operator's view: every request here presents the global-read
+	// credential. The tenant view is covered in handler_scope_test.go.
+	h := NewHandler(store, &leftoverManifest{m: m}, NewStorageClassDetector(nil), defaultCfg(), "logs",
+		WithGlobalReadAuthorizer(func(*http.Request) bool { return true }))
 	return h, m, store
 }
 

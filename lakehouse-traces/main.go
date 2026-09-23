@@ -1314,7 +1314,11 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	if cfg.Delete.Enabled && tombstoneStore != nil {
 		mq := &manifestQuerierAdapter{m: store.Manifest()}
-		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, "traces")
+		// Tenant callers manage only their own tombstones; the global-read
+		// credential (the one that widens a select) is the operator's view.
+		globalRead := tenant.NewGlobalReadAuth(cfg.Tenant.GlobalReadHeader, cfg.Tenant.GlobalReadValue, cfg.Tenant.GlobalReadToken)
+		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, "traces",
+			delete.WithGlobalReadAuthorizer(func(r *http.Request) bool { return globalRead.Enabled() && globalRead.Authorize(r) }))
 		dh.Register(mux)
 	}
 
@@ -2222,6 +2226,12 @@ type manifestQuerierAdapter struct {
 func (a *manifestQuerierAdapter) RetiredKeys() []manifest.RetiredKey { return a.m.RetiredKeys() }
 
 func (a *manifestQuerierAdapter) PendingKeys() []manifest.PendingKey { return a.m.PendingKeys() }
+
+// TenantKeyParser lends the delete API the manifest's key → tenant attribution,
+// so a tenant's delete, estimate and leftovers cover exactly its own objects.
+func (a *manifestQuerierAdapter) TenantKeyParser() func(key string) (account, project string, ok bool) {
+	return a.m.TenantKeyParser()
+}
 
 func (a *manifestQuerierAdapter) GetFilesForRange(startNs, endNs int64) []delete.FileInfo {
 	mFiles := a.m.GetFilesForRange(startNs, endNs)

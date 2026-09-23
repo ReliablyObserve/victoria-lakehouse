@@ -144,7 +144,7 @@ func TestTryRemove(t *testing.T) {
 	if err := store.TryRemove("missing"); !errors.Is(err, ErrTombstoneNotFound) {
 		t.Fatalf("missing id: %v", err)
 	}
-	store.Add(Tombstone{ID: "busy", Mode: "permanent",
+	store.Add(Tombstone{ID: "busy", Mode: "permanent", Tenants: []TenantRef{{}},
 		Superseded: map[string]Supersession{"src": {NewKey: "n", State: SupersessionPublished}}})
 	if err := store.TryRemove("busy"); !errors.Is(err, ErrRewriteInProgress) {
 		t.Fatalf("an un-delete mid-rewrite must be refused: %v", err)
@@ -163,7 +163,7 @@ func TestTryRemove(t *testing.T) {
 
 func TestHandler_UndeleteMidRewriteIsAConflict(t *testing.T) {
 	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "busy", Mode: "permanent",
+	store.Add(Tombstone{ID: "busy", Mode: "permanent", Tenants: []TenantRef{{}},
 		Superseded: map[string]Supersession{"src": {NewKey: "n", State: SupersessionPrepared}}})
 	h := NewHandler(store, &mockManifest{}, nil, nil, "logs")
 	mux := http.NewServeMux()
