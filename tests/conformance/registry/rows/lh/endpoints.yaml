@@ -307,6 +307,37 @@
   refs: { doc: docs/deletion-strategy.md, tests: [internal/storage/parquets3/tombstone_scope_test.go, internal/delete/handler_scope_test.go, internal/compaction/tombstone_scope_test.go] }
   notes: "The tombstone is scoped to the request's tenant: a query by that tenant returns no rows of the window, while queries by every other tenant (and a global read, except for the deleted tenant's rows) return exactly what they did before; field_values, the count fast paths, the buffer and the rewriter behave the same way. Another tenant's GET/DELETE /delete/logsql/tombstone/{id} of it answers 404. Covered at unit level by the listed tests; this row is the end-to-end expectation the runner will execute."
 
+- id: lh.delete.upstream_tasks_tenant_scoped
+  title: "Upstream /delete/stop_task and /delete/active_tasks act for the request's tenant only"
+  surface: lh
+  kind: admin
+  origin: lh-shim
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  upstream: { route: /delete/active_tasks }
+  request: { method: GET, path: /delete/active_tasks, headers: { AccountID: "{{tenant.account}}", ProjectID: "{{tenant.project}}" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/deletion-strategy.md, tests: [cmd/lakehouse-logs/public_delete_mount_test.go, lakehouse-traces/public_delete_test.go, internal/delete/tasks_test.go] }
+  notes: "Deliberately stricter than upstream on this opt-in route (-delete.enable plus delete.enabled): active_tasks lists only the tasks scoped exactly to the request's tenant, and stop_task stops only such a task; stopping another tenant's task answers byte for byte like an unknown task id. The validated global-read credential lists and stops every task. The cluster protocol (/internal/delete/*) stays unscoped, as upstream. With -delete.enable off the answer is upstream's (vl/vt.delete.*.status)."
+
+- id: lh.delete.string_tenant_scoped
+  title: "Delete with a string tenant (X-Scope-OrgID alias) is scoped like its integer tenant"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  request: { method: POST, path: /delete/logsql/delete, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", mode: "hide" }, headers: { X-Scope-OrgID: "{{tenant.org_id}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/deletion-strategy.md, tests: [internal/delete/handler_tenant_forms_test.go, cmd/lakehouse-logs/public_delete_tenant_forms_test.go, lakehouse-traces/public_delete_tenant_forms_test.go] }
+  notes: "String tenants are a lakehouse extension: X-Scope-OrgID maps through the tenant aliases to an account/project pair before any handler runs, and the delete (LH API and upstream /delete/*) is then scoped exactly like the integer form of that tenant, on both key layouts; on an {OrgID}/ layout a non-zero ProjectID is refused. An unknown OrgID answers exactly like the select path. Integer-tenant answers are identical whether or not aliases are configured."
+
 - id: lh.delete.hide_survives_crash
   title: "LH hide-mode delete — suppression survives a non-graceful restart"
   surface: lh

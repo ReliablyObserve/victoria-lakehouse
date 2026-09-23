@@ -585,7 +585,9 @@ suppression, field enumeration, the rewriter and compaction apply a tombstone on
 tenant A cannot hide or remove tenant B's data. The delete API lists, verifies and un-deletes only
 the caller's own tombstones; the global-read credential sees all of them. The records themselves
 live under the deployment's one prefix (`{prefix}_tombstones/{id}.json`), each carrying its
-`Tenants`. Records written by a release before tenant scope carry none and act on every tenant.
+`Tenants`; a record naming none is rejected, never applied. Tenants resolve in both forms: integer
+`AccountID`/`ProjectID` headers (upstream's) and string `X-Scope-OrgID` through the aliases (the
+lakehouse extension).
 See [deletion-strategy.md → Tenant Scope](deletion-strategy.md#tenant-scope).
 
 ### Compaction
