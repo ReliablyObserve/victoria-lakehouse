@@ -1,6 +1,7 @@
 package vlstorage
 
 import (
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect"
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage/netselect"
 
@@ -15,18 +17,28 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 )
 
-// The cluster delete protocol end to end: the lakehouse gate in front of
-// upstream's own internalselect handler, dispatching into this adapter. This
-// is the path a vlselect node takes when it fans a delete out to the cold tier.
-func internalDeleteServer(t *testing.T, ts *delete.TombstoneStore, enabled, deleteEnabled bool) http.HandlerFunc {
+// The cluster delete protocol end to end, as the logs binary serves it:
+// upstream's own vlselect.RequestHandler (its -internaldelete.enable gate, then
+// internalselect) behind the lakehouse delete.enabled check, dispatching into
+// this adapter. This is the path a vlselect node takes when it fans a delete
+// out to the cold tier.
+func internalDeleteServer(t *testing.T, ts *delete.TombstoneStore, flagOn, deleteEnabled bool) http.HandlerFunc {
 	t.Helper()
 	internalselect.Init()
 	t.Cleanup(internalselect.Stop)
 	SetStorage(mockStore{}, ts)
-	return internaldelete.Handler(enabled, deleteEnabled, func(w http.ResponseWriter, r *http.Request) {
-		internalselect.RequestHandler(r.Context(), w, r)
+	if err := flag.Set(internaldelete.FlagName, map[bool]string{true: "true", false: "false"}[flagOn]); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = flag.Set(internaldelete.FlagName, "false") })
+	return internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled, func(w http.ResponseWriter, r *http.Request) {
+		vlselect.RequestHandler(w, r)
 	})
 }
+
+// upstream's answer while -internaldelete.enable is off (vlselect/main.go).
+const upstreamDisabled = "requests to /internal/delete/* are disabled; pass -internaldelete.enable command-line flag for enabling them; " +
+	"see https://docs.victoriametrics.com/victorialogs/#how-to-delete-logs\n"
 
 func postForm(h http.HandlerFunc, path string, form url.Values) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
@@ -48,14 +60,14 @@ func runTaskForm(tenants string) url.Values {
 
 // Regression: /internal/delete/run_task used to be served unconditionally and
 // wrote an instance-wide tombstone, so any client reaching the port could hide
-// every tenant's matching rows. By default it now answers exactly as upstream.
+// every tenant's matching rows. By default it now gets upstream's own answer.
 func TestInternalDelete_DefaultAnswersLikeUpstreamAndHidesNothing(t *testing.T) {
 	ts := delete.NewTombstoneStore()
 	h := internalDeleteServer(t, ts, false, true)
 
 	for _, path := range []string{"/internal/delete/run_task", "/internal/delete/stop_task", "/internal/delete/active_tasks"} {
 		rec := postForm(h, path, runTaskForm(`[{"account_id":7,"project_id":3}]`))
-		if rec.Code != http.StatusBadRequest || rec.Body.String() != internaldelete.DisabledMessage+"\n" {
+		if rec.Code != http.StatusBadRequest || rec.Body.String() != upstreamDisabled {
 			t.Fatalf("%s: got %d %q, want upstream's disabled answer", path, rec.Code, rec.Body.String())
 		}
 	}

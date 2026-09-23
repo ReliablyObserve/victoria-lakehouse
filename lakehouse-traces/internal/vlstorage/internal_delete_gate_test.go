@@ -15,15 +15,16 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 )
 
-// The cluster delete protocol end to end: the lakehouse gate in front of
-// upstream's own internalselect handler, dispatching into this adapter. This
-// is the path a vlselect node takes when it fans a delete out to the cold tier.
-func internalDeleteServer(t *testing.T, ts *delete.TombstoneStore, enabled, deleteEnabled bool) http.HandlerFunc {
+// The cluster delete protocol end to end with upstream's flag on: the
+// lakehouse delete.enabled check, then upstream's internalselect dispatching
+// into this adapter. The flag-off answer is the binary's (see
+// lakehouse-traces/internal_delete_mount_test.go).
+func internalDeleteServer(t *testing.T, ts *delete.TombstoneStore, _ /* flagOn */, deleteEnabled bool) http.HandlerFunc {
 	t.Helper()
 	internalselect.Init()
 	t.Cleanup(internalselect.Stop)
 	SetStorage(mockStore{}, ts)
-	return internaldelete.Handler(enabled, deleteEnabled, func(w http.ResponseWriter, r *http.Request) {
+	return internaldelete.Handler(func() bool { return true }, deleteEnabled, func(w http.ResponseWriter, r *http.Request) {
 		internalselect.RequestHandler(r.Context(), w, r)
 	})
 }
@@ -43,24 +44,6 @@ func runTaskForm(tenants string) url.Values {
 		"timestamp":  {"1700000000000000000"},
 		"tenant_ids": {tenants},
 		"filter":     {"level:error"},
-	}
-}
-
-// Regression: /internal/delete/run_task used to be served unconditionally and
-// wrote an instance-wide tombstone, so any client reaching the port could hide
-// every tenant's matching rows. By default it now answers exactly as upstream.
-func TestInternalDelete_DefaultAnswersLikeUpstreamAndHidesNothing(t *testing.T) {
-	ts := delete.NewTombstoneStore()
-	h := internalDeleteServer(t, ts, false, true)
-
-	for _, path := range []string{"/internal/delete/run_task", "/internal/delete/stop_task", "/internal/delete/active_tasks"} {
-		rec := postForm(h, path, runTaskForm(`[{"account_id":7,"project_id":3}]`))
-		if rec.Code != http.StatusBadRequest || rec.Body.String() != internaldelete.DisabledMessage+"\n" {
-			t.Fatalf("%s: got %d %q, want upstream's disabled answer", path, rec.Code, rec.Body.String())
-		}
-	}
-	if n := ts.Count(); n != 0 {
-		t.Fatalf("tombstones = %d, want 0", n)
 	}
 }
 

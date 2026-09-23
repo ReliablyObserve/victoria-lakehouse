@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,25 +9,44 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 )
 
-// The binary must mount /internal/delete/* behind the gate, never straight
-// onto internalselect: with the defaults every delete path answers upstream's
-// "disabled" error, exactly like a VL node started without -internaldelete.enable.
-func TestMountInternalProtocol_DeleteIsGatedByDefault(t *testing.T) {
-	mux := http.NewServeMux()
-	mountInternalProtocol(mux, internaldelete.Enabled(), true)
+// upstream's answer while -internaldelete.enable is off (vlselect/main.go).
+const upstreamInternalDeleteDisabled = "requests to /internal/delete/* are disabled; pass -internaldelete.enable command-line flag for enabling them; " +
+	"see https://docs.victoriametrics.com/victorialogs/#how-to-delete-logs\n"
 
-	for _, path := range []string{"/internal/delete/run_task", "/internal/delete/stop_task", "/internal/delete/active_tasks"} {
-		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
-		if rec.Code != http.StatusBadRequest || rec.Body.String() != internaldelete.DisabledMessage+"\n" {
-			t.Fatalf("%s: got %d %q, want upstream's disabled answer", path, rec.Code, rec.Body.String())
+// The binary mounts /internal/delete/* on upstream's vlselect.RequestHandler,
+// never straight onto internalselect: with the defaults every delete path gets
+// upstream's own "disabled" answer, exactly like a VictoriaLogs node started
+// without -internaldelete.enable — whatever delete.enabled says.
+func TestMountInternalProtocol_DeleteIsGatedByDefault(t *testing.T) {
+	for _, deleteEnabled := range []bool{true, false} {
+		mux := http.NewServeMux()
+		mountInternalProtocol(mux, deleteEnabled)
+
+		for _, path := range []string{"/internal/delete/run_task", "/internal/delete/stop_task", "/internal/delete/active_tasks"} {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+			if rec.Code != http.StatusBadRequest || rec.Body.String() != upstreamInternalDeleteDisabled {
+				t.Fatalf("delete.enabled=%v %s: got %d %q, want upstream's disabled answer", deleteEnabled, path, rec.Code, rec.Body.String())
+			}
 		}
 	}
 }
 
+// The flag is upstream's own registration, with upstream's default.
+func TestInternalDeleteFlag_IsUpstreams(t *testing.T) {
+	f := flag.Lookup(internaldelete.FlagName)
+	if f == nil || f.DefValue != "false" {
+		t.Fatalf("-%s = %+v, want upstream's flag with default false", internaldelete.FlagName, f)
+	}
+}
+
 func TestMountInternalProtocol_DeleteNeedsTheDeleteFeature(t *testing.T) {
+	if err := flag.Set(internaldelete.FlagName, "true"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = flag.Set(internaldelete.FlagName, "false") })
 	mux := http.NewServeMux()
-	mountInternalProtocol(mux, true, false)
+	mountInternalProtocol(mux, false)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/delete/run_task", nil))

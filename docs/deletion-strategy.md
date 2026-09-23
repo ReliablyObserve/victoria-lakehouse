@@ -278,13 +278,20 @@ Tombstone-based deletion **satisfies GDPR right to erasure** requirements becaus
 A VictoriaLogs or VictoriaTraces cluster deletes through its storage nodes:
 `vlselect`/`vtselect` fans `/internal/delete/run_task`, `stop_task` and
 `active_tasks` out to every storage node. The lakehouse serves this protocol
-the way an upstream storage node does, behind the same switch:
+through upstream's own code, behind the same switch: the logs binary mounts
+VictoriaLogs' `vlselect.RequestHandler` for `/internal/delete/*`, so the flag,
+its help text and its answers are upstream's. The traces binary carries a
+verbatim copy of VictoriaTraces' gate (checked against the vendored source by a
+test) until it serves `/select/*` through `vtselect` as well — VT's and VL's
+select packages register the same flag names and cannot be linked into one
+binary.
 
 - **`-internaldelete.enable`** (default `false`, same name and default as
   upstream). While it is off, every `/internal/delete/*` request answers
   upstream's own error — `400 requests to /internal/delete/* are disabled; pass
   -internaldelete.enable command-line flag for enabling them` — exactly like a
-  VictoriaLogs node started with its defaults.
+  VictoriaLogs or VictoriaTraces node started with its defaults, whatever
+  `delete.enabled` says.
 - With the flag on, the lakehouse also requires **`delete.enabled: true`**,
   because the protocol writes into the lakehouse tombstone store.
 - **`run_task` is refused** even when both are on. Upstream applies a delete task
@@ -295,6 +302,15 @@ the way an upstream storage node does, behind the same switch:
   the prerequisite for serving it. `stop_task` and `active_tasks` work.
 
 Use the lakehouse delete API above for deletes against the cold tier.
+
+Mounting `vlselect.RequestHandler` also registers VictoriaLogs' other select
+flags in the logs binary, so `-help` lists `-search.maxQueryDuration`,
+`-search.maxConcurrentRequests`, `-search.maxQueueDuration`, `-select.disable`,
+`-internalselect.disable`, `-delete.enable`, `-search.logSlowQueryDuration` and
+`-vmalert.proxyURL`. The lakehouse's own `/select/*` handling does not honour
+them yet: `query.timeout` and `query.max_concurrent` govern the lakehouse select
+path today, and `/delete/*` answers `404`. Moving `/select/*` onto upstream's
+handler, which will honour them, is tracked separately.
 
 ## Traces Delete Support
 

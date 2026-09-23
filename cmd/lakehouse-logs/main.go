@@ -39,6 +39,7 @@ import (
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert"
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect"
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo"
@@ -1150,17 +1151,19 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
-// mountInternalProtocol mounts VL's cluster protocol handler (internalselect)
-// for /internal/select/* and /internal/delete/*. Upstream serves
-// /internal/delete/* only behind -internaldelete.enable (default off); mounting
-// internalselect directly skips upstream's own check, so internaldelete.Handler
-// repeats it, plus the lakehouse delete.enabled requirement.
-func mountInternalProtocol(mux *http.ServeMux, internalDeleteEnabled, deleteEnabled bool) {
-	internalHandler := func(w http.ResponseWriter, r *http.Request) {
+// mountInternalProtocol mounts VL's cluster protocol for /internal/select/* and
+// /internal/delete/*. /internal/delete/* goes to upstream's own
+// vlselect.RequestHandler, so the -internaldelete.enable gate (default off),
+// its help text and its "disabled" answer are VictoriaLogs' code;
+// internaldelete.Handler only adds the lakehouse delete.enabled requirement
+// after upstream's flag.
+func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
+	mux.HandleFunc("/internal/select/", func(w http.ResponseWriter, r *http.Request) {
 		internalselect.RequestHandler(r.Context(), w, r)
-	}
-	mux.HandleFunc("/internal/select/", internalHandler)
-	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internalDeleteEnabled, deleteEnabled, internalHandler))
+	})
+	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled, func(w http.ResponseWriter, r *http.Request) {
+		vlselect.RequestHandler(w, r)
+	}))
 }
 
 func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
@@ -1220,7 +1223,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	if cfg.SelectEnabled() {
 		internalselect.Init()
-		mountInternalProtocol(mux, internaldelete.Enabled(), cfg.Delete.Enabled)
+		mountInternalProtocol(mux, cfg.Delete.Enabled)
 
 		publicHandler := selectapi.NewHandler(store, cfg, selectapi.WithResolver(resolver))
 		publicHandler.Register(mux)
