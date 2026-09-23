@@ -9,17 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Upstream's delete API: `/delete/run_task`, `/delete/stop_task` and `/delete/active_tasks`.** Both binaries now serve upstream's public delete routes behind upstream's `-delete.enable` (default `false`, same name, default and help): the logs binary through VictoriaLogs' `vlselect.RequestHandler`, the traces binary through a copy of VictoriaTraces' gate and delete handler that a test holds to the vendored source. Flag off, every `/delete/*` path the lakehouse does not serve itself answers upstream's `400 requests to /delete/* are disabled` (it was a `404`). Flag on, `delete.enabled: true` is also required, and `run_task` registers a tombstone scoped to the request's tenant. `stop_task` and `active_tasks` are tenant-scoped too, which is stricter than upstream: a tenant lists and stops only its own tasks, stopping another tenant's task answers exactly like an unknown task id, and only the global-read credential sees every task. `-delete.enable` is upstream's switch for this API; `delete.enabled` stays the switch for tombstones and the lakehouse's own `/delete/logsql/*` and `/delete/tracessql/*` API.
+- **Upstream's delete API: `/delete/run_task`, `/delete/stop_task` and `/delete/active_tasks`.**
+  Both binaries now serve upstream's public delete routes behind upstream's `-delete.enable`
+  (default `false`, same name, default and help): the logs binary through VictoriaLogs'
+  `vlselect.RequestHandler`, the traces binary through a copy of VictoriaTraces' gate and delete
+  handler that a test holds to the vendored source. Flag off, every `/delete/*` path the lakehouse
+  does not serve itself answers upstream's `400 requests to /delete/* are disabled` (it was a
+  `404`). Flag on, `delete.enabled: true` is also required, and `run_task` registers a tombstone
+  scoped to the request's tenant. `stop_task` and `active_tasks` are tenant-scoped too, which is
+  stricter than upstream: a tenant lists and stops only its own tasks, stopping another tenant's
+  task answers exactly like an unknown task id, and only the global-read credential sees every
+  task. `-delete.enable` is upstream's switch for this API; `delete.enabled` stays the switch for
+  tombstones and the lakehouse's own `/delete/logsql/*` and `/delete/tracessql/*` API.
 
 ### Changed
 
-- **Delete tasks of the cluster protocol are served instead of refused.** With `-internaldelete.enable` and `delete.enabled`, `/internal/delete/run_task` registers a tombstone with the task's id, scoped to exactly the task's `tenant_ids`, over the rows not newer than the task's timestamp that match its filter (relative time filters evaluated at that timestamp, as upstream), in `delete.default_mode`. A task id that is already registered is refused, as upstream. A task naming no tenant is accepted and deletes nothing, like upstream, but unlike upstream it is not registered and so never appears in `active_tasks`. `active_tasks` reports each task's tenants, filter and start time (the task's timestamp). The protocol stays unscoped, as upstream: it serves a vlselect or vtselect fan-out.
+- **Delete tasks of the cluster protocol are served instead of refused.**
+  With `-internaldelete.enable` and `delete.enabled`, `/internal/delete/run_task` registers a
+  tombstone with the task's id, scoped to exactly the task's `tenant_ids`, over the rows not newer
+  than the task's timestamp that match its filter (relative time filters evaluated at that
+  timestamp, as upstream), in `delete.default_mode`. A task id that is already registered is
+  refused, as upstream. A task naming no tenant is accepted and deletes nothing, like upstream,
+  but unlike upstream it is not registered and so never appears in `active_tasks`.
+  `active_tasks` reports each task's tenants, filter and start time (the task's timestamp). The
+  protocol stays unscoped, as upstream: it serves a vlselect or vtselect fan-out.
 
-- **The delete API answers for the request's tenant.** `/delete/{logsql,tracessql}/tombstones`, `tombstone/{id}`, `verify`, `estimate` and `leftovers` cover only the requesting tenant's tombstones and objects and report `"scope": "tenant"`; any other tombstone id answers `404`. A request with the global-read credential gets the whole instance (`"scope": "instance"`). A tombstone record naming no tenant is no longer valid: none is created, and a restore rejects one instead of applying it (`lakehouse_delete_startup_inconsistencies_total{kind="unscoped_tombstone"}`, once per process), including the records of earlier releases, and its `_tombstones/{id}.json` object is deleted like an un-deleted tombstone's. A record's disk and S3 copies merge to the tenants both name, so a copy can only narrow a scope; copies with no tenant in common are rejected and removed the same way. Relative time filters in a delete (`_time:5m`) are evaluated when it is issued and no longer drift with the clock.
+- **The delete API answers for the request's tenant.**
+  `/delete/{logsql,tracessql}/tombstones`, `tombstone/{id}`, `verify`, `estimate` and `leftovers`
+  cover only the requesting tenant's tombstones and objects and report `"scope": "tenant"`; any
+  other tombstone id answers `404`. A request with the global-read credential gets the whole
+  instance (`"scope": "instance"`). A tombstone record naming no tenant is no longer valid: none is
+  created, and a restore rejects one instead of applying it
+  (`lakehouse_delete_startup_inconsistencies_total{kind="unscoped_tombstone"}`, once per process),
+  including the records of earlier releases, and its `_tombstones/{id}.json` object is deleted like
+  an un-deleted tombstone's. A record's disk and S3 copies merge to the tenants both name, so a copy
+  can only narrow a scope; copies with no tenant in common are rejected and removed the same way.
+  Relative time filters in a delete (`_time:5m`) are evaluated when it is issued and no longer
+  drift with the clock.
 
 ### Security
 
-- **A delete acts only on the requesting tenant's data.** Tombstones were instance-wide: a delete issued through `/delete/{logsql,tracessql}/delete` by any tenant hid the matching rows of every tenant and, in `permanent` and `auto` mode, had the rewriter and compaction remove them; any tenant could also list, read and un-delete every other tenant's deletes. A tombstone now names the tenant the request resolves to (integer `AccountID`/`ProjectID` headers as upstream, or a string `X-Scope-OrgID` through the aliases as a lakehouse extension whose presence never changes an integer answer; `0:0` without either), and query-time suppression, field enumeration, the count and metadata fast paths, buffered rows, the rewriter and compaction apply it only to that tenant's objects and rows. A tombstone of one tenant no longer costs other tenants their fast paths. Where object keys carry the account alone (`{OrgID}/` template), a delete for a `ProjectID` other than `0` is refused.
+- **A delete acts only on the requesting tenant's data.**
+  Tombstones were instance-wide: a delete issued through `/delete/{logsql,tracessql}/delete` by
+  any tenant hid the matching rows of every tenant and, in `permanent` and `auto` mode, had the
+  rewriter and compaction remove them; any tenant could also list, read and un-delete every other
+  tenant's deletes. A tombstone now names the tenant the request resolves to (integer
+  `AccountID`/`ProjectID` headers as upstream, or a string `X-Scope-OrgID` through the aliases as
+  a lakehouse extension whose presence never changes an integer answer; `0:0` without either),
+  and query-time suppression, field enumeration, the count and metadata fast paths, buffered
+  rows, the rewriter and compaction apply it only to that tenant's objects and rows. A tombstone
+  of one tenant no longer costs other tenants their fast paths. Where object keys carry the
+  account alone (`{OrgID}/` template), a delete for a `ProjectID` other than `0` is refused.
 
 ## [0.142.11] - 2026-09-23
 
