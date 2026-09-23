@@ -909,24 +909,6 @@ func TestGetFieldNames_UsesLabelIndex(t *testing.T) {
 	}
 }
 
-func TestGetFieldValues_UsesLabelIndex(t *testing.T) {
-	s := testStorage()
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-	vals, err := s.GetFieldValues(context.Background(), nil, q, "service.name", uint64(10))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vals) != 3 {
-		t.Errorf("expected 3 values from label index, got %d", len(vals))
-	}
-}
-
 func TestMemCacheStats(t *testing.T) {
 	s := testStorage()
 	s.memCache.Put("k", []byte("v"))

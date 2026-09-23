@@ -191,41 +191,30 @@ func TestGetFieldNames_CancelledContext(t *testing.T) {
 
 // --- GetFieldValues tests ---
 
-func TestGetFieldValues_FromLabelIndex(t *testing.T) {
-	s := testStorage()
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
+// TestGetFieldValues_LabelIndexIsNotAnAnswer: the in-RAM label index holds a
+// sample of values from any time, so field_values never answers from it. A
+// window holding no rows has no values (VictoriaLogs semantics), whatever the
+// label index remembers — with and without a limit.
+func TestGetFieldValues_LabelIndexIsNotAnAnswer(t *testing.T) {
+	for _, limit := range []uint64{0, 2, 10} {
+		s := testStorage()
+		soleTenantManifest(t, s)
+		s.labelIndex.Add("service.name", []string{"api", "web", "worker"})
+		s.labelIndex.Add("level", []string{"info", "warn", "error", "debug", "trace"})
 
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-
-	vals, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vals) != 3 {
-		t.Errorf("expected 3 values, got %d", len(vals))
-	}
-}
-
-func TestGetFieldValues_FromLabelIndex_WithLimit(t *testing.T) {
-	s := testStorage()
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("level", []string{"info", "warn", "error", "debug", "trace"})
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-
-	vals, err := s.GetFieldValues(context.Background(), nil, q, "level", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vals) != 2 {
-		t.Errorf("expected 2 values (limited), got %d", len(vals))
+		q := mustParseQueryWithTime(t, "*",
+			time.Now().Add(-time.Hour).UnixNano(),
+			time.Now().UnixNano(),
+		)
+		for _, field := range []string{"service.name", "level"} {
+			vals, err := s.GetFieldValues(context.Background(), nil, q, field, limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(vals) != 0 {
+				t.Errorf("limit=%d %s: a window with no rows answered %v from the label index", limit, field, vals)
+			}
+		}
 	}
 }
 
@@ -451,13 +440,16 @@ func TestGetStreamFieldNames_Traces_ReturnsRegistryFields(t *testing.T) {
 // --- GetStreamFieldValues tests ---
 
 func TestGetStreamFieldValues_DelegatesToGetFieldValues(t *testing.T) {
-	s := testStorage()
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"api", "web"})
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	rows := []fullLogRow{
+		{TimestampUnixNano: now.UnixNano(), Body: "msg1", SeverityText: "INFO", ServiceName: "api"},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "msg2", SeverityText: "WARN", ServiceName: "web"},
+	}
+	s, _ := testFieldStorage(t, rows)
 
 	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
+		time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC).UnixNano(),
+		time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano(),
 	)
 
 	vals, err := s.GetStreamFieldValues(context.Background(), nil, q, "service.name", 10)
@@ -1084,31 +1076,6 @@ func TestGetFieldValues_MultipleFiles(t *testing.T) {
 	}
 	if !valSet["web"] {
 		t.Error("missing 'web' from file2")
-	}
-}
-
-// --- GetFieldValues with zero limit ---
-
-func TestGetFieldValues_ZeroLimit(t *testing.T) {
-	s := testStorage()
-	soleTenantManifest(t, s)
-	s.labelIndex.Add("service.name", []string{"a", "b", "c"})
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-
-	// limit=0 (no limit — what a Grafana dropdown sends) must serve from the in-RAM
-	// label index, NOT fall through to a Parquet scan. The index is self-bounded, so
-	// serving all its values is correct. (Previously the fast-path was gated on
-	// limit > 0, which sent no-limit requests to a full scan — the dropdown slowness.)
-	vals, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vals) != 3 {
-		t.Errorf("limit=0 should serve all 3 index values (a,b,c), got %d", len(vals))
 	}
 }
 

@@ -157,8 +157,11 @@ func TestTenantScope_LabelIndex_SingleTenantManifest(t *testing.T) {
 
 // TestTenantScope_LabelIndex_KeptForSoleTenant is the positive side: the sole
 // tenant — including 0:0 in a deployment that still holds legacy objects next
-// to its 0:0-prefixed ones — keeps the label index fast path, so a dropdown
-// request outside the object window is still answered from RAM.
+// to its 0:0-prefixed ones — keeps the label index fast path for field NAMES,
+// so a field_names request outside the object window is still answered from
+// RAM. field_values never answers from the label index (its values are a
+// sample and not time-scoped): outside the object window it has no values, as
+// on VictoriaLogs.
 func TestTenantScope_LabelIndex_KeptForSoleTenant(t *testing.T) {
 	for _, layout := range tsLayouts() {
 		for _, lm := range labelIndexManifests() {
@@ -169,15 +172,19 @@ func TestTenantScope_LabelIndex_KeptForSoleTenant(t *testing.T) {
 					t.Fatalf("the sole tenant %v lost the label index fast path", lm.sole)
 				}
 				q := mustParseQueryWithTime(t, "*", tsNow().Add(48*time.Hour).UnixNano(), tsNow().Add(49*time.Hour).UnixNano())
+				names, err := f.s.GetFieldNames(context.Background(), owner, q)
+				if err != nil {
+					t.Fatalf("GetFieldNames: %v", err)
+				}
+				if got := valuesToCounts(names); len(got) == 0 {
+					t.Error("sole tenant's field names not served from the label index outside the object window")
+				}
 				values, err := f.s.GetFieldValues(context.Background(), owner, q, "service.name", 100)
 				if err != nil {
 					t.Fatalf("GetFieldValues: %v", err)
 				}
-				got := valuesToCounts(values)
-				for _, obj := range lm.objects {
-					if got[obj.service] == 0 {
-						t.Errorf("sole tenant's value %q not served from the label index outside the object window (got %v)", obj.service, got)
-					}
+				if len(values) != 0 {
+					t.Errorf("field_values outside the object window = %v, want none (the label index is not an answer)", valuesToCounts(values))
 				}
 				if touched := f.mock.bucketsTouched(); len(touched) != 0 {
 					t.Errorf("a label index answer issued S3 requests: %v", touched)

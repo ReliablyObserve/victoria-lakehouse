@@ -259,20 +259,24 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 
 	// pmeta catalog fast-path (--pmeta): union the field's values across the
 	// partitions in the query's time range, served from RAM. nil (flag off) or
-	// empty (cold) falls through to the labelIndex/scan path unchanged.
-	// A no-limit request (limit==0) MUST still use the in-RAM index — it is
+	// empty (field not catalogued, or high-card) falls through to the row scan.
+	// A no-limit request (limit==0) MUST still use the catalog — it is exact and
 	// self-bounded, so this is correct and avoids a full scan. See the logs-module
 	// comment: gating on `limit > 0` was the dropdown slowness.
+	//
+	// The in-RAM label index is deliberately NOT a source here: its values are a
+	// sample (the first rows of the first files opened), never updated by a flush
+	// and not time-scoped, so as an answer it listed a subset of the values in
+	// range and values from outside the window. See the logs-module comment.
 	startNs, endNs := q.GetFilterTimeRange()
 
-	// The catalog and the labelIndex are built at write/compaction time and
-	// carry no tombstone awareness: a value that exists only on deleted rows is
-	// still in both. Serving from them while a tombstone could cover their
-	// answer is how a "deleted" value kept appearing in dropdowns, so a fast
-	// path is given up whenever a tombstone overlaps what IT answers from, and
-	// the answer is verified against rows instead:
+	// The catalog is built at write/compaction time and carries no tombstone
+	// awareness: a value that exists only on deleted rows is still in it.
+	// Serving from it while a tombstone could cover its answer is how a
+	// "deleted" value kept appearing in dropdowns, so the fast path is given up
+	// whenever a tombstone overlaps what it answers from, and the answer is
+	// verified against rows instead:
 	//   - the catalog answers per partition hour → hour-widened window;
-	//   - the labelIndex is not time-scoped at all → any active tombstone;
 	//   - the row scan reads whole files → the scanned files' time span (below).
 	gaveUpFastPath := false
 
@@ -284,31 +288,6 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 				return nil, nil // declared id column: don't enumerate (matches VT), no scan
 			}
 			if result := s.catalogFieldValues(q, scope, fieldName, limit); len(result) > 0 {
-				return result, nil
-			}
-		}
-	}
-
-	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
-		if len(s.allTombstones(scope)) > 0 {
-			gaveUpFastPath = true
-		} else {
-			vals := s.labelIndex.GetFieldValues(fieldName, limit)
-			if len(vals) == 0 {
-				if m := s.registry.ResolveToParquet(fieldName); m != nil && m.InternalName != fieldName {
-					vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
-				}
-			}
-			if len(vals) == 0 {
-				if m := s.registry.ResolveFromParquet(fieldName); m != nil && m.InternalName != fieldName {
-					vals = s.labelIndex.GetFieldValues(m.InternalName, limit)
-				}
-			}
-			if len(vals) > 0 {
-				result := make([]logstorage.ValueWithHits, len(vals))
-				for i, v := range vals {
-					result[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
-				}
 				return result, nil
 			}
 		}

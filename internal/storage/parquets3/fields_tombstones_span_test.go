@@ -100,11 +100,12 @@ func TestGetStreamIDs_TombstoneInsideAScannedFileButOutsideTheWindow(t *testing.
 	assertNotEnumerated(t, "stream_ids", got, "stream-old", "stream-new")
 }
 
-// TestFieldValues_LabelIndexGatedByATombstoneAnywhere: the in-memory label
-// index is not time-scoped — it lists every value any file ever carried — so a
-// tombstone in ANY hour can cover a value it would serve. With no pmeta catalog
-// it is the first fast path field_values tries.
-func TestFieldValues_LabelIndexGatedByATombstoneAnywhere(t *testing.T) {
+// TestFieldValues_SeededLabelIndexNeverListsATombstonedValue: the in-memory
+// label index is not time-scoped — it lists every value any file ever carried —
+// and is not tombstone-aware. field_values never answers from it; with no pmeta
+// catalog the answer comes from the rows, so a value deleted in another hour
+// stays hidden even while the label index still holds it.
+func TestFieldValues_SeededLabelIndexNeverListsATombstonedValue(t *testing.T) {
 	mock := newMockS3Server()
 	t.Cleanup(mock.close)
 	s := testStorageWithS3(t, mock.url())
@@ -127,8 +128,8 @@ func TestFieldValues_LabelIndexGatedByATombstoneAnywhere(t *testing.T) {
 		StartNs: yesterday.Add(-time.Minute).UnixNano(), EndNs: yesterday.Add(time.Minute).UnixNano(), Mode: "hide"})
 	s.SetTombstoneStore(store)
 
-	// A window that contains both hours: the label index would answer with
-	// both values, and the deleted one must not be among them.
+	// A window that contains both hours: the label index holds both values,
+	// and the deleted one must not be among the answer.
 	q := mustParseQueryWithTime(t, "*", yesterday.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	got, err := s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
 	if err != nil {
@@ -137,7 +138,7 @@ func TestFieldValues_LabelIndexGatedByATombstoneAnywhere(t *testing.T) {
 	assertNotEnumerated(t, "field_values", got, "secret-svc", "web")
 
 	// A window over today only: nothing deleted is in it, but the time-blind
-	// label index would still have answered with yesterday's deleted value.
+	// label index still holds yesterday's deleted value.
 	q = mustParseQueryWithTime(t, "*", now.Add(-time.Minute).UnixNano(), now.Add(time.Minute).UnixNano())
 	got, err = s.GetFieldValues(context.Background(), nil, q, "service.name", 100)
 	if err != nil {

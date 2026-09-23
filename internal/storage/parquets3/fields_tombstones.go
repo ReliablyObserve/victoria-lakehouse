@@ -37,14 +37,6 @@ func (s *Storage) fieldsTombstones(scope tenantScope, startNs, endNs int64) []to
 	return s.scopeTombstones(scope, startNs, endNs)
 }
 
-// allTombstones returns every active tombstone acting on a tenant of scope, or
-// nil. It gates answers that are not time-scoped at all — the in-memory label
-// index lists every value any file ever carried, so a tombstone in any hour can
-// cover a value it serves.
-func (s *Storage) allTombstones(scope tenantScope) []tombstone {
-	return s.fieldsTombstones(scope, math.MinInt64, math.MaxInt64)
-}
-
 // partitionHourBounds widens [startNs, endNs] to the whole partition hours it
 // touches. The pmeta catalog answers field_values with the value union of every
 // partition hour a query window touches, not just the rows inside the window; a

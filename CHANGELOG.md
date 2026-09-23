@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cold `field_values` lists every value in range, not a sample.**
+  The pmeta catalog is keyed by Parquet column name and was looked up with the request's field
+  name, so every aliased field missed it: `level` (stored as `severity_text`) on the logs binary;
+  `name`, `status_message`, `resource_attr:*` and `span_attr:*` on the traces binary. The miss
+  fell through to the in-memory label index, whose values are sampled from the first rows of
+  whichever file the first query opened, and that sample was returned as the answer. That is why
+  the parity suite intermittently saw cold `field_values?field=level` return 3 of hot's 4 values.
+  The catalog lookup now resolves the name through the schema registry, and `field_values` no
+  longer answers from the label index on either binary: a catalog miss (pmeta off, a high-card
+  field) is answered by the column-projected row scan, which also confines the values to the
+  query window as VictoriaLogs does. With pmeta off an unfiltered `field_values` request now costs
+  a scan instead of a RAM read.
+
 ## [0.143.0] - 2026-09-23
 
 ### Added

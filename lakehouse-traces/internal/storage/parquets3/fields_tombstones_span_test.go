@@ -96,9 +96,10 @@ func TestTraceGetStreamIDs_TombstoneInsideAScannedFileButOutsideTheWindow(t *tes
 	assertTraceNotEnumerated(t, "stream_ids", got, "stream-old", "stream-new")
 }
 
-// TestTraceFieldValues_LabelIndexGatedByATombstoneAnywhere: the label index is
-// not time-scoped, so any active tombstone can cover a value it would serve.
-func TestTraceFieldValues_LabelIndexGatedByATombstoneAnywhere(t *testing.T) {
+// TestTraceFieldValues_SeededLabelIndexNeverListsATombstonedValue: the label
+// index is not time-scoped and not tombstone-aware; field_values never answers
+// from it, so a value deleted in another hour stays hidden while it holds it.
+func TestTraceFieldValues_SeededLabelIndexNeverListsATombstonedValue(t *testing.T) {
 	mock := newMockS3Server()
 	t.Cleanup(mock.close)
 	s := testStorageWithS3(t, mock.url())

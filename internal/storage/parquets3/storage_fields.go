@@ -401,23 +401,29 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 
 	// pmeta catalog fast-path (--pmeta): union the field's values across the
 	// partitions in the query's time range, served from RAM. nil (flag off) or
-	// empty (cold) falls through to the labelIndex/scan path unchanged.
+	// empty (field not catalogued, or high-card) falls through to the row scan.
 	//
 	// NOTE: a no-limit request (limit==0, what a Grafana dropdown sends) MUST still
-	// use the in-RAM index — both the catalog and the labelIndex are self-bounded,
-	// so serving from them is correct AND avoids a full column scan (which, with S3
-	// latency, takes tens of seconds). Gating this on `limit > 0` was the dropdown
-	// slowness: it sent every no-limit field_values straight to the scan path.
+	// use the catalog — it is exact and self-bounded, so serving from it is correct
+	// AND avoids a full column scan (which, with S3 latency, takes tens of seconds).
+	// Gating this on `limit > 0` was the dropdown slowness: it sent every no-limit
+	// field_values straight to the scan path.
+	//
+	// The in-RAM label index is deliberately NOT a source here. Its values are a
+	// sample — the first rows of the first row group of whichever file the first
+	// query opened, or of at most ten files at warm-up — it is never updated by a
+	// flush, and it is not time-scoped. Returned as the answer it listed a subset
+	// of the values in range (the intermittent `field_values?field=level` parity
+	// failure: 3 of 4 levels, once 1 of 4) and values from outside the window.
 	startNs, endNs := q.GetFilterTimeRange()
 
-	// The catalog and the labelIndex are built at write/compaction time and
-	// carry no tombstone awareness: a value that exists only on deleted rows is
-	// still in both. Serving from them while a tombstone could cover their
-	// answer is how a "deleted" value kept appearing in dropdowns, so a fast
-	// path is given up whenever a tombstone overlaps what IT answers from, and
-	// the answer is verified against rows instead:
+	// The catalog is built at write/compaction time and carries no tombstone
+	// awareness: a value that exists only on deleted rows is still in it.
+	// Serving from it while a tombstone could cover its answer is how a
+	// "deleted" value kept appearing in dropdowns, so the fast path is given up
+	// whenever a tombstone overlaps what it answers from, and the answer is
+	// verified against rows instead:
 	//   - the catalog answers per partition hour → hour-widened window;
-	//   - the labelIndex is not time-scoped at all → any active tombstone;
 	//   - the row scan reads whole files → the scanned files' time span (below).
 	gaveUpFastPath := false
 
@@ -431,18 +437,6 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 			if result := s.catalogFieldValues(q, scope, fieldName, limit); len(result) > 0 {
 				return result, nil
 			}
-		}
-	}
-
-	if filter == nil && s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
-		if len(s.allTombstones(scope)) > 0 {
-			gaveUpFastPath = true
-		} else if vals := s.labelIndex.GetFieldValues(fieldName, limit); len(vals) > 0 {
-			result := make([]logstorage.ValueWithHits, len(vals))
-			for i, v := range vals {
-				result[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
-			}
-			return result, nil
 		}
 	}
 

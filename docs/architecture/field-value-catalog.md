@@ -57,7 +57,10 @@ matching values?").
    and never serves a truncated list.** For a field above the threshold (or in
    `always_sketch_fields`) the catalog stops storing values (bounding RAM) and
    its `Values()` returns nil, so `field_values` **falls through to the exact
-   legacy scan** — the answer is still exact, just slower. With
+   legacy scan** — the answer is still exact, just slower. The in-memory label
+   index is never consulted for values on that path: its values are a sample
+   (the first rows of the first files a query opened) and not time-scoped, so
+   it cannot stand in for the scan. With
    `refuse_sketch_enumeration` on, a declared `always_sketch_fields` id column
    returns *empty* instead of scanning (identical to VL/VT, which don't
    enumerate these either; threshold-crossers are NOT refused). The field's
@@ -257,6 +260,13 @@ streams the configured `always_sketch_fields` id columns into `Store.AddCardinal
 `Store.Cardinality(field)` + the gauge read it. Verified e2e
 (`TestInteg_PmetaCatalog_CardinalityTapE2E`): a real `BatchWriter` flush of 5,000
 `trace_id`s → `Cardinality` within 3 % and the gauge published.
+
+**Field names.** Facets are keyed by the Parquet column name the flush-time
+label sets use (`severity_text`, `span.name`, `service.name`). A request names
+the field the upstream way (`level`, `name`, `resource_attr:service.name`), so
+`catalogFieldValues` resolves it through the schema registry first
+(`catalogFieldKey`, both modules); only promoted columns are translated. Before
+that resolution every aliased field missed the catalog.
 
 ## 3. Data structure — extend, don't rebuild
 

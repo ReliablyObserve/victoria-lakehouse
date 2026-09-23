@@ -228,6 +228,28 @@ This file is the source of truth for "what cold tier doesn't do yet". When closi
 
 ### Closed (history)
 
+**Cold `field_values` listed a subset of the values in range** — intermittent in
+the parity suite (`field_values_level`, `field_values_jsonl`: cold answered 3 of
+hot's 4 levels, once 1 of 4, while every row count agreed). The pmeta catalog is
+keyed by Parquet column (`severity_text`) and was looked up with the request's
+name (`level`), so every aliased field missed it — `level` on logs; `name`,
+`status_message`, `resource_attr:*`, `span_attr:*` on traces. The miss fell
+through to the in-memory label index, whose values are a sample of the first
+rows of whichever file the process's first query opened, and that sample was
+returned as the whole answer; which file came first depended on query order.
+The catalog lookup now resolves the name through the schema registry, and
+`field_values` never answers from the label index: a catalog miss is answered by
+the column-projected row scan, which is exact and bound to the query window (as
+on VictoriaLogs; the label index also answered windows holding no rows).
+Regression tests: `TestFieldValues_AliasedField_ServedFromCatalog`,
+`TestFieldValues_SampledLabelIndexIsNeverTheAnswer`,
+`TestFieldValues_AliasedField_CatalogStaysTenantScoped` (both modules).
+`BenchmarkFieldValues_Level` (24 hourly partitions × 400 rows, Apple M5 Pro,
+`-benchtime 2000x -count 5`, median): pmeta on 7.5 µs → 10.0 µs per request (a
+catalog answer instead of a catalog miss plus a label-index read); pmeta off
+74 ns → 3.0 ms (a projected scan of 24 files from the local mock S3 instead of
+the sampled index).
+
 **Service Graph** — PR #121
 
 The Lakehouse cold tier now serves Grafana's Service Graph view via

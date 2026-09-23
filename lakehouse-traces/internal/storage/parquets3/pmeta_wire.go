@@ -260,6 +260,7 @@ func sketchSet(fields []string) map[string]bool {
 // Caller guarantees s.catalog != nil.
 func (s *Storage) catalogFieldValues(q *logstorage.Query, scope tenantScope, fieldName string, limit uint64) []logstorage.ValueWithHits {
 	startNs, endNs := q.GetFilterTimeRange()
+	key := s.catalogFieldKey(fieldName)
 	seen := make(map[string]struct{}, 16)
 	valset := make(map[string]struct{})
 	// Bounded uint64→int conversion (the facet API takes int; limit can originate
@@ -278,7 +279,7 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, scope tenantScope, fie
 			continue
 		}
 		seen[p] = struct{}{}
-		for _, v := range s.catalog.FieldValues(p, fieldName, "", catLimit) {
+		for _, v := range s.catalog.FieldValues(p, key, "", catLimit) {
 			valset[v] = struct{}{}
 		}
 	}
@@ -300,6 +301,26 @@ func (s *Storage) catalogFieldValues(q *logstorage.Query, scope tenantScope, fie
 	}
 	metrics.CatalogValueLookups.Add("catalog", 1) // served from RAM
 	return out
+}
+
+// catalogFieldKey maps a requested field name to the name the catalog facet is
+// keyed by. The facet is fed from the flush-time label sets, which name each
+// dimension by its PARQUET column (schema.LogLabelColumns / TraceLabelColumns),
+// while a request names it the way the VictoriaLogs / VictoriaTraces API does —
+// `level` for the `severity_text` column, `name` for `span.name`,
+// `resource_attr:service.name` for `service.name`. Looking the request name up
+// verbatim missed every aliased field, and the miss fell through to paths that
+// could not answer it exactly. Only a promoted column is translated: a MAP
+// attribute (MapKey set) is not a catalogued dimension, and names outside the
+// registry (account_id, project_id) are catalogued under their own name.
+func (s *Storage) catalogFieldKey(fieldName string) string {
+	if s.registry == nil {
+		return fieldName
+	}
+	if m := s.registry.ResolveToParquet(fieldName); m != nil && m.MapKey == "" && m.ParquetColumn != "" {
+		return m.ParquetColumn
+	}
+	return fieldName
 }
 
 // catalogFieldNames unions the field names across the partitions overlapping the
