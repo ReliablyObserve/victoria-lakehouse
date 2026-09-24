@@ -7,12 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
@@ -69,6 +71,20 @@ type BatchWriter struct {
 	totalRows  atomic.Int64
 	totalBytes atomic.Int64
 
+	// inflight holds each FlushAll snapshot while it is written, so its rows
+	// stay visible to buffer queries until they are committed to the
+	// manifest or put back into the buffers after a failed upload. Guarded
+	// by mu.
+	inflight    map[uint64]*inflightFlush
+	nextFlushID uint64
+	// pendingBytes is the estimated raw size of every row not yet committed
+	// to object storage: buffered, in flight, or put back after a failure.
+	pendingBytes atomic.Int64
+
+	probeMu  sync.Mutex
+	probeAt  time.Time
+	probeErr error
+
 	catalogObserver *catalogObserver
 	statsCallback   StatsCallback
 	flushCacheCb    FlushCacheCallback
@@ -91,6 +107,7 @@ func NewBatchWriter(cfg *config.InsertConfig, pool *s3reader.ClientPool,
 		mode:      mode,
 		logBufs:   make(map[string][]schema.LogRow),
 		traceBufs: make(map[string][]schema.TraceRow),
+		inflight:  make(map[uint64]*inflightFlush),
 		stopCh:    make(chan struct{}),
 	}
 
@@ -153,7 +170,11 @@ func (w *BatchWriter) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := w.FlushAll(ctx); err != nil {
-		logger.Errorf("final flush failed: %s", err)
+		// The rows the final flush could not write are back in the buffers,
+		// which die with the process: nothing else holds them.
+		lost := w.totalRows.Load()
+		metrics.InsertRowsLostAtShutdown.Add(int(lost))
+		logger.Errorf("final flush failed: %s; %d buffered rows could not be written and are lost", err, lost)
 	}
 }
 
@@ -195,6 +216,8 @@ func (w *BatchWriter) AddLogRows(rows []schema.LogRow) {
 	}
 	w.mu.Unlock()
 
+	w.pendingBytes.Add(estimateRawBytesLogs(rows))
+	metrics.InsertBufferBytes.Set(w.pendingBytes.Load())
 	w.totalRows.Add(int64(len(rows)))
 	metrics.InsertRowsBuffered.Set(w.totalRows.Load())
 
@@ -220,6 +243,8 @@ func (w *BatchWriter) AddTraceRows(rows []schema.TraceRow) {
 	}
 	w.mu.Unlock()
 
+	w.pendingBytes.Add(estimateRawBytesTraces(rows))
+	metrics.InsertBufferBytes.Set(w.pendingBytes.Load())
 	w.totalRows.Add(int64(len(rows)))
 	metrics.InsertRowsBuffered.Set(w.totalRows.Load())
 
@@ -270,6 +295,12 @@ func (w *BatchWriter) triggerFlush() {
 }
 
 // FlushAll snapshots all buffers and flushes them to S3.
+//
+// A tenant group whose upload fails — or that the flush does not reach before
+// ctx ends — is put back into the buffers and written by the next flush; a
+// group that was written is never retried. Until then the snapshot stays
+// visible to buffer queries (BufferedLogRows / BufferedTraceRows), so a row is
+// never missing from reads while it is on its way to object storage.
 func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	flushStart := time.Now()
 
@@ -279,26 +310,49 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	w.logBufs = make(map[string][]schema.LogRow)
 	w.traceBufs = make(map[string][]schema.TraceRow)
 	w.totalRows.Store(0)
+	id := w.nextFlushID
+	w.nextFlushID++
+	if len(logSnap) > 0 || len(traceSnap) > 0 {
+		if w.inflight == nil {
+			w.inflight = make(map[uint64]*inflightFlush)
+		}
+		w.inflight[id] = &inflightFlush{logs: logSnap, traces: traceSnap}
+	}
 	w.mu.Unlock()
 
 	metrics.InsertRowsBuffered.Set(0)
 	metrics.InsertPartitionsActive.Set(int64(len(logSnap) + len(traceSnap)))
 
 	var errs []error
+	failedLogs := make(map[string][]schema.LogRow)
+	failedTraces := make(map[string][]schema.TraceRow)
+	var committedBytes int64
 
 	for partition, rows := range logSnap {
-		if err := w.flushLogPartition(ctx, partition, rows); err != nil {
+		failed, err := w.flushLogPartition(ctx, partition, rows)
+		if err != nil {
 			metrics.InsertFlushErrorsTotal.Inc()
 			errs = append(errs, fmt.Errorf("flush logs %s: %w", partition, err))
 		}
+		if len(failed) > 0 {
+			failedLogs[partition] = failed
+		}
+		committedBytes += estimateRawBytesLogs(rows) - estimateRawBytesLogs(failed)
 	}
 
 	for partition, rows := range traceSnap {
-		if err := w.flushTracePartition(ctx, partition, rows); err != nil {
+		failed, err := w.flushTracePartition(ctx, partition, rows)
+		if err != nil {
 			metrics.InsertFlushErrorsTotal.Inc()
 			errs = append(errs, fmt.Errorf("flush traces %s: %w", partition, err))
 		}
+		if len(failed) > 0 {
+			failedTraces[partition] = failed
+		}
+		committedBytes += estimateRawBytesTraces(rows) - estimateRawBytesTraces(failed)
 	}
+
+	w.finishFlush(id, failedLogs, failedTraces, committedBytes)
 
 	if len(logSnap) > 0 || len(traceSnap) > 0 {
 		metrics.InsertFlushTotal.Inc()
@@ -316,18 +370,35 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	return nil
 }
 
-func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, rows []schema.LogRow) error {
+// flushLogPartition writes one partition, one object per tenant, and
+// returns the rows it could not write (their tenant group failed, or ctx ended
+// before it was reached) with the first error. Rows it did write are committed
+// and never returned.
+func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, rows []schema.LogRow) ([]schema.LogRow, error) {
+	// The rows may be visible to buffer queries while in flight (FlushAll),
+	// so they are reordered under the same lock those queries read under.
+	w.mu.Lock()
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano
 	})
+	w.mu.Unlock()
 
 	groups := groupLogRowsByTenant(rows)
+	var failed []schema.LogRow
+	var firstErr error
 	for _, g := range groups {
-		if err := w.flushLogTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows); err != nil {
-			return err
+		err := ctx.Err()
+		if err == nil {
+			err = w.flushLogTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows)
+		}
+		if err != nil {
+			failed = append(failed, g.Rows...)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return failed, firstErr
 }
 
 func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.LogRow) error {
@@ -405,18 +476,35 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 	return nil
 }
 
-func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string, rows []schema.TraceRow) error {
+// flushTracePartition writes one partition, one object per tenant, and
+// returns the rows it could not write (their tenant group failed, or ctx ended
+// before it was reached) with the first error. Rows it did write are committed
+// and never returned.
+func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string, rows []schema.TraceRow) ([]schema.TraceRow, error) {
+	// The rows may be visible to buffer queries while in flight (FlushAll),
+	// so they are reordered under the same lock those queries read under.
+	w.mu.Lock()
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano
 	})
+	w.mu.Unlock()
 
 	groups := groupTraceRowsByTenant(rows)
+	var failed []schema.TraceRow
+	var firstErr error
 	for _, g := range groups {
-		if err := w.flushTraceTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows); err != nil {
-			return err
+		err := ctx.Err()
+		if err == nil {
+			err = w.flushTraceTenantGroup(ctx, partition, g.AccountID, g.ProjectID, g.Rows)
+		}
+		if err != nil {
+			failed = append(failed, g.Rows...)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return failed, firstErr
 }
 
 func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.TraceRow) error {
@@ -696,10 +784,82 @@ func (w *BatchWriter) TotalBytesUploaded() int64 {
 	return w.totalBytes.Load()
 }
 
-// CanWriteData checks if the S3 backend is reachable.
+// inflightFlush is one FlushAll snapshot while it is being written.
+type inflightFlush struct {
+	logs   map[string][]schema.LogRow
+	traces map[string][]schema.TraceRow
+}
+
+// finishFlush retires flush id: the rows it could not write go back into the
+// buffers (ahead of rows that arrived meanwhile; a flush sorts them anyway),
+// in the same critical section that stops showing them as in flight, so a
+// buffer query sees every row exactly once throughout.
+func (w *BatchWriter) finishFlush(id uint64, failedLogs map[string][]schema.LogRow, failedTraces map[string][]schema.TraceRow, committedBytes int64) {
+	var requeued int
+	w.mu.Lock()
+	delete(w.inflight, id)
+	for p, rows := range failedLogs {
+		w.logBufs[p] = append(rows, w.logBufs[p]...)
+		requeued += len(rows)
+	}
+	for p, rows := range failedTraces {
+		w.traceBufs[p] = append(rows, w.traceBufs[p]...)
+		requeued += len(rows)
+	}
+	w.mu.Unlock()
+
+	w.pendingBytes.Add(-committedBytes)
+	metrics.InsertBufferBytes.Set(w.pendingBytes.Load())
+	if requeued > 0 {
+		w.totalRows.Add(int64(requeued))
+		metrics.InsertRowsRequeued.Add(requeued)
+		logger.Warnf("flush could not write %d rows; they stay buffered and are retried by the next flush", requeued)
+	}
+	metrics.InsertRowsBuffered.Set(w.totalRows.Load())
+}
+
+// writeProbeTTL is how long a write probe's outcome answers CanWriteData.
+// Insert handlers ask on every request; probing object storage each time
+// was a PUT per insert request.
+const writeProbeTTL = 10 * time.Second
+
+// CanWriteData reports whether rows can be accepted now. It answers the way
+// VictoriaLogs' own storage does when it cannot take writes — an error the
+// insert handlers turn into an HTTP status, so clients back off and retry:
+//   - 429 while the rows not yet written to object storage exceed
+//     insert.max_buffer_bytes (flushes are failing or cannot keep up), instead
+//     of growing the buffer until the process runs out of memory;
+//   - 503 while object storage refuses a small write (the probe result is
+//     reused for writeProbeTTL).
 func (w *BatchWriter) CanWriteData(ctx context.Context) error {
+	if limit, pending := w.cfg.MaxBufferBytesN(), w.pendingBytes.Load(); pending > limit {
+		metrics.InsertRejected.Inc("buffer_full")
+		return &httpserver.ErrorWithStatusCode{
+			Err: fmt.Errorf("the insert buffer holds %d bytes not yet written to object storage, over insert.max_buffer_bytes=%d; retry later",
+				pending, limit),
+			StatusCode: http.StatusTooManyRequests,
+		}
+	}
+
+	w.probeMu.Lock()
+	defer w.probeMu.Unlock()
+	if !w.probeAt.IsZero() && time.Since(w.probeAt) < writeProbeTTL {
+		if w.probeErr != nil {
+			metrics.InsertRejected.Inc("storage_unavailable")
+		}
+		return w.probeErr
+	}
 	testKey := w.prefix + "_write_check"
-	return w.pool.Upload(ctx, testKey, []byte("ok"))
+	w.probeErr = nil
+	if err := w.pool.Upload(ctx, testKey, []byte("ok")); err != nil {
+		metrics.InsertRejected.Inc("storage_unavailable")
+		w.probeErr = &httpserver.ErrorWithStatusCode{
+			Err:        fmt.Errorf("object storage refuses writes: %w", err),
+			StatusCode: http.StatusServiceUnavailable,
+		}
+	}
+	w.probeAt = time.Now()
+	return w.probeErr
 }
 
 // BufferedLogRows returns unflushed log rows matching a time range (for buffer query protocol).
@@ -707,13 +867,21 @@ func (w *BatchWriter) BufferedLogRows(startNs, endNs int64) []schema.LogRow {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// [startNs, endNs] inclusive, as the query window it serves. Rows of a
+	// flush in progress are included until they are committed.
 	var result []schema.LogRow
-	for _, rows := range w.logBufs {
-		for _, r := range rows {
-			if r.TimestampUnixNano >= startNs && r.TimestampUnixNano < endNs {
-				result = append(result, r)
+	collect := func(bufs map[string][]schema.LogRow) {
+		for _, rows := range bufs {
+			for _, r := range rows {
+				if r.TimestampUnixNano >= startNs && r.TimestampUnixNano <= endNs {
+					result = append(result, r)
+				}
 			}
 		}
+	}
+	collect(w.logBufs)
+	for _, f := range w.inflight {
+		collect(f.logs)
 	}
 	return result
 }
@@ -723,13 +891,21 @@ func (w *BatchWriter) BufferedTraceRows(startNs, endNs int64) []schema.TraceRow 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// [startNs, endNs] inclusive, as the query window it serves. Rows of a
+	// flush in progress are included until they are committed.
 	var result []schema.TraceRow
-	for _, rows := range w.traceBufs {
-		for _, r := range rows {
-			if r.TimestampUnixNano >= startNs && r.TimestampUnixNano < endNs {
-				result = append(result, r)
+	collect := func(bufs map[string][]schema.TraceRow) {
+		for _, rows := range bufs {
+			for _, r := range rows {
+				if r.TimestampUnixNano >= startNs && r.TimestampUnixNano <= endNs {
+					result = append(result, r)
+				}
 			}
 		}
+	}
+	collect(w.traceBufs)
+	for _, f := range w.inflight {
+		collect(f.traces)
 	}
 	return result
 }

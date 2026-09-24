@@ -59,7 +59,7 @@ func newFullReadFixture(t *testing.T) *fullReadFixture {
 	rows := fullReadStreamRows(rand.New(rand.NewSource(7)), ingestAt.Add(90*time.Second), 2256)
 	rows = append(rows, fullReadMarkerSpans(ingestAt, marker)...)
 	const partition = "dt=2026-09-14/hour=12"
-	if err := writer.flushTracePartition(context.Background(), partition, rows); err != nil {
+	if _, err := writer.flushTracePartition(context.Background(), partition, rows); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	files := s.manifest.FilesForPartition(partition)

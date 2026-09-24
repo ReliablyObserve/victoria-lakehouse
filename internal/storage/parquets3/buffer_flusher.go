@@ -170,7 +170,7 @@ func (f *BufferFlusher) flushCollected(ctx context.Context, collected map[logsto
 		}
 		sort.Strings(parts)
 		for _, p := range parts {
-			if err := f.writer.flushLogPartition(ctx, p, byPartition[p]); err != nil {
+			if _, err := f.writer.flushLogPartition(ctx, p, byPartition[p]); err != nil {
 				return err
 			}
 		}
