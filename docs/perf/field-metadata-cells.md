@@ -460,6 +460,40 @@ Hot VictoriaLogs (in-process upstream storage, same rows, local disk):
 
 † no iteration had exact hits (catalog and label-index answers carry hits=1); bracketed timing is over set-exact iterations only.
 
+## Three-way results: Lakehouse vs disk VictoriaLogs/VictoriaTraces vs ClickHouse on S3
+
+`scripts/bench/run.sh --queries "fv_level fv_service streams_list fv_name"` on the benchmark stack
+(MinIO behind toxiproxy, 7 days of seeded data, the same Parquet read by Lakehouse and ClickHouse),
+10 timed iterations per cell after 2 warm-ups, every response validated. Raw results and the
+generated report: `bench-results/field-metadata-2026-09-24/run.{json,md}`. The ClickHouse side runs
+`SELECT <column> AS value, count() AS hits ... GROUP BY value` over the same window; all three systems
+reduce to a hash of sorted (value, hits) pairs, so a sample or wrong hits never validates.
+
+| Query | Window | Hot VL/VT p50 (ms) | Lakehouse p50 (ms) | ClickHouse p50 (ms) | Answer |
+|---|---|---|---|---|---|
+| logs `field_values level` | 1h / 6h / 24h, 0 ms S3 | 3.5 / 4.3 / 9.7 | 3.4 / 1.5 / 3.0 | 208 / 157 / 187 | **Lakehouse wrong**: every value has hits=1 (total 4 vs 553 / 14 160) |
+| logs `field_values level` | same, 100 ms S3 | 1.7 / 2.3 / 3.9 | 1.1 / 1.5 / 1.2 | 84 / 83 / 74 | **Lakehouse wrong** (same) |
+| logs `field_values service.name` | 1h / 6h / 24h, 0 ms S3 | 3.6 / 3.4 / 9.1 | 1.7 / 1.5 / 1.8 | 760 / 144 / 179 | **Lakehouse wrong** (hits=1) |
+| logs `streams` | 1h / 6h / 24h, 0 ms S3 | 12.0 / 19.9 / 82.9 | 14.5 / 63.6 / 187.6 | 121.9 / 211.6 / 112.7 | exact; **ClickHouse faster at 24h** |
+| logs `streams` | same, 100 ms S3 | 3.1 / 18.5 / 44.1 | 6.8 / 36.8 / 141.5 | 78.3 / 80.6 / 103.7 | exact; **ClickHouse faster at 24h** |
+| traces `field_values name` | 1h / 6h / 24h, 0 ms S3 | 1.6 / 1.8 / 2.1 | 1.8 / 3.2 / 7.1 | 90 / 118 / 89 | exact |
+| traces `field_values service` | 1h / 6h / 24h, 100 ms S3 | 1.6 / 1.5 / 1.9 | 1.5 / 2.3 / 7.2 | 89 / 94 / 117 | exact |
+
+What this says, in the order the tiered design fixes it:
+
+1. **Logs `field_values` hits are wrong on every cell.** The catalog answers with hits=1 per value;
+   VictoriaLogs and ClickHouse agree on the real counts. The answer is fast (≈1–3 ms) and invalid —
+   per-value counts in the catalog (design PR 2) make it exact at the same speed.
+2. **Logs `streams` over 24h is slower than ClickHouse** (188 vs 113 ms; 142 vs 104 ms at 100 ms S3)
+   and 2–3× slower than disk VictoriaLogs — the serial per-file scan (design PR 3) and the dictionary
+   / page tiers (PR 5) are what close it.
+3. **Traces `field_values` is exact and 10–60× faster than ClickHouse**; 1h/6h are within 1–2× of disk
+   VictoriaTraces, 24h is ~3.5× (7 vs 2 ms) — the catalog-feed and dictionary tiers target that gap.
+
+Not a field-metadata result, recorded because the run surfaced it: during seeding the traces flush
+converged to 16 196 of 18 501 spans (ratio 0.875) and stayed there — a real gap, not lag, tracked
+separately. Logs converged exactly (14 042 = 14 042).
+
 ## Proposed registry perf rows (not wired)
 
 `tests/conformance/registry/schema.go` has no `perf` surface and `Row` has no

@@ -927,7 +927,9 @@ print('\x1f'.join([str(d.get('p95_ms')), str(v if v is not None else ''), str(to
   done
 done
 RESULTS+="]"
-echo "$RESULTS" | python3 -m json.tool > "$OUTPUT"
+# json.dump, not `python3 -m json.tool`: from Python 3.14 json.tool colourises
+# whenever FORCE_COLOR is set, even into a file, and the result is not JSON.
+echo "$RESULTS" | python3 -c 'import json, sys; json.dump(json.load(sys.stdin), sys.stdout, indent=4); sys.stdout.write("\n")' > "$OUTPUT"
 log "raw results -> $OUTPUT"
 
 # --- report: markdown table normalized to the VL/VT baseline ------------------
