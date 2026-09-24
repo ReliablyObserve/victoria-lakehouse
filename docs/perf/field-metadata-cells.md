@@ -441,6 +441,12 @@ VictoriaLogs answers (block headers carry the stream id).
    buffers before uploading and does not put a failed partition back. That run was discarded and
    repeated on a quieter host. This is also the likely cause of the traces seed converging to
    87.5 % in earlier runs.
+7. **A slow peer drops out of the unflushed window.** The buffer bridge ships every unflushed row
+   as JSON under `select.buffer_query_timeout` (default 2 s). On a shared CI runner the harness's
+   in-process peer broke off after 2112 of 4000 rows at 5 s; before #239 those 2112 rows were
+   silently counted as the peer's whole answer, now the answer is dropped whole and counted in
+   `lakehouse_buffer_bridge_errors_total{reason="decode"}`. A peer answering enumeration with
+   (value, hits) pairs instead of rows keeps large unflushed windows inside the timeout.
 
 ## Noise
 

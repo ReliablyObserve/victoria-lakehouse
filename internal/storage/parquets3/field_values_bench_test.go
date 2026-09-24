@@ -628,6 +628,10 @@ func fmTruthKey(endpoint, filter, window string) string {
 // fmPeer is an insert instance holding unflushed rows: it answers
 // /internal/buffer/query for the default tenant with the rows inside the
 // requested [start, end], as the buffer handler does.
+//
+// The bridge timeout is generous: a shared CI runner can stall past the
+// production default while the fake streams thousands of rows, and a timed-out
+// peer is dropped whole (counted in lakehouse_buffer_bridge_errors_total).
 func fmPeer(tb testing.TB, rows []schema.LogRow) *BufferBridge {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start, _ := strconv.ParseInt(r.URL.Query().Get("start"), 10, 64)
@@ -641,7 +645,7 @@ func fmPeer(tb testing.TB, rows []schema.LogRow) *BufferBridge {
 		}
 	}))
 	tb.Cleanup(srv.Close)
-	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 5 * time.Second}, config.ModeLogs)
+	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 60 * time.Second}, config.ModeLogs)
 	bridge.SetEndpoints([]string{srv.URL})
 	return bridge
 }

@@ -174,6 +174,10 @@ func fmtSlotRows(hour, slot int) []schema.TraceRow {
 
 // fmtPeer is an insert instance holding unflushed spans, answering
 // /internal/buffer/query with the spans inside the requested [start, end].
+//
+// The bridge timeout is generous: a shared CI runner can stall past the
+// production default while the fake streams thousands of rows, and a timed-out
+// peer is dropped whole (counted in lakehouse_buffer_bridge_errors_total).
 func fmtPeer(t *testing.T, rows []schema.TraceRow) *BufferBridge {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start, _ := strconv.ParseInt(r.URL.Query().Get("start"), 10, 64)
@@ -187,7 +191,7 @@ func fmtPeer(t *testing.T, rows []schema.TraceRow) *BufferBridge {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 5 * time.Second}, config.ModeTraces)
+	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 60 * time.Second}, config.ModeTraces)
 	bridge.SetEndpoints([]string{srv.URL})
 	return bridge
 }
