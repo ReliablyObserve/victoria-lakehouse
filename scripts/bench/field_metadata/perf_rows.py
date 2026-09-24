@@ -183,7 +183,9 @@ def check(matrix_groups, rows):
         exact = all(s["exact"] == s["n"] for s in ss)
         if row["expect"] == "pass" and not exact:
             got = ", ".join("%d/%d" % (s["exact"], s["n"]) for s in ss)
-            fails.append(f"{cell}: expect pass but not exact ({got})")
+            diffs = sorted({r["diff"] for recs in runs for r in recs if r.get("diff")})
+            why = f" — got/want: {'; '.join(diffs)[:300]}" if diffs else ""
+            fails.append(f"{cell}: expect pass but not exact ({got}){why}")
         if row["expect"] == "differ" and exact:
             fails.append(f"{cell}: expect differ but now exact — regenerate the rows to promote it")
         for recs in runs:

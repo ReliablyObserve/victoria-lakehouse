@@ -548,6 +548,35 @@ func fmRowOracle(tb testing.TB, s *Storage, filter string, w fmWindow) map[strin
 	return values
 }
 
+// fmDiff names the first values whose hits differ from the truth
+// (value=got/want), so a non-exact iteration in CI says what was wrong.
+func fmDiff(got, truth map[string]uint64) string {
+	keys := make([]string, 0, len(got)+len(truth))
+	for k := range truth {
+		keys = append(keys, k)
+	}
+	for k := range got {
+		if _, ok := truth[k]; !ok {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	n := 0
+	for _, k := range keys {
+		if got[k] == truth[k] {
+			continue
+		}
+		if n == 5 {
+			b.WriteString(" …")
+			break
+		}
+		fmt.Fprintf(&b, "%s=%d/%d ", k, got[k], truth[k])
+		n++
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func fmEqualCounts(a, b map[string]uint64) bool {
 	if len(a) != len(b) {
 		return false
@@ -702,6 +731,7 @@ func buildFmEnv(tb testing.TB, layout string, pmetaOn bool) *fmEnv {
 type fmResult struct {
 	dur                        time.Duration
 	setOK, hitsOK              bool
+	diff                       string // first differences from the truth, when not exact
 	values                     int
 	gets, bytes, lists         int64
 	rowGroups, pages, catalogs int64
@@ -761,6 +791,9 @@ func (e *fmEnv) run(tb testing.TB, endpoint, filter string, w fmWindow, latency 
 		}
 	}
 	r.hitsOK = r.setOK && fmEqualCounts(got, truth)
+	if !r.hitsOK {
+		r.diff = fmDiff(got, truth)
+	}
 	return r
 }
 
@@ -901,6 +934,7 @@ type fmRecord struct {
 	RowGroups int64  `json:"row_groups"`
 	Pages     int64  `json:"pages"`
 	Catalog   int64  `json:"catalog_answers"`
+	Diff      string `json:"diff,omitempty"`
 }
 
 // TestFieldMetadataMatrix runs every cell FM_ITERS times (after FM_WARMUP
@@ -946,7 +980,7 @@ func TestFieldMetadataMatrix(t *testing.T) {
 								SetOK: r.setOK, HitsOK: r.hitsOK, Values: r.values,
 								Truth: fmDigest(e.truth[fmTruthKey(ep, flt, w.name)]), Files: e.files,
 								Gets: r.gets, Bytes: r.bytes, Lists: r.lists, RowGroups: r.rowGroups, Pages: r.pages,
-								Catalog: r.catalogs,
+								Catalog: r.catalogs, Diff: r.diff,
 							}
 							if err := enc.Encode(rec); err != nil {
 								t.Fatal(err)

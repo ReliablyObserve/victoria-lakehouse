@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -362,6 +363,7 @@ type fmtRecord struct {
 	Gets      int64  `json:"gets"`
 	Bytes     int64  `json:"bytes"`
 	Catalog   int64  `json:"catalog_answers"`
+	Diff      string `json:"diff,omitempty"`
 }
 
 func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency time.Duration) fmtRecord {
@@ -418,7 +420,12 @@ func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency
 			hitsOK = false
 		}
 	}
+	diff := ""
+	if !hitsOK {
+		diff = fmtDiff(got, truth)
+	}
 	return fmtRecord{
+		Diff:     diff,
 		Endpoint: endpoint, Pmeta: e.pmeta, Layout: e.layout, Window: w.name, Filter: filter,
 		LatencyMs: latency.Milliseconds(), Ns: dur.Nanoseconds(), SetOK: setOK, HitsOK: hitsOK,
 		Values: len(vals), Files: e.files, Gets: e.mock.gets.Load(), Bytes: e.mock.bytesServed.Load(),
@@ -522,4 +529,33 @@ func TestFieldMetadataMatrixTraces(t *testing.T) {
 			}
 		}
 	}
+}
+
+// fmtDiff names the first values whose hits differ from the truth
+// (value=got/want), so a non-exact iteration in CI says what was wrong.
+func fmtDiff(got, truth map[string]uint64) string {
+	keys := make([]string, 0, len(got)+len(truth))
+	for k := range truth {
+		keys = append(keys, k)
+	}
+	for k := range got {
+		if _, ok := truth[k]; !ok {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	n := 0
+	for _, k := range keys {
+		if got[k] == truth[k] {
+			continue
+		}
+		if n == 5 {
+			b.WriteString(" …")
+			break
+		}
+		fmt.Fprintf(&b, "%s=%d/%d ", k, got[k], truth[k])
+		n++
+	}
+	return strings.TrimSpace(b.String())
 }
