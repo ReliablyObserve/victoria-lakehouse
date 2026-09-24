@@ -526,41 +526,15 @@ func TestPmetaRebuildCatalogValues_SkipsPartitionsWithUnlabeledFiles(t *testing.
 	}
 }
 
-func TestPartitionHourBounds(t *testing.T) {
-	h := time.Date(2026, 9, 5, 14, 0, 0, 0, time.UTC)
-	lo, hi := partitionHourBounds(h.Add(17*time.Minute).UnixNano(), h.Add(42*time.Minute).UnixNano())
-	if lo != h.UnixNano() {
-		t.Errorf("lo = %v, want the start of the hour %v", time.Unix(0, lo).UTC(), h)
-	}
-	if hi != h.Add(time.Hour).UnixNano()-1 {
-		t.Errorf("hi = %v, want the last nanosecond of the hour", time.Unix(0, hi).UTC())
-	}
-
-	// A window spanning hours covers every hour it touches.
-	lo, hi = partitionHourBounds(h.Add(59*time.Minute).UnixNano(), h.Add(61*time.Minute).UnixNano())
-	if lo != h.UnixNano() || hi != h.Add(2*time.Hour).UnixNano()-1 {
-		t.Errorf("spanning window widened to [%v, %v]", time.Unix(0, lo).UTC(), time.Unix(0, hi).UTC())
-	}
-
-	// Open-ended windows stay open instead of overflowing.
-	if lo, hi := partitionHourBounds(math.MinInt64, math.MaxInt64); lo != math.MinInt64 || hi != math.MaxInt64 {
-		t.Errorf("open window became [%d, %d]", lo, hi)
-	}
-	if _, hi := partitionHourBounds(0, math.MaxInt64-1); hi != math.MaxInt64-1 {
-		t.Errorf("a near-max end must not overflow, got %d", hi)
-	}
-}
-
-// TestFieldValues_TombstoneInTheSameHourGatesTheCatalog covers the catalog's
-// granularity: it answers with the value union of whole partition hours. A
-// tombstone later in the same hour, outside the query window, still hides rows
-// whose values that union lists, so the fast path must not be used — the row
-// scan over the exact window is the right answer.
-func TestFieldValues_TombstoneInTheSameHourGatesTheCatalog(t *testing.T) {
+// TestFieldValues_TombstoneOutsideTheFileKeepsItsAggregate covers the
+// granularity of the metadata path: a file is answered from its exact label
+// counts unless a tombstone of its tenant touches its rows. A tombstone earlier
+// in the same hour that ends before the file's first row hides none of its
+// rows, so the counts stay exact and no scan is needed; the hour-granular value
+// union that used to answer here had to give up on it.
+func TestFieldValues_TombstoneOutsideTheFileKeepsItsAggregate(t *testing.T) {
 	f := newFieldsTombstoneFixture(t, true)
 
-	// The fixture's rows sit at "now"; a tombstone over a sliver of the same
-	// hour that does NOT overlap a narrow window around those rows.
 	now := time.Now()
 	hourStart := now.UTC().Truncate(time.Hour)
 	windowStart, windowEnd := now.Add(-time.Second).UnixNano(), now.Add(time.Second).UnixNano()
@@ -569,21 +543,29 @@ func TestFieldValues_TombstoneInTheSameHourGatesTheCatalog(t *testing.T) {
 	if tsEnd <= tsStart {
 		t.Skip("the fixture rows landed at the very start of an hour; no room for a same-hour tombstone before them")
 	}
+	for _, fi := range f.storage.manifest.GetFilesForRange(windowStart, windowEnd) {
+		if fi.MinTimeNs <= tsEnd {
+			t.Skipf("fixture file %s starts inside the tombstone", fi.Key)
+		}
+	}
 
 	store := delete.NewTombstoneStore()
 	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "same-hour", Query: "*", StartNs: tsStart, EndNs: tsEnd, Mode: "hide"})
 	f.storage.SetTombstoneStore(store)
 
 	q := mustParseQueryWithTime(t, "*", windowStart, windowEnd)
-	before := metrics.DeleteFieldsScanFallback.Get("field_values")
+	beforeFallback := metrics.DeleteFieldsScanFallback.Get("field_values")
+	beforeAgg := metrics.FieldValuesFiles.Get("aggregate")
 	got, err := f.storage.GetFieldValues(context.Background(), nil, q, "service.name", 100)
 	if err != nil {
 		t.Fatalf("GetFieldValues: %v", err)
 	}
-	if metrics.DeleteFieldsScanFallback.Get("field_values") <= before {
-		t.Error("a tombstone in the same partition hour must gate the catalog fast path")
+	if metrics.DeleteFieldsScanFallback.Get("field_values") != beforeFallback {
+		t.Error("a tombstone that touches no row of the file forced a scan")
 	}
-	// Nothing in the exact window is tombstoned, so the scan returns everything.
+	if metrics.FieldValuesFiles.Get("aggregate") <= beforeAgg {
+		t.Error("the untouched file was not answered from its label counts")
+	}
 	if want := []string{"api-gateway", "order-service"}; !reflect.DeepEqual(valueStrings(got), want) {
 		t.Fatalf("values = %v, want %v", valueStrings(got), want)
 	}

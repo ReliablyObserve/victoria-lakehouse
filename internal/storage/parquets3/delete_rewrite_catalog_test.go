@@ -23,7 +23,9 @@ import (
 // dropping the superseded file's per-file facets (what compaction's hook does)
 // is not enough; the rewrite hook in both binaries, PmetaOnRewritten, rebuilds
 // the value sets from the files that survive. The negative control proves this
-// test notices when that rebuild is missing.
+// test notices when that rebuild is missing — in the catalog itself, since
+// field_values answers from the replacement's own rows and label counts and
+// stays exact either way.
 func TestDeleteRewrite_CatalogForgetsTheDeletedValue(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -32,11 +34,11 @@ func TestDeleteRewrite_CatalogForgetsTheDeletedValue(t *testing.T) {
 	}{
 		{name: "with the rewrite hook", hook: "rewritten", wantValue: []string{"api-gateway"}},
 		// Negative control: compaction's hook drops per-file facets but the
-		// catalog union keeps the deleted value.
-		{name: "negative control: compaction hook only", hook: "compacted", wantValue: []string{"api-gateway", "order-service"}},
-		// No hook at all: the replacement file never reaches the catalog, so
-		// the catalog does not cover the range and field_values answers from
-		// the rows (catalogFieldValues' coverage check) — correct, not stale.
+		// catalog union keeps the deleted value (asserted below); field_values
+		// does not read that union and is exact.
+		{name: "negative control: compaction hook only", hook: "compacted", wantValue: []string{"api-gateway"}},
+		// No hook at all: the replacement file never reaches the catalog;
+		// field_values answers from its rows and label counts — correct.
 		{name: "no hook: uncovered replacement is scanned", hook: "", wantValue: []string{"api-gateway"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,6 +130,14 @@ func TestDeleteRewrite_CatalogForgetsTheDeletedValue(t *testing.T) {
 			}
 			if got := valueStrings(after); !reflect.DeepEqual(got, tc.wantValue) {
 				t.Fatalf("values after the delete completed = %v, want %v", got, tc.wantValue)
+			}
+			// Hits count the surviving rows only: the two api-gateway rows.
+			if len(after) != 1 || after[0].Hits != 2 {
+				t.Fatalf("hits after the delete completed = %v, want api-gateway:2", after)
+			}
+			stale := catalog.FieldValues(part, "service.name", "", 0)
+			if wantStale := tc.hook != "rewritten"; wantStale != reflect.DeepEqual(stale, []string{"api-gateway", "order-service"}) {
+				t.Fatalf("catalog value set after the delete = %v (stale union expected: %v)", stale, wantStale)
 			}
 
 			if tc.hook == "rewritten" {

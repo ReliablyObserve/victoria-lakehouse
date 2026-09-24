@@ -18,6 +18,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -26,10 +27,11 @@ import (
 // Traces subset of the field-metadata performance matrix
 // (internal/storage/parquets3/field_values_bench_test.go on the logs side,
 // docs/perf/field-metadata-cells.md). Cells: endpoint {field_values name,
-// field_values resource_attr:service.name, streams} × pmeta {on, off} × window
-// {whole hours, cut mid-hour} × filter {none, service.name:="svc-a"} × S3
-// first-byte latency {0, 100 ms}, over flushed small files (compacted layouts
-// and field_names are measured on the logs side only). Every iteration starts
+// field_values resource_attr:service.name, streams} × pmeta {on, off} × layout
+// {flushed small files, compacted into one object per hour} × window {whole
+// hours, cut mid-hour, narrow, across the hour edge} × filter {none,
+// service.name:="svc-a"} × S3 first-byte latency {0, 100 ms} (field_names is
+// measured on the logs side only). Every iteration starts
 // with cold object caches and is validated against the generator's truth
 // (set_ok: exact value set; hits_ok: and exact hit counts).
 //
@@ -175,6 +177,8 @@ func fmtWindows() []fmtWindow {
 	return []fmtWindow{
 		{"whole", fmtBase.UnixNano(), fmtBase.Add(2*time.Hour).UnixNano() - 1},
 		{"cut", fmtBase.Add(30*time.Minute + 75*time.Millisecond).UnixNano(), fmtBase.Add(90*time.Minute + 75*time.Millisecond).UnixNano()},
+		{"narrow", fmtBase.Add(80*time.Minute + 10*time.Second + 75*time.Millisecond).UnixNano(), fmtBase.Add(80*time.Minute + 40*time.Second + 75*time.Millisecond).UnixNano()},
+		{"edge", fmtBase.Add(45*time.Minute - 75*time.Millisecond).UnixNano(), fmtBase.Add(67*time.Minute + 30*time.Second + 75*time.Millisecond).UnixNano()},
 	}
 }
 
@@ -201,14 +205,15 @@ func fmtTruth(rows []schema.TraceRow, endpoint, filter string, w fmtWindow) map[
 }
 
 type fmtEnv struct {
-	s     *Storage
-	mock  *fmtS3
-	pmeta bool
-	files int
-	rows  []schema.TraceRow
+	s      *Storage
+	mock   *fmtS3
+	layout string
+	pmeta  bool
+	files  int
+	rows   []schema.TraceRow
 }
 
-func buildFmtEnv(t *testing.T, pmetaOn bool) *fmtEnv {
+func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 	t.Helper()
 	mock := newFmtS3()
 	t.Cleanup(mock.srv.Close)
@@ -219,13 +224,38 @@ func buildFmtEnv(t *testing.T, pmetaOn bool) *fmtEnv {
 		s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
 		bw.catalogObserver = &catalogObserver{store: s.catalog}
 	}
-	e := &fmtEnv{s: s, mock: mock, pmeta: pmetaOn}
+	e := &fmtEnv{s: s, mock: mock, layout: layout, pmeta: pmetaOn}
 	for h := 0; h < 2; h++ {
 		for slot := 0; slot < fmtSlotsPerHour; slot++ {
 			rows := fmtSlotRows(h, slot)
 			e.rows = append(e.rows, rows...)
 			bw.AddTraceRows(rows)
 			bw.triggerFlush()
+		}
+	}
+	if layout == "compacted" {
+		for h := 0; h < 2; h++ {
+			partition := partitionFromNano(fmtBase.Add(time.Duration(h) * time.Hour).UnixNano())
+			inputs := s.manifest.FilesForPartition(partition)
+			c := compaction.NewCompactor(compaction.CompactorConfig{
+				Pool:             s.pool,
+				Manifest:         s.manifest,
+				Prefix:           "logs/",
+				Mode:             config.ModeTraces,
+				RowGroupSize:     s.cfg.Insert.RowGroupSize,
+				CompressionLevel: s.cfg.Insert.CompressionLevel,
+				CompactionConfig: s.cfg.Compaction,
+			})
+			res, err := c.Compact(context.Background(), partition, inputs, 0)
+			if err != nil {
+				t.Fatalf("compact %s: %v", partition, err)
+			}
+			removed := make([]string, 0, len(inputs))
+			for _, fi := range inputs {
+				removed = append(removed, fi.Key)
+			}
+			// What the scheduler's OnCompacted hook does in cmd/lakehouse-traces.
+			s.PmetaOnCompacted(s.manifest.FilesForPartition(partition), removed, res.OutputBlooms)
 		}
 	}
 	whole := fmtWindows()[0]
@@ -321,10 +351,51 @@ func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency
 		}
 	}
 	return fmtRecord{
-		Endpoint: endpoint, Pmeta: e.pmeta, Layout: "flushed", Window: w.name, Filter: filter,
+		Endpoint: endpoint, Pmeta: e.pmeta, Layout: e.layout, Window: w.name, Filter: filter,
 		LatencyMs: latency.Milliseconds(), Ns: dur.Nanoseconds(), SetOK: setOK, HitsOK: hitsOK,
 		Values: len(vals), Files: e.files, Gets: e.mock.gets.Load(), Bytes: e.mock.bytesServed.Load(),
 		Catalog: int64(metrics.CatalogValueLookups.Get("catalog") - cat0), //nolint:gosec // a per-iteration counter delta
+	}
+}
+
+func buildFmtEnvs(t *testing.T) []*fmtEnv {
+	var envs []*fmtEnv
+	for _, layout := range []string{"flushed", "compacted"} {
+		for _, pm := range []bool{true, false} {
+			envs = append(envs, buildFmtEnv(t, layout, pm))
+		}
+	}
+	return envs
+}
+
+func fmtCellName(ep string, e *fmtEnv, w fmtWindow, filter string, lat time.Duration) string {
+	return fmt.Sprintf("traces.%s/pmeta=%v/layout=%s/window=%s/filter=%s/s3=%dms", ep, e.pmeta, e.layout, w.name, filter, lat.Milliseconds())
+}
+
+var fmtEndpoints = []string{"fv_name", "fv_service", "streams"}
+
+// TestFieldMetadataTraces_ExactInBothLayouts is the traces twin of
+// TestFieldMetadata_ExactInBothLayouts: every cell exact, at 0 ms S3, on the
+// same spans flushed and compacted; label-count answers read nothing from S3.
+func TestFieldMetadataTraces_ExactInBothLayouts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds four deployments of 48k spans")
+	}
+	for _, e := range buildFmtEnvs(t) {
+		for _, ep := range fmtEndpoints {
+			for _, w := range fmtWindows() {
+				for _, f := range []string{"none", "svc"} {
+					r := e.run(t, ep, f, w, 0)
+					name := fmtCellName(ep, e, w, f, 0)
+					if !r.HitsOK {
+						t.Errorf("%s: not exact (values ok: %v)", name, r.SetOK)
+					}
+					if ep == "fv_name" && f == "none" && w.name == "whole" && r.Gets != 0 {
+						t.Errorf("%s: %d S3 GETs, want 0 (label counts)", name, r.Gets)
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -357,8 +428,8 @@ func TestFieldMetadataMatrixTraces(t *testing.T) {
 	defer func() { _ = f.Close() }()
 	enc := json.NewEncoder(f)
 
-	envs := []*fmtEnv{buildFmtEnv(t, true), buildFmtEnv(t, false)}
-	for _, ep := range []string{"fv_name", "fv_service", "streams"} {
+	envs := buildFmtEnvs(t)
+	for _, ep := range fmtEndpoints {
 		for _, e := range envs {
 			for _, w := range fmtWindows() {
 				for _, flt := range []string{"none", "svc"} {
@@ -369,7 +440,7 @@ func TestFieldMetadataMatrixTraces(t *testing.T) {
 						for i := 0; i < iters; i++ {
 							rec := e.run(t, ep, flt, w, lat)
 							rec.Build, rec.Round, rec.Iter = os.Getenv("FM_BUILD"), os.Getenv("FM_ROUND"), i
-							rec.Cell = fmt.Sprintf("traces.%s/pmeta=%v/layout=flushed/window=%s/filter=%s/s3=%dms", ep, e.pmeta, w.name, flt, lat.Milliseconds())
+							rec.Cell = fmtCellName(ep, e, w, flt, lat)
 							rec.Endpoint = "traces." + ep
 							if err := enc.Encode(rec); err != nil {
 								t.Fatal(err)

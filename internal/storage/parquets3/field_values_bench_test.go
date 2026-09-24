@@ -441,6 +441,13 @@ func fmWindows() []fmWindow {
 		// rowGroupMatchesTimeRange), so a row exactly at endNs that starts a
 		// row group would be missing from the oracle but not from the scan.
 		{"cut", fmBase.Add(30*time.Minute + 75*time.Millisecond).UnixNano(), fmBase.Add(90*time.Minute + 75*time.Millisecond).UnixNano()},
+		// 30 s inside one flush slot: cuts one flushed file, and one compacted
+		// object, of which it needs a sliver (a small call on a big object).
+		{"narrow", fmBase.Add(80*time.Minute + 10*time.Second + 75*time.Millisecond).UnixNano(), fmBase.Add(80*time.Minute + 40*time.Second + 75*time.Millisecond).UnixNano()},
+		// Across the hour boundary: flushed slots 09-11 of the first hour and
+		// 00 of the second lie wholly inside (answerable from their label
+		// counts), slot 01 is cut; both compacted hour objects are cut.
+		{"edge", fmBase.Add(45*time.Minute - 75*time.Millisecond).UnixNano(), fmBase.Add(67*time.Minute + 30*time.Second + 75*time.Millisecond).UnixNano()},
 	}
 }
 
@@ -793,6 +800,39 @@ func benchFmCell(b *testing.B, e *fmEnv, ep, filter string, w fmWindow, lat time
 	b.ReportMetric(pages/n, "pages/op")
 	b.ReportMetric(valid/n, "valid")
 	b.ReportMetric(setValid/n, "set_valid")
+}
+
+// TestFieldMetadata_ExactInBothLayouts runs every value cell once, at 0 ms S3,
+// on the same rows flushed as small files and compacted into hour objects, and
+// requires the exact answer (values and hits) in every layout, window and
+// filter. Answers from label counts must also cost no S3 read. field_names is
+// not exact yet (it credits all-null columns and ignores the window) and is
+// measured by the matrix only.
+func TestFieldMetadata_ExactInBothLayouts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds four deployments of 48k rows")
+	}
+	for _, e := range buildFmEnvs(t) {
+		for _, ep := range fmEndpoints {
+			if ep == "field_names" {
+				continue
+			}
+			for _, w := range fmWindows() {
+				for _, f := range fmFilters {
+					r := e.run(t, ep, f, w, 0)
+					name := fmCellName(ep, e, w, f, 0)
+					if !r.hitsOK {
+						t.Errorf("%s: not exact (values ok: %v)", name, r.setOK)
+					}
+					// Wholly contained objects and a low-card field: the answer
+					// is the objects' label counts, read from the manifest.
+					if ep == "fv_level" && f == "none" && w.name == "whole" && r.gets != 0 {
+						t.Errorf("%s: %d S3 GETs, want 0 (label counts)", name, r.gets)
+					}
+				}
+			}
+		}
+	}
 }
 
 // fmRecord is one JSONL line of TestFieldMetadataMatrix.

@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -266,45 +264,14 @@ func (s *Storage) scanProjectedFieldValues(
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
 	scope := scopeFor(ctx, tenantIDs)
-
-	// pmeta catalog fast-path (--pmeta): union the field's values across the
-	// partitions in the query's time range, served from RAM. nil (flag off) or
-	// empty (field not catalogued, or high-card) falls through to the row scan.
-	// A no-limit request (limit==0) MUST still use the catalog — it is exact and
-	// self-bounded, so this is correct and avoids a full scan. See the logs-module
-	// comment: gating on `limit > 0` was the dropdown slowness.
-	//
-	// The in-RAM label index is deliberately NOT a source here: its values are a
-	// sample (the first rows of the first files opened), never updated by a flush
-	// and not time-scoped, so as an answer it listed a subset of the values in
-	// range and values from outside the window. See the logs-module comment.
 	startNs, endNs := q.GetFilterTimeRange()
 
-	// The catalog is built at write/compaction time and carries no tombstone
-	// awareness: a value that exists only on deleted rows is still in it.
-	// Serving from it while a tombstone could cover its answer is how a
-	// "deleted" value kept appearing in dropdowns, so the fast path is given up
-	// whenever a tombstone overlaps what it answers from, and the answer is
-	// verified against rows instead:
-	//   - the catalog answers per partition hour → hour-widened window;
-	//   - the row scan reads whole files → the scanned files' time span (below).
-	gaveUpFastPath := false
-
-	if filter == nil && s.catalog != nil {
-		if hLo, hHi := partitionHourBounds(startNs, endNs); len(s.fieldsTombstones(scope, hLo, hHi)) > 0 {
-			gaveUpFastPath = true
-		} else {
-			if s.refuseEnumeration(fieldName) {
-				return nil, nil // declared id column: don't enumerate (matches VT), no scan
-			}
-			if result := s.catalogFieldValues(q, scope, fieldName, limit); len(result) > 0 {
-				return result, nil
-			}
-		}
-	}
-
-	if gaveUpFastPath {
-		noteFieldsScanFallback("field_values")
+	// Neither the in-RAM label index (a sample, not time-scoped) nor the pmeta
+	// catalog (value sets without counts: every value got hits=1) can answer
+	// this exactly; see the logs-module comment. Exact per-file counts come
+	// from the manifest's label aggregates instead (collectFieldValues).
+	if filter == nil && s.refuseEnumeration(fieldName) {
+		return nil, nil // declared id column: don't enumerate (matches VT), no scan
 	}
 
 	files := s.filesForScope("field_values", startNs, endNs, scope)
@@ -312,13 +279,16 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		return nil, nil
 	}
 
-	// The scan reads every row of every overlapping file, including the rows
+	// A scan reads every row of every overlapping file, including the rows
 	// that lie outside the query window, so it must apply every tombstone
-	// overlapping those files — not only the ones overlapping the window.
+	// overlapping those files — not only the ones overlapping the window. A
+	// file a tombstone of its tenant touches is never answered from its
+	// aggregate, which predates the delete.
 	spanLo, spanHi := filesTimeSpan(files, startNs, endNs)
 	tombstones := s.fieldsTombstones(scope, spanLo, spanHi)
-	// Each object gets only the tombstones of its own tenant.
-	parse := s.keyTenantParser()
+	if len(tombstones) > 0 {
+		noteFieldsScanFallback("field_values")
+	}
 
 	mapping := s.registry.ResolveToParquet(fieldName)
 	if mapping == nil {
@@ -328,68 +298,20 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		return nil, nil
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	fileWorkers := s.cfg.Query.FileWorkers
-	if fileWorkers <= 0 {
-		fileWorkers = 8
+	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
+		op:         "field values",
+		column:     mapping.ParquetColumn,
+		aggregates: true,
+		filter:     filter,
+		tombstones: tombstones,
+		parse:      s.keyTenantParser(),
+		startNs:    startNs,
+		endNs:      endNs,
+	})
+	if err != nil {
+		return nil, err
 	}
-	if fileWorkers > len(files) {
-		fileWorkers = len(files)
-	}
-
-	var mu sync.Mutex
-	seen := make(map[string]uint64)
-
-	taskCh := make(chan manifest.FileInfo, len(files))
-	for _, fi := range files {
-		taskCh <- fi
-	}
-	close(taskCh)
-
-	var wg sync.WaitGroup
-	for i := 0; i < fileWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for fi := range taskCh {
-				if ctx.Err() != nil {
-					return
-				}
-
-				// Column-projected read: fetches only (target + filter cols)
-				// chunk data from S3 rather than the entire file body.
-				localSeen := make(map[string]uint64)
-				if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, tombstonesForKey(tombstones, parse, fi.Key), localSeen, startNs, endNs); err != nil {
-					logger.Warnf("scan projected field values: %s; key=%s", err, fi.Key)
-					continue
-				}
-
-				mu.Lock()
-				for k, v := range localSeen {
-					seen[k] += v
-				}
-				limitReached := limit > 0 && uint64(len(seen)) >= limit
-				mu.Unlock()
-
-				if limitReached {
-					cancel()
-					return
-				}
-			}
-		}()
-	}
-	wg.Wait()
-
-	result := make([]logstorage.ValueWithHits, 0, len(seen))
-	for v, hits := range seen {
-		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
-	}
-	if limit > 0 && uint64(len(result)) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+	return valuesWithHits(seen, limit), nil
 }
 
 func (s *Storage) GetStreamFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
@@ -431,31 +353,19 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 		streamColName = m.ParquetColumn
 	}
 
-	seen := make(map[string]uint64)
-
-	for _, fi := range files {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if err := s.scanProjectedFieldValues(ctx, fi, streamColName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen, startNs, endNs); err != nil {
-			logger.Warnf("scan projected streams: %s; key=%s", err, fi.Key)
-			continue
-		}
-
-		if limit > 0 && uint64(len(seen)) >= limit {
-			break
-		}
+	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
+		op:         "streams",
+		column:     streamColName,
+		filter:     filter,
+		tombstones: tombstones,
+		parse:      parse,
+		startNs:    startNs,
+		endNs:      endNs,
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	result := make([]logstorage.ValueWithHits, 0, len(seen))
-	for v, hits := range seen {
-		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
-	}
-	if limit > 0 && uint64(len(result)) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+	return valuesWithHits(seen, limit), nil
 }
 
 func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
@@ -484,31 +394,19 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 		colName = m.ParquetColumn
 	}
 
-	seen := make(map[string]uint64)
-
-	for _, fi := range files {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if err := s.scanProjectedFieldValues(ctx, fi, colName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen, startNs, endNs); err != nil {
-			logger.Warnf("scan projected stream_ids: %s; key=%s", err, fi.Key)
-			continue
-		}
-
-		if limit > 0 && uint64(len(seen)) >= limit {
-			break
-		}
+	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
+		op:         "stream_ids",
+		column:     colName,
+		filter:     filter,
+		tombstones: tombstones,
+		parse:      parse,
+		startNs:    startNs,
+		endNs:      endNs,
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	result := make([]logstorage.ValueWithHits, 0, len(seen))
-	for v, hits := range seen {
-		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
-	}
-	if limit > 0 && uint64(len(result)) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+	return valuesWithHits(seen, limit), nil
 }
 
 // collectFilteredValues collects values from targetColIdx for rows that match the filter.
