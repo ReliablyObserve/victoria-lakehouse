@@ -237,6 +237,7 @@ Read scoping (see [multi-tenancy — Read Scoping](multi-tenancy.md#read-scoping
 | `lakehouse_min_manifest_files_gate` | Gauge | Configured `cfg.Startup.MinManifestFiles` threshold (0 = gate disabled) |
 | `lakehouse_buffer_bridge_az_requests_total` | Counter (`az_type`) | Buffer-bridge fan-out calls labeled `same_az` / `cross_az` / `self`. The `self` label appears for single-node deployments that loop back to their own writer buffer |
 | `lakehouse_buffer_bridge_fallback_total` | Counter | Times the bridge fell back to a different AZ tier after the preferred one returned no peers |
+| `lakehouse_buffer_bridge_errors_total` | Counter (`reason`) | Peer answers the buffer bridge dropped — `request` (unreachable, timed out), `status` (non-200), `scope` (no tenant-scope echo), `decode` (the row stream broke off). Each one leaves that peer's unflushed rows out of a query or field enumeration; a stream that breaks off is dropped whole, never used as a partial answer |
 
 ### Cache snapshot Metrics
 

@@ -375,6 +375,7 @@ func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency
 	e.mock.bytesServed.Store(0)
 	e.mock.latency.Store(int64(latency))
 	cat0 := metrics.CatalogValueLookups.Get("catalog")
+	br0 := fmtBridgeErrors()
 	ctx := context.Background()
 	var (
 		vals []logstorage.ValueWithHits
@@ -423,6 +424,9 @@ func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency
 	diff := ""
 	if !hitsOK {
 		diff = fmtDiff(got, truth)
+		if n := fmtBridgeErrors() - br0; n > 0 {
+			diff += fmt.Sprintf(" (buffer bridge errors: %d)", n)
+		}
 	}
 	return fmtRecord{
 		Diff:     diff,
@@ -529,6 +533,15 @@ func TestFieldMetadataMatrixTraces(t *testing.T) {
 			}
 		}
 	}
+}
+
+// fmtBridgeErrors is the number of peer answers the buffer bridge dropped.
+func fmtBridgeErrors() uint64 {
+	var n uint64
+	for _, reason := range []string{"request", "status", "scope", "decode"} {
+		n += metrics.BufferBridgeErrors.Get(reason)
+	}
+	return n
 }
 
 // fmtDiff names the first values whose hits differ from the truth

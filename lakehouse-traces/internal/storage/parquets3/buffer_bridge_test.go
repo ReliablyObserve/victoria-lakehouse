@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -262,4 +264,33 @@ func TestBufferBridge_SetEndpoints(t *testing.T) {
 		t.Errorf("endpoints after update = %d, want 1", len(bridge.endpoints))
 	}
 	bridge.mu.RUnlock()
+}
+
+// A span stream that breaks off drops that peer's answer and is counted — it
+// is never returned as a smaller, complete-looking answer.
+func TestBufferBridge_BrokenTraceStreamIsAnErrorNotAPartialAnswer(t *testing.T) {
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
+		enc := json.NewEncoder(w)
+		for i := 0; i < 3; i++ {
+			_ = enc.Encode(schema.TraceRow{TimestampUnixNano: base.UnixNano(), TraceID: "t", SpanName: "ok"})
+		}
+		_, _ = io.WriteString(w, `{"timestamp_unix_nano": 1, "trace_id": "cut`)
+	}))
+	defer srv.Close()
+
+	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeTraces)
+	bridge.SetEndpoints([]string{srv.URL})
+	before := metrics.BufferBridgeErrors.Get("decode")
+	got, err := bridge.QueryTraces(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d spans from a broken stream, want none", len(got))
+	}
+	if metrics.BufferBridgeErrors.Get("decode") <= before {
+		t.Error("the broken stream was not counted")
+	}
 }

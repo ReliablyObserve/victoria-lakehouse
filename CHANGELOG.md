@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buffer bridge dropped them when turning another instance's rows into query blocks, so those
   rows were missing from `stream_ids` and from filters on these fields until flushed.
 
+- **A peer's row stream that breaks off is no longer used as a complete answer.** The buffer
+  bridge returned the rows read before a stream broke off (timeout, reset) as if they were all of
+  that peer's unflushed window — a silently short count. The peer's answer is now dropped whole,
+  logged, and counted in `lakehouse_buffer_bridge_errors_total{reason}` together with unreachable
+  peers, non-200 answers and missing tenant-scope echoes, which were silent before.
+
 ### Changed
 
 - **Cold `streams`, `stream_ids` and logs `field_values` scans run in parallel.** They read

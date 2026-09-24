@@ -548,6 +548,15 @@ func fmRowOracle(tb testing.TB, s *Storage, filter string, w fmWindow) map[strin
 	return values
 }
 
+// fmBridgeErrors is the number of peer answers the buffer bridge dropped.
+func fmBridgeErrors() uint64 {
+	var n uint64
+	for _, reason := range []string{"request", "status", "scope", "decode"} {
+		n += metrics.BufferBridgeErrors.Get(reason)
+	}
+	return n
+}
+
 // fmDiff names the first values whose hits differ from the truth
 // (value=got/want), so a non-exact iteration in CI says what was wrong.
 func fmDiff(got, truth map[string]uint64) string {
@@ -746,6 +755,7 @@ func (e *fmEnv) run(tb testing.TB, endpoint, filter string, w fmWindow, latency 
 	e.mock.resetCounters()
 	e.mock.latency.Store(int64(latency))
 	cat0 := metrics.CatalogValueLookups.Get("catalog")
+	br0 := fmBridgeErrors()
 	ctx := context.Background()
 
 	var (
@@ -793,6 +803,9 @@ func (e *fmEnv) run(tb testing.TB, endpoint, filter string, w fmWindow, latency 
 	r.hitsOK = r.setOK && fmEqualCounts(got, truth)
 	if !r.hitsOK {
 		r.diff = fmDiff(got, truth)
+		if n := fmBridgeErrors() - br0; n > 0 {
+			r.diff += fmt.Sprintf(" (buffer bridge errors: %d)", n)
+		}
 	}
 	return r
 }
