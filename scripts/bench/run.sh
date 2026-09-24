@@ -792,8 +792,11 @@ ingest() {
 }
 
 # logsql_count: total row count over [now-secs, now] from a LogsQL endpoint.
-logsql_count() { # $1 base_url  $2 secs
-  curl -sf --max-time 30 --data-urlencode "query=* | stats count() n" \
+# $3 = the row filter; traces pass trace_id:* because VictoriaTraces' `*` also
+# counts its internal trace_id_idx rows (one per trace), which made a complete
+# Lakehouse look like it held 7/8 of the spans.
+logsql_count() { # $1 base_url  $2 secs  [$3 filter, default *]
+  curl -sf --max-time 30 --data-urlencode "query=${3:-*} | stats count() n" \
     --data-urlencode "start=$(start_ns "$2")" --data-urlencode "end=$(end_ns "$2")" \
     "$1/select/logsql/query" 2>/dev/null | python3 -c "
 import sys,json
@@ -814,11 +817,12 @@ else: print(0)"
 # LH's Parquet so it tracks LH.
 wait_for_flush() { # $1 signal  $2 secs
   local signal="$1" secs="$2" base_url cold_url
+  local filter="*"
   if [[ "$signal" == logs ]]; then base_url="${EP[vl]}"; cold_url="${EP[lh_logs]}"
-  else base_url="${EP[vt]}"; cold_url="${EP[lh_traces]}"; fi
+  else base_url="${EP[vt]}"; cold_url="${EP[lh_traces]}"; filter="trace_id:*"; fi
   local tries=0 base cold prev=-1 stable=0 ratio
   while (( tries < 90 )); do   # up to ~15min
-    base=$(logsql_count "$base_url" "$secs"); cold=$(logsql_count "$cold_url" "$secs")
+    base=$(logsql_count "$base_url" "$secs" "$filter"); cold=$(logsql_count "$cold_url" "$secs" "$filter")
     if [[ "$base" =~ ^[0-9]+$ && "$cold" =~ ^[0-9]+$ && "$base" -gt 0 ]]; then
       ratio=$(awk "BEGIN{printf \"%.3f\",$cold/$base}")
       printf '    %-7s baseline=%-8s LH=%-8s ratio=%s\n' "$signal" "$base" "$cold" "$ratio" >&2

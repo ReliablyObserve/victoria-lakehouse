@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed flush no longer drops its rows.** A flush cleared the write buffers before uploading
+  and threw away every partition whose `PutObject` failed or that it had not reached before its
+  60-second deadline — under a slow or overloaded object store (a 7-day backfill on a busy host)
+  that lost 40 % of the logs and about 12 % of the spans. Now a tenant group that is not written goes
+  back into the buffers and the next flush writes it; groups that were written are never written
+  again. Rows stay readable (local buffer, peers' `/internal/buffer/query`) until their object is
+  committed, including while it uploads. Both binaries.
+
+- **Inserts are refused with 429 instead of growing the buffer without bound.** Past
+  `insert.max_buffer_bytes` of rows not yet written to object storage (previously not read), the
+  insert endpoints answer **429 Too Many Requests** — what VictoriaLogs returns when it cannot take
+  writes — so clients back off and retry; they answer **503** while object storage refuses writes.
+  The write check behind this no longer uploads an object on every insert request: its result is
+  reused for 10 seconds.
+
+- **An insert never waits for object storage.** A batch that pushed a buffer over its size
+  threshold flushed inside the insert request, so a slow object store held the request past the
+  client's timeout and the client's retry wrote the batch twice (10 % extra logs in a benchmark
+  seed). The request now hands the flush to the flush loop and returns; a failed upload is retried
+  under the same object key, so an object the store kept after the client gave up is overwritten,
+  never duplicated. Both binaries.
+
+- **A buffered row exactly at the window end is returned.** Buffer queries treated the window end
+  as exclusive, unlike the query they serve.
+
+- **The benchmark counts traces as spans when it waits for the flush.** VictoriaTraces' `*`
+  includes one internal index row per trace, so a complete Lakehouse read as 87.5 % of the
+  baseline and every traces run was flagged as a gap.
+
 ## [0.143.2] - 2026-09-24
 
 ### Fixed

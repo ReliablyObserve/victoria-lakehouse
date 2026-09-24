@@ -860,6 +860,42 @@
           "legendFormat": "requests {{source}}"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 109 },
+      "id": 88,
+      "title": "Write Durability",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 110 },
+      "id": 87,
+      "title": "Failed Uploads, Refused Inserts, Unwritten Bytes",
+      "description": "Rows a flush could not write and put back for the next flush (never dropped); inserts refused because unwritten data exceeds insert.max_buffer_bytes (429) or object storage refuses writes (503); rows lost at shutdown (should stay 0).",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(lakehouse_insert_rows_requeued_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "rows put back/s"
+        },
+        {
+          "expr": "sum by (reason) (rate(lakehouse_insert_rejected_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "inserts refused/s {{reason}}"
+        },
+        {
+          "expr": "sum(increase(lakehouse_insert_rows_lost_at_shutdown_total{instance=~\"$instance\"}[1h]))",
+          "legendFormat": "rows lost at shutdown (1h)"
+        },
+        {
+          "expr": "sum(lakehouse_insert_bytes_buffered{instance=~\"$instance\"})",
+          "legendFormat": "unwritten bytes"
+        }
+      ]
     }
   ],
   "schemaVersion": 39,

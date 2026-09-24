@@ -629,7 +629,7 @@ flowchart TD
 |---|---|---|---|---|
 | `insert.flush_interval` | `1m` | set | `-lakehouse.insert.flush-interval` | The interval at which buffered rows are flushed to Parquet on S3. |
 | `insert.max_buffer_rows` | `50000` | set |  | The number of rows a partition buffer holds before it flushes. |
-| `insert.max_buffer_bytes` | `256MB` | set |  | **Not read.** The total buffer memory across partitions, as a size string. |
+| `insert.max_buffer_bytes` | `256MB` | set |  | Bounds the rows not yet written to object storage — buffered, being uploaded, or put back after a failed upload — as a size string. |
 | `insert.target_file_size` | `128MB` | set |  | The target Parquet file size, as a size string; a buffer reaching it flushes early. |
 | `insert.row_group_size` | `10000` | set |  | The number of rows per Parquet row group in freshly written files. |
 | `insert.bloom_columns` | `[service.name, trace_id]` | set |  | Extra columns to bloom-index on write, in addition to the signal's built-in bloom columns. |

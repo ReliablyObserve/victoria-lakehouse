@@ -558,18 +558,30 @@ func pushNDJSON(endpoint string, rows []logRow, accountID, projectID, orgID stri
 	return nil
 }
 
-// withRetry retries a push up to 3 times (the fn rebuilds the request body each
-// attempt). Timeouts under bursty cold-tier ingest are transient, so a retry lands
-// the batch rather than dropping it.
+// withRetry retries a push (the fn rebuilds the request body each attempt) the
+// way ingestion agents do: with capped exponential backoff for about two
+// minutes. Timeouts under bursty cold-tier ingest are transient, and a 429 is
+// the insert path asking the client to wait while it writes what it holds —
+// giving up after a few seconds would drop the batch and leave the benchmark
+// datasets unequal.
 func withRetry(fn func() error) error {
+	const maxWait = 2 * time.Minute
 	var err error
-	for attempt := 1; attempt <= 3; attempt++ {
+	backoff, waited := 500*time.Millisecond, time.Duration(0)
+	for {
 		if err = fn(); err == nil {
 			return nil
 		}
-		time.Sleep(time.Duration(attempt) * time.Second)
+		if waited >= maxWait {
+			return err
+		}
+		log.Printf("push failed, retrying in %s: %v", backoff, err)
+		time.Sleep(backoff)
+		waited += backoff
+		if backoff < 10*time.Second {
+			backoff *= 2
+		}
 	}
-	return err
 }
 
 func pushNDJSONBatch(endpoint string, rows []logRow, accountID, projectID, orgID string) error {

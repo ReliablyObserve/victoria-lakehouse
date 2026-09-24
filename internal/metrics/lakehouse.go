@@ -355,8 +355,20 @@ var (
 
 // Insert / writer metrics
 var (
-	InsertRowsTotal        = NewCounter("lakehouse_insert_rows_total")
-	InsertRowsBuffered     = NewGauge("lakehouse_insert_rows_buffered")
+	InsertRowsTotal    = NewCounter("lakehouse_insert_rows_total")
+	InsertRowsBuffered = NewGauge("lakehouse_insert_rows_buffered")
+	// InsertRowsRequeued counts rows a flush could not write and put back into
+	// the buffers for the next flush (never dropped).
+	InsertRowsRequeued = NewCounter("lakehouse_insert_rows_requeued_total")
+	// InsertRowsLostAtShutdown counts buffered rows the final flush could not
+	// write before the process exited (the legacy staging path has no WAL).
+	InsertRowsLostAtShutdown = NewCounter("lakehouse_insert_rows_lost_at_shutdown_total")
+	// InsertRejected counts insert requests refused by CanWriteData:
+	// buffer_full (429) or storage_unavailable (503).
+	InsertRejected = NewCounterVec("lakehouse_insert_rejected_total", "reason")
+	// InsertBytesBuffered is the estimated raw size of the rows not yet
+	// written to object storage (buffered, being uploaded, or put back after a
+	// failed upload); CanWriteData answers 429 above insert.max_buffer_bytes.
 	InsertBytesBuffered    = NewGauge("lakehouse_insert_bytes_buffered")
 	InsertFlushTotal       = NewCounter("lakehouse_insert_flush_total")
 	InsertFlushErrorsTotal = NewCounter("lakehouse_insert_flush_errors_total")

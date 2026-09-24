@@ -270,7 +270,7 @@
     },
     "insert.max_buffer_bytes": {
       "name": "MaxBufferBytes",
-      "doc": "MaxBufferBytes is the total buffer memory across partitions, as a size string."
+      "doc": "MaxBufferBytes bounds the rows not yet written to object storage — buffered, being uploaded, or put back after a failed upload — as a size string. Past it inserts are refused with 429, as VictoriaLogs does when it cannot take writes, until flushes catch up."
     },
     "insert.max_buffer_rows": {
       "name": "MaxBufferRows",

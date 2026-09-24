@@ -258,8 +258,10 @@ type InsertConfig struct {
 	// MaxBufferRows is the number of rows a partition buffer holds before it
 	// flushes.
 	MaxBufferRows int `yaml:"max_buffer_rows"`
-	// MaxBufferBytes is the total buffer memory across partitions, as a size
-	// string.
+	// MaxBufferBytes bounds the rows not yet written to object storage —
+	// buffered, being uploaded, or put back after a failed upload — as a size
+	// string. Past it inserts are refused with 429, as VictoriaLogs does when
+	// it cannot take writes, until flushes catch up.
 	MaxBufferBytes string `yaml:"max_buffer_bytes"`
 	// TargetFileSize is the target Parquet file size, as a size string; a
 	// buffer reaching it flushes early.

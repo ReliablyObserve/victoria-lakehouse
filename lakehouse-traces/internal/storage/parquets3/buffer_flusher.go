@@ -177,7 +177,7 @@ func (f *BufferFlusher) flushCollected(ctx context.Context, collected map[logsto
 		}
 		sort.Strings(parts) // deterministic so a retry re-walks the same way
 		for _, p := range parts {
-			if err := f.writer.flushTracePartition(ctx, p, byPartition[p]); err != nil {
+			if _, err := f.writer.flushTracePartition(ctx, p, byPartition[p]); err != nil {
 				return err
 			}
 		}

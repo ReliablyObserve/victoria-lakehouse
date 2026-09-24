@@ -149,7 +149,7 @@ Every override, profile by profile:
 | `insert.compression_level` | `3` |  | `7` | `11` | `1` |
 | `insert.flush_interval` | `1m` | `5s` |  | `30s` | `1s` |
 | `insert.flush_linger` (not read) | `200ms` | `100ms` | `0s` | `1s` | `0s` |
-| `insert.max_buffer_bytes` (not read) | `256MB` | `512MB` |  | `128MB` | `32MB` |
+| `insert.max_buffer_bytes` | `256MB` | `512MB` |  | `128MB` | `32MB` |
 | `insert.max_buffer_rows` | `50000` | `100000` |  | `25000` | `1000` |
 | `insert.row_group_size` | `10000` | `5000` |  | `50000` | `1000` |
 | `insert.target_file_size` | `128MB` | `64MB` |  | `256MB` | `8MB` |
@@ -530,7 +530,7 @@ Controls buffering and flushing on the write path.
 | `insert.flush_interval` | duration | `1m` | set | `-lakehouse.insert.flush-interval` | max-performance: `5s`; max-cost-savings: `30s`; dev: `1s` | The interval at which buffered rows are flushed to Parquet on S3. |
 | `insert.flush_linger` | duration | `200ms` | set |  | max-performance: `100ms`; max-durability: `0s`; max-cost-savings: `1s`; dev: `0s` | **Not read.** Delays a flush to coalesce small writes. |
 | `insert.flush_max_rows` | int | `5000` | set |  |  | **Not read.** Caps the rows of one flush batch. |
-| `insert.max_buffer_bytes` | string | `256MB` | set |  | max-performance: `512MB`; max-cost-savings: `128MB`; dev: `32MB` | **Not read.** The total buffer memory across partitions, as a size string. |
+| `insert.max_buffer_bytes` | string | `256MB` | set |  | max-performance: `512MB`; max-cost-savings: `128MB`; dev: `32MB` | Bounds the rows not yet written to object storage — buffered, being uploaded, or put back after a failed upload — as a size string. |
 | `insert.max_buffer_rows` | int | `50000` | set |  | max-performance: `100000`; max-cost-savings: `25000`; dev: `1000` | The number of rows a partition buffer holds before it flushes. |
 | `insert.peer_replicate` | bool | `false` | enable-only |  |  | **Not read.** Replicates inserts to peer insert pods. |
 | `insert.peer_replicate_timeout` | duration | `5ms` | set |  |  | **Not read.** Bounds one peer replication. |

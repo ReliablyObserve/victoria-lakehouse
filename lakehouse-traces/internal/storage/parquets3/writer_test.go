@@ -358,8 +358,8 @@ func TestBufferedLogRows_TimeRange(t *testing.T) {
 	end := base.Add(7 * time.Second).UnixNano()
 
 	got := bw.BufferedLogRows(start, end)
-	if len(got) != 4 {
-		t.Errorf("BufferedLogRows returned %d rows, want 4 (indices 3-6)", len(got))
+	if len(got) != 5 {
+		t.Errorf("BufferedLogRows returned %d rows, want 5 (indices 3-7: inclusive at both ends, as the query window it serves)", len(got))
 	}
 }
 
@@ -390,8 +390,8 @@ func TestBufferedTraceRows_TimeRange(t *testing.T) {
 	end := base.Add(5 * time.Second).UnixNano()
 
 	got := bw.BufferedTraceRows(start, end)
-	if len(got) != 5 {
-		t.Errorf("BufferedTraceRows returned %d rows, want 5", len(got))
+	if len(got) != 6 {
+		t.Errorf("BufferedTraceRows returned %d rows, want 6 (indices 0-5: inclusive at both ends, as the query window it serves)", len(got))
 	}
 }
 
