@@ -384,14 +384,30 @@ The rows this PR changes: logs `field_values` wrong on every cell (hits=1) → e
 one wave (in-process at 100 ms S3: 2470 → 609 ms with the harness's 4 concurrent downloads, 2456 →
 107 ms on traces).
 
-**This PR: blocked by a write-path data loss, not measured.** Two attempts on this host (load
-13–36 from other work) lost part of the 7-day seed at write time: flushes failed `PutObject` with
-`context deadline exceeded` and dropped their rows (finding 6). The parity gate stopped both
-runs before any cell was timed — Lakehouse 8 281 = ClickHouse 8 281 (the same Parquet) vs
-VictoriaLogs 14 239 over 24 h — as it must: equal answers are compared or nothing is. The
-three-way for this PR is re-run once the flush durability fix lands (or on a quiet host, where
-the earlier run converged exactly).
+**After #239 and the flush durability fix (valid run).** Same benchmark, same host under load
+16–22 from other work — the conditions that lost rows in two earlier attempts. Both signals
+converged exactly (logs 14 360 = 14 360; traces 16 562 = 16 562 counted as spans), both parity
+gates passed, and **every Lakehouse cell is valid (36/36)**: the same values and hits as disk
+VictoriaLogs/VictoriaTraces and ClickHouse. p95/p90 per cell, 10 iterations after 2 warm-ups (the
+report's statistic; the before-state above is p50). Raw results:
+`bench-results/field-metadata-2026-09-24/run-durability.{json,md}`.
 
+| Query | Window, S3 | Disk VL/VT | Lakehouse | ClickHouse on S3 |
+|---|---|---|---|---|
+| logs `field_values level` | 1h / 6h / 24h, 0 ms | 4.8 / 2.3 / 6.7 | 5.0 / 8.8 / **5.6** | 83 / 99 / 79 |
+| logs `field_values level` | 24h, 100 ms | 5.9 | **5.7** | 97 |
+| logs `field_values service.name` | 1h / 6h / 24h, 0 ms | 2.3 / 7.1 / 12.7 | 8.0 / 10.6 / **6.8** | 84 / 81 / 106 |
+| logs `streams` | 1h / 6h / 24h, 0 ms | 5.2 / 15.8 / 70.5 | 7.2 / 18.2 / **94.9** | 93 / 81 / 201 |
+| logs `streams` | 1h / 6h / 24h, 100 ms | 5.8 / 23.7 / 53.2 | 28.8 / 33.0 / **63.4** | 98 / 131 / 161 |
+| traces `field_values name` | 1h / 6h / 24h, 0 ms | 1.7 / 2.2 / 13.2 | 5.8 / 13.4 / 18.1 | 75 / 77 / 155 |
+| traces `field_values service` | 24h, 0 / 100 ms | 3.8 / 2.2 | 10.5 / 11.5 | 84 / 101 |
+| traces `streams` | 1h / 6h / 24h, 0 ms | 3.2 / 3.0 / 2.1 | 5.8 / 25.1 / 14.0 | 95 / 113 / 132 |
+
+- Logs `field_values` is exact (was hits=1) and at 24h as fast as or faster than disk VictoriaLogs.
+- **Logs `streams` at 24h now beats ClickHouse: 95 vs 201 ms (0 ms S3), 63 vs 161 ms (100 ms S3)**
+  — the case that was 188 vs 113 ms before — and is 1.2–1.4× disk VictoriaLogs.
+- Traces are 9–80× faster than ClickHouse on every cell and 1.2–8× disk VictoriaTraces; closing
+  that gap is the metadata work in the plan below.
 
 ## Closing the logs `streams` gap (ClickHouse at 24h, disk VictoriaLogs)
 
@@ -435,12 +451,12 @@ VictoriaLogs answers (block headers carry the stream id).
 5. **The row path drops a row exactly at the window end** when it opens a row group (end-exclusive
    `rowGroupMatchesTimeRange`); the enumeration scans use an inclusive check
    (`TestFieldValues_RowGroupPruningKeepsTheWindowEnd`).
-6. **A failed flush drops its rows.** In a first attempt at the three-way run (host load ~36 while
-   images built), ~40 partitions failed `PutObject` with `context deadline exceeded` within the
-   60 s flush timeout and the logs count stayed at 60 039 of 100 000: `FlushAll` clears the write
-   buffers before uploading and does not put a failed partition back. That run was discarded and
-   repeated on a quieter host. This is also the likely cause of the traces seed converging to
-   87.5 % in earlier runs.
+6. **A failed flush dropped its rows — fixed.** In two attempts at the three-way run (host load
+   ~36), ~40 partitions failed `PutObject` with `context deadline exceeded` within the 60 s flush
+   timeout and the logs count stayed at 60 % of the baseline: `FlushAll` cleared the write buffers
+   before uploading and did not put a failed partition back. Fixed by the flush durability change
+   (see [durability](../durability.md#21-failed-uploads)); the traces seed's "87.5 %" was a
+   benchmark count, not loss (VictoriaTraces' `*` includes one internal index row per trace).
 7. **A slow peer drops out of the unflushed window.** The buffer bridge ships every unflushed row
    as JSON under `select.buffer_query_timeout` (default 2 s). On a shared CI runner the harness's
    in-process peer broke off after 2112 of 4000 rows at 5 s; before #239 those 2112 rows were

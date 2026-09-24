@@ -24,8 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The write check behind this no longer uploads an object on every insert request: its result is
   reused for 10 seconds.
 
+- **An insert never waits for object storage.** A batch that pushed a buffer over its size
+  threshold flushed inside the insert request, so a slow object store held the request past the
+  client's timeout and the client's retry wrote the batch twice (10 % extra logs in a benchmark
+  seed). The request now hands the flush to the flush loop and returns; a failed upload is retried
+  under the same object key, so an object the store kept after the client gave up is overwritten,
+  never duplicated. Both binaries.
+
 - **A buffered row exactly at the window end is returned.** Buffer queries treated the window end
   as exclusive, unlike the query they serve.
+
+- **The benchmark counts traces as spans when it waits for the flush.** VictoriaTraces' `*`
+  includes one internal index row per trace, so a complete Lakehouse read as 87.5 % of the
+  baseline and every traces run was flagged as a gap.
 
 ## [0.143.2] - 2026-09-24
 
