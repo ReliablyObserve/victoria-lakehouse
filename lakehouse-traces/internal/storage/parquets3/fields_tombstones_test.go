@@ -2,7 +2,6 @@ package parquets3
 
 import (
 	"context"
-	"math"
 	"sort"
 	"testing"
 	"time"
@@ -282,17 +281,6 @@ func TestTracePmetaOnRewritten_RebuildsTheCatalogValues(t *testing.T) {
 	s.PmetaRebuildCatalogValues([]string{newKey})
 	if metrics.DeleteCatalogRebuilds.Get("skipped_unlabeled_file") <= before {
 		t.Error("a partition with an unlabeled file must be skipped and counted")
-	}
-}
-
-func TestTracePartitionHourBounds(t *testing.T) {
-	h := time.Date(2026, 9, 5, 14, 0, 0, 0, time.UTC)
-	lo, hi := partitionHourBounds(h.Add(17*time.Minute).UnixNano(), h.Add(42*time.Minute).UnixNano())
-	if lo != h.UnixNano() || hi != h.Add(time.Hour).UnixNano()-1 {
-		t.Errorf("window widened to [%v, %v], want the whole hour", time.Unix(0, lo).UTC(), time.Unix(0, hi).UTC())
-	}
-	if lo, hi := partitionHourBounds(math.MinInt64, math.MaxInt64); lo != math.MinInt64 || hi != math.MaxInt64 {
-		t.Errorf("open window became [%d, %d]", lo, hi)
 	}
 }
 

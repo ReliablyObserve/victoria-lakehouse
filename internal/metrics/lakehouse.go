@@ -267,10 +267,14 @@ var (
 	ParquetRowGroupsScanned = NewCounter("lakehouse_parquet_row_groups_scanned_total")
 	ParquetRowGroupsSkipped = NewCounterVec("lakehouse_parquet_row_groups_skipped_total", "reason")
 
-	// pmeta field/value catalog (--pmeta). CatalogValueLookups{source} is the
-	// catalog-vs-scan hit rate that proves the dropdown speedup; ResidentBytes is
-	// the RAM guardrail.
+	// Field enumeration (field_values, streams, stream_ids).
+	// CatalogValueLookups{source} counts requests: "catalog" when the whole
+	// answer (values and hits) came from metadata in RAM, "scan" when any file
+	// had to be read. FieldValuesFiles{path} counts the files behind them:
+	// "aggregate" = answered from the file's exact per-value label counts,
+	// "scan" = window-confined column scan. ResidentBytes is the RAM guardrail.
 	CatalogValueLookups  = NewCounterVec("lakehouse_catalog_value_lookups_total", "source") // catalog|scan
+	FieldValuesFiles     = NewCounterVec("lakehouse_field_values_files_total", "path")      // aggregate|scan
 	CatalogResidentBytes = NewGauge("lakehouse_catalog_resident_bytes")
 	// CatalogFieldCardinality is the HLL-estimated distinct-count per high-card
 	// field — the cardinality-bomb early-warning (alert when an id-like field's
@@ -487,6 +491,11 @@ var (
 var (
 	QueryPeerErrorsTotal      = NewCounterVec("lakehouse_query_peer_errors_total", "type")
 	BufferBridgeFallbackTotal = NewCounter("lakehouse_buffer_bridge_fallback_total")
+	// BufferBridgeErrors counts peer answers the buffer bridge dropped:
+	// request (unreachable, timed out), status (non-200), scope (the peer did
+	// not echo the tenant scope), decode (the row stream broke off). A dropped
+	// answer leaves that peer's unflushed rows out of the result.
+	BufferBridgeErrors = NewCounterVec("lakehouse_buffer_bridge_errors_total", "reason")
 )
 
 // Bloom index metrics

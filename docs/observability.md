@@ -173,7 +173,9 @@ Read scoping (see [multi-tenancy — Read Scoping](multi-tenancy.md#read-scoping
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `lakehouse_tenant_scope_violations_total` | Counter | `site` | Objects or buffered rows the read path selected for a request but that belong to another tenant, dropped before answering. Expected to stay 0; `site` names the read path (`query`, `field_names`, `field_values`, `streams`, `stream_ids`, `catalog_field_names`, `catalog_field_values`, `trace_index_lookup`, `bridge_logs`, `bridge_traces`). |
+| `lakehouse_tenant_scope_violations_total` | Counter | `site` | Objects or buffered rows the read path selected for a request but that belong to another tenant, dropped before answering. Expected to stay 0; `site` names the read path (`query`, `field_names`, `field_values`, `streams`, `stream_ids`, `catalog_field_names`, `trace_index_lookup`, `bridge_logs`, `bridge_traces`). |
+| `lakehouse_field_values_files_total` | Counter | `path` | Objects behind `field_values` / `streams` / `stream_ids` answers: `aggregate` = answered from the object's exact per-value label counts in the manifest (no S3 read), `scan` = window-confined column scan. See [read-path — Field enumeration](read-path.md#field-enumeration). |
+| `lakehouse_catalog_value_lookups_total` | Counter | `source` | Field-enumeration requests answered entirely from memory (`catalog`) vs. those that read at least one object (`scan`). |
 | `lakehouse_global_read_queries_total` | Counter | | Select requests that presented a valid global-read credential and were answered across all tenants |
 
 ### Global Storage Metrics
@@ -235,6 +237,7 @@ Read scoping (see [multi-tenancy — Read Scoping](multi-tenancy.md#read-scoping
 | `lakehouse_min_manifest_files_gate` | Gauge | Configured `cfg.Startup.MinManifestFiles` threshold (0 = gate disabled) |
 | `lakehouse_buffer_bridge_az_requests_total` | Counter (`az_type`) | Buffer-bridge fan-out calls labeled `same_az` / `cross_az` / `self`. The `self` label appears for single-node deployments that loop back to their own writer buffer |
 | `lakehouse_buffer_bridge_fallback_total` | Counter | Times the bridge fell back to a different AZ tier after the preferred one returned no peers |
+| `lakehouse_buffer_bridge_errors_total` | Counter (`reason`) | Peer answers the buffer bridge dropped — `request` (unreachable, timed out), `status` (non-200), `scope` (no tenant-scope echo), `decode` (the row stream broke off). Each one leaves that peer's unflushed rows out of a query or field enumeration; a stream that breaks off is dropped whole, never used as a partial answer |
 
 ### Cache snapshot Metrics
 

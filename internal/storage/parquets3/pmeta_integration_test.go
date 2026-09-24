@@ -1043,17 +1043,15 @@ func TestInteg_CatalogFieldValues_MultiPartitionUnion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Raw order, NOT re-sorted: asserts the union is deduped (shared-svc once)
-	// AND already sorted as returned.
-	raw := make([]string, len(got))
-	for i, v := range got {
-		raw[i] = v.Value
-	}
-	if want := []string{"billing", "checkout", "shared-svc"}; !reflect.DeepEqual(raw, want) {
-		t.Fatalf("whole-range GetFieldValues = %v, want deduped sorted union %v", raw, want)
+	// Raw order, NOT re-sorted: asserts the union is deduped (shared-svc once,
+	// its hits summed across partitions) AND ordered as VictoriaLogs orders it —
+	// descending hits, then values in natural order.
+	want := []logstorage.ValueWithHits{{Value: "shared-svc", Hits: 2}, {Value: "billing", Hits: 1}, {Value: "checkout", Hits: 1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("whole-range GetFieldValues = %v, want %v", got, want)
 	}
 	if metrics.CatalogValueLookups.Get("catalog") <= before {
-		t.Fatal("union was not served from the catalog fast-path")
+		t.Fatal("union was not served from metadata in RAM")
 	}
 }
 

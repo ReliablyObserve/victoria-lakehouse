@@ -20,7 +20,18 @@ The query context carries:
 - `Query` -- the raw LogsQL, Jaeger, or Tempo query string
 - `RequestedColumns` -- optional column projection list
 
-The enumeration endpoints (`field_names`, `field_values`, `streams`, `stream_field_values`) select objects through the same tenant-scoped manifest lookup and then scan **every** selected object. They do not second-guess the list: an object whose rows are already inside a merged compaction output never reaches them, because the publish removes it from the manifest and retires its key until a listing proves the object gone (see [manifest-system.md](manifest-system.md#compaction-integration)). Deciding that in the read path from time ranges and compaction levels hid the newest flush of a live partition — its rows fall inside the compacted neighbour's backfilled range — from every enumeration while `query` and `hits` still returned them.
+The enumeration endpoints (`field_names`, `field_values`, `streams`, `stream_field_values`) select objects through the same tenant-scoped manifest lookup and then read **every** selected object. They do not second-guess the list: an object whose rows are already inside a merged compaction output never reaches them, because the publish removes it from the manifest and retires its key until a listing proves the object gone (see [manifest-system.md](manifest-system.md#compaction-integration)). Deciding that in the read path from time ranges and compaction levels hid the newest flush of a live partition — its rows fall inside the compacted neighbour's backfilled range — from every enumeration while `query` and `hits` still returned them.
+
+### Field enumeration
+
+`field_values`, `streams` and `stream_ids` return every value in the window with its exact hit count, as VictoriaLogs does. Per selected object:
+
+| object | answered from | S3 reads |
+|---|---|---|
+| wholly inside the window, request unfiltered, no tombstone of its tenant reaching its time range, and its manifest entry carries the column's label aggregate (`field_values` only) | the aggregate: exact per-value row counts written at flush and recomputed at compaction | none |
+| anything else — straddling a window edge, filtered, tombstoned, a field over the per-object 100-value aggregate cap, a column that is not a label, `streams` / `stream_ids` | a column-projected scan of the target (+ filter and timestamp) columns, counting only in-window rows that pass the filter and every tombstone | the projected chunks |
+
+Scans run on the query path's file-worker pool (`query.file_workers`), so a request costs one wave of round-trips rather than one per object, read only the row groups whose timestamp range reaches the window, and never stop early on `limit`. Rows not flushed yet are merged the way a query merges them — the co-located buffer on a single node, every insert instance's buffer through `/internal/buffer/query` otherwise — tenant-scoped, only rows newer than each tenant's newest selected object (no row counted twice), through the request's filter and tombstones; a window with nothing flushed is answered from them alone. The response is built with VictoriaLogs' `MergeValuesWithHits`: descending hits, then values in natural order; past `limit`, hits are zeroed and the first values in natural order are kept. `lakehouse_field_values_files_total{path="aggregate|scan"}` counts the objects each way; `lakehouse_catalog_value_lookups_total{source="catalog"}` counts requests answered entirely from memory. Measured cost per window and layout: [perf/field-metadata-cells.md](perf/field-metadata-cells.md).
 
 ## Pruning Cascade
 

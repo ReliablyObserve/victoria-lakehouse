@@ -9,8 +9,11 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -200,6 +203,9 @@ func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, scop
 				defer wg.Done()
 				rows, err := b.fetchLogs(ctx, endpoint, startNs, endNs, sub)
 				if err != nil {
+					if ctx.Err() == nil {
+						logger.Warnf("buffer bridge: %s; the peer's unflushed rows are missing from this answer", err)
+					}
 					return
 				}
 				mu.Lock()
@@ -221,14 +227,17 @@ func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, 
 
 	resp, err := b.client.Do(req)
 	if err != nil {
+		metrics.BufferBridgeErrors.Inc("request")
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		metrics.BufferBridgeErrors.Inc("status")
 		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
 	}
 	if err := checkPeerTenantScope(resp, scope); err != nil {
+		metrics.BufferBridgeErrors.Inc("scope")
 		return nil, err
 	}
 
@@ -237,7 +246,11 @@ func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, 
 	for dec.More() {
 		var row schema.LogRow
 		if err := dec.Decode(&row); err != nil {
-			break
+			// A stream that breaks off is not a smaller answer: returning
+			// the rows read so far would count part of this peer's
+			// unflushed window as all of it.
+			metrics.BufferBridgeErrors.Inc("decode")
+			return nil, fmt.Errorf("buffer query from %s broke off after %d rows: %w", endpoint, len(rows), err)
 		}
 		rows = append(rows, row)
 	}
@@ -271,6 +284,9 @@ func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, sc
 				defer wg.Done()
 				rows, err := b.fetchTraces(ctx, endpoint, startNs, endNs, sub)
 				if err != nil {
+					if ctx.Err() == nil {
+						logger.Warnf("buffer bridge: %s; the peer's unflushed rows are missing from this answer", err)
+					}
 					return
 				}
 				mu.Lock()
@@ -292,14 +308,17 @@ func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs
 
 	resp, err := b.client.Do(req)
 	if err != nil {
+		metrics.BufferBridgeErrors.Inc("request")
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		metrics.BufferBridgeErrors.Inc("status")
 		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
 	}
 	if err := checkPeerTenantScope(resp, scope); err != nil {
+		metrics.BufferBridgeErrors.Inc("scope")
 		return nil, err
 	}
 
@@ -308,7 +327,11 @@ func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs
 	for dec.More() {
 		var row schema.TraceRow
 		if err := dec.Decode(&row); err != nil {
-			break
+			// A stream that breaks off is not a smaller answer: returning
+			// the rows read so far would count part of this peer's
+			// unflushed window as all of it.
+			metrics.BufferBridgeErrors.Inc("decode")
+			return nil, fmt.Errorf("buffer query from %s broke off after %d rows: %w", endpoint, len(rows), err)
 		}
 		rows = append(rows, row)
 	}

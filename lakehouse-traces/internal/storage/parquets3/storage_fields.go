@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -197,9 +195,9 @@ func (s *Storage) scanProjectedFieldValues(
 		projectedCols[timestampColumn] = true
 	}
 
-	// Plan-then-fetch (S3 Tier-2): this path reads EVERY row group's
-	// projected chunks, so the plan covers all row groups — armed right
-	// after open, before the chunk readers below issue any page reads.
+	// Plan-then-fetch (S3 Tier-2): the plan covers the row groups the window
+	// reaches — armed right after open, before the chunk readers below issue
+	// any page reads.
 	// Mirror of the logs module.
 	f, planned, err := s.openParquetFileWithPlan(ctx, fi, projectedCols)
 	if err != nil {
@@ -227,16 +225,20 @@ func (s *Storage) scanProjectedFieldValues(
 		return nil
 	}
 
+	// A compacted object spans far more time than a narrow window: only the
+	// row groups whose timestamps reach the window are planned and read.
+	rgIdxs := windowRowGroups(f, winLo, winHi)
+	if len(rgIdxs) == 0 {
+		return nil
+	}
 	if planned != nil {
-		rgIdxs := make([]int, len(f.RowGroups()))
-		for i := range rgIdxs {
-			rgIdxs[i] = i
-		}
 		s.armProjectedPlan(ctx, planned, f, rgIdxs, projectedCols, nil)
 	}
 
 	buf := make([]parquet.Row, 256)
-	for _, rg := range f.RowGroups() {
+	rowGroups := f.RowGroups()
+	for _, ri := range rgIdxs {
+		rg := rowGroups[ri]
 		allChunks := rg.ColumnChunks()
 		projChunks := make([]parquet.ColumnChunk, 0, len(projectedIndices))
 		for _, ci := range projectedIndices {
@@ -266,59 +268,30 @@ func (s *Storage) scanProjectedFieldValues(
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
 	scope := scopeFor(ctx, tenantIDs)
-
-	// pmeta catalog fast-path (--pmeta): union the field's values across the
-	// partitions in the query's time range, served from RAM. nil (flag off) or
-	// empty (field not catalogued, or high-card) falls through to the row scan.
-	// A no-limit request (limit==0) MUST still use the catalog — it is exact and
-	// self-bounded, so this is correct and avoids a full scan. See the logs-module
-	// comment: gating on `limit > 0` was the dropdown slowness.
-	//
-	// The in-RAM label index is deliberately NOT a source here: its values are a
-	// sample (the first rows of the first files opened), never updated by a flush
-	// and not time-scoped, so as an answer it listed a subset of the values in
-	// range and values from outside the window. See the logs-module comment.
 	startNs, endNs := q.GetFilterTimeRange()
 
-	// The catalog is built at write/compaction time and carries no tombstone
-	// awareness: a value that exists only on deleted rows is still in it.
-	// Serving from it while a tombstone could cover its answer is how a
-	// "deleted" value kept appearing in dropdowns, so the fast path is given up
-	// whenever a tombstone overlaps what it answers from, and the answer is
-	// verified against rows instead:
-	//   - the catalog answers per partition hour → hour-widened window;
-	//   - the row scan reads whole files → the scanned files' time span (below).
-	gaveUpFastPath := false
-
-	if filter == nil && s.catalog != nil {
-		if hLo, hHi := partitionHourBounds(startNs, endNs); len(s.fieldsTombstones(scope, hLo, hHi)) > 0 {
-			gaveUpFastPath = true
-		} else {
-			if s.refuseEnumeration(fieldName) {
-				return nil, nil // declared id column: don't enumerate (matches VT), no scan
-			}
-			if result := s.catalogFieldValues(q, scope, fieldName, limit); len(result) > 0 {
-				return result, nil
-			}
-		}
-	}
-
-	if gaveUpFastPath {
-		noteFieldsScanFallback("field_values")
+	// Neither the in-RAM label index (a sample, not time-scoped) nor the pmeta
+	// catalog (value sets without counts: every value got hits=1) can answer
+	// this exactly; see the logs-module comment. Exact per-file counts come
+	// from the manifest's label aggregates instead (collectFieldValues).
+	if filter == nil && s.refuseEnumeration(fieldName) {
+		return nil, nil // declared id column: don't enumerate (matches VT), no scan
 	}
 
 	files := s.filesForScope("field_values", startNs, endNs, scope)
-	if len(files) == 0 {
-		return nil, nil
-	}
+	// No early return on an empty object list: a window nothing has been
+	// flushed for yet is answered from the unflushed rows alone.
 
-	// The scan reads every row of every overlapping file, including the rows
+	// A scan reads every row of every overlapping file, including the rows
 	// that lie outside the query window, so it must apply every tombstone
-	// overlapping those files — not only the ones overlapping the window.
+	// overlapping those files — not only the ones overlapping the window. A
+	// file a tombstone of its tenant touches is never answered from its
+	// aggregate, which predates the delete.
 	spanLo, spanHi := filesTimeSpan(files, startNs, endNs)
 	tombstones := s.fieldsTombstones(scope, spanLo, spanHi)
-	// Each object gets only the tombstones of its own tenant.
-	parse := s.keyTenantParser()
+	if len(tombstones) > 0 {
+		noteFieldsScanFallback("field_values")
+	}
 
 	mapping := s.registry.ResolveToParquet(fieldName)
 	if mapping == nil {
@@ -328,68 +301,23 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		return nil, nil
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	fileWorkers := s.cfg.Query.FileWorkers
-	if fileWorkers <= 0 {
-		fileWorkers = 8
+	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
+		op:         "field values",
+		column:     mapping.ParquetColumn,
+		field:      mapping.InternalName,
+		tenantIDs:  tenantIDs,
+		query:      q,
+		aggregates: true,
+		filter:     filter,
+		tombstones: tombstones,
+		parse:      s.keyTenantParser(),
+		startNs:    startNs,
+		endNs:      endNs,
+	})
+	if err != nil {
+		return nil, err
 	}
-	if fileWorkers > len(files) {
-		fileWorkers = len(files)
-	}
-
-	var mu sync.Mutex
-	seen := make(map[string]uint64)
-
-	taskCh := make(chan manifest.FileInfo, len(files))
-	for _, fi := range files {
-		taskCh <- fi
-	}
-	close(taskCh)
-
-	var wg sync.WaitGroup
-	for i := 0; i < fileWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for fi := range taskCh {
-				if ctx.Err() != nil {
-					return
-				}
-
-				// Column-projected read: fetches only (target + filter cols)
-				// chunk data from S3 rather than the entire file body.
-				localSeen := make(map[string]uint64)
-				if err := s.scanProjectedFieldValues(ctx, fi, mapping.ParquetColumn, filter, tombstonesForKey(tombstones, parse, fi.Key), localSeen, startNs, endNs); err != nil {
-					logger.Warnf("scan projected field values: %s; key=%s", err, fi.Key)
-					continue
-				}
-
-				mu.Lock()
-				for k, v := range localSeen {
-					seen[k] += v
-				}
-				limitReached := limit > 0 && uint64(len(seen)) >= limit
-				mu.Unlock()
-
-				if limitReached {
-					cancel()
-					return
-				}
-			}
-		}()
-	}
-	wg.Wait()
-
-	result := make([]logstorage.ValueWithHits, 0, len(seen))
-	for v, hits := range seen {
-		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
-	}
-	if limit > 0 && uint64(len(result)) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+	return valuesWithHits(seen, limit), nil
 }
 
 func (s *Storage) GetStreamFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
@@ -412,9 +340,8 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
 	scope := scopeFor(ctx, tenantIDs)
-	if len(files) == 0 {
-		return nil, nil
-	}
+	// No early return on an empty object list: a window nothing has been
+	// flushed for yet is answered from the unflushed rows alone.
 
 	// Whole files are scanned: apply every tombstone overlapping their rows,
 	// not only those overlapping the query window.
@@ -431,31 +358,22 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 		streamColName = m.ParquetColumn
 	}
 
-	seen := make(map[string]uint64)
-
-	for _, fi := range files {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if err := s.scanProjectedFieldValues(ctx, fi, streamColName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen, startNs, endNs); err != nil {
-			logger.Warnf("scan projected streams: %s; key=%s", err, fi.Key)
-			continue
-		}
-
-		if limit > 0 && uint64(len(seen)) >= limit {
-			break
-		}
+	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
+		op:         "streams",
+		column:     streamColName,
+		field:      "_stream",
+		tenantIDs:  tenantIDs,
+		query:      q,
+		filter:     filter,
+		tombstones: tombstones,
+		parse:      parse,
+		startNs:    startNs,
+		endNs:      endNs,
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	result := make([]logstorage.ValueWithHits, 0, len(seen))
-	for v, hits := range seen {
-		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
-	}
-	if limit > 0 && uint64(len(result)) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+	return valuesWithHits(seen, limit), nil
 }
 
 func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
@@ -465,9 +383,8 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 
 	files := s.filesForTenants(ctx, "stream_ids", startNs, endNs, tenantIDs)
 	scope := scopeFor(ctx, tenantIDs)
-	if len(files) == 0 {
-		return nil, nil
-	}
+	// No early return on an empty object list: a window nothing has been
+	// flushed for yet is answered from the unflushed rows alone.
 
 	// Whole files are scanned: apply every tombstone overlapping their rows,
 	// not only those overlapping the query window.
@@ -484,31 +401,22 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 		colName = m.ParquetColumn
 	}
 
-	seen := make(map[string]uint64)
-
-	for _, fi := range files {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if err := s.scanProjectedFieldValues(ctx, fi, colName, filter, tombstonesForKey(tombstones, parse, fi.Key), seen, startNs, endNs); err != nil {
-			logger.Warnf("scan projected stream_ids: %s; key=%s", err, fi.Key)
-			continue
-		}
-
-		if limit > 0 && uint64(len(seen)) >= limit {
-			break
-		}
+	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
+		op:         "stream_ids",
+		column:     colName,
+		field:      "_stream_id",
+		tenantIDs:  tenantIDs,
+		query:      q,
+		filter:     filter,
+		tombstones: tombstones,
+		parse:      parse,
+		startNs:    startNs,
+		endNs:      endNs,
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	result := make([]logstorage.ValueWithHits, 0, len(seen))
-	for v, hits := range seen {
-		result = append(result, logstorage.ValueWithHits{Value: v, Hits: hits})
-	}
-	if limit > 0 && uint64(len(result)) > limit {
-		result = result[:limit]
-	}
-	return result, nil
+	return valuesWithHits(seen, limit), nil
 }
 
 // collectFilteredValues collects values from targetColIdx for rows that match the filter.
@@ -655,4 +563,38 @@ func rowInWindow(row parquet.Row, tsColIdx int, startNs, endNs int64) bool {
 	}
 	ts := row[tsColIdx].Int64()
 	return ts >= startNs && ts <= endNs
+}
+
+// windowRowGroups returns the row groups of f whose timestamp range reaches
+// [lo, hi] (inclusive both ends, as the query's time filter), from the
+// timestamp column index aggregated across every page. An unbounded window,
+// a file without a timestamp column and a row group without a column index
+// keep every row group: skipping is only ever an optimisation.
+func windowRowGroups(f *parquet.File, lo, hi int64) []int {
+	rgs := f.RowGroups()
+	all := make([]int, 0, len(rgs))
+	tsIdx := -1
+	if lo != math.MinInt64 || hi != math.MaxInt64 {
+		tsIdx = findColumnIndex(f.Root(), timestampColumn)
+	}
+	for i, rg := range rgs {
+		if tsIdx >= 0 {
+			if cols := rg.ColumnChunks(); tsIdx < len(cols) {
+				if idx, err := cols[tsIdx].ColumnIndex(); err == nil && idx != nil && idx.NumPages() > 0 {
+					if rgMin, rgMax := columnIndexTimeBounds(idx); rgMax < lo || rgMin > hi {
+						metrics.ParquetRowGroupsSkipped.Inc("stats") // time range, as on the query path
+						continue
+					}
+				}
+			}
+		}
+		all = append(all, i)
+	}
+	return all
+}
+
+// bufferRowsTo streams the unflushed spans of the request's tenants into
+// sink, the same spans RunQuery merges (see queryBufferBridgeTo).
+func (s *Storage) bufferRowsTo(ctx context.Context, startNs, endNs int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
+	s.queryBufferBridgeTo(ctx, startNs, endNs, wm, q, tenantIDs, sink)
 }

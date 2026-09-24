@@ -11,6 +11,16 @@
 > interactive-Grafana gap where cold LH feels slower than hot VL/VT for
 > label/field dropdowns. Companion to the performance machinery
 > reference in [performance-machinery.md](../performance-machinery.md).
+>
+> **`field_values` no longer answers from the catalog.** Its per-partition value
+> sets carry no counts, so a catalog answer gave every value `hits` 1 where
+> VictoriaLogs returns the number of rows, and its hour granularity listed values
+> from outside a window that cuts an hour. `field_values` now answers each object
+> wholly inside the window from that object's exact per-value row counts (the
+> manifest's label aggregates) and scans the rest — see
+> [read-path.md](../read-path.md#field-enumeration). The catalog still serves
+> `field_names`, cardinality and the sketch refusal below; per-value counts in the
+> catalog would let it answer whole partition hours again.
 
 ## 1. Motivation — what is actually slow (measured)
 

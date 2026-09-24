@@ -175,6 +175,15 @@ Extreme settings to avoid:
 
 See [ZSTD Compression Benchmark](zstd-compression-benchmark.md) for detailed real-data results.
 
+## Field-Metadata Matrix (field_values / field_names / streams)
+
+`scripts/bench/field_metadata/run.sh` runs the validated cold field-metadata
+matrix (pmeta on/off, flushed/compacted, whole/cut window, filter, 0/100 ms S3
+latency) on two builds interleaved, plus a hot-VictoriaLogs reference on the
+same rows. Every answer is checked against the dataset's truth; inexact answers
+are counted, never timed. Results, analysis and the proposed registry perf rows:
+[perf/field-metadata-cells.md](perf/field-metadata-cells.md).
+
 ## Running All Benchmarks
 
 ```bash

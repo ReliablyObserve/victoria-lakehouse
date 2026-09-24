@@ -2,7 +2,6 @@ package parquets3
 
 import (
 	"context"
-	"math"
 	"sort"
 	"time"
 
@@ -253,78 +252,6 @@ func sketchSet(fields []string) map[string]bool {
 		m[f] = true
 	}
 	return m
-}
-
-// catalogFieldValues unions a field's distinct values across the partitions
-// overlapping the query's time range, served from the pmeta catalog in RAM.
-// Returns nil — and the caller answers with the row scan — unless the catalog
-// can vouch for the COMPLETE value set of every partition in range:
-//   - a partition without a catalog facet, or in which the field is high-card
-//     (threshold crossed, truncated extractor list, always-sketch), holds no
-//     enumerable values; unioning the other partitions would be a subset;
-//   - a file in range whose labels never reached the catalog (flushed by
-//     another writer, or listed from S3 before enrichment) is missing from its
-//     partition's value set;
-//   - a field the catalog holds no value for at all (a MAP attribute, a
-//     non-label column) is answered by the scan.
-//
-// The answer is hour-granular by design: a partition's value set covers the
-// whole partition hour, so a window that cuts an hour lists the values of the
-// entire hour. Hits are not counted (every value carries 1).
-// Caller guarantees s.catalog != nil.
-func (s *Storage) catalogFieldValues(q *logstorage.Query, scope tenantScope, fieldName string, limit uint64) []logstorage.ValueWithHits {
-	startNs, endNs := q.GetFilterTimeRange()
-	key := s.catalogFieldKey(fieldName)
-	seen := make(map[string]struct{}, 16)
-	valset := make(map[string]struct{})
-	// Bounded uint64→int conversion (the facet API takes int; limit can originate
-	// from a parsed query param). Clamp to MaxInt32 — the platform-independent int
-	// bound — so the conversion is safe even where int is 32-bit (CodeQL
-	// go/incorrect-integer-conversion). 0 = no cap; a dropdown never needs 2^31 values.
-	catLimit := math.MaxInt32
-	if limit < math.MaxInt32 {
-		catLimit = int(limit)
-	}
-	// The catalog is keyed by the TENANT partition (the full key directory), so
-	// scoping the file list scopes the answer: a tenant only ever unions its own
-	// partitions' facets.
-	for _, fi := range s.filesForScope("catalog_field_values", startNs, endNs, scope) {
-		p := manifest.ExtractTenantPartition(fi.Key)
-		if !s.catalog.CatalogCoversFile(p, fi.Key) {
-			metrics.CatalogValueLookups.Add("scan", 1) // incomplete catalog → exact scan
-			return nil
-		}
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		seen[p] = struct{}{}
-		vals, exact := s.catalog.FieldValuesExact(p, key, "", catLimit)
-		if !exact {
-			metrics.CatalogValueLookups.Add("scan", 1) // not enumerable here → exact scan
-			return nil
-		}
-		for _, v := range vals {
-			valset[v] = struct{}{}
-		}
-	}
-	if len(valset) == 0 {
-		metrics.CatalogValueLookups.Add("scan", 1) // catalog missed → legacy path
-		return nil
-	}
-	vals := make([]string, 0, len(valset))
-	for v := range valset {
-		vals = append(vals, v)
-	}
-	sort.Strings(vals)
-	if limit > 0 && uint64(len(vals)) > limit {
-		vals = vals[:limit]
-	}
-	out := make([]logstorage.ValueWithHits, len(vals))
-	for i, v := range vals {
-		out[i] = logstorage.ValueWithHits{Value: v, Hits: 1}
-	}
-	metrics.CatalogValueLookups.Add("catalog", 1) // served from RAM
-	return out
 }
 
 // catalogFieldKey maps a requested field name to the name the catalog facet is

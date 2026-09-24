@@ -1047,10 +1047,13 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 	times := make([]string, len(rows))
 	bodies := make([]string, len(rows))
 	levels := make([]string, len(rows))
+	sevNums := make([]string, len(rows))
 	services := make([]string, len(rows))
 	traceIDs := make([]string, len(rows))
 	spanIDs := make([]string, len(rows))
 	streams := make([]string, len(rows))
+	streamIDs := make([]string, len(rows))
+	scopes := make([]string, len(rows))
 	namespaces := make([]string, len(rows))
 	pods := make([]string, len(rows))
 	deployments := make([]string, len(rows))
@@ -1063,10 +1066,13 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 		times[i] = s.registry.FormatField("_time", row.TimestampUnixNano)
 		bodies[i] = row.Body
 		levels[i] = row.SeverityText
+		sevNums[i] = s.registry.FormatField("severity_number", row.SeverityNumber)
 		services[i] = row.ServiceName
 		traceIDs[i] = row.TraceID
 		spanIDs[i] = row.SpanID
 		streams[i] = row.Stream
+		streamIDs[i] = row.StreamID
+		scopes[i] = row.ScopeName
 		namespaces[i] = row.K8sNamespaceName
 		pods[i] = row.K8sPodName
 		deployments[i] = row.K8sDeploymentName
@@ -1080,10 +1086,16 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 		{Name: "_time", Values: times},
 		{Name: "_msg", Values: bodies},
 		{Name: "level", Values: levels},
+		{Name: "severity_number", Values: sevNums},
 		{Name: "service.name", Values: services},
 		{Name: "trace_id", Values: traceIDs},
 		{Name: "span_id", Values: spanIDs},
 		{Name: "_stream", Values: streams},
+		// _stream_id, severity_number and scope.name as logRowToFields emits
+		// them for flushed rows: without them a peer's unflushed rows were
+		// missing from stream_ids and from filters on these fields.
+		{Name: "_stream_id", Values: streamIDs},
+		{Name: "scope.name", Values: scopes},
 		{Name: "k8s.namespace.name", Values: namespaces},
 		{Name: "k8s.pod.name", Values: pods},
 		{Name: "k8s.deployment.name", Values: deployments},
