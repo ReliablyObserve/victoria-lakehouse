@@ -166,6 +166,9 @@ func (s *Storage) scanFieldValuesParallel(ctx context.Context, files []manifest.
 				local := make(map[string]uint64)
 				if err := s.scanProjectedFieldValues(ctx, fi, r.column, r.filter, tombstonesForKey(r.tombstones, r.parse, fi.Key), local, r.startNs, r.endNs); err != nil {
 					if ctx.Err() == nil {
+						// The object is left out of the answer, as the query
+						// path does with an unreadable object; counted there too.
+						metrics.QueryFileErrorsTotal.Inc()
 						logger.Warnf("scan projected %s: %s; key=%s", r.op, err, fi.Key)
 					}
 					continue

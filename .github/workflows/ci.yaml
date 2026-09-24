@@ -161,8 +161,11 @@ jobs:
         run: |
           set -euo pipefail
           export FM_MATRIX_OUT="$RUNNER_TEMP/field-metadata.jsonl" FM_BUILD=after FM_ITERS=1 FM_WARMUP=0 FM_LATENCIES_MS=0
-          go test ./internal/storage/parquets3/ -run '^TestFieldMetadataMatrix$' -count=1 -timeout=10m
-          (cd lakehouse-traces && go test ./internal/storage/parquets3/ -run '^TestFieldMetadataMatrixTraces$' -count=1 -timeout=10m)
+          # -v so an object the scan could not read is visible: its warning
+          # is the only trace of it (the answer just comes back short).
+          go test ./internal/storage/parquets3/ -run '^TestFieldMetadataMatrix$' -count=1 -timeout=10m -v > "$RUNNER_TEMP/fm-logs.txt" 2>&1
+          (cd lakehouse-traces && go test ./internal/storage/parquets3/ -run '^TestFieldMetadataMatrixTraces$' -count=1 -timeout=10m -v > "$RUNNER_TEMP/fm-traces.txt" 2>&1)
+          grep -h -E 'scan projected|query file error|--- FAIL|^(ok|FAIL)' "$RUNNER_TEMP"/fm-logs.txt "$RUNNER_TEMP"/fm-traces.txt | head -50
 
       - name: Hold the cells to the registry perf rows
         run: |
