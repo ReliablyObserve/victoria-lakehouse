@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.2] - 2026-09-24
+
 ### Fixed
 
 - **Cold `field_values` returns the real hit counts, on both binaries.** An unfiltered request
