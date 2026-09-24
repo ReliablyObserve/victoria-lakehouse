@@ -46,7 +46,10 @@ SELECT
     CAST([] AS Array(String)) AS `Links.TraceId`,
     CAST([] AS Array(String)) AS `Links.SpanId`,
     CAST([] AS Array(String)) AS `Links.TraceState`,
-    CAST([] AS Array(Map(String, String))) AS `Links.Attributes`
+    CAST([] AS Array(Map(String, String))) AS `Links.Attributes`,
+    -- The LogsQL stream key, so field-metadata benchmarks can compare
+    -- /select/logsql/streams against GROUP BY Stream on the same Parquet.
+    `_stream` AS Stream
 FROM s3(
     'http://s3-latency:9000/obs-archive/*/*/logs/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',

@@ -100,5 +100,26 @@ is_groupby_query count_by_service && check "is_groupby_query(count_by_service)" 
 is_groupby_query high_card && check "is_groupby_query(high_card)" "groupby" "groupby" || check "is_groupby_query(high_card)" "not-groupby" "groupby"
 is_groupby_query count_total && check "is_groupby_query(count_total)" "groupby" "not-groupby" || check "is_groupby_query(count_total)" "not-groupby" "not-groupby"
 
+# --- field metadata (fv_level/fv_service/streams_list/fv_name) -------------
+# LogsQL systems answer {"values":[...]}; ClickHouse answers JSONEachRow of the
+# same (value, hits) pairs. Same data must give the same result string; a
+# sample of the values, or right values with wrong hits, must not.
+printf '{"values":[{"value":"INFO","hits":30},{"value":"ERROR","hits":5},{"value":"WARN","hits":7}]}\n' > "$TMP/fv_vl.json"
+printf '{"value":"WARN","hits":"7"}\n{"value":"ERROR","hits":"5"}\n{"value":"INFO","hits":"30"}\n' > "$TMP/fv_ch.jsonl"
+printf '{"values":[{"value":"INFO","hits":30},{"value":"WARN","hits":7}]}\n' > "$TMP/fv_sample.json"
+printf '{"values":[{"value":"INFO","hits":1},{"value":"ERROR","hits":1},{"value":"WARN","hits":1}]}\n' > "$TMP/fv_hits1.json"
+printf '{"values":[]}\n' > "$TMP/fv_empty.json"
+fv_vl="$(extract_result fv_level victorialogs "$TMP/fv_vl.json")"
+check "fv values: rows/total"            "$fv_vl" "rows=3;total=42;hash=*"
+check "fv values: CH JSONEachRow matches VL" "$(extract_result fv_level clickhouse "$TMP/fv_ch.jsonl")" "$fv_vl"
+check "fv values: LH same as VL"         "$(extract_result fv_level lakehouse "$TMP/fv_vl.json")" "$fv_vl"
+[[ "$(extract_result fv_level lakehouse "$TMP/fv_sample.json")" != "$fv_vl" ]] && check "fv values: a sample differs" ok ok || check "fv values: a sample differs" same differ
+[[ "$(extract_result fv_level lakehouse "$TMP/fv_hits1.json")" != "$fv_vl" ]] && check "fv values: hits=1 differs" ok ok || check "fv values: hits=1 differs" same differ
+check "fv values: empty is invalid"      "$(extract_result fv_level lakehouse "$TMP/fv_empty.json")" "invalid:empty-body"
+check "fv values: malformed is invalid"  "$(extract_result streams_list clickhouse "$TMP/malformed.txt")" "invalid:parse-error"
+check "fv values: traces kind"           "$(extract_result fv_name victoriatraces "$TMP/fv_vl.json")" "$fv_vl"
+is_values_query fv_service && check "is_values_query(fv_service)" "values" "values" || check "is_values_query(fv_service)" "not-values" "values"
+is_values_query count_total && check "is_values_query(count_total)" "values" "not-values" || check "is_values_query(count_total)" "not-values" "not-values"
+
 echo "extract_result_test.sh: $pass passed, $fail failed" >&2
 [[ "$fail" == 0 ]]

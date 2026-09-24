@@ -78,12 +78,14 @@ COMPOSE_ARGS=(-f "$COMPOSE_BASE")
 [[ "$DISK_PROFILE" == "gp3-loop" ]] && COMPOSE_ARGS+=(-f "$COMPOSE_GP3")
 
 # --- endpoints (benchmark compose published ports) ----------------------------
+# Host ports follow deployment/docker/docker-compose-benchmark.yml; both read
+# BENCH_PORT_* so the stack can run next to other stacks without clashing.
 declare -A EP=(
-  [lh_logs]=http://localhost:39428
-  [vl]=http://localhost:39401
-  [lh_traces]=http://localhost:30428
-  [vt]=http://localhost:30401
-  [ch]=http://localhost:38123
+  [lh_logs]=http://localhost:${BENCH_PORT_LH_LOGS:-39428}
+  [vl]=http://localhost:${BENCH_PORT_VL:-39401}
+  [lh_traces]=http://localhost:${BENCH_PORT_LH_TRACES:-30428}
+  [vt]=http://localhost:${BENCH_PORT_VT:-30401}
+  [ch]=http://localhost:${BENCH_PORT_CH_HTTP:-38123}
 )
 # ClickHouse HTTP auth (CLICKHOUSE_USER/PASSWORD in the benchmark compose).
 CH_USER="${CH_USER:-default}"; CH_PASS="${CH_PASS:-benchmark}"
@@ -109,6 +111,15 @@ is_miss_query() { [[ "$MISS_QUERIES" == *" $1 "* ]]; }
 # the sorted (group, count) pairs for these.
 GROUPBY_QUERIES=" count_by_service high_card "
 is_groupby_query() { [[ "$GROUPBY_QUERIES" == *" $1 "* ]]; }
+
+# VALUES_QUERIES are the field-metadata kinds: LogsQL systems answer them from
+# /select/logsql/field_values or /streams ({"values":[{"value","hits"}]}),
+# ClickHouse from `SELECT <col> AS value, count() AS hits ... GROUP BY value`
+# as JSONEachRow. Both reduce to the same "rows;total;hash" of sorted
+# (value, hits) pairs, so a system that returns the right values with wrong
+# hits — or a sample of the values — never matches.
+VALUES_QUERIES=" fv_level fv_service streams_list fv_name "
+is_values_query() { [[ "$VALUES_QUERIES" == *" $1 "* ]]; }
 
 # SCAN_LIMIT: the `limit` every scan query uses (see _prep_body). VictoriaLogs
 # documents that `limit N` without an explicit `sort` returns rows "selected
@@ -195,7 +206,7 @@ result_is_empty() {
 # iteration, to check a truncated scan's rows are members of that window.
 extract_result() {
   local qkind="$1" system="$2" file="$3" keysout="${4:-}"
-  if [[ "$system" == clickhouse && "$qkind" != scan && "$qkind" != count_by_service && "$qkind" != high_card ]]; then
+  if [[ "$system" == clickhouse && "$qkind" != scan && "$qkind" != count_by_service && "$qkind" != high_card ]] && ! is_values_query "$qkind"; then
     case "$qkind" in
       trace_by_id)
         awk -F'\t' '{n++; v=$NF} END{if(n==0){print "invalid:empty-body"} else {print "spans="(v+0)}}' "$file" ;;
@@ -246,6 +257,31 @@ else:
         with open(keysout, "wb") as kf:
             kf.write(b"\x00".join(u.encode("utf-8", "surrogatepass") for u in uniq))
     print("rows={};hash={}".format(n, h))
+PY
+        ;;
+      fv_level|fv_service|streams_list|fv_name)
+        # Field metadata: {"values":[{"value","hits"}]} from LogsQL systems,
+        # JSONEachRow {"value","hits"} lines from ClickHouse.
+        python3 - "$file" <<'PY'
+import sys, json, hashlib
+raw = open(sys.argv[1]).read().strip()
+pairs = []
+try:
+    if not raw:
+        print("invalid:empty-body"); sys.exit(0)
+    if raw.startswith("{") and '"values"' in raw.split("\n", 1)[0]:
+        vals = json.loads(raw)["values"]
+    else:
+        vals = [json.loads(l) for l in raw.splitlines() if l.strip()]
+    for v in vals:
+        pairs.append((str(v["value"]), int(v["hits"])))
+except Exception:
+    print("invalid:parse-error"); sys.exit(0)
+if not pairs:
+    print("invalid:empty-body"); sys.exit(0)
+pairs.sort()
+h = hashlib.sha256("\n".join("{}\x00{}".format(k, c) for k, c in pairs).encode()).hexdigest()
+print("rows={};total={};hash={}".format(len(pairs), sum(c for _, c in pairs), h))
 PY
         ;;
       count_by_service|high_card)
@@ -622,11 +658,13 @@ prep() { # $1 signal  $2 query  $3 system  $4 sns  $5 ens
 _prep_body() {
   local signal="$1" query="$2" sys="$3" sns="$4" ens="$5"
   local logs_url traces_url
+  local logs_base traces_base
   case "$sys" in
-    lakehouse) logs_url="${EP[lh_logs]}/select/logsql/query"; traces_url="${EP[lh_traces]}/select/logsql/query" ;;
-    victorialogs) logs_url="${EP[vl]}/select/logsql/query" ;;
-    victoriatraces) traces_url="${EP[vt]}/select/logsql/query" ;;
+    lakehouse) logs_base="${EP[lh_logs]}"; traces_base="${EP[lh_traces]}" ;;
+    victorialogs) logs_base="${EP[vl]}" ;;
+    victoriatraces) traces_base="${EP[vt]}" ;;
   esac
+  logs_url="${logs_base}/select/logsql/query"; traces_url="${traces_base}/select/logsql/query"
   if [[ "$signal" == logs ]]; then
     case "$query" in
       count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s)' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\t* | stats count() n' "$logs_url" "$sns" "$ens" ;;
@@ -643,6 +681,11 @@ _prep_body() {
       # membership + window_hash check instead of being validated by row
       # count alone (its projection is no longer "different", it's the same
       # comparable key).
+      # Field metadata — the dropdowns of Grafana/Drilldown/vmui. Same window
+      # for every system; ClickHouse groups the same Parquet columns.
+      fv_level)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SeverityText AS value, count() AS hits FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&field=level\t*' "$logs_base" "$sns" "$ens" ;;
+      fv_service)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName AS value, count() AS hits FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&field=service.name\t*' "$logs_base" "$sns" "$ens" ;;
+      streams_list)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Stream AS value, count() AS hits FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/streams?start=%s&end=%s\t*' "$logs_base" "$sns" "$ens" ;;
       scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Body AS _msg, ServiceName FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\t* | fields _msg, service.name | limit %s' "$logs_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
     esac
   else # traces. trace_id:* counts only REAL spans — VictoriaTraces also
@@ -675,13 +718,17 @@ _prep_body() {
       # can never catch a real divergence). Same filter/limit, so the count
       # and row selection are unaffected; only two extra small fields ride
       # along in the response.
+      # Field metadata on traces: span names and services, as Jaeger/Tempo
+      # dropdowns ask for them. trace_id:* drops VT's internal index rows.
+      fv_name)          [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&field=name\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
+      fv_service)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&field=resource_attr:service.name\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
       scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit %s' "$traces_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
     esac
   fi
 }
 
-LOG_QUERIES="count_total count_by_service fulltext level_filter multi_filter negation trace_lookup high_card scan"
-TRACE_QUERIES="count_total count_by_service service_filter trace_by_id span_name slow_spans scan"
+LOG_QUERIES="count_total count_by_service fulltext level_filter multi_filter negation trace_lookup high_card scan fv_level fv_service streams_list"
+TRACE_QUERIES="count_total count_by_service service_filter trace_by_id span_name slow_spans scan fv_name fv_service"
 # --queries "a b c" overrides the per-signal list (intersected with what's valid
 # for each signal), so a focused cold run can target just scan/count.
 [[ -n "${QUERY_OVERRIDE:-}" ]] && { LOG_QUERIES="$QUERY_OVERRIDE"; TRACE_QUERIES="$QUERY_OVERRIDE"; }
