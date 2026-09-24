@@ -291,6 +291,13 @@ func TestRow_Validate_ValidLayers(t *testing.T) {
 		t.Run(layer, func(t *testing.T) {
 			r := validRow()
 			r.Layers = []string{layer}
+			if layer == "perf" {
+				// A perf-layer row must carry its perf block (schema_perf_test.go).
+				r.Perf = &Perf{Cell: "c", Counters: &PerfCounters{Path: "scan"}}
+				if r.Expect == ExpectPass {
+					r.Perf.Budget = &PerfBudget{P50Ms: 1, P90Ms: 1, Valid: "1/1"}
+				}
+			}
 			if err := r.Validate(); err != nil {
 				t.Fatalf("valid layer %s rejected: %v", layer, err)
 			}
@@ -299,7 +306,7 @@ func TestRow_Validate_ValidLayers(t *testing.T) {
 }
 
 func TestRow_Validate_ValidSeeds(t *testing.T) {
-	validSeeds := []string{"logs.base", "logs.edge", "logs.streams", "traces.base", "traces.sg", "tenants.iso"}
+	validSeeds := []string{"logs.base", "logs.edge", "logs.streams", "traces.base", "traces.sg", "tenants.iso", "logs.fieldmeta", "traces.fieldmeta"}
 	for _, seed := range validSeeds {
 		t.Run(seed, func(t *testing.T) {
 			r := validRow()

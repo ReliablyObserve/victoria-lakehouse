@@ -67,6 +67,11 @@ var Seeds = map[string]bool{
 	"traces.base":  true,
 	"traces.sg":    true,
 	"tenants.iso":  true,
+	// Field-metadata perf cells: the deterministic generators of
+	// internal/storage/parquets3/field_values_bench_test.go (fmSlotRows) and its
+	// traces twin (fmtSlotRows) — a quiet and a busy hour with known truth.
+	"logs.fieldmeta":   true,
+	"traces.fieldmeta": true,
 }
 
 var idRe = regexp.MustCompile(`^(vl|vt|lh|ui|fuzz)\.[a-z0-9_]+(\.[a-z0-9_]+)+$`)
@@ -149,6 +154,37 @@ type Refs struct {
 	Tests []string `yaml:"tests,omitempty"`
 }
 
+// PerfBudget is a perf row's latency budget: the measured p50/p90 of the cell
+// and the exact-iteration count it must keep (e.g. "10/10"). Only rows whose
+// answer is exact carry one — a wrong answer gets no budget.
+type PerfBudget struct {
+	P50Ms float64 `yaml:"p50_ms"`
+	P90Ms float64 `yaml:"p90_ms"`
+	Valid string  `yaml:"valid"`
+}
+
+// PerfCounters are the deterministic costs of one answer: S3 requests and
+// bytes, Parquet row groups and pages touched, and the path that answered
+// (catalog, scan, ...). Unlike latency they do not depend on the host, so a
+// gate can hold them exactly.
+type PerfCounters struct {
+	S3Gets    int    `yaml:"s3_gets"`
+	S3Bytes   int64  `yaml:"s3_bytes"`
+	RowGroups int    `yaml:"row_groups,omitempty"`
+	Pages     int    `yaml:"pages,omitempty"`
+	Path      string `yaml:"path"`
+}
+
+// Perf ties a row to one cell of a measurement harness: Cell is the harness
+// cell name the runner joins its results on.
+type Perf struct {
+	Cell     string        `yaml:"cell"`
+	Budget   *PerfBudget   `yaml:"budget,omitempty"`
+	Counters *PerfCounters `yaml:"counters,omitempty"`
+}
+
+var perfValidRe = regexp.MustCompile(`^[0-9]+/[1-9][0-9]*$`)
+
 type Row struct {
 	ID         string            `yaml:"id"`
 	Title      string            `yaml:"title"`
@@ -167,6 +203,7 @@ type Row struct {
 	Pending    bool              `yaml:"pending,omitempty"` // declared but not yet executed by the runner
 	Refs       *Refs             `yaml:"refs,omitempty"`
 	Notes      string            `yaml:"notes,omitempty"`
+	Perf       *Perf             `yaml:"perf,omitempty"`
 }
 
 type Registry struct {
@@ -348,6 +385,50 @@ func (r *Row) Validate() error {
 	for _, layer := range r.Layers {
 		if !Layers[layer] {
 			add("layers: %q invalid", layer)
+		}
+	}
+
+	// Perf block: required on perf-layer rows, forbidden elsewhere. A budget
+	// only on an exact (expect=pass) cell — a wrong answer is never timed.
+	perfLayer := false
+	for _, layer := range r.Layers {
+		if layer == "perf" {
+			perfLayer = true
+		}
+	}
+	switch {
+	case perfLayer && r.Perf == nil:
+		add("perf block required on a perf-layer row")
+	case !perfLayer && r.Perf != nil:
+		add("perf block only allowed on a perf-layer row")
+	case r.Perf != nil:
+		if strings.TrimSpace(r.Perf.Cell) == "" {
+			add("perf.cell required")
+		}
+		if r.Perf.Counters == nil {
+			add("perf.counters required")
+		} else {
+			c := r.Perf.Counters
+			if c.S3Gets < 0 || c.S3Bytes < 0 || c.RowGroups < 0 || c.Pages < 0 {
+				add("perf.counters must not be negative")
+			}
+			if strings.TrimSpace(c.Path) == "" {
+				add("perf.counters.path required")
+			}
+		}
+		switch {
+		case r.Expect == ExpectPass && r.Perf.Budget == nil:
+			add("perf.budget required when expect=pass")
+		case r.Expect != ExpectPass && r.Perf.Budget != nil:
+			add("perf.budget only allowed when expect=pass (a wrong answer gets no budget)")
+		case r.Perf.Budget != nil:
+			b := r.Perf.Budget
+			if b.P50Ms <= 0 || b.P90Ms < b.P50Ms {
+				add("perf.budget needs 0 < p50_ms <= p90_ms")
+			}
+			if !perfValidRe.MatchString(b.Valid) {
+				add("perf.budget.valid %q must be k/N", b.Valid)
+			}
 		}
 	}
 

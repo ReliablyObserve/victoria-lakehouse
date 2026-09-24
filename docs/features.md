@@ -911,7 +911,7 @@ Because a hide-mode delete never touched the data, it is reversible: deleting th
 
 ### ✅ Upstream delete API (`/delete/run_task`, `stop_task`, `active_tasks`)
 
-`lh.feature.deletion.upstream_api` · status: shipped · since: the release after v0.142.11 · surfaces: api, flag
+`lh.feature.deletion.upstream_api` · status: shipped · since: v0.143.0 · surfaces: api, flag
 
 **Upstream delete API**: VictoriaLogs' and VictoriaTraces' `/delete/run_task`, `stop_task` and `active_tasks`, behind upstream's `-delete.enable`; a task becomes a tombstone scoped to the requesting tenant.
 
@@ -919,7 +919,7 @@ A client written for VictoriaLogs or VictoriaTraces deletes through the same rou
 
 - Verification: rows: `vl.delete.run_task.status` (pass, pending), `vl.delete.stop_task.status` (pass, pending), `vl.delete.active_tasks.status` (pass, pending), `vt.delete.run_task.status` (pass, pending), `vt.delete.stop_task.status` (pass, pending), `vt.delete.active_tasks.status` (pass, pending) · tests: `internal/internaldelete/gate_test.go#TestPublicHandler_GatesLikeHandler`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_GatedByDefault`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestPublicDeleteFlag_IsUpstreams`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_RunTaskIsTenantScoped`, `lakehouse-traces/public_delete_test.go#TestMountPublicDelete_GatedByDefault`, `lakehouse-traces/public_delete_test.go#TestMountPublicDelete_RunTaskIsTenantScoped`, `lakehouse-traces/public_delete_test.go#TestUpstreamPublicDelete_MatchesVendoredVTSelect`, `internal/delete/tasks_test.go#TestRunTask_RegistersATenantScopedTombstone`, `internal/delete/tasks_test.go#TestRunTask_EdgeCases`, `lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsTenantScoped`
 - Docs: `docs/deletion-strategy.md#upstream-delete-api-delete`, `docs/deletion-strategy.md#cluster-delete-protocol-internaldelete`, `docs/configuration.md`
-- Changelog: the release after `0.142.11`
+- Changelog: `0.143.0`
 
 ### ✅ Delete verification
 

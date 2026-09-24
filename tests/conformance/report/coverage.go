@@ -78,7 +78,11 @@ func CoveredKeys(inv *inventory.Inventory, reg *registry.Registry) map[string][]
 
 	for i := range reg.Rows {
 		r := &reg.Rows[i]
-		if r.Upstream == nil || r.Upstream.IsZero() {
+		if r.Upstream == nil || r.Upstream.IsZero() || IsPerfRow(r) {
+			// Perf cells measure an item's speed, not whether LH serves it:
+			// they are summarised separately (RenderCoverage, "Performance
+			// cells") and never count as functional coverage or decide an
+			// item's status.
 			continue
 		}
 		uk := r.Upstream.Key() // "<kind>:<name>"
@@ -102,6 +106,16 @@ func CoveredKeys(inv *inventory.Inventory, reg *registry.Registry) map[string][]
 	}
 
 	return covered
+}
+
+// IsPerfRow reports whether r is a performance cell (layer "perf").
+func IsPerfRow(r *registry.Row) bool {
+	for _, l := range r.Layers {
+		if l == "perf" {
+			return true
+		}
+	}
+	return false
 }
 
 // expectRank orders Expect values from best (0) to worst (3), for
@@ -269,6 +283,8 @@ func RenderCoverage(inv *inventory.Inventory, reg *registry.Registry) string {
 	}
 	b.WriteString("\n")
 
+	renderPerfCells(&b, reg)
+
 	fmt.Fprintf(&b, "## Rows gated on a later upstream version / absent by design\n\n| Row | Since | Expect | Note |\n|---|---|---|---|\n")
 	present := map[string]bool{}
 	for _, it := range inv.Items {
@@ -282,7 +298,7 @@ func RenderCoverage(inv *inventory.Inventory, reg *registry.Registry) string {
 		// skipped here) if its upstream key is present on any surface it
 		// applies to — an lh row covering both surfaces only belongs in
 		// this gated section if it is present on neither.
-		if PresentOnAnySurface(present, &r) {
+		if IsPerfRow(&r) || PresentOnAnySurface(present, &r) {
 			continue
 		}
 		since := "—"
@@ -303,4 +319,48 @@ func RenderCoverage(inv *inventory.Inventory, reg *registry.Registry) string {
 	}
 
 	return b.String()
+}
+
+// renderPerfCells summarises the performance cells per surface and route:
+// how many cells, how many have an exact answer and a latency budget, and how
+// many are not exact yet (expect=differ, no budget).
+func renderPerfCells(b *strings.Builder, reg *registry.Registry) {
+	type agg struct{ total, budgeted, differ int }
+	byRoute := map[string]*agg{}
+	var keys []string
+	for i := range reg.Rows {
+		r := &reg.Rows[i]
+		if !IsPerfRow(r) {
+			continue
+		}
+		route := ""
+		if r.Upstream != nil {
+			route = r.Upstream.Route
+		}
+		k := string(r.Surface) + "\t" + route
+		a := byRoute[k]
+		if a == nil {
+			a = &agg{}
+			byRoute[k] = a
+			keys = append(keys, k)
+		}
+		a.total++
+		if r.Perf != nil && r.Perf.Budget != nil {
+			a.budgeted++
+		}
+		if r.Expect == registry.ExpectDiffer {
+			a.differ++
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	sort.Strings(keys)
+	fmt.Fprintf(b, "## Performance cells\n\nMeasured cells (layer `perf`): each carries deterministic counters; exact cells also carry a latency budget, cells that are not exact yet carry none. They do not count as functional coverage above.\n\n| Surface | Route | Cells | Exact, budgeted | Not exact yet |\n|---|---|---|---|---|\n")
+	for _, k := range keys {
+		surface, route, _ := strings.Cut(k, "\t")
+		a := byRoute[k]
+		fmt.Fprintf(b, "| %s | `%s` | %d | %d | %d |\n", surface, route, a.total, a.budgeted, a.differ)
+	}
+	b.WriteString("\n")
 }

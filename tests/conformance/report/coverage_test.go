@@ -422,3 +422,41 @@ func TestRenderCoverage_PerSurfacePreamble(t *testing.T) {
 		t.Fatalf("expected the per-surface counting note in the preamble:\n%s", md)
 	}
 }
+
+// Perf cells measure speed, not whether LH serves an item: they must never
+// count as functional coverage or decide an item's status, and they are
+// summarised in their own section.
+func TestRenderCoverage_PerfCellsAreSeparate(t *testing.T) {
+	inv := &inventory.Inventory{Items: []inventory.Item{
+		{Kind: "route", Surface: "vl", Name: "/select/logsql/field_values"},
+	}}
+	up := &registry.Upstream{Route: "/select/logsql/field_values"}
+	reg := &registry.Registry{Rows: []registry.Row{
+		{ID: "vl.select.field_values.basic", Surface: registry.SurfaceVL, Expect: registry.ExpectPass, Layers: []string{"api"}, Upstream: up},
+		{ID: "vl.perf.fv.a", Surface: registry.SurfaceVL, Expect: registry.ExpectPass, Layers: []string{"perf"}, Upstream: up,
+			Perf: &registry.Perf{Cell: "a", Budget: &registry.PerfBudget{P50Ms: 1, P90Ms: 2, Valid: "10/10"}, Counters: &registry.PerfCounters{Path: "scan"}}},
+		{ID: "vl.perf.fv.b", Surface: registry.SurfaceVL, Expect: registry.ExpectDiffer, DifferNote: "not exact", Layers: []string{"perf"}, Upstream: up,
+			Perf: &registry.Perf{Cell: "b", Counters: &registry.PerfCounters{Path: "catalog"}}},
+	}}
+	reg.ByID = map[string]*registry.Row{}
+	for i := range reg.Rows {
+		reg.ByID[reg.Rows[i].ID] = &reg.Rows[i]
+	}
+	covered := CoveredKeys(inv, reg)
+	if got := covered["vl:route:/select/logsql/field_values"]; len(got) != 1 || got[0] != "vl.select.field_values.basic" {
+		t.Fatalf("covering rows = %v, want only the functional row", got)
+	}
+	md := RenderCoverage(inv, reg)
+	var routeLine string
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "| `/select/logsql/field_values` |") {
+			routeLine = line
+		}
+	}
+	if routeLine == "" || strings.Contains(routeLine, "vl.perf.") || strings.Contains(routeLine, "not exact") {
+		t.Fatalf("route line %q lists a perf cell or takes its status", routeLine)
+	}
+	if !strings.Contains(md, "## Performance cells") || !strings.Contains(md, "| vl | `/select/logsql/field_values` | 2 | 1 | 1 |") {
+		t.Fatalf("missing or wrong perf summary:\n%s", md)
+	}
+}

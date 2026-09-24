@@ -518,6 +518,18 @@ flag: 29/181 covered by at least one registry row.
 | `lh.ui.lakehouse.status` | LH UI panel — lakehouse tier/compaction status page | ui | 🟡 declared, not yet executed |
 | `lh.ui.page.status` | LH UI — /lakehouse/ui page loads | admin | 🟡 declared, not yet executed |
 
+## Performance cells
+
+Measured cells (layer `perf`): each carries deterministic counters; exact cells also carry a latency budget, cells that are not exact yet carry none. They do not count as functional coverage above.
+
+| Surface | Route | Cells | Exact, budgeted | Not exact yet |
+|---|---|---|---|---|
+| vl | `/select/logsql/field_names` | 32 | 0 | 32 |
+| vl | `/select/logsql/field_values` | 64 | 56 | 8 |
+| vl | `/select/logsql/streams` | 32 | 32 | 0 |
+| vt | `/select/logsql/field_values` | 32 | 28 | 4 |
+| vt | `/select/logsql/streams` | 16 | 16 | 0 |
+
 ## Rows gated on a later upstream version / absent by design
 
 | Row | Since | Expect | Note |
