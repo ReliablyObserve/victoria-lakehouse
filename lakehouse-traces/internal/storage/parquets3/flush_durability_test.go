@@ -413,3 +413,80 @@ func TestTraceStop_RowsTheFinalFlushCannotWriteAreCounted(t *testing.T) {
 		t.Fatalf("rows counted as lost at shutdown = %d, want 12", d)
 	}
 }
+
+// An insert that crosses the size threshold returns at once: the flush runs on
+// the flush loop. Waiting for every partition to upload inside the insert
+// request made a slow object store time the client out, and its retry wrote
+// the batch twice.
+func TestTraceFlush_SizeTriggeredFlushNeverBlocksTheInsert(t *testing.T) {
+	u := &faultyUploader{block: make(chan struct{}), started: make(chan struct{}, 1)}
+	bw, m := durabilityWriter(t, u)
+	bw.cfg.MaxBufferRows = 10
+	bw.cfg.FlushInterval = time.Hour
+	bw.Start()
+	defer func() {
+		close(u.block)
+		bw.Stop()
+	}()
+
+	returned := make(chan struct{})
+	go func() {
+		bw.AddTraceRows(rowsAt(time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC), 20, 0))
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the insert waited for the upload")
+	}
+	select {
+	case <-u.started: // the flush loop picked the request up
+	case <-time.After(2 * time.Second):
+		t.Fatal("crossing the size threshold did not start a flush")
+	}
+	u.block <- struct{}{} // let this one upload through
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if rows, _ := committedRows(m); rows == 20 {
+			return
+		}
+		if time.Now().After(deadline) {
+			rows, _ := committedRows(m)
+			t.Fatalf("the size-triggered flush committed %d rows, want 20", rows)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// An upload can fail on the client side after the store kept the object (a
+// timeout). The retry writes the same key with the same bytes, so the store
+// and the manifest end up with one object — not the timed-out one plus a copy
+// under a new name, which a listing would adopt as duplicate rows.
+func TestTraceFlush_ARetryOverwritesTheSameObject(t *testing.T) {
+	attempts := map[string]int{}
+	var mu sync.Mutex
+	u := &faultyUploader{fail: func(key string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts[key]++
+		if attempts[key] == 1 {
+			return errPutFailed // stored, but the client gave up waiting
+		}
+		return nil
+	}}
+	bw, m := durabilityWriter(t, u)
+	bw.AddTraceRows(rowsAt(time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC), 50, 0))
+
+	if err := bw.FlushAll(context.Background()); err == nil {
+		t.Fatal("expected the first attempt to fail")
+	}
+	if err := bw.FlushAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("the retry wrote %d distinct objects, want the same one: %v", len(attempts), attempts)
+	}
+	if rows, files := committedRows(m); rows != 50 || files != 1 {
+		t.Fatalf("committed %d rows in %d files, want 50 in 1", rows, files)
+	}
+}
