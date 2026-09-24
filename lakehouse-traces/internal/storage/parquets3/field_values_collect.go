@@ -16,7 +16,10 @@ import (
 type fieldValuesRequest struct {
 	op         string // endpoint label for logs and metrics
 	column     string // Parquet column whose values are enumerated
-	aggregates bool   // the column may be answered from per-file label aggregates
+	field      string // the same field's name in rows (VictoriaLogs naming)
+	tenantIDs  []logstorage.TenantID
+	query      *logstorage.Query
+	aggregates bool // the column may be answered from per-file label aggregates
 	filter     *logstorage.Filter
 	tombstones []tombstone // every tombstone overlapping the files' rows
 	parse      keyTenantFunc
@@ -63,13 +66,55 @@ func (s *Storage) collectFieldValues(ctx context.Context, files []manifest.FileI
 	metrics.FieldValuesFiles.Add("scan", len(scan))
 	if len(scan) == 0 {
 		metrics.CatalogValueLookups.Add("catalog", 1) // whole answer from RAM
-		return seen, ctx.Err()
+	} else {
+		metrics.CatalogValueLookups.Add("scan", 1)
+		if err := s.scanFieldValuesParallel(ctx, scan, r, seen); err != nil {
+			return nil, err
+		}
 	}
-	metrics.CatalogValueLookups.Add("scan", 1)
-	if err := s.scanFieldValuesParallel(ctx, scan, r, seen); err != nil {
-		return nil, err
+	s.collectBufferedValues(ctx, files, r, seen)
+	return seen, ctx.Err()
+}
+
+// collectBufferedValues adds the rows not yet flushed to Parquet — this
+// node's co-located buffer, or every insert peer's through the buffer bridge
+// — exactly as a query merges them: tenant-scoped, only rows newer than each
+// tenant's flush watermark over the selected objects (so no row is counted
+// from both tiers), through the request's filter and its tenants' tombstones.
+// Without them a dropdown over the last minutes misses values upstream
+// returns and undercounts hits.
+func (s *Storage) collectBufferedValues(ctx context.Context, files []manifest.FileInfo, r fieldValuesRequest, seen map[string]uint64) {
+	if r.query == nil || r.field == "" {
+		return
 	}
-	return seen, nil
+	var mu sync.Mutex
+	count := func(tss []tombstone) logstorage.WriteDataBlockFunc {
+		return func(_ uint, db *logstorage.DataBlock) {
+			if db = filterDataBlock(db, r.filter); db == nil || db.RowsCount() == 0 {
+				return
+			}
+			if len(tss) > 0 {
+				if db = suppressTombstonedRows(db, tss); db == nil || db.RowsCount() == 0 {
+					return
+				}
+			}
+			for _, c := range db.GetColumns(false) {
+				if c.Name != r.field {
+					continue
+				}
+				mu.Lock()
+				for _, v := range c.Values {
+					if v != "" {
+						seen[v]++
+					}
+				}
+				mu.Unlock()
+			}
+		}
+	}
+	scope := scopeFor(ctx, r.tenantIDs)
+	sink := newTombstoneSink(scope, r.tombstones, r.parse, s.AccountOnlyTenantKeys(), count)
+	s.bufferRowsTo(ctx, r.startNs, r.endNs, s.bufferWatermarksFor(files), r.query, r.tenantIDs, sink)
 }
 
 // fileAggregate returns the file's exact per-value counts for the request's
@@ -141,6 +186,9 @@ func (s *Storage) scanFieldValuesParallel(ctx context.Context, files []manifest.
 // merge: descending hits, then values in natural order; past the limit the
 // hits are zeroed and the first limit values in natural order are kept.
 func valuesWithHits(seen map[string]uint64, limit uint64) []logstorage.ValueWithHits {
+	if len(seen) == 0 {
+		return nil
+	}
 	vhs := make([]logstorage.ValueWithHits, 0, len(seen))
 	for v, hits := range seen {
 		vhs = append(vhs, logstorage.ValueWithHits{Value: v, Hits: hits})

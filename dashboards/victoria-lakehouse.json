@@ -832,6 +832,34 @@
           "legendFormat": "leaks detected (1h)"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 100 },
+      "id": 85,
+      "title": "Field Enumeration",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 101 },
+      "id": 86,
+      "title": "Field Enumeration Answer Path",
+      "description": "Objects behind field_values / streams / stream_ids answers: aggregate = the object's exact per-value label counts from the manifest (no S3 read), scan = window-confined column scan. Requests answered entirely from memory vs. those that read an object.",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (path) (rate(lakehouse_field_values_files_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "objects {{path}}"
+        },
+        {
+          "expr": "sum by (source) (rate(lakehouse_catalog_value_lookups_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "requests {{source}}"
+        }
+      ]
     }
   ],
   "schemaVersion": 39,

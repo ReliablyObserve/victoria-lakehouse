@@ -31,6 +31,7 @@ func fvcStorage(t *testing.T, batches ...[]schema.TraceRow) *Storage {
 	mock := newMockS3Server()
 	t.Cleanup(mock.close)
 	s := testStorageWithS3(t, mock.url())
+	s.cfg.Mode = config.ModeTraces // as the traces binary runs (the buffer bridge decodes spans)
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
 	for _, b := range batches {
 		bw.AddTraceRows(b)

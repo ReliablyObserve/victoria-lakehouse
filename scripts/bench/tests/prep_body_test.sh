@@ -7,6 +7,7 @@
 # Usage: scripts/bench/tests/prep_body_test.sh
 set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 1
+RUN_SH="$PWD/scripts/bench/run.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -19,8 +20,11 @@ BENCH_TMP="$TMP"
 source "$TMP/funcs.sh"
 log() { :; }
 SAMPLE_TID="t"; SCAN_LIMIT=10
-LOGS_Q="count_total count_by_service fulltext level_filter multi_filter negation trace_lookup high_card scan fv_level fv_service streams_list"
-TRACES_Q="count_total count_by_service service_filter trace_by_id span_name slow_spans scan fv_name fv_service"
+# The query lists are run.sh's own, so a kind added there is tested here.
+eval "$(grep -E '^(LOG|TRACE)_QUERIES=' "$RUN_SH")"
+LOGS_Q="$LOG_QUERIES"
+TRACES_Q="$TRACE_QUERIES"
+[[ " $TRACES_Q " == *" streams_list "* && " $LOGS_Q " == *" streams_list "* ]] || { echo "FAIL: streams must be measured on both signals" >&2; exit 1; }
 
 pass=0 fail=0
 run() { # $1 signal $2 query $3 system
@@ -38,6 +42,11 @@ out="$(_prep_body logs fv_level victorialogs 100 200)"
 [[ "$out" == POST*"/select/logsql/field_values?start=100&end=200&field=level"* ]] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: fv_level VL request: $out" >&2; }
 out="$(_prep_body traces fv_name clickhouse 100 200)"
 [[ "$out" == CH*"SELECT SpanName AS value, count() AS hits"*"GROUP BY value FORMAT JSONEachRow"* ]] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: fv_name CH request: $out" >&2; }
+
+out="$(_prep_body traces streams_list victoriatraces 100 200)"
+[[ "$out" == POST*"/select/logsql/streams?start=100&end=200"*"trace_id:*" ]] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: traces streams VT request: $out" >&2; }
+out="$(_prep_body traces streams_list clickhouse 100 200)"
+[[ "$out" == CH*"SELECT Stream AS value, count() AS hits FROM lakehouse.otel_traces"* ]] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: traces streams CH request: $out" >&2; }
 
 echo "prep_body_test.sh: $pass passed, $fail failed" >&2
 [[ "$fail" == 0 ]]

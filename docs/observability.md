@@ -173,7 +173,9 @@ Read scoping (see [multi-tenancy — Read Scoping](multi-tenancy.md#read-scoping
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `lakehouse_tenant_scope_violations_total` | Counter | `site` | Objects or buffered rows the read path selected for a request but that belong to another tenant, dropped before answering. Expected to stay 0; `site` names the read path (`query`, `field_names`, `field_values`, `streams`, `stream_ids`, `catalog_field_names`, `catalog_field_values`, `trace_index_lookup`, `bridge_logs`, `bridge_traces`). |
+| `lakehouse_tenant_scope_violations_total` | Counter | `site` | Objects or buffered rows the read path selected for a request but that belong to another tenant, dropped before answering. Expected to stay 0; `site` names the read path (`query`, `field_names`, `field_values`, `streams`, `stream_ids`, `catalog_field_names`, `trace_index_lookup`, `bridge_logs`, `bridge_traces`). |
+| `lakehouse_field_values_files_total` | Counter | `path` | Objects behind `field_values` / `streams` / `stream_ids` answers: `aggregate` = answered from the object's exact per-value label counts in the manifest (no S3 read), `scan` = window-confined column scan. See [read-path — Field enumeration](read-path.md#field-enumeration). |
+| `lakehouse_catalog_value_lookups_total` | Counter | `source` | Field-enumeration requests answered entirely from memory (`catalog`) vs. those that read at least one object (`scan`). |
 | `lakehouse_global_read_queries_total` | Counter | | Select requests that presented a valid global-read credential and were answered across all tenants |
 
 ### Global Storage Metrics

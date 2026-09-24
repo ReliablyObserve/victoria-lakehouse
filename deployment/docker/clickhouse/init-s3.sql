@@ -126,7 +126,10 @@ SELECT
     CAST([] AS Array(String)) AS `Links.TraceId`,
     CAST([] AS Array(String)) AS `Links.SpanId`,
     CAST([] AS Array(String)) AS `Links.TraceState`,
-    CAST([] AS Array(Map(String, String))) AS `Links.Attributes`
+    CAST([] AS Array(Map(String, String))) AS `Links.Attributes`,
+    -- The LogsQL stream key, as in otel_logs: /select/logsql/streams on
+    -- traces is compared against GROUP BY Stream on the same Parquet.
+    `_stream` AS Stream
 FROM s3(
     'http://s3-latency:9000/obs-archive/*/*/traces/dt=*/hour=*/*.parquet',
     'minioadmin', 'minioadmin', 'Parquet',
@@ -141,7 +144,7 @@ FROM s3(
      `http.url` String, `db.system` String,
      `db.statement` String,
      `resource.attributes` Map(String, String), `span.attributes` Map(String, String),
-     `scope.attributes` Map(String, String)'
+     `scope.attributes` Map(String, String), `_stream` String'
 )
 WHERE trace_id != '';
 

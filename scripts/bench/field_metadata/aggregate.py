@@ -10,9 +10,12 @@ never timed. Per cell and build:
              has set-exact ones (the pmeta catalog answers hits=1), the set-exact
              p50 is shown in brackets and marked, never as a clean number;
   GETs/bytes/RGs/pages  median per iteration (deterministic in this harness);
-  path       'catalog' (pmeta catalog answered), 'index' (answered from RAM
-             without the catalog and without S3: the sampled label index),
-             'scan' (projected row scan), 'mixed' when iterations differ.
+  path       'ram' (the whole answer came from metadata in RAM, no S3 read:
+             the pmeta catalog before #239, per-object label counts after),
+             'index' (RAM without that metadata: the sampled label index),
+             'scan' (at least one object read), 'mixed' when iterations differ.
+
+Registry rows for these cells are generated and checked by perf_rows.py.
 """
 import json
 import statistics
@@ -57,8 +60,8 @@ def summarize(recs):
     med = lambda k: statistics.median([r[k] for r in recs]) if recs and k in recs[0] else None  # noqa: E731
     def src(r):
         if r.get("catalog_answers", 0) > 0:
-            return "catalog"
-        return "index" if r.get("gets", 1) == 0 else "scan"  # RAM answer without the catalog = label index
+            return "ram"
+        return "index" if r.get("gets", 1) == 0 else "scan"  # RAM answer without that metadata = label index
     srcs = {src(r) for r in recs}
     path = srcs.pop() if len(srcs) == 1 else "mixed"
     timed = [r["ns"] for r in exact]
@@ -100,67 +103,17 @@ def delta(b, a):
     return f"[{r}]†" if (a["bracket"] or b["bracket"]) else r
 
 
-ROUTES = {"fv_level": ("/select/logsql/field_values", "level"),
-          "fv_service": ("/select/logsql/field_values", "service.name"),
-          "field_names": ("/select/logsql/field_names", None),
-          "streams": ("/select/logsql/streams", None),
-          "traces.fv_name": ("/select/logsql/field_values", "name"),
-          "traces.fv_service": ("/select/logsql/field_values", "resource_attr:service.name"),
-          "traces.streams": ("/select/logsql/streams", None)}
-
-
-def emit_rows(groups):
-    """Proposed conformance perf rows (not wired: the registry schema has no
-    perf block yet). Budgets are the 'after' build's measured p50/p90 over exact
-    iterations; counters are the deterministic per-request S3 economics."""
-    for cell in sorted(c for c in groups if "after" in groups[c]):
-        a = summarize(groups[cell]["after"])
-        r0 = groups[cell]["after"][0]
-        ep = r0["endpoint"]
-        route, field = ROUTES[ep]
-        traces = ep.startswith("traces.")
-        rid = ("vt" if traces else "vl") + ".perf." + cell.replace("traces.", "").replace("/", ".") \
-            .replace("=", "_").replace("pmeta_true", "pmeta_on").replace("pmeta_false", "pmeta_off")
-        params = {"query": "*" if r0["filter"] == "none" else 'service.name:="svc-a"'}
-        if field:
-            params["field"] = field
-        exact = a["exact"] == a["n"]
-        sig = "vt" if traces else "vl"
-        head = (f"- {{ id: {rid.lower()}, surface: {sig}, kind: select, origin: native, targets: [cold], "
-                f"seed: [{'traces' if traces else 'logs'}.fieldmeta], layers: [perf], pending: true,")
-        if exact:
-            head += " expect: pass,"
-        else:
-            why = "hits=1 from a RAM index" if a["set"] == a["n"] else "value set is not the window's"
-            head += f" expect: differ, differ_note: \"{a['exact']}/{a['n']} exact at v0.143.1: {why}\","
-        print(head)
-        print(f"    upstream: {{ route: {route} }}, request: {{ method: GET, path: {route}, params: {json.dumps(params)} }},")
-        print("    compare: { type: values-with-hits, options: { hits_tolerance: \"0\" } }, refs: { doc: docs/perf/field-metadata-cells.md },")
-        perf = [f"cell: \"{cell}\""]
-        if exact:
-            perf.append(f"budget: {{ p50_ms: {a['p50'] / 1e6:.3f}, p90_ms: {a['p90'] / 1e6:.3f}, valid: \"{a['exact']}/{a['n']}\" }}")
-        counters = [f"s3_gets: {a['gets']:.0f}", f"s3_bytes: {a['bytes']:.0f}"]
-        if a["rgs"] is not None:
-            counters += [f"row_groups: {a['rgs']:.0f}", f"pages: {a['pages']:.0f}"]
-        counters.append(f"path: {a['path']}")
-        perf.append("counters: { " + ", ".join(counters) + " }")
-        print("    perf: { " + ", ".join(perf) + " } }")
-
-
 def main():
     path = sys.argv[1]
     groups = defaultdict(lambda: defaultdict(list))
     for line in open(path):
         r = json.loads(line)
         groups[r["cell"]][r["build"]].append(r)
-    if len(sys.argv) > 2 and sys.argv[2] == "--rows":
-        emit_rows(groups)
-        return
 
     def order(cell):
         ep, *rest = cell.split("/")
         eps = ["fv_level", "fv_service", "field_names", "streams",
-               "traces.fv_name", "traces.fv_service", "traces.streams"]
+               "traces.fv_name", "traces.fv_service", "traces.streams", "traces.field_names"]
         return (eps.index(ep) if ep in eps else 99, rest)
 
     vl_cells = sorted(c for c in groups if "vl" in groups[c])
@@ -187,7 +140,7 @@ def main():
             rp = f"{a['rgs']:.0f}/{a['pages']:.0f}"
         print("| " + " | ".join([cell] + cell_str(b) + cell_str(a) + [rp, delta(b, a)]) + " |")
     print()
-    print("† no iteration had exact hits (catalog and label-index answers carry hits=1); bracketed timing is over set-exact iterations only.")
+    print("† no iteration had exact hits (catalog and label-index answers carried hits=1); bracketed timing is over set-exact iterations only.")
     for w in warnings:
         print(f"WARNING: {w}")
 

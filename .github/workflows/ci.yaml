@@ -127,6 +127,49 @@ jobs:
             bash "$t"
           done
           python3 -m unittest scripts/bench/tests/test_report_validity.py -v
+          python3 -m unittest scripts/bench/tests/test_perf_rows.py -v
+
+  # Field-metadata performance gate, held by the registry. The harness answers
+  # every cell (field_values, field_names, streams x pmeta x flushed/compacted
+  # layout x window x filter, both binaries) on the same rows and validates each
+  # answer against the generator's truth; perf_rows.py check holds the run to
+  # tests/conformance/registry/rows/perf/field_metadata.yaml: exact where a row
+  # passes, no S3 GETs/bytes, row groups or pages above the row, the same
+  # answering path, every cell registered, and every compacted cell exact where
+  # its flushed twin is. S3 latency does not change the counters, so the gate
+  # runs at 0 ms; latency budgets are held by the recorded per-PR matrix.
+  field-metadata-perf:
+    needs: deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+
+      - name: Measure the field-metadata cells (logs, traces)
+        run: |
+          set -euo pipefail
+          export FM_MATRIX_OUT="$RUNNER_TEMP/field-metadata.jsonl" FM_BUILD=after FM_ITERS=1 FM_WARMUP=0 FM_LATENCIES_MS=0
+          go test ./internal/storage/parquets3/ -run '^TestFieldMetadataMatrix$' -count=1 -timeout=10m
+          (cd lakehouse-traces && go test ./internal/storage/parquets3/ -run '^TestFieldMetadataMatrixTraces$' -count=1 -timeout=10m)
+
+      - name: Hold the cells to the registry perf rows
+        run: |
+          set -euo pipefail
+          python3 scripts/bench/field_metadata/perf_rows.py check "$RUNNER_TEMP/field-metadata.jsonl" \
+            tests/conformance/registry/rows/perf/field_metadata.yaml | tee field-metadata-perf.txt
+          { echo "## Field-metadata perf gate"; echo '```'; cat field-metadata-perf.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
   parquet-readback:
     needs: deps

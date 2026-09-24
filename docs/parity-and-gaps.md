@@ -101,9 +101,9 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 | **Bucket-per-tenant manifest refresh** | Resolved | — | The periodic refresh listed only the default bucket, so objects that lived solely in a dedicated tenant bucket left the manifest at the next refresh. It now lists each override bucket under its tenant prefix as well. |
 | **`isolation: bucket` + `bucket_template`** | Open | Functional-degradation | Validated at startup but not wired to bucket routing; per-tenant `overrides[].s3.bucket` is the working form. |
 | **Stats snapshot vs manifest divergence** | Reconciled at API layer | Resolved | `/api/v1/tenants` now overlays manifest truth on registry entries; `LiveAggregateWindow` is the single source for time-bounded totals. |
-| **pmeta catalog with several writers** | Open | Performance | The catalog learns a file from this process's own flushes and compactions, and from the manifest and the persisted bundles only at startup (`WarmCatalogFromS3`, `WarmCatalog`). The periodic manifest refresh adds files another pod flushed to the manifest but never to the catalog, so on a multi-writer or autoscaled deployment `Store.CatalogCoversFile` stays false for them until this pod restarts, and every `field_values` request whose range includes such a file is answered by the row scan. The answer is exact; it is slower. Single-writer deployments are unaffected. The fix belongs with the per-peer pmeta shards work. |
+| **pmeta catalog with several writers** | Open | Performance | The catalog learns a file from this process's own flushes and compactions, and from the manifest and the persisted bundles only at startup (`WarmCatalogFromS3`, `WarmCatalog`). The periodic manifest refresh adds files another pod flushed to the manifest but never to the catalog, so on a multi-writer or autoscaled deployment `Store.CatalogCoversFile` stays false for them until this pod restarts, and requests the catalog would answer (`field_names`) whose range includes such a file fall back to reading objects. The answer is not affected; it is slower. Single-writer deployments are unaffected. The fix belongs with the per-peer pmeta shards work. |
 | **Traces `field_names` for a window that holds objects** | Open (B2) | UX-degradation | The traces binary reads the footer of the first object in the window only, then answers from the pmeta catalog's names, and when those are empty (pmeta off) from the in-memory label index, which is not time-scoped. Part of B2; a window holding no objects is answered empty. |
-| **`field_values` from the pmeta catalog** | Open | UX-degradation | When every partition in range is catalogued, low-card and complete, `field_values` answers from the catalog in RAM. That answer differs from hot VL/VT in three ways: every value carries `hits` 1 (hot returns the number of matching rows, and returns 0 for every value once the result exceeds `limit`); with a `limit`, the catalog returns the first `limit` values in sort order, where hot returns whichever values its search met first; and the value set is hour-granular — a window that cuts a partition hour lists the values of the whole hour. Requests the catalog cannot answer exactly go to the row scan, which counts hits per row inside the window. |
+| **`field_values` from the pmeta catalog** | **Resolved** | UX-degradation | The catalog answered with `hits` 1, hour-granular value sets and its own `limit` order. `field_values` no longer reads it; see the Closed section below. |
 | **Cold row field set** | **Resolved** | UX-degradation | Cold rows used to carry every Parquet leaf column — unset ones as the literal `"<null>"` — plus the tenant columns, the unmapped spare slots, and (on traces) a duplicate of every promoted attribute under its raw Parquet name and the service-graph edge columns. A cold row now carries exactly its ingested fields, under the same names hot returns. See the Closed section below. |
 
 ## Known divergences under investigation
@@ -230,6 +230,20 @@ shrinks.
 This file is the source of truth for "what cold tier doesn't do yet". When closing a gap, move its row to a closed section at the bottom with the PR number and date so reviewers can see the trajectory.
 
 ### Closed (history)
+
+**Cold `field_values` answered `hits` 1** (both binaries, #239). With pmeta on,
+an unfiltered request was answered from the catalog's per-partition value sets,
+which hold no counts: every value came back with `hits` 1 where hot returns the
+number of rows, a window cutting an hour listed the whole hour's values, and
+`limit` kept an arbitrary subset. The traces benchmark hid it on that binary by
+filtering (`trace_id:*`). `field_values` now answers each object wholly inside
+the window from its label aggregate (exact per-value row counts) and scans the
+rest for in-window rows, on the file-worker pool; `streams` and `stream_ids` scan
+on the same pool. The response uses VictoriaLogs' own merge, so order and
+`limit` match upstream. Proof: `TestFieldMetadata_ExactInBothLayouts` and its
+traces twin (every value cell exact in flushed and compacted layouts over whole,
+cut, narrow and hour-edge windows; 8 cells per binary fail on v0.143.1), the
+`field-metadata-perf` CI gate, and [perf/field-metadata-cells.md](perf/field-metadata-cells.md).
 
 **Cold `field_values` listed a subset of the values in range** — intermittent in
 the parity suite (`field_values_level`, `field_values_jsonl`: cold answered 3 of

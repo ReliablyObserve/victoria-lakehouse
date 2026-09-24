@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cold `field_values` returns the real hit counts, on both binaries.** An unfiltered request
+  with pmeta on was answered from the catalog, which keeps only which values exist per partition
+  hour, so every value came back with `hits: 1`; a window cutting an hour also listed values from
+  outside it. Now an object wholly inside the window, untouched by a delete, answers from its own
+  per-value row counts (the manifest's label aggregates, written at flush and compaction, read
+  from memory, no S3 request), and every other object is scanned for its in-window rows. Values
+  and hits match VictoriaLogs / VictoriaTraces in every window, before and after compaction, with
+  pmeta on or off. The response is built with VictoriaLogs' own merge, so ordering and `limit`
+  behave as upstream: descending hits; past the limit, zeroed hits and the first values in
+  natural order (the same for `streams` and `stream_ids`).
+
+- **Cold `field_values`, `streams` and `stream_ids` include rows not flushed yet.** They read
+  only Parquet: rows still in this node's buffer or in another insert instance's (reached through
+  `/internal/buffer/query`) were missing, so a dropdown over the last minutes lacked values and
+  hits that a query over the same window returns — and a window with nothing flushed yet answered
+  empty. They now merge unflushed rows exactly as queries do: tenant-scoped, only rows newer than
+  the flushed objects (no row counted twice), through the request's filter and tombstones.
+
+- **A peer's unflushed log rows carry `_stream_id`, `severity_number` and `scope.name`.** The
+  buffer bridge dropped them when turning another instance's rows into query blocks, so those
+  rows were missing from `stream_ids` and from filters on these fields until flushed.
+
 ### Changed
+
+- **Cold `streams`, `stream_ids` and logs `field_values` scans run in parallel.** They read
+  objects one after another; they now use the query path's file-worker pool (`query.file_workers`)
+  in both binaries, so a request costs one wave of S3 round-trips instead of one per object.
+  `lakehouse_field_values_files_total{path="aggregate|scan"}` counts the objects answered from
+  row counts and those scanned. On a compacted object these scans read only the row groups whose
+  time range reaches the window (a 30-second window no longer reads all six row groups of an
+  hour object).
 
 - **Field-metadata performance is measured three ways and held by the registry.**
   `field_values`, `field_names` and `streams` on the cold tier now have a validated performance
@@ -21,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only when the answer is exact — a latency budget; 176 field-metadata cells are declared,
   pending the conformance runner. Benchmark host ports are overridable (`BENCH_PORT_*`), and the
   harness self-tests run in CI.
+
+  Every cell is measured on the same rows flushed as small objects and compacted into hour
+  objects, over whole, cut, narrow (30 s) and hour-edge windows, for logs and traces (traces
+  `streams` and `field_names` included). The `field-metadata-perf` CI job re-runs the cells and
+  holds them to the registry rows: exact where a row passes, no more S3 GETs, bytes, row groups or
+  pages than recorded, the same answering path, and every compacted cell exact wherever its
+  flushed twin is.
 
 ## [0.143.1] - 2026-09-23
 

@@ -22,6 +22,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -105,7 +106,9 @@ func benchFieldValuesLevel(b *testing.B, pmetaOn bool, window string, base, lo, 
 //
 // Cells: endpoint {field_values level, field_values service.name, field_names,
 // streams} × pmeta {on, off} × layout {flushed small files, compacted by the
-// real compactor} × window {whole hours, cut mid-hour} × filter {none,
+// real compactor, flushed but the last ten minutes still unflushed on a peer
+// insert instance (served through the buffer bridge)} × window {whole hours,
+// cut mid-hour, narrow 30 s, across the hour edge} × filter {none,
 // service.name:="svc-a"} × S3 first-byte latency {0, 100 ms}.
 //
 // Every iteration starts with cold object caches (memCache + footerCache are
@@ -584,6 +587,27 @@ func fmTruthKey(endpoint, filter, window string) string {
 	return endpoint + "/" + filter + "/" + window
 }
 
+// fmPeer is an insert instance holding unflushed rows: it answers
+// /internal/buffer/query for the default tenant with the rows inside the
+// requested [start, end], as the buffer handler does.
+func fmPeer(tb testing.TB, rows []schema.LogRow) *BufferBridge {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, _ := strconv.ParseInt(r.URL.Query().Get("start"), 10, 64)
+		end, _ := strconv.ParseInt(r.URL.Query().Get("end"), 10, 64)
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
+		enc := json.NewEncoder(w)
+		for i := range rows {
+			if ts := rows[i].TimestampUnixNano; ts >= start && ts <= end {
+				_ = enc.Encode(&rows[i])
+			}
+		}
+	}))
+	tb.Cleanup(srv.Close)
+	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 5 * time.Second}, config.ModeLogs)
+	bridge.SetEndpoints([]string{srv.URL})
+	return bridge
+}
+
 func buildFmEnv(tb testing.TB, layout string, pmetaOn bool) *fmEnv {
 	tb.Helper()
 	mock := newFmS3()
@@ -595,11 +619,22 @@ func buildFmEnv(tb testing.TB, layout string, pmetaOn bool) *fmEnv {
 		s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
 		bw.catalogObserver = &catalogObserver{store: s.catalog}
 	}
+	var unflushed []schema.LogRow
 	for h := 0; h < 2; h++ {
 		for slot := 0; slot < fmSlotsPerHour; slot++ {
+			// layout=peer: the last ten minutes are not flushed yet; they sit
+			// in another insert instance's buffer, reachable only through the
+			// buffer bridge (the FATAL level exists only there).
+			if layout == "peer" && h == 1 && slot >= fmSlotsPerHour-2 {
+				unflushed = append(unflushed, fmSlotRows(h, slot)...)
+				continue
+			}
 			bw.AddLogRows(fmSlotRows(h, slot))
 			bw.triggerFlush()
 		}
+	}
+	if layout == "peer" {
+		s.bufferBridge = fmPeer(tb, unflushed)
 	}
 	ctx := context.Background()
 	if layout == "compacted" {
@@ -739,7 +774,7 @@ func fmLatencies() []time.Duration {
 
 func buildFmEnvs(tb testing.TB) []*fmEnv {
 	var envs []*fmEnv
-	for _, layout := range []string{"flushed", "compacted"} {
+	for _, layout := range []string{"flushed", "compacted", "peer"} {
 		for _, pm := range []bool{true, false} {
 			envs = append(envs, buildFmEnv(tb, layout, pm))
 		}
@@ -803,7 +838,8 @@ func benchFmCell(b *testing.B, e *fmEnv, ep, filter string, w fmWindow, lat time
 }
 
 // TestFieldMetadata_ExactInBothLayouts runs every value cell once, at 0 ms S3,
-// on the same rows flushed as small files and compacted into hour objects, and
+// on the same rows flushed as small files, compacted into hour objects, and
+// flushed except the last ten minutes still unflushed on a peer, and
 // requires the exact answer (values and hits) in every layout, window and
 // filter. Answers from label counts must also cost no S3 read. field_names is
 // not exact yet (it credits all-null columns and ignores the window) and is

@@ -600,7 +600,7 @@ func TestTenantScope_Invariant_ExactRowCounts(t *testing.T) {
 // are exactly the objects it owns.
 func TestTenantScope_Invariant_FileSelection(t *testing.T) {
 	sites := []string{"query", "field_names", "field_values", "streams", "stream_ids",
-		"catalog_field_names", "catalog_field_values"}
+		"catalog_field_names"}
 
 	for _, layout := range tsLayouts() {
 		f := newTenantScopeFixtureLayout(t, layout)

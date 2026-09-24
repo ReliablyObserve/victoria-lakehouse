@@ -17,6 +17,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -27,11 +28,13 @@ import (
 // Traces subset of the field-metadata performance matrix
 // (internal/storage/parquets3/field_values_bench_test.go on the logs side,
 // docs/perf/field-metadata-cells.md). Cells: endpoint {field_values name,
-// field_values resource_attr:service.name, streams} × pmeta {on, off} × layout
-// {flushed small files, compacted into one object per hour} × window {whole
+// field_values resource_attr:service.name, streams, field_names} × pmeta {on, off} × layout
+// {flushed small files, compacted into one object per hour, flushed but the
+// last ten minutes still unflushed on a peer insert instance} × window {whole
 // hours, cut mid-hour, narrow, across the hour edge} × filter {none,
-// service.name:="svc-a"} × S3 first-byte latency {0, 100 ms} (field_names is
-// measured on the logs side only). Every iteration starts
+// service.name:="svc-a"} × S3 first-byte latency {0, 100 ms}. field_names'
+// truth is the row path's (every non-empty field of every row in range); the
+// others' is the generator's. Every iteration starts
 // with cold object caches and is validated against the generator's truth
 // (set_ok: exact value set; hits_ok: and exact hit counts).
 //
@@ -168,6 +171,26 @@ func fmtSlotRows(hour, slot int) []schema.TraceRow {
 	return rows
 }
 
+// fmtPeer is an insert instance holding unflushed spans, answering
+// /internal/buffer/query with the spans inside the requested [start, end].
+func fmtPeer(t *testing.T, rows []schema.TraceRow) *BufferBridge {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start, _ := strconv.ParseInt(r.URL.Query().Get("start"), 10, 64)
+		end, _ := strconv.ParseInt(r.URL.Query().Get("end"), 10, 64)
+		w.Header().Set(buffer.TenantScopeHeader, "0:0")
+		enc := json.NewEncoder(w)
+		for i := range rows {
+			if ts := rows[i].TimestampUnixNano; ts >= start && ts <= end {
+				_ = enc.Encode(&rows[i])
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 5 * time.Second}, config.ModeTraces)
+	bridge.SetEndpoints([]string{srv.URL})
+	return bridge
+}
+
 type fmtWindow struct {
 	name   string
 	lo, hi int64
@@ -211,6 +234,29 @@ type fmtEnv struct {
 	pmeta  bool
 	files  int
 	rows   []schema.TraceRow
+	names  map[string]map[string]uint64 // filter/window -> field_names truth
+}
+
+// fmtNamesOracle counts, per field, the rows in range carrying a non-empty
+// value, read through the row path (the answer field_names owes).
+func fmtNamesOracle(t *testing.T, s *Storage, filter string, w fmtWindow) map[string]uint64 {
+	var mu sync.Mutex
+	names := make(map[string]uint64)
+	err := s.RunQuery(context.Background(), nil, fmtQuery(t, filter, w), func(_ uint, db *logstorage.DataBlock) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range db.GetColumns(false) {
+			for _, v := range c.Values {
+				if v != "" {
+					names[c.Name]++
+				}
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
 }
 
 func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
@@ -218,6 +264,7 @@ func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 	mock := newFmtS3()
 	t.Cleanup(mock.srv.Close)
 	s := testStorageWithS3(t, mock.srv.URL)
+	s.cfg.Mode = config.ModeTraces
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
 	if pmetaOn {
 		s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
@@ -225,13 +272,23 @@ func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 		bw.catalogObserver = &catalogObserver{store: s.catalog}
 	}
 	e := &fmtEnv{s: s, mock: mock, layout: layout, pmeta: pmetaOn}
+	var unflushed []schema.TraceRow
 	for h := 0; h < 2; h++ {
 		for slot := 0; slot < fmtSlotsPerHour; slot++ {
 			rows := fmtSlotRows(h, slot)
 			e.rows = append(e.rows, rows...)
+			// layout=peer: the last ten minutes sit unflushed in another
+			// insert instance's buffer ("shutdown" spans exist only there).
+			if layout == "peer" && h == 1 && slot >= fmtSlotsPerHour-2 {
+				unflushed = append(unflushed, rows...)
+				continue
+			}
 			bw.AddTraceRows(rows)
 			bw.triggerFlush()
 		}
+	}
+	if layout == "peer" {
+		s.bufferBridge = fmtPeer(t, unflushed)
 	}
 	if layout == "compacted" {
 		for h := 0; h < 2; h++ {
@@ -263,6 +320,12 @@ func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 	// Seed the label index the way production does: a first query opens files.
 	if err := s.RunQuery(context.Background(), nil, fmtQuery(t, "none", whole), func(uint, *logstorage.DataBlock) {}); err != nil {
 		t.Fatal(err)
+	}
+	e.names = make(map[string]map[string]uint64)
+	for _, w := range fmtWindows() {
+		for _, f := range []string{"none", "svc"} {
+			e.names[f+"/"+w.name] = fmtNamesOracle(t, s, f, w)
+		}
 	}
 	return e
 }
@@ -323,6 +386,8 @@ func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency
 		vals, err = s.GetFieldValues(ctx, nil, q, "resource_attr:service.name", 0)
 	case "streams":
 		vals, err = s.GetStreams(ctx, nil, q, 0)
+	case "field_names":
+		vals, err = s.GetFieldNames(ctx, nil, q)
 	}
 	dur := time.Since(start)
 	e.mock.latency.Store(0)
@@ -330,6 +395,9 @@ func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency
 		t.Fatalf("%s: %v", endpoint, err)
 	}
 	truth := fmtTruth(e.rows, endpoint, filter, w)
+	if endpoint == "field_names" {
+		truth = e.names[filter+"/"+w.name]
+	}
 	got := make(map[string]uint64, len(vals))
 	setOK := true
 	for _, v := range vals {
@@ -360,7 +428,7 @@ func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency
 
 func buildFmtEnvs(t *testing.T) []*fmtEnv {
 	var envs []*fmtEnv
-	for _, layout := range []string{"flushed", "compacted"} {
+	for _, layout := range []string{"flushed", "compacted", "peer"} {
 		for _, pm := range []bool{true, false} {
 			envs = append(envs, buildFmtEnv(t, layout, pm))
 		}
@@ -372,7 +440,7 @@ func fmtCellName(ep string, e *fmtEnv, w fmtWindow, filter string, lat time.Dura
 	return fmt.Sprintf("traces.%s/pmeta=%v/layout=%s/window=%s/filter=%s/s3=%dms", ep, e.pmeta, e.layout, w.name, filter, lat.Milliseconds())
 }
 
-var fmtEndpoints = []string{"fv_name", "fv_service", "streams"}
+var fmtEndpoints = []string{"fv_name", "fv_service", "streams", "field_names"}
 
 // TestFieldMetadataTraces_ExactInBothLayouts is the traces twin of
 // TestFieldMetadata_ExactInBothLayouts: every cell exact, at 0 ms S3, on the
@@ -383,6 +451,9 @@ func TestFieldMetadataTraces_ExactInBothLayouts(t *testing.T) {
 	}
 	for _, e := range buildFmtEnvs(t) {
 		for _, ep := range fmtEndpoints {
+			if ep == "field_names" {
+				continue // not exact yet: measured by the matrix only
+			}
 			for _, w := range fmtWindows() {
 				for _, f := range []string{"none", "svc"} {
 					r := e.run(t, ep, f, w, 0)

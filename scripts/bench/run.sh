@@ -722,13 +722,14 @@ _prep_body() {
       # dropdowns ask for them. trace_id:* drops VT's internal index rows.
       fv_name)          [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&field=name\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
       fv_service)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&field=resource_attr:service.name\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
+      streams_list)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Stream AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/streams?start=%s&end=%s\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
       scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit %s' "$traces_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
     esac
   fi
 }
 
 LOG_QUERIES="count_total count_by_service fulltext level_filter multi_filter negation trace_lookup high_card scan fv_level fv_service streams_list"
-TRACE_QUERIES="count_total count_by_service service_filter trace_by_id span_name slow_spans scan fv_name fv_service"
+TRACE_QUERIES="count_total count_by_service service_filter trace_by_id span_name slow_spans scan fv_name fv_service streams_list"
 # --queries "a b c" overrides the per-signal list (intersected with what's valid
 # for each signal), so a focused cold run can target just scan/count.
 [[ -n "${QUERY_OVERRIDE:-}" ]] && { LOG_QUERIES="$QUERY_OVERRIDE"; TRACE_QUERIES="$QUERY_OVERRIDE"; }
