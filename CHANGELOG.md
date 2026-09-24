@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.3] - 2026-09-24
+
 ### Fixed
 
 - **A failed flush no longer drops its rows.** A flush cleared the write buffers before uploading
