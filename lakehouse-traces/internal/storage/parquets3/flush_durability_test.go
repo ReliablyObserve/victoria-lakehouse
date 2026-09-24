@@ -413,4 +413,3 @@ func TestTraceStop_RowsTheFinalFlushCannotWriteAreCounted(t *testing.T) {
 		t.Fatalf("rows counted as lost at shutdown = %d, want 12", d)
 	}
 }
-

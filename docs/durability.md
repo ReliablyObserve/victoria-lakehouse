@@ -50,7 +50,7 @@ flowchart LR
 |---|---|---|---|
 | **Process crash / kill -9** | Rows in the buffer's on-disk parts survive; the flush watermark re-flushes the uncommitted window on restart. Loss window ≈ buffer flush interval (~5s), matching hot VL/VT. | Buffer parts survive and serve **reads** for `buffer_retention`, but the **legacy staging** (authoritative for Parquet) loses its in-flight window — that window is never re-persisted to S3. | In-flight `[]row` staging is lost (no WAL). Loss window = up to `flush_interval`. |
 | **Normal shutdown (SIGTERM)** | Buffer `Close()` flushes parts to disk; readiness gate holds `/ready`; manifest + footer-cache snapshots saved. | Same buffer `Close()`; legacy staging flush-on-shutdown. | Graceful flush of staging before exit. |
-| **S3 unreachable** | Buffer keeps accepting (bounded by `buffer_retention` + disk); flush retries with backoff. | Same; legacy staging grows in memory, backpressure at `max_buffer_bytes`. | Backpressure at `max_buffer_bytes`. |
+| **S3 unreachable or slow (uploads fail or time out)** | Buffer keeps accepting (bounded by `buffer_retention` + disk); the watermark does not advance, so the window is flushed again (see the note on duplicates in §2.1). | Legacy staging: every upload that fails, or that the flush does not reach before its deadline, is put back and retried by the next flush; its rows stay readable meanwhile. Past `insert.max_buffer_bytes` of unwritten rows inserts get **429** (as VictoriaLogs answers when it cannot take writes) until flushes catch up. | Same as the middle column. |
 | **Already-flushed data** | Immutable Parquet on S3; survives everything. | Same. | Same. |
 | **A delete (tombstone)** | Written through to local disk synchronously and to S3 in the same call before the API returns; retried until S3 confirms. Survives `kill -9`. | Same. | Same. |
 | **An in-progress delete rewrite** | Two-phase (prepare → publish → commit) with a conditional publish: a crash or a concurrent compaction at any step leaves exactly one manifested copy of every kept row. See §3.1. | Same. | Same. |
@@ -63,6 +63,45 @@ flowchart LR
 > crash-safety, no WAL). `ack_mode: flush-sync` (200 only after S3 confirms) is
 > not an alternative in this release: no binary reads `insert.ack_mode`. See
 > [Configuration](#7-configuration).
+
+### 2.1 Failed uploads
+
+A flush writes one object per partition and tenant. When one of those
+`PutObject` calls fails — or the flush's deadline passes before it gets there —
+that tenant group goes back into the write buffer and the next flush writes it;
+the groups that were written are never written again, so a failed flush neither
+loses nor duplicates rows. Until a row is committed to the manifest it is
+served to reads from the buffer (`/internal/buffer/query`, the co-located
+buffer), including while its upload is in flight.
+
+The unwritten rows are held in memory, so they are bounded: past
+`insert.max_buffer_bytes` (buffered + uploading + put back) `CanWriteData`
+refuses inserts with **429 Too Many Requests** — the status VictoriaLogs returns
+when it cannot take writes — and clients (vlagent, OpenTelemetry Collector, any
+VictoriaLogs client) back off and retry. When object storage refuses a small
+probe write the answer is **503**; the probe result is reused for 10 s, not
+repeated per insert request.
+
+What is still lost: rows the final flush at shutdown cannot write (there is no
+WAL on the legacy staging path) — counted in
+`lakehouse_insert_rows_lost_at_shutdown_total` and logged — and, as before, the
+in-memory window on `kill -9`.
+
+Proof: `TestFlush_FailedUploadKeepsItsRows`,
+`TestFlush_OnlyTheFailedTenantGroupIsRetried`,
+`TestFlush_PartitionsNotReachedBeforeTheDeadlineArePutBack`,
+`TestFlush_RowsStayVisibleWhileInFlight`,
+`TestFlush_RandomFailuresUnderConcurrentInsertsLoseNothing` (random failures
+and concurrent inserts, every row committed exactly once),
+`TestCanWriteData_TooMuchUnwrittenDataIs429`,
+`TestCanWriteData_ProbeIsReusedAndAnUnwritableStoreIs503`,
+`TestStop_RowsTheFinalFlushCannotWriteAreCounted` — and their `TestTrace*`
+twins in `lakehouse-traces`.
+
+> **Known gap (buffer-authoritative flush).** With `buffer_flush_enabled`, a
+> window whose flush fails part-way is flushed again whole on the next tick, so
+> the partitions written in the failed attempt are written twice. Tracked
+> separately; the legacy staging path above does not have it.
 
 ---
 

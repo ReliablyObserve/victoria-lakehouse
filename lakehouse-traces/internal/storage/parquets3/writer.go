@@ -217,7 +217,7 @@ func (w *BatchWriter) AddLogRows(rows []schema.LogRow) {
 	w.mu.Unlock()
 
 	w.pendingBytes.Add(estimateRawBytesLogs(rows))
-	metrics.InsertBufferBytes.Set(w.pendingBytes.Load())
+	metrics.InsertBytesBuffered.Set(w.pendingBytes.Load())
 	w.totalRows.Add(int64(len(rows)))
 	metrics.InsertRowsBuffered.Set(w.totalRows.Load())
 
@@ -244,7 +244,7 @@ func (w *BatchWriter) AddTraceRows(rows []schema.TraceRow) {
 	w.mu.Unlock()
 
 	w.pendingBytes.Add(estimateRawBytesTraces(rows))
-	metrics.InsertBufferBytes.Set(w.pendingBytes.Load())
+	metrics.InsertBytesBuffered.Set(w.pendingBytes.Load())
 	w.totalRows.Add(int64(len(rows)))
 	metrics.InsertRowsBuffered.Set(w.totalRows.Load())
 
@@ -809,7 +809,7 @@ func (w *BatchWriter) finishFlush(id uint64, failedLogs map[string][]schema.LogR
 	w.mu.Unlock()
 
 	w.pendingBytes.Add(-committedBytes)
-	metrics.InsertBufferBytes.Set(w.pendingBytes.Load())
+	metrics.InsertBytesBuffered.Set(w.pendingBytes.Load())
 	if requeued > 0 {
 		w.totalRows.Add(int64(requeued))
 		metrics.InsertRowsRequeued.Add(requeued)

@@ -110,6 +110,19 @@ graph LR
 | `lakehouse_cache_cross_prefetch_sent_total` | Counter | Prefetch hints sent to other signal |
 | `lakehouse_cache_cross_prefetch_received_total` | Counter | Prefetch hints received |
 
+### Insert / Write Path Metrics
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_insert_rows_total` | Counter | | Rows accepted by the insert path |
+| `lakehouse_insert_rows_buffered` | Gauge | | Rows waiting for the next flush (including rows put back after a failed upload) |
+| `lakehouse_insert_bytes_buffered` | Gauge | | Estimated raw bytes not yet written to object storage — buffered, being uploaded, or put back. Inserts get 429 above `insert.max_buffer_bytes` |
+| `lakehouse_insert_flush_total` / `lakehouse_insert_flush_errors_total` | Counter | | Flushes, and partitions whose upload failed |
+| `lakehouse_insert_rows_requeued_total` | Counter | | Rows a flush could not write and put back for the next flush — never dropped. A steady rate means object storage is failing or too slow for the flush deadline |
+| `lakehouse_insert_rejected_total` | Counter | `reason` | Insert requests refused by `CanWriteData`: `buffer_full` (429, over `insert.max_buffer_bytes`), `storage_unavailable` (503, the write probe failed; reused for 10 s) |
+| `lakehouse_insert_rows_lost_at_shutdown_total` | Counter | | Buffered rows the final flush at shutdown could not write (the legacy staging path has no WAL). Should stay 0 |
+| `lakehouse_insert_flush_duration_seconds` | Histogram | | Flush wall time |
+
 ### Parquet Engine Metrics
 
 | Metric | Type | Labels | Description |
