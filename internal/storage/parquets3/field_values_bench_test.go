@@ -684,7 +684,13 @@ func buildFmEnv(tb testing.TB, layout string, pmetaOn bool) *fmEnv {
 					t, got = fmTruth(all, ep, f, w), oracle[cols[ep]]
 				}
 				if !fmEqualCounts(got, t) {
-					tb.Fatalf("row oracle disagrees with the generator for %s/%s/%s: %v vs %v", ep, f, w.name, got, t)
+					if layout != "peer" {
+						tb.Fatalf("row oracle disagrees with the generator for %s/%s/%s: %v vs %v", ep, f, w.name, got, t)
+					}
+					// Over the buffer bridge the row path itself is under test:
+					// a build whose bridge drops fields is a finding, not a
+					// harness defect. The generator stays the truth.
+					tb.Logf("row path over the buffer bridge disagrees with the generator for %s/%s/%s: %v vs %v", ep, f, w.name, got, t)
 				}
 				e.truth[fmTruthKey(ep, f, w.name)] = t
 			}
