@@ -110,6 +110,24 @@ jobs:
   # gate.
   # needs: deps because internal/schema (the real row structs) imports
   # VL upstream via severity.go.
+  # The benchmark harness decides which timed answers count: its validators
+  # (extract_result, scan membership, request prep for every system, report
+  # validity) are tested here so a broken harness cannot publish numbers.
+  bench-selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Benchmark harness self-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in scripts/bench/tests/*_test.sh; do
+            echo "== $t"
+            bash "$t"
+          done
+          python3 -m unittest scripts/bench/tests/test_report_validity.py -v
+
   parquet-readback:
     needs: deps
     runs-on: ubuntu-latest

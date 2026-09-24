@@ -658,7 +658,7 @@ prep() { # $1 signal  $2 query  $3 system  $4 sns  $5 ens
 _prep_body() {
   local signal="$1" query="$2" sys="$3" sns="$4" ens="$5"
   local logs_url traces_url
-  local logs_base traces_base
+  local logs_base="" traces_base=""
   case "$sys" in
     lakehouse) logs_base="${EP[lh_logs]}"; traces_base="${EP[lh_traces]}" ;;
     victorialogs) logs_base="${EP[vl]}" ;;
