@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A failed flush no longer drops its rows.** A flush cleared the write buffers before uploading
   and threw away every partition whose `PutObject` failed or that it had not reached before its
   60-second deadline — under a slow or overloaded object store (a 7-day backfill on a busy host)
-  that lost 40 % of the logs and 23 % of the spans. Now a tenant group that is not written goes
+  that lost 40 % of the logs and about 12 % of the spans. Now a tenant group that is not written goes
   back into the buffers and the next flush writes it; groups that were written are never written
   again. Rows stay readable (local buffer, peers' `/internal/buffer/query`) until their object is
   committed, including while it uploads. Both binaries.
