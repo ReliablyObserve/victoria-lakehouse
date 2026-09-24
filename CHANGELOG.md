@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Field-metadata performance is measured three ways and held by the registry.**
+  `field_values`, `field_names` and `streams` on the cold tier now have a validated performance
+  matrix: `internal/storage/parquets3` benchmarks count S3 GETs, bytes, row groups and pages at
+  0 ms and 100 ms of S3 latency and check every answer against the generator's own values, and
+  `scripts/bench/run.sh` runs the same queries three ways — Lakehouse, disk
+  VictoriaLogs/VictoriaTraces and ClickHouse over the same Parquet on S3. Results and the gaps
+  they show are in `docs/perf/field-metadata-cells.md`.
+
+  Registry rows in the `perf` layer carry the cell they measure, deterministic counters and —
+  only when the answer is exact — a latency budget; 176 field-metadata cells are declared,
+  pending the conformance runner. Benchmark host ports are overridable (`BENCH_PORT_*`), and the
+  harness self-tests run in CI.
+
 ## [0.143.1] - 2026-09-23
 
 ### Fixed
