@@ -115,3 +115,33 @@ func TestTraceFieldValues_CancelledRequestIsAnError(t *testing.T) {
 		t.Errorf("streams: err = %v, want context.Canceled", err)
 	}
 }
+
+// Twin of the logs test: row groups outside the window are skipped, and a
+// span exactly at the window end that opens a row group is counted.
+func TestTraceFieldValues_RowGroupPruningKeepsTheWindowEnd(t *testing.T) {
+	mock := newMockS3Server()
+	t.Cleanup(mock.close)
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Mode = config.ModeTraces
+	s.cfg.Insert.RowGroupSize = 2
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
+	bw.AddTraceRows([]schema.TraceRow{
+		fvcSpan(1*time.Minute, "GET"), fvcSpan(2*time.Minute, "GET"),
+		fvcSpan(3*time.Minute, "PUT"), fvcSpan(4*time.Minute, "PUT"),
+		fvcSpan(5*time.Minute, "POST"), fvcSpan(6*time.Minute, "POST"),
+	})
+	bw.triggerFlush()
+
+	skipped0 := metrics.ParquetRowGroupsSkipped.Get("stats")
+	q := mustParseQueryWithTime(t, "*", fvcBase.Add(2*time.Minute).UnixNano(), fvcBase.Add(3*time.Minute).UnixNano())
+	got, err := s.GetFieldValues(context.Background(), nil, q, "name", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []logstorage.ValueWithHits{{Value: "GET", Hits: 1}, {Value: "PUT", Hits: 1}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("field_values name = %v, want %v", got, want)
+	}
+	if metrics.ParquetRowGroupsSkipped.Get("stats") <= skipped0 {
+		t.Error("the row group outside the window was read")
+	}
+}

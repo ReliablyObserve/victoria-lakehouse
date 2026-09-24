@@ -147,3 +147,35 @@ func TestGetStreams_WorkerPoolSizeDoesNotChangeTheAnswer(t *testing.T) {
 		}
 	}
 }
+
+// Scans skip row groups whose time range misses the window, and the window
+// end is inclusive: a row exactly at the end that opens a row group is
+// counted (the query path's end-exclusive check would drop it).
+func TestFieldValues_RowGroupPruningKeepsTheWindowEnd(t *testing.T) {
+	mock := newMockS3Server()
+	t.Cleanup(mock.close)
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Insert.RowGroupSize = 2
+	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
+	bw.AddLogRows([]schema.LogRow{
+		fvcRow(1*time.Minute, "INFO"), fvcRow(2*time.Minute, "INFO"),
+		fvcRow(3*time.Minute, "WARN"), fvcRow(4*time.Minute, "WARN"),
+		fvcRow(5*time.Minute, "ERROR"), fvcRow(6*time.Minute, "ERROR"),
+	})
+	bw.triggerFlush()
+
+	skipped0 := metrics.ParquetRowGroupsSkipped.Get("stats")
+	// [2m, 3m]: the second row of the first group and the row opening the
+	// second group, exactly at the window end; the third group is outside.
+	q := mustParseQueryWithTime(t, "*", fvcBase.Add(2*time.Minute).UnixNano(), fvcBase.Add(3*time.Minute).UnixNano())
+	got, err := s.GetFieldValues(context.Background(), nil, q, "level", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []logstorage.ValueWithHits{{Value: "INFO", Hits: 1}, {Value: "WARN", Hits: 1}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("field_values level = %v, want %v", got, want)
+	}
+	if metrics.ParquetRowGroupsSkipped.Get("stats") <= skipped0 {
+		t.Error("the row group outside the window was read")
+	}
+}
