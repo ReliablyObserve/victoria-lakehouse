@@ -524,11 +524,12 @@ Measured cells (layer `perf`): each carries deterministic counters; exact cells 
 
 | Surface | Route | Cells | Exact, budgeted | Not exact yet |
 |---|---|---|---|---|
-| vl | `/select/logsql/field_names` | 32 | 0 | 32 |
-| vl | `/select/logsql/field_values` | 64 | 56 | 8 |
-| vl | `/select/logsql/streams` | 32 | 32 | 0 |
-| vt | `/select/logsql/field_values` | 32 | 28 | 4 |
-| vt | `/select/logsql/streams` | 16 | 16 | 0 |
+| vl | `/select/logsql/field_names` | 96 | 0 | 96 |
+| vl | `/select/logsql/field_values` | 192 | 192 | 0 |
+| vl | `/select/logsql/streams` | 96 | 96 | 0 |
+| vt | `/select/logsql/field_names` | 96 | 0 | 96 |
+| vt | `/select/logsql/field_values` | 192 | 192 | 0 |
+| vt | `/select/logsql/streams` | 96 | 96 | 0 |
 
 ## Rows gated on a later upstream version / absent by design
 

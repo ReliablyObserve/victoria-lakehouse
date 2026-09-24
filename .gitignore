@@ -61,3 +61,6 @@ internal/ui/vmui/robots.txt
 
 # Go workspace
 go.work.sum
+
+# scripts/bench/field_metadata/run.sh default worktree of the "before" build
+/.before-*/

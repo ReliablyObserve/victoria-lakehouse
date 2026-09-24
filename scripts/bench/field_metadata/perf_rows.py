@@ -68,8 +68,9 @@ def load_matrix(path, build):
 def counters_of(recs):
     """The worst iteration's counters. They are deterministic per cell except
     where concurrent reads race a cache fill (a filtered scan of a compacted
-    object sometimes issues one or two more 4 KiB range reads), so the row
-    records, and the gate compares, the maximum."""
+    object issues a varying number of 4 KiB range reads, and more of them at
+    0 ms than at 100 ms), so the row records, and the gate compares, the
+    maximum."""
     s = summarize(recs)
     c = {"s3_gets": max(r["gets"] for r in recs), "s3_bytes": max(r["bytes"] for r in recs)}
     if "row_groups" in recs[0]:
@@ -83,7 +84,10 @@ def q(v):
     return json.dumps(v, ensure_ascii=True)
 
 
-def row_for(cell, recs, at):
+def row_for(cell, recs, at, shape_recs=None):
+    """shape_recs: every record of the cell's shape across S3 latencies — the
+    counters are held per shape (the gate compares a run at any latency), so
+    the row records the worst of all of them."""
     s = summarize(recs)
     p = parse_cell(cell)
     surface, title, route, field = ENDPOINTS[p["ep"]]
@@ -111,7 +115,8 @@ def row_for(cell, recs, at):
     perf = [f"cell: {q(cell)}"]
     if exact:
         perf.append(f"budget: {{ p50_ms: {s['p50'] / 1e6:.3f}, p90_ms: {max(s['p90'], s['p50']) / 1e6:.3f}, valid: \"{s['exact']}/{s['n']}\" }}")
-    c = counters_of(recs)
+    c = counters_of(shape_recs or recs)
+    c["path"] = s["path"]
     perf.append("counters: { " + ", ".join(f"{k}: {q(v) if k == 'path' else v}" for k, v in c.items()) + " }")
     parts.append("perf: { " + ", ".join(perf) + " }")
     return "- { " + ", ".join(parts) + " }"
@@ -132,7 +137,10 @@ def cmd_gen(args):
     groups = load_matrix(args.matrix, args.build)
     if not groups:
         sys.exit(f"no records of build {args.build!r} in {args.matrix}")
-    lines = [row_for(cell, groups[cell], args.at) for cell in groups]
+    shapes = defaultdict(list)
+    for cell, recs in groups.items():
+        shapes[strip_latency(cell)].extend(recs)
+    lines = [row_for(cell, groups[cell], args.at, shapes[strip_latency(cell)]) for cell in groups]
     lines.sort(key=lambda l: re.search(r'id: "([^"]+)"', l).group(1))
     sys.stdout.write(HEADER + "\n" + "\n".join(lines) + "\n")
 

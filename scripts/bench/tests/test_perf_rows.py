@@ -119,6 +119,13 @@ class PerfRowsTest(unittest.TestCase):
         f = perf_rows.check(groups([rec(FLUSHED, gets=35), rec(FLUSHED, gets=37)]), rows)
         self.assertTrue(any("s3_gets 37 > registry 36" in x for x in f), f)
 
+    def test_counters_are_held_per_shape_across_latencies(self):
+        fast = FLUSHED
+        slow = FLUSHED.replace("s3=0ms", "s3=100ms")
+        recs = [rec(fast, gets=36), rec(slow, gets=28)]
+        text = "\n".join(perf_rows.row_for(c, rs, "t", recs) for c, rs in groups(recs).items())
+        self.assertEqual(text.count("s3_gets: 36"), 2, text)
+
     def test_bad_cell_names_are_rejected(self):
         with self.assertRaises(ValueError):
             perf_rows.parse_cell("fv_level/window=cut")
