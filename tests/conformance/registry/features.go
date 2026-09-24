@@ -69,6 +69,8 @@ var BenchScenarios = map[string]bool{
 	"multi_filter": true, "negation": true, "trace_lookup": true, "high_card": true,
 	"scan": true, "service_filter": true, "trace_by_id": true, "span_name": true,
 	"slow_spans": true,
+	// Field metadata (Grafana/Drilldown/vmui dropdowns): field_values and streams.
+	"fv_level": true, "fv_service": true, "streams_list": true, "fv_name": true,
 }
 
 // ReadmeSections lists the subsections of README.md's "Key Features" block,
