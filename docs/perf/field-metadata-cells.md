@@ -119,16 +119,19 @@ Unchanged by #237 on every path: the catalog was never used with a filter
 and the scan's cost is the same. Δ p50 0.95–1.02× at 100 ms on every
 filtered cell (e.g. flushed/whole `level` 2478 → 2491 ms, compacted/whole
 3298 → 3144 ms, 30–33 GETs). At 0 ms, compacted cut-window filtered cells
-are 0.72–0.77× (faster): the window check now runs before the filter, so rows
-outside the window are no longer filter-evaluated.
+are 0.72–0.77× (faster) for `field_values`: the window check now runs before
+the filter, so rows outside the window are no longer filter-evaluated. Other
+filtered cells at 0 ms fall within 0.72–1.25×, which is inside this host's
+±25 % sub-millisecond noise; do not quote a single all-cell range at 0 ms.
 
 ## Analysis
 
 **Nothing that was exact before got slower, except one shape.** Every cell
 that was exact on v0.143.0 is within noise on v0.143.1 (0.95–1.02× at
 100 ms), with one exception: **compacted objects that straddle a cut window**
-now read the timestamp column for the row-level window check — 18 → 24 GETs,
-**1838 → 2457 ms (+34 %) at 100 ms** for `streams`; the same +6 GETs apply to
+now read the timestamp column for the row-level window check — 18 → 24 GETs
+(**+33 %**), 1838 → 2457 ms (+34 %) at 100 ms for `streams`, the time ratio
+measured against the previously invalid cell's timing; the same +6 GETs apply to
 `field_values` on that shape. (Before, these answers were wrong — they leaked
 rows from outside the window — so it is not a regression against a valid
 baseline, but it is the cost of exactness to optimise.)
@@ -189,7 +192,7 @@ cache state.
 | **T2 — per-value row counts in the catalog** (per partition-hour) | pmeta-on catalog cells (`hits=1` today) | set-exact → exact at ~10–20 µs for hour-aligned windows |
 | **T3 — catalog for interior hours + scan only the edge partitions** of a cut window (instead of hour-granular answers) | pmeta-on cut cells (invalid today) | exact; cost = the two straddling hours only (flushed cut: 13 GETs → ≤ 13, with T0 parallel) |
 | **T4 — dictionary pages for row groups wholly inside the window** (set from the dictionary, hits from the RLE index pages of the same chunk) and a column-chunk plan for sub-128 KB objects when the footer is cached (or its chunk offsets are carried in pmeta) | pmeta-off and high-card scan cells | `level`: 3.6 KB of column vs 1.64 MB whole-object downloads (~450× fewer bytes); GETs stay 1 per object |
-| **T5 — page-index skipping on straddling objects**: use the timestamp column/offset index to select window pages instead of projecting the timestamp column over every row | compacted/cut cells (the +6 GETs, +34 %) | back to ≤ 18 GETs with exact window confinement |
+| **T5 — page-index skipping on straddling objects**: use the timestamp column/offset index to select window pages instead of projecting the timestamp column over every row | compacted/cut cells (the +6 GETs, +33 %) | back to ≤ 18 GETs with exact window confinement |
 | **T6 — bloom/statistics/dictionary pruning for filtered requests** | filtered cells | no gain on this dataset (`svc-a` is in every object — a worst case); for a selective filter, objects/row groups whose SBBF or dictionary lacks the value are skipped |
 | **T7 — `field_names` from the catalog's per-partition names + row counts**, skipping columns that are empty or all-null; filter-aware only through the scan | all `field_names` cells | makes the answer exact and cache-state independent; removes the 24 whole-object downloads for flushed layouts |
 
@@ -200,7 +203,9 @@ Load average was 3–7 for the 0 ms run and 3–14 for most of the 100 ms run
 are latency-bound: p90/p50 ≤ 1.1 in every exact cell, and identical-code
 cells land at 0.95–1.02×. At 0 ms, identical-code cells scatter 0.8–1.25×
 (e.g. `streams` pmeta on/off, same path): treat 0 ms deltas inside ±25 % as
-noise. The hot-VictoriaLogs reference ran at load ~23 — its absolute numbers are
+noise. Traces records carry no truth digest in the JSONL (the traces harness
+validates in-process with the same scheme), so traces cells cannot be
+re-checked from the raw results alone. The hot-VictoriaLogs reference ran at load ~23 — its absolute numbers are
 an upper bound.
 
 ## Not measured
@@ -1189,3 +1194,11 @@ gets no budget); their counters are still recorded. Regenerate with
 ```
 
 </details>
+
+## Verification
+
+Every headline cell was re-derived independently from the raw results and two
+cells were re-run on separate builds (before/after interleaved); harness
+latency, cold caches, counters, the generator-derived truth and the upstream
+VictoriaLogs reference were checked in code. The corrections above (+33 % GETs,
+the 0 ms filtered-cell range, the traces truth digest) came from that check.
