@@ -118,7 +118,7 @@ func contains(s, sub string) bool {
 // (never re-flushing ancient data); and the write is atomic.
 func TestBufferFlusher_Watermark(t *testing.T) {
 	dir := t.TempDir()
-	f := NewBufferFlusher(nil, nil, dir, nil, 0, 0)
+	f := newBufferFlusher(nil, nil, dir, nil, 0, 0)
 
 	if got, err := f.loadWatermark(12345); err != nil || got != 12345 {
 		t.Fatalf("missing watermark: want fallback 12345, got %d, %v", got, err)
@@ -170,7 +170,7 @@ func TestBufferFlusher_CrashRecovery(t *testing.T) {
 	// Phase A: ingest [base, base+1min] and "commit" the watermark at base+1min.
 	ingestTraceAt(t, bs, tenant, base, base+int64(time.Minute), 50)
 	bs.DebugFlush()
-	f := NewBufferFlusher(nil, bs, wmDir, nil, 0, 0)
+	f := newBufferFlusher(nil, bs, wmDir, nil, 0, 0)
 	if err := f.saveWatermark(base + int64(time.Minute)); err != nil {
 		t.Fatalf("save wm: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestBufferFlusher_CrashRecovery(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer bs2.Close()
-	f2 := NewBufferFlusher(nil, bs2, wmDir, nil, 0, 0)
+	f2 := newBufferFlusher(nil, bs2, wmDir, nil, 0, 0)
 	last, err := f2.loadWatermark(time.Now().UnixNano())
 	if err != nil {
 		t.Fatalf("load: %v", err)

@@ -10,7 +10,7 @@ import (
 // promptly when the context is cancelled (graceful shutdown), before
 // ever touching the buffer.
 func TestBufferFlusherRun_StopsOnCancel(t *testing.T) {
-	f := NewBufferFlusher(nil, nil, t.TempDir(), nil, 0, 0)
+	f := newBufferFlusher(nil, nil, t.TempDir(), nil, 0, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -36,7 +36,7 @@ func TestBufferFlusherRun_StopsOnCancel(t *testing.T) {
 // the loop must still honour cancellation.
 func TestBufferFlusherRun_WatermarkAheadSkipsTicks(t *testing.T) {
 	dir := t.TempDir()
-	f := NewBufferFlusher(nil, nil, dir, nil, 0, 0)
+	f := newBufferFlusher(nil, nil, dir, nil, 0, 0)
 
 	// Persist a watermark one hour in the future: every tick's flushEnd
 	// (now - latencyOffset) is <= last → continue without touching the

@@ -68,10 +68,10 @@ type FlushRowFilter func(accountID, projectID uint32, stream string) bool
 //     the (account, project, partition) and row count of every group. Keys are
 //     derived from those, never stored. Every write of the watermark puts the
 //     same content into <name>.prev first and then into the main file, so a
-//     corrupt file is only ever one of the two and the other still holds the
+//     crash can leave at most one of the two torn and the other still holds the
 //     pending record;
 //   - after each PUT a "stored" mark is appended to <name>.stored and fsynced
-//     (and the directory when the file is created) before the object is
+//     (and the directory, retried on every mark until it succeeds) before the object is
 //     committed to the manifest, so anything compaction can see has a durable
 //     mark. A failed mark write never fails the group (its object is stored and
 //     committed at once) but is counted under stage "mark";
@@ -103,7 +103,7 @@ type FlushRowFilter func(accountID, projectID uint32, stream string) bool
 // peer compacting an unrecorded object while this node is down re-sends it
 // (#37); a PUT from the dead process still in flight can land after the recovery
 // HEAD; an in-process timed-out PUT that is adopted, compacted and forgotten
-// before its retry is re-sent; rows lost to buffer expiry are counted, not
+// before its retry is re-sent; rows lost to buffer expiry are counted, net of late rows, not
 // recovered. Rows that arrive for a pending window after its first attempt are
 // never written to Parquet by an in-process retry (like rows later than the
 // latency tolerance); they are visible only while they are newer than the
@@ -127,22 +127,25 @@ type BufferFlusher struct {
 	start     int64                      // its start (the committed watermark)
 	nonce     string                     // names its objects
 	refs      map[flushGroupRef]int64    // the groups in the durable pending record, with their row counts
-	stored    map[flushGroupRef]struct{} // groups marked stored (best effort)
+	stored    map[flushGroupRef]struct{} // groups with a durable stored mark
 	failed    []*logGroupUpload          // groups the last attempt could not write
 	recovered bool                       // loaded from disk: not yet resumed
-	prepared  bool                       // Prepare loaded the watermark
-	startLast int64                      // the watermark Prepare loaded
+	// markDirSynced: the directory holding the stored marks has been fsynced
+	// since the window began (retried on every mark until it succeeds).
+	markDirSynced bool
+	prepared      bool  // Prepare loaded the watermark
+	startLast     int64 // the watermark Prepare loaded
 }
 
 // estBytesPerLogRow is a rough raw-bytes-per-row estimate used only to decide
 // WHEN a window is big enough to flush (the size gate). It needn't be exact.
 const estBytesPerLogRow = 512
 
-// NewBufferFlusher builds a flusher. watermarkDir should be the buffer's data
+// newBufferFlusher builds a flusher without loading anything. watermarkDir should be the buffer's data
 // dir (persistent). keep may be nil. targetBytes is the S3 object-size flush
 // trigger (e.g. insert.target_file_size); maxLinger caps how long a sub-target
 // window waits before being flushed anyway. Both fall back to sane defaults.
-func NewBufferFlusher(writer *BatchWriter, buffer flusherBuffer, watermarkDir string, keep FlushRowFilter, targetBytes int64, maxLinger time.Duration) *BufferFlusher {
+func newBufferFlusher(writer *BatchWriter, buffer flusherBuffer, watermarkDir string, keep FlushRowFilter, targetBytes int64, maxLinger time.Duration) *BufferFlusher {
 	if targetBytes <= 0 {
 		targetBytes = 128 << 20 // 128 MiB
 	}
@@ -158,6 +161,24 @@ func NewBufferFlusher(writer *BatchWriter, buffer flusherBuffer, watermarkDir st
 		targetBytes:   targetBytes,
 		maxLinger:     int64(maxLinger),
 	}
+}
+
+// fatalf reports a startup error that must stop the process; a variable so tests
+// can observe it.
+var fatalf = logger.Fatalf
+
+// NewBufferFlusher builds a flusher and loads its watermark (Prepare) when
+// watermarkDir is set. A watermark that exists but cannot be read makes the
+// process stop with a message saying how to reset it: starting from "now" would
+// silently skip data. Otherwise see newBufferFlusher for the arguments.
+func NewBufferFlusher(writer *BatchWriter, buffer flusherBuffer, watermarkDir string, keep FlushRowFilter, targetBytes int64, maxLinger time.Duration) *BufferFlusher {
+	f := newBufferFlusher(writer, buffer, watermarkDir, keep, targetBytes, maxLinger)
+	if watermarkDir != "" {
+		if err := f.Prepare(time.Now().UnixNano()); err != nil {
+			fatalf("buffer_flush_enabled but the flush watermark cannot be read: %s", err)
+		}
+	}
+	return f
 }
 
 // flushGroupRef identifies one group of a window: one tenant's rows of one
@@ -212,7 +233,7 @@ type flushWatermark struct {
 
 // watermarkVersion is the format written. A file of an older version, or a
 // pending window without a nonce, is read as having no pending window.
-const watermarkVersion = 3
+const watermarkVersion = 4
 
 func parseWatermark(b []byte) (flushWatermark, error) {
 	var wm flushWatermark
@@ -282,6 +303,7 @@ func (f *BufferFlusher) clearPending() {
 	f.stored = nil
 	f.failed = nil
 	f.recovered = false
+	f.markDirSynced = false
 }
 
 // loadStoredMarks reads the best-effort "stored" marks of the pending window. A
@@ -324,8 +346,6 @@ func (f *BufferFlusher) markStored(ref flushGroupRef) {
 	if f.stored != nil {
 		f.stored[ref] = struct{}{}
 	}
-	_, statErr := os.Stat(f.storedPath())
-	created := os.IsNotExist(statErr)
 	fh, err := os.OpenFile(f.storedPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err == nil {
 		_, err = fmt.Fprintf(fh, "%s\t%d\t%d\t%s\n", f.nonce, ref.Account, ref.Project, ref.Partition)
@@ -336,8 +356,13 @@ func (f *BufferFlusher) markStored(ref flushGroupRef) {
 			err = cerr
 		}
 	}
-	if err == nil && created {
-		err = syncDir(filepath.Dir(f.storedPath()))
+	// The directory entry of the mark file must be durable too. Retry on every
+	// mark until one succeeds: a failed directory fsync on the first mark must
+	// not leave every later mark of the window undurable.
+	if err == nil && !f.markDirSynced {
+		if err = syncDir(filepath.Dir(f.storedPath())); err == nil {
+			f.markDirSynced = true
+		}
 	}
 	if err != nil {
 		metrics.BufferFlushErrors.Inc("mark")
@@ -379,8 +404,8 @@ func (f *BufferFlusher) writeIntent(lastNs int64) error {
 
 // writeWatermark replaces the watermark durably. Every write puts the SAME
 // content into <name>.prev first and then into the main file, each through a
-// temp file: write, fsync, rename, fsync of the directory. A torn or corrupt
-// file can therefore only ever be one of the two, and the other holds a state
+// temp file: write, fsync, rename, fsync of the directory. A crash can
+// leave at most one of the two torn, and the other holds a state
 // that is safe to resume from — including the pending record. Main is preferred
 // on load: when a crash separates the two writes, main is the older, still valid
 // state, and nothing of the newer one had started yet (the record is written
@@ -548,6 +573,20 @@ func (f *BufferFlusher) collectTenantRows(ctx context.Context, tenant logstorage
 	return rows, err
 }
 
+// Prepare loads the persisted watermark (falling back to nowNs on a first
+// start). A watermark that exists but cannot be read is an error: the caller
+// must not start the flusher, because starting from "now" would skip data. NewBufferFlusher
+// calls it; Run calls it if it has not run, and does not run on an error.
+func (f *BufferFlusher) Prepare(nowNs int64) error {
+	last, err := f.loadWatermark(nowNs)
+	if err != nil {
+		return err
+	}
+	f.startLast = last
+	f.prepared = true
+	return nil
+}
+
 // Run drives the flusher until ctx is cancelled. checkInterval is how often the
 // flusher wakes to (re-)evaluate the window for the size/linger gate — NOT the
 // flush cadence (a window flushes on targetBytes OR maxLinger).
@@ -561,20 +600,6 @@ func (f *BufferFlusher) collectTenantRows(ctx context.Context, tenant logstorage
 // un-flushed data hasn't aged out of the buffer before recovery. A FRESH flip
 // (no watermark file) starts at nowNs (the flip point) so pre-flip data — already
 // owned by the legacy path — is never double-flushed.
-// Prepare loads the persisted watermark (falling back to nowNs on a first
-// start). A watermark that exists but cannot be read is an error: the caller
-// must not start the flusher, because starting from "now" would skip data. Run
-// calls it when the caller has not, and does not run on an error.
-func (f *BufferFlusher) Prepare(nowNs int64) error {
-	last, err := f.loadWatermark(nowNs)
-	if err != nil {
-		return err
-	}
-	f.startLast = last
-	f.prepared = true
-	return nil
-}
-
 func (f *BufferFlusher) Run(ctx context.Context, checkInterval time.Duration, nowNs int64) {
 	if checkInterval <= 0 {
 		checkInterval = 30 * time.Second

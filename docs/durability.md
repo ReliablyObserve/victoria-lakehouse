@@ -105,13 +105,13 @@ The guarantees below are exact; the residuals that follow them are the cases
 they do not cover.
 
 The `BufferFlusher` records a window before it uploads any of it. The record —
-`buffer_flush_watermark.json`, version 3 — holds the window `(watermark, end]`, a
+`buffer_flush_watermark.json`, version 4 — holds the window `(watermark, end]`, a
 random nonce drawn for that window, and the `(account, project, partition)` and
 row count of every group it will upload. Every write of the watermark (this
 record, its additions during recovery, the commit) writes the **same content to
 `buffer_flush_watermark.json.prev` first and then to the main file**, each
-through a temp file: write, fsync, rename, fsync of the directory. A torn or
-corrupt file can therefore only ever be one of the two, and the other still holds
+through a temp file: write, fsync, rename, fsync of the directory. A crash can
+leave at most one of the two torn, and the other still holds
 a state that is safe to resume from — the pending record included. If the record
 cannot be written, nothing is uploaded. Object keys are not stored: they are
 derived from the nonce, the window and the group, so two nodes flushing the same
@@ -168,7 +168,8 @@ then depends on HEAD after a restart.
   marks clear and the watermark moves to the window's end.
 - **An unreadable watermark stops the flusher.** The main file falls back to
   `.prev` (same content). If a file exists but neither can be read, the flusher
-  does not start and the process exits with a message saying to delete the files
+  does not start: `NewBufferFlusher` loads the watermark when the flusher is
+  built and the process exits with a message saying to delete the files
   to start from now — it never silently jumps to "now", which would skip data.
 
 **Late rows.** Rows that arrive for a window after its first attempt are never
@@ -177,10 +178,21 @@ latency tolerance, they are older than a committed window and never collected
 again. They stay visible from the buffer only while they are newer than the
 tenant's cold watermark (its newest stored `MaxTimeNs`) and within buffer
 retention; at or below that watermark they are not served from the buffer at all,
-so they are not visible. After a restart the window is collected again, so a
-group that was never stored includes such rows; a stored group does not change.
+so they are not visible. After a restart the window is collected again only if some
+recorded group is absent from the object store: then a group that was never stored
+includes such rows, and groups the record lacks are added; a stored group does not
+change. When every group is settled the buffer is not read, so late rows for
+tenants or partitions the record lacks are skipped and not counted — the same class
+as the in-process retry.
 `lakehouse_insert_rows_superseded_total` counts only rows of groups whose key was
 retired; a group skipped because its object is live is not counted.
+
+The superseded and lost counts are per recovery attempt: a crash after counting
+and before the commit can count them again after the restart, and a recovered
+group uploaded with a different row count keeps its recorded count in the record.
+The lost count is **net of late rows**: a group re-collected with as many rows as
+recorded counts 0 even if some expired and others arrived late, and one
+re-collected with more rows than recorded counts 0 and uploads them all.
 
 Residuals, stated plainly:
 
