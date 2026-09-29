@@ -70,7 +70,20 @@ func newIdemEnv(t *testing.T) *idemEnv {
 		}
 		return nil
 	}}
-	e.bw, e.m = durabilityWriter(t, e.u)
+	e.newWriter()
+	e.open()
+	t.Cleanup(func() {
+		if e.st != nil {
+			e.st.Close()
+		}
+	})
+	return e
+}
+
+// newWriter gives the env a new writer over a new, empty manifest and the same
+// object store: what a restarted process has before it loads or lists anything.
+func (e *idemEnv) newWriter() {
+	e.bw, e.m = durabilityWriter(e.t, e.u)
 	// Tenants get their own prefix so a key names its tenant.
 	e.bw.SetTenantPrefix(func(account, project uint32) string { return fmt.Sprintf("t%d-%d/", account, project) })
 	e.bw.SetStatsCallback(func(_, _ uint32, _, _, rows int64, _ string) {
@@ -79,13 +92,6 @@ func newIdemEnv(t *testing.T) *idemEnv {
 		e.statMu.Unlock()
 		e.statHook.Load().(func())()
 	})
-	e.open()
-	t.Cleanup(func() {
-		if e.st != nil {
-			e.st.Close()
-		}
-	})
-	return e
 }
 
 func (e *idemEnv) open() {
@@ -448,7 +454,7 @@ func TestBufferFlusher_PartialFailureRetriesOnlyTheFailedGroupWithIdenticalBytes
 		{1, 2, e.p1()}, {1, 2, e.p2()}, {2, 3, e.p1()}, {2, 3, e.p2()},
 	}
 	for i, g := range want {
-		if wm.PendingGroups[i] != g {
+		if wm.PendingGroups[i].flushGroupRef != g {
 			t.Fatalf("pending_groups[%d] = %+v, want %+v (sorted by account, project, partition)", i, wm.PendingGroups[i], g)
 		}
 	}
@@ -1087,7 +1093,7 @@ func TestBufferFlusher_NewGroupsFoundOnRecoveryAreRecordedBeforeUpload(t *testin
 		wm, err := parseWatermark(b)
 		if err == nil {
 			for _, g := range wm.PendingGroups {
-				if g == cRef {
+				if g.flushGroupRef == cRef {
 					recordedFirst = true
 				}
 			}
@@ -1576,41 +1582,63 @@ func TestBufferFlusher_LoadWatermarkHandling(t *testing.T) {
 	}
 }
 
-// A corrupt or empty main file falls back to the previous good copy; both
-// unreadable is an error and the flusher does not start.
-func TestBufferFlusher_CorruptWatermarkUsesTheBackupOrRefusesToStart(t *testing.T) {
+// A corrupt or empty main file falls back to <name>.prev, which holds the SAME
+// content — the pending record included — so recovery resumes the window instead
+// of flushing it afresh under a new nonce. Both unreadable is an error and the
+// flusher does not start.
+func TestBufferFlusher_CorruptMainIntentFallsBackToAnIdenticalPrevAndDoesNotDuplicate(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
 	f := e.flusher(1, time.Nanosecond)
 	last, end := e.window()
+	// A committed watermark exists before the window (the steady state).
 	if err := f.saveWatermark(last); err != nil {
 		t.Fatal(err)
 	}
-	f.buffer.DebugFlush()
-	e.failAll()
+	e.failGroup(idemTenantB, e.p2())
 	if got := f.tick(context.Background(), last, end); got != last {
 		t.Fatalf("watermark advanced to %d", got)
 	}
-	// main = the pending record, .prev = the committed watermark before it.
-	prev, err := os.ReadFile(f.prevPath())
+	e.mustLive(3*idemRowsPerGroup, 3, "after the partial attempt")
+	nonce := readWatermarkFile(t, f).PendingNonce
+
+	mainB, err := os.ReadFile(f.watermarkPath)
 	if err != nil {
-		t.Fatalf("no previous copy kept: %v", err)
+		t.Fatal(err)
 	}
-	if wm, perr := parseWatermark(prev); perr != nil || wm.LastFlushWindowEndNs != last || wm.PendingWindowEndNs != 0 {
-		t.Fatalf("previous copy = %+v, %v: want the committed watermark", wm, perr)
+	prevB, err := os.ReadFile(f.prevPath())
+	if err != nil || !bytes.Equal(mainB, prevB) {
+		t.Fatalf("the backup differs from the main file (%v):\nmain %s\nprev %s", err, mainB, prevB)
 	}
 	if _, err := os.Stat(f.watermarkPath + ".tmp"); err == nil {
 		t.Error("a temp file was left behind: the replacement was not an atomic rename")
 	}
 
-	for name, content := range map[string]string{"empty": "", "truncated": `{"last_flush_wind`} {
+	for name, content := range map[string]string{"garbage": "{garbage", "empty": "", "truncated": string(mainB[:len(mainB)/2])} {
 		if err := os.WriteFile(f.watermarkPath, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		f2 := e.flusher(1, time.Nanosecond)
 		got, err := f2.loadWatermark(time.Now().UnixNano())
-		if err != nil || got != last || f2.pending != 0 {
-			t.Fatalf("%s main file: got last=%d pending=%d err=%v, want the backup's %d", name, got, f2.pending, err, last)
+		if err != nil || got != last || !f2.recovered || f2.nonce != nonce || len(f2.refs) != 4 {
+			t.Fatalf("%s main file: last=%d recovered=%v nonce=%q refs=%d err=%v; want the pending record from the backup", name, got, f2.recovered, f2.nonce, len(f2.refs), err)
+		}
+	}
+
+	// The repro: corrupt main, restart, resume: no duplicates.
+	if err := os.WriteFile(f.watermarkPath, []byte("{garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.failNone()
+	e.restart()
+	f3, restored := e.resume()
+	if got := f3.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	e.mustLive(4*idemRowsPerGroup, 4, "after the corrupt-main recovery")
+	for _, k := range e.allKeys(nonce)[:3] {
+		if n := e.attempts(k); n != 1 {
+			t.Errorf("%s was sent %d times, want only its first", k, n)
 		}
 	}
 
@@ -1621,16 +1649,15 @@ func TestBufferFlusher_CorruptWatermarkUsesTheBackupOrRefusesToStart(t *testing.
 	if err := os.WriteFile(f.prevPath(), []byte("{bad"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f3 := e.flusher(1, time.Nanosecond)
-	if err := f3.Prepare(time.Now().UnixNano()); err == nil {
+	f4 := e.flusher(1, time.Nanosecond)
+	if err := f4.Prepare(time.Now().UnixNano()); err == nil {
 		t.Fatal("Prepare accepted a watermark it cannot read")
 	}
 	attempts0 := e.totalAttempts()
-	e.failNone()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		f3.Run(context.Background(), time.Millisecond, time.Now().UnixNano())
+		f4.Run(context.Background(), time.Millisecond, time.Now().UnixNano())
 	}()
 	select {
 	case <-done:
@@ -1642,28 +1669,37 @@ func TestBufferFlusher_CorruptWatermarkUsesTheBackupOrRefusesToStart(t *testing.
 	}
 }
 
-// Each write keeps the previous good file as .prev and replaces the main file
-// through a temp file that does not survive.
-func TestBufferFlusher_WatermarkWritesKeepThePreviousFileAndReplaceAtomically(t *testing.T) {
+// Every write, whatever it is (commit, intent, recovery additions), puts the same
+// content into .prev before main, through a temp file that does not survive, and
+// fsyncs the file and the directory.
+func TestBufferFlusher_EveryWatermarkWriteMirrorsToPrevFirstAndIsFsynced(t *testing.T) {
 	f := NewBufferFlusher(nil, nil, t.TempDir(), nil, 0, 0)
-	for _, end := range []int64{100, 200, 300} {
+	var syncs []string
+	orig := fsyncFile
+	fsyncFile = func(fh *os.File) error {
+		syncs = append(syncs, filepath.Base(fh.Name()))
+		return orig(fh)
+	}
+	t.Cleanup(func() { fsyncFile = orig })
+
+	for _, end := range []int64{100, 200} {
+		syncs = nil
 		if err := f.saveWatermark(end); err != nil {
 			t.Fatal(err)
 		}
-	}
-	main, err := os.ReadFile(f.watermarkPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	prev, err := os.ReadFile(f.prevPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wm, _ := parseWatermark(main); wm.LastFlushWindowEndNs != 300 {
-		t.Fatalf("main = %s", main)
-	}
-	if wm, _ := parseWatermark(prev); wm.LastFlushWindowEndNs != 200 {
-		t.Fatalf("prev = %s, want the previous write", prev)
+		mainB, _ := os.ReadFile(f.watermarkPath)
+		prevB, _ := os.ReadFile(f.prevPath())
+		if !bytes.Equal(mainB, prevB) {
+			t.Fatalf("after writing %d: main %s, prev %s", end, mainB, prevB)
+		}
+		if wm, _ := parseWatermark(mainB); wm.LastFlushWindowEndNs != end {
+			t.Fatalf("main = %s", mainB)
+		}
+		// .prev is synced before main; each file and then the directory.
+		want := []string{"buffer_flush_watermark.json.prev.tmp", filepath.Base(filepath.Dir(f.watermarkPath)), "buffer_flush_watermark.json.tmp", filepath.Base(filepath.Dir(f.watermarkPath))}
+		if len(syncs) != 4 || syncs[0] != want[0] || syncs[1] != want[1] || syncs[2] != want[2] || syncs[3] != want[3] {
+			t.Fatalf("fsync sequence = %v, want %v", syncs, want)
+		}
 	}
 	entries, _ := os.ReadDir(filepath.Dir(f.watermarkPath))
 	for _, ent := range entries {
@@ -1671,15 +1707,340 @@ func TestBufferFlusher_WatermarkWritesKeepThePreviousFileAndReplaceAtomically(t 
 			t.Errorf("temp file %s left behind", ent.Name())
 		}
 	}
-	// A torn main file never replaces a good backup.
-	if err := os.WriteFile(f.watermarkPath, []byte("{torn"), 0o600); err != nil {
+}
+
+// A stored mark is fsynced after the append, and the directory is fsynced when
+// the file is created — before the manifest commit, so anything compaction can
+// see already has a durable mark.
+func TestBufferFlusher_StoredMarkIsFsyncedBeforeTheCommit(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	var mu sync.Mutex
+	var syncs []string
+	orig := fsyncFile
+	fsyncFile = func(fh *os.File) error {
+		mu.Lock()
+		syncs = append(syncs, filepath.Base(fh.Name()))
+		mu.Unlock()
+		return orig(fh)
+	}
+	t.Cleanup(func() { fsyncFile = orig })
+	// At each group's commit, its mark must already have been fsynced.
+	var atCommit []int
+	dirAfterMark := 0
+	e.statHook.Store(func() {
+		mu.Lock()
+		n := 0
+		for _, s := range syncs {
+			if s == "buffer_flush_watermark.json.stored" {
+				n++
+			}
+		}
+		atCommit = append(atCommit, n)
+		if len(atCommit) == 1 {
+			// The mark file was created by the first group: the directory must
+			// have been fsynced after its first fsync, before this commit.
+			seenMark := false
+			for _, s := range syncs {
+				if s == "buffer_flush_watermark.json.stored" {
+					seenMark = true
+				} else if seenMark && s == filepath.Base(e.wmDir) {
+					dirAfterMark++
+				}
+			}
+		}
+		mu.Unlock()
+	})
+	if got := f.tick(context.Background(), last, end); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	for i, n := range atCommit {
+		if n < i+1 {
+			t.Errorf("group %d committed with only %d mark fsyncs done", i, n)
+		}
+	}
+	if dirAfterMark == 0 {
+		t.Error("the directory was not fsynced between the first mark and its group's commit")
+	}
+}
+
+// R3: K is stored and committed, compacted into C and deleted, and a listing
+// forgets K's retired record. Its mark is durable, so the restart does not send
+// K again. (Before marks were fsynced, a power loss here lost the mark and K was
+// uploaded next to C.)
+func TestBufferFlusher_DurableMarkAfterCompactionAndForgottenRecordDoesNotResend(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	e.failGroup(idemTenantB, e.p2())
+	if got := f.tick(context.Background(), last, end); got != last {
+		t.Fatalf("watermark advanced to %d", got)
+	}
+	nonce := readWatermarkFile(t, f).PendingNonce
+	k := e.keyOf(nonce, idemTenantA, e.p1())
+	e.compact(e.entry(k), e.p1())
+	e.failNone()
+	e.restart()
+	f2, restored := e.resume()
+	e.list()
+	if e.m.IsRetired(k) || e.m.HasKey(k) {
+		t.Fatal("precondition: K must be neither retired nor live after the listing")
+	}
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	if n := e.attempts(k); n != 1 {
+		t.Errorf("DUPLICATE: %s was sent %d times after its object was compacted away", k, n)
+	}
+	if rows, files := e.liveRows(); rows != 4*idemRowsPerGroup {
+		t.Errorf("DUPLICATES: live %d rows in %d files, want %d", rows, files, 4*idemRowsPerGroup)
+	}
+}
+
+// R2: recorded groups whose objects HEAD reports absent and whose rows the buffer
+// no longer has (retention expired, or the gate filter changed): the window
+// commits, and the loss is counted — rows, once per group, and logged.
+func TestBufferFlusher_AbsentGroupWithoutRowsIsCounted(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	_, _ = crashWithEverythingUnstored(t, e)
+	_, end := e.window()
+	e.restart()
+	keep := func(account, _ uint32, _ string) bool { return account != idemTenantB.AccountID }
+	f2 := NewBufferFlusher(e.bw, e.st, e.wmDir, keep, 1, time.Nanosecond)
+	f2.latencyOffset = 0
+	restored, err := f2.loadWatermark(time.Now().UnixNano())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.saveWatermark(400); err != nil {
+	lost0 := metrics.InsertRowsLost.Get("buffer_expired")
+	missing0 := metrics.BufferFlushErrors.Get("missing")
+
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("recovery must never block on lost rows: watermark = %d, want %d", got, end)
+	}
+	e.mustLive(2*idemRowsPerGroup, 2, "tenant A only")
+	if d := metrics.InsertRowsLost.Get("buffer_expired") - lost0; d != 2*idemRowsPerGroup {
+		t.Errorf("rows lost counted = %d, want %d", d, 2*idemRowsPerGroup)
+	}
+	if d := metrics.BufferFlushErrors.Get("missing") - missing0; d != 2 {
+		t.Errorf("missing groups counted = %d, want 2 (once per group)", d)
+	}
+}
+
+// A shortfall, not a total loss: the buffer has some of a group's rows. They are
+// uploaded, the rest is counted.
+func TestBufferFlusher_PartialShortfallUploadsWhatIsLeftAndCountsTheRest(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	_, _ = crashWithEverythingUnstored(t, e)
+	_, end := e.window()
+	e.restart()
+	var n atomic.Int64
+	keep := func(account, _ uint32, _ string) bool {
+		if account != idemTenantB.AccountID {
+			return true
+		}
+		return n.Add(1)%2 == 0 // every other row of tenant B
+	}
+	f2 := NewBufferFlusher(e.bw, e.st, e.wmDir, keep, 1, time.Nanosecond)
+	f2.latencyOffset = 0
+	restored, err := f2.loadWatermark(time.Now().UnixNano())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if prev2, _ := os.ReadFile(f.prevPath()); !bytes.Equal(prev2, prev) {
-		t.Fatalf("a corrupt main file overwrote the good backup: %s", prev2)
+	lost0 := metrics.InsertRowsLost.Get("buffer_expired")
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	rows, files := e.liveRows()
+	lost := int64(metrics.InsertRowsLost.Get("buffer_expired") - lost0)
+	if files != 4 || rows+lost != 4*idemRowsPerGroup || lost == 0 || rows <= 2*idemRowsPerGroup {
+		t.Fatalf("live %d rows in %d files, lost %d: want 4 files and live+lost = %d with a real shortfall", rows, files, lost, 4*idemRowsPerGroup)
+	}
+}
+
+// A window whose groups are all settled commits even when the buffer cannot be
+// queried, and never reads it.
+type failingBuffer struct {
+	flusherBuffer
+	flushes, queries atomic.Int32
+}
+
+func (b *failingBuffer) DebugFlush() { b.flushes.Add(1) }
+func (b *failingBuffer) RunQuery(*logstorage.QueryContext, logstorage.WriteDataBlockFunc) error {
+	b.queries.Add(1)
+	return errors.New("buffer query failed")
+}
+func (b *failingBuffer) GetTenantIDs(context.Context, int64, int64) ([]logstorage.TenantID, error) {
+	b.queries.Add(1)
+	return nil, errors.New("buffer query failed")
+}
+
+func TestBufferFlusher_RecoveryWithOnlySettledGroupsNeverReadsTheBuffer(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	e.blockWatermarkAfter(4) // all four stored, marked and committed; the watermark is stuck
+	if got := f.tick(context.Background(), last, end); got != last {
+		t.Fatalf("watermark advanced to %d", got)
+	}
+	e.unblockWatermark()
+	e.restart()
+
+	fb := &failingBuffer{flusherBuffer: e.st}
+	f2 := NewBufferFlusher(e.bw, fb, e.wmDir, nil, 1, time.Nanosecond)
+	f2.latencyOffset = 0
+	restored, err := f2.loadWatermark(time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("recovery stalled on a collect error it did not need: watermark = %d, want %d", got, end)
+	}
+	if fb.flushes.Load() != 0 || fb.queries.Load() != 0 {
+		t.Fatalf("the buffer was read (%d flushes, %d queries) although every group was settled", fb.flushes.Load(), fb.queries.Load())
+	}
+	e.mustLive(4*idemRowsPerGroup, 4, "after recovery")
+}
+
+// Groups settled as retired are counted from the record (their recorded rows),
+// without reading the buffer.
+func TestBufferFlusher_RetiredGroupsAreCountedFromTheRecord(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	e.blockWatermarkAfter(4)
+	if got := f.tick(context.Background(), last, end); got != last {
+		t.Fatalf("watermark advanced to %d", got)
+	}
+	e.unblockWatermark()
+	nonce := readWatermarkFile(t, f).PendingNonce
+	x := e.keyOf(nonce, idemTenantA, e.p1())
+	e.compact(e.entry(x), e.p1())
+	e.restart()
+	if err := os.Remove(e.wmPath(".stored")); err != nil { // force manifest classification
+		t.Fatal(err)
+	}
+	fb := &failingBuffer{flusherBuffer: e.st}
+	f2 := NewBufferFlusher(e.bw, fb, e.wmDir, nil, 1, time.Nanosecond)
+	f2.latencyOffset = 0
+	restored, err := f2.loadWatermark(time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup0 := metrics.InsertRowsSuperseded.Get()
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	if d := metrics.InsertRowsSuperseded.Get() - sup0; d != idemRowsPerGroup {
+		t.Errorf("superseded counted %d, want the recorded %d", d, idemRowsPerGroup)
+	}
+	if fb.flushes.Load() != 0 || fb.queries.Load() != 0 {
+		t.Fatal("the buffer was read for a window with nothing to upload")
+	}
+	if n := e.attempts(x); n != 1 {
+		t.Errorf("%s attempted %d times", x, n)
+	}
+}
+
+// bucketRows counts the rows in every object the bucket holds (not deleted).
+func (e *idemEnv) bucketRows() int64 {
+	var n int64
+	for _, k := range e.storedKeys() {
+		if !e.deleted[k] {
+			n += e.parquetRows(k)
+		}
+	}
+	return n
+}
+
+// Restarts with a manifest that is not the one the attempt ran with: EMPTY (a
+// node that lost its disk, never listed, or listed by a real refresh) and OLDER
+// (a snapshot from before the attempt, with unrelated entries). Marks or HEAD
+// settle the stored groups; nothing stored is sent again and rows are exact.
+func TestBufferFlusher_RestartWithAFreshOrOlderManifestDoesNotResend(t *testing.T) {
+	type variant struct {
+		name     string
+		populate func(e *idemEnv)
+		list     bool
+		noMarks  bool
+	}
+	variants := []variant{
+		{name: "empty never listed", populate: func(*idemEnv) {}},
+		{name: "empty then listed", populate: func(*idemEnv) {}, list: true},
+		{name: "empty never listed no marks", populate: func(*idemEnv) {}, noMarks: true},
+		{name: "empty then listed no marks", populate: func(*idemEnv) {}, list: true, noMarks: true},
+		{name: "older snapshot", populate: func(e *idemEnv) {
+			e.m.AddFile(e.p1(), manifest.FileInfo{Key: "t9-9/" + e.p1() + "/old.parquet", Size: 1, RowCount: 5})
+		}},
+		{name: "older snapshot no marks", populate: func(e *idemEnv) {
+			e.m.AddFile(e.p1(), manifest.FileInfo{Key: "t9-9/" + e.p1() + "/old.parquet", Size: 1, RowCount: 5})
+		}, noMarks: true},
+	}
+	for _, v := range variants {
+		t.Run(v.name, func(t *testing.T) {
+			e := newIdemEnv(t)
+			e.seed()
+			f := e.flusher(1, time.Nanosecond)
+			last, end := e.window()
+			e.failGroup(idemTenantB, e.p2())
+			if got := f.tick(context.Background(), last, end); got != last {
+				t.Fatalf("watermark advanced to %d", got)
+			}
+			nonce := readWatermarkFile(t, f).PendingNonce
+			e.failNone()
+			e.restart()
+			e.newWriter()
+			v.populate(e)
+			if v.noMarks {
+				if err := os.Remove(e.wmPath(".stored")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f2, restored := e.resume()
+			if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+				t.Fatalf("watermark = %d, want %d", got, end)
+			}
+			keys := e.allKeys(nonce)
+			for i, k := range keys {
+				want := 1
+				if i == 3 { // B/p2, the group that failed
+					want = 2
+				}
+				if n := e.attempts(k); n != want {
+					t.Errorf("%s attempted %d times, want %d", k, n, want)
+				}
+				if e.storedCount(k) != 1 {
+					t.Errorf("%s stored %d times", k, e.storedCount(k))
+				}
+				wantHeads := 0
+				if i == 3 || v.noMarks {
+					wantHeads = 1
+				}
+				if n := e.u.headCount(k); n != wantHeads {
+					t.Errorf("%s HEADed %d times, want %d", k, n, wantHeads)
+				}
+			}
+			if got := e.bucketRows(); got != 4*idemRowsPerGroup {
+				t.Fatalf("bucket holds %d rows, want exactly %d", got, 4*idemRowsPerGroup)
+			}
+			if v.list {
+				e.list()
+				extra := int64(0)
+				if strings.HasPrefix(v.name, "older") {
+					extra = 5
+				}
+				if rows, files := e.liveRows(); rows != 4*idemRowsPerGroup+extra || files < 4 {
+					t.Fatalf("after the listing: live %d rows in %d files, want %d", rows, files, 4*idemRowsPerGroup+extra)
+				}
+			}
+		})
 	}
 }
 
@@ -1695,7 +2056,7 @@ func TestBufferFlusher_StoredMarkFailureDoesNotFailTheGroup(t *testing.T) {
 	if err := os.Mkdir(f.storedPath(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	errs0 := metrics.BufferFlushErrors.Get("watermark")
+	errs0 := metrics.BufferFlushErrors.Get("mark")
 
 	if got := f.tick(context.Background(), last, end); got != end {
 		t.Fatalf("watermark = %d, want %d: a lost mark must not fail the window", got, end)
@@ -1704,7 +2065,7 @@ func TestBufferFlusher_StoredMarkFailureDoesNotFailTheGroup(t *testing.T) {
 	if n := e.totalAttempts(); n != 4 {
 		t.Fatalf("%d upload attempts, want 4", n)
 	}
-	if d := metrics.BufferFlushErrors.Get("watermark") - errs0; d != 4 {
+	if d := metrics.BufferFlushErrors.Get("mark") - errs0; d != 4 {
 		t.Errorf("mark errors counted = %d, want 4", d)
 	}
 }

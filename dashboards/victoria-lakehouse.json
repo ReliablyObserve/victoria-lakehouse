@@ -876,7 +876,7 @@
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 110 },
       "id": 87,
       "title": "Failed Uploads, Refused Inserts, Unwritten Bytes",
-      "description": "Rows a flush could not write and put back for the next flush (never dropped); inserts refused because unwritten data exceeds insert.max_buffer_bytes (429) or object storage refuses writes (503); rows a flush group skipped because its object's key was already compacted, rewritten or removed (near 0); buffer-flusher errors by stage (collect, intent, head, upload, watermark; near 0); rows lost at shutdown (should stay 0).",
+      "description": "Rows a flush could not write and put back for the next flush (never dropped); inserts refused because unwritten data exceeds insert.max_buffer_bytes (429) or object storage refuses writes (503); rows a flush group skipped because its object's key was already compacted, rewritten or removed (near 0); buffer-flusher errors by stage (collect, intent, head, upload, watermark; near 0); rows lost at shutdown or to buffer expiry during recovery (should stay 0).",
       "type": "timeseries",
       "targets": [
         {
@@ -894,6 +894,10 @@
         {
           "expr": "sum by (reason) (rate(lakehouse_insert_rejected_total{instance=~\"$instance\"}[5m]))",
           "legendFormat": "inserts refused/s {{reason}}"
+        },
+        {
+          "expr": "sum by (reason) (increase(lakehouse_insert_rows_lost_total{instance=~\"$instance\"}[1h]))",
+          "legendFormat": "rows lost (1h) {{reason}}"
         },
         {
           "expr": "sum(increase(lakehouse_insert_rows_lost_at_shutdown_total{instance=~\"$instance\"}[1h]))",

@@ -1302,7 +1302,6 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 				if w == nil {
 					logger.Fatalf("buffer_flush_enabled but the insert writer is nil")
 				}
-				internalvlstorage.SetBufferAuthoritative(true)
 				// buffer_flush_interval is the object-store flush cap (max linger
 				// before a sub-target window is flushed). The flusher CHECKS more
 				// often than that (so recent rows become queryable / size is
@@ -1321,6 +1320,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 				if err := flusher.Prepare(time.Now().UnixNano()); err != nil {
 					logger.Fatalf("buffer_flush_enabled but the flush watermark cannot be read: %s", err)
 				}
+				internalvlstorage.SetBufferAuthoritative(true)
 				go flusher.Run(context.Background(), checkInterval, time.Now().UnixNano())
 				logger.Warnf("Option B CUTOVER ACTIVE: buffer is the authoritative Parquet producer; BufferFlusher running (interval=%s); legacy staging + WAL bypassed", cfg.Insert.BufferFlushInterval)
 			}

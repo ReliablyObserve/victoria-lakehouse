@@ -103,10 +103,17 @@ func TestBufferFlusher_Watermark(t *testing.T) {
 	if err := os.WriteFile(f.watermarkPath, []byte("{not json"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	// A watermark that exists but cannot be read is an error, never "now":
-	// falling back would silently skip everything since the last commit.
+	// A corrupt main file falls back to the backup, which holds the same state.
+	if got, err := f.loadWatermark(7); err != nil || got != 99999 {
+		t.Fatalf("corrupt main: want the backup's 99999, got %d, %v", got, err)
+	}
+	// Both unreadable is an error, never "now": falling back would silently skip
+	// everything since the last commit.
+	if err := os.WriteFile(f.prevPath(), []byte("{not json"), 0o640); err != nil {
+		t.Fatal(err)
+	}
 	if got, err := f.loadWatermark(7); err == nil {
-		t.Fatalf("corrupt watermark: want an error, got %d", got)
+		t.Fatalf("corrupt watermark and backup: want an error, got %d", got)
 	}
 	_ = f.saveWatermark(42)
 	if _, err := os.ReadFile(filepath.Join(dir, "buffer_flush_watermark.json.tmp")); err == nil {

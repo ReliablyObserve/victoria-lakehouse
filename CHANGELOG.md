@@ -14,18 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uploads and the watermark save, made the next attempt flush a larger window into new objects, so the
   partitions already uploaded were written again. Objects are now never rewritten. The flusher records
   each window durably before its first upload (its end, a random nonce that names its objects, and
-  every group), keeps the previous good watermark as `.prev`, and refuses to start on a watermark it
-  cannot read instead of jumping to "now". A group that fails is retried with the same bytes; after a
-  restart each group is settled by a best-effort stored mark, the manifest, or an object-store HEAD —
-  no bucket listing is awaited — and only groups whose object is absent are uploaded again. A tenant's
-  later partitions are not attempted after its group fails, so a newer stored partition does not hide
-  the buffer rows of an older one. The writer skips a group whose key the manifest already has or has
-  retired (counted in `lakehouse_insert_rows_superseded_total`) and no longer adds back a key retired
-  while its upload was in flight. New `lakehouse_buffer_flush_errors_total{stage}`. Not covered: a peer
-  compacting an unrecorded object while this node is down (#37), a PUT from the dead process landing
-  after the recovery check, an in-process timed-out PUT adopted, compacted and forgotten before its
-  retry, and rows that arrive for a pending window after its first attempt (not added by an in-process
-  retry). Both binaries.
+  every group with its row count), mirrors every watermark write to a `.prev` copy first so a corrupt
+  file still leaves the pending record, fsyncs a per-group stored mark before the object is committed,
+  and refuses to start on a watermark it cannot read instead of jumping to "now". A group that fails is
+  retried with the same bytes; after a restart each group is settled by its stored mark, the manifest,
+  or an object-store HEAD (which needs `s3:ListBucket`) — no bucket listing is awaited and the buffer is
+  read only if some object is absent. Rows the buffer no longer has by then are uploaded as far as
+  they exist and the rest is counted in the new `lakehouse_insert_rows_lost_total{reason="buffer_expired"}`.
+  A tenant's later partitions are not attempted after its group fails, so a newer stored partition does
+  not hide the buffer rows of an older one. The writer skips a group whose key the manifest already has
+  or has retired (counted in `lakehouse_insert_rows_superseded_total`) and no longer adds back a key
+  retired while its upload was in flight. New `lakehouse_buffer_flush_errors_total{stage}`. Not covered:
+  a failed mark write followed by compaction and the retired record being forgotten before a restart,
+  buffer expiry (counted, not recovered), a peer compacting an unrecorded object while this node is
+  down (#37), a PUT from the dead process landing after the recovery check, an in-process timed-out PUT
+  adopted, compacted and forgotten before its retry, the legacy staging path's partial-failure
+  visibility gap (#245), objects recovered by HEAD being bare listing entries until compaction (#246),
+  and rows that arrive for a window after its first attempt, which an in-process retry never writes.
+  Both binaries.
 
 ## [0.143.3] - 2026-09-24
 
