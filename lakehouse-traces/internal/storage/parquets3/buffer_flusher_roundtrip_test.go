@@ -135,3 +135,16 @@ func TestInteg_FlusherRoundTrip_EndToEnd(t *testing.T) {
 		t.Fatalf("REPRO end-to-end: ingested %d, read back %d (%.0f%%)", n, got, 100*float64(got)/float64(n))
 	}
 }
+
+// flushCollected uploads the rows collected for (startNs, endNs] under a fresh
+// nonce, one object per tenant and partition, without recording anything: a
+// one-shot flush of a collected window (a test helper). The first error is
+// returned after every group was attempted.
+func (f *BufferFlusher) flushCollected(ctx context.Context, collected map[logstorage.TenantID][]schema.TraceRow, startNs, endNs int64) error {
+	groups := f.buildGroups(collected, startNs, startNs, endNs, randomBatchID())
+	for _, up := range groups {
+		up.afterUpload = nil
+	}
+	_, err := f.uploadAll(ctx, groups)
+	return err
+}

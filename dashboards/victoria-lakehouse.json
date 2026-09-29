@@ -885,7 +885,7 @@
         },
         {
           "expr": "sum(rate(lakehouse_insert_rows_superseded_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "rows skipped, object superseded/s"
+          "legendFormat": "rows skipped, object retired/s"
         },
         {
           "expr": "sum by (reason) (rate(lakehouse_insert_rejected_total{instance=~\"$instance\"}[5m]))",

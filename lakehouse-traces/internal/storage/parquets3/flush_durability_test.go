@@ -2,7 +2,9 @@ package parquets3
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -21,15 +23,32 @@ import (
 
 // faultyUploader stands in for object storage: fail decides, per key, whether
 // an upload fails; block, when set, holds every upload until it is closed.
+//
+// It also enforces the storage invariant of the insert path: the bytes stored
+// under a key never change. Every upload that succeeds records the sha256 of its
+// bytes; a second one under the same key with different bytes is a violation,
+// reported by checkByteInvariant (durabilityWriter registers it as a cleanup, so
+// every test built on it asserts the invariant). Attempts that failed are
+// recorded separately in attemptHashes: a retry in the same process must send
+// the same bytes too, which allowAttemptDrift relaxes for the one case where a
+// restarted flusher deliberately collects a never-stored group afresh.
 type faultyUploader struct {
 	mu       sync.Mutex
 	fail     func(key string) error
 	block    chan struct{}
 	started  chan struct{}
 	uploaded map[string]int
+	// stored is the sha256 of the bytes stored under each key; data the bytes.
+	stored map[string]string
+	data   map[string][]byte
+	// attemptHashes lists the sha256 of every attempt (stored or not) per key.
+	attemptHashes map[string][]string
+	violations    []string
+	// allowAttemptDrift permits failed attempts of a key to differ in bytes.
+	allowAttemptDrift bool
 }
 
-func (u *faultyUploader) Upload(ctx context.Context, key string, _ []byte) error {
+func (u *faultyUploader) Upload(ctx context.Context, key string, data []byte) error {
 	if u.started != nil {
 		select {
 		case u.started <- struct{}{}:
@@ -48,6 +67,14 @@ func (u *faultyUploader) Upload(ctx context.Context, key string, _ []byte) error
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	sum := fmt.Sprintf("%x", sha256.Sum256(data))
+	if u.attemptHashes == nil {
+		u.attemptHashes = make(map[string][]string)
+	}
+	if prev := u.attemptHashes[key]; len(prev) > 0 && prev[0] != sum && !u.allowAttemptDrift {
+		u.violations = append(u.violations, fmt.Sprintf("%s attempted with different bytes (%s then %s)", key, prev[0][:12], sum[:12]))
+	}
+	u.attemptHashes[key] = append(u.attemptHashes[key], sum)
 	if u.fail != nil {
 		if err := u.fail(key); err != nil {
 			return err
@@ -55,9 +82,34 @@ func (u *faultyUploader) Upload(ctx context.Context, key string, _ []byte) error
 	}
 	if u.uploaded == nil {
 		u.uploaded = make(map[string]int)
+		u.stored = make(map[string]string)
+		u.data = make(map[string][]byte)
+	}
+	if prev, ok := u.stored[key]; ok && prev != sum {
+		u.violations = append(u.violations, fmt.Sprintf("%s rewritten with different bytes (%s then %s)", key, prev[:12], sum[:12]))
 	}
 	u.uploaded[key]++
+	u.stored[key] = sum
+	u.data[key] = append([]byte(nil), data...)
 	return nil
+}
+
+// checkByteInvariant fails t if any key was ever stored, or attempted, with
+// different bytes than an earlier upload of the same key.
+func (u *faultyUploader) checkByteInvariant(t *testing.T) {
+	t.Helper()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, v := range u.violations {
+		t.Errorf("byte invariant violated: %s", v)
+	}
+}
+
+// attempts returns how many uploads of key were attempted (stored or not).
+func (u *faultyUploader) attempts(key string) int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.attemptHashes[key])
 }
 
 // durabilityWriter is a BatchWriter whose span uploads go to u.
@@ -69,6 +121,7 @@ func durabilityWriter(t *testing.T, u *faultyUploader) (*BatchWriter, *manifest.
 	bw.cfg.MaxBufferRows = 1 << 30 // flushes happen only when the test calls FlushAll
 	bw.SetTenantBucket(func(uint32, uint32) string { return "durability" })
 	bw.SetTenantPool(func(string) PoolWriter { return u })
+	t.Cleanup(func() { u.checkByteInvariant(t) })
 	return bw, m
 }
 
@@ -552,5 +605,61 @@ func TestTraceFlush_ARetryOfAnAdoptedThenCompactedObjectIsSkipped(t *testing.T) 
 	// A second flush has nothing left to do.
 	if err := bw.FlushAll(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An upload "fails" on the client side but the store kept the object, and the
+// manifest refresh adopts it: it is live. The next flush's retry of that group
+// must not upload it again (that would rewrite a stored object) nor add it a
+// second time — and it is not "superseded": nothing replaced it, its rows are
+// simply already in the manifest.
+func TestTraceFlush_ARetryOfAnAdoptedObjectIsSkipped(t *testing.T) {
+	var mu sync.Mutex
+	attempts := map[string]int{}
+	u := &faultyUploader{fail: func(key string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts[key]++
+		if attempts[key] == 1 {
+			return errPutFailed // stored, but the client gave up waiting
+		}
+		return nil
+	}}
+	bw, m := durabilityWriter(t, u)
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	bw.AddTraceRows(rowsAt(base, 50, 0))
+
+	if err := bw.FlushAll(context.Background()); err == nil {
+		t.Fatal("expected the first attempt to fail")
+	}
+	var key string
+	for k := range attempts {
+		key = k
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("attempted keys, want exactly 1: %v", attempts)
+	}
+	partition := partitionFromNano(base.UnixNano())
+	// The refresh lists the bucket and adopts the object the store kept.
+	m.AddFile(partition, manifest.FileInfo{Key: key, Size: 1000, RowCount: 50, MinTimeNs: base.UnixNano(), MaxTimeNs: base.Add(49 * time.Second).UnixNano()})
+	superseded0 := metrics.InsertRowsSuperseded.Get()
+
+	if err := bw.FlushAll(context.Background()); err != nil {
+		t.Fatalf("the retry of an adopted group must complete, not fail: %v", err)
+	}
+	if attempts[key] != 1 {
+		t.Errorf("%s was uploaded again (%d attempts)", key, attempts[key])
+	}
+	if u.attempts(key) != 1 {
+		t.Errorf("the uploader saw %d attempts of %s, want 1", u.attempts(key), key)
+	}
+	if rows, files := committedRows(m); rows != 50 || files != 1 {
+		t.Fatalf("committed %d rows in %d files, want 50 in 1 (the adopted object)", rows, files)
+	}
+	if d := metrics.InsertRowsSuperseded.Get() - superseded0; d != 0 {
+		t.Errorf("superseded counter rose by %d: an adopted live object is not superseded", d)
+	}
+	if bw.BufferedRows() != 0 || bw.pendingBytes.Load() != 0 {
+		t.Errorf("the settled group is still buffered: rows=%d pending=%d", bw.BufferedRows(), bw.pendingBytes.Load())
 	}
 }

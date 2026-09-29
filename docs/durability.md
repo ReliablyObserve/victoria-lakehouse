@@ -98,47 +98,83 @@ and concurrent inserts, every row committed exactly once),
 `TestStop_RowsTheFinalFlushCannotWriteAreCounted` — and their `TestTrace*`
 twins in `lakehouse-traces`.
 
-**Buffer-authoritative flush (`buffer_flush_enabled`).** The `BufferFlusher`
-records the window it is about to flush — `(watermark, end]` — in
-`buffer_flush_watermark.json` (`pending_window_end_ns`) **before its first
-upload**. Every partition and tenant of the window is attempted; the objects are
-named from the window, the tenant and the partition, not at random. If any
-upload fails, or the process dies before the watermark is saved, the next
-attempt — the next tick, or the first tick after a restart — flushes exactly
-that window again, ignoring the size and linger gates. It writes to the same
-object names, so what the earlier attempt already wrote is overwritten, never
-written a second time, and rows that arrived inside the window in the meantime
-are picked up. The manifest entry of an overwritten object is replaced
-(`Manifest.UpsertFile`), so its row count describes the object as it now is and
-the stats count only the difference. Only then does the watermark move to the
-window's end and the pending marker clear.
+**Buffer-authoritative flush (`buffer_flush_enabled`).** The invariant: **an
+object's bytes never change once uploaded, and no key is ever uploaded twice
+with different content.** Objects are never rewritten; a retry never replaces
+an object with a different one.
 
-A retry never re-adds an object that was compacted, rewritten or removed after
-an earlier attempt wrote it. If the object's key is retired in the manifest —
-before the retry uploads it, or while the upload is in flight — the group is
-skipped (in the second case the object just uploaded is queued for deletion),
-and the manifest refuses the key (`ErrKeyRetired`). Compaction's output already
-carries the rows, so nothing is written twice and no deleted row comes back. The
-skipped rows are counted in `lakehouse_insert_rows_superseded_total`: that is
-every row of the skipped group, so the counter is an upper bound on what is
-missing — only rows that arrived after the earlier attempt are absent from the
-superseding object. The legacy staging path's same-key retry follows the same
-rule.
+The `BufferFlusher` records the window it is about to flush — `(watermark, end]`
+— in `buffer_flush_watermark.json` **before its first upload**, together with a
+random nonce drawn for that window (`pending_nonce`). The nonce is part of every
+object name of the window, so two nodes flushing the same range, or a later
+window over it, never derive the same key. After each object is stored its key is
+added to `pending_uploaded` (atomic tempfile + rename) — before the object is
+committed to the manifest. Every tenant and partition of the window is attempted
+in a fixed order; a failure does not stop the rest.
 
-Proof: `TestBufferFlusher_PartialFailureRetriesTheExactWindow`,
-`TestBufferFlusher_PartialFailureThenRestartRetriesTheExactWindow`,
-`TestBufferFlusher_CrashAfterUploadsBeforeWatermarkDoesNotDuplicate`,
-`TestBufferFlusher_LateRowsInThePendingWindowAreIncludedOnce`,
+- **A group fails while the process lives.** The next tick retries just the
+  groups that failed, with the same keys and the very same bytes, without
+  collecting the window again and ignoring the size and linger gates. Groups
+  already stored are not sent again.
+- **The process restarts** (crash, deploy) with a window pending. The first tick
+  waits until the manifest has applied a bucket listing, so an object stored
+  before the crash — even one whose key was never recorded — is in the manifest.
+  It then collects `(watermark, pending]` again, drops the groups recorded in
+  `pending_uploaded`, and attempts the rest under the persisted nonce. Before
+  uploading a group the writer skips it if the manifest already has its key (an
+  earlier upload was stored and adopted: its rows are live) or has retired it
+  (compacted, rewritten or removed: its rows live elsewhere).
+- **Every group is stored but the watermark cannot be saved.** The following ticks
+  upload nothing and only retry the save; on success the pending record clears
+  and the watermark moves to the window's end.
+
+Rows that arrive for the pending window after its first attempt are **not**
+added by an in-process retry: the retry sends exactly what the first attempt
+collected, consistent with the rule that rows older than a committed window are
+never collected again (they stay in the buffer and are served by the read-merge
+until it ages out). After a restart the window is collected again, so a group
+that was never stored includes such rows; a group that was stored does not
+change. `lakehouse_insert_rows_superseded_total` counts only the rows of groups
+skipped because their key had been retired; a group skipped because its object is
+live is not counted (nothing replaced it).
+
+Residual limits, stated plainly:
+
+- **Multi-node:** a group whose object was stored but whose key was not recorded
+  (a crash between the upload and its record) is normally skipped after the
+  restart because a listing shows the object. If another peer adopted that
+  object, compacted it and deleted it before its manifest push reached this
+  node, this node sees the key as neither live nor retired and uploads the group
+  again, duplicating rows the compacted object already carries. Tracked in #37.
+- **Legacy staging path:** an upload that timed out but was stored is adopted by a
+  listing, compacted, and its retired record forgotten by a later listing, all
+  before the next retry of that group. That needs upload failures lasting longer
+  than a compaction cycle.
+
+Proof (both modules unless noted; every test also asserts, through the
+`faultyUploader`, that no key was stored twice with different bytes):
+`TestBufferFlusher_PartialFailureRetriesOnlyTheFailedGroupWithIdenticalBytes`,
+`TestBufferFlusher_PartialFailureThenRestartSendsOnlyWhatWasNeverStored`,
+`TestBufferFlusher_CrashAfterAllUploadsBeforeTheWatermarkSendsNothing`,
+`TestBufferFlusher_CrashBetweenPutAndRecordAdoptedByListingIsNotResent`,
+`TestBufferFlusher_CrashBetweenPutAndRecordThenCompactedIsNotResent`,
+`TestBufferFlusher_RecoveredTickWaitsForTheFirstListing`,
+`TestBufferFlusher_RetiredRecordForgottenByListingStillNoResendAfterRestart`,
+`TestBufferFlusher_RetryBetweenCompactionReadAndPublishLosesNothing`,
+`TestBufferFlusher_FewerRowsAfterRestartDoNotResendAStoredGroup`,
+`TestBufferFlusher_WatermarkSaveFailureAfterUploadsNeverReuploads`,
+`TestBufferFlusher_LateRowsAreNotAddedByAnInProcessRetry`,
+`TestBufferFlusher_LateRowsAfterARestartReachGroupsNeverStored`,
+`TestBufferFlusher_TwoFlushersOfTheSameWindowUseDistinctKeys`,
 `TestBufferFlusher_PendingWindowIgnoresTheSizeGate`,
-`TestWindowBatchID_DeterministicAndSensitiveToEveryInput`,
-`TestBufferFlusher_LoadWatermarkPendingHandling`,
-`TestBufferFlusher_RetryDoesNotReAddAKeyCompactedAway`,
-`TestBufferFlusher_KeyRetiredDuringTheRetryUploadIsReclaimed`,
-`TestBufferFlusher_WatermarkWriteFailsAfterUploads`,
 `TestBufferFlusher_AFailedGroupDoesNotStopTheRestOfTheWindow`,
-`TestFlush_ARetryOfAnAdoptedThenCompactedObjectIsSkipped` and `TestUpsertFile_*` — the
-`parquets3` ones in both `internal/storage/parquets3` and
-`lakehouse-traces/internal/storage/parquets3`.
+`TestBufferFlusher_LoadWatermarkPendingHandling`,
+`TestWindowBatchID_DeterministicAndSensitiveToEveryInput`,
+`TestUploadGroup_AfterUploadErrorFailsTheGroupAndTheRetrySendsIdenticalBytes`,
+`TestUploadGroup_SettledGroupsRunAfterUploadWithoutUploading`, and, for the legacy
+staging path, `TestFlush_ARetryOfAnAdoptedThenCompactedObjectIsSkipped` and
+`TestFlush_ARetryOfAnAdoptedObjectIsSkipped` (`TestTraceFlush_*` in
+`lakehouse-traces`).
 
 ---
 
@@ -153,13 +189,16 @@ Proof: `TestBufferFlusher_PartialFailureRetriesTheExactWindow`,
    `buffer_flush_watermark.json` (atomic tempfile + rename) and advances it
    **only after** every partition of a window has been written to S3 and
    registered in the manifest. Before the first upload it also records the
-   window's end as pending. On restart it reloads both: a pending window is
-   re-flushed exactly as it was, `(watermark, pending]`; otherwise the next
-   window is `(watermark, now-offset]`.
-3. **Idempotent re-flush.** A window's objects are named from the window, the
-   tenant and the partition, so a re-flush overwrites the objects an interrupted
-   attempt wrote and the manifest replaces their entries (`UpsertFile`).
-   Re-flushing loses nothing and writes no row twice (see §2.1).
+   window's end as pending, with the nonce that names its objects, and after
+   each upload the key stored. On restart it reloads all of it: a pending window
+   is resumed as `(watermark, pending]` (a pending record without a nonce, or
+   from an older file version, is ignored); otherwise the next window is
+   `(watermark, now-offset]`.
+3. **Resuming without rewriting.** After a restart the flusher waits for the
+   first bucket listing, then collects the pending window again and uploads only
+   the groups that were not recorded as stored; the writer skips keys the
+   manifest already has or has retired. Objects are never rewritten, so
+   re-flushing loses nothing and writes no row twice (see §2.1).
 4. **The retention guard.** Un-flushed rows live **only** in the buffer until
    the flush commits, so the buffer must retain them across a full linger window
    **plus** restart downtime. Config validation enforces

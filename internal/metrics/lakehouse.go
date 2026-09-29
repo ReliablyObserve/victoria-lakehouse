@@ -360,9 +360,9 @@ var (
 	// InsertRowsRequeued counts rows a flush could not write and put back into
 	// the buffers for the next flush (never dropped).
 	InsertRowsRequeued = NewCounter("lakehouse_insert_rows_requeued_total")
-	// InsertRowsSuperseded counts rows of a retried flush object whose earlier
-	// copy was already compacted, rewritten or removed: the retry skips it
-	// instead of writing those rows a second time.
+	// InsertRowsSuperseded counts rows of flush groups skipped because their
+	// object's key was retired (compacted, rewritten or removed) after an earlier
+	// attempt stored it: whatever replaced it carries those rows.
 	InsertRowsSuperseded = NewCounter("lakehouse_insert_rows_superseded_total")
 	// InsertRowsLostAtShutdown counts buffered rows the final flush could not
 	// write before the process exited (the legacy staging path has no WAL).

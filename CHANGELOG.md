@@ -12,11 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Buffer-flush mode no longer writes rows twice after a failed or interrupted flush.** With
   `buffer_flush_enabled`, a flush that failed part-way, or a restart between the uploads and the
   watermark save, made the next attempt flush a larger window into new objects, so the partitions
-  already uploaded were written again. The flusher now records the window before its first upload
-  and retries exactly that window to the same object names, overwriting what the earlier attempt
-  wrote; an object that compaction, a delete rewrite or retention has retired in the meantime is
-  skipped rather than added back (counted in `lakehouse_insert_rows_superseded_total`). Both
-  binaries.
+  already uploaded were written again. Objects are now never rewritten: the flusher records each
+  window with a random nonce that names its objects and the keys already stored, retries a group
+  that failed with the same bytes, and after a restart waits for the first bucket listing, collects
+  the window again and sends only what was never stored. The writer also skips a group whose key
+  the manifest already has (an earlier upload was stored) or has retired (compacted, rewritten or
+  removed; counted in `lakehouse_insert_rows_superseded_total`), which the legacy staging path's
+  same-key retry benefits from too. Rows that arrive for a pending window after its first attempt
+  are not added by an in-process retry. Both binaries.
 
 ## [0.143.3] - 2026-09-24
 
