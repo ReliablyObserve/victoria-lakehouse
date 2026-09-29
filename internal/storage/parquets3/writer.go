@@ -481,6 +481,12 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 // ended before it was reached) with the first error. Groups it did write are
 // committed and never returned.
 func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, rows []schema.LogRow) ([]*logGroupUpload, error) {
+	return w.flushLogPartitionNamed(ctx, partition, rows, nil)
+}
+
+// flushLogPartitionNamed is flushLogPartition with each tenant's object named by
+// batchID(accountID, projectID) instead of a random name (nil keeps random).
+func (w *BatchWriter) flushLogPartitionNamed(ctx context.Context, partition string, rows []schema.LogRow, batchID func(accountID, projectID uint32) string) ([]*logGroupUpload, error) {
 	// The rows may be visible to buffer queries while in flight (FlushAll),
 	// so they are reordered under the same lock those queries read under.
 	w.mu.Lock()
@@ -497,6 +503,9 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	var firstErr error
 	for _, g := range groups {
 		up := &logGroupUpload{partition: partition, accountID: g.AccountID, projectID: g.ProjectID, rows: g.Rows}
+		if batchID != nil {
+			up.batchID = batchID(g.AccountID, g.ProjectID)
+		}
 		err := ctx.Err()
 		if err == nil {
 			err = w.uploadLogGroup(ctx, up)
@@ -520,8 +529,11 @@ type logGroupUpload struct {
 	partition            string
 	accountID, projectID uint32
 	rows                 []schema.LogRow
-	key                  string
-	result               *flushResult
+	// batchID names the object; empty draws a random one. The buffer flusher
+	// derives it from the window so a retried window writes the same objects.
+	batchID string
+	key     string
+	result  *flushResult
 }
 
 func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.LogRow) error {
@@ -529,13 +541,25 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 }
 
 func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) error {
+	if up.key == "" {
+		if up.batchID == "" {
+			up.batchID = randomBatchID()
+		}
+		up.key = fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(up.accountID, up.projectID), up.partition, up.batchID)
+	}
+	// An earlier attempt of this object may have been compacted, rewritten or
+	// removed since: the object is superseded, not owed. Uploading it again
+	// would put its rows back next to the ones that replaced it.
+	if w.manifest.IsRetired(up.key) {
+		w.noteSuperseded(up.key, len(up.rows), "before the upload")
+		return nil
+	}
 	if up.result == nil {
 		result, err := writeLogsParquet(up.rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 		if err != nil {
 			return fmt.Errorf("write parquet: %w", err)
 		}
 		up.result = result
-		up.key = fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(up.accountID, up.projectID), up.partition, randomBatchID())
 	}
 	partition, accountID, projectID, rows, result, key := up.partition, up.accountID, up.projectID, up.rows, up.result, up.key
 
@@ -582,7 +606,18 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 		LabelAggregates:   schema.ExtractLogLabelAggregates(rows),
 		ColumnBytes:       result.ColumnBytes,
 	}
-	w.manifest.AddFile(partition, fi)
+	// The same object can be written again (a retried flush window): the
+	// manifest then describes it as it now is, and stats count only the
+	// difference.
+	old, rewritten, err := w.manifest.UpsertFile(partition, fi)
+	if err != nil {
+		// Retired between the check above and this commit. The upload may
+		// have recreated the object: it is owed a delete, and its rows are
+		// already carried by whatever superseded it.
+		w.manifest.Retire(key, "flush-retry", true)
+		w.noteSuperseded(key, len(rows), "during the upload")
+		return nil
+	}
 
 	// Per-column bloom values for the pmeta bloom facet (uncapped — a capped
 	// feed false-negatives). One extraction, no legacy dual-write anymore.
@@ -601,7 +636,11 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 	}
 
 	if w.statsCallback != nil {
-		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
+		stored, raw, n := int64(len(result.Data)), result.RawBytes, int64(len(rows))
+		if rewritten {
+			stored, raw, n = stored-old.Size, raw-old.RawBytes, n-old.RowCount
+		}
+		w.statsCallback(accountID, projectID, stored, raw, n, "STANDARD")
 	}
 
 	if w.flushCacheCb != nil {
@@ -621,6 +660,12 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 // ended before it was reached) with the first error. Groups it did write are
 // committed and never returned.
 func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string, rows []schema.TraceRow) ([]*traceGroupUpload, error) {
+	return w.flushTracePartitionNamed(ctx, partition, rows, nil)
+}
+
+// flushTracePartitionNamed is flushTracePartition with each tenant's object named by
+// batchID(accountID, projectID) instead of a random name (nil keeps random).
+func (w *BatchWriter) flushTracePartitionNamed(ctx context.Context, partition string, rows []schema.TraceRow, batchID func(accountID, projectID uint32) string) ([]*traceGroupUpload, error) {
 	// The rows may be visible to buffer queries while in flight (FlushAll),
 	// so they are reordered under the same lock those queries read under.
 	w.mu.Lock()
@@ -634,6 +679,9 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	var firstErr error
 	for _, g := range groups {
 		up := &traceGroupUpload{partition: partition, accountID: g.AccountID, projectID: g.ProjectID, rows: g.Rows}
+		if batchID != nil {
+			up.batchID = batchID(g.AccountID, g.ProjectID)
+		}
 		err := ctx.Err()
 		if err == nil {
 			err = w.uploadTraceGroup(ctx, up)
@@ -657,8 +705,11 @@ type traceGroupUpload struct {
 	partition            string
 	accountID, projectID uint32
 	rows                 []schema.TraceRow
-	key                  string
-	result               *flushResult
+	// batchID names the object; empty draws a random one. The buffer flusher
+	// derives it from the window so a retried window writes the same objects.
+	batchID string
+	key     string
+	result  *flushResult
 }
 
 func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.TraceRow) error {
@@ -666,13 +717,25 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 }
 
 func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload) error {
+	if up.key == "" {
+		if up.batchID == "" {
+			up.batchID = randomBatchID()
+		}
+		up.key = fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(up.accountID, up.projectID), up.partition, up.batchID)
+	}
+	// An earlier attempt of this object may have been compacted, rewritten or
+	// removed since: the object is superseded, not owed. Uploading it again
+	// would put its rows back next to the ones that replaced it.
+	if w.manifest.IsRetired(up.key) {
+		w.noteSuperseded(up.key, len(up.rows), "before the upload")
+		return nil
+	}
 	if up.result == nil {
 		result, err := writeTracesParquet(up.rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 		if err != nil {
 			return fmt.Errorf("write parquet: %w", err)
 		}
 		up.result = result
-		up.key = fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(up.accountID, up.projectID), up.partition, randomBatchID())
 	}
 	partition, accountID, projectID, rows, result, key := up.partition, up.accountID, up.projectID, up.rows, up.result, up.key
 
@@ -711,7 +774,18 @@ func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload
 		LabelAggregates:   schema.ExtractTraceLabelAggregates(rows),
 		ColumnBytes:       result.ColumnBytes,
 	}
-	w.manifest.AddFile(partition, fi)
+	// The same object can be written again (a retried flush window): the
+	// manifest then describes it as it now is, and stats count only the
+	// difference.
+	old, rewritten, err := w.manifest.UpsertFile(partition, fi)
+	if err != nil {
+		// Retired between the check above and this commit. The upload may
+		// have recreated the object: it is owed a delete, and its rows are
+		// already carried by whatever superseded it.
+		w.manifest.Retire(key, "flush-retry", true)
+		w.noteSuperseded(key, len(rows), "during the upload")
+		return nil
+	}
 
 	var bloomValues map[string][]string
 	if w.catalogObserver != nil {
@@ -728,7 +802,11 @@ func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload
 	}
 
 	if w.statsCallback != nil {
-		w.statsCallback(accountID, projectID, int64(len(result.Data)), result.RawBytes, int64(len(rows)), "STANDARD")
+		stored, raw, n := int64(len(result.Data)), result.RawBytes, int64(len(rows))
+		if rewritten {
+			stored, raw, n = stored-old.Size, raw-old.RawBytes, n-old.RowCount
+		}
+		w.statsCallback(accountID, projectID, stored, raw, n, "STANDARD")
 	}
 
 	if w.flushCacheCb != nil {
@@ -1122,4 +1200,11 @@ func bloomFilters(cols []string) []parquet.BloomFilterColumn {
 		bf = append(bf, parquet.SplitBlockFilter(10, c))
 	}
 	return bf
+}
+
+// noteSuperseded counts the rows of a retried flush object whose earlier copy
+// was compacted, rewritten or removed, so the retry does not write them again.
+func (w *BatchWriter) noteSuperseded(key string, rows int, stage string) {
+	metrics.InsertRowsSuperseded.Add(rows)
+	logger.Warnf("flush retry skipped a superseded object %s (%s): its earlier copy was compacted, rewritten or removed; rows=%d", key, stage, rows)
 }

@@ -2,7 +2,9 @@ package parquets3
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -68,6 +70,9 @@ type BufferFlusher struct {
 	latencyOffset int64 // ns; flush only up to now-latencyOffset
 	targetBytes   int64 // S3 object-size trigger: flush a window once it reaches this
 	maxLinger     int64 // ns; force-flush a window this old even if below targetBytes
+	// pending is the end of a window whose flush started and has not
+	// committed (see flushWatermark.PendingWindowEndNs); 0 when none.
+	pending int64
 }
 
 // estBytesPerLogRow is a rough raw-bytes-per-row estimate used only to decide
@@ -98,7 +103,13 @@ func NewBufferFlusher(writer *BatchWriter, buffer flusherBuffer, watermarkDir st
 
 type flushWatermark struct {
 	LastFlushWindowEndNs int64 `json:"last_flush_window_end_ns"`
-	Version              int   `json:"version"`
+	// PendingWindowEndNs is the end of the window being flushed, recorded
+	// before its first upload. The next attempt — after a failed upload or a
+	// restart — flushes exactly (last, pending] again, to the same objects
+	// (windowBatchID), so what an earlier attempt wrote is overwritten, never
+	// written a second time under a new name.
+	PendingWindowEndNs int64 `json:"pending_window_end_ns,omitempty"`
+	Version            int   `json:"version"`
 }
 
 // loadWatermark returns the persisted window-end, or fallbackNs when no (valid)
@@ -113,13 +124,30 @@ func (f *BufferFlusher) loadWatermark(fallbackNs int64) int64 {
 	if err := json.Unmarshal(b, &wm); err != nil || wm.LastFlushWindowEndNs <= 0 {
 		return fallbackNs
 	}
+	if wm.PendingWindowEndNs > wm.LastFlushWindowEndNs {
+		f.pending = wm.PendingWindowEndNs
+	}
 	return wm.LastFlushWindowEndNs
 }
 
 // saveWatermark persists the window-end atomically (tempfile + rename) so a crash
 // mid-write never leaves a torn watermark.
 func (f *BufferFlusher) saveWatermark(endNs int64) error {
-	b, err := json.Marshal(flushWatermark{LastFlushWindowEndNs: endNs, Version: 1})
+	if err := f.writeWatermark(flushWatermark{LastFlushWindowEndNs: endNs, Version: 2}); err != nil {
+		return err
+	}
+	metrics.InsertFlushWatermarkNs.Set(endNs)
+	return nil
+}
+
+// savePending records that the window (lastNs, endNs] is about to be flushed,
+// before its first upload, so a failure or a crash retries exactly that window.
+func (f *BufferFlusher) savePending(lastNs, endNs int64) error {
+	return f.writeWatermark(flushWatermark{LastFlushWindowEndNs: lastNs, PendingWindowEndNs: endNs, Version: 2})
+}
+
+func (f *BufferFlusher) writeWatermark(wm flushWatermark) error {
+	b, err := json.Marshal(wm)
 	if err != nil {
 		return err
 	}
@@ -127,11 +155,7 @@ func (f *BufferFlusher) saveWatermark(endNs int64) error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	err = os.Rename(tmp, f.watermarkPath)
-	if err == nil {
-		metrics.InsertFlushWatermarkNs.Set(endNs)
-	}
-	return err
+	return os.Rename(tmp, f.watermarkPath)
 }
 
 // flushWindow flushes (startNs, endNs] from the buffer to authoritative Parquet,
@@ -158,8 +182,34 @@ func (f *BufferFlusher) collectWindow(ctx context.Context, startNs, endNs int64)
 	return out, total, nil
 }
 
-func (f *BufferFlusher) flushCollected(ctx context.Context, collected map[logstorage.TenantID][]schema.LogRow) error {
-	for _, rows := range collected {
+// windowBatchID names the object one tenant's rows of one partition get when
+// the window (startNs, endNs] is flushed. It depends only on those, so a retry
+// of the window writes the same objects.
+func windowBatchID(startNs, endNs int64, accountID, projectID uint32, partition string) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d-%d-%d-%d-%s", startNs, endNs, accountID, projectID, partition)))
+	return fmt.Sprintf("%x", sum[:8])
+}
+
+// flushCollected writes the rows collected for (startNs, endNs], one object per
+// tenant and partition named by windowBatchID. Every partition is attempted;
+// the first error is returned, and a retry of the same window overwrites what
+// this attempt wrote.
+func (f *BufferFlusher) flushCollected(ctx context.Context, collected map[logstorage.TenantID][]schema.LogRow, startNs, endNs int64) error {
+	var firstErr error
+	// Tenants in a fixed order, so which group an error hits first does not
+	// depend on map iteration.
+	tenants := make([]logstorage.TenantID, 0, len(collected))
+	for t := range collected {
+		tenants = append(tenants, t)
+	}
+	sort.Slice(tenants, func(i, j int) bool {
+		if tenants[i].AccountID != tenants[j].AccountID {
+			return tenants[i].AccountID < tenants[j].AccountID
+		}
+		return tenants[i].ProjectID < tenants[j].ProjectID
+	})
+	for _, tenant := range tenants {
+		rows := collected[tenant]
 		byPartition := map[string][]schema.LogRow{}
 		for _, r := range rows {
 			byPartition[partitionFromNano(r.TimestampUnixNano)] = append(byPartition[partitionFromNano(r.TimestampUnixNano)], r)
@@ -170,12 +220,15 @@ func (f *BufferFlusher) flushCollected(ctx context.Context, collected map[logsto
 		}
 		sort.Strings(parts)
 		for _, p := range parts {
-			if _, err := f.writer.flushLogPartition(ctx, p, byPartition[p]); err != nil {
-				return err
+			name := func(accountID, projectID uint32) string {
+				return windowBatchID(startNs, endNs, accountID, projectID, p)
+			}
+			if _, err := f.writer.flushLogPartitionNamed(ctx, p, byPartition[p], name); err != nil && firstErr == nil {
+				firstErr = err
 			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // collectTenantRows queries the buffer for one tenant over (startNs, endNs],
@@ -233,39 +286,63 @@ func (f *BufferFlusher) Run(ctx context.Context, checkInterval time.Duration, no
 		case <-ctx.Done():
 			return
 		case tick := <-t.C:
-			// Stop short of now by latencyOffset so in-flight/late rows land
-			// before their window is committed.
-			flushEnd := tick.UnixNano() - f.latencyOffset
-			if flushEnd <= last {
-				continue
-			}
-			// Make all ingested rows queryable; RunQuery does NOT see the
-			// un-flushed rowsBuffer, so without this the recent window is
-			// invisible and the watermark would skip past it (the under-
-			// production bug).
-			f.buffer.DebugFlush()
-			collected, nRows, err := f.collectWindow(ctx, last, flushEnd)
-			if err != nil {
-				logger.Warnf("buffer flusher: collect (%d,%d] failed, will retry: %s", last, flushEnd, err)
-				continue
-			}
-			aged := flushEnd-last >= f.maxLinger
-			// Size gate: hold a sub-target window open across ticks so the S3
-			// object lands at ~targetBytes instead of one tiny file per tick.
-			if int64(nRows)*estBytesPerLogRow < f.targetBytes && !aged {
-				continue // accumulate — don't flush, don't advance the watermark
-			}
-			if nRows > 0 {
-				if err := f.flushCollected(ctx, collected); err != nil {
-					logger.Warnf("buffer flusher: flush (%d,%d] failed, will retry: %s", last, flushEnd, err)
-					continue // watermark unmoved → retry the same window next tick
-				}
-			}
-			if err := f.saveWatermark(flushEnd); err != nil {
-				logger.Warnf("buffer flusher: watermark persist failed (window will re-flush, harmless): %s", err)
-				continue
-			}
-			last = flushEnd
+			last = f.tick(ctx, last, tick.UnixNano())
 		}
 	}
+}
+
+// tick runs one flush attempt and returns the watermark after it.
+//
+// A window whose flush started and did not commit (f.pending) is retried as it
+// was — same end, same object names — before any new window: a partial failure
+// or a crash between uploads and the watermark then overwrites the objects it
+// wrote instead of writing them again under new names inside a larger window.
+// Rows that arrived for that window in the meantime are included; the manifest
+// entry of an overwritten object is replaced (UpsertFile).
+func (f *BufferFlusher) tick(ctx context.Context, last, nowNs int64) int64 {
+	retry := f.pending > last
+	// Stop short of now by latencyOffset so in-flight/late rows land before
+	// their window is committed.
+	flushEnd := nowNs - f.latencyOffset
+	if retry {
+		flushEnd = f.pending
+	}
+	if flushEnd <= last {
+		return last
+	}
+	// Make all ingested rows queryable; RunQuery does NOT see the un-flushed
+	// rowsBuffer, so without this the recent window is invisible and the
+	// watermark would skip past it (the under-production bug).
+	f.buffer.DebugFlush()
+	collected, nRows, err := f.collectWindow(ctx, last, flushEnd)
+	if err != nil {
+		logger.Warnf("buffer flusher: collect (%d,%d] failed, will retry: %s", last, flushEnd, err)
+		return last
+	}
+	aged := flushEnd-last >= f.maxLinger
+	// Size gate: hold a sub-target window open across ticks so the S3 object
+	// lands at ~targetBytes instead of one tiny file per tick. A pending window
+	// is flushed regardless: its objects may already exist.
+	if !retry && int64(nRows)*estBytesPerLogRow < f.targetBytes && !aged {
+		return last // accumulate — don't flush, don't advance the watermark
+	}
+	if nRows > 0 {
+		if !retry {
+			if err := f.savePending(last, flushEnd); err != nil {
+				logger.Warnf("buffer flusher: cannot record window (%d,%d] before flushing it, will retry: %s", last, flushEnd, err)
+				return last
+			}
+			f.pending = flushEnd
+		}
+		if err := f.flushCollected(ctx, collected, last, flushEnd); err != nil {
+			logger.Warnf("buffer flusher: flush (%d,%d] failed, will retry the same window: %s", last, flushEnd, err)
+			return last
+		}
+	}
+	if err := f.saveWatermark(flushEnd); err != nil {
+		logger.Warnf("buffer flusher: watermark persist failed (the window is retried to the same objects, harmless): %s", err)
+		return last
+	}
+	f.pending = 0
+	return flushEnd
 }

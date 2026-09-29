@@ -490,3 +490,67 @@ func TestFlush_ARetryOverwritesTheSameObject(t *testing.T) {
 		t.Fatalf("committed %d rows in %d files, want 50 in 1", rows, files)
 	}
 }
+
+// An upload "fails" on the client side but the store kept the object, and the
+// manifest refresh adopts it. Compaction then merges and retires it. The next
+// flush's retry of that group must not upload or re-add the key — the compacted
+// output already carries its rows — and the rows are counted as superseded.
+func TestFlush_ARetryOfAnAdoptedThenCompactedObjectIsSkipped(t *testing.T) {
+	var mu sync.Mutex
+	attempts := map[string]int{}
+	u := &faultyUploader{fail: func(key string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts[key]++
+		if attempts[key] == 1 {
+			return errPutFailed // stored, but the client gave up waiting
+		}
+		return nil
+	}}
+	bw, m := durabilityWriter(t, u)
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	bw.AddLogRows(rowsAt(base, 50, 0))
+
+	if err := bw.FlushAll(context.Background()); err == nil {
+		t.Fatal("expected the first attempt to fail")
+	}
+	var key string
+	for k := range attempts {
+		key = k
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("attempted keys, want exactly 1: %v", attempts)
+	}
+	partition := partitionFromNano(base.UnixNano())
+	// The refresh lists the bucket and adopts the object the store kept.
+	m.AddFile(partition, manifest.FileInfo{Key: key, Size: 1000, RowCount: 50, MinTimeNs: base.UnixNano(), MaxTimeNs: base.Add(49 * time.Second).UnixNano()})
+	// Compaction publishes its output and retires the source.
+	out := partition + "/compacted.parquet"
+	if !m.ReplaceFiles(partition, []string{key}, manifest.FileInfo{Key: out, Size: 900, RowCount: 50, MinTimeNs: base.UnixNano(), MaxTimeNs: base.Add(49 * time.Second).UnixNano()}) {
+		t.Fatal("ReplaceFiles refused the adopted object")
+	}
+	superseded0 := metrics.InsertRowsSuperseded.Get()
+
+	if err := bw.FlushAll(context.Background()); err != nil {
+		t.Fatalf("the retry of a superseded group must complete, not fail: %v", err)
+	}
+	if attempts[key] != 1 {
+		t.Errorf("%s was uploaded again (%d attempts)", key, attempts[key])
+	}
+	if m.HasKey(key) {
+		t.Error("the retired key was added back")
+	}
+	if rows, files := committedRows(m); rows != 50 || files != 1 {
+		t.Fatalf("committed %d rows in %d files, want 50 in 1 (the compacted output)", rows, files)
+	}
+	if d := metrics.InsertRowsSuperseded.Get() - superseded0; d != 50 {
+		t.Errorf("superseded counter rose by %d, want 50", d)
+	}
+	if bw.BufferedRows() != 0 || bw.pendingBytes.Load() != 0 {
+		t.Errorf("the superseded group is still buffered: rows=%d pending=%d", bw.BufferedRows(), bw.pendingBytes.Load())
+	}
+	// A second flush has nothing left to do.
+	if err := bw.FlushAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

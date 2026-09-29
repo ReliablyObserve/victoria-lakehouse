@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Buffer-flush mode no longer writes rows twice after a failed or interrupted flush.** With
+  `buffer_flush_enabled`, a flush that failed part-way, or a restart between the uploads and the
+  watermark save, made the next attempt flush a larger window into new objects, so the partitions
+  already uploaded were written again. The flusher now records the window before its first upload
+  and retries exactly that window to the same object names, overwriting what the earlier attempt
+  wrote; an object that compaction, a delete rewrite or retention has retired in the meantime is
+  skipped rather than added back (counted in `lakehouse_insert_rows_superseded_total`). Both
+  binaries.
+
 ## [0.143.3] - 2026-09-24
 
 ### Fixed

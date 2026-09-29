@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1694,6 +1695,46 @@ func (m *Manifest) ReplaceFile(partition string, oldKey string, fi FileInfo) boo
 	m.retireLocked(RetiredKey{Key: oldKey, By: fi.Key, Reclaim: true})
 	m.addFileLocked(partition, fi)
 	return true
+}
+
+// ErrKeyRetired is returned by UpsertFile for a key the manifest has retired:
+// compaction, a delete rewrite or retention superseded that object, so it must
+// not be registered again.
+var ErrKeyRetired = errors.New("manifest: key is retired")
+
+// UpsertFile registers fi, replacing the entry already under fi.Key in
+// partition when there is one, and returns that previous entry. It is the
+// writer's commit for an object it may write more than once under the same
+// key — a flush retried after a failure or a crash re-uploads its window to
+// the same object, possibly with rows that arrived in between — so the
+// manifest describes the object as it now is instead of keeping the first
+// description (AddFile skips a key it already has). Unlike ReplaceFile the key
+// is not retired: it is still the live object. Totals, tenant aggregates and
+// change observers see the old entry removed and the new one added.
+//
+// A retired key is refused with ErrKeyRetired and nothing is changed: the
+// object was compacted, rewritten or removed after an earlier attempt wrote it,
+// and adding it back would duplicate the rows the compacted output carries (or
+// resurrect deleted ones). The caller owes the object's deletion (Retire with
+// reclaim), since its upload may already have recreated it.
+//
+// Safe for concurrent use.
+func (m *Manifest) UpsertFile(partition string, fi FileInfo) (FileInfo, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, retired := m.retired[fi.Key]; retired {
+		return FileInfo{}, false, ErrKeyRetired
+	}
+	var old FileInfo
+	replaced := false
+	if m.keyInPartitionLocked(partition, fi.Key) {
+		if files, idx := m.findFileLocked(fi.Key); idx >= 0 {
+			old = files[idx]
+		}
+		replaced = m.removeFileLocked(partition, fi.Key)
+	}
+	m.addFileLocked(partition, fi)
+	return old, replaced, nil
 }
 
 // ReplaceFiles is ReplaceFile for a merge: it registers fi and removes every

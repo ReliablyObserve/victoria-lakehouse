@@ -50,7 +50,7 @@ flowchart LR
 |---|---|---|---|
 | **Process crash / kill -9** | Rows in the buffer's on-disk parts survive; the flush watermark re-flushes the uncommitted window on restart. Loss window ≈ buffer flush interval (~5s), matching hot VL/VT. | Buffer parts survive and serve **reads** for `buffer_retention`, but the **legacy staging** (authoritative for Parquet) loses its in-flight window — that window is never re-persisted to S3. | In-flight `[]row` staging is lost (no WAL). Loss window = up to `flush_interval`. |
 | **Normal shutdown (SIGTERM)** | Buffer `Close()` flushes parts to disk; readiness gate holds `/ready`; manifest + footer-cache snapshots saved. | Same buffer `Close()`; legacy staging flush-on-shutdown. | Graceful flush of staging before exit. |
-| **S3 unreachable or slow (uploads fail or time out)** | Buffer keeps accepting (bounded by `buffer_retention` + disk); the watermark does not advance, so the window is flushed again (see the note on duplicates in §2.1). | Legacy staging: every upload that fails, or that the flush does not reach before its deadline, is put back and retried by the next flush; its rows stay readable meanwhile. Past `insert.max_buffer_bytes` of unwritten rows inserts get **429** (as VictoriaLogs answers when it cannot take writes) until flushes catch up. | Same as the middle column. |
+| **S3 unreachable or slow (uploads fail or time out)** | Buffer keeps accepting (bounded by `buffer_retention` + disk); the watermark does not advance, so the same window is flushed again to the same objects (see the buffer-authoritative paragraph in §2.1). | Legacy staging: every upload that fails, or that the flush does not reach before its deadline, is put back and retried by the next flush; its rows stay readable meanwhile. Past `insert.max_buffer_bytes` of unwritten rows inserts get **429** (as VictoriaLogs answers when it cannot take writes) until flushes catch up. | Same as the middle column. |
 | **Already-flushed data** | Immutable Parquet on S3; survives everything. | Same. | Same. |
 | **A delete (tombstone)** | Written through to local disk synchronously and to S3 in the same call before the API returns; retried until S3 confirms. Survives `kill -9`. | Same. | Same. |
 | **An in-progress delete rewrite** | Two-phase (prepare → publish → commit) with a conditional publish: a crash or a concurrent compaction at any step leaves exactly one manifested copy of every kept row. See §3.1. | Same. | Same. |
@@ -98,10 +98,47 @@ and concurrent inserts, every row committed exactly once),
 `TestStop_RowsTheFinalFlushCannotWriteAreCounted` — and their `TestTrace*`
 twins in `lakehouse-traces`.
 
-> **Known gap (buffer-authoritative flush).** With `buffer_flush_enabled`, a
-> window whose flush fails part-way is flushed again whole on the next tick, so
-> the partitions written in the failed attempt are written twice. Tracked
-> separately; the legacy staging path above does not have it.
+**Buffer-authoritative flush (`buffer_flush_enabled`).** The `BufferFlusher`
+records the window it is about to flush — `(watermark, end]` — in
+`buffer_flush_watermark.json` (`pending_window_end_ns`) **before its first
+upload**. Every partition and tenant of the window is attempted; the objects are
+named from the window, the tenant and the partition, not at random. If any
+upload fails, or the process dies before the watermark is saved, the next
+attempt — the next tick, or the first tick after a restart — flushes exactly
+that window again, ignoring the size and linger gates. It writes to the same
+object names, so what the earlier attempt already wrote is overwritten, never
+written a second time, and rows that arrived inside the window in the meantime
+are picked up. The manifest entry of an overwritten object is replaced
+(`Manifest.UpsertFile`), so its row count describes the object as it now is and
+the stats count only the difference. Only then does the watermark move to the
+window's end and the pending marker clear.
+
+A retry never re-adds an object that was compacted, rewritten or removed after
+an earlier attempt wrote it. If the object's key is retired in the manifest —
+before the retry uploads it, or while the upload is in flight — the group is
+skipped (in the second case the object just uploaded is queued for deletion),
+and the manifest refuses the key (`ErrKeyRetired`). Compaction's output already
+carries the rows, so nothing is written twice and no deleted row comes back. The
+skipped rows are counted in `lakehouse_insert_rows_superseded_total`: that is
+every row of the skipped group, so the counter is an upper bound on what is
+missing — only rows that arrived after the earlier attempt are absent from the
+superseding object. The legacy staging path's same-key retry follows the same
+rule.
+
+Proof: `TestBufferFlusher_PartialFailureRetriesTheExactWindow`,
+`TestBufferFlusher_PartialFailureThenRestartRetriesTheExactWindow`,
+`TestBufferFlusher_CrashAfterUploadsBeforeWatermarkDoesNotDuplicate`,
+`TestBufferFlusher_LateRowsInThePendingWindowAreIncludedOnce`,
+`TestBufferFlusher_PendingWindowIgnoresTheSizeGate`,
+`TestWindowBatchID_DeterministicAndSensitiveToEveryInput`,
+`TestBufferFlusher_LoadWatermarkPendingHandling`,
+`TestBufferFlusher_RetryDoesNotReAddAKeyCompactedAway`,
+`TestBufferFlusher_KeyRetiredDuringTheRetryUploadIsReclaimed`,
+`TestBufferFlusher_WatermarkWriteFailsAfterUploads`,
+`TestBufferFlusher_AFailedGroupDoesNotStopTheRestOfTheWindow`,
+`TestFlush_ARetryOfAnAdoptedThenCompactedObjectIsSkipped` and `TestUpsertFile_*` — the
+`parquets3` ones in both `internal/storage/parquets3` and
+`lakehouse-traces/internal/storage/parquets3`.
 
 ---
 
@@ -115,12 +152,14 @@ twins in `lakehouse-traces`.
 2. **The flush watermark.** `BufferFlusher` persists
    `buffer_flush_watermark.json` (atomic tempfile + rename) and advances it
    **only after** every partition of a window has been written to S3 and
-   registered in the manifest. On restart it reloads the watermark and
-   re-flushes `(watermark, now-offset]`.
-3. **Idempotent re-flush.** A re-flushed window produces new Parquet objects;
-   `manifest.AddFile` is keyed so duplicate registrations are dropped, and the
-   read path deduplicates spans by `(trace_id, span_id)`. Re-flushing loses
-   nothing and double-counts nothing.
+   registered in the manifest. Before the first upload it also records the
+   window's end as pending. On restart it reloads both: a pending window is
+   re-flushed exactly as it was, `(watermark, pending]`; otherwise the next
+   window is `(watermark, now-offset]`.
+3. **Idempotent re-flush.** A window's objects are named from the window, the
+   tenant and the partition, so a re-flush overwrites the objects an interrupted
+   attempt wrote and the manifest replaces their entries (`UpsertFile`).
+   Re-flushing loses nothing and writes no row twice (see §2.1).
 4. **The retention guard.** Un-flushed rows live **only** in the buffer until
    the flush commits, so the buffer must retain them across a full linger window
    **plus** restart downtime. Config validation enforces

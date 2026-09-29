@@ -46,7 +46,7 @@ func TestInteg_FlusherRoundTrip_MultiFilePartition(t *testing.T) {
 			})
 			total++
 		}
-		if err := f.flushCollected(context.Background(), map[logstorage.TenantID][]schema.TraceRow{tenant: rows}); err != nil {
+		if err := f.flushCollected(context.Background(), map[logstorage.TenantID][]schema.TraceRow{tenant: rows}, int64(w), int64(w)+1); err != nil {
 			t.Fatalf("flush window %d: %v", w, err)
 		}
 	}
@@ -120,7 +120,7 @@ func TestInteg_FlusherRoundTrip_EndToEnd(t *testing.T) {
 		t.Fatalf("collectWindow: %v", err)
 	}
 	t.Logf("collected %d rows from buffer", nRows)
-	if err := f.flushCollected(context.Background(), collected); err != nil {
+	if err := f.flushCollected(context.Background(), collected, 0, 1); err != nil {
 		t.Fatalf("flushCollected: %v", err)
 	}
 
