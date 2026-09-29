@@ -91,20 +91,22 @@ func TestBufferFlusher_Watermark(t *testing.T) {
 	dir := t.TempDir()
 	f := NewBufferFlusher(nil, nil, dir, nil, 0, 0)
 
-	if got := f.loadWatermark(12345); got != 12345 {
-		t.Fatalf("missing watermark: want fallback 12345, got %d", got)
+	if got, err := f.loadWatermark(12345); err != nil || got != 12345 {
+		t.Fatalf("missing watermark: want fallback 12345, got %d, %v", got, err)
 	}
 	if err := f.saveWatermark(99999); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if got := f.loadWatermark(12345); got != 99999 {
-		t.Fatalf("after save: want 99999, got %d", got)
+	if got, err := f.loadWatermark(12345); err != nil || got != 99999 {
+		t.Fatalf("after save: want 99999, got %d, %v", got, err)
 	}
 	if err := os.WriteFile(f.watermarkPath, []byte("{not json"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.loadWatermark(7); got != 7 {
-		t.Fatalf("corrupt watermark: want fallback 7, got %d", got)
+	// A watermark that exists but cannot be read is an error, never "now":
+	// falling back would silently skip everything since the last commit.
+	if got, err := f.loadWatermark(7); err == nil {
+		t.Fatalf("corrupt watermark: want an error, got %d", got)
 	}
 	_ = f.saveWatermark(42)
 	if _, err := os.ReadFile(filepath.Join(dir, "buffer_flush_watermark.json.tmp")); err == nil {
@@ -141,7 +143,10 @@ func TestBufferFlusher_CrashRecovery(t *testing.T) {
 	}
 	defer bs2.Close()
 	f2 := NewBufferFlusher(nil, bs2, wmDir, nil, 0, 0)
-	last := f2.loadWatermark(time.Now().UnixNano())
+	last, err := f2.loadWatermark(time.Now().UnixNano())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 	if last != base+int64(time.Minute) {
 		t.Fatalf("recovered watermark = %d, want %d", last, base+int64(time.Minute))
 	}

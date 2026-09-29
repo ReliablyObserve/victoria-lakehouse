@@ -1313,6 +1313,9 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 				flusher := parquets3.NewBufferFlusher(w, bufStore, cfg.Insert.BufferDir, internalvlstorage.FlushRowKeeper(), cfg.Insert.TargetFileSizeN(), maxLinger)
 				// Process-lived goroutine; on shutdown the watermark doesn't
 				// advance, so the in-flight window re-flushes on restart (no loss).
+				if err := flusher.Prepare(time.Now().UnixNano()); err != nil {
+					logger.Fatalf("buffer_flush_enabled but the flush watermark cannot be read: %s", err)
+				}
 				go flusher.Run(context.Background(), checkInterval, time.Now().UnixNano())
 				logger.Warnf("Option B CUTOVER ACTIVE: buffer is the authoritative Parquet producer; BufferFlusher running (interval=%s); legacy staging + WAL bypassed", cfg.Insert.BufferFlushInterval)
 			}

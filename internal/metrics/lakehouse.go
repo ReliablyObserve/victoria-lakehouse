@@ -364,6 +364,12 @@ var (
 	// object's key was retired (compacted, rewritten or removed) after an earlier
 	// attempt stored it: whatever replaced it carries those rows.
 	InsertRowsSuperseded = NewCounter("lakehouse_insert_rows_superseded_total")
+	// BufferFlushErrors counts buffer-flusher failures by stage: collect (reading
+	// the window from the buffer), intent (recording the pending window before
+	// its uploads), head (checking whether an object exists during recovery),
+	// upload (a group's PUT or commit failed) and watermark (saving the
+	// committed watermark failed). Each is retried on the next tick.
+	BufferFlushErrors = NewCounterVec("lakehouse_buffer_flush_errors_total", "stage")
 	// InsertRowsLostAtShutdown counts buffered rows the final flush could not
 	// write before the process exited (the legacy staging path has no WAL).
 	InsertRowsLostAtShutdown = NewCounter("lakehouse_insert_rows_lost_at_shutdown_total")

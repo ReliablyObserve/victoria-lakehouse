@@ -46,6 +46,49 @@ type faultyUploader struct {
 	violations    []string
 	// allowAttemptDrift permits failed attempts of a key to differ in bytes.
 	allowAttemptDrift bool
+	// HEAD side: headErr injects an error for a key's existence check, heads
+	// counts the checks per key, gone lists objects deleted from the bucket.
+	headErr func(key string) error
+	heads   map[string]int
+	gone    map[string]bool
+}
+
+// Exists is the object store's HEAD: it reports whether key is stored and not
+// deleted, or headErr's error.
+func (u *faultyUploader) Exists(_ context.Context, key string) (bool, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.heads == nil {
+		u.heads = make(map[string]int)
+	}
+	u.heads[key]++
+	if u.headErr != nil {
+		if err := u.headErr(key); err != nil {
+			return false, err
+		}
+	}
+	if u.gone[key] {
+		return false, nil
+	}
+	_, ok := u.data[key]
+	return ok, nil
+}
+
+// remove deletes key's object from the bucket (compaction's delete).
+func (u *faultyUploader) remove(key string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.gone == nil {
+		u.gone = make(map[string]bool)
+	}
+	u.gone[key] = true
+}
+
+// headCount returns how many existence checks key has had.
+func (u *faultyUploader) headCount(key string) int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.heads[key]
 }
 
 func (u *faultyUploader) Upload(ctx context.Context, key string, data []byte) error {

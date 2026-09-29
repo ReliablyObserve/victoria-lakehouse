@@ -102,9 +102,9 @@ func (e *idemEnv) open() {
 // A restarted flusher collects the groups it never stored afresh, and Parquet
 // encoding is not required to be byte-identical across encodings of the same
 // rows, so from here on a failed (never stored) attempt may differ from the next
-// attempt of its key. What must still hold, and is still checked, is that the
-// bytes stored under a key never change and that a key stored once is not sent
-// again (the tests count attempts per key).
+// attempt of its key. What is still enforced strictly is that the bytes stored
+// under a key never change, and the tests assert per key that a stored group is
+// never attempted again after a restart.
 func (e *idemEnv) restart() {
 	e.t.Helper()
 	e.u.mu.Lock()
@@ -127,7 +127,11 @@ func (e *idemEnv) flusher(targetBytes int64, maxLinger time.Duration) *BufferFlu
 func (e *idemEnv) resume() (*BufferFlusher, int64) {
 	e.t.Helper()
 	f := e.flusher(1, time.Nanosecond)
-	return f, f.loadWatermark(time.Now().UnixNano())
+	last, err := f.loadWatermark(time.Now().UnixNano())
+	if err != nil {
+		e.t.Fatalf("load watermark: %v", err)
+	}
+	return f, last
 }
 
 // window is (last, end]: it holds both partition hours.
@@ -324,6 +328,7 @@ func (e *idemEnv) compact(fi manifest.FileInfo, partition string) string {
 		e.t.Fatalf("ReplaceFiles refused %s", fi.Key)
 	}
 	e.deleted[fi.Key] = true
+	e.u.remove(fi.Key)
 	return out
 }
 
@@ -367,18 +372,60 @@ func readWatermarkFile(t *testing.T, f *BufferFlusher) flushWatermark {
 	return wm
 }
 
-func hasKeyIn(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
+// storeDirect puts a failed group's encoded object into the bucket the way a PUT
+// that completed just before a crash would have: no manifest commit, no mark.
+func (e *idemEnv) storeDirect(up *traceGroupUpload) {
+	e.t.Helper()
+	if up.result == nil {
+		e.t.Fatalf("group %s was never encoded", up.key)
 	}
-	return false
+	e.failNone()
+	if err := e.u.Upload(context.Background(), up.key, up.result.Data); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
-// 1. One of four uploads fails. The next tick retries exactly that group, with
-// the very bytes of the first attempt; the three stored objects are not sent
-// again; rows are exact and the watermark commits.
+// crashWithEverythingUnstored runs a tick in which every PUT fails: the intent
+// is durable and nothing is stored. It returns the flusher (whose failed groups
+// carry the encoded objects) and the window's nonce.
+func crashWithEverythingUnstored(t *testing.T, e *idemEnv) (*BufferFlusher, string) {
+	t.Helper()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	e.failAll()
+	if got := f.tick(context.Background(), last, end); got != last {
+		t.Fatalf("watermark advanced to %d with every upload failing", got)
+	}
+	if len(f.failed) != 4 {
+		t.Fatalf("%d groups left, want 4", len(f.failed))
+	}
+	e.failNone()
+	return f, readWatermarkFile(t, f).PendingNonce
+}
+
+func (e *idemEnv) storedMarkLines() []string {
+	e.t.Helper()
+	b, err := os.ReadFile(e.wmDir + "/buffer_flush_watermark.json.stored")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func (e *idemEnv) wmPath(suffix string) string {
+	return e.wmDir + "/buffer_flush_watermark.json" + suffix
+}
+
+// 1. One of four uploads fails. The pending record was written before any PUT
+// and lists all four groups; the next tick retries exactly the group that
+// failed, with the very bytes of the first attempt; the three stored objects are
+// not sent again; rows are exact and the watermark commits.
 func TestBufferFlusher_PartialFailureRetriesOnlyTheFailedGroupWithIdenticalBytes(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
@@ -391,13 +438,24 @@ func TestBufferFlusher_PartialFailureRetriesOnlyTheFailedGroupWithIdenticalBytes
 	}
 	e.mustLive(3*idemRowsPerGroup, 3, "after the partial failure")
 	wm := readWatermarkFile(t, f)
-	if wm.Version != 2 || wm.LastFlushWindowEndNs != last || wm.PendingWindowEndNs != end || wm.PendingNonce == "" {
-		t.Fatalf("watermark file = %+v, want v2 with last=%d pending=%d and a nonce recorded before the uploads", wm, last, end)
+	if wm.Version != 3 || wm.LastFlushWindowEndNs != last || wm.PendingWindowEndNs != end || wm.PendingNonce == "" {
+		t.Fatalf("watermark file = %+v, want v3 with last=%d pending=%d and a nonce", wm, last, end)
+	}
+	if len(wm.PendingGroups) != 4 {
+		t.Fatalf("pending_groups = %v, want all 4 groups recorded (before any PUT)", wm.PendingGroups)
+	}
+	want := []flushGroupRef{
+		{1, 2, e.p1()}, {1, 2, e.p2()}, {2, 3, e.p1()}, {2, 3, e.p2()},
+	}
+	for i, g := range want {
+		if wm.PendingGroups[i] != g {
+			t.Fatalf("pending_groups[%d] = %+v, want %+v (sorted by account, project, partition)", i, wm.PendingGroups[i], g)
+		}
 	}
 	keys := e.allKeys(wm.PendingNonce)
 	failedKey := keys[3]
-	if len(wm.PendingUploaded) != 3 || !sort.StringsAreSorted(wm.PendingUploaded) || hasKeyIn(wm.PendingUploaded, failedKey) {
-		t.Fatalf("pending_uploaded = %v, want the 3 stored keys sorted and not %s", wm.PendingUploaded, failedKey)
+	if marks := e.storedMarkLines(); len(marks) != 3 {
+		t.Fatalf("stored marks = %v, want the 3 groups that were stored", marks)
 	}
 	if f.pending != end || f.nonce != wm.PendingNonce || len(f.failed) != 1 || f.failed[0].key != failedKey {
 		t.Fatalf("in-memory state pending=%d nonce=%q failed=%d", f.pending, f.nonce, len(f.failed))
@@ -420,6 +478,9 @@ func TestBufferFlusher_PartialFailureRetriesOnlyTheFailedGroupWithIdenticalBytes
 		if n := e.attempts(k); n != want {
 			t.Errorf("%s attempted %d times, want %d", k, n, want)
 		}
+		if n := e.u.headCount(k); n != 0 {
+			t.Errorf("%s was HEADed %d times in-process, want 0", k, n)
+		}
 	}
 	e.u.mu.Lock()
 	h := e.u.attemptHashes[failedKey]
@@ -428,20 +489,24 @@ func TestBufferFlusher_PartialFailureRetriesOnlyTheFailedGroupWithIdenticalBytes
 		t.Errorf("the retry of the failed group sent different bytes: %v", h)
 	}
 	wm = readWatermarkFile(t, f)
-	if wm.LastFlushWindowEndNs != end || wm.PendingWindowEndNs != 0 || wm.PendingNonce != "" || len(wm.PendingUploaded) != 0 {
+	if wm.LastFlushWindowEndNs != end || wm.PendingWindowEndNs != 0 || wm.PendingNonce != "" || len(wm.PendingGroups) != 0 {
 		t.Fatalf("watermark file after success = %+v, want last=%d and nothing pending", wm, end)
 	}
-	if f.pending != 0 || f.nonce != "" || f.uploaded != nil || f.failed != nil {
-		t.Fatalf("in-memory pending state not cleared: %d %q %v %v", f.pending, f.nonce, f.uploaded, f.failed)
+	if _, err := os.Stat(e.wmPath(".stored")); err == nil {
+		t.Error("the stored marks survived the commit")
+	}
+	if f.pending != 0 || f.nonce != "" || f.refs != nil || f.failed != nil {
+		t.Fatalf("in-memory pending state not cleared: %d %q %v %v", f.pending, f.nonce, f.refs, f.failed)
 	}
 	if got := e.statRows(); got != 4*idemRowsPerGroup {
 		t.Fatalf("stats counted %d rows, want %d", got, 4*idemRowsPerGroup)
 	}
 }
 
-// 2. A partial failure, then the process restarts. The stored keys were
-// persisted, so they are not sent again; the group that never made it is
-// collected again and uploaded; rows are exact.
+// 2. A partial failure, then the process restarts. The stored marks settle the
+// groups that were stored (no HEAD); the one that failed is looked up by HEAD,
+// found absent, collected again and uploaded; rows are exact. No listing is
+// needed for any of it.
 func TestBufferFlusher_PartialFailureThenRestartSendsOnlyWhatWasNeverStored(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
@@ -451,31 +516,33 @@ func TestBufferFlusher_PartialFailureThenRestartSendsOnlyWhatWasNeverStored(t *t
 	if got := f.tick(context.Background(), last, end); got != last {
 		t.Fatalf("watermark advanced to %d despite a failed upload", got)
 	}
+	// A2 failing blocks tenant A's later partitions only; A has none after p2.
 	e.mustLive(3*idemRowsPerGroup, 3, "before the restart")
 	nonce := readWatermarkFile(t, f).PendingNonce
 
 	e.failNone()
 	e.restart()
 	f2, restored := e.resume()
-	if restored != last || !f2.recovered || f2.pending != end || f2.nonce != nonce || len(f2.uploaded) != 3 {
-		t.Fatalf("restored last=%d recovered=%v pending=%d nonce=%q uploaded=%d", restored, f2.recovered, f2.pending, f2.nonce, len(f2.uploaded))
+	if restored != last || !f2.recovered || f2.pending != end || f2.nonce != nonce || len(f2.refs) != 4 || len(f2.stored) != 3 {
+		t.Fatalf("restored last=%d recovered=%v pending=%d nonce=%q refs=%d stored=%d", restored, f2.recovered, f2.pending, f2.nonce, len(f2.refs), len(f2.stored))
 	}
-	e.list()
 	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
 		t.Fatalf("watermark after the restart retry = %d, want %d", got, end)
 	}
 	e.mustLive(4*idemRowsPerGroup, 4, "after the restart retry")
-	keys := e.allKeys(nonce)
-	for i, k := range keys {
+	for i, k := range e.allKeys(nonce) {
 		if n := e.storedCount(k); n != 1 {
 			t.Errorf("%s stored %d times, want once", k, n)
 		}
-		want := 1
+		want, heads := 1, 0
 		if i == 1 { // A/p2, the group that failed
-			want = 2
+			want, heads = 2, 1
 		}
 		if n := e.attempts(k); n != want {
 			t.Errorf("%s attempted %d times, want %d", k, n, want)
+		}
+		if n := e.u.headCount(k); n != heads {
+			t.Errorf("%s HEADed %d times, want %d", k, n, heads)
 		}
 	}
 	if wm := readWatermarkFile(t, f2); wm.LastFlushWindowEndNs != end || wm.PendingWindowEndNs != 0 {
@@ -483,9 +550,97 @@ func TestBufferFlusher_PartialFailureThenRestartSendsOnlyWhatWasNeverStored(t *t
 	}
 }
 
-// 3. The process dies after every upload and before the watermark is saved (the
-// watermark directory turns read-only, so the save fails and the process is then
-// restarted). The restart sends nothing and commits the watermark.
+// Crash matrix, point 1: the intent is durable and no PUT happened. The restart
+// finds every group absent by HEAD, collects the window and uploads all of it.
+func TestBufferFlusher_CrashIntentWrittenNoPutUploadsEverything(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	_, nonce := crashWithEverythingUnstored(t, e)
+	_, end := e.window()
+	if n := len(e.storedKeys()); n != 0 {
+		t.Fatalf("%d objects stored, want none", n)
+	}
+
+	e.restart()
+	f2, restored := e.resume()
+	if !f2.recovered || len(f2.refs) != 4 || len(f2.stored) != 0 {
+		t.Fatalf("recovered=%v refs=%d stored=%d", f2.recovered, len(f2.refs), len(f2.stored))
+	}
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	e.mustLive(4*idemRowsPerGroup, 4, "after recovery")
+	for _, k := range e.allKeys(nonce) {
+		if e.storedCount(k) != 1 || e.u.headCount(k) != 1 {
+			t.Errorf("%s stored %d times, HEADed %d times, want 1 and 1", k, e.storedCount(k), e.u.headCount(k))
+		}
+	}
+}
+
+// Crash matrix, point 2: the PUT completed and the process died before the
+// stored mark and the manifest commit. The restart's HEAD finds the object and
+// does not send it again; a listing then adopts it.
+func TestBufferFlusher_CrashPutDoneNoMarkIsFoundByHead(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f, nonce := crashWithEverythingUnstored(t, e)
+	_, end := e.window()
+	x := f.failed[0] // A/p1, encoded
+	e.storeDirect(x)
+
+	e.restart()
+	f2, restored := e.resume()
+	if len(f2.stored) != 0 {
+		t.Fatalf("%d stored marks, want none", len(f2.stored))
+	}
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	if n := e.storedCount(x.key); n != 1 {
+		t.Errorf("%s stored %d times, want the crashed process's PUT only", x.key, n)
+	}
+	if n := e.attempts(x.key); n != 2 { // the failed attempt and the direct PUT; nothing after the restart
+		t.Errorf("%s attempted %d times, want 2 (none after the restart)", x.key, n)
+	}
+	if n := e.u.headCount(x.key); n != 1 {
+		t.Errorf("%s HEADed %d times, want 1", x.key, n)
+	}
+	e.list() // the refresh adopts the object the crashed PUT stored
+	e.mustLive(4*idemRowsPerGroup, 4, "after recovery and the listing")
+	_ = nonce
+}
+
+// Crash matrix, point 3: the stored mark was written but the manifest commit was
+// not. The restart trusts the mark: no HEAD, no PUT.
+func TestBufferFlusher_CrashStoredMarkNoCommitSettlesWithoutHead(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f, _ := crashWithEverythingUnstored(t, e)
+	_, end := e.window()
+	x := f.failed[0]
+	e.storeDirect(x)
+	f.markStored(refOf(x))
+
+	e.restart()
+	f2, restored := e.resume()
+	if len(f2.stored) != 1 {
+		t.Fatalf("%d stored marks, want 1", len(f2.stored))
+	}
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	if n := e.attempts(x.key); n != 2 {
+		t.Errorf("%s attempted %d times, want 2 (none after the restart)", x.key, n)
+	}
+	if n := e.u.headCount(x.key); n != 0 {
+		t.Errorf("%s HEADed %d times, want 0 (the mark settles it)", x.key, n)
+	}
+	e.list()
+	e.mustLive(4*idemRowsPerGroup, 4, "after recovery and the listing")
+}
+
+// Crash matrix, point 4: every group is stored and committed but the watermark
+// cannot be saved, and the process is restarted. The restart sends nothing.
 func TestBufferFlusher_CrashAfterAllUploadsBeforeTheWatermarkSendsNothing(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
@@ -498,23 +653,22 @@ func TestBufferFlusher_CrashAfterAllUploadsBeforeTheWatermarkSendsNothing(t *tes
 	}
 	e.mustLive(4*idemRowsPerGroup, 4, "before the crash")
 	wm := readWatermarkFile(t, f)
-	if wm.PendingWindowEndNs != end || len(wm.PendingUploaded) != 4 {
-		t.Fatalf("watermark file = %+v, want the window pending with all 4 keys recorded", wm)
+	if wm.PendingWindowEndNs != end || len(wm.PendingGroups) != 4 {
+		t.Fatalf("watermark file = %+v, want the window pending with its 4 groups", wm)
 	}
 	e.unblockWatermark()
 
 	e.restart()
 	f2, restored := e.resume()
-	if restored != last || !f2.recovered || len(f2.uploaded) != 4 {
-		t.Fatalf("restored last=%d recovered=%v uploaded=%d", restored, f2.recovered, len(f2.uploaded))
+	if restored != last || !f2.recovered || len(f2.stored) != 4 {
+		t.Fatalf("restored last=%d recovered=%v stored=%d", restored, f2.recovered, len(f2.stored))
 	}
-	e.list()
 	before := e.totalAttempts()
 	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
 		t.Fatalf("watermark after the recovery tick = %d, want %d", got, end)
 	}
 	if after := e.totalAttempts(); after != before || before != 4 {
-		t.Fatalf("uploads attempted: %d before the restart, %d after; want 4 and 4 (the restart sends nothing)", before, after)
+		t.Fatalf("uploads attempted: %d before the restart, %d after; want 4 and 4", before, after)
 	}
 	e.mustLive(4*idemRowsPerGroup, 4, "after the recovery tick")
 	if wm := readWatermarkFile(t, f2); wm.LastFlushWindowEndNs != end || wm.PendingWindowEndNs != 0 {
@@ -522,116 +676,9 @@ func TestBufferFlusher_CrashAfterAllUploadsBeforeTheWatermarkSendsNothing(t *tes
 	}
 }
 
-// crashBetweenPutAndRecord runs a tick in which the first group (A/p1) is stored
-// but its key cannot be recorded (the watermark directory is read-only exactly
-// then), so the object is in the bucket, not in the persisted set and not in the
-// manifest. It returns the flusher, the group's key and the window.
-func crashBetweenPutAndRecord(t *testing.T, e *idemEnv) (f *BufferFlusher, x string) {
-	t.Helper()
-	if os.Geteuid() == 0 {
-		t.Skip("permissions are not enforced for root")
-	}
-	t.Cleanup(func() { _ = os.Chmod(e.wmDir, 0o700) })
-	f = e.flusher(1, time.Nanosecond)
-	last, end := e.window()
-	prefix := e.tenantPrefix(idemTenantA)
-	isX := func(key string) bool { return strings.HasPrefix(key, prefix) && strings.Contains(key, e.p1()) }
-	var locked, unlocked atomic.Bool
-	e.hook.Store(func(key string) {
-		switch {
-		case isX(key) && !locked.Load():
-			locked.Store(true)
-			if err := os.Chmod(e.wmDir, 0o500); err != nil {
-				t.Errorf("chmod: %v", err)
-			}
-		case !isX(key) && locked.Load() && !unlocked.Load():
-			unlocked.Store(true)
-			if err := os.Chmod(e.wmDir, 0o700); err != nil {
-				t.Errorf("chmod: %v", err)
-			}
-		}
-	})
-	if got := f.tick(context.Background(), last, end); got != last {
-		t.Fatalf("watermark advanced to %d although a group could not be recorded", got)
-	}
-	e.hook.Store(func(string) {})
-	nonce := readWatermarkFile(t, f).PendingNonce
-	x = e.keyOf(nonce, idemTenantA, e.p1())
-	if e.storedCount(x) != 1 {
-		t.Fatalf("%s is not in the bucket", x)
-	}
-	if e.m.HasKey(x) {
-		t.Fatal("the group whose record failed was committed")
-	}
-	if wm := readWatermarkFile(t, f); hasKeyIn(wm.PendingUploaded, x) || len(wm.PendingUploaded) != 3 {
-		t.Fatalf("pending_uploaded = %v: want the 3 other keys and not %s", wm.PendingUploaded, x)
-	}
-	return f, x
-}
-
-// 4. The crash lands between the PUT and persisting the key: the object is in S3
-// but the flusher does not know it. After the restart a listing adopts it, and
-// the writer skips it (the manifest has the key): no re-upload, rows exact.
-func TestBufferFlusher_CrashBetweenPutAndRecordAdoptedByListingIsNotResent(t *testing.T) {
-	e := newIdemEnv(t)
-	e.seed()
-	_, x := crashBetweenPutAndRecord(t, e)
-	last, end := e.window()
-
-	e.restart()
-	f2, restored := e.resume()
-	if restored != last || !f2.recovered || len(f2.uploaded) != 3 || f2.pending != end {
-		t.Fatalf("restored last=%d recovered=%v uploaded=%d", restored, f2.recovered, len(f2.uploaded))
-	}
-	e.list()
-	if !e.m.HasKey(x) {
-		t.Fatal("the listing did not adopt the stored object")
-	}
-	superseded0 := metrics.InsertRowsSuperseded.Get()
-	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
-		t.Fatalf("watermark after the recovery tick = %d, want %d", got, end)
-	}
-	if n := e.attempts(x); n != 1 {
-		t.Errorf("%s uploaded %d times, want only the first", x, n)
-	}
-	e.mustLive(4*idemRowsPerGroup, 4, "after the recovery tick")
-	if d := metrics.InsertRowsSuperseded.Get() - superseded0; d != 0 {
-		t.Errorf("superseded counter rose by %d: an adopted live object is not superseded", d)
-	}
-}
-
-// 4b. As 4, but the adopted object is compacted before the retry: the key is
-// retired, not live. The writer skips it and counts its rows as superseded; the
-// compacted output carries them.
-func TestBufferFlusher_CrashBetweenPutAndRecordThenCompactedIsNotResent(t *testing.T) {
-	e := newIdemEnv(t)
-	e.seed()
-	_, x := crashBetweenPutAndRecord(t, e)
-	_, end := e.window()
-
-	e.restart()
-	f2, restored := e.resume()
-	e.list()
-	e.compact(e.entry(x), e.p1())
-	superseded0 := metrics.InsertRowsSuperseded.Get()
-	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
-		t.Fatalf("watermark after the recovery tick = %d, want %d", got, end)
-	}
-	if n := e.attempts(x); n != 1 {
-		t.Errorf("%s uploaded %d times, want only the first", x, n)
-	}
-	if e.m.HasKey(x) {
-		t.Error("the compacted key is live again")
-	}
-	e.mustLive(4*idemRowsPerGroup, 4, "after the recovery tick")
-	if d := metrics.InsertRowsSuperseded.Get() - superseded0; d != idemRowsPerGroup {
-		t.Errorf("superseded counter rose by %d, want %d", d, idemRowsPerGroup)
-	}
-}
-
-// 5. Until a bucket listing has been applied, "the manifest lacks this key" says
-// nothing about whether an earlier attempt stored it: a recovered tick waits.
-func TestBufferFlusher_RecoveredTickWaitsForTheFirstListing(t *testing.T) {
+// A HEAD error is "unknown": the recovered tick uploads nothing, keeps the
+// pending window and asks again next tick.
+func TestBufferFlusher_HeadErrorUploadsNothingAndIsRetried(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
 	f := e.flusher(1, time.Nanosecond)
@@ -642,43 +689,173 @@ func TestBufferFlusher_RecoveredTickWaitsForTheFirstListing(t *testing.T) {
 	}
 	e.failNone()
 	e.restart()
-	f2, restored := e.resume()
-	fileBefore, err := os.ReadFile(f2.watermarkPath)
-	if err != nil {
+	// The marks are gone with the disk that held them (or were never written):
+	// everything has to be checked by HEAD.
+	if err := os.Remove(e.wmPath(".stored")); err != nil {
 		t.Fatal(err)
 	}
+	f2, restored := e.resume()
+	fileBefore, _ := os.ReadFile(f2.watermarkPath)
+	e.u.mu.Lock()
+	e.u.headErr = func(string) error { return errors.New("HeadObject: 503 SlowDown") }
+	e.u.mu.Unlock()
 	attempts0 := e.totalAttempts()
+	errs0 := metrics.BufferFlushErrors.Get("head")
 
-	if e.m.Listed() {
-		t.Fatal("the manifest was listed before the test wanted it to be")
-	}
 	for i := 0; i < 3; i++ {
 		if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != last {
-			t.Fatalf("tick %d before the first listing moved the watermark to %d", i, got)
+			t.Fatalf("tick %d with a failing HEAD moved the watermark to %d", i, got)
 		}
 	}
 	if e.totalAttempts() != attempts0 {
-		t.Fatalf("uploads were attempted before the first listing: %d -> %d", attempts0, e.totalAttempts())
+		t.Fatalf("uploads were attempted while HEAD failed: %d -> %d", attempts0, e.totalAttempts())
 	}
 	if !f2.recovered || f2.pending != end {
 		t.Fatalf("the pending window was dropped: recovered=%v pending=%d", f2.recovered, f2.pending)
 	}
 	if fileAfter, _ := os.ReadFile(f2.watermarkPath); !bytes.Equal(fileBefore, fileAfter) {
-		t.Fatal("the watermark file changed while waiting for a listing")
+		t.Fatal("the watermark file changed while HEAD failed")
+	}
+	if d := metrics.BufferFlushErrors.Get("head") - errs0; d != 3 {
+		t.Errorf("head errors counted = %d, want 3", d)
 	}
 
-	e.list()
+	e.u.mu.Lock()
+	e.u.headErr = nil
+	e.u.mu.Unlock()
 	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
-		t.Fatalf("watermark after the listing = %d, want %d", got, end)
+		t.Fatalf("watermark after HEAD recovered = %d, want %d", got, end)
 	}
-	e.mustLive(4*idemRowsPerGroup, 4, "after the listing")
+	e.mustLive(4*idemRowsPerGroup, 4, "after HEAD recovered")
+	if keys := e.storedKeys(); len(keys) != 4 {
+		t.Fatalf("%d objects stored, want 4 (the 3 from before + the failed one)", len(keys))
+	}
+	for _, k := range e.storedKeys() {
+		if e.storedCount(k) != 1 {
+			t.Errorf("%s stored %d times", k, e.storedCount(k))
+		}
+	}
 }
 
-// 6a. K is stored and recorded, then compacted into C, and a real listing
-// forgets K's retired record (the object is gone). After a restart the retry
-// must not send K again: the persisted set still knows it. Without that, K —
-// neither live nor retired any more — would be uploaded and its rows would
-// appear twice (in C and in K).
+// The manifest snapshot restored at startup lists many more files than the
+// bucket holds now, so the cliff guard rejects every listing and the manifest
+// never counts as refreshed. Recovery does not depend on that: it settles by
+// marks and HEAD and completes.
+func TestBufferFlusher_RecoveryDoesNotNeedAnAcceptedListing(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	for i := 0; i < 20; i++ { // snapshot-era entries whose objects are gone
+		e.m.AddFile(e.p1(), manifest.FileInfo{Key: fmt.Sprintf("%s/old-%d.parquet", e.p1(), i), Size: 1, RowCount: 1})
+	}
+	e.failGroup(idemTenantB, e.p2())
+	if got := f.tick(context.Background(), last, end); got != last {
+		t.Fatalf("watermark advanced")
+	}
+	e.failNone()
+	e.restart()
+	f2, restored := e.resume()
+
+	var objs []manifest.ListedObject
+	e.u.mu.Lock()
+	for k, d := range e.u.data {
+		objs = append(objs, manifest.ListedObject{Key: k, Size: int64(len(d))})
+	}
+	e.u.mu.Unlock()
+	time.Sleep(3 * time.Millisecond)
+	if e.m.ApplyListing(objs, time.Now()) || e.m.Listed() {
+		t.Fatal("precondition: the cliff guard must reject the listing")
+	}
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("the recovered flusher stalled behind the rejected listing: watermark = %d, want %d", got, end)
+	}
+	if keys := e.storedKeys(); len(keys) != 4 {
+		t.Fatalf("%d objects stored, want 4", len(keys))
+	}
+	for _, k := range e.storedKeys() {
+		if e.storedCount(k) != 1 {
+			t.Errorf("%s stored %d times", k, e.storedCount(k))
+		}
+	}
+}
+
+// The first listing after a restart lacks a whole account (a per-account LIST
+// failed and the refresh was still accepted). The object stored before the
+// crash is therefore not in the manifest; recovery finds it by HEAD and does not
+// send it again — not even with late rows, which would have changed its bytes.
+func TestBufferFlusher_ListingMissingAnAccountDoesNotResendAStoredKey(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f, _ := crashWithEverythingUnstored(t, e)
+	_, end := e.window()
+	x := f.failed[0] // A/p1
+	e.storeDirect(x)
+	e.late(idemTenantA, 1, 3) // late rows for X's group
+
+	e.restart()
+	f2, restored := e.resume()
+	prefixA := e.tenantPrefix(idemTenantA)
+	var objs []manifest.ListedObject
+	e.u.mu.Lock()
+	for k, d := range e.u.data {
+		if !strings.HasPrefix(k, prefixA) {
+			objs = append(objs, manifest.ListedObject{Key: k, Size: int64(len(d))})
+		}
+	}
+	e.u.mu.Unlock()
+	time.Sleep(3 * time.Millisecond)
+	e.m.ApplyListing(objs, time.Now())
+	if e.m.HasKey(x.key) {
+		t.Fatal("precondition: the listing must not show X")
+	}
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	if n := e.storedCount(x.key); n != 1 {
+		t.Errorf("%s stored %d times, want the crashed process's PUT only", x.key, n)
+	}
+	if n := e.attempts(x.key); n != 2 {
+		t.Errorf("%s attempted %d times, want 2 (none after the restart)", x.key, n)
+	}
+}
+
+// The stored object was adopted, then compacted (retired). The restart settles
+// it as retired, without a HEAD, and counts its rows as superseded.
+func TestBufferFlusher_RecoveryOfARetiredGroupIsSettledAndCounted(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f, _ := crashWithEverythingUnstored(t, e)
+	_, end := e.window()
+	x := f.failed[0] // A/p1
+	e.storeDirect(x)
+	e.list() // adopts X (bare)
+	e.compact(e.entry(x.key), e.p1())
+
+	e.restart()
+	f2, restored := e.resume()
+	superseded0 := metrics.InsertRowsSuperseded.Get()
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	if n := e.attempts(x.key); n != 2 {
+		t.Errorf("%s attempted %d times, want 2 (none after the restart)", x.key, n)
+	}
+	if n := e.u.headCount(x.key); n != 0 {
+		t.Errorf("%s HEADed %d times, want 0 (the manifest knows it is retired)", x.key, n)
+	}
+	if e.m.HasKey(x.key) {
+		t.Error("the compacted key is live again")
+	}
+	e.mustLive(4*idemRowsPerGroup, 4, "after recovery: the compaction output carries X's rows")
+	if d := metrics.InsertRowsSuperseded.Get() - superseded0; d != idemRowsPerGroup {
+		t.Errorf("superseded counter rose by %d, want %d", d, idemRowsPerGroup)
+	}
+}
+
+// 6a. K is stored and marked, then compacted into C, and a real listing forgets
+// K's retired record (the object is gone). After a restart the retry must not
+// send K again: its stored mark settles it. HEAD alone would say "absent".
 func TestBufferFlusher_RetiredRecordForgottenByListingStillNoResendAfterRestart(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
@@ -716,8 +893,8 @@ func TestBufferFlusher_RetiredRecordForgottenByListingStillNoResendAfterRestart(
 }
 
 // 6b. Compaction reads K; a retry of the window happens; then compaction
-// publishes. K's object and manifest entry are what compaction read — the retry
-// did not rewrite K — so the publish succeeds and no row is lost.
+// publishes. K's object and manifest entry are what compaction read, so the
+// publish succeeds and no row is lost.
 func TestBufferFlusher_RetryBetweenCompactionReadAndPublishLosesNothing(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
@@ -778,8 +955,10 @@ func TestBufferFlusher_FewerRowsAfterRestartDoNotResendAStoredGroup(t *testing.T
 	}
 	f2 := NewBufferFlusher(e.bw, e.st, e.wmDir, keep, 1, time.Nanosecond)
 	f2.latencyOffset = 0
-	restored := f2.loadWatermark(time.Now().UnixNano())
-	e.list()
+	restored, err := f2.loadWatermark(time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
 		t.Fatalf("watermark = %d, want %d", got, end)
 	}
@@ -795,14 +974,15 @@ func TestBufferFlusher_FewerRowsAfterRestartDoNotResendAStoredGroup(t *testing.T
 }
 
 // 7. The watermark cannot be saved after every group is stored and committed:
-// further ticks send nothing (the groups are done) and only retry the save; once
-// it works, the watermark commits.
+// further ticks send nothing and only retry the save; once it works, the
+// watermark commits.
 func TestBufferFlusher_WatermarkSaveFailureAfterUploadsNeverReuploads(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
 	f := e.flusher(1, time.Nanosecond)
 	last, end := e.window()
 	e.blockWatermarkAfter(4)
+	errs0 := metrics.BufferFlushErrors.Get("watermark")
 
 	for i := 0; i < 4; i++ {
 		if got := f.tick(context.Background(), last, end+int64(i)*int64(time.Hour)); got != last {
@@ -815,6 +995,9 @@ func TestBufferFlusher_WatermarkSaveFailureAfterUploadsNeverReuploads(t *testing
 	e.mustLive(4*idemRowsPerGroup, 4, "with the watermark stuck")
 	if len(f.failed) != 0 || f.pending != end {
 		t.Fatalf("state after the failed saves: failed=%d pending=%d", len(f.failed), f.pending)
+	}
+	if d := metrics.BufferFlushErrors.Get("watermark") - errs0; d != 4 {
+		t.Errorf("watermark errors counted = %d, want 4", d)
 	}
 
 	e.unblockWatermark()
@@ -832,10 +1015,213 @@ func TestBufferFlusher_WatermarkSaveFailureAfterUploadsNeverReuploads(t *testing
 	}
 }
 
+// If the pending record cannot be written, nothing is uploaded: the attempt is
+// abandoned before any PUT and started afresh once the record can be written.
+func TestBufferFlusher_IntentWriteFailureAbortsBeforeAnyPut(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permissions are not enforced for root")
+	}
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	if err := f.saveWatermark(last); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(e.wmDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(e.wmDir, 0o700) })
+	errs0 := metrics.BufferFlushErrors.Get("intent")
+
+	if got := f.tick(context.Background(), last, end); got != last {
+		t.Fatalf("watermark = %d, want %d", got, last)
+	}
+	if e.totalAttempts() != 0 {
+		t.Fatalf("%d uploads attempted although the intent could not be recorded", e.totalAttempts())
+	}
+	if f.pending != 0 || f.refs != nil {
+		t.Fatalf("a window is pending in memory without a durable intent: %d", f.pending)
+	}
+	if d := metrics.BufferFlushErrors.Get("intent") - errs0; d != 1 {
+		t.Errorf("intent errors counted = %d, want 1", d)
+	}
+
+	if err := os.Chmod(e.wmDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.tick(context.Background(), last, end); got != end {
+		t.Fatalf("watermark after the directory recovered = %d, want %d", got, end)
+	}
+	e.mustLive(4*idemRowsPerGroup, 4, "after the retry")
+}
+
+// Groups the re-collected rows introduce that the pending record lacks were
+// never uploaded. They are recorded durably before their first PUT.
+func TestBufferFlusher_NewGroupsFoundOnRecoveryAreRecordedBeforeUpload(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	_, nonce := crashWithEverythingUnstored(t, e)
+	_, end := e.window()
+	tenantC := logstorage.TenantID{AccountID: 3, ProjectID: 4}
+	ingestTraceAt(t, e.st, tenantC, e.hour.Add(10*time.Minute).UnixNano(), e.hour.Add(20*time.Minute).UnixNano(), idemRowsPerGroup)
+	e.st.DebugFlush()
+
+	e.restart()
+	f2, restored := e.resume()
+	if len(f2.refs) != 4 {
+		t.Fatalf("record has %d groups, want the original 4", len(f2.refs))
+	}
+	cRef := flushGroupRef{Account: 3, Project: 4, Partition: e.p1()}
+	recordedFirst := false
+	seenC := false
+	e.hook.Store(func(key string) {
+		if !strings.HasPrefix(key, e.tenantPrefix(tenantC)) {
+			return
+		}
+		seenC = true
+		b, err := os.ReadFile(f2.watermarkPath)
+		if err != nil {
+			return
+		}
+		wm, err := parseWatermark(b)
+		if err == nil {
+			for _, g := range wm.PendingGroups {
+				if g == cRef {
+					recordedFirst = true
+				}
+			}
+		}
+	})
+	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	if !seenC {
+		t.Fatal("the new group was never uploaded")
+	}
+	if !recordedFirst {
+		t.Fatal("the new group's PUT ran before it was in the durable record")
+	}
+	e.mustLive(5*idemRowsPerGroup, 5, "after recovery")
+	_ = nonce
+}
+
+// Finding: the buffer's read watermark is a tenant's newest stored MaxTimeNs, so
+// storing a newer partition of a tenant whose older partition failed would hide
+// that older partition's buffer rows. After a tenant's group fails, its later
+// partitions are not attempted in that attempt; other tenants proceed.
+func TestBufferFlusher_TenantsLaterPartitionsAreNotAttemptedAfterItsFailure(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	e.failGroup(idemTenantA, e.p1()) // tenant A's oldest partition
+
+	if got := f.tick(context.Background(), last, end); got != last {
+		t.Fatalf("watermark advanced to %d", got)
+	}
+	nonce := readWatermarkFile(t, f).PendingNonce
+	keys := e.allKeys(nonce)
+	if n := e.attempts(keys[1]); n != 0 {
+		t.Errorf("A/p2 was attempted %d times after A/p1 failed, want 0", n)
+	}
+	for _, k := range keys[2:] {
+		if e.storedCount(k) != 1 {
+			t.Errorf("tenant B's %s stored %d times, want 1: other tenants proceed", k, e.storedCount(k))
+		}
+	}
+	e.mustLive(2*idemRowsPerGroup, 2, "only tenant B is visible in the manifest")
+	if len(f.failed) != 2 || f.failed[1].result != nil {
+		t.Fatalf("failed = %d groups, the unattempted one must stay unencoded", len(f.failed))
+	}
+
+	e.failNone()
+	if got := f.tick(context.Background(), last, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	for _, k := range keys {
+		if e.storedCount(k) != 1 {
+			t.Errorf("%s stored %d times, want once", k, e.storedCount(k))
+		}
+	}
+	if n := e.attempts(keys[1]); n != 1 {
+		t.Errorf("A/p2 attempted %d times, want exactly once (the retry)", n)
+	}
+	e.mustLive(4*idemRowsPerGroup, 4, "after the retry")
+}
+
+// A failed group of one tenant does not stop the rest of the window: with A's
+// newest partition failing, its older one and all of tenant B's still go.
+func TestBufferFlusher_AFailedGroupDoesNotStopTheRestOfTheWindow(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	e.failGroup(idemTenantA, e.p2())
+
+	if got := f.tick(context.Background(), last, end); got != last {
+		t.Fatalf("watermark advanced to %d", got)
+	}
+	e.mustLive(3*idemRowsPerGroup, 3, "the groups other than the failed one")
+	if len(e.storedKeys()) != 3 || e.totalAttempts() != 4 {
+		t.Fatalf("%d groups stored, %d attempted, want 3 stored of 4 attempted", len(e.storedKeys()), e.totalAttempts())
+	}
+	e.failNone()
+	if got := f.tick(context.Background(), last, end+int64(time.Hour)); got != end {
+		t.Fatalf("watermark = %d, want %d", got, end)
+	}
+	if e.totalAttempts() != 5 {
+		t.Fatalf("%d attempts in total, want 5 (the retry sends only the failed group)", e.totalAttempts())
+	}
+	e.mustLive(4*idemRowsPerGroup, 4, "after the retry")
+}
+
+// The key is retired while the PUT is in flight (a peer's push, compaction). The
+// commit refuses it: not live, the recreated object is owed a delete again with
+// the earlier replacement kept, its rows are counted as superseded, and the
+// group counts as done so the window commits.
+func TestBufferFlusher_KeyRetiredDuringThePutIsNotResurrected(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	prefix := e.tenantPrefix(idemTenantA)
+	var target string
+	var once sync.Once
+	e.hook.Store(func(key string) {
+		if strings.HasPrefix(key, prefix) && strings.Contains(key, e.p1()) {
+			once.Do(func() {
+				target = key
+				e.m.Retire(key, "compacted-elsewhere", false)
+				e.m.ConfirmDeleted(key) // its delete landed: nothing owed yet
+			})
+		}
+	})
+	superseded0 := metrics.InsertRowsSuperseded.Get()
+
+	// The retirement lands between the writer's check and its commit: force the
+	// writer past its pre-check by retiring inside the PUT.
+	if got := f.tick(context.Background(), last, end); got != end {
+		t.Fatalf("watermark = %d, want %d: the refused group counts as done", got, end)
+	}
+	if target == "" {
+		t.Fatal("the hook never ran")
+	}
+	if e.m.HasKey(target) {
+		t.Error("the commit resurrected a key retired during the PUT")
+	}
+	rk, ok := e.m.LookupRetired(target)
+	if !ok || !rk.Reclaim || rk.Deleted || rk.By != "compacted-elsewhere" {
+		t.Errorf("LookupRetired = %+v, %v: want Reclaim owed, not Deleted, By kept", rk, ok)
+	}
+	e.mustLive(3*idemRowsPerGroup, 3, "the other three groups")
+	if d := metrics.InsertRowsSuperseded.Get() - superseded0; d != idemRowsPerGroup {
+		t.Errorf("superseded counter rose by %d, want %d", d, idemRowsPerGroup)
+	}
+}
+
 // 8a. Late rows, in-process: rows that arrive for the pending window after its
-// first attempt are not added by the retry. The retry sends the same groups; the
-// count is exactly what the first attempt collected. (They stay in the buffer,
-// served by the read-merge, but a committed window is never collected again.)
+// first attempt are not added by the retry.
 func TestBufferFlusher_LateRowsAreNotAddedByAnInProcessRetry(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
@@ -867,9 +1253,6 @@ func TestBufferFlusher_LateRowsAreNotAddedByAnInProcessRetry(t *testing.T) {
 func TestBufferFlusher_LateRowsAfterARestartReachGroupsNeverStored(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
-	// The failed group is collected afresh after the restart, with more rows than
-	// its failed attempt had: different bytes under the same key are expected (it
-	// was never stored); restart() relaxes the attempt-level check accordingly.
 	f := e.flusher(1, time.Nanosecond)
 	last, end := e.window()
 	e.failGroup(idemTenantB, e.p2())
@@ -884,13 +1267,11 @@ func TestBufferFlusher_LateRowsAfterARestartReachGroupsNeverStored(t *testing.T)
 	e.failNone()
 	e.restart()
 	f2, restored := e.resume()
-	e.list()
 	if got := f2.tick(context.Background(), restored, end+int64(time.Hour)); got != end {
 		t.Fatalf("watermark = %d, want %d", got, end)
 	}
 	e.mustLive(4*idemRowsPerGroup+late, 4, "after the restart")
-	b2 := e.keyOf(nonce, idemTenantB, e.p2())
-	if got := e.parquetRows(b2); got != idemRowsPerGroup+late {
+	if got := e.parquetRows(e.keyOf(nonce, idemTenantB, e.p2())); got != idemRowsPerGroup+late {
 		t.Errorf("the group never stored has %d rows, want %d (its own plus the late ones)", got, idemRowsPerGroup+late)
 	}
 	if got := e.parquetRows(e.keyOf(nonce, idemTenantA, e.p1())); got != idemRowsPerGroup {
@@ -899,7 +1280,7 @@ func TestBufferFlusher_LateRowsAfterARestartReachGroupsNeverStored(t *testing.T)
 }
 
 // 9. Two nodes flushing the same window derive different keys: the nonce is
-// drawn per pending window, so they never write different bytes to one key.
+// drawn per pending window.
 func TestBufferFlusher_TwoFlushersOfTheSameWindowUseDistinctKeys(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
@@ -926,9 +1307,9 @@ func TestBufferFlusher_TwoFlushersOfTheSameWindowUseDistinctKeys(t *testing.T) {
 	}
 }
 
-// 10. afterUpload failing fails the group: it is not committed, keeps its key
-// and encoded bytes, and its retry sends the same bytes.
-func TestUploadGroup_AfterUploadErrorFailsTheGroupAndTheRetrySendsIdenticalBytes(t *testing.T) {
+// onStored runs after the PUT, is told about groups that needed no upload, and
+// cannot fail the group.
+func TestUploadGroup_OnStoredRunsAfterThePutAndCannotFailTheGroup(t *testing.T) {
 	u := &faultyUploader{}
 	bw, m := durabilityWriter(t, u)
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
@@ -937,46 +1318,33 @@ func TestUploadGroup_AfterUploadErrorFailsTheGroupAndTheRetrySendsIdenticalBytes
 		t.Fatalf("%d groups, want 1", len(groups))
 	}
 	up := groups[0]
-	calls := 0
-	up.afterUpload = func(string) error {
-		calls++
-		if calls == 1 {
-			return errors.New("no space left on device")
-		}
-		return nil
+	var told []string
+	var storedAtCall []int
+	up.onStored = func(key string) {
+		told = append(told, key)
+		storedAtCall = append(storedAtCall, u.uploadedCount(key))
 	}
-
-	if err := bw.uploadTraceGroup(context.Background(), up); err == nil {
-		t.Fatal("a failing afterUpload must fail the group")
-	}
-	if rows, files := committedRows(m); rows != 0 || files != 0 {
-		t.Fatalf("committed %d rows in %d files although the group failed", rows, files)
-	}
-	if up.key == "" || up.result == nil {
-		t.Fatal("the failed group lost its key or encoded bytes")
-	}
-	key := up.key
 	if err := bw.uploadTraceGroup(context.Background(), up); err != nil {
 		t.Fatal(err)
 	}
-	if up.key != key {
-		t.Errorf("key changed on retry: %s -> %s", key, up.key)
-	}
-	u.mu.Lock()
-	h := u.attemptHashes[key]
-	u.mu.Unlock()
-	if len(h) != 2 || h[0] != h[1] {
-		t.Errorf("the retry sent different bytes: %v", h)
+	if len(told) != 1 || told[0] != up.key || storedAtCall[0] != 1 {
+		t.Fatalf("onStored calls = %v (stored count at the call %v), want once, after the PUT", told, storedAtCall)
 	}
 	if rows, files := committedRows(m); rows != 20 || files != 1 {
 		t.Fatalf("committed %d rows in %d files, want 20 in 1", rows, files)
 	}
 }
 
-// A group whose key is already live, or retired, needs no upload; its
-// afterUpload still runs so the caller records it as done. Only a retired one is
-// counted as superseded.
-func TestUploadGroup_SettledGroupsRunAfterUploadWithoutUploading(t *testing.T) {
+func (u *faultyUploader) uploadedCount(key string) int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.uploaded[key]
+}
+
+// A group whose key is already live, or retired, needs no upload; onStored still
+// runs so the caller records it as done. Only a retired one is counted as
+// superseded.
+func TestUploadGroup_SettledGroupsRunOnStoredWithoutUploading(t *testing.T) {
 	u := &faultyUploader{}
 	bw, m := durabilityWriter(t, u)
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
@@ -984,7 +1352,7 @@ func TestUploadGroup_SettledGroupsRunAfterUploadWithoutUploading(t *testing.T) {
 	mk := func(batch string) (*traceGroupUpload, *[]string) {
 		groups := bw.buildTraceGroups(partition, rowsAt(base, 7, 0), func(uint32, uint32) string { return batch })
 		var got []string
-		groups[0].afterUpload = func(k string) error { got = append(got, k); return nil }
+		groups[0].onStored = func(k string) { got = append(got, k) }
 		return groups[0], &got
 	}
 
@@ -1007,9 +1375,17 @@ func TestUploadGroup_SettledGroupsRunAfterUploadWithoutUploading(t *testing.T) {
 		t.Errorf("a retired key counted %d superseded rows, want 7", d)
 	}
 	if len(*liveCalls) != 1 || len(*retiredCalls) != 1 {
-		t.Errorf("afterUpload calls: live=%d retired=%d, want 1 each", len(*liveCalls), len(*retiredCalls))
+		t.Errorf("onStored calls: live=%d retired=%d, want 1 each", len(*liveCalls), len(*retiredCalls))
 	}
-	if n := e2eAttempts(u); n != 0 {
+	if n := (func() int {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		n := 0
+		for _, h := range u.attemptHashes {
+			n += len(h)
+		}
+		return n
+	})(); n != 0 {
 		t.Errorf("%d uploads for two settled groups, want 0", n)
 	}
 	if m.HasKey(retired.key) {
@@ -1017,24 +1393,45 @@ func TestUploadGroup_SettledGroupsRunAfterUploadWithoutUploading(t *testing.T) {
 	}
 }
 
-func e2eAttempts(u *faultyUploader) int {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	n := 0
-	for _, h := range u.attemptHashes {
-		n += len(h)
+// Writer level (the legacy staging path shares it): a key retired while its PUT
+// is in flight is not added back.
+func TestUploadGroup_KeyRetiredDuringThePutIsNotAddedBack(t *testing.T) {
+	var bw *BatchWriter
+	var m *manifest.Manifest
+	var key string
+	u := &faultyUploader{fail: func(k string) error {
+		key = k
+		m.Retire(k, "compacted", false)
+		return nil
+	}}
+	bw, m = durabilityWriter(t, u)
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	partition := partitionFromNano(base.UnixNano())
+	up := bw.buildTraceGroups(partition, rowsAt(base, 9, 0), nil)[0]
+	superseded0 := metrics.InsertRowsSuperseded.Get()
+
+	if err := bw.uploadTraceGroup(context.Background(), up); err != nil {
+		t.Fatalf("a refused commit counts as done, got %v", err)
 	}
-	return n
+	if m.HasKey(key) {
+		t.Error("the key retired during the PUT is live")
+	}
+	rk, ok := m.LookupRetired(key)
+	if !ok || !rk.Reclaim || rk.By != "compacted" {
+		t.Errorf("LookupRetired = %+v, %v: want Reclaim owed and By kept", rk, ok)
+	}
+	if d := metrics.InsertRowsSuperseded.Get() - superseded0; d != 9 {
+		t.Errorf("superseded counter rose by %d, want 9", d)
+	}
 }
 
-// A pending window is flushed although the size gate would hold it: its objects
-// may already exist, so it must reach a commit. A fresh window is still gated.
+// A pending window is flushed although the size gate would hold it. A fresh
+// window is still gated.
 func TestBufferFlusher_PendingWindowIgnoresTheSizeGate(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
 	last, end := e.window()
 
-	// Attempt 1 (small gate) fails on every upload and leaves the window pending.
 	f1 := e.flusher(1, time.Nanosecond)
 	e.failAll()
 	if got := f1.tick(context.Background(), last, end); got != last {
@@ -1045,11 +1442,13 @@ func TestBufferFlusher_PendingWindowIgnoresTheSizeGate(t *testing.T) {
 	// After a restart the gate is huge: nothing would flush a fresh window.
 	e.restart()
 	f2 := e.flusher(1<<40, 24*time.Hour)
-	last2 := f2.loadWatermark(time.Now().UnixNano())
+	last2, err := f2.loadWatermark(time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if f2.pending != end {
 		t.Fatalf("pending = %d, want %d", f2.pending, end)
 	}
-	e.list()
 	if got := f2.tick(context.Background(), last2, end+int64(time.Hour)); got != end {
 		t.Fatalf("the pending window was held by the size gate: watermark = %d, want %d", got, end)
 	}
@@ -1096,24 +1495,24 @@ func TestWindowBatchID_DeterministicAndSensitiveToEveryInput(t *testing.T) {
 	}
 }
 
-// loadWatermark restores a pending window only when it is version 2, has a
-// nonce and is ahead of the committed watermark.
-func TestBufferFlusher_LoadWatermarkPendingHandling(t *testing.T) {
+// loadWatermark restores a pending window only when it is version 3, has a
+// nonce and is ahead of the committed watermark; an unreadable file is an error
+// unless the previous copy is readable.
+func TestBufferFlusher_LoadWatermarkHandling(t *testing.T) {
+	const pend = `"pending_window_end_ns":250,"pending_nonce":"abc","pending_groups":[{"account":1,"project":2,"partition":"dt=x/hour=1"},{"account":1,"project":2,"partition":"dt=x/hour=2"}]`
 	cases := []struct {
-		name         string
-		json         string
-		wantLast     int64
-		wantPending  int64
-		wantUploaded int
+		name        string
+		json        string
+		wantLast    int64
+		wantPending int64
+		wantRefs    int
 	}{
-		{"pending ahead is restored", `{"last_flush_window_end_ns":100,"pending_window_end_ns":250,"pending_nonce":"abc","pending_uploaded":["k1","k2"],"version":2}`, 100, 250, 2},
-		{"restored without uploaded keys", `{"last_flush_window_end_ns":100,"pending_window_end_ns":250,"pending_nonce":"abc","version":2}`, 100, 250, 0},
-		{"pending without a nonce is ignored", `{"last_flush_window_end_ns":100,"pending_window_end_ns":250,"version":2}`, 100, 0, 0},
-		{"version 1 pending is ignored", `{"last_flush_window_end_ns":100,"pending_window_end_ns":250,"pending_nonce":"abc","version":1}`, 100, 0, 0},
-		{"pending equal to last is ignored", `{"last_flush_window_end_ns":100,"pending_window_end_ns":100,"pending_nonce":"abc","version":2}`, 100, 0, 0},
-		{"pending behind last is ignored", `{"last_flush_window_end_ns":100,"pending_window_end_ns":40,"pending_nonce":"abc","version":2}`, 100, 0, 0},
-		{"no pending", `{"last_flush_window_end_ns":100,"version":2}`, 100, 0, 0},
-		{"corrupt file", `{nope`, 7, 0, 0},
+		{"pending ahead is restored", `{"last_flush_window_end_ns":100,` + pend + `,"version":3}`, 100, 250, 2},
+		{"pending without a nonce is ignored", `{"last_flush_window_end_ns":100,"pending_window_end_ns":250,"version":3}`, 100, 0, 0},
+		{"version 2 pending is ignored", `{"last_flush_window_end_ns":100,` + pend + `,"version":2}`, 100, 0, 0},
+		{"pending equal to last is ignored", `{"last_flush_window_end_ns":100,"pending_window_end_ns":100,"pending_nonce":"abc","version":3}`, 100, 0, 0},
+		{"pending behind last is ignored", `{"last_flush_window_end_ns":100,"pending_window_end_ns":40,"pending_nonce":"abc","version":3}`, 100, 0, 0},
+		{"no pending", `{"last_flush_window_end_ns":100,"version":3}`, 100, 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1121,11 +1520,12 @@ func TestBufferFlusher_LoadWatermarkPendingHandling(t *testing.T) {
 			if err := os.WriteFile(f.watermarkPath, []byte(tc.json), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if got := f.loadWatermark(7); got != tc.wantLast {
-				t.Fatalf("last = %d, want %d", got, tc.wantLast)
+			got, err := f.loadWatermark(7)
+			if err != nil || got != tc.wantLast {
+				t.Fatalf("last = %d, err = %v, want %d", got, err, tc.wantLast)
 			}
-			if f.pending != tc.wantPending || len(f.uploaded) != tc.wantUploaded || f.recovered != (tc.wantPending != 0) {
-				t.Fatalf("pending=%d uploaded=%d recovered=%v, want %d/%d/%v", f.pending, len(f.uploaded), f.recovered, tc.wantPending, tc.wantUploaded, tc.wantPending != 0)
+			if f.pending != tc.wantPending || len(f.refs) != tc.wantRefs || f.recovered != (tc.wantPending != 0) {
+				t.Fatalf("pending=%d refs=%d recovered=%v, want %d/%d/%v", f.pending, len(f.refs), f.recovered, tc.wantPending, tc.wantRefs, tc.wantPending != 0)
 			}
 			if tc.wantPending == 0 && f.nonce != "" {
 				t.Fatalf("nonce %q kept without a pending window", f.nonce)
@@ -1133,49 +1533,178 @@ func TestBufferFlusher_LoadWatermarkPendingHandling(t *testing.T) {
 		})
 	}
 
-	// savePending/saveWatermark round trip.
+	t.Run("no file is a first start", func(t *testing.T) {
+		f := NewBufferFlusher(nil, nil, t.TempDir(), nil, 0, 0)
+		if got, err := f.loadWatermark(7); err != nil || got != 7 {
+			t.Fatalf("got %d, %v, want the fallback", got, err)
+		}
+	})
+	for name, content := range map[string]string{"corrupt": `{nope`, "empty": ``, "zero last": `{"last_flush_window_end_ns":0,"version":3}`} {
+		content := content
+		t.Run(name+" file with no backup is an error", func(t *testing.T) {
+			f := NewBufferFlusher(nil, nil, t.TempDir(), nil, 0, 0)
+			if err := os.WriteFile(f.watermarkPath, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.loadWatermark(7)
+			if err == nil || !strings.Contains(err.Error(), "delete both files") {
+				t.Fatalf("got %d, %v: want an error that says how to reset", got, err)
+			}
+		})
+	}
+
+	// The stored marks: only those of this window's nonce and groups.
 	f := NewBufferFlusher(nil, nil, t.TempDir(), nil, 0, 0)
-	f.pending, f.nonce, f.uploaded = 20, "nn", map[string]struct{}{"b": {}, "a": {}}
-	if err := f.savePending(10); err != nil {
+	if err := os.WriteFile(f.watermarkPath, []byte(`{"last_flush_window_end_ns":100,`+pend+`,"version":3}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	g := NewBufferFlusher(nil, nil, filepath.Dir(f.watermarkPath), nil, 0, 0)
-	if last := g.loadWatermark(1); last != 10 || g.pending != 20 || g.nonce != "nn" || len(g.uploaded) != 2 || !g.recovered {
-		t.Fatalf("round trip: last=%d pending=%d nonce=%q uploaded=%v", last, g.pending, g.nonce, g.uploaded)
-	}
-	if err := g.saveWatermark(20); err != nil {
+	marks := "abc\t1\t2\tdt=x/hour=1\n" + // ours
+		"zzz\t1\t2\tdt=x/hour=2\n" + // another window's
+		"abc\t9\t9\tdt=x/hour=9\n" + // not in the record
+		"abc\t1\t2\tdt=x/ho" // torn last line
+	if err := os.WriteFile(f.storedPath(), []byte(marks), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h := NewBufferFlusher(nil, nil, filepath.Dir(f.watermarkPath), nil, 0, 0)
-	if last := h.loadWatermark(1); last != 20 || h.pending != 0 || h.nonce != "" || h.recovered {
-		t.Fatalf("after commit: last=%d pending=%d", last, h.pending)
+	if _, err := f.loadWatermark(7); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.stored) != 1 {
+		t.Fatalf("stored marks = %v, want only the one of this window and record", f.stored)
+	}
+	if _, ok := f.stored[flushGroupRef{1, 2, "dt=x/hour=1"}]; !ok {
+		t.Fatalf("stored marks = %v", f.stored)
 	}
 }
 
-// 12. Tenants and partitions are flushed in a fixed order and a failure does not
-// stop the rest of the window: with the first group failing, every other group
-// is still attempted — and committed — in the same attempt; the retry sends
-// only the one that failed.
-func TestBufferFlusher_AFailedGroupDoesNotStopTheRestOfTheWindow(t *testing.T) {
+// A corrupt or empty main file falls back to the previous good copy; both
+// unreadable is an error and the flusher does not start.
+func TestBufferFlusher_CorruptWatermarkUsesTheBackupOrRefusesToStart(t *testing.T) {
 	e := newIdemEnv(t)
 	e.seed()
 	f := e.flusher(1, time.Nanosecond)
 	last, end := e.window()
-	e.failGroup(idemTenantA, e.p1()) // the first group in flush order
-
+	if err := f.saveWatermark(last); err != nil {
+		t.Fatal(err)
+	}
+	f.buffer.DebugFlush()
+	e.failAll()
 	if got := f.tick(context.Background(), last, end); got != last {
 		t.Fatalf("watermark advanced to %d", got)
 	}
-	e.mustLive(3*idemRowsPerGroup, 3, "the groups after the failed one")
-	if len(e.storedKeys()) != 3 || e.totalAttempts() != 4 {
-		t.Fatalf("%d groups stored, %d attempted in the failing tick, want 3 stored of 4 attempted", len(e.storedKeys()), e.totalAttempts())
+	// main = the pending record, .prev = the committed watermark before it.
+	prev, err := os.ReadFile(f.prevPath())
+	if err != nil {
+		t.Fatalf("no previous copy kept: %v", err)
 	}
+	if wm, perr := parseWatermark(prev); perr != nil || wm.LastFlushWindowEndNs != last || wm.PendingWindowEndNs != 0 {
+		t.Fatalf("previous copy = %+v, %v: want the committed watermark", wm, perr)
+	}
+	if _, err := os.Stat(f.watermarkPath + ".tmp"); err == nil {
+		t.Error("a temp file was left behind: the replacement was not an atomic rename")
+	}
+
+	for name, content := range map[string]string{"empty": "", "truncated": `{"last_flush_wind`} {
+		if err := os.WriteFile(f.watermarkPath, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f2 := e.flusher(1, time.Nanosecond)
+		got, err := f2.loadWatermark(time.Now().UnixNano())
+		if err != nil || got != last || f2.pending != 0 {
+			t.Fatalf("%s main file: got last=%d pending=%d err=%v, want the backup's %d", name, got, f2.pending, err, last)
+		}
+	}
+
+	// Both unreadable: an error, and Run does not start.
+	if err := os.WriteFile(f.watermarkPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.prevPath(), []byte("{bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f3 := e.flusher(1, time.Nanosecond)
+	if err := f3.Prepare(time.Now().UnixNano()); err == nil {
+		t.Fatal("Prepare accepted a watermark it cannot read")
+	}
+	attempts0 := e.totalAttempts()
 	e.failNone()
-	if got := f.tick(context.Background(), last, end+int64(time.Hour)); got != end {
-		t.Fatalf("watermark = %d, want %d", got, end)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f3.Run(context.Background(), time.Millisecond, time.Now().UnixNano())
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run kept running on an unreadable watermark")
 	}
-	if e.totalAttempts() != 5 {
-		t.Fatalf("%d attempts in total, want 5 (the retry sends only the failed group)", e.totalAttempts())
+	if e.totalAttempts() != attempts0 {
+		t.Fatal("a flusher that could not read its watermark uploaded")
 	}
-	e.mustLive(4*idemRowsPerGroup, 4, "after the retry")
+}
+
+// Each write keeps the previous good file as .prev and replaces the main file
+// through a temp file that does not survive.
+func TestBufferFlusher_WatermarkWritesKeepThePreviousFileAndReplaceAtomically(t *testing.T) {
+	f := NewBufferFlusher(nil, nil, t.TempDir(), nil, 0, 0)
+	for _, end := range []int64{100, 200, 300} {
+		if err := f.saveWatermark(end); err != nil {
+			t.Fatal(err)
+		}
+	}
+	main, err := os.ReadFile(f.watermarkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev, err := os.ReadFile(f.prevPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wm, _ := parseWatermark(main); wm.LastFlushWindowEndNs != 300 {
+		t.Fatalf("main = %s", main)
+	}
+	if wm, _ := parseWatermark(prev); wm.LastFlushWindowEndNs != 200 {
+		t.Fatalf("prev = %s, want the previous write", prev)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(f.watermarkPath))
+	for _, ent := range entries {
+		if strings.HasSuffix(ent.Name(), ".tmp") {
+			t.Errorf("temp file %s left behind", ent.Name())
+		}
+	}
+	// A torn main file never replaces a good backup.
+	if err := os.WriteFile(f.watermarkPath, []byte("{torn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.saveWatermark(400); err != nil {
+		t.Fatal(err)
+	}
+	if prev2, _ := os.ReadFile(f.prevPath()); !bytes.Equal(prev2, prev) {
+		t.Fatalf("a corrupt main file overwrote the good backup: %s", prev2)
+	}
+}
+
+// The stored mark is best effort: when it cannot be written (here its path is a
+// directory) the group is still committed at once and the window still commits.
+// A failed record therefore can never leave a stored, uncommitted object behind
+// to be adopted, compacted, forgotten and then sent again by the retry.
+func TestBufferFlusher_StoredMarkFailureDoesNotFailTheGroup(t *testing.T) {
+	e := newIdemEnv(t)
+	e.seed()
+	f := e.flusher(1, time.Nanosecond)
+	last, end := e.window()
+	if err := os.Mkdir(f.storedPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	errs0 := metrics.BufferFlushErrors.Get("watermark")
+
+	if got := f.tick(context.Background(), last, end); got != end {
+		t.Fatalf("watermark = %d, want %d: a lost mark must not fail the window", got, end)
+	}
+	e.mustLive(4*idemRowsPerGroup, 4, "all groups committed")
+	if n := e.totalAttempts(); n != 4 {
+		t.Fatalf("%d upload attempts, want 4", n)
+	}
+	if d := metrics.BufferFlushErrors.Get("watermark") - errs0; d != 4 {
+		t.Errorf("mark errors counted = %d, want 4", d)
+	}
 }

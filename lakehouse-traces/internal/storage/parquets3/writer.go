@@ -498,10 +498,11 @@ type logGroupUpload struct {
 	batchID string
 	key     string
 	result  *flushResult
-	// afterUpload, when set, runs once the object is stored (or found already
-	// settled) and before the manifest commit. An error fails the group: it
-	// keeps its key and encoded bytes, so the retry sends the same object.
-	afterUpload func(key string) error
+	// onStored, when set, is told once the object is stored, or found already
+	// settled (live or retired), before the manifest commit. It cannot fail the
+	// group: a stored object is always committed at once. The buffer flusher
+	// uses it for a best-effort "stored" mark.
+	onStored func(key string)
 }
 
 // assignLogKey fixes the group's object key (once) and returns it.
@@ -527,16 +528,12 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 	// compacted, rewritten or removed and its rows live elsewhere. Either way
 	// the group is settled; uploading it again would duplicate its rows.
 	if w.manifest.HasKey(key) {
-		if err := w.settled(up.afterUpload, key); err != nil {
-			return err
-		}
+		w.settled(up.onStored, key)
 		logger.Infof("skipped %s: an earlier upload of it is already live in the manifest; rows=%d", key, len(up.rows))
 		return nil
 	}
 	if w.manifest.IsRetired(key) {
-		if err := w.settled(up.afterUpload, key); err != nil {
-			return err
-		}
+		w.settled(up.onStored, key)
 		w.noteSuperseded(key, len(up.rows))
 		return nil
 	}
@@ -557,10 +554,8 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 		return err
 	}
 	metrics.InsertBytesUploaded.Add(len(result.Data))
-	if up.afterUpload != nil {
-		if err := up.afterUpload(key); err != nil {
-			return fmt.Errorf("record uploaded object %s: %w", key, err)
-		}
+	if up.onStored != nil {
+		up.onStored(key)
 	}
 
 	labelStart := time.Now()
@@ -594,7 +589,15 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 		Labels:            labels,
 		LabelAggregates:   schema.ExtractLogLabelAggregates(rows),
 	}
-	w.manifest.AddFile(partition, fi)
+	// Atomic with the retired check: a key retired while the PUT was in flight
+	// (compaction merged it, a delete rewrite replaced it) must not come back.
+	// The PUT may have recreated an already deleted object: it is owed a delete
+	// again, and its rows live in whatever superseded it.
+	if !w.manifest.AddFileUnlessRetired(partition, fi) {
+		w.manifest.Retire(key, "", true)
+		w.noteSuperseded(key, len(rows))
+		return nil
+	}
 	if w.catalogObserver != nil {
 		// UNCAPPED bloom feed (trace_id + service.name): the capped label map
 		// false-negatives on values past maxLabelsPerField — a bloom must see
@@ -679,10 +682,11 @@ type traceGroupUpload struct {
 	batchID string
 	key     string
 	result  *flushResult
-	// afterUpload, when set, runs once the object is stored (or found already
-	// settled) and before the manifest commit. An error fails the group: it
-	// keeps its key and encoded bytes, so the retry sends the same object.
-	afterUpload func(key string) error
+	// onStored, when set, is told once the object is stored, or found already
+	// settled (live or retired), before the manifest commit. It cannot fail the
+	// group: a stored object is always committed at once. The buffer flusher
+	// uses it for a best-effort "stored" mark.
+	onStored func(key string)
 }
 
 // assignTraceKey fixes the group's object key (once) and returns it.
@@ -708,16 +712,12 @@ func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload
 	// compacted, rewritten or removed and its rows live elsewhere. Either way
 	// the group is settled; uploading it again would duplicate its rows.
 	if w.manifest.HasKey(key) {
-		if err := w.settled(up.afterUpload, key); err != nil {
-			return err
-		}
+		w.settled(up.onStored, key)
 		logger.Infof("skipped %s: an earlier upload of it is already live in the manifest; rows=%d", key, len(up.rows))
 		return nil
 	}
 	if w.manifest.IsRetired(key) {
-		if err := w.settled(up.afterUpload, key); err != nil {
-			return err
-		}
+		w.settled(up.onStored, key)
 		w.noteSuperseded(key, len(up.rows))
 		return nil
 	}
@@ -738,10 +738,8 @@ func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload
 		return err
 	}
 	metrics.InsertBytesUploaded.Add(len(result.Data))
-	if up.afterUpload != nil {
-		if err := up.afterUpload(key); err != nil {
-			return fmt.Errorf("record uploaded object %s: %w", key, err)
-		}
+	if up.onStored != nil {
+		up.onStored(key)
 	}
 
 	labelStart2 := time.Now()
@@ -770,7 +768,15 @@ func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload
 		Labels:            labels2,
 		LabelAggregates:   schema.ExtractTraceLabelAggregates(rows),
 	}
-	w.manifest.AddFile(partition, fi)
+	// Atomic with the retired check: a key retired while the PUT was in flight
+	// (compaction merged it, a delete rewrite replaced it) must not come back.
+	// The PUT may have recreated an already deleted object: it is owed a delete
+	// again, and its rows live in whatever superseded it.
+	if !w.manifest.AddFileUnlessRetired(partition, fi) {
+		w.manifest.Retire(key, "", true)
+		w.noteSuperseded(key, len(rows))
+		return nil
+	}
 	traceBloomValues := extractTraceBloomValues(rows)
 	if w.catalogObserver != nil {
 		// UNCAPPED bloom feed — same rationale as the logs flush above.
@@ -1169,17 +1175,29 @@ func bloomFilters(cols []string) []parquet.BloomFilterColumn {
 	return bf
 }
 
-// settled runs a group's afterUpload hook for a group that needs no upload
-// (its object is already live or already superseded), so the caller's record
-// of what is done includes it.
-func (w *BatchWriter) settled(afterUpload func(key string) error, key string) error {
-	if afterUpload == nil {
-		return nil
+// settled tells a group's onStored hook that its object needs no upload (it is
+// already live or already superseded), so the caller's record of what is done
+// includes it.
+func (w *BatchWriter) settled(onStored func(key string), key string) {
+	if onStored != nil {
+		onStored(key)
 	}
-	if err := afterUpload(key); err != nil {
-		return fmt.Errorf("record settled object %s: %w", key, err)
+}
+
+// objectExists asks the object store, by HEAD, whether key exists in the bucket
+// the tenant's objects live in. An error means "unknown", never "absent".
+func (w *BatchWriter) objectExists(ctx context.Context, accountID, projectID uint32, key string) (bool, error) {
+	_, p := w.bucketForTenant(accountID, projectID)
+	c, ok := p.(objectChecker)
+	if !ok {
+		return false, fmt.Errorf("the object store for %s cannot check existence", key)
 	}
-	return nil
+	return c.Exists(ctx, key)
+}
+
+// objectChecker is the HEAD side of an object store; s3reader.ClientPool has it.
+type objectChecker interface {
+	Exists(ctx context.Context, key string) (bool, error)
 }
 
 // noteSuperseded counts rows a group skipped because its object had been

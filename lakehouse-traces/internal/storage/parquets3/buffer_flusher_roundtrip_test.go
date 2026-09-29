@@ -141,10 +141,14 @@ func TestInteg_FlusherRoundTrip_EndToEnd(t *testing.T) {
 // one-shot flush of a collected window (a test helper). The first error is
 // returned after every group was attempted.
 func (f *BufferFlusher) flushCollected(ctx context.Context, collected map[logstorage.TenantID][]schema.TraceRow, startNs, endNs int64) error {
-	groups := f.buildGroups(collected, startNs, startNs, endNs, randomBatchID())
-	for _, up := range groups {
-		up.afterUpload = nil
+	f.start, f.pending, f.nonce = startNs, endNs, randomBatchID()
+	defer f.clearPending()
+	var firstErr error
+	for _, up := range f.buildGroups(collected) {
+		up.onStored = nil
+		if err := f.writer.uploadTraceGroup(ctx, up); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	_, err := f.uploadAll(ctx, groups)
-	return err
+	return firstErr
 }

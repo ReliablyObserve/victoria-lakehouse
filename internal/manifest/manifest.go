@@ -1925,6 +1925,28 @@ func (m *Manifest) AddFile(partition string, fi FileInfo) {
 	m.addFileLocked(partition, fi)
 }
 
+// AddFileUnlessRetired is AddFile for a writer that has just stored an object
+// and must not resurrect a key the manifest retired in the meantime (compaction,
+// a delete rewrite or retention superseded it while the upload was in flight).
+// The retired check and the add are one critical section: it returns false and
+// changes nothing when key is retired, and true when the file was registered (or
+// was already registered under the same key).
+//
+// The caller owes a refused object's deletion: Retire(key, "", true) keeps the
+// existing replacement and re-arms the reclaim, since the upload may have
+// recreated an object that was already deleted.
+//
+// Safe for concurrent use.
+func (m *Manifest) AddFileUnlessRetired(partition string, fi FileInfo) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, retired := m.retired[fi.Key]; retired {
+		return false
+	}
+	m.addFileLocked(partition, fi)
+	return true
+}
+
 // addFileLocked is AddFile's body without the lock so ReplaceFile can pair it
 // with removeFileLocked inside ONE critical section. Caller must hold m.mu
 // (write).
