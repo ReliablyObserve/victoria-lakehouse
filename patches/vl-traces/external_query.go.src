@@ -50,57 +50,45 @@ func RunQueryExternal(qctx *QueryContext, searchFn func(writeBlock WriteDataBloc
 // satisfies this by passing its own RunQuery method.
 type ExternalRunQueryFn func(qctx *QueryContext, writeBlock WriteDataBlockFunc) error
 
-// RunQueryExternalWithSubqueries behaves like RunQueryExternal but
-// additionally preprocesses subqueries embedded in pipes (currently:
-// `| join …`) before running the main pipe pipeline. The supplied
-// runQuery callback is invoked for each inner subquery — adapters
-// typically pass their own RunQuery here.
+// RunQueryExternalWithSubqueries behaves like RunQueryExternal but first
+// resolves the subqueries embedded in the query: `in(...)` filters, `| join`,
+// `| union` and `| stream_context` pipes. The supplied runQuery callback is
+// invoked for each inner subquery, so adapters typically pass their own
+// RunQuery method and joins, unions and nested subqueries all run through the
+// same backend.
 //
-// This mirrors the native path in storage_search.go where the local
-// storage runs initJoinMaps(...) before runPipes(...). Without this
-// preprocessing, the join pipe processor finds an empty lookup map
-// and silently returns zero matched rows.
+// Upstream's (*Storage).runQuery does exactly this before runPipes, through
+// initSubqueries (lib/logstorage/storage_search.go), and this function calls
+// that same function. It used to re-implement the join step alone, which left
+// `in(...)` subqueries unresolved (the filter matched nothing), and a `union`
+// pipe panicked in its processor for want of its inner query. Reusing
+// initSubqueries also keeps these resolutions in step with the latency
+// offset: a subquery inherits the query's global time filter, or not under
+// options(ignore_global_time_filter=true), exactly as on hot storage, because
+// upstream's own code decides it.
+//
+// searchFn receives the query with its subqueries resolved (qNew), which is the
+// one the storage must evaluate: an `in(...)` filter in it already carries the
+// values its subquery produced.
 //
 // Background: VictoriaTraces' servicegraph background task issues a
-// `… | join by (span_id) (…) inner | …` query. On the native hot tier
-// `storage_search.go` resolves both sides through the same `runQuery`.
-// The external storage adapter must do the same — otherwise the inner
-// subquery never executes and the cold tier serves an empty
-// Service Graph.
+// `… | join by (span_id) (…) inner | …` query; without the join step the cold
+// tier served an empty Service Graph.
 //
-// upstream-copy: lib/logstorage/storage_search.go initSubqueries
-// upstream-divergence: upstream's initSubqueries runs FOUR initialisers —
-// initFilterInValues (`in(...)` subqueries), initJoinMaps (`join`),
-// initUnionQueries (`union`) and initStreamContextPipes (`stream_context`).
-// This function runs only initJoinMaps, because that is the one Lakehouse
-// has a cold-tier test for; the other three are resolved on the hot tier
-// only, so a cold query using them returns fewer rows than the same query
-// against upstream rather than failing. Reuse-first note: the remaining
-// three cannot simply be called here — initUnionQueries and
-// initStreamContextPipes take a runQueryFunc over writeBlockResultFunc and
-// a *QueryContext they re-parent, so adopting them is an adapter change,
-// not a one-line call. Tracked as a cold-tier parity gap. The tail after
-// the initialisers is upstream (*Storage).runQuery's, baselined separately
-// under RunQueryExternal.
-func RunQueryExternalWithSubqueries(qctx *QueryContext, searchFn func(writeBlock WriteDataBlockFunc) error, runQuery ExternalRunQueryFn, writeBlock WriteDataBlockFunc) error {
-	q := qctx.Query
-
+// upstream-original: a thin caller of upstream's initSubqueries (whose text the
+// old copy baselined) followed by the pipe chain, which RunQueryExternal's
+// baseline already tracks; nothing here is copied upstream logic.
+func RunQueryExternalWithSubqueries(qctx *QueryContext, searchFn func(q *Query, writeBlock WriteDataBlockFunc) error, runQuery ExternalRunQueryFn, writeBlock WriteDataBlockFunc) error {
 	// Adapt the adapter's WriteDataBlockFunc-shaped RunQuery into the
-	// writeBlockResultFunc-shaped runQueryFunc used by getRows. Each
-	// inner subquery reuses the SAME backend, so joins can nest.
+	// writeBlockResultFunc-shaped runQueryFunc upstream's initSubqueries wants.
 	runQueryInternal := runQueryFunc(func(qctxLocal *QueryContext, writeBlock writeBlockResultFunc) error {
 		wb := writeBlock.newDataBlockWriter()
 		return runQuery(qctxLocal, wb)
 	})
 
-	getJoinRows := func(qInner *Query) ([][]Field, error) {
-		qctxLocal := qctx.WithQuery(qInner)
-		return getRows(qctxLocal, runQueryInternal)
-	}
-
-	qNew, err := initJoinMaps(q, getJoinRows)
+	qNew, err := initSubqueries(qctx, runQueryInternal, false)
 	if err != nil {
-		return fmt.Errorf("cannot initialize `join` subqueries: %w", err)
+		return fmt.Errorf("cannot initialize subqueries: %w", err)
 	}
 
 	qctxNew := qctx.WithQuery(qNew)
@@ -109,7 +97,7 @@ func RunQueryExternalWithSubqueries(qctx *QueryContext, searchFn func(writeBlock
 
 	search := func(stopCh <-chan struct{}, writeBlockToPipes writeBlockResultFunc) error {
 		wb := writeBlockToPipes.newDataBlockWriter()
-		return searchFn(wb)
+		return searchFn(qNew, wb)
 	}
 
 	return runPipes(qctxNew, qNew.pipes, search, writeBlockResult, concurrency)

@@ -53,8 +53,8 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		if logstorage.QueryNeedsAllFields(qctx.Query) {
 			ctx = storage.WithAllFieldsHint(ctx)
 		}
-		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query,
+		searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
+			return a.store.RunQuery(ctx, qctx.TenantIDs, q,
 				wrapHiddenFields(wb, hiddenFilters))
 		}
 		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)

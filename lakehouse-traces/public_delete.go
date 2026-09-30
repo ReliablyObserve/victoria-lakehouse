@@ -30,9 +30,8 @@ import (
 // processDeleteRunTaskRequest is held to the vendored source verbatim.
 //
 // The logs binary mounts vlselect.RequestHandler instead of copying anything.
-// This binary cannot import vtselect yet (see internal_delete.go); once it
-// serves /select/* and /internal/* through vtselect too, this file is replaced
-// by vtselect.RequestHandler.
+// This binary does not mount vtselect.RequestHandler (see internal_delete.go);
+// if it ever does, this file is replaced by it.
 var deleteEnable = flag.Bool("delete.enable", false, "Whether to enable /delete/* HTTP endpoints")
 
 const deleteDisabledMessage = "requests to /delete/* are disabled; pass -delete.enable command-line flag for enabling them"

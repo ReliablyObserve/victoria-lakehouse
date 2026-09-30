@@ -10,17 +10,17 @@ import (
 
 // VictoriaTraces v0.12.0 applies -search.allowPartialResponse (and the
 // allow_partial_response argument) to the Tempo and Jaeger query APIs too;
-// before, it only reached LogsQL. This binary links VictoriaLogs' LogsQL
-// handlers, which register the same flag, so vtselect-flag-dedup.patch makes
-// VictoriaTraces read that one flag at call time instead of registering its
-// own (a second registration panics at init). It has no peer fan-out to
-// change: Lakehouse's own fan-out (the buffer bridge, peer cache) does not
-// take the flag, and Tempo/Jaeger reach storage through the Lakehouse adapter,
-// not VictoriaTraces' netselect.
+// before, it only reached LogsQL. The traces binary serves LogsQL with
+// VictoriaTraces' own handlers, so VictoriaLogs' LogsQL package (which
+// registered the same flag) is not linked and the flag is VictoriaTraces' own,
+// unpatched registration. It has no peer fan-out to change: Lakehouse's own
+// fan-out (the buffer bridge, peer cache) does not take the flag, and
+// Tempo/Jaeger reach storage through the Lakehouse adapter, not VictoriaTraces'
+// netselect.
 func TestAllowPartialResponse_FlagReachesTempoAndJaeger(t *testing.T) {
 	f := flag.Lookup("search.allowPartialResponse")
 	if f == nil {
-		t.Fatal("-search.allowPartialResponse is not registered: the flag the VictoriaLogs LogsQL handlers register is what vtselect's searchutil reads, so it must exist")
+		t.Fatal("-search.allowPartialResponse is not registered: VictoriaTraces' searchutil registers it and reads it, so it must exist")
 	}
 	old := f.Value.String()
 	t.Cleanup(func() { _ = flag.Set("search.allowPartialResponse", old) })

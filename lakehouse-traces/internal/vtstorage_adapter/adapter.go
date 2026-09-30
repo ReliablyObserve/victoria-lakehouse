@@ -88,8 +88,8 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// patches/vl-traces/external_query.go.src for the pipe list.
 	if logstorage.QueryNeedsAllFields(qctx.Query) {
 		ctx := storage.WithAllFieldsHint(qctx.Context)
-		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query, wb)
+		searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
+			return a.store.RunQuery(ctx, qctx.TenantIDs, q, wrapHiddenFields(wb, qctx.HiddenFieldsFilters))
 		}
 		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
@@ -108,8 +108,8 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 
 	if rewritten, ok := rewriteTraceIndexQuery(qctx.Query); ok {
 		newQctx := qctx.WithQuery(rewritten)
-		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
+		searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
+			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, q, wrapHiddenFields(wb, qctx.HiddenFieldsFilters))
 		}
 		return logstorage.RunQueryExternalWithSubqueries(newQctx, searchFn, a.RunQuery, writeBlock)
 	}
@@ -117,22 +117,22 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	if rewritten, ok := stripTraceIndexStream(qctx.Query); ok {
 		newQctx := qctx.WithQuery(rewritten)
 		if logstorage.QueryHasPipes(rewritten) {
-			searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-				return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
+			searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
+				return a.store.RunQuery(qctx.Context, qctx.TenantIDs, q, wrapHiddenFields(wb, qctx.HiddenFieldsFilters))
 			}
 			return logstorage.RunQueryExternalWithSubqueries(newQctx, searchFn, a.RunQuery, writeBlock)
 		}
-		return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, writeBlock)
+		return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wrapHiddenFields(writeBlock, qctx.HiddenFieldsFilters))
 	}
 
 	if logstorage.QueryHasPipes(qctx.Query) {
-		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, wb)
+		searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
+			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, q, wrapHiddenFields(wb, qctx.HiddenFieldsFilters))
 		}
 		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
 
-	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, writeBlock)
+	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, wrapHiddenFields(writeBlock, qctx.HiddenFieldsFilters))
 }
 
 // stripTraceIndexStream detects VT's Tempo search queries that use the
@@ -268,6 +268,7 @@ func (a *Adapter) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([
 	if err != nil {
 		return nil, err
 	}
+	results = filterHiddenValues(results, qctx.HiddenFieldsFilters)
 	return filterValuesBySubstring(results, filter), nil
 }
 
@@ -284,6 +285,7 @@ func (a *Adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter stri
 	if err != nil {
 		return nil, err
 	}
+	results = filterHiddenValues(results, qctx.HiddenFieldsFilters)
 	return filterValuesBySubstring(results, filter), nil
 }
 
