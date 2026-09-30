@@ -23,43 +23,24 @@ import (
 // body). Returns the encoded bytes.
 func makeMultiRGBloomLogParquet(t *testing.T, baseTime time.Time, known string, minBytes, maxRowsPerRG int) []byte {
 	t.Helper()
-	var rows []schema.LogRow
-	i := 0
-	for {
+	return growParquetTo(t, minBytes, func(i int) schema.LogRow {
 		tid := fmt.Sprintf("trace-%016x-%016x", i, i*2654435761)
 		if i == 0 {
 			tid = known
 		}
-		rows = append(rows, schema.LogRow{
+		return schema.LogRow{
 			TimestampUnixNano: baseTime.Add(time.Duration(i) * time.Microsecond).UnixNano(),
 			Body:              fmt.Sprintf("row-%d-payload-%x-%x-%x", i, i*2654435761, i*1442695040, i*8675309),
 			SeverityText:      []string{"INFO", "WARN", "ERROR", "DEBUG"}[i%4],
 			ServiceName:       fmt.Sprintf("service-%d", i%16),
 			TraceID:           tid,
 			SpanID:            fmt.Sprintf("span-%016x", i),
-		})
-		i++
-		if i%500 == 0 {
-			var buf bytes.Buffer
-			w := parquet.NewGenericWriter[schema.LogRow](&buf,
-				parquet.Compression(&parquet.Zstd),
-				parquet.MaxRowsPerRowGroup(int64(maxRowsPerRG)),
-				parquet.BloomFilters(bloomFilters(schema.LogBloomColumns())...),
-			)
-			if _, err := w.Write(rows); err != nil {
-				t.Fatal(err)
-			}
-			if err := w.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if buf.Len() >= minBytes {
-				return buf.Bytes()
-			}
 		}
-		if i > 100000 {
-			t.Fatal("could not grow test parquet to minBytes")
-		}
-	}
+	},
+		parquet.Compression(&parquet.Zstd),
+		parquet.MaxRowsPerRowGroup(int64(maxRowsPerRG)),
+		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns())...),
+	)
 }
 
 // TestRangeRead_ExactBloomColumn_DoesNotFalseNegative is the regression guard

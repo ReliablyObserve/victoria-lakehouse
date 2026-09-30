@@ -471,6 +471,14 @@ func sampleEvery(values []string, step int) []string {
 // never diverge.
 func buildGoldenFiles(t *testing.T) []goldenFile {
 	t.Helper()
+	return buildGoldenFilesN(t, 0)
+}
+
+// buildGoldenFilesN builds the first limit datasets (all of them when limit is
+// 0). A test that only needs the first file (the logs-basic profile) must not
+// pay for the 200k-value high-cardinality dataset that follows it.
+func buildGoldenFilesN(t *testing.T, limit int) []goldenFile {
+	t.Helper()
 
 	// The writer reads the Tier-2 slot binding from a package global; pin it
 	// so the golden never depends on test ordering.
@@ -499,6 +507,9 @@ func buildGoldenFiles(t *testing.T) []goldenFile {
 		present: map[string][]string{"service.name": presentSvc, "trace_id": presentTID},
 		absent:  map[string][]string{"service.name": absentKeys(512), "trace_id": absentKeys(512)},
 	}))
+	if limit == 1 {
+		return files
+	}
 
 	// 2. logs-highcard — 200k distinct values in a `,dict` bloom column.
 	highRows := goldenHighCardLogRows(200_000)

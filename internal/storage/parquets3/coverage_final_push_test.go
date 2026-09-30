@@ -192,6 +192,7 @@ func TestCanWriteData_Success(t *testing.T) {
 }
 
 func TestCanWriteData_S3Error(t *testing.T) {
+	singleAttemptS3(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"runtime/debug"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -428,6 +429,13 @@ func TestRunQuery_ProductionShape_WildcardScalesUnderMemoryBudget(t *testing.T) 
 
 	budgetBefore := getCounterValue(t, metrics.QueryMemoryBudgetExceeded)
 
+	// The peak is sampled from HeapAlloc, which counts garbage the collector has
+	// not reclaimed yet. With the default GOGC=100 how much of it piles up on
+	// top of the live heap depends on when the GC gets CPU, so a loaded runner
+	// (or a slow -race run) read a healthy query as 91x the block size against
+	// a 64x bound (#38). A tight GOGC keeps the sampled peak close to the live
+	// working set, so the bound measures the queue depth and not GC scheduling.
+	defer debug.SetGCPercent(debug.SetGCPercent(20))
 	var heapBefore runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&heapBefore)

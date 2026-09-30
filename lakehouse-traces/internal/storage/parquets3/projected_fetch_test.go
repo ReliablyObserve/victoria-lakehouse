@@ -150,10 +150,8 @@ type plannedSpanRow struct {
 // minBytes with ZSTD-resistant payload.
 func makeMultiRGSpanParquet(t *testing.T, baseTime time.Time, minBytes, maxRowsPerRG int) []byte {
 	t.Helper()
-	var rows []plannedSpanRow
-	i := 0
-	for {
-		rows = append(rows, plannedSpanRow{
+	return growParquetTo(t, minBytes, func(i int) plannedSpanRow {
+		return plannedSpanRow{
 			TimestampUnixNano: baseTime.Add(time.Duration(i) * time.Microsecond).UnixNano(),
 			TraceID:           fmt.Sprintf("trace-%032x", i),
 			SpanID:            fmt.Sprintf("span-%016x", i),
@@ -162,27 +160,50 @@ func makeMultiRGSpanParquet(t *testing.T, baseTime time.Time, minBytes, maxRowsP
 			DurationNs:        int64(i%1000) * 1_000_000,
 			Stream:            fmt.Sprintf(`{svc="service-%d"}`, i%16),
 			StatusMessage:     fmt.Sprintf("status-%d-detail-%x-%x-%x", i, i*2654435761, i*1442695040, i*0xdeadbeef),
-		})
-		i++
-		if i%500 == 0 {
-			var buf bytes.Buffer
-			w := parquet.NewGenericWriter[plannedSpanRow](&buf,
-				parquet.Compression(&parquet.Zstd),
-				parquet.MaxRowsPerRowGroup(int64(maxRowsPerRG)),
-			)
-			if _, err := w.Write(rows); err != nil {
-				t.Fatal(err)
-			}
-			if err := w.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if buf.Len() >= minBytes {
-				return buf.Bytes()
-			}
 		}
-		if i > 100000 {
+	},
+		parquet.Compression(&parquet.Zstd),
+		parquet.MaxRowsPerRowGroup(int64(maxRowsPerRG)),
+	)
+}
+
+// growParquetTo encodes gen(0..n) as a parquet file of at least minBytes. It
+// sizes n from the bytes-per-row of the previous attempt, so the file is built
+// in a handful of passes. (The loop it replaces re-encoded the whole
+// accumulated slice every 500 rows, which is quadratic and made the
+// oversize-footer fixtures the slowest tests in the package.)
+func growParquetTo[T any](t *testing.T, minBytes int, gen func(i int) T, opts ...parquet.WriterOption) []byte {
+	t.Helper()
+	const step, maxRows = 500, 100_000
+	n := step
+	for {
+		rows := make([]T, n)
+		for i := range rows {
+			rows[i] = gen(i)
+		}
+		var buf bytes.Buffer
+		w := parquet.NewGenericWriter[T](&buf, opts...)
+		if _, err := w.Write(rows); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if buf.Len() >= minBytes {
+			return buf.Bytes()
+		}
+		if n >= maxRows {
 			t.Fatal("could not grow test parquet to minBytes")
 		}
+		next := int(float64(n)*float64(minBytes)/float64(buf.Len())*1.05) + 1
+		next = (next + step - 1) / step * step
+		if next < n+step {
+			next = n + step
+		}
+		if next > maxRows {
+			next = maxRows
+		}
+		n = next
 	}
 }
 
@@ -778,10 +799,8 @@ func TestFooterPrefetch_OversizeFooterFitsPerSignalDefault_Traces(t *testing.T) 
 // (the trace index lives in footer KV).
 func makeMultiRGSpanParquetWithKV(t *testing.T, baseTime time.Time, minBytes, maxRowsPerRG int, kvPad string) []byte {
 	t.Helper()
-	var rows []plannedSpanRow
-	i := 0
-	for {
-		rows = append(rows, plannedSpanRow{
+	return growParquetTo(t, minBytes, func(i int) plannedSpanRow {
+		return plannedSpanRow{
 			TimestampUnixNano: baseTime.Add(time.Duration(i) * time.Microsecond).UnixNano(),
 			TraceID:           fmt.Sprintf("trace-%032x", i),
 			SpanID:            fmt.Sprintf("span-%016x", i),
@@ -790,27 +809,10 @@ func makeMultiRGSpanParquetWithKV(t *testing.T, baseTime time.Time, minBytes, ma
 			DurationNs:        int64(i%1000) * 1_000_000,
 			Stream:            fmt.Sprintf(`{svc="service-%d"}`, i%16),
 			StatusMessage:     fmt.Sprintf("status-%d-detail-%x-%x", i, i*2654435761, i*1442695040),
-		})
-		i++
-		if i%500 == 0 {
-			var buf bytes.Buffer
-			w := parquet.NewGenericWriter[plannedSpanRow](&buf,
-				parquet.Compression(&parquet.Zstd),
-				parquet.MaxRowsPerRowGroup(int64(maxRowsPerRG)),
-				parquet.KeyValueMetadata("test_footer_pad", kvPad),
-			)
-			if _, err := w.Write(rows); err != nil {
-				t.Fatal(err)
-			}
-			if err := w.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if buf.Len() >= minBytes {
-				return buf.Bytes()
-			}
 		}
-		if i > 100000 {
-			t.Fatal("could not grow test parquet to minBytes")
-		}
-	}
+	},
+		parquet.Compression(&parquet.Zstd),
+		parquet.MaxRowsPerRowGroup(int64(maxRowsPerRG)),
+		parquet.KeyValueMetadata("test_footer_pad", kvPad),
+	)
 }

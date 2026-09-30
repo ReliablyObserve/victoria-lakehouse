@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uses against RustFS and the MinIO reference build; `docs/test-s3-backend.md` covers the measurements,
   the job and how to bump the pin. The MinIO images stay available as the reference and fallback.
 
+- **The parquets3 test packages fit their CI timeout again (tests and CI only; no runtime change).** Under
+  `-race` on a 2-core runner `internal/storage/parquets3` had crept to 465s, 494s, 551s and then a 600s
+  timeout kill in both modules. Fixture builders no longer re-encode the whole file every 500 rows, S3-error
+  tests no longer wait out the SDK's retry backoff, and the `testing.Short()`-gated heavy tests (memory
+  budget, production shape, field-metadata exactness) run in their own `test-parquets3-heavy` job on every
+  PR. A report step warns at 70% and fails at 90% of a package's `-timeout` and lists the slowest tests in the
+  job summary. The benchmark jobs no longer re-run the unit tests (86-89 min before) and no longer hide a
+  failing benchmark package; `internal/metrics` benchmarks that panicked on a duplicate metric name now run.
+
 ## [0.143.6] - 2026-09-30
 
 ### Security

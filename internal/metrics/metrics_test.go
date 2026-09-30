@@ -2,9 +2,21 @@ package metrics
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+// benchSeq gives every benchmark run its own metric name. testing calls a
+// benchmark function again for each b.N it tries (and once per -count), and
+// VictoriaMetrics/metrics panics when a name is registered twice, so a fixed
+// name made the first of these benchmarks abort the whole package's run.
+var benchSeq atomic.Int64
+
+func benchMetricName(base string) string {
+	return fmt.Sprintf("%s_%d", base, benchSeq.Add(1))
+}
 
 func TestCounter(t *testing.T) {
 	c := NewCounter("test_counter_basic")
@@ -122,7 +134,7 @@ func TestWritePrometheusContainsLakehouseMetrics(t *testing.T) {
 }
 
 func BenchmarkCounterInc(b *testing.B) {
-	c := NewCounter("bench_counter_inc")
+	c := NewCounter(benchMetricName("bench_counter_inc"))
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			c.Inc()
@@ -131,7 +143,7 @@ func BenchmarkCounterInc(b *testing.B) {
 }
 
 func BenchmarkCounterVecInc(b *testing.B) {
-	cv := NewCounterVec("bench_vec_inc", "op")
+	cv := NewCounterVec(benchMetricName("bench_vec_inc"), "op")
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			cv.Inc("GET")
@@ -140,7 +152,7 @@ func BenchmarkCounterVecInc(b *testing.B) {
 }
 
 func BenchmarkHistogramObserve(b *testing.B) {
-	h := NewHistogram("bench_hist_observe", DefBuckets)
+	h := NewHistogram(benchMetricName("bench_hist_observe"), DefBuckets)
 	b.RunParallel(func(pb *testing.PB) {
 		v := 0.01
 		for pb.Next() {

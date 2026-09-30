@@ -136,7 +136,7 @@ func joinPath(prefix, key string) string {
 // whole-blob difference — which is also what it reports, leaving whoever runs
 // the next parquet-go bump to find the changed line by eye.
 func TestGoldenDiffNamesTamperedFields(t *testing.T) {
-	files := buildGoldenFiles(t)
+	files := buildGoldenFilesN(t, 1) // only files[0] is tampered with
 	if len(files) == 0 {
 		t.Fatal("no golden files were built")
 	}
