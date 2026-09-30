@@ -17,7 +17,7 @@ graph TB
     end
 
     subgraph "S3 Storage"
-        MINIO[("MinIO<br/>obs-archive")]
+        S3[("RustFS<br/>obs-archive")]
     end
 
     subgraph "Hot Tier — Disk, 24h retention"
@@ -49,15 +49,15 @@ graph TB
 
     DS -->|"logs (jsonline)"| VL
     DS -->|"traces (zipkin)"| VT
-    DS -->|"logs parquet"| MINIO
-    DS -->|"traces parquet"| MINIO
+    DS -->|"logs parquet"| S3
+    DS -->|"traces parquet"| S3
     DC -->|"dual-write"| VL
     DC -->|"dual-write"| VT
-    DC -->|"parquet"| MINIO
+    DC -->|"parquet"| S3
 
-    MINIO --> LHL
-    MINIO --> LHT
-    MINIO -->|"SQL on Parquet"| DDB
+    S3 --> LHL
+    S3 --> LHT
+    S3 -->|"SQL on Parquet"| DDB
 
     VLS -->|"fan-out"| VL
     VLS -->|"fan-out"| LHL
@@ -82,7 +82,7 @@ graph TB
     style LHT fill:#5a189a,color:#fff
     style VLS fill:#2d6a4f,color:#fff
     style VTS fill:#2d6a4f,color:#fff
-    style MINIO fill:#e76f51,color:#fff
+    style S3 fill:#e76f51,color:#fff
     style DDB fill:#ff6b35,color:#fff
 ```
 
@@ -106,20 +106,22 @@ Once all services are healthy, open Grafana at [http://localhost:3003](http://lo
 
 The compose file defines the following services on a shared `lakehouse-net` bridge network:
 
-### MinIO (S3-compatible storage)
+### RustFS (S3-compatible storage)
 
 ```yaml
-minio:
-  image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z
-  command: server /data --console-address ":9001"
-  environment:
-    MINIO_ROOT_USER: minioadmin
-    MINIO_ROOT_PASSWORD: minioadmin
+services:
+  s3:
+    image: rustfs/rustfs:1.0.0@sha256:<digest>
+    environment:
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
 ```
 
-MinIO provides S3-compatible object storage. The image is built from upstream source and hosted on GHCR because upstream MinIO is unmaintained and no longer pullable anonymously; it is a frozen test image (see [How the MinIO test images are built](minio-test-images.md)). The `minio-init` sidecar creates the `obs-archive` bucket automatically on first start using the MinIO CLI (`mc mb local/obs-archive`).
+The `s3` service provides S3-compatible object storage using RustFS, the test S3 backend for every compose stack and CI job (see [Test S3 backend](test-s3-backend.md)). The `s3-init` sidecar creates the `obs-archive` bucket automatically on first start using the `mc` client image (`mc mb local/obs-archive`), which works against any S3 endpoint.
 
-- **API endpoint**: `http://minio:9000` (internal)
+- **API endpoint**: `http://s3:9000` (internal)
 - **Console**: not exposed by default; add `ports: ["9001:9001"]` to access the web UI
 
 ### Data Generation
@@ -132,7 +134,7 @@ Two datagen services populate the environment with realistic test data:
 --logs=5000 --traces=1000 --hours-back=48 --dual-write --vl-endpoint=http://victorialogs:9428 --vt-endpoint=http://victoriatraces:10428
 ```
 
-This writes Parquet files directly to S3 (MinIO) and dual-writes to both hot tiers: logs to VictoriaLogs via `/insert/jsonline` and traces to VictoriaTraces via Zipkin `/api/v2/spans`.
+This writes Parquet files directly to S3 (RustFS) and dual-writes to both hot tiers: logs to VictoriaLogs via `/insert/jsonline` and traces to VictoriaTraces via Zipkin `/api/v2/spans`.
 
 **datagen-continuous** runs indefinitely after seeding completes, generating a steady stream of fresh data:
 
@@ -158,7 +160,7 @@ The datagen tool produces five realistic log patterns (JSON access logs, logfmt,
 lakehouse-logs:
   command:
     - "-lakehouse.s3.bucket=obs-archive"
-    - "-lakehouse.s3.endpoint=http://minio:9000"
+    - "-lakehouse.s3.endpoint=http://s3:9000"
     - "-lakehouse.s3.access-key=minioadmin"
     - "-lakehouse.s3.secret-key=minioadmin"
     - "-lakehouse.s3.force-path-style=true"
@@ -169,7 +171,7 @@ lakehouse-logs:
     - "-lakehouse.tenant.global-read-value=lakehouse-e2e-global-key"
 ```
 
-Serves VictoriaLogs-compatible select APIs backed by Parquet files on MinIO. Pre-configured with tenant `0/0` (default), global read access via the `X-Lakehouse-Global-Read` header, and string-based tenant auto-registration via the `X-Scope-OrgID` header. String tenants (e.g., `acme-corp`, `staging-team`) are automatically mapped to numeric IDs on first insert.
+Serves VictoriaLogs-compatible select APIs backed by Parquet files on RustFS. Pre-configured with tenant `0/0` (default), global read access via the `X-Lakehouse-Global-Read` header, and string-based tenant auto-registration via the `X-Scope-OrgID` header. String tenants (e.g., `acme-corp`, `staging-team`) are automatically mapped to numeric IDs on first insert.
 
 - **Internal endpoint**: `http://lakehouse-logs:9428`
 - **Health check**: `GET /health` every 5 seconds
@@ -179,11 +181,11 @@ Serves VictoriaLogs-compatible select APIs backed by Parquet files on MinIO. Pre
 ```yaml
 lakehouse-traces:
   command:
-    - "-lakehouse.s3.endpoint=http://minio:9000"
+    - "-lakehouse.s3.endpoint=http://s3:9000"
     - "-lakehouse.s3.force-path-style=true"
 ```
 
-Serves Jaeger and Tempo-compatible trace query APIs backed by the same MinIO bucket.
+Serves Jaeger and Tempo-compatible trace query APIs backed by the same S3 bucket.
 
 - **Internal endpoint**: `http://lakehouse-traces:10428`
 - **Health check**: `GET /health` every 5 seconds
@@ -321,20 +323,20 @@ clickhouse:
     CLICKHOUSE_USER: default
 ```
 
-ClickHouse provides SQL analytics directly on the Parquet files stored in MinIO, using the `s3()` table function. Pre-configured with named collections for MinIO credentials and views for both logs and traces datasets.
+ClickHouse provides SQL analytics directly on the Parquet files stored in RustFS, using the `s3()` table function. Pre-configured with named collections for the S3 credentials and views for both logs and traces datasets.
 
 Example queries in Grafana:
 
 ```sql
 -- Query logs Parquet files directly from S3
 SELECT * FROM s3(
-  'http://minio:9000/obs-archive/logs/dt=2026-05-12/**/*.parquet',
+  'http://s3:9000/obs-archive/logs/dt=2026-05-12/**/*.parquet',
   'minioadmin', 'minioadmin', 'Parquet'
 ) LIMIT 100
 
 -- Query traces Parquet files
 SELECT * FROM s3(
-  'http://minio:9000/obs-archive/traces/dt=2026-05-12/**/*.parquet',
+  'http://s3:9000/obs-archive/traces/dt=2026-05-12/**/*.parquet',
   'minioadmin', 'minioadmin', 'Parquet'
 ) LIMIT 100
 
@@ -345,7 +347,7 @@ SELECT
   count() as total,
   round(errors / total * 100, 2) as error_pct
 FROM s3(
-  'http://minio:9000/obs-archive/logs/**/*.parquet',
+  'http://s3:9000/obs-archive/logs/**/*.parquet',
   'minioadmin', 'minioadmin', 'Parquet'
 )
 GROUP BY service ORDER BY errors DESC
@@ -355,15 +357,15 @@ GROUP BY service ORDER BY errors DESC
 
 ### DuckDB (Analytics — S3 Parquet via Grafana)
 
-DuckDB runs in-memory inside the Grafana DuckDB datasource plugin (no separate server). It connects to MinIO via the `httpfs` extension, configured automatically via `initSQL` in the datasource provisioning.
+DuckDB runs in-memory inside the Grafana DuckDB datasource plugin (no separate server). It connects to RustFS via the `httpfs` extension, configured automatically via `initSQL` in the datasource provisioning.
 
 Example queries in Grafana:
 
 ```sql
--- Query logs Parquet from MinIO
+-- Query logs Parquet from RustFS
 SELECT * FROM read_parquet('s3://obs-archive/logs/dt=2026-05-12/**/*.parquet') LIMIT 100
 
--- Query traces Parquet from MinIO
+-- Query traces Parquet from RustFS
 SELECT * FROM read_parquet('s3://obs-archive/traces/dt=2026-05-12/**/*.parquet') LIMIT 100
 
 -- Time series: log volume over time
@@ -418,7 +420,7 @@ Pre-configured with eleven datasources via provisioning files in `deployment/doc
 | Lakehouse Logs Cold (S3) | VictoriaLogs | `http://lakehouse-logs:9428` | Cold tier only (S3 Parquet) |
 | Lakehouse Traces Cold (S3) | Jaeger / Tempo | `http://lakehouse-traces:10428` | Cold tier only (S3 Parquet) |
 | Loki via Proxy (Hot+Cold) | Loki | `http://loki-vl-proxy:3100` | Unified hot+cold via Loki API with Drilldown support |
-| DuckDB Analytics (S3 Parquet) | DuckDB | in-memory + MinIO S3 | Direct SQL on Parquet files via DuckDB `read_parquet()` |
+| DuckDB Analytics (S3 Parquet) | DuckDB | in-memory + RustFS S3 | Direct SQL on Parquet files via DuckDB `read_parquet()` |
 | ClickHouse Analytics (S3 Parquet) | ClickHouse | `http://clickhouse:9000` | SQL analytics on Parquet via `lakehouse.logs`/`lakehouse.traces` views |
 | ClickHouse Logs (S3 Parquet) | ClickHouse | `http://clickhouse:9000` | Grafana Logs panel on S3 Parquet — `body`, `severity_text`, `service.name` |
 | ClickHouse Traces (S3 Parquet) | ClickHouse | `http://clickhouse:9000` | Grafana Traces panel on S3 Parquet — `trace_id`, `span_id`, `duration_ns` |
@@ -442,10 +444,10 @@ The compose file defines five named volumes:
 
 The compose file uses health checks and `depends_on` conditions to ensure correct startup order:
 
-1. **minio** starts and becomes healthy
-2. **minio-init** creates the `obs-archive` bucket, then exits
+1. **s3** starts and becomes healthy
+2. **s3-init** creates the `obs-archive` bucket, then exits
 3. **victorialogs** and **victoriatraces** start and become healthy (hot tiers)
-4. **datagen-seed** writes historical data to MinIO, VictoriaLogs, and VictoriaTraces, then exits
+4. **datagen-seed** writes historical data to RustFS, VictoriaLogs, and VictoriaTraces, then exits
 5. **lakehouse-logs** and **lakehouse-traces** start (depend on seed completion)
 6. **datagen-continuous** begins generating fresh data every 30 seconds (dual-write to all tiers)
 7. **vlselect** and **vtselect** start (depend on hot + cold tiers being healthy)
@@ -497,7 +499,7 @@ ports:
 ports:
   - "10428:10428"
 
-# Add to minio service (for DuckDB/analytics access)
+# Add to the s3 service (for DuckDB/analytics access)
 ports:
   - "9000:9000"
   - "9001:9001"

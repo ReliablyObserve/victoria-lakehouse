@@ -6,11 +6,11 @@ name: minio-images
 # Why: upstream MinIO is unmaintained (the minio/minio repository is archived,
 # the community edition is source-only) and the quay.io/minio/* and Docker Hub
 # minio/* images refuse anonymous pulls. These are frozen test images, not a
-# supported MinIO distribution. See docs/minio-test-images.md.
+# supported MinIO distribution. See docs/test-s3-backend.md.
 #
 # Tags are immutable: an image is pushed only when its tag does not exist yet.
 # To move to a different MinIO release, change the pins below AND every
-# reference listed in docs/minio-test-images.md.
+# reference listed in docs/test-s3-backend.md.
 
 on:
   pull_request:

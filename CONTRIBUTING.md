@@ -8,7 +8,7 @@ Thank you for your interest in contributing to Victoria Lakehouse! This document
 
 - Go 1.23+
 - Docker (for local E2E testing)
-- MinIO CLI (`mc`) for local S3 testing
+- The `mc` client (any S3 client works) for local S3 testing
 
 ### Development Setup
 
@@ -22,8 +22,8 @@ go test ./...
 ### Running Locally
 
 ```bash
-# Start MinIO for local S3
-docker compose -f deployment/docker/docker-compose-e2e.yml up -d minio
+# Start the S3 backend (RustFS) and create the buckets
+docker compose -f deployment/docker/docker-compose-e2e.yml up -d s3 s3-init
 
 # Run lakehouse-logs
 go run ./cmd/lakehouse-logs --lakehouse.s3.bucket=obs-archive --lakehouse.s3.endpoint=http://localhost:9000
