@@ -20,10 +20,10 @@ import (
 // Go's flag package panics at init on a duplicate name — so every name both
 // sides register has to be deduplicated. That is what
 // patches/vt-traces/vtstorage-flag-dedup.patch (via the safe* helpers in
-// flag_dedup.go.src), patches/vt-traces/vtinsert-flag-dedup.patch and
-// patches/vt-traces/vtselect-flag-dedup.patch do: the
-// VictoriaTraces side checks flag.Lookup first and reuses VictoriaLogs'
-// already-registered Value instead of registering a second one.
+// flag_dedup.go.src) does: the VictoriaTraces side checks flag.Lookup first and
+// hands back VictoriaLogs' already-registered Value instead of registering a
+// second one. patches/vt-traces/vtinsert-flag-dedup.patch aliases VictoriaLogs'
+// exported flag pointers, so VictoriaTraces registers nothing there at all.
 //
 // The failure mode this file guards is silent and total: an upstream bump that
 // adds one new VictoriaTraces flag colliding with an existing VictoriaLogs flag
@@ -178,7 +178,7 @@ func TestVTFlagDedupCoversEveryCollision(t *testing.T) {
 	}
 	for _, name := range unguarded {
 		t.Errorf("flag -%s is registered by BOTH %s (VictoriaLogs) and %s (VictoriaTraces) but is not deduplicated: lakehouse-traces will panic at startup with \"flag redefined\".\n"+
-			"Add it to patches/vt-traces/vtstorage-flag-dedup.patch (safe* helper from flag_dedup.go.src) or patches/vt-traces/vtinsert-flag-dedup.patch or patches/vt-traces/vtselect-flag-dedup.patch.",
+			"Add it to patches/vt-traces/vtstorage-flag-dedup.patch (safe* helper from flag_dedup.go.src) or patches/vt-traces/vtinsert-flag-dedup.patch.",
 			name, vlFlags[name], vtFlags[name])
 	}
 	for _, name := range dead {
@@ -274,7 +274,6 @@ func TestVTFlagDedupPatchesPresent(t *testing.T) {
 		"patches/vt-traces/flag_dedup.go.src",
 		"patches/vt-traces/vtstorage-flag-dedup.patch",
 		"patches/vt-traces/vtinsert-flag-dedup.patch",
-		"patches/vt-traces/vtselect-flag-dedup.patch",
 	} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(p))); err != nil {
 			t.Errorf("%s is missing — the lakehouse-traces flag dedup has no mechanism behind it: %v", p, err)

@@ -2,19 +2,40 @@ package vtstorage
 
 import (
 	"flag"
+	"reflect"
 	"time"
+	"unsafe"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
+
+	// The lakehouse-traces binary links VictoriaLogs' vlstorage, which registers
+	// the same flag names as this package. Importing it here makes it initialize
+	// FIRST (a package initializes after the packages it imports), so the
+	// flag.Lookup guards below see VictoriaLogs' registration whatever the
+	// import paths sort like, and a registration on this side can never win the
+	// race and make VictoriaLogs' own registration panic.
+	_ "github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
 )
 
-// Safe flag registration helpers that skip registration when the flag already exists.
-// Prevents panics when both VL's vlstorage and VT's vtstorage are in the same binary.
+// Safe flag registration helpers that skip registration when the flag already
+// exists. Prevents panics when both VL's vlstorage and VT's vtstorage are in
+// the same binary.
+//
+// When the flag already exists, the helper hands back VictoriaLogs' own value,
+// not a detached copy: the command-line setting (and a password read from a
+// file or URL) is then the one both packages see. A detached copy would read
+// the default instead, e.g. an auth key that reads empty and lets every request
+// through. Only when the existing registration is of an unexpected type does a
+// detached default come back.
 
 // upstream-original: a flag.Lookup guard in front of flagutil.NewRetentionDuration. No
 // upstream body is copied; which collisions must be guarded is checked
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeRetentionDuration(name, defaultValue, description string) *flagutil.RetentionDuration {
-	if flag.Lookup(name) != nil {
+	if f := flag.Lookup(name); f != nil {
+		if v, ok := f.Value.(*flagutil.RetentionDuration); ok {
+			return v
+		}
 		d := &flagutil.RetentionDuration{}
 		_ = d.Set(defaultValue)
 		return d
@@ -26,8 +47,11 @@ func safeRetentionDuration(name, defaultValue, description string) *flagutil.Ret
 // upstream body is copied; which collisions must be guarded is checked
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeBytes(name string, defaultValue int64, description string) *flagutil.Bytes {
-	if flag.Lookup(name) != nil {
-		return &flagutil.Bytes{}
+	if f := flag.Lookup(name); f != nil {
+		if v, ok := f.Value.(*flagutil.Bytes); ok {
+			return v
+		}
+		return &flagutil.Bytes{N: defaultValue}
 	}
 	return flagutil.NewBytes(name, defaultValue, description)
 }
@@ -36,7 +60,10 @@ func safeBytes(name string, defaultValue int64, description string) *flagutil.By
 // upstream body is copied; which collisions must be guarded is checked
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safePassword(name, description string) *flagutil.Password {
-	if flag.Lookup(name) != nil {
+	if f := flag.Lookup(name); f != nil {
+		if v, ok := f.Value.(*flagutil.Password); ok {
+			return v
+		}
 		// A zero Password has no value stored and its Get() dereferences nil;
 		// Set("") stores the empty default, so the detached copy is usable.
 		p := &flagutil.Password{}
@@ -50,7 +77,10 @@ func safePassword(name, description string) *flagutil.Password {
 // upstream body is copied; which collisions must be guarded is checked
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeArrayString(name, description string) *flagutil.ArrayString {
-	if flag.Lookup(name) != nil {
+	if f := flag.Lookup(name); f != nil {
+		if v, ok := f.Value.(*flagutil.ArrayString); ok {
+			return v
+		}
 		return &flagutil.ArrayString{}
 	}
 	return flagutil.NewArrayString(name, description)
@@ -60,17 +90,43 @@ func safeArrayString(name, description string) *flagutil.ArrayString {
 // upstream body is copied; which collisions must be guarded is checked
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeArrayBool(name, description string) *flagutil.ArrayBool {
-	if flag.Lookup(name) != nil {
+	if f := flag.Lookup(name); f != nil {
+		if v, ok := f.Value.(*flagutil.ArrayBool); ok {
+			return v
+		}
 		return &flagutil.ArrayBool{}
 	}
 	return flagutil.NewArrayBool(name, description)
+}
+
+// sharedScalar returns a pointer to the scalar the existing flag f stores, when
+// f is one of the standard library's scalar flags (flag.Int, flag.Bool,
+// flag.String, flag.Duration): their Value types are unexported named types
+// whose underlying type is the scalar itself (`type intValue int`), so the
+// pointer the flag package keeps is a valid *T. It returns nil for any other
+// value, or when the type name does not match.
+//
+// upstream-original: reads the value pointer the standard library flag package
+// keeps for a flag some other package registered; no upstream body is copied.
+func sharedScalar[T any](f *flag.Flag, stdType string) *T {
+	if reflect.TypeOf(f.Value).String() != stdType {
+		return nil
+	}
+	rv := reflect.ValueOf(f.Value)
+	if rv.Kind() != reflect.Pointer || rv.Type().Elem().Size() != unsafe.Sizeof(*new(T)) {
+		return nil
+	}
+	return (*T)(rv.UnsafePointer())
 }
 
 // upstream-original: a flag.Lookup guard in front of flag.Int. No
 // upstream body is copied; which collisions must be guarded is checked
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeInt(name string, value int, usage string) *int {
-	if flag.Lookup(name) != nil {
+	if f := flag.Lookup(name); f != nil {
+		if p := sharedScalar[int](f, "*flag.intValue"); p != nil {
+			return p
+		}
 		v := value
 		return &v
 	}
@@ -81,7 +137,10 @@ func safeInt(name string, value int, usage string) *int {
 // upstream body is copied; which collisions must be guarded is checked
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeBool(name string, value bool, usage string) *bool {
-	if flag.Lookup(name) != nil {
+	if f := flag.Lookup(name); f != nil {
+		if p := sharedScalar[bool](f, "*flag.boolValue"); p != nil {
+			return p
+		}
 		v := value
 		return &v
 	}
@@ -92,7 +151,10 @@ func safeBool(name string, value bool, usage string) *bool {
 // upstream body is copied; which collisions must be guarded is checked
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeString(name, value, usage string) *string {
-	if flag.Lookup(name) != nil {
+	if f := flag.Lookup(name); f != nil {
+		if p := sharedScalar[string](f, "*flag.stringValue"); p != nil {
+			return p
+		}
 		v := value
 		return &v
 	}
@@ -103,7 +165,10 @@ func safeString(name, value, usage string) *string {
 // upstream body is copied; which collisions must be guarded is checked
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safeDuration(name string, value time.Duration, usage string) *time.Duration {
-	if flag.Lookup(name) != nil {
+	if f := flag.Lookup(name); f != nil {
+		if p := sharedScalar[time.Duration](f, "*flag.durationValue"); p != nil {
+			return p
+		}
 		v := value
 		return &v
 	}

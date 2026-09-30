@@ -81,7 +81,6 @@ $(VT_DIR)/go.mod:
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-dispatch.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtstorage-flag-dedup.patch
 	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtinsert-flag-dedup.patch
-	cd $(VT_DIR) && git apply ../../../patches/vt-traces/vtselect-flag-dedup.patch
 	# Point VT's own VictoriaLogs dependency at the sibling checkout the
 	# deps-traces target prepares, so VT's vlstorage path sees the same
 	# external.go replacement we apply on the logs side. `go mod edit` instead

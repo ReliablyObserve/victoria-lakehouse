@@ -53,7 +53,7 @@ var VTFlagPackages = []string{"app/vtselect", "app/vtselect/logsql", "app/vtsele
 // HonouredFlags lists the exceptions inside such packages.
 var LinkedIntoLH = map[string]bool{
 	"app/vlselect": false, "app/vlselect/logsql": true, "app/vlselect/internalselect": true, "app/vlinsert": true, "app/vlstorage": true,
-	"app/vtselect": false, "app/vtselect/logsql": false, "app/vtselect/internalselect": false, "app/vtselect/traces/tracecommon": true, "app/vtselect/searchutil": true, "app/vtinsert": true, "app/vtstorage": true, "app/victoria-traces/servicegraph": true,
+	"app/vtselect": false, "app/vtselect/logsql": true, "app/vtselect/internalselect": false, "app/vtselect/traces/tracecommon": true, "app/vtselect/searchutil": true, "app/vtinsert": true, "app/vtstorage": true, "app/victoria-traces/servicegraph": true,
 }
 
 // HonouredFlags lists, per surface, flags the Lakehouse honours although their

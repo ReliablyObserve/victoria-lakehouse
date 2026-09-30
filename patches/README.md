@@ -72,11 +72,10 @@ Applied to `lakehouse-traces/deps/VictoriaTraces/...`.
 | Patch | Upstream file | Symbol exported / behavior |
 | --- | --- | --- |
 | `external.go.src` | `app/vtstorage/external.go` | Added file (upstream has none) that wires VT's vtstorage to LH's trace storage backend. Copied, not diffed. |
-| `flag_dedup.go.src` | `app/vtstorage/flag_dedup.go` | Adds the dedup-flag guard so VT's flags don't collide with LH's identical flags in the same binary. |
+| `flag_dedup.go.src` | `app/vtstorage/flag_dedup.go` | The dedup-flag guard so VT's flags don't collide with the identical flags VL's vlstorage registers in the same binary. Each `safe*` helper returns VL's registered value (the `flagutil` types directly; the standard library's scalar flags through their underlying pointer), so a command-line setting, or a password read from a file, is the one both packages see; a detached default is only the fallback for an unexpected value type. It imports `app/vlstorage`, so VL initializes first by dependency order (not by import-path sort order, which Go 1.21+ only uses among packages that are otherwise ready). |
 | `vtstorage-dispatch.patch` | `app/vtstorage/main.go` | Routes VT's query handlers to `externalStorage` when LH has registered itself. |
 | `vtstorage-flag-dedup.patch` | `app/vtstorage/main.go` | Wires `flag_dedup.go.src` into VT's flag parsing path so duplicate `flag.Lookup` calls don't panic. (15 flag sites in one file — helper file is cheaper than inline closures.) |
-| `vtinsert-flag-dedup.patch` | `app/vtinsert/insertutil/flags.go` | Dedupes the VT vtinsert flags (`-defaultMsgValue`, `-insert.maxFieldsPerLine`) that collide with VL's same-named flags when both packages link into the lakehouse-traces binary. Uses inline `flag.Lookup` closures (2 sites, no helper file). At v0.12.0 upstream moved `-defaultMsgValue` out of `common_params.go` into `flags.go` as the exported `DefaultMsgValue`, so the patch touches one file. |
-| `vtselect-flag-dedup.patch` | `app/vtselect/searchutil/partial_response.go` | VT v0.12.0 moved `-search.allowPartialResponse` into `searchutil` (Tempo and Jaeger now read it); VL's `vlselect/logsql`, which this binary also links, registers the same name. VT's registration is removed and its `GetAllowPartialResponse` reads the flag through `flag.Lookup` at call time, so the command-line setting reaches Tempo and Jaeger and no package-init order is relied on (a registration on either side would panic if it ran second). |
+| `vtinsert-flag-dedup.patch` | `app/vtinsert/insertutil/flags.go` | `-insert.maxFieldsPerLine` and `-defaultMsgValue` are VL's flags in the lakehouse-traces binary: VT's `MaxFieldsPerLine` and `DefaultMsgValue` alias VL's pointers (`vlinsert/insertutil`), which also makes VL initialize first. An earlier form copied VL's value when the package initialised, before `flag.Parse`, so an operator's value never reached span ingest (#259). At v0.12.0 upstream moved `-defaultMsgValue` out of `common_params.go` into `flags.go`. |
 
 Not every overlay is a patch file. VT's own `go.mod` needs a
 `replace github.com/VictoriaMetrics/VictoriaLogs => ../VictoriaLogs`
@@ -101,6 +100,7 @@ single-source-of-truth dependency on VL/VT.
 | `internal/vlstorage/insert.go` (`logstorage.GetLogRows`, `MustAdd`, `ForEachRow`, `StreamTags`, `UnmarshalCanonicalInplace`) | `github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage` | The canonical VL row representation; LH writes the same `LogRow` shape so VL hot tooling reads cold parquets unchanged. |
 | `internal/vlstorage/insert.go::insertutil` | `github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/insertutil` | VL's shared insert helpers (timestamp normalization, stream-tag canonicalization). |
 | `internal/selectapi/handler.go` (`logsql.ProcessQueryRequest` and siblings) | `github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/logsql` | VL's own HTTP handlers wired to LH's externalStorage dispatch (see `vlstorage-dispatch.patch`). Same query semantics across tiers. |
+| `lakehouse-traces/internal/selectapi/handler.go` (`logsql.Process*Request`) | `github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/logsql` | VT's own LogsQL handlers, dispatched through `vtstorage-dispatch.patch` to the Lakehouse adapter. Since VT v0.12.0 this is where the LogsQL latency offset comes from; nothing in Lakehouse builds that filter.
 | `lakehouse-traces/internal/selectapi/handler.go` (`tempo.RequestHandler`, `jaeger.RequestHandler`) | `github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/traces/{tempo,jaeger}` | VT's own Tempo + Jaeger HTTP handlers, dispatched via `vtstorage-dispatch.patch`. |
 
 If you add another import from `deps/` to LH code, append a row here.
@@ -110,22 +110,16 @@ If you add another import from `deps/` to LH code, append a row here.
 When a patch needs to dedupe a flag (or wrap any symbol) at multiple
 sites, two shapes are available:
 
-1. **Inline `flag.Lookup` closure**, one per site:
-
-   ```go
-   var MaxFieldsPerLine = func() *int {
-       if existing := flag.Lookup("insert.maxFieldsPerLine"); existing != nil {
-           v, _ := strconv.Atoi(existing.Value.String())
-           return &v
-       }
-       return flag.Int("insert.maxFieldsPerLine", 1000, "...")
-   }()
-   ```
+1. **Alias or inline closure**, one per site. When the upstream flag is exported
+   by the other package, alias its pointer (the `vtinsert-flag-dedup.patch`
+   shape: `var MaxFieldsPerLine = vlinsertutil.MaxFieldsPerLine`). Do not copy
+   the value at init: package initialization runs before `flag.Parse`, so a copy
+   keeps the default forever (issue #259).
 
 2. **Helper file** (e.g. `flag_dedup.go.src`) plus a small patch that
    swaps `flag.Int(...)` → `safeInt(...)`.
 
-Use **inline closures** when there are 1–3 sites (the
+Use **an alias** when there are 1–3 sites (the
 `vtinsert-flag-dedup.patch` shape — two flags, no extra file).
 
 Use the **helper-file shape** when there are 5+ sites in one file
@@ -178,7 +172,7 @@ Findings recorded here for future maintainers:
   `external.go.src` is a *replacement* (`cp`) and the dispatch is
   a *diff* (`git apply`). Cannot be combined cleanly.
 - **`vtstorage-flag-dedup` vs `vtinsert-flag-dedup`** — different
-  patch shapes (helper-file vs inline-closure) by design. See the
+  patch shapes (helper file vs alias) by design. See the
   "Patch-style choice" section above.
 - **`computeStreamID` in `internal/vlstorage/stream_id.go`** —
   reproduces VL's private `hash128 → streamID.marshalString`

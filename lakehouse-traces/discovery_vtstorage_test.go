@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -108,5 +109,42 @@ func TestRealVTStorage_InternalRoutesRefuseNonPOST(t *testing.T) {
 				t.Errorf("%s %s: handled=%v code=%d, want handled with 405", method, path, handled, rec.Code)
 			}
 		}
+	}
+}
+
+// vtstorage's auth-key flags (-forceFlushAuthKey, -partitionManageAuthKey, ...)
+// are the SAME flags VictoriaLogs' vlstorage registers in this binary: the
+// vtstorage-flag-dedup helpers hand VictoriaTraces VictoriaLogs' value, not a
+// detached copy. A detached copy would read empty whatever the operator set,
+// and a mounted vtstorage would then answer without the key (fail open).
+func TestRealVTStorage_AuthKeyIsTheSharedFlag(t *testing.T) {
+	t.Chdir(t.TempDir())
+	vtstorage.Init()
+	t.Cleanup(vtstorage.Stop)
+
+	if flag.Lookup("partitionManageAuthKey") == nil {
+		t.Fatal("-partitionManageAuthKey is not registered")
+	}
+	if err := flag.Set("partitionManageAuthKey", "s3cret"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = flag.Set("partitionManageAuthKey", "") })
+
+	call := func(query string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/internal/partition/list"+query, nil)
+		if !vtstorage.RequestHandler(rec, req) {
+			t.Fatal("not handled")
+		}
+		return rec.Code
+	}
+	if code := call(""); code != http.StatusUnauthorized {
+		t.Errorf("no key: got %d, want 401: the flag value set on the command line did not reach vtstorage", code)
+	}
+	if code := call("?authKey=wrong"); code != http.StatusUnauthorized {
+		t.Errorf("wrong key: got %d, want 401", code)
+	}
+	if code := call("?authKey=s3cret"); code != http.StatusOK {
+		t.Errorf("right key: got %d, want 200", code)
 	}
 }
