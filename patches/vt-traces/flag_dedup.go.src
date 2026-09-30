@@ -37,7 +37,11 @@ func safeBytes(name string, defaultValue int64, description string) *flagutil.By
 // against both vendored trees by TestVTFlagDedupCoversEveryCollision.
 func safePassword(name, description string) *flagutil.Password {
 	if flag.Lookup(name) != nil {
-		return &flagutil.Password{}
+		// A zero Password has no value stored and its Get() dereferences nil;
+		// Set("") stores the empty default, so the detached copy is usable.
+		p := &flagutil.Password{}
+		_ = p.Set("")
+		return p
 	}
 	return flagutil.NewPassword(name, description)
 }

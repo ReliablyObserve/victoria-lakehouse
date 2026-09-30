@@ -43,7 +43,7 @@ func ScanFlagNames(dir string) (map[string]string, error) {
 
 // Packages whose flags reach a user of the binaries (relative to the VL / VT dir).
 var VLFlagPackages = []string{"app/vlselect", "app/vlselect/logsql", "app/vlselect/internalselect", "app/vlinsert", "app/vlstorage"}
-var VTFlagPackages = []string{"app/vtselect", "app/vtselect/logsql", "app/vtselect/internalselect", "app/vtselect/traces/tracecommon", "app/vtinsert", "app/vtstorage", "app/victoria-traces/servicegraph"}
+var VTFlagPackages = []string{"app/vtselect", "app/vtselect/logsql", "app/vtselect/internalselect", "app/vtselect/traces/tracecommon", "app/vtselect/searchutil", "app/vtinsert", "app/vtstorage", "app/victoria-traces/servicegraph"}
 
 // LinkedIntoLH records, per upstream package, whether the Lakehouse binaries
 // honour its flags. A package marked false either is not linked at all or is
@@ -53,7 +53,7 @@ var VTFlagPackages = []string{"app/vtselect", "app/vtselect/logsql", "app/vtsele
 // HonouredFlags lists the exceptions inside such packages.
 var LinkedIntoLH = map[string]bool{
 	"app/vlselect": false, "app/vlselect/logsql": true, "app/vlselect/internalselect": true, "app/vlinsert": true, "app/vlstorage": true,
-	"app/vtselect": false, "app/vtselect/logsql": false, "app/vtselect/internalselect": false, "app/vtselect/traces/tracecommon": true, "app/vtinsert": true, "app/vtstorage": true, "app/victoria-traces/servicegraph": true,
+	"app/vtselect": false, "app/vtselect/logsql": false, "app/vtselect/internalselect": false, "app/vtselect/traces/tracecommon": true, "app/vtselect/searchutil": true, "app/vtinsert": true, "app/vtstorage": true, "app/victoria-traces/servicegraph": true,
 }
 
 // HonouredFlags lists, per surface, flags the Lakehouse honours although their

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/internalselect"
+	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage/netselect"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
@@ -23,9 +24,12 @@ import (
 
 // /delete/run_task, /internal/delete/* and /internal/select/* are POST-only, as
 // in VictoriaTraces v0.12.0 (issue #225 for run_task). run_task carries VT's
-// check in the copied handler; the /internal/* prefixes are checked by
-// internaldelete.POSTOnly because the VictoriaLogs revision this binary embeds
-// lacks it. Twin of cmd/lakehouse-logs/public_delete_post_only_test.go.
+// own check in the copied handler (held to the vendored source verbatim by
+// TestUpstreamPublicDelete_MatchesVendoredVTSelect); the /internal/* prefixes
+// are mounted from the VictoriaLogs internalselect this binary embeds, which
+// (at v1.52.0) does not refuse a GET, so internaldelete.POSTOnly enforces the
+// check VT's own internalselect has. Twin of
+// cmd/lakehouse-logs/public_delete_post_only_test.go.
 
 // queryRequest is the SSRF shape of an attack: every argument in the URL query
 // and no body (Go's ParseForm ignores the body of a GET, HEAD or DELETE, so a
@@ -146,7 +150,7 @@ func internalServer(t *testing.T, deleteEnabled bool) (*delete.TombstoneStore, h
 func internalRunTaskArgs() url.Values {
 	tenants := []logstorage.TenantID{{AccountID: 7, ProjectID: 3}, {AccountID: 8}}
 	return url.Values{
-		"version":    {"v1"},
+		"version":    {netselect.DeleteRunTaskProtocolVersion},
 		"task_id":    {"forged"},
 		"timestamp":  {"1"},
 		"tenant_ids": {string(logstorage.MarshalTenantIDsToJSON(tenants))},
@@ -186,7 +190,7 @@ func TestMountInternalProtocol_NonPOSTRefused(t *testing.T) {
 				t.Errorf("%s tenant %s: a forged internal delete created %d tombstone(s)", name, method, store.Count())
 			}
 			for _, path := range []string{"/internal/delete/stop_task", "/internal/delete/active_tasks"} {
-				if rec := queryRequest(srv, method, path, url.Values{"version": {"v1"}}, headers); rec.Code != http.StatusMethodNotAllowed || rec.Body.Len() != 0 {
+				if rec := queryRequest(srv, method, path, url.Values{"version": {netselect.DeleteStopTaskProtocolVersion}}, headers); rec.Code != http.StatusMethodNotAllowed || rec.Body.Len() != 0 {
 					t.Errorf("%s tenant %s %s: got %d %q, want a bare 405", name, method, path, rec.Code, rec.Body.String())
 				}
 			}
@@ -238,8 +242,8 @@ func TestUpstreamInternalProtocolStillAcceptsGET(t *testing.T) {
 	internalselect.Init()
 	t.Cleanup(internalselect.Stop)
 	const msg = "the embedded VictoriaLogs %s now answers 405 to a GET itself: drop internaldelete.POSTOnly " +
-		"(its use in mountInternalProtocol) and its tests, and flip vt.internal.delete.non_post.differ / " +
-		"vt.internal.select.non_post.differ to pass"
+		"(its use in mountInternalProtocol) and its tests, then update the notes of vt.internal.delete.non_post / " +
+		"vt.internal.select.non_post (they stay pass)"
 	newReq := func(path string) *http.Request {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		t.Cleanup(cancel)
@@ -276,18 +280,25 @@ func TestNetselectClientsUsePOST(t *testing.T) {
 	}
 }
 
-// The vendored VictoriaTraces is the reference for the checks above. It is
-// v0.11.0 today, which has none; at the VT bump to v0.12.0 this fails: flip
-// vt.internal.select.non_post.differ, vt.internal.delete.non_post.differ and
-// vt.delete.run_task.non_post.differ to pass.
-func TestVendoredVTStillLacksPOSTChecks(t *testing.T) {
-	src, err := os.ReadFile("deps/VictoriaTraces/app/vtselect/internalselect/internalselect.go")
-	if err != nil {
-		t.Fatalf("vendored VictoriaTraces source missing (run make deps-vt): %v", err)
-	}
-	if strings.Contains(string(src), `r.Method != "POST"`) {
-		t.Fatal("the vendored VictoriaTraces internalselect now enforces POST: it is at or past v0.12.0; " +
-			"flip vt.internal.select.non_post.differ, vt.internal.delete.non_post.differ and " +
-			"vt.delete.run_task.non_post.differ to pass, and update the pin-specific comments")
+// The vendored VictoriaTraces is the reference for the checks above: since
+// v0.12.0 its internalselect, its public /delete/run_task handler and its
+// vtstorage (/internal/force_merge, /internal/force_flush,
+// /internal/log_new_streams, /internal/partition/*) all refuse anything but
+// POST. This fails if a later revision drops them, which would turn the
+// vt.*.non_post registry rows from "matches upstream" into a divergence.
+func TestVendoredVTEnforcesPOSTChecks(t *testing.T) {
+	for path, want := range map[string]string{
+		"deps/VictoriaTraces/app/vtselect/internalselect/internalselect.go": `r.Method != "POST"`,
+		"deps/VictoriaTraces/app/vtselect/logsql.go":                        `r.Method != http.MethodPost`,
+		"deps/VictoriaTraces/app/vtstorage/main.go":                         `strings.HasPrefix(path, "/internal/") && r.Method != "POST"`,
+	} {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("vendored VictoriaTraces source %s missing (run make deps-vt): %v", path, err)
+		}
+		if !strings.Contains(string(src), want) {
+			t.Errorf("%s no longer contains %q: the vendored VictoriaTraces stopped enforcing POST here; "+
+				"re-check vt.internal.select.non_post, vt.internal.delete.non_post and vt.delete.run_task.non_post", path, want)
+		}
 	}
 }

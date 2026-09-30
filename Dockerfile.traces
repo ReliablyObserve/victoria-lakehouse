@@ -12,10 +12,10 @@ ARG VERSION=dev
 # "patch failed" hunk error. Asserted by TestDockerfilePinsMatchMakefile in
 # tests/conformance.
 ARG VL_VERSION=v1.52.0
-# VictoriaLogs at commit 6ae2da3c11f3 (= VL v1.51.0), the commit
-# VictoriaTraces v0.11.0's own go.mod requires. Derived, never chosen.
-ARG VL_COMMIT=6ae2da3c11f3
-ARG VT_VERSION=v0.11.0
+# VictoriaLogs at commit c945d2949e98 (= VL v1.52.0), the commit
+# VictoriaTraces v0.12.0's own go.mod requires. Derived, never chosen.
+ARG VL_COMMIT=c945d2949e98
+ARG VT_VERSION=v0.12.0
 ARG TARGETOS
 ARG TARGETARCH
 # FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. See Dockerfile.logs for the
@@ -51,9 +51,14 @@ RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTrac
     cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \
     git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch && \
     git apply /tmp/patches/vt-traces/vtinsert-flag-dedup.patch && \
+    git apply /tmp/patches/vt-traces/vtselect-flag-dedup.patch && \
     go mod edit -replace github.com/VictoriaMetrics/VictoriaLogs=../VictoriaLogs
 COPY . .
-RUN cp -r lakehouse-traces/deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
+# VictoriaTraces v0.12.0 replaced the log-based UI with VTUI; the traces binary serves
+# that (lakehouse-traces/internal/vtui), not VictoriaLogs' vmui. The directory is wiped
+# first so a stale bundle from the build context cannot survive.
+RUN rm -rf lakehouse-traces/internal/vtui/vmui && mkdir -p lakehouse-traces/internal/vtui/vmui && \
+    cp -r lakehouse-traces/deps/VictoriaTraces/app/vtselect/vmui/. lakehouse-traces/internal/vtui/vmui/
 # The healthcheck binary (~3 MB) was folded into the main binary as
 # `lakehouse-traces healthcheck` in PR #96. Saves ~10% of image size.
 RUN cd lakehouse-traces && \

@@ -40,6 +40,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 	vtstorageadapter "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtstorage_adapter"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtui"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/victoria-traces/servicegraph"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtinsert"
@@ -66,7 +67,7 @@ import (
 // VL_COMMIT_TRACES, but that pin is a pseudo-version derived from
 // VictoriaTraces' own go.mod and is reported through the conformance
 // inventory, not here.)
-const vtCompat = "0.11.0"
+const vtCompat = "0.12.0"
 
 var (
 	configPath      = flag.String("lakehouse.config", "", "Path to YAML config file")
@@ -1469,7 +1470,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	uiHandler.Register(mux)
 
 	// VMUI with Lakehouse tab injection
-	ui.RegisterVMUI(mux, cfg.UI.VMUITab)
+	ui.RegisterVMUIFS(mux, cfg.UI.VMUITab, vtui.FS())
 
 	// Lifecycle endpoints for K8s probes and observability
 	lcInfo := lifecycle.LifecycleInfo{

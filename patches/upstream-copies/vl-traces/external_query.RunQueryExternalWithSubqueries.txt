@@ -1,6 +1,6 @@
 # upstream: lib/logstorage/storage_search.go initSubqueries
 # tree: lakehouse-traces/deps/VictoriaLogs
-# pin: 6ae2da3c11f3
+# pin: c945d2949e98
 
 func initSubqueries(qctx *QueryContext, runQuery runQueryFunc, eagerExecute bool) (*Query, error) {
 	getFieldValues := func(q *Query, fieldName string) ([]string, error) {

@@ -1,35 +1,8 @@
-diff --git a/app/vtinsert/insertutil/common_params.go b/app/vtinsert/insertutil/common_params.go
-index c798218..6ece344 100644
---- a/app/vtinsert/insertutil/common_params.go
-+++ b/app/vtinsert/insertutil/common_params.go
-@@ -18,10 +18,19 @@ import (
- 	"github.com/VictoriaMetrics/metrics"
- )
- 
--var (
--	defaultMsgValue = flag.String("defaultMsgValue", "-",
-+// defaultMsgValue is shared with VL's own -defaultMsgValue flag when both
-+// vtinsert and vlinsert are linked into the same binary (lakehouse-traces).
-+// flag.Lookup detects the prior registration from vlinsert/insertutil and
-+// reuses its Value rather than panicking on the duplicate registration.
-+// Added by patches/vt-traces/vtinsert-flag-dedup.patch.
-+var defaultMsgValue = func() *string {
-+	if existing := flag.Lookup("defaultMsgValue"); existing != nil {
-+		s := existing.Value.String()
-+		return &s
-+	}
-+	return flag.String("defaultMsgValue", "-",
- 		"Default value for _msg field; see https://docs.victoriametrics.com/victorialogs/keyconcepts/#message-field")
--)
-+}()
- 
- // CommonParams contains common HTTP parameters used by log ingestion APIs.
- //
 diff --git a/app/vtinsert/insertutil/flags.go b/app/vtinsert/insertutil/flags.go
-index 547ac8f..960802d 100644
+index a7ddff0..ddbf888 100644
 --- a/app/vtinsert/insertutil/flags.go
 +++ b/app/vtinsert/insertutil/flags.go
-@@ -2,10 +2,20 @@ package insertutil
+@@ -2,14 +2,36 @@ package insertutil
  
  import (
  	"flag"
@@ -52,5 +25,23 @@ index 547ac8f..960802d 100644
 +	}
 +	return flag.Int("insert.maxFieldsPerLine", 1000, "The maximum number of log fields per line, which can be read by /insert/* handlers; "+
  		"see https://docs.victoriametrics.com/victorialogs/faq/#how-many-fields-a-single-log-entry-may-contain")
++}()
+ 
+-	// DefaultMsgValue is the default value for _msg field if the ingested log entry doesn't contain it.
+-	DefaultMsgValue = flag.String("defaultMsgValue", "-",
++// DefaultMsgValue is the default value for _msg field if the ingested log entry doesn't contain it.
++//
++// It is shared with VL's own -defaultMsgValue flag when both vtinsert and
++// vlinsert are linked into the same binary (lakehouse-traces): flag.Lookup
++// detects the prior registration from vlinsert/insertutil and reuses its Value
++// rather than panicking on the duplicate registration.
++// Added by patches/vt-traces/vtinsert-flag-dedup.patch.
++var DefaultMsgValue = func() *string {
++	if existing := flag.Lookup("defaultMsgValue"); existing != nil {
++		s := existing.Value.String()
++		return &s
++	}
++	return flag.String("defaultMsgValue", "-",
+ 		"Default value for _msg field; see https://docs.victoriametrics.com/victorialogs/keyconcepts/#message-field")
 -)
 +}()

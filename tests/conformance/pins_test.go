@@ -34,7 +34,7 @@ var (
 
 	// imageTagRe matches the upstream images by tag wherever Compose pulls or
 	// wraps them: `image: victoriametrics/victoria-logs:v1.52.0`,
-	// `UPSTREAM: victoriametrics/victoria-traces:v0.11.0`, ...
+	// `UPSTREAM: victoriametrics/victoria-traces:v0.12.0`, ...
 	imageTagRe = regexp.MustCompile(`victoriametrics/(victoria-logs|victoria-traces):(\S+)`)
 
 	// dockerPatchRefRe matches a patch path a Dockerfile applies from the
@@ -221,7 +221,7 @@ func TestComposeHealthchecksDoNotAssumeAShell(t *testing.T) {
 }
 
 // workflowPinRe matches a workflow env entry for one of the three pins, with
-// or without quotes: `  VL_VERSION_LOGS: v1.52.0`, `  VT_VERSION: "v0.11.0"`.
+// or without quotes: `  VL_VERSION_LOGS: v1.52.0`, `  VT_VERSION: "v0.12.0"`.
 var workflowPinRe = regexp.MustCompile(`(?m)^\s*(VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION):\s*"?([^"\s#]+)"?`)
 
 // TestWorkflowPinsMatchMakefile closes the last place the pins are duplicated:

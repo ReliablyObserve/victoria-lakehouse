@@ -43,8 +43,8 @@ other.
 
 The two trees are **two different VictoriaLogs checkouts**: the logs
 binary embeds `VL_VERSION_LOGS` (v1.52.0), the traces binary embeds
-`VL_COMMIT_TRACES` (6ae2da3c11f3 = v1.51.0 — the commit VictoriaTraces
-v0.11.0 pins in its own `go.mod`). The pins legitimately differ, so the
+`VL_COMMIT_TRACES` (c945d2949e98 = v1.52.0 — the commit VictoriaTraces
+v0.12.0 pins in its own `go.mod`). The pins may legitimately differ, so the
 two patch files for the same upstream file may carry different *context*
 even though the lines they add are identical.
 
@@ -75,7 +75,8 @@ Applied to `lakehouse-traces/deps/VictoriaTraces/...`.
 | `flag_dedup.go.src` | `app/vtstorage/flag_dedup.go` | Adds the dedup-flag guard so VT's flags don't collide with LH's identical flags in the same binary. |
 | `vtstorage-dispatch.patch` | `app/vtstorage/main.go` | Routes VT's query handlers to `externalStorage` when LH has registered itself. |
 | `vtstorage-flag-dedup.patch` | `app/vtstorage/main.go` | Wires `flag_dedup.go.src` into VT's flag parsing path so duplicate `flag.Lookup` calls don't panic. (15 flag sites in one file — helper file is cheaper than inline closures.) |
-| `vtinsert-flag-dedup.patch` | `app/vtinsert/insertutil/{common_params,flags}.go` | Dedupes the VT vtinsert flags (`-defaultMsgValue`, `-insert.maxFieldsPerLine`) that collide with VL's same-named flags when both packages link into the lakehouse-traces binary. Uses inline `flag.Lookup` closures (2 sites, no helper file). |
+| `vtinsert-flag-dedup.patch` | `app/vtinsert/insertutil/flags.go` | Dedupes the VT vtinsert flags (`-defaultMsgValue`, `-insert.maxFieldsPerLine`) that collide with VL's same-named flags when both packages link into the lakehouse-traces binary. Uses inline `flag.Lookup` closures (2 sites, no helper file). At v0.12.0 upstream moved `-defaultMsgValue` out of `common_params.go` into `flags.go` as the exported `DefaultMsgValue`, so the patch touches one file. |
+| `vtselect-flag-dedup.patch` | `app/vtselect/searchutil/partial_response.go` | VT v0.12.0 moved `-search.allowPartialResponse` into `searchutil` (Tempo and Jaeger now read it); VL's `vlselect/logsql`, which this binary also links, registers the same name. VT's registration is removed and its `GetAllowPartialResponse` reads the flag through `flag.Lookup` at call time, so the command-line setting reaches Tempo and Jaeger and no package-init order is relied on (a registration on either side would panic if it ran second). |
 
 Not every overlay is a patch file. VT's own `go.mod` needs a
 `replace github.com/VictoriaMetrics/VictoriaLogs => ../VictoriaLogs`
@@ -168,11 +169,10 @@ Findings recorded here for future maintainers:
 
 - **vl-logs ↔ vl-traces mirror** — near-identical files in two
   directories. Could be a single source + Makefile copy, but that
-  complicates Docker COPY semantics, and since the 2026-09 bump the
-  two directories are no longer unconditionally byte-equal (the pins
-  are v1.52.0 and v1.51.0, so two patches carry one differing context
-  line each — see `patches/vl-traces/DIVERGENCE.md`). Current shape
-  preferred, with the equality guard enforcing that every *other*
+  complicates Docker COPY semantics, and the two pins can drift apart
+  again (they are both v1.52.0 since VictoriaTraces v0.12.0; a context
+  difference is declared in `patches/vl-traces/DIVERGENCE.md`). Current
+  shape preferred, with the equality guard enforcing that every *other*
   file stays identical.
 - **`vlstorage-dispatch` and `external.go.src`** — split because
   `external.go.src` is a *replacement* (`cp`) and the dispatch is
