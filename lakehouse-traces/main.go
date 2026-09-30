@@ -566,6 +566,9 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
+		if answerHTTP2Probe(w, r) {
+			return true
+		}
 		handler.ServeHTTP(w, r)
 		return true
 	}

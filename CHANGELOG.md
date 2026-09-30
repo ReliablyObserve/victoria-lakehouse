@@ -20,8 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `-defaultMsgValue`), and one patch is new: `vtselect-flag-dedup` (see the partial-response bullet).
   The VictoriaLogs protocol version for `/internal/delete/*` on the traces binary moves from `v1` to
   `v2`, so a VictoriaTraces v0.11 `vtselect` cannot delete through a v0.12 Lakehouse storage node (and
-  the reverse): upgrade both together. The select protocol is unchanged (`v5`). Also new in v0.11.1,
-  inherited: the per-tenant trace-index fix and the quiet answer to HTTP/2 `PRI *` probes.
+  the reverse): upgrade both together. The select protocol is unchanged (`v5`). Also new in
+  VictoriaTraces v0.11.1: the per-tenant trace-index fix (inherited: ingest runs VictoriaTraces' code) and
+  the plain `405` answer to HTTP/2 `PRI *` probes (Grafana's Tempo data source sends them), which the
+  traces binary now gives in its own request handler so the probe stops logging an unsupported-path warning.
 
 - **The traces binary serves VictoriaTraces' own trace explorer (VTUI) at `/select/vmui/`.** VictoriaTraces
   v0.12.0 replaced the log-based UI with it, and Lakehouse embeds whatever the vendored VictoriaTraces
