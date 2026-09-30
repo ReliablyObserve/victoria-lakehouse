@@ -7,15 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.143.4] - 2026-09-30
-
-### Changed
-
-- **CI: MinIO test images are built from source.** Upstream MinIO is unmaintained and its
-  `quay.io/minio/*` and Docker Hub images can no longer be pulled anonymously, so the e2e, parity,
-  benchmark and nightly load-test stacks now use images built from the same pinned MinIO releases
-  and published at `ghcr.io/reliablyobserve/minio` and `ghcr.io/reliablyobserve/mc`. They are frozen
-  test images; see `docs/minio-test-images.md`.
+## [0.143.5] - 2026-09-30
 
 ### Fixed
 
@@ -42,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   visibility gap (#245), objects recovered by HEAD being bare listing entries until compaction (#246),
   and rows that arrive for a window after its first attempt, which an in-process retry never writes.
   Both binaries.
+
+## [0.143.4] - 2026-09-30
+
+### Changed
+
+- **CI: MinIO test images are built from source.** Upstream MinIO is unmaintained and its
+  `quay.io/minio/*` and Docker Hub images can no longer be pulled anonymously, so the e2e, parity,
+  benchmark and nightly load-test stacks now use images built from the same pinned MinIO releases
+  and published at `ghcr.io/reliablyobserve/minio` and `ghcr.io/reliablyobserve/mc`. They are frozen
+  test images; see `docs/minio-test-images.md`.
 
 ## [0.143.3] - 2026-09-24
 
