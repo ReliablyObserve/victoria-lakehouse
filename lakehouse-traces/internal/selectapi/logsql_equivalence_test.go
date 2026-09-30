@@ -240,6 +240,7 @@ func TestLogsQLServedEqualsUpstreamOnTheSameData(t *testing.T) {
 		{"in() subquery", "/select/logsql/query", url.Values{"query": {"_msg:in(level:error | fields _msg) | stats count() n"}, "start": {start}}, true, ""},
 		{"in() subquery, ignore_global_time_filter", "/select/logsql/query", url.Values{"query": {"options(ignore_global_time_filter=true) _msg:in(level:error | fields _msg) | stats count() n"}, "start": {start}}, true, ""},
 		{"join", "/select/logsql/query", url.Values{"query": {"level:error | join by (app) (* | stats by (app) count() c)"}, "start": {start}}, true, ""},
+		{"join with an empty subquery", "/select/logsql/query", url.Values{"query": {"level:error | join by (app) (level:nothing | stats by (app) count() c) inner | stats count() n"}, "start": {start}}, false, ""},
 		{"union", "/select/logsql/query", url.Values{"query": {"level:error | union (level:warn)"}, "start": {start}}, true, ""},
 		{"union, ignore_global_time_filter", "/select/logsql/query", url.Values{"query": {"options(ignore_global_time_filter=true) level:error | union (level:warn)"}, "start": {start}}, true, ""},
 		{"with the opt-out", "/select/logsql/query", url.Values{"query": {"*"}, "start": {start}, "disable_latency_offset": {"true"}}, true, ""},

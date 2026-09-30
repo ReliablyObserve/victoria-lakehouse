@@ -18,6 +18,11 @@ type filterStore struct {
 }
 
 func (s *filterStore) RunQuery(_ context.Context, _ []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
+	// The real storage stringifies the query and asks for its pipe fields; both
+	// must be safe on whatever the adapter hands a store (a resolved join pipe is
+	// not).
+	_ = q.String()
+	_ = logstorage.GetQueryPipeFields(q)
 	f := logstorage.QueryFilter(q)
 	var kept []map[string]string
 	for _, r := range s.rows {
@@ -97,6 +102,13 @@ func TestRunQuery_UnionAndInSubqueriesAreResolved(t *testing.T) {
 	got = runAdapter(t, s, `_msg:in(level:error | fields _msg) | stats count() n`)
 	if strings.Join(got, ";") != "n=2" {
 		t.Errorf("in() subquery: got %v, want [n=2]", got)
+	}
+	// A join whose subquery finds nothing leaves a resolved pipe with neither rows
+	// nor query, which panics if anything stringifies it (the service-graph task
+	// issues exactly this shape while a tenant has no spans yet).
+	got = runAdapter(t, s, `level:error | join by (level) (level:nothing | stats by (level) count() c) inner | stats count() n`)
+	if strings.Join(got, ";") != "n=0" && len(got) != 0 {
+		t.Errorf("join with an empty subquery: got %v", got)
 	}
 	got = runAdapter(t, s, `level:error | join by (level) (* | stats by (level) count() c) | fields _msg, c`)
 	if strings.Join(got, ";") != "_msg=a,c=2;_msg=c,c=2" {

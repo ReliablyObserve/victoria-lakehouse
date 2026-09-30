@@ -57,6 +57,11 @@ type tierStore struct {
 }
 
 func (s *tierStore) record(q *logstorage.Query) (int64, int64) {
+	// The real storage stringifies the query and asks for its pipe fields (trace_id
+	// detection, column projection). Both must be safe on whatever the adapter
+	// hands a store: a resolved join pipe is not (issue found by the parity stack).
+	_ = q.String()
+	_ = logstorage.GetQueryPipeFields(q)
 	start, end := q.GetFilterTimeRange()
 	s.mu.Lock()
 	s.ranges = append(s.ranges, [2]int64{start, end})

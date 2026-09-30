@@ -67,9 +67,12 @@ type ExternalRunQueryFn func(qctx *QueryContext, writeBlock WriteDataBlockFunc) 
 // options(ignore_global_time_filter=true), exactly as on hot storage, because
 // upstream's own code decides it.
 //
-// searchFn receives the query with its subqueries resolved (qNew), which is the
-// one the storage must evaluate: an `in(...)` filter in it already carries the
-// values its subquery produced.
+// searchFn receives the query with the FILTER's subqueries resolved -- an
+// `in(...)` filter in it already carries the values its subquery produced -- and
+// its pipes as the caller wrote them. The resolved pipes (a join's lookup map, a
+// union's inner query) are for runPipes below, not for the storage: a storage
+// reads the query's filter, and its String() and pipe fields (the projection
+// planner calls them), which are not safe on a resolved join pipe.
 //
 // Background: VictoriaTraces' servicegraph background task issues a
 // `… | join by (span_id) (…) inner | …` query; without the join step the cold
@@ -95,9 +98,14 @@ func RunQueryExternalWithSubqueries(qctx *QueryContext, searchFn func(q *Query, 
 	writeBlockResult := writeBlock.newBlockResultWriter()
 	concurrency := qNew.GetConcurrency()
 
+	// The storage's query: the caller's query with the resolved filter and options.
+	qStore := qctx.Query.cloneShallow()
+	qStore.f = qNew.f
+	qStore.opts = qNew.opts
+
 	search := func(stopCh <-chan struct{}, writeBlockToPipes writeBlockResultFunc) error {
 		wb := writeBlockToPipes.newDataBlockWriter()
-		return searchFn(qNew, wb)
+		return searchFn(qStore, wb)
 	}
 
 	return runPipes(qctxNew, qNew.pipes, search, writeBlockResult, concurrency)
