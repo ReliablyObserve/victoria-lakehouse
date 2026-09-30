@@ -238,13 +238,19 @@ func (d *Discovery) PollPartitionList(ctx context.Context) (*HotBoundary, error)
 	return boundary, nil
 }
 
+// fetchPartitions asks one storage node for its partitions. The request is a
+// POST: VictoriaTraces v0.12.0 answers 405 to every non-POST /internal/*
+// request on vtstorage (SSRF guard, issue #225), and VictoriaLogs accepts POST
+// on the same route, so one method works against both. The auth key stays in
+// the URL query, where upstream's httpserver.CheckAuthFlag reads it for a POST
+// too.
 func (d *Discovery) fetchPartitions(ctx context.Context, addr string) ([]string, error) {
 	url := fmt.Sprintf("http://%s/internal/partition/list", addr)
 	if d.partitionAuthKey != "" {
 		url += "?authKey=" + d.partitionAuthKey
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return nil, err
 	}

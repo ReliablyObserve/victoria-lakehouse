@@ -308,3 +308,45 @@ func TestSplitHostPort(t *testing.T) {
 		}
 	}
 }
+
+// VictoriaTraces v0.12.0's vtstorage answers 405 to every non-POST
+// /internal/* request (issue #225), so hot-boundary discovery must poll with
+// POST. The stub refuses anything else with the same status and body as
+// upstream; the auth key must still arrive in the URL query, where
+// httpserver.CheckAuthFlag reads it for a POST as well.
+func TestPollPartitionList_PostsLikeVTv012(t *testing.T) {
+	var gotMethod, gotAuthKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		if r.Method != http.MethodPost {
+			http.Error(w, "Only POST method is allowed; got "+r.Method+".", http.StatusMethodNotAllowed)
+			return
+		}
+		gotAuthKey = r.URL.Query().Get("authKey")
+		if err := json.NewEncoder(w).Encode([]string{"20260501", "20260502"}); err != nil {
+			http.Error(w, err.Error(), 500)
+		}
+	}))
+	defer srv.Close()
+
+	d := New("", []string{srv.Listener.Addr().String()}, "test-secret", "", "9428", 5*time.Second)
+	if _, err := d.DiscoverStorageNodes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	boundary, err := d.PollPartitionList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boundary == nil {
+		t.Fatalf("no hot boundary discovered; the node refused a %s (405), so discovery must POST", gotMethod)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %s, want POST", gotMethod)
+	}
+	if boundary.MinDate != "20260501" || boundary.MaxDate != "20260502" {
+		t.Errorf("boundary = %+v, want 20260501..20260502", boundary)
+	}
+	if gotAuthKey != "test-secret" {
+		t.Errorf("auth key = %q, want test-secret", gotAuthKey)
+	}
+}
