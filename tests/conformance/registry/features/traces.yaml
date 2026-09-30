@@ -191,29 +191,40 @@
     - vt.select.logsql_hits.latency_offset
     - vt.select.logsql_stats_query.latency_offset
     - vt.select.logsql_field_values.latency_offset
+    - vt.select.logsql_query.latency_offset_rate
+    - vt.select.logsql_query.latency_offset_time_offset
+    - vt.select.logsql_query.latency_offset_ignore_global_time_filter
+    - vt.select.logsql_query.latency_offset_subqueries
+    - vt.select.logsql_query.time_offset_time_column
+    - vt.select.logsql_query.in_subquery_without_pipes
+    - vt.select.logsql_query_time_range.ignores_latency_offset_arg
     - vt.select.tenant_ids.no_latency_offset
     - vt.flag.search_latency_offset
   tests:
     - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_HidesRowsYoungerThanTheOffset
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_BoundaryIsInclusiveAtTheNanosecond
     - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_EndTimeIsNowMinusFlag
-    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_IntersectsWithCallerRange
-    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_AppliesToEveryQueryAPI
-    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_NotAppliedInLogsMode
-    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestApplyLatencyOffset_DirectCases
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_ComposesWithCallerArguments
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_PerAPI
+    - lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestLogsQLServedEqualsUpstreamOnTheSameData
+    - lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestRateThroughTheServedHandler
+    - lakehouse-traces/logsql_routes_test.go#TestLogsQLRouteTableMatchesVendoredVT
+    - lakehouse-traces/logsql_routes_test.go#TestLatencyOffsetFlagDefault
     - lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_HidesYoungRowsLikeHotVT
     - lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_BridgeAsksForEffectiveRange
-    - tests/parity/zz_traces_latency_offset_test.go#TestParity_Traces_LogsQLLatencyOffset
+    - tests/parity/traces_latency_offset_test.go#TestParity_Traces_LogsQLLatencyOffset
   docs:
     - docs/read-path.md
   highlight: >-
-    **LogsQL latency offset (traces)**: the cold tier hides spans younger than `-search.latencyOffset` from every LogsQL query API and honours `disable_latency_offset=true`, exactly as VictoriaTraces v0.12.0 does on hot data.
+    **LogsQL latency offset (traces)**: `/select/logsql/*` on the traces binary is served by VictoriaTraces' own handlers, so spans younger than `-search.latencyOffset` are hidden and `disable_latency_offset=true` opts out exactly as on hot VictoriaTraces v0.12.0.
   description: >-
     VictoriaTraces v0.12.0 extended the offset a span waits before becoming visible from the
-    Jaeger and Tempo APIs to the LogsQL query APIs (everything but live tailing and tenant
-    enumeration), with a per-request opt-out. The traces binary serves LogsQL through
-    VictoriaLogs' handlers, so it adds the same "up to now minus the offset" time filter to the
-    query itself; the Parquet scan, the buffer bridge and peer buffers all take their time range
-    from the query and therefore agree with hot VictoriaTraces about which spans exist.
+    Jaeger and Tempo APIs to the LogsQL query APIs (everything but live tailing, query_time_range
+    and tenant enumeration), with a per-request opt-out. The traces binary mounts VictoriaTraces'
+    own LogsQL handlers over the Lakehouse storage adapter, so the offset is upstream's code and
+    a served answer is checked against upstream's on the same data; the Parquet scan, the buffer
+    bridge and peer buffers take their time range from the query. Each process uses its own clock
+    for "now", so a span within the clock skew of the boundary can differ between tiers.
 
 - id: lh.feature.traces.vtui
   title: VictoriaTraces trace explorer UI (VTUI)

@@ -138,13 +138,15 @@ vendored trees — using `go list -deps` on the traces module, so only packages
 actually linked count — and requires the dedup list to match it exactly in both
 directions: an unguarded collision means the binary panics at startup, a guard
 with nothing behind it means VictoriaTraces silently skips its own registration.
-At VL v1.52.0 / VT v0.12.0 there are 35 collisions and all 35 are guarded. The
-35th is `search.allowPartialResponse`, which VT v0.12.0 moved into
-`vtselect/searchutil` so that Tempo and Jaeger read it too: `vtselect-flag-dedup.patch`
-removes VT's registration (VL's `vlselect/logsql` already has it, and which of the two
-initialises first is not something to rely on) and has VT read the flag at call time. The
-definition stays in the patched file (`registerAllowPartialResponseFlag`, never called)
-so the inventory still sees it.
+The count is recomputed on every run (`t.Logf` prints it and the names); at VL v1.52.0 /
+VT v0.12.0 it is 32 (`-insert.maxFieldsPerLine` and `-defaultMsgValue` are no longer among them:
+VictoriaTraces' ingest package aliases VictoriaLogs' flags instead of registering its own).
+VT v0.12.0 moved
+`-search.allowPartialResponse` into `vtselect/searchutil` (Tempo and Jaeger read it too) and
+`lakehouse-traces` now serves LogsQL through VictoriaTraces' own `vtselect/logsql`, so
+VictoriaLogs' `vlselect/logsql` is no longer linked into the traces binary at all: that flag,
+`search.maxQueryTimeRange` and `search.maxQueryLen` are registered once, by VictoriaTraces, and
+need no dedup.
 
 ## Feature catalog
 

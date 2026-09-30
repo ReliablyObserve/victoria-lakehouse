@@ -117,9 +117,9 @@ route: 140/140 covered by at least one registry row.
 | `/select/logsql/hits` | `app/vlselect/main.go` | vl.select.hits.basic, vl.select.hits.tenant_scope.default.bucket, vl.select.hits.tenant_scope.default.prefix, vl.select.hits.tenant_scope.global.bucket, vl.select.hits.tenant_scope.global.prefix, vl.select.hits.tenant_scope.scoped.bucket, vl.select.hits.tenant_scope.scoped.prefix, vl.select.hits.tenant_scope.unknown.bucket, vl.select.hits.tenant_scope.unknown.prefix, lh.cold.hits_bucket_counts_exact | 🟡 declared, not yet executed |
 | `/select/logsql/hits` | `app/vtselect/logsql.go` | vt.select.logsql_hits.basic, vt.select.logsql_hits.latency_offset, lh.cold.hits_bucket_counts_exact | 🟡 declared, not yet executed |
 | `/select/logsql/query` | `app/vlselect/main.go` | vl.select.query.bad_query, vl.select.query.tenant_scope.default.bucket, vl.select.query.tenant_scope.default.prefix, vl.select.query.tenant_scope.global.bucket, vl.select.query.tenant_scope.global.prefix, vl.select.query.tenant_scope.scoped.bucket, vl.select.query.tenant_scope.scoped.prefix, vl.select.query.tenant_scope.unknown.bucket, vl.select.query.tenant_scope.unknown.prefix, vl.select.query.wildcard, lh.query.half_open_time_range, lh.rows.field_set_logs, lh.rows.field_set_traces, lh.shim.time_params_ms | 🔁 differs: The LH shim also accepts start/end as raw millisecond-epoch integers (matching Tempo's convention); hot VL/VT only accept RFC3339 or relative durations. Documented, not a bug — see docs/parity-and-gaps.md. (declared, not yet executed) |
-| `/select/logsql/query` | `app/vtselect/logsql.go` | vt.select.logsql_query.latency_offset, vt.select.logsql_query.latency_offset_disabled, vt.select.logsql_query.wildcard, lh.query.half_open_time_range, lh.rows.field_set_logs, lh.rows.field_set_traces, lh.shim.time_params_ms | 🔁 differs: The LH shim also accepts start/end as raw millisecond-epoch integers (matching Tempo's convention); hot VL/VT only accept RFC3339 or relative durations. Documented, not a bug — see docs/parity-and-gaps.md. (declared, not yet executed) |
+| `/select/logsql/query` | `app/vtselect/logsql.go` | vt.select.logsql_query.in_subquery_without_pipes, vt.select.logsql_query.latency_offset, vt.select.logsql_query.latency_offset_disabled, vt.select.logsql_query.latency_offset_ignore_global_time_filter, vt.select.logsql_query.latency_offset_rate, vt.select.logsql_query.latency_offset_subqueries, vt.select.logsql_query.latency_offset_time_offset, vt.select.logsql_query.time_offset_time_column, vt.select.logsql_query.wildcard, lh.query.half_open_time_range, lh.rows.field_set_logs, lh.rows.field_set_traces, lh.shim.time_params_ms | 🔁 differs: A query with no pipes never reaches RunQueryExternalWithSubqueries, so an in() filter in it stays unresolved and matches nothing; the same filter followed by any pipe (| stats, | limit) works. Pre-existing, documented in patches/vl-*/external_query.go.src; pinned by TestLogsQLServedEqualsUpstreamOnTheSameData. (declared, not yet executed) |
 | `/select/logsql/query_time_range` | `app/vlselect/main.go` | vl.select.query_time_range.basic | 🟡 declared, not yet executed |
-| `/select/logsql/query_time_range` | `app/vtselect/logsql.go` | vt.select.logsql_query_time_range.basic | 🟡 declared, not yet executed |
+| `/select/logsql/query_time_range` | `app/vtselect/logsql.go` | vt.select.logsql_query_time_range.basic, vt.select.logsql_query_time_range.ignores_latency_offset_arg | 🟡 declared, not yet executed |
 | `/select/logsql/stats_query` | `app/vlselect/main.go` | vl.select.stats_query.basic, lh.cold.count_exact_above_1m_rows | 🟡 declared, not yet executed |
 | `/select/logsql/stats_query` | `app/vtselect/logsql.go` | vt.select.logsql_stats_query.basic, vt.select.logsql_stats_query.latency_offset, lh.cold.count_exact_above_1m_rows | 🟡 declared, not yet executed |
 | `/select/logsql/stats_query_range` | `app/vlselect/main.go` | vl.select.stats_query_range.basic | 🟡 declared, not yet executed |
@@ -299,9 +299,9 @@ traceql: 9/9 covered by at least one registry row.
 | `rate` | `lib/traceql/pipe_metrics.go` | vt.traceql.rate.basic, vt.traceql.rate.by_service | 🟡 declared, not yet executed |
 | `sum_over_time` | `lib/traceql/pipe_metrics.go` | vt.traceql.sum_over_time.basic | 🟡 declared, not yet executed |
 
-## Upstream flag (181)
+## Upstream flag (179)
 
-flag: 30/181 covered by at least one registry row.
+flag: 30/179 covered by at least one registry row.
 
 | flag | Source | Rows | Status |
 |---|---|---|---|
@@ -309,7 +309,6 @@ flag: 30/181 covered by at least one registry row.
 | `datadog.maxRequestSize` | `app/vlinsert/datadog/datadog.go` |  | ⚪ no row |
 | `datadog.streamFields` | `app/vlinsert/datadog/datadog.go` |  | ⚪ no row |
 | `defaultMsgValue` | `app/vlinsert/insertutil/flags.go` | vl.flag.default_msg_value | 🟡 declared, not yet executed |
-| `defaultMsgValue` | `app/vtinsert/insertutil/flags.go` |  | ⚪ no row |
 | `defaultParallelReaders` | `app/vlstorage/main.go` |  | ⚪ no row |
 | `defaultParallelReaders` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `delete.enable` | `app/vlselect/main.go` | vl.flag.delete_enable | 🔁 differs: Registered by upstream's vlselect and gating /delete/* exactly as upstream. With it on, the cold tier also needs delete.enabled, and a task becomes a tenant-scoped tombstone: its rows are hidden at once and removed by the rewriter per delete.default_mode, and active_tasks lists it until the tombstone retires rather than until a background pass finishes. stop_task and active_tasks act for the request tenant only (lh.delete.upstream_tasks_tenant_scoped). See docs/deletion-strategy.md and docs/parity-and-gaps.md. (declared, not yet executed) |
@@ -331,7 +330,6 @@ flag: 30/181 covered by at least one registry row.
 | `insert.disableCompression` | `app/vtstorage/main.go` |  | ⚪ no row |
 | `insert.indexFlushInterval` | `app/vtinsert/insertutil/index_helper.go` |  | ⚪ no row |
 | `insert.maxFieldsPerLine` | `app/vlinsert/insertutil/flags.go` | vl.flag.insert_max_fields_per_line | 🟡 declared, not yet executed |
-| `insert.maxFieldsPerLine` | `app/vtinsert/insertutil/flags.go` |  | ⚪ no row |
 | `insert.maxLineSizeBytes` | `app/vlinsert/insertutil/flags.go` | vl.flag.insert_max_line_size_bytes | 🟡 declared, not yet executed |
 | `internaldelete.enable` | `app/vlselect/main.go` | vl.flag.internaldelete_enable | 🟡 declared, not yet executed |
 | `internaldelete.enable` | `app/vtselect/main.go` | vt.flag.internaldelete_enable | 🟡 declared, not yet executed |
@@ -389,9 +387,9 @@ flag: 30/181 covered by at least one registry row.
 | `search.maxQueryDuration` | `app/vlselect/main.go` | vl.flag.search_max_query_duration | 🟡 declared, not yet executed (package not linked into LH) |
 | `search.maxQueryDuration` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
 | `search.maxQueryLen` | `app/vlselect/logsql/logsql.go` | vl.flag.search_max_query_len | 🟡 declared, not yet executed |
-| `search.maxQueryLen` | `app/vtselect/logsql/logsql.go` |  | ⚪ not linked into LH, no row |
+| `search.maxQueryLen` | `app/vtselect/logsql/logsql.go` |  | ⚪ no row |
 | `search.maxQueryTimeRange` | `app/vlselect/logsql/logsql.go` | vl.flag.search_max_query_time_range | 🟡 declared, not yet executed |
-| `search.maxQueryTimeRange` | `app/vtselect/logsql/logsql.go` |  | ⚪ not linked into LH, no row |
+| `search.maxQueryTimeRange` | `app/vtselect/logsql/logsql.go` |  | ⚪ no row |
 | `search.maxQueueDuration` | `app/vlselect/main.go` | vl.flag.search_max_queue_duration | 🔁 differs: vlselect's queue is not linked into LH; LH's query.max_concurrent admission control rejects immediately instead of queueing. See docs/parity-and-gaps.md. (declared, not yet executed) (package not linked into LH) |
 | `search.maxQueueDuration` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
 | `search.maxTags` | `app/vtselect/traces/tracecommon/tracecommon.go` | vt.flag.search_max_tags | 🔁 differs: Present since the VT 0.9.4 bump (pinned VT is 0.12.0) alongside search.maxTraces, and supersedes the deprecated search.traceMaxServiceNameList / search.traceMaxSpanNameList. Cold-tier behaviour is verified by the parity run, not here. See docs/parity-and-gaps.md. (declared, not yet executed) |

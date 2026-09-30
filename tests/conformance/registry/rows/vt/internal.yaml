@@ -186,11 +186,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/force_flush }
-  request: { method: GET, path: /internal/force_flush }
+  request: { method: POST, path: /internal/force_flush }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "Unrouted in the LH traces binary (no registration, no catch-all) → net/http default 404; hot VT serves it from local storage."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST from local storage; Lakehouse does not mount the route (no registration, no catch-all), so any method gets net/http's default 404."
 
 - id: vt.internal.force_merge.unsupported
   title: "/internal/force_merge — LH traces never registers this path"
@@ -201,11 +201,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/force_merge }
-  request: { method: GET, path: /internal/force_merge, params: { partitionPrefix: "*" } }
+  request: { method: POST, path: /internal/force_merge, params: { partitionPrefix: "*" } }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "Unrouted in the LH traces binary (no registration, no catch-all) → net/http default 404; hot VT serves it from local storage."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST from local storage; Lakehouse does not mount the route (no registration, no catch-all), so any method gets net/http's default 404."
 
 - id: vt.internal.log_new_streams.unsupported
   title: "/internal/log_new_streams — LH traces never registers this path"
@@ -216,11 +216,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/log_new_streams }
-  request: { method: GET, path: /internal/log_new_streams }
+  request: { method: POST, path: /internal/log_new_streams }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST; Lakehouse does not mount the route (lakehouse-traces/main.go mountInternalProtocol mounts only /internal/select/ and /internal/delete/), so any method falls through to net/http's default \"404 page not found\". Not a documented, deliberate unsupported response, just an unregistered storage-internal path."
 
 - id: vt.internal.partition_attach.unsupported
   title: "/internal/partition/attach — LH traces never registers this path"
@@ -231,11 +231,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/partition/attach }
-  request: { method: GET, path: /internal/partition/attach }
+  request: { method: POST, path: /internal/partition/attach }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST; Lakehouse does not mount the route (lakehouse-traces/main.go mountInternalProtocol mounts only /internal/select/ and /internal/delete/), so any method falls through to net/http's default \"404 page not found\". Not a documented, deliberate unsupported response, just an unregistered storage-internal path."
 
 - id: vt.internal.partition_detach.unsupported
   title: "/internal/partition/detach — LH traces never registers this path"
@@ -246,11 +246,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/partition/detach }
-  request: { method: GET, path: /internal/partition/detach }
+  request: { method: POST, path: /internal/partition/detach }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST; Lakehouse does not mount the route (lakehouse-traces/main.go mountInternalProtocol mounts only /internal/select/ and /internal/delete/), so any method falls through to net/http's default \"404 page not found\". Not a documented, deliberate unsupported response, just an unregistered storage-internal path."
 
 - id: vt.internal.partition_list.unsupported
   title: "/internal/partition/list — LH traces never registers this path"
@@ -261,11 +261,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/partition/list }
-  request: { method: GET, path: /internal/partition/list }
+  request: { method: POST, path: /internal/partition/list }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST; Lakehouse does not mount the route (lakehouse-traces/main.go mountInternalProtocol mounts only /internal/select/ and /internal/delete/), so any method falls through to net/http's default \"404 page not found\". Not a documented, deliberate unsupported response, just an unregistered storage-internal path."
 
 - id: vt.internal.partition_snapshot_create.unsupported
   title: "/internal/partition/snapshot/create — LH traces never registers this path"
@@ -276,11 +276,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/partition/snapshot/create }
-  request: { method: GET, path: /internal/partition/snapshot/create }
+  request: { method: POST, path: /internal/partition/snapshot/create }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST; Lakehouse does not mount the route (lakehouse-traces/main.go mountInternalProtocol mounts only /internal/select/ and /internal/delete/), so any method falls through to net/http's default \"404 page not found\". Not a documented, deliberate unsupported response, just an unregistered storage-internal path."
 
 - id: vt.internal.partition_snapshot_delete.unsupported
   title: "/internal/partition/snapshot/delete — LH traces never registers this path"
@@ -291,11 +291,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/partition/snapshot/delete }
-  request: { method: GET, path: /internal/partition/snapshot/delete }
+  request: { method: POST, path: /internal/partition/snapshot/delete }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST; Lakehouse does not mount the route (lakehouse-traces/main.go mountInternalProtocol mounts only /internal/select/ and /internal/delete/), so any method falls through to net/http's default \"404 page not found\". Not a documented, deliberate unsupported response, just an unregistered storage-internal path."
 
 - id: vt.internal.partition_snapshot_delete_stale.unsupported
   title: "/internal/partition/snapshot/delete_stale — LH traces never registers this path"
@@ -306,11 +306,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/partition/snapshot/delete_stale }
-  request: { method: GET, path: /internal/partition/snapshot/delete_stale }
+  request: { method: POST, path: /internal/partition/snapshot/delete_stale }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST; Lakehouse does not mount the route (lakehouse-traces/main.go mountInternalProtocol mounts only /internal/select/ and /internal/delete/), so any method falls through to net/http's default \"404 page not found\". Not a documented, deliberate unsupported response, just an unregistered storage-internal path."
 
 - id: vt.internal.partition_snapshot_list.unsupported
   title: "/internal/partition/snapshot/list — LH traces never registers this path"
@@ -321,11 +321,11 @@
   targets: [cold]
   seed: [traces.base]
   upstream: { route: /internal/partition/snapshot/list }
-  request: { method: GET, path: /internal/partition/snapshot/list }
+  request: { method: POST, path: /internal/partition/snapshot/list }
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
-  notes: "LH traces only mounts /internal/select/ and /internal/delete/ (lakehouse-traces/main.go:1128-1129); this storage-internal admin path has no handler registered at all on LH traces, so a request falls through to net/http's default \"404 page not found\" -- not a documented, deliberate unsupported response."
+  notes: "Hot VictoriaTraces v0.12 answers 405 to any method but POST on this route and serves a POST; Lakehouse does not mount the route (lakehouse-traces/main.go mountInternalProtocol mounts only /internal/select/ and /internal/delete/), so any method falls through to net/http's default \"404 page not found\". Not a documented, deliberate unsupported response, just an unregistered storage-internal path."
 
 - id: vt.internal.delete.non_post
   title: "/internal/delete/* — anything but POST is refused with a bare 405 (SSRF guard)"

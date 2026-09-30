@@ -292,7 +292,7 @@
   compare: { type: status }
   layers: [api]
   pending: true
-  notes: "VictoriaTraces v0.12.0 moved the flag into vtselect/searchutil so the Tempo and Jaeger handlers honour it (and the allow_partial_response argument) when a vtstorage node is unavailable. The traces binary links VictoriaLogs' LogsQL handlers, which register the same flag, so patches/vt-traces/vtselect-flag-dedup.patch makes VictoriaTraces read that one flag at call time (lakehouse-traces/partial_response_test.go). There is no peer fan-out to change: Lakehouse's own fan-out (buffer bridge, peer cache) does not take the flag, and Tempo/Jaeger reach storage through the Lakehouse adapter, not VictoriaTraces' netselect, so the flag has no cold-tier effect beyond being parsed and validated."
+  notes: "VictoriaTraces v0.12.0 moved the flag into vtselect/searchutil so the Tempo and Jaeger handlers honour it (and the allow_partial_response argument) when a vtstorage node is unavailable. The flag is VictoriaTraces' own registration, unpatched: the traces binary serves LogsQL through VictoriaTraces' vtselect/logsql, so VictoriaLogs' handlers that registered the same flag are no longer linked (lakehouse-traces/partial_response_test.go). There is no peer fan-out to change: Lakehouse's own fan-out (buffer bridge, peer cache) does not take the flag, and Tempo/Jaeger reach storage through the Lakehouse adapter, not VictoriaTraces' netselect, so the flag has no cold-tier effect beyond being parsed and validated."
 
 - id: vt.flag.servicegraph_enable_task
   title: "-servicegraph.enableTask — cold has no periodic-task runner"

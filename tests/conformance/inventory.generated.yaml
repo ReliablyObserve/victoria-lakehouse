@@ -1559,11 +1559,6 @@ items:
       source: app/vlselect/main.go
     - kind: flag
       surface: vt
-      name: defaultMsgValue
-      source: app/vtinsert/insertutil/flags.go
-      linked: true
-    - kind: flag
-      surface: vt
       name: defaultParallelReaders
       source: app/vtstorage/main.go
       linked: true
@@ -1611,11 +1606,6 @@ items:
       surface: vt
       name: insert.indexFlushInterval
       source: app/vtinsert/insertutil/index_helper.go
-      linked: true
-    - kind: flag
-      surface: vt
-      name: insert.maxFieldsPerLine
-      source: app/vtinsert/insertutil/flags.go
       linked: true
     - kind: flag
       surface: vt
@@ -1751,10 +1741,12 @@ items:
       surface: vt
       name: search.maxQueryLen
       source: app/vtselect/logsql/logsql.go
+      linked: true
     - kind: flag
       surface: vt
       name: search.maxQueryTimeRange
       source: app/vtselect/logsql/logsql.go
+      linked: true
     - kind: flag
       surface: vt
       name: search.maxQueueDuration

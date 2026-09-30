@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -26,6 +27,38 @@ func TestAnswerHTTP2Probe(t *testing.T) {
 		rec := httptest.NewRecorder()
 		if answerHTTP2Probe(rec, r) {
 			t.Errorf("%s %s was swallowed as an HTTP/2 probe", r.Method, r.URL.Path)
+		}
+	}
+}
+
+// answerHTTP2Probe mirrors a block of VictoriaTraces' own request dispatcher
+// (app/victoria-traces/main.go), which this binary replaces. Hold it to the
+// vendored source: the method and path that identify the probe, the answer's
+// text and its status. When upstream changes any of them, this fails.
+func TestHTTP2ProbeMatchesVendoredVT(t *testing.T) {
+	up, err := os.ReadFile("deps/VictoriaTraces/app/victoria-traces/main.go")
+	if err != nil {
+		t.Fatalf("vendored VictoriaTraces missing (run make deps-vt): %v", err)
+	}
+	ours, err := os.ReadFile("http2_probe.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`r.Method == "PRI" && r.URL.Path == "*"`,
+		`http.Error(w, "HTTP/2 is currently not supported on this port", http.StatusMethodNotAllowed)`,
+	} {
+		if !strings.Contains(string(up), want) {
+			t.Errorf("the vendored VictoriaTraces dispatcher no longer contains %q: re-check http2_probe.go", want)
+		}
+	}
+	// Ours is the negation of the same test, then the same answer.
+	for _, want := range []string{
+		`r.Method != "PRI" || r.URL.Path != "*"`,
+		`http.Error(w, "HTTP/2 is currently not supported on this port", http.StatusMethodNotAllowed)`,
+	} {
+		if !strings.Contains(string(ours), want) {
+			t.Errorf("http2_probe.go no longer contains %q", want)
 		}
 	}
 }
