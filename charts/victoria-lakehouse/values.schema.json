@@ -118,6 +118,16 @@
             "auto_register": {
               "type": "boolean"
             },
+            "auto_register_min_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967294
+            },
+            "auto_register_max_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967294
+            },
             "alias_sync_interval": {
               "type": "string"
             },

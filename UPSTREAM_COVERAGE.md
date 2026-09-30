@@ -512,6 +512,12 @@ flag: 30/179 covered by at least one registry row.
 | `lh.stats.compaction.schema` | LH stats compaction — recent compaction runs and efficiency hints | admin | 🟡 declared, not yet executed |
 | `lh.stats.fields.schema` | LH stats fields — per-field size/cardinality breakdown | admin | 🟡 declared, not yet executed |
 | `lh.stats.overview.schema` | LH stats overview — tier sizes, object counts, compaction backlog | admin | 🟡 declared, not yet executed |
+| `lh.tenant_scope.logs.alias_collision_rejected` | Logs — an alias that collides with an existing one is rejected with 409 | admin | 🟡 declared, not yet executed |
+| `lh.tenant_scope.logs.auto_registered_orgid` | Logs — an auto-registered OrgID gets a reserved-range ID and reads only its own rows | insert | 🟡 declared, not yet executed |
+| `lh.tenant_scope.logs.unknown_orgid_read` | Logs — a read with an unknown OrgID is empty and registers nothing | select | 🟡 declared, not yet executed |
+| `lh.tenant_scope.traces.alias_collision_rejected` | Traces — an alias that collides with an existing one is rejected with 409 | admin | 🟡 declared, not yet executed |
+| `lh.tenant_scope.traces.auto_registered_orgid` | Traces — an auto-registered OrgID gets a reserved-range ID and reads only its own spans | insert | 🟡 declared, not yet executed |
+| `lh.tenant_scope.traces.unknown_orgid_read` | Traces — a read with an unknown OrgID is empty and registers nothing | select | 🟡 declared, not yet executed |
 | `lh.tenants.list.schema` | LH tenant listing — accounts/projects known to the cold tier | admin | 🟡 declared, not yet executed |
 | `lh.ui.lakehouse.status` | LH UI panel — lakehouse tier/compaction status page | ui | 🟡 declared, not yet executed |
 | `lh.ui.page.status` | LH UI — /lakehouse/ui page loads | admin | 🟡 declared, not yet executed |

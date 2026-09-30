@@ -830,7 +830,15 @@
     },
     "tenant.auto_register": {
       "name": "AutoRegister",
-      "doc": "AutoRegister registers an unknown string tenant id as a new alias."
+      "doc": "AutoRegister registers an unknown string tenant id as a new alias when it arrives on a write path; a read never registers."
+    },
+    "tenant.auto_register_max_id": {
+      "name": "AutoRegisterMaxID",
+      "doc": "AutoRegisterMaxID is the last AccountID auto-registration may hand out. It stays below 4294967295, the AccountID that unknown tenants resolve to on reads."
+    },
+    "tenant.auto_register_min_id": {
+      "name": "AutoRegisterMinID",
+      "doc": "AutoRegisterMinID is the first AccountID auto-registration may hand out (ProjectID is always 0). The range is reserved: configured aliases must stay outside it."
     },
     "tenant.bucket_template": {
       "name": "BucketTemplate",

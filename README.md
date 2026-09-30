@@ -545,7 +545,9 @@ lakehouse:
     header_project: "X-Scope-ProjectID"   # HTTP header for ProjectID
     orgid_header: "X-Scope-OrgID"         # Loki/Tempo-compatible string alias header
     alias_sync_interval: "30s"            # fleet alias sync interval (also drives policy refresh)
-    auto_register: false                  # auto-register unknown X-Scope-OrgID values
+    auto_register: false                  # auto-register unknown X-Scope-OrgID values on ingest (reads never register)
+    auto_register_min_id: 2147483648      # first AccountID auto-registration may allocate (reserved range)
+    auto_register_max_id: 4294967294      # last AccountID auto-registration may allocate
     global_read_header: ""      # e.g., "X-Lakehouse-Global-Read" — cross-tenant reads via custom header
     global_read_value: ""       # required value for the custom header
     global_read_token: ""       # Bearer token for cross-tenant reads via Authorization header

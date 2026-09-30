@@ -1,0 +1,104 @@
+# String tenants (X-Scope-OrgID) and their AccountIDs, for both signals.
+#
+# String tenants are a Lakehouse addition (VictoriaLogs and VictoriaTraces know
+# only the integer AccountID/ProjectID pair), so these rows are lh-addition with
+# no upstream counterpart. Int tenant semantics are unchanged by them.
+#
+# Rule: an OrgID that is configured, persisted or auto-registered owns exactly
+# one AccountID:ProjectID and that pair belongs to exactly that OrgID.
+# Auto-registration happens only on an ingest request and allocates from the
+# reserved range [2147483648, 4294967294] (ProjectID 0), never an ID a configured
+# alias, a persisted alias or a tenant with data holds. A read with an unknown
+# OrgID is answered as a tenant without data and registers nothing. The
+# compose stack configures acme-corp:1001 and staging-team:1002.
+# Semantics: docs/multi-tenancy.md#auto-register-range-and-the-shared-registry.
+
+- id: lh.tenant_scope.logs.auto_registered_orgid
+  title: "Logs — an auto-registered OrgID gets a reserved-range ID and reads only its own rows"
+  surface: lh
+  kind: insert
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  request: { method: POST, path: /insert/jsonline, params: { _stream_fields: "service.name" }, headers: { X-Scope-OrgID: "{{tenant.org_id}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/tenant/registry_test.go, internal/tenant/middleware_autoregister_test.go, internal/selectapi/tenant_autoregister_test.go, tests/e2e/string_tenant_autoregister_test.go] }
+  notes: "Ingest as an OrgID no pod has seen, with acme-corp:1001 and staging-team:1002 configured: the OrgID is assigned an AccountID in [2147483648, 4294967294] and ProjectID 0, acme-corp and staging-team keep 1001 and 1002, and no two OrgIDs share an ID. A select as each OrgID returns exactly that OrgID's rows, so the _msg sets of the three are pairwise disjoint."
+
+- id: lh.tenant_scope.traces.auto_registered_orgid
+  title: "Traces — an auto-registered OrgID gets a reserved-range ID and reads only its own spans"
+  surface: lh
+  kind: insert
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  request: { method: POST, path: /insert/opentelemetry/v1/traces, headers: { X-Scope-OrgID: "{{tenant.org_id}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/tenant/registry_test.go, lakehouse-traces/internal/selectapi/tenant_autoregister_test.go, tests/e2e/string_tenant_autoregister_test.go] }
+  notes: "OTLP ingest as an unseen OrgID with acme-corp:1001 configured: the OrgID is assigned a reserved-range AccountID, acme-corp keeps 1001, and a select (LogsQL, Jaeger, Tempo) as each OrgID returns only its own trace_ids and services, so the trace_id sets are disjoint."
+
+- id: lh.tenant_scope.logs.unknown_orgid_read
+  title: "Logs — a read with an unknown OrgID is empty and registers nothing"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" }, headers: { X-Scope-OrgID: "{{tenant.org_id}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/tenant/middleware_autoregister_test.go, internal/selectapi/tenant_autoregister_test.go, tests/e2e/string_tenant_autoregister_test.go] }
+  notes: "With auto-register on, only an ingest request registers an OrgID. A select, field, stream, hits or stats request with an OrgID no alias names answers 200 with the empty result of a tenant without data (it never falls through to 0:0 or to any other tenant), does not appear in the alias list or in the shared alias registry, and is counted in lakehouse_tenant_unknown_orgid_reads_total."
+
+- id: lh.tenant_scope.traces.unknown_orgid_read
+  title: "Traces — a read with an unknown OrgID is empty and registers nothing"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "1000" }, headers: { X-Scope-OrgID: "{{tenant.org_id}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/tenant/middleware_autoregister_test.go, lakehouse-traces/internal/selectapi/tenant_autoregister_test.go, tests/e2e/string_tenant_autoregister_test.go] }
+  notes: "Same rule on the traces binary, through VictoriaTraces' own LogsQL, Jaeger and Tempo handlers: an unknown OrgID reads as a tenant without data, nothing is registered, and no service or trace_id of another tenant is returned."
+
+- id: lh.tenant_scope.logs.alias_collision_rejected
+  title: "Logs — an alias that collides with an existing one is rejected with 409"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  request: { method: POST, path: /lakehouse/api/v1/tenants/aliases }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/tenant/registry_test.go, cmd/lakehouse-logs/tenant_autoregister_test.go, tests/e2e/string_tenant_autoregister_test.go] }
+  notes: "Creating an alias whose AccountID:ProjectID already belongs to another OrgID, whose OrgID already maps to another ID, or whose AccountID lies in the auto-register range answers 409 and changes nothing: the reverse map (display name, org_id, metric label) is never overwritten. The same entry arriving over the peer sync is logged, counted in lakehouse_tenant_alias_rejected_total and dropped. Startup refuses configured aliases that collide with each other or sit inside the range."
+
+- id: lh.tenant_scope.traces.alias_collision_rejected
+  title: "Traces — an alias that collides with an existing one is rejected with 409"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [tenants.iso]
+  request: { method: POST, path: /lakehouse/api/v1/tenants/aliases }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/tenant/registry_test.go, lakehouse-traces/tenant_autoregister_test.go, tests/e2e/string_tenant_autoregister_test.go] }
+  notes: "Same alias-collision rule on the traces binary (shared internal/tenant): 409 for an ID or OrgID already mapped and for an AccountID inside the auto-register range; the existing mapping is left as it was."

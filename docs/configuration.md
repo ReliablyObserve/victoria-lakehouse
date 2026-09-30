@@ -363,7 +363,9 @@ The **Effect** column says what a flag does to the config key it writes:
 | `-lakehouse.smart-cache.disk.scaling` | both | `smart_cache.disk_scaling` | set | ` ` | Smart-cache disk scaling policy: fixed\|linear\|expbackoff |
 | `-lakehouse.tenant.alias` | both | `tenant.aliases` | set | ` ` | Static tenant aliases: comma-separated orgid:account:project (e.g. acme-corp:1001:0,staging-team:1002:0). Re-applied every startup as the reconstruction baseline; merged with S3-persisted runtime aliases. |
 | `-lakehouse.tenant.alias-sync-interval` | both | `tenant.alias_sync_interval` | set | `0s` | Fleet sync interval for runtime aliases (default: 30s) |
-| `-lakehouse.tenant.auto-register` | both | `tenant.auto_register` | enable-only | `false` | Auto-register unknown X-Scope-OrgID tenants |
+| `-lakehouse.tenant.auto-register` | both | `tenant.auto_register` | enable-only | `false` | Auto-register unknown X-Scope-OrgID tenants on write paths (insert/OTLP/native). Reads never register |
+| `-lakehouse.tenant.auto-register-max-id` | both | `tenant.auto_register_max_id` | set | `0` | Last AccountID auto-registration may allocate; must be below 4294967295 (default: 4294967294) |
+| `-lakehouse.tenant.auto-register-min-id` | both | `tenant.auto_register_min_id` | set | `0` | First AccountID auto-registration may allocate; configured aliases must stay outside [min,max] (default: 2147483648) |
 | `-lakehouse.tenant.bucket-template` | both | `tenant.bucket_template` | set | ` ` | Bucket name template for bucket isolation |
 | `-lakehouse.tenant.default-account` | both | `tenant.default_account` | set | ` ` | Default tenant account ID (default: 0) |
 | `-lakehouse.tenant.default-prefix` | both | `tenant.default_prefix` | set | ` ` | Static S3 key prefix override |
@@ -772,7 +774,9 @@ Controls multi-tenant routing, isolation and per-tenant overrides.
 |---|---|---|---|---|---|---|
 | `tenant.alias_sync_interval` | duration | `30s` | set | `-lakehouse.tenant.alias-sync-interval` |  | How often runtime aliases and tenant policies sync across the fleet. |
 | `tenant.aliases` | map[string]object | `{}` | set | `-lakehouse.tenant.alias` |  | Maps string tenant ids to an AccountID and ProjectID. |
-| `tenant.auto_register` | bool | `false` | enable-only | `-lakehouse.tenant.auto-register` (enable-only) |  | Registers an unknown string tenant id as a new alias. |
+| `tenant.auto_register` | bool | `false` | enable-only | `-lakehouse.tenant.auto-register` (enable-only) |  | Registers an unknown string tenant id as a new alias when it arrives on a write path; a read never registers. |
+| `tenant.auto_register_max_id` | int | `4294967294` | set | `-lakehouse.tenant.auto-register-max-id` |  | The last AccountID auto-registration may hand out. |
+| `tenant.auto_register_min_id` | int | `2147483648` | set | `-lakehouse.tenant.auto-register-min-id` |  | The first AccountID auto-registration may hand out (ProjectID is always 0). |
 | `tenant.bucket_template` | string | `""` | set | `-lakehouse.tenant.bucket-template` |  | Names a tenant's bucket in bucket isolation; required when isolation is bucket. |
 | `tenant.default_account` | string | `0` | set | `-lakehouse.tenant.default-account` |  | The AccountID of a request that carries no tenant header. |
 | `tenant.default_prefix` | string | `""` | set | `-lakehouse.tenant.default-prefix` |  | A static S3 key prefix that replaces prefix_template. |
