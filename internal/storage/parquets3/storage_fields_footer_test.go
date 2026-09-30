@@ -1,7 +1,6 @@
 package parquets3
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -105,28 +104,15 @@ func (m *instrumentedS3Server) url() string { return m.srv.URL }
 // in regression tests.
 func makeLargeParquet(t *testing.T, baseTime time.Time, minBytes int) []byte {
 	t.Helper()
-	rows := make([]logRow, 0, 4096)
-	i := 0
-	for {
-		// Use a unique body per row to defeat ZSTD compression and
-		// keep the file growing predictably.
-		rows = append(rows, logRow{
+	// Unique content per row defeats ZSTD, so the file grows predictably.
+	return growParquetTo(t, minBytes, func(i int) logRow {
+		return logRow{
 			TimestampUnixNano: baseTime.Add(time.Duration(i) * time.Microsecond).UnixNano(),
 			Body:              fmt.Sprintf("row-%d-payload-%x-%x-%x-%x", i, i*2654435761, i*1442695040, i*8675309, i*0xdeadbeef),
 			SeverityText:      []string{"INFO", "WARN", "ERROR", "DEBUG"}[i%4],
 			ServiceName:       fmt.Sprintf("service-%d", i%32),
-		})
-		i++
-		if i%200 == 0 {
-			data := writeParquetToBytes(t, rows)
-			if len(data) >= minBytes {
-				return data
-			}
 		}
-		if i > 200000 {
-			return writeParquetToBytes(t, rows) // safety stop
-		}
-	}
+	}, parquet.Compression(&parquet.Zstd))
 }
 
 // TestGetFieldNames_ServesOnlyFooterBytes locks in the regression guard
@@ -243,32 +229,14 @@ func TestGetFieldNames_HitsRemainCorrect(t *testing.T) {
 	}
 }
 
-// writeFullLogParquetToBytes writes fullLogRow records to an in-memory
-// parquet buffer. The 8-column schema is needed for tests that require
-// projecting fewer than half the columns (so shouldUseRangeRead returns
-// true and the range-read path actually engages).
-func writeFullLogParquetToBytes(t *testing.T, rows []fullLogRow) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	w := parquet.NewGenericWriter[fullLogRow](&buf, parquet.Compression(&parquet.Zstd))
-	if _, err := w.Write(rows); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
 // makeLargeFullLogParquet generates an 8-column logs Parquet file at
 // least minBytes long, padding with unique-content rows so ZSTD cannot
 // compress it down to below the prefetch threshold.
 func makeLargeFullLogParquet(t *testing.T, baseTime time.Time, minBytes int) []byte {
 	t.Helper()
-	rows := make([]fullLogRow, 0, 4096)
-	i := 0
-	for {
-		rows = append(rows, fullLogRow{
+	// Unique content per row defeats ZSTD, so the file grows predictably.
+	return growParquetTo(t, minBytes, func(i int) fullLogRow {
+		return fullLogRow{
 			TimestampUnixNano: baseTime.Add(time.Duration(i) * time.Microsecond).UnixNano(),
 			Body:              fmt.Sprintf("row-%d-payload-%x-%x-%x-%x-%x", i, i*2654435761, i*1442695040, i*8675309, i*0xdeadbeef, i*0xbadf00d),
 			SeverityText:      []string{"INFO", "WARN", "ERROR", "DEBUG"}[i%4],
@@ -277,18 +245,8 @@ func makeLargeFullLogParquet(t *testing.T, baseTime time.Time, minBytes int) []b
 			StreamID:          fmt.Sprintf("sid-%x", i),
 			TraceID:           fmt.Sprintf("trace-%016x", i),
 			SpanID:            fmt.Sprintf("span-%016x", i),
-		})
-		i++
-		if i%200 == 0 {
-			data := writeFullLogParquetToBytes(t, rows)
-			if len(data) >= minBytes {
-				return data
-			}
 		}
-		if i > 200000 {
-			return writeFullLogParquetToBytes(t, rows) // safety stop
-		}
-	}
+	}, parquet.Compression(&parquet.Zstd))
 }
 
 // TestGetFieldValues_UsesColumnProjectedRead locks in the regression

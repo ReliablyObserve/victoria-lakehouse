@@ -1,7 +1,6 @@
 package parquets3
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -104,42 +103,15 @@ func (m *instrumentedS3Server) url() string { return m.srv.URL }
 // appending unique-content rows (so ZSTD cannot compress them away).
 func makeLargeParquet(t *testing.T, baseTime time.Time, minBytes int) []byte {
 	t.Helper()
-	rows := make([]logRow, 0, 4096)
-	i := 0
-	for {
-		rows = append(rows, logRow{
+	// Unique content per row defeats ZSTD, so the file grows predictably.
+	return growParquetTo(t, minBytes, func(i int) logRow {
+		return logRow{
 			TimestampUnixNano: baseTime.Add(time.Duration(i) * time.Microsecond).UnixNano(),
 			Body:              fmt.Sprintf("row-%d-payload-%x-%x-%x-%x", i, i*2654435761, i*1442695040, i*8675309, i*0xdeadbeef),
 			SeverityText:      []string{"INFO", "WARN", "ERROR", "DEBUG"}[i%4],
 			ServiceName:       fmt.Sprintf("service-%d", i%32),
-		})
-		i++
-		if i%200 == 0 {
-			data := writeParquetToBytesLocal(t, rows)
-			if len(data) >= minBytes {
-				return data
-			}
 		}
-		if i > 200000 {
-			return writeParquetToBytesLocal(t, rows) // safety stop
-		}
-	}
-}
-
-// writeParquetToBytesLocal writes the logRow records to an in-memory
-// parquet buffer. Suffixed "Local" because the traces module's existing
-// writeParquetToBytes helper has a different signature.
-func writeParquetToBytesLocal(t *testing.T, rows []logRow) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	w := parquet.NewGenericWriter[logRow](&buf, parquet.Compression(&parquet.Zstd))
-	if _, err := w.Write(rows); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
+	}, parquet.Compression(&parquet.Zstd))
 }
 
 // TestGetFieldNames_ServesOnlyFooterBytes_Traces locks in the regression

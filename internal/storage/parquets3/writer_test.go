@@ -194,6 +194,16 @@ func mockS3() *httptest.Server {
 	}))
 }
 
+// singleAttemptS3 makes the AWS SDK clients built afterwards try each request
+// once (the SDK reads AWS_MAX_ATTEMPTS when the client config loads). The
+// tests that point a writer at a server answering every PUT with 500 only
+// need the first error; the SDK's default three attempts with exponential
+// backoff turned each of them into a multi-second wait for the same assertion.
+func singleAttemptS3(t *testing.T) {
+	t.Helper()
+	t.Setenv("AWS_MAX_ATTEMPTS", "1")
+}
+
 func testPool(t testing.TB, endpoint string) *s3reader.ClientPool {
 	t.Helper()
 	cfg := &config.S3Config{
@@ -540,6 +550,7 @@ func TestCheckSizeThreshold(t *testing.T) {
 }
 
 func TestFlushAll_S3Error(t *testing.T) {
+	singleAttemptS3(t)
 	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -563,6 +574,7 @@ func TestFlushAll_S3Error(t *testing.T) {
 }
 
 func TestFlushAll_TraceS3Error(t *testing.T) {
+	singleAttemptS3(t)
 	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
 			w.WriteHeader(http.StatusInternalServerError)

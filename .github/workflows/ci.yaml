@@ -237,8 +237,27 @@ jobs:
             exit 1
           fi
 
+      # Two invocations, because -short must reach only parquets3 (other
+      # packages gate their own stress/memleak tests on it):
+      #   * every other package: -timeout=10m, unchanged.
+      #   * parquets3 (-short): -timeout=8m. Measured on a 2-core runner it
+      #     takes ~3 min (was ~9-10 min and timing out at random); 8m is ~2.5x
+      #     that, and gotest_report.py warns at 70% (5m36s) and fails at 90%
+      #     (7m12s) of it, so a creeping package is caught while it is still
+      #     green. The tests -short skips (the memory-budget, production-shape
+      #     and field-metadata matrix tests, i.e. exactly the ones that call
+      #     testing.Short()) run in test-parquets3-heavy on every PR.
+      # `set -o pipefail` keeps a go test failure from being hidden by the
+      # pipe into the report.
       - name: Test logs module
-        run: go test ./internal/... -race -count=1 -timeout=10m
+        run: |
+          set -euo pipefail
+          others=$(go list ./internal/... | grep -v '/internal/storage/parquets3$')
+          # shellcheck disable=SC2086
+          go test $others -race -count=1 -timeout=10m -json | tee test-logs-others.json |
+            python3 scripts/ci/gotest_report.py --budget-seconds 600 --title "logs: all packages except parquets3"
+          go test ./internal/storage/parquets3/ -short -race -count=1 -timeout=8m -json | tee test-logs-parquets3.json |
+            python3 scripts/ci/gotest_report.py --budget-seconds 480 --title "logs: parquets3 (-short)"
 
       - name: Coverage check (logs)
         run: |
@@ -255,7 +274,8 @@ jobs:
               echo "::error::Coverage for $pkg is ${pct}% (minimum: ${THRESHOLD}%)"
               FAILED=1
             fi
-          done < <(go test ./internal/... -cover -count=1 -timeout=10m 2>&1 | grep 'coverage:')
+          done < <({ go test $(go list ./internal/... | grep -v '/internal/storage/parquets3$') -cover -count=1 -timeout=10m
+                     go test ./internal/storage/parquets3/ -short -cover -count=1 -timeout=8m; } 2>&1 | grep 'coverage:')
           [ "$FAILED" -eq 1 ] && exit 1 || echo "All packages above ${THRESHOLD}% coverage"
 
       - name: Vet logs module
@@ -288,9 +308,17 @@ jobs:
             exit 1
           fi
 
+      # Same split and budgets as test-logs (see the comment there).
       - name: Test traces module
         working-directory: lakehouse-traces
-        run: go test ./internal/... -race -count=1 -timeout=10m
+        run: |
+          set -euo pipefail
+          others=$(go list ./internal/... | grep -v '/internal/storage/parquets3$')
+          # shellcheck disable=SC2086
+          go test $others -race -count=1 -timeout=10m -json | tee test-traces-others.json |
+            python3 ../scripts/ci/gotest_report.py --budget-seconds 600 --title "traces: all packages except parquets3"
+          go test ./internal/storage/parquets3/ -short -race -count=1 -timeout=8m -json | tee test-traces-parquets3.json |
+            python3 ../scripts/ci/gotest_report.py --budget-seconds 480 --title "traces: parquets3 (-short)"
 
       - name: Coverage check (traces)
         working-directory: lakehouse-traces
@@ -308,12 +336,64 @@ jobs:
               echo "::error::Coverage for $pkg is ${pct}% (minimum: ${THRESHOLD}%)"
               FAILED=1
             fi
-          done < <(go test ./internal/... -cover -count=1 -timeout=10m 2>&1 | grep 'coverage:')
+          done < <({ go test $(go list ./internal/... | grep -v '/internal/storage/parquets3$') -cover -count=1 -timeout=10m
+                     go test ./internal/storage/parquets3/ -short -cover -count=1 -timeout=8m; } 2>&1 | grep 'coverage:')
           [ "$FAILED" -eq 1 ] && exit 1 || echo "All packages above ${THRESHOLD}% coverage"
 
       - name: Vet traces module
         working-directory: lakehouse-traces
         run: go vet ./...
+
+  # The parquets3 tests that call testing.Short() and so are skipped by the
+  # -short unit run in test-logs / test-traces: the memory-budget and
+  # production-shape query tests, the field-metadata exactness matrix in all
+  # layouts, and the compression benchmarks-as-tests. They build hundreds of
+  # files or ~48k-row deployments and are the slowest tests in the repo; keeping
+  # them in the unit job pushed the package past its 10m -timeout (465s, 494s,
+  # 551s, then a 600s kill on main), so they run here instead, in parallel, on
+  # every PR, with -race and their own budget. The test list is derived from the
+  # source (short_gated_tests.sh), so a test that gains or loses a Short() gate
+  # moves between the two jobs by itself; nothing is enumerated by hand.
+  # Measured on a 2-core runner: ~3-4 min. -timeout=10m is ~2.5x; the report
+  # warns at 70% and fails at 90% of it.
+  test-parquets3-heavy:
+    needs: deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: logs
+            dir: .
+            gomod: go.mod
+          - module: traces
+            dir: lakehouse-traces
+            gomod: lakehouse-traces/go.mod
+    name: test-parquets3-heavy (${{ matrix.module }})
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ matrix.gomod }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+
+      - name: Heavy parquets3 tests (${{ matrix.module }})
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -euo pipefail
+          heavy=$("$GITHUB_WORKSPACE/scripts/ci/short_gated_tests.sh" internal/storage/parquets3)
+          echo "running: $heavy"
+          go test ./internal/storage/parquets3/ -run "$heavy" -race -count=1 -timeout=10m -json | tee heavy.json |
+            python3 "$GITHUB_WORKSPACE/scripts/ci/gotest_report.py" --budget-seconds 600 --title "${{ matrix.module }}: parquets3 heavy"
 
   # Dedicated hot/cold parity safeguard. The same tests already run as
   # part of `test-traces` and `test-logs`, but pulling them into a named
@@ -628,9 +708,29 @@ jobs:
         run: |
           helm lint charts/victoria-lakehouse/ --strict
 
+  # Benchmark smoke run (informational: nothing gates on the numbers, the
+  # registry-backed perf jobs above do that). What it guarantees is that every
+  # benchmark still compiles, starts and finishes, and it lists the slowest ones
+  # in the job summary.
+  #  * -run='^$': the unit tests are NOT run again. This job used to execute
+  #    every package's whole test suite (the slow parquets3 tests included)
+  #    before its first benchmark, and had no timeout: 86-89 minutes per run.
+  #  * -benchtime=1s -count=1: one second per benchmark is enough to prove it
+  #    runs; the old 3s x 2 tripled the time for numbers nobody consumes.
+  #  * `set -o pipefail` (in `set -euo pipefail`): the old `go test | tee` had
+  #    the pipe's status be tee's, which hid a real failure: internal/metrics
+  #    benchmarks registered a fixed metric name and panicked on testing's
+  #    second b.N pass, so 3 of that package's 4 benchmarks never ran.
+  #  * Budget: measured ~15 min for logs (BenchmarkFieldMetadata alone is ~12
+  #    min: its 100 ms S3-latency cells are sleeping, not computing, and were
+  #    kept as they are) and ~15 s for traces on a 32-thread laptop. The CI
+  #    runner is slower, so -timeout=40m / timeout-minutes 45 is ~2x the
+  #    logs estimate; traces gets 15m / 20m. gotest_report.py warns at 70% and
+  #    fails at 90% of the go -timeout.
   benchmarks-logs:
     needs: deps
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
@@ -648,16 +748,24 @@ jobs:
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Run benchmarks (logs)
-        run: go test -bench=. -benchtime=3s -count=2 ./internal/... | tee bench-logs.txt
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          go test -run='^$' -bench=. -benchtime=1s -count=1 -timeout=40m -json ./internal/... |
+            python3 scripts/ci/gotest_report.py --budget-seconds 2400 --bench-out bench-logs.txt --title "benchmarks (logs)"
+          echo "Benchmark run wall time: $((SECONDS - start))s" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: bench-results-logs
           path: bench-logs.txt
 
+  # Same shape as benchmarks-logs (see the comment there).
   benchmarks-traces:
     needs: deps
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
@@ -676,9 +784,15 @@ jobs:
 
       - name: Run benchmarks (traces)
         working-directory: lakehouse-traces
-        run: go test -bench=. -benchtime=3s -count=2 ./internal/... | tee bench-traces.txt
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          go test -run='^$' -bench=. -benchtime=1s -count=1 -timeout=15m -json ./internal/... |
+            python3 ../scripts/ci/gotest_report.py --budget-seconds 900 --bench-out bench-traces.txt --title "benchmarks (traces)"
+          echo "Benchmark run wall time: $((SECONDS - start))s" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: bench-results-traces
           path: lakehouse-traces/bench-traces.txt

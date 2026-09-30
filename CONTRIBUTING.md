@@ -40,6 +40,26 @@ cd lakehouse-traces && go run . --lakehouse.s3.bucket=obs-archive --lakehouse.s3
 4. **Run linters**: `golangci-lint run ./...`
 5. **Open a pull request** against `main`
 
+### Test time budget
+
+`internal/storage/parquets3` (in both modules) is the slowest package, and CI
+holds it to a `-timeout`:
+
+- The unit jobs (`test-logs`, `test-traces`) run it with `-short`, under
+  `-timeout=8m`. A test that builds hundreds of files or a large deployment
+  (memory-budget, production-shape, field-metadata exactness matrix) should
+  start with `if testing.Short() { t.Skip(...) }`.
+- Those `Short()`-gated tests run in the `test-parquets3-heavy` job on every PR
+  (`scripts/ci/short_gated_tests.sh` derives the list from the source, so
+  nothing is enumerated by hand). Run them locally with
+  `go test ./internal/storage/parquets3/ -run "$(scripts/ci/short_gated_tests.sh internal/storage/parquets3)"`.
+- `scripts/ci/gotest_report.py` warns at 70% and fails at 90% of each package's
+  timeout and lists the slowest tests in the job summary. When it warns, make
+  the slowest tests faster instead of raising the timeout: share fixtures,
+  size datasets to the assertion, and never `time.Sleep` for real time. A test
+  that points S3 at a server answering 500 should call `singleAttemptS3(t)` so
+  the SDK's retry backoff does not turn it into a multi-second wait.
+
 ## Code Standards
 
 ### Go Style
