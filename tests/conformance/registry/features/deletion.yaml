@@ -303,9 +303,15 @@
   surfaces: [api, flag]
   rows:
     - vl.delete.run_task.status
+    - vl.delete.run_task.non_post.differ
+    - vl.internal.delete.non_post.differ
+    - vl.internal.select.non_post.differ
     - vl.delete.stop_task.status
     - vl.delete.active_tasks.status
     - vt.delete.run_task.status
+    - vt.delete.run_task.non_post.differ
+    - vt.internal.delete.non_post.differ
+    - vt.internal.select.non_post.differ
     - vt.delete.stop_task.status
     - vt.delete.active_tasks.status
   tests:
@@ -316,6 +322,16 @@
     - lakehouse-traces/public_delete_test.go#TestMountPublicDelete_GatedByDefault
     - lakehouse-traces/public_delete_test.go#TestMountPublicDelete_RunTaskIsTenantScoped
     - lakehouse-traces/public_delete_test.go#TestUpstreamPublicDelete_MatchesVendoredVTSelect
+    - internal/internaldelete/runtask_post_test.go#TestRunTaskPOSTOnly
+    - internal/internaldelete/post_only_test.go#TestPOSTOnly
+    - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused
+    - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamInternalProtocolStillAcceptsGET
+    - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskCounterParity
+    - lakehouse-traces/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused
+    - lakehouse-traces/public_delete_post_only_test.go#TestVendoredVTStillLacksPOSTChecks
+    - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly
+    - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamRunTaskStillLacksMethodCheck
+    - lakehouse-traces/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly
     - internal/delete/tasks_test.go#TestRunTask_RegistersATenantScopedTombstone
     - internal/delete/tasks_test.go#TestRunTask_EdgeCases
     - lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsTenantScoped
