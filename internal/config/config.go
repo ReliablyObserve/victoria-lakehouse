@@ -858,8 +858,17 @@ type TenantConfig struct {
 	OrgIDHeader string `yaml:"orgid_header"`
 	// MetricsFormat is the tenant label of metrics: id, name or both.
 	MetricsFormat string `yaml:"metrics_format"`
-	// AutoRegister registers an unknown string tenant id as a new alias.
+	// AutoRegister registers an unknown string tenant id as a new alias when it
+	// arrives on a write path; a read never registers.
 	AutoRegister bool `yaml:"auto_register"`
+	// AutoRegisterMinID is the first AccountID auto-registration may hand out
+	// (ProjectID is always 0). The range is reserved: configured aliases
+	// must stay outside it.
+	AutoRegisterMinID uint32 `yaml:"auto_register_min_id"`
+	// AutoRegisterMaxID is the last AccountID auto-registration may hand out.
+	// It stays below 4294967295, the AccountID that unknown tenants resolve
+	// to on reads.
+	AutoRegisterMaxID uint32 `yaml:"auto_register_max_id"`
 	// AliasSyncInterval is how often runtime aliases and tenant policies sync
 	// across the fleet.
 	AliasSyncInterval time.Duration `yaml:"alias_sync_interval"`
@@ -1387,6 +1396,8 @@ func Default() *Config {
 			OrgIDHeader:       "X-Scope-OrgID",
 			MetricsFormat:     "id",
 			AutoRegister:      false,
+			AutoRegisterMinID: 2147483648,
+			AutoRegisterMaxID: 4294967294,
 			AliasSyncInterval: 30 * time.Second,
 		},
 
@@ -1645,6 +1656,47 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateTenantAutoRegister(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// TenantNullAccountID is the AccountID an unknown string tenant resolves to on
+// reads. It never holds data: auto-registration stays below it and writes to
+// it are refused.
+const TenantNullAccountID uint32 = 4294967295
+
+// validateTenantAutoRegister checks the reserved auto-register AccountID range
+// and that no configured alias sits inside it.
+func (c *Config) validateTenantAutoRegister() error {
+	t := &c.Tenant
+	if t.AutoRegisterMinID == 0 && t.AutoRegisterMaxID == 0 {
+		return nil // programmatic Config without defaults; callers get the code defaults
+	}
+	if t.AutoRegisterMinID == 0 || t.AutoRegisterMaxID == 0 {
+		return fmt.Errorf("--lakehouse.tenant.auto-register-min-id and --lakehouse.tenant.auto-register-max-id must both be set (got min=%d max=%d)",
+			t.AutoRegisterMinID, t.AutoRegisterMaxID)
+	}
+	if t.AutoRegisterMinID > t.AutoRegisterMaxID {
+		return fmt.Errorf("--lakehouse.tenant.auto-register-min-id (%d) must not exceed --lakehouse.tenant.auto-register-max-id (%d)",
+			t.AutoRegisterMinID, t.AutoRegisterMaxID)
+	}
+	if t.AutoRegisterMaxID >= TenantNullAccountID {
+		return fmt.Errorf("--lakehouse.tenant.auto-register-max-id (%d) must be below %d, the AccountID reserved for unknown tenants on reads",
+			t.AutoRegisterMaxID, TenantNullAccountID)
+	}
+	for orgID, a := range t.Aliases {
+		if a.AccountID >= t.AutoRegisterMinID && a.AccountID <= t.AutoRegisterMaxID {
+			return fmt.Errorf("tenant alias %q maps to AccountID %d, inside the reserved auto-register range [%d, %d]; "+
+				"move the alias out of the range or change --lakehouse.tenant.auto-register-min-id/-max-id",
+				orgID, a.AccountID, t.AutoRegisterMinID, t.AutoRegisterMaxID)
+		}
+		if a.AccountID == TenantNullAccountID {
+			return fmt.Errorf("tenant alias %q maps to AccountID %d, which is reserved for unknown tenants", orgID, a.AccountID)
+		}
+	}
 	return nil
 }
 
@@ -2343,6 +2395,12 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Tenant.AutoRegister {
 		base.Tenant.AutoRegister = true
+	}
+	if overlay.Tenant.AutoRegisterMinID > 0 {
+		base.Tenant.AutoRegisterMinID = overlay.Tenant.AutoRegisterMinID
+	}
+	if overlay.Tenant.AutoRegisterMaxID > 0 {
+		base.Tenant.AutoRegisterMaxID = overlay.Tenant.AutoRegisterMaxID
 	}
 	if overlay.Tenant.AliasSyncInterval > 0 {
 		base.Tenant.AliasSyncInterval = overlay.Tenant.AliasSyncInterval

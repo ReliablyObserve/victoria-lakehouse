@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"math"
 	"sort"
 	"strconv"
 
@@ -338,6 +339,32 @@ func (s *Storage) TenantIDsForRange(startNs, endNs int64) []logstorage.TenantID 
 		}
 		return out[i].ProjectID < out[j].ProjectID
 	})
+	return out
+}
+
+// DataTenantAccountIDs lists the AccountIDs that hold data anywhere in time:
+// cold-tier tenants from the manifest's per-tenant aggregates, plus the tenants
+// of the co-located unflushed buffer. String-tenant auto-registration never
+// hands out one of these IDs, so a new OrgID cannot land on an int tenant that
+// already has data.
+func (s *Storage) DataTenantAccountIDs() []uint32 {
+	seen := make(map[uint32]struct{})
+	for _, t := range s.TenantIDsForRange(0, math.MaxInt64) {
+		seen[t.AccountID] = struct{}{}
+	}
+	if lister, ok := s.localBuffer.(interface {
+		GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error)
+	}); ok && lister != nil {
+		if ids, err := lister.GetTenantIDs(context.Background(), 0, math.MaxInt64); err == nil {
+			for _, t := range ids {
+				seen[t.AccountID] = struct{}{}
+			}
+		}
+	}
+	out := make([]uint32, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
 	return out
 }
 

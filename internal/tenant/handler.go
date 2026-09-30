@@ -1,11 +1,15 @@
 package tenant
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 type AliasListResponse struct {
@@ -16,10 +20,25 @@ type Persister interface {
 	SaveAliases(entries []AliasEntry) error
 }
 
+// RegistryWriter persists alias changes with conditional writes to the shared
+// registry, so concurrent changes from other pods are merged, not overwritten.
+type RegistryWriter interface {
+	Register(ctx context.Context, e AliasEntry) error
+	Unregister(ctx context.Context, orgID string) error
+}
+
 type Handler struct {
 	resolver  *TenantResolver
 	persister Persister
+	registry  RegistryWriter
 	authKey   string
+}
+
+// WithRegistry makes the handler persist through the shared registry instead
+// of writing the whole alias set blind.
+func (h *Handler) WithRegistry(rw RegistryWriter) *Handler {
+	h.registry = rw
+	return h
 }
 
 func NewHandler(r *TenantResolver, p Persister, authKey string) *Handler {
@@ -72,14 +91,24 @@ func (h *Handler) createAlias(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.resolver.AddAlias(entry.OrgID, TenantID{AccountID: entry.AccountID, ProjectID: entry.ProjectID}); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+	tid := TenantID{AccountID: entry.AccountID, ProjectID: entry.ProjectID}
+	if err := h.resolver.CheckAlias(entry.OrgID, tid); err != nil {
+		h.aliasError(w, err)
+		return
+	}
+	if h.registry != nil {
+		entry.Source = SourceAPI
+		if err := h.registry.Register(r.Context(), entry); err != nil {
+			h.aliasError(w, err)
+			return
+		}
+	}
+	if err := h.resolver.AddAliasFrom(entry.OrgID, tid, SourceAPI); err != nil {
+		h.aliasError(w, err)
 		return
 	}
 
-	if h.persister != nil {
+	if h.registry == nil && h.persister != nil {
 		if err := h.persister.SaveAliases(h.resolver.AllAliases()); err != nil {
 			logger.Errorf("failed to persist tenant aliases: %s", err)
 		}
@@ -88,6 +117,24 @@ func (h *Handler) createAlias(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(entry)
+}
+
+// aliasError maps an alias failure to its status: 409 for a conflict (the
+// mapping is refused, nothing changed), 503 when the shared registry cannot be
+// reached, 400 otherwise.
+func (h *Handler) aliasError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	switch {
+	case errors.Is(err, ErrAliasConflict):
+		status = http.StatusConflict
+		metrics.TenantAliasRejectedTotal.Inc("admin")
+		logger.Warnf("tenant alias API: %s", err)
+	case errors.Is(err, ErrRegistryUnavailable), errors.Is(err, ErrAllocationConflict):
+		status = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
 func (h *Handler) handleAliasDelete(w http.ResponseWriter, r *http.Request) {
@@ -106,9 +153,15 @@ func (h *Handler) handleAliasDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.registry != nil {
+		if err := h.registry.Unregister(r.Context(), orgID); err != nil {
+			h.aliasError(w, err)
+			return
+		}
+	}
 	h.resolver.RemoveAlias(orgID)
 
-	if h.persister != nil {
+	if h.registry == nil && h.persister != nil {
 		if err := h.persister.SaveAliases(h.resolver.AllAliases()); err != nil {
 			logger.Errorf("failed to persist tenant aliases: %s", err)
 		}

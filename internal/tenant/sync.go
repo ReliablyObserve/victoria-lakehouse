@@ -9,6 +9,10 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 type AliasDelta struct {
@@ -51,12 +55,21 @@ func (sh *SyncHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A peer only pushes entries it has confirmed (they are in the shared
+	// registry). An entry that contradicts what this pod maps is refused and
+	// never overwrites it: the reverse map stays intact.
 	for _, ae := range delta.Aliases {
-		if _, exists := sh.resolver.Resolve(ae.OrgID); !exists {
-			_ = sh.resolver.AddAlias(ae.OrgID, TenantID{
-				AccountID: ae.AccountID,
-				ProjectID: ae.ProjectID,
-			})
+		tid := TenantID{AccountID: ae.AccountID, ProjectID: ae.ProjectID}
+		if cur, exists := sh.resolver.Resolve(ae.OrgID); exists && cur == tid {
+			continue
+		}
+		src := ae.Source
+		if src == "" || src == SourceConfig {
+			src = SourceSynced
+		}
+		if err := sh.resolver.AddAliasFrom(ae.OrgID, tid, src); err != nil {
+			metrics.TenantAliasRejectedTotal.Inc("sync")
+			logger.Errorf("tenant sync from %q: refusing alias %q -> %d:%d: %s", delta.NodeID, ae.OrgID, ae.AccountID, ae.ProjectID, err)
 		}
 	}
 

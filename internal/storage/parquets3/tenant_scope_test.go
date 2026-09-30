@@ -1055,6 +1055,42 @@ func TestTenantScope_TenantIDsForRange(t *testing.T) {
 	}
 }
 
+// DataTenantAccountIDs is what string-tenant auto-registration consults so it
+// never hands out the AccountID of an integer tenant that holds data: the cold
+// tier's tenants (manifest aggregates) and the unflushed buffer's tenants.
+func TestDataTenantAccountIDs_ColdAndBuffered(t *testing.T) {
+	f := newTenantScopeFixture(t)
+	f.addLegacyObject()
+
+	ids := func() map[uint32]bool {
+		out := map[uint32]bool{}
+		for _, id := range f.s.DataTenantAccountIDs() {
+			out[id] = true
+		}
+		return out
+	}
+	got := ids()
+	for _, want := range []uint32{0, 1001, 2002} {
+		if !got[want] {
+			t.Errorf("cold tenant %d missing from %v", want, got)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("DataTenantAccountIDs = %v, want exactly the three cold tenants", got)
+	}
+
+	f.s.localBuffer = &tenantListingBuffer{tenants: []logstorage.TenantID{{AccountID: 3003}, {AccountID: 1001}}}
+	got = ids()
+	if !got[3003] || len(got) != 4 {
+		t.Errorf("with a buffered tenant: %v, want the cold tenants plus 3003", got)
+	}
+
+	f.s.localBuffer = &tenantListingBuffer{listErr: fmt.Errorf("boom")}
+	if got = ids(); len(got) != 3 {
+		t.Errorf("a failing buffer listing must not hide the cold tenants: %v", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Scope resolution unit tests.
 // ---------------------------------------------------------------------------
