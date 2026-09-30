@@ -15,6 +15,10 @@ package parity
 // without the opt-out. The rest of the suite opts out (withoutLatencyOffset)
 // because it means "compare everything the seed wrote"; these cases set the
 // argument explicitly so the helper leaves them alone.
+//
+// This file writes two spans into the shared stack, so it is named to sort (and
+// therefore run) after every other file of the package: the suite's counts, its
+// service lists and its tenant totals are read before the probe spans exist.
 
 import (
 	"bytes"

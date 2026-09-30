@@ -202,7 +202,7 @@
     - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestApplyLatencyOffset_DirectCases
     - lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_HidesYoungRowsLikeHotVT
     - lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_BridgeAsksForEffectiveRange
-    - tests/parity/traces_latency_offset_test.go#TestParity_Traces_LogsQLLatencyOffset
+    - tests/parity/zz_traces_latency_offset_test.go#TestParity_Traces_LogsQLLatencyOffset
   docs:
     - docs/read-path.md
   highlight: >-
