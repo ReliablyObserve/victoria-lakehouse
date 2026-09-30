@@ -23,9 +23,7 @@ var files embed.FS
 // FS returns the VTUI bundle rooted at the upstream UI directory
 // (index.html, assets/, ...).
 func FS() fs.FS {
-	sub, err := fs.Sub(files, "vmui")
-	if err != nil {
-		panic("vtui: embedded vmui directory missing: " + err.Error())
-	}
+	// fs.Sub fails only on an invalid path; "vmui" is a constant.
+	sub, _ := fs.Sub(files, "vmui")
 	return sub
 }
