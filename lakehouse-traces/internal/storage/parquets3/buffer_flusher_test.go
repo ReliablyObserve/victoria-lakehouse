@@ -118,25 +118,33 @@ func contains(s, sub string) bool {
 // (never re-flushing ancient data); and the write is atomic.
 func TestBufferFlusher_Watermark(t *testing.T) {
 	dir := t.TempDir()
-	f := NewBufferFlusher(nil, nil, dir, nil, 0, 0)
+	f := newBufferFlusher(nil, nil, dir, nil, 0, 0)
 
-	if got := f.loadWatermark(12345); got != 12345 {
-		t.Fatalf("missing watermark: want fallback 12345, got %d", got)
+	if got, err := f.loadWatermark(12345); err != nil || got != 12345 {
+		t.Fatalf("missing watermark: want fallback 12345, got %d, %v", got, err)
 	}
 	if err := f.saveWatermark(99999); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if got := f.loadWatermark(12345); got != 99999 {
-		t.Fatalf("after save: want 99999, got %d", got)
+	if got, err := f.loadWatermark(12345); err != nil || got != 99999 {
+		t.Fatalf("after save: want 99999, got %d, %v", got, err)
 	}
 	// Corrupt file → fallback.
 	if err := os.WriteFile(f.watermarkPath, []byte("{not json"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.loadWatermark(7); got != 7 {
-		t.Fatalf("corrupt watermark: want fallback 7, got %d", got)
+	// A corrupt main file falls back to the backup, which holds the same state.
+	if got, err := f.loadWatermark(7); err != nil || got != 99999 {
+		t.Fatalf("corrupt main: want the backup's 99999, got %d, %v", got, err)
 	}
-	// No torn temp file left behind after a successful save.
+	// Both unreadable is an error, never "now": falling back would silently skip
+	// everything since the last commit.
+	if err := os.WriteFile(f.prevPath(), []byte("{not json"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := f.loadWatermark(7); err == nil {
+		t.Fatalf("corrupt watermark and backup: want an error, got %d", got)
+	}
 	_ = f.saveWatermark(42)
 	if _, err := os.ReadFile(filepath.Join(dir, "buffer_flush_watermark.json.tmp")); err == nil {
 		t.Fatal("temp watermark file should not persist after rename")
@@ -162,7 +170,7 @@ func TestBufferFlusher_CrashRecovery(t *testing.T) {
 	// Phase A: ingest [base, base+1min] and "commit" the watermark at base+1min.
 	ingestTraceAt(t, bs, tenant, base, base+int64(time.Minute), 50)
 	bs.DebugFlush()
-	f := NewBufferFlusher(nil, bs, wmDir, nil, 0, 0)
+	f := newBufferFlusher(nil, bs, wmDir, nil, 0, 0)
 	if err := f.saveWatermark(base + int64(time.Minute)); err != nil {
 		t.Fatalf("save wm: %v", err)
 	}
@@ -179,8 +187,11 @@ func TestBufferFlusher_CrashRecovery(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer bs2.Close()
-	f2 := NewBufferFlusher(nil, bs2, wmDir, nil, 0, 0)
-	last := f2.loadWatermark(time.Now().UnixNano())
+	f2 := newBufferFlusher(nil, bs2, wmDir, nil, 0, 0)
+	last, err := f2.loadWatermark(time.Now().UnixNano())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 	if last != base+int64(time.Minute) {
 		t.Fatalf("recovered watermark = %d, want %d (last committed boundary)", last, base+int64(time.Minute))
 	}

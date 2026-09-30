@@ -769,3 +769,71 @@ func TestRetiredSettled_CountsOnlyWhatAnAcceptedListingReleased(t *testing.T) {
 		t.Errorf("settled counter rose by %d, want 2 — one per guard the accepted listing released", got)
 	}
 }
+
+func TestAddFileUnlessRetired_AddsALiveKeyAndRefusesARetiredOne(t *testing.T) {
+	m := New("b", "logs/")
+	const part = "dt=2026-05-03/hour=14"
+	fi := FileInfo{Key: "logs/" + part + "/a.parquet", Size: 10, RowCount: 5}
+	if !m.AddFileUnlessRetired(part, fi) || !m.HasKey(fi.Key) {
+		t.Fatal("a key that is not retired must be added")
+	}
+	// The same key again is the idempotent AddFile: accepted, still one entry.
+	if !m.AddFileUnlessRetired(part, fi) {
+		t.Fatal("re-adding a live key must not be refused")
+	}
+	if files := m.AllFiles()[part]; len(files) != 1 {
+		t.Fatalf("%d entries for one key", len(files))
+	}
+
+	gone := FileInfo{Key: "logs/" + part + "/b.parquet", Size: 10, RowCount: 7}
+	m.Retire(gone.Key, "logs/"+part+"/c.parquet", false)
+	if m.AddFileUnlessRetired(part, gone) {
+		t.Fatal("a retired key was added")
+	}
+	if m.HasKey(gone.Key) {
+		t.Fatal("a refused add mutated the manifest")
+	}
+	rk, ok := m.LookupRetired(gone.Key)
+	if !ok || rk.By != "logs/"+part+"/c.parquet" || rk.Reclaim {
+		t.Fatalf("a refused add changed the retirement record: %+v %v", rk, ok)
+	}
+}
+
+// The writer's answer to a refused add: Retire with an empty replacement keeps
+// the record of who superseded the key (delete-intent undo depends on it) and
+// owes the recreated object's deletion again.
+func TestRetireWithEmptyReplacementKeepsByAndRearmsReclaim(t *testing.T) {
+	m := New("b", "logs/")
+	const key = "logs/dt=2026-05-03/hour=14/b.parquet"
+	m.Retire(key, "compacted-1", false)
+	m.ConfirmDeleted(key) // object deleted: Deleted set, Reclaim clear
+	m.Retire(key, "", true)
+	rk, ok := m.LookupRetired(key)
+	if !ok || rk.By != "compacted-1" || !rk.Reclaim || rk.Deleted {
+		t.Fatalf("record = %+v, want By kept, Reclaim owed and not Deleted", rk)
+	}
+	if !m.UnretireIfReplacedBy(key, "compacted-1") {
+		t.Fatal("UnretireIfReplacedBy no longer matches after the re-retirement")
+	}
+}
+
+func TestAddFileUnlessRetired_ConcurrentWithRetire(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		m := New("b", "logs/")
+		const part = "dt=2026-05-03/hour=14"
+		fi := FileInfo{Key: "logs/" + part + "/x.parquet", Size: 1, RowCount: 1}
+		done := make(chan bool)
+		go func() { done <- m.AddFileUnlessRetired(part, fi) }()
+		m.Retire(fi.Key, "", true)
+		added := <-done
+		// Whatever the order, a retired key is never live afterwards.
+		if m.HasKey(fi.Key) && m.IsRetired(fi.Key) && !added {
+			t.Fatal("refused add left the key live")
+		}
+		if added && m.IsRetired(fi.Key) && m.HasKey(fi.Key) {
+			// Add first, then Retire: Retire removes the entry, so this is
+			// impossible.
+			t.Fatal("key both live and retired")
+		}
+	}
+}

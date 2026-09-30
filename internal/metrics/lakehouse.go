@@ -360,9 +360,26 @@ var (
 	// InsertRowsRequeued counts rows a flush could not write and put back into
 	// the buffers for the next flush (never dropped).
 	InsertRowsRequeued = NewCounter("lakehouse_insert_rows_requeued_total")
+	// InsertRowsSuperseded counts rows of flush groups skipped because their
+	// object's key was retired (compacted, rewritten or removed) after an earlier
+	// attempt stored it: whatever replaced it carries those rows.
+	InsertRowsSuperseded = NewCounter("lakehouse_insert_rows_superseded_total")
+	// BufferFlushErrors counts buffer-flusher failures by stage: collect (reading
+	// the window from the buffer), intent (recording the pending window before
+	// its uploads), head (checking whether an object exists during recovery),
+	// upload (a group's PUT failed), watermark (saving the watermark failed),
+	// mark (a durable stored mark could not be written) and missing (a recorded
+	// group's rows are gone from the buffer, once per group). All but mark and
+	// missing are retried on the next tick.
+	BufferFlushErrors = NewCounterVec("lakehouse_buffer_flush_errors_total", "stage")
 	// InsertRowsLostAtShutdown counts buffered rows the final flush could not
 	// write before the process exited (the legacy staging path has no WAL).
 	InsertRowsLostAtShutdown = NewCounter("lakehouse_insert_rows_lost_at_shutdown_total")
+	// InsertRowsLost counts rows that are gone for a stated reason:
+	// buffer_expired is rows the buffer flusher recorded for a window and could
+	// not upload because the buffer no longer had them (retention, or a changed
+	// flush filter) when recovery came back for them.
+	InsertRowsLost = NewCounterVec("lakehouse_insert_rows_lost_total", "reason")
 	// InsertRejected counts insert requests refused by CanWriteData:
 	// buffer_full (429) or storage_unavailable (503).
 	InsertRejected = NewCounterVec("lakehouse_insert_rejected_total", "reason")

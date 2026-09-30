@@ -46,7 +46,7 @@ func TestInteg_FlusherRoundTrip_MultiFilePartition(t *testing.T) {
 			})
 			total++
 		}
-		if err := f.flushCollected(context.Background(), map[logstorage.TenantID][]schema.TraceRow{tenant: rows}); err != nil {
+		if err := f.flushCollected(context.Background(), map[logstorage.TenantID][]schema.TraceRow{tenant: rows}, int64(w), int64(w)+1); err != nil {
 			t.Fatalf("flush window %d: %v", w, err)
 		}
 	}
@@ -120,7 +120,7 @@ func TestInteg_FlusherRoundTrip_EndToEnd(t *testing.T) {
 		t.Fatalf("collectWindow: %v", err)
 	}
 	t.Logf("collected %d rows from buffer", nRows)
-	if err := f.flushCollected(context.Background(), collected); err != nil {
+	if err := f.flushCollected(context.Background(), collected, 0, 1); err != nil {
 		t.Fatalf("flushCollected: %v", err)
 	}
 
@@ -134,4 +134,21 @@ func TestInteg_FlusherRoundTrip_EndToEnd(t *testing.T) {
 	if got != n {
 		t.Fatalf("REPRO end-to-end: ingested %d, read back %d (%.0f%%)", n, got, 100*float64(got)/float64(n))
 	}
+}
+
+// flushCollected uploads the rows collected for (startNs, endNs] under a fresh
+// nonce, one object per tenant and partition, without recording anything: a
+// one-shot flush of a collected window (a test helper). The first error is
+// returned after every group was attempted.
+func (f *BufferFlusher) flushCollected(ctx context.Context, collected map[logstorage.TenantID][]schema.TraceRow, startNs, endNs int64) error {
+	f.start, f.pending, f.nonce = startNs, endNs, randomBatchID()
+	defer f.clearPending()
+	var firstErr error
+	for _, up := range f.buildGroups(collected) {
+		up.onStored = nil
+		if err := f.writer.uploadTraceGroup(ctx, up); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

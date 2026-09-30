@@ -439,11 +439,9 @@ func (w *BatchWriter) FlushAll(ctx context.Context) error {
 	return nil
 }
 
-// flushLogPartition writes one partition, one object per tenant, and
-// returns the tenant groups it could not write (the upload failed, or ctx
-// ended before it was reached) with the first error. Groups it did write are
-// committed and never returned.
-func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, rows []schema.LogRow) ([]*logGroupUpload, error) {
+// buildLogGroups sorts rows and splits them by tenant into one upload per
+// tenant, each named by batchID(accountID, projectID) (nil draws a random name).
+func (w *BatchWriter) buildLogGroups(partition string, rows []schema.LogRow, batchID func(accountID, projectID uint32) string) []*logGroupUpload {
 	// The rows may be visible to buffer queries while in flight (FlushAll),
 	// so they are reordered under the same lock those queries read under.
 	w.mu.Lock()
@@ -453,10 +451,25 @@ func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, r
 	w.mu.Unlock()
 
 	groups := groupLogRowsByTenant(rows)
-	var failed []*logGroupUpload
-	var firstErr error
+	out := make([]*logGroupUpload, 0, len(groups))
 	for _, g := range groups {
 		up := &logGroupUpload{partition: partition, accountID: g.AccountID, projectID: g.ProjectID, rows: g.Rows}
+		if batchID != nil {
+			up.batchID = batchID(g.AccountID, g.ProjectID)
+		}
+		out = append(out, up)
+	}
+	return out
+}
+
+// flushLogPartition writes one partition, one object per tenant, and
+// returns the tenant groups it could not write (the upload failed, or ctx
+// ended before it was reached) with the first error. Groups it did write are
+// committed and never returned.
+func (w *BatchWriter) flushLogPartition(ctx context.Context, partition string, rows []schema.LogRow) ([]*logGroupUpload, error) {
+	var failed []*logGroupUpload
+	var firstErr error
+	for _, up := range w.buildLogGroups(partition, rows, nil) {
 		err := ctx.Err()
 		if err == nil {
 			err = w.uploadLogGroup(ctx, up)
@@ -480,8 +493,27 @@ type logGroupUpload struct {
 	partition            string
 	accountID, projectID uint32
 	rows                 []schema.LogRow
-	key                  string
-	result               *flushResult
+	// batchID names the object; empty draws a random one. The buffer flusher
+	// derives it from its window so a restarted window names the same objects.
+	batchID string
+	key     string
+	result  *flushResult
+	// onStored, when set, is told once the object is stored, or found already
+	// settled (live or retired), before the manifest commit. It cannot fail the
+	// group: a stored object is always committed at once. The buffer flusher
+	// uses it for a best-effort "stored" mark.
+	onStored func(key string)
+}
+
+// assignLogKey fixes the group's object key (once) and returns it.
+func (w *BatchWriter) assignLogKey(up *logGroupUpload) string {
+	if up.key == "" {
+		if up.batchID == "" {
+			up.batchID = randomBatchID()
+		}
+		up.key = fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(up.accountID, up.projectID), up.partition, up.batchID)
+	}
+	return up.key
 }
 
 func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.LogRow) error {
@@ -489,15 +521,30 @@ func (w *BatchWriter) flushLogTenantGroup(ctx context.Context, partition string,
 }
 
 func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) error {
+	key := w.assignLogKey(up)
+	// An object is never written twice with different content. If the manifest
+	// already has this key, an earlier upload of it was stored and adopted by a
+	// listing: its rows are live. If the key is retired, the object was
+	// compacted, rewritten or removed and its rows live elsewhere. Either way
+	// the group is settled; uploading it again would duplicate its rows.
+	if w.manifest.HasKey(key) {
+		w.settled(up.onStored, key)
+		logger.Infof("skipped %s: an earlier upload of it is already live in the manifest; rows=%d", key, len(up.rows))
+		return nil
+	}
+	if w.manifest.IsRetired(key) {
+		w.settled(up.onStored, key)
+		w.noteSuperseded(key, len(up.rows))
+		return nil
+	}
 	if up.result == nil {
 		result, err := writeLogsParquet(up.rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 		if err != nil {
 			return fmt.Errorf("write parquet: %w", err)
 		}
 		up.result = result
-		up.key = fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(up.accountID, up.projectID), up.partition, randomBatchID())
 	}
-	partition, accountID, projectID, rows, result, key := up.partition, up.accountID, up.projectID, up.rows, up.result, up.key
+	partition, accountID, projectID, rows, result := up.partition, up.accountID, up.projectID, up.rows, up.result
 
 	bucket, uploader := w.bucketForTenant(accountID, projectID)
 
@@ -507,6 +554,9 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 		return err
 	}
 	metrics.InsertBytesUploaded.Add(len(result.Data))
+	if up.onStored != nil {
+		up.onStored(key)
+	}
 
 	labelStart := time.Now()
 	labels := extractLogLabels(rows)
@@ -539,7 +589,15 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 		Labels:            labels,
 		LabelAggregates:   schema.ExtractLogLabelAggregates(rows),
 	}
-	w.manifest.AddFile(partition, fi)
+	// Atomic with the retired check: a key retired while the PUT was in flight
+	// (compaction merged it, a delete rewrite replaced it) must not come back.
+	// The PUT may have recreated an already deleted object: it is owed a delete
+	// again, and its rows live in whatever superseded it.
+	if !w.manifest.AddFileUnlessRetired(partition, fi) {
+		w.manifest.Retire(key, "", true)
+		w.noteSuperseded(key, len(rows))
+		return nil
+	}
 	if w.catalogObserver != nil {
 		// UNCAPPED bloom feed (trace_id + service.name): the capped label map
 		// false-negatives on values past maxLabelsPerField — a bloom must see
@@ -565,11 +623,9 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 	return nil
 }
 
-// flushTracePartition writes one partition, one object per tenant, and
-// returns the tenant groups it could not write (the upload failed, or ctx
-// ended before it was reached) with the first error. Groups it did write are
-// committed and never returned.
-func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string, rows []schema.TraceRow) ([]*traceGroupUpload, error) {
+// buildTraceGroups sorts rows and splits them by tenant into one upload per
+// tenant, each named by batchID(accountID, projectID) (nil draws a random name).
+func (w *BatchWriter) buildTraceGroups(partition string, rows []schema.TraceRow, batchID func(accountID, projectID uint32) string) []*traceGroupUpload {
 	// The rows may be visible to buffer queries while in flight (FlushAll),
 	// so they are reordered under the same lock those queries read under.
 	w.mu.Lock()
@@ -579,10 +635,25 @@ func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string,
 	w.mu.Unlock()
 
 	groups := groupTraceRowsByTenant(rows)
-	var failed []*traceGroupUpload
-	var firstErr error
+	out := make([]*traceGroupUpload, 0, len(groups))
 	for _, g := range groups {
 		up := &traceGroupUpload{partition: partition, accountID: g.AccountID, projectID: g.ProjectID, rows: g.Rows}
+		if batchID != nil {
+			up.batchID = batchID(g.AccountID, g.ProjectID)
+		}
+		out = append(out, up)
+	}
+	return out
+}
+
+// flushTracePartition writes one partition, one object per tenant, and
+// returns the tenant groups it could not write (the upload failed, or ctx
+// ended before it was reached) with the first error. Groups it did write are
+// committed and never returned.
+func (w *BatchWriter) flushTracePartition(ctx context.Context, partition string, rows []schema.TraceRow) ([]*traceGroupUpload, error) {
+	var failed []*traceGroupUpload
+	var firstErr error
+	for _, up := range w.buildTraceGroups(partition, rows, nil) {
 		err := ctx.Err()
 		if err == nil {
 			err = w.uploadTraceGroup(ctx, up)
@@ -606,8 +677,27 @@ type traceGroupUpload struct {
 	partition            string
 	accountID, projectID uint32
 	rows                 []schema.TraceRow
-	key                  string
-	result               *flushResult
+	// batchID names the object; empty draws a random one. The buffer flusher
+	// derives it from its window so a restarted window names the same objects.
+	batchID string
+	key     string
+	result  *flushResult
+	// onStored, when set, is told once the object is stored, or found already
+	// settled (live or retired), before the manifest commit. It cannot fail the
+	// group: a stored object is always committed at once. The buffer flusher
+	// uses it for a best-effort "stored" mark.
+	onStored func(key string)
+}
+
+// assignTraceKey fixes the group's object key (once) and returns it.
+func (w *BatchWriter) assignTraceKey(up *traceGroupUpload) string {
+	if up.key == "" {
+		if up.batchID == "" {
+			up.batchID = randomBatchID()
+		}
+		up.key = fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(up.accountID, up.projectID), up.partition, up.batchID)
+	}
+	return up.key
 }
 
 func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition string, accountID, projectID uint32, rows []schema.TraceRow) error {
@@ -615,15 +705,30 @@ func (w *BatchWriter) flushTraceTenantGroup(ctx context.Context, partition strin
 }
 
 func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload) error {
+	key := w.assignTraceKey(up)
+	// An object is never written twice with different content. If the manifest
+	// already has this key, an earlier upload of it was stored and adopted by a
+	// listing: its rows are live. If the key is retired, the object was
+	// compacted, rewritten or removed and its rows live elsewhere. Either way
+	// the group is settled; uploading it again would duplicate its rows.
+	if w.manifest.HasKey(key) {
+		w.settled(up.onStored, key)
+		logger.Infof("skipped %s: an earlier upload of it is already live in the manifest; rows=%d", key, len(up.rows))
+		return nil
+	}
+	if w.manifest.IsRetired(key) {
+		w.settled(up.onStored, key)
+		w.noteSuperseded(key, len(up.rows))
+		return nil
+	}
 	if up.result == nil {
 		result, err := writeTracesParquet(up.rows, w.cfg.RowGroupSize, w.cfg.CompressionLevel)
 		if err != nil {
 			return fmt.Errorf("write parquet: %w", err)
 		}
 		up.result = result
-		up.key = fmt.Sprintf("%s%s/%s.parquet", w.prefixForTenant(up.accountID, up.projectID), up.partition, randomBatchID())
 	}
-	partition, accountID, projectID, rows, result, key := up.partition, up.accountID, up.projectID, up.rows, up.result, up.key
+	partition, accountID, projectID, rows, result := up.partition, up.accountID, up.projectID, up.rows, up.result
 
 	bucket, uploader := w.bucketForTenant(accountID, projectID)
 
@@ -633,6 +738,9 @@ func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload
 		return err
 	}
 	metrics.InsertBytesUploaded.Add(len(result.Data))
+	if up.onStored != nil {
+		up.onStored(key)
+	}
 
 	labelStart2 := time.Now()
 	labels2 := extractTraceLabels(rows)
@@ -660,7 +768,15 @@ func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload
 		Labels:            labels2,
 		LabelAggregates:   schema.ExtractTraceLabelAggregates(rows),
 	}
-	w.manifest.AddFile(partition, fi)
+	// Atomic with the retired check: a key retired while the PUT was in flight
+	// (compaction merged it, a delete rewrite replaced it) must not come back.
+	// The PUT may have recreated an already deleted object: it is owed a delete
+	// again, and its rows live in whatever superseded it.
+	if !w.manifest.AddFileUnlessRetired(partition, fi) {
+		w.manifest.Retire(key, "", true)
+		w.noteSuperseded(key, len(rows))
+		return nil
+	}
 	traceBloomValues := extractTraceBloomValues(rows)
 	if w.catalogObserver != nil {
 		// UNCAPPED bloom feed — same rationale as the logs flush above.
@@ -1057,4 +1173,37 @@ func bloomFilters(cols []string) []parquet.BloomFilterColumn {
 		bf = append(bf, parquet.SplitBlockFilter(10, c))
 	}
 	return bf
+}
+
+// settled tells a group's onStored hook that its object needs no upload (it is
+// already live or already superseded), so the caller's record of what is done
+// includes it.
+func (w *BatchWriter) settled(onStored func(key string), key string) {
+	if onStored != nil {
+		onStored(key)
+	}
+}
+
+// objectExists asks the object store, by HEAD, whether key exists in the bucket
+// the tenant's objects live in. An error means "unknown", never "absent".
+func (w *BatchWriter) objectExists(ctx context.Context, accountID, projectID uint32, key string) (bool, error) {
+	_, p := w.bucketForTenant(accountID, projectID)
+	c, ok := p.(objectChecker)
+	if !ok {
+		return false, fmt.Errorf("the object store for %s cannot check existence", key)
+	}
+	return c.Exists(ctx, key)
+}
+
+// objectChecker is the HEAD side of an object store; s3reader.ClientPool has it.
+type objectChecker interface {
+	Exists(ctx context.Context, key string) (bool, error)
+}
+
+// noteSuperseded counts rows a group skipped because its object had been
+// retired (compacted, rewritten or removed): whatever superseded it carries
+// them.
+func (w *BatchWriter) noteSuperseded(key string, rows int) {
+	metrics.InsertRowsSuperseded.Add(rows)
+	logger.Warnf("flush skipped a retired object %s: it was compacted, rewritten or removed and its rows live elsewhere; rows=%d", key, rows)
 }
