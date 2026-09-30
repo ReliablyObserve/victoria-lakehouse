@@ -19,7 +19,9 @@ package internaldelete
 
 import (
 	"flag"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 )
@@ -87,5 +89,37 @@ func gate(flagOn func() bool, deleteEnabled bool, message string, upstream http.
 			return
 		}
 		upstream(w, r)
+	}
+}
+
+// RunTaskPath is the public delete API path that starts a delete task.
+const RunTaskPath = "/delete/run_task"
+
+// RunTaskPOSTOnly wraps next, the handler owning /delete/* (upstream's
+// -delete.enable check followed by its delete handler), so that
+// /delete/run_task answers 405 unless the request is a POST. A GET, HEAD, PUT
+// or DELETE can then never start a delete task, for example one forged through
+// SSRF.
+//
+// VictoriaLogs master (app/vlselect/main.go processDeleteRunTaskRequest) and
+// VictoriaTraces v0.12.0 (issue #225) refuse non-POST requests there, with
+// exactly this answer, after the -delete.enable check and before parsing the
+// tenant or the filter. VictoriaLogs v1.52.0, the pin of the logs binary, has
+// no such check, so this wrapper adds it. Once the pin includes the upstream
+// check this becomes redundant but harmless
+// (TestUpstreamRunTaskStillLacksMethodCheck fails at that point so the
+// duplicate gets dropped).
+//
+// Only run_task is affected, as upstream: stop_task and active_tasks are
+// unchanged. flagOn reports upstream's -delete.enable: while it is off the
+// request goes to next untouched and gets upstream's own "disabled" answer,
+// whatever the method, so the observable order matches upstream.
+func RunTaskPOSTOnly(flagOn func() bool, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if flagOn() && strings.ReplaceAll(r.URL.Path, "//", "/") == RunTaskPath && r.Method != http.MethodPost {
+			http.Error(w, fmt.Sprintf("Only POST method is allowed; got %s.", r.Method), http.StatusMethodNotAllowed)
+			return
+		}
+		next(w, r)
 	}
 }

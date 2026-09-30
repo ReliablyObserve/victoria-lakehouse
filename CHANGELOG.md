@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The delete API's `/delete/run_task` requires POST** (both binaries), matching upstream
+  VictoriaTraces 0.12 / VictoriaLogs, so a GET — e.g. one forged via SSRF — can no longer start a
+  delete. GET, HEAD, PUT and DELETE now answer `405 Only POST method is allowed; got <METHOD>.`
+  after the `-delete.enable` check and before anything is parsed, and no task is created;
+  `stop_task` and `active_tasks` are unchanged, as upstream. The traces binary carries VT
+  v0.12.0's check in its copy of the handler; the logs binary enforces it itself until the pinned
+  VictoriaLogs includes the upstream check (a test fails then, so the duplicate is dropped).
+  The `/internal/force_merge`, `/internal/force_flush`, `/internal/log_new_streams` and
+  `/internal/partition/*` maintenance endpoints, POST-only in VictoriaTraces 0.12, are not
+  served by either binary.
+
 ## [0.143.3] - 2026-09-24
 
 ### Fixed

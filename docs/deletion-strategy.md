@@ -405,6 +405,12 @@ whose storage calls go through the same dispatch as the cluster protocol.
   request headers) and answers upstream's `{"task_id":"…"}`; the task becomes a
   tombstone scoped to the request's tenant, exactly as a cluster `run_task` for
   that one tenant.
+  **`run_task` requires POST**, as VictoriaTraces 0.12 and VictoriaLogs do
+  (VictoriaTraces issue #225): any other method answers `405 Only POST method
+  is allowed; got <METHOD>.` after the `-delete.enable` and `delete.enabled`
+  checks and before anything is parsed, and no task is created, so a GET forged
+  through SSRF cannot start a delete. `stop_task` and `active_tasks` accept any
+  method, as upstream.
 - **`stop_task`** and **`active_tasks`** act for the request's tenant, resolved
   like every other delete request (see [Tenant Scope](#tenant-scope)):
   `active_tasks` lists only the tasks scoped exactly to that tenant, and

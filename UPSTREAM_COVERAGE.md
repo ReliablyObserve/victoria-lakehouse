@@ -18,8 +18,8 @@ route: 140/140 covered by at least one registry row.
 | `/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v2_logs.count | 🟡 declared, not yet executed |
 | `/delete/active_tasks` | `app/vlselect/main.go` | vl.delete.active_tasks.status, lh.delete.upstream_tasks_tenant_scoped | 🟡 declared, not yet executed |
 | `/delete/active_tasks` | `app/vtselect/logsql.go` | vt.delete.active_tasks.status, lh.delete.upstream_tasks_tenant_scoped | 🟡 declared, not yet executed |
-| `/delete/run_task` | `app/vlselect/main.go` | vl.delete.run_task.status | 🟡 declared, not yet executed |
-| `/delete/run_task` | `app/vtselect/logsql.go` | vt.delete.run_task.status | 🟡 declared, not yet executed |
+| `/delete/run_task` | `app/vlselect/main.go` | vl.delete.run_task.non_post.differ, vl.delete.run_task.status | 🔁 differs: Upstream VictoriaLogs master (app/vlselect/main.go processDeleteRunTaskRequest) refuses non-POST; the pinned VL v1.52.0 has no such check, so the logs binary enforces it in internaldelete.RunTaskPOSTOnly and answers 405 where the pinned upstream would accept the GET. Redundant once the pin includes the upstream check (drift test TestUpstreamRunTaskStillLacksMethodCheck fails then). (declared, not yet executed) |
+| `/delete/run_task` | `app/vtselect/logsql.go` | vt.delete.run_task.non_post.differ, vt.delete.run_task.status | 🔁 differs: Native upstream behaviour from VictoriaTraces v0.12.0 (issue #225, PR #236); the pinned VT v0.11.0 has no such check, so lakehouse-traces/public_delete.go carries it and answers 405 where the pinned upstream would accept the GET. (declared, not yet executed) |
 | `/delete/stop_task` | `app/vlselect/main.go` | vl.delete.stop_task.status | 🟡 declared, not yet executed |
 | `/delete/stop_task` | `app/vtselect/logsql.go` | vt.delete.stop_task.status | 🟡 declared, not yet executed |
 | `/insert/datadog/` | `app/vlinsert/main.go` | vl.insert.datadog_logs.count, vl.insert.datadog_validate.status | 🟡 declared, not yet executed |

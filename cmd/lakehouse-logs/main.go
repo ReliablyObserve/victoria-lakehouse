@@ -1177,14 +1177,17 @@ func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
 // tombstone scoped to the request's tenant. internaldelete.PublicHandler only
 // adds the lakehouse delete.enabled requirement after upstream's flag, and
 // delete.ScopeTaskRequests the caller, so stop_task and active_tasks act only on
-// the caller's own tasks (globalRead: the operator view). Any other /delete/*
+// the caller's own tasks (globalRead: the operator view).
+// internaldelete.RunTaskPOSTOnly makes /delete/run_task POST-only, as on
+// VictoriaLogs master (the v1.52.0 pin lacks that check). Any other /delete/*
 // path the lakehouse does not serve itself gets upstream's answer too, as on a
 // VictoriaLogs node.
 func mountPublicDelete(mux *http.ServeMux, deleteEnabled bool, globalRead func(*http.Request) bool) {
 	mux.HandleFunc("/delete/", internaldelete.PublicHandler(internaldelete.PublicFlagEnabled, deleteEnabled,
-		delete.ScopeTaskRequests(globalRead, func(w http.ResponseWriter, r *http.Request) {
-			vlselect.RequestHandler(w, r)
-		})))
+		internaldelete.RunTaskPOSTOnly(internaldelete.PublicFlagEnabled,
+			delete.ScopeTaskRequests(globalRead, func(w http.ResponseWriter, r *http.Request) {
+				vlselect.RequestHandler(w, r)
+			}))))
 }
 
 // globalReadAuthorizer validates the operator credential that widens a delete

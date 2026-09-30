@@ -118,6 +118,24 @@
   pending: true
   notes: "Default (no -delete.enable) must answer exactly like a VictoriaTraces node started with its defaults: 400 with upstream's disabled message. LH serves /delete/* through a copy of VT's gate and delete handler held to the vendored source by a drift test (lakehouse-traces/public_delete.go). With -delete.enable and delete.enabled the task becomes a tombstone scoped to the request's tenant (docs/deletion-strategy.md)."
 
+
+- id: vt.delete.run_task.non_post.differ
+  title: "/delete/run_task — anything but POST is refused with 405 (SSRF guard)"
+  surface: vt
+  kind: admin
+  origin: native
+  expect: differ
+  differ_note: "Native upstream behaviour from VictoriaTraces v0.12.0 (issue #225, PR #236); the pinned VT v0.11.0 has no such check, so lakehouse-traces/public_delete.go carries it and answers 405 where the pinned upstream would accept the GET."
+  since: { vt: "0.12.0" }
+  targets: [cold]
+  seed: [traces.base]
+  upstream: { route: /delete/run_task }
+  request: { method: GET, path: /delete/run_task, params: { filter: "`resource_attr:service.name`:checkout" } }
+  compare: { type: error, options: { cold_status: "405", body_prefix: "Only POST method is allowed; got GET." } }
+  layers: [api]
+  pending: true
+  notes: "With -delete.enable and delete.enabled on, GET, HEAD, PUT and DELETE on /delete/run_task answer 405 'Only POST method is allowed; got <METHOD>.' after the enable check and before tenant or filter parsing, and no delete task is created; stop_task and active_tasks are unchanged. Guards against SSRF-forged GET deletes (VictoriaTraces issue #225)."
+
 - id: vt.delete.stop_task.status
   title: "/delete/stop_task — upstream's delete API, gated by -delete.enable"
   surface: vt
