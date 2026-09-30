@@ -203,11 +203,11 @@ The mixed workload runs 7 insert workers and 3 query workers simultaneously, mea
 docker run -d --name minio -p 9000:9000 \
   -e MINIO_ROOT_USER=minioadmin \
   -e MINIO_ROOT_PASSWORD=minioadmin \
-  quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+  ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z server /data
 
 # 2. Create bucket
-docker run --rm --network host quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z \
-  sh -c "mc alias set local http://localhost:9000 minioadmin minioadmin && mc mb local/obs-archive"
+docker run --rm --network host --entrypoint sh ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z \
+  -c "mc alias set local http://localhost:9000 minioadmin minioadmin && mc mb local/obs-archive"
 
 # 3. Generate test data
 go run ./cmd/datagen \
