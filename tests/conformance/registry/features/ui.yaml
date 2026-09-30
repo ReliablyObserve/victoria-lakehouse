@@ -31,6 +31,8 @@
     - internal/ui/vmui_inject_test.go
     - internal/ui/vmui_inject_regression_test.go
     - internal/ui/guards_test.go
+    - lakehouse-traces/internal/vtui/vtui_test.go#TestServesVTUIWithLakehouseTab
+    - lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIIndexMatchesVendoredVT
   docs:
     - docs/lakehouse-explorer.md
   changelog_bullets:

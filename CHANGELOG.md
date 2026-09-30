@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **VictoriaTraces v0.12.0 (the traces binary's VictoriaLogs pin moves to c945d2949e98, v1.52.0).** The
+  traces binary now embeds VictoriaTraces v0.12.0 and the VictoriaLogs commit its `go.mod` requires,
+  which is VictoriaLogs v1.52.0, so both binaries embed the same VictoriaLogs release. They stay two
+  pins (`VL_VERSION_LOGS`, `VL_COMMIT_TRACES`) with two patch directories, the pin still derived from
+  VictoriaTraces, never chosen. All the pins moved together: Makefile, `lakehouse-traces/go.mod`,
+  `Dockerfile.traces`, the workflows and the e2e, parity and benchmark compose files. The patch sets
+  rebased without semantic change (`vl-traces` is now byte-equal to `vl-logs`; `vt-traces` needed new
+  context lines for `vtstorage-dispatch` and a rewrite of `vtinsert-flag-dedup` for the moved
+  `-defaultMsgValue`), and one patch is new: `vtselect-flag-dedup` (see the partial-response bullet).
+  The VictoriaLogs protocol version for `/internal/delete/*` on the traces binary moves from `v1` to
+  `v2`, so a VictoriaTraces v0.11 `vtselect` cannot delete through a v0.12 Lakehouse storage node (and
+  the reverse): upgrade both together. The select protocol is unchanged (`v5`). Also new in v0.11.1,
+  inherited: the per-tenant trace-index fix and the quiet answer to HTTP/2 `PRI *` probes.
+
+- **The traces binary serves VictoriaTraces' own trace explorer (VTUI) at `/select/vmui/`.** VictoriaTraces
+  v0.12.0 replaced the log-based UI with it, and Lakehouse embeds whatever the vendored VictoriaTraces
+  ships: `lakehouse-traces/internal/vtui` holds the tracked `index.html` (the drift marker) and
+  `make sync-vmui-traces` / `Dockerfile.traces` copy the rest from `app/vtselect/vmui`, exactly as the logs
+  binary does for VictoriaLogs' vmui (`internal/ui`, unchanged). The Lakehouse tab is injected at serve
+  time; the bundle is never modified. Drift tests pin the embedded index and assets to the vendored tree.
+
+- **LogsQL on the traces binary hides spans younger than `-search.latencyOffset`, and honours
+  `disable_latency_offset=true`, like VictoriaTraces v0.12.0.** Upstream extended the 30s offset a span waits
+  before it is visible from the Jaeger and Tempo APIs to the LogsQL query APIs (`query`, `hits`, `facets`,
+  `field_names`, `field_values`, `stream_*`, `streams`, `stats_query`, `stats_query_range`; not live tailing
+  or `/select/tenant_ids`). The traces binary serves LogsQL through VictoriaLogs' handlers, so it adds the
+  same "up to now minus the offset" time filter to the query, after the request's own `start`/`end`; the
+  Parquet scan, the buffer bridge and peer buffers all take their range from the query, so cold and hot
+  agree on which spans exist. A malformed opt-out value is a 400. Code that queried right after ingest
+  and expected to see the rows must pass `disable_latency_offset=true`; the e2e and parity suites, and the
+  benchmark's flush-convergence wait, now do. The logs binary has no offset.
+
 - **Test and CI stacks use RustFS as the S3 backend.** The e2e, parity, benchmark, cluster and nightly
   load-test stacks now run `rustfs/rustfs:1.0.0` (pinned by digest) instead of MinIO, which is archived.
   RustFS was measured against MinIO, SeaweedFS, Versity S3 Gateway and Garage with the operation harness
@@ -27,6 +59,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PR. A report step warns at 70% and fails at 90% of a package's `-timeout` and lists the slowest tests in the
   job summary. The benchmark jobs no longer re-run the unit tests (86-89 min before) and no longer hide a
   failing benchmark package; `internal/metrics` benchmarks that panicked on a duplicate metric name now run.
+
+### Security
+
+- **VictoriaTraces v0.12.0's POST-only checks are upstream behaviour now; the duplicates the traces binary
+  carried are dropped where upstream covers them.** `/delete/run_task` in the traces binary is VictoriaTraces'
+  own handler, held verbatim to the vendored source, so the local POST-only block is gone (the request is still
+  refused with `405 Only POST method is allowed; got <METHOD>.`). `/internal/select/*` and `/internal/delete/*`
+  keep `internaldelete.POSTOnly`, deliberately: the traces binary mounts VictoriaLogs' `internalselect`, which
+  at v1.52.0 still answers a GET, and a test fails the day it does not so the wrapper can go. VictoriaTraces'
+  `vtstorage` now also refuses non-POST on `/internal/force_merge`, `/internal/force_flush`,
+  `/internal/log_new_streams` and `/internal/partition/*`; the traces binary does not serve those routes.
+  The registry rows `vt.delete.run_task.non_post`, `vt.internal.delete.non_post` and
+  `vt.internal.select.non_post` flipped from `differ` to `pass`: hot VictoriaTraces and the cold tier now
+  answer alike, with the same tests holding the behaviour.
+
+### Fixed
+
+- **Hot-boundary discovery polls `/internal/partition/list` with POST (#250).** VictoriaTraces v0.12.0
+  answers `405` to every non-POST `/internal/*` request on `vtstorage`, and the poll was a GET, so against a
+  v0.12 storage node it found no partitions and never set the hot boundary. It is a POST now (VictoriaLogs
+  accepts one on the same route); the auth key stays in the URL query. A test runs the production client
+  against the real vendored `vtstorage` handler and proves the GET fails and the POST works.
+
+- **Tempo `/api/search` returns `startTimeUnixNano` as a JSON string (VictoriaTraces v0.12.0, PR #256).** Clients
+  that decode the field as a string, Grafana's Tempo data source among them, broke on the number. The traces
+  binary serves the response through VictoriaTraces' own Tempo handler, so it inherits the fix; a test pins the
+  string type on a Lakehouse-served response, and the parity suite checks both tiers.
+
+- **`-search.allowPartialResponse` reaches the Tempo and Jaeger handlers of the traces binary.** VictoriaTraces
+  v0.12.0 applies it (and the `allow_partial_response` argument) to Tempo and Jaeger, not only LogsQL. The
+  traces binary links VictoriaLogs' LogsQL handlers, which register the same flag, so the new
+  `vtselect-flag-dedup` patch makes VictoriaTraces read that one flag at call time instead of registering a
+  second one (a second registration panics at startup). Lakehouse's own fan-out (buffer bridge, peer cache)
+  takes no such flag, so there is no peer plumbing to change.
 
 ## [0.143.6] - 2026-09-30
 

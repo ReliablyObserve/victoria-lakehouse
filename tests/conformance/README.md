@@ -41,9 +41,10 @@ on top.
   (`VL_VERSION_LOGS`) for `surface: vl` rows, `lakehouse-traces/deps/VictoriaLogs`
   (`VL_COMMIT_TRACES`) for `surface: vt` rows — `lakehouse-traces` mounts
   VictoriaLogs' `internalselect` package for these endpoints, so it follows its own
-  VictoriaLogs pin, not VictoriaTraces and not the logs pin. The pins may differ and
-  today do: `select` is `v5` on both, `delete` is `v2` on the logs pin (VL v1.52.0)
-  and `v1` on the traces pin (VL v1.51.0). The resolved pairs are extracted from both
+  VictoriaLogs pin, not VictoriaTraces and not the logs pin. The pins may differ (they
+  did, VL v1.52.0 against v1.51.0, until VictoriaTraces v0.12.0 moved the traces
+  pin to VL v1.52.0); today `select` is `v5` and `delete` is `v2` on both. The
+  resolved pairs are extracted from both
   trees and recorded under `protocol:` in `inventory.generated.yaml`, so a future bump
   that moves either version surfaces as drift instead of as a runtime
   "unexpected protocol version" rejection between peers.
@@ -91,6 +92,11 @@ actually true now:
 alongside its VictoriaTraces twin, so the native-ingest admission cap is covered
 on both surfaces.
 
+The VT v0.12.0 bump moved one flag (`search.allowPartialResponse`, above), reworded
+`search.latencyOffset` (which now also caps the LogsQL query APIs) and added no flag.
+Both are covered by `vt.flag.search_allow_partial_response` and
+`vt.flag.search_latency_offset`.
+
 Two deprecations to keep in view: `search.traceMaxServiceNameList` and
 `search.traceMaxSpanNameList` are assigned to `_` in VictoriaTraces 0.11.0
 (superseded by `search.maxTags`) — still registered, so still warned about, but
@@ -132,7 +138,13 @@ vendored trees — using `go list -deps` on the traces module, so only packages
 actually linked count — and requires the dedup list to match it exactly in both
 directions: an unguarded collision means the binary panics at startup, a guard
 with nothing behind it means VictoriaTraces silently skips its own registration.
-At VL v1.51.0 / VT v0.11.0 there are 34 collisions and all 34 are guarded.
+At VL v1.52.0 / VT v0.12.0 there are 35 collisions and all 35 are guarded. The
+35th is `search.allowPartialResponse`, which VT v0.12.0 moved into
+`vtselect/searchutil` so that Tempo and Jaeger read it too: `vtselect-flag-dedup.patch`
+removes VT's registration (VL's `vlselect/logsql` already has it, and which of the two
+initialises first is not something to rely on) and has VT read the flag at call time. The
+definition stays in the patched file (`registerAllowPartialResponseFlag`, never called)
+so the inventory still sees it.
 
 ## Feature catalog
 

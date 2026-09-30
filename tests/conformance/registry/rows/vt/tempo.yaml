@@ -37,7 +37,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "Live at the pinned VT 0.11.0 (arrived in 0.9.4). Whether the cold tier reports the same intrinsic tag set is verified by the parity run (docs/parity-and-gaps.md)."
+  differ_note: "Live at the pinned VT 0.12.0 (arrived in 0.9.4). Whether the cold tier reports the same intrinsic tag set is verified by the parity run (docs/parity-and-gaps.md)."
   since: { vt: "0.9.4" }
   targets: [hot, cold]
   seed: [traces.base]
@@ -67,7 +67,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "Both tiers now run VT 0.11.0, which returns span kind values as strings (SPAN_KIND_SERVER, ...) rather than the pre-0.10.0 ints; the cold tier must produce the same strings, which the parity run checks (docs/parity-and-gaps.md)."
+  differ_note: "Both tiers now run VT 0.12.0, which returns span kind values as strings (SPAN_KIND_SERVER, ...) rather than the pre-0.10.0 ints; the cold tier must produce the same strings, which the parity run checks (docs/parity-and-gaps.md)."
   since: { vt: "0.10.0" }
   targets: [hot, cold]
   seed: [traces.base]
@@ -125,7 +125,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "The pinned VT 0.11.0 returns the full spanSets shape (multiple matched spans per trace, with match highlighting) rather than the pre-0.9.4 single-spanSet one; whether the cold tier reproduces it is verified by the parity run (docs/parity-and-gaps.md)."
+  differ_note: "The pinned VT 0.12.0 returns the full spanSets shape (multiple matched spans per trace, with match highlighting) rather than the pre-0.9.4 single-spanSet one; whether the cold tier reproduces it is verified by the parity run (docs/parity-and-gaps.md)."
   since: { vt: "0.9.4" }
   targets: [hot, cold]
   seed: [traces.base]
@@ -141,7 +141,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "Live at the pinned VT 0.11.0 (arrived in 0.9.3). Whether the cold tier answers it identically to /api/v2/traces/{id} is verified by the parity run (docs/parity-and-gaps.md)."
+  differ_note: "Live at the pinned VT 0.12.0 (arrived in 0.9.3). Whether the cold tier answers it identically to /api/v2/traces/{id} is verified by the parity run (docs/parity-and-gaps.md)."
   since: { vt: "0.9.3" }
   targets: [hot, cold, global]
   seed: [traces.base]
@@ -171,7 +171,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "The pinned VT 0.11.0 serves protobuf-encoded trace responses for Accept: application/protobuf (added in 0.9.3); cold-tier encoding parity is verified by the parity run (docs/parity-and-gaps.md)."
+  differ_note: "The pinned VT 0.12.0 serves protobuf-encoded trace responses for Accept: application/protobuf (added in 0.9.3); cold-tier encoding parity is verified by the parity run (docs/parity-and-gaps.md)."
   since: { vt: "0.9.3" }
   targets: [hot, cold]
   seed: [traces.base]
@@ -234,3 +234,19 @@
   compare: { type: trace }
   layers: [api]
   pending: true
+
+- id: vt.tempo.search.start_time_string
+  title: "/select/tempo/api/search — startTimeUnixNano is a JSON string (VT 0.12.0+)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  since: { vt: "0.12.0" }
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/tempo/api/search }
+  request: { method: GET, path: /select/tempo/api/search, params: { q: '{ resource.service.name = "checkout" }', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  notes: "VictoriaTraces v0.12.0 (PR #256) returns startTimeUnixNano as a JSON string in the trace summary and in every span of its spanSets; before, a JSON number that broke clients decoding it as a string (Grafana's Tempo data source among them). The traces binary serves the response through VT's own Tempo handler, so the cold tier inherits the fix; lakehouse-traces/internal/selectapi/tempo_search_test.go (TestTempoSearch_StartTimeUnixNanoIsAString) pins the string type on a Lakehouse-served response and tests/parity TestParity_Traces_TempoSearchStartTimeIsString checks both tiers on the live stack."
