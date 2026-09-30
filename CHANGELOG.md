@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Test and CI stacks use RustFS as the S3 backend.** The e2e, parity, benchmark, cluster and nightly
+  load-test stacks now run `rustfs/rustfs:1.0.0` (pinned by digest) instead of MinIO, which is archived.
+  RustFS was measured against MinIO, SeaweedFS, Versity S3 Gateway and Garage with the operation harness
+  in `tests/s3compat`: it passed all 67 cases derived from what Lakehouse issues, ingest, restart and
+  cold read of 20 000 records lost no rows, and it needs only two environment variables. The compose
+  service is now `s3` (was `minio`), its init sidecar `s3-init`, and the e2e suite reads `S3_URL`,
+  `S3_BUCKET`, `S3_USER` and `S3_PASSWORD`. A new `s3-compat` CI job checks every S3 operation Lakehouse
+  uses against RustFS and the MinIO reference build; `docs/test-s3-backend.md` covers the measurements,
+  the job and how to bump the pin. The MinIO images stay available as the reference and fallback.
+
 - **The parquets3 test packages fit their CI timeout again (tests and CI only; no runtime change).** Under
   `-race` on a 2-core runner `internal/storage/parquets3` had crept to 465s, 494s, 551s and then a 600s
   timeout kill in both modules. Fixture builders no longer re-encode the whole file every 500 rows, S3-error

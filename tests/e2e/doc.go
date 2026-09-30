@@ -3,7 +3,7 @@
 // These tests run against a live Docker Compose stack with:
 //   - lakehouse-logs at localhost:29428 (VictoriaLogs-compatible select API)
 //   - lakehouse-traces at localhost:20428 (VictoriaTraces-compatible + Jaeger API)
-//   - MinIO at localhost:29000 (S3-compatible storage)
+//   - RustFS at localhost:29000 (S3-compatible storage)
 //   - vlselect at localhost:29471 (multi-level select fan-out)
 //   - loki-vl-proxy at localhost:23100 (Loki API compatibility)
 //   - Grafana at localhost:3003

@@ -1,6 +1,6 @@
 // compression_ab measures the real-data effect of the schema encoding tags
 // (delta timestamps + RLE_DICTIONARY low-card strings): it downloads REAL
-// parquet files from the live e2e MinIO, decodes their rows, re-encodes them
+// parquet files from the live e2e S3 backend, decodes their rows, re-encodes them
 // with (a) the pre-tag baseline schema and (b) the current tagged schema —
 // identical rows, identical zstd level — and reports sizes.
 //

@@ -99,7 +99,7 @@ get_metric() {
 # Phase 1: Ensure data exists in S3
 if [[ "$SKIP_INGEST" == "false" ]]; then
   echo "--- Phase 1: Ingesting seed data ---"
-  docker compose -f "$COMPOSE_FILE" up -d minio minio-init lakehouse-logs
+  docker compose -f "$COMPOSE_FILE" up -d s3 s3-init lakehouse-logs
   echo "Waiting for lakehouse to be ready..."
   until curl -sf "${TARGET}/health" > /dev/null 2>&1; do sleep 1; done
 
