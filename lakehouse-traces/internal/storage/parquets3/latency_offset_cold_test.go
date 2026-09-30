@@ -122,7 +122,12 @@ func TestColdLatencyOffset_HidesYoungRowsLikeHotVT(t *testing.T) {
 // never asked for rows younger than now-offset, and the opt-out reaches now.
 func TestColdLatencyOffset_BridgeAsksForEffectiveRange(t *testing.T) {
 	now := time.Now()
-	s, _ := coldLatencyStorage(t, now)
+	// No flushed object: the window is entirely unflushed, so the bridge is
+	// asked for it whole (with an object present it is asked only for what is
+	// newer than that object's flush watermark, which would hide the range).
+	mock := newMockS3Server()
+	t.Cleanup(mock.close)
+	s := testStorageWithS3(t, mock.url())
 
 	var mu sync.Mutex
 	var ends []int64
