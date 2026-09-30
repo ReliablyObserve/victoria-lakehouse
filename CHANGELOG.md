@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.7] - 2026-09-30
+
 ### Changed
 
 - **VictoriaTraces v0.12.0 (the traces binary's VictoriaLogs pin moves to c945d2949e98, v1.52.0).** The
