@@ -34,7 +34,7 @@ var (
 // (30s) of data from LogsQL by default, and the traces binary mirrors that; these
 // tests ingest and query straight away and want to see everything, so they opt
 // out. The offset itself is covered by lakehouse-traces/internal/selectapi and
-// the conformance rows vt.logsql.latency_offset.*.
+// the conformance rows vt.select.logsql_query.latency_offset*.
 func e2eParams(baseURL, path string, params url.Values) url.Values {
 	if baseURL != tracesBaseURL || !strings.HasPrefix(path, "/select/logsql/") || params.Has("disable_latency_offset") {
 		return params

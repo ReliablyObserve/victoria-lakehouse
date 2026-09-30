@@ -32,7 +32,10 @@ import (
 // TestTenantParity_TenantCountsSumToTotal pins the manifest accounting: the
 // per-tenant file and byte totals must add up to the bucket overview.
 func TestTenantParity_TenantCountsSumToTotal(t *testing.T) {
-	tenants := requireSeededTenants(t)
+	tenants := requireAllTenants(t)
+	if len(tenants) < 2 {
+		t.Fatalf("need the two seeded tenants, the manifest lists %d", len(tenants))
+	}
 
 	var sumFiles, sumBytes int64
 	for _, te := range tenants {
@@ -211,8 +214,30 @@ type tenantSummary struct {
 }
 
 // requireSeededTenants returns the tenants the cold traces manifest lists and
-// fails unless it lists at least the two the parity compose seeds.
+// fails when there are fewer than two, minus the tenants that tests own for the
+// data they write themselves (latencyProbeAccount): those are not seeded, and
+// the tests that iterate the list compare against a reference the seed built.
 func requireSeededTenants(t *testing.T) []tenantSummary {
+	t.Helper()
+	all := requireAllTenants(t)
+	seeded := make([]tenantSummary, 0, len(all))
+	for _, te := range all {
+		if te.AccountID == latencyProbeAccount {
+			continue
+		}
+		seeded = append(seeded, te)
+	}
+	if len(seeded) < 2 {
+		t.Fatalf("need the two seeded tenants, the manifest lists %d (besides test-owned ones) — check the "+
+			"datagen-seed-tenant2 service in tests/parity/docker-compose.yml", len(seeded))
+	}
+	return seeded
+}
+
+// requireAllTenants returns every tenant the cold traces manifest lists, test-owned
+// ones included: the per-tenant totals must add up to the overview's, which
+// counts all of them.
+func requireAllTenants(t *testing.T) []tenantSummary {
 	t.Helper()
 	r := fetch(t, lhtBaseURL, "/lakehouse/api/v1/tenants", nil)
 	if r.StatusCode != 200 {
@@ -223,10 +248,6 @@ func requireSeededTenants(t *testing.T) []tenantSummary {
 	}
 	if err := json.Unmarshal(r.Body, &d); err != nil {
 		t.Fatalf("parse /lakehouse/api/v1/tenants: %v", err)
-	}
-	if len(d.Tenants) < 2 {
-		t.Fatalf("need the two seeded tenants, the manifest lists %d — check the "+
-			"datagen-seed-tenant2 service in tests/parity/docker-compose.yml", len(d.Tenants))
 	}
 	return d.Tenants
 }
