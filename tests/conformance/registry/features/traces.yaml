@@ -221,6 +221,7 @@
   area: traces
   surfaces: [ui]
   tests:
+    - lakehouse-traces/vmui_mount_test.go#TestMountVMUI_ServesVTUI
     - lakehouse-traces/internal/vtui/vtui_test.go#TestServesVTUIWithLakehouseTab
     - lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIIndexMatchesVendoredVT
     - lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIAssetsMatchVendoredVT

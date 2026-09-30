@@ -1113,6 +1113,13 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
+// mountVMUI serves VictoriaTraces' own UI (VTUI, which replaced the log-based
+// UI in VictoriaTraces v0.12.0) at /select/vmui/ with the Lakehouse tab
+// injected. The logs binary serves VictoriaLogs' vmui the same way.
+func mountVMUI(mux *http.ServeMux, enabled bool) {
+	ui.RegisterVMUIFS(mux, enabled, vtui.FS())
+}
+
 // mountInternalProtocol mounts the cluster protocol for /internal/select/* and
 // /internal/delete/*. /internal/delete/* goes through upstreamInternalDelete
 // (VT's gate, internal_delete.go); internaldelete.Handler only adds the
@@ -1470,7 +1477,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	uiHandler.Register(mux)
 
 	// VMUI with Lakehouse tab injection
-	ui.RegisterVMUIFS(mux, cfg.UI.VMUITab, vtui.FS())
+	mountVMUI(mux, cfg.UI.VMUITab)
 
 	// Lifecycle endpoints for K8s probes and observability
 	lcInfo := lifecycle.LifecycleInfo{

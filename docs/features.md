@@ -1075,7 +1075,7 @@ VT's ingest pipeline emits internal rows alongside spans. Storing them as cold s
 
 The traces binary embeds the UI bundle VictoriaTraces ships and injects the Lakehouse tab into its HTML at serve time, so upgrading VictoriaTraces never conflicts with a patched bundle. The embedded index is held to the vendored tree by a drift test, so a stale UI can never ship alongside a newer VictoriaTraces.
 
-- Verification: tests: `lakehouse-traces/internal/vtui/vtui_test.go#TestServesVTUIWithLakehouseTab`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIIndexMatchesVendoredVT`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIAssetsMatchVendoredVT`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIEmbeddedTreeHasNoStaleAssets`
+- Verification: tests: `lakehouse-traces/vmui_mount_test.go#TestMountVMUI_ServesVTUI`, `lakehouse-traces/internal/vtui/vtui_test.go#TestServesVTUIWithLakehouseTab`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIIndexMatchesVendoredVT`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIAssetsMatchVendoredVT`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIEmbeddedTreeHasNoStaleAssets`
 - Docs: `docs/lakehouse-explorer.md`, `docs/upstream-sync.md`
 
 ## Tenancy (19)
