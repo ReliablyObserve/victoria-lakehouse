@@ -8,42 +8,41 @@ networks:
 
 services:
   # =========================================================================
-  # Shared storage — MinIO for Lakehouse + Loki
+  # Shared storage — RustFS (S3) for Lakehouse + Loki
   # =========================================================================
 
-  minio:
-    image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z
-    command: server /data --console-address ":9001"
+  s3:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
     ports:
-      - "${BENCH_PORT_MINIO:-39000}:9000"
+      - "${BENCH_PORT_S3:-39000}:9000"
     networks: [bench-net]
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  minio-init:
+  s3-init:
     image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on:
-      minio:
+      s3:
         condition: service_healthy
     networks: [bench-net]
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc alias set local http://s3:9000 minioadmin minioadmin &&
       mc mb local/obs-archive --ignore-existing &&
       mc mb local/loki-data --ignore-existing &&
       mc mb local/tempo-data --ignore-existing &&
-      echo 'MinIO buckets ready (obs-archive, loki-data, tempo-data)'
+      echo 'S3 buckets ready (obs-archive, loki-data, tempo-data)'
       "
 
   # =========================================================================
   # S3 latency proxy (toxiproxy) — EVERY S3-backed engine (lakehouse-logs,
-  # lakehouse-traces, ClickHouse) reads MinIO through this proxy, so a single
+  # lakehouse-traces, ClickHouse) reads the S3 backend through this proxy, so a single
   # toggle injects identical object-store latency for an apples-to-apples
   # comparison. VL/VT are disk-native (the baseline) and bypass it. Inject with
   # scripts/inject-s3-latency.sh <mean_ms> <jitter_ms> (0 = passthrough).
@@ -55,7 +54,7 @@ services:
       - ./toxiproxy-proxies.json:/etc/toxiproxy/proxies.json:ro
     networks: [bench-net]
     depends_on:
-      minio:
+      s3:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "/toxiproxy-cli", "list"]
@@ -72,7 +71,7 @@ services:
       context: ../../
       dockerfile: Dockerfile.logs
     depends_on:
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
       s3-latency:
         condition: service_healthy
@@ -148,7 +147,7 @@ services:
       - "${BENCH_PORT_LOKI:-33100}:3100"
     networks: [bench-net]
     depends_on:
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
     volumes:
       - ./loki-benchmark-config.yml:/etc/loki/config.yaml:ro
@@ -167,7 +166,7 @@ services:
       context: ../../
       dockerfile: Dockerfile.traces
     depends_on:
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
       s3-latency:
         condition: service_healthy
@@ -242,7 +241,7 @@ services:
       - "${BENCH_PORT_TEMPO_OTLP:-34318}:4318"
     networks: [bench-net]
     depends_on:
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
     volumes:
       - ./tempo-benchmark-config.yml:/etc/tempo/config.yaml:ro
@@ -263,7 +262,7 @@ services:
       - "${BENCH_PORT_CH_NATIVE:-39009}:9000"
     networks: [bench-net]
     depends_on:
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
     volumes:
       - ./clickhouse/init-s3.sql:/docker-entrypoint-initdb.d/init-s3.sql:ro

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Config sweep: test different MaxConcurrent and FileWorkers values.
-# Requires: lakehouse binary built, MinIO running, data already seeded.
+# Requires: lakehouse binary built, S3 backend running, data already seeded.
 #
 # Usage:
 #   ./scripts/config-sweep.sh http://localhost:9428 ./lakehouse-logs config.yaml results/

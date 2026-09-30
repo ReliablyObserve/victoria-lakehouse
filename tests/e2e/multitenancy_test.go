@@ -24,10 +24,10 @@ import (
 )
 
 var (
-	minioURL      = envOrDefault("MINIO_URL", "http://localhost:29000")
-	minioBucket   = envOrDefault("MINIO_BUCKET", "obs-archive")
-	minioUser     = envOrDefault("MINIO_USER", "minioadmin")
-	minioPassword = envOrDefault("MINIO_PASSWORD", "minioadmin")
+	s3URL      = envOrDefault("S3_URL", "http://localhost:29000")
+	s3Bucket   = envOrDefault("S3_BUCKET", "obs-archive")
+	s3User     = envOrDefault("S3_USER", "minioadmin")
+	s3Password = envOrDefault("S3_PASSWORD", "minioadmin")
 
 	globalReadHeader = "X-Lakehouse-Global-Read"
 	globalReadSecret = "lakehouse-e2e-global-key"
@@ -39,14 +39,14 @@ func newS3Client(t *testing.T) *s3.Client {
 	cfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion("us-east-1"),
 		awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(minioUser, minioPassword, ""),
+			credentials.NewStaticCredentialsProvider(s3User, s3Password, ""),
 		),
 	)
 	if err != nil {
 		t.Fatalf("failed to load AWS config: %v", err)
 	}
 	return s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(minioURL)
+		o.BaseEndpoint = aws.String(s3URL)
 		o.UsePathStyle = true
 	})
 }
@@ -58,7 +58,7 @@ func listS3Objects(t *testing.T, client *s3.Client, prefix string) []string {
 
 	var keys []string
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(minioBucket),
+		Bucket: aws.String(s3Bucket),
 		Prefix: aws.String(prefix),
 	})
 
@@ -465,10 +465,10 @@ func TestMultitenancy_S3BucketExists(t *testing.T) {
 	defer cancel()
 
 	_, err := client.HeadBucket(ctx, &s3.HeadBucketInput{
-		Bucket: aws.String(minioBucket),
+		Bucket: aws.String(s3Bucket),
 	})
 	if err != nil {
-		t.Fatalf("bucket %q does not exist or is not accessible: %v", minioBucket, err)
+		t.Fatalf("bucket %q does not exist or is not accessible: %v", s3Bucket, err)
 	}
 }
 
@@ -577,7 +577,7 @@ func TestMultitenancy_S3ObjectSizeNonZero(t *testing.T) {
 	}
 
 	head, err := client.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(minioBucket),
+		Bucket: aws.String(s3Bucket),
 		Key:    aws.String(keys[0]),
 	})
 	if err != nil {
@@ -603,7 +603,7 @@ func TestMultitenancy_S3ParquetMagicBytes(t *testing.T) {
 	}
 
 	out, err := client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(minioBucket),
+		Bucket: aws.String(s3Bucket),
 		Key:    aws.String(keys[0]),
 		Range:  aws.String("bytes=0-3"),
 	})
@@ -1260,7 +1260,7 @@ func TestMultitenancy_TenantScope_BucketLayout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(scopeBucketTenantBucket)}); err != nil {
-		t.Fatalf("dedicated tenant bucket %q missing (docker-compose-e2e.yml minio-init): %v", scopeBucketTenantBucket, err)
+		t.Fatalf("dedicated tenant bucket %q missing (docker-compose-e2e.yml s3-init): %v", scopeBucketTenantBucket, err)
 	}
 	for _, signal := range []string{"logs", "traces"} {
 		if keys := listS3Objects(t, client, "3003/0/"+signal+"/"); len(keys) > 0 {

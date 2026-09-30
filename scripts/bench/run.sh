@@ -7,7 +7,7 @@
 #   Lakehouse (S3 Parquet)                    = system under test
 #   ClickHouse (S3, the SAME Parquet LH wrote) = engine-vs-engine on identical bytes
 #
-# Every S3 engine (LH, CH) reads MinIO through the toxiproxy s3-latency proxy, so
+# Every S3 engine (LH, CH) reads the S3 backend through the toxiproxy s3-latency proxy, so
 # one knob injects identical object-store latency. VL/VT are disk-native; with
 # --disk-profile gp3-loop their disk is throttled to AWS gp3 (125 MB/s, 3000 IOPS)
 # so a fast laptop NVMe doesn't flatter the baseline.

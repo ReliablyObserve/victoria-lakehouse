@@ -227,7 +227,7 @@ e2e:
 	TRACES_BASE_URL=http://localhost:20428 \
 	LOKI_PROXY_URL=http://localhost:23100 \
 	VLSELECT_URL=http://localhost:29471 \
-	MINIO_URL=http://localhost:29000 \
+	S3_URL=http://localhost:29000 \
 	go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/; \
 	rc=$$?; docker compose -f deployment/docker/docker-compose-e2e.yml down -v; exit $$rc
 
@@ -236,5 +236,5 @@ e2e-test: deps-logs
 	TRACES_BASE_URL=http://localhost:20428 \
 	LOKI_PROXY_URL=http://localhost:23100 \
 	VLSELECT_URL=http://localhost:29471 \
-	MINIO_URL=http://localhost:29000 \
+	S3_URL=http://localhost:29000 \
 	go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/

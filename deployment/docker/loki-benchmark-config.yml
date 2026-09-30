@@ -28,7 +28,7 @@ storage_config:
     cache_location: /data/loki/tsdb-cache
   aws:
     bucketnames: loki-data
-    endpoint: minio:9000
+    endpoint: s3:9000
     access_key_id: minioadmin
     secret_access_key: minioadmin
     insecure: true

@@ -92,11 +92,13 @@ jobs:
 
       - name: Verify S3 data seeded
         run: |
-          docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc alias set local http://localhost:9000 minioadmin minioadmin
-          echo "=== Default tenant (0/0) ==="
-          docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc ls --recursive local/obs-archive/0/0/ | head -20
-          echo "=== Test tenant (1/1) ==="
-          docker compose -f deployment/docker/docker-compose-e2e.yml exec -T minio mc ls --recursive local/obs-archive/1/1/ | head -20
+          # RustFS ships no mc; list through the mc image already used for bucket creation.
+          docker compose -f deployment/docker/docker-compose-e2e.yml run --rm --no-deps -T --entrypoint /bin/sh s3-init -c '
+            mc alias set local http://s3:9000 minioadmin minioadmin >/dev/null
+            echo "=== Default tenant (0/0) ==="
+            mc ls --recursive local/obs-archive/0/0/ | head -20
+            echo "=== Test tenant (1/1) ==="
+            mc ls --recursive local/obs-archive/1/1/ | head -20'
           echo "=== String tenant aliases ==="
           curl -sf http://localhost:29428/lakehouse/api/v1/tenants/aliases 2>/dev/null || echo "aliases not ready yet"
           curl -sf http://localhost:20428/lakehouse/api/v1/tenants/aliases 2>/dev/null || echo "traces aliases not ready yet"
@@ -108,10 +110,10 @@ jobs:
           LOKI_PROXY_URL: http://localhost:23100
           VLSELECT_URL: http://localhost:29471
           VTSELECT_URL: http://localhost:20471
-          MINIO_URL: http://localhost:29000
-          MINIO_BUCKET: obs-archive
-          MINIO_USER: minioadmin
-          MINIO_PASSWORD: minioadmin
+          S3_URL: http://localhost:29000
+          S3_BUCKET: obs-archive
+          S3_USER: minioadmin
+          S3_PASSWORD: minioadmin
         run: go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestSmoke" 2>&1 | tee e2e-results.txt
 
       - name: Verify metrics (all 147+ Prometheus metrics)
