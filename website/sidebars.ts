@@ -41,6 +41,7 @@ const sidebars: SidebarsConfig = {
         'deployment-architecture',
         'kubernetes-deployment',
         'docker-compose-setup',
+        'minio-test-images',
       ],
     },
     {

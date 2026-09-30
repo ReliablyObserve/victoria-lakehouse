@@ -110,14 +110,14 @@ The compose file defines the following services on a shared `lakehouse-net` brid
 
 ```yaml
 minio:
-  image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+  image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z
   command: server /data --console-address ":9001"
   environment:
     MINIO_ROOT_USER: minioadmin
     MINIO_ROOT_PASSWORD: minioadmin
 ```
 
-MinIO provides S3-compatible object storage. The `minio-init` sidecar creates the `obs-archive` bucket automatically on first start using the MinIO CLI (`mc mb local/obs-archive`).
+MinIO provides S3-compatible object storage. The image is built from upstream source and hosted on GHCR because upstream MinIO is unmaintained and no longer pullable anonymously; it is a frozen test image (see [How the MinIO test images are built](minio-test-images.md)). The `minio-init` sidecar creates the `obs-archive` bucket automatically on first start using the MinIO CLI (`mc mb local/obs-archive`).
 
 - **API endpoint**: `http://minio:9000` (internal)
 - **Console**: not exposed by default; add `ports: ["9001:9001"]` to access the web UI
