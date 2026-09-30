@@ -174,8 +174,28 @@ func fetchShort(t *testing.T, baseURL, path string, params url.Values) fetchResu
 	return fetchWith(t, shortClient, baseURL, path, params)
 }
 
+// withoutLatencyOffset adds disable_latency_offset=true to a LogsQL request
+// unless the caller set the argument itself. VictoriaTraces v0.12.0 hides the
+// newest -search.latencyOffset (30s) from LogsQL by default and the traces
+// binary mirrors that, so a parity case that means "compare everything the
+// seed wrote" must opt out on both tiers; the cases that pin the offset itself
+// (traces_latency_offset_test.go) set the argument explicitly. VictoriaLogs
+// ignores the argument.
+func withoutLatencyOffset(path string, params url.Values) url.Values {
+	if !strings.HasPrefix(path, "/select/logsql/") || params.Has("disable_latency_offset") {
+		return params
+	}
+	out := url.Values{}
+	for k, v := range params {
+		out[k] = v
+	}
+	out.Set("disable_latency_offset", "true")
+	return out
+}
+
 func fetchWith(t *testing.T, client *http.Client, baseURL, path string, params url.Values) fetchResult {
 	t.Helper()
+	params = withoutLatencyOffset(path, params)
 	u := baseURL + path
 	if len(params) > 0 {
 		u += "?" + params.Encode()

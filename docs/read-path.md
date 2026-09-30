@@ -22,6 +22,12 @@ The query context carries:
 
 The enumeration endpoints (`field_names`, `field_values`, `streams`, `stream_field_values`) select objects through the same tenant-scoped manifest lookup and then read **every** selected object. They do not second-guess the list: an object whose rows are already inside a merged compaction output never reaches them, because the publish removes it from the manifest and retires its key until a listing proves the object gone (see [manifest-system.md](manifest-system.md#compaction-integration)). Deciding that in the read path from time ranges and compaction levels hid the newest flush of a live partition — its rows fall inside the compacted neighbour's backfilled range — from every enumeration while `query` and `hits` still returned them.
 
+### LogsQL latency offset (traces)
+
+VictoriaTraces v0.12.0 hides a span from the LogsQL query APIs until it is `-search.latencyOffset` old (default 30s; the Jaeger and Tempo APIs always did), and a request can opt out with `disable_latency_offset=true`. It applies to `query`, `query_time_range`, `facets`, `hits`, `field_names`, `field_values`, `stream_field_names`, `stream_field_values`, `streams`, `stream_ids`, `stats_query` and `stats_query_range`, not to live tailing or `/select/tenant_ids`.
+
+`lakehouse-traces` serves LogsQL through VictoriaLogs' handlers, so it adds the equivalent filter itself: the select wrapper appends `extra_filters=_time:<=<now - offset>` to the request unless `disable_latency_offset` is true (a malformed value is a 400 with upstream's message). The filter becomes part of the query, so the effective time range every tier reads -- the Parquet scan, the buffer bridge and peer buffers -- is the same one hot VictoriaTraces uses, and rows younger than the offset are absent from both or present in both. It is ANDed after the request's own `start`/`end`, as upstream does, so a caller's earlier `end` is never widened. The logs binary has no offset (VictoriaLogs has none).
+
 ### Field enumeration
 
 `field_values`, `streams` and `stream_ids` return every value in the window with its exact hit count, as VictoriaLogs does. Per selected object:
@@ -78,6 +84,8 @@ if query [start, end] within [MinTime, MaxTime] -> return empty (<1ms)
 ```
 
 This prevents redundant queries when vlselect fans out to both hot storage and lakehouse simultaneously.
+
+The boundary comes from polling each hot storage node's `/internal/partition/list` (see [architecture.md](architecture.md#hot-boundary-discovery)). The poll is a `POST`: VictoriaTraces v0.12.0 answers `405` to every non-POST `/internal/*` request on vtstorage (an SSRF guard), and VictoriaLogs accepts a POST on the same route, so one method serves both. A `GET` poll against a v0.12.0 node silently found no partitions and left the boundary unset.
 
 ### Level 2: Manifest Fast Path
 

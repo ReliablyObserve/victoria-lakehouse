@@ -606,6 +606,7 @@ func TestStringTenant_BothSignalsStringTenantSummary(t *testing.T) {
 
 func httpGetWithOrgID(t *testing.T, baseURL, path string, params url.Values, orgID string) (int, []byte) {
 	t.Helper()
+	params = e2eParams(baseURL, path, params)
 
 	u := baseURL + path
 	if len(params) > 0 {
