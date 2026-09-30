@@ -10,6 +10,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/hiddenfields"
 )
 
 func TestMemLeak_TracesAdapter_TombstoneAddRemoveCycles(t *testing.T) {
@@ -132,7 +133,7 @@ func TestMemLeak_TracesAdapter_FilterHiddenValuesCycles(t *testing.T) {
 			if f != "" {
 				fSlice = []string{f}
 			}
-			result := filterHiddenValues(values, fSlice)
+			result := hiddenfields.FilterValues(values, fSlice)
 			_ = result
 		}
 	}

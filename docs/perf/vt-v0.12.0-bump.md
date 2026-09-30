@@ -67,3 +67,13 @@ about 6 (other work on the host).
 Reproduce: `go test ./lakehouse-traces/internal/selectapi -run XXX -bench BenchmarkServedLogsQL`
 (from `lakehouse-traces`, `GOWORK=off`); for main, copy the file into a checkout of main and swap
 `vtstorageadapter.Init(st)` for `internalvlstorage.SetStorage(st, delete.NewTombstoneStore())`.
+
+## 3. A resolved `in()` subquery with many values, over the real store
+
+`TestRealStore_ResolvedInSubqueryWithManyValues` (`lakehouse-traces/internal/storage/parquets3`) runs
+`trace_id:in(_stream:{resource_attr:service.name="api"} | fields trace_id) | stats count() n` through
+`vtstorage.RunQuery`, the vtstorage adapter and the real parquets3 `Storage` (two Parquet files in a mock
+S3; the subquery resolves to 600 trace IDs and the `_trace_idx` pre-filter drops the other service's
+file). The answer is exact (1200 rows) and the whole query, subquery included, takes about 20 ms on a
+laptop (`go test -run ResolvedInSubquery -v` prints the figure). It is a correctness check with a timing
+for reference, not a benchmark.

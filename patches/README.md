@@ -77,6 +77,43 @@ Applied to `lakehouse-traces/deps/VictoriaTraces/...`.
 | `vtstorage-flag-dedup.patch` | `app/vtstorage/main.go` | Wires `flag_dedup.go.src` into VT's flag parsing path so duplicate `flag.Lookup` calls don't panic. (15 flag sites in one file — helper file is cheaper than inline closures.) |
 | `vtinsert-flag-dedup.patch` | `app/vtinsert/insertutil/flags.go` | `-insert.maxFieldsPerLine` and `-defaultMsgValue` are VL's flags in the lakehouse-traces binary: VT's `MaxFieldsPerLine` and `DefaultMsgValue` alias VL's pointers (`vlinsert/insertutil`), which also makes VL initialize first. An earlier form copied VL's value when the package initialised, before `flag.Parse`, so an operator's value never reached span ingest (#259). At v0.12.0 upstream moved `-defaultMsgValue` out of `common_params.go` into `flags.go`. |
 
+#### Fragile by design: `sharedScalar` in `flag_dedup.go.src`
+
+The `safeInt`, `safeBool`, `safeString` and `safeDuration` helpers share VL's
+value through `sharedScalar`, which reads the pointer that the Go standard
+library's `flag` package keeps for a flag VL registered. The standard library
+does not export those types (`flag.intValue`, `flag.boolValue`,
+`flag.stringValue`, `flag.durationValue`), so the helper depends on their
+names and on their layout (`type intValue int`: the named type's underlying
+type is the scalar itself) through `reflect` and `unsafe`. It is the only place
+in the tree that does this, and it is an assumption about the Go release, not
+about VL or VT.
+
+What guards it:
+
+- a type-name check (`reflect.TypeOf(f.Value).String()` must equal the expected
+  `*flag.xxxValue`) and a size check (the pointee must be exactly the scalar's
+  size); when either fails `sharedScalar` returns nil and the helper falls back
+  to a detached default, so a Go upgrade that renames or reshapes a type never
+  corrupts memory, it only stops sharing;
+- `TestSharedScalarTypeNamesMatchStdlib` (`tests/conformance/sharedscalar_test.go`)
+  reads the four type names written in `flag_dedup.go.src` and compares them and
+  the sizes with what the toolchain really registers, so a Go release that
+  renames or reshapes a type fails the build instead of turning sharing off
+  silently;
+- `TestRealVTStorage_AuthKeyIsTheSharedFlag` (`lakehouse-traces/discovery_vtstorage_test.go`)
+  sets VL's flag and reads it back through VT's real `vtstorage`. That flag is a
+  `flagutil.Password`, which `safePassword` shares directly, so this test covers
+  the shared-value mechanism as a whole, not `sharedScalar` itself.
+
+If a Go upgrade breaks it, the first test above fails. Fix it by updating the type
+names passed to `sharedScalar` in `flag_dedup.go.src` to the new ones (print
+`reflect.TypeOf(flag.Lookup("<name>").Value)` for each kind), keep the size
+check, and only if the standard library stops exposing a plain pointer to the
+scalar replace the helper with a `flag.Value` wrapper (`flag.Var`) registered by
+one package and looked up by the other. Do not delete the check to make the
+test pass.
+
 Not every overlay is a patch file. VT's own `go.mod` needs a
 `replace github.com/VictoriaMetrics/VictoriaLogs => ../VictoriaLogs`
 so VT's vlstorage path sees the same `external.go` replacement we apply

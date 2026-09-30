@@ -109,3 +109,21 @@ func (t *TracedStorage) HasDataForRange(startNs, endNs int64) bool {
 func (t *TracedStorage) Close() error {
 	return t.inner.Close()
 }
+
+// LookupTraceIndex forwards the optional footer-index trace lookup that the
+// vtstorage adapter uses to answer VT's trace-by-ID index query without a span
+// scan. The adapter finds that capability by type assertion, so a wrapper that
+// dropped it would silently turn the Jaeger/Tempo fast path off whenever
+// telemetry is enabled. An inner store without it reports a miss, which the
+// adapter already treats as "fall through to the span scan".
+func (t *TracedStorage) LookupTraceIndex(ctx context.Context, tenantIDs []logstorage.TenantID, traceID string) (startNs, endNs int64, found bool, err error) {
+	l, ok := t.inner.(interface {
+		LookupTraceIndex(ctx context.Context, tenantIDs []logstorage.TenantID, traceID string) (int64, int64, bool, error)
+	})
+	if !ok {
+		return 0, 0, false, nil
+	}
+	ctx, span := otel.Tracer("lakehouse").Start(ctx, "storage.lookup_trace_index")
+	defer span.End()
+	return l.LookupTraceIndex(ctx, tenantIDs, traceID)
+}

@@ -38,15 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hits`, `facets`, `field_names`, `field_values`, `stream_*`, `streams`, `stats_query`, `stats_query_range`; not
   live tailing, `query_time_range` or `/select/tenant_ids`). The traces binary used to serve `/select/logsql/*`
   through VictoriaLogs' handlers; it now mounts VictoriaTraces' `app/vtselect/logsql` ones, over the same
-  Lakehouse storage adapter Jaeger and Tempo already use, so the offset is upstream's code and behaves as upstream
-  does in the cases a hand-built filter got wrong (`stats rate()` steps, `options(time_offset=...)`,
-  `options(ignore_global_time_filter=true)`, subqueries). The Parquet scan, the buffer bridge and peer buffers take
-  their time range from the query, so cold and hot apply the same bound. Each process computes "now minus the
-  offset" from its own clock, so a span within the clock skew between the two of the boundary can be visible on one
-  and not on the other for a moment. A malformed `disable_latency_offset` is a 400 on every route that parses it.
-  Code that queried right after ingest and expected to see the rows must pass `disable_latency_offset=true`; the
-  e2e and parity suites, the admin parity check and the benchmark's flush-convergence wait now do. The logs binary
-  has no offset.
+  Lakehouse storage adapter Jaeger and Tempo already use, so the offset is upstream's code. A served answer is
+  checked against upstream's on the same data for `stats rate()` steps, `options(ignore_global_time_filter=true)`
+  and subqueries. `options(time_offset=...)` agrees on counts only: hot storage also adds the offset to the
+  `_time` it returns and the cold tier does not (a declared difference in the conformance registry, not changed
+  here). The Parquet scan, the buffer bridge and peer buffers take their time range from the query, so cold and
+  hot apply the same bound. Each process computes "now minus the offset" from its own clock, so a span within the
+  clock skew between the two of the boundary can be visible on one and not on the other for a moment. A malformed
+  `disable_latency_offset` is a 400 on every route that parses it. Code that queried right after ingest and
+  expected to see the rows must pass `disable_latency_offset=true`; the e2e and parity suites, the admin parity
+  check and the benchmark's flush-convergence wait now do. The logs binary has no offset.
 
 - **Test and CI stacks use RustFS as the S3 backend.** The e2e, parity, benchmark, cluster and nightly
   load-test stacks now run `rustfs/rustfs:1.0.0` (pinned by digest) instead of MinIO, which is archived.
@@ -97,10 +98,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   imported so it always initialises first. Not reachable today (the binary does not mount `vtstorage`'s
   handler), found by running it.
 
-- **`| union` queries on the cold tier no longer panic, and `in(...)` filters inside pipes are resolved (both
-  binaries).** The cold-tier query path resolved only `join` subqueries. It now calls upstream's own
-  `initSubqueries`, as upstream's storage does, and hands the storage the resolved query. An `in(...)` filter in a
-  query with no pipes is still not resolved on the cold tier (documented, pinned by a test).
+- **`| union` queries on the cold tier no longer panic, and `in(...)` filters are resolved, with or without pipes
+  (both binaries).** The cold-tier query path resolved only `join` subqueries. It now calls upstream's own
+  `initSubqueries`, as upstream's storage does. The storage is handed the caller's query with the resolved filter
+  and options (its pipes stay the caller's, because a resolved `join` with an empty subquery has no text form and
+  the storage stringifies every query it is given); the resolved pipes run in the adapter. A query whose only
+  subquery is an `in(...)` filter, with no pipes at all, is routed the same way (`QueryHasFilterSubqueries`), and
+  so is an `in(...)` inside the branch of a `union`. Three registry rows move from `differ` to `pass` with proofs
+  over the real Parquet store: `vl.pipe.union.basic`, `vl.filter.in.subquery` and `vl.pipe.stream_context.basic`,
+  plus `vt.select.logsql_query.in_subquery_without_pipes`.
+
+- **LogsQL that mentions `trace_id_idx` is no longer taken for VictoriaTraces' trace lookup (traces binary).**
+  Serving `/select/logsql/*` through VictoriaTraces' handlers sends user LogsQL to the same adapter as the Jaeger
+  and Tempo lookups. The adapter recognised the lookup by a substring, so `trace_id_idx:=X | stats count()`, or a
+  quoted phrase holding the text, was answered with one synthetic row that ignored the caller's pipes. The
+  fast path and the span-scan rewrite now match only the exact query VictoriaTraces issues (index stream
+  selector, the three-column `stats`, the optional time filter and `limit`), and the stream-selector strip only a
+  leading selector. The adapter's storage is also wrapped in the telemetry decorator when telemetry is on, so
+  LogsQL keeps its `storage.run_query` span; the decorator forwards the trace-index lookup so the Jaeger and
+  Tempo fast path keeps working under it.
 
 - **The admin parity check (`/lakehouse/api/v1/stats/parity`) is not skewed by the latency offset.** It loops back
   to `/select/logsql/stats_query` with `end` = now; on the traces binary the newest spans were left out and read as

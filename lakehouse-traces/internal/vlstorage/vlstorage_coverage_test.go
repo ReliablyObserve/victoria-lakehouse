@@ -7,6 +7,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/hiddenfields"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
@@ -348,7 +349,7 @@ func TestWrapHiddenFields_AllColumnsHidden(t *testing.T) {
 	})
 
 	var writeBlockCalled bool
-	wrapped := wrapHiddenFields(func(_ uint, d *logstorage.DataBlock) {
+	wrapped := hiddenfields.WrapWriteBlock(func(_ uint, d *logstorage.DataBlock) {
 		writeBlockCalled = true
 	}, []string{"secret1", "secret2"})
 	wrapped(0, db)
@@ -366,7 +367,7 @@ func TestWrapHiddenFields_NoColumnsHidden(t *testing.T) {
 	})
 
 	var received *logstorage.DataBlock
-	wrapped := wrapHiddenFields(func(_ uint, d *logstorage.DataBlock) {
+	wrapped := hiddenfields.WrapWriteBlock(func(_ uint, d *logstorage.DataBlock) {
 		received = d
 	}, []string{"nonexistent"})
 	wrapped(0, db)
@@ -516,7 +517,7 @@ func TestRunQuery_Error(t *testing.T) {
 // --- Additional edge case tests ---
 
 func TestFilterHiddenValues_EmptyInput(t *testing.T) {
-	result := filterHiddenValues(nil, []string{"something"})
+	result := hiddenfields.FilterValues(nil, []string{"something"})
 	if len(result) != 0 {
 		t.Errorf("expected empty result for nil input, got %d", len(result))
 	}
@@ -528,7 +529,7 @@ func TestFilterHiddenValues_MultipleExactFilters(t *testing.T) {
 		{Value: "b", Hits: 5},
 		{Value: "c", Hits: 3},
 	}
-	result := filterHiddenValues(values, []string{"a", "b"})
+	result := hiddenfields.FilterValues(values, []string{"a", "b"})
 	if len(result) != 1 {
 		t.Errorf("expected 1 result, got %d", len(result))
 	}

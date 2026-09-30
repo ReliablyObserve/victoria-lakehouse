@@ -32,6 +32,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/telemetry"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
@@ -1233,7 +1234,10 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		// Wire a tenant lister so VT's per-tenant background tasks
 		// (notably servicegraph) iterate every tenant the LH process
 		// holds in cold storage, not just the legacy {0,0}.
-		vtstorageadapter.Init(store, vtstorageadapter.WithTenantLister(
+		// LogsQL on the traces binary reaches the cold tier through this
+		// adapter, so it needs the same storage.run_query span the
+		// SetStorage path above gets when telemetry is on.
+		vtstorageadapter.Init(adapterStorage(store, cfg.Telemetry.Enabled), vtstorageadapter.WithTenantLister(
 			func(startNs, endNs int64) []logstorage.TenantID {
 				summaries := store.Manifest().TenantSummariesInWindow(startNs, endNs)
 				out := make([]logstorage.TenantID, 0, len(summaries))
@@ -2331,4 +2335,15 @@ func runFIPSStatusSubcommand() {
 	}
 	fmt.Println("fips140: disabled")
 	os.Exit(1)
+}
+
+// adapterStorage is the store the vtstorage adapter (VT's external storage, and
+// with it every LogsQL query on this binary) runs against: the same traced
+// decorator SetStorage gets when telemetry is on, so storage.run_query spans
+// are not lost on this path.
+func adapterStorage(store storage.Storage, telemetryEnabled bool) storage.Storage {
+	if telemetryEnabled {
+		return internalvlstorage.NewTracedStorage(store)
+	}
+	return store
 }

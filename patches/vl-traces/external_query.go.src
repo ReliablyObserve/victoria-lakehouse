@@ -78,9 +78,18 @@ type ExternalRunQueryFn func(qctx *QueryContext, writeBlock WriteDataBlockFunc) 
 // `… | join by (span_id) (…) inner | …` query; without the join step the cold
 // tier served an empty Service Graph.
 //
-// upstream-original: a thin caller of upstream's initSubqueries (whose text the
-// old copy baselined) followed by the pipe chain, which RunQueryExternal's
-// baseline already tracks; nothing here is copied upstream logic.
+// upstream-divergence: upstream's (*Storage).runQuery hands its search the
+// fully resolved query; this hands searchFn the caller's query with only the
+// filter and options resolved, and keeps the resolved pipes for runPipes. That
+// is deliberate: the Lakehouse storage stringifies every query it is given and
+// reads its pipe fields, and a resolved `join` with an empty subquery has
+// neither rows nor query, so its String() dereferences nil (it crashed
+// lakehouse-traces at start-up through the service-graph task). The resolution
+// itself is upstream's initSubqueries, called, not copied; nothing else here is
+// upstream logic (the tail is RunQueryExternal's, baselined separately).
+//
+// upstream-original: the adapter for upstream's initSubqueries and runPipes; see
+// the divergence above for the one place it differs from upstream's runQuery.
 func RunQueryExternalWithSubqueries(qctx *QueryContext, searchFn func(q *Query, writeBlock WriteDataBlockFunc) error, runQuery ExternalRunQueryFn, writeBlock WriteDataBlockFunc) error {
 	// Adapt the adapter's WriteDataBlockFunc-shaped RunQuery into the
 	// writeBlockResultFunc-shaped runQueryFunc upstream's initSubqueries wants.
@@ -109,6 +118,24 @@ func RunQueryExternalWithSubqueries(qctx *QueryContext, searchFn func(q *Query, 
 	}
 
 	return runPipes(qctxNew, qNew.pipes, search, writeBlockResult, concurrency)
+}
+
+// QueryHasFilterSubqueries returns true if the query's filter (or its global
+// filter, or a filter inside a pipe) holds an `in(...)` filter whose values
+// come from a subquery. Such a query needs RunQueryExternalWithSubqueries even
+// when it has no pipes at all, because the storage evaluates the query's filter
+// and can only do so once the subquery's values are in it (this is the same test
+// upstream's initFilterInValues opens with). A query without pipes inside a
+// `union` or `join` is such a case: the inner query reaches the adapter's
+// RunQuery by itself.
+//
+// upstream-original: exports the test upstream's initFilterInValues applies,
+// built from upstream's own hasFilterInWithQuery* functions; no logic is copied.
+func QueryHasFilterSubqueries(q *Query) bool {
+	if q == nil {
+		return false
+	}
+	return hasFilterInWithQueryForFilter(q.opts.globalFilter) || hasFilterInWithQueryForFilter(q.f) || hasFilterInWithQueryForPipes(q.pipes)
 }
 
 // QueryHasPipes returns true if the query has pipe operators attached.

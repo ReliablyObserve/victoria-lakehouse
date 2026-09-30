@@ -210,6 +210,10 @@
     - lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestLogsQLServedEqualsUpstreamOnTheSameData
     - lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestRateThroughTheServedHandler
     - lakehouse-traces/internal/vtstorage_adapter/hidden_fields_test.go#TestHiddenFieldsAreRemoved
+    - lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go#TestAdapter_UserLogsQLWithTraceIDIdxIsNotHijacked
+    - lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go#TestAdapter_VTIssuedLookupKeepsFastPath
+    - lakehouse-traces/adapter_storage_test.go#TestAdapterStorage_TelemetryKeepsSpanAndLookup
+    - lakehouse-traces/internal/storage/parquets3/subquery_in_real_store_test.go#TestRealStore_ResolvedInSubqueryWithManyValues
     - lakehouse-traces/logsql_routes_test.go#TestLogsQLRouteTableMatchesVendoredVT
     - lakehouse-traces/logsql_routes_test.go#TestLatencyOffsetFlagDefault
     - lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_HidesYoungRowsLikeHotVT

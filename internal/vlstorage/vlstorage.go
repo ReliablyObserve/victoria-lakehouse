@@ -8,9 +8,9 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/hiddenfields"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
@@ -41,7 +41,7 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// via parseFilterFromQuery (Clone + DropAllPipes), so passing the full
 	// query here is safe — pipes only inform column projection planning.
 
-	if logstorage.QueryHasPipes(qctx.Query) {
+	if logstorage.QueryHasPipes(qctx.Query) || logstorage.QueryHasFilterSubqueries(qctx.Query) {
 		// Field-enumerating pipes (field_names / field_values / facets /
 		// block_stats) need every column on the row — bypass projection
 		// narrowing via the all-fields hint so the projection layer
@@ -53,13 +53,13 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		}
 		searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
 			return a.store.RunQuery(ctx, qctx.TenantIDs, q,
-				wrapHiddenFields(wb, hiddenFilters))
+				hiddenfields.WrapWriteBlock(wb, hiddenFilters))
 		}
 		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
 
 	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query,
-		wrapHiddenFields(writeBlock, hiddenFilters))
+		hiddenfields.WrapWriteBlock(writeBlock, hiddenFilters))
 }
 
 func (a *adapter) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
@@ -67,7 +67,7 @@ func (a *adapter) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([
 	if err != nil {
 		return nil, err
 	}
-	results = filterHiddenValues(results, qctx.HiddenFieldsFilters)
+	results = hiddenfields.FilterValues(results, qctx.HiddenFieldsFilters)
 	return filterValuesBySubstring(results, filter), nil
 }
 
@@ -84,7 +84,7 @@ func (a *adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter stri
 	if err != nil {
 		return nil, err
 	}
-	results = filterHiddenValues(results, qctx.HiddenFieldsFilters)
+	results = hiddenfields.FilterValues(results, qctx.HiddenFieldsFilters)
 	return filterValuesBySubstring(results, filter), nil
 }
 
@@ -174,47 +174,6 @@ func filterValuesBySubstring(results []logstorage.ValueWithHits, filter string) 
 	filtered := make([]logstorage.ValueWithHits, 0, len(results))
 	for _, v := range results {
 		if strings.Contains(v.Value, filter) {
-			filtered = append(filtered, v)
-		}
-	}
-	return filtered
-}
-
-// wrapHiddenFields wraps writeBlock to strip columns matching HiddenFieldsFilters.
-// Uses VL's prefixfilter.MatchFilters for exact and wildcard matching.
-func wrapHiddenFields(writeBlock logstorage.WriteDataBlockFunc, filters []string) logstorage.WriteDataBlockFunc {
-	if len(filters) == 0 {
-		return writeBlock
-	}
-	return func(workerID uint, db *logstorage.DataBlock) {
-		columns := db.GetColumns(false)
-		filtered := make([]logstorage.BlockColumn, 0, len(columns))
-		for _, col := range columns {
-			if !prefixfilter.MatchFilters(filters, col.Name) {
-				filtered = append(filtered, col)
-			}
-		}
-		if len(filtered) == len(columns) {
-			writeBlock(workerID, db)
-			return
-		}
-		if len(filtered) == 0 {
-			return
-		}
-		result := &logstorage.DataBlock{}
-		result.SetColumns(filtered)
-		writeBlock(workerID, result)
-	}
-}
-
-// filterHiddenValues removes entries whose Value matches any HiddenFieldsFilter pattern.
-func filterHiddenValues(results []logstorage.ValueWithHits, filters []string) []logstorage.ValueWithHits {
-	if len(filters) == 0 {
-		return results
-	}
-	filtered := make([]logstorage.ValueWithHits, 0, len(results))
-	for _, v := range results {
-		if !prefixfilter.MatchFilters(filters, v.Value) {
 			filtered = append(filtered, v)
 		}
 	}

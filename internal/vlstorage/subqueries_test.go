@@ -87,7 +87,7 @@ func runAdapter(t *testing.T, s *filterStore, query string) []string {
 // The logs binary's cold-tier query path resolves a query's subqueries with
 // upstream's own initSubqueries: a `| union` used to panic in its pipe processor,
 // and an in() filter inside a pipe matched nothing, because only `join` was
-// resolved. (An in() in a query with no pipes at all is a documented gap.)
+// resolved. (An in() in a query with no pipes is covered in subqueries_rows_test.go.)
 func TestRunQuery_UnionAndInSubqueriesAreResolved(t *testing.T) {
 	s := &filterStore{rows: []map[string]string{
 		{"_msg": "a", "level": "error"},
