@@ -28,19 +28,19 @@ export GOWORK=off
 #                      commit that VictoriaTraces' own go.mod requires at
 #                      VT_VERSION. Read it with
 #                      `git show $(VT_VERSION):go.mod | grep VictoriaLogs`
-#                      (VT v0.11.0 → v1.121.1-0.20260617051904-6ae2da3c11f3,
-#                      i.e. VL v1.51.0) and copy the commit part here.
+#                      (VT v0.12.0 → v1.121.1-0.20260716015338-c945d2949e98,
+#                      i.e. VL v1.52.0) and copy the commit part here.
 #                      It legitimately lags VL_VERSION_LOGS: the traces binary
 #                      links VT against the exact VL VT was built and tested
 #                      with. Lifting it to VL_VERSION_LOGS "because it
 #                      compiles" is not allowed.
 VL_VERSION_LOGS := v1.52.0
-VL_COMMIT_TRACES := 6ae2da3c11f3
+VL_COMMIT_TRACES := c945d2949e98
 VL_REPO := https://github.com/VictoriaMetrics/VictoriaLogs.git
 VL_DIR_LOGS := deps/VictoriaLogs
 VL_DIR_TRACES := lakehouse-traces/deps/VictoriaLogs
 
-VT_VERSION := v0.11.0
+VT_VERSION := v0.12.0
 VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
 VT_DIR := lakehouse-traces/deps/VictoriaTraces
 
@@ -113,16 +113,18 @@ sync-vmui: deps-logs
 	cp -R $(VL_DIR_LOGS)/app/vlselect/vmui/. internal/ui/vmui/
 	@echo "vmui: internal/ui/vmui <- $(VL_DIR_LOGS)/app/vlselect/vmui (VictoriaLogs $(VL_VERSION_LOGS))"
 
-# sync-vmui-traces is the traces-binary counterpart: lakehouse-traces embeds the
-# same internal/ui package, but Dockerfile.traces copies vmui from the traces
-# module's own VL checkout (VL_COMMIT_TRACES), not the logs one. Run this before
-# a local `make build-traces` if the two pins have diverged and you care which
-# vmui build the traces binary serves.
-sync-vmui-traces: deps-traces
-	@rm -rf internal/ui/vmui
-	@mkdir -p internal/ui/vmui
-	cp -R $(VL_DIR_TRACES)/app/vlselect/vmui/. internal/ui/vmui/
-	@echo "vmui: internal/ui/vmui <- $(VL_DIR_TRACES)/app/vlselect/vmui (VictoriaLogs $(VL_COMMIT_TRACES))"
+# sync-vmui-traces is the traces-binary counterpart. VictoriaTraces v0.12.0
+# replaced the log-based UI with its own trace explorer (VTUI, app/vtselect/vmui),
+# so lakehouse-traces serves THAT at /select/vmui/ instead of VictoriaLogs' vmui:
+# it embeds lakehouse-traces/internal/vtui/vmui (same layout as internal/ui/vmui:
+# only index.html tracked, the rest .gitignore'd) and Dockerfile.traces does the
+# same inline copy. The Lakehouse tab is injected by internal/ui, as for the logs
+# binary. It does not touch internal/ui/vmui, which stays the logs binary's.
+sync-vmui-traces: deps-vt
+	@rm -rf lakehouse-traces/internal/vtui/vmui
+	@mkdir -p lakehouse-traces/internal/vtui/vmui
+	cp -R $(VT_DIR)/app/vtselect/vmui/. lakehouse-traces/internal/vtui/vmui/
+	@echo "vtui: lakehouse-traces/internal/vtui/vmui <- $(VT_DIR)/app/vtselect/vmui (VictoriaTraces $(VT_VERSION))"
 
 build: build-logs build-traces
 

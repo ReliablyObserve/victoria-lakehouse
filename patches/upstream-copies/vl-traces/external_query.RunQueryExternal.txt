@@ -1,6 +1,6 @@
 # upstream: lib/logstorage/storage_search.go (*Storage).runQuery
 # tree: lakehouse-traces/deps/VictoriaLogs
-# pin: 6ae2da3c11f3
+# pin: c945d2949e98
 
 func (s *Storage) runQuery(qctx *QueryContext, writeBlock writeBlockResultFunc) error {
 	qNew, err := initSubqueries(qctx, s.runQuery, false)

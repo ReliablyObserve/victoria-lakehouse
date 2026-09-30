@@ -9,7 +9,7 @@ import (
 
 // vtRequireRe matches the traces module's VictoriaTraces requirement, e.g.
 //
-//	github.com/VictoriaMetrics/VictoriaTraces v0.11.0
+//	github.com/VictoriaMetrics/VictoriaTraces v0.12.0
 var vtRequireRe = regexp.MustCompile(`(?m)^\s*github\.com/VictoriaMetrics/VictoriaTraces\s+(v\S+)`)
 
 // TestVTCompatMatchesGoMod keeps the version this binary advertises equal to

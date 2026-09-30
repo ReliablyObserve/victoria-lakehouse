@@ -26,6 +26,11 @@ var gatePrefixes = map[string]bool{
 	"/internal/select/":    true,
 	"/internal/delete/":    true,
 	"/select/vmui/static/": true,
+	// vtstorage's RequestHandler (VT v0.12.0+) opens with
+	// `strings.HasPrefix(path, "/internal/") && r.Method != "POST"`: a method
+	// gate in front of the real /internal/* routes it then switches on, not a
+	// route of its own.
+	"/internal/": true,
 }
 
 // vlRouteFiles lists where VictoriaLogs registers HTTP paths (relative to the VL dir).

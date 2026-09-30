@@ -343,9 +343,11 @@ through upstream's own code, behind the same switch: the logs binary mounts
 VictoriaLogs' `vlselect.RequestHandler` for `/internal/delete/*`, so the flag,
 its help text and its answers are upstream's. The traces binary carries a
 verbatim copy of VictoriaTraces' gate (checked against the vendored source by a
-test) until it serves `/select/*` through `vtselect` as well — VT's and VL's
-select packages register the same flag names and cannot be linked into one
-binary.
+test). It serves `/select/logsql/*` with VictoriaTraces' own handlers but not
+`vtselect.RequestHandler`: `/internal/select/*` and `/internal/delete/*` go
+through VictoriaLogs' `internalselect` (VT's `vtstorage` does not route delete
+calls to external storage), and VT's and VL's `internalselect` register the same
+flag, so both cannot be linked into one binary.
 
 - **`-internaldelete.enable`** (default `false`, same name and default as
   upstream). While it is off, every `/internal/delete/*` request answers
@@ -389,6 +391,17 @@ to start instead of silently ignoring it (as before vlselect was linked, when
 they were undefined). Moving `/select/*` onto upstream's handler, which will
 honour them, is tracked separately. `-delete.enable` is honoured: see the next
 section.
+
+### Upgrade note: mixed VictoriaTraces v0.11 / v0.12 clusters
+
+The delete fan-out carries a protocol version (`version=` on `/internal/delete/run_task`,
+`stop_task` and `active_tasks`). VictoriaLogs v1.52.0, which the traces binary embeds since
+VictoriaTraces v0.12.0, moved it from `v1` to `v2`. A VictoriaTraces v0.11 `vtselect` (which sends
+`v1`) therefore cannot delete through a v0.12 Lakehouse storage node, and a v0.12 `vtselect` (which
+sends `v2`) cannot delete through a v0.11 one: the node answers `unexpected protocol version`, the
+fan-out fails, and the delete is refused. Nothing is deleted and no data is at risk. The query
+protocol (`/internal/select/*`, version `v5`) is unchanged, so reads keep working across the two
+versions. Upgrade `vtselect` and the Lakehouse traces nodes together before using the delete API.
 
 ## Upstream Delete API (`/delete/*`)
 

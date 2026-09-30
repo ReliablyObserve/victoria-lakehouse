@@ -14,14 +14,14 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 6 | 0 | 0 | 1 | 7 |
 | Deletion | 11 | 0 | 0 | 0 | 11 |
-| Traces | 8 | 0 | 0 | 3 | 11 |
+| Traces | 10 | 0 | 0 | 3 | 13 |
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **131** | **1** | **3** | **8** | **143** |
+| **Total** | **133** | **1** | **3** | **8** | **145** |
 
 ## Coverage gaps
 
@@ -461,7 +461,7 @@ The metadata already knows how many rows each file holds and how they distribute
 
 Lakehouse asks the hot tier which partitions it still holds and serves only what lies below that boundary, so hot and cold never double-answer and no operator has to keep a retention constant in two places. The boundary moves on its own as hot retention rolls.
 
-- Verification: tests: `internal/discovery/discovery_test.go#TestPollPartitionList`, `internal/discovery/discovery_test.go#TestGetHotBoundary`, `internal/storage/parquets3/storage_query_test.go#TestRunQuery_HotBoundary_InsertRoleSuppresses`, `internal/discovery/discovery_coverage_test.go`
+- Verification: tests: `internal/discovery/discovery_test.go#TestPollPartitionList`, `internal/discovery/discovery_test.go#TestPollPartitionList_PostsLikeVTv012`, `lakehouse-traces/discovery_vtstorage_test.go#TestDiscoveryAgainstRealVTStorage_POSTOnly`, `lakehouse-traces/discovery_vtstorage_test.go#TestRealVTStorage_InternalRoutesRefuseNonPOST`, `internal/discovery/discovery_test.go#TestGetHotBoundary`, `internal/storage/parquets3/storage_query_test.go#TestRunQuery_HotBoundary_InsertRoleSuppresses`, `internal/discovery/discovery_coverage_test.go`
 - Docs: `docs/read-path.md`, `docs/configuration.md`
 
 ### 🟡 Live tail answers as documented rather than silently
@@ -917,7 +917,7 @@ Because a hide-mode delete never touched the data, it is reversible: deleting th
 
 A client written for VictoriaLogs or VictoriaTraces deletes through the same routes on the lakehouse: off by default with upstream's own answer, served through upstream's handler (a drift-tested copy of VictoriaTraces' in the traces binary) when `-delete.enable` and the lakehouse `delete.enabled` are both on. Each task is registered as a tombstone scoped to the requesting tenant, hidden at once and physically removed per `delete.default_mode`.
 
-- Verification: rows: `vl.delete.run_task.status` (pass, pending), `vl.delete.run_task.non_post.differ` (differ, pending), `vl.internal.delete.non_post.differ` (differ, pending), `vl.internal.select.non_post.differ` (differ, pending), `vl.delete.stop_task.status` (pass, pending), `vl.delete.active_tasks.status` (pass, pending), `vt.delete.run_task.status` (pass, pending), `vt.delete.run_task.non_post.differ` (differ, pending), `vt.internal.delete.non_post.differ` (differ, pending), `vt.internal.select.non_post.differ` (differ, pending), `vt.delete.stop_task.status` (pass, pending), `vt.delete.active_tasks.status` (pass, pending) · tests: `internal/internaldelete/gate_test.go#TestPublicHandler_GatesLikeHandler`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_GatedByDefault`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestPublicDeleteFlag_IsUpstreams`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_RunTaskIsTenantScoped`, `lakehouse-traces/public_delete_test.go#TestMountPublicDelete_GatedByDefault`, `lakehouse-traces/public_delete_test.go#TestMountPublicDelete_RunTaskIsTenantScoped`, `lakehouse-traces/public_delete_test.go#TestUpstreamPublicDelete_MatchesVendoredVTSelect`, `internal/internaldelete/runtask_post_test.go#TestRunTaskPOSTOnly`, `internal/internaldelete/post_only_test.go#TestPOSTOnly`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamInternalProtocolStillAcceptsGET`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskCounterParity`, `lakehouse-traces/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused`, `lakehouse-traces/public_delete_post_only_test.go#TestVendoredVTStillLacksPOSTChecks`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamRunTaskStillLacksMethodCheck`, `lakehouse-traces/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly`, `internal/delete/tasks_test.go#TestRunTask_RegistersATenantScopedTombstone`, `internal/delete/tasks_test.go#TestRunTask_EdgeCases`, `lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsTenantScoped`
+- Verification: rows: `vl.delete.run_task.status` (pass, pending), `vl.delete.run_task.non_post.differ` (differ, pending), `vl.internal.delete.non_post.differ` (differ, pending), `vl.internal.select.non_post.differ` (differ, pending), `vl.delete.stop_task.status` (pass, pending), `vl.delete.active_tasks.status` (pass, pending), `vt.delete.run_task.status` (pass, pending), `vt.delete.run_task.non_post` (pass, pending), `vt.internal.delete.non_post` (pass, pending), `vt.internal.select.non_post` (pass, pending), `vt.delete.stop_task.status` (pass, pending), `vt.delete.active_tasks.status` (pass, pending) · tests: `internal/internaldelete/gate_test.go#TestPublicHandler_GatesLikeHandler`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_GatedByDefault`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestPublicDeleteFlag_IsUpstreams`, `cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_RunTaskIsTenantScoped`, `lakehouse-traces/public_delete_test.go#TestMountPublicDelete_GatedByDefault`, `lakehouse-traces/public_delete_test.go#TestMountPublicDelete_RunTaskIsTenantScoped`, `lakehouse-traces/public_delete_test.go#TestUpstreamPublicDelete_MatchesVendoredVTSelect`, `internal/internaldelete/runtask_post_test.go#TestRunTaskPOSTOnly`, `internal/internaldelete/post_only_test.go#TestPOSTOnly`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamInternalProtocolStillAcceptsGET`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskCounterParity`, `lakehouse-traces/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused`, `lakehouse-traces/public_delete_post_only_test.go#TestVendoredVTEnforcesPOSTChecks`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly`, `cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamRunTaskStillLacksMethodCheck`, `lakehouse-traces/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly`, `internal/delete/tasks_test.go#TestRunTask_RegistersATenantScopedTombstone`, `internal/delete/tasks_test.go#TestRunTask_EdgeCases`, `lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go#TestInternalDelete_EnabledRunTaskIsTenantScoped`
 - Docs: `docs/deletion-strategy.md#upstream-delete-api-delete`, `docs/deletion-strategy.md#cluster-delete-protocol-internaldelete`, `docs/configuration.md`
 - Changelog: `0.143.0`
 
@@ -932,7 +932,7 @@ Compliance needs proof, not a promise. Normal verification re-runs the predicate
 - Verification: rows: `lh.delete.verify.status` (pass, pending) · tests: `internal/delete/handler_test.go#TestHandler_handleVerify_WithMatchingTombstone`, `internal/delete/handler_test.go#TestHandler_handleVerify_PartialCoverage`, `internal/delete/scheduler_test.go#TestSchedulerVerify`, `tests/e2e/delete_test.go#TestDelete_Verify`
 - Docs: `docs/deletion-strategy.md`
 
-## Traces (11)
+## Traces (13)
 
 ### 📝 Pre-aggregated trace dependencies
 
@@ -955,6 +955,17 @@ The Jaeger surface is the one Grafana and the Jaeger UI speak, and it is served 
 
 - Verification: rows: `vt.jaeger.services.bare_shim` (pass, pending), `vt.jaeger.traces_search.bare_shim` (pass, pending) · tests: `tests/e2e/traces_jaeger_test.go#TestJaeger_Search`, `tests/e2e/traces_jaeger_test.go#TestJaeger_Services`, `tests/parity/coldhot_endpoint_parity_test.go#TestParity_Jaeger_Services_NonEmpty`, `tests/e2e/endpoints_verification_test.go#TestEndpoint_Traces_Jaeger_SearchTraces`, `tests/verification/probe_jaeger_search_24h.sh`
 - Docs: `docs/parity-and-gaps.md`, `docs/docker-compose-setup.md`
+
+### ✅ LogsQL latency offset on the traces surface
+
+`lh.feature.traces.logsql_latency_offset` · status: shipped · surfaces: api, flag
+
+**LogsQL latency offset (traces)**: `/select/logsql/*` on the traces binary is served by VictoriaTraces' own handlers, so spans younger than `-search.latencyOffset` are hidden and `disable_latency_offset=true` opts out exactly as on hot VictoriaTraces v0.12.0.
+
+VictoriaTraces v0.12.0 extended the offset a span waits before becoming visible from the Jaeger and Tempo APIs to the LogsQL query APIs (everything but live tailing, query_time_range and tenant enumeration), with a per-request opt-out. The traces binary mounts VictoriaTraces' own LogsQL handlers over the Lakehouse storage adapter, so the offset is upstream's code and a served answer is checked against upstream's on the same data; the Parquet scan, the buffer bridge and peer buffers take their time range from the query. Each process uses its own clock for "now", so a span within the clock skew of the boundary can differ between tiers.
+
+- Verification: rows: `vt.select.logsql_query.latency_offset` (pass, pending), `vt.select.logsql_query.latency_offset_disabled` (pass, pending), `vt.select.logsql_hits.latency_offset` (pass, pending), `vt.select.logsql_stats_query.latency_offset` (pass, pending), `vt.select.logsql_field_values.latency_offset` (pass, pending), `vt.select.logsql_query.latency_offset_rate` (pass, pending), `vt.select.logsql_query.latency_offset_time_offset` (pass, pending), `vt.select.logsql_query.latency_offset_ignore_global_time_filter` (pass, pending), `vt.select.logsql_query.latency_offset_subqueries` (pass, pending), `vt.select.logsql_query.time_offset_time_column` (differ, pending), `vt.select.logsql_query.in_subquery_without_pipes` (pass, pending), `vt.select.logsql_query_time_range.ignores_latency_offset_arg` (pass, pending), `vt.select.tenant_ids.no_latency_offset` (pass, pending), `vt.flag.search_latency_offset` (pass, pending) · tests: `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_HidesRowsYoungerThanTheOffset`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_BoundaryIsInclusiveAtTheNanosecond`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_EndTimeIsNowMinusFlag`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_EndIsExactlyNowMinusOffset`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_ComposesWithCallerArguments`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_PerAPI`, `lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestLogsQLServedEqualsUpstreamOnTheSameData`, `lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestRateThroughTheServedHandler`, `lakehouse-traces/internal/vtstorage_adapter/hidden_fields_test.go#TestHiddenFieldsAreRemoved`, `lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go#TestAdapter_UserLogsQLWithTraceIDIdxIsNotHijacked`, `lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go#TestAdapter_VTIssuedLookupKeepsFastPath`, `lakehouse-traces/adapter_storage_test.go#TestAdapterStorage_TelemetryKeepsSpanAndLookup`, `lakehouse-traces/internal/storage/parquets3/subquery_in_real_store_test.go#TestRealStore_ResolvedInSubqueryWithManyValues`, `lakehouse-traces/logsql_routes_test.go#TestLogsQLRouteTableMatchesVendoredVT`, `lakehouse-traces/logsql_routes_test.go#TestLatencyOffsetFlagDefault`, `lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_HidesYoungRowsLikeHotVT`, `lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_BridgeAsksForEffectiveRange`, `tests/parity/traces_latency_offset_test.go#TestParity_Traces_LogsQLLatencyOffset`
+- Docs: `docs/read-path.md`
 
 ### ✅ Service graph from cold storage
 
@@ -1055,6 +1066,17 @@ VT's ingest pipeline emits internal rows alongside spans. Storing them as cold s
 
 - Verification: tests: `lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_DropsTraceIDIndexRow`, `lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_KeepsServiceGraphRow`, `internal/stats/parity_internal_test.go#TestParity_VTInternalDropped_AccountedInExpectedDrift`, `internal/storage/parquets3/drop_trace_shaped_rows_test.go#TestDropTraceShapedRows_DropsTraceStreams`, `internal/storage/streamshape_test.go#TestIsTraceShapedStream`
 - Docs: `docs/parity-and-gaps.md`
+
+### ✅ VictoriaTraces trace explorer UI (VTUI)
+
+`lh.feature.traces.vtui` · status: shipped · surfaces: ui
+
+**VTUI on cold traces**: `/select/vmui/` serves VictoriaTraces' own trace explorer (which replaced the log-based UI in v0.12.0), unmodified, with the Lakehouse tab injected.
+
+The traces binary embeds the UI bundle VictoriaTraces ships and injects the Lakehouse tab into its HTML at serve time, so upgrading VictoriaTraces never conflicts with a patched bundle. The embedded index is held to the vendored tree by a drift test, so a stale UI can never ship alongside a newer VictoriaTraces.
+
+- Verification: tests: `lakehouse-traces/vmui_mount_test.go#TestMountVMUI_ServesVTUI`, `lakehouse-traces/internal/vtui/vtui_test.go#TestServesVTUIWithLakehouseTab`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIIndexMatchesVendoredVT`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIAssetsMatchVendoredVT`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIEmbeddedTreeHasNoStaleAssets`
+- Docs: `docs/lakehouse-explorer.md`, `docs/upstream-sync.md`
 
 ## Tenancy (19)
 
@@ -1351,7 +1373,7 @@ The overview answers the first questions an operator has — how much is stored,
 
 Injection happens at serve time over the upstream assets, so upgrading VL or VT never conflicts with a patched UI bundle. Remembering the selected sub-tab is what makes the tab usable during an investigation rather than resetting on every reload.
 
-- Verification: tests: `internal/ui/vmui_inject_test.go`, `internal/ui/vmui_inject_regression_test.go`, `internal/ui/guards_test.go`
+- Verification: tests: `internal/ui/vmui_inject_test.go`, `internal/ui/vmui_inject_regression_test.go`, `internal/ui/guards_test.go`, `lakehouse-traces/internal/vtui/vtui_test.go#TestServesVTUIWithLakehouseTab`, `lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIIndexMatchesVendoredVT`
 - Docs: `docs/lakehouse-explorer.md`
 - Changelog: `0.100.0`
 

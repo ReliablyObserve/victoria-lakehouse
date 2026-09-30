@@ -179,3 +179,77 @@
     create degenerate rows with empty `trace_id`; dropping them silently would make row counts
     disagree with hot VT for unexplained reasons. They are classified, counted per kind, and
     subtracted from expected parity drift.
+
+- id: lh.feature.traces.logsql_latency_offset
+  title: LogsQL latency offset on the traces surface
+  status: shipped
+  area: traces
+  surfaces: [api, flag]
+  rows:
+    - vt.select.logsql_query.latency_offset
+    - vt.select.logsql_query.latency_offset_disabled
+    - vt.select.logsql_hits.latency_offset
+    - vt.select.logsql_stats_query.latency_offset
+    - vt.select.logsql_field_values.latency_offset
+    - vt.select.logsql_query.latency_offset_rate
+    - vt.select.logsql_query.latency_offset_time_offset
+    - vt.select.logsql_query.latency_offset_ignore_global_time_filter
+    - vt.select.logsql_query.latency_offset_subqueries
+    - vt.select.logsql_query.time_offset_time_column
+    - vt.select.logsql_query.in_subquery_without_pipes
+    - vt.select.logsql_query_time_range.ignores_latency_offset_arg
+    - vt.select.tenant_ids.no_latency_offset
+    - vt.flag.search_latency_offset
+  tests:
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_HidesRowsYoungerThanTheOffset
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_BoundaryIsInclusiveAtTheNanosecond
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_EndTimeIsNowMinusFlag
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_EndIsExactlyNowMinusOffset
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_ComposesWithCallerArguments
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_PerAPI
+    - lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestLogsQLServedEqualsUpstreamOnTheSameData
+    - lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestRateThroughTheServedHandler
+    - lakehouse-traces/internal/vtstorage_adapter/hidden_fields_test.go#TestHiddenFieldsAreRemoved
+    - lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go#TestAdapter_UserLogsQLWithTraceIDIdxIsNotHijacked
+    - lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go#TestAdapter_VTIssuedLookupKeepsFastPath
+    - lakehouse-traces/adapter_storage_test.go#TestAdapterStorage_TelemetryKeepsSpanAndLookup
+    - lakehouse-traces/internal/storage/parquets3/subquery_in_real_store_test.go#TestRealStore_ResolvedInSubqueryWithManyValues
+    - lakehouse-traces/logsql_routes_test.go#TestLogsQLRouteTableMatchesVendoredVT
+    - lakehouse-traces/logsql_routes_test.go#TestLatencyOffsetFlagDefault
+    - lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_HidesYoungRowsLikeHotVT
+    - lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_BridgeAsksForEffectiveRange
+    - tests/parity/traces_latency_offset_test.go#TestParity_Traces_LogsQLLatencyOffset
+  docs:
+    - docs/read-path.md
+  highlight: >-
+    **LogsQL latency offset (traces)**: `/select/logsql/*` on the traces binary is served by VictoriaTraces' own handlers, so spans younger than `-search.latencyOffset` are hidden and `disable_latency_offset=true` opts out exactly as on hot VictoriaTraces v0.12.0.
+  description: >-
+    VictoriaTraces v0.12.0 extended the offset a span waits before becoming visible from the
+    Jaeger and Tempo APIs to the LogsQL query APIs (everything but live tailing, query_time_range
+    and tenant enumeration), with a per-request opt-out. The traces binary mounts VictoriaTraces'
+    own LogsQL handlers over the Lakehouse storage adapter, so the offset is upstream's code and
+    a served answer is checked against upstream's on the same data; the Parquet scan, the buffer
+    bridge and peer buffers take their time range from the query. Each process uses its own clock
+    for "now", so a span within the clock skew of the boundary can differ between tiers.
+
+- id: lh.feature.traces.vtui
+  title: VictoriaTraces trace explorer UI (VTUI)
+  status: shipped
+  area: traces
+  surfaces: [ui]
+  tests:
+    - lakehouse-traces/vmui_mount_test.go#TestMountVMUI_ServesVTUI
+    - lakehouse-traces/internal/vtui/vtui_test.go#TestServesVTUIWithLakehouseTab
+    - lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIIndexMatchesVendoredVT
+    - lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIAssetsMatchVendoredVT
+    - lakehouse-traces/internal/vtui/vtui_test.go#TestVTUIEmbeddedTreeHasNoStaleAssets
+  docs:
+    - docs/lakehouse-explorer.md
+    - docs/upstream-sync.md
+  highlight: >-
+    **VTUI on cold traces**: `/select/vmui/` serves VictoriaTraces' own trace explorer (which replaced the log-based UI in v0.12.0), unmodified, with the Lakehouse tab injected.
+  description: >-
+    The traces binary embeds the UI bundle VictoriaTraces ships and injects the Lakehouse tab into
+    its HTML at serve time, so upgrading VictoriaTraces never conflicts with a patched bundle. The
+    embedded index is held to the vendored tree by a drift test, so a stale UI can never ship
+    alongside a newer VictoriaTraces.

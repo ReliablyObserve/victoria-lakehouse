@@ -15,7 +15,7 @@ permissions:
 
 env:
   VL_VERSION_LOGS: v1.52.0
-  VL_COMMIT_TRACES: 6ae2da3c11f3
+  VL_COMMIT_TRACES: c945d2949e98
   GOWORK: "off"
 
 jobs:

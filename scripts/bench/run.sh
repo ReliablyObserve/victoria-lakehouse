@@ -695,11 +695,11 @@ _prep_body() {
        # Parquet) correctly drop those, so without this filter the VT
        # baseline over-counts.
     case "$query" in
-      count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s)' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats count() n' "$traces_url" "$sns" "$ens" ;;
-      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() AS n FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY ServiceName FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | stats by (`resource_attr:service.name`) count() as n' "$traces_url" "$sns" "$ens" ;;
-      service_filter)   [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\t`resource_attr:service.name`:="api-gateway" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
-      trace_by_id)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$sns" "$ens" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$traces_url" "$sns" "$ens" "$SAMPLE_TID" ;;
-      span_name)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND SpanName='"'"'HTTP GET /api/v1/users'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\tname:="HTTP GET /api/v1/users" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
+      count_total)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s)' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s&disable_latency_offset=true\ttrace_id:* | stats count() n' "$traces_url" "$sns" "$ens" ;;
+      count_by_service) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName,count() AS n FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY ServiceName FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s&disable_latency_offset=true\ttrace_id:* | stats by (`resource_attr:service.name`) count() as n' "$traces_url" "$sns" "$ens" ;;
+      service_filter)   [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s&disable_latency_offset=true\t`resource_attr:service.name`:="api-gateway" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
+      trace_by_id)      [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$sns" "$ens" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s&disable_latency_offset=true\ttrace_id:=%s | stats count() n' "$traces_url" "$sns" "$ens" "$SAMPLE_TID" ;;
+      span_name)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND SpanName='"'"'HTTP GET /api/v1/users'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s&disable_latency_offset=true\tname:="HTTP GET /api/v1/users" | stats count() as n' "$traces_url" "$sns" "$ens" ;;
       # 100ms was the original threshold; the seed's spans are 5-54ms
       # (cmd/datagen), so >50ms selects the slowest ~8% and is the largest
       # round number giving a non-zero, exactly-equal count on VT/LH/CH
@@ -709,7 +709,7 @@ _prep_body() {
       # end_time, duration) carry a trace-level duration and no trace_id;
       # some of those exceed 100ms, so a bare `duration:>N` filter
       # over-counts on VT only (1075 vs LH's real 0) — confirmed empirically.
-      slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND Duration>50000000' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* duration:>50000000 | stats count() as n' "$traces_url" "$sns" "$ens" ;;
+      slow_spans)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND Duration>50000000' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s&disable_latency_offset=true\ttrace_id:* duration:>50000000 | stats count() as n' "$traces_url" "$sns" "$ens" ;;
       # trace_id, span_id are included in the projection (in addition to
       # name/service.name/duration) so extract_result's scan-key hash
       # (trace_id:span_id for traces) is actually meaningful —
@@ -720,10 +720,10 @@ _prep_body() {
       # along in the response.
       # Field metadata on traces: span names and services, as Jaeger/Tempo
       # dropdowns ask for them. trace_id:* drops VT's internal index rows.
-      fv_name)          [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&field=name\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
-      fv_service)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&field=resource_attr:service.name\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
-      streams_list)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Stream AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/streams?start=%s&end=%s\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
-      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit %s' "$traces_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
+      fv_name)          [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SpanName AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&disable_latency_offset=true&field=name\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
+      fv_service)       [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT ServiceName AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/field_values?start=%s&end=%s&disable_latency_offset=true&field=resource_attr:service.name\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
+      streams_list)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT Stream AS value, count() AS hits FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY value FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s/select/logsql/streams?start=%s&end=%s&disable_latency_offset=true\ttrace_id:*' "$traces_base" "$sns" "$ens" ;;
+      scan)             [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId AS trace_id, SpanId AS span_id, SpanName, ServiceName, Duration FROM lakehouse.otel_traces WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) LIMIT %s FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" "$SCAN_LIMIT" || printf 'POST\t%s?start=%s&end=%s&disable_latency_offset=true\ttrace_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit %s' "$traces_url" "$sns" "$ens" "$SCAN_LIMIT" ;;
     esac
   fi
 }
@@ -742,6 +742,7 @@ fetch_sample_tid() {
   local tid
   tid=$(curl -sf --max-time 20 --data-urlencode 'query=trace_id:* | sort by (_time) desc | fields trace_id | limit 1' \
     --data-urlencode "start=$(start_ns 3600)" --data-urlencode "end=$(end_ns 3600)" \
+    --data-urlencode "disable_latency_offset=true" \
     "${EP[lh_traces]}/select/logsql/query" 2>/dev/null | python3 -c "
 import sys,json
 for l in sys.stdin:
@@ -796,8 +797,13 @@ ingest() {
 # counts its internal trace_id_idx rows (one per trace), which made a complete
 # Lakehouse look like it held 7/8 of the spans.
 logsql_count() { # $1 base_url  $2 secs  [$3 filter, default *]
+  # disable_latency_offset=true: VictoriaTraces >= v0.12.0 (and the traces
+  # binary that mirrors it) hide the newest -search.latencyOffset (30s) of data
+  # from LogsQL by default; the flush-convergence check wants to see everything.
+  # VictoriaLogs and ClickHouse-side URLs ignore the unknown argument.
   curl -sf --max-time 30 --data-urlencode "query=${3:-*} | stats count() n" \
     --data-urlencode "start=$(start_ns "$2")" --data-urlencode "end=$(end_ns "$2")" \
+    --data-urlencode "disable_latency_offset=true" \
     "$1/select/logsql/query" 2>/dev/null | python3 -c "
 import sys,json
 for l in sys.stdin:

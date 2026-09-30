@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -28,10 +29,29 @@ var (
 	vlselectURL   = envOrDefault("VLSELECT_URL", "http://localhost:29471")
 )
 
+// e2eParams adds disable_latency_offset=true to a LogsQL request against the
+// traces binary. VictoriaTraces v0.12.0 hides the newest -search.latencyOffset
+// (30s) of data from LogsQL by default, and the traces binary mirrors that; these
+// tests ingest and query straight away and want to see everything, so they opt
+// out. The offset itself is covered by lakehouse-traces/internal/selectapi and
+// the conformance rows vt.select.logsql_query.latency_offset*.
+func e2eParams(baseURL, path string, params url.Values) url.Values {
+	if baseURL != tracesBaseURL || !strings.HasPrefix(path, "/select/logsql/") || params.Has("disable_latency_offset") {
+		return params
+	}
+	out := url.Values{}
+	for k, v := range params {
+		out[k] = v
+	}
+	out.Set("disable_latency_offset", "true")
+	return out
+}
+
 // httpGet performs an HTTP GET and returns the response, failing the test on error.
 func httpGet(t *testing.T, baseURL, path string, params url.Values) *http.Response {
 	t.Helper()
 
+	params = e2eParams(baseURL, path, params)
 	u := baseURL + path
 	if len(params) > 0 {
 		u += "?" + params.Encode()
@@ -70,6 +90,7 @@ func httpGetBody(t *testing.T, baseURL, path string, params url.Values) []byte {
 func httpGetAllowStatus(t *testing.T, baseURL, path string, params url.Values, allowedStatuses ...int) *http.Response {
 	t.Helper()
 
+	params = e2eParams(baseURL, path, params)
 	u := baseURL + path
 	if len(params) > 0 {
 		u += "?" + params.Encode()

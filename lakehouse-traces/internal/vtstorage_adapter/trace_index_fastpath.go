@@ -2,8 +2,8 @@ package vtstorageadapter
 
 import (
 	"context"
+	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -34,14 +34,32 @@ func traceIndexLookupTraceID(q *logstorage.Query) (string, bool) {
 	if q == nil {
 		return "", false
 	}
-	queryStr := q.String()
-	if !strings.Contains(queryStr, otelpb.TraceIDIndexFieldName+`:=`) {
+	return traceIndexShapeTraceID(q.String())
+}
+
+// traceIndexShapeRe matches the canonical String() of the query VT's Jaeger
+// (vtselect/traces/query.GetTrace) and Tempo (vtselect/traces/tempo.GetTrace)
+// lookups issue: an optional time filter, the index stream selector, the
+// trace_id_idx filter, the fixed three-column stats pipe, and the `| limit 10`
+// VT appends. It is anchored at both ends on purpose. A substring test fired on
+// any query that merely contained the text (a quoted phrase, a different pipe
+// chain such as `| stats count()`) and answered it with a synthetic row that
+// ignored the caller's pipes; since LogsQL reaches this adapter too, only the
+// exact VT shape may be taken over.
+var traceIndexShapeRe = regexp.MustCompile(
+	`^(?:_time:\S+ )?\{` + otelpb.TraceIDIndexStreamName + `="\d+"\} ` +
+		otelpb.TraceIDIndexFieldName + `:=("(?:[^"\\]|\\.)*"|[^\s"|)]+)` +
+		` \| stats min\(_time\) as _time, min\(` + otelpb.TraceIDIndexStartTimeFieldName + `\) as ` + otelpb.TraceIDIndexStartTimeFieldName +
+		`, max\(` + otelpb.TraceIDIndexEndTimeFieldName + `\) as ` + otelpb.TraceIDIndexEndTimeFieldName +
+		`(?: \| limit \d+)?$`)
+
+// traceIndexShapeTraceID returns the trace ID of a query string that has
+// exactly VT's index-lookup shape, and false for everything else.
+func traceIndexShapeTraceID(queryStr string) (string, bool) {
+	if !traceIndexShapeRe.MatchString(queryStr) {
 		return "", false
 	}
-	// Same parser used by rewriteTraceIndexQuery — keep the two detectors
-	// behavior-identical so a query the rewrite would catch is also caught
-	// here and vice versa.
-	return extractTraceIDFromIndexQuery(queryStr), strings.Contains(queryStr, otelpb.TraceIDIndexFieldName+`:=`)
+	return extractTraceIDFromIndexQuery(queryStr), true
 }
 
 // emitTraceIndexBlock writes a single synthetic DataBlock that mirrors the

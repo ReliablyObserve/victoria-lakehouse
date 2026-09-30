@@ -309,9 +309,9 @@
     - vl.delete.stop_task.status
     - vl.delete.active_tasks.status
     - vt.delete.run_task.status
-    - vt.delete.run_task.non_post.differ
-    - vt.internal.delete.non_post.differ
-    - vt.internal.select.non_post.differ
+    - vt.delete.run_task.non_post
+    - vt.internal.delete.non_post
+    - vt.internal.select.non_post
     - vt.delete.stop_task.status
     - vt.delete.active_tasks.status
   tests:
@@ -328,7 +328,7 @@
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamInternalProtocolStillAcceptsGET
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskCounterParity
     - lakehouse-traces/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused
-    - lakehouse-traces/public_delete_post_only_test.go#TestVendoredVTStillLacksPOSTChecks
+    - lakehouse-traces/public_delete_post_only_test.go#TestVendoredVTEnforcesPOSTChecks
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamRunTaskStillLacksMethodCheck
     - lakehouse-traces/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly

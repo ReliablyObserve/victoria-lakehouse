@@ -10,6 +10,9 @@
   surfaces: [api, flag]
   tests:
     - internal/discovery/discovery_test.go#TestPollPartitionList
+    - internal/discovery/discovery_test.go#TestPollPartitionList_PostsLikeVTv012
+    - lakehouse-traces/discovery_vtstorage_test.go#TestDiscoveryAgainstRealVTStorage_POSTOnly
+    - lakehouse-traces/discovery_vtstorage_test.go#TestRealVTStorage_InternalRoutesRefuseNonPOST
     - internal/discovery/discovery_test.go#TestGetHotBoundary
     - internal/storage/parquets3/storage_query_test.go#TestRunQuery_HotBoundary_InsertRoleSuppresses
     - internal/discovery/discovery_coverage_test.go

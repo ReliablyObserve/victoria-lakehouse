@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaLogs/app/vlselect/logsql"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/logsql"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/traces/jaeger"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/traces/tempo"
 	"go.opentelemetry.io/otel"
@@ -61,21 +61,58 @@ func NewHandler(store storage.Storage, cfg *config.Config, opts ...HandlerOption
 	return h
 }
 
+// LogsQLRoute is one LogsQL route served by VictoriaTraces' own handler.
+type LogsQLRoute struct {
+	Path string
+	// Handler is the name of the function in app/vtselect/logsql that serves it.
+	Handler string
+	// LatencyOffset records whether upstream applies -search.latencyOffset
+	// (and parses disable_latency_offset) on this route. It is documentation
+	// the drift test (logsql_routes_test.go in the traces main package) holds to
+	// the vendored source: the handler applies it, not this table.
+	LatencyOffset bool
+}
+
+// LogsQLRoutes is the route table: which URL reaches which VictoriaTraces
+// handler. It is the only Lakehouse-side LogsQL routing logic; the drift test
+// derives the same table from the vendored vtselect and requires equality.
+var LogsQLRoutes = []LogsQLRoute{
+	{"/select/logsql/query", "ProcessQueryRequest", true},
+	{"/select/logsql/query_time_range", "ProcessQueryTimeRangeRequest", false},
+	{"/select/logsql/facets", "ProcessFacetsRequest", true},
+	{"/select/logsql/field_names", "ProcessFieldNamesRequest", true},
+	{"/select/logsql/field_values", "ProcessFieldValuesRequest", true},
+	{"/select/logsql/stream_field_names", "ProcessStreamFieldNamesRequest", true},
+	{"/select/logsql/stream_field_values", "ProcessStreamFieldValuesRequest", true},
+	{"/select/logsql/streams", "ProcessStreamsRequest", true},
+	{"/select/logsql/stream_ids", "ProcessStreamIDsRequest", true},
+	{"/select/logsql/hits", "ProcessHitsRequest", true},
+	{"/select/logsql/stats_query", "ProcessStatsQueryRequest", true},
+	{"/select/logsql/stats_query_range", "ProcessStatsQueryRangeRequest", true},
+	{"/select/tenant_ids", "ProcessTenantIDsRequest", false},
+}
+
+var logsqlHandlers = map[string]func(ctx context.Context, w http.ResponseWriter, r *http.Request){
+	"ProcessQueryRequest":             logsql.ProcessQueryRequest,
+	"ProcessQueryTimeRangeRequest":    logsql.ProcessQueryTimeRangeRequest,
+	"ProcessFacetsRequest":            logsql.ProcessFacetsRequest,
+	"ProcessFieldNamesRequest":        logsql.ProcessFieldNamesRequest,
+	"ProcessFieldValuesRequest":       logsql.ProcessFieldValuesRequest,
+	"ProcessStreamFieldNamesRequest":  logsql.ProcessStreamFieldNamesRequest,
+	"ProcessStreamFieldValuesRequest": logsql.ProcessStreamFieldValuesRequest,
+	"ProcessStreamsRequest":           logsql.ProcessStreamsRequest,
+	"ProcessStreamIDsRequest":         logsql.ProcessStreamIDsRequest,
+	"ProcessHitsRequest":              logsql.ProcessHitsRequest,
+	"ProcessStatsQueryRequest":        logsql.ProcessStatsQueryRequest,
+	"ProcessStatsQueryRangeRequest":   logsql.ProcessStatsQueryRangeRequest,
+	"ProcessTenantIDsRequest":         logsql.ProcessTenantIDsRequest,
+}
+
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/select/logsql/query", h.wrapVL(logsql.ProcessQueryRequest))
-	mux.HandleFunc("/select/logsql/query_time_range", h.wrapVL(logsql.ProcessQueryTimeRangeRequest))
-	mux.HandleFunc("/select/logsql/facets", h.wrapVL(logsql.ProcessFacetsRequest))
-	mux.HandleFunc("/select/logsql/field_names", h.wrapVL(logsql.ProcessFieldNamesRequest))
-	mux.HandleFunc("/select/logsql/field_values", h.wrapVL(logsql.ProcessFieldValuesRequest))
-	mux.HandleFunc("/select/logsql/stream_field_names", h.wrapVL(logsql.ProcessStreamFieldNamesRequest))
-	mux.HandleFunc("/select/logsql/stream_field_values", h.wrapVL(logsql.ProcessStreamFieldValuesRequest))
-	mux.HandleFunc("/select/logsql/streams", h.wrapVL(logsql.ProcessStreamsRequest))
-	mux.HandleFunc("/select/logsql/stream_ids", h.wrapVL(logsql.ProcessStreamIDsRequest))
-	mux.HandleFunc("/select/logsql/hits", h.wrapVL(logsql.ProcessHitsRequest))
-	mux.HandleFunc("/select/logsql/stats_query", h.wrapVL(logsql.ProcessStatsQueryRequest))
-	mux.HandleFunc("/select/logsql/stats_query_range", h.wrapVL(logsql.ProcessStatsQueryRangeRequest))
+	for _, rt := range LogsQLRoutes {
+		mux.HandleFunc(rt.Path, h.wrapVL(logsqlHandlers[rt.Handler]))
+	}
 	mux.HandleFunc("/select/logsql/tail", h.handleTailNoop)
-	mux.HandleFunc("/select/tenant_ids", h.wrapVL(logsql.ProcessTenantIDsRequest))
 
 	if h.cfg.Mode == config.ModeTraces {
 		mux.HandleFunc("/select/jaeger/", func(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +156,11 @@ func (h *Handler) scopeContext(r *http.Request) context.Context {
 	return ctx
 }
 
+// wrapVL wraps one of VictoriaTraces' own LogsQL handlers
+// (app/vtselect/logsql) with Lakehouse's admission control, tenant scope and
+// timeout. The handlers are upstream's, including the latency offset
+// (-search.latencyOffset, disable_latency_offset): nothing here touches the
+// query.
 func (h *Handler) wrapVL(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		select {

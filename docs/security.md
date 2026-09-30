@@ -65,7 +65,7 @@ containerSecurityContext:
 
 ### Discovery Auth Key
 
-`--lakehouse.discovery.partition-auth-key` authenticates requests to vlstorage/vtstorage `/internal/partition/list` endpoints. Must match the `-partitionManageAuthKey` value on storage nodes.
+`--lakehouse.discovery.partition-auth-key` authenticates requests to vlstorage/vtstorage `/internal/partition/list` endpoints (polled with `POST`, the only method VictoriaTraces v0.12.0 accepts there; the key stays in the URL query). Must match the `-partitionManageAuthKey` value on storage nodes.
 
 ### Peer Cache Auth Key
 

@@ -1,6 +1,6 @@
 # upstream: pipes-implementing-updateNeededFields
 # tree: lakehouse-traces/deps/VictoriaLogs
-# pin: 6ae2da3c11f3
+# pin: c945d2949e98
 
 pipeBlockStats
 pipeBlocksCount
@@ -22,6 +22,7 @@ pipeFirst
 pipeFormat
 pipeGenerateSequence
 pipeHash
+pipeJSONArrayConcat
 pipeJSONArrayLen
 pipeJoin
 pipeLast

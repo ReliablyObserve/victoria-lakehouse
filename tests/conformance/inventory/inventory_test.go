@@ -117,7 +117,7 @@ func TestExtract_RealDeps(t *testing.T) {
 // vtVLRequireRe pulls the VictoriaLogs pseudo-version out of VictoriaTraces'
 // own go.mod require block, e.g.
 //
-//	github.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260617051904-6ae2da3c11f3 // v1.51.0
+//	github.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260716015338-c945d2949e98 // v1.52.0
 var vtVLRequireRe = regexp.MustCompile(`(?m)^\s*github\.com/VictoriaMetrics/VictoriaLogs\s+(\S+)`)
 
 // TestVLCommitTracesPinIsDerivedFromVT pins the derivation rule for the second

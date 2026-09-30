@@ -59,6 +59,14 @@ internal/ui/vmui/manifest.json
 internal/ui/vmui/preview.jpg
 internal/ui/vmui/robots.txt
 
+# VTUI assets (copied from VT deps at build time, keep the tracked index.html)
+lakehouse-traces/internal/vtui/vmui/assets/
+lakehouse-traces/internal/vtui/vmui/config.json
+lakehouse-traces/internal/vtui/vmui/favicon.svg
+lakehouse-traces/internal/vtui/vmui/manifest.json
+lakehouse-traces/internal/vtui/vmui/preview.jpg
+lakehouse-traces/internal/vtui/vmui/robots.txt
+
 # Go workspace
 go.work.sum
 

@@ -41,9 +41,10 @@ on top.
   (`VL_VERSION_LOGS`) for `surface: vl` rows, `lakehouse-traces/deps/VictoriaLogs`
   (`VL_COMMIT_TRACES`) for `surface: vt` rows — `lakehouse-traces` mounts
   VictoriaLogs' `internalselect` package for these endpoints, so it follows its own
-  VictoriaLogs pin, not VictoriaTraces and not the logs pin. The pins may differ and
-  today do: `select` is `v5` on both, `delete` is `v2` on the logs pin (VL v1.52.0)
-  and `v1` on the traces pin (VL v1.51.0). The resolved pairs are extracted from both
+  VictoriaLogs pin, not VictoriaTraces and not the logs pin. The pins may differ (they
+  did, VL v1.52.0 against v1.51.0, until VictoriaTraces v0.12.0 moved the traces
+  pin to VL v1.52.0); today `select` is `v5` and `delete` is `v2` on both. The
+  resolved pairs are extracted from both
   trees and recorded under `protocol:` in `inventory.generated.yaml`, so a future bump
   that moves either version surfaces as drift instead of as a runtime
   "unexpected protocol version" rejection between peers.
@@ -91,6 +92,11 @@ actually true now:
 alongside its VictoriaTraces twin, so the native-ingest admission cap is covered
 on both surfaces.
 
+The VT v0.12.0 bump moved one flag (`search.allowPartialResponse`, above), reworded
+`search.latencyOffset` (which now also caps the LogsQL query APIs) and added no flag.
+Both are covered by `vt.flag.search_allow_partial_response` and
+`vt.flag.search_latency_offset`.
+
 Two deprecations to keep in view: `search.traceMaxServiceNameList` and
 `search.traceMaxSpanNameList` are assigned to `_` in VictoriaTraces 0.11.0
 (superseded by `search.maxTags`) — still registered, so still warned about, but
@@ -132,7 +138,15 @@ vendored trees — using `go list -deps` on the traces module, so only packages
 actually linked count — and requires the dedup list to match it exactly in both
 directions: an unguarded collision means the binary panics at startup, a guard
 with nothing behind it means VictoriaTraces silently skips its own registration.
-At VL v1.51.0 / VT v0.11.0 there are 34 collisions and all 34 are guarded.
+The count is recomputed on every run (`t.Logf` prints it and the names); at VL v1.52.0 /
+VT v0.12.0 it is 32 (`-insert.maxFieldsPerLine` and `-defaultMsgValue` are no longer among them:
+VictoriaTraces' ingest package aliases VictoriaLogs' flags instead of registering its own).
+VT v0.12.0 moved
+`-search.allowPartialResponse` into `vtselect/searchutil` (Tempo and Jaeger read it too) and
+`lakehouse-traces` now serves LogsQL through VictoriaTraces' own `vtselect/logsql`, so
+VictoriaLogs' `vlselect/logsql` is no longer linked into the traces binary at all: that flag,
+`search.maxQueryTimeRange` and `search.maxQueryLen` are registered once, by VictoriaTraces, and
+need no dedup.
 
 ## Feature catalog
 

@@ -32,6 +32,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/telemetry"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
@@ -40,6 +41,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 	vtstorageadapter "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtstorage_adapter"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtui"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/victoria-traces/servicegraph"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtinsert"
@@ -66,7 +68,7 @@ import (
 // VL_COMMIT_TRACES, but that pin is a pseudo-version derived from
 // VictoriaTraces' own go.mod and is reported through the conformance
 // inventory, not here.)
-const vtCompat = "0.11.0"
+const vtCompat = "0.12.0"
 
 var (
 	configPath      = flag.String("lakehouse.config", "", "Path to YAML config file")
@@ -565,6 +567,9 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
+		if answerHTTP2Probe(w, r) {
+			return true
+		}
 		handler.ServeHTTP(w, r)
 		return true
 	}
@@ -1112,6 +1117,13 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
+// mountVMUI serves VictoriaTraces' own UI (VTUI, which replaced the log-based
+// UI in VictoriaTraces v0.12.0) at /select/vmui/ with the Lakehouse tab
+// injected. The logs binary serves VictoriaLogs' vmui the same way.
+func mountVMUI(mux *http.ServeMux, enabled bool) {
+	ui.RegisterVMUIFS(mux, enabled, vtui.FS())
+}
+
 // mountInternalProtocol mounts the cluster protocol for /internal/select/* and
 // /internal/delete/*. /internal/delete/* goes through upstreamInternalDelete
 // (VT's gate, internal_delete.go); internaldelete.Handler only adds the
@@ -1222,7 +1234,10 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		// Wire a tenant lister so VT's per-tenant background tasks
 		// (notably servicegraph) iterate every tenant the LH process
 		// holds in cold storage, not just the legacy {0,0}.
-		vtstorageadapter.Init(store, vtstorageadapter.WithTenantLister(
+		// LogsQL on the traces binary reaches the cold tier through this
+		// adapter, so it needs the same storage.run_query span the
+		// SetStorage path above gets when telemetry is on.
+		vtstorageadapter.Init(adapterStorage(store, cfg.Telemetry.Enabled), vtstorageadapter.WithTenantLister(
 			func(startNs, endNs int64) []logstorage.TenantID {
 				summaries := store.Manifest().TenantSummariesInWindow(startNs, endNs)
 				out := make([]logstorage.TenantID, 0, len(summaries))
@@ -1469,7 +1484,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	uiHandler.Register(mux)
 
 	// VMUI with Lakehouse tab injection
-	ui.RegisterVMUI(mux, cfg.UI.VMUITab)
+	mountVMUI(mux, cfg.UI.VMUITab)
 
 	// Lifecycle endpoints for K8s probes and observability
 	lcInfo := lifecycle.LifecycleInfo{
@@ -2320,4 +2335,15 @@ func runFIPSStatusSubcommand() {
 	}
 	fmt.Println("fips140: disabled")
 	os.Exit(1)
+}
+
+// adapterStorage is the store the vtstorage adapter (VT's external storage, and
+// with it every LogsQL query on this binary) runs against: the same traced
+// decorator SetStorage gets when telemetry is on, so storage.run_query spans
+// are not lost on this path.
+func adapterStorage(store storage.Storage, telemetryEnabled bool) storage.Storage {
+	if telemetryEnabled {
+		return internalvlstorage.NewTracedStorage(store)
+	}
+	return store
 }

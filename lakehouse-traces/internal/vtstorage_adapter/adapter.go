@@ -3,12 +3,14 @@ package vtstorageadapter
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/hiddenfields"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
@@ -88,8 +90,8 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// patches/vl-traces/external_query.go.src for the pipe list.
 	if logstorage.QueryNeedsAllFields(qctx.Query) {
 		ctx := storage.WithAllFieldsHint(qctx.Context)
-		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(ctx, qctx.TenantIDs, qctx.Query, wb)
+		searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
+			return a.store.RunQuery(ctx, qctx.TenantIDs, q, hiddenfields.WrapWriteBlock(wb, qctx.HiddenFieldsFilters))
 		}
 		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
@@ -108,31 +110,31 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 
 	if rewritten, ok := rewriteTraceIndexQuery(qctx.Query); ok {
 		newQctx := qctx.WithQuery(rewritten)
-		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
+		searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
+			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, q, hiddenfields.WrapWriteBlock(wb, qctx.HiddenFieldsFilters))
 		}
 		return logstorage.RunQueryExternalWithSubqueries(newQctx, searchFn, a.RunQuery, writeBlock)
 	}
 
 	if rewritten, ok := stripTraceIndexStream(qctx.Query); ok {
 		newQctx := qctx.WithQuery(rewritten)
-		if logstorage.QueryHasPipes(rewritten) {
-			searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-				return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, wb)
+		if logstorage.QueryHasPipes(rewritten) || logstorage.QueryHasFilterSubqueries(rewritten) {
+			searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
+				return a.store.RunQuery(qctx.Context, qctx.TenantIDs, q, hiddenfields.WrapWriteBlock(wb, qctx.HiddenFieldsFilters))
 			}
 			return logstorage.RunQueryExternalWithSubqueries(newQctx, searchFn, a.RunQuery, writeBlock)
 		}
-		return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, writeBlock)
+		return a.store.RunQuery(qctx.Context, qctx.TenantIDs, rewritten, hiddenfields.WrapWriteBlock(writeBlock, qctx.HiddenFieldsFilters))
 	}
 
-	if logstorage.QueryHasPipes(qctx.Query) {
-		searchFn := func(wb logstorage.WriteDataBlockFunc) error {
-			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, wb)
+	if logstorage.QueryHasPipes(qctx.Query) || logstorage.QueryHasFilterSubqueries(qctx.Query) {
+		searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
+			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, q, hiddenfields.WrapWriteBlock(wb, qctx.HiddenFieldsFilters))
 		}
 		return logstorage.RunQueryExternalWithSubqueries(qctx, searchFn, a.RunQuery, writeBlock)
 	}
 
-	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, writeBlock)
+	return a.store.RunQuery(qctx.Context, qctx.TenantIDs, qctx.Query, hiddenfields.WrapWriteBlock(writeBlock, qctx.HiddenFieldsFilters))
 }
 
 // stripTraceIndexStream detects VT's Tempo search queries that use the
@@ -141,7 +143,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 // actual span data. Preserves pipes and time filters from the original query.
 func stripTraceIndexStream(q *logstorage.Query) (*logstorage.Query, bool) {
 	queryStr := q.String()
-	if !strings.Contains(queryStr, `trace_id_idx_stream`) {
+	if !traceIndexStreamPrefixRe.MatchString(queryStr) {
 		return nil, false
 	}
 
@@ -163,6 +165,12 @@ func stripTraceIndexStream(q *logstorage.Query) (*logstorage.Query, bool) {
 
 	return rewritten, true
 }
+
+// traceIndexStreamPrefixRe matches a query that STARTS with the index stream
+// selector (after an optional time filter), which is how VT's Tempo search
+// issues it. A query that only mentions the text elsewhere (a quoted phrase, a
+// later filter) is the caller's own LogsQL and is left alone.
+var traceIndexStreamPrefixRe = regexp.MustCompile(`^(?:_time:\S+ )?\{trace_id_idx_stream=`)
 
 // stripIndexStreamSelector removes {trace_id_idx_stream="..."} from a query
 // string and cleans up leftover AND operators.
@@ -200,13 +208,8 @@ func stripIndexStreamSelector(s string) string {
 //	trace_id:="<traceID>"
 //	| stats min(_time) _time, min(start_time_unix_nano) start_time, max(end_time_unix_nano) end_time
 func rewriteTraceIndexQuery(q *logstorage.Query) (*logstorage.Query, bool) {
-	queryStr := q.String()
-	if !strings.Contains(queryStr, `trace_id_idx:=`) {
-		return nil, false
-	}
-
-	traceID := extractTraceIDFromIndexQuery(queryStr)
-	if traceID == "" {
+	traceID, ok := traceIndexShapeTraceID(q.String())
+	if !ok || traceID == "" {
 		return nil, false
 	}
 
@@ -268,6 +271,7 @@ func (a *Adapter) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([
 	if err != nil {
 		return nil, err
 	}
+	results = hiddenfields.FilterValues(results, qctx.HiddenFieldsFilters)
 	return filterValuesBySubstring(results, filter), nil
 }
 
@@ -284,6 +288,7 @@ func (a *Adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter stri
 	if err != nil {
 		return nil, err
 	}
+	results = hiddenfields.FilterValues(results, qctx.HiddenFieldsFilters)
 	return filterValuesBySubstring(results, filter), nil
 }
 

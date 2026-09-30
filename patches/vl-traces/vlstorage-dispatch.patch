@@ -1,5 +1,5 @@
 diff --git a/app/vlstorage/main.go b/app/vlstorage/main.go
-index bce1b1457..46e7c9fc0 100644
+index 826366f..e99cf5e 100644
 --- a/app/vlstorage/main.go
 +++ b/app/vlstorage/main.go
 @@ -553,6 +553,10 @@ func (*Storage) MustAddRows(lr *logstorage.LogRows) {
@@ -106,7 +106,7 @@ index bce1b1457..46e7c9fc0 100644
  	}
 @@ -667,6 +697,9 @@ func DeleteActiveTasks(ctx context.Context) ([]*logstorage.DeleteTask, error) {
  
- // GetTenantIDs returns tenantIDs from the storage by the given start and end.
+ // GetTenantIDs returns sorted tenantIDs on the [start..end] time range.
  func GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error) {
 +	if externalStorage != nil {
 +		return externalStorage.GetTenantIDs(ctx, start, end)

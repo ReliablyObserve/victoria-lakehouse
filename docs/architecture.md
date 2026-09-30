@@ -200,7 +200,7 @@ Memory footprint: ~100 bytes per partition-hour → ~850 KB for one year of hour
 To avoid serving queries that belong to the hot tier (VL/VT on disk), Victoria Lakehouse auto-discovers the hot data range by polling VL/VT storage nodes:
 
 1. Resolve storage node addresses via headless DNS (`discovery.headless_service`) or static list
-2. Poll each node's `/internal/partition/list` endpoint (returns `["YYYYMMDD",...]`)
+2. Poll each node's `/internal/partition/list` endpoint with a `POST` (returns `["YYYYMMDD",...]`; VictoriaTraces v0.12.0 refuses any other method on `/internal/*`)
 3. Derive union of all partition dates across all nodes
 4. Suppress queries entirely within the hot range (return empty, <1 ms)
 5. Refresh every 5 minutes (configurable)

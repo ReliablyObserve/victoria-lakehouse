@@ -22,6 +22,14 @@ The query context carries:
 
 The enumeration endpoints (`field_names`, `field_values`, `streams`, `stream_field_values`) select objects through the same tenant-scoped manifest lookup and then read **every** selected object. They do not second-guess the list: an object whose rows are already inside a merged compaction output never reaches them, because the publish removes it from the manifest and retires its key until a listing proves the object gone (see [manifest-system.md](manifest-system.md#compaction-integration)). Deciding that in the read path from time ranges and compaction levels hid the newest flush of a live partition — its rows fall inside the compacted neighbour's backfilled range — from every enumeration while `query` and `hits` still returned them.
 
+### LogsQL latency offset (traces)
+
+VictoriaTraces v0.12.0 hides a span from the LogsQL query APIs until it is `-search.latencyOffset` old (default 30s; the Jaeger and Tempo APIs always did), and a request can opt out with `disable_latency_offset=true`. It applies to `query`, `facets`, `hits`, `field_names`, `field_values`, `stream_field_names`, `stream_field_values`, `streams`, `stream_ids`, `stats_query` and `stats_query_range`. It does not apply to live tailing, to `query_time_range` (which never parses the argument) or to `/select/tenant_ids`.
+
+`lakehouse-traces` serves these routes with VictoriaTraces' own `app/vtselect/logsql` handlers, over the same Lakehouse storage adapter the Jaeger and Tempo handlers use. The offset is therefore upstream's code, including the cases a hand-built filter gets wrong: the step `stats rate()` derives from the query's time range, `options(time_offset=...)`, `options(ignore_global_time_filter=true)` and the global filter that subqueries inherit. The offset becomes part of the query, so the effective time range every tier reads -- the Parquet scan, the buffer bridge and peer buffers -- is the one hot VictoriaTraces uses. It is ANDed after the request's own `start`/`end`, so a caller's earlier `end` is never widened, and a malformed `disable_latency_offset` is a 400. The logs binary has no offset (VictoriaLogs has none).
+
+Two limits to know. Each process computes "now minus the offset" from its own clock, so near the boundary a span can be visible on one tier and not on the other for as long as the clocks differ. And the cold tier answers `options(time_offset=...)` by filtering on the shifted range but returns `_time` unshifted (hot storage returns it shifted); this is independent of the latency offset (registry row `vt.select.logsql_query.time_offset_time_column`).
+
 ### Field enumeration
 
 `field_values`, `streams` and `stream_ids` return every value in the window with its exact hit count, as VictoriaLogs does. Per selected object:
@@ -78,6 +86,8 @@ if query [start, end] within [MinTime, MaxTime] -> return empty (<1ms)
 ```
 
 This prevents redundant queries when vlselect fans out to both hot storage and lakehouse simultaneously.
+
+The boundary comes from polling each hot storage node's `/internal/partition/list` (see [architecture.md](architecture.md#hot-boundary-discovery)). The poll is a `POST`: VictoriaTraces v0.12.0 answers `405` to every non-POST `/internal/*` request on vtstorage (an SSRF guard), and VictoriaLogs accepts a POST on the same route, so one method serves both. A `GET` poll against a v0.12.0 node silently found no partitions and left the boundary unset.
 
 ### Level 2: Manifest Fast Path
 

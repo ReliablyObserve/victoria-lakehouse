@@ -10,6 +10,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/hiddenfields"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
@@ -88,7 +89,7 @@ func TestWrapHiddenFields_NoFilters(t *testing.T) {
 	})
 
 	var received *logstorage.DataBlock
-	wrapped := wrapHiddenFields(func(_ uint, d *logstorage.DataBlock) {
+	wrapped := hiddenfields.WrapWriteBlock(func(_ uint, d *logstorage.DataBlock) {
 		received = d
 	}, nil)
 	wrapped(0, db)
@@ -110,7 +111,7 @@ func TestWrapHiddenFields_ExactMatch(t *testing.T) {
 	})
 
 	var received *logstorage.DataBlock
-	wrapped := wrapHiddenFields(func(_ uint, d *logstorage.DataBlock) {
+	wrapped := hiddenfields.WrapWriteBlock(func(_ uint, d *logstorage.DataBlock) {
 		received = d
 	}, []string{"secret"})
 	wrapped(0, db)
@@ -139,7 +140,7 @@ func TestWrapHiddenFields_WildcardPrefix(t *testing.T) {
 	})
 
 	var received *logstorage.DataBlock
-	wrapped := wrapHiddenFields(func(_ uint, d *logstorage.DataBlock) {
+	wrapped := hiddenfields.WrapWriteBlock(func(_ uint, d *logstorage.DataBlock) {
 		received = d
 	}, []string{"k8s.*"})
 	wrapped(0, db)
@@ -162,14 +163,14 @@ func TestFilterHiddenValues(t *testing.T) {
 	}
 
 	t.Run("no filters", func(t *testing.T) {
-		result := filterHiddenValues(values, nil)
+		result := hiddenfields.FilterValues(values, nil)
 		if len(result) != 4 {
 			t.Errorf("expected 4, got %d", len(result))
 		}
 	})
 
 	t.Run("wildcard", func(t *testing.T) {
-		result := filterHiddenValues(values, []string{"k8s.*"})
+		result := hiddenfields.FilterValues(values, []string{"k8s.*"})
 		if len(result) != 2 {
 			t.Errorf("expected 2, got %d", len(result))
 		}

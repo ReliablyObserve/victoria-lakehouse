@@ -13,11 +13,13 @@ import (
 // (internal_delete_test.go fails when the vendored source stops matching).
 //
 // The logs binary mounts vlselect.RequestHandler instead of copying anything.
-// The traces binary cannot import vtselect yet: VT's internalselect and logsql
-// packages register the same flag names as the VictoriaLogs packages this binary
-// serves /internal/select/* and /select/logsql/* with, so both cannot be linked
-// into one binary. Once traces serves those through vtselect too, this file is
-// replaced by vtselect.RequestHandler.
+// The traces binary serves /select/logsql/* with VictoriaTraces' own
+// app/vtselect/logsql handlers, but not vtselect.RequestHandler: it serves
+// /internal/select/* and /internal/delete/* with VictoriaLogs' internalselect,
+// because VT's vtstorage does not route delete calls to external storage, and VT's
+// and VL's internalselect register the same flag (-internalselect.maxConcurrentRequests),
+// so both cannot be linked into one binary. This file is replaced by
+// vtselect.RequestHandler if that ever changes.
 var internalDeleteEnable = flag.Bool("internaldelete.enable", false, "Whether to enable /internal/delete/* HTTP endpoints, which are used by vtselect for deleting spans "+
 	"via delete API at vtstorage nodes")
 

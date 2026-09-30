@@ -205,6 +205,56 @@ func TestParity_Traces_ColdHot_RecentTraceID(t *testing.T) {
 	})
 }
 
+// TestParity_Traces_TempoSearchStartTimeIsString pins the VictoriaTraces
+// v0.12.0 fix for Tempo /api/search: startTimeUnixNano is a JSON string (a JSON
+// number broke clients, Grafana's Tempo data source among them, that decode it
+// as a string). Hot VT and the cold tier must agree on the type, for the trace
+// summary and for every span in its span set.
+func TestParity_Traces_TempoSearchStartTimeIsString(t *testing.T) {
+	now := time.Now().Unix()
+	params := url.Values{
+		"q":     {`{resource.service.name="api-gateway"}`},
+		"limit": {"5"},
+		"start": {fmt.Sprint(now - 48*3600)},
+		"end":   {fmt.Sprint(now)},
+	}
+	for name, base := range map[string]string{"hot": vtBaseURL, "cold": lhtBaseURL} {
+		r := fetch(t, base, "/select/tempo/api/search", params)
+		if r.StatusCode != 200 {
+			t.Fatalf("%s tempo search returned %d: %s", name, r.StatusCode, string(r.Body))
+		}
+		var resp struct {
+			Traces []struct {
+				StartTimeUnixNano json.RawMessage `json:"startTimeUnixNano"`
+				SpanSets          []struct {
+					Spans []struct {
+						StartTimeUnixNano json.RawMessage `json:"startTimeUnixNano"`
+					} `json:"spans"`
+				} `json:"spanSets"`
+			} `json:"traces"`
+		}
+		if err := json.Unmarshal(r.Body, &resp); err != nil {
+			t.Fatalf("%s: parse tempo response: %v", name, err)
+		}
+		if len(resp.Traces) == 0 {
+			t.Skipf("%s tier returned no traces to check", name)
+		}
+		isString := func(raw json.RawMessage) bool { return len(raw) > 0 && raw[0] == '"' }
+		for _, tr := range resp.Traces {
+			if !isString(tr.StartTimeUnixNano) {
+				t.Errorf("%s: trace startTimeUnixNano = %s, want a JSON string", name, tr.StartTimeUnixNano)
+			}
+			for _, set := range tr.SpanSets {
+				for _, sp := range set.Spans {
+					if !isString(sp.StartTimeUnixNano) {
+						t.Errorf("%s: span startTimeUnixNano = %s, want a JSON string", name, sp.StartTimeUnixNano)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestParity_Traces_LogsQL(t *testing.T) {
 	tracesFullRange := func() url.Values {
 		now := time.Now()

@@ -26,12 +26,12 @@ The `Makefile` is the single source of truth for what is embedded:
 built and tested with:
 
 ```
-$ git -C lakehouse-traces/deps/VictoriaTraces show v0.11.0:go.mod | grep VictoriaLogs
-	github.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260617051904-6ae2da3c11f3 // v1.51.0
+$ git -C lakehouse-traces/deps/VictoriaTraces show v0.12.0:go.mod | grep VictoriaLogs
+	github.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260716015338-c945d2949e98 // v1.52.0
 ```
 
-The last component of that pseudo-version (`6ae2da3c11f3`) is the pin. It usually lags
-`VL_VERSION_LOGS`, and must not be lifted to it because a newer commit happens to compile —
+The last component of that pseudo-version (`c945d2949e98`) is the pin. It can lag
+`VL_VERSION_LOGS` (it did until VictoriaTraces v0.12.0, when both became VictoriaLogs v1.52.0), and must not be lifted to it because a newer commit happens to compile —
 the two-pin model is deliberate. `TestVLCommitTracesPinIsDerivedFromVT` holds the Makefile
 to the rule, and `TestVLSurface_LogsPinSupersetOfTracesPin` requires the logs pin to expose
 everything the traces pin does, so the extracted upstream inventory never under-reports
@@ -144,15 +144,18 @@ $ make test
 
 ### 6. Embedded web UI
 
-vmui is VictoriaLogs' own UI, embedded with the Lakehouse tab injected. Re-sync it from the
-tree each binary embeds:
+Each binary embeds its upstream's own UI with the Lakehouse tab injected at serve time. The
+logs binary serves VictoriaLogs' vmui (`internal/ui/vmui`). The traces binary serves
+VictoriaTraces' own trace explorer, VTUI (`lakehouse-traces/internal/vtui/vmui`), which
+replaced the log-based UI in VictoriaTraces v0.12.0. Re-sync each from the tree it embeds:
 
 ```
 $ make sync-vmui sync-vmui-traces
 ```
 
-The `internal/ui` drift tests require the embedded `index.html` to equal the vendored one and
-every asset it references to exist.
+The drift tests (`internal/ui` for the logs binary, `lakehouse-traces/internal/vtui` for the
+traces binary) require the embedded `index.html` to equal the vendored one and every asset it
+references to exist.
 
 ### 7. Protocol inventory
 

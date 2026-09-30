@@ -982,6 +982,7 @@ func scopeService(marker, tenantKey string) string {
 
 func scopeGet(t *testing.T, base, path string, params url.Values, headers map[string]string) []byte {
 	t.Helper()
+	params = e2eParams(base, path, params)
 	req, err := http.NewRequest(http.MethodGet, base+path+"?"+params.Encode(), nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
