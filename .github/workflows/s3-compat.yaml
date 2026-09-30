@@ -1,0 +1,130 @@
+name: S3 Compat
+
+# Runs tests/s3compat (every S3 operation Lakehouse issues, built on the
+# production s3reader client) against the S3 backend the test and CI stacks
+# use (RustFS) and against the MinIO reference build. If both legs fail the
+# regression is in our code or the SDK; if only the RustFS leg fails the
+# backend changed. See docs/test-s3-backend.md.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tests/s3compat/**"
+      - "internal/s3reader/**"
+      - "deployment/docker/docker-compose-*.yml"
+      - "tests/parity/docker-compose.yml"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/s3-compat.yaml"
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VL_VERSION_LOGS: v1.52.0
+  VL_COMMIT_TRACES: 6ae2da3c11f3
+  VT_VERSION: v0.11.0
+  GOWORK: "off"
+
+jobs:
+  s3-compat:
+    name: s3-compat (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The test backend. Bump by changing the tag and digest here, in the
+          # compose files and in nightly-loadtest.yaml, then read this job.
+          - backend: rustfs
+            image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+            cmd: ""
+            # Keys with "." / ".." / empty path segments are rejected with 400
+            # (opaque-key semantics are AWS-only; Lakehouse never generates them).
+            skip: "TestExtra_DotSegmentKeys"
+          # Reference build, so a red RustFS leg can be attributed to the
+          # backend or to our code. Known MinIO deviations are skipped by name:
+          # CopyObject rejects a ":" in the source key, If-Match on a missing
+          # key succeeds, and dot-segment keys are rejected.
+          - backend: minio-reference
+            image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z
+            cmd: server /data
+            skip: "TestProd_CopyObject/col:on|TestExtra_ConditionalPut/if-match-missing-key-404|TestExtra_DotSegmentKeys"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # internal/s3reader links the config package, which needs the patched
+      # VictoriaLogs checkout (make deps-logs is a no-op when the cache hits).
+      - uses: actions/cache/restore@v6
+        with:
+          path: deps/VictoriaLogs
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+
+      - name: Prepare VL deps (logs)
+        run: make deps-logs
+
+      # docker run rather than a service container: the MinIO image needs
+      # "server /data" as its command, which services cannot pass.
+      - name: Start ${{ matrix.backend }}
+        run: |
+          docker run -d --name s3 -p 127.0.0.1:9000:9000 \
+            -e RUSTFS_ACCESS_KEY=s3compat -e RUSTFS_SECRET_KEY=s3compatsecret \
+            -e MINIO_ROOT_USER=s3compat -e MINIO_ROOT_PASSWORD=s3compatsecret \
+            "${{ matrix.image }}" ${{ matrix.cmd }}
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live > /dev/null; then
+              echo "backend ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs s3
+          echo "backend did not become healthy" >&2
+          exit 1
+
+      - name: Run the S3 operation harness
+        run: |
+          set -o pipefail
+          go test ./tests/s3compat -count=1 -v -timeout=20m -skip '${{ matrix.skip }}' \
+            -args -endpoint=http://127.0.0.1:9000 -key=s3compat -secret=s3compatsecret \
+            2>&1 | tee s3compat-${{ matrix.backend }}.txt
+
+      # The harness skips every test without an endpoint, so a wiring mistake
+      # would be a silent green. Require real passes.
+      - name: Require the production-derived cases to have run
+        run: |
+          n=$(grep -c -- '^--- PASS: TestProd_' s3compat-${{ matrix.backend }}.txt || true)
+          echo "TestProd_ tests passed: $n"
+          test "$n" -ge 18
+          if grep -q -- '--- SKIP: TestProd_' s3compat-${{ matrix.backend }}.txt; then
+            echo "a production-derived test was skipped" >&2
+            grep -- '--- SKIP: TestProd_' s3compat-${{ matrix.backend }}.txt >&2
+            exit 1
+          fi
+
+      - name: Backend log
+        if: failure()
+        run: docker logs s3 2>&1 | tail -100
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## S3 compat: ${{ matrix.backend }}"
+            echo '```'
+            grep -E '^(--- (FAIL|SKIP)|ok|FAIL|PASS)' s3compat-${{ matrix.backend }}.txt | head -60 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop backend
+        if: always()
+        run: docker rm -f s3
