@@ -338,7 +338,7 @@ func TestLatencyOffset_PerAPI(t *testing.T) {
 		"stream_field_values": q("field", "f"),
 		"streams":             q(),
 		"stream_ids":          q(),
-		"stats_query":         url.Values{"query": {"* | stats count()"}},
+		"stats_query":         {"query": {"* | stats count()"}},
 		"stats_query_range":   q("query", "* | stats count()", "step", "5m"),
 	}
 	for name, args := range apis {
