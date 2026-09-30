@@ -279,6 +279,12 @@ func (a *vlStatsCountAdapter) StatsCountAll(ctx context.Context, startNs, endNs 
 	qs := req.URL.Query()
 	qs.Set("query", q)
 	qs.Set("time", fmt.Sprintf("%d", endNs/1e9))
+	// The admin parity check counts everything up to the window's end. The
+	// traces binary's LogsQL hides spans younger than -search.latencyOffset
+	// (VictoriaTraces v0.12.0) unless told not to, which would leave the newest
+	// rows out of the count and read as drift against the manifest. Other
+	// servers ignore the argument.
+	qs.Set("disable_latency_offset", "true")
 	req.URL.RawQuery = qs.Encode()
 
 	// #nosec G107,G704 -- request URL derives from operator-configured baseURL above.
