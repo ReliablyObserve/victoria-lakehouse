@@ -189,11 +189,31 @@ func TestUpstreamPublicDelete_MatchesVendoredVTSelect(t *testing.T) {
 		// vlstorage; and the copy discards fmt.Fprintf's result explicitly.
 		up = strings.ReplaceAll(up, "vtstorage.", "vlstorage.")
 		ours := strings.ReplaceAll(ourFuncs[name], "_, _ = fmt.Fprintf(", "fmt.Fprintf(")
+		if name == "processDeleteRunTaskRequest" && !strings.Contains(up, "Only POST method is allowed") {
+			// VT v0.12.0's POST-only check (issue #225) is ahead of the
+			// vendored v0.11.0; compare without it until the vendored source
+			// has it, then require the copies to match exactly.
+			ours = strings.Replace(ours, postOnlyCheck, "", 1)
+		}
 		if ours != up {
 			t.Errorf("%s drifted from vendored VT; update public_delete.go\nupstream:\n%s\nours:\n%s", name, up, ours)
 		}
 	}
 }
+
+// postOnlyCheck is the block public_delete.go carries ahead of the vendored
+// VT v0.11.0, verbatim from VT v0.12.0.
+// At the VT bump to v0.12.0 the comparison above starts requiring an exact
+// match, and TestVendoredVTStillLacksPOSTChecks fails: flip
+// vt.delete.run_task.non_post.differ (and the two internal rows) to pass.
+const postOnlyCheck = `	// Upstream VictoriaTraces v0.12.0 (issue #225): only POST may start a
+	// delete task, so a GET, e.g. one forged through SSRF, cannot.
+	if r.Method != http.MethodPost {
+		http.Error(w, fmt.Sprintf("Only POST method is allowed; got %s.", r.Method), http.StatusMethodNotAllowed)
+		return
+	}
+
+`
 
 func funcSources(t *testing.T, name string, src []byte) map[string]string {
 	t.Helper()

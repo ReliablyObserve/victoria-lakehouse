@@ -25,7 +25,11 @@ import (
 // dispatch /internal/delete/* reaches), instead of VT's app/vtstorage, whose
 // delete functions are not routed to external storage; and the response writes
 // discard fmt.Fprintf's result explicitly (`_, _ =`) for this repository's
-// errcheck. The request handling, flag, answers and metrics are VT's.
+// errcheck; and processDeleteRunTaskRequest already carries v0.12.0's
+// POST-only check (issue #225) while the vendored source is v0.11.0
+// (public_delete_test.go drops the check from the comparison until the vendored
+// source has it, then requires it to match). The request handling, flag,
+// answers and metrics are VT's.
 //
 // The logs binary mounts vlselect.RequestHandler instead of copying anything.
 // This binary cannot import vtselect yet (see internal_delete.go); once it
@@ -70,6 +74,13 @@ func deleteHandler(w http.ResponseWriter, r *http.Request, path string) {
 }
 
 func processDeleteRunTaskRequest(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	// Upstream VictoriaTraces v0.12.0 (issue #225): only POST may start a
+	// delete task, so a GET, e.g. one forged through SSRF, cannot.
+	if r.Method != http.MethodPost {
+		http.Error(w, fmt.Sprintf("Only POST method is allowed; got %s.", r.Method), http.StatusMethodNotAllowed)
+		return
+	}
+
 	tenantID, err := logstorage.GetTenantIDFromRequest(r)
 	if err != nil {
 		httpserver.Errorf(w, r, "cannot obtain tenantID: %s", err)
