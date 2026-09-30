@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **CI: MinIO test images are built from source.** Upstream MinIO is unmaintained and its
+  `quay.io/minio/*` and Docker Hub images can no longer be pulled anonymously, so the e2e, parity,
+  benchmark and nightly load-test stacks now use images built from the same pinned MinIO releases
+  and published at `ghcr.io/reliablyobserve/minio` and `ghcr.io/reliablyobserve/mc`. They are frozen
+  test images; see `docs/minio-test-images.md`.
+
 ### Security
 
 - **The delete API's `/delete/run_task` requires POST, and so do the cluster-protocol prefixes
