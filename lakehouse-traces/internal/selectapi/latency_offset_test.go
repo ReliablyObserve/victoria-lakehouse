@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -377,6 +378,40 @@ func TestLatencyOffset_PerAPI(t *testing.T) {
 		}
 		if len(st.ranges) != 0 {
 			t.Errorf("tenant_ids must not run a query")
+		}
+	})
+}
+
+// With the clock frozen (testing/synctest: time.Now() does not move inside the
+// bubble) the effective end is exactly now minus the offset, to the
+// nanosecond, and a row exactly there is visible while one nanosecond newer is
+// not. A wall-clock test can only bound the end to a window a few microseconds
+// wide; a bound that is one nanosecond short (a strict "<" where upstream's is
+// inclusive) needs this.
+func TestLatencyOffset_EndIsExactlyNowMinusOffset(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now()
+		offset := *tracecommon.LatencyOffset
+		wantEnd := now.Add(-offset).UnixNano()
+
+		st, mux := latencyServer(t, []tierRow{
+			row(time.Unix(0, wantEnd-1), "before"),
+			row(time.Unix(0, wantEnd), "exact"),
+			row(time.Unix(0, wantEnd+1), "after"),
+		})
+		st.dyn = func(_, end int64) []tierRow {
+			if end == 1<<63-1 {
+				return nil
+			}
+			return st.rows
+		}
+		args := url.Values{"query": {"*"}, "start": {now.Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)}}
+		got := msgs(t, get(mux, "/select/logsql/query", args))
+		if end := st.lastRange(t)[1]; end != wantEnd {
+			t.Errorf("effective end = %d (%s), want exactly now-offset = %d (%s)", end, time.Unix(0, end).UTC(), wantEnd, time.Unix(0, wantEnd).UTC())
+		}
+		if strings.Join(got, ",") != "before,exact" {
+			t.Errorf("rows at now-offset-1ns, now-offset, now-offset+1ns: got %v, want [before exact]", got)
 		}
 	})
 }

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-		"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/logsql"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/traces/jaeger"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtselect/traces/tempo"

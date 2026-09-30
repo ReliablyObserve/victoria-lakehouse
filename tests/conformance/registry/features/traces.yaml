@@ -204,10 +204,12 @@
     - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_HidesRowsYoungerThanTheOffset
     - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_BoundaryIsInclusiveAtTheNanosecond
     - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_EndTimeIsNowMinusFlag
+    - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_EndIsExactlyNowMinusOffset
     - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_ComposesWithCallerArguments
     - lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_PerAPI
     - lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestLogsQLServedEqualsUpstreamOnTheSameData
     - lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestRateThroughTheServedHandler
+    - lakehouse-traces/internal/vtstorage_adapter/hidden_fields_test.go#TestHiddenFieldsAreRemoved
     - lakehouse-traces/logsql_routes_test.go#TestLogsQLRouteTableMatchesVendoredVT
     - lakehouse-traces/logsql_routes_test.go#TestLatencyOffsetFlagDefault
     - lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_HidesYoungRowsLikeHotVT
