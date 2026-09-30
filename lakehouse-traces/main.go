@@ -1115,12 +1115,15 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 // mountInternalProtocol mounts the cluster protocol for /internal/select/* and
 // /internal/delete/*. /internal/delete/* goes through upstreamInternalDelete
 // (VT's gate, internal_delete.go); internaldelete.Handler only adds the
-// lakehouse delete.enabled requirement after upstream's flag.
+// lakehouse delete.enabled requirement after upstream's flag. Both prefixes
+// answer a bare 405 to anything but POST, as VictoriaTraces v0.12.0's
+// internalselect.RequestHandler does (internaldelete.POSTOnly).
 func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
-	mux.HandleFunc("/internal/select/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/select/", internaldelete.POSTOnly(nil, func(w http.ResponseWriter, r *http.Request) {
 		internalselect.RequestHandler(r.Context(), w, r)
-	})
-	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled, upstreamInternalDelete))
+	}))
+	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled,
+		internaldelete.POSTOnly(internaldelete.FlagEnabled, upstreamInternalDelete)))
 }
 
 // mountPublicDelete serves upstream's public delete API (/delete/run_task,

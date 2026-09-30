@@ -155,3 +155,35 @@
   compare: { type: status, options: { cold_status: "404" } }
   layers: [api]
   pending: true
+
+- id: vl.internal.delete.non_post.differ
+  title: "/internal/delete/* — anything but POST is refused with a bare 405 (SSRF guard)"
+  surface: vl
+  kind: internal
+  origin: native
+  expect: differ
+  differ_note: "Upstream VictoriaLogs master (app/vlselect/internalselect, issues #1635 and #1716) answers a bare 405 to any non-POST; the pinned v1.52.0 accepts a GET, so the logs binary enforces it in internaldelete.POSTOnly. No since: master is unreleased. Redundant once the pin includes it; TestUpstreamInternalProtocolStillAcceptsGET fails then and this row flips to pass."
+  targets: [global]
+  seed: [logs.base]
+  upstream: { route: /internal/delete/run_task }
+  request: { method: GET, path: /internal/delete/run_task, params: { version: "v2", task_id: "forged", timestamp: "1", tenant_ids: "[{\"account_id\":7,\"project_id\":3},{\"account_id\":8}]", filter: "*" } }
+  compare: { type: error, options: { cold_status: "405" } }
+  layers: [api]
+  pending: true
+  notes: "With -internaldelete.enable and delete.enabled on, GET, HEAD, PUT and DELETE on /internal/delete/{run_task,stop_task,active_tasks} answer a bare 405 (empty body) after the -internaldelete.enable and delete.enabled gates, and no tombstone is created; POST (multipart, as upstream's netselect client sends it) is served as before. Both gates still answer first when closed. The Lakehouse tenant middleware runs before the 405, so an unknown X-Scope-OrgID gets its 400 first (Lakehouse-only, not a regression)."
+
+- id: vl.internal.select.non_post.differ
+  title: "/internal/select/* — anything but POST is refused with a bare 405 (SSRF guard)"
+  surface: vl
+  kind: internal
+  origin: native
+  expect: differ
+  differ_note: "Upstream VictoriaLogs master (app/vlselect/internalselect, issues #1635 and #1716) answers a bare 405 to any non-POST; the pinned v1.52.0 accepts a GET, so the logs binary enforces it in internaldelete.POSTOnly. No since: master is unreleased. Redundant once the pin includes it; TestUpstreamInternalProtocolStillAcceptsGET fails then and this row flips to pass."
+  targets: [global]
+  seed: [tenants.iso]
+  upstream: { route: /internal/select/tenant_ids }
+  request: { method: GET, path: /internal/select/tenant_ids, params: { version: "{{proto.internal_select}}", start: "0", end: "9223372036854775807" } }
+  compare: { type: error, options: { cold_status: "405" } }
+  layers: [api]
+  pending: true
+  notes: "GET, HEAD, PUT and DELETE on /internal/select/* answer a bare 405 (empty body) and return no data; POST (multipart, as upstream's netselect client sends it) is served as before. /internal/select/* has no enable flag, so the 405 is unconditional. The Lakehouse tenant middleware runs before the 405, so an unknown X-Scope-OrgID gets its 400 first (Lakehouse-only, not a regression)."

@@ -9,16 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **The delete API's `/delete/run_task` requires POST** (both binaries), matching upstream
-  VictoriaTraces 0.12 / VictoriaLogs, so a GET — e.g. one forged via SSRF — can no longer start a
-  delete. GET, HEAD, PUT and DELETE now answer `405 Only POST method is allowed; got <METHOD>.`
-  after the `-delete.enable` check and before anything is parsed, and no task is created;
-  `stop_task` and `active_tasks` are unchanged, as upstream. The traces binary carries VT
-  v0.12.0's check in its copy of the handler; the logs binary enforces it itself until the pinned
-  VictoriaLogs includes the upstream check (a test fails then, so the duplicate is dropped).
-  The `/internal/force_merge`, `/internal/force_flush`, `/internal/log_new_streams` and
-  `/internal/partition/*` maintenance endpoints, POST-only in VictoriaTraces 0.12, are not
-  served by either binary.
+- **The delete API's `/delete/run_task` requires POST, and so do the cluster-protocol prefixes
+  `/internal/delete/*` and `/internal/select/*`** (both binaries), matching VictoriaTraces 0.12 and
+  VictoriaLogs master (unreleased, #1635), so a GET — e.g. one forged via SSRF — can no longer
+  start a delete or read data. Before, `GET /internal/delete/run_task?...` created a tombstone
+  for every tenant it named and `GET /internal/select/tenant_ids` answered. Now:
+  - GET, HEAD, PUT and DELETE on `/delete/run_task` answer `405 Only POST method is allowed; got
+    <METHOD>.` after the `-delete.enable` check and before anything is parsed, and no task is
+    created; `stop_task` and `active_tasks` are unchanged, as upstream.
+  - Any method but POST on `/internal/delete/*` and `/internal/select/*` answers upstream's bare
+    `405` (empty body), after the `-internaldelete.enable` and `delete.enabled` gates, which still
+    answer first when closed. Every client we run (upstream's cluster client) already sends POST.
+  - `/internal/prefetch/hint` and `/internal/cache/evict-hint`, which change cache state and are
+    only ever called with POST, are POST-only too.
+  The traces binary carries VictoriaTraces v0.12.0's `run_task` check in its copy of the handler;
+  the other checks are enforced by the lakehouse until the embedded VictoriaLogs / VictoriaTraces
+  include them (tests fail then, so the duplicates are dropped). This is not the whole of
+  VictoriaTraces 0.12's hardening: its other `/internal/*` maintenance endpoints
+  (`force_merge`, `force_flush`, `log_new_streams`, `partition/*`) are not served by either
+  binary, and the lakehouse's own read-only peer routes keep accepting GET.
 
 ## [0.143.3] - 2026-09-24
 

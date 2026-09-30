@@ -51,6 +51,11 @@ func (h *Handler) HandlePrefetchHint(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAuth(w, r) {
 		return
 	}
+	if r.Method != http.MethodPost {
+		// Mutating route: POST only, so a forged GET cannot trigger it.
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 
 	var hint PrefetchHint
 	if err := json.NewDecoder(r.Body).Decode(&hint); err != nil {
@@ -70,6 +75,11 @@ func (h *Handler) HandlePrefetchHint(w http.ResponseWriter, r *http.Request) {
 // HandleEvictHint handles POST /internal/cache/evict-hint.
 func (h *Handler) HandleEvictHint(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		// Mutating route: POST only, so a forged GET cannot trigger it.
+		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 

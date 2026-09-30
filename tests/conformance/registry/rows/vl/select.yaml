@@ -369,7 +369,6 @@
   pending: true
   notes: "Default (no -delete.enable) must answer exactly like a VictoriaLogs node started with its defaults: 400 with upstream's disabled message. LH serves /delete/* through upstream's own vlselect.RequestHandler (mountPublicDelete). With -delete.enable and delete.enabled the task becomes a tombstone scoped to the request's tenant (docs/deletion-strategy.md)."
 
-
 - id: vl.delete.run_task.non_post.differ
   title: "/delete/run_task — anything but POST is refused with 405 (SSRF guard)"
   surface: vl
@@ -384,7 +383,7 @@
   compare: { type: error, options: { cold_status: "405", body_prefix: "Only POST method is allowed; got GET." } }
   layers: [api]
   pending: true
-  notes: "With -delete.enable and delete.enabled on, GET, HEAD, PUT and DELETE on /delete/run_task answer 405 'Only POST method is allowed; got <METHOD>.' after the enable check and before tenant or filter parsing, and no delete task is created; stop_task and active_tasks are unchanged. Guards against SSRF-forged GET deletes (VictoriaTraces issue #225)."
+  notes: "With -delete.enable and delete.enabled on, GET, HEAD, PUT and DELETE on /delete/run_task answer 405 'Only POST method is allowed; got <METHOD>.' after the enable check and before tenant or filter parsing, and no delete task is created; stop_task and active_tasks are unchanged. Guards against SSRF-forged GET deletes (VictoriaTraces issue #225). The Lakehouse tenant middleware runs before the 405, so an unknown X-Scope-OrgID gets its 400 first (Lakehouse-only, not a regression)."
 
 - id: vl.delete.stop_task.status
   title: "/delete/stop_task — upstream's delete API, gated by -delete.enable"

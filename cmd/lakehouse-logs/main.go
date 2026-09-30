@@ -1159,14 +1159,17 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 // vlselect.RequestHandler, so the -internaldelete.enable gate (default off),
 // its help text and its "disabled" answer are VictoriaLogs' code;
 // internaldelete.Handler only adds the lakehouse delete.enabled requirement
-// after upstream's flag.
+// after upstream's flag. Both prefixes answer a bare 405 to anything but POST, as
+// VictoriaLogs master's internalselect.RequestHandler does
+// (internaldelete.POSTOnly; the v1.52.0 pin lacks the check).
 func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
-	mux.HandleFunc("/internal/select/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/select/", internaldelete.POSTOnly(nil, func(w http.ResponseWriter, r *http.Request) {
 		internalselect.RequestHandler(r.Context(), w, r)
-	})
-	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled, func(w http.ResponseWriter, r *http.Request) {
-		vlselect.RequestHandler(w, r)
 	}))
+	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled,
+		internaldelete.POSTOnly(internaldelete.FlagEnabled, func(w http.ResponseWriter, r *http.Request) {
+			vlselect.RequestHandler(w, r)
+		})))
 }
 
 // mountPublicDelete serves upstream's public delete API (/delete/run_task,

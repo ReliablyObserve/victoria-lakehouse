@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
+	"github.com/VictoriaMetrics/metrics"
 )
 
 // FlagName is upstream's flag for the protocol. The flag is registered by
@@ -95,6 +96,9 @@ func gate(flagOn func() bool, deleteEnabled bool, message string, upstream http.
 // RunTaskPath is the public delete API path that starts a delete task.
 const RunTaskPath = "/delete/run_task"
 
+// RunTaskRequestsCounter is VictoriaLogs' request counter for RunTaskPath.
+const RunTaskRequestsCounter = `vl_http_requests_total{path="/delete/run_task"}`
+
 // RunTaskPOSTOnly wraps next, the handler owning /delete/* (upstream's
 // -delete.enable check followed by its delete handler), so that
 // /delete/run_task answers 405 unless the request is a POST. A GET, HEAD, PUT
@@ -117,7 +121,38 @@ const RunTaskPath = "/delete/run_task"
 func RunTaskPOSTOnly(flagOn func() bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if flagOn() && strings.ReplaceAll(r.URL.Path, "//", "/") == RunTaskPath && r.Method != http.MethodPost {
+			// VictoriaLogs master counts the request before refusing it. The
+			// counter is upstream's own (same name in the default set;
+			// GetOrCreateCounter returns the instance vlselect registered).
+			metrics.GetOrCreateCounter(RunTaskRequestsCounter).Inc()
 			http.Error(w, fmt.Sprintf("Only POST method is allowed; got %s.", r.Method), http.StatusMethodNotAllowed)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// POSTOnly wraps next, the handler owning a cluster-protocol prefix
+// (/internal/select/*, /internal/delete/*), so that any method but POST is
+// answered with a bare 405, no body, exactly as upstream does first thing in
+// its internalselect.RequestHandler (VictoriaTraces v0.12.0, VictoriaLogs
+// master, issues #1635 and #1716). Every upstream client of the protocol
+// (netselect) sends POST, so nothing legitimate is refused; a GET can no
+// longer run a delete task or read data through a forged request.
+//
+// gate reports whether upstream's own gate for the prefix is open (for
+// /internal/delete/* upstream's -internaldelete.enable): while it is closed the
+// request goes to next untouched and gets upstream's own "disabled" answer,
+// whatever the method, so the observable order matches upstream. A nil gate is
+// always open (/internal/select/* has no enable flag).
+//
+// The v1.52.0 pin of VictoriaLogs, and the VictoriaLogs revision the traces
+// binary embeds, lack the check; once they include it this is redundant but
+// harmless (the drift guards fail at that point).
+func POSTOnly(gate func() bool, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && (gate == nil || gate()) {
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 		next(w, r)
