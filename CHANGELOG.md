@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Test and CI stacks use RustFS as the S3 backend.** The e2e, parity, benchmark, cluster and nightly
+  load-test stacks now run `rustfs/rustfs:1.0.0` (pinned by digest) instead of MinIO, which is archived.
+  RustFS was measured against MinIO, SeaweedFS, Versity S3 Gateway and Garage with the operation harness
+  in `tests/s3compat`: it passed all 67 cases derived from what Lakehouse issues, ingest, restart and
+  cold read of 20 000 records lost no rows, and it needs only two environment variables. The compose
+  service is now `s3` (was `minio`), its init sidecar `s3-init`, and the e2e suite reads `S3_URL`,
+  `S3_BUCKET`, `S3_USER` and `S3_PASSWORD`. A new `s3-compat` CI job checks every S3 operation Lakehouse
+  uses against RustFS and the MinIO reference build; `docs/test-s3-backend.md` covers the measurements,
+  the job and how to bump the pin. The MinIO images stay available as the reference and fallback.
+
 ## [0.143.6] - 2026-09-30
 
 ### Security

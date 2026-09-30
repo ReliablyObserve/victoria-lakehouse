@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Inject (or clear) S3 latency on the lakehouse-net via the toxiproxy
-# instance sitting between lakehouse-{logs,traces} and minio.
+# instance sitting between lakehouse-{logs,traces} and the s3 service.
 #
 # Usage:
 #   scripts/inject-s3-latency.sh <mean_ms> [jitter_ms]

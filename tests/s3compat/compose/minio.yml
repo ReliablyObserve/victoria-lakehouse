@@ -1,0 +1,10 @@
+# Reference: the frozen MinIO test image (see docs/test-s3-backend.md).
+# Run: docker compose -p s3bake-minio -f minio.yml up -d
+services:
+  s3:
+    image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: s3bakekey
+      MINIO_ROOT_PASSWORD: s3bakesecret
+    ports: ["39000:9000"]

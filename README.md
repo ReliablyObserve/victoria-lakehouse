@@ -91,13 +91,13 @@ docker run -p 10428:10428 \
   --lakehouse.s3.region=us-east-1
 ```
 
-### Docker Compose (with MinIO)
+### Docker Compose (with RustFS)
 
 ```bash
 docker compose -f deployment/docker/docker-compose-e2e.yml up
 ```
 
-Starts 13 services: MinIO (S3), VictoriaLogs + VictoriaTraces (hot tiers, 24h), lakehouse-logs + lakehouse-traces (cold S3), vlselect + vtselect (multi-level select), loki-vl-proxy (hot+cold routing), ClickHouse (analytics), and Grafana with 11 pre-configured datasources. See [Docker Compose Setup](docs/docker-compose-setup.md).
+Starts 13 services: RustFS (S3), VictoriaLogs + VictoriaTraces (hot tiers, 24h), lakehouse-logs + lakehouse-traces (cold S3), vlselect + vtselect (multi-level select), loki-vl-proxy (hot+cold routing), ClickHouse (analytics), and Grafana with 11 pre-configured datasources. See [Docker Compose Setup](docs/docker-compose-setup.md).
 
 ### Helm
 
@@ -773,7 +773,7 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 ### Getting Started
 - [Feature catalog](docs/features.md) — every feature, its status, and the tests, rows and docs that verify it (generated)
 - [Getting Started](docs/getting-started.md) — quick start, first query in 5 minutes
-- [Docker Compose Setup](docs/docker-compose-setup.md) — full local environment with MinIO, hot/cold tiers, Grafana (11 datasources)
+- [Docker Compose Setup](docs/docker-compose-setup.md) — full local environment with RustFS, hot/cold tiers, Grafana (11 datasources)
 - [Kubernetes Deployment](docs/kubernetes-deployment.md) — Helm install, values, topology, probes
 - [Configuration](docs/configuration.md) — all 110+ config options with production-ready defaults
 
@@ -855,7 +855,7 @@ make docker-traces    # Build traces Docker image
 make build            # Build both binaries
 make test             # Run all tests
 make lint             # golangci-lint both modules
-make e2e              # Full E2E with MinIO + VL cluster
+make e2e              # Full E2E with RustFS + VL cluster
 
 # Embedded VictoriaLogs web UI (served at /select/vmui/)
 make sync-vmui        # Copy vmui from deps/VictoriaLogs into internal/ui/vmui/

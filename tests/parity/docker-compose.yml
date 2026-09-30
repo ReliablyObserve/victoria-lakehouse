@@ -14,30 +14,29 @@ networks:
     driver: bridge
 
 services:
-  minio:
-    image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z
-    command: server /data --console-address ":9001"
+  s3:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
     networks: [parity-net]
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  minio-init:
+  s3-init:
     image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on:
-      minio:
+      s3:
         condition: service_healthy
     networks: [parity-net]
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc alias set local http://s3:9000 minioadmin minioadmin &&
       mc mb local/parity-bucket --ignore-existing &&
-      echo 'MinIO bucket ready'
+      echo 'S3 bucket ready'
       "
 
   victorialogs:
@@ -70,12 +69,12 @@ services:
       context: ../../
       dockerfile: Dockerfile.logs
     depends_on:
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
     networks: [parity-net]
     command:
       - "-lakehouse.s3.bucket=parity-bucket"
-      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
@@ -137,12 +136,12 @@ services:
       context: ../../
       dockerfile: Dockerfile.traces
     depends_on:
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
     networks: [parity-net]
     command:
       - "-lakehouse.s3.bucket=parity-bucket"
-      - "-lakehouse.s3.endpoint=http://minio:9000"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
       - "-lakehouse.s3.access-key=minioadmin"
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"

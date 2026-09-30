@@ -2,7 +2,7 @@
   {
     "name": "s3",
     "listen": "[::]:9000",
-    "upstream": "minio:9000",
+    "upstream": "s3:9000",
     "enabled": true
   }
 ]

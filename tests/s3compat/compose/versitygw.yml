@@ -1,0 +1,10 @@
+services:
+  s3:
+    image: ghcr.io/versity/versitygw:v1.8.0
+    # /data does not exist in the image; a volume is required (init step #1).
+    command: ["--access", "s3bakekey", "--secret", "s3bakesecret", "--port", ":7070", "posix", "/data"]
+    volumes:
+      - data:/data
+    ports: ["39030:7070"]
+volumes:
+  data:

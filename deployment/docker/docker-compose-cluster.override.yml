@@ -18,7 +18,7 @@
 #   - Adds lakehouse-logs-2 and lakehouse-logs-3: same image, same command, same
 #     cluster config + alias, distinct host ports (29429, 29430) and AZ labels.
 #
-# All three share the EXISTING lakehouse-net, minio (via s3-latency), the
+# All three share the EXISTING lakehouse-net, s3 (via s3-latency), the
 # obs-archive bucket, and the running datagen-continuous — so all three ingest
 # and serve the same data. No image rebuild: instances 2/3 pin the prebuilt
 # `victoria-lakehouse-lakehouse-logs:latest` (instance 1 keeps its e2e build).
@@ -33,7 +33,7 @@ services:
   lakehouse-logs: &logs-cluster-base
     image: victoria-lakehouse-lakehouse-logs:latest
     depends_on:
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
       s3-latency:
         condition: service_healthy
@@ -123,7 +123,7 @@ services:
   # ALIAS `lakehouse-traces-cluster`, which Docker embedded DNS resolves to all
   # three traces container IPs, and mounts ./lakehouse-cluster-config-traces.yml
   # (discovery.peer_headless_service: lakehouse-traces-cluster + the shared
-  # peer.auth_key). All three share the EXISTING minio/s3-latency + datagen.
+  # peer.auth_key). All three share the EXISTING s3/s3-latency + datagen.
   # ===========================================================================
 
   # Traces instance 1 — re-declared so it joins the cluster (alias + cluster
@@ -133,7 +133,7 @@ services:
   lakehouse-traces: &traces-cluster-base
     image: victoria-lakehouse-lakehouse-traces:latest
     depends_on:
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
       s3-latency:
         condition: service_healthy

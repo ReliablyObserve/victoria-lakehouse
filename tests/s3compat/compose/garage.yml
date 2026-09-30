@@ -1,0 +1,8 @@
+# Garage needs post-start steps (layout assign/apply + key import + bucket
+# create); run ./garage-init.sh <project> after "up".
+services:
+  s3:
+    image: dxflrs/garage:v2.4.1
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+    ports: ["39040:3900"]
