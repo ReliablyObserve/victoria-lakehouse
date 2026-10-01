@@ -13,6 +13,10 @@ Measured effect of opening cached Parquet files with zero S3 round trips (footer
 
 The numbers below compare the previous read path (window mode, footer fetched on every open, page index read lazily) with this change, on the same host and the same data, interleaved by latency. The machine was shared and busy (load average 7-10): the 0 ms columns carry that noise (read them as within about 20%); the 20-100 ms columns are latency-dominated and repeat within a few percent.
 
+## Parquet read mode: async and sync
+
+The tables below ran with the current default page read mode (`async`). PR #305 makes `sync` the default, so the whole matrix was repeated with `PROFILE_READMODE=sync` on both builds. At S3 latency the read mode does not change the result, because the time is round trips, not page decoding: `BIGMARK | stats count()` on 11 files at 50 ms is 722 ms before and 116 ms after in sync mode (738 and 115 in async); 50 files 1,845 to 375 ms; Layout B 817 to 76 ms; `level:=error | stats count()` 526 to 114 ms. GETs, bytes and round trips are equal to the async run. The overlay and the planned fetch do not depend on the read mode (`TestCachedFooter_OpenAndPageIndexMakeZeroGETs` runs both).
+
 ## Logs, Layout A (11 files): p50 ms before to after
 
 | shape | 0 ms | 50 ms | GETs | MB read | seq. round trips (50 ms) |
@@ -106,7 +110,7 @@ At 50 ms, with GETs, MB read and round trips:
 
 ## First query after the footer cache is cold
 
-The harness resets the footer cache before the first run of every shape (a restart, or the first query over files whose footers are not cached). It still wins, because the batch prefetch now keeps the stripe and the planned wave replaces the serial window reads: `BIGMARK | stats count()` 792 to 168 ms, `level:=error | stats count()` 584 to 163 ms, `* | stats count()` 270 to 59 ms at 50 ms (Layout A). A footer larger than the prefetch tail (token-bloom footers of 357-431 KB on 10 MB objects, traces `_trace_idx` footers) costs one extra round trip for the exact footer and one for the stripe on its first open: three in total instead of two. Traces first-run: `trace_id lookup` 366 to 315 ms, `query=* limit 1000` 218 to 249 ms (noise on a shape that is otherwise unchanged).
+The harness resets the footer cache before the first run of every shape (a restart, or the first query over files whose footers are not cached). It still wins, because the batch prefetch now keeps the stripe and the planned wave replaces the serial window reads: `BIGMARK | stats count()` 792 to 168 ms, `level:=error | stats count()` 584 to 163 ms, `* | stats count()` 270 to 59 ms at 50 ms (Layout A). A footer larger than the prefetch tail (token-bloom footers of 357-431 KB on 10 MB objects, traces `_trace_idx` footers) costs one extra round trip on its first open for the exact footer, read together with the page-index stripe behind it (a 32 KB look-behind): two round trips in total. Traces first-run: `trace_id lookup` 366 to 315 ms, `query=* limit 1000` 218 to 249 ms (noise on a shape that is otherwise unchanged).
 
 ## The footer cache is bounded by bytes
 

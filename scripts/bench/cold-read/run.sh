@@ -22,6 +22,12 @@ BASE=$(cd "$1" && pwd); PR=$(cd "$2" && pwd); OUT=$3; MODE=${4:-quick}
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 
+# Pin the data anchor once: the harness otherwise derives it from the wall-clock hour, and a run that
+# crosses an hour boundary would compare two builds on differently-timestamped rows (the answers' _time
+# buckets then differ and table.py reports a false mismatch).
+export PROFILE_ANCHOR_NS=${PROFILE_ANCHOR_NS:-$(python3 -c 'import time; print((int(time.time())//3600*3600-3600+2400)*10**9)')}
+# PROFILE_READMODE=sync|async selects parquet-go's page read mode for both builds (default: the build's own).
+
 LOGS_PKG=internal/storage/parquets3
 TRACES_PKG=lakehouse-traces/internal/storage/parquets3
 for f in cold_read_bench_test.go s3count_test.go; do

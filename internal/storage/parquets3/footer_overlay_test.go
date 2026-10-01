@@ -212,23 +212,38 @@ func TestFooterWriters_AllKeepPageIndex(t *testing.T) {
 			t.Fatal("fetchFooterFile entry lacks the page index")
 		}
 	})
-	t.Run("fetchFooterFile two-phase", func(t *testing.T) {
-		// A prefetch range too small for the footer forces the two-phase
-		// fetch; the stripe then needs its own GET and must still be kept.
-		fx := newColdFixture(t, 1, 9000, 3000, config.ProjectedFetchModePlanned)
-		fx.s.cfg.S3.FooterPrefetchBytes = 4096
-		before := len(fx.mock.Requests())
-		if _, err := fx.s.fetchFooterFile(context.Background(), fx.files[0]); err != nil {
-			t.Fatal(err)
-		}
-		cf, ok := fx.s.footerCache.Get(fx.files[0].Key)
-		if !ok || !cf.HasPageIndex() {
-			t.Fatal("two-phase entry lacks the page index")
-		}
-		if n := len(fx.mock.Requests()) - before; n != 3 {
-			t.Fatalf("cold two-phase footer fetch made %d GETs, want 3 (tail, exact footer, stripe)", n)
-		}
-	})
+	// A prefetch range too small for the footer forces the two-phase fetch. The
+	// exact-footer read looks pageIndexLookBehind bytes behind the footer, so the
+	// stripe arrives with it: two GETs. With no look-behind the stripe needs its
+	// own GET: three. Either way the entry keeps the page index.
+	for _, tc := range []struct {
+		name   string
+		look   int64
+		wantGE int
+	}{{"two-phase look-behind", 32 << 10, 2}, {"two-phase no look-behind", 0, 3}} {
+		t.Run("fetchFooterFile "+tc.name, func(t *testing.T) {
+			old := pageIndexLookBehind
+			pageIndexLookBehind = tc.look
+			defer func() { pageIndexLookBehind = old }()
+			fx := newColdFixture(t, 1, 9000, 3000, config.ProjectedFetchModePlanned)
+			fx.s.cfg.S3.FooterPrefetchBytes = 4096
+			before := len(fx.mock.Requests())
+			if _, err := fx.s.fetchFooterFile(context.Background(), fx.files[0]); err != nil {
+				t.Fatal(err)
+			}
+			cf, ok := fx.s.footerCache.Get(fx.files[0].Key)
+			if !ok || !cf.HasPageIndex() {
+				t.Fatal("two-phase entry lacks the page index")
+			}
+			tail, off := cf.Tail()
+			if !bytes.Equal(tail, fx.datas[fx.files[0].Key][off:]) {
+				t.Fatal("two-phase entry holds bytes that differ from the object")
+			}
+			if n := len(fx.mock.Requests()) - before; n != tc.wantGE {
+				t.Fatalf("cold two-phase footer fetch made %d GETs, want %d", n, tc.wantGE)
+			}
+		})
+	}
 }
 
 // A cache entry for another version of the key (different size) must never

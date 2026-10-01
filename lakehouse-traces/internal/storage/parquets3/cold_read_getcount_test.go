@@ -158,9 +158,20 @@ func stripeStart(t *testing.T, data []byte) int64 {
 // modes, and every ColumnIndex()/OffsetIndex() read afterwards (what row-group
 // pruning does) is served from memory and equals the object's own.
 func TestCachedFooter_OpenAndPageIndexMakeZeroGETs(t *testing.T) {
-	for _, mode := range []string{config.ProjectedFetchModePlanned, config.ProjectedFetchModeWindow} {
-		t.Run(mode, func(t *testing.T) {
+	// Both fetch modes, and both parquet page read modes (the zero-GET open must
+	// not depend on whether pages are read ahead by goroutines or inline).
+	for _, rm := range []string{"sync", "async"} {
+		for _, mode := range []string{config.ProjectedFetchModePlanned, config.ProjectedFetchModeWindow} {
+			t.Run(rm+"/"+mode, func(t *testing.T) { testCachedFooterZeroGETs(t, mode, rm) })
+		}
+	}
+}
+
+func testCachedFooterZeroGETs(t *testing.T, mode, readMode string) {
+	{
+		{
 			fx := newColdFixture(t, 2, 9000, 3000, mode)
+			fx.s.cfg.S3.ParquetReadMode = readMode
 			fx.prefetch(t)
 			fi := fx.files[0]
 			ref, err := parquet.OpenFile(bytes.NewReader(fx.datas[fi.Key]), fi.Size)
@@ -223,7 +234,7 @@ func TestCachedFooter_OpenAndPageIndexMakeZeroGETs(t *testing.T) {
 			if got := len(fx.mock.Requests()) - before; got != 0 {
 				t.Fatalf("page-index reads made %d S3 requests, want 0 (%d pages checked)", got, checked)
 			}
-		})
+		}
 	}
 }
 
@@ -354,6 +365,18 @@ func TestColdQuery_AnswersIdenticalAcrossOpenPaths(t *testing.T) {
 		}},
 		{"planned+cold-footers", func(t *testing.T) *coldFixture {
 			return newColdFixture(t, 3, 6000, 2000, config.ProjectedFetchModePlanned)
+		}},
+		{"planned+overlay+sync", func(t *testing.T) *coldFixture {
+			fx := newColdFixture(t, 3, 6000, 2000, config.ProjectedFetchModePlanned)
+			fx.s.cfg.S3.ParquetReadMode = "sync"
+			fx.prefetch(t)
+			return fx
+		}},
+		{"window+overlay+sync", func(t *testing.T) *coldFixture {
+			fx := newColdFixture(t, 3, 6000, 2000, config.ProjectedFetchModeWindow)
+			fx.s.cfg.S3.ParquetReadMode = "sync"
+			fx.prefetch(t)
+			return fx
 		}},
 		{"window+no-cache", func(t *testing.T) *coldFixture {
 			fx := newColdFixture(t, 3, 6000, 2000, config.ProjectedFetchModeWindow)

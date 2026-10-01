@@ -232,8 +232,8 @@ resident size per entry; conservative on traces).
 What this bounds and what it does not: RAM is now `min(budget, working set)`,
 independent of file count. The hit rate still falls as the queried window
 outgrows the budget (a 256 MiB logs cache holds about 190 compacted or 1,300
-flush-sized footers); misses pay one to three S3 round trips per file
-(prefetch tail, exact footer for oversize footers, page-index stripe).
+flush-sized footers); misses pay one or two S3 round trips per file (the prefetch tail; an oversize
+footer adds one exact-footer read that also picks up the page-index stripe).
 
 **Planned:** make the cache the file-meta facet's page cache (persisted by
 pmeta), with per-tenant fairness.

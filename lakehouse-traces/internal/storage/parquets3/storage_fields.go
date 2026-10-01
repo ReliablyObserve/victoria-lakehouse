@@ -13,6 +13,13 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
+// pageIndexLookBehind is how far before an oversize footer the two-phase footer
+// fetch reads, to pick up the page-index stripe in the same request. Measured
+// stripe sizes are 3.4 KB (logs, flush-sized objects) and 6.4 KB (traces,
+// compacted objects); 32 KB leaves room for wide row-group counts. A larger
+// stripe falls back to one extra range GET.
+var pageIndexLookBehind = int64(32 << 10)
+
 // fetchFooterFile returns a metadata-only *parquet.File for fi. Prefers the
 // footer cache; on miss it does a small range read (~16 KB) instead of
 // downloading the full file. Falls back to a full-file download only when
@@ -68,15 +75,19 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 		if footerOffset < 0 {
 			return nil, fmt.Errorf("footer length implies negative offset: footer=%d file=%d", totalFooterBytes, fi.Size)
 		}
+		// Read pageIndexLookBehind bytes ahead of the footer in the same range:
+		// the page-index stripe sits right before it, so a stripe that fits
+		// the look-behind costs no third round trip.
+		fetchOff := footerOffset - min(footerOffset, pageIndexLookBehind)
 		metrics.S3GetsByPhase.Inc("footer")
-		bigTail, err := s.pool.DownloadRangeDedup(ctx, "footer", fi.Key, footerOffset, int64(totalFooterBytes))
+		bigTail, err := s.pool.DownloadRangeDedup(ctx, "footer", fi.Key, fetchOff, fi.Size-fetchOff)
 		if err != nil {
 			return nil, fmt.Errorf("download oversize footer range: %w", err)
 		}
-		if len(bigTail) < totalFooterBytes {
-			return nil, fmt.Errorf("oversize footer fetch short: got %d, want %d", len(bigTail), totalFooterBytes)
+		if int64(len(bigTail)) < fi.Size-fetchOff {
+			return nil, fmt.Errorf("oversize footer fetch short: got %d, want %d", len(bigTail), fi.Size-fetchOff)
 		}
-		tail, tailOff = bigTail, footerOffset
+		tail, tailOff = bigTail, fetchOff
 	}
 	// cacheFooterFromTail keeps the page-index stripe with the footer (one
 	// extra range GET when the stripe lies before the fetched tail, as it does
