@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   twice; `lakehouse_watermark_inferred_unresolved_total` counts those cases. Rows the buffer held before the
   restart are still counted once.
 
+- **A count or stats query no longer counts rows twice when a newer object is answered from metadata and an older one
+  is read (#272).** The buffer watermark was computed over the objects still to be read only, so an object answered
+  from the manifest (the count fast path, the label-count pushdown) fell out of it, and the buffer served that
+  object's rows again next to the manifest's count: for example 5 instead of 3 rows over a window with one
+  recent fully covered object and one older object at its boundary, after any restart or flush in the same hour.
+  The watermark is now computed over the objects read plus the objects answered from metadata; bloom, label and
+  trace-index pruning still leave an object out, as before.
+
 ## [0.143.8] - 2026-10-01
 
 ### Security

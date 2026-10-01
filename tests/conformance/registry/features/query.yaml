@@ -338,11 +338,17 @@
     - internal/storage/parquets3/restart_watermark_test.go
     - internal/storage/parquets3/restart_watermark_bounds_test.go
     - internal/storage/parquets3/restart_watermark_faults_test.go
+    - internal/storage/parquets3/restart_watermark_round2_test.go
+    - internal/storage/parquets3/restart_watermark_rr3_test.go
+    - internal/storage/parquets3/restart_watermark_rr3b_test.go
     - internal/manifest/bounds_inferred_test.go
     - cmd/lakehouse-logs/shutdown_snapshot_test.go
     - lakehouse-traces/internal/storage/parquets3/restart_watermark_test.go
     - lakehouse-traces/internal/storage/parquets3/restart_watermark_bounds_test.go
     - lakehouse-traces/internal/storage/parquets3/restart_watermark_faults_test.go
+    - lakehouse-traces/internal/storage/parquets3/restart_watermark_round2_test.go
+    - lakehouse-traces/internal/storage/parquets3/restart_watermark_rr3_test.go
+    - lakehouse-traces/internal/storage/parquets3/restart_watermark_rr3b_test.go
     - lakehouse-traces/shutdown_snapshot_test.go
   docs:
     - docs/durability.md#22-restart-and-the-read-watermark
@@ -356,7 +362,7 @@
     exact one from the pmeta facet or the Parquet footer statistics (one bounded, backed-off ranged
     read, only for objects that can change the watermark) before the watermark is computed. An
     object that cannot be resolved keeps its inferred end in the watermark and is never answered from
-    metadata, so no row is counted twice; its rows are hidden until it resolves. Shutdown persists the manifest again
+    metadata, so no row is counted twice; its rows are hidden until it resolves. The watermark covers the objects read plus those answered from metadata. Shutdown persists the manifest again
     after the final flush so the next boot starts with exact ranges. Verified for both binaries
     across restart, hour-boundary and previous-hour cases, a peer's flush learned by listing, and a
     random write/flush/restart property test.
