@@ -260,7 +260,7 @@ stats: 24/24 covered by at least one registry row.
 |---|---|---|---|
 | `any` | `lib/logstorage/stats_any.go` | vl.stats.any.basic | 🔁 differs: any() returns an arbitrary matching row; hot and cold can legitimately pick a different one from the same result set. See docs/parity-and-gaps.md. (declared, not yet executed) |
 | `avg` | `lib/logstorage/stats_avg.go` | vl.stats.avg.basic | 🟡 declared, not yet executed |
-| `count` | `lib/logstorage/stats_count.go` | vl.stats.count.basic, vl.stats.filtered.by_field, vl.stats.filtered.default_field_time, vl.stats.if_bloom_column, vl.stats.not_bloom_column | 🟡 declared, not yet executed |
+| `count` | `lib/logstorage/stats_count.go` | vl.stats.count.basic, vl.stats.filtered.by_field, vl.stats.filtered.default_field_time, vl.stats.if_bloom_column, vl.stats.not_bloom_column, vl.stats.or_bloom_column | 🟡 declared, not yet executed |
 | `count_empty` | `lib/logstorage/stats_count_empty.go` | vl.stats.count_empty.basic | 🟡 declared, not yet executed |
 | `count_uniq` | `lib/logstorage/stats_count_uniq.go` | vl.stats.count_uniq.basic | 🟡 declared, not yet executed |
 | `count_uniq_hash` | `lib/logstorage/stats_count_uniq_hash.go` | vl.stats.count_uniq_hash.basic | 🟡 declared, not yet executed |
