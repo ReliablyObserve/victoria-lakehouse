@@ -25,11 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.143.9] - 2026-10-01
 
-### Changed
-
-- **Release images are built with Go 1.27.1** (`golang:1.27.1-alpine3.23` in `Dockerfile.logs`,
-  `Dockerfile.traces` and `Dockerfile.datagen`; was 1.26.8).
-
 ## [0.143.8] - 2026-10-01
 
 ### Security
