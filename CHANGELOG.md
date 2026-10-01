@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **OpenTelemetry Go v1.45.0 (both binaries), fixing GO-2026-6505.** `go.opentelemetry.io/otel`, `otel/sdk`,
+  `otel/trace` and the OTLP trace exporters move from v1.43.0/v1.44.0 to v1.45.0, the first release with the fix;
+  `govulncheck` reported the advisory as reachable from the self-tracing exporter. Transitive updates: `otlp` proto
+  v1.11.0, `grpc-gateway` v2.29.0, `genproto` 2026-08-03. No configuration or behaviour change.
+
 ## [0.143.10] - 2026-10-01
 
 ### Changed
