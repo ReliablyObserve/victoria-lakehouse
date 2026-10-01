@@ -49,12 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The watermark is now computed over the objects read plus the objects answered from metadata; bloom, label and
   trace-index pruning still leave an object out, as before.
 
-- **`field_values` and `streams` over rows not yet flushed no longer list wrong values (#272).** The values of the
-  buffered rows were kept in the result map as strings pointing into memory the buffer reuses once the block
-  callback returns, and Go's map assignment replaces the stored key on every increment, so one value could
-  overwrite another: on the traces binary all 15 buffered spans of a query were counted under one span name, and
-  the right names were missing. Keys are now copied. It surfaced once the rows buffered after a restart became
-  visible; the affected rows are the unflushed ones of any window.
+- **`field_values`, `streams`, `stream_ids`, stream field values and the Jaeger service and operation lists no longer
+  show wrong values for rows not yet flushed (#272, partly #278).** The values of the buffered rows were kept in
+  the result map as strings pointing into memory the buffer reuses once the block callback returns, and Go's map
+  assignment replaces the stored key on every increment, so one value could overwrite another: on the traces
+  binary all 15 buffered spans of a query were counted under one span name, and the right names were missing.
+  Keys are now copied. It surfaced once the rows buffered after a restart became visible; the affected rows are
+  the unflushed ones of any window.
 
 ## [0.143.8] - 2026-10-01
 
