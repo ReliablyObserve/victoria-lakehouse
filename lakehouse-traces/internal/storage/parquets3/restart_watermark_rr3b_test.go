@@ -9,6 +9,8 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/encoding/thrift"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 )
 
 // Round-3 follow-up tests (#272): partial page indexes, statistics edge cases,
@@ -238,5 +240,32 @@ func TestRR3_StartupPassCoversAFewHoursBack(t *testing.T) {
 	rwSetClock(t, rwHour.Add(30*time.Minute))
 	if n := r.s.enrichRecentInferredBounds(t.Context()); n != 1 {
 		t.Errorf("resolved %d objects, want the one from 4 hours back", n)
+	}
+}
+
+// A removal that overlaps an in-flight failing read must not leave a back-off
+// entry behind.
+func TestRR3_RemovalDuringAFailingReadLeavesNoBackoffEntry(t *testing.T) {
+	singleAttemptS3(t)
+	mock := newRWMock()
+	r := newRWRigWith(t, mock.mockS3Server)
+	r.ingest("COLD", at(rwHour, 10*time.Minute))
+	r.restart(true, false)
+	fi := r.objects()[0]
+	mock.fail(fi.Key, 404)
+	mock.delay(fi.Key, 300*time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = r.s.bufferWatermarksFor(t.Context(), 0, []manifest.FileInfo{fi})
+	}()
+	time.Sleep(100 * time.Millisecond)
+	r.s.manifest.RemoveFile(manifest.ExtractPartition(fi.Key), fi.Key)
+	<-done
+	r.s.inferredBounds.mu.Lock()
+	n := len(r.s.inferredBounds.retry)
+	r.s.inferredBounds.mu.Unlock()
+	if n != 0 {
+		t.Errorf("%d back-off entries for an object removed while its read was in flight", n)
 	}
 }
