@@ -76,7 +76,7 @@ To run the harness against any S3 endpoint, including your own, see
 1. Pick the new tag and resolve its digest (`docker buildx imagetools inspect rustfs/rustfs:<tag>`).
 2. Replace the pinned reference in every place that carries it:
    `grep -rn 'rustfs/rustfs:' .` (the four compose files, `s3-compat.yaml`,
-   `nightly-loadtest.yaml`, `tests/s3compat/compose/rustfs.yml` and this page).
+   `tests/s3compat/compose/rustfs.yml` and this page).
 3. Open the PR. The `s3-compat` job, `e2e` and `parity` are the acceptance gate; read a red
    `s3-compat` leg against the `minio-reference` leg before changing anything in Lakehouse.
 
