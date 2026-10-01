@@ -1069,6 +1069,11 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// emitted under that spelling too, or the filter matches nothing. Every
 	// other query gets the VT field names alone — see emitParquetNameAlias.
 	aliasCols := queryParquetNameAliases(queryStr, s.registry, pipeFields)
+	// NOTE: today no production handler sets the timestamp-only hint
+	// (selectapi's wrapVLTimestampOnly has no caller), so this branch is not
+	// reached by a served request; the guards keep it from narrowing a read a
+	// delete, a row filter or a pipe needing every field made unprojected if a
+	// handler starts setting it.
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) && !rowFilterFrom(ctx) && !readAllFrom(ctx) {
 		// Timestamp-only is safe ONLY for an UNFILTERED count/hits. A free-text
 		// _msg word filter (e.g. `error | stats count()`) has no bloom to push
