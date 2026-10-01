@@ -378,16 +378,15 @@ func TestCachedFooterWeightCalibration(t *testing.T) {
 			region := data[tailStart:]
 			// Background allocation (leftover goroutines of earlier tests) only ever
 			// inflates a heap delta, so the smallest of a few trials is the honest one.
-			var keep []*CachedFooter
 			per := int64(1) << 62
 			const n = 24
+			var sample *CachedFooter // one entry kept for the report; the rest are garbage per trial
 			for trial := 0; trial < 3; trial++ {
-				keep = nil // the previous trial's entries must be garbage before m0
 				runtime.GC()
 				runtime.GC()
 				var m0, m1 runtime.MemStats
 				runtime.ReadMemStats(&m0)
-				keep = make([]*CachedFooter, 0, n)
+				keep := make([]*CachedFooter, 0, n) // out of scope (garbage) before the next trial's m0
 				for i := 0; i < n; i++ {
 					cf, _, err := cacheFooterFromTail(context.Background(), nil, "k", append([]byte(nil), region...), tailStart, size)
 					if err != nil {
@@ -401,14 +400,13 @@ func TestCachedFooterWeightCalibration(t *testing.T) {
 				if d := (int64(m1.HeapAlloc) - int64(m0.HeapAlloc)) / n; d < per {
 					per = d
 				}
-				runtime.KeepAlive(keep)
+				sample = keep[0]
 			}
-			w := keep[0].Weight()
-			t.Logf("rows=%d footer=%dB tail=%dB measured heap/entry=%dB model weight=%dB (ratio %.2f)", rows, keep[0].footerSize, len(keep[0].tail), per, w, float64(w)/float64(per))
+			w := sample.Weight()
+			t.Logf("rows=%d footer=%dB tail=%dB measured heap/entry=%dB model weight=%dB (ratio %.2f)", rows, sample.footerSize, len(sample.tail), per, w, float64(w)/float64(per))
 			if float64(w) < 0.75*float64(per) || float64(w) > 1.4*float64(per) {
 				t.Errorf("weight model %d B is off the measured %d B per entry (allowed 0.75x..1.4x)", w, per)
 			}
-			runtime.KeepAlive(keep)
 			runtime.KeepAlive(data)
 		})
 	}

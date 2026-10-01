@@ -168,6 +168,8 @@ jobs:
           - internal/storage/parquets3:FuzzMultiRowDataBlock
           - internal/storage/parquets3:FuzzParseFooterBytes
           - internal/storage/parquets3:FuzzFooterLength
+          - internal/storage/parquets3:FuzzCacheFooterFromTail
+          - internal/s3reader:FuzzOverlayReadAt
           - internal/storage/parquets3:FuzzStorageFetchPeerAZ
           - internal/storage/parquets3:FuzzExtractTraceBloomValues
           - internal/storage/parquets3:FuzzParseFilterFromQuery_TimeOnlyIsSound
@@ -325,7 +327,11 @@ jobs:
         # Shared ingestmatrix source is exercised as named files under this
         # module's dependency graph; see the explicit case in the fuzz step.
         target:
+<<<<<<< HEAD
           - tests/ingestmatrix:FuzzRawTruthPhysicalRepresentations
+=======
+          - internal/storage/parquets3:FuzzCacheFooterFromTail
+>>>>>>> fed1f2f9 (ci: fuzz targets in the CI matrix, flag usage matches the code default, lint fix in the calibration test)
           - internal/storage/parquets3:FuzzExtractExactMatch
           - internal/storage/parquets3:FuzzPhraseExact
           - internal/storage/parquets3:FuzzIsPrintable
