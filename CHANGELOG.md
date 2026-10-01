@@ -13,9 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `go.mod` files (which every CI workflow reads through `go-version-file`) and `go.work` still said 1.26.8, so
   CI tested with a different toolchain from the one that builds the shipped binaries. Both modules and the
   workspace now declare `go 1.27.1`, and the parity test runner image (`tests/parity/docker-compose.yml`) moves to
-  `golang:1.27.1`. Parquet data is unchanged; the footer's `created_by` string now includes the parquet-go version in
-  test builds (23 bytes per file), so the field-metadata perf rows' `s3_bytes` counters were updated to CI's measured
-  values.
+  `golang:1.27.1`. Parquet data is unchanged. (The toolchain did change parquet-go's default footer `created_by`
+  string; every writer now sets its own, see below.)
 - **`s3.parquet_read_mode` now defaults to `sync` (both binaries).** With `async`, a read-ahead goroutine per column
   reader shares the file's single read-ahead window with the others; the buffered reader serialises their GETs under
   one mutex, so they gain no I/O parallelism, and they evict each other's window and fetch the same bytes again.

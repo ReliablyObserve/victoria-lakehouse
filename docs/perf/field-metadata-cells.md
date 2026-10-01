@@ -466,8 +466,10 @@ VictoriaLogs answers (block headers carry the stream id).
 
 ## Deterministic counters
 
-The gate holds GETs, bytes, row groups and pages exactly, so they must be a function of the files
-and the query alone. Two inputs were not, and both moved the compacted cells between CI runs
+The gate holds GETs, bytes, row groups and pages exactly: a cell whose counters differ from its
+row, up or down, or differ between two iterations fails (`perf_rows.py check`; until this change
+only an increase failed, so a drift downwards left stale rows behind). That requires them to be a
+function of the files and the query alone. Two inputs were not, and both moved the compacted cells between CI runs
 (`fv_level` compacted `window=whole/filter=svc`: 642384 vs registry 642367 bytes; `window=cut`
 601424 in CI vs 597328 locally):
 

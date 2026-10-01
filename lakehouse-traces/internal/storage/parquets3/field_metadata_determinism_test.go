@@ -11,6 +11,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -78,7 +79,10 @@ func TestFieldMetadataTracesCompactedLayoutIsByteReproducible(t *testing.T) {
 
 // TestFieldMetadataTracesCompactedCountersAreDeterministic runs every
 // compacted traces cell several times against cold caches and requires the
-// same S3 GETs and bytes each time.
+// same S3 GETs and bytes each time. No traces cell reads several columns
+// through one read-ahead window today (the traces matrix reads the same counters
+// in sync and async mode), so this guards against a future read path that
+// does, rather than reproducing the logs failure.
 func TestFieldMetadataTracesCompactedCountersAreDeterministic(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds two compacted deployments")
@@ -100,6 +104,30 @@ func TestFieldMetadataTracesCompactedCountersAreDeterministic(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// TestRangedOpenOptions_ReadMode pins which parquet-go page read mode a
+// ranged open gets: sync by default (and for an unset mode), async only when
+// s3.parquet_read_mode asks for it.
+func TestRangedOpenOptions_ReadMode(t *testing.T) {
+	s := &Storage{cfg: testConfig()}
+	fi := manifest.FileInfo{Key: "k", Size: 1 << 20}
+	for _, tc := range []struct {
+		mode string
+		want parquet.ReadMode
+	}{
+		{testConfig().S3.ParquetReadMode, parquet.ReadModeSync},
+		{"", parquet.ReadModeSync},
+		{"sync", parquet.ReadModeSync},
+		{"async", parquet.ReadModeAsync},
+	} {
+		s.cfg.S3.ParquetReadMode = tc.mode
+		cfg := parquet.DefaultFileConfig()
+		cfg.Apply(s.rangedOpenOptions(fi, nil)...)
+		if cfg.ReadMode != tc.want {
+			t.Errorf("parquet_read_mode %q: read mode %v, want %v", tc.mode, cfg.ReadMode, tc.want)
 		}
 	}
 }

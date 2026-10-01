@@ -11,6 +11,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -106,6 +107,55 @@ func TestFieldMetadataCompactedCountersAreDeterministic(t *testing.T) {
 							break
 						}
 					}
+				}
+			}
+		}
+	}
+}
+
+// TestRangedOpenOptions_ReadMode pins which parquet-go page read mode a
+// ranged open gets: sync by default (and for an unset mode), async only when
+// s3.parquet_read_mode asks for it.
+func TestRangedOpenOptions_ReadMode(t *testing.T) {
+	s := &Storage{cfg: testConfig()}
+	fi := manifest.FileInfo{Key: "k", Size: 1 << 20}
+	for _, tc := range []struct {
+		mode string
+		want parquet.ReadMode
+	}{
+		{testConfig().S3.ParquetReadMode, parquet.ReadModeSync},
+		{"", parquet.ReadModeSync},
+		{"sync", parquet.ReadModeSync},
+		{"async", parquet.ReadModeAsync},
+	} {
+		s.cfg.S3.ParquetReadMode = tc.mode
+		cfg := parquet.DefaultFileConfig()
+		cfg.Apply(s.rangedOpenOptions(fi, nil)...)
+		if cfg.ReadMode != tc.want {
+			t.Errorf("parquet_read_mode %q: read mode %v, want %v", tc.mode, cfg.ReadMode, tc.want)
+		}
+	}
+}
+
+// TestFieldMetadataAsyncReadModeStaysExact keeps the opt-in async page read
+// mode covered: every value cell on the compacted layout (the one whose
+// filtered scans read through the shared read-ahead window) stays exact with
+// s3.parquet_read_mode: async. Its GET counts are not asserted: they depend on
+// goroutine scheduling, which is why sync is the default.
+func TestFieldMetadataAsyncReadModeStaysExact(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a compacted deployment of 48k rows")
+	}
+	e := buildFmEnv(t, "compacted", false)
+	e.s.cfg.S3.ParquetReadMode = "async"
+	for _, ep := range fmEndpoints {
+		if ep == "field_names" {
+			continue
+		}
+		for _, w := range fmWindows() {
+			for _, f := range fmFilters {
+				if r := e.run(t, ep, f, w, 0); !r.hitsOK {
+					t.Errorf("%s with async page reads: not exact (%s)", fmCellName(ep, e, w, f, 0), r.diff)
 				}
 			}
 		}

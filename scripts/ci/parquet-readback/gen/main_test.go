@@ -272,6 +272,19 @@ func TestGen_IsDeterministic(t *testing.T) {
 	if a, b := sortedIndex(t, fa), sortedIndex(t, fb); !reflect.DeepEqual(a, b) {
 		t.Error("traces: two runs wrote different trace-index entries")
 	}
+	// The trace index is written sorted, so trace files are byte-identical too.
+	ta, _ := os.ReadFile(path("traces-a.parquet"))
+	tb, _ := os.ReadFile(path("traces-b.parquet"))
+	if len(ta) == 0 || !bytes.Equal(ta, tb) {
+		t.Error("traces: two runs with the same arguments wrote different bytes")
+	}
+	// The gate's files carry the created_by production writes.
+	flogs, _ := readBack[schema.LogRow](t, path("logs-a.parquet"))
+	for name, f := range map[string]*parquet.File{"logs": flogs, "traces": fa} {
+		if got, want := f.Metadata().CreatedBy, schema.ParquetWriterApp+" version "; len(got) < len(want) || got[:len(want)] != want {
+			t.Errorf("%s: created_by = %q, want prefix %q", name, got, want)
+		}
+	}
 }
 
 func sameTruth(a, b fileTruth) bool {
