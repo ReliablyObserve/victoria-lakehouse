@@ -50,11 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A delete is evaluated on the columns the query reads, and a narrow read did not include the fields the delete
   matches on, so counts, `stats by (...)` and histograms still included the deleted rows (a logs
   `* | stats by (service.name) count()` showed 20/20/20 where 10/10/10 was right). The read now adds the fields of
-  every delete that overlaps the window.
-- **Two more wrong cold answers fixed (the first in both binaries, the second in logs).** A `stats by (...)` fed by a pipe that
-  rewrites the group key (`copy`, `extract`, `format`) was answered from per-file label counts and returned the wrong
-  groups; it now scans. A `_time` filter that is not a plain range (`day_range`, `week_range`) is no longer answered
-  from evenly spaced stand-in timestamps (logs).
+  every delete that overlaps the window, so while a delete overlaps a window every query in it reads the attribute and
+  slot columns when the delete's field is not a registered column (see `docs/read-path.md` for the measured cost).
+- **Wrong cold answers from metadata shortcuts fixed (both binaries, closes #289).** A `stats by (...)` fed by a pipe that
+  rewrites the group key (`copy`, `extract`, `format`), a `count() if (...)` on another field or on `_time`, or a
+  `_time:day_range[...]` / `week_range` filter was answered from per-file label counts and fabricated timestamps and
+  returned the wrong groups or counts (for example 27 or 6 where 54 was right); these now scan. In logs, a `_time` filter
+  that is not a plain range, or a delete over part of a file, is no longer answered from evenly spaced stand-in
+  timestamps. The hits timestamp-only shortcut no longer narrows a read that a pipe needing every field (`pack_json`,
+  `pack_logfmt`, a prefix wildcard) made unprojected, which returned 0 for `| filter` after such a pipe. A `NOT`, an `OR`
+  or a `stats ... if (...)` around a bloom-indexed field (`trace_id`) no longer prunes row groups and files on a term that
+  does not have to match, so `NOT trace_id:="x"` returns the other rows instead of none.
 
 ## [0.143.9] - 2026-10-01
 

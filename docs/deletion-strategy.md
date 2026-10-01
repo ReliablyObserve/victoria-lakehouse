@@ -536,3 +536,7 @@ flowchart TB
 | `lakehouse_delete_rewrite_bytes_saved` | Counter | Bytes freed by rewrites |
 | `lakehouse_delete_rewrite_skipped_glacier` | Counter | Rewrites skipped (Glacier) |
 | `lakehouse_delete_rows_suppressed_total` | Counter | Rows filtered by tombstones at query time |
+
+## Read cost while a hide-mode delete is active
+
+Until the affected files are rewritten, a hide-mode delete is applied on the read path to every query whose time window overlaps it, and the columns the delete's query references are read for that. A delete on a registered column adds roughly 24% to 77% to a `stats` query's latency on a cold file; a delete on an unregistered field adds the attribute MAP and Tier-2 slot columns to every query in the window (+296% for an unfiltered `stats count()`), because the exact column is not known per file. Details and the measurement are in [read-path.md](read-path.md); the exact-column resolution is tracked in #292.

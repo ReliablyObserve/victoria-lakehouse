@@ -344,6 +344,29 @@ func GetQueryNeededFields(q *Query) []string {
 	return fields
 }
 
+// GetQueryPipeNeededFields is GetQueryNeededFields for the pipe chain alone:
+// the fields the pipes read from the stored rows, without the filter's. A
+// metadata-only shortcut that fabricates rows (the count pushdown) uses it to
+// ask whether anything AFTER the filter reads a field it cannot reproduce, such
+// as `_time` in `count() if (_time:...)`, which the filter-inclusive list
+// cannot tell apart from the always-present global time range.
+//
+// upstream-original: upstream's getNeededColumns over the unexported pipes;
+// no logic is copied.
+func GetQueryPipeNeededFields(q *Query) []string {
+	all := []string{"*"}
+	if q == nil || QueryNeedsAllFields(q) {
+		return all
+	}
+	names, ok := getNeededColumns(q.pipes).GetAllowStrings()
+	if !ok {
+		return all
+	}
+	fields := append([]string(nil), names...)
+	sort.Strings(fields)
+	return fields
+}
+
 // QueryFirstPipeIsAggregate reports whether the first pipe of q is one that
 // REPLACES the row stream with its own output built only from the named input
 // fields: stats, uniq, top or fields. A count pushed down to per-file label
