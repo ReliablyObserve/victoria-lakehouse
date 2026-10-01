@@ -293,7 +293,7 @@ query:
 - **The footer cache is a fixed byte budget.** Both binaries hold at
   most `cache.footer_max_bytes` of footers (default 256 MiB logs,
   512 MiB traces); wide queries over more files than fit pay the
-  footer fetch (one to three S3 round trips) for the rest.
+  footer fetch (one or two S3 round trips) for the rest.
 
 - **Resident pmeta has no eviction for live partitions.** It grows
   with retention × tenants until retention expires a partition;

@@ -508,6 +508,9 @@ func TestColdReadProfile(t *testing.T) {
 		}
 		sort.Strings(lines)
 		ans := strings.Join(lines, ";")
+		if os.Getenv("PROFILE_FULLANS") != "" {
+			t.Logf("FULLANS %s: %s", sh.name, ans) // the whole answer, to diff two builds
+		}
 		if len(ans) > 300 {
 			ans = fmt.Sprintf("groups=%d hash=%x", len(lines), fnv32(ans))
 		}
