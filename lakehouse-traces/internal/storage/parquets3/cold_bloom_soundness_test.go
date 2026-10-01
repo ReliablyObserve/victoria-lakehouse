@@ -182,3 +182,51 @@ func TestColdBloom_FileLevelSidecars(t *testing.T) {
 		}
 	}
 }
+
+// TestColdBloom_QuotedPushdownText: the row-group pushdown predicate is read from
+// the filter part of the query only; the quoted equality inside a pipe's
+// `if (...)` (or after a NOT / OR) must not become a pushdown check.
+func TestColdBloom_QuotedPushdownText(t *testing.T) {
+	mock := newMockS3Server()
+	t.Cleanup(mock.close)
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Mode = config.ModeTraces
+	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	pad := strings.Repeat("y", 1500)
+	for f := 0; f < 2; f++ {
+		var rows []schema.TraceRow
+		for i := 0; i < 40; i++ {
+			k := i / 10
+			ts := base.Add(time.Duration(f*40+i) * time.Second).UnixNano()
+			rows = append(rows, schema.TraceRow{
+				TimestampUnixNano: ts, StartTimeUnixNano: ts,
+				TraceID: fmt.Sprintf("tr-%d-%d", f, k), SpanID: fmt.Sprintf("%016x", f*100+i), SpanName: fmt.Sprintf("op%d-%s%d", k%2, pad, i), ServiceName: []string{"alpha", "beta"}[f],
+				Stream: fmt.Sprintf(`{resource_attr:service.name=%q}`, []string{"alpha", "beta"}[f]), StreamID: fmt.Sprintf("%048x", 3+f),
+			})
+		}
+		res, err := writeTracesParquet(rows, 10, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		registerFileInMockS3(t, s, mock, fmt.Sprintf("traces/dt=%s/hour=%02d/q%d.parquet", base.Format("2006-01-02"), base.Hour(), f), res.Data, base.Add(time.Duration(f)*40*time.Second))
+	}
+	run := tracesRunner(t, s, base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
+	bg := context.Background()
+	t10 := "tr-1-0"
+	for _, c := range []struct {
+		q    string
+		want int
+	}{
+		{fmt.Sprintf(`* | stats count() if (trace_id:=%q) a, count() n`, t10), 80},
+		{fmt.Sprintf(`* | stats count() if (trace_id:=%q) n`, t10), 10},
+		{fmt.Sprintf(`* | stats by ("resource_attr:service.name") count() if (trace_id:=%q) a, count() n`, t10), 80},
+		{fmt.Sprintf(`* | stats count() if (NOT trace_id:=%q) n`, t10), 70},
+		{fmt.Sprintf(`NOT trace_id:=%q | stats count() n`, t10), 70},
+		{fmt.Sprintf(`trace_id:=%q OR "resource_attr:service.name":="alpha" | stats count() n`, t10), 50},
+		{fmt.Sprintf(`* | filter trace_id:=%q or "resource_attr:service.name":="alpha" | stats count() n`, t10), 50},
+	} {
+		if got := sumN(run(bg, c.q)); got != c.want {
+			t.Errorf("%s: got %d want %d", c.q, got, c.want)
+		}
+	}
+}

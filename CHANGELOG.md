@@ -57,10 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_time:day_range[...]` / `week_range` filter was answered from per-file label counts and fabricated timestamps and
   returned the wrong groups or counts (for example 27 or 6 where 54 was right); these now scan. In logs, a `_time` filter
   that is not a plain range, or a delete over part of a file, is no longer answered from evenly spaced stand-in
-  timestamps. The hits timestamp-only shortcut no longer narrows a read that a pipe needing every field (`pack_json`,
-  `pack_logfmt`, a prefix wildcard) made unprojected, which returned 0 for `| filter` after such a pipe. A `NOT`, an `OR`
-  or a `stats ... if (...)` around a bloom-indexed field (`trace_id`) no longer prunes row groups and files on a term that
-  does not have to match, so `NOT trace_id:="x"` returns the other rows instead of none.
+  timestamps. A `hits` query followed by a pipe that needs every field (`pack_json`, `pack_logfmt`, a prefix wildcard)
+  and then `| filter` returned 0 on cold data because only the timestamp was read; the parsed-query projection
+  described above fixes it (0 became 80 on the live stack). The hits timestamp-only shortcut also stays
+  off when a delete or such a pipe applies; no route sets that hint today, so this part is a guard, not a live fix. A
+  `NOT`, an `OR` or a `stats ... if (...)` around a bloom-indexed field (`trace_id`) no longer prunes on a term that
+  does not have to match, in any layer (footer bloom row-group skip, file-level `.bloom` sidecar, the pushdown
+  predicate, the traces `_trace_idx` prefilter and the `_msg` token bloom), so `NOT trace_id:="x"` returns the other
+  rows instead of none.
 
 ## [0.143.9] - 2026-10-01
 
