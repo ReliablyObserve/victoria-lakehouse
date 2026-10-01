@@ -196,6 +196,10 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// no metadata-only path may fabricate them.
 	ctx = withNeededFields(ctx, withTombstoneFields(neededFields, queryTombstones))
 	ctx = withRowFilter(ctx, filter != nil || hasTombstones)
+	// A pipe that needs every field (pack_json, a prefix wildcard, sort...) makes
+	// the read unprojected; the hits timestamp-only hint must not narrow it again.
+	ctx = withNoFooterBloom(ctx, FilterContainsNotOr(filter) || strings.Contains(queryStr, " if ("))
+	ctx = withReadAll(ctx, logstorage.QueryHasPipes(q) && containsWildcard(neededFields))
 	sink := newTombstoneSink(scope, queryTombstones, s.keyTenantParser(), s.AccountOnlyTenantKeys(), writeBlockWith)
 	filteredWriteBlock := sink.uniform
 
@@ -277,7 +281,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// LabelAggregates for files fully within the range — zero S3 reads. Boundary
 	// / un-aggregated files fall through to the scan below; the buffer bridge
 	// still contributes unflushed rows after the watermark.
-	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones && countPushdownSound(q, neededFields, aggField) {
+	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones && countPushdownSound(q, aggField) {
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
@@ -438,10 +442,16 @@ func recordQueryRows(rowsEmitted *atomic.Int64) {
 // (TestQueryFileWorkers_BoundEnforced) load-bearing: stripping the
 // Acquire makes the bound's Limit unenforced.
 func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) {
-	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, queryStr, s.registry, s.footerCache, s.footerPrefetchBytes()); skip {
+	// Footer and file-level bloom pruning read the query text for terms that
+	// must match; under a NOT, an OR or an `if (...)` they do not (#289).
+	pruneQuery := queryStr
+	if noFooterBloomFrom(ctx) {
+		pruneQuery = ""
+	}
+	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, pruneQuery, s.registry, s.footerCache, s.footerPrefetchBytes()); skip {
 		return
 	}
-	if s.checkFileBloom(ctx, fi, queryStr) {
+	if s.checkFileBloom(ctx, fi, pruneQuery) {
 		return
 	}
 	if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
@@ -990,7 +1000,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// Hits/stats fast path: when the endpoint only needs timestamps (set via
 	// context hint) and the query has no column-specific filters, project only
 	// the timestamp column to avoid deserializing all row data.
-	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
+	if projectedCols == nil && storage.IsTimestampOnly(ctx) && !rowFilterFrom(ctx) && !readAllFrom(ctx) {
 		// Timestamp-only is safe ONLY for an UNFILTERED count/hits. A row filter
 		// must be evaluated against its columns at scan time — a free-text _msg
 		// word filter (e.g. `error | stats count()`) has no bloom to push down,
@@ -1060,7 +1070,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
 	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecks(queryStr))
-	pdf := resolvePushDownIndices(f, buildPushDownFilter(queryStr, s.registry))
+	pdf := resolvePushDownIndices(f, buildPushDownFilter(stripPipeOutsideQuotes(queryStr), s.registry))
 
 	// Footer-bloom row-group skip is SOUND ONLY when the file body is fully
 	// resident. On the projected range-read path (projectedCols != nil →
@@ -1074,7 +1084,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// rows. The file-level pmeta bloom has already pruned files; the per-row-group
 	// footer-bloom skip is a pure optimization, so gating it off on the range-read
 	// path costs only extra in-range row-group reads, never correctness.
-	bloomResident := projectedCols == nil
+	bloomResident := projectedCols == nil && !noFooterBloomFrom(ctx)
 
 	var collectedTraceIDs []string
 	var traceIDsPtr *[]string
@@ -2543,7 +2553,7 @@ func extractExactMatch(query, fieldName string) string {
 // filterFilesByLabels uses manifest-level labels to skip files that definitely
 // don't contain the queried values. This avoids downloading files from S3.
 func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
-	pdf := buildPushDownFilter(queryStr, s.registry)
+	pdf := buildPushDownFilter(stripPipeOutsideQuotes(queryStr), s.registry)
 	if pdf == nil || len(pdf.Checks) == 0 {
 		return files
 	}
@@ -3046,6 +3056,11 @@ func (s *Storage) updateColumnStats(fileKey string, f *parquet.File) {
 // skipping, footer cache, etc.).
 //
 // If no matching files are found, it returns nil (no error).
+//
+// It emits the named files' rows within [startNs, endNs], projected to the
+// columns the query reads. It applies neither the query's row filter nor any
+// delete (tombstone): the caller owns both, and no production code calls it
+// today. Do not use it to answer a query without adding them.
 func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
 	if len(fileKeys) == 0 {
 		return nil

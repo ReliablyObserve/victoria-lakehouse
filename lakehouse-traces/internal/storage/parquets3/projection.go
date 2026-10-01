@@ -42,6 +42,43 @@ func rowFilterFrom(ctx context.Context) bool {
 	return v
 }
 
+type noFooterBloomKey struct{}
+
+// withNoFooterBloom records that the query has a NOT, an OR, or a per-function
+// `if (...)` condition: a bloom term inside one does not have to match, so the
+// footer-bloom row-group skip must not run on it.
+func withNoFooterBloom(ctx context.Context, off bool) context.Context {
+	return context.WithValue(ctx, noFooterBloomKey{}, off)
+}
+
+func noFooterBloomFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(noFooterBloomKey{}).(bool)
+	return v
+}
+
+type readAllKey struct{}
+
+// withReadAll records that the query's pipes need every field, so the read is
+// deliberately unprojected.
+func withReadAll(ctx context.Context, all bool) context.Context {
+	return context.WithValue(ctx, readAllKey{}, all)
+}
+
+func readAllFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(readAllKey{}).(bool)
+	return v
+}
+
+// containsWildcard reports whether a needed-field list means "everything".
+func containsWildcard(fields []string) bool {
+	for _, f := range fields {
+		if f == "*" || strings.HasSuffix(f, "*") {
+			return true
+		}
+	}
+	return false
+}
+
 // withTombstoneFields adds every field a tombstone's query references to the
 // needed-field list. A tombstone is evaluated against the projected block
 // (suppressTombstonedRows), so a projection that lacks its field would see the
@@ -70,16 +107,20 @@ func withTombstoneFields(fields []string, tss []tombstone) []string {
 	return out
 }
 
-// countPushdownSound reports whether a query whose count pushdown candidate is
-// aggField reads nothing but that field (and _time) from the stored rows, and
-// starts with a pipe that consumes them directly. needed is
-// logstorage.GetQueryNeededFields(q).
-func countPushdownSound(q *logstorage.Query, needed []string, aggField string) bool {
+// countPushdownSound reports whether the manifest count pushdown for aggField
+// may answer q. The pushdown fabricates rows from per-file label counts (one
+// field plus made-up timestamps), so the pipe chain must start with a pipe that
+// consumes those rows directly (stats, uniq, top, fields) and read nothing but
+// aggField from them: a rewriting pipe ahead of it, a per-function `if (...)`
+// on another field, or `_time` read by a function (`count() if (_time:...)`)
+// would see fabricated values. The filter is vetted separately
+// (countPushdownFilterFields).
+func countPushdownSound(q *logstorage.Query, aggField string) bool {
 	if !logstorage.QueryFirstPipeIsAggregate(q) {
 		return false
 	}
-	for _, f := range needed {
-		if f != aggField && f != "_time" {
+	for _, f := range logstorage.GetQueryPipeNeededFields(q) {
+		if f != aggField {
 			return false
 		}
 	}

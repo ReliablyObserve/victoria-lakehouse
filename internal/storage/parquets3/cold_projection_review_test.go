@@ -316,7 +316,7 @@ func TestCountPushdownSound(t *testing.T) {
 		{`* | extract "x <service.name> " from _msg | stats by (service.name) count()`, "service.name", false},
 		{`* | format "x" as service.name | stats by (service.name) count()`, "service.name", false},
 		{`* | limit 5 | stats by (service.name) count()`, "service.name", false},
-		{`* | filter level:=x | stats by (service.name) count()`, "service.name", false},
+		{`* | filter level:=x | stats by (service.name) count()`, "service.name", true}, // a filter pipe is folded into the filter; countPushdownFilterFields vets it,
 		{`service.name:a | stats by (service.name) count()`, "service.name", true},
 		{`*`, "service.name", false},
 	}
@@ -325,7 +325,7 @@ func TestCountPushdownSound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := countPushdownSound(q, logstorage.GetQueryNeededFields(q), c.field); got != c.want {
+		if got := countPushdownSound(q, c.field); got != c.want {
 			t.Errorf("countPushdownSound(%q) = %v, want %v", c.query, got, c.want)
 		}
 	}

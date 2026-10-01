@@ -253,7 +253,7 @@ func TestCountPushdownSound(t *testing.T) {
 		{`* | extract "x <name> " from trace_id | stats by (name) count()`, "name", false},
 		{`* | format "x" as name | stats by (name) count()`, "name", false},
 		{`* | limit 5 | stats by (name) count()`, "name", false},
-		{`* | filter status_code:=2 | stats by (name) count()`, "name", false},
+		{`* | filter status_code:=2 | stats by (name) count()`, "name", true}, // a filter pipe is folded into the filter; countPushdownFilterFields vets it,
 		{`name:a | stats by (name) count()`, "name", true},
 		{`*`, "name", false},
 	}
@@ -262,7 +262,7 @@ func TestCountPushdownSound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := countPushdownSound(q, logstorage.GetQueryNeededFields(q), c.field); got != c.want {
+		if got := countPushdownSound(q, c.field); got != c.want {
 			t.Errorf("countPushdownSound(%q) = %v, want %v", c.query, got, c.want)
 		}
 	}
@@ -275,26 +275,6 @@ func TestRowFilterContext(t *testing.T) {
 	if !rowFilterFrom(withRowFilter(context.Background(), true)) {
 		t.Error("withRowFilter(true) lost")
 	}
-}
-
-// bloomUnsafe reports a query on which the UNPROJECTED path is known to give a
-// wrong reference answer, so the property cannot compare against it. Both are
-// defects on main, separate from this change: the footer-bloom row-group skip
-// (which runs only when every column is read) is built by scanning the query
-// text, so it (1) ignores a NOT or an OR around a bloom column (`NOT trace_id:="x"` returns
-// no rows) and (2) picks up a bloom-column term from a stats `if (...)`
-// condition as if it were a row filter (`stats count() if (trace_id:a*)` returns
-// no rows). The projected path skips row groups only by the real filter, so it
-// is the one that is right.
-func bloomUnsafe(q string) bool {
-	bloom := []string{`trace_id:`, `name:`, `service.name":`, `service.name:`, `host.name":`}
-	has := false
-	for _, f := range bloom {
-		if strings.Contains(q, f) {
-			has = true
-		}
-	}
-	return has && (strings.Contains(q, "NOT") || strings.Contains(q, " OR ") || strings.Contains(q, " if ("))
 }
 
 // TestRunQueryProjectionEquivalence_Random (traces) drives random filter + pipe
@@ -331,9 +311,6 @@ func TestRunQueryProjectionEquivalence_Random(t *testing.T) {
 			q := g.query()
 			parsed, err := logstorage.ParseQuery(q)
 			if err != nil || logstorage.QueryHasFilterSubqueries(parsed) {
-				continue
-			}
-			if bloomUnsafe(q) {
 				continue
 			}
 			got, want := run(s, q), run(allColumnsStore{s}, q)
