@@ -1100,7 +1100,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 			metrics.ParquetRowGroupsSkipped.Inc("pushdown")
 			continue
 		}
-		if tokenBloomSkip(fileKVMeta, rgIdx, searchTokens) {
+		if !noFooterBloomFrom(ctx) && tokenBloomSkip(fileKVMeta, rgIdx, searchTokens) {
 			metrics.ParquetRowGroupsSkipped.Inc("token_bloom")
 			continue
 		}
