@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explains why Lakehouse scales linearly with two stateless pod types, and adds a long-term retention
   calculator (`scripts/cost/cost_tiering.py`) for S3 lifecycle tiering from 30 days to 7 years.
 
+## [0.143.9] - 2026-10-01
+
+### Changed
+
+- **Release images are built with Go 1.27.1** (`golang:1.27.1-alpine3.23` in `Dockerfile.logs`,
+  `Dockerfile.traces` and `Dockerfile.datagen`; was 1.26.8).
+
 ## [0.143.8] - 2026-10-01
 
 ### Security
