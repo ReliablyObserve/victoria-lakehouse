@@ -191,15 +191,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	scope := scopeFor(ctx, tenantIDs)
 	queryTombstones := s.scopeTombstones(scope, startNs, endNs)
 	hasTombstones := len(queryTombstones) > 0
-	// A tombstone is evaluated on the projected block, so its fields must be read
-	// too; and rows under a row filter or a tombstone are tested one by one, so
-	// no metadata-only path may fabricate them.
-	ctx = withNeededFields(ctx, withTombstoneFields(neededFields, queryTombstones))
-	ctx = withRowFilter(ctx, filter != nil || hasTombstones)
-	// A pipe that needs every field (pack_json, a prefix wildcard, sort...) makes
-	// the read unprojected; the hits timestamp-only hint must not narrow it again.
-	ctx = withNoFooterBloom(ctx, FilterContainsNotOr(filter) || strings.Contains(queryStr, " if ("))
-	ctx = withReadAll(ctx, logstorage.QueryHasPipes(q) && containsWildcard(neededFields))
+	ctx = withReadContext(ctx, q, neededFields, filter, queryStr, queryTombstones)
 	sink := newTombstoneSink(scope, queryTombstones, s.keyTenantParser(), s.AccountOnlyTenantKeys(), writeBlockWith)
 	filteredWriteBlock := sink.uniform
 

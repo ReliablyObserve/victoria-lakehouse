@@ -150,7 +150,7 @@ func TestColdCountPushdown_RewrittenGroupKey(t *testing.T) {
 	if fmtGroups(got) != fmtGroups(methods) {
 		t.Errorf("copy as name\n  got  %s\n  want %s", fmtGroups(got), fmtGroups(methods))
 	}
-	got, used = served(`* | extract "<name> <r>" from trace_id | stats by (name) count() n`)
+	_, used = served(`* | extract "<name> <r>" from trace_id | stats by (name) count() n`)
 	if used {
 		t.Error("extract-rewritten group key was answered from the stored aggregates")
 	}

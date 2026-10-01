@@ -215,3 +215,21 @@ func stripTimeRange(filterPart string) string {
 	}
 	return s
 }
+
+// withReadContext attaches to ctx everything the per-file reads need to decide
+// what to fetch and which shortcuts they may take:
+//
+//   - the needed-field list, with the fields of every overlapping delete added
+//     (a delete is evaluated on the projected block);
+//   - whether rows must be tested one by one (a row filter or a delete), so no
+//     metadata-only path may fabricate them;
+//   - whether the footer-bloom skip is off (a NOT, an OR or an `if (...)` makes
+//     a bloom term optional);
+//   - whether a pipe needs every field (the hits timestamp-only hint must not
+//     narrow such a read again).
+func withReadContext(ctx context.Context, q *logstorage.Query, needed []string, filter *logstorage.Filter, queryStr string, tss []tombstone) context.Context {
+	ctx = withNeededFields(ctx, withTombstoneFields(needed, tss))
+	ctx = withRowFilter(ctx, filter != nil || len(tss) > 0)
+	ctx = withNoFooterBloom(ctx, FilterContainsNotOr(filter) || strings.Contains(queryStr, " if ("))
+	return withReadAll(ctx, logstorage.QueryHasPipes(q) && containsWildcard(needed))
+}
