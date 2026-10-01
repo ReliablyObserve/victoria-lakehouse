@@ -340,7 +340,7 @@ func FuzzRestartWatermark(f *testing.F) {
 		f.Add(seed, uint8(10))
 	}
 	f.Fuzz(func(t *testing.T, seed int64, steps uint8) {
-		rwPropertyRun(t, seed, int(steps%24)+1)
+		rwPropertyRun(t, seed, int(steps%10)+1) // short: the fuzz engine kills an input that runs over 10s
 	})
 }
 

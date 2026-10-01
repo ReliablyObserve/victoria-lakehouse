@@ -1,0 +1,8 @@
+apiVersion: 1
+datasources:
+  - {name: "LH Logs", type: victoriametrics-logs-datasource, uid: lh-logs, access: proxy, url: "http://lakehouse-logs:9428", isDefault: true, jsonData: {maxLines: 1000, derivedFields: [{datasourceUid: lh-jaeger, matcherRegex: 'trace_id=(\w+)', name: traceID, url: "$${__value.raw}"}]}}
+  - {name: "Hot VL (reference)", type: victoriametrics-logs-datasource, uid: hot-logs, access: proxy, url: "http://hot-vl:9428", jsonData: {maxLines: 1000, derivedFields: [{datasourceUid: hot-jaeger, matcherRegex: 'trace_id=(\w+)', name: traceID, url: "$${__value.raw}"}]}}
+  - {name: "LH Jaeger", type: jaeger, uid: lh-jaeger, access: proxy, url: "http://lakehouse-traces:10428/select/jaeger", jsonData: {tracesToLogsV2: {datasourceUid: lh-logs, spanStartTimeShift: "-1h", spanEndTimeShift: "1h", filterByTraceID: true}, nodeGraph: {enabled: true}}}
+  - {name: "Hot Jaeger (reference)", type: jaeger, uid: hot-jaeger, access: proxy, url: "http://hot-vt:10428/select/jaeger", jsonData: {tracesToLogsV2: {datasourceUid: hot-logs, spanStartTimeShift: "-1h", spanEndTimeShift: "1h", filterByTraceID: true}, nodeGraph: {enabled: true}}}
+  - {name: "LH Tempo", type: tempo, uid: lh-tempo, access: proxy, url: "http://lakehouse-traces:10428/select/tempo", jsonData: {streamingEnabled: {search: false, metrics: false}, tracesToLogsV2: {datasourceUid: lh-logs}}}
+  - {name: "Hot Tempo (reference)", type: tempo, uid: hot-tempo, access: proxy, url: "http://hot-vt:10428/select/tempo", jsonData: {streamingEnabled: {search: false, metrics: false}, tracesToLogsV2: {datasourceUid: hot-logs}}}

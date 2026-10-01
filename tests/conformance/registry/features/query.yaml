@@ -344,6 +344,7 @@
     - lakehouse-traces/internal/storage/parquets3/restart_watermark_bounds_test.go
     - lakehouse-traces/internal/storage/parquets3/restart_watermark_faults_test.go
     - lakehouse-traces/shutdown_snapshot_test.go
+    - tests/playwright/tests/restart-buffer-visibility.spec.ts
   docs:
     - docs/durability.md#22-restart-and-the-read-watermark
     - docs/read-path.md

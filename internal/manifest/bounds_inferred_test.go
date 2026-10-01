@@ -259,3 +259,39 @@ func TestSaveTo_ConcurrentSavesDoNotCollide(t *testing.T) {
 		t.Errorf("directory holds %d entries after the saves, want only the snapshot", len(entries))
 	}
 }
+
+func TestHourShaped_EdgeCases(t *testing.T) {
+	if hourShaped("no-partition/key.parquet", 1, 2) {
+		t.Error("a key without a partition cannot be hour-shaped")
+	}
+	if hourShaped("0/0/logs/dt=2026-13-45/hour=99/a.parquet", 1, 2) {
+		t.Error("an unparsable partition cannot be hour-shaped")
+	}
+	if hourShaped(biKey, biHourStart(), biHourEnd()-1) || hourShaped(biKey, biHourStart()+1, biHourEnd()) {
+		t.Error("only exactly [hour, hour+1h-1ns] is hour-shaped")
+	}
+	if !hourShaped(biKey, biHourStart(), biHourEnd()) {
+		t.Error("the exact partition hour must be hour-shaped")
+	}
+}
+
+func TestSaveTo_UnwritableDirectoryFails(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "file")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := New("b", "").SaveTo(filepath.Join(blocker, "sub", "snap.json")); err == nil {
+		t.Error("SaveTo under a regular file must fail")
+	}
+	ro := filepath.Join(dir, "ro")
+	if err := os.Mkdir(ro, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(ro, 0o700) }()
+	if os.Geteuid() != 0 {
+		if err := New("b", "").SaveTo(filepath.Join(ro, "snap.json")); err == nil {
+			t.Error("SaveTo into a read-only directory must fail (temp file creation)")
+		}
+	}
+}
