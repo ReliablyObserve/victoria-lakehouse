@@ -123,6 +123,7 @@ the handle the allowlist and the fixes refer to.
 | **B5** | `/select/logsql/hits` at sub-hour `step` returns evenly spaced synthetic buckets — the totals match hot but the per-bucket distribution is flat, because cold partitions are hour-granular and the sub-hour buckets are interpolated rather than counted. | `hits_small_step`, `hits_bucket_keys`. |
 | **B6** | A tenant-scoped read on the cold tier answers with every tenant's rows rather than only the requesting tenant's: the logs query path in `internal/storage/parquets3/storage_query.go` selects files with `GetFilesForRange` instead of `GetFilesForRangeTenant` and never consults the request's tenant ids, and on both binaries `field_names`, `field_values` and `streams`, the pmeta catalog, the label index and the buffer bridge are unscoped; the traces Jaeger path passes `tenantIDs=nil`. | `TestTenantIsolation_Logs_PerTenantCounts/LH/*`, `TestTenantIsolation_Traces_PerTenantParity/*/field_values_hits`. |
 | **B7** | A row whose timestamp is exactly the last nanosecond of the query window is dropped on cold. The HTTP `end` bound is exclusive and the upstream handler turns it into an inclusive bound by subtracting 1 ns; cold row-group pruning (`rowGroupMatchesTimeRange` in `storage_query.go`, both binaries) then compares that inclusive bound exclusively (`rgMin < endNs`), so a row group whose smallest timestamp sits on the bound is skipped. The file-level and row-level checks are inclusive and agree with hot. The miss is wider than one nanosecond: measured on the parity stack (2026-10-01), a window `[T-1ns, T+e]` returns the row at `T` on hot for every `e >= 1ns` and on cold only once `T+e` reaches the next whole microsecond (`e` = 1, 2, 10, 100, 500 ns: nothing; `e` = 999, 1000 ns: the row). | `TestParity_TimeRange/boundary_ns_start_inclusive`. |
+| **B8** | A sort over all columns (`sort` without `by`, `first N` / `last N` without `by`) orders rows that share a `_time` differently on cold. Upstream compares columns in block order, and VictoriaLogs lists `_time`, `_stream_id`, `_stream`, `_msg` first (`blockResult.initColumnsByFilter`), so tied rows are ordered by `_stream_id`; the cold tier builds blocks with `_msg` right after `_time`, so it orders them by `_msg` and a limit keeps different rows. Both binaries. Issue #324. | `TestParity_AllColumnSortTieOrder/logs`, `TestParity_AllColumnSortTieOrder/traces`. |
 
 Each is fixed in its own PR; none of them is a test-harness problem, so the
 suite records them rather than hiding them.
@@ -212,7 +213,10 @@ a comparison into a silent no-op or a result that depends on timing:
   last `_time` of the two answers, and the whole group, re-read from both
   tiers with the case's row-limit pipes removed (`tests/parity/rows_ties.go`),
   is identical on hot and cold, larger than what was kept, and contains every
-  kept row. The re-read window reaches 2µs past the tie because of B7.
+  kept row. The re-read window reaches 2µs past the tie because of B7. A sort
+  over all columns (`sort`, `first|last N` without `by`) is not a tie for this
+  rule: VictoriaLogs orders those rows by `_stream_id`, and the cold tier
+  diverging there is B8.
 - **Read the Tempo tag APIs more than once.** VictoriaTraces answers
   `/api/v2/search/tags` and `/api/v2/search/tag/<tag>/values` through
   `singleFieldQueryHelper`, whose result slice is appended to from several
