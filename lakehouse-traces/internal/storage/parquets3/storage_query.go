@@ -300,7 +300,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// (cached) footer read per remaining file; the payoff is that a
 	// non-existent trace ID stops sweeping 50+ files of bloom false
 	// positives — previously a 30s Jaeger client timeout per Get.
-	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 {
+	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 && !noFooterBloomFrom(ctx) {
 		files = s.filterFilesByTraceIdx(ctx, files, tids)
 		if len(files) == 0 {
 			s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
@@ -1194,7 +1194,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 			metrics.ParquetRowGroupsSkipped.Inc("pushdown")
 			continue
 		}
-		if tokenBloomSkip(fileKVMeta, rgIdx, searchTokens) {
+		if !noFooterBloomFrom(ctx) && tokenBloomSkip(fileKVMeta, rgIdx, searchTokens) {
 			metrics.ParquetRowGroupsSkipped.Inc("token_bloom")
 			continue
 		}
