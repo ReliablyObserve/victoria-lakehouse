@@ -278,6 +278,8 @@ RunQuery:
   3. emit via writeBlock (outer RunQuery applies pipes once over Parquet + recent blocks)
 ```
 
+**The watermark is per tenant and exact.** It is the newest `MaxTimeNs` among the objects the query selected for that tenant, and the buffer serves only rows strictly after it. Only an object's **exact** time bounds may raise it. An object the manifest knows only from the S3 listing (the final flush of a graceful shutdown, a peer's flush) carries bounds inferred from the partition hour, flagged `bounds_inferred`; they never feed the watermark. Before the watermark is computed, a query resolves the exact bounds of such objects from the pmeta file-meta facet, then the object's Parquet footer and page index (the manifest keeps them from then on), and an object that stays unresolved is left out. Without that, rows buffered after a restart in the same UTC hour as the data flushed at shutdown were hidden until the next flush (#272). See [Persistence & Durability](durability.md#22-restart-and-the-read-watermark).
+
 Buffer/peer errors are silently ignored for graceful degradation — S3 data is always available even if insert pods are temporarily unreachable.
 
 ## DataBlock Emission

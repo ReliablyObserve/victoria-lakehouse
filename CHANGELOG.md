@@ -50,6 +50,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `lakehouse_tenant_unknown_orgid_reads_total`. Integer tenants (`AccountID`/`ProjectID`) behave exactly as before;
   string tenants are a Lakehouse addition to VictoriaLogs and VictoriaTraces.
 
+### Fixed
+
+- **After a graceful restart, rows ingested in the same hour as the data flushed at shutdown no longer stay hidden
+  until the next flush (#272).** Queries (`*`, field and stream lists, `stats`) and the Jaeger and Tempo reads of
+  both binaries returned only the older rows for the rest of that UTC hour, because the objects written by the
+  shutdown's final flush were learned from the S3 listing with the hour's end as their newest row, and the read
+  path treated everything up to that time as already flushed. The manifest now marks such time ranges as
+  inferred and never uses them to decide what the buffer still owes: it takes the exact range from the pmeta
+  facet or the Parquet footer first (the startup warmup does this for the last six hours, a query does it for
+  anything still unresolved), and shutdown saves the manifest snapshot a second time after the final flush, so
+  the next boot already has the exact ranges. Rows the buffer held before the restart are still counted once.
+
 ## [0.143.7] - 2026-09-30
 
 ### Changed

@@ -10,7 +10,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 |---|---|---|---|---|---|
 | Ingest | 6 | 0 | 1 | 0 | 7 |
 | Storage | 21 | 0 | 2 | 2 | 25 |
-| Query | 13 | 1 | 0 | 1 | 15 |
+| Query | 14 | 1 | 0 | 1 | 16 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 6 | 0 | 0 | 1 | 7 |
 | Deletion | 11 | 0 | 0 | 0 | 11 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **133** | **1** | **3** | **8** | **145** |
+| **Total** | **134** | **1** | **3** | **8** | **146** |
 
 ## Coverage gaps
 
@@ -406,7 +406,7 @@ Ingest writes at a level chosen for throughput; each compaction level re-encodes
 - Verification: tests: `internal/storage/parquets3/writer_test.go#TestWriteLogsParquet_CompressionLevels`, `internal/compaction/ttl_compression_test.go`, `internal/config/config_test.go#TestCompressionLevelForOutput_GlobalSchedule`, `internal/storage/parquets3/writer_realdata_bench_test.go#TestRealDataCompressionBenchmark`
 - Docs: `docs/zstd-compression-benchmark.md`, `docs/open-parquet-format.md`
 
-## Query (15)
+## Query (16)
 
 ### ✅ Multi-tier bloom index
 
@@ -418,6 +418,17 @@ Point lookups over an object store are a file-skipping problem. Blooms answer "t
 
 - Verification: rows: `lh.bloom.status.schema` (pass, pending) · tests: `internal/bloomindex/bloomindex_test.go`, `internal/bloomindex/bloom_tiering_test.go`, `internal/bloomindex/cache_test.go`, `internal/bloomindex/controller_test.go`, `tests/e2e/bloom_verification_test.go#TestBloomVerify_StatusAPI_FullResponse` · bench: `trace_lookup`, `trace_by_id`
 - Docs: `docs/bloom-index.md#architecture`, `docs/bloom-index.md#age-based-tiering`
+
+### ✅ Rows buffered after a graceful restart are visible from the first query
+
+`lh.feature.query.buffer_visible_after_restart` · status: shipped · surfaces: api, storage
+
+**Restart-safe read watermark**: after a graceful restart, rows ingested in the same UTC hour as the data flushed at shutdown are visible exactly once from the first query — time ranges the manifest only inferred from the S3 listing never decide what the buffer still owes, and the shutdown manifest snapshot is saved again after the final flush.
+
+The buffer serves only rows newer than the newest time covered by the Parquet objects a query selected. An object the manifest knows only from a listing has no recorded range, so its range is inferred from the partition hour and marked as inferred; the marked range is replaced by the exact one from the pmeta facet or the Parquet footer before any watermark is computed, and an object whose range cannot be resolved is left out of it. Shutdown persists the manifest again after the final flush so the next boot starts with exact ranges. Verified for both binaries across restart, hour-boundary and previous-hour cases, a peer's flush learned by listing, and a random write/flush/restart property test.
+
+- Verification: tests: `internal/storage/parquets3/restart_watermark_test.go`, `internal/storage/parquets3/restart_watermark_bounds_test.go`, `internal/manifest/bounds_inferred_test.go`, `cmd/lakehouse-logs/shutdown_snapshot_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_bounds_test.go`, `lakehouse-traces/shutdown_snapshot_test.go`
+- Docs: `docs/durability.md#22-restart-and-the-read-watermark`, `docs/read-path.md`
 
 ### ✅ Column projection
 
