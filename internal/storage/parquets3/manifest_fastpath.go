@@ -112,9 +112,12 @@ func metadataOnlyPlanFromContext(ctx context.Context) metadataOnlyPlan {
 
 // fileFullyInRange reports whether fi's manifest metadata is populated and its
 // whole time span sits inside [startNs, endNs]. MinTimeNs == 0 is VL-side
-// sentinel for "bounds not yet enriched from the Parquet footer".
+// sentinel for "bounds not yet enriched from the Parquet footer". Bounds the
+// manifest only inferred from the listing (BoundsInferred) never qualify: the
+// object is read for real, so a metadata-answered count can never disagree
+// with the buffer watermark about which rows the object holds.
 func fileFullyInRange(fi manifest.FileInfo, startNs, endNs int64) bool {
-	return fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+	return fi.RowCount > 0 && !fi.BoundsInferred && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
 		fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs
 }
 

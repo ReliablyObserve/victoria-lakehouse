@@ -33,13 +33,16 @@ import (
 )
 
 type Storage struct {
-	cfg               *config.Config
-	pool              *s3reader.ClientPool
-	manifest          *manifest.Manifest
-	registry          *schema.Registry
-	memCache          *cache.LRU
-	diskCache         *cache.DiskCache
-	sfGroup           *cache.Group
+	cfg       *config.Config
+	pool      *s3reader.ClientPool
+	manifest  *manifest.Manifest
+	registry  *schema.Registry
+	memCache  *cache.LRU
+	diskCache *cache.DiskCache
+	sfGroup   *cache.Group
+	// inferredBounds is the negative cache and the in-flight set of the exact-
+	// bounds resolution (bounds_resolve.go); the zero value is ready to use.
+	inferredBounds    boundsResolver
 	labelIndex        *cache.LabelIndex
 	persister         *cache.Persister
 	discovery         *discovery.Discovery

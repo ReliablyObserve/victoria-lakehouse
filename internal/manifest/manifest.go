@@ -160,6 +160,9 @@ type partitionEntry struct {
 }
 
 type Manifest struct {
+	// saveMu serialises SaveTo: a persist that outlived its timeout during
+	// shutdown must not race the next one on the snapshot file.
+	saveMu           sync.Mutex
 	mu               sync.RWMutex
 	files            map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
 	sortedPartitions []partitionEntry
@@ -1917,7 +1920,7 @@ func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, max
 	if files[i].BoundsInferred {
 		// Both bounds or neither: a lone exact bound next to an inferred one
 		// would leave a range that is neither the truth nor the inferred hour.
-		if minTimeNs > 0 && maxTimeNs >= minTimeNs {
+		if minTimeNs > 0 && maxTimeNs >= minTimeNs && !hourShaped(files[i].Key, minTimeNs, maxTimeNs) {
 			files[i].MinTimeNs = minTimeNs
 			files[i].MaxTimeNs = maxTimeNs
 			files[i].BoundsInferred = false
@@ -2230,6 +2233,8 @@ type persistedManifest struct {
 }
 
 func (m *Manifest) SaveTo(path string) error {
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
 	now := time.Now()
 	m.mu.Lock()
 	m.pruneRetiredLocked(now)
@@ -2266,11 +2271,25 @@ func (m *Manifest) SaveTo(path string) error {
 		return fmt.Errorf("create dir: %w", err)
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+	// A unique temp name per call, renamed atomically: even a writer that is not
+	// serialised by saveMu (another process, a stale one) never shares a temp
+	// file with this one.
+	tf, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
+	tmp := tf.Name()
+	if _, err := tf.Write(buf.Bytes()); err != nil {
+		_ = tf.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write manifest: %w", err)
+	}
+	if err := tf.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write manifest: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("rename manifest: %w", err)
 	}
 
@@ -2354,6 +2373,10 @@ func (m *Manifest) LoadFrom(path string) error {
 		}
 		format = "json"
 	}
+
+	// Entries written before bounds were marked carry the inferred partition
+	// hour as if it were exact; they are inferred, whatever the snapshot says.
+	markHourShapedInferred(snap.Files)
 
 	m.mu.Lock()
 	m.files = snap.Files
@@ -2684,4 +2707,34 @@ func (m *Manifest) TenantSummaries() []TenantSummary {
 		return result[i].TotalBytes > result[j].TotalBytes
 	})
 	return result
+}
+
+// hourShaped reports whether [minNs, maxNs] is exactly the partition hour of
+// key: the range the manifest INFERS for an object it knows only from a
+// listing. Older versions stored it unmarked, in snapshots, the file-metadata
+// cache and the facets, so a source that hands it back is not evidence of the
+// object's real range. (A real object whose first row is on the hour's first
+// nanosecond and whose last is on its last is not a case worth keeping.)
+func hourShaped(key string, minNs, maxNs int64) bool {
+	part := extractPartition(key)
+	if part == "" {
+		return false
+	}
+	t, err := parsePartitionTime(part)
+	if err != nil {
+		return false
+	}
+	return minNs == t.UnixNano() && maxNs == t.Add(time.Hour).UnixNano()-1
+}
+
+// markHourShapedInferred flags every entry whose bounds are exactly the
+// partition hour (see hourShaped) as inferred.
+func markHourShapedInferred(files map[string][]FileInfo) {
+	for _, pFiles := range files {
+		for i := range pFiles {
+			if !pFiles[i].BoundsInferred && hourShaped(pFiles[i].Key, pFiles[i].MinTimeNs, pFiles[i].MaxTimeNs) {
+				pFiles[i].BoundsInferred = true
+			}
+		}
+	}
 }

@@ -93,10 +93,21 @@ type rwRig struct {
 	bw       *BatchWriter
 }
 
+// rwFreezeClock pins the clock the buffer-retention floor reads to just before
+// the fixture hour: the fake buffer keeps every row it was given, regardless of
+// the retention a real one applies, and the fixture's times are fixed.
+func rwFreezeClock(t *testing.T) {
+	t.Helper()
+	old := nowFn
+	nowFn = func() time.Time { return rwHour.Add(-time.Hour) }
+	t.Cleanup(func() { nowFn = old })
+}
+
 func newRWRig(t *testing.T) *rwRig {
 	t.Helper()
 	mock := newMockS3Server()
 	t.Cleanup(mock.close)
+	rwFreezeClock(t)
 	r := &rwRig{t: t, mock: mock, buf: &rwBuffer{}, snapshot: filepath.Join(t.TempDir(), "manifest.snapshot")}
 	r.s, r.bw = r.boot(manifest.New("test-bucket", "logs/"))
 	return r

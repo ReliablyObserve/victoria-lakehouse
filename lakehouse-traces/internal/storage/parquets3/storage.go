@@ -32,13 +32,16 @@ import (
 )
 
 type Storage struct {
-	cfg               *config.Config
-	pool              *s3reader.ClientPool
-	manifest          *manifest.Manifest
-	registry          *schema.Registry
-	memCache          *cache.LRU
-	diskCache         *cache.DiskCache
-	sfGroup           *cache.Group
+	cfg       *config.Config
+	pool      *s3reader.ClientPool
+	manifest  *manifest.Manifest
+	registry  *schema.Registry
+	memCache  *cache.LRU
+	diskCache *cache.DiskCache
+	sfGroup   *cache.Group
+	// inferredBounds is the negative cache and the in-flight set of the exact-
+	// bounds resolution (bounds_resolve.go); the zero value is ready to use.
+	inferredBounds    boundsResolver
 	labelIndex        *cache.LabelIndex
 	catalog           *pmeta.Store // unified field/value catalog; nil unless --pmeta
 	persister         *cache.Persister
@@ -1422,7 +1425,8 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 	}
 
 	smallEnriched := 0
-	if len(needEnrich) > 0 {
+	// Same nil guard as Phase 3: insert-only pods run without a footer cache.
+	if len(needEnrich) > 0 && s.footerCache != nil {
 		var stillMissing []manifest.FileInfo
 		enrichedKeys := make(map[string]bool, footerEnriched)
 		for _, fi := range needEnrich {

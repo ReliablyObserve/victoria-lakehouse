@@ -64,7 +64,7 @@ func (fm FileMeta) ApplyTo(fi *FileInfo) {
 	}
 	if fi.BoundsInferred {
 		// Exact bounds replace the listing's inferred hour, never fill beside it.
-		if fm.MinTimeNs > 0 && fm.MaxTimeNs >= fm.MinTimeNs {
+		if fm.MinTimeNs > 0 && fm.MaxTimeNs >= fm.MinTimeNs && !hourShaped(fi.Key, fm.MinTimeNs, fm.MaxTimeNs) {
 			fi.MinTimeNs = fm.MinTimeNs
 			fi.MaxTimeNs = fm.MaxTimeNs
 			fi.BoundsInferred = false

@@ -410,22 +410,32 @@ type bufferWatermarks map[logstorage.TenantID]int64
 // untenanted objects to 0:0, where the read path serves them) and records each
 // tenant's newest MaxTimeNs.
 //
-// Only an object's EXACT MaxTimeNs may raise a watermark. The bounds the
-// manifest infers for an object it learned from the listing alone are the end
-// of the partition hour; used here they would hide every buffered row of the
-// rest of the hour (the final flush of a graceful shutdown lands in the
-// listing, not the snapshot). They are resolved first (withExactBounds); an
-// object that stays unresolved is left out, so its tenant's buffer window is
-// not cut at an hour boundary no row ever reached.
-func (s *Storage) bufferWatermarksFor(ctx context.Context, files []manifest.FileInfo) bufferWatermarks {
+// Only an object's EXACT MaxTimeNs may raise a watermark from knowledge; an
+// object the manifest knows only from the S3 listing carries bounds inferred
+// from the partition hour, whose end would hide every buffered row of the rest
+// of the hour (the final flush of a graceful shutdown lands in the listing, not
+// the snapshot). So, for the objects that could change the answer (an inferred
+// end at or above max(the query's start, now - buffer retention) and above the
+// tenant's exact watermark), the exact bounds are resolved first
+// (withExactBounds: manifest, pmeta facet, one ranged footer read, bounded in
+// time and backed off after a failure).
+//
+// An object that stays unresolved keeps its INFERRED end in the watermark: the
+// buffer is hidden up to the end of its hour, never counted against rows the
+// object already holds. That is the conservative side - rows hide until it
+// resolves, nothing is counted twice - and lakehouse_watermark_inferred_unresolved_total
+// counts it.
+func (s *Storage) bufferWatermarksFor(ctx context.Context, startNs int64, files []manifest.FileInfo) bufferWatermarks {
 	if len(files) == 0 {
 		return nil
 	}
-	files = s.withExactBounds(ctx, files)
 	parse := s.manifest.TenantKeyParser()
 	wm := make(bufferWatermarks, 2)
+	tenants := make([]logstorage.TenantID, len(files))
+	valid := make([]bool, len(files))
 	for i := range files {
 		tid, ok := tenantIDOfKey(parse, files[i].Key)
+		tenants[i], valid[i] = tid, ok
 		if !ok {
 			continue
 		}
@@ -433,7 +443,61 @@ func (s *Storage) bufferWatermarksFor(ctx context.Context, files []manifest.File
 			wm[tid] = maxNs
 		}
 	}
+	floor := s.watermarkFloor(startNs)
+	var cand []int
+	for i := range files {
+		if !valid[i] || !files[i].BoundsInferred {
+			continue
+		}
+		if files[i].MaxTimeNs < floor || files[i].MaxTimeNs <= wm[tenants[i]] {
+			continue // cannot change what the buffer serves
+		}
+		cand = append(cand, i)
+	}
+	if len(cand) == 0 {
+		return wm
+	}
+	sub := make([]manifest.FileInfo, len(cand))
+	for k, i := range cand {
+		sub[k] = files[i]
+	}
+	sub = s.withExactBounds(ctx, sub)
+	for k, i := range cand {
+		if _, exact := sub[k].ExactBounds(); exact > 0 {
+			if exact > wm[tenants[i]] {
+				wm[tenants[i]] = exact
+			}
+			continue
+		}
+		// Unresolved: the conservative inferred end.
+		metrics.WatermarkInferredUnresolved.Inc()
+		if sub[k].MaxTimeNs > wm[tenants[i]] {
+			wm[tenants[i]] = sub[k].MaxTimeNs
+		}
+	}
 	return wm
+}
+
+// watermarkSource yields the per-tenant buffer watermarks at the moment the
+// buffer is actually consulted. Computing them can mean reading object footers,
+// so a query that never reaches the buffer (no buffer, a trace_id lookup,
+// the row limit already reached) must not pay for it.
+type watermarkSource interface {
+	watermarks(ctx context.Context) bufferWatermarks
+}
+
+func (w bufferWatermarks) watermarks(context.Context) bufferWatermarks { return w }
+
+// lazyWatermarks computes the watermarks over the query's selected objects on
+// first use.
+type lazyWatermarks struct {
+	s       *Storage
+	startNs int64
+	files   []manifest.FileInfo
+}
+
+func (l lazyWatermarks) watermarks(ctx context.Context) bufferWatermarks {
+	return l.s.bufferWatermarksFor(ctx, l.startNs, l.files)
 }
 
 // tenantIDOfKey maps an object key to the numeric tenant it belongs to. A key

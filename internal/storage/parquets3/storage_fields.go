@@ -695,7 +695,7 @@ func parquetRowToFields(row parquet.Row, colNames []string, tsColIdx int, s *Sto
 // [startNs, endNs] by its manifest bounds. Unknown bounds (either end zero)
 // never qualify: the file could hold rows from any time.
 func fileWithinWindow(fi manifest.FileInfo, startNs, endNs int64) bool {
-	if fi.MinTimeNs == 0 || fi.MaxTimeNs == 0 {
+	if fi.MinTimeNs == 0 || fi.MaxTimeNs == 0 || fi.BoundsInferred {
 		return false
 	}
 	return fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs
@@ -741,7 +741,7 @@ func windowRowGroups(f *parquet.File, lo, hi int64) []int {
 
 // bufferRowsTo streams the unflushed rows of the request's tenants into sink,
 // the same rows RunQuery merges (see queryBufferBridgeTo).
-func (s *Storage) bufferRowsTo(ctx context.Context, startNs, endNs int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
+func (s *Storage) bufferRowsTo(ctx context.Context, startNs, endNs int64, wm watermarkSource, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
 	var emitted atomic.Int64
 	s.queryBufferBridgeTo(ctx, startNs, endNs, 0, &emitted, wm, q, tenantIDs, sink)
 }

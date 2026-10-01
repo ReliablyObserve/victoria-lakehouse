@@ -1302,7 +1302,7 @@ func TestTenantScope_BufferWatermarks(t *testing.T) {
 		{Key: "1001/0/logs/" + tsPartition + "/c.parquet", MaxTimeNs: 50},
 		{Key: "acme/x/logs/" + tsPartition + "/d.parquet", MaxTimeNs: 999}, // not a numeric tenant
 	}
-	wm := f.s.bufferWatermarksFor(context.Background(), files)
+	wm := f.s.bufferWatermarksFor(context.Background(), 0, files)
 	if got := wm[logstorage.TenantID{}]; got != 400 {
 		t.Errorf("0:0 watermark = %d, want 400 (its own objects and the legacy object it owns)", got)
 	}
@@ -1312,7 +1312,7 @@ func TestTenantScope_BufferWatermarks(t *testing.T) {
 	if len(wm) != 2 {
 		t.Errorf("watermarks = %v, want exactly 0:0 and 1001:0", wm)
 	}
-	if got := f.s.bufferWatermarksFor(context.Background(), nil); got != nil {
+	if got := f.s.bufferWatermarksFor(context.Background(), 0, nil); got != nil {
 		t.Errorf("no objects → no watermarks, got %v", got)
 	}
 
