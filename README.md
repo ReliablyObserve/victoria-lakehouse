@@ -14,6 +14,21 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/ReliablyObserve/victoria-lakehouse)](https://goreportcard.com/report/github.com/ReliablyObserve/victoria-lakehouse)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
 
+## TL;DR
+
+**The long-term home for logs and traces that is cheap, fast and open at the same time, so you don't have to pick two.**
+
+- 💰 **Lowest-cost HA option we modelled from 0.1 to 10 TB/day.** One copy on S3 behind stateless nodes: 53–84% cheaper than Loki + Tempo and 19–45% cheaper than HA tiered ClickHouse, at AWS list prices ([cost model](docs/cost-estimates.md); Lakehouse CPU is assumed until measured).
+- ⚡ **Millisecond queries straight from S3.** Median p95 of **8.5 ms for logs and 7.7 ms for traces**: within about 2× of VictoriaLogs/VictoriaTraces on local SSD, which set the bar for speed, and **10–13× faster than ClickHouse** reading the same Parquet from S3 ([Performance](#performance): validated benchmark, small dataset, warm cache).
+- 📥 **Ingest from anything VictoriaLogs and VictoriaTraces accept**: OTLP, Loki push, Elasticsearch bulk, Splunk HEC, Datadog, journald, syslog, JSON lines and the native VL/VT protocols, through the upstream handlers themselves.
+- 🔎 **Query it the way you already do**: LogsQL, LogQL (via [loki-vl-proxy](https://github.com/ReliablyObserve/loki-vl-proxy)), the Jaeger API, the Tempo API with TraceQL search and metrics, and SQL.
+- 📊 **Keep every Grafana workflow**: Explore, Logs Drilldown, dashboards, and one-click jumps from logs to traces and back, over hot and cold data, with stock Grafana datasources and no plugin to install ([Grafana and UI](#grafana-and-ui-experience)).
+- 🧮 **Analyse the same files with any Parquet engine.** Plain Apache Parquet with Hive partitions, readable directly on S3 by DuckDB, ClickHouse, Spark, Trino and pyarrow. No export, no catalog server, no lock-in.
+
+We are not aware of another system that combines VictoriaLogs/VictoriaTraces ingestion, LogsQL/Loki/Jaeger/Tempo reads and plain Parquet on S3 in one place. Lakehouse is not ready above about 50 TB/day yet ([limits](docs/cost-estimates.md#where-lakehouse-wins-and-where-it-does-not)).
+
+---
+
 **S3-backed cold storage for VictoriaLogs and VictoriaTraces.** Two dedicated binaries — `lakehouse-logs` and `lakehouse-traces` — each 100% API-compatible with VL/VT. Same endpoints, same protocols, same query language. Implements the VL/VT storage interface with an S3 Parquet backend. Registers as a `-storageNode` and works transparently alongside existing VL/VT clusters.
 
 > **Two binaries, one architecture.** `lakehouse-logs` reimplements the VL storage layer. `lakehouse-traces` reimplements the VT storage layer. Both use Parquet on S3 and expose identical HTTP APIs, LogsQL query syntax, binary DataBlock protocol, and insert endpoints as their upstream counterparts. Each binary pins to its own VL/VT dependency version for maximum compatibility.
@@ -23,7 +38,7 @@
 - **Zero-delay reads.** Select pods query ALL insert pods across ALL AZs for unflushed buffer data, merging with S3 results for immediate read-after-write visibility. Single-node deployments self-loop so they serve their own unflushed buffer without a peer fan-out.
 - **Instant-warm restart.** Manifest + footer-cache persist to local disk on shutdown; the next start reloads the manifest in milliseconds and asynchronously re-prefetches every footer the previous pod had cached — first user query after restart hits a hot cache instead of paying an S3 round-trip.
 - **Three-state `/ready` lifecycle.** `503 not_ready` → `204 serving_warming` (queries answered, background warmup in progress) → `200 ready`. Load balancers see fully-warm pods only; queries never block on a half-loaded manifest.
-- **Open format + S3 durability.** 48-56% cheaper than Loki/Tempo at scale. At small scale (≤500 GB/mo), VL/VT EBS is cheapest; at PB/mo with >8mo retention, Lakehouse Hybrid wins. S3's 11-nines durability for compliance, Glacier tiering for 3yr+.
+- **Open format + S3 durability.** One copy on S3 with 11-nines durability for compliance, and Glacier tiering for multi-year retention. See [Cost](#cost).
 - **Sub-millisecond fast path.** Queries within the hot tier's range get an immediate empty response via the partition manifest. Zero S3 I/O.
 - **Disaster recovery.** When the hot cluster is down (outage, upgrade, migration), lakehouse serves all data from S3 — slower but always available.
 - **Cost-aware deletion.** VL-compatible delete APIs with tombstone-based soft delete. Three modes: `hide` (instant, $0), `permanent` (physical removal), `auto` (smart). Glacier-safe — never triggers retrieval fees.
@@ -32,44 +47,153 @@
 
 ---
 
-## The Cost Case
+## Why Victoria Lakehouse
 
-Cost leadership is **scale-dependent**. At small scale (≤500 GB/mo), VL/VT EBS is cheapest — compute dominates and 55x compression wins. At PB/mo with >8 months retention, Lakehouse Hybrid crosses below VL/VT EBS because S3's per-raw-GB cost ($0.0038) beats 3-AZ EBS ($0.0044) by 14%. Standalone Lakehouse is **cheapest at all retention periods** — 57% cheaper than hybrid, 78% cheaper than Loki/Tempo. It adds **open Parquet format, S3 11-nines durability, disaster recovery, and Glacier tiering**.
+**One copy of your logs and traces, as open Parquet on S3, behind the same APIs as VictoriaLogs and VictoriaTraces.**
 
-| Scenario (500 GB/day, 1yr, 3 AZ) | Standalone Lakehouse | VL/VT EBS Only | Lakehouse Hybrid | Loki + Tempo |
-|---|---|---|---|---|
-| **Monthly cost** | **$1,283/mo** | $2,679/mo | $3,009/mo | $5,763/mo |
-| **Compression (logs)** | 6.1x (ZSTD L7) | ~70x | 6.1x (ZSTD L7) | 3-3.5x (Snappy) |
-| **Compression (traces)** | 9.4x (ZSTD L7) | ~47x | 9.4x (ZSTD L7) | 3-4x (Snappy) |
-| **Query latency (point)** | <100ms (bloom) | <10ms (EBS) | <10ms hot / <100ms cold | 1-10s |
-| **Query latency (scan)** | <500ms | <10ms (EBS) | <10ms hot / <500ms cold | 1-10s |
-| **Data format** | **Open Parquet** | Proprietary (VL/VT) | **Proprietary (VL/VT hot) + Open Parquet (S3 cold)** | Proprietary |
-| **S3 durability** | **11 nines** | EBS per-AZ | **11 nines** | 11 nines |
-| **Glacier tiering** | **Yes (cheapest at 3yr+)** | N/A | **Yes (cheapest at 3yr+)** | No (compaction breaks it) |
-| **Analytics access** | **DuckDB, Spark, Trino** | VL/VT API only | **DuckDB, Spark, Trino** | Loki API only |
-| **Disaster recovery** | **Independent** | N/A | **Independent cold tier** | N/A |
-| **Write path** | buffer + S3 + compaction (~1.1x, no WAL) | EBS WAL + LSM (~3-10x) | EBS + WAL + S3 + compaction | WAL→chunk→S3→compact (3-5x) |
-| **CPU (vCPU-months)** | 9 vCPU | 18 vCPU | 25 vCPU | 24 vCPU |
-| **Memory (GB)** | 24 GB | 48 GB | 72 GB | 56 GB |
-| **Network traffic (GB/mo)** | 180 PUT+GET | ~150 (EBS local) | 300 PUT+GET + cross-AZ | 370 PUT+GET + compaction |
-| **Storage breakdown** | S3: $688/mo | EBS: $796/mo | EBS: $65/mo + S3: $688/mo | S3: $1,484/mo |
-| **Cost composition** | 54% Storage, 32% Compute, 14% Network | 30% Storage, 64% Compute, 6% Network | 23% Storage, 64% Compute, 10% Network, 3% Other | 26% Storage, 66% Compute, 6% Network, 2% Other |
+Most observability backends make you choose: a fast proprietary store you can only query through its own API, or an open data lake your dashboards can't talk to. Victoria Lakehouse is both:
 
-> **Write amplification detail**: Lakehouse writes each byte ~1.1x: (1) S3 PutObject (ZSTD Parquet), (2) compaction reads N files and writes 1 merged file (~0.1x at 10:1 ratio). There is **no separate WAL copy** — crash durability comes from the `logstore` buffer's own on-disk parts (the same parts hot VL/VT persist), not an extra write. VL/VT LSM write amplification is 3-10x (WAL → L0 → L1 → L2 compaction levels). Loki/Tempo write 3-5x: WAL → in-memory chunk → flushed chunk → S3 + compacted S3.
->
-> **Hybrid = full Lakehouse S3 cost + additional VL/VT hot tier + doubled delivery network** (1 month EBS + compute + 2× cross-AZ ingest from mirroring to both VL/VT and LH inserts). All data always on S3; EBS is additional for sub-10ms queries on recent data. At 500 GB/day, VL/VT EBS is cheapest (compute + delivery dominates). At PB/mo with >8mo retention, Hybrid crosses below VL/VT EBS.
+- **Ingest like VictoriaLogs / VictoriaTraces.** It runs the upstream `vlinsert` / `vtinsert` handlers, so any agent that already ships to VL/VT ships to Lakehouse unchanged.
+- **Query like VictoriaLogs, VictoriaTraces, Loki, Jaeger and Tempo.** LogsQL, the Jaeger API, the Tempo API with TraceQL, and LogQL through [loki-vl-proxy](https://github.com/ReliablyObserve/loki-vl-proxy).
+- **Analyse with any Parquet engine.** Files are plain Apache Parquet (ZSTD, Hive-style `dt=`/`hour=` partitions, standard bloom filters), read straight from S3.
+- **HA without doubling storage.** Nodes are stateless over S3: one S3 copy, any number of replicas.
+- **Drop-in for an existing VL/VT cluster.** It registers as a `-storageNode`; queries spanning hot and cold data are merged transparently.
 
-> **Resource metrics and cost composition details:** See [Cost Estimates — Resource Cost Breakdown](docs/cost-estimates.md#resource-cost-breakdown) for CPU/memory/network derivations, per-resource costs, and measurement sources.
+### Ingestion protocols
 
-### Footnotes
+**Logs**: served by the upstream VictoriaLogs handlers.
 
-¹ **CPU requirements** derived from throughput benchmarks in [Performance](docs/performance.md#benchmarks) and Helm [defaults](charts/victoria-lakehouse/values.yaml#L150-L160). VL/VT EBS CPU from [VictoriaLogs performance tuning](https://docs.victoriametrics.com/victorialogs/#performance-tuning). Loki/Tempo CPU from [Loki scaling guide](https://grafana.com/docs/loki/latest/operations/loki-canary/) and [Tempo documentation](https://grafana.com/docs/tempo/latest/configuration/).
+| Protocol | Endpoint | Typical shippers |
+|---|---|---|
+| JSON lines | `/insert/jsonline` | Vector, Fluent Bit, curl |
+| Elasticsearch bulk | `/insert/elasticsearch/_bulk` | Filebeat, Logstash, Fluentd, Vector |
+| Loki push (JSON + protobuf) | `/insert/loki/api/v1/push` | Promtail, Grafana Alloy |
+| OpenTelemetry (OTLP/HTTP) | `/insert/opentelemetry/v1/logs` | OpenTelemetry Collector and SDKs |
+| Splunk HEC | `/insert/splunk/services/collector/event` | Splunk forwarders, Vector |
+| Datadog | `/insert/datadog/api/v2/logs` | Datadog Agent |
+| journald | `/insert/journald/upload` | systemd-journal-upload |
+| syslog | TCP/UDP listener | rsyslog, syslog-ng |
+| VictoriaLogs native | `/insert/native`, `/insert/multitenant/native` | vlagent, VictoriaLogs clusters |
 
-² **Memory requirements** from Helm [resource defaults](charts/victoria-lakehouse/values.yaml#L200-L220) and [cache configuration](docs/configuration.md#cache). Multi-node scenarios scale linearly with pod count.
+**Traces**
 
-³ **Network traffic** calculated from ingest rate (500 GB/day ÷ 6.1x compression = 82 GB S3 PUT/day) and query patterns (estimated 10 queries/day × 10 GB = 100 GB GET/day). See [Cost Estimates — Network Traffic](docs/cost-estimates.md#network-traffic) for detailed calculations.
+| Protocol | Endpoint | Status |
+|---|---|---|
+| OpenTelemetry OTLP/HTTP (JSON + protobuf) | `/insert/opentelemetry/v1/traces` | same as upstream |
+| VictoriaTraces native | `/insert/native`, `/insert/multitenant/native` | served; the cold-tier end-to-end path is not yet verified |
 
-Full cost worksheet: [Cost Estimates](docs/cost-estimates.md) | Deep comparison vs Loki/Tempo: [Cost Comparison](docs/cost-comparison.md) | Cross-AZ cost: [Cross-AZ Optimization](docs/cross-az-optimization.md)
+### Read APIs
+
+| API | Clients | Lakehouse vs upstream |
+|---|---|---|
+| **LogsQL** (`/select/logsql/*`: query, hits, stats_query, stats_query_range, facets, field_names, field_values, streams, stream_ids, stream_field_*) | VictoriaLogs Grafana datasource, VMUI | same, except `field_values` with `limit` (documented) |
+| **Loki / LogQL** via loki-vl-proxy | Grafana Loki datasource, Logs Drilldown | routed by time: recent to VictoriaLogs, older to Lakehouse |
+| **Jaeger** (`/select/jaeger/api/*`: services, operations, search, trace by ID, dependencies) | Jaeger UI, Grafana Jaeger datasource | same |
+| **Tempo + TraceQL** (`/select/tempo/api/*`: search, tags, tag values, trace by ID, TraceQL metrics) | Grafana Tempo datasource | same as VictoriaTraces' Tempo subset; 5 documented response-shape differences |
+| **LogsQL over spans** | VTUI, Grafana | same |
+| `/select/logsql/tail` | live tail | hot tier only; the cold tier answers a documented 501 |
+
+Per-endpoint status lives in the [conformance registry](tests/conformance/registry) and [Parity and gaps](docs/parity-and-gaps.md).
+
+### Readers that query the Parquet files directly on S3
+
+| Engine | How | Verified |
+|---|---|---|
+| pyarrow | `pq.read_table("s3://…/logs/")` | in CI: the readback gate checks every generated file against writer-side truth |
+| DuckDB | `read_parquet('s3://…/**/*.parquet', hive_partitioning=1)` | in CI: same readback gate |
+| ClickHouse | `s3('…/*.parquet', 'Parquet')` | every benchmark run; results must match LogsQL exactly |
+| Spark, Trino | Hive-partitioned Parquet table | documented examples in [Open Parquet format](docs/open-parquet-format.md); not tested in CI |
+| Athena, Polars, DataFusion, Snowflake external tables | standard Parquet + Hive partitions | expected to work; not tested |
+
+---
+
+## Grafana and UI experience
+
+**Keep every Grafana workflow you already use: Explore, Drilldown, dashboards, and one-click jumps between logs and traces in both directions, over hot and cold data.** Lakehouse answers the APIs Grafana's own datasources speak, so there is no Lakehouse plugin to install.
+
+| You open Grafana with… | Datasource | Talks to |
+|---|---|---|
+| LogsQL | VictoriaLogs (`victoriametrics-logs-datasource`) | Lakehouse logs, or `vlselect` for hot+cold |
+| LogQL | Loki, pointed at loki-vl-proxy | proxy → VictoriaLogs (recent) + Lakehouse (older), split by time |
+| Jaeger | Jaeger | `/select/jaeger` on Lakehouse traces or `vtselect` |
+| TraceQL | Tempo | `/select/tempo` on Lakehouse traces or `vtselect` |
+| SQL | ClickHouse (`grafana-clickhouse-datasource`, OTel logs/traces mode) | the same Parquet files on S3 |
+
+The Docker Compose stack provisions every one of these three ways: hot only, cold only, and hot+cold (`deployment/docker/grafana/provisioning`).
+
+### Logs
+
+| Grafana feature | How it works on Lakehouse | Status |
+|---|---|---|
+| **Explore**: query, log lines, fields, log volume histogram | LogsQL `query` + `hits`; LogQL through the proxy | ✅ APIs checked in CI; UI spec in `tests/playwright` |
+| **Logs Drilldown**: service view, field breakdown, detected fields, patterns | loki-vl-proxy with hot/cold time routing and translated OTel field names | ✅ shipped; ⚠️ the proxy's own Drilldown suite runs against VictoriaLogs, not yet against Lakehouse |
+| **Show context** (lines around a hit) | LogsQL `stream_context` pipe | ✅ checked on the cold tier |
+| **Dashboards**: log panels, stats, time series | `stats_query`, `stats_query_range`; LogQL metric queries through the proxy | ✅ APIs checked in CI |
+| **Live tail** | streams from the hot tier (VictoriaLogs / `vlselect`) | ⚠️ hot only; nothing new lands in a flushed file |
+| **Built-in VMUI** | served by `lakehouse-logs` at `/select/vmui/` | ✅ |
+
+### Traces
+
+| Grafana feature | How it works on Lakehouse | Status |
+|---|---|---|
+| **Explore with Jaeger**: service and operation pickers, search by tags and duration, trace view, span details | Jaeger API | ✅ APIs checked in CI; UI spec in `tests/playwright` |
+| **Explore with Tempo**: TraceQL search, tag and value autocomplete, trace by ID | Tempo API (the VictoriaTraces subset) | ✅ APIs checked in CI |
+| **Trace by ID from cold storage** | footer trace index, no row-group scan | ✅ parity-tested against hot |
+| **Node graph** (per trace) | built from the span tree | ✅ |
+| **Service dependencies** | Jaeger `/api/dependencies` | ✅ |
+| **TraceQL metrics** (`rate`, `count_over_time`, `quantile_over_time`, `histogram_over_time`, `compare`…) | `/select/tempo/api/metrics/query_range` | ✅ APIs checked in CI |
+| **Traces Drilldown** app | TraceQL metrics + tags | ⚠️ not yet verified on Lakehouse |
+| **Tempo Service Graph view** | needs `traces_service_graph_*` Prometheus metrics | ❌ not generated by VictoriaTraces or Lakehouse; use the Jaeger dependencies view |
+| **Tempo streaming search** | needs Tempo's gRPC streaming | ❌ disabled in the datasource; normal search works |
+| **Built-in VTUI** | served by `lakehouse-traces` | ✅; ⚠️ the duration heatmap is empty on cold data ([#265](https://github.com/ReliablyObserve/victoria-lakehouse/issues/265)) |
+
+### Correlation in every direction
+
+| From | To | Mechanism | Status |
+|---|---|---|---|
+| Log line (VictoriaLogs or Loki datasource) | trace | derived field on `trace_id` → Jaeger or Tempo datasource | ✅ provisioned for hot, cold and hot+cold |
+| Trace or span (Jaeger or Tempo datasource) | logs | "Logs for this span" (`tracesToLogsV2`), filtered by trace ID, ±1h | ✅ provisioned; Tempo → Loki, Jaeger → VictoriaLogs |
+| Cold log | cold trace | cold-only datasource pairs keep the click on S3 | ✅ |
+| Grafana | SQL on the same data | ClickHouse OTel logs/traces views over the Parquet files | ✅ provisioned |
+| Trace → metrics, metrics → trace (exemplars), profiles | — | standard Grafana configuration; not provisioned in the example stack | — |
+
+"Checked in CI" means the conformance registry and parity suites verify the API. The Grafana UI specs in `tests/playwright` (Explore for logs and traces, log volume, trace and span detail) run manually today; Drilldown, context and correlation clicks have no automated UI test yet.
+
+---
+
+## Performance
+
+From the validated benchmark in `bench-results/baseline-2026-09` (`run-baseline-v3.3`). Every timed answer is checked for correctness and every system reads the same data: 64 cells, 20 iterations each, 0 invalid.
+
+| p95 latency | Logs, median (range) | Traces, median (range) |
+|---|---:|---:|
+| **Lakehouse, reading Parquet from S3** | **8.5 ms** (2.5 – 28.9) | **7.7 ms** (3.2 – 14.3) |
+| VictoriaLogs / VictoriaTraces on local SSD | 5.4 ms (2.5 – 12.7) | 3.3 ms (1.4 – 5.0) |
+| ClickHouse reading the same Parquet from S3 | 82.6 ms (73.1 – 106.6) | 97.9 ms (85.5 – 120.3) |
+| Loki / Tempo | not measured yet | not measured yet |
+
+- **Within about 2× of VictoriaLogs and VictoriaTraces**, which are among the fastest log and trace engines available, while serving from object storage. Lakehouse beats them outright in some cells, such as trace lookups (best cell 0.6×).
+- **10× (logs) and 13× (traces) faster than ClickHouse** on the same Parquet files, by median ratio.
+
+Limits, stated plainly: the dataset is small (about 14k log rows per 24h). Lakehouse's 100 ms S3-latency cells are served from a warm cache. Native ClickHouse MergeTree tables, Loki, Tempo and OpenSearch have not been benchmarked yet. For context only, not a Lakehouse number: on 36 Grafana Logs Drilldown queries, VictoriaLogs behind loki-vl-proxy returned data for 35 where Loki returned data for 9, and was 10–24× faster where both answered ([loki-vl-proxy measurements](https://github.com/ReliablyObserve/loki-vl-proxy/blob/main/docs/honest-tldr.md)).
+
+---
+
+## Cost
+
+Monthly AWS list price for a production HA setup, logs and traces together, 1-year retention. Storage and network prices are sourced. **Lakehouse CPU is assumed** (the same per-MB/s rule as ClickHouse's own sizing guide) until it is measured.
+
+| Ingest/day | Lakehouse | ClickHouse 7d EBS + S3 (RF2) | ClickHouse Cloud | Loki + Tempo | VL/VT HA on EBS | OpenSearch 7d hot + snapshots |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 TB | **$1.5k** | $2.0k | $2.1k | $3.1k | $5.7k | $15.9k |
+| 10 TB | **$14.5k** | $17.9k | $21.0k | $41.2k | $57.1k | $157.0k |
+
+Where Lakehouse loses:
+- A single-replica ClickHouse on S3 is cheaper ($9.6k at 10 TB/day, 1 year) because it compresses better, but it has no compute HA.
+- Above about 50 TB/day Lakehouse is not ready yet: the manifest and metadata grow with file count.
+- VL/VT on local disk answers recent-data queries about 2× faster, which is why the hybrid (VL/VT hot for 7 days, Lakehouse after) exists.
+
+Full model, assumptions, 0.1–500 TB/day tables and the scripts that produce them: [Cost Estimates](docs/cost-estimates.md).
 
 ---
 
@@ -828,8 +952,8 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 - [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) — real-data compression levels, write/read performance, S3 cost impact
 - [VL Comparison](docs/vl-comparison.md) — measured head-to-head vs VictoriaLogs with correctness validation
 - [Measurements](docs/measurements/soak-and-bench-2026-06-05.md) — raw soak + perf-bench records ([corrected rerun](docs/measurements/perf-bench-corrected-2026-06-05.md), [pprof negative control](docs/measurements/pprof-goalb-negcontrol.md), CSVs alongside)
-- [Cost Estimates](docs/cost-estimates.md) — EBS vs S3 vs Glacier cost breakdown, scale-dependent recommendations
-- [Cost Comparison vs Loki/Tempo](docs/cost-comparison.md) — comprehensive competitive analysis at 500 GB/day, S3 write path durability comparison
+- [Cost Estimates](docs/cost-estimates.md) — HA cost model from 0.1 to 500 TB/day across Lakehouse, VL/VT, ClickHouse, Loki/Tempo and OpenSearch, with reproducible scripts
+- [Cost Comparison vs Loki/Tempo](docs/cost-comparison.md) — Lakehouse vs Loki + Tempo, cost and architecture durability comparison
 - [Cross-AZ Optimization](docs/cross-az-optimization.md) — AZ-aware routing strategy, buffer bridge design, cross-AZ cost analysis
 
 ---

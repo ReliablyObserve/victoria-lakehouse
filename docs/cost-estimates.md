@@ -5,351 +5,97 @@ sidebar_position: 15
 
 # Cost Estimates
 
-```mermaid
-graph LR
-    subgraph "Storage Cost per GB/month"
-    EBS["EBS gp3<br/>$0.08-0.15"] --> S3S["S3 Standard<br/>$0.023"]
-    S3S --> S3IA["S3 IA<br/>$0.0125"]
-    S3IA --> GLA["Glacier<br/>$0.004"]
-    end
+Monthly AWS infrastructure cost for logs and traces together (60% logs, 40% traces), at 1 query per second, for every system deployed as a **production HA setup** unless its name says otherwise. Storage, compute, cross-AZ network and S3 requests are all counted.
 
-    subgraph "Savings at 1 PB/month"
-    VS["vs Loki/Tempo<br/>52% cheaper<br/>$614K/yr saved"]
-    end
+Both models are scripts in this repository. Change a constant, re-run, and every table below is regenerated:
 
-    style EBS fill:#F44336,color:#fff
-    style S3S fill:#FF9800,color:#fff
-    style S3IA fill:#8BC34A,color:#fff
-    style GLA fill:#4CAF50,color:#fff
-    style VS fill:#2196F3,color:#fff
+```bash
+python3 scripts/cost/cost_model.py            # 0.1 / 1 / 10 TB per day, cost tables
+python3 scripts/cost/cost_model.py --res      # the projected resources behind each figure
+python3 scripts/cost/cost_model_scale.py      # 50 / 100 / 300 / 500 TB per day, HA topology
+NODE_TB=60 python3 scripts/cost/cost_model_scale.py   # sensitivity: 60 TB of EBS per node
+VL_CPU=loki python3 scripts/cost/cost_model.py        # sensitivity: heavier VL/VT CPU rule
 ```
 
-## Pricing Basis (AWS us-east-1)
+## Read this first: what is measured and what is not
 
-| Resource | Price |
+Every input is labelled **measured**, **sourced** (vendor documentation or price list) or **assumed**.
+
+| Input | Class | Note |
+|---|---|---|
+| AWS and ClickHouse Cloud prices | sourced | list prices, us-east-1, fetched 2026-09-30 |
+| Lakehouse compression (logs 6.1x, traces 9.4x) | **measured** | [ZSTD compression benchmark](zstd-compression-benchmark.md) |
+| ClickHouse compression and CPU | sourced | ClickStack sizing guide: 10x compression; 0.1 vCPU per MB/s ingest, 0.3 per MB/s per query |
+| VictoriaLogs / VictoriaTraces compression | sourced range | "10x or more" (VT docs); relative claims for VL |
+| Loki and Tempo sizing | sourced | Loki sizing tiers, Tempo sizing guide |
+| OpenSearch storage and nodes | sourced | AWS OpenSearch best-practice formulas |
+| **Lakehouse CPU** | **assumed** | same per-MB/s rule as ClickHouse's guide until measured |
+| **VL/VT CPU** | **assumed** | same rule; `VL_CPU=loki` gives a heavier, derived alternative |
+| Wire compression (5x), 1 QPS, 7-day hot window | assumed | applied to every system equally |
+
+**Cost is not performance.** See [Performance](performance.md) and the validated benchmark in `bench-results/baseline-2026-09`.
+
+## 0.1 – 10 TB per day
+
+Monthly, mid estimate (the scripts also print low/high ranges).
+
+| System | 0.1 TB/day, 30d | 0.1 TB/day, 1y | 1 TB/day, 30d | 1 TB/day, 1y | 10 TB/day, 30d | 10 TB/day, 1y |
+|---|---:|---:|---:|---:|---:|---:|
+| **Lakehouse (S3)** | **$137** | **$246** | **$367** | **$1,453** | **$3,646** | **$14,504** |
+| ClickHouse, 1 replica, 7d EBS + S3 (**no compute HA**) | $211 | $275 | $482 | $1,124 | $3,192 | $9,613 |
+| Hybrid: VL/VT hot 7d + Lakehouse S3 after 7d | $276 | $385 | $670 | $1,756 | $6,680 | $17,538 |
+| ClickHouse self-hosted, 7d EBS + S3, RF2 | $230 | $358 | $670 | $1,954 | $5,069 | $17,910 |
+| ClickHouse Cloud (Scale) | $454 | $596 | $691 | $2,103 | $6,909 | $21,035 |
+| Loki + Tempo (S3) | $731 | $909 | $1,315 | $3,088 | $23,435 | $41,157 |
+| VL/VT HA (2 clusters, EBS) | $181 | $672 | $792 | $5,706 | $7,924 | $57,057 |
+| ClickHouse self-hosted, EBS, RF2 | $257 | $815 | $961 | $6,544 | $8,002 | $63,836 |
+| OpenSearch, 7d hot + searchable snapshots | $969 | $1,816 | $5,242 | $15,868 | $49,244 | $157,047 |
+
+## 50 – 500 TB per day (HA topology)
+
+Each system is sized as a production cluster: shards × replicas, Keeper or masters, Kafka where the system needs it. Data nodes are r7g.8xlarge and stateless pools m7g.8xlarge, at on-demand list price; volume discounts are not modelled and would apply to every row.
+
+| System | 50 TB/d 30d | 50 TB/d 1y | 100 TB/d 30d | 100 TB/d 1y | 300 TB/d 1y | 500 TB/d 1y |
+|---|---:|---:|---:|---:|---:|---:|
+| Lakehouse (**projected, not ready at this scale**) | $23k | $73k | $43k | $142k | $420k | $697k |
+| ClickHouse self-hosted, 7d EBS + S3, RF2 | $34k | $93k | $64k | $182k | $543k | $904k |
+| Hybrid: VL/VT hot 7d + Lakehouse S3 after 7d | $46k | $96k | $86k | $185k | $549k | $911k |
+| ClickHouse Cloud (Scale, list price) | $35k | $105k | $69k | $210k | $631k | $1,052k |
+| Loki + Tempo | $142k | $223k | $283k | $445k | $1,329k | $2,214k |
+| VL/VT HA (2 clusters) | $49k | $487k | $97k | $974k | $2,916k | $4,861k |
+| ClickHouse self-hosted, EBS, RF2 | $51k | $550k | $102k | $1,098k | $3,287k | $5,477k |
+| OpenSearch, 7d hot + searchable snapshots | $309k | $1,156k | $616k | $2,312k | $6,932k | $11,553k |
+
+## Where Lakehouse wins, and where it does not
+
+- **Lowest-cost HA option from 0.1 to 10 TB per day** in this model. Lakehouse nodes are stateless over a single S3 copy, so HA does not double storage.
+- **A single-replica ClickHouse on S3 is cheaper at long retention** (10 TB/day for a year: $9.6k vs $14.5k). It compresses better (about 12x vs 6.1x/9.4x), but open-source ClickHouse has no supported way to share one S3 copy between replicas (zero-copy replication is not recommended upstream), so that setup has **no compute HA**.
+- **Above about 50 TB per day Lakehouse is not ready yet.** Every replica holds the full file manifest, manifest refresh lists the whole bucket, metadata has no eviction, and trace-ID lookup grows with file count. At 50 TB/day and 64 MB files that is about 40 million files a year. The large-scale rows show the cost after that work is done.
+- **VL/VT on local disk compresses best and answers fastest**, but upstream HA means two independent clusters, so it is costly at long retention. The hybrid keeps VL/VT for the recent window and moves older data to Lakehouse. Moving data from VL/VT into Lakehouse by age is a design; today Lakehouse receives every write directly.
+- **Loki + Tempo** costs more at every size because of replication-factor-3 ingesters, Kafka for Tempo, and lower compression.
+- **OpenSearch** keeps an index about the size of the source plus a replica; keeping a year hot is shown for completeness, not as a realistic deployment.
+
+## Prices
+
+| Item | Price |
 |---|---|
-| EBS gp3 | $0.08/GB/month |
-| S3 Standard | $0.023/GB/month |
-| S3 Infrequent Access | $0.0125/GB/month |
-| S3 GET requests | $0.0004/1000 requests |
-| EC2 m5.xlarge (4 vCPU, 16GB) | ~$140/month |
-| EKS pod (1 vCPU, 2GB) | ~$30-40/month |
+| S3 Standard | $0.023 / $0.022 / $0.021 per GB-month (first 50 TB / next 450 TB / above) |
+| S3 PUT / GET | $0.005 / $0.0004 per 1,000 |
+| EBS gp3 | $0.08 per GB-month |
+| Cross-AZ transfer | $0.02 per GB (both directions) |
+| m7g.xlarge / r7g.xlarge | $0.1632 / $0.2142 per hour (larger sizes scale linearly) |
+| ClickHouse Cloud Scale | $0.2985 per unit-hour (2 vCPU + 8 GiB); storage $25.30 per compressed TB-month |
 
-## Compression Ratios
+## Topology as modelled
 
-All Parquet ratios are real-data benchmarked at ZSTD level 7 (default). See [ZSTD Compression Benchmark](./zstd-compression-benchmark.md) for methodology.
-
-| Format | Ratio | Notes |
+| System | Data copies | Compute rule (per MB/s raw ingest, at 1 QPS) |
 |---|---|---|
-| VL native (LSM, logs) | ~70:1 | Stream dedup + inverted index + ZSTD (production measured) |
-| VT native (traces) | ~47:1 | Structured span fields + index (production measured) |
-| Parquet + ZSTD-7 (logs) | ~6.1:1 | Columnar + dictionary + ZSTD level 7 (real E2E data) |
-| Parquet + ZSTD-7 (traces) | ~9.4:1 | Traces compress much better — structured fields achieve extreme columnar ratios |
-| Loki (Snappy, logs) | ~3.5:1 | Row-oriented chunks, Snappy compression |
-| Tempo (Snappy, traces) | ~3.5:1 | Block-oriented, Snappy compression |
-
-## 250 GB/month Logs (Multi-AZ)
-
-VL stored: ~4.5 GB/mo (~55x avg). Parquet stored: ~41 GB/mo (6.1x).
-
-> **Hybrid model**: All data always written to S3 Parquet. EBS hot tier is an addition for sub-10ms queries on recent data.
-
-| Retention | VL/VT EBS | Hybrid (1mo hot + ALL S3) | All-S3 Lakehouse | Loki+Tempo (full infra) |
-|---|---|---|---|---|
-| 1 month | $131/mo | $132/mo | $131/mo | $145/mo |
-| 6 months | $133/mo | $136/mo | $135/mo | $160/mo |
-| 1 year | $135/mo | $140/mo | $139/mo | $178/mo |
-| 2 years | $138/mo | $148/mo | $147/mo | $214/mo |
-
-At small scale, compute dominates — all options within ~10%. Loki+Tempo includes RF=3 cross-AZ replication and dual-system overhead.
-
-## 500 GB/month Logs (Multi-AZ)
-
-VL stored: ~9 GB/mo (~55x avg). Parquet stored: ~82 GB/mo (6.1x).
-
-| Retention | VL/VT EBS | Hybrid (1mo hot + ALL S3) | All-S3 Lakehouse | Loki+Tempo (full infra) |
-|---|---|---|---|---|
-| 1 month | $132/mo | $134/mo | $132/mo | $151/mo |
-| 6 months | $136/mo | $141/mo | $140/mo | $193/mo |
-| 1 year | $140/mo | $149/mo | $148/mo | $241/mo |
-| 2 years | $148/mo | $167/mo | $166/mo | $339/mo |
-
-## 1 PB/month Logs (Multi-AZ)
-
-VL stored: ~18.2 TB/mo (~55x avg). Parquet stored: ~164 TB/mo (6.1x). EBS includes 3 AZ replication.
-
-> **Hybrid = full S3 archive + EBS hot month.** All data always goes to Lakehouse S3. EBS is additional for fast queries.
-
-| Retention | VL/VT EBS (3 AZ) | Hybrid (1mo hot + ALL S3) | All-S3 Lakehouse | Loki+Tempo (full infra) |
-|---|---|---|---|---|
-| 3 months | $15,600/mo | $18,100/mo | $13,800/mo | $33,200/mo |
-| 6 months | $28,700/mo | $29,400/mo | $25,000/mo | $60,100/mo |
-| 1 year | $54,900/mo | $51,900/mo | $47,500/mo | $114,000/mo |
-| 2 years | $107,200/mo | $96,900/mo | $92,600/mo | $221,700/mo |
-
-> At 1 PB/month, storage dominates. Hybrid crosses below VL/VT EBS at ~8 months retained data because S3 ($0.023/GB) grows slower per-month than EBS ($0.08/GB × 3 AZ). At 2yr, hybrid saves $10,300/mo vs VL/VT EBS. Loki+Tempo includes full dual-system infrastructure: separate Loki + Tempo clusters, RF=3 cross-AZ replication ($0.01/GB × 2 replicas × ingest volume), compaction I/O, and dual compute stacks.
-
-## Annual Savings Summary
-
-> **Hybrid = full Lakehouse S3 cost (all retained data) + additional VL/VT hot tier (1 month EBS + VL/VT compute)**. Not "1 month EBS + remaining months on LH" — all data is always on S3, EBS is additional.
-
-Lakehouse Hybrid vs Loki+Tempo (full infrastructure, Lakehouse always cheaper):
-
-| Scenario | 1yr Retention Savings | 2yr Retention Savings |
-|---|---|---|
-| 250 GB/mo (hybrid) | $456/yr (21%) | $792/yr (31%) |
-| 500 GB/mo (hybrid) | $1,104/yr (38%) | $2,064/yr (51%) |
-| 1 PB/mo (hybrid) | $745K/yr (54%) | $1.50M/yr (56%) |
-| 1 PB/mo (standalone) | $798K/yr (58%) | $1.55M/yr (58%) |
-
-Standalone Lakehouse vs Hybrid vs VL/VT EBS:
-
-| Scenario | Standalone LH vs VL/VT EBS | Hybrid vs VL/VT EBS |
-|---|---|---|
-| 250 GB/mo, 1yr | +$48/yr (3% more — compute dominates) | +$60/yr (4% more than VL) |
-| 500 GB/mo, 1yr | +$96/yr (6% more — compute dominates) | +$108/yr (6% more than VL) |
-| 1 PB/mo, 1yr | -$88,800/yr (**13% cheaper than VL**) | -$36,000/yr (**5% cheaper than VL**) |
-| 1 PB/mo, 2yr | -$175,200/yr (**14% cheaper than VL**) | -$123,600/yr (**10% cheaper than VL**) |
-
-**Key insights**:
-- At **small scale** (≤500 GB/mo), **VL/VT EBS is cheapest** — compute dominates and VL's 55x compression keeps storage negligible. The S3 per-raw-GB advantage doesn't overcome the compute premium at this scale.
-- At **large scale** (1 PB/mo), **Lakehouse is cheapest** — storage dominates and S3's per-raw-GB cost ($0.023/6.1 = $0.0038) beats 3-AZ EBS ($0.24/55 = $0.0044) by 14%. Hybrid crosses below VL/VT EBS at ~8 months retained data at this scale.
-- The **break-even retention for Hybrid vs VL/VT** is scale-dependent: ~8 months at 1 PB/mo, but 30+ months at 500 GB/day — because the fixed VL/VT compute premium takes longer to amortize at smaller volumes.
-- **Lakehouse value beyond cost**: open Parquet format, S3 11-nines durability, disaster recovery, direct analytics access (DuckDB, Spark, Trino).
-
-## Why Lakehouse Despite VL/VT's Better Compression
-
-VL/VT's 47-70x compression beats Parquet's 6.1-9.4x per-byte, but Lakehouse wins on total cost of ownership:
-
-1. **S3 is cheaper per-raw-GB than 3-AZ EBS**: S3 $0.023/6.1x = $0.0038/raw-GB vs EBS $0.24/55x = $0.0044/raw-GB. Lakehouse is 14% cheaper per stored raw-GB at any retention. At large scale (1 PB/mo), this per-GB advantage compounds — Hybrid crosses below VL/VT EBS at ~8 months retained data. At small scale, compute dominates so VL/VT EBS is cheaper overall.
-2. **No replication needed**: S3 provides 11-nines multi-AZ durability for free. VL/VT needs explicit replication across AZs (EBS × N). Loki/Tempo need RF=3 with cross-AZ transfer costs.
-3. **No deduplication needed**: Each Lakehouse pod writes unique partitioned files. S3 PutObject is atomic. Loki/Tempo need compactor deduplication after WAL replays.
-4. **Open Parquet format**: DuckDB, Spark, Trino, ClickHouse query cold data directly. No export needed.
-5. **Glacier tiering**: S3 lifecycle rules move old data to IA ($0.0125/GB) or Glacier ($0.004/GB). At 3+ years, 27× cheaper per raw-GB than VL/VT 3-AZ EBS.
-6. **Disaster recovery**: Complete cluster wipe = zero data loss. Manifest rebuilds from S3 listing.
-7. **No EBS management at scale**: No volume sizing, IOPS provisioning, or snapshot management.
-8. **L2 cache absorbs reads**: $4-16/month of EBS cache avoids thousands of S3 GET requests.
-9. **Traces compress 2.7× better than Loki/Tempo**: 9.4x vs 3.5x — massive storage savings at scale.
-
-## Resource Cost Breakdown
-
-This section details the CPU, memory, and network costs for each scenario, showing how cost composition shifts from compute-dominated at small scales to storage-dominated at large scales.
-
-### CPU Requirements
-
-CPU needs scale with ingest throughput. All values assume m6i equivalents or multi-pod deployments.
-
-#### Derivation from Benchmarks
-
-Lakehouse achieves ~50-80 MB/s per vCPU on ingest (ZSTD compression), measured in benchmarks against representative test datasets.
-
-**For 500 GB/day scenario:**
-- Ingest rate: 500 GB / 86,400 s = 5.8 MB/s sustained
-- Lakehouse requirement: 5.8 MB/s ÷ 50 MB/s-per-vCPU = 0.116 vCPU (single pod sufficient, but 2 pods for HA)
-- **Deployed: 2 m6i.large pods (3 cores each) = 6 vCPU total** (over-provisioned for HA + query load)
-
-**For 1 PB/month scenario:**
-- Ingest rate: 1 PB / 86,400 s = 11.6 GB/s = 11,600 MB/s
-- Lakehouse requirement: 11,600 ÷ 50 = 232 vCPU minimum
-- **Deployed: 60 m6i.large pods = 180 vCPU** (per [performance.md](./performance.md))
-
-#### VL/VT EBS CPU Requirements
-
-VictoriaLogs achieves ~100-150 MB/s per vCPU on ingest (native LSM with 55-70x compression). Higher per-vCPU throughput than Parquet due to stream deduplication.
-
-- **500 GB/day:** 5.8 MB/s ÷ 100 MB/s-per-vCPU = 0.058 vCPU, deployed with 6 m6i.xlarge (4 cores each) per AZ = 48 vCPU (2 replicas HA)
-- **1 PB/month:** 11,600 MB/s ÷ 100 = 116 vCPU minimum, typically deployed with 200+ vCPU for query performance
-
-#### Loki/Tempo CPU Requirements
-
-Loki ingester achieves ~30-50 MB/s per vCPU (write amplification from WAL + in-memory chunks). Tempo similar. Higher CPU overhead than VL/VT.
-
-- **500 GB/day (Loki):** 5.8 MB/s ÷ 40 MB/s-per-vCPU = 0.145 vCPU, deployed with 4+ vCPU = more expensive per-MB/s than Lakehouse or VL/VT
-- **1 PB/month (Loki+Tempo dual):** ~300 vCPU combined (both systems running in parallel)
-
-**Sources:**
-- Lakehouse: Measured from `benchmarks/` throughput tests
-- VL/VT: [VictoriaMetrics documentation](https://docs.victoriametrics.com/victorialogs/#performance-tuning)
-- Loki/Tempo: [Loki operator guide](https://grafana.com/docs/loki/latest/operations/), [Tempo configuration](https://grafana.com/docs/tempo/latest/configuration/)
-
-### Memory Requirements
-
-Memory scales with cache size and buffer allocation. Lakehouse uses tiered caching (L1 memory + L2 disk cache).
-
-#### Helm Chart Defaults
-
-From `charts/victoria-lakehouse/values.yaml` (Helm chart defaults):
-
-```yaml
-resources:
-  # Resource defaults (empty — Lakehouse uses lakehouseConfig for sizing)
-
-cache:
-  memory_limit: "512MB"   # L1 in-memory cache (columnar index)
-  memory_request: "512MB" # L1 baseline for warm startup
-  memory_scaling: "fixed" # Fixed vs proportional to pod count
-
-insert_buffer: "256MB"    # Write buffer for uncompressed data
-buffer_retention: "1h"    # logstore buffer retention (durability, no WAL)
-l2_cache_size: "50GB"     # L2 disk cache for bloom filters
-```
-
-#### Per-Scenario Memory
-
-| Scenario | Pod Type | Pods | Memory/pod | Total Memory | Notes |
-|----------|----------|------|-----------|--------------|-------|
-| 500 GB/day | m6i.large (2vCPU, 8GB) | 3 | 512 MB request | 1.5 GB | L1 cache bounded; L2 disk unbounded |
-| 500 GB/day | m6i.xlarge (4vCPU, 16GB) | 2 | 1 GB request | 2 GB | HA pair, higher comfort margin |
-| 1 PB/month | m6i.large | 60 | 512 MB request | 30 GB | Each pod L1 independent; shared L2 |
-| 1 PB/month | m6i.xlarge | 30 | 1 GB request | 30 GB | Lower pod count, higher per-pod RAM |
-
-**VL/VT EBS** — Memory requirements similar (LSM state, block cache). Typically 8-16 GB per node for in-memory indices.
-
-**Loki/Tempo** — Higher memory overhead due to in-memory chunks. Typically 12-20 GB per ingester pod.
-
-**Sources:**
-- Helm defaults: `charts/victoria-lakehouse/values.yaml`
-- Configuration: [docs/configuration.md](./configuration.md)
-- Kubernetes deployments: [docs/kubernetes-deployment.md](./kubernetes-deployment.md)
-
-### Network Traffic
-
-Network costs come from S3 request pricing (PUT/GET), not bandwidth in AWS (same-region is free, cross-region charged).
-
-#### S3 PUT Traffic (Ingest Write)
-
-Raw bytes are compressed before S3 write:
-
-| Scenario | Daily Ingest | Compression | S3 Stored/day | Monthly PUTs | PUT Cost @ $0.0004/1000 |
-|----------|--------------|-------------|--------------|--------------|------------------------|
-| 500 GB/day | 500 GB | 6.1x (Parquet) | 82 GB | 2.46M | $1/mo |
-| 1 PB/month | 33.3 GB/day | 6.1x | 5.5 GB | 165M | $66/mo |
-| Loki 500 GB/day | 500 GB | 3.5x | 143 GB | 4.29M | $2/mo |
-
-Lakehouse achieves 6.1x compression due to ZSTD-7 + columnar format. Loki achieves 3.5x (Snappy + row chunks).
-
-#### S3 GET Traffic (Query Reads)
-
-Queries perform point reads (small result sets) and scans (large range queries).
-
-**Estimated query pattern: 10 point queries × 10GB + 5 scan queries × 50GB = 350 GB/day**
-
-Monthly query volume: 350 GB × 30 = 10.5 TB/month = 10.5M GetObject requests
-
-Cost: 10.5M × $0.0004/1000 = $4.20/mo
-
-**VL/VT EBS** — No S3 request cost (local EBS storage). Cross-AZ replication adds $0.01/GB outbound.
-
-**Loki/Tempo** — Similar S3 PUT cost, but higher due to write amplification (compactor re-reads and re-writes data 3-5x).
-
-#### Cross-AZ Network Traffic
-
-Multi-AZ deployments incur cross-AZ bandwidth charges.
-
-| Solution | Replication Method | Cost/GB | For 500 GB/day | Notes |
-|----------|-------------------|---------|----------------|-------|
-| Lakehouse | S3 multi-AZ (built-in) | Free | $0/mo | S3 handles AZ placement automatically |
-| VL/VT EBS | 3-AZ replication (outbound) | $0.01/GB | $150/mo | 500 GB × 30 days × $0.01 |
-| Loki/Tempo | RF=3 cross-AZ | $0.02/GB | $300/mo | 2 replicas × 500 GB × 30 days × $0.01 |
-
-**Sources:**
-- S3 pricing: [AWS pricing](https://aws.amazon.com/s3/pricing/)
-- Query patterns: [performance.md](./performance.md)
-- Cross-AZ costs: [cross-az-optimization.md](./cross-az-optimization.md)
-
-### Cost Composition by Percentage
-
-The shift from compute-dominated at small scales to storage-dominated at large scales explains why Lakehouse wins at PB scale.
-
-#### 500 GB/day, 1 year retention (Multi-AZ)
-
-| Cost Category | Lakehouse | VL/VT EBS | Hybrid | Loki+Tempo |
-|---------------|-----------|-----------|--------|-----------|
-| Storage | $688/mo | $796/mo | $753/mo | $1,484/mo |
-| Compute (vCPU) | $414/mo | $1,728/mo | $1,935/mo | $3,813/mo |
-| Network | $180/mo | $155/mo | $300/mo | $370/mo |
-| **Total** | **$1,282/mo** | **$2,679/mo** | **$2,988/mo** | **$5,667/mo** |
-| **Percentage breakdown** | | | | |
-| Storage % | 54% | 30% | 25% | 26% |
-| Compute % | 32% | 65% | 65% | 67% |
-| Network % | 14% | 6% | 10% | 7% |
-
-**Key insight:** At 500 GB/day, compute dominates for VL/VT (64%), making it competitive with Lakehouse despite worse per-raw-GB cost. Lakehouse's network cost (14%) is high because S3 request cost is significant at this scale. Hybrid's dual infrastructure doubles compute cost, making it most expensive option until retention exceeds 8 months.
-
-#### 1 PB/month, 1 year retention (Multi-AZ)
-
-| Cost Category | Lakehouse | VL/VT EBS | Hybrid | Loki+Tempo |
-|---------------|-----------|-----------|--------|-----------|
-| Storage | $3.77M/mo | $6.29M/mo | $4.46M/mo | $8.14M/mo |
-| Compute | $8.4K/mo | $14K/mo | $20K/mo | $12K/mo |
-| Network | $1.97M/mo | $5K/mo | $1.98M/mo | $2.5M/mo |
-| **Total** | **$5.75M/mo** | **$6.31M/mo** | **$6.46M/mo** | **$10.65M/mo** |
-| **Percentage breakdown** | | | | |
-| Storage % | 65.6% | 99.7% | 69.0% | 76.4% |
-| Compute % | 0.1% | 0.2% | 0.3% | 0.1% |
-| Network % | 34.3% | 0.1% | 30.7% | 23.5% |
-
-**Key insight:** At PB scale, storage dominates all solutions (65-100%). Lakehouse's 6.1x compression + $0.023/GB S3 beats VL/VT's $0.08/GB × 3-AZ EBS ($0.24/GB total), saving $540K/mo. Network cost (S3 requests and queries) becomes significant (34%) and explains why direct S3 analytics (DuckDB, Spark) provides additional value — every query avoids expensive cross-AZ bandwidth and replication overhead.
-
-**Verification notes:**
-- All percentages verified against cost totals
-- Discrepancies from README (README shows $1,283/mo vs $1,282/mo calculated) due to rounding — within <0.1%
-- 1 PB calculation uses 1 PB ingested per 30-day month; if your month is different, scale proportionally
-
-## Measurement Sources and Methodology
-
-All numbers in this section are derived from one of three sources: benchmarked, configured, or measured. We distinguish between them to help readers weight the data appropriately.
-
-### Benchmarked (from test runs)
-
-- **ZSTD compression ratios:** Real E2E ingest data (logs + traces) compressed and measured. See [zstd-compression-benchmark.md](./zstd-compression-benchmark.md).
-- **Throughput (MB/s per vCPU):** Controlled load tests with measured CPU and ingest rates. See [performance.md](./performance.md).
-- **Query latency:** Production queries replayed on test data. See [performance.md](./performance.md).
-
-### Configured (from defaults and recommendations)
-
-- **CPU/memory pod sizing:** Helm chart requests and limits in `charts/victoria-lakehouse/values.yaml`.
-- **Pod counts:** Recommended sizing from [scaling.md](./scaling.md) and [deployment-architecture.md](./deployment-architecture.md).
-- **Cache tuning:** [configuration.md](./configuration.md).
-
-### Measured (from production operations)
-
-- **Actual cluster resource utilization:** Observability dashboards from [observability.md](./observability.md).
-- **S3 request patterns:** CloudWatch metrics from real deployments (if available — otherwise estimated from query patterns).
-- **Network traffic breakdown:** VPC Flow Logs analysis (if available — otherwise estimated).
-
-### Estimation Method for Network Traffic
-
-When direct measurement unavailable, we estimate:
-
-1. **Ingest traffic to S3:** Raw bytes / compression ratio
-2. **Query traffic from S3:** Number of queries × average bytes returned
-3. **Cross-AZ traffic:** Replication factor × data volume per day
-
-**Example:** 500 GB/day ingest, 6.1x compression = 82 GB/day S3 PUTs. If 10 daily queries fetch 10 GB each, that's 100 GB/day GETs = 3,000 GB/month GET requests = 3M S3 GET requests × $0.0004/1000 = $1,200/month.
-
-### Verification Against External Sources
-
-- **VL/VT CPU/memory:** Cross-referenced with [VictoriaLogs documentation](https://docs.victoriametrics.com/victorialogs/), [performance tuning](https://docs.victoriametrics.com/victorialogs/#performance-tuning).
-- **Loki/Tempo CPU/memory:** Cross-referenced with [Loki operator docs](https://grafana.com/docs/loki/latest/operations/loki-canary/), [Tempo scaling guide](https://grafana.com/docs/tempo/latest/configuration/).
-- **AWS pricing:** [AWS S3 pricing](https://aws.amazon.com/s3/pricing/), [EC2 pricing](https://aws.amazon.com/ec2/pricing/on-demand/) (us-east-1, as of June 2026).
-
-### Known Limitations
-
-- **Compression ratios:** Measured on representative datasets; your data may compress differently (more structured = better; more random = worse).
-- **Query patterns:** Assumed 10 point queries + 5 scans per day; adjust proportionally for your workload.
-- **Cross-AZ traffic:** Estimated; actual depends on pod distribution and failure patterns.
-- **Pod sizing:** Helm defaults assume HA (2+ pods). Single-pod deployments reduce cost by ~50% but lose high availability.
-- **S3 request costs:** Extremely low at 500 GB scale (<$5/mo) but become significant at PB scale. Monitor actual CloudWatch metrics for your workload.
-
-## Recommendation
-
-| Scenario | Recommendation |
-|---|---|
-| Small scale (≤500 GB/mo), any retention | VL/VT EBS Only (cheapest — compute dominates, 55x compression wins) |
-| Cold-only, archive, analytics, compliance | Standalone Lakehouse (cheapest cold storage at PB scale) |
-| Large scale (PB/mo), ≤ 8mo retention | VL/VT EBS Only (cheapest at short retention) |
-| Large scale (PB/mo), > 8mo retention | Hybrid (crosses below VL/VT EBS, open format + DR) |
-| 3yr+ retention | Hybrid + S3 lifecycle (Glacier = 27× cheaper than 3-AZ EBS) |
-| Open format + analytics on cold data | Lakehouse (DuckDB, Spark, Trino on open Parquet) |
-| Loki/Tempo replacement | Lakehouse Hybrid (48-56% cheaper, no replication/dedup overhead) |
+| Lakehouse | one S3 copy | assumed: 0.15 vCPU ingest (×2 insert nodes), 0.3 vCPU query, 4 GiB/vCPU |
+| ClickHouse self-hosted | RF2 (`ReplicatedMergeTree`); tiered keeps two S3 copies | ClickStack guide, plus 3 Keeper nodes |
+| ClickHouse Cloud | one copy (SharedMergeTree) plus backup | same vCPU as the guide, minimum 2 units |
+| VL/VT HA | two independent clusters (VictoriaLogs does not replicate) | assumed: same ClickStack rule, split across the two clusters |
+| Loki + Tempo | one S3 copy; ingesters RF3; Tempo on Kafka | Loki sizing tiers; Tempo sizing guide; Kafka 3 × 2 vCPU |
+| OpenSearch | primary + 1 replica, ×1.45 headroom | AWS best-practice node sizing |
+| Hybrid | VL/VT HA for 7 days, Lakehouse for older data | VL/VT as above, plus Lakehouse insert, compaction and cold-query pools |
+
+See also: [Cost Comparison vs Loki and Tempo](cost-comparison.md), [Cross-AZ Optimization](cross-az-optimization.md), [ZSTD Compression Benchmark](zstd-compression-benchmark.md).

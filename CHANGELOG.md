@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **README: TL;DR, coverage tables, Grafana experience, validated performance and the current cost
+  model.** The README now opens with a summary and lists what Lakehouse ingests (every VictoriaLogs
+  protocol and OTLP traces), what it answers (LogsQL, LogQL through loki-vl-proxy, Jaeger, Tempo and
+  TraceQL), which engines read its Parquet files directly on S3, and which Grafana workflows work, each
+  marked with how it is verified. Performance quotes the validated 2026-09 benchmark with its limits.
+  The old cost section is replaced: it relied on an unsourced ~70x VictoriaLogs compression figure and
+  a single 500 GB/day worksheet. `docs/cost-estimates.md` and `docs/cost-comparison.md` now carry an HA
+  cost model from 0.1 to 500 TB/day, with every input labelled measured, sourced or assumed, and the
+  scripts that produce it live in `scripts/cost/`.
+
 ## [0.143.8] - 2026-10-01
 
 ### Security
