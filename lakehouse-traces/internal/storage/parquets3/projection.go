@@ -76,6 +76,10 @@ func addFieldColumns(reg *schema.Registry, name string, cols map[string]bool) {
 	}
 }
 
+// referencesField reports whether the query text spells name as a field term.
+// It is NOT used to choose which columns to read (neededColumns does that from
+// the parsed query); it only decides which promoted Parquet column spellings
+// are also emitted as alias fields (queryParquetNameAliases).
 func referencesField(query, name string) bool {
 	// VL serializes field names that contain `:` or other special chars
 	// (e.g. `span_attr:http.status_code`) with surrounding double quotes:

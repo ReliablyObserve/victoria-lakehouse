@@ -312,3 +312,32 @@ func TestNeededColumns_BytesRead_Traces(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkProjectionColumns measures the per-query column derivation for the
+// span query shapes: the work done once per RunQuery (the needed-field list)
+// and once per file (the column map).
+func BenchmarkProjectionColumns(b *testing.B) {
+	reg := schema.NewRegistry(schema.TracesProfile)
+
+	queries := map[string]string{
+		"wildcard":       `*`,
+		"trace_id":       `trace_id:="abc123"`,
+		"stats_by_name":  `* | stats by (name) count()`,
+		"filtered_stats": `_time:30m name:="a" | stats count()`,
+		"stream_by":      `{"resource_attr:service.name"="api"} _time:5m | stats by (trace_id) count()`,
+		"histogram":      `* | stats by (_time:1h) histogram(duration)`,
+		"sort_limit":     `trace_id:="abc" | sort by (_time) | limit 10`,
+	}
+	for name, query := range queries {
+		q, err := logstorage.ParseQuery(query)
+		if err != nil {
+			b.Fatalf("ParseQuery(%q): %v", query, err)
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				neededColumns(reg, logstorage.GetQueryNeededFields(q))
+			}
+		})
+	}
+}
