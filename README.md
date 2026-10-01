@@ -19,7 +19,7 @@
 **The long-term home for logs and traces that is cheap, fast and open at the same time, so you don't have to pick two.**
 
 - 💰 **Lowest-cost HA option we modelled from 0.1 to 10 TB/day.** One copy on S3 behind stateless nodes: 53–84% cheaper than Loki + Tempo and 19–45% cheaper than HA tiered ClickHouse, at AWS list prices ([cost model](docs/cost-estimates.md); Lakehouse CPU is assumed until measured).
-- ⚡ **Millisecond queries straight from S3.** Median p95 of **8.5 ms for logs and 7.7 ms for traces**: within about 2× of VictoriaLogs/VictoriaTraces on local SSD, which set the bar for speed, and **10–13× faster than ClickHouse** reading the same Parquet from S3 ([Performance](#performance): validated benchmark, small dataset, warm cache).
+- ⚡ **Fast reads over Parquet.** Median p95 of **8.5 ms for logs and 7.7 ms for traces**: within about 2× of VictoriaLogs/VictoriaTraces on local SSD, which set the bar for speed, and **10–13× faster than ClickHouse** reading the same Parquet files ([Performance](#performance): small dataset, local S3-compatible server, warm cache; numbers with real S3 latency are being re-measured).
 - 📥 **Ingest from anything VictoriaLogs and VictoriaTraces accept**: OTLP, Loki push, Elasticsearch bulk, Splunk HEC, Datadog, journald, syslog, JSON lines and the native VL/VT protocols, through the upstream handlers themselves.
 - 🔎 **Query it the way you already do**: LogsQL, LogQL (via [loki-vl-proxy](https://github.com/ReliablyObserve/loki-vl-proxy)), the Jaeger API, the Tempo API with TraceQL search and metrics, and SQL.
 - 📊 **Keep every Grafana workflow**: Explore, Logs Drilldown, dashboards, and one-click jumps from logs to traces and back, over hot and cold data, with stock Grafana datasources and no plugin to install ([Grafana and UI](#grafana-and-ui-experience)).
@@ -167,15 +167,15 @@ From the validated benchmark in `bench-results/baseline-2026-09` (`run-baseline-
 
 | p95 latency | Logs, median (range) | Traces, median (range) |
 |---|---:|---:|
-| **Lakehouse, reading Parquet from S3** | **8.5 ms** (2.5 – 28.9) | **7.7 ms** (3.2 – 14.3) |
+| **Lakehouse, reading Parquet (warm cache)** | **8.5 ms** (2.5 – 28.9) | **7.7 ms** (3.2 – 14.3) |
 | VictoriaLogs / VictoriaTraces on local SSD | 5.4 ms (2.5 – 12.7) | 3.3 ms (1.4 – 5.0) |
-| ClickHouse reading the same Parquet from S3 | 82.6 ms (73.1 – 106.6) | 97.9 ms (85.5 – 120.3) |
+| ClickHouse reading the same Parquet files | 82.6 ms (73.1 – 106.6) | 97.9 ms (85.5 – 120.3) |
 | Loki / Tempo | not measured yet | not measured yet |
 
 - **Within about 2× of VictoriaLogs and VictoriaTraces**, which are among the fastest log and trace engines available, while serving from object storage. Lakehouse beats them outright in some cells, such as trace lookups (best cell 0.6×).
 - **10× (logs) and 13× (traces) faster than ClickHouse** on the same Parquet files, by median ratio.
 
-Limits, stated plainly: the dataset is small (about 14k log rows per 24h). Lakehouse's 100 ms S3-latency cells are served from a warm cache. Native ClickHouse MergeTree tables, Loki, Tempo and OpenSearch have not been benchmarked yet. For context only, not a Lakehouse number: on 36 Grafana Logs Drilldown queries, VictoriaLogs behind loki-vl-proxy returned data for 35 where Loki returned data for 9, and was 10–24× faster where both answered ([loki-vl-proxy measurements](https://github.com/ReliablyObserve/loki-vl-proxy/blob/main/docs/honest-tldr.md)).
+Limits, stated plainly: the dataset is small (about 14k log rows per 24h), and the object store is a local S3-compatible server. The run was meant to add 100 ms of S3 latency in half its cells, but the latency injector targeted the wrong container, so **no cell has injected S3 latency**: these numbers show Lakehouse's warm cache and ClickHouse over a local object store, not cold reads from real S3. A re-run with verified latency injection (20/50/100 ms, cold and warm reported separately) will replace them. Native ClickHouse MergeTree tables, Loki, Tempo and OpenSearch have not been benchmarked yet. For context only, not a Lakehouse number: on 36 Grafana Logs Drilldown queries, VictoriaLogs behind loki-vl-proxy returned data for 35 where Loki returned data for 9, and was 10–24× faster where both answered ([loki-vl-proxy measurements](https://github.com/ReliablyObserve/loki-vl-proxy/blob/main/docs/honest-tldr.md)).
 
 ---
 
