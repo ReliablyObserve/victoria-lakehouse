@@ -19,6 +19,8 @@
 **The long-term home for logs and traces that is cheap, fast and open at the same time, so you don't have to pick two.**
 
 - 💰 **Lowest-cost HA option we modelled from 0.1 to 10 TB/day.** One copy on S3 behind stateless nodes: 53–84% cheaper than Loki + Tempo and 19–45% cheaper than HA tiered ClickHouse, at AWS list prices ([cost model](docs/cost-estimates.md); Lakehouse CPU is assumed until measured).
+- 🧊 **Data gets cheaper as it ages.** Compacted Parquet objects move by S3 lifecycle policy (globally or per tenant) from Standard to Standard-IA and Glacier Instant Retrieval while staying queryable, or to Deep Archive for compliance. Deletes never trigger retrieval fees. Storage drops about 68% at 1-year retention and 79% at 7 years: 10 TB/day kept 3 years runs about **$10k a month all-in vs $75k for Loki + Tempo** on S3 Standard ([tiering calculator](docs/cost-estimates.md#long-term-retention-and-s3-storage-class-tiering)).
+- 📈 **Scales in a straight line with two knobs.** Stateless insert and select pods over one S3 copy: ingest sets the insert pods, query load sets the select pods, and retention only grows S3. There are no shards to rebalance, no replicas to resync and no disks to grow ([scaling](docs/cost-comparison.md#5-scaling-linear-and-two-knobs)).
 - ⚡ **Fast reads over Parquet.** Median p95 of **8.5 ms for logs and 7.7 ms for traces**: within about 2× of VictoriaLogs/VictoriaTraces on local SSD, which set the bar for speed, and **10–13× faster than ClickHouse** reading the same Parquet files ([Performance](#performance): small dataset, local S3-compatible server, warm cache; numbers with real S3 latency are being re-measured).
 - 📥 **Ingest from anything VictoriaLogs and VictoriaTraces accept**: OTLP, Loki push, Elasticsearch bulk, Splunk HEC, Datadog, journald, syslog, JSON lines and the native VL/VT protocols, through the upstream handlers themselves.
 - 🔎 **Query it the way you already do**: LogsQL, LogQL (via [loki-vl-proxy](https://github.com/ReliablyObserve/loki-vl-proxy)), the Jaeger API, the Tempo API with TraceQL search and metrics, and SQL.
@@ -188,12 +190,22 @@ Monthly AWS list price for a production HA setup, logs and traces together, 1-ye
 | 1 TB | **$1.5k** | $2.0k | $2.1k | $3.1k | $5.7k | $15.9k |
 | 10 TB | **$14.5k** | $17.9k | $21.0k | $41.2k | $57.1k | $157.0k |
 
+**Long retention with S3 lifecycle tiering**: 10 TB/day, total monthly cost (storage, compute, network, requests). Lakehouse keeps 30 days on S3 Standard, then Standard-IA, then Glacier Instant Retrieval from day 90, and stays queryable throughout.
+
+| Retention | Lakehouse + lifecycle | Loki + Tempo on S3 Standard | Loki + Tempo + same lifecycle | VL/VT HA on EBS |
+|---|---:|---:|---:|---:|
+| 1 year | **$6.3k** | $39.8k | $27.6k | $57.1k |
+| 3 years | **$10.4k** | $75.1k | $34.3k | $164k |
+| 7 years | **$18.6k** | $146k | $47.7k | $378k |
+
+Reading Standard-IA or Glacier IR data costs $0.01 or $0.03 per GB read, on top of these figures.
+
 Where Lakehouse loses:
 - A single-replica ClickHouse on S3 is cheaper ($9.6k at 10 TB/day, 1 year) because it compresses better, but it has no compute HA.
 - Above about 50 TB/day Lakehouse is not ready yet: the manifest and metadata grow with file count.
 - VL/VT on local disk answers recent-data queries about 2× faster, which is why the hybrid (VL/VT hot for 7 days, Lakehouse after) exists.
 
-Full model, assumptions, 0.1–500 TB/day tables and the scripts that produce them: [Cost Estimates](docs/cost-estimates.md).
+Full model, assumptions, 0.1–500 TB/day tables, the long-term tiering calculator and the scripts that produce them: [Cost Estimates](docs/cost-estimates.md). Where the money goes line by line, and why scaling is linear: [Cost Comparison](docs/cost-comparison.md).
 
 ---
 

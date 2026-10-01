@@ -14,6 +14,7 @@ python3 scripts/cost/cost_model.py            # 0.1 / 1 / 10 TB per day, cost ta
 python3 scripts/cost/cost_model.py --res      # the projected resources behind each figure
 python3 scripts/cost/cost_model_scale.py      # 50 / 100 / 300 / 500 TB per day, HA topology
 NODE_TB=60 python3 scripts/cost/cost_model_scale.py   # sensitivity: 60 TB of EBS per node
+python3 scripts/cost/cost_tiering.py         # long-term retention and S3 lifecycle tiering
 VL_CPU=loki python3 scripts/cost/cost_model.py        # sensitivity: heavier VL/VT CPU rule
 ```
 
@@ -66,6 +67,83 @@ Each system is sized as a production cluster: shards × replicas, Keeper or mast
 | ClickHouse self-hosted, EBS, RF2 | $51k | $550k | $102k | $1,098k | $3,287k | $5,477k |
 | OpenSearch, 7d hot + searchable snapshots | $309k | $1,156k | $616k | $2,312k | $6,932k | $11,553k |
 
+## Long-term retention and S3 storage-class tiering
+
+Lakehouse is built for S3 lifecycle tiering (`lh.feature.storage.lifecycle_tiering`, shipped since v0.49.0; per-tenant schedules since v0.100.0):
+- **Few, large objects.** Compaction produces large immutable Parquet objects, about 64 MB each, which is what lifecycle transitions want. Few objects means cheap transitions, and objects stay well above the 128 KB minimum billable size of the infrequent-access classes.
+- **Escalating compression.** Compression escalates with age as compaction levels rise. The extra saving is not measured yet, so the tables below use the measured 6.1x / 9.4x throughout.
+- **Rules and stats agree.** The transition itself is an S3 bucket lifecycle rule. Lakehouse mirrors the same rules in its config, globally or per tenant, so tenant stats, cost estimates and the delete path know which storage class each object is in.
+- **Deletes never pay retrieval fees.** Deletes on Standard-IA or Glacier objects are applied as tombstones, never as retrieval plus rewrite ([deletion strategy](deletion-strategy.md)).
+- **Glacier IR stays queryable.** Glacier Instant Retrieval objects answer normal GETs in milliseconds; a query that reads them pays $0.03 per GB read (Standard-IA: $0.01 per GB).
+- **Deep Archive is for retention only.** Objects there must be restored before they can be queried.
+- **Transition after compaction.** The first transition should come after compaction has finished with an object. Rewriting an object that is already in Standard-IA or Glacier IR costs a retrieval fee plus the rest of its minimum storage duration (30 and 90 days).
+
+Reproduce: `python3 scripts/cost/cost_tiering.py`.
+
+Steady state (retention window full). Includes PUTs and lifecycle-transition requests; retrieval fees for reading IA/Glacier IR data are extra ($0.01 / $0.03 per GB read).
+
+**S3 Standard only**
+
+| Ingest/day | 30 days | 90 days | 1 year | 3 years | 7 years |
+|---|---:|---:|---:|---:|---:|
+| 1 TB | $98 | $292 | $1,182 | $3,445 | $7,971 |
+| 10 TB | $976 | $2,843 | $11,304 | $32,906 | $76,111 |
+| 50 TB | $4,717 | $13,833 | $54,522 | $163k | $379k |
+| 100 TB | $9,383 | $27,166 | $109k | $325k | $757k |
+| 500 TB | $45,053 | $134k | $541k | $1,621k | $3,781k |
+
+**Standard 30d → Standard-IA → Glacier IR at 90d (all queryable)**
+
+| Ingest/day | 30 days | 90 days | 1 year | 3 years | 7 years |
+|---|---:|---:|---:|---:|---:|
+| 1 TB | $98 | $204 | $360 | $772 | $1,595 |
+| 10 TB | $976 | $2,039 | $3,602 | $7,717 | $15,946 |
+| 50 TB | $4,717 | $10,034 | $17,850 | $38,424 | $79,571 |
+| 100 TB | $9,383 | $20,018 | $35,651 | $76,797 | $159k |
+| 500 TB | $45,053 | $98,226 | $176k | $382k | $794k |
+
+**Standard 30d → Glacier IR → Deep Archive after 1y (archive)**
+
+| Ingest/day | 30 days | 90 days | 1 year | 3 years | 7 years |
+|---|---:|---:|---:|---:|---:|
+| 1 TB | $98 | $133 | $288 | $393 | $597 |
+| 10 TB | $976 | $1,327 | $2,877 | $3,928 | $5,965 |
+| 50 TB | $4,717 | $6,474 | $14,224 | $19,481 | $29,665 |
+| 100 TB | $9,383 | $12,897 | $28,398 | $38,912 | $59,280 |
+| 500 TB | $45,053 | $62,623 | $140k | $193k | $295k |
+
+### The same policy against the alternatives
+
+Storage + compute + cross-AZ network + requests. Lakehouse uses the all-queryable policy (Standard 30d → Standard-IA → Glacier IR at 90d); Loki + Tempo is shown on S3 Standard and with the same lifecycle; VL/VT HA keeps two EBS copies (no tiering on EBS). Compute for Loki + Tempo and VL/VT is taken from scripts/cost/cost_model.py at 10 TB/day.
+
+| 10 TB/day, retention | Lakehouse + lifecycle | Loki + Tempo, S3 Standard | Loki + Tempo + same lifecycle | VL/VT HA on EBS |
+|---|---:|---:|---:|---:|
+| 30 days | **$3,644** | $23,268 | $23,268 | $7,924 |
+| 90 days | **$4,707** | $26,304 | $25,010 | $16,724 |
+| 1 year | **$6,271** | $39,830 | $27,574 | $57,057 |
+| 3 years | **$10,385** | $75,089 | $34,290 | $164k |
+| 7 years | **$18,615** | $146k | $47,722 | $378k |
+
+Loki + Tempo can use the same S3 lifecycle rules, and they help it too. Its compute baseline and replication-factor-3 network stay. VL/VT keeps data on EBS, where there is no storage-class tiering.
+
+### Cumulative spend over time
+
+Sum of monthly bills while data accumulates up to the retention window, then steady state. Storage, compute, network and requests.
+
+| Ingest/day, retention | first 1 y | first 3 y | first 7 y |
+|---|---:|---:|---:|
+| 1 TB/day, 1 year | $6,263 | $21,312 | $51,411 |
+| 1 TB/day, 3 years | $6,263 | $26,317 | $76,167 |
+| 1 TB/day, 7 years | $6,263 | $26,317 | $95,647 |
+| 10 TB/day, 1 year | $62,625 | $213k | $514k |
+| 10 TB/day, 3 years | $62,625 | $263k | $762k |
+| 10 TB/day, 7 years | $62,625 | $263k | $956k |
+| 100 TB/day, 1 year | $622k | $2,118k | $5,110k |
+| 100 TB/day, 3 years | $622k | $2,618k | $7,585k |
+| 100 TB/day, 7 years | $622k | $2,618k | $9,533k |
+
+The rows at 50 TB/day and above are projections: Lakehouse is not ready at that scale yet (see below).
+
 ## Where Lakehouse wins, and where it does not
 
 - **Lowest-cost HA option from 0.1 to 10 TB per day** in this model. Lakehouse nodes are stateless over a single S3 copy, so HA does not double storage.
@@ -81,6 +159,8 @@ Each system is sized as a production cluster: shards × replicas, Keeper or mast
 |---|---|
 | S3 Standard | $0.023 / $0.022 / $0.021 per GB-month (first 50 TB / next 450 TB / above) |
 | S3 PUT / GET | $0.005 / $0.0004 per 1,000 |
+| S3 Standard-IA / Glacier Instant Retrieval / Glacier Deep Archive | $0.0125 / $0.004 / $0.00099 per GB-month; retrieval $0.01 / $0.03 per GB / restore first |
+| Lifecycle transition requests (into Standard-IA / Glacier IR / Deep Archive) | $0.01 / $0.02 / $0.05 per 1,000 objects |
 | EBS gp3 | $0.08 per GB-month |
 | Cross-AZ transfer | $0.02 per GB (both directions) |
 | m7g.xlarge / r7g.xlarge | $0.1632 / $0.2142 per hour (larger sizes scale linearly) |

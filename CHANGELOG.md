@@ -18,7 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The old cost section is replaced: it relied on an unsourced ~70x VictoriaLogs compression figure and
   a single 500 GB/day worksheet. `docs/cost-estimates.md` and `docs/cost-comparison.md` now carry an HA
   cost model from 0.1 to 500 TB/day, with every input labelled measured, sourced or assumed, and the
-  scripts that produce it live in `scripts/cost/`.
+  scripts that produce it live in `scripts/cost/`. The comparison page now breaks the AWS bill down
+  line by line (on-demand EC2, EBS gp3, every S3 storage class and request type, cross-AZ transfer),
+  explains why Lakehouse scales linearly with two stateless pod types, and adds a long-term retention
+  calculator (`scripts/cost/cost_tiering.py`) for S3 lifecycle tiering from 30 days to 7 years.
 
 ## [0.143.8] - 2026-10-01
 
