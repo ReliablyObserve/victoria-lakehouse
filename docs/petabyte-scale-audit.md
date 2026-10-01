@@ -43,7 +43,7 @@ are `F`, `P × T` and `R` in the metadata plane.**
 | Manifest refresh | `O(N)` per interval per replica | full re-enumeration of every tenant/signal prefix each `manifest.refresh_interval` (default 5 min), under a hard 2-minute timeout; no time window | LIST pages `≈ N/1000` per replica per refresh (~50 k at 50 M objects); once a refresh cannot finish in 2 minutes it fails every cycle and the manifest stops picking up files that peer push missed | poll only partitions newer than the snapshot; make push the primary path; periodic full reconcile |
 | pmeta residency | `O(P × T)` | every live partition's bundle stays resident; eviction only when a partition fully expires | metadata RAM and warm GETs grow with partitions × tenants | lazy load by window, age-LRU under `resourcebounds`, day-level bundles after rollup |
 | pmeta multi-writer | writers per partition | one bundle key per partition, written with an unconditional `PutObject` | concurrent writers replace each other's bundle — last write wins | per-peer shard keys, merge-on-read, owner-side consolidation |
-| Footer cache | files in the query window × `T` | **both binaries: byte-bounded, `cache.footer_max_bytes` (default 256 MiB logs, 512 MiB traces)** | the query working set is evicted by background scans once the hot window outgrows the budget | fold into the file-meta facet as its page cache |
+| Footer cache | files in the query window × `T` | **both binaries: byte-bounded, `cache.footer_max_bytes` (auto: 10% logs / 20% traces of the cache memory, clamped to 1 GiB / 2 GiB)** | the query working set is evicted by background scans once the hot window outgrows the budget | fold into the file-meta facet as its page cache |
 | Label index | distinct values per field | 10 000 values/field cap with truncation; field-name LRU exists but is off by default | high-cardinality fields keep an arbitrary subset of values | retire into the pmeta field catalog facet |
 | Compaction throughput | partitions retired per pod-hour | `compaction.max_concurrent: 1`, `compaction.interval: 5m` → ≤ 12 partitions/h/pod; inputs fully materialised in memory | when new (tenant, partition) work outpaces what the scheduler retires, the small-file backlog grows without bound | size-targeted flush, streaming k-way merge under a byte budget, parallel partitions |
 | Object size at flush | rows and *raw* bytes | flush at 50 000 buffered rows, or estimated **uncompressed** bytes ≥ `insert.target_file_size` (128 MiB), or the interval | compressed objects land far below the target → request overhead and read amplification on cold queries | compressed-size target + minimum-age hold; one object per (tenant, partition) per flush |
@@ -217,17 +217,19 @@ into one object by the partition's owner during compaction.
 ### Footer cache
 
 Both binaries bound the footer cache by **resident bytes**
-(`cache.footer_max_bytes`; `0` = 256 MiB on logs, 512 MiB on traces); the
+(`cache.footer_max_bytes`; `0` = auto: 10% of the cache memory on logs, 20% on traces, clamped to 1 GiB / 2 GiB); the
 entry-count bound and the traces auto-retune are gone. An entry is the raw
 footer plus the page-index tail plus the decoded metadata: about 0.2 MB for a
 flush-sized logs object (43-50 KB footer), about 1.2-1.5 MB for a 10 MB
 compacted logs object (357-431 KB footer with token blooms), about 1.3-1.9 MB
-for a traces L2 object (467-519 KB `_trace_idx` footer; the model is
-conservative there). The previous 10,000-entry bound did not bound bytes at
+for a traces L2 object (467-519 KB `_trace_idx` footer; the model charges
+a per-column-chunk term as well, so an object with many row groups is not
+under-charged once its page index is decoded). The previous 10,000-entry bound did not bound bytes at
 all: it retained the whole footer-prefetch buffer per entry and was never
 measured. Measured against the heap by
-`TestCachedFooterWeightCalibration` (model within 5-27% of the measured
-resident size per entry; conservative on traces).
+`TestCachedFooterWeightCalibration` (1, 8 and 40 row groups, fresh and
+index-decoded, both modules: the model is never below the measured resident
+size per entry and at most 1.5x of it).
 
 What this bounds and what it does not: RAM is now `min(budget, working set)`,
 independent of file count. The hit rate still falls as the queried window

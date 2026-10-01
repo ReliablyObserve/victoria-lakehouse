@@ -518,8 +518,16 @@ func TestColdReadProfile(t *testing.T) {
 	}
 
 	for _, sh := range profShapes(anchor) {
-		if only != "" && !strings.Contains(sh.name, only) {
-			continue
+		if only != "" {
+			hit := false
+			for _, o := range strings.Split(only, ",") {
+				if strings.HasPrefix(sh.name, o+" ") || (!strings.Contains(only, ",") && strings.Contains(sh.name, o)) {
+					hit = true
+				}
+			}
+			if !hit {
+				continue
+			}
 		}
 		store := delete.NewTombstoneStore()
 		if sh.tomb != "" {

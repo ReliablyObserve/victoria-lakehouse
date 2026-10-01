@@ -269,7 +269,7 @@ hit rate as high as possible without blowing the memory budget".
 |---|---|---|---:|---|
 | **Smart Cache L1 (memory)** | `internal/smartcache/Controller` + `internal/cache/LRU` | Decoded parquet row groups in RAM. LRU with peer-aware affinity. | 256 MiB (small), 1 GiB (PB) | `cache.memory_mb` |
 | **Smart Cache L2 (disk)** | `internal/cache/DiskCache` | Raw parquet bytes on local disk; survives restarts. | 2 GiB (small), 100 GiB (PB) | `cache.disk_max_mb` |
-| **Footer cache** | `internal/storage/parquets3/FooterCache` | LRU of parsed parquet footers plus their page-index tail (with `_trace_idx`, token blooms), bounded by bytes. | 256 MiB logs / 512 MiB traces (default), 8 GiB (PB) | `cache.footer_max_bytes` |
+| **Footer cache** | `internal/storage/parquets3/FooterCache` | LRU of parsed parquet footers plus their page-index tail (with `_trace_idx`, token blooms), bounded by bytes. | auto: 10% logs / 20% traces of the cache memory, clamped to 1 GiB / 2 GiB (default), 8 GiB (PB) | `cache.footer_max_bytes` |
 | **Footer-cache disk snapshot** | `footer_cache_snapshot.go` | LRU key-list snapshot persisted at shutdown; reloaded async after `/ready=200` so a restart doesn't refetch every footer from S3. | 4 B + object key per cached entry (≈ 60–150 B): ~1 MiB at 10 k entries, 10–30 MB at 200 k | persist_path |
 | **PeerCache** | `internal/peercache` | Consistent-hash ring of peers' L1 caches. Local query knows which peer holds a key without asking. | bounded by peer count | k8s headless service |
 | **Self-cache filter** | `storage_query.go::applyOwnedFilesFirst` + `LookupOwner` | Excludes files this pod owns from "fetch from peer" set; prevents peer→peer fan-out for files we already have. | — | none |

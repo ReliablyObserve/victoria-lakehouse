@@ -23,13 +23,33 @@ actual `lakehouse_*` metrics in steady state.
 
 > Both binaries bound the footer cache by **bytes**, with
 > `cache.footer_max_bytes` (flag `-lakehouse.cache.footer-max-bytes`;
-> `0` = 256 MiB on logs, 512 MiB on traces). An entry is charged its
-> raw footer plus page-index tail and the decoded metadata, about
+> `0` = auto, see the table below). An entry is charged its
+> raw footer plus page-index tail, the decoded metadata and a
+> per-column-chunk term for the page-index state parquet-go memoizes
+> after a query decoded it, about
 > 0.2 MB for a flush-sized logs object, about 1.2-1.5 MB for a
 > 10 MB compacted logs object with token blooms and about 1.3-1.9 MB
 > for a traces L2 object with `_trace_idx` (measured, see
 > [read path](../read-path.md#footer-cache-and-zero-get-open)). The
 > cache holds as many footers as fit.
+>
+> **Auto budget (`footer_max_bytes: 0`).** Logs get 10% and traces 20% of
+> the memory the process may use for caches (VictoriaMetrics
+> `memory.Allowed()`: 60% of the machine or container limit unless
+> `-memory.allowedPercent` says otherwise), clamped to 32 MiB..1 GiB on logs
+> and 32 MiB..2 GiB on traces. The resolved value is logged at startup
+> (`footer cache budget: ...`); an explicit `footer_max_bytes` overrides it,
+> clamps included. Computed from the formula (sourced, not measured):
+>
+> | machine or container limit | logs | traces |
+> |--:|--:|--:|
+> | 1 GiB | 61 MiB | 123 MiB |
+> | 2 GiB | 123 MiB | 246 MiB |
+> | 4 GiB | 246 MiB | 492 MiB |
+> | 8 GiB | 492 MiB | 983 MiB |
+> | 16 GiB | 983 MiB | 1,966 MiB |
+>
+> `TestAutoFooterMaxBytes_Table` pins these values in both modules.
 >
 > Per-file manifest RAM and resident pmeta size at these file counts
 > are **not measured** — the figures below
@@ -43,8 +63,8 @@ actual `lakehouse_*` metrics in steady state.
 Per pod, steady state:
 
   + Manifest in-memory state       ≈ 200 bytes × file_count  (estimate)
-  + Footer cache                   ≤ cache.footer_max_bytes  (byte-bounded; default
-                                      256 MiB logs, 512 MiB traces; entry ≈ 0.2-1.9 MB, measured)
+  + Footer cache                   ≤ cache.footer_max_bytes  (byte-bounded; auto
+                                      10% logs / 20% traces of the cache memory; entry ≈ 0.2-1.9 MB, measured)
   + pmeta resident bundles         ≈ grows with partitions × tenants; no eviction
                                       of live partitions — watch
                                       lakehouse_catalog_resident_bytes
@@ -176,7 +196,7 @@ lakehouse:
     min_manifest_files: 0  # not read from the config file in this release
     serve_while_warming: false  # not read from the config file in this release
   cache:
-    footer_max_bytes: 268435456  # 256 MiB, the logs default
+    footer_max_bytes: 268435456  # 256 MiB, explicit (0 = auto)
     warmup_partitions: 6  # not read from the config file in this release
 ```
 
@@ -185,7 +205,7 @@ startup:
   min_manifest_files: 1000  # not read from the config file in this release
   serve_while_warming: true  # not read from the config file in this release
 cache:
-  footer_max_bytes: 268435456  # 256 MiB, the logs default
+  footer_max_bytes: 268435456  # 256 MiB, explicit (0 = auto)
   warmup_partitions: 6  # not read from the config file in this release
 manifest:
   refresh_interval: 30s
@@ -199,7 +219,7 @@ lakehouse:
     min_manifest_files: 1000  # not read from the config file in this release
     serve_while_warming: true  # not read from the config file in this release
   cache:
-    footer_max_bytes: 268435456  # 256 MiB, the logs default
+    footer_max_bytes: 268435456  # 256 MiB, explicit (0 = auto)
     warmup_partitions: 6  # not read from the config file in this release
   manifest:
     refresh_interval: 30s
@@ -261,8 +281,8 @@ query:
   [scale limits](../petabyte-scale-audit.md#manifest-refresh).
 
 - **The footer cache is a fixed byte budget.** Both binaries hold at
-  most `cache.footer_max_bytes` of footers (default 256 MiB logs,
-  512 MiB traces); wide queries over more files than fit pay the
+  most `cache.footer_max_bytes` of footers (auto: 10% of the cache
+  memory on logs, 20% on traces, clamped to 1 GiB / 2 GiB); wide queries over more files than fit pay the
   footer fetch (one or two S3 round trips) for the rest.
 
 - **Resident pmeta has no eviction for live partitions.** It grows
