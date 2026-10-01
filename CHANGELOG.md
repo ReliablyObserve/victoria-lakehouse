@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Go 1.27.1 everywhere.** The release images moved to `golang:1.27.1-alpine3.23` in #282, while both
+  `go.mod` files (which every CI workflow reads through `go-version-file`) and `go.work` still said 1.26.8, so
+  CI tested with a different toolchain from the one that builds the shipped binaries. Both modules and the
+  workspace now declare `go 1.27.1`.
+
 ### Documentation
 
 - **README: TL;DR, coverage tables, Grafana experience, validated performance and the current cost
