@@ -428,6 +428,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Cached Parquet files open with zero S3 round trips, and the planned read mode is the default (both binaries).**
+  Every footer-cache writer (batch prefetch, single-file fetch, inline fetch, whole-object download) now keeps the
+  page-index stripe (ColumnIndex/OffsetIndex) with the footer, and a query-time open of a cached file serves the
+  footer and every later page-index read from memory through an overlay reader (`SkipMagicBytes(true)`, no
+  optimistic tail read); only data ranges reach S3. `s3.projected_fetch_mode` now defaults to `planned`: the exact
+  column-chunk ranges of the surviving row groups are fetched in one wave per file, with no read-ahead window.
+  `window` stays as a deprecated fallback for one release and will be removed. A `trace_id` point lookup
+  (trace-by-ID) stays on the window reader. Measured in-process with injected S3 latency, 11 flush-sized files
+  (`scripts/bench/cold-read/`): `BIGMARK | stats count()` at 50 ms 728 -> 115 ms with 73 -> 20 GETs and
+  14.5 -> 4.7 MB read; `level:=error | stats count()` 518 -> 108 ms and 11.6 MB -> 45 KB; sequential round trips
+  14 -> 2; 50 files 1,829 -> 375 ms; the first query over cold footers 792 -> 168 ms; traces 2-5x on every
+  shape but `query=* limit 1000` (unchanged), trace-by-ID 212 -> 108 ms with 3 -> 1 GETs. Answers are identical to the
+  previous read path on every shape. Where it does not help: `query=* limit 1000` and the other whole-object reads
+  are unchanged, and a footer-cache budget of 256 MiB holds fewer footers than 10,000 entries did.
+- **The footer cache is bounded by bytes, not entries (both binaries).** `cache.footer_max_bytes` (flag
+  `-lakehouse.cache.footer-max-bytes`; `0` = 256 MiB logs, 512 MiB traces) replaces `cache.footer_max_items`, which
+  the logs binary never read and the traces binary auto-tuned by entry count. A footer with token blooms or a trace
+  index is 40-520 KB, so 10,000 entries could be gigabytes; an entry is now charged its owned tail plus a measured
+  estimate of its decoded metadata and the least-recently-used entries are evicted to fit the budget. New
+  metrics: `lakehouse_footer_cache_bytes`, `lakehouse_footer_overlay_opens_total{result}`. The chart gains
+  `lakehouseConfig.cache.footer_max_bytes`.
+
 - **Go 1.27.1 everywhere.** The release images moved to `golang:1.27.1-alpine3.23` in #282, while both
   `go.mod` files (which every CI workflow reads through `go-version-file`) and `go.work` still said 1.26.8, so
   CI tested with a different toolchain from the one that builds the shipped binaries. Both modules and the

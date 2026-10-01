@@ -288,7 +288,7 @@ The footer cache is populated on first access and during cache warmup. It is sep
 
 | Setting | Default | Impact |
 |---|---|---|
-| `cache.footer_max_items` | `0` | Max parsed footers in memory; each footer is a few KB. **Traces only.** At `0` traces sizes the cache from the manifest file count, clamped to [10000, 100000]; an explicit value overrides that. The logs binary's footer cache is fixed at 10 000 entries and reads this key only to print a startup sizing hint — see [scale limits](petabyte-scale-audit.md#footer-cache). |
+| `cache.footer_max_bytes` | `0` | Byte budget of the footer cache (both binaries): `0` = 256 MiB logs, 512 MiB traces. Each entry holds the footer and the page-index tail, so a cached file opens with no S3 round trip (see [read path](read-path.md#footer-cache-and-zero-get-open)); least-recently-used entries are evicted to stay within the budget. |
 
 ### Parallel row group processing
 
