@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.8] - 2026-10-01
+
 ### Security
 
 - **Auto-registered string tenants (`X-Scope-OrgID`) no longer reuse the AccountID of an existing tenant, and a read
