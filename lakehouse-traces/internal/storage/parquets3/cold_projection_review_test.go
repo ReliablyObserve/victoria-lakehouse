@@ -154,7 +154,10 @@ func TestColdCountPushdown_RewrittenGroupKey(t *testing.T) {
 	if used {
 		t.Error("extract-rewritten group key was answered from the stored aggregates")
 	}
-	_ = got
+	got, used = served(`* | format "x" as name | stats by (name) count() n`)
+	if used || len(got) != 1 || got["x"] != len(rows) {
+		t.Errorf("format-rewritten group key: pushdown used=%v answer %s, want x=%d from a scan", used, fmtGroups(got), len(rows))
+	}
 }
 
 // TestColdTier2Slot_FilterAndGroupBy (traces): a span attribute stored in a
