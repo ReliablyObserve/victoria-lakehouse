@@ -74,15 +74,27 @@ RELEASE_METADATA_FILES = {
 }
 
 
-def run_git(*args: str) -> str:
+def run_git(*args: str, cwd: pathlib.Path = ROOT) -> str:
     result = subprocess.run(
         ["git", *args],
-        cwd=ROOT,
+        cwd=cwd,
         check=True,
         capture_output=True,
         text=True,
     )
     return result.stdout.strip()
+
+
+def comparison_base(base: str, head: str, cwd: pathlib.Path = ROOT) -> str:
+    """The commit the PR's own changes start from: merge-base(base, head).
+
+    ``pull_request.base.sha`` is the base branch tip, which moves on after the
+    branch was cut. Diffing that tip against the head (two dots) attributes
+    every commit that landed on the base since then to the PR, as reverts: a
+    release-metadata PR cut before another PR merged then "touches" that PR's
+    files, stops looking like a metadata sync and fails the gate (#312, #321).
+    """
+    return run_git("merge-base", base, head, cwd=cwd)
 
 
 def extract_unreleased_section(text: str) -> str:
@@ -323,10 +335,11 @@ def main() -> int:
     parser.add_argument("--head", required=True)
     args = parser.parse_args()
 
-    files = run_git("diff", "--name-only", f"{args.base}..{args.head}").splitlines()
-    commits = run_git("log", "--pretty=format:%s", f"{args.base}..{args.head}").splitlines()
+    base = comparison_base(args.base, args.head)
+    files = run_git("diff", "--name-only", f"{base}..{args.head}").splitlines()
+    commits = run_git("log", "--pretty=format:%s", f"{base}..{args.head}").splitlines()
 
-    base_text = run_git("show", f"{args.base}:CHANGELOG.md")
+    base_text = run_git("show", f"{base}:CHANGELOG.md")
     head_text = run_git("show", f"{args.head}:CHANGELOG.md")
     base_unreleased = extract_unreleased_section(base_text)
     head_unreleased = extract_unreleased_section(head_text)
