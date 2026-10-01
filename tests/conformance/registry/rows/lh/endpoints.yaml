@@ -351,3 +351,34 @@
   layers: [api, chaos]
   pending: true
   notes: "Create a hide-mode tombstone, kill the pod without a graceful shutdown, restart it, and query the same window: the suppressed rows must still be absent, the deleted value must still be absent from field_values, and removing the tombstone afterwards must bring the rows back even if a compaction ran in between. Covered at unit level by internal/delete/tombstone_durability_test.go (TestTombstoneDurability_SurvivesACrashViaDisk / ViaS3 / RestoreUnionsDiskAndS3), internal/storage/parquets3/fields_tombstones_test.go (TestFieldValues_TombstonedValueDisappears) and internal/compaction/tombstones_test.go (TestCompaction_HideModeRowsAreCarriedForward); this row is the end-to-end expectation the runner will execute."
+
+- id: lh.select.restart.same_hour_buffer_visible_logs
+  title: "LH cold read after a graceful restart — rows buffered in the same UTC hour as the shutdown flush are visible exactly once (logs)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs: { doc: docs/durability.md, tests: [internal/storage/parquets3/restart_watermark_test.go, internal/storage/parquets3/restart_watermark_bounds_test.go, internal/manifest/bounds_inferred_test.go, cmd/lakehouse-logs/shutdown_snapshot_test.go] }
+  notes: "Seed cold rows in hour H, restart the pod gracefully (SIGTERM, so the final flush writes them), then ingest rows with _time in the same hour H and query the window: query=*, stats count and field_values must show every cold row and every new row exactly once (cold N + buffered M), not only the cold ones. The previous-hour case and rows that straddle the hour boundary give the same totals. Covered at unit and lifecycle level by the listed tests (TestRestartWatermark_*, FuzzRestartWatermark); this row is the end-to-end expectation the runner will execute."
+
+- id: lh.select.restart.same_hour_buffer_visible_traces
+  title: "LH cold read after a graceful restart — spans buffered in the same UTC hour as the shutdown flush are visible exactly once (traces)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs: { doc: docs/durability.md, tests: [lakehouse-traces/internal/storage/parquets3/restart_watermark_test.go, lakehouse-traces/internal/storage/parquets3/restart_watermark_bounds_test.go, lakehouse-traces/shutdown_snapshot_test.go] }
+  notes: "The traces binary's twin of the logs row: spans ingested after a graceful restart, in the same UTC hour as the spans flushed at shutdown, are returned by the LogsQL query API (and the Jaeger and Tempo reads built on it) exactly once alongside the cold spans. trace_id lookups already bypass the buffer watermark and are not the case under test."
+

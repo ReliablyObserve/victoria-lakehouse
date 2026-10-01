@@ -333,6 +333,7 @@
   status: shipped
   area: query
   surfaces: [api, storage]
+  rows: [lh.select.restart.same_hour_buffer_visible_logs, lh.select.restart.same_hour_buffer_visible_traces]
   tests:
     - internal/storage/parquets3/restart_watermark_test.go
     - internal/storage/parquets3/restart_watermark_bounds_test.go

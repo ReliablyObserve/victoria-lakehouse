@@ -509,6 +509,8 @@ flag: 30/179 covered by at least one registry row.
 | `lh.manifest.partitions.schema` | LH manifest partitions — partition listing | admin | 🟡 declared, not yet executed |
 | `lh.manifest.range.schema` | LH manifest range — partition manifest lookup over a time window | admin | 🟡 declared, not yet executed |
 | `lh.ready.status` | LH ready — readiness probe | internal | 🟡 declared, not yet executed |
+| `lh.select.restart.same_hour_buffer_visible_logs` | LH cold read after a graceful restart — rows buffered in the same UTC hour as the shutdown flush are visible exactly once (logs) | select | 🟡 declared, not yet executed |
+| `lh.select.restart.same_hour_buffer_visible_traces` | LH cold read after a graceful restart — spans buffered in the same UTC hour as the shutdown flush are visible exactly once (traces) | select | 🟡 declared, not yet executed |
 | `lh.stats.compaction.schema` | LH stats compaction — recent compaction runs and efficiency hints | admin | 🟡 declared, not yet executed |
 | `lh.stats.fields.schema` | LH stats fields — per-field size/cardinality breakdown | admin | 🟡 declared, not yet executed |
 | `lh.stats.overview.schema` | LH stats overview — tier sizes, object counts, compaction backlog | admin | 🟡 declared, not yet executed |
