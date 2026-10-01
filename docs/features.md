@@ -429,6 +429,7 @@ The buffer serves only rows newer than the newest time covered by the Parquet ob
 
 - Verification: rows: `lh.select.restart.same_hour_buffer_visible_logs` (pass, pending), `lh.select.restart.same_hour_buffer_visible_traces` (pass, pending) · tests: `internal/storage/parquets3/restart_watermark_test.go`, `internal/storage/parquets3/restart_watermark_bounds_test.go`, `internal/storage/parquets3/restart_watermark_faults_test.go`, `internal/manifest/bounds_inferred_test.go`, `cmd/lakehouse-logs/shutdown_snapshot_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_bounds_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_faults_test.go`, `lakehouse-traces/shutdown_snapshot_test.go`
 - Docs: `docs/durability.md#22-restart-and-the-read-watermark`, `docs/read-path.md`
+- Note: The Grafana-level check is tests/playwright/tests/restart-buffer-visibility.spec.ts, run against a stack seeded by scripts/bench/restart-ab/seed.py (not wired into CI yet); the A/B perf and correctness smoke is scripts/bench/restart-ab/perf_smoke.py.
 
 ### ✅ Column projection
 

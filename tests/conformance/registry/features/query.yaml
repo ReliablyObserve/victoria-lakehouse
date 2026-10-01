@@ -344,7 +344,6 @@
     - lakehouse-traces/internal/storage/parquets3/restart_watermark_bounds_test.go
     - lakehouse-traces/internal/storage/parquets3/restart_watermark_faults_test.go
     - lakehouse-traces/shutdown_snapshot_test.go
-    - tests/playwright/tests/restart-buffer-visibility.spec.ts
   docs:
     - docs/durability.md#22-restart-and-the-read-watermark
     - docs/read-path.md
@@ -361,3 +360,7 @@
     after the final flush so the next boot starts with exact ranges. Verified for both binaries
     across restart, hour-boundary and previous-hour cases, a peer's flush learned by listing, and a
     random write/flush/restart property test.
+  notes: >-
+    The Grafana-level check is tests/playwright/tests/restart-buffer-visibility.spec.ts, run against a
+    stack seeded by scripts/bench/restart-ab/seed.py (not wired into CI yet); the A/B perf and
+    correctness smoke is scripts/bench/restart-ab/perf_smoke.py.
