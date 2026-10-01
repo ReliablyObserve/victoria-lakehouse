@@ -312,3 +312,28 @@ func TestRound2_FooterBoundsNeedEveryRowGroup(t *testing.T) {
 		t.Error("a missing column must be unavailable")
 	}
 }
+
+// m6: a computation that runs out of its budget pauses further reads, and the
+// next computation does not wait again.
+func TestRound2_BudgetTimeoutPausesFurtherReads(t *testing.T) {
+	singleAttemptS3(t)
+	mock := newRWMock()
+	r := newRWRigWith(t, mock.mockS3Server)
+	r.ingest("COLD", at(rwHour, 10*time.Minute))
+	r.restart(true, false)
+	files := r.objects()
+	mock.delay(files[0].Key, 10*time.Second)
+	start := time.Now()
+	_ = r.s.bufferWatermarksFor(context.Background(), 0, files)
+	if d := time.Since(start); d < boundsResolveTimeout-200*time.Millisecond || d > boundsResolveTimeout+2*time.Second {
+		t.Errorf("first computation took %v, want about the %v budget", d, boundsResolveTimeout)
+	}
+	if !r.s.inferredBounds.paused(time.Now()) {
+		t.Error("no pause after the budget ran out")
+	}
+	start = time.Now()
+	_ = r.s.bufferWatermarksFor(context.Background(), 0, files)
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Errorf("the computation during the pause took %v, want ~0", d)
+	}
+}
