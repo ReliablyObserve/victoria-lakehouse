@@ -284,7 +284,7 @@ The shutdown order matters for what the next boot can see:
 **The guarantee when an object cannot be resolved** (S3 error, the object retired by a peer's compaction, a result that is exactly the partition hour, the budget running out). The watermark never sits below a row the object holds, so the buffer does not re-serve its rows (rows are hidden, not counted twice), over the objects the query reads plus those answered from metadata:
 
 - the object contributes its inferred end to the watermark, so the buffer is hidden up to the end of its hour rather than counted against rows the object already holds;
-- the same holds for an object too old to be worth a read (its inferred end is before the later of the query start and now minus `insert.buffer_retention`): it is not read, and it still contributes its inferred end, because the buffer's retention is applied per day partition and can still hold its rows. The fix therefore never shows more rows than before it for such an object (it shows the same ones);
+- the same holds for an object too old to be worth a read (its inferred end is before the later of the query start and now minus `insert.buffer_retention`): it is not read, and it still contributes its inferred end, because the buffer's retention is applied per day partition and can still hold its rows.;
 - no metadata-only answer (manifest fast path, count pushdown, 404 recovery, field-value aggregates) uses an object whose bounds are still inferred: it goes to the scan path, where an unreadable object contributes nothing;
 - `lakehouse_watermark_inferred_unresolved_total` counts the objects a read was tried for and failed to resolve.
 
