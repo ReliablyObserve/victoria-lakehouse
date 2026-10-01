@@ -248,6 +248,11 @@ func QueryFilter(q *Query) *Filter {
 // and performance change that must be measured, not folded into an
 // upstream bump. Reuse-first target: replace this function with
 // getNeededColumns plus a prefix-to-column resolution step.
+//
+// The Parquet projection no longer uses this function: GetQueryNeededFields
+// is that replacement and fixed divergence B4 for the projection. This one is
+// kept only for the count pushdown's single-field gate and the traces alias
+// logic, which want the pipes' by-fields alone.
 func GetQueryPipeFields(q *Query) []string {
 	if q == nil {
 		return nil
