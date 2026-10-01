@@ -499,6 +499,21 @@ up to 48%) and two are more than 5% slower: both read identical GETs and bytes, 
 outlier iteration, the other a 0-GET `layout=peer` cell whose 10 → 11–13 ms is the buffer bridge.
 Exactness is identical in every cell.
 
+A control set outside the field-metadata endpoints, same build, both modes interleaved per
+iteration, production window knobs, flushed and compacted layouts, windows whole/cut/edge, row
+queries through `RunQuery` with every answer's row set hashed (measured, this machine):
+
+| signal | queries | shapes | row sets sync vs async | GETs / bytes async → sync | summed p50, 0 ms | summed p50, 100 ms | cells > 5% apart at 100 ms |
+|---|---|---|---|---|---|---|---|
+| logs | `*`, `service.name:="svc-a"`, `level:="ERROR"`, a phrase with no match, one `trace_id`, `_msg:~"status=500"`, `level:="FATAL" OR level:="TRACE"` | 84 | identical in every shape | 672 / 98.0 MB both | 531 → 527 ms | 12,274 → 12,289 ms | 0 |
+| traces | `*`, `service.name:="svc-a"`, `name:="shutdown"`, one `trace_id`, `duration:>400000`, `name:="warmup" OR name:="shutdown"` | 72 | identical in every shape | 284 / 69.2 MB both | 1,264 → 1,268 ms | 6,694 → 6,710 ms | 0 |
+
+The read mode shows no effect on these row reads (a few large reads per file): same GETs, same
+bytes, p50 within ±2% at 100 ms (median cell ratio 1.00). The
+difference is confined to column-projected ranged scans (field_values, field_names, streams),
+measured above. Not measured: a live stack with real S3 latency and files above the whole-file
+download thresholds.
+
 `TestFieldMetadataCompactedCountersAreDeterministic` (logs) and
 `TestFieldMetadataTracesCompactedCountersAreDeterministic` (traces) run every compacted cell six
 times and require identical counters; with `async` the logs test fails on five cells.
