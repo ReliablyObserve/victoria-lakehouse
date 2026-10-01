@@ -332,16 +332,27 @@ func compareRowsMatch(t *testing.T, ref, sut fetchResult, skipFields []string, t
 	refRows := parseNDJSON(ref.Body)
 	sutRows := parseNDJSON(sut.Body)
 	requireNonEmptyReference(t, RowsMatch, len(refRows), "reference returned no rows")
+	problems, note := judgeRows(t, refRows, sutRows, skipFields, ties)
+	for _, p := range problems {
+		t.Error(p)
+	}
+	t.Log(note)
+}
+
+// judgeRows compares two non-empty answers row by row as multisets and
+// returns the problems to report (none when they match) and a summary line.
+// A difference that only a limit cutting a _time tie group explains is not a
+// problem; see rows_ties.go.
+func judgeRows(t *testing.T, refRows, sutRows []map[string]any, skipFields []string, ties tieGroupFetcher) (problems []string, note string) {
+	t.Helper()
 	if len(refRows) != len(sutRows) {
-		t.Errorf("row count mismatch: ref=%d sut=%d", len(refRows), len(sutRows))
-		return
+		return []string{fmt.Sprintf("row count mismatch: ref=%d sut=%d", len(refRows), len(sutRows))}, "rows_match: row counts differ"
 	}
 	refKeys := extractRowKeys(refRows, skipFields)
 	sutKeys := extractRowKeys(sutRows, skipFields)
 	refOnly, sutOnly := multisetDiff(refKeys, sutKeys)
 	if len(refOnly) == 0 && len(sutOnly) == 0 {
-		t.Logf("rows_match: %d rows, 0 mismatches", len(refRows))
-		return
+		return nil, fmt.Sprintf("rows_match: %d rows, 0 mismatches", len(refRows))
 	}
 	// The row sets differ. The one legitimate cause is a row limit cutting
 	// through a group of rows that share the boundary _time: neither tier's
@@ -350,26 +361,22 @@ func compareRowsMatch(t *testing.T, ref, sut fetchResult, skipFields []string, t
 	// identical and every differing row belongs to it.
 	at, why, ok := explainedByTruncatedTie(t, ties, refKeys, sutKeys, skipFields)
 	if ok {
-		t.Logf("rows_match: %d rows; %d rows differ only inside the _time tie group at %s that the limit cut, and that group is identical on both tiers",
+		return nil, fmt.Sprintf("rows_match: %d rows; %d rows differ only inside the _time tie group at %s that the limit cut, and that group is identical on both tiers",
 			len(refRows), len(refOnly), at.Format(time.RFC3339Nano))
-		return
-	}
-	if ties != nil {
-		t.Logf("rows_match: the row sets differ and a tie at the limit does not explain it: %s", why)
 	}
 	mismatches := 0
 	for i := range refKeys {
 		if refKeys[i] != sutKeys[i] {
 			mismatches++
 			if mismatches <= 3 {
-				t.Errorf("row %d mismatch:\n  ref: %s\n  sut: %s", i, refKeys[i], sutKeys[i])
+				problems = append(problems, fmt.Sprintf("row %d mismatch:\n  ref: %s\n  sut: %s", i, refKeys[i], sutKeys[i]))
 			}
 		}
 	}
 	if mismatches > 3 {
-		t.Errorf("... and %d more mismatches", mismatches-3)
+		problems = append(problems, fmt.Sprintf("... and %d more mismatches", mismatches-3))
 	}
-	t.Logf("rows_match: %d rows, %d mismatches", len(refRows), mismatches)
+	return problems, fmt.Sprintf("rows_match: %d rows, %d mismatches; not a tie cut by the limit: %s", len(refRows), mismatches, why)
 }
 
 func compareStatusEqual(t *testing.T, ref, sut fetchResult) {

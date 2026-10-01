@@ -22,15 +22,21 @@ package parity
 // never matters. What remains is the group a limit cut in two. A difference is
 // accepted only when all of these hold:
 //
+//   - the case orders rows by _time alone: no sort pipe (the query endpoint's
+//     `limit` returns the newest rows), or `sort by (_time)` / `first|last N by
+//     (_time)`. A secondary sort key would make rows at one _time unequal, and
+//     a wrong order on it must stay a mismatch;
 //   - both answers have the same number of rows, and every differing row has
-//     the same _time, at the first or last _time of both answers (the edge a
-//     limit or offset cuts);
-//   - re-read in full from both tiers (the case's own query over a 2ns window
-//     around that _time, with its row-limit pipes removed), the group is
-//     identical on hot and cold and larger than what the answers kept;
+//     the same _time, at the first or last _time of the two answers (the edge
+//     a limit or offset cuts);
+//   - re-read from both tiers (the case's own query with its row-limit pipes
+//     removed, over a window a few microseconds around that _time, keeping the
+//     rows at exactly that _time), the group is identical on hot and cold and
+//     larger than what the answers kept;
 //   - every row each tier kept at that _time is a member of the group.
 //
-// Anything else is still a mismatch.
+// Anything else is still a mismatch, and so is any case whose query this file
+// cannot take apart safely.
 
 import (
 	"fmt"
@@ -44,33 +50,113 @@ import (
 )
 
 // tieGroupFetcher reads, from the reference and the system under test, every
-// row a case's query yields at exactly one _time.
+// row a case's query yields around one _time.
 type tieGroupFetcher func(t *testing.T, at time.Time) (ref, sut fetchResult)
 
-// rowLimitPipe matches the pipes that cap or skip rows. They are dropped when a
-// tie group is re-read: the group must come back whole, and a skip would land
-// inside the narrow window instead of where the case put it.
-var rowLimitPipe = regexp.MustCompile(`(?i)\|\s*(limit|head|offset|skip|first|last)\s+\d+(\s+by\s*\([^)]*\))?`)
-
-// tieGroupQuery returns query with its row-limit pipes removed.
-func tieGroupQuery(query string) string {
-	return strings.TrimSpace(rowLimitPipe.ReplaceAllString(query, ""))
+// splitTopLevelPipes splits a LogsQL query at the `|` characters that separate
+// pipes, skipping any inside quotes or parentheses (a quoted phrase, a
+// subquery). ok is false when the quotes or parentheses do not balance.
+func splitTopLevelPipes(query string) (segments []string, ok bool) {
+	depth := 0
+	var quote rune
+	escaped := false
+	last := 0
+	for i, r := range query {
+		switch {
+		case escaped:
+			escaped = false
+		case quote != 0:
+			if r == '\\' && quote != '`' {
+				escaped = true
+			} else if r == quote {
+				quote = 0
+			}
+		case r == '"' || r == '\'' || r == '`':
+			quote = r
+		case r == '(':
+			depth++
+		case r == ')':
+			depth--
+			if depth < 0 {
+				return nil, false
+			}
+		case r == '|' && depth == 0:
+			segments = append(segments, strings.TrimSpace(query[last:i]))
+			last = i + 1
+		}
+	}
+	if quote != 0 || depth != 0 {
+		return nil, false
+	}
+	return append(segments, strings.TrimSpace(query[last:])), true
 }
 
-// newTieGroupFetcher re-issues a case against both tiers over [at-1ns, at+1ns].
-// The window is one nanosecond wider than the tie on each side so the read
-// does not depend on how either tier treats an inclusive bound at the exact
-// timestamp (see divergence B7); rowsAt then keeps only the rows at `at`.
+var (
+	// limitPipe is a pipe that only caps or skips rows: dropped on a re-read.
+	limitPipe = regexp.MustCompile(`(?i)^(limit|head|offset|skip)\s+\S+$`)
+	// timeFirstLastPipe is `first|last N by (_time [asc|desc])`, a sort by
+	// _time plus a limit: dropped on a re-read.
+	timeFirstLastPipe = regexp.MustCompile(`(?i)^(first|last)\s+\S+\s+by\s*\(\s*_time(\s+(asc|desc))?\s*\)(\s+(asc|desc))?$`)
+	// timeSortPipe is `sort by (_time [asc|desc]) [asc|desc]` with no inline
+	// limit or offset: kept on a re-read.
+	timeSortPipe = regexp.MustCompile(`(?i)^sort\s+by\s*\(\s*_time(\s+(asc|desc))?\s*\)(\s+(asc|desc))?$`)
+	// rowOrderPipe names every pipe that orders, samples or aggregates rows.
+	// Outside the _time-only forms above, any of them makes the tie rule
+	// inapplicable.
+	rowOrderPipe = regexp.MustCompile(`(?i)^(sort|order|first|last|top|uniq|stats|sample|facets|field_values|field_names|block_stats|union|join|limit|head|offset|skip)\b`)
+)
+
+// tieGroupQuery returns the query a tie group is re-read with: the case's
+// query without the pipes that cap or skip rows. ok is false when the case
+// orders by anything but _time, or when its query cannot be split safely; the
+// tie rule then does not apply and the comparison stays strict.
+func tieGroupQuery(query string) (string, bool) {
+	segments, ok := splitTopLevelPipes(query)
+	if !ok {
+		return "", false
+	}
+	kept := segments[:1]
+	for _, seg := range segments[1:] {
+		switch {
+		case limitPipe.MatchString(seg), timeFirstLastPipe.MatchString(seg):
+			continue
+		case timeSortPipe.MatchString(seg):
+		case rowOrderPipe.MatchString(seg):
+			return "", false
+		}
+		kept = append(kept, seg)
+	}
+	return strings.Join(kept, " | "), true
+}
+
+// tieWindowBefore/tieWindowAfter widen the re-read window around the tie.
+// Divergence B7 makes the cold tier drop a row when the request's end bound
+// falls in the same microsecond as the row (measured: end = T+1..T+500ns
+// returns nothing, end past the next whole microsecond returns the row), so
+// the window reaches two microseconds past the tie; keysAt then keeps only the
+// rows at exactly the tie. B7 itself is asserted by its own test.
+const (
+	tieWindowBefore = time.Microsecond
+	tieWindowAfter  = 2 * time.Microsecond
+)
+
+// newTieGroupFetcher returns a fetcher that re-issues a case against both
+// tiers around one _time, or nil when the tie rule does not apply to the case
+// (see tieGroupQuery).
 func newTieGroupFetcher(refBase, sutBase, endpoint string, params url.Values) tieGroupFetcher {
+	query, ok := tieGroupQuery(params.Get("query"))
+	if !ok {
+		return nil
+	}
 	return func(t *testing.T, at time.Time) (fetchResult, fetchResult) {
 		t.Helper()
 		p := url.Values{}
 		for k, v := range params {
 			p[k] = append([]string(nil), v...)
 		}
-		p.Set("query", tieGroupQuery(p.Get("query")))
-		p.Set("start", strconv.FormatInt(at.UnixNano()-1, 10))
-		p.Set("end", strconv.FormatInt(at.UnixNano()+1, 10))
+		p.Set("query", query)
+		p.Set("start", strconv.FormatInt(at.Add(-tieWindowBefore).UnixNano(), 10))
+		p.Set("end", strconv.FormatInt(at.Add(tieWindowAfter).UnixNano(), 10))
 		if p.Has("limit") {
 			p.Set("limit", "1000")
 		}
@@ -138,8 +224,8 @@ func timeBounds(keys []string) (lo, hi time.Time, ok bool) {
 }
 
 // boundaryTieTime reports the _time every differing row shares, when that
-// _time is the first or the last of both answers and both sides differ by the
-// same number of rows.
+// _time is the first or the last of the two answers and both sides differ by
+// the same number of rows.
 func boundaryTieTime(refKeys, sutKeys, refOnly, sutOnly []string) (time.Time, bool) {
 	if len(refOnly) == 0 || len(refOnly) != len(sutOnly) {
 		return time.Time{}, false
@@ -156,14 +242,11 @@ func boundaryTieTime(refKeys, sutKeys, refOnly, sutOnly []string) (time.Time, bo
 			return time.Time{}, false
 		}
 	}
-	refLo, refHi, ok1 := timeBounds(refKeys)
-	sutLo, sutHi, ok2 := timeBounds(sutKeys)
-	if !ok1 || !ok2 {
+	lo, hi, ok := timeBounds(append(append([]string(nil), refKeys...), sutKeys...))
+	if !ok {
 		return time.Time{}, false
 	}
-	atLow := at.Equal(refLo) && at.Equal(sutLo)
-	atHigh := at.Equal(refHi) && at.Equal(sutHi)
-	return at, atLow || atHigh
+	return at, at.Equal(lo) || at.Equal(hi)
 }
 
 // keysAt returns the keys whose _time is at.
@@ -218,7 +301,7 @@ func judgeTruncatedTieGroup(t *testing.T, ties tieGroupFetcher, at time.Time, re
 func explainedByTruncatedTie(t *testing.T, ties tieGroupFetcher, refKeys, sutKeys, skipFields []string) (time.Time, string, bool) {
 	t.Helper()
 	if ties == nil {
-		return time.Time{}, "no way to re-read the tiers", false
+		return time.Time{}, "the case does not order rows by _time alone, or its query cannot be re-read safely", false
 	}
 	refOnly, sutOnly := multisetDiff(refKeys, sutKeys)
 	at, ok := boundaryTieTime(refKeys, sutKeys, refOnly, sutOnly)
