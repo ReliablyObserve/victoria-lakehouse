@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -271,5 +272,30 @@ func TestFooterLength_TooShort(t *testing.T) {
 	_, err := FooterLength([]byte{1, 2, 3})
 	if err == nil {
 		t.Fatal("expected error for short input")
+	}
+}
+
+// BenchmarkFooterCachePut: Put of a real entry into a cache at its byte bound
+// (every Put evicts), the cost the footer prefetch pays per file.
+func BenchmarkFooterCachePut(b *testing.B) {
+	data := logsObject(b, 6000, 2000)
+	size := int64(len(data))
+	start := objectStripeStart(b, data)
+	if start < 0 {
+		start = size - int64(footerTotal(data))
+	}
+	cf, _, err := cacheFooterFromTail(context.Background(), nil, "k", append([]byte(nil), data[start:]...), start, size)
+	if err != nil {
+		b.Fatal(err)
+	}
+	fc := NewFooterCache(8 * cf.Weight())
+	keys := make([]string, 64)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("logs/dt=2026-06-01/hour=10/f%03d.parquet", i)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fc.Put(keys[i%len(keys)], cf)
 	}
 }

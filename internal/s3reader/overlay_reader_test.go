@@ -276,3 +276,32 @@ func FuzzOverlayReadAt(f *testing.F) {
 		}
 	})
 }
+
+// BenchmarkOverlayReadAt: reads wholly inside the cached tail (memory copy),
+// wholly before it (forwarded) and straddling its start (split).
+func BenchmarkOverlayReadAt(b *testing.B) {
+	const size, tailLen = 8 << 20, 128 << 10
+	obj := newObject(size, 9)
+	ov := NewOverlayReaderAt(obj, size, append([]byte(nil), obj.data[size-tailLen:]...))
+	tailOff := int64(size - tailLen)
+	for _, c := range []struct {
+		name string
+		off  int64
+		n    int
+	}{
+		{"inside_tail_4KiB", tailOff + 1024, 4 << 10},
+		{"before_tail_4KiB", 1 << 20, 4 << 10},
+		{"straddle_8KiB", tailOff - 4096, 8 << 10},
+	} {
+		b.Run(c.name, func(b *testing.B) {
+			p := make([]byte, c.n)
+			b.SetBytes(int64(c.n))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := ov.ReadAt(p, c.off); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
