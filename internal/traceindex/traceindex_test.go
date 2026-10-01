@@ -208,3 +208,34 @@ func TestLookupFields_Miss(t *testing.T) {
 		t.Error("expected found=false for nil entries")
 	}
 }
+
+// TestCompute_SortedAndMarshalStable pins the entry order: Compute returns the
+// entries sorted by trace ID whatever order the spans arrive in, so Marshal
+// produces the same `_trace_idx` bytes for the same spans on every run (Go map
+// iteration order is random, and the value lands in the Parquet footer).
+func TestCompute_SortedAndMarshalStable(t *testing.T) {
+	var rows []schema.TraceRow
+	for i := 0; i < 200; i++ {
+		rows = append(rows, schema.TraceRow{
+			TraceID:           string(rune('a'+i%26)) + string(rune('a'+(i*7)%26)) + "-trace",
+			StartTimeUnixNano: int64(1000 + i),
+			DurationNs:        int64(i),
+		})
+	}
+	first := Marshal(Compute(rows))
+	for run := 0; run < 20; run++ {
+		reversed := make([]schema.TraceRow, len(rows))
+		for i := range rows {
+			reversed[len(rows)-1-i] = rows[i]
+		}
+		entries := Compute(reversed)
+		for i := 1; i < len(entries); i++ {
+			if entries[i-1].TraceID >= entries[i].TraceID {
+				t.Fatalf("entries not sorted by trace ID at %d: %q then %q", i, entries[i-1].TraceID, entries[i].TraceID)
+			}
+		}
+		if got := Marshal(entries); string(got) != string(first) {
+			t.Fatalf("run %d: Marshal(Compute(rows)) differs for the same spans in another order", run)
+		}
+	}
+}

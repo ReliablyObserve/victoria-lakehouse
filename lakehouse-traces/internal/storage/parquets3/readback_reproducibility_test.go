@@ -12,6 +12,8 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/format"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 // This file covers two properties the readback goldens alone cannot:
@@ -19,10 +21,11 @@ import (
 //  1. the golden comparison actually NAMES what changed, so a future
 //     parquet-go bump produces a diagnosis instead of two 2000-line JSON
 //     blobs to eyeball (TestGoldenDiffNamesTamperedFields), and
-//  2. the log writer is byte-reproducible for a fixed input, with a footer
-//     diff helper that says exactly which metadata fields differ when two
-//     files are not identical (TestLogsParquetWriteIsByteReproducible,
-//     TestFooterMetadataDiff*).
+//  2. the log and trace writers are byte-reproducible for a fixed input and
+//     record the Lakehouse created_by, with a footer diff helper that says
+//     exactly which metadata fields differ when two files are not identical
+//     (TestLogsParquetWriteIsByteReproducible,
+//     TestTracesParquetWriteIsByteReproducible, TestFooterMetadataDiff*).
 //
 // Together they make "did the library change anything?" a question the test
 // suite answers by itself at the next bump.
@@ -214,10 +217,8 @@ func TestGoldenDiffNamesTamperedFields(t *testing.T) {
 // same process against the same library, and requires the two files to be
 // identical byte for byte. That is what makes a byte-level comparison across
 // parquet-go versions meaningful: any difference then belongs to the library,
-// not to the writer.
-//
-// Traces are deliberately excluded, see
-// TestTracesParquetIsStructurallyStableButNotByteStable.
+// not to the writer. TestTracesParquetWriteIsByteReproducible holds the
+// trace writer to the same property.
 func TestLogsParquetWriteIsByteReproducible(t *testing.T) {
 	saved := activeSlotResolver
 	activeSlotResolver = nil
@@ -234,6 +235,7 @@ func TestLogsParquetWriteIsByteReproducible(t *testing.T) {
 		t.Fatalf("second write: %v", err)
 	}
 
+	assertLakehouseCreatedBy(t, first.Data)
 	if bytes.Equal(first.Data, second.Data) {
 		return
 	}
@@ -246,18 +248,13 @@ func TestLogsParquetWriteIsByteReproducible(t *testing.T) {
 		len(rows), len(first.Data), len(second.Data), off, len(diffs), strings.Join(diffs, "\n  "))
 }
 
-// TestTracesParquetIsStructurallyStableButNotByteStable records why the trace
-// writer is not part of the byte-reproducibility gate: the `_trace_idx` footer
-// key/value is built by iterating a Go map, so its entry order varies from run
-// to run WITHIN one library version. That is harmless for readers — the index
-// is self-describing and the read path sorts — but it makes byte-level
-// provenance impossible for trace files, so the property asserted here is the
-// structural one instead: two writes of the same rows must describe the same
-// file.
-//
-// This is not a claim that the bytes always differ (an unlucky map order could
-// match); it is a claim that the STRUCTURE never does.
-func TestTracesParquetIsStructurallyStableButNotByteStable(t *testing.T) {
+// TestTracesParquetWriteIsByteReproducible is the trace twin of
+// TestLogsParquetWriteIsByteReproducible. The `_trace_idx` footer key/value
+// used to be serialised in Go map order, so two writes of the same spans
+// described the same file in different bytes; the index is now emitted
+// sorted by trace ID. Structure is checked as well, so a failure says which
+// footer field moved.
+func TestTracesParquetWriteIsByteReproducible(t *testing.T) {
 	saved := activeSlotResolver
 	activeSlotResolver = nil
 	t.Cleanup(func() { activeSlotResolver = saved })
@@ -280,13 +277,31 @@ func TestTracesParquetIsStructurallyStableButNotByteStable(t *testing.T) {
 	a := profileParquet(t, "traces-a", first.Data, "timestamp_unix_nano", probes)
 	b := profileParquet(t, "traces-b", second.Data, "timestamp_unix_nano", probes)
 	a.Name, b.Name = "traces", "traces"
-
 	if diffs := diffGolden(a, b); len(diffs) != 0 {
 		t.Fatalf("two writes of the same %d trace rows describe different files:\n  %s", len(rows), strings.Join(diffs, "\n  "))
 	}
-
 	if diffs := footerMetadataDiff(t, first.Data, second.Data); len(diffs) != 0 {
-		t.Fatalf("two writes of the same trace rows differ in footer metadata (only the byte order of the _trace_idx KV may vary, never its described content):\n  %s", strings.Join(diffs, "\n  "))
+		t.Fatalf("two writes of the same trace rows differ in footer metadata:\n  %s", strings.Join(diffs, "\n  "))
+	}
+	assertLakehouseCreatedBy(t, first.Data)
+	if !bytes.Equal(first.Data, second.Data) {
+		t.Fatalf("writing the same %d trace rows twice produced different bytes (len %d vs %d, first difference at offset %d); "+
+			"map iteration order in a footer value is the usual cause",
+			len(rows), len(first.Data), len(second.Data), firstByteDifference(first.Data, second.Data))
+	}
+}
+
+// assertLakehouseCreatedBy requires the footer's created_by to be the one
+// every Lakehouse writer sets (schema.ParquetCreatedBy), not parquet-go's
+// default, which depends on the Go build information.
+func assertLakehouseCreatedBy(t *testing.T, data []byte) {
+	t.Helper()
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.Metadata().CreatedBy, schema.ParquetWriterApp+" version "; !strings.HasPrefix(got, want) {
+		t.Fatalf("created_by = %q, want prefix %q", got, want)
 	}
 }
 

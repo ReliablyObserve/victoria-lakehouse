@@ -464,10 +464,12 @@ type S3Config struct {
 	ReadBufferSize int `yaml:"read_buffer_size"`
 
 	// ParquetReadMode selects parquet-go's page read mode on ranged S3
-	// opens: "async" (default — pages are read ahead by a per-column
-	// goroutine, hiding S3 latency behind decode; bounded at one page in
-	// flight per column reader) or "sync" (the library default mode, kept
-	// as the rollback switch).
+	// opens: "sync" (default — the column readers of a file take turns on
+	// its single read-ahead window in a fixed order, so the GETs and bytes
+	// of a query depend only on the files and the query) or "async" (pages
+	// are read ahead by a per-column goroutine; the goroutines interleave
+	// on the shared window, evict each other's bytes and re-fetch them, so
+	// the same query reads a varying and larger number of GETs and bytes).
 	ParquetReadMode string `yaml:"parquet_read_mode"`
 
 	// ProjectedFetchMode selects the read strategy for COLUMN-PROJECTED
@@ -1271,7 +1273,7 @@ func Default() *Config {
 			ReadAheadMaxBytes:        8 * 1024 * 1024, // 8MB adaptive ceiling
 			ReadAheadWasteThreshold:  0.5,             // shrink window when >50% of it was never read
 			ReadBufferSize:           1024 * 1024,     // 1MB parquet page read buffer
-			ParquetReadMode:          "async",
+			ParquetReadMode:          "sync",
 			ProjectedFetchMode:       ProjectedFetchModeWindow,
 			ProjectedFetchMaxBytes:   16 * 1024 * 1024, // DEPRECATED (per-plan cap retired; kept parsed)
 			PlannedFetchMaxInflight:  16,               // min(16, spans) concurrent span GETs per file

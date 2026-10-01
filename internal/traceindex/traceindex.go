@@ -18,7 +18,9 @@ package traceindex
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/cespare/xxhash/v2"
 
@@ -53,6 +55,10 @@ type Entry struct {
 // all spans for that trace_id within the batch. Spans without a
 // trace_id (e.g. degenerate rows that escaped the insert-side filter)
 // are skipped.
+//
+// Entries come back sorted by trace ID, so the marshaled `_trace_idx`
+// footer value — and with it the whole Parquet file — is byte-identical
+// for the same rows on every run (Go map iteration order is random).
 func Compute(rows []schema.TraceRow) []Entry {
 	type acc struct {
 		startNs int64
@@ -91,6 +97,7 @@ func Compute(rows []schema.TraceRow) []Entry {
 			EndNs:     a.endNs,
 		})
 	}
+	slices.SortFunc(entries, func(a, b Entry) int { return strings.Compare(a.TraceID, b.TraceID) })
 	return entries
 }
 

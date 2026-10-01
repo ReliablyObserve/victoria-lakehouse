@@ -56,8 +56,8 @@
                 "async",
                 "sync"
               ],
-              "default": "async",
-              "description": "Parquet page read mode on ranged S3 opens: async (per-column read-ahead goroutine) or sync (rollback switch)"
+              "default": "sync",
+              "description": "Parquet page read mode on ranged S3 opens: sync (default; column readers take turns on the read-ahead window, so a query's GETs and bytes are fixed) or async (per-column read-ahead goroutine)"
             },
             "projected_fetch_mode": {
               "type": "string",

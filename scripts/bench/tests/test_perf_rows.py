@@ -82,8 +82,17 @@ class PerfRowsTest(unittest.TestCase):
         f = self.fails(lambda rs: [r.update(bytes=1001) for r in rs if r["cell"] == TRACES])
         self.assertTrue(any("s3_bytes" in x for x in f), f)
 
-    def test_fewer_gets_pass(self):
-        self.assertEqual(self.fails(lambda rs: [r.update(gets=1) for r in rs if r["cell"] == FLUSHED]), [])
+    def test_fewer_gets_fail_until_the_row_is_regenerated(self):
+        f = self.fails(lambda rs: [r.update(gets=1) for r in rs if r["cell"] == FLUSHED])
+        self.assertTrue(any("s3_gets 1 < registry 4" in x and "regenerate" in x for x in f), f)
+
+    def test_fewer_bytes_fail_until_the_row_is_regenerated(self):
+        f = self.fails(lambda rs: [r.update(bytes=999) for r in rs if r["cell"] == TRACES])
+        self.assertTrue(any("s3_bytes 999 < registry 1000" in x for x in f), f)
+
+    def test_counters_varying_between_iterations_fail(self):
+        f = self.fails(lambda rs: [r.update(gets=3) for r in rs[:1]])
+        self.assertTrue(any("s3_gets varies between iterations [3, 4]" in x for x in f), f)
 
     def test_path_change_fails(self):
         f = self.fails(lambda rs: [r.update(catalog_answers=1, gets=0) for r in rs if r["cell"] == FLUSHED])
@@ -116,7 +125,7 @@ class PerfRowsTest(unittest.TestCase):
         rows, text = rows_from(recs)
         self.assertIn("s3_gets: 36", text)
         self.assertEqual(perf_rows.check(groups([rec(FLUSHED, gets=36)]), rows), [])
-        f = perf_rows.check(groups([rec(FLUSHED, gets=35), rec(FLUSHED, gets=37)]), rows)
+        f = perf_rows.check(groups([rec(FLUSHED, gets=37)]), rows)
         self.assertTrue(any("s3_gets 37 > registry 36" in x for x in f), f)
 
     def test_counters_are_held_per_shape_across_latencies(self):
