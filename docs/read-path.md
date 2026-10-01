@@ -125,11 +125,17 @@ For exact-match queries on bloom-enabled columns, the engine checks partition-le
 
 ### Level 3: Footer Parse and Cache
 
-The Parquet footer (file metadata, schema, column indices) is parsed once per file access and stored in an LRU cache (`FooterCache`, default 10K entries; auto-resizes after each manifest refresh to track active file count). A cached entry is metadata only: it supplies the schema, the column count and the row-group layout that plan a ranged read of the projected columns, so a projected read of a known file needs no footer round trip.
+The Parquet footer (file metadata, schema, column indices) is parsed once per file access and stored in an LRU cache (`FooterCache`, bounded by **bytes**, not entry count: `cache.footer_max_bytes`, default 256 MiB on logs and 512 MiB on traces; see [Footer cache and zero-GET open](#footer-cache-and-zero-get-open)). A cached entry is metadata only: it supplies the schema, the column count and the row-group layout that plan a ranged read of the projected columns, so a projected read of a known file needs no footer round trip.
 
 A read that needs every column (a bare filter, `* | limit N`, or the upstream `limit` argument, which VL rewrites to `| sort by (_time) desc | offset | limit`) downloads the whole object and always decodes rows through a fresh handle over those bytes, on both binaries. It never reuses the cached handle: a cache entry is backed by a copy of the object's metadata tail — the page index and the footer — and returns zeros for the column data, and parquet-go column and page readers keep per-read state anyway. The traces binary used to reuse the cached handle there, so such a query returned no rows from any object of 128 KiB or more whose footer the same query had prefetched; `TestFullRowRead_AfterFooterPrefetch` and `TestOpenParquet_FullDownloadNeverReusesCachedHandle` (`lakehouse-traces/internal/storage/parquets3/full_read_footer_cache_test.go`) pin the fix.
 
-A whole-object read caches that metadata tail rather than a handle over the object it just downloaded: the cache is bounded by entry count (10,000), not bytes, so entries referencing object bodies could hold gigabytes — `TestParseFooterFromData_EntryDoesNotRetainTheObject` measures it. The copy includes the page index (the per-page null counts and min/max bounds that `field_names`' hit counts and the manifest's time-bound enrichment read), so a warm cache answers those from RAM instead of degrading to whole-chunk estimates.
+A whole-object read caches that metadata tail rather than a handle over the object it just downloaded: the cache is bounded by bytes and an entry referencing an object body would be charged (and hold) the whole object, so entries hold only the metadata tail — `TestParseFooterFromData_EntryDoesNotRetainTheObject` measures it. The copy includes the page index (the per-page null counts and min/max bounds that `field_names`' hit counts and the manifest's time-bound enrichment read), so a warm cache answers those from RAM instead of degrading to whole-chunk estimates.
+
+#### Footer cache and zero-GET open
+
+Every footer-cache writer (the batch footer prefetch, the single-file footer fetch with its two-phase path, the inline open-path fetch, and the whole-object download) stores the same record: the parsed footer **and** the raw tail of the object from the first page-index section to the end of the file, i.e. the ColumnIndex/OffsetIndex stripe followed by the footer. The entry owns an exact-size copy of those bytes (it never pins the prefetch buffer), so its cost is known: about `len(tail) + 2.25 x footer + 56 KiB` (raw tail, decoded metadata, fixed per-file structures), which `TestCachedFooterWeightCalibration` holds within 0.75x-1.4x of the measured heap. When the stripe lies before the range a writer fetched (a footer too large for the prefetch tail), one extra range GET fetches it so the entry is complete; if that GET fails the entry keeps the footer alone and the page index is read lazily as before.
+
+A query-time open of a cached file puts an overlay reader (`s3reader.OverlayReaderAt`) over the S3 reader and opens the file with `SkipMagicBytes(true)` and without the optimistic tail read. The footer read and every later `ColumnIndex()`/`OffsetIndex()` call (row-group time pruning, constant-column detection, push-down statistics, the metadata-only count) are served from the cached tail: **zero S3 round trips to open, zero for the page index**. Only data ranges reach S3. The overlay is safe by construction: the cached tail must end exactly at the object size the manifest reports for that key (objects are immutable, so key and size identify the bytes), and it serves only bytes the cache really holds; a read that starts before the tail is a real read of just that front part, never zero-filled (the false-negative bloom bug of #172 was a zero-filled section). An entry without a stripe still opens with no GET and reads the page index lazily; a size mismatch builds no overlay. `lakehouse_footer_overlay_opens_total{result}` counts `hit`, `hit_footer_only` and `miss`; `lakehouse_footer_cache_bytes` and `lakehouse_footer_cache_entries` show the budget in use. Measured effect, per shape and S3 latency, for both signals: [Cold-read performance](perf/cold-read.md).
 
 Cold-file footers are fetched via a two-phase range read. The first
 range pulls the last 64 KiB of the file in one round-trip, which
@@ -222,6 +228,8 @@ Three rules keep a narrow read honest. (1) A hide-mode delete (tombstone) is eva
 
 **Tombstone filtering**: If a `TombstoneStore` is configured (for soft deletes), `filterTombstonedRows()` removes rows matching any active tombstone before emitting results.
 
+**Read mode (`s3.projected_fetch_mode`)**: a projected read (fewer than half the columns) defaults to `planned`: after row-group pruning the exact coalesced column-chunk ranges of the surviving row groups are fetched in one concurrent wave per file, with no speculative read-ahead window. With the footer and page index served from the footer cache that wave is the only S3 traffic of the file. `window` (the adaptive read-ahead reader) remains as a deprecated fallback for one release and will be removed; full-scan reads (no projection) always use the window reader, and a `trace_id` point lookup (Jaeger/Tempo trace-by-ID, the log-to-trace click) stays on the window reader as well, because the per-row-group bloom skip is disabled on the projected path and a planned read would fetch the `trace_id` chunk of every row group (counted as `lakehouse_s3_projected_fetch_fallback_total{reason="trace-id-lookup"}`). On a cold footer a file below `s3.whole_file_threshold_bytes` (logs 5 MB, traces 8 MB) is downloaded whole, which doubles as the footer-cache warmup; larger files fetch the footer with the page-index stripe (one to three round trips) and then plan.
+
 **Parallel row group processing**: When multiple row groups survive pruning within a file, they are processed in parallel (up to 3 goroutines). Row groups are sorted by estimated cost (row count ascending) for optimal load balancing.
 
 ## Cache Hierarchy
@@ -306,7 +314,10 @@ The read path emits Prometheus metrics at each stage:
 | `lakehouse_parquet_row_groups_scanned` | Row groups fully scanned |
 | `lakehouse_parquet_column_bytes_read` | Total bytes of Parquet file data read |
 | `lakehouse_footer_cache_hits_total` | Footer cache hits (parsed `parquet.File` reused) |
-| `lakehouse_footer_cache_evictions_total` | Footer cache LRU evictions |
+| `lakehouse_footer_cache_evictions_total` | Footer cache LRU evictions (by byte budget) |
+| `lakehouse_footer_cache_bytes` | Resident bytes charged to the footer cache (limit: `cache.footer_max_bytes`) |
+| `lakehouse_footer_cache_entries` | Footers currently cached |
+| `lakehouse_footer_overlay_opens_total` | Parquet opens by overlay result: `hit` (footer + page index from memory), `hit_footer_only`, `miss` |
 | `lakehouse_cache_hits_total` | Data cache hits by tier (L1, L2, L3) |
 | `lakehouse_cache_misses_total` | Data cache misses by tier |
 | `lakehouse_s3_requests_total` | S3 API calls |
