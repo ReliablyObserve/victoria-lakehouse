@@ -154,7 +154,7 @@ func TestRunShutdown_PersistsManifestBeforeAndAfterClose(t *testing.T) {
 	if first < 0 || stop < 0 || closeAndPersist < 0 {
 		t.Fatalf("runShutdown calls %v: want persistManifestSnapshot, vtinsert.Stop and closeStoreAndPersistManifest", order)
 	}
-	if !(first < stop && stop < closeAndPersist) {
+	if first >= stop || stop >= closeAndPersist {
 		t.Errorf("runShutdown order = %v: want the first manifest persist, then the Stop() calls, then close+persist", order)
 	}
 	if i := idx("store.Close"); i >= 0 {
