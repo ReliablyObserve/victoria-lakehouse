@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.10] - 2026-10-01
+
 ### Changed
 
 - **Go 1.27.1 everywhere.** The release images moved to `golang:1.27.1-alpine3.23` in #282, while both
