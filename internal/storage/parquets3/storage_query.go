@@ -992,6 +992,11 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// Hits/stats fast path: when the endpoint only needs timestamps (set via
 	// context hint) and the query has no column-specific filters, project only
 	// the timestamp column to avoid deserializing all row data.
+	// NOTE: today no production handler sets the timestamp-only hint
+	// (selectapi's wrapVLTimestampOnly has no caller), so this branch is not
+	// reached by a served request; the guards keep it from narrowing a read a
+	// delete, a row filter or a pipe needing every field made unprojected if a
+	// handler starts setting it.
 	if projectedCols == nil && storage.IsTimestampOnly(ctx) && !rowFilterFrom(ctx) && !readAllFrom(ctx) {
 		// Timestamp-only is safe ONLY for an UNFILTERED count/hits. A row filter
 		// must be evaluated against its columns at scan time — a free-text _msg
