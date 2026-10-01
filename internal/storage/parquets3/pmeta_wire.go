@@ -323,12 +323,13 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 			// facet by the tenant-isolated partition (derived from the file key),
 			// matching the live writer flush — NOT the manifest's pure dt=/hour=
 			// key, or the warmed facet wouldn't be found by the tenant-scoped reads.
+			exMin, exMax := fi.ExactBounds() // never replay the listing's inferred hour as fact
 			s.catalog.OnFileReplay(pmeta.FileContribution{
 				Partition:         manifest.ExtractTenantPartition(fi.Key),
 				FileKey:           fi.Key,
 				RowCount:          fi.RowCount,
-				MinTimeNs:         fi.MinTimeNs,
-				MaxTimeNs:         fi.MaxTimeNs,
+				MinTimeNs:         exMin,
+				MaxTimeNs:         exMax,
 				RawBytes:          fi.RawBytes,
 				SchemaFingerprint: fi.SchemaFingerprint,
 				Labels:            fi.Labels,
@@ -387,11 +388,12 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 		files := filesByTP[p]
 		cs := make([]pmeta.FileContribution, 0, len(files))
 		for _, fi := range files {
+			exMin, exMax := fi.ExactBounds()
 			cs = append(cs, pmeta.FileContribution{
 				FileKey:           fi.Key,
 				RowCount:          fi.RowCount,
-				MinTimeNs:         fi.MinTimeNs,
-				MaxTimeNs:         fi.MaxTimeNs,
+				MinTimeNs:         exMin,
+				MaxTimeNs:         exMax,
 				RawBytes:          fi.RawBytes,
 				SchemaFingerprint: fi.SchemaFingerprint,
 				Labels:            fi.Labels,

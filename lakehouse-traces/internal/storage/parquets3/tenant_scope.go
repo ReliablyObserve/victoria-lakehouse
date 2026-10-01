@@ -409,10 +409,19 @@ type bufferWatermarks map[logstorage.TenantID]int64
 // bufferWatermarksFor attributes every selected object to its tenant (legacy
 // untenanted objects to 0:0, where the read path serves them) and records each
 // tenant's newest MaxTimeNs.
-func (s *Storage) bufferWatermarksFor(files []manifest.FileInfo) bufferWatermarks {
+//
+// Only an object's EXACT MaxTimeNs may raise a watermark. The bounds the
+// manifest infers for an object it learned from the listing alone are the end
+// of the partition hour; used here they would hide every buffered row of the
+// rest of the hour (the final flush of a graceful shutdown lands in the
+// listing, not the snapshot). They are resolved first (withExactBounds); an
+// object that stays unresolved is left out, so its tenant's buffer window is
+// not cut at an hour boundary no row ever reached.
+func (s *Storage) bufferWatermarksFor(ctx context.Context, files []manifest.FileInfo) bufferWatermarks {
 	if len(files) == 0 {
 		return nil
 	}
+	files = s.withExactBounds(ctx, files)
 	parse := s.manifest.TenantKeyParser()
 	wm := make(bufferWatermarks, 2)
 	for i := range files {
@@ -420,8 +429,8 @@ func (s *Storage) bufferWatermarksFor(files []manifest.FileInfo) bufferWatermark
 		if !ok {
 			continue
 		}
-		if files[i].MaxTimeNs > wm[tid] {
-			wm[tid] = files[i].MaxTimeNs
+		if _, maxNs := files[i].ExactBounds(); maxNs > wm[tid] {
+			wm[tid] = maxNs
 		}
 	}
 	return wm

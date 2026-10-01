@@ -66,7 +66,16 @@ type FileInfo struct {
 	RowCount  int64  `json:"row_count,omitempty"`
 	MinTimeNs int64  `json:"min_time_ns,omitempty"`
 	MaxTimeNs int64  `json:"max_time_ns,omitempty"`
-	RawBytes  int64  `json:"raw_bytes,omitempty"`
+	// BoundsInferred marks MinTimeNs/MaxTimeNs as the partition hour
+	// [hour, hour+1h) the manifest assumed for an object it learned only from the
+	// S3 listing, not the object's real row range. Inferred bounds are good
+	// enough to prune (they are a superset of the truth) but must never decide
+	// what the buffer still owes: the per-tenant buffer watermark is the newest
+	// MaxTimeNs among the selected objects, and an hour-end MaxTimeNs hides every
+	// buffered row of the rest of the hour. Exact bounds (flush, footer, pmeta
+	// facet, sidecar) replace the inferred ones and clear the flag.
+	BoundsInferred bool  `json:"bounds_inferred,omitempty"`
+	RawBytes       int64 `json:"raw_bytes,omitempty"`
 	// BloomBytes is the on-disk footprint of this file's FOOTER blooms (sum of the
 	// per-row-group column-chunk bloom filter sizes), captured at write time so the
 	// compaction stats can report bloom storage cost without reading any file.
@@ -91,6 +100,17 @@ type FileInfo struct {
 	ClassCheckedAt time.Time        `json:"class_checked_at,omitempty"`
 	ClassSource    string           `json:"class_source,omitempty"`
 	CreatedAt      time.Time        `json:"created_at,omitempty"`
+}
+
+// ExactBounds returns the object's real time range, or (0, 0) while the manifest
+// only has the bounds it inferred from the listing (BoundsInferred). Anything
+// that exports bounds as fact (pmeta facets, the file-metadata cache) or lets
+// them decide what the buffer owes (the flush watermark) goes through this.
+func (fi FileInfo) ExactBounds() (minNs, maxNs int64) {
+	if fi.BoundsInferred {
+		return 0, 0
+	}
+	return fi.MinTimeNs, fi.MaxTimeNs
 }
 
 // BucketOr returns the file's bucket, falling back to defaultBucket
@@ -967,9 +987,11 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo, listSt
 		for i := range pFiles {
 			if pFiles[i].MinTimeNs == 0 {
 				pFiles[i].MinTimeNs = pMinNs
+				pFiles[i].BoundsInferred = true
 			}
 			if pFiles[i].MaxTimeNs == 0 {
 				pFiles[i].MaxTimeNs = pMaxNs
+				pFiles[i].BoundsInferred = true
 			}
 		}
 	}
@@ -1872,7 +1894,9 @@ func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinM
 
 // EnrichFileMetadata updates RowCount and time bounds for a file identified
 // by key. Called after first opening a file during a query, using metadata
-// from the Parquet footer. Only updates fields that are zero (not already set).
+// from the Parquet footer. Only updates fields that are zero (not already set),
+// except for time bounds the manifest merely inferred from the listing
+// (FileInfo.BoundsInferred): exact bounds REPLACE those and clear the flag.
 //
 // Updates the tenant aggregate cache by the delta — a query may bump a
 // file's RowCount from 0 to (say) 1M, and TenantSummaries must reflect
@@ -1890,11 +1914,21 @@ func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, max
 		rowDelta = rowCount
 		files[i].RowCount = rowCount
 	}
-	if files[i].MinTimeNs == 0 && minTimeNs > 0 {
-		files[i].MinTimeNs = minTimeNs
-	}
-	if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
-		files[i].MaxTimeNs = maxTimeNs
+	if files[i].BoundsInferred {
+		// Both bounds or neither: a lone exact bound next to an inferred one
+		// would leave a range that is neither the truth nor the inferred hour.
+		if minTimeNs > 0 && maxTimeNs >= minTimeNs {
+			files[i].MinTimeNs = minTimeNs
+			files[i].MaxTimeNs = maxTimeNs
+			files[i].BoundsInferred = false
+		}
+	} else {
+		if files[i].MinTimeNs == 0 && minTimeNs > 0 {
+			files[i].MinTimeNs = minTimeNs
+		}
+		if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
+			files[i].MaxTimeNs = maxTimeNs
+		}
 	}
 
 	if rowDelta != 0 {

@@ -642,21 +642,7 @@ func runShutdown(
 	if persistTimeout <= 0 {
 		persistTimeout = 30 * time.Second
 	}
-	manifestSaveStart := time.Now()
-	manifestSaveDone := make(chan error, 1)
-	go func() {
-		manifestSaveDone <- store.Manifest().SaveTo(manifestSnapshotPath(cfg))
-	}()
-	select {
-	case err := <-manifestSaveDone:
-		if err != nil {
-			logger.Errorf("manifest snapshot on shutdown failed after %v: %s", time.Since(manifestSaveStart), err)
-		} else {
-			logger.Infof("manifest snapshot on shutdown persisted in %v", time.Since(manifestSaveStart))
-		}
-	case <-time.After(persistTimeout):
-		logger.Errorf("manifest snapshot on shutdown timed out after %v — next pod will boot with previous snapshot", persistTimeout)
-	}
+	persistManifestSnapshot(store, manifestSnapshotPath(cfg), persistTimeout, "shutdown")
 
 	// Footer-cache snapshot — small (a few bytes per key) and fast.
 	// Persist sequentially with manifest because both feed the next
@@ -708,11 +694,47 @@ func runShutdown(
 		}
 	}
 
+	// Close runs the writer's final flush; the snapshot persisted at the top of
+	// this function cannot contain what that flush wrote, so persist again.
+	closeStoreAndPersistManifest(store, manifestSnapshotPath(cfg), persistTimeout)
+
+	logger.Infof("lakehouse-logs stopped")
+}
+
+// closeStoreAndPersistManifest closes the storage (its writer's final flush
+// runs here) and then persists the manifest snapshot AGAIN: the objects that
+// flush wrote are not in the snapshot taken at the top of runShutdown, and a
+// restart would learn them only from the S3 listing, with time bounds it can
+// only guess (the partition hour). With this snapshot the next boot starts with
+// their exact bounds, so rows buffered after it are visible from the first
+// query. The first snapshot stays: it is the one that survives a SIGKILL during
+// the long Stop() calls before Close. Mirror of the other binary's helper.
+func closeStoreAndPersistManifest(store *parquets3.Storage, path string, timeout time.Duration) {
 	if err := store.Close(); err != nil {
 		logger.Errorf("storage close error: %s", err)
 	}
+	persistManifestSnapshot(store, path, timeout, "after final flush")
+}
 
-	logger.Infof("lakehouse-logs stopped")
+// persistManifestSnapshot saves the manifest snapshot to path, bounded by
+// timeout so a misbehaving local disk cannot extend shutdown. when names the
+// shutdown phase in the log lines. Mirror of the other binary's helper.
+func persistManifestSnapshot(store *parquets3.Storage, path string, timeout time.Duration, when string) {
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		done <- store.Manifest().SaveTo(path)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			logger.Errorf("manifest snapshot (%s) failed after %v: %s", when, time.Since(start), err)
+		} else {
+			logger.Infof("manifest snapshot (%s) persisted in %v", when, time.Since(start))
+		}
+	case <-time.After(timeout):
+		logger.Errorf("manifest snapshot (%s) timed out after %v — next pod will boot with the previous snapshot", when, timeout)
+	}
 }
 
 // newDeleteRewriter builds the delete rewriter with the compactor's writers, so a

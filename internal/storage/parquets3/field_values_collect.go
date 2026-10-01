@@ -114,7 +114,7 @@ func (s *Storage) collectBufferedValues(ctx context.Context, files []manifest.Fi
 	}
 	scope := scopeFor(ctx, r.tenantIDs)
 	sink := newTombstoneSink(scope, r.tombstones, r.parse, s.AccountOnlyTenantKeys(), count)
-	s.bufferRowsTo(ctx, r.startNs, r.endNs, s.bufferWatermarksFor(files), r.query, r.tenantIDs, sink)
+	s.bufferRowsTo(ctx, r.startNs, r.endNs, s.bufferWatermarksFor(ctx, files), r.query, r.tenantIDs, sink)
 }
 
 // fileAggregate returns the file's exact per-value counts for the request's

@@ -1440,8 +1440,17 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 		}
 	}
 
-	logger.Infof("metadata warmup: disk=%d facet=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
-		diskLoaded, facetEnriched, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
+	// Phase 3c: exact time bounds for the recent objects the listing alone told
+	// the manifest about (the final flush of a graceful shutdown, a peer's
+	// flushes). Their inferred bounds are the end of the partition hour, which
+	// must never feed the buffer watermark; the footer-only phases above cannot
+	// supply bounds (they need the page index), so read these objects fully.
+	// Bounded to the recent window the buffer can still hold; the watermark
+	// resolves anything older lazily (withExactBounds).
+	boundsEnriched := s.enrichRecentInferredBounds(ctx)
+
+	logger.Infof("metadata warmup: disk=%d facet=%d sidecar=%d footer=%d small=%d bounds=%d need_enrich=%d total_files=%d",
+		diskLoaded, facetEnriched, sidecarLoaded, footerEnriched, smallEnriched, boundsEnriched, len(needEnrich), len(files))
 
 	s.saveFileMetadataToDisk()
 }
@@ -1567,11 +1576,12 @@ func (s *Storage) saveFileMetadataToDisk() {
 	var entries []cache.FileMetaEntry
 	for _, fi := range files {
 		if fi.RowCount > 0 {
+			exMin, exMax := fi.ExactBounds() // inferred bounds are not persisted as fact
 			entries = append(entries, cache.FileMetaEntry{
 				Key:               fi.Key,
 				RowCount:          fi.RowCount,
-				MinTimeNs:         fi.MinTimeNs,
-				MaxTimeNs:         fi.MaxTimeNs,
+				MinTimeNs:         exMin,
+				MaxTimeNs:         exMax,
 				RawBytes:          fi.RawBytes,
 				SchemaFingerprint: fi.SchemaFingerprint,
 				Labels:            fi.Labels,

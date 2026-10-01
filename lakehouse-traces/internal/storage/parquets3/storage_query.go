@@ -217,7 +217,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet (Jaeger's GetTrace narrow-window lookup against trace_ids
 		// just observed in the previous search step is the canonical case).
 		// Falling through here keeps the buffer query in the flow.
-		s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 		return nil
 	}
 
@@ -247,7 +247,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 			return nil
 		}
 		files = remaining
@@ -264,7 +264,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 			return nil
 		}
 		files = remaining
@@ -273,7 +273,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files = s.preFilterFiles(files, queryStr)
 
 	if len(files) == 0 {
-		s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 		return nil
 	}
 
@@ -291,7 +291,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 {
 		files = s.filterFilesByTraceIdx(ctx, files, tids)
 		if len(files) == 0 {
-			s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 			return nil
 		}
 	}
@@ -361,7 +361,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+	s.queryBufferBridgeTo(ctx, startNs, endNs, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 
 	return nil
 }

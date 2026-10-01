@@ -213,7 +213,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		if s.servePureBufferQuery(ctx, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
 		}
-		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 		return nil
 	}
 
@@ -251,7 +251,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
-			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 			return nil
 		}
 		files = remaining
@@ -266,7 +266,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
-			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 			return nil
 		}
 		files = remaining
@@ -274,7 +274,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 		return nil
 	}
 
@@ -333,7 +333,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	wg.Wait()
 
-	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(ctx, files), q, tenantIDs, sink)
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
