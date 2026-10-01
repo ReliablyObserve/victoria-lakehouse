@@ -158,6 +158,9 @@ func stripeStart(t *testing.T, data []byte) int64 {
 // modes, and every ColumnIndex()/OffsetIndex() read afterwards (what row-group
 // pruning does) is served from memory and equals the object's own.
 func TestCachedFooter_OpenAndPageIndexMakeZeroGETs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("heavy fixture: runs in the heavy (non -short) job")
+	}
 	// Both fetch modes, and both parquet page read modes (the zero-GET open must
 	// not depend on whether pages are read ahead by goroutines or inline).
 	for _, rm := range []string{"sync", "async"} {
@@ -243,6 +246,9 @@ func testCachedFooterZeroGETs(t *testing.T, mode, readMode string) {
 // GET, at most one span per (row group, projected column) per file, and the
 // answer equals window mode's.
 func TestColdQuery_CachedFooters_OnlyDataRangesReachS3(t *testing.T) {
+	if testing.Short() {
+		t.Skip("heavy fixture: runs in the heavy (non -short) job")
+	}
 	const nFiles, rows, rg = 3, 9000, 3000
 	planned := newColdFixture(t, nFiles, rows, rg, config.ProjectedFetchModePlanned)
 	planned.prefetch(t)
@@ -327,6 +333,9 @@ func TestColdQuery_CachedFooters_OnlyDataRangesReachS3(t *testing.T) {
 // opened: planned + overlay (the default), window + overlay, planned with a
 // footer-only cache entry (page index read lazily), and with no footer cache.
 func TestColdQuery_AnswersIdenticalAcrossOpenPaths(t *testing.T) {
+	if testing.Short() {
+		t.Skip("heavy fixture: runs in the heavy (non -short) job")
+	}
 	shapes := []string{
 		`name:=op-3 | stats count() n`,
 		`"span_attr:repro_layer":=big | stats by (name) count() n`,
