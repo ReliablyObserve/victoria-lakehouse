@@ -189,7 +189,7 @@ func TestSortFilesByCacheAffinity_NoMemoryLeak(t *testing.T) {
 }
 
 func TestFooterCache_Has(t *testing.T) {
-	fc := NewFooterCache(10)
+	fc := NewFooterCache(0)
 
 	if fc.Has("missing") {
 		t.Fatal("expected Has to return false for missing key")

@@ -2,9 +2,11 @@ package parquets3
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -39,6 +41,80 @@ func footerPrefetchTail(prefetchBytes, fileSize int64) int64 {
 		return sizeCap
 	}
 	return prefetchBytes
+}
+
+// pendingFooter is a parsed footer whose cache entry still references the
+// caller's buffer; own() turns it into an entry that owns exactly what is worth
+// keeping. Splitting the two lets a caller that may discard the footer (the
+// row-group skip probe) parse without paying for the copy.
+type pendingFooter struct {
+	cached     *CachedFooter
+	file       *parquet.File
+	rd         *footerReaderAt
+	key        string
+	tail       []byte
+	tailOff    int64
+	fileSize   int64
+	footerSize int64
+}
+
+func parseFooterRegion(key string, tail []byte, tailOff, fileSize int64) (*pendingFooter, error) {
+	if tailOff < 0 || tailOff+int64(len(tail)) != fileSize {
+		return nil, fmt.Errorf("cache footer %s: tail [%d,+%d) does not end at object size %d", key, tailOff, len(tail), fileSize)
+	}
+	cached, f, rd, err := parseFooterBytes(key, tail, fileSize)
+	if err != nil {
+		return nil, err
+	}
+	return &pendingFooter{cached: cached, file: f, rd: rd, key: key, tail: tail, tailOff: tailOff, fileSize: fileSize, footerSize: int64(cached.footerSize)}, nil
+}
+
+// own finalizes the entry: it keeps a copy of the footer and the page-index
+// stripe (ColumnIndex + OffsetIndex sections) that sits right before it, so a
+// later open serves both from memory (see s3reader.OverlayReaderAt). The
+// caller's buffer is not retained, so a 128 KB prefetch tail does not pin
+// 128 KB per entry.
+//
+// When the stripe starts before the fetched region (a footer large enough to
+// push it out of the range) one extra range GET fetches the missing bytes; if
+// that fails the entry still caches the footer alone and the page index is read
+// lazily as before.
+func (p *pendingFooter) own(ctx context.Context, pool *s3reader.ClientPool) (*CachedFooter, *parquet.File) {
+	footerStart := p.fileSize - p.footerSize
+	keepFrom := footerStart
+	var front []byte
+	if ps := pageIndexStripeStart(p.file); ps > 0 && ps < footerStart {
+		if ps >= p.tailOff {
+			keepFrom = ps
+		} else if pool != nil {
+			metrics.S3GetsByPhase.Inc("footer")
+			if b, gerr := pool.DownloadRangeDedup(ctx, "footer", p.key, ps, p.tailOff-ps); gerr == nil && int64(len(b)) == p.tailOff-ps {
+				front, keepFrom = b, ps
+			}
+		}
+	}
+	owned := make([]byte, p.fileSize-keepFrom) // exact size: no append slack
+	if front != nil {
+		copy(owned, front)
+		copy(owned[len(front):], p.tail)
+	} else {
+		copy(owned, p.tail[keepFrom-p.tailOff:])
+	}
+	p.rd.footer = owned
+	p.cached.tail, p.cached.tailOff = owned, keepFrom
+	return p.cached, p.file
+}
+
+// cacheFooterFromTail parses the footer out of tail — the object's bytes from
+// tailOff to EOF, as returned by a footer range read — and builds the cache
+// entry for it (see pendingFooter.own).
+func cacheFooterFromTail(ctx context.Context, pool *s3reader.ClientPool, key string, tail []byte, tailOff, fileSize int64) (*CachedFooter, *parquet.File, error) {
+	p, err := parseFooterRegion(key, tail, tailOff, fileSize)
+	if err != nil {
+		return nil, nil, err
+	}
+	cached, f := p.own(ctx, pool)
+	return cached, f, nil
 }
 
 // shouldSkipByFooter performs an S3 range read to fetch only the parquet footer,
@@ -120,15 +196,13 @@ func shouldSkipByFooter(
 		return false, nil
 	}
 
-	// Extract the footer slice from the end of tail.
-	footerSlice := tail[len(tail)-totalFooterBytes:]
-
 	// Parse the footer metadata.
-	cached, pf, err := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size)
+	pending, err := parseFooterRegion(fi.Key, tail, offset, fi.Size)
 	if err != nil {
 		// Parse error — fall back.
 		return false, nil
 	}
+	pf := pending.file
 
 	// Resolve column indices now that we have the schema.
 	resolvedPdf := resolvePushDownIndices(pf, pdf)
@@ -149,8 +223,10 @@ func shouldSkipByFooter(
 		return true, nil
 	}
 
-	// At least one row group might match — cache the footer for queryFile to reuse.
+	// At least one row group might match — cache the footer (with its
+	// page-index stripe) for queryFile to reuse.
 	if footerCache != nil {
+		cached, _ := pending.own(ctx, pool)
 		footerCache.Put(fi.Key, cached)
 	}
 
@@ -233,13 +309,12 @@ func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []man
 					mu.Unlock()
 					continue
 				}
-				footerSlice := tail[len(tail)-totalFooterBytes:]
-				cached, _, err := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size)
+				cached, _, err := cacheFooterFromTail(ctx, pool, fi.Key, tail, offset, fi.Size)
 				if err != nil {
 					mu.Lock()
 					parseErrors++
 					if parseErrors == 1 {
-						logger.Warnf("footer prefetch: first parse error: key=%s size=%d footer_slice=%d err=%v", fi.Key, fi.Size, len(footerSlice), err)
+						logger.Warnf("footer prefetch: first parse error: key=%s size=%d tail=%d err=%v", fi.Key, fi.Size, len(tail), err)
 					}
 					mu.Unlock()
 					continue

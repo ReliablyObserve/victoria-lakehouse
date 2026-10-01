@@ -69,7 +69,7 @@ func TestFooterCacheAccessor(t *testing.T) {
 	if got := s.FooterCache(); got != nil {
 		t.Errorf("expected nil footer cache when not configured, got %v", got)
 	}
-	fc := NewFooterCache(8)
+	fc := NewFooterCache(0)
 	s.footerCache = fc
 	if got := s.FooterCache(); got != fc {
 		t.Error("FooterCache accessor must return the configured cache")
@@ -249,7 +249,7 @@ func TestPrefetchFootersByKeys_HydratesCache(t *testing.T) {
 	// Empty key list and nil pool are safe no-ops.
 	s.PrefetchFootersByKeys(context.Background(), nil, 2)
 	s2 := testStorage()
-	s2.footerCache = NewFooterCache(4)
+	s2.footerCache = NewFooterCache(0)
 	s2.PrefetchFootersByKeys(context.Background(), []string{"k"}, 2)
 }
 
@@ -364,7 +364,7 @@ func TestShouldSkipByFooter(t *testing.T) {
 		// "might match" and the file is conservatively kept. The
 		// contract pinned here: never an error, never a WRONG skip.
 		// (Same expectation as TestInteg_shouldSkipByFooter_NoMatch.)
-		skip, err := shouldSkipByFooter(ctx, s.pool, fi, absentQ, s.registry, NewFooterCache(8), 0)
+		skip, err := shouldSkipByFooter(ctx, s.pool, fi, absentQ, s.registry, NewFooterCache(0), 0)
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
@@ -372,7 +372,7 @@ func TestShouldSkipByFooter(t *testing.T) {
 	})
 
 	t.Run("present value never skips and caches the footer", func(t *testing.T) {
-		fc := NewFooterCache(8)
+		fc := NewFooterCache(0)
 		skip, err := shouldSkipByFooter(ctx, s.pool, fi, `service.name:="svc-present"`, s.registry, fc, 0)
 		if err != nil || skip {
 			t.Fatalf("got (skip=%v, err=%v), want (false, nil)", skip, err)
@@ -389,7 +389,7 @@ func TestShouldSkipByFooter(t *testing.T) {
 
 	t.Run("download error falls back to scan", func(t *testing.T) {
 		ghost := manifest.FileInfo{Key: "logs/dt=2026-06-01/hour=10/none.parquet", Size: int64(len(data))}
-		skip, err := shouldSkipByFooter(ctx, s.pool, ghost, absentQ, s.registry, NewFooterCache(8), 0)
+		skip, err := shouldSkipByFooter(ctx, s.pool, ghost, absentQ, s.registry, NewFooterCache(0), 0)
 		if err != nil || skip {
 			t.Errorf("got (skip=%v, err=%v), want (false, nil)", skip, err)
 		}
@@ -399,7 +399,7 @@ func TestShouldSkipByFooter(t *testing.T) {
 		junk := make([]byte, minFileSizeForPrefetch+512)
 		mock.putFile("logs/dt=2026-06-01/hour=10/garbage.parquet", junk)
 		bad := manifest.FileInfo{Key: "logs/dt=2026-06-01/hour=10/garbage.parquet", Size: int64(len(junk))}
-		skip, err := shouldSkipByFooter(ctx, s.pool, bad, absentQ, s.registry, NewFooterCache(8), 0)
+		skip, err := shouldSkipByFooter(ctx, s.pool, bad, absentQ, s.registry, NewFooterCache(0), 0)
 		if err != nil || skip {
 			t.Errorf("got (skip=%v, err=%v), want (false, nil)", skip, err)
 		}

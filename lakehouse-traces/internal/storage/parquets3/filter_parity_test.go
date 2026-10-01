@@ -67,7 +67,7 @@ func TestFieldEqualityAndStreamFilter_ReturnSameRows(t *testing.T) {
 		sfGroup:     cache.NewGroup(),
 		labelIndex:  cache.NewLabelIndex(),
 		discovery:   discovery.New("", nil, "", "", "9428", 5*time.Second),
-		footerCache: NewFooterCache(1000),
+		footerCache: NewFooterCache(0),
 		dlSem:       make(chan struct{}, 4),
 	}
 

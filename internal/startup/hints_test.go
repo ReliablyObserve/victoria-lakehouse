@@ -16,9 +16,9 @@ import (
 func TestEmitStartupHints_HealthyClusterSilent(t *testing.T) {
 	out := captureLogs(t, func() {
 		EmitStartupHints(HintInputs{
-			ManifestFiles:     100_000,
-			MinManifestFiles:  10_000,
-			FooterCacheMax:    50_000, // 50% coverage — healthy
+			ManifestFiles:       100_000,
+			MinManifestFiles:    10_000,
+			FooterCacheMaxBytes: 5000000000, FooterAvgBytes: 100_000, // 50% coverage — healthy
 			BufferBridgePeers: 3,
 			SnapshotAge:       2 * time.Minute, // well under 6× persist
 			PersistInterval:   5 * time.Minute,
@@ -39,8 +39,8 @@ func TestEmitStartupHints_HealthyClusterSilent(t *testing.T) {
 func TestEmitStartupHints_FooterCacheLow(t *testing.T) {
 	out := captureLogs(t, func() {
 		EmitStartupHints(HintInputs{
-			ManifestFiles:     200_000,
-			FooterCacheMax:    10_000, // 5% coverage
+			ManifestFiles:       200_000,
+			FooterCacheMaxBytes: 1000000000, FooterAvgBytes: 100_000, // 5% coverage
 			BufferBridgePeers: 3,
 			PersistInterval:   5 * time.Minute,
 		})
@@ -48,7 +48,7 @@ func TestEmitStartupHints_FooterCacheLow(t *testing.T) {
 	if !strings.Contains(out, "hint:footer-cache") {
 		t.Errorf("expected footer-cache hint, got:\n%s", out)
 	}
-	if !strings.Contains(out, "footer_max_items=") {
+	if !strings.Contains(out, "footer_max_bytes=") {
 		t.Errorf("hint must name the config knob to change")
 	}
 	if !strings.Contains(out, "MB RAM") {
@@ -83,8 +83,8 @@ func TestEmitStartupHints_StaleSnapshot(t *testing.T) {
 func TestEmitStartupHints_SinglePeer(t *testing.T) {
 	out := captureLogs(t, func() {
 		EmitStartupHints(HintInputs{
-			ManifestFiles:     1000,
-			FooterCacheMax:    10_000, // healthy
+			ManifestFiles:       1000,
+			FooterCacheMaxBytes: 1000000000, FooterAvgBytes: 100_000, // healthy
 			BufferBridgePeers: 1,
 			PersistInterval:   5 * time.Minute,
 		})
@@ -100,8 +100,8 @@ func TestEmitStartupHints_SinglePeer(t *testing.T) {
 func TestEmitStartupHints_SlowWarmup(t *testing.T) {
 	out := captureLogs(t, func() {
 		EmitStartupHints(HintInputs{
-			ManifestFiles:     1000,
-			FooterCacheMax:    10_000,
+			ManifestFiles:       1000,
+			FooterCacheMaxBytes: 1000000000, FooterAvgBytes: 100_000,
 			BufferBridgePeers: 3,
 			PersistInterval:   5 * time.Minute,
 			S3RefreshDuration: 10 * time.Second,
@@ -119,9 +119,9 @@ func TestEmitStartupHints_SlowWarmup(t *testing.T) {
 func TestEmitStartupHints_ReadyGateOffAtScale(t *testing.T) {
 	out := captureLogs(t, func() {
 		EmitStartupHints(HintInputs{
-			ManifestFiles:     50_000,
-			MinManifestFiles:  0, // gate disabled
-			FooterCacheMax:    25_000,
+			ManifestFiles:       50_000,
+			MinManifestFiles:    0, // gate disabled
+			FooterCacheMaxBytes: 2500000000, FooterAvgBytes: 100_000,
 			BufferBridgePeers: 3,
 			PersistInterval:   5 * time.Minute,
 		})

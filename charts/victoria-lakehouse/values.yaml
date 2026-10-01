@@ -158,15 +158,14 @@ lakehouseConfig:
     # (the rollback switch).
     parquet_read_mode: async
     # -- Read strategy for COLUMN-PROJECTED parquet reads (queries touching
-    # fewer than half the columns): window (default) or planned (CH-style
+    # fewer than half the columns): planned (default; CH-style
     # plan-then-fetch: the exact coalesced byte ranges of the projected
     # column chunks, dictionary pages and page-index sections included, are
     # derived from the cached footer and fetched concurrently up-front; no
     # speculative read-ahead window) or window (the previous adaptive-window
-    # behavior, kept as the full rollback switch). Fixes the measured
-    # ~46 MB/query of never-read window bytes on filtered counts. Full-scan
-    # (non-projected) reads always use the window stack.
-    projected_fetch_mode: window
+    # behavior; DEPRECATED fallback kept for one release, then removed).
+    # Full-scan (non-projected) reads always use the window stack.
+    projected_fetch_mode: planned
     # -- DEPRECATED: the per-PLAN cap is retired (planned-fetch v2 slice 1
     # cap re-scope). Kept parsed for compatibility and no longer read; plans
     # are admitted via the memory ledger (absolute ceiling = the file size)
@@ -237,6 +236,11 @@ lakehouseConfig:
     disk_limit: 50GB
     # -- Disk cache eviction watermark (0.0-1.0).
     eviction_watermark: 0.8
+    # -- Byte budget of the Parquet footer cache (0 = per-signal default: 256 MiB
+    # logs, 512 MiB traces). Footers are cached with their page index so a
+    # cached file opens with no S3 round trip; least-recently-used entries are
+    # evicted to stay within the budget. Replaces footer_max_items.
+    footer_max_bytes: 0
     # -- TTL for cached Parquet file footers.
     footer_ttl: 1h
     # -- TTL for cached bloom filter data.
