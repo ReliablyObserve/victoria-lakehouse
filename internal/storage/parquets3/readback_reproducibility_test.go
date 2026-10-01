@@ -214,10 +214,8 @@ func TestGoldenDiffNamesTamperedFields(t *testing.T) {
 // same process against the same library, and requires the two files to be
 // identical byte for byte. That is what makes a byte-level comparison across
 // parquet-go versions meaningful: any difference then belongs to the library,
-// not to the writer.
-//
-// Traces are deliberately excluded, see
-// TestTracesParquetIsStructurallyStableButNotByteStable.
+// not to the writer. TestTracesParquetWriteIsByteReproducible holds the
+// trace writer to the same property.
 func TestLogsParquetWriteIsByteReproducible(t *testing.T) {
 	saved := activeSlotResolver
 	activeSlotResolver = nil
@@ -246,18 +244,13 @@ func TestLogsParquetWriteIsByteReproducible(t *testing.T) {
 		len(rows), len(first.Data), len(second.Data), off, len(diffs), strings.Join(diffs, "\n  "))
 }
 
-// TestTracesParquetIsStructurallyStableButNotByteStable records why the trace
-// writer is not part of the byte-reproducibility gate: the `_trace_idx` footer
-// key/value is built by iterating a Go map, so its entry order varies from run
-// to run WITHIN one library version. That is harmless for readers — the index
-// is self-describing and the read path sorts — but it makes byte-level
-// provenance impossible for trace files, so the property asserted here is the
-// structural one instead: two writes of the same rows must describe the same
-// file.
-//
-// This is not a claim that the bytes always differ (an unlucky map order could
-// match); it is a claim that the STRUCTURE never does.
-func TestTracesParquetIsStructurallyStableButNotByteStable(t *testing.T) {
+// TestTracesParquetWriteIsByteReproducible is the trace twin of
+// TestLogsParquetWriteIsByteReproducible. The `_trace_idx` footer key/value
+// used to be serialised in Go map order, so two writes of the same spans
+// described the same file in different bytes; the index is now emitted
+// sorted by trace ID. Structure is checked as well, so a failure says which
+// footer field moved.
+func TestTracesParquetWriteIsByteReproducible(t *testing.T) {
 	saved := activeSlotResolver
 	activeSlotResolver = nil
 	t.Cleanup(func() { activeSlotResolver = saved })
@@ -280,13 +273,16 @@ func TestTracesParquetIsStructurallyStableButNotByteStable(t *testing.T) {
 	a := profileParquet(t, "traces-a", first.Data, "timestamp_unix_nano", probes)
 	b := profileParquet(t, "traces-b", second.Data, "timestamp_unix_nano", probes)
 	a.Name, b.Name = "traces", "traces"
-
 	if diffs := diffGolden(a, b); len(diffs) != 0 {
 		t.Fatalf("two writes of the same %d trace rows describe different files:\n  %s", len(rows), strings.Join(diffs, "\n  "))
 	}
-
 	if diffs := footerMetadataDiff(t, first.Data, second.Data); len(diffs) != 0 {
-		t.Fatalf("two writes of the same trace rows differ in footer metadata (only the byte order of the _trace_idx KV may vary, never its described content):\n  %s", strings.Join(diffs, "\n  "))
+		t.Fatalf("two writes of the same trace rows differ in footer metadata:\n  %s", strings.Join(diffs, "\n  "))
+	}
+	if !bytes.Equal(first.Data, second.Data) {
+		t.Fatalf("writing the same %d trace rows twice produced different bytes (len %d vs %d, first difference at offset %d); "+
+			"map iteration order in a footer value is the usual cause",
+			len(rows), len(first.Data), len(second.Data), firstByteDifference(first.Data, second.Data))
 	}
 }
 

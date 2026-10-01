@@ -16,6 +16,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `golang:1.27.1`. Parquet data is unchanged; the footer's `created_by` string now includes the parquet-go version in
   test builds (23 bytes per file), so the field-metadata perf rows' `s3_bytes` counters were updated to CI's measured
   values.
+- **`s3.parquet_read_mode` now defaults to `sync` (both binaries).** With `async`, a read-ahead goroutine per column
+  reader shares the file's single read-ahead window with the others; the buffered reader serialises their GETs under
+  one mutex, so they gain no I/O parallelism, and they evict each other's window and fetch the same bytes again.
+  Measured on the field-metadata matrix with the default window knobs (192 cells, logs): `sync` reads 1,578 GETs and
+  137.0 MB where `async` read 1,768–1,816 GETs and 164–172 MB, at 100 ms S3 latency the summed p50 drops from 99.2 s to
+  88.0 s (compacted `fv_level` cells up to 48% faster; the two cells more than 5% slower read the same GETs and bytes and
+  differ by one outlier iteration or 1–3 ms on a buffer-bridge call that touches no S3), and every answer stays exact.
+  `-lakehouse.s3.parquet-read-mode=async` keeps the old behaviour.
+- **Every Lakehouse Parquet file records `created_by` = `victoria-lakehouse version <release>(build )`** instead of
+  parquet-go's default, which depends on whether the Go build information is present (toolchain and build mode).
+
+### Fixed
+
+- **The field-metadata perf gate's counters are deterministic (compacted layout).** `field-metadata-perf` failed on
+  main and on #295 (`fv_level` compacted `window=whole/filter=svc`: `s3_bytes 642384 > registry 642367`), and two
+  compacted cells had already differed between a local run and CI. Two causes: the S3 GETs of a filtered scan depended
+  on goroutine scheduling (the `async` page readers above; the same identical files took 32–36 GETs from one run to the
+  next), and the object sizes depended on the toolchain through `created_by` (the 17 bytes). Both are fixed at the
+  source (`sync` default, fixed `created_by`), and the `_trace_idx` footer value is now written sorted by trace ID, so
+  trace files, flushed and compacted, are byte-reproducible as logs files already were. New tests in both modules
+  build the compacted layout twice and require byte-identical objects, and run every compacted cell six times
+  requiring identical GETs and bytes (and, on logs, row groups and pages); the registry `s3_bytes`/`s3_gets` counters were regenerated
+  from CI's measurements.
 
 ### Documentation
 

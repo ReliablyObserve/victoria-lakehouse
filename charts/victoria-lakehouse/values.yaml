@@ -152,11 +152,12 @@ lakehouseConfig:
     # parquet-go's own default is 4KB — sized for local disk, far too small
     # for network storage (hundreds of tiny reads per chunk).
     read_buffer_size: 1048576
-    # -- Parquet page read mode on ranged S3 opens: async (default — pages
-    # are read ahead by a per-column goroutine, hiding S3 latency behind
-    # decode; memory bounded at ~1 page in flight per column reader) or sync
-    # (the rollback switch).
-    parquet_read_mode: async
+    # -- Parquet page read mode on ranged S3 opens: sync (default — the
+    # column readers of a file take turns on its read-ahead window, so a
+    # query's GETs and bytes are fixed) or async (a read-ahead goroutine per
+    # column; the goroutines evict each other's window and re-fetch, so the
+    # same query reads more, and a varying number of, GETs and bytes).
+    parquet_read_mode: sync
     # -- Read strategy for COLUMN-PROJECTED parquet reads (queries touching
     # fewer than half the columns): window (default) or planned (CH-style
     # plan-then-fetch: the exact coalesced byte ranges of the projected

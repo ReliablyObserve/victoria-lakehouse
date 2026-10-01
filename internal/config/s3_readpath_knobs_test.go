@@ -16,8 +16,8 @@ func TestS3ReadPathKnobs_DefaultsMergeValidate(t *testing.T) {
 		t.Fatalf("defaults: ReadAheadMaxBytes=%d ReadBufferSize=%d, want >0",
 			d.S3.ReadAheadMaxBytes, d.S3.ReadBufferSize)
 	}
-	if d.S3.ParquetReadMode != "async" {
-		t.Fatalf("default ParquetReadMode = %q, want async", d.S3.ParquetReadMode)
+	if d.S3.ParquetReadMode != "sync" {
+		t.Fatalf("default ParquetReadMode = %q, want sync", d.S3.ParquetReadMode)
 	}
 	d.Mode = ModeLogs
 	d.S3.Bucket = "b"
@@ -33,7 +33,7 @@ lakehouse:
     bucket: b
     read_ahead_max_bytes: 4194304
     read_buffer_size: 262144
-    parquet_read_mode: sync
+    parquet_read_mode: async
 `
 	path := filepath.Join(t.TempDir(), "cfg.yaml")
 	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
@@ -43,11 +43,11 @@ lakehouse:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.S3.ReadAheadMaxBytes != 4194304 || cfg.S3.ReadBufferSize != 262144 || cfg.S3.ParquetReadMode != "sync" {
+	if cfg.S3.ReadAheadMaxBytes != 4194304 || cfg.S3.ReadBufferSize != 262144 || cfg.S3.ParquetReadMode != "async" {
 		t.Fatalf("overlay merge lost knobs: %+v", cfg.S3)
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("sync mode must validate: %v", err)
+		t.Fatalf("async mode must validate: %v", err)
 	}
 
 	// enum validation: invalid mode is rejected with a helpful error.

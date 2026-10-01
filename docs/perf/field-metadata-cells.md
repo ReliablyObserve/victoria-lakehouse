@@ -464,6 +464,46 @@ VictoriaLogs answers (block headers carry the stream id).
    `lakehouse_buffer_bridge_errors_total{reason="decode"}`. A peer answering enumeration with
    (value, hits) pairs instead of rows keeps large unflushed windows inside the timeout.
 
+## Deterministic counters
+
+The gate holds GETs, bytes, row groups and pages exactly, so they must be a function of the files
+and the query alone. Two inputs were not, and both moved the compacted cells between CI runs
+(`fv_level` compacted `window=whole/filter=svc`: 642384 vs registry 642367 bytes; `window=cut`
+601424 in CI vs 597328 locally):
+
+- **Page read mode.** With `s3.parquet_read_mode: async`, each column reader's read-ahead goroutine
+  calls into the file's single read-ahead window. Which reader's bytes survive in the window
+  depends on goroutine scheduling, so identical files took 32–36 GETs for the same cell from one
+  run to the next (4 KiB harness window; 33–36 with `GOMAXPROCS` > 1, a fixed 36 with
+  `GOMAXPROCS=1`, a fixed 24 in `sync` mode). The window's mutex serialises the GETs anyway, so
+  `async` gains no I/O parallelism. The default is now `sync`.
+- **`created_by`.** parquet-go's default string carries its version only when the Go build
+  information is present (Go 1.27 test binaries: yes; Go 1.26: no), 23 bytes per file. The footer
+  tail reads scale with object size (`size/4` and `size/8`), which is where the 17 bytes came from.
+  Every writer now sets `victoria-lakehouse version <release>(build )`.
+
+`async` vs `sync`, same build, logs matrix, 192 cells (measured, this machine, Go 1.27.1):
+
+| knobs | latency | iterations | GETs async → sync | bytes async → sync | cells whose counters varied (async / sync) | summed p50 async → sync |
+|---|---|---|---|---|---|---|
+| harness (4 KiB window) | 0 ms | 3 | 8 cells fewer, none more | 8 cells fewer, none more | 5 / 0 | median cell ratio 0.92 (sub-ms noise) |
+| harness (4 KiB window) | 100 ms | 3 | as above | as above | 6 / 0 | median cell ratio 1.00; best 0.69 |
+| production defaults (2 MiB window, 1 MiB gap) | 0 ms | 3 × 3 runs | 1,816 → 1,578 | 171.5 → 137.0 MB | 27 / 0 | — |
+| production defaults | 100 ms | 2 | 1,768 → 1,578 | 164.1 → 137.0 MB | — | 99.2 → 88.0 s |
+
+GETs and bytes are the sum over cells of each cell's worst iteration. At 100 ms with the
+production knobs, 38 cells are more than 5% faster in `sync` (compacted `fv_level`/`fv_service`
+up to 48%) and two are more than 5% slower: both read identical GETs and bytes, one by a single
+outlier iteration, the other a 0-GET `layout=peer` cell whose 10 → 11–13 ms is the buffer bridge.
+Exactness is identical in every cell.
+
+`TestFieldMetadataCompactedCountersAreDeterministic` (logs) and
+`TestFieldMetadataTracesCompactedCountersAreDeterministic` (traces) run every compacted cell six
+times and require identical counters; with `async` the logs test fails on five cells.
+`TestFieldMetadataCompactedLayoutIsByteReproducible` and its traces twin build the compacted layout
+twice and require byte-identical objects; before the `_trace_idx` sort the traces one failed on
+both partitions.
+
 ## Noise
 
 Host load average was 12–36 throughout (other work on the machine). At 0 ms, identical-code cells
