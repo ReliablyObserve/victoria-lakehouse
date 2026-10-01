@@ -1447,8 +1447,10 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 	// Phase 3c: exact time bounds for the recent objects the listing alone told
 	// the manifest about (the final flush of a graceful shutdown, a peer's
 	// flushes). Their inferred bounds are the end of the partition hour, which
-	// must never feed the buffer watermark; the footer-only phases above cannot
-	// supply bounds (they need the page index), so read these objects fully.
+	// must never feed the buffer watermark. The footer prefetch phases above
+	// only supply a row count (bounds come from column statistics, which this
+	// pass reads with a ranged read of each object's footer - never the whole
+	// object, and the newest objects first).
 	// Bounded to the recent window the buffer can still hold; the watermark
 	// resolves anything older lazily (withExactBounds).
 	boundsEnriched := s.enrichRecentInferredBounds(ctx)

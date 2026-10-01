@@ -295,3 +295,89 @@ func TestSaveTo_UnwritableDirectoryFails(t *testing.T) {
 		}
 	}
 }
+
+// A slow, older save must not rename over a newer snapshot.
+func TestSaveTo_SlowStaleSaveCannotOverwriteNewer(t *testing.T) {
+	m := New("b", "")
+	m.AddFile(biPart, FileInfo{Key: "0/0/logs/" + biPart + "/a.parquet", Size: 1, RowCount: 1, MinTimeNs: biHourStart() + 1, MaxTimeNs: biHourStart() + 2})
+	path := filepath.Join(t.TempDir(), "snap.json")
+	var calls int
+	var mu sync.Mutex
+	saveTestHook = func() {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			time.Sleep(400 * time.Millisecond) // the stale save is slow to write
+		}
+	}
+	defer func() { saveTestHook = nil }()
+	done := make(chan struct{})
+	go func() { _ = m.SaveTo(path); close(done) }()
+	time.Sleep(100 * time.Millisecond)
+	m.AddFile(biPart, FileInfo{Key: "0/0/logs/" + biPart + "/b.parquet", Size: 1, RowCount: 1, MinTimeNs: biHourStart() + 3, MaxTimeNs: biHourStart() + 4})
+	if err := m.SaveTo(path); err != nil { // the newer save
+		t.Fatal(err)
+	}
+	<-done
+	loaded := New("b", "")
+	if err := loaded.LoadFrom(path); err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TotalFiles() != 2 {
+		t.Errorf("the snapshot holds %d files: a stale save overwrote the newer one", loaded.TotalFiles())
+	}
+}
+
+func TestRemoveHook_RunsForRemovedKeys(t *testing.T) {
+	m := New("b", "")
+	m.AddFile(biPart, FileInfo{Key: biKey, Size: 1})
+	var got []string
+	m.OnFileRemoved(func(k string) { got = append(got, k) })
+	m.RemoveFile(biPart, biKey)
+	if len(got) != 1 || got[0] != biKey {
+		t.Errorf("remove hook saw %v", got)
+	}
+}
+
+func TestFileInfoBucketOr(t *testing.T) {
+	if got := (FileInfo{}).BucketOr("default"); got != "default" {
+		t.Errorf("BucketOr of an unrouted object = %q", got)
+	}
+	if got := (FileInfo{Bucket: "tenant-b"}).BucketOr("default"); got != "tenant-b" {
+		t.Errorf("BucketOr of a routed object = %q", got)
+	}
+}
+
+func TestLiveAggregateWindow_CountsOverlappingObjects(t *testing.T) {
+	m := New("b", "")
+	m.AddFile(biPart, FileInfo{Key: biKey, Size: 10, RowCount: 3, RawBytes: 30, MinTimeNs: biHourStart() + 10, MaxTimeNs: biHourStart() + 20})
+	k2 := "0/0/logs/" + biPart + "/b.parquet"
+	m.AddFile(biPart, FileInfo{Key: k2, Size: 5, RowCount: 2, RawBytes: 20, MinTimeNs: biHourStart() + 100, MaxTimeNs: biHourStart() + 200})
+	all := m.LiveAggregate()
+	if all.Files != 2 || all.Rows != 5 || all.Bytes != 15 || all.RawBytes != 50 || all.MinTimeNs != biHourStart()+10 || all.MaxTimeNs != biHourStart()+200 {
+		t.Errorf("LiveAggregate = %+v", all)
+	}
+	if w := m.LiveAggregateWindow(biHourStart()+50, 0); w.Files != 1 || w.Rows != 2 {
+		t.Errorf("window after the first object = %+v", w)
+	}
+	if w := m.LiveAggregateWindow(0, biHourStart()+50); w.Files != 1 || w.Rows != 3 {
+		t.Errorf("window before the second object = %+v", w)
+	}
+}
+
+func TestTenantSummariesInWindow_FiltersByOverlap(t *testing.T) {
+	m := New("b", "")
+	m.SetPrefixTemplate("{AccountID}/{ProjectID}/")
+	m.AddFile(biPart, FileInfo{Key: biKey, Size: 10, RowCount: 3, MinTimeNs: biHourStart() + 10, MaxTimeNs: biHourStart() + 20})
+	if got := m.TenantSummariesInWindow(0, 0); len(got) == 0 {
+		t.Fatal("no summaries without a window")
+	}
+	if got := m.TenantSummariesInWindow(biHourStart()+int64(10*time.Hour), 0); len(got) != 0 {
+		t.Errorf("a window after the data kept %d tenants", len(got))
+	}
+	if got := m.TenantSummariesInWindow(0, biHourStart()-int64(10*time.Hour)); len(got) != 0 {
+		t.Errorf("a window before the data kept %d tenants", len(got))
+	}
+}

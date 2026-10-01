@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // Cost of the buffer watermark on the query path (#272). The common case is
@@ -67,5 +70,37 @@ func BenchmarkWithExactBounds_AllExact(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = s.withExactBounds(ctx, files)
+	}
+}
+
+type rwNopBuf struct{}
+
+func (rwNopBuf) RunQuery(*logstorage.QueryContext, logstorage.WriteDataBlockFunc) error { return nil }
+func (rwNopBuf) Close()                                                                 {}
+
+// BenchmarkRunQueryCount is a whole `stats count()` over N exact objects with a
+// buffer attached: the watermark computation inside a real query.
+func BenchmarkRunQueryCount(b *testing.B) {
+	for _, n := range []int{10, 200} {
+		b.Run(fmt.Sprintf("files=%d", n), func(b *testing.B) {
+			s := testStorage()
+			for _, fi := range rwBenchFiles(n, false) {
+				s.manifest.AddFile(manifest.ExtractPartition(fi.Key), fi)
+			}
+			s.localBuffer = rwNopBuf{}
+			q, err := logstorage.ParseQuery("* | stats count() n")
+			if err != nil {
+				b.Fatal(err)
+			}
+			q.AddTimeFilter(rwHour.Add(-49*time.Hour).UnixNano(), rwHour.Add(time.Hour).UnixNano())
+			ctx := storage.WithTimestampOnlyHint(context.Background())
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := s.RunQuery(ctx, nil, q, func(_ uint, db *logstorage.DataBlock) {}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

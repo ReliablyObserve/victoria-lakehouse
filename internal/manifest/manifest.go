@@ -192,6 +192,9 @@ type Manifest struct {
 	// keep per-field/per-tenant size totals current without rescanning.
 	onAdd    func(partition string, fi FileInfo)
 	onRemove func(partition string, fi FileInfo)
+	// removeHooks are called with the key of every object removeFileLocked
+	// drops; like onRemove they run under the write lock and must not call back.
+	removeHooks []func(key string)
 
 	// tenantAggregates is the incremental per-tenant cache backing
 	// TenantSummaries(). Without this, /api/v1/tenants, /stats/overview,
@@ -1651,6 +1654,9 @@ func (m *Manifest) removeFileLocked(partition string, key string) bool {
 			if m.onRemove != nil {
 				m.onRemove(partition, fi)
 			}
+			for _, h := range m.removeHooks {
+				h(key)
+			}
 			m.files[partition] = append(files[:i], files[i+1:]...)
 			if len(m.files[partition]) == 0 {
 				delete(m.files, partition)
@@ -1943,6 +1949,16 @@ func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, max
 	}
 }
 
+// OnFileRemoved registers fn to be called (under the write lock) with the key
+// of every object removed from the manifest by RemoveFile and friends. fn must
+// be cheap and MUST NOT call back into the manifest. Unlike SetChangeObserver
+// it adds to, never replaces, what is registered.
+func (m *Manifest) OnFileRemoved(fn func(key string)) {
+	m.mu.Lock()
+	m.removeHooks = append(m.removeHooks, fn)
+	m.mu.Unlock()
+}
+
 // SetChangeObserver registers callbacks fired (under the write lock) on every
 // file add/remove. Flush AND compaction both route through AddFile/RemoveFile,
 // so one observer captures every storage diff. Pass nil to clear. Callbacks must
@@ -2232,6 +2248,10 @@ type persistedManifest struct {
 	Retired []RetiredKey `json:"retired,omitempty"`
 }
 
+// saveTestHook, when set by a test, runs in SaveTo after the snapshot is
+// captured and encoded and before it is written (to make a save slow).
+var saveTestHook func()
+
 func (m *Manifest) SaveTo(path string) error {
 	m.saveMu.Lock()
 	defer m.saveMu.Unlock()
@@ -2265,6 +2285,10 @@ func (m *Manifest) SaveTo(path string) error {
 	enc := gob.NewEncoder(&buf)
 	if err := enc.Encode(&snap); err != nil {
 		return fmt.Errorf("encode manifest: %w", err)
+	}
+
+	if saveTestHook != nil {
+		saveTestHook()
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {

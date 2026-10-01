@@ -414,45 +414,63 @@ type bufferWatermarks map[logstorage.TenantID]int64
 // object the manifest knows only from the S3 listing carries bounds inferred
 // from the partition hour, whose end would hide every buffered row of the rest
 // of the hour (the final flush of a graceful shutdown lands in the listing, not
-// the snapshot). So, for the objects that could change the answer (an inferred
-// end at or above max(the query's start, now - buffer retention) and above the
-// tenant's exact watermark), the exact bounds are resolved first
-// (withExactBounds: manifest, pmeta facet, one ranged footer read, bounded in
-// time and backed off after a failure).
+// the snapshot). So the exact bounds are resolved first
+// (withExactBounds: manifest, pmeta facet, the shared ranged footer fetch,
+// bounded in time and backed off after a failure) for the objects whose
+// inferred end is above the tenant's exact watermark and not older than
+// max(the query's start, now - buffer retention).
 //
-// An object that stays unresolved keeps its INFERRED end in the watermark: the
-// buffer is hidden up to the end of its hour, never counted against rows the
-// object already holds. That is the conservative side - rows hide until it
-// resolves, nothing is counted twice - and lakehouse_watermark_inferred_unresolved_total
-// counts it.
+// An object that stays unresolved - or is too old to be worth a read, because
+// the buffer's retention is per DAY partition and it can still hold that
+// object's rows - keeps its INFERRED end in the watermark: the buffer is
+// hidden up to the end of its hour, never counted against rows the object
+// already holds. That is the conservative side - rows hide until it resolves,
+// nothing is counted twice - and lakehouse_watermark_inferred_unresolved_total
+// counts the ones a read was tried for.
 func (s *Storage) bufferWatermarksFor(ctx context.Context, startNs int64, files []manifest.FileInfo) bufferWatermarks {
 	if len(files) == 0 {
 		return nil
 	}
 	parse := s.manifest.TenantKeyParser()
 	wm := make(bufferWatermarks, 2)
-	tenants := make([]logstorage.TenantID, len(files))
-	valid := make([]bool, len(files))
+	var inferred []int
 	for i := range files {
+		if files[i].BoundsInferred {
+			inferred = append(inferred, i)
+			continue
+		}
 		tid, ok := tenantIDOfKey(parse, files[i].Key)
-		tenants[i], valid[i] = tid, ok
 		if !ok {
 			continue
 		}
-		if _, maxNs := files[i].ExactBounds(); maxNs > wm[tid] {
-			wm[tid] = maxNs
+		if files[i].MaxTimeNs > wm[tid] {
+			wm[tid] = files[i].MaxTimeNs
 		}
+	}
+	if len(inferred) == 0 {
+		return wm
 	}
 	floor := s.watermarkFloor(startNs)
 	var cand []int
-	for i := range files {
-		if !valid[i] || !files[i].BoundsInferred {
+	candTenant := make(map[int]logstorage.TenantID, len(inferred))
+	for _, i := range inferred {
+		tid, ok := tenantIDOfKey(parse, files[i].Key)
+		if !ok {
 			continue
 		}
-		if files[i].MaxTimeNs < floor || files[i].MaxTimeNs <= wm[tenants[i]] {
+		end := files[i].MaxTimeNs
+		if end <= wm[tid] {
 			continue // cannot change what the buffer serves
 		}
+		if end < floor {
+			// Too old to be worth a read - but the buffer's retention is per
+			// DAY partition, so it can still hold this object's rows: keep the
+			// conservative inferred end (hide, never double count).
+			wm[tid] = end
+			continue
+		}
 		cand = append(cand, i)
+		candTenant[i] = tid
 	}
 	if len(cand) == 0 {
 		return wm
@@ -463,16 +481,17 @@ func (s *Storage) bufferWatermarksFor(ctx context.Context, startNs int64, files 
 	}
 	sub = s.withExactBounds(ctx, sub)
 	for k, i := range cand {
+		tid := candTenant[i]
 		if _, exact := sub[k].ExactBounds(); exact > 0 {
-			if exact > wm[tenants[i]] {
-				wm[tenants[i]] = exact
+			if exact > wm[tid] {
+				wm[tid] = exact
 			}
 			continue
 		}
 		// Unresolved: the conservative inferred end.
 		metrics.WatermarkInferredUnresolved.Inc()
-		if sub[k].MaxTimeNs > wm[tenants[i]] {
-			wm[tenants[i]] = sub[k].MaxTimeNs
+		if sub[k].MaxTimeNs > wm[tid] {
+			wm[tid] = sub[k].MaxTimeNs
 		}
 	}
 	return wm

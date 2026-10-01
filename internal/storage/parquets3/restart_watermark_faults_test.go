@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
@@ -46,6 +48,7 @@ type rwMock struct {
 	full        map[string]int
 	ranged      map[string]int
 	rangedBytes int64
+	delays      map[string]time.Duration
 }
 
 func newRWMock() *rwMock {
@@ -66,7 +69,15 @@ func newRWMock() *rwMock {
 					m.full[key]++
 				}
 				st := m.status[key]
+				d := m.delays[key]
 				m.mu.Unlock()
+				if d > 0 {
+					select {
+					case <-time.After(d):
+					case <-r.Context().Done():
+						return
+					}
+				}
 				if st != 0 {
 					w.WriteHeader(st)
 					if st == http.StatusNotFound {
@@ -144,6 +155,7 @@ func (r *rwRig) statsRows(from, to time.Time) int {
 func (r *rwRig) resetBackoff() {
 	r.s.inferredBounds.mu.Lock()
 	r.s.inferredBounds.retry = nil
+	r.s.inferredBounds.pausedUntil = time.Time{}
 	r.s.inferredBounds.mu.Unlock()
 }
 
@@ -590,3 +602,29 @@ type atomicInt struct{ v atomic.Int64 }
 
 func (a *atomicInt) set(n int64)        { a.v.Store(n) }
 func (a *atomicInt) ptr() *atomic.Int64 { return &a.v }
+
+var tenantZero = logstorage.TenantID{}
+
+// delay makes GETs of key wait before answering.
+func (m *rwMock) delay(key string, d time.Duration) {
+	m.mu.Lock()
+	if m.delays == nil {
+		m.delays = map[string]time.Duration{}
+	}
+	m.delays[key] = d
+	m.mu.Unlock()
+}
+
+type rwBytes struct{ b []byte }
+
+func (w *rwBytes) Write(p []byte) (int, error) { w.b = append(w.b, p...); return len(p), nil }
+func (w *rwBytes) Len() int                    { return len(w.b) }
+func (w *rwBytes) reader() *bytes.Reader       { return bytes.NewReader(w.b) }
+
+func rwPeerRows(ts []time.Time) []schema.LogRow {
+	rows := make([]schema.LogRow, len(ts))
+	for i, t := range ts {
+		rows[i] = schema.LogRow{TimestampUnixNano: t.UnixNano(), Body: "cold", SeverityText: "COLD", ServiceName: "svc-COLD"}
+	}
+	return rows
+}

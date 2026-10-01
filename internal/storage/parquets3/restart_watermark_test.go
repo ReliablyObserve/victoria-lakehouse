@@ -93,13 +93,14 @@ type rwRig struct {
 	bw       *BatchWriter
 }
 
-// rwFreezeClock pins the clock the buffer-retention floor reads to just before
-// the fixture hour: the fake buffer keeps every row it was given, regardless of
-// the retention a real one applies, and the fixture's times are fixed.
+// rwFreezeClock pins the clock the buffer-retention floor reads to half an hour
+// into the fixture hour: a restart shortly after the final flush, the usual
+// case. Tests of an object older than the retention floor set their own clock
+// (rwSetClock).
 func rwFreezeClock(t *testing.T) {
 	t.Helper()
 	old := nowFn
-	nowFn = func() time.Time { return rwHour.Add(-time.Hour) }
+	nowFn = func() time.Time { return rwHour.Add(30 * time.Minute) }
 	t.Cleanup(func() { nowFn = old })
 }
 
@@ -395,4 +396,12 @@ func rwPropertyRun(t *testing.T, seed int64, steps int) {
 		}
 		check(i)
 	}
+}
+
+// rwSetClock pins the clock the buffer-retention floor reads, for the test.
+func rwSetClock(t *testing.T, now time.Time) {
+	t.Helper()
+	old := nowFn
+	nowFn = func() time.Time { return now }
+	t.Cleanup(func() { nowFn = old })
 }

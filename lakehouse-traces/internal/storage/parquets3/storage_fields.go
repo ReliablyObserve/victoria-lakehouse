@@ -41,22 +41,39 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 		}
 		return f, nil
 	}
+	_, f, err := s.fetchFooterTail(ctx, fi, s.pool.DownloadRangeDedup)
+	return f, err
+}
+
+// rangeDownloader is the ranged object read the footer fetch is built on:
+// DownloadRangeDedup shares concurrent identical reads (and outlives its
+// caller), DownloadRange stops with the caller's context.
+type rangeDownloader func(ctx context.Context, kind, key string, offset, length int64) ([]byte, error)
+
+// fetchFooterTail reads the footer of fi with a ranged read of the object's
+// tail (the whole object when it is smaller than the tail), then a second,
+// exact-length ranged read when the footer is larger than the tail (typical for
+// trace objects with a large `_trace_idx` key-value), parses it, and caches it.
+// It does not consult the cache and never downloads the whole object of a
+// large file. Shared by fetchFooterFile and the exact-bounds resolution.
+// Twin of internal/storage/parquets3/storage_fields.go.
+func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl rangeDownloader) (*CachedFooter, *parquet.File, error) {
 	offset := fi.Size - footerPrefetchTail(s.footerPrefetchBytes(), fi.Size)
 	if offset < 0 {
 		offset = 0
 	}
 	length := fi.Size - offset
 	metrics.S3GetsByPhase.Inc("footer")
-	tail, err := s.pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, length)
+	tail, err := dl(ctx, "footer", fi.Key, offset, length)
 	if err != nil {
-		return nil, fmt.Errorf("download footer range: %w", err)
+		return nil, nil, fmt.Errorf("download footer range: %w", err)
 	}
 	if len(tail) < 8 {
-		return nil, fmt.Errorf("footer tail too short: %d bytes", len(tail))
+		return nil, nil, fmt.Errorf("footer tail too short: %d bytes", len(tail))
 	}
 	footerLen, err := FooterLength(tail[len(tail)-8:])
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	totalFooterBytes := footerLen + 8
 	if totalFooterBytes > len(tail) {
@@ -65,27 +82,27 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 		// per the logs↔traces module parity rule.
 		footerOffset := fi.Size - int64(totalFooterBytes)
 		if footerOffset < 0 {
-			return nil, fmt.Errorf("footer length implies negative offset: footer=%d file=%d", totalFooterBytes, fi.Size)
+			return nil, nil, fmt.Errorf("footer length implies negative offset: footer=%d file=%d", totalFooterBytes, fi.Size)
 		}
 		metrics.S3GetsByPhase.Inc("footer")
-		bigTail, err := s.pool.DownloadRangeDedup(ctx, "footer", fi.Key, footerOffset, int64(totalFooterBytes))
+		bigTail, err := dl(ctx, "footer", fi.Key, footerOffset, int64(totalFooterBytes))
 		if err != nil {
-			return nil, fmt.Errorf("download oversize footer range: %w", err)
+			return nil, nil, fmt.Errorf("download oversize footer range: %w", err)
 		}
 		if len(bigTail) < totalFooterBytes {
-			return nil, fmt.Errorf("oversize footer fetch short: got %d, want %d", len(bigTail), totalFooterBytes)
+			return nil, nil, fmt.Errorf("oversize footer fetch short: got %d, want %d", len(bigTail), totalFooterBytes)
 		}
 		tail = bigTail
 	}
 	footerSlice := tail[len(tail)-totalFooterBytes:]
 	cached, f, err := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if s.footerCache != nil {
 		s.footerCache.Put(fi.Key, cached)
 	}
-	return f, nil
+	return cached, f, nil
 }
 
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {

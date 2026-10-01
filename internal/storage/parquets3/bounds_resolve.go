@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"encoding/binary"
+	"sort"
 	"sync"
 	"time"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 // Resolving the exact time range of an object the manifest only knows from the
@@ -60,6 +60,44 @@ type boundsResolver struct {
 	mu       sync.Mutex
 	retry    map[string]boundsRetry
 	inflight map[string]chan struct{}
+	// pausedUntil is set when a computation ran out of its time budget: while
+	// it lies ahead no further footer reads are started (rows hide, none are
+	// counted twice) instead of making every query wait the budget again.
+	pausedUntil time.Time
+	// watching is the manifest whose removals prune the back-off entries.
+	watching *manifest.Manifest
+}
+
+// maxBoundsRetryEntries caps the back-off table; past it, entries of objects
+// the manifest no longer holds (and expired ones) are swept.
+const maxBoundsRetryEntries = 1024
+
+// watch makes removals from m forget the removed objects' back-off entries.
+func (r *boundsResolver) watch(m *manifest.Manifest) {
+	r.mu.Lock()
+	if r.watching == m {
+		r.mu.Unlock()
+		return
+	}
+	r.watching = m
+	r.mu.Unlock()
+	m.OnFileRemoved(func(key string) {
+		r.mu.Lock()
+		delete(r.retry, key)
+		r.mu.Unlock()
+	})
+}
+
+func (r *boundsResolver) paused(now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return now.Before(r.pausedUntil)
+}
+
+func (r *boundsResolver) pause(now time.Time) {
+	r.mu.Lock()
+	r.pausedUntil = now.Add(boundsBackoffMin)
+	r.mu.Unlock()
 }
 
 // backedOff reports whether key's last resolution failed recently enough that
@@ -84,6 +122,13 @@ func (r *boundsResolver) failed(key string, now time.Time) {
 	}
 	st.until = now.Add(d)
 	r.retry[key] = st
+	if len(r.retry) > maxBoundsRetryEntries {
+		for k, v := range r.retry {
+			if now.After(v.until) {
+				delete(r.retry, k)
+			}
+		}
+	}
 }
 
 func (r *boundsResolver) succeeded(key string) {
@@ -144,10 +189,19 @@ func (s *Storage) withExactBounds(ctx context.Context, files []manifest.FileInfo
 	if len(todo) == 0 {
 		return files
 	}
+	if s.inferredBounds.paused(time.Now()) {
+		return files
+	}
 	out := append([]manifest.FileInfo(nil), files...)
 
 	ctx, cancel := context.WithTimeout(ctx, boundsResolveTimeout)
 	defer cancel()
+	defer func() {
+		// The budget ran out (not the caller going away): stop starting reads.
+		if ctx.Err() == context.DeadlineExceeded {
+			s.inferredBounds.pause(time.Now())
+		}
+	}()
 
 	workers := boundsResolveConcurrency
 	if workers > len(todo) {
@@ -179,6 +233,7 @@ func (s *Storage) resolveFileBounds(ctx context.Context, fi manifest.FileInfo) m
 	if s.manifest == nil {
 		return fi
 	}
+	s.inferredBounds.watch(s.manifest)
 	current := func() manifest.FileInfo {
 		if cur, ok := s.manifest.GetFileByKey(fi.Key); ok {
 			return cur
@@ -236,9 +291,10 @@ func (s *Storage) resolveFileBounds(ctx context.Context, fi manifest.FileInfo) m
 }
 
 // readFooterTimeBounds reads the object's footer - from the footer cache, or
-// with one ranged GET of its tail - and returns its row count and the min/max
-// of the timestamp column from the column-chunk statistics. It never reads
-// data pages or the page index.
+// with the shared ranged footer fetch (one tail read, plus one exact-length
+// read when the footer is larger than the tail) - and returns its row count and
+// the min/max of the timestamp column from the column-chunk statistics. It
+// never reads data pages or the page index.
 func (s *Storage) readFooterTimeBounds(ctx context.Context, fi manifest.FileInfo) (rows, minNs, maxNs int64, err error) {
 	var pf *parquet.File
 	if s.footerCache != nil {
@@ -247,39 +303,14 @@ func (s *Storage) readFooterTimeBounds(ctx context.Context, fi manifest.FileInfo
 		}
 	}
 	if pf == nil {
-		if s.pool == nil {
+		if s.pool == nil || fi.Size <= 0 {
 			return 0, 0, 0, errNoFooter
 		}
-		size := fi.Size
-		if size <= 0 {
-			return 0, 0, 0, errNoFooter
-		}
-		prefetch := s.footerPrefetchBytes()
-		offset := size - footerPrefetchTail(prefetch, size)
-		if offset < 0 {
-			offset = 0
-		}
-		metrics.S3GetsByPhase.Inc("footer")
-		tail, derr := s.pool.DownloadRange(ctx, fi.Key, offset, size-offset)
-		if derr != nil {
-			return 0, 0, 0, derr
-		}
-		if len(tail) < 8 {
-			return 0, 0, 0, errNoFooter
-		}
-		footerLen, ferr := FooterLength(tail[len(tail)-8:])
+		_, parsed, ferr := s.fetchFooterTail(ctx, fi, func(c context.Context, _, key string, offset, length int64) ([]byte, error) {
+			return s.pool.DownloadRange(c, key, offset, length)
+		})
 		if ferr != nil {
 			return 0, 0, 0, ferr
-		}
-		if footerLen+8 > len(tail) {
-			return 0, 0, 0, errNoFooter // larger than one tail read: leave it unresolved
-		}
-		cached, parsed, perr := ParseFooterFromBytes(fi.Key, tail[len(tail)-(footerLen+8):], size)
-		if perr != nil {
-			return 0, 0, 0, perr
-		}
-		if s.footerCache != nil {
-			s.footerCache.Put(fi.Key, cached)
 		}
 		pf = parsed
 	}
@@ -338,11 +369,13 @@ func footerTimeBounds(pf *parquet.File, tsIdx int) (rows, minNs, maxNs int64, er
 // resolves inferred bounds (enrichRecentInferredBounds): the buffer only ever
 // holds recent rows, so older objects wait for the lazy path.
 const (
-	recentInferredWindow   = 6 * time.Hour
-	recentInferredMaxFiles = 512
+	recentInferredWindow = 6 * time.Hour
 	// recentInferredBudget bounds the whole startup pass.
 	recentInferredBudget = 30 * time.Second
 )
+
+// recentInferredMaxFiles is a variable only so a test can lower it.
+var recentInferredMaxFiles = 512
 
 // enrichRecentInferredBounds resolves the inferred bounds of the recent
 // objects at startup (ranged footer reads only), so the first query after a
@@ -364,6 +397,9 @@ func (s *Storage) enrichRecentInferredBounds(ctx context.Context) int {
 		return 0
 	}
 	if len(todo) > recentInferredMaxFiles {
+		// Newest first: the cap must drop the oldest objects, not the ones of
+		// the tenants whose keys sort last.
+		sort.Slice(todo, func(i, j int) bool { return todo[i].MaxTimeNs > todo[j].MaxTimeNs })
 		todo = todo[:recentInferredMaxFiles]
 	}
 	ctx, cancel := context.WithTimeout(ctx, recentInferredBudget)
