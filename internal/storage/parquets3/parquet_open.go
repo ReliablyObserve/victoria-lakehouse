@@ -112,6 +112,45 @@ func (s *Storage) rangedOpenOptions(fi manifest.FileInfo, cachedSchema *parquet.
 	return opts
 }
 
+// withFooterOverlay puts the cached footer + page-index tail of fi in front of
+// raw when the footer cache holds them for exactly this object, and adjusts the
+// open options so parquet-go reads nothing from S3 at open:
+//
+//   - SkipMagicBytes(true): the head magic is not read (the cached footer was
+//     parsed from this same immutable object, and the trailer magic is still
+//     validated from the cached tail);
+//   - OptimisticRead(false): the optimistic read would ask for up to
+//     ReadBufferSize bytes of tail, far more than the cached tail, turning a
+//     memory hit into a ranged GET for the front part.
+//
+// Every ColumnIndex()/OffsetIndex() read parquet-go makes later is served from
+// the same cached bytes; only data ranges (and bloom sections, which sit
+// between the row groups) reach S3. With no usable cache entry raw and opts
+// are returned unchanged. The key and the size must both match the cached
+// entry; the overlay never synthesises bytes outside the cached tail.
+func (s *Storage) withFooterOverlay(fi manifest.FileInfo, raw s3reader.ReaderAtSizer, opts []parquet.FileOption) (s3reader.ReaderAtSizer, []parquet.FileOption) {
+	if s.footerCache == nil {
+		return raw, opts
+	}
+	cached, ok := s.footerCache.Get(fi.Key)
+	if !ok || cached.FileSize != fi.Size {
+		metrics.FooterOverlayOpens.Inc("miss")
+		return raw, opts
+	}
+	tail, _ := cached.Tail()
+	ov := s3reader.NewOverlayReaderAt(raw, fi.Size, tail)
+	if ov == nil {
+		metrics.FooterOverlayOpens.Inc("miss")
+		return raw, opts
+	}
+	if cached.HasPageIndex() {
+		metrics.FooterOverlayOpens.Inc("hit")
+	} else {
+		metrics.FooterOverlayOpens.Inc("hit_footer_only")
+	}
+	return ov, append(opts, parquet.SkipMagicBytes(true), parquet.OptimisticRead(false))
+}
+
 // openRangedParquet opens fi over ranged S3 reads through the ADAPTIVE
 // WINDOW stack (PhaseReaderAt -> BufferedS3ReaderAt -> CoalescingReaderAt)
 // with the Tier-1 read hygiene options — the path for full scans and for
@@ -124,9 +163,10 @@ func (s *Storage) rangedOpenOptions(fi manifest.FileInfo, cachedSchema *parquet.
 func (s *Storage) openRangedParquet(ctx context.Context, fi manifest.FileInfo, cachedSchema *parquet.Schema) (*parquet.File, error) {
 	raw := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
 	phased := s3reader.NewPhaseReaderAt(raw)
-	readerAt := s.buildWindowReader(phased, fi.Size)
+	inner, opts := s.withFooterOverlay(fi, phased, s.rangedOpenOptions(fi, cachedSchema))
+	readerAt := s.buildWindowReader(inner, fi.Size)
 
-	f, err := parquet.OpenFile(readerAt, fi.Size, s.rangedOpenOptions(fi, cachedSchema)...)
+	f, err := parquet.OpenFile(readerAt, fi.Size, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -154,8 +194,9 @@ func (s *Storage) openRangedParquet(ctx context.Context, fi manifest.FileInfo, c
 func (s *Storage) openPlannedParquet(ctx context.Context, fi manifest.FileInfo, cachedSchema *parquet.Schema) (*parquet.File, *s3reader.PlannedFetchReaderAt, error) {
 	raw := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
 	phased := s3reader.NewPhaseReaderAt(raw)
+	inner, opts := s.withFooterOverlay(fi, phased, s.rangedOpenOptions(fi, cachedSchema))
 	effGap, _, _ := s.clampWindowKnobs(fi.Size)
-	view := s3reader.NewPlannedFetchReaderAt(phased, fi.Size, effGap, chargePlannedFetchBytes)
+	view := s3reader.NewPlannedFetchReaderAt(inner, fi.Size, effGap, chargePlannedFetchBytes)
 	// v2 slice-1 levers (opt-in planned path only): span concurrency
 	// min(k, spans) and the per-SPAN cap (spans above it split — CH
 	// bytes_per_read_task scope; the per-plan cap is retired). The gap is
@@ -164,7 +205,7 @@ func (s *Storage) openPlannedParquet(ctx context.Context, fi manifest.FileInfo, 
 	view.SetMaxInFlight(s.cfg.S3.PlannedFetchMaxInflight)
 	view.SetSpanCap(int64(s.cfg.S3.PlannedFetchSpanCapBytes))
 
-	f, err := parquet.OpenFile(view, fi.Size, s.rangedOpenOptions(fi, cachedSchema)...)
+	f, err := parquet.OpenFile(view, fi.Size, opts...)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -478,7 +478,7 @@ func TestInteg_prefetchFooters_AlreadyCached(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	data := writeLargeParquetToBytes(t, []string{"api-gw"})
 	if int64(len(data)) < minFileSizeForPrefetch {
@@ -504,7 +504,7 @@ func TestInteg_prefetchFooters_SmallFiles(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	// File smaller than minFileSizeForPrefetch
 	data := writeParquetToBytes(t, []logRow{
@@ -1492,7 +1492,7 @@ func TestInteg_shouldSkipByFooter_FooterTooBig(t *testing.T) {
 	mock.putFile(key, data)
 
 	fi := manifest.FileInfo{Key: key, Size: int64(len(data))}
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	// Exercise the full path
 	skip, err := shouldSkipByFooter(context.Background(), pool, fi, `service.name:="zzz"`, registry, footerCache, 0)
@@ -2164,7 +2164,7 @@ func TestInteg_prefetchFooters_CancelledContext(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	data := writeLargeParquetToBytes(t, []string{"api-gw"})
 	if int64(len(data)) < minFileSizeForPrefetch {

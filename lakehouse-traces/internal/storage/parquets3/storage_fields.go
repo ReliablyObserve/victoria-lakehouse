@@ -76,6 +76,7 @@ func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl 
 		return nil, nil, err
 	}
 	totalFooterBytes := footerLen + 8
+	tailOff := offset
 	if totalFooterBytes > len(tail) {
 		// Two-phase fetch — see internal/storage/parquets3/
 		// storage_fields.go for the rationale. Mirrored byte-for-byte
@@ -92,10 +93,12 @@ func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl 
 		if len(bigTail) < totalFooterBytes {
 			return nil, nil, fmt.Errorf("oversize footer fetch short: got %d, want %d", len(bigTail), totalFooterBytes)
 		}
-		tail = bigTail
+		tail, tailOff = bigTail, footerOffset
 	}
-	footerSlice := tail[len(tail)-totalFooterBytes:]
-	cached, f, err := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size)
+	// cacheFooterFromTail keeps the page-index stripe with the footer (one
+	// extra range GET when the stripe lies before the fetched tail, as it does
+	// for a footer that did not fit the prefetch range).
+	cached, f, err := cacheFooterFromTail(ctx, s.pool, fi.Key, tail, tailOff, fi.Size)
 	if err != nil {
 		return nil, nil, err
 	}

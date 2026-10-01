@@ -373,7 +373,7 @@ type fmtRecord struct {
 func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency time.Duration) fmtRecord {
 	s := e.s
 	s.memCache = cache.NewLRU(64 * 1024 * 1024)
-	s.footerCache = NewFooterCache(1000)
+	s.footerCache = NewFooterCache(0)
 	q := fmtQuery(t, filter, w)
 	e.mock.gets.Store(0)
 	e.mock.bytesServed.Store(0)

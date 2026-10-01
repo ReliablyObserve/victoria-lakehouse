@@ -171,7 +171,7 @@ func testStorageWithS3(t testing.TB, s3url string) *Storage {
 		sfGroup:     cache.NewGroup(),
 		labelIndex:  cache.NewLabelIndex(),
 		discovery:   discovery.New("", nil, "", "", "9428", 5*time.Second),
-		footerCache: NewFooterCache(1000),
+		footerCache: NewFooterCache(0),
 		dlSem:       make(chan struct{}, 4),
 	}
 }
@@ -489,7 +489,7 @@ func TestInteg_shouldSkipByFooter_NoMatch(t *testing.T) {
 
 	// Query that doesn't match any data (service.name:="nonexistent")
 	queryStr := `service.name:="nonexistent-service-xyz"`
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache, 0)
 	if err != nil {
@@ -530,7 +530,7 @@ func TestInteg_shouldSkipByFooter_Match(t *testing.T) {
 
 	// Query that matches the data
 	queryStr := `service.name:="api-gw"`
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache, 0)
 	if err != nil {
@@ -582,7 +582,7 @@ func TestInteg_shouldSkipByFooter_CachedFooter(t *testing.T) {
 	registry := schema.NewRegistry(schema.LogsProfile)
 	fi := manifest.FileInfo{Key: "cached.parquet", Size: 100000}
 
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 	// Pre-populate footer cache
 	footerCache.Put(fi.Key, &CachedFooter{FileSize: fi.Size})
 
@@ -601,7 +601,7 @@ func TestInteg_prefetchFooters(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	now := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
 
@@ -641,7 +641,7 @@ func TestInteg_prefetchFooters(t *testing.T) {
 }
 
 func TestInteg_prefetchFooters_NilInputs(t *testing.T) {
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	// nil pool
 	if n := prefetchFooters(context.Background(), nil, nil, footerCache, 0, 0); n != 0 {
@@ -727,7 +727,7 @@ func TestInteg_applySelfFilter_AllRemoteFallback(t *testing.T) {
 
 func TestInteg_applyCacheAffinity_SortsCorrectly(t *testing.T) {
 	s := testStorage()
-	s.footerCache = NewFooterCache(100)
+	s.footerCache = NewFooterCache(0)
 
 	// Cache footer for "b.parquet" only
 	s.footerCache.Put("b.parquet", &CachedFooter{FileSize: 100})
@@ -761,7 +761,7 @@ func TestInteg_applyCacheAffinity_NilCache(t *testing.T) {
 
 func TestInteg_applyCacheAffinity_AllCached(t *testing.T) {
 	s := testStorage()
-	s.footerCache = NewFooterCache(100)
+	s.footerCache = NewFooterCache(0)
 
 	// Cache all footers
 	s.footerCache.Put("a.parquet", &CachedFooter{FileSize: 100})
@@ -2682,7 +2682,7 @@ func TestInteg_shouldSkipByFooter_FullPath_NoMatch(t *testing.T) {
 	key := "logs/dt=2026-05-10/hour=14/skip-full.parquet"
 	mock.putFile(key, data)
 	fi := manifest.FileInfo{Key: key, Size: int64(len(data))}
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	// Exercise the full footer fetch + parse + rowGroupMatchesFilter path.
 	// Note: shouldSkipByFooter uses ParseFooterFromBytes with SkipPageIndex=true,
@@ -2721,7 +2721,7 @@ func TestInteg_shouldSkipByFooter_FullPath_Match(t *testing.T) {
 	key := "logs/dt=2026-05-10/hour=14/skip-match.parquet"
 	mock.putFile(key, data)
 	fi := manifest.FileInfo{Key: key, Size: int64(len(data))}
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	// This service exists in the file
 	skip, err := shouldSkipByFooter(context.Background(), pool, fi, `service.name:="api-gw"`, registry, footerCache, 0)
@@ -2746,7 +2746,7 @@ func TestInteg_prefetchFooters_LargeFiles(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	var files []manifest.FileInfo
 	for i := 0; i < 3; i++ {

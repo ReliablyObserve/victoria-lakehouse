@@ -89,6 +89,7 @@ var (
 	cacheMemoryMB         = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 512)")
 	cacheDiskPath         = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
 	cacheDiskMB           = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 51200)")
+	cacheFooterMaxBytes   = flag.Int("lakehouse.cache.footer-max-bytes", 0, "Byte budget of the Parquet footer cache: footers are cached with their page index so a cached file opens with no S3 round trip; least-recently-used entries are evicted to stay within the budget (default: 512 MiB)")
 	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup; warmup runs only when this or -lakehouse.cache.warmup-max-files is set (default: 0 = 6 when warmup runs)")
 	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup; warmup runs only when this or -lakehouse.cache.warmup-partitions is set (default: 0 = 500 when warmup runs)")
 	cachePartitionMode    = flag.String("lakehouse.cache.partition-mode", "", "Cache partition mode: az-local (default), global, distributed")
@@ -109,7 +110,7 @@ var (
 	s3ReadBufferSize  = flag.Int("lakehouse.s3.read-buffer-size", 0, "Parquet page read buffer for ranged S3 opens in bytes (default: 1MB)")
 	s3ParquetReadMode = flag.String("lakehouse.s3.parquet-read-mode", "", "Parquet page read mode on ranged S3 opens: sync (column readers take turns on the read-ahead window) or async (read-ahead goroutine per column) (default: sync)")
 
-	s3ProjectedFetchMode      = flag.String("lakehouse.s3.projected-fetch-mode", "", "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — rollback switch) (default: window)")
+	s3ProjectedFetchMode      = flag.String("lakehouse.s3.projected-fetch-mode", "", "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — deprecated fallback, removed in the next release) (default: planned)")
 	s3ProjectedFetchMaxBytes  = flag.Int("lakehouse.s3.projected-fetch-max-bytes", 0, "DEPRECATED: the per-plan cap is retired (kept parsed for compatibility; plans are admitted via the memory ledger and capped per-SPAN by lakehouse.s3.planned-fetch-span-cap-bytes)")
 	s3PlannedFetchMaxInflight = flag.Int("lakehouse.s3.planned-fetch-max-inflight", 0, "Concurrent span GETs per file on the planned projected-read path: min(k, spans) in flight (default: 16)")
 	s3PlannedFetchSpanCap     = flag.Int("lakehouse.s3.planned-fetch-span-cap-bytes", 0, "Per-SPAN byte cap on the planned projected-read path; coalesced spans above it are split into cap-sized concurrent GETs (CH bytes_per_read_task scope; default: 16MB)")
@@ -1666,10 +1667,15 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	// clusters log nothing here. The values come from cfg +
 	// post-warmup manifest, so the hints can name specific knobs
 	// to tune rather than generic "consider X" advice.
+	var fcMaxBytes, fcAvgBytes int64
+	if fc := store.FooterCache(); fc != nil {
+		fcMaxBytes, fcAvgBytes = fc.MaxBytes(), fc.AvgEntryBytes()
+	}
 	startup.EmitStartupHints(startup.HintInputs{
-		ManifestFiles:    int64(store.Manifest().TotalFiles()),
-		MinManifestFiles: cfg.Startup.MinManifestFiles,
-		FooterCacheMax:   cfg.Cache.FooterMaxItems,
+		ManifestFiles:       int64(store.Manifest().TotalFiles()),
+		MinManifestFiles:    cfg.Startup.MinManifestFiles,
+		FooterCacheMaxBytes: fcMaxBytes,
+		FooterAvgBytes:      fcAvgBytes,
 		// BufferBridge peer count not exposed live — use the
 		// configured discovery peer count as a proxy. The check
 		// fires when peers ≤1, so misreading high doesn't suppress
@@ -1942,6 +1948,9 @@ func applyCacheFlags(c *config.CacheConfig) {
 	}
 	if p := *cacheDiskPath; p != "" {
 		c.DiskPath = p
+	}
+	if *cacheFooterMaxBytes > 0 {
+		c.FooterMaxBytes = *cacheFooterMaxBytes
 	}
 	if *cacheDiskMB > 0 {
 		c.DiskLimit = fmt.Sprintf("%dMB", *cacheDiskMB)

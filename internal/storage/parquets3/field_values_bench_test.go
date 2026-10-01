@@ -754,7 +754,7 @@ type fmResult struct {
 func (e *fmEnv) run(tb testing.TB, endpoint, filter string, w fmWindow, latency time.Duration) fmResult {
 	s := e.s
 	s.memCache = cache.NewLRU(64 * 1024 * 1024)
-	s.footerCache = NewFooterCache(1000)
+	s.footerCache = NewFooterCache(0)
 	q := fmQuery(tb, filter, w)
 	e.mock.resetCounters()
 	e.mock.latency.Store(int64(latency))

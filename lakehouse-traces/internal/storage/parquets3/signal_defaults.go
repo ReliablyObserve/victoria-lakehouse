@@ -40,3 +40,12 @@ func (s *Storage) wholeFileThresholdBytes() int64 {
 	}
 	return defaultWholeFileThresholdBytes
 }
+
+const (
+	// defaultFooterMaxBytes (cache.footer_max_bytes = 0) — traces. The
+	// footer cache is bounded by resident bytes. Every live traces
+	// compacted-L2 footer measures 467-519 KB (the _trace_idx key-value),
+	// so a cached entry (raw tail + decoded metadata) is ~1 MB. 512 MiB
+	// holds ~500 L2 footers, the working set of a hot query window.
+	defaultFooterMaxBytes = 512 * 1024 * 1024
+)
