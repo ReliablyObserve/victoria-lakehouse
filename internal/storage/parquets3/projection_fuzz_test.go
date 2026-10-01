@@ -163,7 +163,10 @@ var (
 	}
 )
 
-type projGen struct{ pick func(n int) int }
+type projGen struct {
+	pick  func(n int) int
+	extra []string // additional filter atoms
+}
 
 func (g projGen) atom() string  { return projFilterAtoms[g.pick(len(projFilterAtoms))] }
 func (g projGen) field() string { return projFields[g.pick(len(projFields))] }

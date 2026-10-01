@@ -344,6 +344,27 @@ func GetQueryNeededFields(q *Query) []string {
 	return fields
 }
 
+// QueryFirstPipeIsAggregate reports whether the first pipe of q is one that
+// REPLACES the row stream with its own output built only from the named input
+// fields: stats, uniq, top or fields. A count pushed down to per-file label
+// aggregates is only sound when the rows reaching such a pipe are the stored
+// rows themselves, so a pipe ahead of it (copy, extract, format, math, rename,
+// unpack_*, ...) that can rewrite a field the pipe groups by makes the answer
+// wrong.
+//
+// upstream-original: a type test on the unexported Query.pipes slice using
+// upstream's own pipe types; no upstream logic is duplicated.
+func QueryFirstPipeIsAggregate(q *Query) bool {
+	if q == nil || len(q.pipes) == 0 {
+		return false
+	}
+	switch q.pipes[0].(type) {
+	case *pipeStats, *pipeUniq, *pipeTop, *pipeFields:
+		return true
+	}
+	return false
+}
+
 // TimeBucket describes one `_time` bucketing applied by a `stats by (_time:<step>)`
 // pipe — the shape every LogsQL histogram query takes (`/select/logsql/hits`
 // builds `stats by (_time:step) count()`, `stats_query_range` the same).
