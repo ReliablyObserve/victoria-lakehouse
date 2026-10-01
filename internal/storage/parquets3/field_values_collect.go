@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -102,11 +103,21 @@ func (s *Storage) collectBufferedValues(ctx context.Context, files []manifest.Fi
 				if c.Name != r.field {
 					continue
 				}
-				mu.Lock()
+				// Count per distinct value within the block first: the block's
+				// strings point into memory the engine reuses once this callback
+				// returns (the logstore buffer's block arena), so a key kept in
+				// `seen` must be its own copy - and a Go map assignment, also an
+				// increment of an existing key, REPLACES the stored key with the
+				// one assigned, so every assignment below uses a fresh copy.
+				local := make(map[string]uint64, 8)
 				for _, v := range c.Values {
 					if v != "" {
-						seen[v]++
+						local[v]++
 					}
+				}
+				mu.Lock()
+				for v, n := range local {
+					seen[strings.Clone(v)] += n
 				}
 				mu.Unlock()
 			}

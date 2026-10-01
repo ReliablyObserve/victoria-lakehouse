@@ -6,7 +6,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/encoding/thrift"
 
@@ -267,5 +269,56 @@ func TestRR3_RemovalDuringAFailingReadLeavesNoBackoffEntry(t *testing.T) {
 	r.s.inferredBounds.mu.Unlock()
 	if n != 0 {
 		t.Errorf("%d back-off entries for an object removed while its read was in flight", n)
+	}
+}
+
+// rwAliasBuffer hands out column values that point into one arena and wipes the
+// arena as soon as the callback returns, as the logstore buffer's blocks do.
+type rwAliasBuffer struct{ rwBuffer }
+
+func (b *rwAliasBuffer) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
+	start, end := qctx.Query.GetFilterTimeRange()
+	b.mu.Lock()
+	var arena []byte
+	var spans [][2]int
+	for _, r := range b.rows {
+		if r.ts >= start && r.ts <= end {
+			spans = append(spans, [2]int{len(arena), len(arena) + len(r.level)})
+			arena = append(arena, r.level...)
+		}
+	}
+	b.mu.Unlock()
+	if len(spans) == 0 {
+		return nil
+	}
+	values := make([]string, len(spans))
+	for i, sp := range spans {
+		values[i] = unsafe.String(&arena[sp[0]], sp[1]-sp[0])
+	}
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{{Name: "level", Values: values}})
+	writeBlock(0, db)
+	for i := range arena {
+		arena[i] = 'X' // the engine reuses the block memory
+	}
+	return nil
+}
+
+// The buffered values of field_values must survive the engine reusing its block
+// memory: with the keys aliasing it, spans of different names collapsed into one
+// wrong name (seen live on the traces binary: all 15 buffered spans counted as
+// "repro-buffer-1", sometimes split 10/5).
+func TestRR3_BufferedFieldValuesDoNotAliasEngineMemory(t *testing.T) {
+	r := newRWRig(t)
+	r.ingest("COLD", at(rwHour, 5*time.Minute)) // an object, so the buffer is merged behind a watermark
+	r.restart(true, true)
+	buf := &rwAliasBuffer{}
+	r.s.localBuffer = buf
+	buf.add("ALPHA", at(rwHour, 10*time.Minute), at(rwHour, 11*time.Minute))
+	buf.add("BETA", at(rwHour, 12*time.Minute))
+	from, to := rwWindow()
+	hits := r.levelHits(from, to)
+	if hits["ALPHA"] != 2 || hits["BETA"] != 1 || hits["COLD"] != 1 || len(hits) != 3 {
+		t.Errorf("field_values over buffered rows = %v, want ALPHA=2 BETA=1 COLD=1", hits)
 	}
 }
