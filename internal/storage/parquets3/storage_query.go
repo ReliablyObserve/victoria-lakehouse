@@ -78,6 +78,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	queryStr := q.String()
 	pipeFields := logstorage.GetQueryPipeFields(q)
+	// The columns every per-file read projects come from the parsed query
+	// (filter AND pipes), not from the query text — see neededColumns.
+	ctx = withNeededFields(ctx, logstorage.GetQueryNeededFields(q))
 	filter := parseFilterFromQuery(q)
 
 	// Per-query memory ceiling for in-flight DataBlock rows. Bounds the live
@@ -960,7 +963,7 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 }
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
-	projectedCols := queryColumns(queryStr, s.registry, pipeFields)
+	projectedCols := neededColumns(s.registry, neededFieldsFrom(ctx))
 
 	// Hits/stats fast path: when the endpoint only needs timestamps (set via
 	// context hint) and the query has no column-specific filters, project only

@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explains why Lakehouse scales linearly with two stateless pod types, and adds a long-term retention
   calculator (`scripts/cost/cost_tiering.py`) for S3 lifecycle tiering from 30 days to 7 years.
 
+### Fixed
+
+- **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**
+  The cold read decided which Parquet columns to load by scanning the query text, and that scan missed the default
+  `_msg` field when it was written as `_msg:="x"` (VictoriaLogs prints it as `="x"`) and sat next to a `_time:` term,
+  a stream selector or another field term, so the filter ran on rows without a message and matched nothing; `by (...)`
+  fields and the inputs of `extract`, `unpack_json`, `math`, `format` and similar pipes could be dropped the same way.
+  The columns are now taken from the parsed query: the fields its filter reads (upstream's own filter code) plus the
+  fields its pipes need (upstream's pipe code), and any query whose needs cannot be named exactly reads every column.
+  Unfiltered counts and single-field queries read the same columns as before. Cold `stats` answers now equal the
+  row query for the same filter.
+
 ## [0.143.9] - 2026-10-01
 
 ## [0.143.8] - 2026-10-01

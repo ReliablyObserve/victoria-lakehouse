@@ -234,47 +234,32 @@ func BenchmarkTokenBloomCheck_Miss(b *testing.B) {
 	}
 }
 
-// BenchmarkProjectionColumns measures column projection performance,
-// exercising queryColumns which determines which Parquet columns to read.
+// BenchmarkProjectionColumns measures column projection derivation, the
+// per-query work (once per RunQuery for the field list, once per file for the
+// column map) that decides which Parquet columns to read.
 func BenchmarkProjectionColumns(b *testing.B) {
 	reg := schema.NewRegistry(schema.LogsProfile)
 
-	queries := map[string]struct {
-		query      string
-		pipeFields []string
-	}{
-		"wildcard": {
-			query:      "*",
-			pipeFields: nil,
-		},
-		"exact_match": {
-			query:      `service.name:="api-gateway"`,
-			pipeFields: nil,
-		},
-		"with_pipe_fields": {
-			query:      `service.name:="api-gateway" | stats count() by service.name`,
-			pipeFields: []string{"service.name"},
-		},
-		"multi_field": {
-			query:      `service.name:="api-gw" AND trace_id:="abc123" AND severity_text:="error"`,
-			pipeFields: nil,
-		},
-		"free_text": {
-			query:      `"connection timeout"`,
-			pipeFields: nil,
-		},
-		"complex_pipe": {
-			query:      `* | stats count() by service.name, severity_text | sort by count desc | limit 10`,
-			pipeFields: []string{"service.name", "severity_text"},
-		},
+	queries := map[string]string{
+		"wildcard":         `*`,
+		"exact_match":      `service.name:="api-gateway"`,
+		"with_pipe_fields": `service.name:="api-gateway" | stats by (service.name) count()`,
+		"multi_field":      `service.name:="api-gw" AND trace_id:="abc123" AND severity_text:="error"`,
+		"free_text":        `"connection timeout"`,
+		"filtered_stats":   `_time:30m _msg:=M | stats count()`,
+		"complex_pipe":     `* | stats by (service.name, severity_text) count() | sort by (count) desc | limit 10`,
 	}
 
-	for name, tc := range queries {
+	for name, query := range queries {
+		q, err := logstorage.ParseQuery(query)
+		if err != nil {
+			b.Fatalf("ParseQuery(%q): %v", query, err)
+		}
 		b.Run(name, func(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				queryColumns(tc.query, reg, tc.pipeFields)
+				neededColumns(reg, logstorage.GetQueryNeededFields(q))
 			}
 		})
 	}

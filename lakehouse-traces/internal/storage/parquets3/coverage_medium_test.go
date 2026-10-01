@@ -346,38 +346,6 @@ func TestMedium_parquetValueToInterface(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 7. isFreeTextSearch (projection.go ~81) -- cover uncovered branches
-// ---------------------------------------------------------------------------
-
-func TestMedium_isFreeTextSearch(t *testing.T) {
-	tests := []struct {
-		name  string
-		query string
-		want  bool
-	}{
-		{"empty string", "", false},
-		{"wildcard", "*", false},
-		{"quoted text", `"error connecting"`, true},
-		{"bare word no colon", "error", true},
-		{"field:value with colon", `service.name:"api"`, false},
-		{"leading spaces + bare word", "  error", true},
-		{"leading spaces + quoted", `  "error"`, true},
-		{"leading spaces + wildcard", "  *", false},
-		{"colon-only string", ":", false},
-		{"has colon but no field name", `:="test"`, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isFreeTextSearch(tt.query)
-			if got != tt.want {
-				t.Errorf("isFreeTextSearch(%q) = %v, want %v", tt.query, got, tt.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 8. rowGroupMatchesTimeRange (storage_query.go) -- cover boundaries
 // ---------------------------------------------------------------------------
 

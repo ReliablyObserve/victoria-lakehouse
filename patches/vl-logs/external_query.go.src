@@ -2,6 +2,7 @@ package logstorage
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
 )
@@ -299,6 +300,47 @@ func GetQueryPipeFields(q *Query) []string {
 			}
 		}
 	}
+	return fields
+}
+
+// GetQueryNeededFields returns the field names a storage backend must read for
+// each row so that BOTH the query's filter and its pipes see every field they
+// reference, or []string{"*"} when the set cannot be named exactly (a pipe that
+// passes every field through, such as `sort` or `limit`, a wildcard field
+// filter, a `delete`/`rename` that needs a prefix). The `_time` field is always
+// included. An empty or "*"-containing result means "read every column".
+//
+// It is the column list a Parquet projection needs: the fields upstream's own
+// search would unpack for this query. The filter contributes through each
+// filter's updateNeededFields (a default-field term such as `_msg:="x"` or a
+// bare word reports `_msg`; a stream selector reports `_stream`; a `_time`
+// term reports `_time`), and the pipe chain through getNeededColumns, which
+// asks every pipe — stats by-fields and function arguments, fields, uniq, top,
+// sort, filter, extract, unpack_*, math, format and every pipe upstream adds.
+//
+// upstream-original: composes upstream's getNeededColumns (pipes) and the
+// filter interface's updateNeededFields (filter) behind one exported accessor;
+// no upstream logic is copied, and a pipe or filter upstream adds is covered
+// by its own updateNeededFields with no change here.
+func GetQueryNeededFields(q *Query) []string {
+	all := []string{"*"}
+	if q == nil || QueryNeedsAllFields(q) {
+		// Upstream answers field_names/field_values/facets/block_stats from
+		// block metadata, so its pipe chain names no columns for them; an
+		// external backend has only rows to enumerate and must read them all.
+		return all
+	}
+	pf := getNeededColumns(q.pipes)
+	if f := q.getFinalFilter(); f != nil {
+		f.updateNeededFields(pf)
+	}
+	pf.AddAllowFilter("_time")
+	names, ok := pf.GetAllowStrings()
+	if !ok {
+		return all
+	}
+	fields := append([]string(nil), names...)
+	sort.Strings(fields)
 	return fields
 }
 
