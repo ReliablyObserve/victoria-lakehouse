@@ -1463,33 +1463,7 @@ func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFoo
 }
 
 func (s *Storage) enrichFromParquetFile(fi manifest.FileInfo, pf *parquet.File) bool {
-	var totalRows int64
-	var minTs, maxTs int64
-	tsIdx := findColumnIndex(pf.Root(), s.registry.TimestampColumn())
-	for _, rg := range pf.RowGroups() {
-		totalRows += rg.NumRows()
-		if tsIdx < 0 {
-			continue
-		}
-		cols := rg.ColumnChunks()
-		if tsIdx >= len(cols) {
-			continue
-		}
-		idx, err := cols[tsIdx].ColumnIndex()
-		if err != nil || idx == nil || idx.NumPages() == 0 {
-			continue
-		}
-		// Aggregate across all pages — see columnIndexTimeBounds
-		// (storage_query.go). Positional MinValue(0)/MaxValue(N-1) bounds
-		// understate the manifest time range when pages are not time-sorted.
-		rgMin, rgMax := columnIndexTimeBounds(idx)
-		if minTs == 0 || rgMin < minTs {
-			minTs = rgMin
-		}
-		if rgMax > maxTs {
-			maxTs = rgMax
-		}
-	}
+	totalRows, minTs, maxTs := pageIndexTimeBounds(pf, s.registry.TimestampColumn())
 	if totalRows > 0 {
 		s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
 		return true

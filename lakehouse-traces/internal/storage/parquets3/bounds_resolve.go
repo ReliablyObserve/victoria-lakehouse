@@ -68,6 +68,10 @@ type boundsResolver struct {
 	pausedUntil time.Time
 	// watching is the manifest whose removals prune the back-off entries.
 	watching *manifest.Manifest
+	// removals counts the removal notifications seen: a failure recorded for a
+	// read that overlapped one is not remembered (the object may be the one
+	// that was removed, and a recreated entry would never be pruned).
+	removals uint64
 }
 
 // maxBoundsRetryEntries caps the back-off table; past it, entries of objects
@@ -86,6 +90,7 @@ func (r *boundsResolver) watch(m *manifest.Manifest) {
 	m.OnFileRemoved(func(key string) {
 		r.mu.Lock()
 		delete(r.retry, key)
+		r.removals++
 		r.mu.Unlock()
 	})
 }
@@ -110,9 +115,20 @@ func (r *boundsResolver) backedOff(key string, now time.Time) bool {
 	return now.Before(r.retry[key].until)
 }
 
-func (r *boundsResolver) failed(key string, now time.Time) {
+func (r *boundsResolver) removalCount() uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.removals
+}
+
+// failed remembers a failed resolution of key, unless a removal happened since
+// the attempt began (seen is removalCount() taken at its start).
+func (r *boundsResolver) failed(key string, now time.Time, seen uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.removals != seen {
+		return
+	}
 	if r.retry == nil {
 		r.retry = make(map[string]boundsRetry)
 	}
@@ -236,6 +252,10 @@ func (s *Storage) resolveFileBounds(ctx context.Context, fi manifest.FileInfo) m
 		return fi
 	}
 	s.inferredBounds.watch(s.manifest)
+	if _, ok := s.manifest.GetFileByKey(fi.Key); !ok {
+		return fi // gone from the manifest (retired, or dropped by a refresh): nothing to resolve
+	}
+	seen := s.inferredBounds.removalCount()
 	current := func() manifest.FileInfo {
 		if cur, ok := s.manifest.GetFileByKey(fi.Key); ok {
 			return cur
@@ -281,12 +301,12 @@ func (s *Storage) resolveFileBounds(ctx context.Context, fi manifest.FileInfo) m
 			return cur
 		}
 		// A range that is exactly the partition hour is not evidence either.
-		s.inferredBounds.failed(fi.Key, now)
+		s.inferredBounds.failed(fi.Key, now, seen)
 	case ctx.Err() == context.Canceled:
 		// The caller went away: not the object's fault. (A deadline that ran
 		// out DURING the read is: a slow object is backed off like a failing one.)
 	default:
-		s.inferredBounds.failed(fi.Key, now)
+		s.inferredBounds.failed(fi.Key, now, seen)
 		logger.Warnf("buffer watermark: cannot read the footer of %s to resolve its time bounds (retrying with back-off): %s", fi.Key, err)
 	}
 	return current()
@@ -432,4 +452,45 @@ func (s *Storage) enrichRecentInferredBounds(ctx context.Context) int {
 		}
 	}
 	return resolved
+}
+
+// pageIndexTimeBounds returns the row count of pf and the min/max of the
+// timestamp column from its page index. The range is only reported when EVERY
+// row group has a usable index: a row group without one could hold the newest
+// (or oldest) row, and a range that leaves it out understates MaxTimeNs, which
+// would let the buffer watermark sit below rows the object holds. Without a
+// complete index the bounds are (0, 0), "unknown", and an inferred range stays
+// inferred.
+func pageIndexTimeBounds(pf *parquet.File, tsColumn string) (rows, minNs, maxNs int64) {
+	tsIdx := findColumnIndex(pf.Root(), tsColumn)
+	complete := tsIdx >= 0
+	for _, rg := range pf.RowGroups() {
+		rows += rg.NumRows()
+		if tsIdx < 0 || rg.NumRows() == 0 {
+			continue
+		}
+		cols := rg.ColumnChunks()
+		if tsIdx >= len(cols) {
+			complete = false
+			continue
+		}
+		idx, err := cols[tsIdx].ColumnIndex()
+		if err != nil || idx == nil || idx.NumPages() == 0 {
+			complete = false
+			continue
+		}
+		// Aggregate across all pages - see columnIndexTimeBounds: positional
+		// bounds understate the range when pages are not time-sorted.
+		rgMin, rgMax := columnIndexTimeBounds(idx)
+		if minNs == 0 || rgMin < minNs {
+			minNs = rgMin
+		}
+		if rgMax > maxNs {
+			maxNs = rgMax
+		}
+	}
+	if !complete {
+		return rows, 0, 0
+	}
+	return rows, minNs, maxNs
 }

@@ -229,6 +229,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	plan := planMetadataOnly(q)
 	ctx = withMetadataOnlyPlan(ctx, plan)
 
+	// served collects the objects answered from metadata below. They leave
+	// `files` (nothing is read from them) but their rows are in the answer, so
+	// the buffer watermark must still cover them (see watermarkFiles).
+	var served []manifest.FileInfo
+
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
 		// The fast path stops emitting as soon as the query's budget cancels the
@@ -250,6 +255,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
 			return nil
 		}
+		served = append(served, subtractFiles(files, remaining)...)
 		files = remaining
 	}
 
@@ -267,13 +273,14 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
 			return nil
 		}
+		served = append(served, subtractFiles(files, remaining)...)
 		files = remaining
 	}
 
 	files = s.preFilterFiles(files, queryStr)
 
 	if len(files) == 0 {
-		s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 		return nil
 	}
 
@@ -291,7 +298,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if tids := extractFilterValuesAST(queryStr, "trace_id"); len(tids) > 0 {
 		files = s.filterFilesByTraceIdx(ctx, files, tids)
 		if len(files) == 0 {
-			s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 			return nil
 		}
 	}
@@ -361,7 +368,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
+	s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 
 	return nil
 }

@@ -505,6 +505,39 @@ type watermarkSource interface {
 
 func (w bufferWatermarks) watermarks(context.Context) bufferWatermarks { return w }
 
+// subtractFiles returns the files of all that are not in remaining (by key).
+func subtractFiles(all, remaining []manifest.FileInfo) []manifest.FileInfo {
+	if len(remaining) == len(all) {
+		return nil
+	}
+	keep := make(map[string]struct{}, len(remaining))
+	for i := range remaining {
+		keep[remaining[i].Key] = struct{}{}
+	}
+	var out []manifest.FileInfo
+	for i := range all {
+		if _, ok := keep[all[i].Key]; !ok {
+			out = append(out, all[i])
+		}
+	}
+	return out
+}
+
+// watermarkFiles is the object selection the buffer watermark is computed
+// over: the objects still to be read plus the ones answered from metadata
+// (manifest fast path, count pushdown). The latter must stay in: their rows are
+// part of the answer, so the buffer must not re-serve them. Objects dropped
+// BEFORE the read by pruning (bloom, label, trace-index filters) stay out, as
+// they always did.
+func watermarkFiles(files, served []manifest.FileInfo) []manifest.FileInfo {
+	if len(served) == 0 {
+		return files
+	}
+	out := make([]manifest.FileInfo, 0, len(files)+len(served))
+	out = append(out, files...)
+	return append(out, served...)
+}
+
 // lazyWatermarks computes the watermarks over the query's selected objects on
 // first use.
 type lazyWatermarks struct {

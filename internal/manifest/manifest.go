@@ -1159,6 +1159,24 @@ func (m *Manifest) applyRefreshedFiles(files map[string][]FileInfo, listStart ti
 		return false
 	}
 
+	// A refresh replaces the file set wholesale: tell the remove hooks about the
+	// objects it drops (a peer's compaction deleted them) before byKey is rebuilt.
+	if len(m.removeHooks) > 0 {
+		kept := make(map[string]struct{}, totalFiles)
+		for _, pFiles := range files {
+			for i := range pFiles {
+				kept[pFiles[i].Key] = struct{}{}
+			}
+		}
+		for key := range m.byKey {
+			if _, ok := kept[key]; !ok {
+				for _, h := range m.removeHooks {
+					h(key)
+				}
+			}
+		}
+	}
+
 	m.files = files
 	m.rebuildByKey()
 	m.rebuildTenantAggregates()

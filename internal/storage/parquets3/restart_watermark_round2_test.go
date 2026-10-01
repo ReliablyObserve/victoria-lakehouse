@@ -158,10 +158,10 @@ func TestRound2_BackoffTableIsCapped(t *testing.T) {
 	var r boundsResolver
 	past := time.Now().Add(-time.Hour)
 	for i := 0; i < maxBoundsRetryEntries; i++ {
-		r.failed("old-"+time.Duration(i).String(), past) // expired entries
+		r.failed("old-"+time.Duration(i).String(), past, 0) // expired entries
 	}
-	r.failed("fresh", time.Now())
-	r.failed("fresh2", time.Now())
+	r.failed("fresh", time.Now(), 0)
+	r.failed("fresh2", time.Now(), 0)
 	r.mu.Lock()
 	n := len(r.retry)
 	r.mu.Unlock()

@@ -384,3 +384,40 @@ func TestTenantSummariesInWindow_FiltersByOverlap(t *testing.T) {
 		t.Errorf("a window before the data kept %d tenants", len(got))
 	}
 }
+
+// An entry with only one bound gets the other inferred AND is marked inferred.
+func TestBoundsInferred_HalfBoundedEntryIsMarked(t *testing.T) {
+	for name, fi := range map[string]FileInfo{
+		"max only": {Key: biKey, MaxTimeNs: biHourStart() + 5},
+		"min only": {Key: biKey, MinTimeNs: biHourStart() + 5},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := New("b", "")
+			files := map[string][]FileInfo{biPart: {fi}}
+			m.mu.Lock()
+			m.mergeRefreshedFilesLocked(files, time.Now())
+			m.mu.Unlock()
+			if got := files[biPart][0]; !got.BoundsInferred || got.MinTimeNs == 0 || got.MaxTimeNs == 0 {
+				t.Errorf("half-bounded entry after the merge: %+v, want both bounds set and marked inferred", got)
+			}
+		})
+	}
+}
+
+// A refresh that drops an object tells the remove hooks (the back-off table
+// forgets it).
+func TestRemoveHook_RunsForObjectsDroppedByARefresh(t *testing.T) {
+	m := New("b", "")
+	m.AddFile(biPart, FileInfo{Key: biKey, Size: 1})
+	other := "0/0/logs/" + biPart + "/other.parquet"
+	m.AddFile(biPart, FileInfo{Key: other, Size: 1})
+	var got []string
+	m.OnFileRemoved(func(k string) { got = append(got, k) })
+	// A listing that still has `other` but no longer biKey (cliff guard needs >= half).
+	if !m.ApplyListing([]ListedObject{{Key: other, Size: 1}}, time.Now().Add(time.Hour)) {
+		t.Fatal("listing rejected")
+	}
+	if len(got) != 1 || got[0] != biKey {
+		t.Errorf("remove hooks saw %v, want only %s", got, biKey)
+	}
+}

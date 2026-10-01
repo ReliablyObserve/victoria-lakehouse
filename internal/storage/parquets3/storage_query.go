@@ -239,6 +239,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	plan := planMetadataOnly(q)
 	ctx = withMetadataOnlyPlan(ctx, plan)
 
+	// served collects the objects answered from metadata below. They leave
+	// `files` (nothing is read from them) but their rows are in the answer, so
+	// the buffer watermark must still cover them (see watermarkFiles).
+	var served []manifest.FileInfo
+
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
 		// The fast path stops emitting as soon as the query's max-rows or
@@ -254,6 +259,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
 			return nil
 		}
+		served = append(served, subtractFiles(files, remaining)...)
 		files = remaining
 	}
 
@@ -269,12 +275,13 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
 			return nil
 		}
+		served = append(served, subtractFiles(files, remaining)...)
 		files = remaining
 	}
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 		return nil
 	}
 
@@ -333,7 +340,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	wg.Wait()
 
-	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
+	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -2825,33 +2832,7 @@ func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File
 	if fi.RowCount > 0 {
 		return
 	}
-	var totalRows int64
-	var minTs, maxTs int64
-	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
-	for _, rg := range f.RowGroups() {
-		totalRows += rg.NumRows()
-		if tsIdx < 0 {
-			continue
-		}
-		cols := rg.ColumnChunks()
-		if tsIdx >= len(cols) {
-			continue
-		}
-		idx, err := cols[tsIdx].ColumnIndex()
-		if err != nil || idx == nil || idx.NumPages() == 0 {
-			continue
-		}
-		// Aggregate across all pages — see columnIndexTimeBounds. Positional
-		// bounds would land an understated time range in the manifest and
-		// break range pruning for every later query on this file.
-		rgMin, rgMax := columnIndexTimeBounds(idx)
-		if minTs == 0 || rgMin < minTs {
-			minTs = rgMin
-		}
-		if rgMax > maxTs {
-			maxTs = rgMax
-		}
-	}
+	totalRows, minTs, maxTs := pageIndexTimeBounds(f, s.registry.TimestampColumn())
 	if totalRows > 0 {
 		s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
 	}
