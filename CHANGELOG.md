@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **OpenTelemetry trace exporter v1.45.0 (GO-2026-6505).** Both binaries link
+  `go.opentelemetry.io/otel/exporters/otlp/otlptrace` and `otlptracegrpc` v1.43.0 (the OTLP self-tracing exporter
+  in `internal/telemetry`, and VictoriaLogs' storage), which govulncheck reports as affected by GO-2026-6505, fixed
+  in v1.45.0. Both modules move to v1.45.0, with the rest of the OpenTelemetry SDK (v1.44.0 → v1.45.0) and the
+  `go mod tidy` follow-ups; govulncheck now reports no vulnerabilities in either module.
+
+### Removed
+
+- **The 24.7 MB `compression_ab` binary at the repo root.** A local build of `scripts/bench/compression_ab`
+  was committed by accident in #143; nothing referenced it. `/compression_ab` is now ignored. The tool still
+  runs from source (`go run ./scripts/bench/compression_ab`).
+
 ## [0.143.10] - 2026-10-01
 
 ### Changed
@@ -56,12 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line by line (on-demand EC2, EBS gp3, every S3 storage class and request type, cross-AZ transfer),
   explains why Lakehouse scales linearly with two stateless pod types, and adds a long-term retention
   calculator (`scripts/cost/cost_tiering.py`) for S3 lifecycle tiering from 30 days to 7 years.
-
-### Removed
-
-- **The 24.7 MB `compression_ab` binary at the repo root.** A local build of `scripts/bench/compression_ab`
-  was committed by accident in #143; nothing referenced it. `/compression_ab` is now ignored. The tool still
-  runs from source (`go run ./scripts/bench/compression_ab`).
 
 ## [0.143.9] - 2026-10-01
 
