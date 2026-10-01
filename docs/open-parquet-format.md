@@ -160,6 +160,8 @@ Low-cardinality string columns (`service.name`, `k8s.namespace.name`) achieve 50
 
 Files are written with [parquet-go](https://github.com/parquet-go/parquet-go). The library version appears in each file's footer as the `created_by` string (`parquet-tools meta` prints it), which is the only place the writer identifies itself -- it carries no meaning for readers and no Lakehouse metadata.
 
+parquet-go reads its own version from the Go build information. From Go 1.27 that information is filled in for test binaries too, so files written by the test harnesses now carry `github.com/parquet-go/parquet-go version 0.32.0(build )` where Go 1.26 wrote `github.com/parquet-go/parquet-go`. That makes each file 23 bytes larger with identical data pages, and it is why the field-metadata perf rows' `s3_bytes` counters moved by multiples of 23 bytes with the Go 1.27.1 toolchain.
+
 ### parquet-go v0.32.0
 
 Nothing on disk changed when the writer moved from parquet-go v0.30.1 to v0.32.0. The same rows written by both versions with the same writer options produce files that are **byte-identical apart from the `created_by` string**: for a 5,000-row logs file the two builds differ in exactly 2 of 237,050 bytes, both inside `...version 0.30.1(build )` / `...version 0.32.0(build )`.
