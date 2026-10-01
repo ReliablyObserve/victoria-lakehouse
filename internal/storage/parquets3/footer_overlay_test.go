@@ -166,6 +166,9 @@ func TestCacheFooterFromTail_RejectsInconsistentInput(t *testing.T) {
 // All writers keep the page-index stripe: the whole-file path
 // (ParseFooterFromData), the direct parser, and the prefetch.
 func TestFooterWriters_AllKeepPageIndex(t *testing.T) {
+	if testing.Short() {
+		t.Skip("heavy fixture: runs in the heavy (non -short) job")
+	}
 	data := logsObject(t, 9000, 3000)
 	size := int64(len(data))
 	ps := objectStripeStart(t, data)
