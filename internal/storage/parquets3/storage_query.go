@@ -537,7 +537,7 @@ func (s *Storage) queryBufferBridgeTo(ctx context.Context, startNs, endNs int64,
 		return
 	}
 	var wm bufferWatermarks
-	if wmSrc != nil && !(q != nil && queryFiltersTraceID(q.String())) {
+	if wmSrc != nil && (q == nil || !queryFiltersTraceID(q.String())) {
 		wm = wmSrc.watermarks(ctx)
 	}
 	scope := scopeFor(ctx, tenantIDs)
