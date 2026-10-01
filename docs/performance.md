@@ -288,7 +288,7 @@ The footer cache is populated on first access and during cache warmup. It is sep
 
 | Setting | Default | Impact |
 |---|---|---|
-| `cache.footer_max_bytes` | `0` | Byte budget of the footer cache (both binaries): `0` = 256 MiB logs, 512 MiB traces. Each entry holds the footer and the page-index tail, so a cached file opens with no S3 round trip (see [read path](read-path.md#footer-cache-and-zero-get-open)); least-recently-used entries are evicted to stay within the budget. |
+| `cache.footer_max_bytes` | `0` | Byte budget of the footer cache (both binaries): `0` = auto (10% of the memory the process may use for caches on logs, 20% on traces, clamped to 32 MiB..1 GiB / 2 GiB; logged at startup, an explicit value overrides it). Each entry holds the footer and the page-index tail, so a cached file opens with no S3 round trip (see [read path](read-path.md#footer-cache-and-zero-get-open)); least-recently-used entries are evicted to stay within the budget. |
 
 ### Parallel row group processing
 

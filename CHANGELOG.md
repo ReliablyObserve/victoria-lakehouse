@@ -434,21 +434,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   footer and every later page-index read from memory through an overlay reader (`SkipMagicBytes(true)`, no
   optimistic tail read); only data ranges reach S3. `s3.projected_fetch_mode` now defaults to `planned`: the exact
   column-chunk ranges of the surviving row groups are fetched in one wave per file, with no read-ahead window.
-  `window` stays as a deprecated fallback for one release and will be removed. A `trace_id` point lookup
-  (trace-by-ID) stays on the window reader. Measured in-process with injected S3 latency, 11 flush-sized files
-  (`scripts/bench/cold-read/`): `BIGMARK | stats count()` at 50 ms 728 -> 115 ms with 73 -> 20 GETs and
-  14.5 -> 4.7 MB read; `level:=error | stats count()` 518 -> 108 ms and 11.6 MB -> 45 KB; sequential round trips
-  14 -> 2; 50 files 1,829 -> 375 ms; the first query over cold footers 792 -> 168 ms; traces 2-5x on every
-  shape but `query=* limit 1000` (unchanged), trace-by-ID 212 -> 108 ms with 3 -> 1 GETs. Answers are identical to the
-  previous read path on every shape. Where it does not help: `query=* limit 1000` and the other whole-object reads
-  are unchanged, and a footer-cache budget of 256 MiB holds fewer footers than 10,000 entries did.
+  `window` stays as a deprecated fallback for one release and will be removed. Trace-by-ID and the
+  log-to-trace `trace_id:=X` query use the planned reader like every other projected query. Measured in-process
+  with injected S3 latency, 11 flush-sized files (`scripts/bench/cold-read/`): `BIGMARK | stats count()` at 50 ms
+  743 -> 114 ms with 73 -> 20 GETs and 14.5 -> 4.7 MB read; `level:=error | stats count()` 527 -> 113 ms and
+  11.8 MB -> 40 KB; sequential round trips 14 -> 2; 50 files 1,841 -> 379 ms; the first query over cold footers
+  848 -> 165 ms; traces 2-5x on every shape but `query=* limit 1000` (unchanged); trace-by-ID on compacted-like
+  traces files 320 -> 114 ms with 1.43 -> 0.09 MB read (the window reader took 220 ms and 1.07 MB), and
+  `trace_id:=X | stats count()` on logs 734 -> 160 ms (window reader 481 ms). Answers are identical to the previous
+  read path on every shape. Where it does not help: `query=* limit 1000` and the other whole-object reads are
+  unchanged, a `trace_id` lookup on compacted-like logs files makes more requests than the window reader (32
+  against 12, for 2.5x fewer bytes and a 4x shorter chain), and a small footer-cache budget holds fewer footers
+  than 10,000 entries did.
 - **The footer cache is bounded by bytes, not entries (both binaries).** `cache.footer_max_bytes` (flag
-  `-lakehouse.cache.footer-max-bytes`; `0` = 256 MiB logs, 512 MiB traces) replaces `cache.footer_max_items`, which
-  the logs binary never read and the traces binary auto-tuned by entry count. A footer with token blooms or a trace
-  index is 40-520 KB, so 10,000 entries could be gigabytes; an entry is now charged its owned tail plus a measured
-  estimate of its decoded metadata and the least-recently-used entries are evicted to fit the budget. New
-  metrics: `lakehouse_footer_cache_bytes`, `lakehouse_footer_overlay_opens_total{result}`. The chart gains
-  `lakehouseConfig.cache.footer_max_bytes`.
+  `-lakehouse.cache.footer-max-bytes`) replaces `cache.footer_max_items`, which the logs binary never read and the
+  traces binary auto-tuned by entry count; a config file that still sets `cache.footer_max_items` is rejected with
+  an error naming the replacement. `0` is auto: 10% (logs) or 20% (traces) of the memory the process may use for
+  caches, clamped to 32 MiB..1 GiB on logs and 32 MiB..2 GiB on traces, and logged at startup; an explicit value
+  overrides it. A footer with token blooms or a trace index is 40-520 KB, so 10,000 entries could be gigabytes; an
+  entry is now charged its owned tail, a measured estimate of its decoded metadata and a per-row-group term for the
+  page-index state parquet-go memoizes later, calibrated to stay between 1.0x and 1.5x of the measured heap with
+  1 to 40 row groups, and the least-recently-used entries are evicted to fit the budget. An entry cached for another
+  size of the same object key is dropped and re-fetched. New metrics: `lakehouse_footer_cache_bytes`,
+  `lakehouse_footer_overlay_opens_total{result}`. The chart gains `lakehouseConfig.cache.footer_max_bytes`.
 
 - **Go 1.27.1 everywhere.** The release images moved to `golang:1.27.1-alpine3.23` in #282, while both
   `go.mod` files (which every CI workflow reads through `go-version-file`) and `go.work` still said 1.26.8, so

@@ -48,8 +48,12 @@ run() { # signal build latency_ms reps files layout only
   local tag="$sig-$b-f${files:-def}-L$lay-${lat}ms"
   LH_COLD_PROFILE=1 PROFILE_LAT_MS=$lat PROFILE_REPS=$reps PROFILE_BUILD=$b PROFILE_FILES=$files \
     PROFILE_LAYOUT=$lay PROFILE_ONLY=$only PROFILE_OUT="$OUT/$tag.jsonl" \
-    "$OUT/$b-$sig.test" -test.run 'TestColdReadProfile$' -test.timeout 120m >"$OUT/$tag.log" 2>&1 \
-    || { echo "FAILED: $tag (see $OUT/$tag.log)" >&2; return 1; }
+    "$OUT/$b-$sig.test" -test.run 'TestColdReadProfile$' -test.timeout 120m >"$OUT/$tag.log" 2>&1 || {
+    # A failed ground-truth check (the base build answering a shape wrongly) still leaves its rows in the
+    # jsonl; table.py lists them under ANSWERS. Anything without rows is a real failure.
+    if [ -s "$OUT/$tag.jsonl" ]; then echo "NOTE: $tag has failing answer checks (see $OUT/$tag.log)" >&2
+    else echo "FAILED: $tag (see $OUT/$tag.log)" >&2; return 1; fi
+  }
 }
 
 CORE="L01,L02,L06,L09,L11,L13,L20,L21,D2"
@@ -66,5 +70,6 @@ for lat in $LAT; do
     for b in base pr; do run logs "$b" "$lat" "$reps" "" B "$CORE"; done
   fi
 done
-python3 "$HERE/table.py" "$OUT" > "$OUT/table.md"
+rc=0; python3 "$HERE/table.py" "$OUT" > "$OUT/table.md" || rc=$?
 cat "$OUT/table.md"
+exit $rc

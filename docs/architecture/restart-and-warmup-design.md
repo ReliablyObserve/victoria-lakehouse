@@ -220,7 +220,7 @@ shutdown:
   persist_timeout: 30s             # bound the SIGTERM snapshot save
 
 cache:
-  footer_max_bytes: 4294967296     # 4 GiB; unset = 256 MiB logs / 512 MiB traces
+  footer_max_bytes: 4294967296     # 4 GiB; unset or 0 = auto (10% logs / 20% traces of the cache memory)
   warmup_partitions: 12            # most-recent N partitions to pre-load; not read from the config file in this release
   warmup_max_files: 2000  # not read from the config file in this release
 ```

@@ -386,11 +386,11 @@
     - internal/storage/parquets3/projected_fetch_test.go#TestPlanProjectedRanges_Derivation
     - internal/storage/parquets3/cold_read_getcount_test.go#TestColdQuery_CachedFooters_OnlyDataRangesReachS3
     - internal/storage/parquets3/cold_read_getcount_test.go#TestColdQuery_AnswersIdenticalAcrossOpenPaths
-    - internal/storage/parquets3/footer_overlay_test.go#TestPlannedDefault_TraceIDLookupKeepsWindowPath
+    - internal/storage/parquets3/footer_overlay_test.go#TestPlannedDefault_TraceIDLookupUsesPlannedReader
     - internal/s3reader/planned_fetch_test.go#TestPlannedFetch_CoalescingCorrectness
     - lakehouse-traces/internal/storage/parquets3/projected_fetch_test.go#TestRunQuery_PlannedVsWindow_Equivalence_Traces
     - lakehouse-traces/internal/storage/parquets3/cold_read_getcount_test.go#TestColdQuery_AnswersIdenticalAcrossOpenPaths
-    - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestPlannedDefault_TraceIDLookupKeepsWindowPath
+    - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestPlannedDefault_TraceIDLookupUsesPlannedReader
     - internal/config/s3_readpath_knobs_test.go#TestS3ProjectedFetchKnobs_DefaultsMergeValidate
   docs:
     - docs/architecture/metadata-and-s3-optimization.md
@@ -404,7 +404,8 @@
     touches, so it asks for those and nothing else. It became the default once the footer cache served
     the footer and page index from memory (see zero-GET open): the lazy page-index round trips that made it
     lose to the window reader are gone, and on the cold-read harness it is faster on every measured shape at
-    20-100 ms of S3 latency in both modules. A trace_id point lookup keeps the window reader.
+    20-100 ms of S3 latency in both modules. Trace-id point lookups (Jaeger and Tempo trace-by-ID, the
+    log-to-trace click) use it too, with fewer requests and bytes than the window reader.
 
 - id: lh.feature.storage.zero_get_open
   title: Zero-round-trip open of cached Parquet files
@@ -422,8 +423,19 @@
     - internal/storage/parquets3/footer_overlay_test.go#TestCachedFooter_FooterOnlyEntryFallsBackToLazyPageIndex
     - internal/storage/parquets3/footer_cache_test.go#TestFooterCache_ByteBoundNotEntryBound
     - internal/storage/parquets3/footer_overlay_test.go#TestCachedFooterWeightCalibration
+    - internal/storage/parquets3/footer_overlay_test.go#TestOpenParquetFile_StaleSizeEntryIsAMiss
+    - internal/storage/parquets3/footer_cache_test.go#TestAutoFooterMaxBytes_Table
+    - internal/storage/parquets3/footer_cache_test.go#TestNewConfiguredFooterCache_AutoAndExplicit
+    - internal/s3reader/overlay_reader_test.go#TestOverlay_StraddleOverShortInnerIsAnError
+    - internal/config/config_test.go#TestLoad_RemovedFooterMaxItemsRejected
     - lakehouse-traces/internal/storage/parquets3/cold_read_getcount_test.go#TestCachedFooter_OpenAndPageIndexMakeZeroGETs
     - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestFooterWriters_AllKeepPageIndex
+    - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestWithFooterOverlay_RequiresKeyAndSizeMatch
+    - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestCachedFooter_FooterOnlyEntryFallsBackToLazyPageIndex
+    - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestCachedFooterWeightCalibration
+    - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestOpenParquetFile_StaleSizeEntryIsAMiss
+    - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestAutoFooterMaxBytes_Table
+    - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestNewConfiguredFooterCache_AutoAndExplicit
     - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestFooterCache_ByteBoundNotEntryBound
   docs:
     - docs/read-path.md
@@ -433,10 +445,15 @@
   description: >-
     Every footer-cache writer keeps the page-index stripe with the footer, and an overlay reader serves
     that tail from memory when a cached file is opened, with magic-byte skipping and no optimistic tail read.
-    The overlay only serves bytes it holds for exactly the same key and object size. The cache charges each
-    entry its real resident size (raw tail plus decoded metadata) against cache.footer_max_bytes, so RAM is
-    bounded whatever the footer size: 40-430 KB with token blooms on logs, 470-520 KB with the trace index on
-    traces.
+    The overlay only serves bytes it holds for exactly the same key and object size; an entry cached for
+    another size of the key is a miss. The cache charges each entry a modelled resident size (raw tail,
+    decoded metadata, and a per-column-chunk term that covers the page-index state parquet-go memoizes after
+    the entry was charged) against cache.footer_max_bytes. The model is calibrated against the measured heap
+    with 1, 8 and 40 row groups, fresh and index-decoded, in both modules: it never charges less than the
+    heap and at most 1.5x of it. Footers run 40-430 KB with token blooms on logs and 470-520 KB with the
+    trace index on traces. With cache.footer_max_bytes = 0 the budget is 10% (logs) or 20% (traces) of the
+    memory the process may use for caches, clamped to 32 MiB..1 GiB (logs) or 2 GiB (traces); an explicit
+    value overrides it.
 
 - id: lh.feature.storage.planned_fetch_v2
   title: Planned-fetch v2 levers (footer prefetch, span concurrency, gap discipline)
