@@ -301,6 +301,7 @@ func FuzzProjectionEquivalence(f *testing.F) {
 	for _, seed := range [][]byte{
 		{0}, {1, 2, 3, 4, 5, 6, 7, 8}, {4, 0, 1, 0, 4, 1, 2, 0}, {9, 9, 9, 9, 9, 9},
 		{5, 3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5}, {200, 100, 50, 25, 12, 6, 3, 1},
+		[]byte("A&91"), // math + rename over a time-range filter: found block-memory aliasing in the harness
 	} {
 		f.Add(seed)
 	}

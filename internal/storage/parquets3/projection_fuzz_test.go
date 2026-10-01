@@ -198,7 +198,10 @@ func (g projGen) pipe() string {
 	case 2:
 		return fmt.Sprintf(`stats by (%s, %s) count() as n`, f, f2)
 	case 3:
-		return fmt.Sprintf(`stats sum(%s) as n`, f)
+		// Numeric field only: sum() over a string column (hex trace ids) parses
+		// a value as a number or not depending on how rows were split into
+		// blocks, which would make the property compare block shapes, not columns.
+		return `stats sum(severity_number) as n`
 	case 4:
 		return fmt.Sprintf(`stats count_uniq(%s) as n`, f)
 	case 5:
@@ -290,6 +293,7 @@ func FuzzProjectionEquivalence(f *testing.F) {
 	for _, seed := range [][]byte{
 		{0}, {1, 2, 3, 4, 5, 6, 7, 8}, {4, 0, 1, 0, 4, 1, 2, 0}, {9, 9, 9, 9, 9, 9},
 		{5, 3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5}, {200, 100, 50, 25, 12, 6, 3, 1},
+		[]byte("A&91"), // math + rename over a time-range filter: found block-memory aliasing in the harness
 	} {
 		f.Add(seed)
 	}
