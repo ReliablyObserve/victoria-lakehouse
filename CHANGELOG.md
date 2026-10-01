@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explains why Lakehouse scales linearly with two stateless pod types, and adds a long-term retention
   calculator (`scripts/cost/cost_tiering.py`) for S3 lifecycle tiering from 30 days to 7 years.
 
+### Fixed
+
+- **After a graceful restart, rows ingested in the same hour as the data flushed at shutdown no longer stay hidden
+  until the next flush (#272).** Queries (`*`, field and stream lists, `stats`) and the Jaeger and Tempo reads of
+  both binaries returned only the older rows for the rest of that UTC hour, because the objects written by the
+  shutdown's final flush were learned from the S3 listing with the hour's end as their newest row, and the read
+  path treated everything up to that time as already flushed. The manifest now marks such time ranges as
+  inferred (also those older versions stored unmarked) and never uses them as the buffer watermark: it takes the
+  exact range from the pmeta facet or the `_time` statistics in the Parquet footer (one ranged read per object,
+  bounded to 2 s and backed off after a failure; the startup warmup does this for the last six hours, a query
+  does it only for objects that can change the watermark), and shutdown saves the manifest snapshot a second
+  time after the final flush, so the next boot already has the exact ranges. An object whose range cannot be
+  resolved is never counted twice: the buffer stays hidden up to the end of its hour (and the object is read for
+  real instead of answered from metadata) until it resolves, counted by the new
+  `lakehouse_watermark_inferred_unresolved_total`. Rows the buffer held before the restart are still counted once.
+
 ## [0.143.8] - 2026-10-01
 
 ### Security
@@ -49,22 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `lakehouse_tenant_alloc_failed_total`, `lakehouse_tenant_alias_rejected_total{source}`,
   `lakehouse_tenant_unknown_orgid_reads_total`. Integer tenants (`AccountID`/`ProjectID`) behave exactly as before;
   string tenants are a Lakehouse addition to VictoriaLogs and VictoriaTraces.
-
-### Fixed
-
-- **After a graceful restart, rows ingested in the same hour as the data flushed at shutdown no longer stay hidden
-  until the next flush (#272).** Queries (`*`, field and stream lists, `stats`) and the Jaeger and Tempo reads of
-  both binaries returned only the older rows for the rest of that UTC hour, because the objects written by the
-  shutdown's final flush were learned from the S3 listing with the hour's end as their newest row, and the read
-  path treated everything up to that time as already flushed. The manifest now marks such time ranges as
-  inferred (also those older versions stored unmarked) and never uses them as the buffer watermark: it takes the
-  exact range from the pmeta facet or the `_time` statistics in the Parquet footer (one ranged read per object,
-  bounded to 2 s and backed off after a failure; the startup warmup does this for the last six hours, a query
-  does it only for objects that can change the watermark), and shutdown saves the manifest snapshot a second
-  time after the final flush, so the next boot already has the exact ranges. An object whose range cannot be
-  resolved is never counted twice: the buffer stays hidden up to the end of its hour (and the object is read for
-  real instead of answered from metadata) until it resolves, counted by the new
-  `lakehouse_watermark_inferred_unresolved_total`. Rows the buffer held before the restart are still counted once.
 
 ## [0.143.7] - 2026-09-30
 
