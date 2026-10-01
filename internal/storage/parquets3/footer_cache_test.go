@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 )
 
 // fakeFooterWeight returns a CachedFooter whose cache charge is exactly w
@@ -148,10 +150,50 @@ func TestFooterCache_OversizeEntryDropped(t *testing.T) {
 	}
 }
 
+// The auto budget (cache.footer_max_bytes = 0) is a share of memory.Allowed()
+// (60% of the machine by default), clamped. Machine sizes 1/2/4/8/16 GiB.
+func TestAutoFooterMaxBytes_Table(t *testing.T) {
+	const gib, mib = int64(1) << 30, int64(1) << 20
+	for i, sys := range []int64{1, 2, 4, 8, 16} {
+		allowed := sys * gib * 6 / 10
+		got := autoFooterMaxBytes(allowed)
+		wantMiB := []int64{61, 123, 246, 492, 983}[i]
+		if (got+mib/2)/mib != wantMiB {
+			t.Errorf("%d GiB machine (allowed %d B): auto budget %.2f MiB, want about %d MiB (logs)", sys, allowed, float64(got)/float64(mib), wantMiB)
+		}
+	}
+	// Clamps: a tiny process gets the floor, a huge one the ceiling.
+	if got := autoFooterMaxBytes(10 * mib); got != 32*mib {
+		t.Errorf("tiny allowed memory: %d, want the 32 MiB floor", got)
+	}
+	if got := autoFooterMaxBytes(0); got != 32*mib {
+		t.Errorf("zero allowed memory: %d, want the 32 MiB floor", got)
+	}
+	if got := autoFooterMaxBytes(1 << 50); got != 1*gib {
+		t.Errorf("huge allowed memory: %d, want the 1 GiB ceiling", got)
+	}
+}
+
+// cache.footer_max_bytes: 0 is auto, an explicit value overrides it.
+func TestNewConfiguredFooterCache_AutoAndExplicit(t *testing.T) {
+	cfg := &config.Config{}
+	if got := newConfiguredFooterCache(cfg).MaxBytes(); got != defaultFooterMaxBytes() || got < footerBudgetMin || got > footerBudgetMax {
+		t.Fatalf("auto budget = %d, want %d within [%d, %d]", got, defaultFooterMaxBytes(), int64(footerBudgetMin), int64(footerBudgetMax))
+	}
+	cfg.Cache.FooterMaxBytes = 5 << 20 // below the auto floor: an explicit value is honoured as given
+	if got := newConfiguredFooterCache(cfg).MaxBytes(); got != 5<<20 {
+		t.Fatalf("explicit budget = %d, want %d", got, 5<<20)
+	}
+	cfg.Cache.FooterMaxBytes = 4 << 30 // above the auto ceiling
+	if got := newConfiguredFooterCache(cfg).MaxBytes(); got != 4<<30 {
+		t.Fatalf("explicit budget = %d, want %d", got, int64(4)<<30)
+	}
+}
+
 func TestFooterCache_DefaultBudget(t *testing.T) {
 	for _, in := range []int64{0, -5} {
-		if got := NewFooterCache(in).MaxBytes(); got != defaultFooterMaxBytes {
-			t.Fatalf("NewFooterCache(%d).MaxBytes() = %d, want default %d", in, got, defaultFooterMaxBytes)
+		if got := NewFooterCache(in).MaxBytes(); got != defaultFooterMaxBytes() {
+			t.Fatalf("NewFooterCache(%d).MaxBytes() = %d, want default %d", in, got, defaultFooterMaxBytes())
 		}
 	}
 	if got := NewFooterCache(12345).MaxBytes(); got != 12345 {

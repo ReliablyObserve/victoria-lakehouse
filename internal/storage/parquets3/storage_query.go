@@ -745,32 +745,6 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 	return f, err
 }
 
-type windowReadOnlyKey struct{}
-
-// withWindowReadOnly marks ctx so projected opens use the adaptive-window
-// reader even when s3.projected_fetch_mode is planned.
-//
-// Why trace_id point lookups: they are the latency-critical read of the
-// traces signal (Jaeger and Tempo trace-by-ID) and the log-to-trace
-// correlation click. The per-row-group bloom skip is disabled on the
-// projected path (the planned view would hand back a zero-filled bloom, #172),
-// so a planned read fetches the trace_id chunk of EVERY matched row group,
-// while the window reader's read-ahead keeps hitting the same few windows. The
-// planned prototype measured 3 -> 8 GETs and 209 -> 412 ms on this shape, so
-// it stays on the window path until the bloom bytes are served from the
-// cached tail as well (the final overlay implementation re-measured both
-// paths at one GET and the same latency on the harness, so the gate is a
-// deliberate no-regression guard, not a measured fix). The cached footer
-// still opens with no S3 round trip.
-func withWindowReadOnly(ctx context.Context) context.Context {
-	return context.WithValue(ctx, windowReadOnlyKey{}, true)
-}
-
-func windowReadOnly(ctx context.Context) bool {
-	v, _ := ctx.Value(windowReadOnlyKey{}).(bool)
-	return v
-}
-
 // openParquetFileWithPlan is openParquetFile for callers that arm a
 // plan-then-fetch view (S3 Tier-2 items 8/9). When the projected
 // range-read path engages and s3.projected_fetch_mode is "planned"
@@ -781,12 +755,6 @@ func windowReadOnly(ctx context.Context) bool {
 // the adaptive-window stack — byte-identical to the previous behavior.
 func (s *Storage) openParquetFileWithPlan(ctx context.Context, fi manifest.FileInfo, projectedCols map[string]bool) (*parquet.File, *s3reader.PlannedFetchReaderAt, error) {
 	usePlanned := s.cfg.S3.ProjectedFetchMode != config.ProjectedFetchModeWindow
-	if usePlanned && windowReadOnly(ctx) {
-		// A trace_id point lookup stays on the window reader it always used
-		// (see windowReadOnly). The zero-GET open still applies.
-		metrics.S3ProjectedFetchFallback.Inc("trace-id-lookup")
-		usePlanned = false
-	}
 	return s.openParquetFileInternal(ctx, fi, projectedCols, usePlanned)
 }
 
@@ -794,7 +762,7 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 	// Range-read path: requires footer cache (to know total column count)
 	// and a non-empty projection that covers fewer than half the columns.
 	if s.footerCache != nil && projectedCols != nil && s.pool != nil {
-		if cached, ok := s.footerCache.Get(fi.Key); ok {
+		if cached, ok := s.footerCache.GetFor(fi.Key, fi.Size); ok {
 			totalCols := len(cached.File.Root().Columns())
 			if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
 				if usePlanned {
@@ -884,7 +852,7 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 			// opens still pay the footer parse otherwise.
 			var cachedSchema *parquet.Schema
 			if s.footerCache != nil {
-				if cf, ok := s.footerCache.Get(fi.Key); ok && cf.File != nil {
+				if cf, ok := s.footerCache.GetFor(fi.Key, fi.Size); ok && cf.File != nil {
 					cachedSchema = cf.File.Schema()
 				}
 			}
@@ -926,9 +894,6 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 }
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
-	if queryFiltersTraceID(queryStr) {
-		ctx = withWindowReadOnly(ctx)
-	}
 	projectedCols := neededColumns(s.registry, neededFieldsFrom(ctx))
 
 	// Hits/stats fast path: when the endpoint only needs timestamps (set via

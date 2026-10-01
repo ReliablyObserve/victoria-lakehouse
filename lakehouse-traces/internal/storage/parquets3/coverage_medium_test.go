@@ -529,8 +529,8 @@ func TestMedium_readMapColumnToBlockCols(t *testing.T) {
 func TestMedium_NewFooterCache(t *testing.T) {
 	t.Run("zero maxBytes defaults", func(t *testing.T) {
 		fc := NewFooterCache(0)
-		if fc.maxBytes != defaultFooterMaxBytes {
-			t.Errorf("expected maxBytes=%d, got %d", defaultFooterMaxBytes, fc.maxBytes)
+		if fc.maxBytes != defaultFooterMaxBytes() {
+			t.Errorf("expected maxBytes=%d, got %d", defaultFooterMaxBytes(), fc.maxBytes)
 		}
 		if fc.items == nil {
 			t.Error("expected non-nil items map")
@@ -542,8 +542,8 @@ func TestMedium_NewFooterCache(t *testing.T) {
 
 	t.Run("negative maxBytes defaults", func(t *testing.T) {
 		fc := NewFooterCache(-5)
-		if fc.maxBytes != defaultFooterMaxBytes {
-			t.Errorf("expected maxBytes=%d, got %d", defaultFooterMaxBytes, fc.maxBytes)
+		if fc.maxBytes != defaultFooterMaxBytes() {
+			t.Errorf("expected maxBytes=%d, got %d", defaultFooterMaxBytes(), fc.maxBytes)
 		}
 	})
 

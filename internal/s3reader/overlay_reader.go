@@ -31,19 +31,8 @@ type OverlayReaderAt struct {
 	tailOff int64
 	size    int64
 
-	// Section hooks recorded from parquet-go (see the Set*Section methods).
-	hooks overlayHooks
-
 	memBytes atomic.Int64 // bytes served from memory
 	memReads atomic.Int64 // ReadAt calls fully or partly served from memory
-}
-
-type overlayHooks struct {
-	magicFooter atomic.Int64
-	footer      atomic.Int64
-	columnIdx   atomic.Int64
-	offsetIdx   atomic.Int64
-	bloom       atomic.Int64
 }
 
 // NewOverlayReaderAt returns an overlay over inner for an object of the given
@@ -114,63 +103,4 @@ func (o *OverlayReaderAt) ReadAt(p []byte, off int64) (int, error) {
 		return n, io.EOF
 	}
 	return n, nil
-}
-
-// parquet-go calls these optional hooks on its reader right before it reads a
-// well-known section of the file (file.go: OpenFile, ReadPageIndex, bloom
-// filter loading). The overlay records them and forwards them to the wrapped
-// reader when that implements them, so a reader that wants to act on section
-// boundaries (for example to size a single ranged GET exactly) still sees
-// them through the overlay.
-
-type magicFooterHook interface{ SetMagicFooterSection(offset, length int64) }
-type footerHook interface{ SetFooterSection(offset, length int64) }
-type columnIndexHook interface{ SetColumnIndexSection(offset, length int64) }
-type offsetIndexHook interface{ SetOffsetIndexSection(offset, length int64) }
-type bloomFilterHook interface{ SetBloomFilterSection(offset, length int64) }
-
-// SetMagicFooterSection implements parquet-go's section hook.
-func (o *OverlayReaderAt) SetMagicFooterSection(offset, length int64) {
-	o.hooks.magicFooter.Add(1)
-	if h, ok := o.inner.(magicFooterHook); ok {
-		h.SetMagicFooterSection(offset, length)
-	}
-}
-
-// SetFooterSection implements parquet-go's section hook.
-func (o *OverlayReaderAt) SetFooterSection(offset, length int64) {
-	o.hooks.footer.Add(1)
-	if h, ok := o.inner.(footerHook); ok {
-		h.SetFooterSection(offset, length)
-	}
-}
-
-// SetColumnIndexSection implements parquet-go's section hook.
-func (o *OverlayReaderAt) SetColumnIndexSection(offset, length int64) {
-	o.hooks.columnIdx.Add(1)
-	if h, ok := o.inner.(columnIndexHook); ok {
-		h.SetColumnIndexSection(offset, length)
-	}
-}
-
-// SetOffsetIndexSection implements parquet-go's section hook.
-func (o *OverlayReaderAt) SetOffsetIndexSection(offset, length int64) {
-	o.hooks.offsetIdx.Add(1)
-	if h, ok := o.inner.(offsetIndexHook); ok {
-		h.SetOffsetIndexSection(offset, length)
-	}
-}
-
-// SetBloomFilterSection implements parquet-go's section hook.
-func (o *OverlayReaderAt) SetBloomFilterSection(offset, length int64) {
-	o.hooks.bloom.Add(1)
-	if h, ok := o.inner.(bloomFilterHook); ok {
-		h.SetBloomFilterSection(offset, length)
-	}
-}
-
-// HookCounts reports how many times each section hook fired:
-// magic+footer-suffix, footer, column index, offset index, bloom filter.
-func (o *OverlayReaderAt) HookCounts() (magicFooter, footer, columnIndex, offsetIndex, bloom int64) {
-	return o.hooks.magicFooter.Load(), o.hooks.footer.Load(), o.hooks.columnIdx.Load(), o.hooks.offsetIdx.Load(), o.hooks.bloom.Load()
 }

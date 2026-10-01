@@ -380,7 +380,7 @@
     {"name":"httpListenAddr","type":"string","default":":9428","usage":"HTTP listen address","keys":[],"effect":"none"},
     {"name":"lakehouse.cache.disk-max-mb","type":"int","default":"0","usage":"L2 disk cache max size in MB (default: 51200)","keys":["cache.disk_limit"],"effect":"set"},
     {"name":"lakehouse.cache.disk-path","type":"string","default":"","usage":"L2 disk cache directory path","keys":["cache.disk_path"],"effect":"set"},
-    {"name":"lakehouse.cache.footer-max-bytes","type":"int","default":"0","usage":"Byte budget of the Parquet footer cache: footers are cached with their page index so a cached file opens with no S3 round trip; least-recently-used entries are evicted to stay within the budget (0 = 256 MiB)","keys":["cache.footer_max_bytes"],"effect":"set"},
+    {"name":"lakehouse.cache.footer-max-bytes","type":"int","default":"0","usage":"Byte budget of the Parquet footer cache: footers are cached with their page index so a cached file opens with no S3 round trip; least-recently-used entries are evicted to stay within the budget (0 = auto: 10% of the memory the process may use for caches, clamped to 32 MiB..1 GiB)","keys":["cache.footer_max_bytes"],"effect":"set"},
     {"name":"lakehouse.cache.memory-mb","type":"int","default":"0","usage":"L1 memory cache size in MB (default: 512)","keys":["cache.memory_limit"],"effect":"set"},
     {"name":"lakehouse.cache.memory.limit","type":"string","default":"","usage":"Cache memory limit (Go size string, e.g. 256MB)","keys":["cache.memory_limit_v2"],"effect":"set"},
     {"name":"lakehouse.cache.memory.request","type":"string","default":"","usage":"Cache memory request (Go size string, e.g. 64MB)","keys":["cache.memory_request"],"effect":"set"},
