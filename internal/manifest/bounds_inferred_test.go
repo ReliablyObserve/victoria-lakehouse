@@ -301,26 +301,28 @@ func TestSaveTo_SlowStaleSaveCannotOverwriteNewer(t *testing.T) {
 	m := New("b", "")
 	m.AddFile(biPart, FileInfo{Key: "0/0/logs/" + biPart + "/a.parquet", Size: 1, RowCount: 1, MinTimeNs: biHourStart() + 1, MaxTimeNs: biHourStart() + 2})
 	path := filepath.Join(t.TempDir(), "snap.json")
-	var calls int
-	var mu sync.Mutex
+	encoded := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
 	saveTestHook = func() {
-		mu.Lock()
-		calls++
-		first := calls == 1
-		mu.Unlock()
-		if first {
-			time.Sleep(400 * time.Millisecond) // the stale save is slow to write
-		}
+		once.Do(func() { // only the first (stale) save is held back
+			close(encoded)
+			<-release
+		})
 	}
 	defer func() { saveTestHook = nil }()
 	done := make(chan struct{})
 	go func() { _ = m.SaveTo(path); close(done) }()
-	time.Sleep(100 * time.Millisecond)
+	<-encoded // the stale save has captured and encoded one file and is now "slow to write"
 	m.AddFile(biPart, FileInfo{Key: "0/0/logs/" + biPart + "/b.parquet", Size: 1, RowCount: 1, MinTimeNs: biHourStart() + 3, MaxTimeNs: biHourStart() + 4})
-	if err := m.SaveTo(path); err != nil { // the newer save
+	newer := make(chan error, 1)
+	go func() { newer <- m.SaveTo(path) }() // the newer save: must queue behind the stale one
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	<-done
+	if err := <-newer; err != nil {
 		t.Fatal(err)
 	}
-	<-done
 	loaded := New("b", "")
 	if err := loaded.LoadFrom(path); err != nil {
 		t.Fatal(err)
