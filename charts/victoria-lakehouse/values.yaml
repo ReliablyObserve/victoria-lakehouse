@@ -541,6 +541,10 @@ lakehouseConfig:
     metrics_format: id
     # -- Auto-register unknown X-Scope-OrgID values as new tenant aliases.
     auto_register: false
+    # -- First AccountID auto-registration may allocate (ProjectID is always 0). Configured aliases must stay outside [min, max].
+    auto_register_min_id: 2147483648
+    # -- Last AccountID auto-registration may allocate. Must be below 4294967295, the AccountID unknown OrgIDs read as.
+    auto_register_max_id: 4294967294
     # -- Fleet sync interval for runtime-added aliases.
     alias_sync_interval: 30s
     # -- Static alias mappings: string alias → {account_id, project_id}.

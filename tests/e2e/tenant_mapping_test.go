@@ -57,10 +57,13 @@ func TestTenantMapping_StringAndIntPaths(t *testing.T) {
 
 	t.Logf("string OrgID %q resolved to int account=%d", stringOrg, resolvedStringAccount)
 
-	// Forward direction (string → int) — alias map.
-	if _, ok := lookupAliasAccount(t, tracesBaseURL, stringOrg); !ok {
+	// Forward direction (string → int) — alias map. Each binary keeps its own
+	// alias registry, so the traces side resolves the name to its own AccountID.
+	tracesAccount, ok := lookupAliasAccount(t, tracesBaseURL, stringOrg)
+	if !ok {
 		t.Errorf("traces side never registered alias for %q", stringOrg)
 	}
+	tracesKey := fmt.Sprintf("%d:0", tracesAccount)
 
 	// Reverse direction (int → string) — /api/v1/tenants must decorate org_id.
 	tenants := fetchTenantEntries(t, logsBaseURL)
@@ -89,10 +92,10 @@ func TestTenantMapping_StringAndIntPaths(t *testing.T) {
 	}
 
 	traceTenants := fetchTenantEntries(t, tracesBaseURL)
-	if e, ok := traceTenants[stringKey]; !ok {
-		t.Errorf("traces tenants endpoint missing %s", stringKey)
+	if e, ok := traceTenants[tracesKey]; !ok {
+		t.Errorf("traces tenants endpoint missing %s", tracesKey)
 	} else if e.OrgID != stringOrg {
-		t.Errorf("traces tenant %s: org_id=%q, want %q", stringKey, e.OrgID, stringOrg)
+		t.Errorf("traces tenant %s: org_id=%q, want %q", tracesKey, e.OrgID, stringOrg)
 	}
 
 	t.Logf("end-to-end mapping verified — int↔string both directions, per-tenant attribution active")

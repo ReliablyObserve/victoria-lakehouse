@@ -593,6 +593,26 @@ var (
 	// {site} names the query path that tripped it.
 	TenantScopeViolations = NewCounterVec("lakehouse_tenant_scope_violations_total", "site")
 
+	// TenantAutoRegisteredTotal counts string tenants (X-Scope-OrgID) that
+	// write-path auto-registration assigned a fresh AccountID in the reserved
+	// range.
+	TenantAutoRegisteredTotal = NewCounter("lakehouse_tenant_auto_registered_total")
+	// TenantAllocConflictsTotal counts precondition failures (HTTP 412) of the
+	// conditional write to the shared alias registry: another pod, or another
+	// request, changed the object between the read and the write. Each one is
+	// retried after a read and merge.
+	TenantAllocConflictsTotal = NewCounter("lakehouse_tenant_alloc_conflicts_total")
+	// TenantAllocFailedTotal counts auto-registrations given up on (retry bound
+	// exhausted, registry unreachable, range exhausted); the insert got 503.
+	TenantAllocFailedTotal = NewCounter("lakehouse_tenant_alloc_failed_total")
+	// TenantAliasRejectedTotal counts alias entries refused because the AccountID
+	// or the OrgID is already mapped to something else. {source} is where the
+	// entry came from: admin, sync, registry or config.
+	TenantAliasRejectedTotal = NewCounterVec("lakehouse_tenant_alias_rejected_total", "source")
+	// TenantUnknownOrgIDReadsTotal counts reads that named an OrgID with no
+	// alias. They are answered as a tenant without data and never register it.
+	TenantUnknownOrgIDReadsTotal = NewCounter("lakehouse_tenant_unknown_orgid_reads_total")
+
 	// GlobalReadQueriesTotal counts select requests that presented a valid
 	// global-read credential and were therefore answered across every tenant.
 	GlobalReadQueriesTotal = NewCounter("lakehouse_global_read_queries_total")

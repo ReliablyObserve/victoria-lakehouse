@@ -168,7 +168,9 @@ var (
 	tenantDefaultPrefix     = flag.String("lakehouse.tenant.default-prefix", "", "Static S3 key prefix override")
 	tenantOrgIDHeader       = flag.String("lakehouse.tenant.orgid-header", "", "HTTP header for string tenant ID (default: X-Scope-OrgID)")
 	tenantMetricsFormat     = flag.String("lakehouse.tenant.metrics-format", "", "Tenant metrics label format: id, name, both (default: id)")
-	tenantAutoRegister      = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants")
+	tenantAutoRegister      = flag.Bool("lakehouse.tenant.auto-register", false, "Auto-register unknown X-Scope-OrgID tenants on write paths (insert/OTLP/native). Reads never register")
+	tenantAutoRegisterMin   = flag.Uint("lakehouse.tenant.auto-register-min-id", 0, "First AccountID auto-registration may allocate; configured aliases must stay outside [min,max] (default: 2147483648)")
+	tenantAutoRegisterMax   = flag.Uint("lakehouse.tenant.auto-register-max-id", 0, "Last AccountID auto-registration may allocate; must be below 4294967295 (default: 4294967294)")
 	tenantAliasSyncInterval = flag.Duration("lakehouse.tenant.alias-sync-interval", 0, "Fleet sync interval for runtime aliases (default: 30s)")
 	tenantAliases           = flag.String("lakehouse.tenant.alias", "", "Static tenant aliases: comma-separated orgid:account:project (e.g. acme-corp:1001:0,staging-team:1002:0). Re-applied every startup as the reconstruction baseline; merged with S3-persisted runtime aliases.")
 
@@ -350,32 +352,45 @@ func run(cfg *config.Config, addr string) {
 	}
 	resolver := tenant.NewResolver(resolverCfg)
 
+	if len(aliasFlagConflicts) > 0 {
+		logger.Errorf("invalid tenant aliases: %s", strings.Join(aliasFlagConflicts, "; "))
+		os.Exit(1)
+	}
+	autoRange := tenant.AutoRange{Min: cfg.Tenant.AutoRegisterMinID, Max: cfg.Tenant.AutoRegisterMaxID}
+	configured := make([]tenant.AliasEntry, 0, len(cfg.Tenant.Aliases))
 	for orgID, target := range cfg.Tenant.Aliases {
-		if err := resolver.AddAlias(orgID, tenant.TenantID{
-			AccountID: target.AccountID,
-			ProjectID: target.ProjectID,
-		}); err != nil {
-			logger.Warnf("invalid tenant alias %q: %s", orgID, err)
+		configured = append(configured, tenant.AliasEntry{OrgID: orgID, AccountID: target.AccountID, ProjectID: target.ProjectID, Source: tenant.SourceConfig})
+	}
+	if err := tenant.ValidateConfiguredAliases(configured, autoRange); err != nil {
+		logger.Errorf("invalid tenant aliases: %s", err)
+		os.Exit(1)
+	}
+	for _, ae := range configured {
+		if err := resolver.AddAliasFrom(ae.OrgID, tenant.TenantID{AccountID: ae.AccountID, ProjectID: ae.ProjectID}, tenant.SourceConfig); err != nil {
+			logger.Errorf("invalid tenant alias %q: %s", ae.OrgID, err)
+			os.Exit(1)
 		}
 	}
 
-	persister := tenant.NewS3Persister(store.Pool(), cfg.AutoPrefix()+"_meta/tenant-aliases.json")
-	s3Aliases, err := persister.LoadAliases()
+	// The alias registry is one S3 object updated only with conditional
+	// writes: the single allocator across pods and restarts. Auto-registered
+	// tenants get AccountIDs from the reserved range, never one a configured
+	// alias, a persisted alias or an int tenant with data holds.
+	aliasRegistry, err := tenant.NewRegistry(resolver, tenant.RegistryConfig{
+		Pool:        store.Pool(),
+		Key:         cfg.AutoPrefix() + "_meta/tenant-aliases.json",
+		Range:       autoRange,
+		DataTenants: store.DataTenantAccountIDs,
+	})
 	if err != nil {
-		logger.Warnf("failed to load tenant aliases from S3: %s", err)
-	} else {
-		for _, ae := range s3Aliases {
-			if _, exists := resolver.Resolve(ae.OrgID); !exists {
-				_ = resolver.AddAlias(ae.OrgID, tenant.TenantID{
-					AccountID: ae.AccountID,
-					ProjectID: ae.ProjectID,
-				})
-			}
-		}
-		if len(s3Aliases) > 0 {
-			logger.Infof("loaded %d tenant aliases from S3", len(s3Aliases))
-		}
+		logger.Errorf("invalid tenant auto-register range: %s", err)
+		os.Exit(1)
 	}
+	syncCtx, syncCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := aliasRegistry.Sync(syncCtx); err != nil {
+		logger.Warnf("failed to load tenant aliases from S3: %s", err)
+	}
+	syncCancel()
 
 	if resolver.HasAliases() {
 		logger.Infof("tenant resolver active; aliases=%d, metrics_format=%s, auto_register=%v",
@@ -494,7 +509,7 @@ func run(cfg *config.Config, addr string) {
 		logger.Infof("tenant overrides pending alias resolution: %v", pending)
 	}
 	startTenantPolicyRefresh(cfg, policy, stopCh)
-	startTenantAliasPersist(cfg, resolver, persister, stopCh)
+	startTenantAliasPersist(cfg, aliasRegistry, stopCh)
 	startPeerDiscovery(cfg, store, stopCh)
 	tenantPolicyHolder = policy
 
@@ -547,7 +562,7 @@ func run(cfg *config.Config, addr string) {
 		}
 	}
 
-	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, persister, policy, statsAgg)
+	mux := newMux(cfg, store, sm, tombstoneStore, detector, registry, cardLimiter, classTracker, costCalc, resolver, aliasRegistry, policy, statsAgg)
 
 	// Wire the compaction drain endpoint (spec §11.1). Mirror of
 	// cmd/lakehouse-logs/main.go — line-parity with feedback_logs_traces_module_parity.
@@ -938,36 +953,16 @@ func startTenantPolicyRefresh(cfg *config.Config, policy *tenant.PolicyRegistry,
 	}()
 }
 
-// startTenantAliasPersist periodically writes the resolver's full alias set to
-// S3 so runtime-registered (auto-register / fleet-synced) tenants survive a
-// restart. Config aliases reconstruct the baseline every startup; this persists
-// everything else and keeps the S3 snapshot fresh. Saves only on change.
-func startTenantAliasPersist(cfg *config.Config, resolver *tenant.TenantResolver, persister *tenant.S3Persister, stopCh <-chan struct{}) {
-	if resolver == nil || persister == nil || cfg.Tenant.AliasSyncInterval <= 0 {
+// startTenantAliasPersist periodically reconciles this pod with the shared
+// alias registry in S3: configured aliases are merged in and entries other
+// pods registered are adopted, all through conditional writes, so runtime
+// (auto-registered, API) tenants survive restarts and pods never overwrite
+// each other.
+func startTenantAliasPersist(cfg *config.Config, reg *tenant.Registry, stopCh <-chan struct{}) {
+	if reg == nil || cfg.Tenant.AliasSyncInterval <= 0 {
 		return
 	}
-	go func() {
-		t := time.NewTicker(cfg.Tenant.AliasSyncInterval)
-		defer t.Stop()
-		lastN := -1
-		for {
-			select {
-			case <-stopCh:
-				return
-			case <-t.C:
-				aliases := resolver.AllAliases()
-				if len(aliases) == lastN {
-					continue
-				}
-				if err := persister.SaveAliases(aliases); err != nil {
-					logger.Warnf("failed to persist tenant aliases to S3: %s", err)
-					continue
-				}
-				lastN = len(aliases)
-				logger.Infof("persisted %d tenant aliases to S3", len(aliases))
-			}
-		}
-	}()
+	reg.Run(stopCh, cfg.Tenant.AliasSyncInterval)
 }
 
 // applyTenantStorageOverrides installs per-tenant bucket isolation and
@@ -1162,7 +1157,7 @@ func globalReadAuthorizer(cfg *config.Config) func(*http.Request) bool {
 	return func(r *http.Request) bool { return auth.Enabled() && auth.Authorize(r) }
 }
 
-func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, persister *tenant.S3Persister, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
+func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, registry *stats.TenantRegistry, cardLimiter *stats.CardinalityLimiter, classTracker *stats.StorageClassTracker, costCalc *stats.CostCalculator, resolver *tenant.TenantResolver, aliasRegistry *tenant.Registry, policy *tenant.PolicyRegistry, statsAgg *stats.StatsAggregate) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	metrics.NewInfoGauge("lakehouse_info", map[string]string{
@@ -1473,7 +1468,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 
 	// Tenant alias management API
 	if resolver != nil {
-		tenantHandler := tenant.NewHandler(resolver, persister, cfg.Peer.AuthKey)
+		tenantHandler := tenant.NewHandler(resolver, nil, cfg.Peer.AuthKey).WithRegistry(aliasRegistry)
 		tenantHandler.Register(mux)
 	}
 
@@ -2047,6 +2042,12 @@ func applyTenantFlags(t *config.TenantConfig) {
 	if *tenantAutoRegister {
 		t.AutoRegister = true
 	}
+	if *tenantAutoRegisterMin > 0 {
+		t.AutoRegisterMinID = uint32(min(*tenantAutoRegisterMin, uint(1<<32-1)))
+	}
+	if *tenantAutoRegisterMax > 0 {
+		t.AutoRegisterMaxID = uint32(min(*tenantAutoRegisterMax, uint(1<<32-1)))
+	}
 	if *tenantAliasSyncInterval > 0 {
 		t.AliasSyncInterval = *tenantAliasSyncInterval
 	}
@@ -2070,10 +2071,20 @@ func applyTenantFlags(t *config.TenantConfig) {
 				logger.Warnf("ignoring invalid tenant alias %q (account/project must be numeric)", entry)
 				continue
 			}
-			t.Aliases[parts[0]] = config.AliasTarget{AccountID: uint32(acct), ProjectID: uint32(proj)}
+			target := config.AliasTarget{AccountID: uint32(acct), ProjectID: uint32(proj)}
+			if prev, dup := t.Aliases[parts[0]]; dup && prev != target {
+				aliasFlagConflicts = append(aliasFlagConflicts, fmt.Sprintf("tenant alias %q is given two targets: %d:%d and %d:%d",
+					parts[0], prev.AccountID, prev.ProjectID, target.AccountID, target.ProjectID))
+				continue
+			}
+			t.Aliases[parts[0]] = target
 		}
 	}
 }
+
+// aliasFlagConflicts collects -lakehouse.tenant.alias entries that name one
+// OrgID twice with different targets; startup refuses to continue on them.
+var aliasFlagConflicts []string
 
 func hostname() string {
 	if h := os.Getenv("POD_NAME"); h != "" {

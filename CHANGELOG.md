@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Auto-registered string tenants (`X-Scope-OrgID`) no longer reuse the AccountID of an existing tenant, and a read
+  never registers one (both binaries).** With `tenant.auto_register` on, the next ID came from a process-local
+  counter that started at 1000 on every start, ignored configured aliases, persisted aliases, other pods and
+  integer tenants that already held data, and ran on reads as well. Two OrgIDs could end up on one AccountID
+  (`acme-corp:1001` configured, a new name auto-registered as `1001`), the newcomer's name replaced the tenant's
+  display name, `org_id` and metric label, and its reads and writes landed in that tenant's data; an unknown name
+  on a select registered itself, so walking names read other tenants' data one ID at a time. Auto-registration now
+  allocates only from a reserved range (`tenant.auto_register_min_id` / `auto_register_max_id`, default
+  `[2147483648, 4294967294]`, ProjectID 0), skips every ID a configured alias, a persisted alias, an earlier
+  allocation or an integer tenant with data holds, and keeps one allocator across pods and restarts: the alias
+  registry `_meta/tenant-aliases.json` is changed only with conditional writes (`If-Match` / `If-None-Match: *`,
+  retried on 412 up to a bound, then the insert gets 503), so the bucket must support conditional `PutObject` (S3,
+  RustFS and current MinIO do). Only ingest routes register; a read naming an unknown OrgID resolves to the reserved
+  `4294967295:0` and returns the empty result of a tenant without data on every select, Jaeger, Tempo and field API,
+  and writing to `AccountID 4294967295` is refused. The alias API answers 409 (and changes nothing) for an ID or
+  OrgID that is already mapped or an ID inside the range, peer sync refuses the same entries, the reverse map is never
+  overwritten, and startup refuses configured aliases that collide with each other or sit inside the range. Persisted
+  entries that contradict a configured alias or each other (written by earlier versions) are refused, logged and
+  dropped instead of kept. New metrics: `lakehouse_tenant_auto_registered_total`, `lakehouse_tenant_alloc_conflicts_total`,
+  `lakehouse_tenant_alloc_failed_total`, `lakehouse_tenant_alias_rejected_total{source}`,
+  `lakehouse_tenant_unknown_orgid_reads_total`. Integer tenants (`AccountID`/`ProjectID`) behave exactly as before;
+  string tenants are a Lakehouse addition to VictoriaLogs and VictoriaTraces.
+
 ## [0.143.7] - 2026-09-30
 
 ### Changed

@@ -176,87 +176,32 @@ func TestStringTenant_AutoRegisterOnInsert(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStringTenant_AcmeCorpDataExists(t *testing.T) {
-	// acme-corp was seeded by datagen-seed-orgid in compose
-	// First check aliases to find the mapped account
-	aliasResp, err := http.Get(logsBaseURL + "/lakehouse/api/v1/tenants/aliases")
-	if err != nil {
-		t.Fatal(err)
+	// acme-corp is a configured alias (acme-corp:1001:0): it must exist, and
+	// data written under it must be readable under it.
+	a, ok := stAliasOf(stAliases(t, logsBaseURL), "acme-corp")
+	if !ok || a.AccountID != 1001 || a.ProjectID != 0 {
+		t.Fatalf("acme-corp alias = %+v (found=%v), want the configured 1001:0", a, ok)
 	}
-	defer func() { _ = aliasResp.Body.Close() }()
-
-	var result struct {
-		Aliases []struct {
-			OrgID     string `json:"org_id"`
-			AccountID uint32 `json:"account_id"`
-			ProjectID uint32 `json:"project_id"`
-		} `json:"aliases"`
-	}
-	body, _ := io.ReadAll(aliasResp.Body)
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatal(err)
-	}
-
-	var acmeAccount uint32
-	found := false
-	for _, a := range result.Aliases {
-		if a.OrgID == "acme-corp" {
-			acmeAccount = a.AccountID
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Skip("acme-corp alias not found — datagen-seed-orgid may not have run yet")
-	}
-
-	// Verify data exists under the mapped prefix
-	client := newS3Client(t)
-	prefix := fmt.Sprintf("%d/0/logs/", acmeAccount)
-	keys := listS3Objects(t, client, prefix)
-	if len(keys) == 0 {
-		t.Skipf("no files under %s yet — data may not be flushed", prefix)
-	}
-	t.Logf("acme-corp (account %d): %d log files", acmeAccount, len(keys))
+	marker := fmt.Sprintf("acme-exists-%d", time.Now().UnixNano())
+	stInsertLog(t, "acme-corp", marker)
+	stEventually(t, 90*time.Second, func() string {
+		return stExpectSet("acme-corp", stQueryField(t, logsBaseURL, "acme-corp", fmt.Sprintf("%q", marker), "_msg"), marker)
+	})
 }
-
 func TestStringTenant_StagingTeamDataExists(t *testing.T) {
-	aliasResp, err := http.Get(logsBaseURL + "/lakehouse/api/v1/tenants/aliases")
-	if err != nil {
-		t.Fatal(err)
+	a, ok := stAliasOf(stAliases(t, logsBaseURL), "staging-team")
+	if !ok || a.AccountID != 1002 || a.ProjectID != 0 {
+		t.Fatalf("staging-team alias = %+v (found=%v), want the configured 1002:0", a, ok)
 	}
-	defer func() { _ = aliasResp.Body.Close() }()
-
-	var result struct {
-		Aliases []struct {
-			OrgID     string `json:"org_id"`
-			AccountID uint32 `json:"account_id"`
-		} `json:"aliases"`
+	marker := fmt.Sprintf("staging-exists-%d", time.Now().UnixNano())
+	stInsertLog(t, "staging-team", marker)
+	stEventually(t, 90*time.Second, func() string {
+		return stExpectSet("staging-team", stQueryField(t, logsBaseURL, "staging-team", fmt.Sprintf("%q", marker), "_msg"), marker)
+	})
+	// acme-corp must not see staging-team's line.
+	if got := stQueryField(t, logsBaseURL, "acme-corp", fmt.Sprintf("%q", marker), "_msg"); len(got) != 0 {
+		t.Fatalf("acme-corp sees staging-team's line: %v", got)
 	}
-	body, _ := io.ReadAll(aliasResp.Body)
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatal(err)
-	}
-
-	var stagingAccount uint32
-	found := false
-	for _, a := range result.Aliases {
-		if a.OrgID == "staging-team" {
-			stagingAccount = a.AccountID
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Skip("staging-team alias not found — datagen-seed-orgid2 may not have run yet")
-	}
-
-	client := newS3Client(t)
-	prefix := fmt.Sprintf("%d/0/logs/", stagingAccount)
-	keys := listS3Objects(t, client, prefix)
-	if len(keys) == 0 {
-		t.Skipf("no files under %s yet", prefix)
-	}
-	t.Logf("staging-team (account %d): %d log files", stagingAccount, len(keys))
 }
 
 // ---------------------------------------------------------------------------
@@ -268,25 +213,10 @@ func TestStringTenant_QueryWithOrgIDHeader(t *testing.T) {
 	params.Set("query", "*")
 	params.Set("limit", "10")
 
-	u := logsBaseURL + "/select/logsql/query?" + params.Encode()
-	req, err := http.NewRequest("GET", u, nil)
-	if err != nil {
-		t.Fatal(err)
+	status, body := httpGetWithOrgID(t, logsBaseURL, "/select/logsql/query", params, "acme-corp")
+	if status != http.StatusOK {
+		t.Fatalf("query with the configured acme-corp OrgID returned %d: %s", status, body)
 	}
-	req.Header.Set("X-Scope-OrgID", "acme-corp")
-
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Skipf("query with acme-corp OrgID returned %d: %s (may not be registered yet)", resp.StatusCode, string(body))
-	}
-
-	body, _ := io.ReadAll(resp.Body)
 	lines := assertValidNDJSON(t, body)
 	t.Logf("acme-corp scoped query returned %d results", len(lines))
 }
@@ -522,55 +452,29 @@ func TestStringTenant_TracesQueryWithOrgID(t *testing.T) {
 	params.Set("limit", "10")
 
 	status, body := httpGetWithOrgID(t, tracesBaseURL, "/select/logsql/query", params, "acme-corp")
-	if status == http.StatusBadRequest {
-		t.Skip("acme-corp not registered on traces endpoint yet")
-	}
 	if status != http.StatusOK {
-		t.Skipf("traces query with acme-corp returned %d: %s", status, string(body))
+		t.Fatalf("traces query with the configured acme-corp OrgID returned %d: %s", status, body)
 	}
-
 	lines := assertValidNDJSON(t, body)
 	t.Logf("traces acme-corp scoped query returned %d results", len(lines))
 }
-
 func TestStringTenant_TracesAcmeCorpDataExists(t *testing.T) {
-	aliasResp, err := http.Get(tracesBaseURL + "/lakehouse/api/v1/tenants/aliases")
-	if err != nil {
-		t.Fatal(err)
+	a, ok := stAliasOf(stAliases(t, tracesBaseURL), "acme-corp")
+	if !ok || a.AccountID != 1001 || a.ProjectID != 0 {
+		t.Fatalf("traces acme-corp alias = %+v (found=%v), want the configured 1001:0", a, ok)
 	}
-	defer func() { _ = aliasResp.Body.Close() }()
-
-	var result struct {
-		Aliases []struct {
-			OrgID     string `json:"org_id"`
-			AccountID uint32 `json:"account_id"`
-		} `json:"aliases"`
-	}
-	body, _ := io.ReadAll(aliasResp.Body)
-	_ = json.Unmarshal(body, &result)
-
-	var acmeAccount uint32
-	found := false
-	for _, a := range result.Aliases {
-		if a.OrgID == "acme-corp" {
-			acmeAccount = a.AccountID
-			found = true
-			break
+	traceID := stRandHex(t, 16)
+	stInsertSpan(t, "acme-corp", traceID, "st-acme-exists")
+	stEventually(t, 90*time.Second, func() string {
+		if got := stQueryField(t, tracesBaseURL, "acme-corp", fmt.Sprintf("trace_id:%q", traceID), "trace_id"); len(got) == 0 {
+			return "acme-corp does not see its own trace " + traceID + " yet"
 		}
+		return ""
+	})
+	if got := stQueryField(t, tracesBaseURL, "staging-team", fmt.Sprintf("trace_id:%q", traceID), "trace_id"); len(got) != 0 {
+		t.Fatalf("staging-team sees acme-corp's trace: %v", got)
 	}
-	if !found {
-		t.Skip("acme-corp alias not found on traces endpoint")
-	}
-
-	client := newS3Client(t)
-	prefix := fmt.Sprintf("%d/0/traces/", acmeAccount)
-	keys := listS3Objects(t, client, prefix)
-	if len(keys) == 0 {
-		t.Skipf("no trace files under %s yet", prefix)
-	}
-	t.Logf("traces acme-corp (account %d): %d trace files", acmeAccount, len(keys))
 }
-
 func TestStringTenant_BothSignalsStringTenantSummary(t *testing.T) {
 	t.Log("=== String Tenant Cross-Signal Summary ===")
 

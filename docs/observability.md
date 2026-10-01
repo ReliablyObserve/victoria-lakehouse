@@ -193,6 +193,11 @@ Read scoping (see [multi-tenancy — Read Scoping](multi-tenancy.md#read-scoping
 | `lakehouse_field_values_files_total` | Counter | `path` | Objects behind `field_values` / `streams` / `stream_ids` answers: `aggregate` = answered from the object's exact per-value label counts in the manifest (no S3 read), `scan` = window-confined column scan. See [read-path — Field enumeration](read-path.md#field-enumeration). |
 | `lakehouse_catalog_value_lookups_total` | Counter | `source` | Field-enumeration requests answered entirely from memory (`catalog`) vs. those that read at least one object (`scan`). |
 | `lakehouse_global_read_queries_total` | Counter | | Select requests that presented a valid global-read credential and were answered across all tenants |
+| `lakehouse_tenant_auto_registered_total` | Counter | | String tenants (`X-Scope-OrgID`) that an ingest request registered, each with a fresh AccountID from the reserved auto-register range (`tenant.auto_register_min_id` to `tenant.auto_register_max_id`). See [multi-tenancy — Auto-register range](multi-tenancy.md#auto-register-range-and-the-shared-registry). |
+| `lakehouse_tenant_alloc_conflicts_total` | Counter | | Lost conditional writes (HTTP 412) on the shared alias registry `_meta/tenant-aliases.json`: another pod or request changed it between the read and the write. Each one is retried after a re-read and merge; a steady rate means many pods register new OrgIDs at once. |
+| `lakehouse_tenant_alloc_failed_total` | Counter | | Auto-registrations given up on: the retry bound was reached, the registry could not be read or written, or the range is exhausted. The ingest request got 503 and nothing was registered. |
+| `lakehouse_tenant_alias_rejected_total` | Counter | `source` | Alias entries refused because their AccountID:ProjectID already belongs to another OrgID, or their OrgID to another ID, or they contradict a configured alias. `source` is `admin` (alias API, answered 409), `sync` (peer gossip) or `registry` (entries read from the shared registry). Expected to stay 0; any increase means two writers disagree about a tenant's ID. |
+| `lakehouse_tenant_unknown_orgid_reads_total` | Counter | | Read requests naming an OrgID no alias knows. They are answered as a tenant without data and never register the name. |
 
 ### Global Storage Metrics
 

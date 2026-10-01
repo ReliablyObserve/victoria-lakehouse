@@ -289,6 +289,72 @@ func (p *ClientPool) Upload(ctx context.Context, key string, data []byte) error 
 	return nil
 }
 
+// DownloadWithETag reads an object together with its ETag. found is false when
+// the object does not exist (not an error).
+func (p *ClientPool) DownloadWithETag(ctx context.Context, key string) (data []byte, etag string, found bool, err error) {
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("GetObject")
+
+	var out *s3.GetObjectOutput
+	err = retryS3(ctx, 3, func() error {
+		var getErr error
+		out, getErr = p.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(p.resolveBucket(key)),
+			Key:    aws.String(key),
+		})
+		return getErr
+	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		var nsk *types.NoSuchKey
+		var ae smithy.APIError
+		if errors.As(err, &nsk) || (errors.As(err, &ae) && (ae.ErrorCode() == "NoSuchKey" || ae.ErrorCode() == "NotFound")) {
+			return nil, "", false, nil
+		}
+		metrics.S3ErrorsTotal.Inc("GetObject")
+		return nil, "", false, fmt.Errorf("s3 GetObject %s: %w", key, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	data, err = io.ReadAll(out.Body)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("read s3 body %s: %w", key, err)
+	}
+	metrics.S3BytesReadTotal.Add(len(data))
+	return data, aws.ToString(out.ETag), true, nil
+}
+
+// UploadConditional writes an object only if it still has the ETag ifMatch
+// (If-Match), or does not exist when ifMatch is empty (If-None-Match: *). A lost
+// race returns an error for which tenant.IsPreconditionFailed is true (HTTP
+// 412, or 409 ConditionalRequestConflict). It is not retried here: the caller
+// must re-read, merge and decide again.
+func (p *ClientPool) UploadConditional(ctx context.Context, key string, data []byte, ifMatch string) error {
+	start := time.Now()
+	metrics.S3RequestsTotal.Inc("PutObject")
+
+	in := &s3.PutObjectInput{
+		Bucket:      aws.String(p.resolveBucket(key)),
+		Key:         aws.String(key),
+		ContentType: aws.String("application/json"),
+	}
+	if ifMatch == "" {
+		in.IfNoneMatch = aws.String("*")
+	} else {
+		in.IfMatch = aws.String(ifMatch)
+	}
+	err := retryS3(ctx, 3, func() error {
+		in.Body = bytes.NewReader(data) // a retry needs a fresh reader
+		_, putErr := p.client.PutObject(ctx, in)
+		return putErr
+	})
+	metrics.S3RequestDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		metrics.S3ErrorsTotal.Inc("PutObject")
+		return fmt.Errorf("s3 conditional PutObject %s: %w", key, err)
+	}
+	return nil
+}
+
 func (p *ClientPool) Bucket() string {
 	return p.bucket
 }

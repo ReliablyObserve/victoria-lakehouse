@@ -127,9 +127,9 @@ curl -H "X-Scope-AccountID: 42" -H "X-Scope-ProjectID: 3" \
 |--------|----------|-------------|----------|
 | **Static config** | Highest | Config file / flag (re-applied every startup) | Known tenants at deploy time |
 | **Runtime API** | Medium | S3 `_meta/tenant-aliases.json` | Dynamic tenant onboarding without restarts |
-| **Auto-discovery** | Lowest | S3 (periodic persist + startup reload) | Dynamic environments, first-seen auto-registration |
+| **Auto-registration** | Lowest | S3 `_meta/tenant-aliases.json` (conditional writes) | Dynamic environments, first-seen OrgIDs on ingest; allocated from a reserved AccountID range |
 
-Static config aliases cannot be overridden by runtime aliases. Runtime aliases are synced across the fleet via the existing stats delta mechanism (default 30s) **and** persisted to S3 by a periodic loop (`startTenantAliasPersist`, on the alias-sync interval) so first-seen auto-registered tenants survive restarts — see [Durability & reconstruction](#durability--reconstruction).
+Static config aliases cannot be overridden by runtime aliases: a persisted entry that contradicts a configured alias is refused. Runtime aliases are kept in one shared registry object in S3 that every pod updates with conditional writes, and are synced across the fleet via the existing stats delta mechanism (default 30s) — see [Durability & reconstruction](#durability--reconstruction) and [Auto-register range and the shared registry](#auto-register-range-and-the-shared-registry).
 
 #### Configuration
 
@@ -137,7 +137,9 @@ Static config aliases cannot be overridden by runtime aliases. Runtime aliases a
 lakehouse:
   tenant:
     orgid_header: "X-Scope-OrgID"      # Header name for string tenant ID
-    auto_register: false                 # Auto-register unknown OrgIDs
+    auto_register: false                 # Auto-register unknown OrgIDs on ingest (reads never register)
+    auto_register_min_id: 2147483648     # First AccountID auto-registration may allocate
+    auto_register_max_id: 4294967294     # Last AccountID auto-registration may allocate
     alias_sync_interval: "30s"           # Fleet sync interval for runtime aliases
     metrics_format: "id"                 # Prometheus label: id | name | both
     aliases:                             # Static alias mappings
@@ -155,6 +157,8 @@ lakehouse:
 ```bash
 --lakehouse.tenant.orgid-header=X-Scope-OrgID
 --lakehouse.tenant.auto-register=false
+--lakehouse.tenant.auto-register-min-id=2147483648
+--lakehouse.tenant.auto-register-max-id=4294967294
 --lakehouse.tenant.alias-sync-interval=30s
 --lakehouse.tenant.metrics-format=id
 # Static aliases without a config file (orgid:account:project, comma-separated):
@@ -179,17 +183,39 @@ curl -X POST http://lakehouse-logs:9428/lakehouse/api/v1/tenants/aliases \
 curl -X DELETE http://lakehouse-logs:9428/lakehouse/api/v1/tenants/aliases/staging_analytics
 ```
 
-Runtime aliases are persisted to `s3://{bucket}/_meta/tenant-aliases.json` and broadcast to all fleet nodes.
+Runtime aliases are persisted to the shared registry `s3://{bucket}/<signal>/_meta/tenant-aliases.json` and broadcast to all fleet nodes.
+
+An alias is never allowed to share an ID or a name with another one. `POST` answers **409 Conflict**, and changes nothing, when
+
+- the `account_id`/`project_id` pair already belongs to another `org_id`,
+- the `org_id` already maps to another pair,
+- the `account_id` lies inside the [auto-register range](#auto-register-range-and-the-shared-registry), or is `4294967295` (reserved).
+
+A `POST` of an identical mapping is idempotent. Conflicts are counted in `lakehouse_tenant_alias_rejected_total{source="admin"}`.
 
 #### Durability & reconstruction
 
 Tenant names must never silently disappear. Three layers keep the alias map durable and self-healing:
 
 1. **Config baseline (reconstruction).** Static aliases — from the `aliases:` YAML map or the `--lakehouse.tenant.alias` flag — are re-applied on **every** startup. Even if the S3 snapshot is deleted or corrupt, the configured tenants reconstruct deterministically.
-2. **Periodic S3 persistence.** A background loop (`startTenantAliasPersist`, runs on `alias_sync_interval`) writes the resolver's full alias set — config **plus** runtime-API **plus** auto-registered (`X-Scope-OrgID`) entries — to `_meta/tenant-aliases.json` whenever it changes. This is what makes first-seen auto-registered tenants survive a restart (previously they lived only in memory and their names vanished on redeploy).
-3. **Startup reload + fleet sync.** On boot the resolver loads the S3 snapshot (after applying the config baseline, so config always wins), and the `SyncPusher` continuously gossips registrations across peers. A node that missed a registration re-learns it from a peer or the next reload.
+2. **Shared S3 registry.** `_meta/tenant-aliases.json` is the source of truth for every alias that is not static config. It is only ever changed with conditional writes (`If-Match` on the ETag that was read, or `If-None-Match: *` for the first write), so pods can never overwrite one another's registrations. A background loop (`startTenantAliasPersist`, runs on `alias_sync_interval`) merges the configured aliases into the object and pulls every entry other pods registered into the local resolver.
+3. **Startup reload + fleet sync.** On boot the resolver applies the config baseline, then loads the registry (config always wins over a contradicting persisted entry), and the `SyncPusher` gossips confirmed registrations across peers. A node that missed a registration re-learns it from the registry on its next sync, or immediately when a request names an OrgID it does not know yet (rate limited to one registry read per second).
 
 Net effect: a name registered once — by config, by API, or by first ingest — is reconstructed on every subsequent start. Loss of the S3 object degrades only to the config baseline, never to bare integer IDs for configured tenants.
+
+#### Auto-register range and the shared registry
+
+With `auto_register: true` an OrgID that no alias names is registered the first time it arrives on an **ingest** request. Three rules keep that registration from ever mixing two tenants' data:
+
+1. **A reserved range.** Auto-registration allocates an `AccountID` (with `ProjectID` 0) only from `[auto_register_min_id, auto_register_max_id]`, default `[2147483648, 4294967294]` (2^31 to 2^32-2), far above any integer tenant VictoriaLogs/VictoriaTraces deployments use. `4294967295` is never allocated: it is the tenant an unknown OrgID *reads* as (below). Configured aliases must stay outside the range, and `auto_register_max_id` must be below `4294967295`; startup refuses otherwise, and also refuses configured aliases that collide with each other (two OrgIDs on one ID, or one OrgID on two IDs).
+2. **No collision, ever.** The allocator skips every AccountID that is used by a configured alias, by an alias in the registry, by an ID it has already handed out, or by an integer tenant that holds data (the manifest's per-tenant aggregates and the unflushed buffer's tenants). Ids are handed out in increasing order, so the ID of a removed alias is not reused while newer ones exist.
+3. **One allocator across pods and restarts.** The registry object is read with its ETag, the new entry is added, and the object is written back with `If-Match: <etag>` (`If-None-Match: *` when it does not exist yet). A lost race (HTTP 412) is retried after re-reading and merging, with jittered exponential backoff, at most 12 attempts (`lakehouse_tenant_alloc_conflicts_total` counts each retry). If the bound is reached, or S3 is unreachable, the ingest request gets **503** with `Retry-After: 1` and nothing is registered (`lakehouse_tenant_alloc_failed_total`). Two pods that see the same new OrgID at the same instant converge on one ID.
+
+**S3 requirement.** The bucket must support conditional `PutObject` (`If-Match` / `If-None-Match`). Amazon S3, RustFS and current MinIO do; a backend that ignores the headers would silently lose the one-allocator guarantee, so check this before enabling `auto_register` on anything else.
+
+**Reads never register.** Only ingest routes (`/insert/*`, `/internal/insert`, `/api/v2/logs`, `/services/collector/*`, all `POST`/`PUT`) may register an OrgID. A select, Jaeger, Tempo, field, stats or admin request naming an OrgID that no alias knows is answered as a tenant that holds no data: it resolves to the reserved `4294967295:0`, so every read path (LogsQL, Jaeger, Tempo, field and stream APIs) returns the same empty result as an integer tenant with no data, without ever falling through to tenant `0:0` and without revealing whether the OrgID exists. Nothing is written to the registry (`lakehouse_tenant_unknown_orgid_reads_total` counts these reads), so the IDs of other tenants cannot be enumerated by probing names. Writing with an explicit `AccountID: 4294967295` header is refused with 400. With `auto_register: false` an unknown OrgID keeps being refused with 400 on both reads and writes.
+
+**Conflicts are refused, not overwritten.** The reverse map (ID to display name, `org_id`, metric label) is never overwritten: an alias that would map an ID to a second OrgID, or an OrgID to a second ID, is rejected with 409 on the alias API, and logged, counted and dropped when it arrives over the peer sync or is read from the registry. When the registry object holds such entries (for example written by an older version that handed out IDs from a process-local counter), startup and every sync refuse to use them: entries contradicting a configured alias are dropped in favour of the configured one, and all entries of a group that maps one ID to several OrgIDs (or one OrgID to several IDs) are dropped, with an error log line per entry and `lakehouse_tenant_alias_rejected_total{source="registry"}`. The next registry write removes them from the object. Data that was written under a colliding ID stays under that ID's prefix; it belongs to whichever tenant owns the ID now.
 
 #### S3 Prefix Templates
 
@@ -425,7 +451,9 @@ The PolicyRegistry caches resolved entries in a `sync.Map` keyed by `(account, p
 | `--lakehouse.tenant.header-project` | `X-Scope-ProjectID` | HTTP header for ProjectID extraction |
 | `--lakehouse.tenant.orgid-header` | `X-Scope-OrgID` | HTTP header for string-based tenant identification (Loki/Tempo compatible) |
 | `--lakehouse.tenant.metrics-format` | `id` | Prometheus tenant label format: `id`, `name`, or `both` |
-| `--lakehouse.tenant.auto-register` | `false` | Auto-register unknown X-Scope-OrgID values as new aliases |
+| `--lakehouse.tenant.auto-register` | `false` | Auto-register unknown X-Scope-OrgID values as new aliases, on ingest requests only (a read never registers) |
+| `--lakehouse.tenant.auto-register-min-id` | `2147483648` | First AccountID auto-registration may allocate. Configured aliases must stay outside `[min, max]` |
+| `--lakehouse.tenant.auto-register-max-id` | `4294967294` | Last AccountID auto-registration may allocate; must be below `4294967295` |
 | `--lakehouse.tenant.alias-sync-interval` | `30s` | Fleet sync interval for runtime-added aliases |
 | `--lakehouse.tenant.global-read-header` | `""` (disabled) | HTTP header name to trigger global read across all tenants |
 | `--lakehouse.tenant.global-read-value` | `""` | Required value for the global read header (acts as a shared secret) |
@@ -451,6 +479,8 @@ lakehouse:
     orgid_header: "X-Scope-OrgID"   # Loki/Tempo compatible header
     metrics_format: "id"             # id | name | both
     auto_register: false             # auto-register unknown OrgIDs
+    auto_register_min_id: 2147483648 # first AccountID auto-registration may allocate
+    auto_register_max_id: 4294967294 # last AccountID auto-registration may allocate
     alias_sync_interval: "30s"       # fleet sync interval
     aliases:                         # static alias → integer ID mappings
       prod-team-eu_staging:

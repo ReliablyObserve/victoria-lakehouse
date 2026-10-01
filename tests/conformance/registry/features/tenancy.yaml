@@ -249,15 +249,34 @@
   status: shipped
   area: tenancy
   surfaces: [api]
+  rows:
+    - lh.tenant_scope.logs.auto_registered_orgid
+    - lh.tenant_scope.traces.auto_registered_orgid
+    - lh.tenant_scope.logs.unknown_orgid_read
+    - lh.tenant_scope.traces.unknown_orgid_read
+    - lh.tenant_scope.logs.alias_collision_rejected
+    - lh.tenant_scope.traces.alias_collision_rejected
   tests:
     - internal/tenant/persistence_test.go
     - internal/tenant/resolver_test.go
+    - internal/tenant/registry_test.go
+    - internal/tenant/registry_s3_test.go
+    - internal/tenant/middleware_autoregister_test.go
+    - internal/selectapi/tenant_autoregister_test.go
+    - lakehouse-traces/internal/selectapi/tenant_autoregister_test.go
+    - internal/config/tenant_autoregister_test.go
     - internal/stats/api_tenant_name_test.go
     - internal/stats/api_tenant_mapping_test.go
     - tests/e2e/string_tenant_test.go#TestStringTenant_AliasCreate
+    - tests/e2e/string_tenant_autoregister_test.go#TestStringTenant_AutoRegisteredOrgIDNeverSharesAnID_Logs
+    - tests/e2e/string_tenant_autoregister_test.go#TestStringTenant_AutoRegisteredOrgIDNeverSharesAnID_Traces
+    - tests/e2e/string_tenant_autoregister_test.go#TestStringTenant_UnknownOrgIDReadIsEmptyAndDoesNotRegister_Logs
+    - tests/e2e/string_tenant_autoregister_test.go#TestStringTenant_UnknownOrgIDReadIsEmptyAndDoesNotRegister_Traces
+    - tests/e2e/string_tenant_autoregister_test.go#TestStringTenant_AliasConflictRejected
   docs:
     - docs/tenant-stats.md
     - docs/multi-tenancy.md
+    - docs/multi-tenancy.md#auto-register-range-and-the-shared-registry
   changelog_bullets:
     - 'Tenant aliases are config-mapped, reconstructed, and persisted.'
   highlight: >-
