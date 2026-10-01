@@ -348,23 +348,33 @@ func TestCachedFooterWeightCalibration(t *testing.T) {
 				tailStart = 0
 			}
 			region := data[tailStart:]
-			runtime.GC()
-			runtime.GC()
-			var m0, m1 runtime.MemStats
-			runtime.ReadMemStats(&m0)
+			// Background allocation (leftover goroutines of earlier tests) only ever
+			// inflates a heap delta, so the smallest of a few trials is the honest one.
+			var keep []*CachedFooter
+			per := int64(1) << 62
 			const n = 24
-			keep := make([]*CachedFooter, 0, n)
-			for i := 0; i < n; i++ {
-				cf, _, err := cacheFooterFromTail(context.Background(), nil, "k", append([]byte(nil), region...), tailStart, size)
-				if err != nil {
-					t.Fatal(err)
+			for trial := 0; trial < 3; trial++ {
+				keep = nil // the previous trial's entries must be garbage before m0
+				runtime.GC()
+				runtime.GC()
+				var m0, m1 runtime.MemStats
+				runtime.ReadMemStats(&m0)
+				keep = make([]*CachedFooter, 0, n)
+				for i := 0; i < n; i++ {
+					cf, _, err := cacheFooterFromTail(context.Background(), nil, "k", append([]byte(nil), region...), tailStart, size)
+					if err != nil {
+						t.Fatal(err)
+					}
+					keep = append(keep, cf)
 				}
-				keep = append(keep, cf)
+				runtime.GC()
+				runtime.GC()
+				runtime.ReadMemStats(&m1)
+				if d := (int64(m1.HeapAlloc) - int64(m0.HeapAlloc)) / n; d < per {
+					per = d
+				}
+				runtime.KeepAlive(keep)
 			}
-			runtime.GC()
-			runtime.GC()
-			runtime.ReadMemStats(&m1)
-			per := (int64(m1.HeapAlloc) - int64(m0.HeapAlloc)) / n
 			w := keep[0].Weight()
 			t.Logf("rows=%d footer=%dB tail=%dB measured heap/entry=%dB model weight=%dB (ratio %.2f)", rows, keep[0].footerSize, len(keep[0].tail), per, w, float64(w)/float64(per))
 			if float64(w) < 0.75*float64(per) || float64(w) > 1.4*float64(per) {
