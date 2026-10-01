@@ -593,10 +593,15 @@ type CacheConfig struct {
 	// runs 470-520 KB, so a count bound meant anything from ~50 MB to
 	// several GB. Each entry is charged its raw tail (footer plus the
 	// page-index stripe, kept so a cached file opens with no S3 round
-	// trip) plus an estimate of the decoded metadata. Least-recently-used
-	// entries are evicted until a new one fits; an entry larger than the
-	// whole budget is not cached. 0 = per-signal default: logs 256 MiB,
-	// traces 512 MiB. Replaces footer_max_items.
+	// trip) plus an estimate of the decoded metadata, which grows with the
+	// row groups. Least-recently-used entries are evicted until a new one
+	// fits; an entry larger than the whole budget is not cached. 0 = auto:
+	// logs 10%, traces 20% of the memory the process may use for caches
+	// (60% of the machine or container limit by default), clamped to
+	// 32 MiB..1 GiB for logs and 32 MiB..2 GiB for traces. An explicit
+	// value overrides the auto budget, including its clamps. The resolved
+	// budget is logged at startup. Replaces footer_max_items, which is
+	// rejected in a config file.
 	FooterMaxBytes int `yaml:"footer_max_bytes"`
 
 	// LabelIndexMaxFields caps the number of distinct field names the
@@ -1584,6 +1589,9 @@ func LoadWithMode(path string, mode Mode, role Role) (*Config, error) {
 // loadConfigBytes is LoadWithMode for an already-read config file: the
 // file's `lakehouse:` document is merged over the profile it selects.
 func loadConfigBytes(data []byte, mode Mode, role Role) (*Config, error) {
+	if err := rejectRemovedKeys(data); err != nil {
+		return nil, err
+	}
 	var wrapper struct {
 		Lakehouse Config `yaml:"lakehouse"`
 	}
@@ -1607,6 +1615,25 @@ func loadConfigBytes(data []byte, mode Mode, role Role) (*Config, error) {
 	merged.Profile = profile
 
 	return merged, nil
+}
+
+// rejectRemovedKeys fails the load of a config file that still sets a key that
+// no longer exists, naming its replacement. YAML decoding is not strict, so
+// without this a removed key would be silently ignored and the operator would
+// run with the default instead of the budget they asked for.
+func rejectRemovedKeys(data []byte) error {
+	var probe struct {
+		Lakehouse struct {
+			Cache map[string]any `yaml:"cache"`
+		} `yaml:"lakehouse"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	if _, ok := probe.Lakehouse.Cache["footer_max_items"]; ok {
+		return fmt.Errorf("cache.footer_max_items was removed: the footer cache is bounded by bytes, set cache.footer_max_bytes (0 = auto, a share of the memory the process may use)")
+	}
+	return nil
 }
 
 func MergeConfigs(base, overlay *Config) *Config {

@@ -108,7 +108,7 @@
               "type": "integer",
               "minimum": 0,
               "default": 0,
-              "description": "Byte budget of the Parquet footer cache; footers are cached with their page index so a cached file opens with no S3 round trip (0 = per-signal default: logs 256 MiB, traces 512 MiB)"
+              "description": "Byte budget of the Parquet footer cache; footers are cached with their page index so a cached file opens with no S3 round trip (0 = auto: 10% of the memory the process may use for caches for logs, 20% for traces, clamped to 32 MiB..1 GiB logs and 32 MiB..2 GiB traces; an explicit value overrides it)"
             }
           }
         },

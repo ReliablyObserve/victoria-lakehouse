@@ -32,7 +32,7 @@ var pageIndexLookBehind = int64(32 << 10)
 // downloading every file in the manifest in full just to read the schema.
 func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*parquet.File, error) {
 	if s.footerCache != nil {
-		if cached, ok := s.footerCache.Get(fi.Key); ok && cached.File != nil {
+		if cached, ok := s.footerCache.GetFor(fi.Key, fi.Size); ok && cached.File != nil {
 			return cached.File, nil
 		}
 	}

@@ -323,6 +323,7 @@ func profShapes(anchor time.Time) []profShape {
 		{name: "L18 BIGMARK limit 1000", q: `BIGMARK | sort by (_time) desc | limit 1000`},
 		{name: "L19 * | limit 1000 (no sort)", q: `* | limit 1000`},
 		{name: "L20 hits * (no hint, as wired today)", q: `* | stats by (_time:5m) count() hits`},
+		{name: "L21 trace_id:=X | count (log-to-trace correlation)", q: `trace_id:=TRACEID | stats count() n`},
 		{name: "F1 field_names *", q: `*`, kind: "field_names"},
 		{name: "F2 field_values level", q: `*`, kind: "field_values"},
 		{name: "F3 streams *", q: `*`, kind: "streams"},
@@ -612,7 +613,7 @@ func TestColdReadProfile(t *testing.T) {
 			store.Add(profTombstone(sh.tomb, start, end))
 		}
 		s.SetTombstoneStore(store)
-		q, err := logstorage.ParseQuery(sh.q)
+		q, err := logstorage.ParseQuery(strings.ReplaceAll(sh.q, "TRACEID", rows[len(rows)/2].TraceID))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -775,6 +776,7 @@ func profTruth(rows []schema.LogRow, anchor time.Time) map[string]string {
 	}
 	a50, a30, an := anchor.Add(-50*time.Minute).UnixNano(), anchor.Add(-30*time.Minute).UnixNano(), anchor.UnixNano()
 	big := func(r *schema.LogRow) bool { return hasWord(r.Body, "BIGMARK") }
+	tid := rows[len(rows)/2].TraceID
 	return map[string]string{
 		"L01": cnt(func(r *schema.LogRow) bool {
 			return big(r) && r.SeverityText == "error" && r.TimestampUnixNano >= a50 && r.TimestampUnixNano <= an
@@ -784,6 +786,7 @@ func profTruth(rows []schema.LogRow, anchor time.Time) map[string]string {
 			return r.Body == "needle273" && r.TimestampUnixNano >= a30 && r.TimestampUnixNano <= an
 		}),
 		"L09": cnt(func(r *schema.LogRow) bool { return r.SeverityText == "error" }),
+		"L21": cnt(func(r *schema.LogRow) bool { return r.TraceID == tid }),
 		"L11": cnt(func(r *schema.LogRow) bool { return r.LogAttributes["status"] == "500" }),
 		"L13": cnt(func(r *schema.LogRow) bool { return true }),
 		"D1":  cnt(func(r *schema.LogRow) bool { return r.HostName != "host-3" }),

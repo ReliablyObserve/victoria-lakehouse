@@ -224,11 +224,13 @@ func TestFooterWriters_AllKeepPageIndex(t *testing.T) {
 		name   string
 		look   int64
 		wantGE int
-	}{{"two-phase look-behind", 32 << 10, 2}, {"two-phase no look-behind", 0, 3}} {
+	}{{"two-phase default look-behind", -1, 2}, {"two-phase look-behind", 32 << 10, 2}, {"two-phase no look-behind", 0, 3}} {
 		t.Run("fetchFooterFile "+tc.name, func(t *testing.T) {
-			old := pageIndexLookBehind
-			pageIndexLookBehind = tc.look
-			defer func() { pageIndexLookBehind = old }()
+			if tc.look >= 0 { // -1 runs with the production default
+				old := pageIndexLookBehind
+				pageIndexLookBehind = tc.look
+				defer func() { pageIndexLookBehind = old }()
+			}
 			fx := newColdFixture(t, 1, 9000, 3000, config.ProjectedFetchModePlanned)
 			fx.s.cfg.S3.FooterPrefetchBytes = 4096
 			before := len(fx.mock.Requests())
@@ -245,6 +247,25 @@ func TestFooterWriters_AllKeepPageIndex(t *testing.T) {
 			}
 			if n := len(fx.mock.Requests()) - before; n != tc.wantGE {
 				t.Fatalf("cold two-phase footer fetch made %d GETs, want %d", n, tc.wantGE)
+			}
+			// The stripe is cached with the footer: the next open, and every
+			// page-index read after it, costs no request at all.
+			after := len(fx.mock.Requests())
+			if _, err := fx.s.fetchFooterFile(context.Background(), fx.files[0]); err != nil {
+				t.Fatal(err)
+			}
+			for _, rg := range cf.File.RowGroups() {
+				for _, cc := range rg.ColumnChunks() {
+					if _, e := cc.ColumnIndex(); e != nil {
+						t.Fatal(e)
+					}
+					if _, e := cc.OffsetIndex(); e != nil {
+						t.Fatal(e)
+					}
+				}
+			}
+			if n := len(fx.mock.Requests()) - after; n != 0 {
+				t.Fatalf("a cached oversize-footer entry made %d GETs for its page index, want 0", n)
 			}
 		})
 	}
@@ -369,49 +390,71 @@ func TestCachedFooter_ConcurrentOpensShareTail(t *testing.T) {
 }
 
 // The resident-size model must track the heap: it is what the byte budget
-// charges, so a drift here silently turns the bound into fiction.
+// charges, so a drift here silently turns the bound into fiction. Entries are
+// measured with 1, 8 and 30+ row groups, fresh and after every ColumnIndex()
+// and OffsetIndex() was decoded (parquet-go memoizes them on the *File, so a
+// cached entry grows after Put). The model must never under-charge the heap
+// and must stay within 1.5x of it.
 func TestCachedFooterWeightCalibration(t *testing.T) {
-	for _, rows := range []int{2000, 15000, 60000} {
-		t.Run(fmt.Sprintf("rows=%d", rows), func(t *testing.T) {
-			data := logsObject(t, rows, 10000)
-			size := int64(len(data))
-			tailStart := size - 1<<20
-			if tailStart < 0 {
-				tailStart = 0
+	cases := []struct {
+		name         string
+		rows, rgSize int
+	}{
+		{"rg1", 3000, 10000},
+		{"rg8", 16000, 2000},
+		{"rg40", 60000, 1500},
+	}
+	for _, c := range cases {
+		for _, decoded := range []bool{false, true} {
+			state := "fresh"
+			if decoded {
+				state = "index-decoded"
 			}
-			region := data[tailStart:]
-			// Heap deltas are noisy (leftover goroutines of earlier tests allocate;
-			// the previous trial's entries may still be collected mid-trial), so take
-			// the median of the positive trials of a helper whose frame is gone, and
-			// with it the entries, before the next one starts.
-			var trials []int64
-			var sample *CachedFooter
-			for trial := 0; trial < 5; trial++ {
-				d, cf := measureFooterEntries(t, region, tailStart, size, 24)
-				sample = cf
-				if d > 0 {
-					trials = append(trials, d)
+			t.Run(c.name+"/"+state, func(t *testing.T) {
+				data := logsObject(t, c.rows, c.rgSize)
+				size := int64(len(data))
+				// The tail covers the whole page-index stripe, as a cache entry
+				// built by the footer read does.
+				tailStart := objectStripeStart(t, data)
+				if tailStart < 0 {
+					tailStart = size - int64(footerTotal(data))
 				}
-			}
-			if len(trials) < 3 {
-				t.Fatalf("only %d usable heap trials of 5", len(trials))
-			}
-			sort.Slice(trials, func(i, j int) bool { return trials[i] < trials[j] })
-			per := trials[len(trials)/2]
-			w := sample.Weight()
-			t.Logf("rows=%d footer=%dB tail=%dB measured heap/entry=%dB model weight=%dB (ratio %.2f)", rows, sample.footerSize, len(sample.tail), per, w, float64(w)/float64(per))
-			if float64(w) < 0.75*float64(per) || float64(w) > 1.4*float64(per) {
-				t.Errorf("weight model %d B is off the measured %d B per entry (allowed 0.75x..1.4x)", w, per)
-			}
-			runtime.KeepAlive(data)
-		})
+				region := data[tailStart:]
+				// Heap deltas are noisy (leftover goroutines of earlier tests allocate;
+				// the previous trial's entries may still be collected mid-trial), so take
+				// the median of the positive trials of a helper whose frame is gone, and
+				// with it the entries, before the next one starts.
+				var trials []int64
+				var sample *CachedFooter
+				for trial := 0; trial < 5; trial++ {
+					d, cf := measureFooterEntries(t, region, tailStart, size, 24, decoded)
+					sample = cf
+					if d > 0 {
+						trials = append(trials, d)
+					}
+				}
+				if len(trials) < 3 {
+					t.Fatalf("only %d usable heap trials of 5", len(trials))
+				}
+				sort.Slice(trials, func(i, j int) bool { return trials[i] < trials[j] })
+				per := trials[len(trials)/2]
+				rgs := len(sample.File.RowGroups())
+				w := sample.Weight()
+				t.Logf("rowgroups=%d footer=%dB tail=%dB measured heap/entry=%dB model weight=%dB (ratio %.2f)", rgs, sample.footerSize, len(sample.tail), per, w, float64(w)/float64(per))
+				if w < per || float64(w) > 1.5*float64(per) {
+					t.Errorf("weight model %d B vs measured %d B per entry (%d row groups, %s): want measured <= model <= 1.5x measured", w, per, rgs, state)
+				}
+				runtime.KeepAlive(data)
+			})
+		}
 	}
 }
 
 // measureFooterEntries builds n cache entries from the same tail and returns the
-// heap growth per entry (after GC) and one entry. It is a function of its own so
-// that all n entries are garbage when it returns.
-func measureFooterEntries(t *testing.T, region []byte, tailStart, size int64, n int) (int64, *CachedFooter) {
+// heap growth per entry (after GC) and one entry. With decode set, every entry
+// also decodes (and so memoizes) all its column and offset indexes. It is a
+// function of its own so that all n entries are garbage when it returns.
+func measureFooterEntries(t *testing.T, region []byte, tailStart, size int64, n int, decode bool) (int64, *CachedFooter) {
 	runtime.GC()
 	runtime.GC()
 	var m0, m1 runtime.MemStats
@@ -422,6 +465,18 @@ func measureFooterEntries(t *testing.T, region []byte, tailStart, size int64, n 
 		if err != nil {
 			t.Fatal(err)
 		}
+		if decode {
+			for _, rg := range cf.File.RowGroups() {
+				for _, cc := range rg.ColumnChunks() {
+					if _, err := cc.ColumnIndex(); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := cc.OffsetIndex(); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		}
 		keep = append(keep, cf)
 	}
 	runtime.GC()
@@ -431,50 +486,103 @@ func measureFooterEntries(t *testing.T, region []byte, tailStart, size int64, n 
 	return (int64(m1.HeapAlloc) - int64(m0.HeapAlloc)) / int64(n), keep[0]
 }
 
-// trace_id point lookups keep the window reader (the planned prototype
-// regressed that shape); every other projected query uses the planned reader.
-// The cached footer still opens with zero GETs on that path.
-func TestPlannedDefault_TraceIDLookupKeepsWindowPath(t *testing.T) {
+// A trace_id point lookup (Jaeger and Tempo trace-by-ID, the log-to-trace
+// click) takes the planned reader like every other projected query, and it
+// needs fewer S3 requests than the window reader on the same warm footers:
+// the page index of the cached footer prunes the row groups, so the plan
+// fetches only the surviving chunks while the window reader reads ahead.
+func TestPlannedDefault_TraceIDLookupUsesPlannedReader(t *testing.T) {
+	rows := bigmarkRows(2*6000, time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC))
+	tid := rows[1234].TraceID
+	q := fmt.Sprintf(`trace_id:=%s | stats count() n`, tid)
+
+	gets := func(mode string) (string, int, int64) {
+		fx := newColdFixture(t, 2, 6000, 2000, mode)
+		fx.prefetch(t)
+		before := len(fx.mock.Requests())
+		ans := fx.answer(t, q)
+		var bytes int64
+		reqs := fx.mock.Requests()[before:]
+		for _, r := range reqs {
+			bytes += r.Out
+		}
+		return ans, len(reqs), bytes
+	}
+	armed0 := metrics.S3PlannedStrategy.Get("plan-warm-footer")
+	planAns, planGets, planBytes := gets(config.ProjectedFetchModePlanned)
+	if metrics.S3PlannedStrategy.Get("plan-warm-footer") <= armed0 {
+		t.Fatal("the trace_id lookup did not take the planned reader (no plan was armed over the warm footer)")
+	}
+	winAns, winGets, winBytes := gets(config.ProjectedFetchModeWindow)
+	if planAns != "n=1" || winAns != planAns {
+		t.Fatalf("trace_id lookup answers: planned %q window %q, want %q", planAns, winAns, "n=1")
+	}
+	t.Logf("trace_id lookup over warm footers: planned %d GETs / %d B, window %d GETs / %d B", planGets, planBytes, winGets, winBytes)
+	if planGets > winGets || planBytes >= winBytes {
+		t.Fatalf("planned trace_id lookup read %d GETs / %d B, the window reader %d GETs / %d B: it must read fewer bytes and no more GETs",
+			planGets, planBytes, winGets, winBytes)
+	}
+
+	// The open itself arms a plan view for a trace_id projection.
 	fx := newColdFixture(t, 2, 6000, 2000, config.ProjectedFetchModePlanned)
 	fx.prefetch(t)
-	fi := fx.files[0]
-	projected := map[string]bool{"trace_id": true}
-
-	f, view, err := fx.s.openParquetFileWithPlan(context.Background(), fi, projected)
+	f, view, err := fx.s.openParquetFileWithPlan(context.Background(), fx.files[0], map[string]bool{"trace_id": true})
 	if err != nil || f == nil {
 		t.Fatalf("planned open: %v", err)
 	}
 	if view == nil {
-		t.Fatal("default projected open must use the planned reader")
+		t.Fatal("a trace_id projection must open on the planned reader")
 	}
 	_ = view.Close()
+}
 
+// A footer entry cached for another size of the same key is a miss: it is
+// removed and the footer fetched again, so a stale schema never reaches the
+// file open.
+func TestOpenParquetFile_StaleSizeEntryIsAMiss(t *testing.T) {
+	fx := newColdFixture(t, 2, 6000, 2000, config.ProjectedFetchModePlanned)
+	fx.prefetch(t)
+	a, b := fx.files[0], fx.files[1]
+	if a.Size == b.Size {
+		t.Skip("fixture objects have equal sizes")
+	}
+	stale, ok := fx.s.footerCache.Get(b.Key)
+	if !ok {
+		t.Fatal("no cached footer for the second object")
+	}
+	fx.s.footerCache.Put(a.Key, stale) // an entry of another object's size under a's key
+
+	if _, ok := fx.s.footerCache.GetFor(a.Key, a.Size); ok {
+		t.Fatal("GetFor returned an entry cached for another size")
+	}
+	if fx.s.footerCache.Has(a.Key) {
+		t.Fatal("GetFor must remove the stale entry")
+	}
+
+	// Through the open path: re-insert the stale entry, open, and expect a
+	// fresh footer for the right size to replace it (and GETs to have been made).
+	fx.s.footerCache.Put(a.Key, stale)
 	before := len(fx.mock.Requests())
-	f, view, err = fx.s.openParquetFileWithPlan(withWindowReadOnly(context.Background()), fi, projected)
+	f, view, err := fx.s.openParquetFileWithPlan(context.Background(), a, map[string]bool{"level": true})
 	if err != nil || f == nil {
-		t.Fatalf("window open: %v", err)
+		t.Fatalf("open: %v", err)
 	}
 	if view != nil {
-		t.Fatal("trace_id lookup must stay on the window reader")
+		_ = view.Close()
 	}
-	if n := len(fx.mock.Requests()) - before; n != 0 {
-		t.Fatalf("window open over a cached footer made %d GETs, want 0", n)
+	if len(fx.mock.Requests()) == before {
+		t.Fatal("a stale-size entry was served: the open made no request")
 	}
-
-	// End to end through the query path.
-	rows := bigmarkRows(2*6000, fx.anchor)
-	tid := rows[1234].TraceID
-	gate0 := metrics.S3ProjectedFetchFallback.Get("trace-id-lookup")
-	if got := fx.answer(t, fmt.Sprintf(`trace_id:=%s | stats count() n`, tid)); got != "n=1" {
-		t.Fatalf("trace_id lookup answered %q, want n=1", got)
+	cur, ok := fx.s.footerCache.Get(a.Key)
+	if !ok || cur.FileSize != a.Size {
+		t.Fatalf("after the open the cache holds size %d (present=%v), want the current %d", func() int64 {
+			if cur != nil {
+				return cur.FileSize
+			}
+			return -1
+		}(), ok, a.Size)
 	}
-	if metrics.S3ProjectedFetchFallback.Get("trace-id-lookup") <= gate0 {
-		t.Fatal("trace_id lookup did not take the window path")
-	}
-	gate1 := metrics.S3ProjectedFetchFallback.Get("trace-id-lookup")
-	_ = fx.answer(t, `level:=error | stats count() n`)
-	_ = fx.answer(t, `BIGMARK | stats count() n`)
-	if metrics.S3ProjectedFetchFallback.Get("trace-id-lookup") != gate1 {
-		t.Fatal("a non-trace_id query was routed to the window reader")
+	if f.Size() != a.Size {
+		t.Fatalf("opened file size %d, want %d", f.Size(), a.Size)
 	}
 }

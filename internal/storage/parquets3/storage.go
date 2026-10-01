@@ -257,7 +257,7 @@ func New(cfg *config.Config) (*Storage, error) {
 	var fc *FooterCache
 	var bfc *BloomFileCache
 	if cfg.SelectEnabled() {
-		fc = NewFooterCache(int64(cfg.Cache.FooterMaxBytes))
+		fc = newConfiguredFooterCache(cfg)
 		bfc = NewBloomFileCache(1024)
 	}
 

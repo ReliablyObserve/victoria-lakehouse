@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1617,5 +1618,34 @@ lakehouse:
 	}
 	if cfg.GC.OrphanGracePeriod != 2*time.Hour {
 		t.Errorf("GC orphan grace = %v, want 2h", cfg.GC.OrphanGracePeriod)
+	}
+}
+
+// cache.footer_max_items was replaced by cache.footer_max_bytes; a config file
+// that still sets it is rejected with the replacement named (no silent default).
+func TestLoad_RemovedFooterMaxItemsRejected(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.yaml")
+	if err := os.WriteFile(p, []byte("lakehouse:\n  mode: logs\n  cache:\n    footer_max_items: 10000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(p)
+	if err == nil {
+		t.Fatal("a config file with cache.footer_max_items must be rejected")
+	}
+	if !strings.Contains(err.Error(), "footer_max_items") || !strings.Contains(err.Error(), "cache.footer_max_bytes") {
+		t.Fatalf("error must name the removed key and its replacement: %v", err)
+	}
+
+	// The replacement key loads.
+	if err := os.WriteFile(p, []byte("lakehouse:\n  mode: logs\n  cache:\n    footer_max_bytes: 67108864\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("footer_max_bytes must load: %v", err)
+	}
+	if cfg.Cache.FooterMaxBytes != 67108864 {
+		t.Fatalf("FooterMaxBytes = %d", cfg.Cache.FooterMaxBytes)
 	}
 }

@@ -228,8 +228,7 @@ func New(cfg *config.Config) (*Storage, error) {
 
 	var fc *FooterCache
 	if cfg.SelectEnabled() {
-		// Byte budget: cache.footer_max_bytes, 0 = the per-signal default.
-		fc = NewFooterCache(int64(cfg.Cache.FooterMaxBytes))
+		fc = newConfiguredFooterCache(cfg)
 	}
 
 	var csClient *crosssignal.Client

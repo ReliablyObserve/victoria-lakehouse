@@ -13,7 +13,8 @@
 #                the harness files are copied in from <pr-tree> when it lacks them (test-only files).
 #   <pr-tree>    the checkout under test (deps/ in place, as for `go test`).
 #   <out-dir>    jsonl + logs + table.md are written here.
-#   quick        (default) Layout A, 11 files, logs + traces, 0 and 50 ms, core shapes.
+#   quick        (default) Layout A, 11 files, logs + traces, 0 and 50 ms, core shapes
+#                (incl. the trace_id lookups L21 and, on traces Layout B, T06).
 #   full         adds Layout B, 50 files, 20 and 100 ms, and every shape.
 # Needs GOWORK=off (the script sets it) and Go on PATH.
 set -euo pipefail
@@ -51,13 +52,15 @@ run() { # signal build latency_ms reps files layout only
     || { echo "FAILED: $tag (see $OUT/$tag.log)" >&2; return 1; }
 }
 
-CORE="L01,L02,L06,L09,L11,L13,L20,D2"
-ALL="L01,L02,L03,L04,L05,L06,L07,L08,L09,L10,L11,L12,L13,L14,L15,L16,L17,L18,L19,L20,D1,D2,D3,D4,D5"
+CORE="L01,L02,L06,L09,L11,L13,L20,L21,D2"
+ALL="L01,L02,L03,L04,L05,L06,L07,L08,L09,L10,L11,L12,L13,L14,L15,L16,L17,L18,L19,L20,L21,D1,D2,D3,D4,D5"
 if [ "$MODE" = full ]; then LAT="0 20 50 100"; SHAPES=$ALL; else LAT="0 50"; SHAPES=$CORE; fi
 for lat in $LAT; do
   reps=9; [ "$lat" != 0 ] && reps=3
   for b in base pr; do run logs "$b" "$lat" "$reps" "" A "$SHAPES"; done        # interleaved per latency
   for b in base pr; do run traces "$b" "$lat" "$reps" "" A "T"; done
+  # trace-by-ID on compacted-like files (Layout B: few large files, many row groups)
+  for b in base pr; do run traces "$b" "$lat" "$reps" "" B "T06,T01,T04"; done
   if [ "$MODE" = full ]; then
     for b in base pr; do run logs "$b" "$lat" "$reps" 50 A "L02,L09,L11,D2,L13"; done
     for b in base pr; do run logs "$b" "$lat" "$reps" "" B "$CORE"; done

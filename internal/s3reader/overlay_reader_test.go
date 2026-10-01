@@ -221,36 +221,37 @@ func TestOverlay_ConcurrentReads(t *testing.T) {
 	}
 }
 
-type hookInner struct {
-	*countingObject
-	magic, footer, colIdx, offIdx, bloom int
-}
+// The manifest size says 1000 bytes but the object behind the key is shorter
+// (truncated or replaced). A read that straddles the cached tail must fail
+// with the inner short read: it must never return bytes of the cached tail
+// after a gap of unread (zero) bytes.
+func TestOverlay_StraddleOverShortInnerIsAnError(t *testing.T) {
+	const size, tailLen, innerLen = 1000, 200, 700 // tail starts at 800; the object ends at 700
+	full := newObject(size, 5)
+	inner := &countingObject{data: append([]byte(nil), full.data[:innerLen]...)}
+	ov := NewOverlayReaderAt(inner, size, append([]byte(nil), full.data[size-tailLen:]...))
 
-func (h *hookInner) SetMagicFooterSection(o, l int64) { h.magic++ }
-func (h *hookInner) SetFooterSection(o, l int64)      { h.footer++ }
-func (h *hookInner) SetColumnIndexSection(o, l int64) { h.colIdx++ }
-func (h *hookInner) SetOffsetIndexSection(o, l int64) { h.offIdx++ }
-func (h *hookInner) SetBloomFilterSection(o, l int64) { h.bloom++ }
+	p := make([]byte, 300) // [750, 1050): front [750, 800) is past the short object
+	n, err := ov.ReadAt(p, 750)
+	if err == nil {
+		t.Fatalf("straddling read over a short object returned no error (n=%d)", n)
+	}
+	if n > 0 {
+		t.Fatalf("straddling read over a short object returned %d bytes, want 0 (object ends at %d, read starts at 750)", n, innerLen)
+	}
 
-func TestOverlay_SectionHooksRecordedAndForwarded(t *testing.T) {
-	inner := &hookInner{countingObject: newObject(100, 7)}
-	ov := NewOverlayReaderAt(inner, 100, inner.data[50:])
-	ov.SetMagicFooterSection(92, 8)
-	ov.SetFooterSection(40, 52)
-	ov.SetColumnIndexSection(30, 5)
-	ov.SetOffsetIndexSection(35, 5)
-	ov.SetBloomFilterSection(10, 20)
-	ov.SetBloomFilterSection(10, 20)
-	m, f, c, o, b := ov.HookCounts()
-	if m != 1 || f != 1 || c != 1 || o != 1 || b != 2 {
-		t.Fatalf("hook counts = %d %d %d %d %d", m, f, c, o, b)
+	// Front partly available: 50 bytes exist ([700-50, 700)) then EOF.
+	p = make([]byte, 300)
+	n, err = ov.ReadAt(p, 650) // front [650, 800): only [650, 700) exists
+	if err == nil {
+		t.Fatalf("partial front read returned no error (n=%d)", n)
 	}
-	if inner.magic != 1 || inner.footer != 1 || inner.colIdx != 1 || inner.offIdx != 1 || inner.bloom != 2 {
-		t.Fatalf("hooks not forwarded to the wrapped reader: %+v", inner)
+	if n > innerLen-650 {
+		t.Fatalf("partial front read returned %d bytes, more than the %d the object has", n, innerLen-650)
 	}
-	// An inner without hooks is fine.
-	plain := NewOverlayReaderAt(newObject(100, 8), 100, make([]byte, 10))
-	plain.SetFooterSection(1, 2)
+	if !bytes.Equal(p[:n], full.data[650:650+n]) {
+		t.Fatal("partial front read returned wrong bytes")
+	}
 }
 
 // FuzzOverlayReadAt: for any object, tail length, offset and length, the

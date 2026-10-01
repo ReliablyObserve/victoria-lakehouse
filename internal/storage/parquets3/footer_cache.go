@@ -9,8 +9,10 @@ import (
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
@@ -28,25 +30,34 @@ type CachedFooter struct {
 	File       *parquet.File
 	FileSize   int64
 	footerSize int
+	chunks     int // column chunks over all row groups (what the weight model scales by)
 
 	tail    []byte
 	tailOff int64
 }
 
 // Resident-size model of one cache entry, fitted to measured heap per entry
-// (TestCachedFooterWeightCalibration re-measures it on every run and fails
-// when the model falls outside 0.75x-1.4x of the heap):
+// (TestCachedFooterWeightCalibration re-measures it on every run with 1, 8 and
+// 40 row groups, fresh and with every page index decoded, and fails when the
+// model is below the heap or above 1.5x of it):
 //
-//	resident ~ len(tail) + retainedMetadataFactor*footerSize + cachedFooterOverhead
+//	resident ~ len(tail) + retainedMetadataFactor*footerSize
+//	         + chunkGraphBytes*columnChunks + cachedFooterOverhead
 //
 // len(tail) is the raw footer + page-index stripe the entry owns;
 // retainedMetadataFactor is the decoded thrift metadata (KV strings, row-group
-// and column structs) per footer byte; cachedFooterOverhead is the fixed
-// per-file part (column tree of the parsed *parquet.File, list element, map
-// slot), about 56 KiB for the logs schema.
+// and column structs) per footer byte; columnChunks is row groups x columns:
+// parquet-go keeps a column-chunk graph per chunk (about 22 KiB per row group
+// of the 48-column logs schema) and, once a query decoded the page index,
+// memoizes the column and offset index of every chunk on the cached file (a
+// further 17-37 KiB per row group), so chunkGraphBytes covers the
+// index-decoded state: the entry grows after it was charged; cachedFooterOverhead
+// is the fixed per-file part (column tree of the parsed *parquet.File, list
+// element, map slot).
 const (
 	retainedMetadataFactor = 2.25
-	cachedFooterOverhead   = 56 << 10
+	chunkGraphBytes        = 1088
+	cachedFooterOverhead   = 26 << 10
 )
 
 // Weight is the number of resident bytes the entry is charged against the
@@ -63,7 +74,8 @@ func (c *CachedFooter) Weight() int64 {
 		}
 		return cachedFooterOverhead
 	}
-	return int64(len(c.tail)) + int64(retainedMetadataFactor*float64(c.footerSize)) + cachedFooterOverhead
+	return int64(len(c.tail)) + int64(retainedMetadataFactor*float64(c.footerSize)) +
+		chunkGraphBytes*int64(c.chunks) + cachedFooterOverhead
 }
 
 // Tail returns the cached tail bytes and the object offset they start at.
@@ -129,10 +141,11 @@ type FooterCache struct {
 }
 
 // NewFooterCache returns a cache holding at most maxBytes of footers;
-// maxBytes <= 0 selects the per-signal default (defaultFooterMaxBytes).
+// maxBytes <= 0 selects the auto budget (defaultFooterMaxBytes: a share of
+// memory.Allowed(), clamped per signal).
 func NewFooterCache(maxBytes int64) *FooterCache {
 	if maxBytes <= 0 {
-		maxBytes = defaultFooterMaxBytes
+		maxBytes = defaultFooterMaxBytes()
 	}
 	return &FooterCache{
 		items:    make(map[string]*footerEntry),
@@ -141,10 +154,49 @@ func NewFooterCache(maxBytes int64) *FooterCache {
 	}
 }
 
+// newConfiguredFooterCache builds the footer cache from cache.footer_max_bytes
+// (an explicit value is used as given; 0 = auto, see autoFooterMaxBytes) and
+// logs the resolved budget once at startup.
+func newConfiguredFooterCache(cfg *config.Config) *FooterCache {
+	configured := int64(cfg.Cache.FooterMaxBytes)
+	fc := NewFooterCache(configured)
+	if configured > 0 {
+		logger.Infof("footer cache budget: %d MiB (cache.footer_max_bytes)", fc.MaxBytes()>>20)
+	} else {
+		logger.Infof("footer cache budget: %d MiB (auto: %d%% of the %d MiB the process may use for caches, clamped to [%d MiB, %d MiB]; set cache.footer_max_bytes to override)",
+			fc.MaxBytes()>>20, footerBudgetPercent, int64(memory.Allowed())>>20, footerBudgetMin>>20, int64(footerBudgetMax)>>20)
+	}
+	return fc
+}
+
 func (fc *FooterCache) Get(key string) (*CachedFooter, bool) {
 	fc.mu.Lock()
 	entry, ok := fc.items[key]
 	if !ok {
+		fc.mu.Unlock()
+		return nil, false
+	}
+	fc.lru.MoveToFront(entry.elem)
+	footer := entry.footer
+	fc.mu.Unlock()
+	metrics.FooterCacheHits.Inc()
+	return footer, true
+}
+
+// GetFor is Get for a caller that knows the object's current size (the
+// manifest's). An entry cached for another size belongs to another version of
+// the key: it is removed and reported as a miss, so a stale schema never
+// reaches the file open.
+func (fc *FooterCache) GetFor(key string, size int64) (*CachedFooter, bool) {
+	fc.mu.Lock()
+	entry, ok := fc.items[key]
+	if !ok {
+		fc.mu.Unlock()
+		return nil, false
+	}
+	if entry.footer.FileSize != size {
+		fc.removeLocked(entry)
+		fc.publishLocked()
 		fc.mu.Unlock()
 		return nil, false
 	}
@@ -442,10 +494,17 @@ func parseFooterBytes(key string, footerBytes []byte, fileSize int64) (cachedFoo
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: %w", key, err)
 	}
+	chunks := 0
+	if md := f.Metadata(); md != nil {
+		for i := range md.RowGroups {
+			chunks += len(md.RowGroups[i].Columns)
+		}
+	}
 	return &CachedFooter{
 		File:       f,
 		FileSize:   fileSize,
 		footerSize: int(declaredLen) + 8,
+		chunks:     chunks,
 		tail:       footerBytes,
 		tailOff:    fileSize - int64(len(footerBytes)),
 	}, f, r, nil

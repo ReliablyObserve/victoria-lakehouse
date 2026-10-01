@@ -236,10 +236,13 @@ lakehouseConfig:
     disk_limit: 50GB
     # -- Disk cache eviction watermark (0.0-1.0).
     eviction_watermark: 0.8
-    # -- Byte budget of the Parquet footer cache (0 = per-signal default: 256 MiB
-    # logs, 512 MiB traces). Footers are cached with their page index so a
-    # cached file opens with no S3 round trip; least-recently-used entries are
-    # evicted to stay within the budget. Replaces footer_max_items.
+    # -- Byte budget of the Parquet footer cache (0 = auto: 10% of the memory the
+    # process may use for caches for logs, 20% for traces, clamped to
+    # 32 MiB..1 GiB logs and 32 MiB..2 GiB traces; the resolved value is logged
+    # at startup, an explicit value overrides it). Footers are cached with their
+    # page index so a cached file opens with no S3 round trip;
+    # least-recently-used entries are evicted to stay within the budget.
+    # Replaces footer_max_items, which is rejected.
     footer_max_bytes: 0
     # -- TTL for cached Parquet file footers.
     footer_ttl: 1h

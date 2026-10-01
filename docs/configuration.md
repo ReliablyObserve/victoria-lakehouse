@@ -303,7 +303,7 @@ The **Effect** column says what a flag does to the config key it writes:
 | `-httpListenAddr` | both |  | none | `:9428` | HTTP listen address |
 | `-lakehouse.cache.disk-max-mb` | both | `cache.disk_limit` | set | `0` | L2 disk cache max size in MB (default: 51200) |
 | `-lakehouse.cache.disk-path` | both | `cache.disk_path` | set | ` ` | L2 disk cache directory path |
-| `-lakehouse.cache.footer-max-bytes` | both | `cache.footer_max_bytes` | set | `0` | Byte budget of the Parquet footer cache: footers are cached with their page index so a cached file opens with no S3 round trip; least-recently-used entries are evicted to stay within the budget (0 = 256 MiB) |
+| `-lakehouse.cache.footer-max-bytes` | both | `cache.footer_max_bytes` | set | `0` | Byte budget of the Parquet footer cache: footers are cached with their page index so a cached file opens with no S3 round trip; least-recently-used entries are evicted to stay within the budget (0 = auto: 10% of the memory the process may use for caches, clamped to 32 MiB..1 GiB) |
 | `-lakehouse.cache.memory-mb` | both | `cache.memory_limit` | set | `0` | L1 memory cache size in MB (default: 512) |
 | `-lakehouse.cache.memory.limit` | both | `cache.memory_limit_v2` | set | ` ` | Cache memory limit (Go size string, e.g. 256MB) |
 | `-lakehouse.cache.memory.request` | both | `cache.memory_request` | set | ` ` | Cache memory request (Go size string, e.g. 64MB) |
