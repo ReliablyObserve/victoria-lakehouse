@@ -226,6 +226,27 @@ func TestResolveFaults_InferredObjectIsNotAnsweredFromMetadata(t *testing.T) {
 	}
 }
 
+// The count pushdown (label aggregates) must not answer for an inferred object
+// either, and does for the same object once its bounds are exact.
+func TestResolveFaults_CountPushdownSkipsInferredObjects(t *testing.T) {
+	s := testStorageWithS3(t, "http://127.0.0.1:1")
+	mk := func(inferred bool) manifest.FileInfo {
+		return manifest.FileInfo{
+			Key: "k", RowCount: 3, MinTimeNs: rwHour.UnixNano(), MaxTimeNs: rwHour.Add(time.Hour).UnixNano() - 1, BoundsInferred: inferred,
+			LabelAggregates: map[string]map[string]int64{"service.name": {"svc": 3}},
+		}
+	}
+	from, to := rwHour.Add(-time.Hour).UnixNano(), rwHour.Add(2*time.Hour).UnixNano()
+	emitted := 0
+	write := func(_ uint, db *logstorage.DataBlock) { emitted += db.RowsCount() }
+	if rem := s.manifestCountFastPath([]manifest.FileInfo{mk(true)}, from, to, "service.name", write); len(rem) != 1 || emitted != 0 {
+		t.Errorf("inferred object: remaining=%d emitted=%d, want it left for the scan (1, 0)", len(rem), emitted)
+	}
+	if rem := s.manifestCountFastPath([]manifest.FileInfo{mk(false)}, from, to, "service.name", write); len(rem) != 0 || emitted != 3 {
+		t.Errorf("exact object: remaining=%d emitted=%d, want it answered from metadata (0, 3)", len(rem), emitted)
+	}
+}
+
 // F2: bounded time, and a failing object is not re-read on every query.
 func TestResolveFaults_FailingObjectIsBoundedAndBackedOff(t *testing.T) {
 	mock := newRWMock()
