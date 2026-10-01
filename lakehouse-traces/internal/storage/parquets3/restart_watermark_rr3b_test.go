@@ -322,3 +322,24 @@ func TestRR3_BufferedFieldValuesDoNotAliasEngineMemory(t *testing.T) {
 		t.Errorf("field_values over buffered rows = %v, want ALPHA=2 BETA=1 COLD=1", hits)
 	}
 }
+
+// A removal that lands between the existence check and the failing read must
+// leave no back-off entry (the removal counter is taken before the check).
+func TestRR3_RemovalAfterTheExistenceCheckLeavesNoBackoffEntry(t *testing.T) {
+	singleAttemptS3(t)
+	mock := newRWMock()
+	r := newRWRigWith(t, mock.mockS3Server)
+	r.ingest("COLD", at(rwHour, 10*time.Minute))
+	r.restart(true, false)
+	fi := r.objects()[0]
+	mock.fail(fi.Key, 404)
+	resolveAfterExistsCheck = func() { r.s.manifest.RemoveFile(manifest.ExtractPartition(fi.Key), fi.Key) }
+	t.Cleanup(func() { resolveAfterExistsCheck = nil })
+	_ = r.s.bufferWatermarksFor(t.Context(), 0, []manifest.FileInfo{fi})
+	r.s.inferredBounds.mu.Lock()
+	n := len(r.s.inferredBounds.retry)
+	r.s.inferredBounds.mu.Unlock()
+	if n != 0 {
+		t.Errorf("%d back-off entries for an object removed in the check-then-act gap", n)
+	}
+}

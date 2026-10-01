@@ -272,7 +272,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
-			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 			return nil
 		}
 		served = append(served, subtractFiles(files, remaining)...)

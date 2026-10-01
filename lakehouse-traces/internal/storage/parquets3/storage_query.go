@@ -270,7 +270,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 			return nil
 		}
 		served = append(served, subtractFiles(files, remaining)...)

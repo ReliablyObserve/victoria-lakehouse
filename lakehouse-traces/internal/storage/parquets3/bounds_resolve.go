@@ -47,6 +47,10 @@ const (
 	boundsBackoffMax = 5 * time.Minute
 )
 
+// resolveAfterExistsCheck, when set by a test, runs right after the existence
+// check of resolveFileBounds (to land a removal in the check-then-act gap).
+var resolveAfterExistsCheck func()
+
 // nowFn is the clock the buffer-retention floor reads; tests replace it.
 var nowFn = time.Now
 
@@ -74,8 +78,8 @@ type boundsResolver struct {
 	removals uint64
 }
 
-// maxBoundsRetryEntries caps the back-off table; past it, entries of objects
-// the manifest no longer holds (and expired ones) are swept.
+// maxBoundsRetryEntries caps the back-off table; past it, expired entries are
+// swept (entries of removed objects are dropped at once by the manifest hook).
 const maxBoundsRetryEntries = 1024
 
 // watch makes removals from m forget the removed objects' back-off entries.
@@ -252,10 +256,15 @@ func (s *Storage) resolveFileBounds(ctx context.Context, fi manifest.FileInfo) m
 		return fi
 	}
 	s.inferredBounds.watch(s.manifest)
+	// Taken BEFORE the existence check: a removal that lands between the check
+	// and a failed read must make the failure unrecorded (check-then-act).
+	seen := s.inferredBounds.removalCount()
 	if _, ok := s.manifest.GetFileByKey(fi.Key); !ok {
 		return fi // gone from the manifest (retired, or dropped by a refresh): nothing to resolve
 	}
-	seen := s.inferredBounds.removalCount()
+	if resolveAfterExistsCheck != nil {
+		resolveAfterExistsCheck()
+	}
 	current := func() manifest.FileInfo {
 		if cur, ok := s.manifest.GetFileByKey(fi.Key); ok {
 			return cur

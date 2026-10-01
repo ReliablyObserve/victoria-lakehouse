@@ -312,3 +312,28 @@ func TestRR3_RefreshDropDoesNotPruneBackoff(t *testing.T) {
 		t.Errorf("back-off map holds %d entries after the object left the manifest via refresh", n)
 	}
 }
+
+// Unflushed rows between the newest READ object's end and a newer label-PRUNED
+// object's end are still served: an object pruned before the read is not in the
+// answer, so it stays out of the watermark.
+func TestRR3_PrunedObjectStaysOutOfTheWatermark(t *testing.T) {
+	r := newRWRig(t)
+	r.ingest("C-1", at(rwHour, 10*time.Minute), at(rwHour, 20*time.Minute))
+	_ = r.bw.FlushAll(context.Background())
+	r.ingest("O-1", at(rwHour, 30*time.Minute), at(rwHour, 40*time.Minute))
+	r.restart(true, true)
+	r.bufferOnly("C-1", at(rwHour, 35*time.Minute))
+	from, to := rwWindow()
+	n := 0
+	var mu sync.Mutex
+	if err := r.s.RunQuery(context.Background(), nil, r.window(`level:="C-1"`, from, to), func(_ uint, db *logstorage.DataBlock) {
+		mu.Lock()
+		n += db.RowsCount()
+		mu.Unlock()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("filtered rows = %d, want 3 (2 cold + the unflushed one)", n)
+	}
+}
