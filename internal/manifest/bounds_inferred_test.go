@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -303,12 +304,12 @@ func TestSaveTo_SlowStaleSaveCannotOverwriteNewer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snap.json")
 	encoded := make(chan struct{})
 	release := make(chan struct{})
-	var once sync.Once
+	var first atomic.Bool
 	saveTestHook = func() {
-		once.Do(func() { // only the first (stale) save is held back
+		if first.CompareAndSwap(false, true) { // only the first (stale) save is held back
 			close(encoded)
 			<-release
-		})
+		}
 	}
 	defer func() { saveTestHook = nil }()
 	done := make(chan struct{})
