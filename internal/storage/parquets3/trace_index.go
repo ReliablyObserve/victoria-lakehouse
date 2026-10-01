@@ -3,7 +3,9 @@ package parquets3
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/cespare/xxhash/v2"
 
@@ -24,7 +26,9 @@ type TraceIndexEntry struct {
 
 // computeTraceIndex aggregates per-trace time ranges from a batch of spans.
 // Each entry represents the min(start_time) and max(end_time) across all
-// spans for that trace_id within this batch.
+// spans for that trace_id within this batch. Entries are sorted by trace ID
+// so the `_trace_idx` footer value is byte-identical for the same rows on
+// every run (Go map iteration order is random).
 func computeTraceIndex(rows []schema.TraceRow) []TraceIndexEntry {
 	type acc struct {
 		startNs int64
@@ -63,6 +67,7 @@ func computeTraceIndex(rows []schema.TraceRow) []TraceIndexEntry {
 			EndNs:     a.endNs,
 		})
 	}
+	slices.SortFunc(entries, func(a, b TraceIndexEntry) int { return strings.Compare(a.TraceID, b.TraceID) })
 	return entries
 }
 

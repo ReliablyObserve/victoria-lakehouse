@@ -7,21 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Documentation
+### Security
 
-- **README: TL;DR, coverage tables, Grafana experience, validated performance and the current cost
-  model.** The README now opens with a summary and lists what Lakehouse ingests (every VictoriaLogs
-  protocol and OTLP traces), what it answers (LogsQL, LogQL through loki-vl-proxy, Jaeger, Tempo and
-  TraceQL), which engines read its Parquet files directly on S3, and which Grafana workflows work, each
-  marked with how it is verified. Performance quotes the validated 2026-09 benchmark with its limits, including that
-  none of its cells had S3 latency injected (the injector targeted the wrong container).
-  The old cost section is replaced: it relied on an unsourced ~70x VictoriaLogs compression figure and
-  a single 500 GB/day worksheet. `docs/cost-estimates.md` and `docs/cost-comparison.md` now carry an HA
-  cost model from 0.1 to 500 TB/day, with every input labelled measured, sourced or assumed, and the
-  scripts that produce it live in `scripts/cost/`. The comparison page now breaks the AWS bill down
-  line by line (on-demand EC2, EBS gp3, every S3 storage class and request type, cross-AZ transfer),
-  explains why Lakehouse scales linearly with two stateless pod types, and adds a long-term retention
-  calculator (`scripts/cost/cost_tiering.py`) for S3 lifecycle tiering from 30 days to 7 years.
+- **OpenTelemetry Go v1.45.0 (both binaries), fixing GO-2026-6505.** `go.opentelemetry.io/otel`, `otel/sdk`,
+  `otel/trace` and the OTLP trace exporters move from v1.43.0/v1.44.0 to v1.45.0, the first release with the fix;
+  `govulncheck` reported the advisory as reachable from the self-tracing exporter. Transitive updates: `otlp` proto
+  v1.11.0, `grpc-gateway` v2.29.0, `genproto` 2026-08-03. No configuration or behaviour change.
 
 ### Fixed
 
@@ -56,6 +47,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binary all 15 buffered spans of a query were counted under one span name, and the right names were missing.
   Keys are now copied. It surfaced once the rows buffered after a restart became visible; the affected rows are
   the unflushed ones of any window.
+
+### Removed
+
+- **The 24.7 MB `compression_ab` binary at the repo root.** A local build of `scripts/bench/compression_ab`
+  was committed by accident in #143; nothing referenced it. `/compression_ab` is now ignored. The tool still
+  runs from source (`go run ./scripts/bench/compression_ab`).
+
+## [0.143.10] - 2026-10-01
+
+### Changed
+
+- **Go 1.27.1 everywhere.** The release images moved to `golang:1.27.1-alpine3.23` in #282, while both
+  `go.mod` files (which every CI workflow reads through `go-version-file`) and `go.work` still said 1.26.8, so
+  CI tested with a different toolchain from the one that builds the shipped binaries. Both modules and the
+  workspace now declare `go 1.27.1`, and the parity test runner image (`tests/parity/docker-compose.yml`) moves to
+  `golang:1.27.1`. Parquet data is unchanged. (The toolchain did change parquet-go's default footer `created_by`
+  string; every writer now sets its own, see below.)
+- **`s3.parquet_read_mode` now defaults to `sync` (both binaries).** With `async`, a read-ahead goroutine per column
+  reader shares the file's single read-ahead window with the others; the buffered reader serialises their GETs under
+  one mutex, so they gain no I/O parallelism, and they evict each other's window and fetch the same bytes again.
+  Measured on the field-metadata matrix with the default window knobs (192 cells, logs): `sync` reads 1,578 GETs and
+  137.0 MB where `async` read 1,768–1,816 GETs and 164–172 MB, at 100 ms S3 latency the summed p50 drops from 99.2 s to
+  88.0 s (compacted `fv_level` cells up to 48% faster; the two cells more than 5% slower read the same GETs and bytes and
+  differ by one outlier iteration or 1–3 ms on a buffer-bridge call that touches no S3), and every answer stays exact.
+  `-lakehouse.s3.parquet-read-mode=async` keeps the old behaviour.
+- **Every Lakehouse Parquet file records `created_by` = `victoria-lakehouse version <release>(build )`** instead of
+  parquet-go's default, which depends on whether the Go build information is present (toolchain and build mode).
+
+### Fixed
+
+- **The field-metadata perf gate's counters are deterministic (compacted layout).** `field-metadata-perf` failed on
+  main and on #295 (`fv_level` compacted `window=whole/filter=svc`: `s3_bytes 642384 > registry 642367`), and two
+  compacted cells had already differed between a local run and CI. Two causes: the S3 GETs of a filtered scan depended
+  on goroutine scheduling (the `async` page readers above; the same identical files took 32–36 GETs from one run to the
+  next), and the object sizes depended on the toolchain through `created_by` (the 17 bytes). Both are fixed at the
+  source (`sync` default, fixed `created_by`), and the `_trace_idx` footer value is now written sorted by trace ID, so
+  trace files, flushed and compacted, are byte-reproducible as logs files already were. New tests in both modules
+  build the compacted layout twice and require byte-identical objects, and run every compacted cell six times
+  requiring identical GETs and bytes (and, on logs, row groups and pages); the registry `s3_bytes`/`s3_gets` counters were regenerated
+  from CI's measurements.
+
+### Documentation
+
+- **README: TL;DR, coverage tables, Grafana experience, validated performance and the current cost
+  model.** The README now opens with a summary and lists what Lakehouse ingests (every VictoriaLogs
+  protocol and OTLP traces), what it answers (LogsQL, LogQL through loki-vl-proxy, Jaeger, Tempo and
+  TraceQL), which engines read its Parquet files directly on S3, and which Grafana workflows work, each
+  marked with how it is verified. Performance quotes the validated 2026-09 benchmark with its limits, including that
+  none of its cells had S3 latency injected (the injector targeted the wrong container).
+  The old cost section is replaced: it relied on an unsourced ~70x VictoriaLogs compression figure and
+  a single 500 GB/day worksheet. `docs/cost-estimates.md` and `docs/cost-comparison.md` now carry an HA
+  cost model from 0.1 to 500 TB/day, with every input labelled measured, sourced or assumed, and the
+  scripts that produce it live in `scripts/cost/`. The comparison page now breaks the AWS bill down
+  line by line (on-demand EC2, EBS gp3, every S3 storage class and request type, cross-AZ transfer),
+  explains why Lakehouse scales linearly with two stateless pod types, and adds a long-term retention
+  calculator (`scripts/cost/cost_tiering.py`) for S3 lifecycle tiering from 30 days to 7 years.
+
+## [0.143.9] - 2026-10-01
 
 ## [0.143.8] - 2026-10-01
 

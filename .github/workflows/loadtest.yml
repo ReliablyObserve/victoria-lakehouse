@@ -1,38 +1,73 @@
 name: Load Test
 
+# Nightly load and latency suite against the e2e compose stack (hot VL/VT,
+# both Lakehouse binaries, seeded and continuously generated data).
+# `cmd/loadtest -mode=all` fails the job when a latency benchmark exceeds its
+# p95 target; `-mode=benchmark` writes the compression/file-size matrix.
+
 on:
   schedule:
     - cron: '0 3 * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'cmd/loadtest mode: all, latency, throughput, concurrent, mixed-rw, realistic, verify'
+        required: false
+        default: 'all'
 
 permissions:
   contents: read
 
+env:
+  VL_VERSION_LOGS: v1.52.0
+  VL_COMMIT_TRACES: c945d2949e98
+  # The repo's go.work spans both modules, which replace VictoriaLogs with
+  # two different pinned checkouts; workspace mode cannot resolve that.
+  GOWORK: "off"
+
 jobs:
   loadtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # cmd/loadtest builds inside the logs module, whose go.mod replaces
+      # VictoriaLogs with ./deps/VictoriaLogs.
+      - name: Prepare VL deps (logs)
+        run: make deps-logs
       - name: Start E2E stack
-        run: docker compose -f deployment/docker/docker-compose-e2e.yml up -d
+        run: docker compose -f deployment/docker/docker-compose-e2e.yml up -d --build
       - name: Wait for lakehouse ready
         run: |
-          for i in $(seq 1 30); do
-            curl -sf http://localhost:29428/ready && break
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:29428/ready && exit 0
             sleep 2
           done
+          echo "lakehouse-logs not ready after 120s" >&2
+          docker compose -f deployment/docker/docker-compose-e2e.yml ps
+          exit 1
       - name: Run load tests
-        run: go run ./cmd/loadtest --target=http://localhost:29428 --mode=all --duration=120s --output=loadtest-results.json
+        run: |
+          MODE="${{ github.event.inputs.mode || 'all' }}"
+          go run ./cmd/loadtest --target=http://localhost:29428 --mode="$MODE" --duration=120s --output=loadtest-results.json
+      - name: Run compression/file-size matrix
+        if: always()
+        run: go run ./cmd/loadtest --mode=benchmark --output=benchmark-results.json
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: loadtest-results
-          path: loadtest-results.json
+          path: |
+            loadtest-results.json
+            benchmark-results.json
+          if-no-files-found: warn
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose -f deployment/docker/docker-compose-e2e.yml logs --tail=200 lakehouse-logs lakehouse-traces
       - name: Stop E2E stack
         if: always()
-        run: docker compose -f deployment/docker/docker-compose-e2e.yml down
+        run: docker compose -f deployment/docker/docker-compose-e2e.yml down -v

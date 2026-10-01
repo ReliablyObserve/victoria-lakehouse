@@ -96,12 +96,13 @@ func main() {
 // productionWriterOptions mirrors the writer/compactor option set
 // (internal/storage/parquets3/writer.go + internal/compaction/
 // compactor.go): zstd at SpeedBestCompression (the deepest level the
-// compaction schedule reaches), bounded row groups, split-block blooms
-// on service.name + trace_id.
+// compaction schedule reaches), bounded row groups, the Lakehouse
+// created_by, split-block blooms on service.name + trace_id.
 func productionWriterOptions(rowGroupSize int) []parquet.WriterOption {
 	return []parquet.WriterOption{
 		parquet.Compression(&zstd.Codec{Level: zstd.SpeedBestCompression}),
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
+		schema.ParquetCreatedBy(),
 		parquet.BloomFilters(
 			parquet.SplitBlockFilter(10, "service.name"),
 			parquet.SplitBlockFilter(10, "trace_id"),

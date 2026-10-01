@@ -344,10 +344,10 @@ Files are written with a row-group geometry chosen for the access pattern, and r
 
 **S3 read-path Tier 1**: parquet-open hygiene, adaptive read-ahead sized to the bandwidth-delay product, coalesced ranges, singleflight de-duplication and per-operation S3 metrics.
 
-Opening a Parquet file over an object store is dominated by round trips. This batch fixed the open sequence, sized read-ahead to the connection's bandwidth-delay product, coalesced nearby ranges into one GET, de-duplicated concurrent identical fetches and made every S3 operation observable so the next optimization has numbers to argue with.
+Opening a Parquet file over an object store is dominated by round trips. This batch fixed the open sequence, sized read-ahead to the connection's bandwidth-delay product, coalesced nearby ranges into one GET, de-duplicated concurrent identical fetches and made every S3 operation observable so the next optimization has numbers to argue with. Pages are read on the decoding goroutine by default (`s3.parquet_read_mode: sync`), so the column readers of a file take turns on its read-ahead window and a query's GETs and bytes depend only on the files and the query; `async` (a read-ahead goroutine per column) remains available.
 
-- Verification: tests: `internal/s3reader/adaptive_test.go`, `internal/s3reader/coalescing_reader_test.go`, `internal/storage/parquets3/coverage_s3_paths_test.go#TestInteg_openParquetFile_ConcurrentDownloads`, `internal/storage/parquets3/coverage_integration_test.go#TestInteg_openParquetFile_RangeRead`
-- Docs: `docs/architecture/metadata-and-s3-optimization.md`, `docs/read-path.md`
+- Verification: tests: `internal/s3reader/adaptive_test.go`, `internal/s3reader/coalescing_reader_test.go`, `internal/storage/parquets3/coverage_s3_paths_test.go#TestInteg_openParquetFile_ConcurrentDownloads`, `internal/storage/parquets3/coverage_integration_test.go#TestInteg_openParquetFile_RangeRead`, `internal/storage/parquets3/field_metadata_determinism_test.go#TestFieldMetadataCompactedCountersAreDeterministic`, `lakehouse-traces/internal/storage/parquets3/field_metadata_determinism_test.go#TestFieldMetadataTracesCompactedCountersAreDeterministic`
+- Docs: `docs/architecture/metadata-and-s3-optimization.md`, `docs/read-path.md`, `docs/perf/field-metadata-cells.md`
 - Changelog: `0.9.0`, `0.83.0`
 - Note: The v0.9.0 S3 circuit breaker was removed in the VL-integration refactor (PR #37); S3 failure and load behavior is governed by resource bounds, singleflight and adaptive read-ahead instead. Its changelog bullet belongs to this feature's history.
 

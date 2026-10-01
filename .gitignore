@@ -9,6 +9,7 @@ lakehouse-traces/lakehouse-traces
 /loadtest
 /bench
 /s3proxy
+/compression_ab
 *.exe
 
 # Test artifacts

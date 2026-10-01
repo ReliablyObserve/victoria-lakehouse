@@ -13,8 +13,10 @@
         - a harness cell has no row, or a row names a cell the harness lacks;
         - a pass row's cell is not exact in every iteration;
         - a differ row's cell became exact (promote it: regenerate the rows);
-        - a counter grew past the row's (GETs, bytes, row groups, pages) or
-          the answering path changed;
+        - a counter (GETs, bytes, row groups, pages) differs from the row's,
+          up or down, or differs between iterations of one cell (the
+          counters are deterministic: a function of the files and the query),
+          or the answering path changed;
         - a compacted cell is not exact where the same flushed cell is.
       Latency budgets are not gated here: shared CI runners are not the
       machine the budgets were measured on. They are held by the per-PR
@@ -66,11 +68,11 @@ def load_matrix(path, build):
 
 
 def counters_of(recs):
-    """The worst iteration's counters. They are deterministic per cell except
-    where concurrent reads race a cache fill (a filtered scan of a compacted
-    object issues a varying number of 4 KiB range reads, and more of them at
-    0 ms than at 100 ms), so the row records, and the gate compares, the
-    maximum."""
+    """The cell's counters (the maximum over its iterations). They are
+    deterministic: every iteration of a cell reads the same GETs, bytes, row
+    groups and pages, whatever the S3 latency or goroutine scheduling. The gate
+    checks that separately (counter_spread) and holds the row to the exact
+    value."""
     s = summarize(recs)
     c = {"s3_gets": max(r["gets"] for r in recs), "s3_bytes": max(r["bytes"] for r in recs)}
     if "row_groups" in recs[0]:
@@ -160,6 +162,17 @@ def load_rows(path):
     return rows
 
 
+def counter_spread(recs):
+    """The counters whose value differs between iterations of one cell, as
+    {counter: sorted distinct values}."""
+    out = {}
+    for k, field in (("s3_gets", "gets"), ("s3_bytes", "bytes"), ("row_groups", "row_groups"), ("pages", "pages")):
+        vals = sorted({r[field] for r in recs if field in r})
+        if len(vals) > 1:
+            out[k] = vals
+    return out
+
+
 def strip_latency(cell):
     return re.sub(r"/s3=\d+ms$", "", cell)
 
@@ -190,9 +203,14 @@ def check(matrix_groups, rows):
             fails.append(f"{cell}: expect differ but now exact — regenerate the rows to promote it")
         for recs in runs:
             got = counters_of(recs)
+            for k, vals in counter_spread(recs).items():
+                fails.append(f"{cell}: {k} varies between iterations {vals} — the counters must be deterministic")
             for k in COUNTERS:
                 if k in row["counters"] and k in got and got[k] > row["counters"][k]:
                     fails.append(f"{cell}: {k} {got[k]} > registry {row['counters'][k]}")
+                elif k in row["counters"] and k in got and got[k] < row["counters"][k]:
+                    fails.append(f"{cell}: {k} {got[k]} < registry {row['counters'][k]} — "
+                                 "regenerate the row (perf_rows.py gen) so the registry records what the build reads")
             if got["path"] != row["counters"]["path"]:
                 fails.append(f"{cell}: path {got['path']} != registry {row['counters']['path']}")
     # Compaction must not cost exactness: the same request on the compacted

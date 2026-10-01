@@ -350,6 +350,7 @@ func sourceSlotMapping(data []byte) []byte {
 func (r *Rewriter) writerOptions(src []byte) []parquet.WriterOption {
 	opts := []parquet.WriterOption{
 		parquet.MaxRowsPerRowGroup(int64(r.rowGroupSize)),
+		schema.ParquetCreatedBy(),
 	}
 	if kv := sourceSlotMapping(src); len(kv) > 0 {
 		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))

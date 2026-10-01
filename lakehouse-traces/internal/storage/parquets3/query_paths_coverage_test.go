@@ -36,6 +36,8 @@ func TestOpenRangedParquet_ReadsRowsOverRanges(t *testing.T) {
 	fi := manifest.FileInfo{Key: key, Size: int64(len(data))}
 
 	t.Run("async mode without cached schema", func(t *testing.T) {
+		s.cfg.S3.ParquetReadMode = "async"
+		defer func() { s.cfg.S3.ParquetReadMode = "" }()
 		f, err := s.openRangedParquet(context.Background(), fi, nil)
 		if err != nil {
 			t.Fatalf("openRangedParquet: %v", err)

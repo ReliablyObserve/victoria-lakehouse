@@ -538,7 +538,7 @@
     },
     "s3.parquet_read_mode": {
       "name": "ParquetReadMode",
-      "doc": "ParquetReadMode selects parquet-go's page read mode on ranged S3 opens: \"async\" (default — pages are read ahead by a per-column goroutine, hiding S3 latency behind decode; bounded at one page in flight per column reader) or \"sync\" (the library default mode, kept as the rollback switch)."
+      "doc": "ParquetReadMode selects parquet-go's page read mode on ranged S3 opens: \"sync\" (default — the column readers of a file take turns on its single read-ahead window in a fixed order, so the GETs and bytes of a query depend only on the files and the query) or \"async\" (pages are read ahead by a per-column goroutine; the goroutines interleave on the shared window, evict each other's bytes and re-fetch them, so the same query reads a varying and larger number of GETs and bytes)."
     },
     "s3.planned_fetch_max_inflight": {
       "name": "PlannedFetchMaxInflight",

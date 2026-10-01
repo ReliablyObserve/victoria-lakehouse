@@ -76,11 +76,17 @@ func (s *Storage) buildWindowReader(inner s3reader.ReaderAtSizer, fileSize int64
 //   - OptimisticRead(true) + ReadBufferSize: one tail GET covers the
 //     magic-footer suffix AND the footer body when the footer fits in the
 //     read buffer — instead of a serial 8-byte read then a footer read.
-//   - FileReadMode(ReadModeAsync) (config: s3.parquet_read_mode): pages are
-//     read ahead by a goroutine per Pages instance (AsyncPages); the read
-//     channel is unbuffered, so memory is bounded at ~one page in flight per
-//     column reader, and Close() drains the goroutine (all our page readers
-//     close via defer). "sync" is the rollback switch.
+//   - FileReadMode (config: s3.parquet_read_mode): "sync" (default) reads
+//     pages on the decoding goroutine, so the column readers of a file take
+//     turns on its single read-ahead window in a fixed order and a query's
+//     GETs and bytes depend only on the files and the query. "async" adds
+//     FileReadMode(ReadModeAsync): a read-ahead goroutine per Pages
+//     instance. Those goroutines interleave on the shared window (the
+//     buffered reader serialises their GETs under one mutex, so they gain
+//     no I/O parallelism), evict each other's bytes and re-fetch them —
+//     measured on the field-metadata matrix with the default window knobs:
+//     27 of 192 cells varied run to run, and the matrix read 15% more GETs
+//     and 25% more bytes than sync.
 //   - FileSchema(cachedSchema): skips re-deriving the schema from footer
 //     metadata when the footer cache already holds it.
 func (s *Storage) rangedOpenOptions(fi manifest.FileInfo, cachedSchema *parquet.Schema) []parquet.FileOption {
@@ -97,7 +103,7 @@ func (s *Storage) rangedOpenOptions(fi manifest.FileInfo, cachedSchema *parquet.
 		parquet.OptimisticRead(true),
 		parquet.ReadBufferSize(readBuf),
 	}
-	if s.cfg.S3.ParquetReadMode != "sync" {
+	if s.cfg.S3.ParquetReadMode == "async" {
 		opts = append(opts, parquet.FileReadMode(parquet.ReadModeAsync))
 	}
 	if cachedSchema != nil {

@@ -102,7 +102,7 @@ var (
 	s3ReadAheadMax    = flag.Int("lakehouse.s3.read-ahead-max-bytes", 0, "Adaptive read-ahead window ceiling in bytes; the window doubles from read-ahead-bytes on sequential scans (default: 8MB)")
 	s3ReadAheadWaste  = flag.Float64("lakehouse.s3.read-ahead-waste-threshold", 0, "Waste-feedback threshold for the adaptive read-ahead window: when an evicted window had more than this fraction of its bytes never read, the next window halves toward read-ahead-bytes instead of growing; >=1 disables (default: 0.5)")
 	s3ReadBufferSize  = flag.Int("lakehouse.s3.read-buffer-size", 0, "Parquet page read buffer for ranged S3 opens in bytes (default: 1MB)")
-	s3ParquetReadMode = flag.String("lakehouse.s3.parquet-read-mode", "", "Parquet page read mode on ranged S3 opens: async (read-ahead goroutine per column) or sync (default: async)")
+	s3ParquetReadMode = flag.String("lakehouse.s3.parquet-read-mode", "", "Parquet page read mode on ranged S3 opens: sync (column readers take turns on the read-ahead window) or async (read-ahead goroutine per column) (default: sync)")
 
 	s3ProjectedFetchMode      = flag.String("lakehouse.s3.projected-fetch-mode", "", "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — rollback switch) (default: window)")
 	s3ProjectedFetchMaxBytes  = flag.Int("lakehouse.s3.projected-fetch-max-bytes", 0, "DEPRECATED: the per-plan cap is retired (kept parsed for compatibility; plans are admitted via the memory ledger and capped per-SPAN by lakehouse.s3.planned-fetch-span-cap-bytes)")
