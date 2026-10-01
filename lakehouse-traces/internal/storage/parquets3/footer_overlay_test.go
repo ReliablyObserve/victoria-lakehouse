@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -363,32 +364,24 @@ func TestCachedFooterWeightCalibration(t *testing.T) {
 				tailStart = 0
 			}
 			region := data[tailStart:]
-			// Background allocation (leftover goroutines of earlier tests) only ever
-			// inflates a heap delta, so the smallest of a few trials is the honest one.
-			per := int64(1) << 62
-			const n = 24
-			var sample *CachedFooter // one entry kept for the report; the rest are garbage per trial
-			for trial := 0; trial < 3; trial++ {
-				runtime.GC()
-				runtime.GC()
-				var m0, m1 runtime.MemStats
-				runtime.ReadMemStats(&m0)
-				keep := make([]*CachedFooter, 0, n) // out of scope (garbage) before the next trial's m0
-				for i := 0; i < n; i++ {
-					cf, _, err := cacheFooterFromTail(context.Background(), nil, "k", append([]byte(nil), region...), tailStart, size)
-					if err != nil {
-						t.Fatal(err)
-					}
-					keep = append(keep, cf)
+			// Heap deltas are noisy (leftover goroutines of earlier tests allocate;
+			// the previous trial's entries may still be collected mid-trial), so take
+			// the median of the positive trials of a helper whose frame is gone, and
+			// with it the entries, before the next one starts.
+			var trials []int64
+			var sample *CachedFooter
+			for trial := 0; trial < 5; trial++ {
+				d, cf := measureFooterEntries(t, region, tailStart, size, 24)
+				sample = cf
+				if d > 0 {
+					trials = append(trials, d)
 				}
-				runtime.GC()
-				runtime.GC()
-				runtime.ReadMemStats(&m1)
-				if d := (int64(m1.HeapAlloc) - int64(m0.HeapAlloc)) / n; d < per {
-					per = d
-				}
-				sample = keep[0]
 			}
+			if len(trials) < 3 {
+				t.Fatalf("only %d usable heap trials of 5", len(trials))
+			}
+			sort.Slice(trials, func(i, j int) bool { return trials[i] < trials[j] })
+			per := trials[len(trials)/2]
 			w := sample.Weight()
 			t.Logf("rows=%d footer=%dB tail=%dB measured heap/entry=%dB model weight=%dB (ratio %.2f)", rows, sample.footerSize, len(sample.tail), per, w, float64(w)/float64(per))
 			if float64(w) < 0.75*float64(per) || float64(w) > 1.4*float64(per) {
@@ -397,6 +390,29 @@ func TestCachedFooterWeightCalibration(t *testing.T) {
 			runtime.KeepAlive(data)
 		})
 	}
+}
+
+// measureFooterEntries builds n cache entries from the same tail and returns the
+// heap growth per entry (after GC) and one entry. It is a function of its own so
+// that all n entries are garbage when it returns.
+func measureFooterEntries(t *testing.T, region []byte, tailStart, size int64, n int) (int64, *CachedFooter) {
+	runtime.GC()
+	runtime.GC()
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	keep := make([]*CachedFooter, 0, n)
+	for i := 0; i < n; i++ {
+		cf, _, err := cacheFooterFromTail(context.Background(), nil, "k", append([]byte(nil), region...), tailStart, size)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keep = append(keep, cf)
+	}
+	runtime.GC()
+	runtime.GC()
+	runtime.ReadMemStats(&m1)
+	runtime.KeepAlive(keep)
+	return (int64(m1.HeapAlloc) - int64(m0.HeapAlloc)) / int64(n), keep[0]
 }
 
 // trace_id point lookups keep the window reader (the planned prototype
