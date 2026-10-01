@@ -78,6 +78,10 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	queryStr := q.String()
 	pipeFields := logstorage.GetQueryPipeFields(q)
+	// The columns every per-file read projects come from the parsed query
+	// (filter AND pipes), not from the query text — see neededColumns. The
+	// context value is attached below, once the tombstones are known.
+	neededFields := logstorage.GetQueryNeededFields(q)
 	filter := parseFilterFromQuery(q)
 
 	// Per-query memory ceiling for in-flight DataBlock rows. Bounds the live
@@ -187,6 +191,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	scope := scopeFor(ctx, tenantIDs)
 	queryTombstones := s.scopeTombstones(scope, startNs, endNs)
 	hasTombstones := len(queryTombstones) > 0
+	ctx = withReadContext(ctx, q, neededFields, filter, queryStr, queryTombstones)
 	sink := newTombstoneSink(scope, queryTombstones, s.keyTenantParser(), s.AccountOnlyTenantKeys(), writeBlockWith)
 	filteredWriteBlock := sink.uniform
 
@@ -262,7 +267,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// LabelAggregates for files fully within the range — zero S3 reads. Boundary
 	// / un-aggregated files fall through to the scan below; the buffer bridge
 	// still contributes unflushed rows after the watermark.
-	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones {
+	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones && countPushdownSound(q, aggField) {
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
@@ -422,10 +427,16 @@ func recordQueryRows(rowsEmitted *atomic.Int64) {
 // (TestQueryFileWorkers_BoundEnforced) load-bearing: stripping the
 // Acquire makes the bound's Limit unenforced.
 func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) {
-	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, queryStr, s.registry, s.footerCache, s.footerPrefetchBytes()); skip {
+	// Footer and file-level bloom pruning read the query text for terms that
+	// must match; under a NOT, an OR or an `if (...)` they do not (#289).
+	pruneQuery := queryStr
+	if noFooterBloomFrom(ctx) {
+		pruneQuery = ""
+	}
+	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, pruneQuery, s.registry, s.footerCache, s.footerPrefetchBytes()); skip {
 		return
 	}
-	if s.checkFileBloom(ctx, fi, queryStr) {
+	if s.checkFileBloom(ctx, fi, pruneQuery) {
 		return
 	}
 	if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
@@ -810,6 +821,32 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 	return f, err
 }
 
+type windowReadOnlyKey struct{}
+
+// withWindowReadOnly marks ctx so projected opens use the adaptive-window
+// reader even when s3.projected_fetch_mode is planned.
+//
+// Why trace_id point lookups: they are the latency-critical read of the
+// traces signal (Jaeger and Tempo trace-by-ID) and the log-to-trace
+// correlation click. The per-row-group bloom skip is disabled on the
+// projected path (the planned view would hand back a zero-filled bloom, #172),
+// so a planned read fetches the trace_id chunk of EVERY matched row group,
+// while the window reader's read-ahead keeps hitting the same few windows. The
+// planned prototype measured 3 -> 8 GETs and 209 -> 412 ms on this shape, so
+// it stays on the window path until the bloom bytes are served from the
+// cached tail as well (the final overlay implementation re-measured both
+// paths at one GET and the same latency on the harness, so the gate is a
+// deliberate no-regression guard, not a measured fix). The cached footer
+// still opens with no S3 round trip.
+func withWindowReadOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, windowReadOnlyKey{}, true)
+}
+
+func windowReadOnly(ctx context.Context) bool {
+	v, _ := ctx.Value(windowReadOnlyKey{}).(bool)
+	return v
+}
+
 // openParquetFileWithPlan is openParquetFile for callers that arm a
 // plan-then-fetch view (S3 Tier-2 items 8/9). When the projected
 // range-read path engages and s3.projected_fetch_mode is "planned"
@@ -820,6 +857,12 @@ func (s *Storage) openParquetFile(ctx context.Context, fi manifest.FileInfo, pro
 // the adaptive-window stack — byte-identical to the previous behavior.
 func (s *Storage) openParquetFileWithPlan(ctx context.Context, fi manifest.FileInfo, projectedCols map[string]bool) (*parquet.File, *s3reader.PlannedFetchReaderAt, error) {
 	usePlanned := s.cfg.S3.ProjectedFetchMode != config.ProjectedFetchModeWindow
+	if usePlanned && windowReadOnly(ctx) {
+		// A trace_id point lookup stays on the window reader it always used
+		// (see windowReadOnly). The zero-GET open still applies.
+		metrics.S3ProjectedFetchFallback.Inc("trace-id-lookup")
+		usePlanned = false
+	}
 	return s.openParquetFileInternal(ctx, fi, projectedCols, usePlanned)
 }
 
@@ -881,8 +924,7 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 				if footerLen, fErr := FooterLength(tail[len(tail)-8:]); fErr == nil {
 					totalFooterBytes := footerLen + 8
 					if totalFooterBytes <= len(tail) {
-						footerSlice := tail[len(tail)-totalFooterBytes:]
-						if cachedF, _, pErr := ParseFooterFromBytes(fi.Key, footerSlice, fi.Size); pErr == nil {
+						if cachedF, _, pErr := cacheFooterFromTail(ctx, s.pool, fi.Key, tail, offset, fi.Size); pErr == nil {
 							s.footerCache.Put(fi.Key, cachedF)
 							totalCols := len(cachedF.File.Root().Columns())
 							if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
@@ -960,12 +1002,20 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 }
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
-	projectedCols := queryColumns(queryStr, s.registry, pipeFields)
+	if queryFiltersTraceID(queryStr) {
+		ctx = withWindowReadOnly(ctx)
+	}
+	projectedCols := neededColumns(s.registry, neededFieldsFrom(ctx))
 
 	// Hits/stats fast path: when the endpoint only needs timestamps (set via
 	// context hint) and the query has no column-specific filters, project only
 	// the timestamp column to avoid deserializing all row data.
-	if projectedCols == nil && storage.IsTimestampOnly(ctx) {
+	// NOTE: today no production handler sets the timestamp-only hint
+	// (selectapi's wrapVLTimestampOnly has no caller), so this branch is not
+	// reached by a served request; the guards keep it from narrowing a read a
+	// delete, a row filter or a pipe needing every field made unprojected if a
+	// handler starts setting it.
+	if projectedCols == nil && storage.IsTimestampOnly(ctx) && !rowFilterFrom(ctx) && !readAllFrom(ctx) {
 		// Timestamp-only is safe ONLY for an UNFILTERED count/hits. A row filter
 		// must be evaluated against its columns at scan time — a free-text _msg
 		// word filter (e.g. `error | stats count()`) has no bloom to push down,
@@ -1035,7 +1085,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
 	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecks(queryStr))
-	pdf := resolvePushDownIndices(f, buildPushDownFilter(queryStr, s.registry))
+	pdf := resolvePushDownIndices(f, buildPushDownFilter(stripPipeOutsideQuotes(queryStr), s.registry))
 
 	// Footer-bloom row-group skip is SOUND ONLY when the file body is fully
 	// resident. On the projected range-read path (projectedCols != nil →
@@ -1049,7 +1099,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// rows. The file-level pmeta bloom has already pruned files; the per-row-group
 	// footer-bloom skip is a pure optimization, so gating it off on the range-read
 	// path costs only extra in-range row-group reads, never correctness.
-	bloomResident := projectedCols == nil
+	bloomResident := projectedCols == nil && !noFooterBloomFrom(ctx)
 
 	var collectedTraceIDs []string
 	var traceIDsPtr *[]string
@@ -1089,7 +1139,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 			metrics.ParquetRowGroupsSkipped.Inc("pushdown")
 			continue
 		}
-		if tokenBloomSkip(fileKVMeta, rgIdx, searchTokens) {
+		if !noFooterBloomFrom(ctx) && tokenBloomSkip(fileKVMeta, rgIdx, searchTokens) {
 			metrics.ParquetRowGroupsSkipped.Inc("token_bloom")
 			continue
 		}
@@ -1112,7 +1162,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// the query's `_time` bucketing; a row group whose true bounds straddle a
 	// bucket boundary is deferred to a real read, so per-bucket counts stay
 	// exact instead of being smeared uniformly across the buckets.
-	tsOnly := len(projectedCols) == 1 && projectedCols[s.registry.TimestampColumn()]
+	tsOnly := len(projectedCols) == 1 && projectedCols[s.registry.TimestampColumn()] && !rowFilterFrom(ctx)
 	plan := metadataOnlyPlanFromContext(ctx)
 	if tsOnly && tsIdx >= 0 {
 		var deferred []indexedRowGroup
@@ -2518,7 +2568,7 @@ func extractExactMatch(query, fieldName string) string {
 // filterFilesByLabels uses manifest-level labels to skip files that definitely
 // don't contain the queried values. This avoids downloading files from S3.
 func (s *Storage) filterFilesByLabels(files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
-	pdf := buildPushDownFilter(queryStr, s.registry)
+	pdf := buildPushDownFilter(stripPipeOutsideQuotes(queryStr), s.registry)
 	if pdf == nil || len(pdf.Checks) == 0 {
 		return files
 	}
@@ -3047,6 +3097,11 @@ func (s *Storage) updateColumnStats(fileKey string, f *parquet.File) {
 // skipping, footer cache, etc.).
 //
 // If no matching files are found, it returns nil (no error).
+//
+// It emits the named files' rows within [startNs, endNs], projected to the
+// columns the query reads. It applies neither the query's row filter nor any
+// delete (tombstone): the caller owns both, and no production code calls it
+// today. Do not use it to answer a query without adding them.
 func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
 	if len(fileKeys) == 0 {
 		return nil
@@ -3056,6 +3111,11 @@ func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, sta
 	keySet := make(map[string]bool, len(fileKeys))
 	for _, k := range fileKeys {
 		keySet[k] = true
+	}
+
+	if q, err := logstorage.ParseQuery(queryStr); err == nil {
+		ctx = withNeededFields(ctx, logstorage.GetQueryNeededFields(q))
+		ctx = withRowFilter(ctx, parseFilterFromQuery(q) != nil)
 	}
 
 	// Cross-tenant by construction: the caller has already named the exact

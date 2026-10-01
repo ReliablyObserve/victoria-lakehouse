@@ -14,33 +14,130 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
+// CachedFooter is one footer-cache entry: the parsed footer plus the raw tail
+// bytes behind it.
+//
+// tail holds the object's last len(tail) bytes: always the footer, and — when
+// the cache writer could see it — the page-index stripe (ColumnIndex and
+// OffsetIndex sections) that sits just before the footer. The parsed File
+// reads its lazy metadata through those same bytes, and the overlay reader
+// serves them to the query-time open, so a cached file opens with no S3 round
+// trip and a ColumnIndex()/OffsetIndex() call never touches S3 either.
+// Entries are immutable once cached.
 type CachedFooter struct {
 	File       *parquet.File
 	FileSize   int64
 	footerSize int
+
+	tail    []byte
+	tailOff int64
+}
+
+// Resident-size model of one cache entry, fitted to measured heap per entry
+// (TestCachedFooterWeightCalibration re-measures it on every run and fails
+// when the model falls outside 0.75x-1.4x of the heap):
+//
+//	resident ~ len(tail) + retainedMetadataFactor*footerSize + cachedFooterOverhead
+//
+// len(tail) is the raw footer + page-index stripe the entry owns;
+// retainedMetadataFactor is the decoded thrift metadata (KV strings, row-group
+// and column structs) per footer byte; cachedFooterOverhead is the fixed
+// per-file part (column tree of the parsed *parquet.File, list element, map
+// slot), about 56 KiB for the logs schema.
+const (
+	retainedMetadataFactor = 2.25
+	cachedFooterOverhead   = 56 << 10
+)
+
+// Weight is the number of resident bytes the entry is charged against the
+// cache budget. An entry that kept the whole object (the whole-file fallback)
+// is charged the object size.
+func (c *CachedFooter) Weight() int64 {
+	if c == nil {
+		return 0
+	}
+	if len(c.tail) == 0 {
+		// Fallback entry whose handle retains the whole object.
+		if c.FileSize > 0 {
+			return c.FileSize + cachedFooterOverhead
+		}
+		return cachedFooterOverhead
+	}
+	return int64(len(c.tail)) + int64(retainedMetadataFactor*float64(c.footerSize)) + cachedFooterOverhead
+}
+
+// Tail returns the cached tail bytes and the object offset they start at.
+// The slice is shared and read-only. The tail is nil when the entry holds
+// none.
+func (c *CachedFooter) Tail() ([]byte, int64) {
+	if c == nil {
+		return nil, 0
+	}
+	return c.tail, c.tailOff
+}
+
+// HasPageIndex reports whether the cached tail covers the whole page-index
+// stripe, i.e. every ColumnIndex()/OffsetIndex() read is served from memory.
+// A file without a page index counts as covered.
+func (c *CachedFooter) HasPageIndex() bool {
+	if c == nil || len(c.tail) == 0 || c.File == nil {
+		return false
+	}
+	start := pageIndexStripeStart(c.File)
+	return start < 0 || start >= c.tailOff
+}
+
+// pageIndexStripeStart returns the smallest ColumnIndex/OffsetIndex offset in
+// the footer metadata, or -1 when the file has no page index.
+func pageIndexStripeStart(f *parquet.File) int64 {
+	md := f.Metadata()
+	if md == nil {
+		return -1
+	}
+	start := int64(-1)
+	for i := range md.RowGroups {
+		for j := range md.RowGroups[i].Columns {
+			c := &md.RowGroups[i].Columns[j]
+			for _, o := range [...]int64{c.ColumnIndexOffset, c.OffsetIndexOffset} {
+				if o > 0 && (start < 0 || o < start) {
+					start = o
+				}
+			}
+		}
+	}
+	return start
 }
 
 type footerEntry struct {
 	key    string
 	footer *CachedFooter
+	weight int64
 	elem   *list.Element
 }
 
+// FooterCache is an LRU of parsed footers bounded by RESIDENT BYTES, not by
+// entry count. A count bound hides the real cost: a footer with token blooms
+// or a trace index runs to hundreds of KB, so "10,000 entries" ranged from
+// ~50 MB to several GB depending on the data. Eviction runs until the new
+// entry fits; an entry larger than the whole budget is not cached.
 type FooterCache struct {
 	mu       sync.RWMutex
 	items    map[string]*footerEntry
 	lru      *list.List
-	maxItems int
+	maxBytes int64
+	bytes    int64
 }
 
-func NewFooterCache(maxItems int) *FooterCache {
-	if maxItems <= 0 {
-		maxItems = 10000
+// NewFooterCache returns a cache holding at most maxBytes of footers;
+// maxBytes <= 0 selects the per-signal default (defaultFooterMaxBytes).
+func NewFooterCache(maxBytes int64) *FooterCache {
+	if maxBytes <= 0 {
+		maxBytes = defaultFooterMaxBytes
 	}
 	return &FooterCache{
-		items:    make(map[string]*footerEntry, maxItems),
+		items:    make(map[string]*footerEntry),
 		lru:      list.New(),
-		maxItems: maxItems,
+		maxBytes: maxBytes,
 	}
 }
 
@@ -58,30 +155,69 @@ func (fc *FooterCache) Get(key string) (*CachedFooter, bool) {
 	return footer, true
 }
 
+// Put caches footer under key, evicting least-recently-used entries until it
+// fits the byte budget. A footer heavier than the whole budget is dropped
+// (and any older entry for the key removed).
 func (fc *FooterCache) Put(key string, footer *CachedFooter) {
+	w := footer.Weight()
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 
 	if entry, ok := fc.items[key]; ok {
-		entry.footer = footer
-		fc.lru.MoveToFront(entry.elem)
+		fc.removeLocked(entry)
+	}
+	if w > fc.maxBytes {
+		fc.publishLocked()
 		return
 	}
-
-	for fc.lru.Len() >= fc.maxItems {
+	for fc.bytes+w > fc.maxBytes {
 		back := fc.lru.Back()
 		if back == nil {
 			break
 		}
-		evicted := back.Value.(*footerEntry)
-		fc.lru.Remove(back)
-		delete(fc.items, evicted.key)
+		fc.removeLocked(back.Value.(*footerEntry))
 		metrics.FooterCacheEvictions.Inc()
 	}
-
-	entry := &footerEntry{key: key, footer: footer}
+	entry := &footerEntry{key: key, footer: footer, weight: w}
 	entry.elem = fc.lru.PushFront(entry)
 	fc.items[key] = entry
+	fc.bytes += w
+	fc.publishLocked()
+}
+
+func (fc *FooterCache) removeLocked(e *footerEntry) {
+	fc.lru.Remove(e.elem)
+	delete(fc.items, e.key)
+	fc.bytes -= e.weight
+}
+
+func (fc *FooterCache) publishLocked() {
+	metrics.FooterCacheEntries.Set(int64(len(fc.items)))
+	metrics.FooterCacheBytes.Set(fc.bytes)
+}
+
+// Bytes returns the resident bytes currently charged to the cache.
+func (fc *FooterCache) Bytes() int64 {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	return fc.bytes
+}
+
+// AvgEntryBytes is the mean resident charge of a cached footer (0 when empty).
+func (fc *FooterCache) AvgEntryBytes() int64 {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	if len(fc.items) == 0 {
+		return 0
+	}
+	return fc.bytes / int64(len(fc.items))
+}
+
+// MaxBytes returns the byte budget.
+func (fc *FooterCache) MaxBytes() int64 {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	return fc.maxBytes
 }
 
 // Has returns true if the key is present in the cache without modifying LRU
@@ -121,8 +257,8 @@ func (fc *FooterCache) Remove(key string) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 	if entry, ok := fc.items[key]; ok {
-		fc.lru.Remove(entry.elem)
-		delete(fc.items, key)
+		fc.removeLocked(entry)
+		fc.publishLocked()
 	}
 }
 
@@ -231,24 +367,32 @@ const maxParquetFooterBytes = 64 * 1024 * 1024
 // fileSize comparison below are defense-in-depth policy limits, not this
 // hang guard.
 func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (cachedFooter *CachedFooter, file *parquet.File, err error) {
+	cachedFooter, file, _, err = parseFooterBytes(key, footerBytes, fileSize)
+	return cachedFooter, file, err
+}
+
+// parseFooterBytes is ParseFooterFromBytes that also returns the synthetic
+// reader behind the parsed file, so cacheFooterFromTail can re-point it at an
+// owned copy of the bytes before the entry is published.
+func parseFooterBytes(key string, footerBytes []byte, fileSize int64) (cachedFooter *CachedFooter, file *parquet.File, rd *footerReaderAt, err error) {
 	if fileSize <= 0 {
 		metrics.FooterParseRejected.Inc("invalid_file_size")
-		return nil, nil, fmt.Errorf("parse parquet footer %s: invalid file size %d", key, fileSize)
+		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: invalid file size %d", key, fileSize)
 	}
 	if int64(len(footerBytes)) > fileSize {
 		metrics.FooterParseRejected.Inc("footer_exceeds_file_size")
-		return nil, nil, fmt.Errorf("parse parquet footer %s: footer bytes (%d) exceed file size (%d)", key, len(footerBytes), fileSize)
+		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: footer bytes (%d) exceed file size (%d)", key, len(footerBytes), fileSize)
 	}
 	if len(footerBytes) < 8 {
 		metrics.FooterParseRejected.Inc("too_short")
-		return nil, nil, fmt.Errorf("parse parquet footer %s: need at least 8 bytes, got %d", key, len(footerBytes))
+		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: need at least 8 bytes, got %d", key, len(footerBytes))
 	}
 	// FooterLength decodes the declared length and validates the "PAR1"
 	// magic in one step (see below).
 	declaredLenInt, lenErr := FooterLength(footerBytes[len(footerBytes)-8:])
 	if lenErr != nil {
 		metrics.FooterParseRejected.Inc("bad_magic")
-		return nil, nil, fmt.Errorf("parse parquet footer %s: %w", key, lenErr)
+		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: %w", key, lenErr)
 	}
 	declaredLen := int64(declaredLenInt)
 	// The real hang guard: parquet-go can never be made to read (and our
@@ -256,19 +400,19 @@ func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (cache
 	// we already hold.
 	if declaredLen+8 > int64(len(footerBytes)) {
 		metrics.FooterParseRejected.Inc("declared_length_exceeds_buffer")
-		return nil, nil, fmt.Errorf("parse parquet footer %s: declared footer length %d exceeds available buffer (%d bytes)", key, declaredLen, len(footerBytes)-8)
+		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: declared footer length %d exceeds available buffer (%d bytes)", key, declaredLen, len(footerBytes)-8)
 	}
 	// Implied by the buffer bound above (footerBytes is already known to
 	// fit within fileSize) but checked explicitly so this invariant holds
 	// even if the buffer-bound check above is ever loosened or reordered.
 	if declaredLen > fileSize {
 		metrics.FooterParseRejected.Inc("declared_length_exceeds_file_size")
-		return nil, nil, fmt.Errorf("parse parquet footer %s: declared footer length %d exceeds file size (%d)", key, declaredLen, fileSize)
+		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: declared footer length %d exceeds file size (%d)", key, declaredLen, fileSize)
 	}
 	if declaredLen > maxParquetFooterBytes {
 		metrics.FooterParseRejected.Inc("declared_length_exceeds_cap")
 		logger.Warnf("footer parse: declared footer length %d for %s exceeds policy cap %d bytes — rejecting (a legitimate file this large needs the cap raised)", declaredLen, key, maxParquetFooterBytes)
-		return nil, nil, fmt.Errorf("parse parquet footer %s: declared footer length %d exceeds max %d", key, declaredLen, maxParquetFooterBytes)
+		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: declared footer length %d exceeds max %d", key, declaredLen, maxParquetFooterBytes)
 	}
 
 	// parquet-go's thrift-decoded metadata carries other untrusted integer
@@ -281,7 +425,7 @@ func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (cache
 	defer func() {
 		if rec := recover(); rec != nil {
 			metrics.FooterParseRejected.Inc("decoder_panic")
-			cachedFooter, file = nil, nil
+			cachedFooter, file, rd = nil, nil, nil
 			err = fmt.Errorf("parse parquet footer %s: panic in parquet-go decoder: %v", key, rec)
 		}
 	}()
@@ -296,13 +440,15 @@ func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (cache
 		SkipMagicBytes:   true,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse parquet footer %s: %w", key, err)
+		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: %w", key, err)
 	}
 	return &CachedFooter{
 		File:       f,
 		FileSize:   fileSize,
-		footerSize: len(footerBytes),
-	}, f, nil
+		footerSize: int(declaredLen) + 8,
+		tail:       footerBytes,
+		tailOff:    fileSize - int64(len(footerBytes)),
+	}, f, r, nil
 }
 
 // footerReaderAt serves a minimal virtual parquet file: "PAR1" magic at

@@ -346,38 +346,6 @@ func TestMedium_parquetValueToInterface(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 7. isFreeTextSearch (projection.go ~81) -- cover uncovered branches
-// ---------------------------------------------------------------------------
-
-func TestMedium_isFreeTextSearch(t *testing.T) {
-	tests := []struct {
-		name  string
-		query string
-		want  bool
-	}{
-		{"empty string", "", false},
-		{"wildcard", "*", false},
-		{"quoted text", `"error connecting"`, true},
-		{"bare word no colon", "error", true},
-		{"field:value with colon", `service.name:"api"`, false},
-		{"leading spaces + bare word", "  error", true},
-		{"leading spaces + quoted", `  "error"`, true},
-		{"leading spaces + wildcard", "  *", false},
-		{"colon-only string", ":", false},
-		{"has colon but no field name", `:="test"`, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isFreeTextSearch(tt.query)
-			if got != tt.want {
-				t.Errorf("isFreeTextSearch(%q) = %v, want %v", tt.query, got, tt.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 8. rowGroupMatchesTimeRange (storage_query.go) -- cover boundaries
 // ---------------------------------------------------------------------------
 
@@ -559,10 +527,10 @@ func TestMedium_readMapColumnToBlockCols(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMedium_NewFooterCache(t *testing.T) {
-	t.Run("zero maxItems defaults to 10000", func(t *testing.T) {
+	t.Run("zero maxBytes defaults", func(t *testing.T) {
 		fc := NewFooterCache(0)
-		if fc.maxItems != 10000 {
-			t.Errorf("expected maxItems=10000, got %d", fc.maxItems)
+		if fc.maxBytes != defaultFooterMaxBytes {
+			t.Errorf("expected maxBytes=%d, got %d", defaultFooterMaxBytes, fc.maxBytes)
 		}
 		if fc.items == nil {
 			t.Error("expected non-nil items map")
@@ -572,22 +540,22 @@ func TestMedium_NewFooterCache(t *testing.T) {
 		}
 	})
 
-	t.Run("negative maxItems defaults to 10000", func(t *testing.T) {
+	t.Run("negative maxBytes defaults", func(t *testing.T) {
 		fc := NewFooterCache(-5)
-		if fc.maxItems != 10000 {
-			t.Errorf("expected maxItems=10000, got %d", fc.maxItems)
+		if fc.maxBytes != defaultFooterMaxBytes {
+			t.Errorf("expected maxBytes=%d, got %d", defaultFooterMaxBytes, fc.maxBytes)
 		}
 	})
 
-	t.Run("positive maxItems used as-is", func(t *testing.T) {
+	t.Run("positive maxBytes used as-is", func(t *testing.T) {
 		fc := NewFooterCache(42)
-		if fc.maxItems != 42 {
-			t.Errorf("expected maxItems=42, got %d", fc.maxItems)
+		if fc.maxBytes != 42 {
+			t.Errorf("expected maxBytes=42, got %d", fc.maxBytes)
 		}
 	})
 
 	t.Run("Has method", func(t *testing.T) {
-		fc := NewFooterCache(10)
+		fc := NewFooterCache(0)
 		fc.Put("key1", &CachedFooter{FileSize: 100})
 		if !fc.Has("key1") {
 			t.Error("expected Has('key1') = true")

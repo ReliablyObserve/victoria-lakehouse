@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Cached Parquet files open with zero S3 round trips, and the planned read mode is the default (both binaries).**
+  Every footer-cache writer (batch prefetch, single-file fetch, inline fetch, whole-object download) now keeps the
+  page-index stripe (ColumnIndex/OffsetIndex) with the footer, and a query-time open of a cached file serves the
+  footer and every later page-index read from memory through an overlay reader (`SkipMagicBytes(true)`, no
+  optimistic tail read); only data ranges reach S3. `s3.projected_fetch_mode` now defaults to `planned`: the exact
+  column-chunk ranges of the surviving row groups are fetched in one wave per file, with no read-ahead window.
+  `window` stays as a deprecated fallback for one release and will be removed. A `trace_id` point lookup
+  (trace-by-ID) stays on the window reader. Measured in-process with injected S3 latency, 11 flush-sized files
+  (`scripts/bench/cold-read/`): `BIGMARK | stats count()` at 50 ms 728 -> 115 ms with 73 -> 20 GETs and
+  14.5 -> 4.7 MB read; `level:=error | stats count()` 518 -> 108 ms and 11.6 MB -> 45 KB; sequential round trips
+  14 -> 2; 50 files 1,829 -> 375 ms; the first query over cold footers 792 -> 168 ms; traces 2-5x on every
+  shape but `query=* limit 1000` (unchanged), trace-by-ID 212 -> 108 ms with 3 -> 1 GETs. Answers are identical to the
+  previous read path on every shape. Where it does not help: `query=* limit 1000` and the other whole-object reads
+  are unchanged, and a footer-cache budget of 256 MiB holds fewer footers than 10,000 entries did.
+- **The footer cache is bounded by bytes, not entries (both binaries).** `cache.footer_max_bytes` (flag
+  `-lakehouse.cache.footer-max-bytes`; `0` = 256 MiB logs, 512 MiB traces) replaces `cache.footer_max_items`, which
+  the logs binary never read and the traces binary auto-tuned by entry count. A footer with token blooms or a trace
+  index is 40-520 KB, so 10,000 entries could be gigabytes; an entry is now charged its owned tail plus a measured
+  estimate of its decoded metadata and the least-recently-used entries are evicted to fit the budget. New
+  metrics: `lakehouse_footer_cache_bytes`, `lakehouse_footer_overlay_opens_total{result}`. The chart gains
+  `lakehouseConfig.cache.footer_max_bytes`.
+
 - **Go 1.27.1 everywhere.** The release images moved to `golang:1.27.1-alpine3.23` in #282, while both
   `go.mod` files (which every CI workflow reads through `go-version-file`) and `go.work` still said 1.26.8, so
   CI tested with a different toolchain from the one that builds the shipped binaries. Both modules and the
@@ -32,6 +54,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line by line (on-demand EC2, EBS gp3, every S3 storage class and request type, cross-AZ transfer),
   explains why Lakehouse scales linearly with two stateless pod types, and adds a long-term retention
   calculator (`scripts/cost/cost_tiering.py`) for S3 lifecycle tiering from 30 days to 7 years.
+
+### Fixed
+
+- **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**
+  The cold read decided which Parquet columns to load by scanning the query text, and that scan missed the default
+  `_msg` field when it was written as `_msg:="x"` (VictoriaLogs prints it as `="x"`) and sat next to a `_time:` term,
+  a stream selector or another field term, so the filter ran on rows without a message and matched nothing; `by (...)`
+  fields and the inputs of `extract`, `unpack_json`, `math`, `format` and similar pipes could be dropped the same way.
+  The columns are now taken from the parsed query: the fields its filter reads (upstream's own filter code) plus the
+  fields its pipes need (upstream's pipe code), and any query whose needs cannot be named exactly reads every column.
+  Unfiltered counts and queries grouping by one registered field read the same columns as before; a query that
+  names a field the schema does not know (for example a custom attribute) now reads the attribute columns and the
+  Tier-2 slot columns for it, so it reads more than the broken answer did and costs more time. Cold `stats` answers
+  now equal the row query for the same filter.
+- **A hide-mode delete no longer shows its rows again in `stats` answers on flushed data (both binaries, closes #285).**
+  A delete is evaluated on the columns the query reads, and a narrow read did not include the fields the delete
+  matches on, so counts, `stats by (...)` and histograms still included the deleted rows (a logs
+  `* | stats by (service.name) count()` showed 20/20/20 where 10/10/10 was right). The read now adds the fields of
+  every delete that overlaps the window, so while a delete overlaps a window every query in it reads the attribute and
+  slot columns when the delete's field is not a registered column (see `docs/read-path.md` for the measured cost).
+- **Wrong cold answers from metadata shortcuts fixed (both binaries, closes #289).** A `stats by (...)` fed by a pipe that
+  rewrites the group key (`copy`, `extract`, `format`), a `count() if (...)` on another field or on `_time`, or a
+  `_time:day_range[...]` / `week_range` filter was answered from per-file label counts and fabricated timestamps and
+  returned the wrong groups or counts (for example 27 or 6 where 54 was right); these now scan. In logs, a `_time` filter
+  that is not a plain range, or a delete over part of a file, is no longer answered from evenly spaced stand-in
+  timestamps. A `hits` query followed by a pipe that needs every field (`pack_json`, `pack_logfmt`, a prefix wildcard)
+  and then `| filter` returned 0 on cold data because only the timestamp was read; the parsed-query projection
+  described above fixes it (0 became 80 on the live stack). The hits timestamp-only shortcut also stays
+  off when a delete or such a pipe applies; no route sets that hint today, so this part is a guard, not a live fix. A
+  `NOT`, an `OR` or a `stats ... if (...)` around a bloom-indexed field (`trace_id`) no longer prunes on a term that
+  does not have to match, in any layer (footer bloom row-group skip, file-level `.bloom` sidecar, the pushdown
+  predicate, the traces `_trace_idx` prefilter and the `_msg` token bloom), so `NOT trace_id:="x"` returns the other
+  rows instead of none.
 
 ## [0.143.9] - 2026-10-01
 

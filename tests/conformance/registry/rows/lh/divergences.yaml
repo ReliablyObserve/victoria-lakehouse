@@ -150,3 +150,28 @@
     tests:
       - tests/parity/cold_row_fields_test.go
       - lakehouse-traces/internal/storage/parquets3/cold_row_fields_test.go
+
+- id: lh.cold.stats_hide_tombstoned_rows
+  title: "stats, stats by and hits exclude rows hidden by a delete, on cold"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "* | stats by (service.name) count() rows", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - internal/storage/parquets3/cold_projection_review_test.go
+      - lakehouse-traces/internal/storage/parquets3/cold_projection_review_test.go
+      - internal/storage/parquets3/cold_hits_hint_test.go
+  notes: >-
+    Run after a hide-mode delete (POST /delete/run_task) has been applied on both tiers. A delete
+    is evaluated on the columns the query reads, so the read includes the fields every overlapping
+    delete references; before, a narrow read showed the deleted rows again in counts, group-bys
+    and histograms. The delete step is a runner precondition, so the unit and RunQuery-level
+    tests above carry the proof until the runner can sequence it. Issue #285.

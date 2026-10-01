@@ -26,7 +26,7 @@
 # cold-tier divergence with a fix in flight; a harness defect belongs in the
 # harness, not on this list.
 #
-# min-pass: 428
+# min-pass: 458
 
 # --- B1: cold query rows carry columns hot does not -------------------------
 # `<null>` placeholders for unset map attributes, the account_id/project_id
@@ -51,29 +51,9 @@ TestParity_Traces_LogsQL/traces_field_names_vt_metadata  # B2: VT metadata field
 # --- B3: a filter + any pipe returns 0 rows ---------------------------------
 # Seen for filters on map attributes, for an exact `_msg` literal containing
 # `:`, and for a `_msg` regexp containing an escaped double quote.
-TestParity_Filters/range_numeric  # B3: map-attribute filter plus pipe returns 0 rows
-TestParity_Filters/exact_msg  # B3: exact _msg literal contains ':' (logfmt ts=), cold reads it as non-free-text and never projects the body
-TestParity_Filters/ipv4_filter  # B3: client_ip is a map attribute; ipv4_range on it plus stats returns 0 rows
-TestParity_FiltersExtended/field_exists_multi  # B3: map-attribute filter plus pipe returns 0 rows
-TestParity_FiltersExtended/negated_exists_combined  # B3: map-attribute filter plus pipe returns 0 rows
 TestParity_FiltersGapfill/escaped_special_chars/filter_with_double_quote  # B3: map-attribute filter plus pipe returns 0 rows
-TestParity_FiltersGapfill/range_comparison_filters/numeric_greater_than  # B3: map-attribute filter plus pipe returns 0 rows
-TestParity_FiltersGapfill/range_comparison_filters/numeric_gte  # B3: map-attribute filter plus pipe returns 0 rows
-TestParity_FiltersGapfill/range_comparison_filters/numeric_less_than  # B3: map-attribute filter plus pipe returns 0 rows
-TestParity_FiltersGapfill/range_comparison_filters/numeric_range_combined  # B3: map-attribute filter plus pipe returns 0 rows
-TestParity_StatsExtended/stats_by_format  # B3: map-attribute filter plus pipe returns 0 rows
 
 # --- B4: rename/format/len/math/extract/unpack lose input columns -----------
-TestParity_PipesExtended/extract_pattern  # B4: pipe loses its input columns
-TestParity_PipesExtended/format_pipe  # B4: pipe loses its input columns
-TestParity_PipesExtended/len_pipe  # B4: pipe loses its input columns
-TestParity_PipesExtended/pipe_chain_rename_stats  # B4: pipe loses its input columns
-TestParity_PipesExtended/rename_field  # B4: pipe loses its input columns
-TestParity_PipesExtended/unpack_json  # B4: pipe loses its input columns
-TestParity_PipesGapfill/chained_pipes_3plus/len_math_filter_stats  # B4: pipe loses its input columns
-TestParity_PipesGapfill/chained_pipes_3plus/rename_filter_sort_fields_limit  # B4: pipe loses its input columns
-TestParity_PipesGapfill/string_functions/len_msg  # B4: pipe loses its input columns
-TestParity_PipesGapfill/string_functions/upper_level  # B4: pipe loses its input columns
 
 # --- B5: /hits at sub-hour steps returns synthetic buckets ------------------
 

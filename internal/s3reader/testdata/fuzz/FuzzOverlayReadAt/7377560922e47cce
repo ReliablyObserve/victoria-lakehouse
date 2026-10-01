@@ -1,0 +1,5 @@
+go test fuzz v1
+uint16(500)
+uint16(129)
+uint16(523)
+uint16(0)

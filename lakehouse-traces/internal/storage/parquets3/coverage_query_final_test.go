@@ -137,7 +137,7 @@ func TestCovFinal_QueryFile_SmartCacheTraceIDs(t *testing.T) {
 		sfGroup:     cache.NewGroup(),
 		labelIndex:  cache.NewLabelIndex(),
 		discovery:   discovery.New("", nil, "", "", "9428", 5*time.Second),
-		footerCache: NewFooterCache(1000),
+		footerCache: NewFooterCache(0),
 		smartCache:  sc,
 		dlSem:       make(chan struct{}, 4),
 	}
@@ -928,7 +928,7 @@ func TestCovFinal_PrefetchFooters_AllCached(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	now := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
 	rows := []logRow{
@@ -963,7 +963,7 @@ func TestCovFinal_PrefetchFooters_SmallFiles(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	// Files are small (< 32KB) → should be skipped in prefetch loop.
 	files := []manifest.FileInfo{
@@ -984,7 +984,7 @@ func TestCovFinal_PrefetchFooters_ContextCancelled(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	now := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
 	var rows []logRow

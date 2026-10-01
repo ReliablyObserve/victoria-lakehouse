@@ -13,7 +13,7 @@ actual `lakehouse_*` metrics in steady state.
 | --- | ---: | --- | ---: | ---: | --- |
 | Dev / CI | < 1 k | 1+1 | 1 GiB | 10 GiB | defaults fine |
 | Small prod | 10 k | 2+2 | 2 GiB | 50 GiB | `min_manifest_files=1000` |
-| Medium | 100 k | 3+3 | 4 GiB | 100 GiB | `footer_max_items=50000` |
+| Medium | 100 k | 3+3 | 4 GiB | 100 GiB | `footer_max_bytes=1073741824` (1 GiB) |
 | Large | 1 M | 6+6 | 8 GiB | 200 GiB | tune persist interval |
 | PB-scale | 5 M+ | 10+ | 16 GiB | 500 GiB | see PB sizing below; several terms are not bounded yet — see [scale limits](../petabyte-scale-audit.md) |
 
@@ -21,13 +21,18 @@ actual `lakehouse_*` metrics in steady state.
 > deployments the two roles share a pod and the numbers can be
 > consolidated.
 
-> `cache.footer_max_items` is honoured by the traces binary only. The
-> logs binary's footer cache is currently fixed at 10 000 entries
-> whatever the setting says, so the footer-cache rows below apply to
-> traces pods; on logs pods count 10 000 entries.
+> Both binaries bound the footer cache by **bytes**, with
+> `cache.footer_max_bytes` (flag `-lakehouse.cache.footer-max-bytes`;
+> `0` = 256 MiB on logs, 512 MiB on traces). An entry is charged its
+> raw footer plus page-index tail and the decoded metadata, about
+> 0.2 MB for a flush-sized logs object, about 1.2-1.5 MB for a
+> 10 MB compacted logs object with token blooms and about 1.3-1.9 MB
+> for a traces L2 object with `_trace_idx` (measured, see
+> [read path](../read-path.md#footer-cache-and-zero-get-open)). The
+> cache holds as many footers as fit.
 >
-> Per-file manifest RAM, footer-cache entry size and resident pmeta
-> size at these file counts are **not measured** — the figures below
+> Per-file manifest RAM and resident pmeta size at these file counts
+> are **not measured** — the figures below
 > are estimates from struct shapes and per-component cost drivers.
 > The [scale limits page](../petabyte-scale-audit.md) lists which
 > terms grow with file count, partitions × tenants, or replicas.
@@ -38,8 +43,8 @@ actual `lakehouse_*` metrics in steady state.
 Per pod, steady state:
 
   + Manifest in-memory state       ≈ 200 bytes × file_count  (estimate)
-  + Footer cache                   ≈ 50 KiB × entries  (traces: footer_max_items;
-                                      logs: fixed 10 000; entry size not measured)
+  + Footer cache                   ≤ cache.footer_max_bytes  (byte-bounded; default
+                                      256 MiB logs, 512 MiB traces; entry ≈ 0.2-1.9 MB, measured)
   + pmeta resident bundles         ≈ grows with partitions × tenants; no eviction
                                       of live partitions — watch
                                       lakehouse_catalog_resident_bytes
@@ -54,29 +59,29 @@ Per pod, steady state:
 
 ### Worked examples
 
-**Small prod cluster, 10k files, footer_max_items=10000:**
+**Small prod cluster, 10k files, default footer cache (256 MiB, logs):**
 
 ```
 manifest        : 200 B × 10k    = 2 MB
-footer cache    : 50 KB × 10k    = 500 MB
+footer cache    : ≤ 256 MiB (byte budget; ~1,300 flush-sized footers)
 smart cache L1  : 256 MB
 logstore buffer : 100 MB (recent ingest)
 query memory    : 512 MB × max_concurrent=8 = 4 GB (worst-case)
 goroutines      : 200 MB
 Go runtime      : 300 MB
 ────────────────────────────────────────
-steady state    : ≈ 1.3 GB
-worst-case query burst : ≈ 5.5 GB
+steady state    : ≈ 1.1 GB
+worst-case query burst : ≈ 5.1 GB
 ```
 
 Pod memory limit: **2 GB** with steady-state queries; **8 GB**
 if running heavy concurrent wildcard scans.
 
-**PB-scale cluster, 5M files, footer_max_items=200000 (traces pod):**
+**PB-scale cluster, 5M files, footer_max_bytes=8 GiB (traces pod):**
 
 ```
 manifest        : 200 B × 5M     = 1 GB   (estimate)
-footer cache    : 50 KB × 200k   = 10 GB  (logs pod: 50 KB × 10k = 500 MB)
+footer cache    : ≤ 8 GiB budget  = ~4,500-6,000 traces L2 footers at ~1.3-1.9 MB (logs pod default: 256 MiB)
 pmeta bundles   : not measured at this scale — excluded from the total
 smart cache L1  : 1 GB (cfg.cache.memory_mb=1024)
 logstore buffer : 200 MB (recent ingest)
@@ -84,8 +89,8 @@ query memory    : 512 MB × max_concurrent=16 = 8 GB
 goroutines      : 500 MB
 Go runtime      : 500 MB
 ────────────────────────────────────────
-steady state    : ≈ 13 GB
-worst-case query burst : ≈ 21 GB
+steady state    : ≈ 11 GB
+worst-case query burst : ≈ 19 GB
 ```
 
 Pod memory limit: **16 GB** with the disk-backed smart cache
@@ -157,10 +162,10 @@ window (see scaling-restart-scenarios.md scenario 2).
 
 ## Config knobs by scale
 
-This release does not read `startup.min_manifest_files`, `startup.serve_while_warming`,
-`cache.footer_max_items` or the `cache.warmup_*` keys from the config file. The warmup
+This release does not read `startup.min_manifest_files`, `startup.serve_while_warming`
+or the `cache.warmup_*` keys from the config file. The warmup
 settings have flags (`-lakehouse.cache.warmup-partitions`,
-`-lakehouse.cache.warmup-max-files`); the other three have none and stay at their
+`-lakehouse.cache.warmup-max-files`); the other two have none and stay at their
 defaults. The examples keep them, marked, to show the intended values.
 
 Dev / CI:
@@ -171,7 +176,7 @@ lakehouse:
     min_manifest_files: 0  # not read from the config file in this release
     serve_while_warming: false  # not read from the config file in this release
   cache:
-    footer_max_items: 10000  # not read from the config file in this release
+    footer_max_bytes: 268435456  # 256 MiB, the logs default
     warmup_partitions: 6  # not read from the config file in this release
 ```
 
@@ -180,7 +185,7 @@ startup:
   min_manifest_files: 1000  # not read from the config file in this release
   serve_while_warming: true  # not read from the config file in this release
 cache:
-  footer_max_items: 10000  # not read from the config file in this release
+  footer_max_bytes: 268435456  # 256 MiB, the logs default
   warmup_partitions: 6  # not read from the config file in this release
 manifest:
   refresh_interval: 30s
@@ -194,7 +199,7 @@ lakehouse:
     min_manifest_files: 1000  # not read from the config file in this release
     serve_while_warming: true  # not read from the config file in this release
   cache:
-    footer_max_items: 10000  # not read from the config file in this release
+    footer_max_bytes: 268435456  # 256 MiB, the logs default
     warmup_partitions: 6  # not read from the config file in this release
   manifest:
     refresh_interval: 30s
@@ -207,7 +212,7 @@ startup:
   serve_while_warming: true  # not read from the config file in this release
   max_warmup_time: 10m
 cache:
-  footer_max_items: 200000  # traces only — logs is fixed at 10000 today; not read from the config file in this release
+  footer_max_bytes: 8589934592  # 8 GiB (traces pod)
   warmup_partitions: 24  # not read from the config file in this release
   warmup_max_files: 5000  # not read from the config file in this release
   memory_mb: 1024
@@ -227,7 +232,7 @@ query:
 | Resource | Scales with | Linearly? |
 | --- | --- | --- |
 | Manifest memory | file_count, on every replica | yes |
-| Footer cache | footer_max_items (traces); fixed 10 000 (logs) | yes |
+| Footer cache | footer_max_bytes (both binaries; byte-bounded) | no — bounded by the budget; hit rate falls as files grow |
 | Resident pmeta bundles | live partitions × tenants | yes — live partitions are never evicted |
 | Buffer restore time | buffer parts on disk / restore rate | yes |
 | S3 LIST during refresh | objects under the enumerated prefixes, per replica, per interval | yes — every refresh re-lists every key; pages within a prefix are sequential, at most 8 tenant prefixes in parallel, 2-minute timeout |
@@ -255,9 +260,10 @@ query:
   threshold — without the gate /ready lies. See
   [scale limits](../petabyte-scale-audit.md#manifest-refresh).
 
-- **The logs footer cache cannot be sized up.** The logs binary
-  ignores `cache.footer_max_items` and holds 10 000 footers; wide
-  queries on a large logs corpus pay S3 round-trips for the rest.
+- **The footer cache is a fixed byte budget.** Both binaries hold at
+  most `cache.footer_max_bytes` of footers (default 256 MiB logs,
+  512 MiB traces); wide queries over more files than fit pay the
+  footer fetch (one or two S3 round trips) for the rest.
 
 - **Resident pmeta has no eviction for live partitions.** It grows
   with retention × tenants until retention expires a partition;

@@ -166,9 +166,12 @@ jobs:
           - internal/storage/parquets3:FuzzMultiRowDataBlock
           - internal/storage/parquets3:FuzzParseFooterBytes
           - internal/storage/parquets3:FuzzFooterLength
+          - internal/storage/parquets3:FuzzCacheFooterFromTail
+          - internal/s3reader:FuzzOverlayReadAt
           - internal/storage/parquets3:FuzzStorageFetchPeerAZ
           - internal/storage/parquets3:FuzzExtractTraceBloomValues
           - internal/storage/parquets3:FuzzParseFilterFromQuery_TimeOnlyIsSound
+          - internal/storage/parquets3:FuzzProjectionEquivalence
           - internal/schema:FuzzResolveToParquet
           - internal/schema:FuzzResolveToParquet_Traces
           - internal/schema:FuzzSlotMapping
@@ -305,6 +308,7 @@ jobs:
         # `lakehouse-traces/...` prefix would break the package
         # resolution under that working directory.
         target:
+          - internal/storage/parquets3:FuzzCacheFooterFromTail
           - internal/storage/parquets3:FuzzExtractExactMatch
           - internal/storage/parquets3:FuzzIsPrintable
           - internal/storage/parquets3:FuzzTraceRowToDataBlock
@@ -313,6 +317,7 @@ jobs:
           - internal/storage/parquets3:FuzzContainsOrOperatorQuoted
           - internal/storage/parquets3:FuzzParseFilterFromQuery
           - internal/storage/parquets3:FuzzParseFilterFromQuery_TimeOnlyIsSound
+          - internal/storage/parquets3:FuzzProjectionEquivalence
           - internal/storage/parquets3:FuzzExtractFilterValuesAST
           - internal/storage/parquets3:FuzzPreFilterFiles_TraceID
           - internal/storage/parquets3:FuzzExtractFilterValuesAST_TraceID

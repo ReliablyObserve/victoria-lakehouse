@@ -135,7 +135,7 @@ func testStorageWithS3(t *testing.T, s3url string) *Storage {
 		sfGroup:     cache.NewGroup(),
 		labelIndex:  cache.NewLabelIndex(),
 		discovery:   discovery.New("", nil, "", "", "9428", 5*time.Second),
-		footerCache: NewFooterCache(1000),
+		footerCache: NewFooterCache(0),
 		dlSem:       make(chan struct{}, 4),
 	}
 }
@@ -419,7 +419,7 @@ func TestInteg_shouldSkipByFooter_NoMatch(t *testing.T) {
 	fi := manifest.FileInfo{Key: key, Size: int64(len(data))}
 
 	queryStr := `service.name:="nonexistent-service-xyz"`
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache, 0)
 	if err != nil {
@@ -462,7 +462,7 @@ func TestInteg_shouldSkipByFooter_Match(t *testing.T) {
 	fi := manifest.FileInfo{Key: key, Size: int64(len(data))}
 
 	queryStr := `service.name:="api-gw"`
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	skip, err := shouldSkipByFooter(context.Background(), pool, fi, queryStr, registry, footerCache, 0)
 	if err != nil {
@@ -513,7 +513,7 @@ func TestInteg_shouldSkipByFooter_CachedFooter(t *testing.T) {
 	registry := schema.NewRegistry(schema.TracesProfile)
 	fi := manifest.FileInfo{Key: "cached.parquet", Size: 100000}
 
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 	footerCache.Put(fi.Key, &CachedFooter{FileSize: fi.Size})
 
 	skip, _ := shouldSkipByFooter(context.Background(), pool, fi, `service.name:="x"`, registry, footerCache, 0)
@@ -531,7 +531,7 @@ func TestInteg_prefetchFooters(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	now := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
 
@@ -571,7 +571,7 @@ func TestInteg_prefetchFooters(t *testing.T) {
 }
 
 func TestInteg_prefetchFooters_NilInputs(t *testing.T) {
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	if n := prefetchFooters(context.Background(), nil, nil, footerCache, 0, 0); n != 0 {
 		t.Errorf("expected 0, got %d", n)
@@ -654,7 +654,7 @@ func TestInteg_applySelfFilter_AllRemoteFallback(t *testing.T) {
 
 func TestInteg_applyCacheAffinity_SortsCorrectly(t *testing.T) {
 	s := testStorage()
-	s.footerCache = NewFooterCache(100)
+	s.footerCache = NewFooterCache(0)
 
 	s.footerCache.Put("b.parquet", &CachedFooter{FileSize: 100})
 
@@ -686,7 +686,7 @@ func TestInteg_applyCacheAffinity_NilCache(t *testing.T) {
 
 func TestInteg_applyCacheAffinity_AllCached(t *testing.T) {
 	s := testStorage()
-	s.footerCache = NewFooterCache(100)
+	s.footerCache = NewFooterCache(0)
 
 	s.footerCache.Put("a.parquet", &CachedFooter{FileSize: 100})
 	s.footerCache.Put("b.parquet", &CachedFooter{FileSize: 100})

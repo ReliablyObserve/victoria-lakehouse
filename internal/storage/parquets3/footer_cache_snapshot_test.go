@@ -13,7 +13,7 @@ import (
 // hydrate older files first and pay the cold S3 cost on the most
 // recent ones — exactly the case we're trying to avoid.
 func TestFooterCacheSnapshot_RoundTrip(t *testing.T) {
-	fc := NewFooterCache(10)
+	fc := NewFooterCache(0)
 	// Inserting in reverse so the LRU front ends up with "c" first.
 	fc.Put("a", &CachedFooter{FileSize: 100})
 	fc.Put("b", &CachedFooter{FileSize: 200})
@@ -60,7 +60,7 @@ func TestFooterCacheSnapshot_MissingFileNoError(t *testing.T) {
 // this case the loader would see a truncated file on day-one ops
 // where the pod is bounced before any query populates the cache.
 func TestFooterCacheSnapshot_EmptyCache(t *testing.T) {
-	fc := NewFooterCache(10)
+	fc := NewFooterCache(0)
 	path := filepath.Join(t.TempDir(), "snapshot.bin")
 	if err := SaveFooterCacheKeys(fc, path); err != nil {
 		t.Fatalf("SaveFooterCacheKeys empty: %v", err)
@@ -79,7 +79,7 @@ func TestFooterCacheSnapshot_EmptyCache(t *testing.T) {
 // next start with a partial decode. The reader should error
 // rather than return an incomplete key list.
 func TestFooterCacheSnapshot_TruncatedFileRejectsCleanly(t *testing.T) {
-	fc := NewFooterCache(10)
+	fc := NewFooterCache(0)
 	fc.Put("a", &CachedFooter{FileSize: 100})
 	fc.Put("b", &CachedFooter{FileSize: 200})
 

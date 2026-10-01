@@ -6,7 +6,6 @@ cache.bloom_ttl
 cache.disk_limit
 cache.disk_path
 cache.eviction_watermark
-cache.footer_max_items
 cache.footer_ttl
 cache.label_index_max_fields
 cache.memory_limit

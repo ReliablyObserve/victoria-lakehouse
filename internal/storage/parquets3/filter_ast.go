@@ -157,6 +157,28 @@ func FilterContainsOr(f *logstorage.Filter) bool {
 	return found
 }
 
+// FilterContainsNotOr reports whether f has a NOT or an OR anywhere. A term
+// under either does not have to match, so a bloom filter may not be used to
+// rule out row groups or files on it.
+func FilterContainsNotOr(f *logstorage.Filter) bool {
+	if f == nil {
+		return false
+	}
+	inner := filterInner(f)
+	if astTypeName(derefValue(inner)) == "" {
+		return true // unparseable layout: assume the worst
+	}
+	found := false
+	walkFilterAST(inner, func(name string, _ reflect.Value) bool {
+		if name == astTypeOr || name == astTypeNot {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // FilterIsTimeOnly reports whether f constrains nothing but _time ranges: one
 // _time range, or an AND of _time ranges (a `*` inside the AND is neutral).
 //
@@ -752,8 +774,15 @@ func countPushdownFilterFields(f *logstorage.Filter) (map[string]bool, bool) {
 			fields[fn] = true
 			fields[other] = true
 		case astTypeNoop:
-		case astTypeTime, astTypeDayRange, astTypeWeekRange:
+		case astTypeTime:
+			// A plain `_time` range: the pushdown's file-containment check
+			// already guarantees every row of a served file satisfies the
+			// query's global range.
 			fields["_time"] = true
+		case astTypeDayRange, astTypeWeekRange:
+			// Reads each row's own time of day / week: the synthetic rows the
+			// pushdown fabricates carry made-up timestamps, so refuse.
+			ok = false
 		case astTypeStream:
 			fields["_stream"] = true
 		case astTypeStreamID:

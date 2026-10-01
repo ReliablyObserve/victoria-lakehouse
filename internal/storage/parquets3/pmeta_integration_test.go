@@ -969,7 +969,7 @@ func TestInteg_GetFieldNames_CatalogFlip(t *testing.T) {
 		}
 	}
 	mock.mu.Unlock()
-	s.footerCache = NewFooterCache(16)
+	s.footerCache = NewFooterCache(0)
 	s.memCache = cache.NewLRU(1024 * 1024)
 
 	on2, err := s.GetFieldNames(context.Background(), nil, q)

@@ -39,3 +39,14 @@ func (s *Storage) wholeFileThresholdBytes() int64 {
 	}
 	return defaultWholeFileThresholdBytes
 }
+
+const (
+	// defaultFooterMaxBytes (cache.footer_max_bytes = 0) — logs. The footer
+	// cache is bounded by resident bytes. A cached logs footer is the raw
+	// tail (footer + page-index stripe: 46-50 KB measured on L2 files,
+	// 43 KB on flush-sized files, 357-431 KB with the token-bloom KV on
+	// 10 MB compacted objects) plus the decoded metadata, so an entry is
+	// ~0.1-0.9 MB. 256 MiB holds the footers of ~300 compacted objects to
+	// ~3,000 flush-sized ones: the working set of a hot query window.
+	defaultFooterMaxBytes = 256 * 1024 * 1024
+)

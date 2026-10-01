@@ -47,7 +47,7 @@ func TestShouldSkipByFooter_SmallFile(t *testing.T) {
 }
 
 func TestShouldSkipByFooter_CachedFooter(t *testing.T) {
-	fc := NewFooterCache(10)
+	fc := NewFooterCache(0)
 	fc.Put("test.parquet", &CachedFooter{FileSize: 100000})
 
 	skip, err := shouldSkipByFooter(context.Background(), &s3reader.ClientPool{}, manifest.FileInfo{

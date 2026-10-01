@@ -66,8 +66,8 @@
                 "planned",
                 "window"
               ],
-              "default": "window",
-              "description": "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — full rollback switch)"
+              "default": "planned",
+              "description": "Read strategy for column-projected parquet reads: planned (default; plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — deprecated fallback, removed in the next release)"
             },
             "projected_fetch_max_bytes": {
               "type": "integer",
@@ -98,6 +98,17 @@
               "minimum": 0,
               "default": 0,
               "description": "Tail range-read size for parquet footer prefetch/fetch (0 = per-signal default: logs 128KB, traces 640KB; traces L2 footers carry a 467-519KB trace index)"
+            }
+          }
+        },
+        "cache": {
+          "type": "object",
+          "properties": {
+            "footer_max_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "Byte budget of the Parquet footer cache; footers are cached with their page index so a cached file opens with no S3 round trip (0 = per-signal default: logs 256 MiB, traces 512 MiB)"
             }
           }
         },
