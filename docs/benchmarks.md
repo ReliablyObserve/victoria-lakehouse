@@ -237,14 +237,14 @@ go run ./cmd/loadtest -mode=benchmark -output=matrix.json
 
 ## CI Integration
 
-The nightly workflow (`.github/workflows/nightly-loadtest.yaml`) runs the full benchmark suite:
+The nightly workflow (`.github/workflows/loadtest.yml`, also runnable by hand with a `mode` input) runs the full benchmark suite:
 
-1. Starts MinIO in a service container
-2. Generates test data with `cmd/datagen`
-3. Starts lakehouse and waits for readiness
-4. Runs `cmd/loadtest -mode=all` with p95 target validation
-5. Runs `cmd/loadtest -mode=benchmark` for the compression matrix
-6. Uploads `benchmark.json` and `matrix.json` as workflow artifacts
+1. Starts the e2e compose stack (`deployment/docker/docker-compose-e2e.yml`): RustFS, hot VictoriaLogs and
+   VictoriaTraces, both Lakehouse binaries, and the seed and continuous `cmd/datagen` containers
+2. Waits for `lakehouse-logs` readiness
+3. Runs `cmd/loadtest -mode=all` with p95 target validation
+4. Runs `cmd/loadtest -mode=benchmark` for the compression matrix
+5. Uploads `loadtest-results.json` and `benchmark-results.json` as workflow artifacts
 
 The workflow fails if any latency benchmark exceeds its p95 target, preventing performance regressions from merging.
 

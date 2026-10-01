@@ -78,7 +78,7 @@ go run ./cmd/loadtest -mode=benchmark -output=results.json
 go run ./cmd/loadtest -mode=all -target=http://localhost:9428
 ```
 
-Nightly CI runs the full suite via `.github/workflows/nightly-loadtest.yaml`. Latency benchmarks fail the workflow if targets are exceeded.
+Nightly CI runs the full suite via `.github/workflows/loadtest.yml` against the e2e compose stack (`deployment/docker/docker-compose-e2e.yml`). Latency benchmarks fail the workflow if targets are exceeded.
 
 ### S3 latency extrapolation
 
