@@ -149,8 +149,9 @@ docker compose -f tests/parity/docker-compose.yml build
 docker compose -f tests/parity/docker-compose.yml up -d
 # Wait until datagen-seed and datagen-seed-tenant2 have exited 0, then until
 # each cold tier agrees with its hot counterpart on a positive row count — the
-# logs corpus, and span_id:* for traces tenants 0 and 1 — unchanged across
-# four checks 5s apart. The "Wait for LH to flush and settle" step of
+# logs corpus, and span_id:* for traces tenants 0 and 1, counted with
+# disable_latency_offset=true so the newest 30s of spans are included —
+# unchanged across four checks 5s apart. The "Wait for LH to flush and settle" step of
 # .github/workflows/parity.yaml is that poll.
 docker compose -f tests/parity/docker-compose.yml --profile test run --rm --no-deps -T \
   parity-tests go test -tags=parity -json -count=1 -timeout=15m ./... \
@@ -164,7 +165,7 @@ docker compose -f tests/parity/docker-compose.yml down -v
 means seeding a second copy of the corpus — after the cold tier was checked
 and while the suite is already reading it.
 
-Five properties the harness has to keep, because breaking any of them turns
+Seven properties the harness has to keep, because breaking any of them turns
 a comparison into a silent no-op or a result that depends on timing:
 
 - **Quote field names containing `:`.** `resource_attr:service.name` unquoted
@@ -199,6 +200,26 @@ a comparison into a silent no-op or a result that depends on timing:
   (`TestTenantIsolation_Logs_PerTenantCounts`) waits until the cold manifest
   lists them and the cold answers have stopped changing for as long — judged
   from evidence other than the answers it asserts on.
+- **Compare `_time` ties as groups, never by position.** Neither VictoriaLogs'
+  `sort` nor the cold tier breaks `_time` ties (upstream `sortBlockLess`
+  returns false for equal keys and the shards are merged with an unstable
+  sort), and `cmd/datagen` puts every uncorrelated log row on a whole-second
+  grid, so a 10k-row seed carries tens of exact-nanosecond collisions. When a
+  limit cuts through such a group, each tier may keep a different member.
+  `RowsMatch` compares rows as a multiset and accepts a difference only when
+  every differing row shares the first or last `_time` of both answers, both
+  tiers kept the same number of rows at that `_time`, and the whole group,
+  re-read from both tiers over a 2ns window around it with the row-limit pipes
+  removed (`tests/parity/rows_ties.go`), is identical on hot and cold, larger
+  than what was kept, and contains every kept row.
+- **Read the Tempo tag APIs more than once.** VictoriaTraces answers
+  `/api/v2/search/tags` and `/api/v2/search/tag/<tag>/values` through
+  `singleFieldQueryHelper`, whose result slice is appended to from several
+  goroutines without a lock (v0.12.0 and current upstream). A call drops a
+  random value about once in twenty on the parity stack, on hot VictoriaTraces
+  and on the cold tier alike, since both run the same upstream handler. The
+  race only loses values, so the tag helpers compare the union of five reads
+  per tier; a value a tier never returns in any read still fails.
 
 ### The known-failure ratchet
 

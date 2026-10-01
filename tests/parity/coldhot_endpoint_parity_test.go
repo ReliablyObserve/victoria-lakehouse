@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -364,7 +365,66 @@ func jaegerSpans(t *testing.T, base, traceID string) int {
 	return len(d.Data[0].Spans)
 }
 
+// tempoRaceSamples is how many times the Tempo tag helpers below read an
+// answer before taking the union of the samples.
+//
+// VictoriaTraces answers /api/v2/search/tags and /api/v2/search/tag/*/values
+// through singleFieldQueryHelper (app/vtselect/traces/tempo/tempo.go, v0.12.0
+// and current master). Its writeBlock callback appends to a slice without a
+// lock, but the `field_values` / `field_names` pipe it runs flushes its shards
+// to that callback from several goroutines at once (pipeUniqProcessor.flush in
+// VictoriaLogs lib/logstorage/pipe_uniq.go). Concurrent appends lose values, so
+// one call can drop a value that exists. Hot VictoriaTraces and the cold tier
+// serve the API through the same upstream handler, so both drop values at
+// random: on the parity stack about one call pair in twenty differs, and in
+// half of those it is hot that came back short.
+//
+// The race only ever loses values; it never invents one. The union of several
+// reads therefore converges on the true answer for each tier, and a value one
+// tier never returns in any sample is a real divergence that still fails.
+const tempoRaceSamples = 5
+
+// unionOfSamples calls read tempoRaceSamples times and returns the sorted
+// union of the answers. It logs when the samples disagree, so a run records how
+// often the upstream race fired.
+func unionOfSamples(t *testing.T, what string, read func() []string) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var first string
+	disagreed := false
+	for i := 0; i < tempoRaceSamples; i++ {
+		vals := read()
+		sorted := append([]string(nil), vals...)
+		sort.Strings(sorted)
+		key := strings.Join(sorted, "\x00")
+		if i == 0 {
+			first = key
+		} else if key != first {
+			disagreed = true
+		}
+		for _, v := range vals {
+			seen[v] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for v := range seen {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	if disagreed {
+		t.Logf("%s: the %d samples disagreed (upstream singleFieldQueryHelper race); comparing their union %v", what, tempoRaceSamples, out)
+	}
+	return out
+}
+
 func tempoTagScopeNames(t *testing.T, base string) []string {
+	t.Helper()
+	return unionOfSamples(t, base+" search/tags scopes", func() []string {
+		return tempoTagScopeNamesOnce(t, base)
+	})
+}
+
+func tempoTagScopeNamesOnce(t *testing.T, base string) []string {
 	t.Helper()
 	r := fetch(t, base, "/select/tempo/api/v2/search/tags", nil)
 	if r.StatusCode != 200 {
@@ -384,6 +444,13 @@ func tempoTagScopeNames(t *testing.T, base string) []string {
 }
 
 func tempoTagValues(t *testing.T, base, tag string) []string {
+	t.Helper()
+	return unionOfSamples(t, base+" search/tag/"+tag+"/values", func() []string {
+		return tempoTagValuesOnce(t, base, tag)
+	})
+}
+
+func tempoTagValuesOnce(t *testing.T, base, tag string) []string {
 	t.Helper()
 	r := fetch(t, base, "/select/tempo/api/v2/search/tag/"+tag+"/values", nil)
 	if r.StatusCode != 200 {
