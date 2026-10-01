@@ -84,7 +84,7 @@ var (
 	cacheMemoryMB         = flag.Int("lakehouse.cache.memory-mb", 0, "L1 memory cache size in MB (default: 512)")
 	cacheDiskPath         = flag.String("lakehouse.cache.disk-path", "", "L2 disk cache directory path")
 	cacheDiskMB           = flag.Int("lakehouse.cache.disk-max-mb", 0, "L2 disk cache max size in MB (default: 51200)")
-	cacheFooterMaxBytes   = flag.Int("lakehouse.cache.footer-max-bytes", 0, "Byte budget of the Parquet footer cache: footers are cached with their page index so a cached file opens with no S3 round trip; least-recently-used entries are evicted to stay within the budget (default: 256 MiB)")
+	cacheFooterMaxBytes   = flag.Int("lakehouse.cache.footer-max-bytes", 0, "Byte budget of the Parquet footer cache: footers are cached with their page index so a cached file opens with no S3 round trip; least-recently-used entries are evicted to stay within the budget (0 = 256 MiB)")
 	cacheWarmupPartitions = flag.Int("lakehouse.cache.warmup-partitions", 0, "Number of recent hourly partitions to warm on startup; warmup runs only when this or -lakehouse.cache.warmup-max-files is set (default: 0 = 6 when warmup runs)")
 	cacheWarmupMaxFiles   = flag.Int("lakehouse.cache.warmup-max-files", 0, "Max files to warm on startup; warmup runs only when this or -lakehouse.cache.warmup-partitions is set (default: 0 = 500 when warmup runs)")
 	cachePartitionMode    = flag.String("lakehouse.cache.partition-mode", "", "Cache partition mode: az-local (default), global, distributed")
