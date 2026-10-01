@@ -42,8 +42,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fields and the inputs of `extract`, `unpack_json`, `math`, `format` and similar pipes could be dropped the same way.
   The columns are now taken from the parsed query: the fields its filter reads (upstream's own filter code) plus the
   fields its pipes need (upstream's pipe code), and any query whose needs cannot be named exactly reads every column.
-  Unfiltered counts and single-field queries read the same columns as before. Cold `stats` answers now equal the
-  row query for the same filter.
+  Unfiltered counts and queries grouping by one registered field read the same columns as before; a query that
+  names a field the schema does not know (for example a custom attribute) now reads the attribute columns and the
+  Tier-2 slot columns for it, so it reads more than the broken answer did and costs more time. Cold `stats` answers
+  now equal the row query for the same filter.
+- **A hide-mode delete no longer shows its rows again in `stats` answers on flushed data (both binaries, closes #285).**
+  A delete is evaluated on the columns the query reads, and a narrow read did not include the fields the delete
+  matches on, so counts, `stats by (...)` and histograms still included the deleted rows (a logs
+  `* | stats by (service.name) count()` showed 20/20/20 where 10/10/10 was right). The read now adds the fields of
+  every delete that overlaps the window.
+- **Two more wrong cold answers fixed (the first in both binaries, the second in logs).** A `stats by (...)` fed by a pipe that
+  rewrites the group key (`copy`, `extract`, `format`) was answered from per-file label counts and returned the wrong
+  groups; it now scans. A `_time` filter that is not a plain range (`day_range`, `week_range`) is no longer answered
+  from evenly spaced stand-in timestamps (logs).
 
 ## [0.143.9] - 2026-10-01
 

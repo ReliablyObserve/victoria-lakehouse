@@ -103,8 +103,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	queryStr := q.String()
 	pipeFields := logstorage.GetQueryPipeFields(q)
 	// The columns every per-file read projects come from the parsed query
-	// (filter AND pipes), not from the query text — see neededColumns.
-	ctx = withNeededFields(ctx, logstorage.GetQueryNeededFields(q))
+	// (filter AND pipes), not from the query text — see neededColumns. The
+	// context value is attached below, once the tombstones are known.
+	neededFields := logstorage.GetQueryNeededFields(q)
 	filter := parseFilterFromQuery(q)
 
 	// Per-query memory ceiling for in-flight DataBlock rows. Mirror of the
@@ -190,6 +191,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	scope := scopeFor(ctx, tenantIDs)
 	queryTombstones := s.scopeTombstones(scope, startNs, endNs)
 	hasTombstones := len(queryTombstones) > 0
+	// A tombstone is evaluated on the projected block, so its fields must be read
+	// too; and rows under a row filter or a tombstone are tested one by one, so
+	// no metadata-only path may fabricate them.
+	ctx = withNeededFields(ctx, withTombstoneFields(neededFields, queryTombstones))
+	ctx = withRowFilter(ctx, filter != nil || hasTombstones)
 	sink := newTombstoneSink(scope, queryTombstones, s.keyTenantParser(), s.AccountOnlyTenantKeys(), writeBlockWith)
 	filteredWriteBlock := sink.uniform
 
@@ -261,7 +267,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// LabelAggregates for files fully within the range — zero S3 reads. Boundary
 	// / un-aggregated files fall through to the scan below; the buffer bridge
 	// still contributes unflushed rows after the watermark.
-	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones {
+	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones && countPushdownSound(q, neededFields, aggField) {
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
 			if n := rowsEmitted.Load(); n > 0 {
@@ -2781,6 +2787,11 @@ func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, sta
 	keySet := make(map[string]bool, len(fileKeys))
 	for _, k := range fileKeys {
 		keySet[k] = true
+	}
+
+	if q, err := logstorage.ParseQuery(queryStr); err == nil {
+		ctx = withNeededFields(ctx, logstorage.GetQueryNeededFields(q))
+		ctx = withRowFilter(ctx, parseFilterFromQuery(q) != nil)
 	}
 
 	// Cross-tenant by construction: the caller has already named the exact

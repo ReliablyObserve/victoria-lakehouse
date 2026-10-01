@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -22,6 +24,66 @@ func withNeededFields(ctx context.Context, fields []string) context.Context {
 func neededFieldsFrom(ctx context.Context) []string {
 	v, _ := ctx.Value(neededFieldsKey{}).([]string)
 	return v
+}
+
+// rowFilterKey marks a query whose rows must be tested individually (a row
+// filter, or a tombstone that overlaps the window).
+type rowFilterKey struct{}
+
+// withRowFilter records that rows must be read and tested one by one, so no
+// metadata-only shortcut that fabricates row values may stand in for them.
+func withRowFilter(ctx context.Context, needed bool) context.Context {
+	return context.WithValue(ctx, rowFilterKey{}, needed)
+}
+
+// rowFilterFrom reports the flag set by withRowFilter (false when absent).
+func rowFilterFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(rowFilterKey{}).(bool)
+	return v
+}
+
+// withTombstoneFields adds every field a tombstone's query references to the
+// needed-field list. A tombstone is evaluated against the projected block
+// (suppressTombstonedRows), so a projection that lacks its field would see the
+// field as absent, match nothing, and show the deleted rows again. A list that
+// already means "everything" is returned unchanged.
+func withTombstoneFields(fields []string, tss []tombstone) []string {
+	if len(tss) == 0 {
+		return fields
+	}
+	seen := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		if f == "*" {
+			return fields
+		}
+		seen[f] = true
+	}
+	out := append([]string(nil), fields...)
+	for i := range tss {
+		for name := range FilterReferencedFields(tss[i].Filter()) {
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
+
+// countPushdownSound reports whether a query whose count pushdown candidate is
+// aggField reads nothing but that field (and _time) from the stored rows, and
+// starts with a pipe that consumes them directly. needed is
+// logstorage.GetQueryNeededFields(q).
+func countPushdownSound(q *logstorage.Query, needed []string, aggField string) bool {
+	if !logstorage.QueryFirstPipeIsAggregate(q) {
+		return false
+	}
+	for _, f := range needed {
+		if f != aggField && f != "_time" {
+			return false
+		}
+	}
+	return true
 }
 
 // neededColumns maps the field names a query needs onto the Parquet columns to
