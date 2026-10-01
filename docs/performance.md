@@ -151,7 +151,7 @@ Bloom filters now support the `in()` operator for multi-value queries (e.g., `se
 
 When a query references only a few fields (e.g., `trace_id:="abc123"`), the query engine automatically detects the referenced columns and skips deserializing unused parquet columns. This reduces I/O and CPU for narrow queries by 2-4x.
 
-Column projection is automatic — no configuration needed. Wildcard or free-text queries fall back to reading all columns.
+Column projection is automatic — no configuration needed. The columns come from the parsed query (its filter and its pipes, see [read-path.md](read-path.md)); a query without pipes, or whose pipes need fields that cannot be named exactly (`sort`, `limit`, `field_names`, wildcards), reads all columns.
 
 ### Push-down filter (column statistics pruning)
 

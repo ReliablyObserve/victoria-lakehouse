@@ -102,6 +102,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	queryStr := q.String()
 	pipeFields := logstorage.GetQueryPipeFields(q)
+	// The columns every per-file read projects come from the parsed query
+	// (filter AND pipes), not from the query text — see neededColumns.
+	ctx = withNeededFields(ctx, logstorage.GetQueryNeededFields(q))
 	filter := parseFilterFromQuery(q)
 
 	// Per-query memory ceiling for in-flight DataBlock rows. Mirror of the
@@ -1069,7 +1072,7 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 }
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
-	projectedCols := queryColumns(queryStr, s.registry, pipeFields)
+	projectedCols := neededColumns(s.registry, neededFieldsFrom(ctx))
 	// Promoted columns whose parquet spelling the query uses directly must be
 	// emitted under that spelling too, or the filter matches nothing. Every
 	// other query gets the VT field names alone — see emitParquetNameAlias.
