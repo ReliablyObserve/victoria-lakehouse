@@ -27,6 +27,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
@@ -49,6 +50,12 @@ type OrphanSweepConfig struct {
 	// Freeze is the scheduler's lifecycle freeze; a steal never rewrites what
 	// the scheduler would not.
 	Freeze *LifecycleFreeze
+	// Tombstones and TombstoneRewriteDelay make a Tier A steal drop
+	// tombstoned rows exactly like a scheduled merge (same meaning as the
+	// SchedulerConfig fields). Without them a steal would carry deleted rows
+	// into the merged output.
+	Tombstones            *delete.TombstoneStore
+	TombstoneRewriteDelay time.Duration
 
 	Prefix           string
 	Mode             config.Mode
@@ -247,6 +254,9 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 			RowGroupSize:     o.cfg.RowGroupSize,
 			CompressionLevel: o.cfg.CompressionLevel,
 			BloomRebuilder:   o.cfg.BloomRebuilder,
+
+			Tombstones:            o.cfg.Tombstones,
+			TombstoneRewriteDelay: o.cfg.TombstoneRewriteDelay,
 		})
 		var (
 			removed []string
