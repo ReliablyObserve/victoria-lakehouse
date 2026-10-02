@@ -235,3 +235,48 @@ func TestScan_FrozenGaugeResetsWhenNothingFrozen(t *testing.T) {
 		}
 	})
 }
+
+// TestFreezeView_MatchesPerKeyLimits guards the per-scan view against the
+// per-key reference: for the global rules, ExtraRules and a tenant override,
+// limitsFor(prefix) must equal limits(prefix) (the view is only a cache), the
+// override applies to its tenant alone, a legacy prefix gets the global
+// limits, and a nil view or freeze freezes nothing. Without the view
+// agreeing, the scan and the Tier A / force paths would freeze different
+// partitions.
+func TestFreezeView_MatchesPerKeyLimits(t *testing.T) {
+	d := delete.NewStorageClassDetector(rules(60, delete.ClassStandardIA))
+	d.SetTenantRules(map[uint32]map[uint32][]delete.LifecycleRule{1001: {0: rules(10, delete.ClassGlacier)}})
+	f := &LifecycleFreeze{Detector: d, ExtraRules: rules(30, delete.ClassGlacierIR)}
+	v := f.view()
+	for _, prefix := range []string{"1001/0/logs/", "1002/0/logs/", "", "1001/7/traces/"} {
+		for i := 0; i < 2; i++ { // second pass hits the cache
+			got, want := v.limitsFor(prefix), f.limits(prefix)
+			if got != want {
+				t.Fatalf("prefix %q: view %+v, per-key %+v", prefix, got, want)
+			}
+		}
+	}
+	if l := v.limitsFor("1001/0/logs/"); !l.hasRule || l.freezeAge != 8*day {
+		t.Fatalf("tenant 1001 override: %+v, want freeze at 8d", l)
+	}
+	if l := v.limitsFor("1002/0/logs/"); !l.hasRule || l.freezeAge != 28*day {
+		t.Fatalf("tenant 1002: %+v, want freeze at 28d (the 30d extra rule beats the 60d global)", l)
+	}
+	var nilView *freezeView
+	if l := nilView.limitsFor("1/0/logs/"); l.hasRule {
+		t.Fatalf("nil view froze: %+v", l)
+	}
+	var nilFreeze *LifecycleFreeze
+	if nilFreeze.view() != nil {
+		t.Fatal("nil freeze must give a nil view")
+	}
+	if age, ok := nilFreeze.FreezeAge("1/0/"); ok || age != 0 {
+		t.Fatalf("nil freeze FreezeAge = %v,%v", age, ok)
+	}
+	if age, ok := f.FreezeAge("1001/0/"); !ok || age != 8*day {
+		t.Fatalf("FreezeAge(1001/0/) = %v,%v; want 8d", age, ok)
+	}
+	if _, ok := (&LifecycleFreeze{}).FreezeAge("1/0/"); ok {
+		t.Fatal("no rules: FreezeAge must report none")
+	}
+}

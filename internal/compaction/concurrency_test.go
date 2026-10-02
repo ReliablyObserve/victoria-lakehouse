@@ -16,7 +16,14 @@ import (
 // (each pod's manifest unaware of the others' merges) is a different problem,
 // tracked in #290, and is deliberately not asserted here.
 
-const concurrencyRounds = 3
+// concurrencyRounds: 3 rounds by default, 1 under -short (the heaviest of the
+// new tests after the property run).
+func concurrencyRounds() int {
+	if testing.Short() {
+		return 1
+	}
+	return 3
+}
 
 // TestStorageHealth_Concurrent_TwoSchedulersRaceScan: both schedulers plan the same files
 // and race to merge them. Guards the publish step (ReplaceFiles only if every
@@ -27,7 +34,7 @@ func TestStorageHealth_Concurrent_TwoSchedulersRaceScan(t *testing.T) {
 		w := newPlanWorld(t, mode)
 		l := newLedger(w)
 		a, b := w.schedulerOn(w.pool), w.schedulerOn(w.pool)
-		for round := 0; round < concurrencyRounds; round++ {
+		for round := 0; round < concurrencyRounds(); round++ {
 			p := partitionAt(time.Now().Add(-time.Duration(3+round) * time.Hour))
 			for _, tenant := range []string{"1001/0", "1002/0", "1003/7"} {
 				l.tenantL0(tenant, p, 10+round%3)
@@ -58,7 +65,7 @@ func TestStorageHealth_Concurrent_ScanForceAndTierA(t *testing.T) {
 		l := newLedger(w)
 		scanSched, forceSched := w.schedulerOn(w.pool), w.schedulerOn(w.pool)
 		sweep := tierAWorld(w, nil, nil)
-		for round := 0; round < concurrencyRounds; round++ {
+		for round := 0; round < concurrencyRounds(); round++ {
 			p := partitionAt(time.Now().Add(-time.Duration(3+round) * time.Hour))
 			for _, tenant := range []string{"1001/0", "1002/0"} {
 				l.tenantL0(tenant, p, 12)
