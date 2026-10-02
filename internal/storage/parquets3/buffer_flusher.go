@@ -595,7 +595,7 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 	}
 	st := flushState{CommittedThroughSeq: g.Seq()}
 	if err := f.writeState(st); err != nil {
-		metrics.BufferFlushErrors.Inc("watermark")
+		metrics.BufferFlushErrors.Inc("commit")
 		return fmt.Errorf("record segment %d as committed: %w", g.Seq(), err)
 	}
 	f.state = st

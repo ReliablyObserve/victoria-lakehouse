@@ -9,22 +9,18 @@ sidebar_position: 3
 
 Victoria Lakehouse accepts data through VL-compatible insert APIs, buffers ingested rows, and flushes them as optimally-sized Parquet files to S3, with zero-delay read-after-write visibility on the recent (not-yet-flushed) window.
 
-The insert buffer is selectable via `insert.buffer_engine`:
-
-- **`buffer`** — rows stage in an in-memory `[]schema.{Log,Trace}Row` slice and flush to Parquet; a buffer query bridge serves the unflushed window to readers. There is no separate lakehouse WAL; for crash durability of the in-flight window use the `logstore` engine, or `ack_mode: flush-sync`.
-- **`logstore`** — rows feed a real per-pod `logstorage.Storage` (the VictoriaLogs/Traces in-memory-parts model) via the exported `MustAddRows`; the recent window is served from that buffer through the exported `Storage.RunQuery` (no struct→DataBlock reconstruction). Durability is logstorage's own on-disk parts (written every flush interval, restored on open) — so **no separate LH WAL is needed**; the crash-loss window matches hot VT/VL. This engine is what gives cold Jaeger/Tempo parity with hot VT for recently-ingested traces. See [Persistence & Durability](durability.md).
-
-The rest of this page describes the **`buffer`** engine (the default). Both engines share the same Parquet flush + manifest machinery downstream.
+The insert buffer is a sequence of upstream `logstorage.Storage` **segments** under `insert.buffer_dir` (a persistent volume). Acknowledged rows are in the active segment, durable within upstream's 5 s part flush — the same guarantee as hot VictoriaLogs/VictoriaTraces — and the recent window is served from the segments through the exported `Storage.RunQuery` (no struct→DataBlock reconstruction). A sealed segment is drained completely to Parquet, and each query answers every row exactly once while that happens. There is no separate Lakehouse WAL. See [Persistence & Durability](durability.md).
 
 ```mermaid
 flowchart LR
     Client --> VLInsert["VL vlinsert\nHandlers"]
-    VLInsert --> Adapter["insertAdapter\nlogRowsToSchemaRows"]
-    Adapter --> Buffer["Buffer\n(memory)"]
-    Buffer --> Flush
-    Flush --> S3["S3 Parquet"]
+    VLInsert --> Adapter["insertAdapter\n(admission)"]
+    Adapter --> Buffer["Active segment\n(upstream storage, on disk)"]
+    Buffer -->|seal| Sealed["Sealed segment"]
+    Sealed -->|drain| S3["S3 Parquet"]
     S3 --> Manifest["Manifest update"]
-    Buffer -.->|zero-delay reads| Select["Select pod\nbuffer query"]
+    Buffer -.->|zero-delay reads| Select["Query\nbufferView"]
+    Sealed -.->|zero-delay reads| Select
 ```
 
 ## Insert APIs
@@ -51,36 +47,34 @@ Each handler is VL upstream code (unchanged). Parsed rows flow through the `inse
 HTTP request
   → VL vlinsert handler (upstream, unchanged)
   → insertutil.logRowsStorage.MustAddRows(*logstorage.LogRows)
-  → insertAdapter.MustAddRows → logRowsToSchemaRows → storage.MustAddLogRows
-  → S3 Parquet
+  → insertAdapter.MustAddRows (admission) → active segment (upstream MustAddRows)
+  → seal → drain → S3 Parquet
 ```
 
-The `logRowsToSchemaRows()` function converts VL's `*logstorage.LogRows` into `[]schema.LogRow` for Parquet storage.
+`DataBlockToLogRows` / `DataBlockToTraceRows` convert a segment's rows into Parquet rows when the segment is drained.
 
 ## Pipeline Stages
 
-### 1. Memory Buffer
+### 1. Insert Buffer (segments)
 
-Rows accumulate in per-partition memory buffers. Partition key: `dt=YYYY-MM-DD/hour=HH` (Hive layout).
+Every acknowledged row goes into the one active segment, whatever its `_time`; rows are grouped into Hive partitions (`dt=YYYY-MM-DD/hour=HH`) only when the segment is drained.
 
 ```yaml
 lakehouse:
   insert:
-    flush_interval: 10s       # Time-based flush trigger
-    max_buffer_rows: 50000    # Per-partition row limit
-    target_file_size: 128MB   # Target Parquet file size
+    buffer_dir: /data/lakehouse/buffer   # persistent volume
+    buffer_flush_interval: 5m            # longest a segment stays open
+    target_file_size: 128MB              # Parquet object size target
 ```
 
-**Acknowledgements:** every insert is acknowledged once it is buffered. `insert.ack_mode`
-(`buffer` or `flush-sync`), `insert.flush_linger` and `insert.max_buffer_bytes` are
-accepted and validated, and profiles set them, but no binary reads them in this release;
-see [Configuration — Known limitations](configuration.md#known-limitations-of-this-release).
+**Acknowledgements:** an insert is acknowledged once upstream's `MustAddRows` returned: durable within upstream's 5 s part flush, like hot VL/VT. When the buffer volume is below its free-space floor the insert gets 429. An object-store outage refuses nothing.
 
-**Flush triggers (any one fires):**
-- Timer: `flush_interval` elapsed since last flush (default 10s)
-- Size: partition buffer reaches estimated `target_file_size`
-- Memory: total buffer memory hits `max_buffer_bytes`
-- Shutdown: graceful shutdown flushes all buffers (preStop hook)
+**Seal triggers (either fires):**
+- Age: the segment has been open `buffer_flush_interval`.
+- Size: the segment holds about `target_file_size` of rows while fewer than 64 segments are pending.
+- Shutdown: the flusher stops, the buffer closes (upstream persists every segment) and the next start drains what is left.
+
+A sealed segment is written whole, per tenant, in objects of at most `target_file_size`, so memory is bounded by one object, not by the segment.
 
 ### 2. Parquet Writer
 
@@ -109,7 +103,7 @@ lakehouse:
     retry_base_delay: 200ms
 ```
 
-**Upload path:** `s3://{bucket}/{tenant}/logs/dt=YYYY-MM-DD/hour=HH/{batch-id}.parquet`
+**Upload path:** `s3://{bucket}/{tenant}/logs/dt=YYYY-MM-DD/hour=HH/{segment-nonce}-{slice}.parquet`
 
 Multipart upload for files >5MB. Single PutObject for smaller files.
 
@@ -134,7 +128,7 @@ Response: NDJSON DataBlocks (same format as /select/logsql/query)
 This provides zero-delay read-after-write visibility:
 - Query arrives at select pod
 - Select queries S3 (via manifest) for flushed data
-- Select queries insert pods for buffered data
+- Select queries insert pods for buffered data (rows plus the nonces of the segments they came from, so the objects of those segments are not read twice)
 - Results merged and returned to client
 
 In single-binary mode (`--lakehouse.role=all`), the buffer is checked locally — no network hop. The BufferBridge registers `http://localhost:<port>` as a fallback endpoint so even when peer discovery returns zero peers (single-node compose, static deployment), the bridge still fans out one request to itself. As soon as DNS discovery resolves real peers, the self-fallback steps aside so the cluster doesn't double-count the local buffer.
@@ -159,13 +153,13 @@ Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a spec
 
 | Metric | Type | Description |
 |---|---|---|
-| `lakehouse_insert_rows_total` | Counter | Total rows received |
-| `lakehouse_insert_rows_buffered` | Gauge | Rows pending flush |
-| `lakehouse_insert_flush_total` | Counter | Flush operations completed |
+| `lakehouse_insert_rows_total` | Counter | Rows admitted into the buffer |
+| `lakehouse_buffer_pending_rows` | Gauge | Rows in segments not yet committed to Parquet |
+| `lakehouse_buffer_segments` | Gauge | Segments by state (`active`, `pending`, `committed`) |
+| `lakehouse_insert_flush_total` | Counter | Segment drains completed |
 | `lakehouse_insert_flush_errors_total` | Counter | Failed flushes |
 | `lakehouse_insert_flush_duration_seconds` | Histogram | Flush latency |
 | `lakehouse_insert_flush_bytes_total` | Counter | Bytes uploaded to S3 |
-| `lakehouse_insert_partitions_active` | Gauge | Active partition buffers |
 
 ## Compaction
 
@@ -202,7 +196,7 @@ Scale write and read independently:
 ### Write Amplification
 
 Lakehouse write amplification is **1x for most data**:
-- Data written once to S3 (no separate WAL)
+- Data written once to S3 (the insert buffer is upstream's own storage, not an extra copy of the pipeline)
 - Compaction adds ~0.2-0.5x for small files only (amortized across all data)
 - Compare: Loki 3-5x (WAL + chunk + index + compaction), Tempo 2-3x
 
@@ -210,7 +204,7 @@ Lakehouse write amplification is **1x for most data**:
 
 | Failure | Impact | Recovery |
 |---|---|---|
-| Insert pod crash (`logstore` engine) | logstorage parts on disk | Buffer restores its parts on restart; the flush watermark re-flushes any un-flushed window — crash-loss window matches hot VT/VL |
-| Insert pod crash (`buffer` engine) | In-flight buffer lost | Use the `logstore` engine |
-| S3 unreachable | Buffer grows in memory | Backpressure when max_buffer_bytes hit, retries with exponential backoff |
+| Insert pod crash (`kill -9`) | Rows newer than upstream's 5 s part flush | Segments are restored on open and drained; the loss window matches hot VT/VL |
+| Insert pod loses its volume | Undrained segments | Run the insert StatefulSet on a PVC (the Helm default); see [Persistence & Durability](durability.md#25-residuals-stated-plainly) |
+| S3 unreachable | Sealed segments wait on disk; nothing is refused | Retried with the same bytes and back-off; 429 only when the buffer volume is below its free-space floor |
 | Select pod crash | Stateless, no data | Restart, re-read manifest from disk/S3 |

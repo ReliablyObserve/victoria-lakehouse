@@ -114,18 +114,21 @@ graph LR
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `lakehouse_insert_rows_total` | Counter | | Rows accepted by the insert path |
-| `lakehouse_insert_rows_buffered` | Gauge | | Rows waiting for the next flush (including rows put back after a failed upload) |
-| `lakehouse_insert_bytes_buffered` | Gauge | | Estimated raw bytes not yet written to object storage — buffered, being uploaded, or put back. Inserts get 429 above `insert.max_buffer_bytes` |
-| `lakehouse_insert_flush_total` / `lakehouse_insert_flush_errors_total` | Counter | | Flushes, and partitions whose upload failed |
-| `lakehouse_insert_rows_requeued_total` | Counter | | Rows a flush could not write and put back for the next flush — never dropped. A steady rate means object storage is failing or too slow for the flush deadline |
+| `lakehouse_insert_rows_total` | Counter | | Rows admitted into the insert buffer (after the admission filter) |
+| `lakehouse_buffer_pending_rows` | Gauge | | Rows in segments not yet fully written to object storage. Grows while object storage is slow or unreachable; the rows are safe on the buffer volume |
+| `lakehouse_buffer_segments` | Gauge | `state` | Insert-buffer segments: `active` (taking writes, always 1), `pending` (sealed, not yet fully written), `committed` (written, kept readable for the grace period) |
+| `lakehouse_buffer_segments_sealed_total` / `lakehouse_buffer_segments_committed_total` | Counter | | Segments sealed and fully written since the process started |
+| `lakehouse_buffer_oldest_pending_age_seconds` | Gauge | | Age of the oldest segment not yet fully written: how far object storage lags behind ingest |
+| `lakehouse_insert_flush_committed_segment` | Gauge | | Sequence number of the newest segment fully written (every older one is too) |
+| `lakehouse_buffer_view_excluded_objects_total` | Counter | | Objects a query skipped because the segment they were written from was served from the buffer in that query: each row is answered once |
+| `lakehouse_compaction_segment_guard_errors_total` | Counter | | Compaction scans that could not list the segment markers; the objects of unconfirmed segments were left alone |
+| `lakehouse_insert_flush_total` / `lakehouse_insert_flush_errors_total` | Counter | | Segments completely written to object storage, and drains that stopped on an error (they resume, with the same bytes, after a back-off) |
 | `lakehouse_insert_rows_superseded_total` | Counter | | Rows of flush groups skipped because their object's key had been retired (compacted, rewritten or removed) since an earlier attempt stored it: whatever replaced it carries those rows. Counts only groups skipped for that reason; a group whose object is still live is skipped without being counted. Should stay near 0 |
-| `lakehouse_buffer_flush_errors_total` | Counter | `stage` | Buffer-flusher (`buffer_flush_enabled`) failures by stage. `collect`: reading the window from the buffer failed (retried). `intent`: the pending window could not be recorded before its uploads (nothing is uploaded; retried). `head`: an object-store existence check failed during recovery (nothing is uploaded; retried — needs `s3:ListBucket`, else S3 answers 403 for absent keys). `upload`: an attempt left groups unwritten — a PUT failed, the Parquet encode failed, or the context was cancelled; counted once per attempt (tick), not per group; retried with the same bytes. `watermark`: saving the watermark failed (retried without any upload). `mark`: a durable stored mark could not be written (not retried; that group depends on HEAD after a restart). `missing`: a recorded group's rows are gone from the buffer during recovery, once per group (see `lakehouse_insert_rows_lost_total`). Should stay near 0 |
-| `lakehouse_insert_rows_lost_total` | Counter | `reason` | Rows lost for a stated reason. `buffer_expired`: rows the buffer flusher recorded for a window and could not upload because the buffer no longer had them (retention expired, or the flush filter changed) when recovery came back for them. Should stay 0 |
-| `lakehouse_insert_rejected_total` | Counter | `reason` | Insert requests refused by `CanWriteData`: `buffer_full` (429, over `insert.max_buffer_bytes`), `storage_unavailable` (503, the write probe failed; reused for 10 s) |
-| `lakehouse_insert_rows_lost_at_shutdown_total` | Counter | | Buffered rows the final flush at shutdown could not write (the legacy staging path has no WAL). Should stay 0 |
-| `lakehouse_watermark_inferred_unresolved_total` | Counter | | Objects whose time bounds were still only inferred from the S3 listing when a query needed them for the buffer watermark and could not be resolved (no pmeta entry, footer read failed or backed off). The object then contributes its inferred end-of-hour to the watermark: no row is counted twice, but buffered rows newer than the object stay hidden until it resolves. Should stay 0 |
-| `lakehouse_insert_flush_duration_seconds` | Histogram | | Flush wall time |
+| `lakehouse_buffer_flush_errors_total` | Counter | `stage` | Buffer-flusher failures by stage. `intent`: recording the segment as draining failed. `collect`: reading a group from the segment failed. `head`: an object-store existence check failed while recovering a segment a previous process was draining (needs `s3:ListBucket`, else S3 answers 403 for absent keys). `upload`: a PUT or Parquet encode failed, or the context was cancelled; counted once per attempt. `marker`: the segment's commit marker could not be written. `commit`: recording the segment as committed failed. `mark`: a durable stored mark could not be written (not retried; that group depends on HEAD after a restart). All but `mark` are retried with the same bytes. Should stay near 0 |
+| `lakehouse_vt_internal_rows_dropped_total` | Counter | `kind` | VictoriaTraces-internal rows dropped when a segment is drained: `trace_id_idx` (the `_trace_idx` footer index replaces them) |
+| `lakehouse_delete_rewrite_deferred_total` | Counter | `reason` | Delete rewrites postponed: `segment_live` (an object's insert-buffer segment is still served from the buffer; the tombstone filter keeps the rows hidden meanwhile) |
+| `lakehouse_insert_rejected_total` | Counter | `reason` | Insert requests refused by the insert adapter: `read_only` (429, the buffer volume is below its free-space floor, with upstream's message). An unreachable object store refuses nothing |
+| `lakehouse_insert_flush_duration_seconds` | Histogram | | Time a segment's drain took |
 
 ### Parquet Engine Metrics
 

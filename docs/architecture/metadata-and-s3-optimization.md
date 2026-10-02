@@ -59,7 +59,7 @@ Companion docs:
         │  ┌─────────────────────────────────────────────┐    │
         │  │            Insert path                      │    │
         │  │  ┌──────────┐  ┌──────────┐  ┌───────────┐  │    │
-        │  │  │  Buffer  │→ │ logstore │→ │  Parquet  │──┼────┼─▶ S3 (.parquet)
+        │  │  │  Buffer  │→ │ segments │→ │  Parquet  │──┼────┼─▶ S3 (.parquet)
         │  │  │ (5m TTL) │  │  parts   │  │  writer   │  │    │
         │  │  └──────────┘  └──────────┘  └─────┬─────┘  │    │
         │  │                                     │       │    │
@@ -77,7 +77,7 @@ Companion docs:
                 │  Local disk (PVC)                   │
                 │  ├── manifest-snapshot.bin (gob)    │
                 │  ├── footer-cache-snapshot.bin (LRU)│
-                │  ├── buffer/ (logstore parts)       │
+                │  ├── buffer/ (segment parts)        │
                 │  └── cache/ (L2 disk)               │
                 └─────────────────────────────────────┘
 ```

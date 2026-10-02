@@ -141,7 +141,7 @@ fixes whatever broke.
 
 | Local state | Action |
 | --- | --- |
-| Buffer warm (insert role, post-WAL) | Local rows + peer rows merged in BufferBridge fan-out |
+| Buffer warm (insert role, segments reopened) | Local rows + peer rows merged in BufferBridge fan-out |
 | Buffer cold (just restarted) | Peer rows only |
 | All buffers cold (simultaneous restart) | **EMPTY for ~2 min until buffer restore + first flush.** Returns 200 with partial data. Future: "data-cold" cluster flag returns 503 retry-after instead. |
 
@@ -271,7 +271,7 @@ Each hint names the config knob to tune AND quantifies the cost
 
 | Layer | Tests |
 | --- | --- |
-| `internal/startup/honesty_test.go` | 16 sub-tests pinning ServingReady preconditions: (manifest_files × WAL needed/done × gate threshold) combinations |
+| `internal/startup/honesty_test.go` | 16 sub-tests pinning ServingReady preconditions: (manifest_files × gate threshold) combinations |
 | `internal/startup/hints_test.go` | 6 cases pinning each hint category fires when expected AND silence when healthy |
 | `internal/manifest/snapshot_age_test.go` | SaveTo updates SavedAt; LoadFrom restores it; failed SaveTo doesn't advance it |
 | e2e compose | rolling-restart probe, simultaneous-restart probe (manual), MinManifestFiles=high triggers /ready=503 |
@@ -291,10 +291,10 @@ Each hint names the config knob to tune AND quantifies the cost
 ## Open questions
 
 1. **Cluster-wide buffer restore state.** During the all-peers-restart
-   scenario, every peer is replaying its WAL independently.
-   Should they share a "WAL-replay coordination" so the first
-   one to finish takes over while others catch up? Probably not
-   (independent WALs by design) — but worth noting.
+   scenario, every peer is draining its own buffer segments independently.
+   Should they coordinate so the first one to finish takes over
+   while others catch up? Probably not (independent buffers by
+   design) — but worth noting.
 
 2. **Snapshot to S3 as well as local disk.** Today the snapshot
    is local-disk only. A fresh-PVC pod gets no benefit. Could

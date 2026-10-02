@@ -355,8 +355,8 @@ every footer cold).
 ### Unflushed rows (`layout=peer`)
 
 The last ten minutes live only on a peer. `whole` needs them (`FATAL`, `shutdown` and 4000 rows
-of hits); v0.143.1 answered those cells without them. #239 merges them after each tenant's flush
-watermark, so the overlap is never counted twice. Cost: 16–26 ms at 0 ms S3 for 4000 unflushed
+of hits); v0.143.1 answered those cells without them. #239 merged them after each tenant's flush
+watermark (since replaced by the segment handoff: the objects of served segments are dropped), so the overlap is never counted twice. Cost: 16–26 ms at 0 ms S3 for 4000 unflushed
 rows — the bridge ships full rows as JSON and they are converted and filtered, the same path
 `RunQuery` pays. Next step: a peer answers enumeration over its own buffer with the VictoriaLogs
 engine and returns (value, hits) pairs, so the transfer is proportional to distinct values, not

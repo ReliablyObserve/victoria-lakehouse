@@ -72,7 +72,7 @@ The **SmartCache controller** (`internal/smartcache/`) wraps all tiers with:
 
 ### Write path
 
-During `BatchWriter.FlushAll`, after a Parquet file is written to S3, the `BloomObserver.OnFileFlush` callback is invoked with the collected column values for each configured bloom column. The bloom filter is built from those values and stored in `internal/bloomindex.Index` (keyed by S3 file key and column name).
+When the `BufferFlusher` drains a segment, after a Parquet file is written to S3, the `BloomObserver.OnFileFlush` callback is invoked with the collected column values for each configured bloom column. The bloom filter is built from those values and stored in `internal/bloomindex.Index` (keyed by S3 file key and column name).
 
 Bloom columns are configured per mode:
 
@@ -105,10 +105,9 @@ flowchart TD
     A["HTTP (any VL protocol: jsonline, Loki, ES bulk,\nsyslog, journald, Datadog, OTLP, Splunk, native)"] --> B["VL vlinsert handler (unchanged upstream code)"]
     B --> C[insertutil.LogRowsStorage interface]
     C --> D[vlstorage.insertAdapter.MustAddRows]
-    D --> E["logRowsToSchemaRows\n(field mapping; strings.Clone for arena safety)"]
-    E --> F[BatchWriter.AddLogRows / AddTraceRows]
-    F --> H["logstore buffer\n(on-disk parts ~5s; durable, no WAL)"]
-    H -->|"flush trigger:\ninterval or size threshold"| I[BatchWriter.flushPartition]
+    D --> E["admission\n(trace-shaped / over-limit streams dropped)"]
+    E --> H["active segment of the insert buffer\n(upstream logstorage; parts fsynced ~5s; durable, no WAL)"]
+    H -->|"seal: age or size,\nthen drain per tenant"| I[BufferFlusher.drain]
     I --> J["parquet-go write\n(ZSTD level 7 default)"]
     I --> K[s3reader.ClientPool.PutObject]
     I --> L[manifest.AddFile]
@@ -116,10 +115,10 @@ flowchart TD
 ```
 
 Key points:
-- `logRowsToSchemaRows` clones all strings because VL uses arena-allocated memory freed immediately after `MustAddRows` returns.
+- The insert adapter hands VL's `*logstorage.LogRows` straight to the insert buffer (an upstream `logstorage.Storage` per segment); rows are converted to Parquet rows only when a sealed segment is drained.
 - Partitions are by hour: `dt=YYYY-MM-DD/hour=HH/`.
-- Flush is triggered by `FlushInterval` (configurable) or when the buffer exceeds `TargetFileSize` (default 128 MB compressed).
-- Crash recovery (no WAL): with `buffer_engine: logstore` the buffer persists rows as on-disk parts (restored on open) and a flush watermark re-flushes any uncommitted window on restart. See [Persistence & Durability](durability.md).
+- A segment is sealed after `insert.buffer_flush_interval` (default 5m) or earlier once it holds about `TargetFileSize` (default 128 MB compressed) of rows, then drained completely to Parquet.
+- Crash recovery (no WAL): the buffer persists rows as upstream on-disk parts (restored on open) and the flusher drains every segment it finds on restart. See [Persistence & Durability](durability.md).
 
 ---
 
@@ -168,10 +167,7 @@ All manifest lookups, cache keys, and bloom index entries are scoped by tenant p
 | `GetFieldValues(ctx, tenantIDs, query, field, limit)` | List values for a field |
 | `GetStreamFieldNames` / `GetStreamFieldValues` | Stream label introspection |
 | `GetStreams` / `GetStreamIDs` | Active stream enumeration |
-| `MustAddLogRows(rows)` | Buffer log rows → logstore buffer (durable) → S3 |
-| `MustAddTraceRows(rows)` | Buffer trace rows → logstore buffer (durable) → S3 |
-| `CanWriteData()` | S3 connectivity check |
-| `BufferedLogRows/TraceRows(start, end)` | Return unflushed rows for buffer bridge |
+| `SetLocalBuffer(buf)` | Attach the insert buffer's segments; queries read them through a `bufferView` (see [Persistence & Durability](durability.md#23-the-read-handoff-exactly-once)) |
 
 The `vlstorage.adapter` wraps `Storage` and registers it with VL's `vlstorage.SetExternalStorage`, so all VL HTTP handlers route through the lakehouse engine without modification.
 

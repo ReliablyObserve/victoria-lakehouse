@@ -151,8 +151,8 @@ flowchart LR
     Ingest["POST /insert/...<br/>(logfmt/JSON/OTLP)"] --> Parse["1. Parse<br/><i>VL/VT upstream via patches</i>"]
     Parse --> Filter["2. Stream-shape filter<br/><i>drop trace-shaped rows from logs</i>"]
     Filter --> Gate["3. Cardinality gate<br/><i>per-tenant MaxStreams</i>"]
-    Gate --> Buffer["4. Membuffer — logstorage in-memory parts<br/><i>durability (parts → PVC every flush interval) AND served via BufferBridge; no separate WAL</i>"]
-    Buffer --> Flush{"5. Flush trigger<br/>size OR time?"}
+    Gate --> Buffer["4. Insert buffer — logstorage segments<br/><i>durability (parts → PVC within 5 s) AND served via BufferBridge; no separate WAL</i>"]
+    Buffer --> Flush{"5. Seal trigger<br/>size OR age?"}
     Flush -->|fire| Build["6. Build artifacts for the FUTURE reader"]
 
     Build --> A1["7a. extractLogLabels →<br/>FileInfo.Labels"]
@@ -309,7 +309,7 @@ hit rate as high as possible without blowing the memory budget".
 | **Stream-shape filter at ingest** | `streamshape.go::IsTraceShapedStream` | Drops trace rows from logs ingest at write time |
 | **Tenant cardinality gate** | `vlstorage.SetCardinalityGate` | Refuses to admit rows above per-tenant `MaxStreams` |
 | **Severity backfill at compaction** | `LogsSeverityTextBackfilledAtCompaction` metric | Heals historical files via `schema.DeriveSeverityText` |
-| **Membuffer durability (no separate WAL)** | logstorage parts on the PVC | Unflushed rows persist via the buffer's own disk parts (written every flush interval, restored on open) |
+| **Membuffer durability (no separate WAL)** | logstorage parts on the PVC | Unflushed rows persist via the buffer's own disk parts (written within 5 s, restored on open) |
 
 ### F. Lifecycle / startup speedups {#f-lifecycle}
 
@@ -353,7 +353,7 @@ know which artifact lands where. This table is the master reference.
 | 5 | **Smart cache L1** (decoded parquet row groups) | ✅ primary | — | — | LRU; never persisted |
 | 6 | **Smart cache L2** (raw parquet bytes) | — | ✅ primary | — | LRU on disk; survives restart |
 | 7 | **PeerCache ring** (consistent-hash map of peer endpoints) | ✅ primary | — | — | derived from k8s headless service watch |
-| 8 | **~~WAL~~ — folded into the membuffer** | — | — | — | **No separate LH WAL** (the old `internal/wal/` was removed). Durability of unflushed rows is the membuffer (#9): VL/VT-native logstorage in-memory parts persisted to the PVC every flush interval and restored on open. Crash-loss window = the last flush interval; long-term durability = the S3 Parquet flush. |
+| 8 | **~~WAL~~ — folded into the membuffer** | — | — | — | **No separate LH WAL** (the old `internal/wal/` was removed). Durability of unflushed rows is the membuffer (#9): VL/VT-native logstorage in-memory parts persisted to the PVC within 5 s and restored on open. Crash-loss window = upstream's 5 s part flush; long-term durability = the S3 Parquet flush. |
 | 9 | **In-memory buffer** (unflushed rows served by `BufferBridge`) | ✅ primary | — | — | freed on flush |
 | 10 | **`.parquet` data file** (row groups, column index, per-rowgroup blooms, footer KVs) | — | — | ✅ primary | written by flusher + compactor; deleted by retention |
 | 11 | **`_pmeta.bundle`** (per-partition facets: file-meta, file-level bloom, field/value catalog) | mirror via `pmeta.Store` | — | ✅ primary | written by `PersistDirty` at flush; warmed at startup; self-heals from parquet footers. Legacy `.bloom`/`_bloom.bin` sidecars from pre-pmeta data stay readable |
