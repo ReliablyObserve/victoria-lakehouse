@@ -511,6 +511,8 @@ flag: 30/179 covered by at least one registry row.
 | `lh.ready.status` | LH ready — readiness probe | internal | 🟡 declared, not yet executed |
 | `lh.select.restart.same_hour_buffer_visible_logs` | LH cold read after a graceful restart — rows buffered in the same UTC hour as the shutdown flush are visible exactly once (logs) | select | 🟡 declared, not yet executed |
 | `lh.select.restart.same_hour_buffer_visible_traces` | LH cold read after a graceful restart — spans buffered in the same UTC hour as the shutdown flush are visible exactly once (traces) | select | 🟡 declared, not yet executed |
+| `lh.select.split.insert_buffer_visible_logs` | LH select pod answers with the insert pods' unflushed rows through the buffer bridge (logs) | select | 🟡 declared, not yet executed |
+| `lh.select.split.insert_buffer_visible_traces` | LH select pod answers with the insert pods' unflushed spans through the buffer bridge (traces) | select | 🟡 declared, not yet executed |
 | `lh.stats.compaction.schema` | LH stats compaction — recent compaction runs and efficiency hints | admin | 🟡 declared, not yet executed |
 | `lh.stats.fields.schema` | LH stats fields — per-field size/cardinality breakdown | admin | 🟡 declared, not yet executed |
 | `lh.stats.overview.schema` | LH stats overview — tier sizes, object counts, compaction backlog | admin | 🟡 declared, not yet executed |

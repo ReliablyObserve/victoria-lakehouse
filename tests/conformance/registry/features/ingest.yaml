@@ -121,10 +121,16 @@
     - internal/buffer/handler_test.go
     - internal/storage/parquets3/buffer_bridge_test.go
     - internal/storage/parquets3/buffer_bridge_az_test.go
+    - internal/storage/parquets3/buffer_bridge_discovery_test.go
     - lakehouse-traces/internal/storage/parquets3/buffer_bridge_az_test.go
+    - lakehouse-traces/internal/storage/parquets3/buffer_bridge_discovery_test.go
+  rows:
+    - lh.select.split.insert_buffer_visible_logs
+    - lh.select.split.insert_buffer_visible_traces
   docs:
     - docs/write-path.md
     - docs/read-path.md
+    - docs/kubernetes-deployment.md
   changelog_bullets:
     - 'Buffer query bridge'
   highlight: >-
