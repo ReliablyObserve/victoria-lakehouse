@@ -526,6 +526,9 @@ jobs:
           version: latest
           args: --build-tags e2e ./tests/ingestmatrix/... ./tests/e2e/... ./tests/conformance/...
           skip-cache: true
+          # tests/ has older findings (errcheck on Sscanf, gocyclo on Row.Validate); only
+          # what a PR adds is held to the linters until they are cleaned up.
+          only-new-issues: true
 
   lint-traces:
     needs: deps
