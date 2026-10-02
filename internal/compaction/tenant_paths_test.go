@@ -287,3 +287,25 @@ func TestTierA_RespectsFreeze(t *testing.T) {
 		}
 	})
 }
+
+// TestScan_HeldFilesDoNotCountTowardThresholds guards the planner's held-key
+// exclusion: a file a delete rewrite has swapped in but not yet recorded is
+// left out BEFORE counting, so ten L0 files with one held are nine and wait;
+// the held file is merged once it is released. Without the exclusion the plan
+// reaches the threshold and merges nine files that did not.
+func TestScan_HeldFilesDoNotCountTowardThresholds(t *testing.T) {
+	bothModes(t, func(t *testing.T, mode config.Mode) {
+		w := newPlanWorld(t, mode)
+		p := partitionAt(time.Now().Add(-3 * time.Hour))
+		keys := w.add("1001/0", p, 0, 10, 2, nil)
+		w.m.Hold(keys[0])
+		s := w.shippedScheduler()
+		if n, err := s.Scan(context.Background()); err != nil || n != 0 {
+			t.Fatalf("nine live L0 files: merges=%d err=%v, want 0", n, err)
+		}
+		w.m.Release(keys[0])
+		if n, err := s.Scan(context.Background()); err != nil || n != 1 {
+			t.Fatalf("after release: merges=%d err=%v, want 1", n, err)
+		}
+	})
+}
