@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.11] - 2026-10-01
+
 ### Security
 
 - **OpenTelemetry Go v1.45.0 (both binaries), fixing GO-2026-6505.** `go.opentelemetry.io/otel`, `otel/sdk`,
