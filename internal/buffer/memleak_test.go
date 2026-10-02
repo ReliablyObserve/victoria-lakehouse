@@ -1,6 +1,7 @@
 package buffer
 
 import (
+	"context"
 	"net/http/httptest"
 	"runtime"
 	"strconv"
@@ -46,6 +47,14 @@ func (f *fixedQuerier) BufferedTraceRows(startNs, endNs int64) []schema.TraceRow
 		}
 	}
 	return result
+}
+
+// ReadBuffer implements Source.
+func (f *fixedQuerier) ReadBuffer(_ context.Context, _ Selection, startNs, endNs int64, mode string) (Answer, error) {
+	if mode == "logs" {
+		return Answer{Logs: f.BufferedLogRows(startNs, endNs)}, nil
+	}
+	return Answer{Traces: f.BufferedTraceRows(startNs, endNs)}, nil
 }
 
 func TestMemLeak_Handler_ServeHTTPLogCycles(t *testing.T) {

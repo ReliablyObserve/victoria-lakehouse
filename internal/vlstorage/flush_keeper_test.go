@@ -7,20 +7,6 @@ type fakeGate struct{ deny map[string]bool }
 
 func (g fakeGate) AllowStream(_, _ uint32, stream string) bool { return !g.deny[stream] }
 
-func TestSetBufferAuthoritative_Flip(t *testing.T) {
-	orig := bufferAuthoritative
-	t.Cleanup(func() { bufferAuthoritative = orig })
-
-	SetBufferAuthoritative(true)
-	if !bufferAuthoritative {
-		t.Fatal("SetBufferAuthoritative(true) did not set the flip")
-	}
-	SetBufferAuthoritative(false)
-	if bufferAuthoritative {
-		t.Fatal("SetBufferAuthoritative(false) did not revert the flip")
-	}
-}
-
 func TestFlushRowKeeper_GatePredicate(t *testing.T) {
 	orig := globalCardinalityGate
 	t.Cleanup(func() { globalCardinalityGate = orig })

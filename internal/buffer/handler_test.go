@@ -2,6 +2,7 @@ package buffer
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,9 +14,27 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
+// mockBufferStore is an insert pod's buffer: rows by timestamp and the nonces of
+// the segments they are read from.
 type mockBufferStore struct {
 	logRows   []schema.LogRow
 	traceRows []schema.TraceRow
+	nonces    []string
+	err       error
+}
+
+// ReadBuffer implements Source over the stored rows (the window is [start, end)).
+func (m *mockBufferStore) ReadBuffer(_ context.Context, _ Selection, startNs, endNs int64, mode string) (Answer, error) {
+	if m.err != nil {
+		return Answer{}, m.err
+	}
+	ans := Answer{Nonces: append([]string(nil), m.nonces...)}
+	if mode == "logs" {
+		ans.Logs = m.BufferedLogRows(startNs, endNs)
+	} else {
+		ans.Traces = m.BufferedTraceRows(startNs, endNs)
+	}
+	return ans, nil
 }
 
 func (m *mockBufferStore) BufferedLogRows(startNs, endNs int64) []schema.LogRow {

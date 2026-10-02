@@ -10,27 +10,26 @@ import (
 )
 
 // DataBlockToLogRows reconstructs schema.LogRow values from a DataBlock emitted
-// by the Option B buffer's RunQuery. It is the read side of the WAL-cutover:
-// the buffer is queried with `*` over a flush window, and the resulting
-// DataBlocks are turned back into the exact LogRow shape the legacy insert path
-// produced — so the Parquet a buffer flush writes is byte-for-byte what the
-// legacy []LogRow path would have written.
+// by the insert buffer's RunQuery. The flusher queries a buffer segment with `*`
+// over one group's time slice and turns the resulting DataBlocks into the
+// LogRows its Parquet file holds.
 //
-// Parity is achieved by REUSING the insert field-mapping (mapFieldToRow) for
-// every non-special column, exactly as logRowsToSchemaRows does, plus the
-// special VL columns:
+// Every non-special column goes through the insert field mapping
+// (mapFieldToRow); the special VictoriaLogs columns are handled here:
 //   - _msg        → row.Body
 //   - _stream     → row.Stream     (human-readable StreamTags string)
 //   - _stream_id  → row.StreamID   (VL's native id == computeStreamID, verified)
 //   - _time       → row.TimestampUnixNano
 //   - tenant      → AccountID/ProjectID (the query is per-tenant; no tenant col)
 //
+// The severity text is derived last (explicit text, else from severity_number,
+// else the stream's level tag), as the compactor does when it backfills.
+//
 // Unlike traces (which recover full nanoseconds from start_time_unix_nano), logs
 // have no separate nanosecond field — the timestamp comes from VL's _time
 // column. VL formats _time at microsecond precision, so a sub-microsecond
 // ingest timestamp is truncated here. For OTLP/syslog logs the source timestamp
-// is microsecond-or-coarser in practice, so this matches; the parity harness
-// quantifies any residual delta.
+// is microsecond-or-coarser in practice.
 func DataBlockToLogRows(db *logstorage.DataBlock, tenant logstorage.TenantID) []schema.LogRow {
 	if db == nil {
 		return nil
@@ -80,6 +79,22 @@ func DataBlockToLogRows(db *logstorage.DataBlock, tenant logstorage.TenantID) []
 				// uses.
 				mapFieldToRow(&row, c.Name, v)
 			}
+		}
+		// Same derivation step as the insert path had and the compactor's backfill
+		// has: an explicit severity text, else the one derived from
+		// severity_number, else the stream's `level` tag. OTLP rows often carry
+		// only the number.
+		var st *logstorage.StreamTags
+		if row.Stream != "" {
+			st = logstorage.GetStreamTags()
+			if err := st.UnmarshalString(row.Stream); err != nil {
+				logstorage.PutStreamTags(st)
+				st = nil
+			}
+		}
+		row.SeverityText = schema.DeriveSeverityText(row.SeverityText, row.SeverityNumber, st)
+		if st != nil {
+			logstorage.PutStreamTags(st)
 		}
 		rows = append(rows, row)
 	}

@@ -1,27 +1,16 @@
 package vlstorage
 
 import (
-	"errors"
+	"context"
+	"math"
+	"sync"
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
-
-// mockLogWriter captures calls to MustAddLogRows for assertion.
-type mockLogWriter struct {
-	rows     []schema.LogRow
-	writeErr error
-}
-
-func (m *mockLogWriter) MustAddLogRows(rows []schema.LogRow) {
-	m.rows = append(m.rows, rows...)
-}
-
-func (m *mockLogWriter) CanWriteData() error {
-	return m.writeErr
-}
 
 func makeLogRows(t *testing.T, fields ...logstorage.Field) *logstorage.LogRows {
 	t.Helper()
@@ -31,9 +20,6 @@ func makeLogRows(t *testing.T, fields ...logstorage.Field) *logstorage.LogRows {
 }
 
 func TestInsertAdapter_MustAddRows_BasicFields(t *testing.T) {
-	w := &mockLogWriter{}
-	a := &insertAdapter{writer: w}
-
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "_msg", Value: "hello world"},
 		logstorage.Field{Name: "level", Value: "info"},
@@ -41,12 +27,12 @@ func TestInsertAdapter_MustAddRows_BasicFields(t *testing.T) {
 	)
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	row := w.rows[0]
+	row := rows[0]
 	if row.Body != "hello world" {
 		t.Errorf("Body = %q, want %q", row.Body, "hello world")
 	}
@@ -62,9 +48,6 @@ func TestInsertAdapter_MustAddRows_BasicFields(t *testing.T) {
 }
 
 func TestInsertAdapter_MustAddRows_AllPromotedFields(t *testing.T) {
-	w := &mockLogWriter{}
-	a := &insertAdapter{writer: w}
-
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "_msg", Value: "test"},
 		logstorage.Field{Name: "service.name", Value: "svc"},
@@ -81,12 +64,12 @@ func TestInsertAdapter_MustAddRows_AllPromotedFields(t *testing.T) {
 	)
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	row := w.rows[0]
+	row := rows[0]
 
 	checks := []struct {
 		name string
@@ -114,9 +97,6 @@ func TestInsertAdapter_MustAddRows_AllPromotedFields(t *testing.T) {
 }
 
 func TestInsertAdapter_MustAddRows_UnpromotedGoToAttributes(t *testing.T) {
-	w := &mockLogWriter{}
-	a := &insertAdapter{writer: w}
-
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "_msg", Value: "test"},
 		logstorage.Field{Name: "custom_field", Value: "custom_value"},
@@ -124,12 +104,12 @@ func TestInsertAdapter_MustAddRows_UnpromotedGoToAttributes(t *testing.T) {
 	)
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	row := w.rows[0]
+	row := rows[0]
 
 	if row.LogAttributes == nil {
 		t.Fatal("LogAttributes should not be nil")
@@ -143,23 +123,17 @@ func TestInsertAdapter_MustAddRows_UnpromotedGoToAttributes(t *testing.T) {
 }
 
 func TestInsertAdapter_MustAddRows_EmptyRows(t *testing.T) {
-	w := &mockLogWriter{}
-	a := &insertAdapter{writer: w}
-
 	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 0 {
-		t.Errorf("expected 0 rows for empty LogRows, got %d", len(w.rows))
+	if len(rows) != 0 {
+		t.Errorf("expected 0 rows for empty LogRows, got %d", len(rows))
 	}
 }
 
 func TestInsertAdapter_MustAddRows_MultipleRows(t *testing.T) {
-	w := &mockLogWriter{}
-	a := &insertAdapter{writer: w}
-
 	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	for i := 0; i < 100; i++ {
 		lr.MustAdd(logstorage.TenantID{}, int64(i)*1_000_000_000,
@@ -167,17 +141,14 @@ func TestInsertAdapter_MustAddRows_MultipleRows(t *testing.T) {
 	}
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 100 {
-		t.Errorf("expected 100 rows, got %d", len(w.rows))
+	if len(rows) != 100 {
+		t.Errorf("expected 100 rows, got %d", len(rows))
 	}
 }
 
 func TestInsertAdapter_MustAddRows_StreamPreserved(t *testing.T) {
-	w := &mockLogWriter{}
-	a := &insertAdapter{writer: w}
-
 	streamFields := []string{"service.name", "k8s.namespace.name"}
 	lr := logstorage.GetLogRows(streamFields, nil, nil, nil, "")
 	lr.MustAdd(logstorage.TenantID{}, 1_000_000_000, []logstorage.Field{
@@ -187,12 +158,12 @@ func TestInsertAdapter_MustAddRows_StreamPreserved(t *testing.T) {
 	}, -1)
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	row := w.rows[0]
+	row := rows[0]
 
 	if row.Stream == "" {
 		t.Error("Stream should not be empty when stream fields are set")
@@ -202,40 +173,19 @@ func TestInsertAdapter_MustAddRows_StreamPreserved(t *testing.T) {
 	}
 }
 
-func TestInsertAdapter_CanWriteData_Healthy(t *testing.T) {
-	a := &insertAdapter{writer: &mockLogWriter{}}
-	if err := a.CanWriteData(); err != nil {
-		t.Errorf("expected nil error, got %v", err)
-	}
-}
-
-func TestInsertAdapter_CanWriteData_Unhealthy(t *testing.T) {
-	a := &insertAdapter{writer: &mockLogWriter{writeErr: errors.New("s3 unavailable")}}
-	err := a.CanWriteData()
-	if err == nil {
-		t.Error("expected error, got nil")
-	}
-	if err.Error() != "s3 unavailable" {
-		t.Errorf("error = %q, want %q", err.Error(), "s3 unavailable")
-	}
-}
-
 func TestInsertAdapter_MustAddRows_NoMsgField(t *testing.T) {
-	w := &mockLogWriter{}
-	a := &insertAdapter{writer: w}
-
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "service.name", Value: "api"},
 		logstorage.Field{Name: "custom", Value: "value"},
 	)
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	row := w.rows[0]
+	row := rows[0]
 	if row.Body != "" {
 		t.Errorf("Body should be empty when no _msg field, got %q", row.Body)
 	}
@@ -298,25 +248,47 @@ func TestMapFieldToRow_AllCases(t *testing.T) {
 	}
 }
 
-func BenchmarkLogRowsToSchemaRows(b *testing.B) {
-	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
+func BenchmarkDataBlockToLogRows(b *testing.B) {
+	st, err := membuffer.Open(membuffer.Config{Path: b.TempDir()})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.Close()
+	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
 	for i := 0; i < 1000; i++ {
-		lr.MustAdd(logstorage.TenantID{}, int64(i)*1_000_000_000, []logstorage.Field{
-			{Name: "_msg", Value: "benchmark log message"},
+		lr.MustAdd(logstorage.TenantID{}, int64(i+1)*1_000_000_000, []logstorage.Field{
 			{Name: "service.name", Value: "benchmark-svc"},
+			{Name: "_msg", Value: "benchmark log message"},
 			{Name: "k8s.namespace.name", Value: "prod"},
 			{Name: "custom_field_1", Value: "value1"},
 			{Name: "custom_field_2", Value: "value2"},
-		}, -1)
+		}, 1)
 	}
-	defer logstorage.PutLogRows(lr)
+	st.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	st.DebugFlush()
+	q, err := logstorage.ParseQueryAtTimestamp("*", math.MaxInt64)
+	if err != nil {
+		b.Fatal(err)
+	}
+	q = q.CloneWithTimeFilter(q.GetTimestamp(), 0, math.MaxInt64)
 
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		rows := logRowsToSchemaRows(lr)
-		if len(rows) != 1000 {
-			b.Fatalf("expected 1000 rows, got %d", len(rows))
+		n := 0
+		qctx := logstorage.NewQueryContext(context.Background(), &logstorage.QueryStats{}, []logstorage.TenantID{{}}, q, false, nil)
+		var mu sync.Mutex
+		if err := st.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
+			rows := DataBlockToLogRows(db, logstorage.TenantID{})
+			mu.Lock()
+			n += len(rows)
+			mu.Unlock()
+		}); err != nil {
+			b.Fatal(err)
+		}
+		if n != 1000 {
+			b.Fatalf("expected 1000 rows, got %d", n)
 		}
 	}
 }

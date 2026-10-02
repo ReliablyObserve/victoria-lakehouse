@@ -44,7 +44,7 @@ func TestSeverityText_FallsBackFromSeverityNumber(t *testing.T) {
 				logstorage.Field{Name: "", Value: "body"},
 				logstorage.Field{Name: "severity_number", Value: tc.sevNumber},
 			)
-			rows := logRowsToSchemaRows(lr)
+			rows := rowsViaBuffer(t, lr)
 			logstorage.PutLogRows(lr)
 			if len(rows) != 1 {
 				t.Fatalf("got %d rows, want 1", len(rows))
@@ -79,7 +79,7 @@ func TestSeverityText_AcceptsBothLevelAndSeverityTextFieldNames(t *testing.T) {
 				logstorage.Field{Name: "", Value: "body"},
 				logstorage.Field{Name: tc.fieldName, Value: "Info"},
 			)
-			rows := logRowsToSchemaRows(lr)
+			rows := rowsViaBuffer(t, lr)
 			logstorage.PutLogRows(lr)
 			if len(rows) != 1 {
 				t.Fatalf("got %d rows, want 1", len(rows))
@@ -104,7 +104,7 @@ func TestSeverityText_ExplicitLevelWinsOverDerived(t *testing.T) {
 		logstorage.Field{Name: "level", Value: "CRITICAL"},
 		logstorage.Field{Name: "severity_number", Value: "13"}, // would derive WARN
 	)
-	rows := logRowsToSchemaRows(lr)
+	rows := rowsViaBuffer(t, lr)
 	logstorage.PutLogRows(lr)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
@@ -122,7 +122,7 @@ func TestSeverityText_ExplicitLevelWinsOverDerived(t *testing.T) {
 // to row.SeverityText. The lift uses VL's exported StreamTags.Get
 // accessor (patches/vl-{logs,traces}/vl-export-streamtags-get.patch)
 // rather than re-parsing the canonical string — this test goes
-// through the full logRowsToSchemaRows path so it exercises both
+// through the full buffer-to-row path (rowsViaBuffer) so it exercises both
 // VL's UnmarshalCanonicalInplace and our integration with .Get().
 func TestSeverityText_FallsBackFromStreamTag(t *testing.T) {
 	cases := []struct {
@@ -180,7 +180,7 @@ func TestSeverityText_FallsBackFromStreamTag(t *testing.T) {
 			fields := append([]logstorage.Field(nil), tc.streamTags...)
 			fields = append(fields, logstorage.Field{Name: "", Value: "body"})
 			lr.MustAdd(logstorage.TenantID{}, 1_000_000_000, fields, len(tc.streamTags))
-			rows := logRowsToSchemaRows(lr)
+			rows := rowsViaBuffer(t, lr)
 			if len(rows) != 1 {
 				t.Fatalf("got %d rows, want 1", len(rows))
 			}
@@ -209,7 +209,7 @@ func TestSeverityText_LookalikeStreamTagNamesDontFalseMatch(t *testing.T) {
 				{Name: "", Value: "body"},
 			}
 			lr.MustAdd(logstorage.TenantID{}, 1_000_000_000, fields, 2)
-			rows := logRowsToSchemaRows(lr)
+			rows := rowsViaBuffer(t, lr)
 			if len(rows) != 1 {
 				t.Fatalf("got %d rows", len(rows))
 			}
@@ -230,7 +230,7 @@ func TestSeverityText_NoNumberNoLevel(t *testing.T) {
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "", Value: "naked log line"},
 	)
-	rows := logRowsToSchemaRows(lr)
+	rows := rowsViaBuffer(t, lr)
 	logstorage.PutLogRows(lr)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1", len(rows))
@@ -254,7 +254,7 @@ func TestSeverityText_OutOfRangeNumberStaysEmpty(t *testing.T) {
 				logstorage.Field{Name: "", Value: "body"},
 				logstorage.Field{Name: "severity_number", Value: n},
 			)
-			rows := logRowsToSchemaRows(lr)
+			rows := rowsViaBuffer(t, lr)
 			logstorage.PutLogRows(lr)
 			if len(rows) != 1 {
 				t.Fatalf("got %d rows, want 1", len(rows))
