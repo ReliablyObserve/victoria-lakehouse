@@ -34,14 +34,14 @@ start_lh() {
 lakehouse:
   cache: {disk_path: $work/cache}
   delete: {persist_path: $work/lh/tombstones}
-  insert: {buffer_dir: $work/lh/buffer, ack_mode: flush-sync}
+  insert: {buffer_dir: $work/lh/buffer, buffer_flush_interval: 5s}
   manifest: {persist_path: $work/lh}
 YAML
   "$LH_BIN" -lakehouse.config="$work/config.yaml" -httpListenAddr=:$PORT -storageDataPath="$work/data" \
     -lakehouse.s3.bucket="$bucket" -lakehouse.s3.prefix="$prefix" \
     -lakehouse.s3.endpoint="$endpoint" -lakehouse.s3.access-key="$key" -lakehouse.s3.secret-key="$secret" \
     -lakehouse.s3.force-path-style=true -lakehouse.s3.region=us-east-1 \
-    -lakehouse.manifest.refresh-interval=3s -lakehouse.insert.flush-interval=5s \
+    -lakehouse.manifest.refresh-interval=3s \
     -lakehouse.compaction.interval=${COMPACT:-600s} -lakehouse.pmeta.enabled=true \
     -lakehouse.cache.memory-mb=64 \
     >>"$work/lh.log" 2>&1 &

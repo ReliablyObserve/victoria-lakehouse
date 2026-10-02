@@ -1,0 +1,7 @@
+# Lakehouse settings of the benchmark stack, mounted into both services.
+#
+# A buffer segment is written to Parquet, whole, at the latest 30 s after it
+# opened, so a benchmark sees fresh data in object storage quickly.
+lakehouse:
+  insert:
+    buffer_flush_interval: 30s

@@ -1132,8 +1132,7 @@ def gen_profile_flag_gaps(truth: Truth) -> str:
 
 
 SUMMARY_COLUMNS = [
-    ("insert.ack_mode", "Ack mode"),
-    ("insert.flush_interval", "Flush interval"),
+    ("insert.buffer_flush_interval", "Buffer flush interval"),
     ("insert.compression_level", "zstd level"),
     ("cache.memory_limit", "Cache memory"),
     ("cache.disk_limit", "Cache disk"),

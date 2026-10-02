@@ -17,16 +17,16 @@ services:
     ports: ["127.0.0.1:${PORT_BASE}5:10428"]
   lakehouse-logs:
     image: ${LOGS_IMAGE}
-    volumes: ["/tmp/fix272-vis/engine.yml:/etc/lakehouse/engine.yml:ro"]
+    volumes: ["/tmp/fix272-vis/engine.yml:/etc/lakehouse/engine.yml:ro","lh-logs-data:/data/lakehouse"]
     depends_on: {s3-init: {condition: service_completed_successfully}}
     ports: ["127.0.0.1:${PORT_BASE}1:9428"]
-    command: ["-lakehouse.s3.bucket=obs-archive","-lakehouse.s3.endpoint=http://s3:9000","-lakehouse.s3.access-key=minioadmin","-lakehouse.s3.secret-key=minioadmin","-lakehouse.s3.force-path-style=true","-lakehouse.manifest.refresh-interval=30s","-lakehouse.insert.flush-interval=3600s","-lakehouse.pmeta.enabled=true","-lakehouse.config=/etc/lakehouse/engine.yml","-loggerLevel=INFO"]
+    command: ["-lakehouse.s3.bucket=obs-archive","-lakehouse.s3.endpoint=http://s3:9000","-lakehouse.s3.access-key=minioadmin","-lakehouse.s3.secret-key=minioadmin","-lakehouse.s3.force-path-style=true","-lakehouse.manifest.refresh-interval=30s","-lakehouse.pmeta.enabled=true","-lakehouse.config=/etc/lakehouse/engine.yml","-loggerLevel=INFO"]
   lakehouse-traces:
     image: ${TRACES_IMAGE}
-    volumes: ["/tmp/fix272-vis/engine.yml:/etc/lakehouse/engine.yml:ro"]
+    volumes: ["/tmp/fix272-vis/engine.yml:/etc/lakehouse/engine.yml:ro","lh-traces-data:/data/lakehouse"]
     depends_on: {s3-init: {condition: service_completed_successfully}}
     ports: ["127.0.0.1:${PORT_BASE}2:10428"]
-    command: ["-lakehouse.s3.bucket=obs-archive","-lakehouse.s3.endpoint=http://s3:9000","-lakehouse.s3.access-key=minioadmin","-lakehouse.s3.secret-key=minioadmin","-lakehouse.s3.force-path-style=true","-lakehouse.manifest.refresh-interval=30s","-lakehouse.insert.flush-interval=3600s","-lakehouse.pmeta.enabled=true","-lakehouse.config=/etc/lakehouse/engine.yml","-loggerLevel=INFO"]
+    command: ["-lakehouse.s3.bucket=obs-archive","-lakehouse.s3.endpoint=http://s3:9000","-lakehouse.s3.access-key=minioadmin","-lakehouse.s3.secret-key=minioadmin","-lakehouse.s3.force-path-style=true","-lakehouse.manifest.refresh-interval=30s","-lakehouse.pmeta.enabled=true","-lakehouse.config=/etc/lakehouse/engine.yml","-loggerLevel=INFO"]
   grafana:
     image: lh-review-grafana:latest
     environment:
@@ -38,3 +38,6 @@ services:
     volumes: ["/tmp/fix272-vis/provisioning:/etc/grafana/provisioning:ro"]
     depends_on: [lakehouse-logs, lakehouse-traces, hot-vl, hot-vt]
     ports: ["127.0.0.1:${PORT_BASE}3:3000"]
+volumes:
+  lh-logs-data: {}
+  lh-traces-data: {}
