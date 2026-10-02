@@ -75,7 +75,7 @@ type RewriteScheduler struct {
 	// from its insert pod. A rewrite replaces an object by one without the
 	// segment's nonce, so it waits for the segment like compaction does
 	// (manifest.SegmentGuard).
-	segmentLister  interface {
+	segmentLister interface {
 		ListModTimes(ctx context.Context, prefix string) (map[string]time.Time, error)
 	}
 	segmentPrefix  string

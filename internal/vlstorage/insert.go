@@ -83,6 +83,7 @@ func SetInsertStorage(buf BufferStore, dir string) {
 func (a *insertAdapter) MustAddRows(lr *logstorage.LogRows) {
 	blr, owned := admittedRows(lr)
 	if blr != nil {
+		metrics.InsertRowsTotal.Add(blr.RowsCount())
 		a.buf.MustAddRows(blr)
 	}
 	if owned {

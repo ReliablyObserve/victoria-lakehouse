@@ -176,32 +176,42 @@ func (b *BufferBridge) getQueryEndpoints() []string {
 	return b.endpoints
 }
 
-// QueryLogs fans out to all insert pod endpoints in parallel and returns
-// the merged set of buffered log rows within the given time range.
-// Endpoint errors are silently ignored for graceful degradation.
-func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, scope tenantScope) ([]schema.LogRow, error) {
+// QueryLogs fans out to every insert pod in parallel and returns their
+// unflushed log rows in [startNs, endNs], and the nonces of the buffer
+// segments the rows were read from (the caller drops those segments' objects
+// from its scan). A peer that fails is left out of both — its unflushed rows
+// are missing from the answer, and none of its objects is excluded, so no row
+// is answered twice.
+func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, scope tenantScope) ([]schema.LogRow, map[string]struct{}) {
+	return queryPeers[schema.LogRow](b, ctx, startNs, endNs, scope)
+}
+
+// QueryTraces is QueryLogs for spans.
+func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, scope tenantScope) ([]schema.TraceRow, map[string]struct{}) {
+	return queryPeers[schema.TraceRow](b, ctx, startNs, endNs, scope)
+}
+
+func queryPeers[T any](b *BufferBridge, ctx context.Context, startNs, endNs int64, scope tenantScope) ([]T, map[string]struct{}) {
 	if !b.cfg.BufferQueryEnabled {
 		return nil, nil
 	}
-
 	b.mu.RLock()
 	eps := b.getQueryEndpoints()
 	b.mu.RUnlock()
-
 	if len(eps) == 0 {
 		return nil, nil
 	}
 
 	var mu sync.Mutex
-	var all []schema.LogRow
+	var all []T
+	nonces := map[string]struct{}{}
 	var wg sync.WaitGroup
-
 	for _, ep := range eps {
 		for _, sub := range bridgeScopes(scope) {
 			wg.Add(1)
 			go func(endpoint string, sub tenantScope) {
 				defer wg.Done()
-				rows, err := b.fetchLogs(ctx, endpoint, startNs, endNs, sub)
+				rows, segs, err := fetchPeer[T](b, ctx, endpoint, startNs, endNs, sub)
 				if err != nil {
 					if ctx.Err() == nil {
 						logger.Warnf("buffer bridge: %s; the peer's unflushed rows are missing from this answer", err)
@@ -210,130 +220,52 @@ func (b *BufferBridge) QueryLogs(ctx context.Context, startNs, endNs int64, scop
 				}
 				mu.Lock()
 				all = append(all, rows...)
-				mu.Unlock()
-			}(ep, sub)
-		}
-	}
-	wg.Wait()
-
-	return all, nil
-}
-
-func (b *BufferBridge) fetchLogs(ctx context.Context, endpoint string, startNs, endNs int64, scope tenantScope) ([]schema.LogRow, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.bufferQueryURL(endpoint, startNs, endNs, scope), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := b.client.Do(req)
-	if err != nil {
-		metrics.BufferBridgeErrors.Inc("request")
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		metrics.BufferBridgeErrors.Inc("status")
-		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
-	}
-	if err := checkPeerTenantScope(resp, scope); err != nil {
-		metrics.BufferBridgeErrors.Inc("scope")
-		return nil, err
-	}
-
-	var rows []schema.LogRow
-	dec := json.NewDecoder(resp.Body)
-	for dec.More() {
-		var row schema.LogRow
-		if err := dec.Decode(&row); err != nil {
-			// A stream that breaks off is not a smaller answer: returning
-			// the rows read so far would count part of this peer's
-			// unflushed window as all of it.
-			metrics.BufferBridgeErrors.Inc("decode")
-			return nil, fmt.Errorf("buffer query from %s broke off after %d rows: %w", endpoint, len(rows), err)
-		}
-		rows = append(rows, row)
-	}
-	return rows, nil
-}
-
-// QueryTraces fans out to all insert pod endpoints in parallel and returns
-// the merged set of buffered trace rows within the given time range.
-// Endpoint errors are silently ignored for graceful degradation.
-func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, scope tenantScope) ([]schema.TraceRow, error) {
-	if !b.cfg.BufferQueryEnabled {
-		return nil, nil
-	}
-
-	b.mu.RLock()
-	eps := b.getQueryEndpoints()
-	b.mu.RUnlock()
-
-	if len(eps) == 0 {
-		return nil, nil
-	}
-
-	var mu sync.Mutex
-	var all []schema.TraceRow
-	var wg sync.WaitGroup
-
-	for _, ep := range eps {
-		for _, sub := range bridgeScopes(scope) {
-			wg.Add(1)
-			go func(endpoint string, sub tenantScope) {
-				defer wg.Done()
-				rows, err := b.fetchTraces(ctx, endpoint, startNs, endNs, sub)
-				if err != nil {
-					if ctx.Err() == nil {
-						logger.Warnf("buffer bridge: %s; the peer's unflushed rows are missing from this answer", err)
+				for _, n := range segs {
+					if n != "" {
+						nonces[n] = struct{}{}
 					}
-					return
 				}
-				mu.Lock()
-				all = append(all, rows...)
 				mu.Unlock()
 			}(ep, sub)
 		}
 	}
 	wg.Wait()
-
-	return all, nil
+	return all, nonces
 }
 
-func (b *BufferBridge) fetchTraces(ctx context.Context, endpoint string, startNs, endNs int64, scope tenantScope) ([]schema.TraceRow, error) {
+func fetchPeer[T any](b *BufferBridge, ctx context.Context, endpoint string, startNs, endNs int64, scope tenantScope) ([]T, []string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.bufferQueryURL(endpoint, startNs, endNs, scope), nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
 	resp, err := b.client.Do(req)
 	if err != nil {
 		metrics.BufferBridgeErrors.Inc("request")
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		metrics.BufferBridgeErrors.Inc("status")
-		return nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
 	}
 	if err := checkPeerTenantScope(resp, scope); err != nil {
 		metrics.BufferBridgeErrors.Inc("scope")
-		return nil, err
+		return nil, nil, err
 	}
 
-	var rows []schema.TraceRow
+	var rows []T
 	dec := json.NewDecoder(resp.Body)
 	for dec.More() {
-		var row schema.TraceRow
+		var row T
 		if err := dec.Decode(&row); err != nil {
 			// A stream that breaks off is not a smaller answer: returning
 			// the rows read so far would count part of this peer's
 			// unflushed window as all of it.
 			metrics.BufferBridgeErrors.Inc("decode")
-			return nil, fmt.Errorf("buffer query from %s broke off after %d rows: %w", endpoint, len(rows), err)
+			return nil, nil, fmt.Errorf("buffer query from %s broke off after %d rows: %w", endpoint, len(rows), err)
 		}
 		rows = append(rows, row)
 	}
-	return rows, nil
+	return rows, buffer.ParseSegments(resp.Header.Get(buffer.SegmentsHeader)), nil
 }

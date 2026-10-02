@@ -2,9 +2,9 @@ package parquets3
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,151 +18,152 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
 
-// flusherBuffer is the subset of the logstorage-native buffer the flusher needs:
-// enumerate tenants with data in a window, and stream their rows back. The
-// membuffer.Store satisfies it. Kept separate from LocalBuffer so the read-path
-// interface (and its test spies) stay unchanged.
-type flusherBuffer interface {
-	RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error
-	GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error)
-	// DebugFlush forces the buffer's in-memory rowsBuffer to a queryable part.
-	// The flusher MUST call this before reading: logstorage's RunQuery does NOT
-	// see un-flushed rows, so without it the most-recent ingest is invisible and
-	// would be skipped past by the advancing watermark (permanent loss).
-	DebugFlush()
-}
-
-// defaultFlushLatencyOffset is how far behind now() the flusher stops: a window
-// is only committed once it is this far in the past, so spans whose _time falls
-// in it but which arrive late (ingestion lag, trace completion) have landed
-// before the watermark advances past their _time. Rows in (now-offset, now] stay
-// in the buffer and are served by the read-merge until then. This is the lateness
-// tolerance — set it above the p99 (ingest_time - _time). 2m covers typical trace
-// completion + ingest lag; 30s was too small and dropped late spans (the residual
-// per-window under-count).
-const defaultFlushLatencyOffset = 2 * time.Minute
-
 // FlushRowFilter is the gate-at-flush predicate: it returns true to KEEP a
-// reconstructed row, false to drop it. It is injected from main so the buffer
-// (a raw query cache) can be filtered to exactly what the legacy authoritative
-// path would have written — dropping VT-internal trace_id_idx rows and rows whose
-// stream exceeds the per-tenant cardinality limit — WITHOUT this package
-// importing the vlstorage gate. A nil filter keeps every row.
+// row, false to drop it. It is injected from main so this package does not
+// import the vlstorage gates. A nil filter keeps every row.
 type FlushRowFilter func(accountID, projectID uint32, stream string) bool
 
-// BufferFlusher makes the logstorage-native buffer the AUTHORITATIVE Parquet
-// producer: on a ticker it queries the buffer for the just-elapsed window,
-// reconstructs schema.schema.TraceRow via DataBlockToschema.TraceRows, applies the gate-at-flush
-// filter, and uploads the rows through the same per-group machinery the legacy
-// flush uses (upload + manifest + bloom + stats + sidecar), so the Parquet it
-// writes is identical to the legacy flush.
-//
-// Durability is the buffer's own restore-on-open plus a persisted watermark.
-// The invariant: an object's bytes never change once uploaded, and no key is
-// uploaded twice with different content. To keep it:
-//
-//   - a window is recorded as pending BEFORE any of its uploads, durably (tmp
-//     file, fsync, rename, fsync of the directory): its end, a random nonce, and
-//     the (account, project, partition) and row count of every group. Keys are
-//     derived from those, never stored. Every write of the watermark puts the
-//     same content into <name>.prev first and then into the main file, so a
-//     crash can leave at most one of the two torn and the other still holds the
-//     pending record;
-//   - after each PUT a "stored" mark is appended to <name>.stored and fsynced
-//     (and the directory, retried on every mark until it succeeds) before the object is
-//     committed to the manifest, so anything compaction can see has a durable
-//     mark. A failed mark write never fails the group (its object is stored and
-//     committed at once) but is counted under stage "mark";
-//   - a group that fails in this process is retried exactly (same key, same
-//     bytes), without collecting the window again; a successful PUT is committed
-//     to the manifest at once;
-//   - after a restart every group of the pending record is settled by, in order:
-//     a stored mark, the manifest having retired the key (its recorded rows are
-//     counted as superseded), the manifest having the key, or an object-store
-//     HEAD finding the object. Only a group whose HEAD says "absent" is uploaded,
-//     from a re-collected window; if every group is settled the buffer is not
-//     read at all. A HEAD error waits for the next tick: it never guesses.
-//     Recovery does not depend on the manifest having been refreshed. HEAD needs
-//     s3:ListBucket (else S3 answers 403 for an absent key) and read-after-write
-//     consistency;
-//   - a group that HEAD reports absent whose rows are gone from the buffer
-//     (retention expired, or the flush filter changed) is uploaded with what is
-//     left, the window commits, and the shortfall is counted in
-//     lakehouse_insert_rows_lost_total{reason="buffer_expired"};
-//   - within one attempt, once a tenant's group fails its later partitions are
-//     not attempted, so a newer stored partition never hides the buffer rows of
-//     an older unstored one (the buffer read watermark is the tenant's newest
-//     stored MaxTimeNs); other tenants proceed;
-//   - the watermark advances only when every group is stored or settled, and a
-//     failed watermark save is retried without any upload.
-//
-// Residuals: a mark write that failed, followed by compaction of the object and
-// the retired record being forgotten before a restart, re-sends the group; a
-// peer compacting an unrecorded object while this node is down re-sends it
-// (#37); a PUT from the dead process still in flight can land after the recovery
-// HEAD; an in-process timed-out PUT that is adopted, compacted and forgotten
-// before its retry is re-sent; rows lost to buffer expiry are counted, net of late rows, not
-// recovered. Rows that arrive for a pending window after its first attempt are
-// never written to Parquet by an in-process retry (like rows later than the
-// latency tolerance); they are visible only while they are newer than the
-// tenant's cold watermark and within buffer retention. Objects recovered by HEAD
-// are registered as bare listing entries until compaction rewrites them (#246).
-// The legacy staging path has its own partial-failure visibility gap (#245).
-//
-// Wired DORMANT (BufferFlushEnabled defaults false): nothing runs until an
-// operator opts in, and the legacy path stays authoritative until the cutover.
-type BufferFlusher struct {
-	writer        *BatchWriter
-	buffer        flusherBuffer
-	keep          FlushRowFilter
-	watermarkPath string
-	latencyOffset int64 // ns; flush only up to now-latencyOffset
-	targetBytes   int64 // S3 object-size trigger: flush a window once it reaches this
-	maxLinger     int64 // ns; force-flush a window this old even if below targetBytes
-
-	// State of the window being flushed, when there is one (see tick).
-	pending   int64                      // its end; 0 when none
-	start     int64                      // its start (the committed watermark)
-	nonce     string                     // names its objects
-	refs      map[flushGroupRef]int64    // the groups in the durable pending record, with their row counts
-	stored    map[flushGroupRef]struct{} // groups with a durable stored mark
-	failed    []*traceGroupUpload        // groups the last attempt could not write
-	recovered bool                       // loaded from disk: not yet resumed
-	// markDirSynced: the directory holding the stored marks has been fsynced
-	// since the window began (retried on every mark until it succeeds).
-	markDirSynced bool
-	prepared      bool  // Prepare loaded the watermark
-	startLast     int64 // the watermark Prepare loaded
+// flushSegments is the part of the segmented insert buffer the flusher drives.
+// *membuffer.Segments has it.
+type flushSegments interface {
+	Active() *membuffer.Segment
+	Seal() (*membuffer.Segment, bool)
+	Pending() []*membuffer.Segment
+	Commit(g *membuffer.Segment, at time.Time)
+	CommitThrough(seq uint64, at time.Time)
+	Reap(now time.Time, grace time.Duration) int
+	Stats(now time.Time) membuffer.Stats
 }
 
-// estBytesPerTraceRow is a rough raw-bytes-per-span estimate used only to decide
-// WHEN a window is big enough to flush (the size gate). It needn't be exact — it
-// just keeps the flusher producing ~targetBytes S3 objects instead of one tiny
-// object per tick.
+// BufferFlusher drains the insert buffer to Parquet on S3, one sealed segment
+// at a time, and is the only producer of Parquet from ingested rows.
+//
+// The buffer is cut by ingest time (membuffer.Segments): every acknowledged
+// row is in exactly one segment, so draining every segment completely writes
+// every row once, whatever its _time — late and backfilled rows included.
+//
+// The invariant: an object's bytes never change once uploaded, and no key is
+// uploaded twice with different content.
+//
+//   - A sealed segment is immutable and durable (upstream closed and reopened
+//     it), so its groups — one tenant, one hour partition, one slice of at most
+//     maxRows rows — and their keys (<nonce>-<slice>) are the same in every
+//     process. The segment itself is the record of what has to be written; no
+//     list of groups is persisted.
+//   - Before a segment's first PUT, the state file records it as draining,
+//     durably (temp file, fsync, rename, fsync of the directory, mirrored to
+//     .prev first). After each PUT a "stored" mark is appended to
+//     <state>.stored and fsynced before the object is committed to the
+//     manifest.
+//   - A group is settled, in order, by: its stored mark, the manifest having
+//     retired its key (its rows live in what replaced it), the manifest having
+//     the key, or — only for a segment a previous process was draining — an
+//     object-store HEAD finding the object. A HEAD error waits for the next
+//     attempt: it never guesses. Every other group is collected from the
+//     segment and uploaded; a failed upload is retried with the same bytes.
+//   - When every group is settled, a marker {prefix}_segments/<nonce> is
+//     written to the object store (compaction and delete rewrites on any node
+//     leave the segment's objects alone until the grace after it), the state
+//     records the segment as committed (committed_through_seq), the marks are
+//     dropped and the segment is kept readable for the grace period, then
+//     removed.
+//
+// Memory is bounded by maxRows per group, whatever the segment's size: the
+// slices are planned from per-second row counts of the segment.
+//
+// Residuals: a PUT still in flight from a dead process can land after the
+// recovery HEAD said the object was absent, and the restarted flusher then
+// uploads the same key with possibly different bytes; a failed mark write
+// followed by compaction of the object and the retired record being forgotten
+// before a restart re-sends that group (counted under stage "mark"); a peer
+// compacting an object of a draining segment while this node is down (#37).
+type BufferFlusher struct {
+	writer    *BatchWriter
+	segs      flushSegments
+	keep      FlushRowFilter
+	statePath string
+	maxRows   int64         // rows per group
+	maxAge    time.Duration // seal the active segment after this long
+	sealBytes int64         // ... or once its estimated raw bytes reach this
+	grace     time.Duration // keep a committed segment readable this long
+
+	state      flushState
+	marksFor   string                       // nonce the in-memory marks belong to
+	marks      map[flushGroupRef]struct{}   // groups of the draining segment with a durable mark
+	head       bool                         // a previous process was draining marksFor: ask HEAD
+	markSynced bool                         // the marks file's directory entry is fsynced
+	retry      map[string]*traceGroupUpload // groups whose upload failed in this process, by key
+	nextTry    time.Time                    // back-off after a failed drain
+	backoff    time.Duration
+
+	stopOnce sync.Once
+	cancel   context.CancelFunc
+	done     chan struct{}
+}
+
+// flushState is the flusher's persisted record.
+type flushState struct {
+	Version int `json:"version"`
+	// CommittedThroughSeq: every segment with seq <= this is in Parquet.
+	CommittedThroughSeq uint64 `json:"committed_through_seq"`
+	// DrainingSeq is the segment whose uploads have begun; 0 when none.
+	DrainingSeq uint64 `json:"draining_seq,omitempty"`
+}
+
+const flushStateVersion = 5
+
+// flushGroupRef identifies one group of a segment.
+type flushGroupRef struct {
+	Account, Project uint32
+	Partition        string
+	Slice            int
+}
+
+// estBytesPerTraceRow is a rough raw size of a span, for sealing by size.
 const estBytesPerTraceRow = 512
 
-// newBufferFlusher builds a flusher without loading anything. watermarkDir should be the buffer's data
-// dir (persistent). keep may be nil. targetBytes is the S3 object-size flush
-// trigger (e.g. insert.target_file_size); maxLinger caps how long a sub-target
-// window waits before being flushed anyway. Both fall back to sane defaults.
-func newBufferFlusher(writer *BatchWriter, buffer flusherBuffer, watermarkDir string, keep FlushRowFilter, targetBytes int64, maxLinger time.Duration) *BufferFlusher {
-	if targetBytes <= 0 {
-		targetBytes = 128 << 20 // 128 MiB
+// maxSizeSealBacklog: with this many sealed segments not yet drained, the
+// active segment is sealed by age only, so an object-store outage builds a few
+// large segments rather than many small ones (each open segment costs about
+// 150 KiB and 8 goroutines, measured).
+const maxSizeSealBacklog = 64
+
+// BufferFlusherConfig sizes the flusher.
+type BufferFlusherConfig struct {
+	TargetBytes int64         // object size target (insert.target_file_size)
+	MaxAge      time.Duration // insert.buffer_flush_interval
+	Grace       time.Duration // committed segments stay readable this long
+}
+
+func newBufferFlusher(writer *BatchWriter, segs flushSegments, stateDir string, keep FlushRowFilter, c BufferFlusherConfig) *BufferFlusher {
+	if c.TargetBytes <= 0 {
+		c.TargetBytes = 128 << 20
 	}
-	if maxLinger <= 0 {
-		maxLinger = 5 * time.Minute
+	if c.MaxAge <= 0 {
+		c.MaxAge = 5 * time.Minute
+	}
+	if c.Grace < 0 {
+		c.Grace = 0
+	}
+	maxRows := c.TargetBytes / estBytesPerTraceRow
+	if maxRows < 1 {
+		maxRows = 1
 	}
 	return &BufferFlusher{
-		writer:        writer,
-		buffer:        buffer,
-		keep:          keep,
-		watermarkPath: filepath.Join(watermarkDir, "buffer_flush_watermark.json"),
-		latencyOffset: int64(defaultFlushLatencyOffset),
-		targetBytes:   targetBytes,
-		maxLinger:     int64(maxLinger),
+		writer:    writer,
+		segs:      segs,
+		keep:      keep,
+		statePath: filepath.Join(stateDir, "buffer_flush_state.json"),
+		maxRows:   maxRows,
+		maxAge:    c.MaxAge,
+		sealBytes: c.TargetBytes,
+		grace:     c.Grace,
+		retry:     map[string]*traceGroupUpload{},
+		done:      make(chan struct{}),
 	}
 }
 
@@ -170,259 +171,75 @@ func newBufferFlusher(writer *BatchWriter, buffer flusherBuffer, watermarkDir st
 // can observe it.
 var fatalf = logger.Fatalf
 
-// NewBufferFlusher builds a flusher and loads its watermark (Prepare) when
-// watermarkDir is set. A watermark that exists but cannot be read makes the
-// process stop with a message saying how to reset it: starting from "now" would
-// silently skip data. Otherwise see newBufferFlusher for the arguments.
-func NewBufferFlusher(writer *BatchWriter, buffer flusherBuffer, watermarkDir string, keep FlushRowFilter, targetBytes int64, maxLinger time.Duration) *BufferFlusher {
-	f := newBufferFlusher(writer, buffer, watermarkDir, keep, targetBytes, maxLinger)
-	if watermarkDir != "" {
-		if err := f.Prepare(time.Now().UnixNano()); err != nil {
-			fatalf("buffer_flush_enabled but the flush watermark cannot be read: %s", err)
-		}
+// NewBufferFlusher builds the flusher and loads its state. A state file that
+// exists but cannot be read stops the process: guessing would skip or repeat
+// data.
+func NewBufferFlusher(writer *BatchWriter, segs flushSegments, stateDir string, keep FlushRowFilter, c BufferFlusherConfig) *BufferFlusher {
+	f := newBufferFlusher(writer, segs, stateDir, keep, c)
+	if err := f.load(time.Now()); err != nil {
+		fatalf("the insert buffer's flush state cannot be read: %s", err)
 	}
 	return f
 }
 
-// flushGroupRef identifies one group of a window: one tenant's rows of one
-// partition. With the window's nonce it determines the group's object key.
-type flushGroupRef struct {
-	Account   uint32 `json:"account"`
-	Project   uint32 `json:"project"`
-	Partition string `json:"partition"`
-}
+func (f *BufferFlusher) prevPath() string   { return f.statePath + ".prev" }
+func (f *BufferFlusher) storedPath() string { return f.statePath + ".stored" }
 
-// flushGroupRec is a group as persisted: its identity and the rows it held when
-// it was recorded, which recovery uses to count what the buffer no longer has
-// and the rows of a group whose object was superseded.
-type flushGroupRec struct {
-	flushGroupRef
-	Rows int64 `json:"rows"`
-}
-
-func sortRefs(refs []flushGroupRef) {
-	sort.Slice(refs, func(i, j int) bool {
-		a, b := refs[i], refs[j]
-		if a.Account != b.Account {
-			return a.Account < b.Account
-		}
-		if a.Project != b.Project {
-			return a.Project < b.Project
-		}
-		return a.Partition < b.Partition
-	})
-}
-
-// flushWatermark is the flusher's persisted state.
-//
-// A window is committed when LastFlushWindowEndNs reaches its end. While a
-// window is being flushed it is also recorded as pending, with the nonce that
-// names its objects and every group it will upload, written before the first
-// upload so a restart knows what to look for.
-type flushWatermark struct {
-	LastFlushWindowEndNs int64 `json:"last_flush_window_end_ns"`
-	// PendingWindowEndNs is the end of the window being flushed.
-	PendingWindowEndNs int64 `json:"pending_window_end_ns,omitempty"`
-	// PendingNonce is random, drawn when the window becomes pending. It is part
-	// of every object name of the window, so two flushers (or two incarnations
-	// of one) never derive the same key for different bytes.
-	PendingNonce string `json:"pending_nonce,omitempty"`
-	// PendingGroups is the sorted set of groups of the window, each with the
-	// number of rows it was recorded with. Keys are derived from the group and
-	// the nonce.
-	PendingGroups []flushGroupRec `json:"pending_groups,omitempty"`
-	Version       int             `json:"version"`
-}
-
-// watermarkVersion is the format written. A file of an older version, or a
-// pending window without a nonce, is read as having no pending window.
-const watermarkVersion = 4
-
-func parseWatermark(b []byte) (flushWatermark, error) {
-	var wm flushWatermark
-	if err := json.Unmarshal(b, &wm); err != nil {
-		return wm, err
-	}
-	if wm.LastFlushWindowEndNs <= 0 {
-		return wm, fmt.Errorf("no valid last_flush_window_end_ns")
-	}
-	return wm, nil
-}
-
-func (f *BufferFlusher) prevPath() string   { return f.watermarkPath + ".prev" }
-func (f *BufferFlusher) storedPath() string { return f.watermarkPath + ".stored" }
-
-// loadWatermark returns the persisted window-end, or fallbackNs when there is no
-// watermark yet (a first start begins at the flip point rather than re-flushing
-// data the legacy path already handled). It reads the main file and falls back
-// to the previous good one. A file that exists but cannot be read, with no
-// readable backup, is an error: guessing "now" would silently skip data.
-//
-// A valid pending window is restored and marked recovered.
-func (f *BufferFlusher) loadWatermark(fallbackNs int64) (int64, error) {
-	f.clearPending()
-	mainB, mainErr := os.ReadFile(f.watermarkPath)
-	var wm flushWatermark
-	if mainErr == nil {
-		var perr error
-		if wm, perr = parseWatermark(mainB); perr != nil {
-			mainErr = perr
-		}
-	}
-	if mainErr != nil {
-		prevB, prevErr := os.ReadFile(f.prevPath())
-		if prevErr == nil {
-			wm, prevErr = parseWatermark(prevB)
-		}
+// load reads the state (falling back to .prev) and tells the segments which of
+// them are committed. A missing state means nothing is committed: every
+// segment found is drained.
+func (f *BufferFlusher) load(now time.Time) error {
+	st, err := readFlushState(f.statePath)
+	if err != nil {
+		prev, perr := readFlushState(f.prevPath())
 		switch {
-		case prevErr == nil:
-			logger.Warnf("buffer flusher: watermark %s is unreadable (%v); using the previous good copy %s", f.watermarkPath, mainErr, f.prevPath())
-		case os.IsNotExist(mainErr) && os.IsNotExist(prevErr):
-			return fallbackNs, nil
+		case perr == nil:
+			logger.Warnf("buffer flusher: state %s is unreadable (%v); using the previous good copy %s", f.statePath, err, f.prevPath())
+			st = prev
+		case os.IsNotExist(err) && os.IsNotExist(perr):
+			st = flushState{Version: flushStateVersion}
 		default:
-			return 0, fmt.Errorf("buffer flush watermark %s is unreadable (%v) and so is its backup %s (%v); delete both files to start from now (data between the last committed window and now that was not flushed will then not be flushed)", f.watermarkPath, mainErr, f.prevPath(), prevErr)
+			return fmt.Errorf("%s is unreadable (%v) and so is its backup %s (%v); delete both to drain every segment present (objects already uploaded from a segment being drained are then uploaded again)", f.statePath, err, f.prevPath(), perr)
 		}
 	}
-	if wm.Version >= watermarkVersion && wm.PendingNonce != "" && wm.PendingWindowEndNs > wm.LastFlushWindowEndNs {
-		f.pending = wm.PendingWindowEndNs
-		f.start = wm.LastFlushWindowEndNs
-		f.nonce = wm.PendingNonce
-		f.refs = make(map[flushGroupRef]int64, len(wm.PendingGroups))
-		for _, g := range wm.PendingGroups {
-			f.refs[g.flushGroupRef] = g.Rows
-		}
-		f.stored = f.loadStoredMarks()
-		f.recovered = true
-	}
-	return wm.LastFlushWindowEndNs, nil
-}
-
-// clearPending forgets the in-memory pending window.
-func (f *BufferFlusher) clearPending() {
-	f.pending = 0
-	f.start = 0
-	f.nonce = ""
-	f.refs = nil
-	f.stored = nil
-	f.failed = nil
-	f.recovered = false
-	f.markDirSynced = false
-}
-
-// loadStoredMarks reads the best-effort "stored" marks of the pending window. A
-// torn last line, or a mark of another window (another nonce), is ignored.
-func (f *BufferFlusher) loadStoredMarks() map[flushGroupRef]struct{} {
-	out := map[flushGroupRef]struct{}{}
-	b, err := os.ReadFile(f.storedPath())
-	if err != nil {
-		return out
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		p := strings.Split(line, "\t")
-		if len(p) != 4 || p[0] != f.nonce {
-			continue
-		}
-		a, errA := strconv.ParseUint(p[1], 10, 32)
-		pr, errP := strconv.ParseUint(p[2], 10, 32)
-		if errA != nil || errP != nil || p[3] == "" {
-			continue
-		}
-		ref := flushGroupRef{Account: uint32(a), Project: uint32(pr), Partition: p[3]}
-		if _, ok := f.refs[ref]; ok {
-			out[ref] = struct{}{}
-		}
-	}
-	return out
-}
-
-// fsyncFile is os.File.Sync; a variable so a test can observe that marks and
-// watermarks are made durable.
-var fsyncFile = func(fh *os.File) error { return fh.Sync() }
-
-// markStored appends a group to the stored marks and makes the mark durable:
-// the file is fsynced after the append, and the directory when the file is
-// created. onStored runs before the manifest commit, so anything compaction can
-// see already has a durable mark. A failure never fails the group — its object
-// is stored and is committed at once — but it is counted (stage "mark") because
-// a group without a mark depends on HEAD after a restart.
-func (f *BufferFlusher) markStored(ref flushGroupRef) {
-	if f.stored != nil {
-		f.stored[ref] = struct{}{}
-	}
-	fh, err := os.OpenFile(f.storedPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err == nil {
-		_, err = fmt.Fprintf(fh, "%s\t%d\t%d\t%s\n", f.nonce, ref.Account, ref.Project, ref.Partition)
-		if err == nil {
-			err = fsyncFile(fh)
-		}
-		if cerr := fh.Close(); err == nil {
-			err = cerr
-		}
-	}
-	// The directory entry of the mark file must be durable too. Retry on every
-	// mark until one succeeds: a failed directory fsync on the first mark must
-	// not leave every later mark of the window undurable.
-	if err == nil && !f.markDirSynced {
-		if err = syncDir(filepath.Dir(f.storedPath())); err == nil {
-			f.markDirSynced = true
-		}
-	}
-	if err != nil {
-		metrics.BufferFlushErrors.Inc("mark")
-		logger.Warnf("buffer flusher: cannot record a durable stored mark for %s (recovery will HEAD the object instead): %s", ref.Partition, err)
-	}
-}
-
-// saveWatermark persists the window-end durably, which also clears the pending
-// record, and then drops the stored marks.
-func (f *BufferFlusher) saveWatermark(endNs int64) error {
-	if err := f.writeWatermark(flushWatermark{LastFlushWindowEndNs: endNs, Version: watermarkVersion}); err != nil {
-		return err
-	}
-	_ = os.Remove(f.storedPath())
-	metrics.InsertFlushWatermarkNs.Set(endNs)
+	f.state = st
+	f.segs.CommitThrough(st.CommittedThroughSeq, now)
 	return nil
 }
 
-// writeIntent records the pending window and the groups in f.refs, durably,
-// before any of their uploads.
-func (f *BufferFlusher) writeIntent(lastNs int64) error {
-	refs := make([]flushGroupRef, 0, len(f.refs))
-	for r := range f.refs {
-		refs = append(refs, r)
+func readFlushState(path string) (flushState, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return flushState{}, err
 	}
-	sortRefs(refs)
-	recs := make([]flushGroupRec, len(refs))
-	for i, r := range refs {
-		recs[i] = flushGroupRec{flushGroupRef: r, Rows: f.refs[r]}
+	var st flushState
+	if err := json.Unmarshal(b, &st); err != nil {
+		return flushState{}, err
 	}
-	return f.writeWatermark(flushWatermark{
-		LastFlushWindowEndNs: lastNs,
-		PendingWindowEndNs:   f.pending,
-		PendingNonce:         f.nonce,
-		PendingGroups:        recs,
-		Version:              watermarkVersion,
-	})
+	if st.Version != flushStateVersion {
+		return flushState{}, fmt.Errorf("version %d, want %d", st.Version, flushStateVersion)
+	}
+	return st, nil
 }
 
-// writeWatermark replaces the watermark durably. Every write puts the SAME
-// content into <name>.prev first and then into the main file, each through a
-// temp file: write, fsync, rename, fsync of the directory. A crash can
-// leave at most one of the two torn, and the other holds a state
-// that is safe to resume from — including the pending record. Main is preferred
-// on load: when a crash separates the two writes, main is the older, still valid
-// state, and nothing of the newer one had started yet (the record is written
-// before the PUTs it describes).
-func (f *BufferFlusher) writeWatermark(wm flushWatermark) error {
-	b, err := json.Marshal(wm)
+// writeState replaces the state durably: the same content goes to .prev
+// first and then to the main file, each through a temp file (write, fsync,
+// rename, fsync of the directory). A crash leaves at most one of them torn.
+func (f *BufferFlusher) writeState(st flushState) error {
+	st.Version = flushStateVersion
+	b, err := json.Marshal(st)
 	if err != nil {
 		return err
 	}
 	if err := writeFileDurable(f.prevPath(), b); err != nil {
-		return fmt.Errorf("write the watermark backup: %w", err)
+		return fmt.Errorf("write the state backup: %w", err)
 	}
-	return writeFileDurable(f.watermarkPath, b)
+	return writeFileDurable(f.statePath, b)
 }
+
+// fsyncFile is os.File.Sync; a variable so a test can observe that marks and
+// the state are made durable.
+var fsyncFile = func(fh *os.File) error { return fh.Sync() }
 
 // syncDir fsyncs a directory so a rename or a created file in it survives a crash.
 func syncDir(dir string) error {
@@ -459,111 +276,160 @@ func writeFileDurable(path string, data []byte) error {
 	return syncDir(filepath.Dir(path))
 }
 
-// collectWindow gathers (startNs, endNs] from the buffer, per tenant, applying
-// the gate-at-flush filter. It returns the per-tenant rows and the total row
-// count (for the size gate). It does NOT write anything — the caller decides
-// whether the window is big enough (or old enough) to flush.
-func (f *BufferFlusher) collectWindow(ctx context.Context, startNs, endNs int64) (map[logstorage.TenantID][]schema.TraceRow, int, error) {
-	tenants, err := f.buffer.GetTenantIDs(ctx, startNs, endNs)
+// loadMarks reads the stored marks of the segment named nonce. A torn last
+// line, or a mark of another segment, is ignored.
+func (f *BufferFlusher) loadMarks(nonce string) map[flushGroupRef]struct{} {
+	out := map[flushGroupRef]struct{}{}
+	b, err := os.ReadFile(f.storedPath())
 	if err != nil {
-		return nil, 0, err
+		return out
 	}
-	out := make(map[logstorage.TenantID][]schema.TraceRow, len(tenants))
-	total := 0
-	for _, tenant := range tenants {
-		rows, err := f.collectTenantRows(ctx, tenant, startNs, endNs)
-		if err != nil {
-			return nil, 0, err
+	for _, line := range strings.Split(string(b), "\n") {
+		p := strings.Split(line, "\t")
+		if len(p) != 5 || p[0] != nonce || p[3] == "" {
+			continue
 		}
-		if len(rows) > 0 {
-			out[tenant] = rows
-			total += len(rows)
+		a, errA := strconv.ParseUint(p[1], 10, 32)
+		pr, errP := strconv.ParseUint(p[2], 10, 32)
+		sl, errS := strconv.Atoi(p[4])
+		if errA != nil || errP != nil || errS != nil {
+			continue
 		}
+		out[flushGroupRef{Account: uint32(a), Project: uint32(pr), Partition: p[3], Slice: sl}] = struct{}{}
 	}
-	return out, total, nil
+	return out
 }
 
-// windowBatchID names the object one tenant's rows of one partition get when
-// the window (startNs, endNs] is flushed under nonce. The nonce is drawn when
-// the window becomes pending and persisted with it, so a resumed window names
-// the same objects while a different flusher, or a later window over the same
-// range, cannot collide with them. 16 hex characters, like any batch id.
-func windowBatchID(nonce string, startNs, endNs int64, accountID, projectID uint32, partition string) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s-%d-%d-%d-%d-%s", nonce, startNs, endNs, accountID, projectID, partition)))
-	return fmt.Sprintf("%x", sum[:8])
-}
-
-// keyFor is the object key of a group of the pending window.
-func (f *BufferFlusher) keyFor(ref flushGroupRef) string {
-	up := &traceGroupUpload{partition: ref.Partition, accountID: ref.Account, projectID: ref.Project,
-		batchID: windowBatchID(f.nonce, f.start, f.pending, ref.Account, ref.Project, ref.Partition)}
-	return f.writer.assignTraceKey(up)
-}
-
-// buildGroups splits the rows collected for the pending window into one upload
-// per tenant and partition, keyed by windowBatchID and ordered by (account,
-// project, partition) — so a tenant's partitions come oldest first and which
-// group an error hits first does not depend on map iteration. Each group marks
-// itself stored through markStored.
-func (f *BufferFlusher) buildGroups(collected map[logstorage.TenantID][]schema.TraceRow) []*traceGroupUpload {
-	tenants := make([]logstorage.TenantID, 0, len(collected))
-	for t := range collected {
-		tenants = append(tenants, t)
-	}
-	sort.Slice(tenants, func(i, j int) bool {
-		if tenants[i].AccountID != tenants[j].AccountID {
-			return tenants[i].AccountID < tenants[j].AccountID
+// markStored appends a durable "stored" mark for ref of the draining segment:
+// the file is fsynced after the append, and its directory until that succeeds
+// once. It runs before the manifest commit. A failure never fails the group —
+// the object is stored and is committed at once — but it is counted (stage
+// "mark"): that group then depends on HEAD after a restart.
+func (f *BufferFlusher) markStored(ref flushGroupRef) {
+	f.marks[ref] = struct{}{}
+	fh, err := os.OpenFile(f.storedPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err == nil {
+		_, err = fmt.Fprintf(fh, "%s\t%d\t%d\t%s\t%d\n", f.marksFor, ref.Account, ref.Project, ref.Partition, ref.Slice)
+		if err == nil {
+			err = fsyncFile(fh)
 		}
-		return tenants[i].ProjectID < tenants[j].ProjectID
-	})
-	var groups []*traceGroupUpload
-	for _, tenant := range tenants {
-		byPartition := map[string][]schema.TraceRow{}
-		for _, r := range collected[tenant] {
-			p := partitionFromNano(r.TimestampUnixNano)
-			byPartition[p] = append(byPartition[p], r)
-		}
-		parts := make([]string, 0, len(byPartition))
-		for p := range byPartition {
-			parts = append(parts, p)
-		}
-		sort.Strings(parts)
-		for _, p := range parts {
-			name := func(accountID, projectID uint32) string {
-				return windowBatchID(f.nonce, f.start, f.pending, accountID, projectID, p)
-			}
-			for _, up := range f.writer.buildTraceGroups(p, byPartition[p], name) {
-				f.writer.assignTraceKey(up)
-				ref := refOf(up)
-				up.onStored = func(string) { f.markStored(ref) }
-				groups = append(groups, up)
-			}
+		if cerr := fh.Close(); err == nil {
+			err = cerr
 		}
 	}
-	return groups
+	if err == nil && !f.markSynced {
+		if err = syncDir(filepath.Dir(f.storedPath())); err == nil {
+			f.markSynced = true
+		}
+	}
+	if err != nil {
+		metrics.BufferFlushErrors.Inc("mark")
+		logger.Warnf("buffer flusher: cannot record a durable stored mark for %s (a restart will HEAD the object instead): %s", ref.Partition, err)
+	}
 }
 
-func refOf(up *traceGroupUpload) flushGroupRef {
-	return flushGroupRef{Account: up.accountID, Project: up.projectID, Partition: up.partition}
+// segmentBatchID names a group's object: the segment nonce, then the slice.
+// The nonce lets readers tell the objects of a live segment from every other
+// object (SegmentNonceOfKey).
+func segmentBatchID(nonce string, slice int) string {
+	return fmt.Sprintf("%s-%x", nonce, slice)
 }
 
-// collectTenantRows queries the buffer for one tenant over (startNs, endNs],
-// reconstructs TraceRows, and applies the gate-at-flush filter (drop trace_id_idx
-// + cardinality-exceeding rows) so the authoritative Parquet matches the legacy
-// path exactly.
-func (f *BufferFlusher) collectTenantRows(ctx context.Context, tenant logstorage.TenantID, startNs, endNs int64) ([]schema.TraceRow, error) {
-	q, err := logstorage.ParseQueryAtTimestamp("*", endNs)
+// flushSlice is one group of a tenant: rows of one hour partition with
+// _time in [start, end].
+type flushSlice struct {
+	partition  string
+	slice      int
+	start, end int64
+	rows       int64
+}
+
+// planSlices cuts a tenant's per-second row counts into groups of at most
+// maxRows rows that never cross an hour partition. A single second with more
+// rows than maxRows is one group. Deterministic for the same counts.
+func planSlices(perSecond map[int64]int64, maxRows int64) []flushSlice {
+	secs := make([]int64, 0, len(perSecond))
+	for s := range perSecond {
+		secs = append(secs, s)
+	}
+	sort.Slice(secs, func(i, j int) bool { return secs[i] < secs[j] })
+	var out []flushSlice
+	next := map[string]int{}
+	for _, sec := range secs {
+		n := perSecond[sec]
+		p := partitionFromNano(sec)
+		if k := len(out) - 1; k >= 0 && out[k].partition == p && out[k].rows+n <= maxRows {
+			out[k].rows += n
+			continue
+		}
+		if k := len(out) - 1; k >= 0 {
+			out[k].end = sec - 1
+		}
+		out = append(out, flushSlice{partition: p, slice: next[p], start: sec, rows: n})
+		next[p]++
+	}
+	if k := len(out) - 1; k >= 0 {
+		out[k].end = secs[len(secs)-1] + int64(time.Second) - 1
+	}
+	return out
+}
+
+// tenantSecondCounts returns the tenant's rows of g per second of _time
+// (upstream `stats by (_time:1s) count()`).
+func tenantSecondCounts(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID) (map[int64]int64, error) {
+	q, err := logstorage.ParseQueryAtTimestamp(`* | stats by (_time:1s) count() as n`, math.MaxInt64)
 	if err != nil {
 		return nil, err
 	}
-	q = q.CloneWithTimeFilter(q.GetTimestamp(), startNs, endNs)
+	q = q.CloneWithTimeFilter(q.GetTimestamp(), 0, math.MaxInt64)
 	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{tenant}, q, false, nil)
+	var mu sync.Mutex
+	out := map[int64]int64{}
+	var perr error
+	err = g.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
+		var ts, ns []string
+		for _, c := range db.GetColumns(false) {
+			switch c.Name {
+			case "_time":
+				ts = c.Values
+			case "n":
+				ns = c.Values
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for i := range ts {
+			t, err := time.Parse(time.RFC3339Nano, ts[i])
+			if err != nil {
+				perr = fmt.Errorf("per-second count: _time %q: %w", ts[i], err)
+				return
+			}
+			n, err := strconv.ParseInt(ns[i], 10, 64)
+			if err != nil {
+				perr = fmt.Errorf("per-second count: n %q: %w", ns[i], err)
+				return
+			}
+			out[t.UnixNano()] += n
+		}
+	})
+	if err == nil {
+		err = perr
+	}
+	return out, err
+}
 
-	// logstorage invokes writeBlock from MULTIPLE goroutines concurrently, so the
-	// shared slice (and any filter side effects) must be synchronized.
+// collectSlice reads one group's rows from g and applies the keep filter.
+func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) ([]schema.TraceRow, error) {
+	q, err := logstorage.ParseQueryAtTimestamp("*", sl.end)
+	if err != nil {
+		return nil, err
+	}
+	q = q.CloneWithTimeFilter(q.GetTimestamp(), sl.start, sl.end)
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{tenant}, q, false, nil)
+	// logstorage calls writeBlock from several goroutines.
 	var mu sync.Mutex
 	var rows []schema.TraceRow
-	err = f.buffer.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
+	err = g.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
 		local := make([]schema.TraceRow, 0, db.RowsCount())
 		for _, r := range vlstorage.DataBlockToTraceRows(db, tenant) {
 			if f.keep != nil && !f.keep(r.AccountID, r.ProjectID, r.Stream) {
@@ -575,280 +441,225 @@ func (f *BufferFlusher) collectTenantRows(ctx context.Context, tenant logstorage
 		rows = append(rows, local...)
 		mu.Unlock()
 	})
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano })
 	return rows, err
 }
 
-// Prepare loads the persisted watermark (falling back to nowNs on a first
-// start). A watermark that exists but cannot be read is an error: the caller
-// must not start the flusher, because starting from "now" would skip data. NewBufferFlusher
-// calls it; Run calls it if it has not run, and does not run on an error.
-func (f *BufferFlusher) Prepare(nowNs int64) error {
-	last, err := f.loadWatermark(nowNs)
-	if err != nil {
-		return err
+// Start runs the flusher until Stop. checkInterval is how often it checks
+// whether to seal the active segment and drains what is sealed.
+func (f *BufferFlusher) Start(checkInterval time.Duration) {
+	if checkInterval <= 0 {
+		checkInterval = time.Second
 	}
-	f.startLast = last
-	f.prepared = true
+	ctx, cancel := context.WithCancel(context.Background())
+	f.cancel = cancel
+	go func() {
+		defer close(f.done)
+		t := time.NewTicker(checkInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				f.tick(ctx, now)
+			}
+		}
+	}()
+}
+
+// Stop ends the flusher and waits for its current step to finish, so the
+// segments can be closed after it. A drain cut short resumes after the
+// restart.
+func (f *BufferFlusher) Stop() {
+	f.stopOnce.Do(func() {
+		if f.cancel == nil {
+			close(f.done)
+			return
+		}
+		f.cancel()
+		<-f.done
+	})
+}
+
+// tick seals the active segment when it is due, drains the sealed segments in
+// order (stopping at the first that cannot be finished now), and removes the
+// committed segments whose grace has passed.
+func (f *BufferFlusher) tick(ctx context.Context, now time.Time) {
+	f.maybeSeal(now)
+	if now.After(f.nextTry) || now.Equal(f.nextTry) {
+		for _, g := range f.segs.Pending() {
+			if ctx.Err() != nil {
+				return
+			}
+			if err := f.drain(ctx, g); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				f.failed(now, g, err)
+				break
+			}
+			f.backoff = 0
+			f.maybeSeal(time.Now())
+		}
+	}
+	f.segs.Reap(time.Now(), f.grace)
+	f.observe(time.Now())
+}
+
+func (f *BufferFlusher) failed(now time.Time, g *membuffer.Segment, err error) {
+	switch {
+	case f.backoff == 0:
+		f.backoff = time.Second
+	case f.backoff < 30*time.Second:
+		f.backoff *= 2
+	}
+	f.nextTry = now.Add(f.backoff)
+	logger.Warnf("buffer flusher: segment %d (%s) is not fully written yet, retrying in %s: %s", g.Seq(), g.Nonce(), f.backoff, err)
+}
+
+// maybeSeal seals the active segment once it is maxAge old, or has reached
+// the size target while few segments wait to be drained.
+func (f *BufferFlusher) maybeSeal(now time.Time) {
+	a := f.segs.Active()
+	rows := a.Rows()
+	if rows == 0 {
+		return
+	}
+	due := now.Sub(a.Created()) >= f.maxAge
+	if !due && rows*estBytesPerTraceRow >= f.sealBytes {
+		due = len(f.segs.Pending()) < maxSizeSealBacklog
+	}
+	if due {
+		if g, ok := f.segs.Seal(); ok {
+			metrics.BufferSegmentsSealed.Inc()
+			logger.Infof("buffer flusher: sealed segment %d (%s) with %d rows", g.Seq(), g.Nonce(), g.Rows())
+		}
+	}
+}
+
+// drain writes every group of g that is not settled yet and then commits g.
+func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
+	switch {
+	case f.state.DrainingSeq != g.Seq():
+		// The first upload of g in any process: record it first, durably.
+		st := f.state
+		st.DrainingSeq = g.Seq()
+		if err := f.writeState(st); err != nil {
+			metrics.BufferFlushErrors.Inc("intent")
+			return fmt.Errorf("record segment %d as draining: %w", g.Seq(), err)
+		}
+		f.state = st
+		_ = os.Remove(f.storedPath())
+		f.marksFor, f.marks, f.head, f.markSynced = g.Nonce(), map[flushGroupRef]struct{}{}, false, false
+	case f.marksFor != g.Nonce():
+		// A previous process was draining g: its marks say what it stored;
+		// any other group may have been stored too, so ask HEAD.
+		f.marksFor, f.marks, f.head, f.markSynced = g.Nonce(), f.loadMarks(g.Nonce()), true, false
+	}
+
+	tenants, err := g.GetTenantIDs(ctx, 0, math.MaxInt64)
+	if err != nil {
+		metrics.BufferFlushErrors.Inc("collect")
+		return fmt.Errorf("list tenants: %w", err)
+	}
+	sort.Slice(tenants, func(i, j int) bool {
+		if tenants[i].AccountID != tenants[j].AccountID {
+			return tenants[i].AccountID < tenants[j].AccountID
+		}
+		return tenants[i].ProjectID < tenants[j].ProjectID
+	})
+	for _, tenant := range tenants {
+		counts, err := tenantSecondCounts(ctx, g, tenant)
+		if err != nil {
+			metrics.BufferFlushErrors.Inc("collect")
+			return fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+		}
+		for _, sl := range planSlices(counts, f.maxRows) {
+			if err := f.writeGroup(ctx, g, tenant, sl); err != nil {
+				return err
+			}
+		}
+	}
+
+	// The marker tells compaction and delete rewrites on every node that the
+	// segment's objects are complete; they leave them alone until the grace
+	// after it has passed (manifest.SegmentGuard). Written before the local
+	// commit: a segment committed here always has its marker.
+	if err := f.writer.putSegmentMarker(ctx, g.Nonce(), g.Seq()); err != nil {
+		metrics.BufferFlushErrors.Inc("marker")
+		return fmt.Errorf("write the commit marker of segment %d: %w", g.Seq(), err)
+	}
+	st := flushState{CommittedThroughSeq: g.Seq()}
+	if err := f.writeState(st); err != nil {
+		metrics.BufferFlushErrors.Inc("watermark")
+		return fmt.Errorf("record segment %d as committed: %w", g.Seq(), err)
+	}
+	f.state = st
+	_ = os.Remove(f.storedPath())
+	f.marksFor, f.marks, f.head = "", nil, false
+	f.segs.Commit(g, time.Now())
+	metrics.BufferSegmentsCommitted.Inc()
 	return nil
 }
 
-// Run drives the flusher until ctx is cancelled. checkInterval is how often the
-// flusher wakes to (re-)evaluate the window for the size/linger gate — NOT the
-// flush cadence (a window flushes on targetBytes OR maxLinger).
-//
-// CRASH-SAFETY: the watermark advances (and is persisted, atomically) ONLY after
-// a window's Parquet is fully written. So a crash mid-window leaves the watermark
-// at the last committed boundary; the rows live in the persisted buffer
-// (logstorage parts on disk, restored on open), and on restart loadWatermark
-// resumes from that boundary: it finishes the pending window if there is one, then
-// flushes (last, now-offset] — no loss, no LH WAL. The only requirement is buffer_retention > maxLinger + downtime so the
-// un-flushed data hasn't aged out of the buffer before recovery. A FRESH flip
-// (no watermark file) starts at nowNs (the flip point) so pre-flip data — already
-// owned by the legacy path — is never double-flushed.
-func (f *BufferFlusher) Run(ctx context.Context, checkInterval time.Duration, nowNs int64) {
-	if checkInterval <= 0 {
-		checkInterval = 30 * time.Second
+// writeGroup settles or uploads one group.
+func (f *BufferFlusher) writeGroup(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) error {
+	ref := flushGroupRef{Account: tenant.AccountID, Project: tenant.ProjectID, Partition: sl.partition, Slice: sl.slice}
+	if _, ok := f.marks[ref]; ok {
+		return nil
 	}
-	if !f.prepared {
-		if err := f.Prepare(nowNs); err != nil {
-			logger.Errorf("buffer flusher NOT started: %s", err)
-			return
-		}
-	}
-	last := f.startLast
-	t := time.NewTicker(checkInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case tick := <-t.C:
-			last = f.tick(ctx, last, tick.UnixNano())
-		}
-	}
-}
-
-// tick runs one flush attempt and returns the watermark after it.
-//
-// A window is either fresh (nothing pending), pending after a restart
-// (recovered), or pending in this process after a failed attempt:
-//
-//   - fresh: gate, collect, record the window and its groups durably, then
-//     attempt them;
-//   - recovered: settle each recorded group (stored mark, retired, live in the
-//     manifest, or found by HEAD); re-collect (start, pending] only if some
-//     group is absent, record groups the rows introduce that the record lacks,
-//     and upload just the absent ones;
-//   - in-process retry: attempt the groups that failed, as they are (same keys,
-//     same bytes), without collecting again.
-//
-// The watermark moves to the window's end only when every group is stored or
-// settled. If saving it fails, the next tick uploads nothing and saves again.
-func (f *BufferFlusher) tick(ctx context.Context, last, nowNs int64) int64 {
-	switch {
-	case f.pending == 0:
-		return f.tickFresh(ctx, last, nowNs)
-	case f.recovered:
-		return f.tickRecovered(ctx, last)
-	default:
-		return f.attempt(ctx, last, f.failed)
-	}
-}
-
-func (f *BufferFlusher) tickFresh(ctx context.Context, last, nowNs int64) int64 {
-	// Stop short of now by latencyOffset so in-flight/late rows land before
-	// their window is committed.
-	flushEnd := nowNs - f.latencyOffset
-	if flushEnd <= last {
-		return last
-	}
-	// Make all ingested rows queryable; RunQuery does NOT see the un-flushed
-	// rowsBuffer, so without this the recent window is invisible and the
-	// watermark would skip past it (the under-production bug).
-	f.buffer.DebugFlush()
-	collected, nRows, err := f.collectWindow(ctx, last, flushEnd)
-	if err != nil {
-		metrics.BufferFlushErrors.Inc("collect")
-		logger.Warnf("buffer flusher: collect (%d,%d] failed, will retry: %s", last, flushEnd, err)
-		return last
-	}
-	aged := flushEnd-last >= f.maxLinger
-	// Size gate: hold a sub-target window open across ticks so the S3 object
-	// lands at ~targetBytes instead of one tiny file per tick.
-	if int64(nRows)*estBytesPerTraceRow < f.targetBytes && !aged {
-		return last // accumulate — don't flush, don't advance the watermark
-	}
-	if nRows == 0 {
-		if err := f.saveWatermark(flushEnd); err != nil {
-			metrics.BufferFlushErrors.Inc("watermark")
-			logger.Warnf("buffer flusher: watermark persist failed, will retry: %s", err)
-			return last
-		}
-		return flushEnd
-	}
-	f.pending, f.start, f.nonce, f.failed, f.recovered = flushEnd, last, randomBatchID(), nil, false
-	f.refs, f.stored = map[flushGroupRef]int64{}, map[flushGroupRef]struct{}{}
-	groups := f.buildGroups(collected)
-	for _, up := range groups {
-		f.refs[refOf(up)] = int64(len(up.rows))
-	}
-	// The intent is durable before any PUT: a crash from here on knows which
-	// objects to look for.
-	if err := f.writeIntent(last); err != nil {
-		metrics.BufferFlushErrors.Inc("intent")
-		logger.Warnf("buffer flusher: cannot record window (%d,%d] before flushing it, will retry: %s", last, flushEnd, err)
-		f.clearPending()
-		return last
-	}
-	return f.attempt(ctx, last, groups)
-}
-
-func (f *BufferFlusher) tickRecovered(ctx context.Context, last int64) int64 {
+	up := &traceGroupUpload{partition: sl.partition, accountID: tenant.AccountID, projectID: tenant.ProjectID,
+		batchID: segmentBatchID(g.Nonce(), sl.slice)}
+	key := f.writer.assignTraceKey(up)
 	m := f.writer.manifest
-	refs := make([]flushGroupRef, 0, len(f.refs))
-	for r := range f.refs {
-		refs = append(refs, r)
-	}
-	sortRefs(refs)
-	need := map[flushGroupRef]bool{}
-	var retired []flushGroupRef
-	for _, ref := range refs {
-		if _, ok := f.stored[ref]; ok {
-			continue
+	switch {
+	case m.IsRetired(key):
+		// Compacted, rewritten or removed: its rows live in what replaced it.
+		f.writer.noteSuperseded(key, int(sl.rows))
+		return nil
+	case m.HasKey(key):
+		return nil
+	case f.head:
+		ok, err := f.writer.objectExists(ctx, tenant.AccountID, tenant.ProjectID, key)
+		if err != nil {
+			metrics.BufferFlushErrors.Inc("head")
+			return fmt.Errorf("check whether %s exists: %w", key, err)
 		}
-		key := f.keyFor(ref)
-		switch {
-		case m.IsRetired(key):
-			retired = append(retired, ref)
-		case m.HasKey(key):
-		default:
-			// Not in this manifest: ask the object store. The manifest may be
-			// behind (a snapshot, a listing that missed the object), so its
-			// silence proves nothing; an error proves nothing either.
-			ok, err := f.writer.objectExists(ctx, ref.Account, ref.Project, key)
-			if err != nil {
-				metrics.BufferFlushErrors.Inc("head")
-				logger.Warnf("buffer flusher: cannot check whether %s exists, will retry: %s", key, err)
-				return last
-			}
-			if !ok {
-				need[ref] = true
-			}
+		if ok {
+			return nil // a listing adopts it
 		}
 	}
-	// The buffer is read only when some group has to be uploaded: a window whose
-	// groups are all settled must commit even if the buffer cannot be queried.
-	var todo []*traceGroupUpload
-	var added []flushGroupRef
-	var shortfalls []flushShortfall
-	if len(need) > 0 {
-		f.buffer.DebugFlush()
-		collected, _, err := f.collectWindow(ctx, last, f.pending)
+	if prev, ok := f.retry[key]; ok {
+		up = prev // the same bytes as the failed attempt
+	} else {
+		rows, err := f.collectSlice(ctx, g, tenant, sl)
 		if err != nil {
 			metrics.BufferFlushErrors.Inc("collect")
-			logger.Warnf("buffer flusher: collect pending window (%d,%d] failed, will retry: %s", last, f.pending, err)
-			return last
+			return fmt.Errorf("collect %s: %w", key, err)
 		}
-		found := map[flushGroupRef]bool{}
-		for _, up := range f.buildGroups(collected) {
-			ref := refOf(up)
-			found[ref] = true
-			switch {
-			case need[ref]:
-				todo = append(todo, up)
-				if got := int64(len(up.rows)); got < f.refs[ref] {
-					shortfalls = append(shortfalls, flushShortfall{ref: ref, recorded: f.refs[ref], got: got})
-				}
-			default:
-				if _, known := f.refs[ref]; !known {
-					// Rows the record never had: never uploaded. Record before
-					// uploading.
-					added = append(added, ref)
-					f.refs[ref] = int64(len(up.rows))
-					todo = append(todo, up)
-				}
-			}
+		if len(rows) == 0 {
+			return nil // every row dropped by the keep filter
 		}
-		for _, ref := range refs {
-			if need[ref] && !found[ref] {
-				shortfalls = append(shortfalls, flushShortfall{ref: ref, recorded: f.refs[ref], got: 0})
-			}
-		}
-		if len(added) > 0 {
-			if err := f.writeIntent(last); err != nil {
-				for _, ref := range added {
-					delete(f.refs, ref)
-				}
-				metrics.BufferFlushErrors.Inc("intent")
-				logger.Warnf("buffer flusher: cannot record the new groups of window (%d,%d], will retry: %s", last, f.pending, err)
-				return last
-			}
-		}
+		up.rows = rows
 	}
-	// Everything that could fail and be retried has passed: count now, once.
-	for _, sf := range shortfalls {
-		lost := sf.recorded - sf.got
-		metrics.InsertRowsLost.Add("buffer_expired", int(lost))
-		metrics.BufferFlushErrors.Inc("missing")
-		logger.Errorf("buffer flusher: group %s of tenant %d:%d in window (%d,%d] was recorded with %d rows but the buffer now has %d and the object store does not have it: %d rows are lost (buffer retention expired, or the flush filter changed); uploading what is left",
-			sf.ref.Partition, sf.ref.Account, sf.ref.Project, last, f.pending, sf.recorded, sf.got, lost)
-	}
-	for _, ref := range retired {
-		// Superseded by whatever retired the key: its rows live there. The
-		// record knows how many there were, so nothing is collected for this.
-		metrics.InsertRowsSuperseded.Add(int(f.refs[ref]))
-		logger.Warnf("buffer flusher: group %s of tenant %d:%d was retired (compacted, rewritten or removed) before its window committed; rows=%d", ref.Partition, ref.Account, ref.Project, f.refs[ref])
-	}
-	f.recovered = false
-	return f.attempt(ctx, last, todo)
-}
-
-// flushShortfall is a group recovery must upload but whose rows the buffer no
-// longer fully has.
-type flushShortfall struct {
-	ref           flushGroupRef
-	recorded, got int64
-}
-
-// attempt uploads groups and, if every one is stored or settled, commits the
-// pending window. Once a tenant's group fails its later partitions are not
-// attempted (they join the failed set, unencoded): the buffer read watermark is
-// the tenant's newest stored MaxTimeNs, so storing a newer partition would hide
-// the buffer rows of the older one that failed. Other tenants proceed.
-func (f *BufferFlusher) attempt(ctx context.Context, last int64, groups []*traceGroupUpload) int64 {
-	var failed []*traceGroupUpload
-	var firstErr error
-	blocked := map[[2]uint32]bool{}
-	for _, up := range groups {
-		tenant := [2]uint32{up.accountID, up.projectID}
-		if blocked[tenant] {
-			failed = append(failed, up)
-			continue
-		}
-		err := ctx.Err()
-		if err == nil {
-			err = f.writer.uploadTraceGroup(ctx, up)
-		}
-		if err != nil {
-			failed = append(failed, up)
-			blocked[tenant] = true
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	f.failed = failed
-	if len(failed) > 0 {
+	up.onStored = func(string) { f.markStored(ref) }
+	if err := f.writer.uploadTraceGroup(ctx, up); err != nil {
+		f.retry[key] = up
 		metrics.BufferFlushErrors.Inc("upload")
-		logger.Warnf("buffer flusher: flush (%d,%d] left %d group(s) unwritten, will retry them: %v", last, f.pending, len(failed), firstErr)
-		return last
+		return fmt.Errorf("upload %s: %w", key, err)
 	}
-	end := f.pending
-	if err := f.saveWatermark(end); err != nil {
-		metrics.BufferFlushErrors.Inc("watermark")
-		logger.Warnf("buffer flusher: watermark persist failed after the window was stored; the next tick saves it again without uploading: %s", err)
-		return last
-	}
-	f.clearPending()
-	return end
+	delete(f.retry, key)
+	return nil
+}
+
+// observe publishes the segment gauges.
+func (f *BufferFlusher) observe(now time.Time) {
+	st := f.segs.Stats(now)
+	metrics.BufferSegments.Set("active", int64(st.Active))
+	metrics.BufferSegments.Set("pending", int64(st.Pending))
+	metrics.BufferSegments.Set("committed", int64(st.Committed))
+	metrics.BufferPendingRows.Set(st.PendingRows)
+	metrics.BufferOldestPendingAge.Set(int64(st.OldestPendingAge.Seconds()))
+	metrics.InsertFlushCommittedSeq.Set(int64(f.state.CommittedThroughSeq))
 }

@@ -91,14 +91,14 @@ type BufferFlusher struct {
 	sealBytes int64         // ... or once its estimated raw bytes reach this
 	grace     time.Duration // keep a committed segment readable this long
 
-	state     flushState
-	marksFor  string                    // nonce the in-memory marks belong to
-	marks     map[flushGroupRef]struct{} // groups of the draining segment with a durable mark
-	head      bool                      // a previous process was draining marksFor: ask HEAD
-	markSynced bool                      // the marks file's directory entry is fsynced
-	retry     map[string]*logGroupUpload // groups whose upload failed in this process, by key
-	nextTry   time.Time                 // back-off after a failed drain
-	backoff   time.Duration
+	state      flushState
+	marksFor   string                     // nonce the in-memory marks belong to
+	marks      map[flushGroupRef]struct{} // groups of the draining segment with a durable mark
+	head       bool                       // a previous process was draining marksFor: ask HEAD
+	markSynced bool                       // the marks file's directory entry is fsynced
+	retry      map[string]*logGroupUpload // groups whose upload failed in this process, by key
+	nextTry    time.Time                  // back-off after a failed drain
+	backoff    time.Duration
 
 	stopOnce sync.Once
 	cancel   context.CancelFunc
