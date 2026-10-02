@@ -53,8 +53,15 @@ var continuousSpreadSec int
 // timed-out push drops that one batch/endpoint and the next tick recovers.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
+// phraseFixture appends a handful of fixed log rows whose trace_id and
+// service.name are hyphenated values that contain shorter phrases, so the
+// hot-vs-cold parity suite can check quoted phrase filters against a value
+// that is longer than the phrase (#319). Set by --phrase-fixture.
+var phraseFixture bool
+
 func main() {
 	logsCount := flag.Int("logs", 5000, "number of log rows per batch")
+	flag.BoolVar(&phraseFixture, "phrase-fixture", false, "append fixed log rows with UUID/hyphenated trace_id and service.name values (hot-vs-cold phrase-filter parity)")
 	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
 	hoursBack := flag.Int("hours-back", 48, "generate historical data for this many hours back")
 	interval := flag.Duration("interval", 0, "continuous mode: generate new data every interval (e.g. 30s)")
@@ -160,6 +167,32 @@ type logRow struct {
 	ScopeName         string
 	ResourceAttrs     map[string]string
 	LogAttrs          map[string]string
+}
+
+// phraseFixtureLogRows returns the fixed rows behind --phrase-fixture: UUID
+// and hyphenated trace ids that contain shorter hyphenated phrases, and a
+// service name that extends another's.
+func phraseFixtureLogRows(now time.Time) []logRow {
+	fixed := []struct{ traceID, svc, body string }{
+		{"4bf92f35-77b3-4da6-a3ce-929d0e0bf736", "edge-proxy-v2", "phrase fixture one"},
+		{"4bf92f35-77b3-4da6-a3ce-929d0e0bf736", "edge-proxy", "phrase fixture two"},
+		{"9d1c3b2a-0e4f-4c11-8a0b-5f6d7e8f9a0b", "edge-proxy-v2", "phrase fixture three"},
+		{"abc-def-ghi", "checkout-web", "phrase fixture four"},
+		{"abc-def", "checkout-web", "phrase fixture five"},
+	}
+	rows := make([]logRow, 0, len(fixed))
+	for i, f := range fixed {
+		rows = append(rows, logRow{
+			TimestampUnixNano: now.Add(-time.Duration(2+i) * time.Hour).UnixNano(),
+			Body:              f.body,
+			SeverityText:      "INFO",
+			SeverityNumber:    9,
+			ServiceName:       f.svc,
+			TraceID:           f.traceID,
+			ResourceAttrs:     map[string]string{"service.name": f.svc},
+		})
+	}
+	return rows
 }
 
 func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, lokiEndpoint, tempoEndpoint, accountID, projectID, orgID string) {
@@ -492,6 +525,10 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 			LogAttrs: logAttrs,
 		}
 		allLogs = append(allLogs, row)
+	}
+
+	if phraseFixture && logsCount > 0 {
+		allLogs = append(allLogs, phraseFixtureLogRows(now)...)
 	}
 
 	// Push logs to all configured endpoints
