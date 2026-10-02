@@ -372,6 +372,33 @@ var (
 	// group's rows are gone from the buffer, once per group). All but mark and
 	// missing are retried on the next tick.
 	BufferFlushErrors = NewCounterVec("lakehouse_buffer_flush_errors_total", "stage")
+	// BufferSegments is the number of insert-buffer segments by state: active
+	// (taking writes, always 1), pending (sealed and not yet fully written to
+	// object storage) and committed (written; kept readable for the grace
+	// period). A growing pending count means object storage is slower than
+	// ingest or unreachable; the rows are safe on the local disk meanwhile.
+	BufferSegments = NewGaugeVec("lakehouse_buffer_segments", "state")
+	// BufferSegmentsSealed and BufferSegmentsCommitted count segments sealed and
+	// fully written since the process started.
+	BufferSegmentsSealed    = NewCounter("lakehouse_buffer_segments_sealed_total")
+	BufferSegmentsCommitted = NewCounter("lakehouse_buffer_segments_committed_total")
+	// BufferPendingRows is the number of rows, added by this process, in
+	// segments not yet fully written to object storage.
+	BufferPendingRows = NewGauge("lakehouse_buffer_pending_rows")
+	// BufferOldestPendingAge is the age in seconds of the oldest segment not yet
+	// fully written: how far object storage lags behind ingest.
+	BufferOldestPendingAge = NewGauge("lakehouse_buffer_oldest_pending_age_seconds")
+	// InsertFlushCommittedSeq is the sequence number of the newest segment fully
+	// written to object storage (every older one is too).
+	InsertFlushCommittedSeq = NewGauge("lakehouse_insert_flush_committed_segment")
+	// BufferViewExcludedObjects counts cold objects a query skipped because the
+	// insert-buffer segment they were flushed from was still served from the
+	// buffer to that query (each row is answered once, from the buffer).
+	BufferViewExcludedObjects = NewCounter("lakehouse_buffer_view_excluded_objects_total")
+	// CompactionSegmentGuardErrors counts compaction scans that could not list
+	// the insert-buffer segment markers; objects of unconfirmed segments were
+	// left alone in that scan.
+	CompactionSegmentGuardErrors = NewCounter("lakehouse_compaction_segment_guard_errors_total")
 	// WatermarkInferredUnresolved counts objects whose time bounds were still
 	// only inferred from the listing when a query needed them for the buffer
 	// watermark and could not be resolved (no pmeta entry, the footer read

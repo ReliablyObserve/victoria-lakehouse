@@ -23,6 +23,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
@@ -51,6 +52,7 @@ type Storage struct {
 	writer            *BatchWriter
 	bufferBridge      *BufferBridge
 	localBuffer       LocalBuffer
+	bufferFlusher     *BufferFlusher
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
 	bloomCache        *bloomindex.BloomCache
@@ -488,15 +490,18 @@ func (s *Storage) Close() error {
 	if s.crossSignalClient != nil {
 		s.crossSignalClient.Close()
 	}
+	// The flusher stops first (a drain cut short resumes after the restart),
+	// then the insert buffer closes: upstream writes every segment's in-memory
+	// rows to disk, so a clean restart loses nothing.
+	if s.bufferFlusher != nil {
+		s.bufferFlusher.Stop()
+	}
 	if s.writer != nil {
 		s.writer.Stop()
-		logger.Infof("writer stopped and final flush completed")
 	}
-	// Option B: flush + close the logstorage-native buffer so the persistent
-	// data dir captures the last sub-FlushInterval window before exit.
 	if s.localBuffer != nil {
 		s.localBuffer.Close()
-		logger.Infof("Option B logstore buffer flushed and closed")
+		logger.Infof("insert buffer closed")
 	}
 	if s.persister != nil {
 		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
@@ -864,23 +869,26 @@ func (s *Storage) BufferBridge() *BufferBridge {
 	return s.bufferBridge
 }
 
-// LocalBuffer is the narrow query surface of the Option B logstorage-native
-// buffer (membuffer.Store). When set (BufferEngine=logstore, co-located
-// insert+select), the SELECT path serves the recent/unflushed window from it
-// via the same engine the S3-Parquet scan uses — no struct→DataBlock
-// conversion.
+// LocalBuffer is the co-located insert buffer (membuffer.Segments) as the
+// query path uses it: every query takes a snapshot of the live segments (see
+// bufferView), and the buffer is closed at shutdown after the flusher stops.
 type LocalBuffer interface {
-	RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error
-	// Close flushes the in-memory window to the persistent data dir and
-	// releases the store — called on graceful shutdown so a clean restart
-	// loses nothing, not even the sub-FlushInterval window.
+	Snapshot() *membuffer.Snapshot
+	// Close writes every segment's in-memory rows to its directory and closes
+	// it, so a clean restart reopens them all.
 	Close()
 }
 
-// SetLocalBuffer wires the co-located logstorage-native buffer into the query
-// path (Option B P3). nil falls back to the BufferBridge HTTP path.
+// SetLocalBuffer wires the co-located insert buffer into the query path. nil
+// (a select-only node) serves the unflushed rows through the buffer bridge.
 func (s *Storage) SetLocalBuffer(lb LocalBuffer) {
 	s.localBuffer = lb
+}
+
+// SetBufferFlusher records the running flusher so Close stops it before it
+// closes the insert buffer.
+func (s *Storage) SetBufferFlusher(f *BufferFlusher) {
+	s.bufferFlusher = f
 }
 
 // SetTombstoneStore injects a TombstoneStore for query-time row filtering.
