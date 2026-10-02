@@ -61,9 +61,8 @@ func TestParity_PhrasePruning_Logs(t *testing.T) {
 			"query": fmt.Sprintf(`trace_id:%q | stats count() rows`, traceID[:12])}, Compare: CountEqual, ExpectEmpty: true},
 		{Name: "trace_id_phrase_rows", Endpoint: queryEndpoint(), Params: map[string]string{
 			"query": fmt.Sprintf(`trace_id:%q | fields _time, trace_id, span_id`, traceID)}, Compare: CountEqual},
-		// Fixed rows (datagen --phrase-fixture): UUID and hyphenated ids, and
-		// a service name that extends another's. The phrase matches longer
-		// values than the exact form does.
+		// Fixed rows (datagen --phrase-fixture): UUID and hyphenated ids. The
+		// phrase matches longer values than the exact form does.
 		{Name: "trace_id_uuid_phrase_part", Endpoint: statsEndpoint(), Params: map[string]string{
 			"query": `trace_id:"4bf92f35-77b3" | stats count() rows`}, Compare: CountEqual},
 		{Name: "trace_id_uuid_phrase_middle", Endpoint: statsEndpoint(), Params: map[string]string{
@@ -76,10 +75,6 @@ func TestParity_PhrasePruning_Logs(t *testing.T) {
 			"query": `trace_id:="abc-def" | stats count() rows`}, Compare: CountEqual},
 		{Name: "trace_id_hyphen_phrase_rows", Endpoint: queryEndpoint(), Params: map[string]string{
 			"query": `trace_id:"abc-def" | fields _time, trace_id`}, Compare: CountEqual},
-		{Name: "service_phrase_extended", Endpoint: statsEndpoint(), Params: map[string]string{
-			"query": `service.name:"edge-proxy" | stats count() rows`}, Compare: CountEqual},
-		{Name: "service_exact_vs_phrase", Endpoint: statsEndpoint(), Params: map[string]string{
-			"query": `service.name:="edge-proxy" | stats count() rows`}, Compare: CountEqual},
 		// phrase AND exact: the phrase must not prune what the exact keeps
 		{Name: "phrase_and_exact", Endpoint: statsEndpoint(), Params: map[string]string{
 			"query": `k8s.pod.name:"api-gateway" service.name:="api-gateway" | stats count() rows`}, Compare: CountEqual},

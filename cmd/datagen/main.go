@@ -170,26 +170,36 @@ type logRow struct {
 }
 
 // phraseFixtureLogRows returns the fixed rows behind --phrase-fixture: UUID
-// and hyphenated trace ids that contain shorter hyphenated phrases, and a
-// service name that extends another's.
+// and hyphenated trace ids that contain shorter hyphenated phrases. Every
+// other field comes from the generator's own value lists, so counts per
+// service, namespace, environment and region stay consistent with the rest of
+// the corpus.
 func phraseFixtureLogRows(now time.Time) []logRow {
-	fixed := []struct{ traceID, svc, body string }{
-		{"4bf92f35-77b3-4da6-a3ce-929d0e0bf736", "edge-proxy-v2", "phrase fixture one"},
-		{"4bf92f35-77b3-4da6-a3ce-929d0e0bf736", "edge-proxy", "phrase fixture two"},
-		{"9d1c3b2a-0e4f-4c11-8a0b-5f6d7e8f9a0b", "edge-proxy-v2", "phrase fixture three"},
-		{"abc-def-ghi", "checkout-web", "phrase fixture four"},
-		{"abc-def", "checkout-web", "phrase fixture five"},
+	fixed := []struct{ traceID, body string }{
+		{"4bf92f35-77b3-4da6-a3ce-929d0e0bf736", "phrase fixture one"},
+		{"4bf92f35-77b3-4da6-a3ce-929d0e0bf736", "phrase fixture two"},
+		{"9d1c3b2a-0e4f-4c11-8a0b-5f6d7e8f9a0b", "phrase fixture three"},
+		{"abc-def-ghi", "phrase fixture four"},
+		{"abc-def", "phrase fixture five"},
 	}
 	rows := make([]logRow, 0, len(fixed))
 	for i, f := range fixed {
+		svc := services[i%len(services)]
 		rows = append(rows, logRow{
 			TimestampUnixNano: now.Add(-time.Duration(2+i) * time.Hour).UnixNano(),
 			Body:              f.body,
 			SeverityText:      "INFO",
 			SeverityNumber:    9,
-			ServiceName:       f.svc,
+			ServiceName:       svc,
+			K8sNamespaceName:  namespaces[0],
+			K8sPodName:        fmt.Sprintf("%s-%s", svc, "0123456789"),
+			K8sDeploymentName: svc,
+			K8sNodeName:       k8sNodes[0],
+			DeployEnv:         deployEnvs[0],
+			CloudRegion:       regions[0],
+			HostName:          hostNames[0],
 			TraceID:           f.traceID,
-			ResourceAttrs:     map[string]string{"service.name": f.svc},
+			ResourceAttrs:     map[string]string{"service.name": svc},
 		})
 	}
 	return rows

@@ -160,6 +160,7 @@ jobs:
           # See discover-fuzz.sh for how to keep this list in sync.
           - tests/ingestmatrix:FuzzRawTruthPhysicalRepresentations
           - internal/storage/parquets3:FuzzExtractExactMatch
+          - internal/storage/parquets3:FuzzPhraseExactLogs
           - internal/storage/parquets3:FuzzIsPrintable
           - internal/storage/parquets3:FuzzTraceRowToDataBlock
           - internal/storage/parquets3:FuzzLogRowToDataBlock
@@ -326,6 +327,7 @@ jobs:
         target:
           - tests/ingestmatrix:FuzzRawTruthPhysicalRepresentations
           - internal/storage/parquets3:FuzzExtractExactMatch
+          - internal/storage/parquets3:FuzzPhraseExact
           - internal/storage/parquets3:FuzzIsPrintable
           - internal/storage/parquets3:FuzzTraceRowToDataBlock
           - internal/storage/parquets3:FuzzMultiRowDataBlock
