@@ -392,6 +392,11 @@ func (r *matrixRun) waitSame(t *testing.T, s *caseState, want int, within time.D
 	for {
 		hot, herr := r.readRows(t, r.hot, s)
 		lh, lerr := r.readRows(t, r.lh, s)
+		if herr == nil && lerr == nil {
+			// Declared known gaps are applied before anything is compared, so a gap
+			// that changes the number of rows (a span returned twice) is handled too.
+			lh = r.applyKnownGaps(s, hot, lh)
+		}
 		switch {
 		case herr != nil:
 			last = herr.Error()
@@ -402,7 +407,6 @@ func (r *matrixRun) waitSame(t *testing.T, s *caseState, want int, within time.D
 		case len(lh) != want:
 			last = fmt.Sprintf("%s returned %d rows, want %d\nhot rows:\n%s\nlakehouse rows:\n%s", r.lh.name, len(lh), want, strings.Join(hot, "\n"), strings.Join(lh, "\n"))
 		default:
-			lh = r.applyKnownGaps(s, hot, lh)
 			if diff := firstRowDiff(hot, lh); diff != "" {
 				last = diff
 				if diffSince.IsZero() {
