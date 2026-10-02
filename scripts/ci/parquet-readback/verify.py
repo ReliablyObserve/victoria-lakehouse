@@ -16,9 +16,8 @@ writer options) with BOTH pyarrow and duckdb and asserts:
   4. PageIndex (ColumnIndex + OffsetIndex) is present on 100% of
      column chunks — the read-side page-skipping work depends on it.
 
-Any failure exits non-zero with a per-check report. This is the gate
-from docs/architecture/parquet-compression-research.md: every parquet
-encoding change ships behind it.
+Any failure exits non-zero with a per-check report. Every parquet encoding
+change ships behind this gate.
 
 Usage: python3 scripts/ci/parquet-readback/verify.py /tmp/parquet-readback
 """
