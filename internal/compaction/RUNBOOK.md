@@ -288,14 +288,32 @@ those rewrites won every scan.
 3. `GET /lakehouse/api/v1/stats/compaction`: `fragmented_partitions` counts a partition only
    when one tenant holds two or more top-level (L2+) files; one L2 file per tenant is healthy.
 
-## 9. "Objects in IA/Glacier are not being compacted"
+## 9. "Objects in IA/Glacier are not being compacted" / "old data is not being merged"
 
-By design. Compaction never rewrites an object whose recorded or detected storage class is not
-STANDARD / INTELLIGENT_TIERING, nor a partition older than the first lifecycle transition minus
-48 h. Check `lakehouse_compaction_frozen_files{reason="storage_class"|"age"}`. If the freeze
-hides data you want compacted, the lifecycle rules in `delete.lifecycle_rules` /
-`stats.s3_lifecycle_rules` (or the tenant's override) are the knob: it follows the bucket's real
-rules.
+By design. Compaction does not rewrite:
+
+- an object whose storage class, as reported by the bucket listing at the last manifest refresh,
+  is not STANDARD / INTELLIGENT_TIERING (`lakehouse_compaction_frozen_files{reason="storage_class"}`);
+- a partition older than the first lifecycle transition minus 48 h of the mirrored rules
+  (`delete.lifecycle_rules`, the tenant's `tenant.overrides.<tenant>.lifecycle`,
+  `stats.s3_lifecycle_rules`) (`reason="age"`);
+- for a tenant with no mirrored rule, a partition older than `compaction.size_merge_max_age`
+  (7 days by default), except for stale-schema heal (`reason="size_age"`). If the bucket's real
+  lifecycle rule is not mirrored in the config, mirror it: that is the correct fix, a larger
+  `size_merge_max_age` (or a negative value) only widens the window in which objects S3 has
+  already moved may be rewritten.
+
+At startup a freeze age that is not later than `compaction.daily_rollup_age` logs a warning (`the
+lifecycle freeze for ... starts at partition age ..., not later than compaction.daily_rollup_age`):
+the closed-hour rollup can never run for that data. Move the first transition later or lower
+`daily_rollup_age`.
+
+## 9b. "One partition's merge fails every scan"
+
+A failing merge backs off for the scan interval doubled per consecutive failure (at most 1 h), so the
+tenant's other partitions still compact; look for `compaction failed` in the logs. If
+`lakehouse_compaction_scan_budget_exhausted_total` keeps rising, a scan cannot serve every tenant with
+work in one interval: add pods or raise `compaction.max_concurrent`; the budget itself has no config key.
 
 ---
 

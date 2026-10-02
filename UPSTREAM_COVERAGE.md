@@ -514,8 +514,6 @@ flag: 30/179 covered by at least one registry row.
 | `lh.stats.compaction.schema` | LH stats compaction — recent compaction runs and efficiency hints | admin | 🟡 declared, not yet executed |
 | `lh.stats.fields.schema` | LH stats fields — per-field size/cardinality breakdown | admin | 🟡 declared, not yet executed |
 | `lh.stats.overview.schema` | LH stats overview — tier sizes, object counts, compaction backlog | admin | 🟡 declared, not yet executed |
-| `lh.storage_health.compaction.second_scan_noop_logs` | Logs compaction: a second scan over a settled manifest does nothing, and the stats report no fragmentation | admin | 🟡 declared, not yet executed |
-| `lh.storage_health.compaction.second_scan_noop_traces` | Traces compaction: a second scan over a settled manifest does nothing, and the stats report no fragmentation | admin | 🟡 declared, not yet executed |
 | `lh.tenant_scope.logs.alias_collision_rejected` | Logs — an alias that collides with an existing one is rejected with 409 | admin | 🟡 declared, not yet executed |
 | `lh.tenant_scope.logs.auto_registered_orgid` | Logs — an auto-registered OrgID gets a reserved-range ID and reads only its own rows | insert | 🟡 declared, not yet executed |
 | `lh.tenant_scope.logs.unknown_orgid_read` | Logs — a read with an unknown OrgID is empty and registers nothing | select | 🟡 declared, not yet executed |

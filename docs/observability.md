@@ -148,7 +148,8 @@ graph LR
 | `lakehouse_compaction_duration_seconds` | Histogram | | Per-partition compaction time |
 | `lakehouse_compaction_errors_total` | Counter | | Failed compaction attempts |
 | `lakehouse_compaction_level_files` | Gauge | `level` | Current file count at each compaction level |
-| `lakehouse_compaction_frozen_files` | Gauge | `reason` | Files the last scan kept out of compaction: `storage_class` (recorded or detected class is not rewritable) or `age` (partition older than the first lifecycle transition minus 48 h) |
+| `lakehouse_compaction_frozen_files` | Gauge | `reason` | Files the last scan kept out of compaction: `storage_class` (the class from the bucket listing is not rewritable), `age` (partition older than the first mirrored lifecycle transition minus 48 h) or `size_age` (no lifecycle rule and the partition is older than `compaction.size_merge_max_age`; only stale-schema heal still runs) |
+| `lakehouse_compaction_scan_budget_exhausted_total` | Counter | | Scans that stopped starting merges because they had run for the scan interval (the scan budget) |
 | `lakehouse_compaction_skipped_total` | Counter | `reason` | Skipped partitions (`locked`, `not_leader`, `below_threshold`, `too_recent`, `schema_mismatch`) |
 | `lakehouse_logs_severity_text_backfilled_at_compaction_total` | Counter | | Rows whose empty `severity_text` was recovered from `severity_number` or the stream-tag `level` value during a compaction pass — historical-data heal counter (see Lifecycle doc) |
 | `lakehouse_logs_trace_shaped_rows_dropped_at_compaction_total` | Counter | | Trace-shape rows the compactor stripped from a merged output |

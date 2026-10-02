@@ -32,19 +32,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Compaction plans merges per tenant and no longer rewrites a lone file forever; tiered objects are left alone (both binaries, closes #343).**
+- **Compaction plans merges per tenant, stops rewriting a lone file forever, and keeps away from tiered objects (both binaries, closes #343).**
   The planner counted files across every tenant of an hour while the compactor merges one tenant at a time, so an hour
   older than `daily_rollup_age` holding one compacted file per tenant was rewritten 1 to 1 on every scan (L2, L3, ... up to
   L853 in a three-day simulation), those rewrites won every scan, and newer hours' L0 files were never merged (17,040 L0
   files, oldest 71 h, with 20 tenants). Fair share also put every candidate into one bucket because production
   partition keys carry no tenant. Planning now splits each hour by tenant first and every merge needs two or more files;
-  fair share is keyed by the tenant in the object keys; a closed hour merges all of a tenant's files under 32 MiB into one.
-  With the shipped defaults a settled manifest does zero merges (0 of 5 idle scans, was 5 of 5). `compaction.max_concurrent`
-  now means merges per tenant per scan, and `compaction.daily_rollup_age` merges every non-mature file of a tenant's closed
-  hour rather than L1 files only. Objects whose storage class is not STANDARD or INTELLIGENT_TIERING, and partitions older
-  than the first lifecycle transition minus 48 h (`delete.lifecycle_rules`, `stats.s3_lifecycle_rules`), are never rewritten;
-  `lakehouse_compaction_frozen_files{reason}` reports what a scan skipped. The compaction stats count a partition as
-  fragmented only when one tenant holds two or more top-level files.
+  fair share is keyed by the tenant in the object keys; a closed hour merges all of a tenant's files under 32 MiB into one,
+  and files of 32 MiB or more are never merged by the rollup or the fragmentation hint (the open-hour thresholds and the
+  stale-schema heal can still take them). With the shipped defaults a settled manifest does zero merges (0 of 5 idle scans,
+  was 5 of 5). `compaction.max_concurrent` now means merges per tenant per scan, and `compaction.daily_rollup_age` merges
+  every non-mature file of a tenant's closed hour rather than L1 files only. Objects are not rewritten when S3 has moved
+  them out of STANDARD or INTELLIGENT_TIERING: the class comes from each manifest listing refresh at no extra request (no
+  HEAD; the Intelligent-Tiering archive tiers are not detected), between refreshes and for objects not yet moved the
+  mirrored rules apply (`delete.lifecycle_rules`, `tenant.overrides.<tenant>.lifecycle`, `stats.s3_lifecycle_rules`: a
+  partition older than the first transition minus 48 h is skipped), and a tenant with no mirrored rule gets only
+  stale-schema heal on partitions older than the new `compaction.size_merge_max_age` (default 168h; negative removes
+  the cap). `lakehouse_compaction_frozen_files{reason}` reports what a scan skipped, and a startup warning names a freeze
+  age that is not later than `compaction.daily_rollup_age`. A merge that fails now backs off (scan interval, doubled, at
+  most 1 h) so one failing partition cannot starve its tenant; a scan starts no new merge after one scan interval
+  (`lakehouse_compaction_scan_budget_exhausted_total`); the Tier A steal applies tombstones like a scheduled merge; and the
+  compaction stats count a partition as fragmented only when one tenant holds two or more non-mature top-level files.
+  A settled scan costs 47 to 53 ns and 5 bytes per file (main: 35 ns and 248 bytes), measured.
 
 - **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**
   The cold read decided which Parquet columns to load by scanning the query text, and that scan missed the default

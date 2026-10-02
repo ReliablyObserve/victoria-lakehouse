@@ -6,10 +6,7 @@
   status: shipped
   area: compaction
   surfaces: [storage, flag]
-  rows:
-    - lh.stats.compaction.schema
-    - lh.storage_health.compaction.second_scan_noop_logs
-    - lh.storage_health.compaction.second_scan_noop_traces
+  rows: [lh.stats.compaction.schema]
   tests:
     - internal/compaction/policy_test.go
     - internal/compaction/compactor_test.go
@@ -158,15 +155,19 @@
     configuration table, not a constant.
 
 - id: lh.feature.compaction.lifecycle_freeze
-  title: Compaction never rewrites tiered objects
+  title: Compaction keeps away from tiered objects
   status: shipped
   area: compaction
   surfaces: [storage, flag]
   tests:
     - internal/compaction/lifecycle_freeze_test.go
+    - internal/compaction/size_cap_test.go
+    - internal/compaction/refresh_class_test.go
+    - internal/compaction/freeze_warnings_test.go
     - internal/compaction/per_tenant_planning_test.go#TestScan_NeverRewritesTieredObjects
     - internal/compaction/tenant_paths_test.go#TestTierA_RespectsFreeze
     - internal/compaction/tenant_paths_test.go#TestForceCompactPartition_RespectsFreeze
+    - internal/manifest/class_from_list_test.go
     - internal/delete/storageclass_transition_test.go
     - cmd/lakehouse-logs/compaction_freeze_test.go
     - lakehouse-traces/compaction_freeze_test.go
@@ -175,11 +176,15 @@
     - docs/observability.md
     - docs/write-path.md
   highlight: >-
-    **Tiered objects are never rewritten**: compaction skips objects S3 lifecycle has moved to IA or Glacier, and partitions about to be, so it cannot trigger retrieval fees, early-deletion charges or Glacier errors.
+    **Compaction keeps away from tiered objects**: it skips objects the bucket listing reports outside STANDARD, partitions past the first mirrored lifecycle transition, and old data with no mirrored rule, so it does not trigger retrieval fees, early-deletion charges or Glacier errors.
   description: >-
     Rewriting an object after lifecycle moved it costs a retrieval fee plus the early-deletion
-    charge, and fails outright in Glacier Flexible Retrieval and Deep Archive. Compaction
-    removes such objects from planning: by the storage class recorded or detected for them, and
-    by partition age against the first lifecycle transition (delete.lifecycle_rules, per-tenant
-    overrides, stats.s3_lifecycle_rules) minus a margin. The frozen-files gauge reports what a
-    scan skipped. The manual recompact trigger and the orphan sweep honour the same freeze.
+    charge, and fails outright in Glacier Flexible Retrieval and Deep Archive. The storage class
+    of each object comes from the manifest's bucket listing refresh, at no extra request, and
+    compaction skips every class that is not STANDARD or INTELLIGENT_TIERING. Between refreshes,
+    and for objects S3 has not moved yet, the lifecycle rules mirrored in the config apply
+    (delete.lifecycle_rules, per-tenant overrides, stats.s3_lifecycle_rules): a partition older
+    than the first transition minus a margin is skipped. A tenant with no rule gets no size
+    merges on partitions older than compaction.size_merge_max_age (7 days by default). Lakehouse
+    never issues a HEAD to learn a class, and the Intelligent-Tiering archive tiers are not
+    detected. The manual recompact trigger and the orphan sweep honour the same rules.

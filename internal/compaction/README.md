@@ -193,13 +193,32 @@ then oldest partition. `SchedulerConfig.MaxConcurrent` is merges per tenant per 
 is keyed by the tenant of the object keys (`<account>/<project>`, or `default` for legacy keys).
 The orphan sweep's Tier A steal and `ForceCompactPartition` use the same per-group rules.
 
-`lifecycle_freeze.go` (`LifecycleFreeze`, `SchedulerConfig.Freeze`, `OrphanSweepConfig.Freeze`)
-removes objects S3 lifecycle has moved, or is about to move, out of STANDARD /
-INTELLIGENT_TIERING before anything is counted: a recorded or cached non-rewritable class, or a
-partition older than the first non-rewritable transition minus 48 h (margin capped at half the
-transition). Gauge: `lakehouse_compaction_frozen_files{reason}`.
+`lifecycle_freeze.go` (`LifecycleFreeze`, `SchedulerConfig.Freeze`, `OrphanSweepConfig.Freeze`) keeps
+away from objects S3 lifecycle has moved, or is about to move, out of STANDARD / INTELLIGENT_TIERING:
 
-Tests: `planner_test.go` (planner units), `lifecycle_freeze_test.go`, `per_tenant_planning_test.go`
+- the class comes from the manifest's bucket listing (`FileInfo.StorageClass`, recorded and updated on
+  every refresh at no extra request; no HEAD is ever issued), and a non-rewritable class is skipped
+  before anything is counted (`frozen_files{reason="storage_class"}`);
+- between refreshes the mirrored rules apply (`delete.lifecycle_rules`, per-tenant overrides,
+  `stats.s3_lifecycle_rules`): a partition older than the first non-rewritable transition minus 48 h
+  (margin capped at half the transition) is skipped (`reason="age"`);
+- a tenant with no such rule gets only stale-schema heal on partitions older than
+  `SizeMergeMaxAge` (`compaction.size_merge_max_age`, 7 days; negative disables) (`reason="size_age"`);
+- `RollupConflictWarnings` flags, at startup, a freeze age not later than `daily_rollup_age`.
+
+Files of 32 MiB or more (`manifest.MatureObjectBytes`) are never merged by the rollup or the
+fragmentation hint; the open-hour thresholds and the stale-schema heal can still take them. The planner
+walks the manifest in place (`RangePartitions`, one partition's read lock at a time) and allocates
+nothing per file on a settled manifest.
+
+Failure handling (`backoff.go`): a failed merge waits out the scan interval, doubled per consecutive
+failure, at most 1 h (`planBackoff`), so the tenant's next plan takes its slot. `SchedulerConfig.ScanBudget`
+(0 = the interval, negative disables) stops a scan from starting new merges once it has run that long;
+`lakehouse_compaction_scan_budget_exhausted_total` counts the cut-off scans and
+`FairShareScheduler.Advance` moves the cursor past the tenants served. Tier A now passes the tombstone
+store to its compactor like the scheduler does.
+
+Tests: `planner_test.go` (planner units), `lifecycle_freeze_test.go`, `size_cap_test.go`, `backoff_test.go`, `scan_budget_test.go`, `freeze_warnings_test.go`, `refresh_class_test.go`, `tierA_tombstones_test.go`, `per_tenant_planning_test.go`
 (the #343 reproductions), `property_test.go` (multi-day randomized runs, invariants after every
 scan), `fault_matrix_test.go`, `concurrency_test.go`, and `wa_sim_test.go` (env-gated simulation:
 `LH_COMPACTION_SIM=1`). The measured before/after table is in
