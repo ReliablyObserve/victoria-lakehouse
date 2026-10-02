@@ -406,6 +406,38 @@ jobs:
           go test ./internal/storage/parquets3/ -run "$heavy" -race -count=1 -timeout=10m -json | tee heavy.json |
             python3 "$GITHUB_WORKSPACE/scripts/ci/gotest_report.py" --budget-seconds 600 --title "${{ matrix.module }}: parquets3 heavy"
 
+  # Storage-health gate for compaction. internal/compaction is exercised by
+  # test-logs, but that job runs hundreds of packages under -race against a
+  # time budget; this named job runs the compaction storage-health cells on
+  # their own so a regression is one status icon on the PR: a second scan
+  # over a settled manifest does nothing (TestScan_SecondScanDoesNothing),
+  # a lone file is never rewritten, tiered objects are never touched, and the
+  # simulated multi-day runs hold the storage invariants. Both signals run
+  # inside each test (internal/compaction exists once, in the root module).
+  storage-health-compaction:
+    needs: deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+
+      - name: Compaction storage-health cells
+        env:
+          LH_COMPACTION_PROPERTY_SEEDS: "30"
+        run: GOWORK=off go test ./internal/compaction -run 'TestScan_|TestStorageHealth' -count=1 -timeout=10m
+
   # Dedicated hot/cold parity safeguard. The same tests already run as
   # part of `test-traces` and `test-logs`, but pulling them into a named
   # job makes the parity check visible in PR pages and gives reviewers
