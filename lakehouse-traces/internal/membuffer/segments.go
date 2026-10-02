@@ -326,6 +326,20 @@ func (s *Segments) Reap(now time.Time, grace time.Duration) int {
 	return len(gone)
 }
 
+// DebugFlush makes the rows added so far searchable at once (upstream
+// DebugFlush on every segment); upstream does it within about a second on its
+// own. Tests use it instead of sleeping.
+func (s *Segments) DebugFlush() {
+	s.mu.Lock()
+	list := append([]*Segment(nil), s.list...)
+	s.mu.Unlock()
+	for _, g := range list {
+		g.stMu.RLock()
+		g.st.DebugFlush()
+		g.stMu.RUnlock()
+	}
+}
+
 // Stats is a point-in-time view of the segments for metrics.
 type Stats struct {
 	Active, Pending, Committed int

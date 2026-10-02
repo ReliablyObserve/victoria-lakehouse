@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"fmt"
+	"net/http/httptest"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
@@ -64,11 +66,14 @@ func (e *viewEnv) ingest(ts time.Time, n int) {
 	}
 	e.segs.MustAddRows(lr)
 	logstorage.PutLogRows(lr)
-	e.segs.Active() // rows become searchable within upstream's ~1 s
+	e.segs.DebugFlush() // upstream makes rows searchable within about a second on its own
 }
 
 // answer runs `*` over the last day and returns each row's count.
-func (e *viewEnv) answer() map[string]int {
+func (e *viewEnv) answer() map[string]int { return e.answerOn(e.s) }
+
+// answerOn is answer on another Storage (a select pod reading the same bucket).
+func (e *viewEnv) answerOn(s *Storage) map[string]int {
 	e.t.Helper()
 	now := time.Now()
 	q, err := logstorage.ParseQueryAtTimestamp("*", now.UnixNano())
@@ -78,7 +83,7 @@ func (e *viewEnv) answer() map[string]int {
 	q = q.CloneWithTimeFilter(q.GetTimestamp(), now.Add(-48*time.Hour).UnixNano(), now.UnixNano())
 	var mu sync.Mutex
 	got := map[string]int{}
-	err = e.s.RunQuery(context.Background(), []logstorage.TenantID{{}}, q, func(_ uint, db *logstorage.DataBlock) {
+	err = s.RunQuery(context.Background(), []logstorage.TenantID{{}}, q, func(_ uint, db *logstorage.DataBlock) {
 		for _, c := range db.GetColumns(false) {
 			if c.Name != "_msg" {
 				continue
@@ -97,9 +102,11 @@ func (e *viewEnv) answer() map[string]int {
 }
 
 // exact fails unless the answer holds every ingested row exactly once.
-func (e *viewEnv) exact(when string) {
+func (e *viewEnv) exact(when string) { e.exactOn(e.s, when) }
+
+func (e *viewEnv) exactOn(s *Storage, when string) {
 	e.t.Helper()
-	got := e.answer()
+	got := e.answerOn(s)
 	var problems []string
 	for i := 1; i <= e.n; i++ {
 		k := fmt.Sprintf("row-%d", i)
@@ -112,8 +119,6 @@ func (e *viewEnv) exact(when string) {
 	}
 }
 
-func waitSearchable() { time.Sleep(1500 * time.Millisecond) }
-
 // Every row is answered exactly once at every step of its life: in the
 // active segment, sealed, while its segment drains (after each group), once
 // the segment is committed and still readable, after the segment is removed,
@@ -125,7 +130,6 @@ func TestBufferView_EachRowOnceThroughTheWholeHandoff(t *testing.T) {
 	base := time.Now().Add(-3 * time.Hour).Truncate(time.Hour)
 	e.ingest(base.Add(10*time.Minute), 20)
 	e.ingest(base.Add(70*time.Minute), 20)
-	waitSearchable()
 	e.exact("active segment")
 
 	g, _ := e.segs.Seal()
@@ -148,7 +152,6 @@ func TestBufferView_EachRowOnceThroughTheWholeHandoff(t *testing.T) {
 
 	// Late rows: older than everything already in Parquet.
 	e.ingest(base.Add(5*time.Minute), 7)
-	waitSearchable()
 	e.exact("late rows in the active segment")
 
 	if n := e.segs.Reap(time.Now().Add(time.Hour), time.Minute); n != 1 {
@@ -179,7 +182,7 @@ func TestBufferView_ConcurrentQueriesDuringDrains(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		e.ingest(base.Add(time.Duration(i)*17*time.Minute), 25)
 	}
-	waitSearchable()
+	e.segs.DebugFlush()
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	var queries atomic.Int32
@@ -234,5 +237,73 @@ func TestBufferView_ExcludeOnlyLiveSegmentObjects(t *testing.T) {
 	v.nonces[""] = struct{}{}
 	if got := v.exclude(files); len(got) != 2 {
 		t.Errorf("with an empty nonce in the set, exclude kept %d objects; want 2", len(got))
+	}
+}
+
+// A select node with no segments of its own reads an insert pod through the
+// buffer bridge: the pod's rows and the nonces of the segments they come from
+// travel together, so the objects the pod flushed from them are not read on top
+// — before, during and after the flush, and once the pod removes the segment.
+func TestBufferView_BridgedPeerHandoff(t *testing.T) {
+	e := newViewEnv(t) // the insert pod: segments, flusher, writer
+	peer := httptest.NewServer(buffer.NewHandler(BridgeSource{Segments: e.segs}, ""))
+	t.Cleanup(peer.Close)
+
+	sel := testStorageWithS3(t, e.srv.url()) // the select pod
+	sel.cfg.Mode = config.ModeLogs
+	sel.bufferBridge = NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 5 * time.Second}, config.ModeLogs)
+	sel.bufferBridge.SetEndpoints([]string{peer.URL})
+	if sel.useLocalBuffer() {
+		t.Fatal("a select pod with a peer read its own buffer")
+	}
+	listing := func() {
+		t.Helper()
+		if err := sel.manifest.RefreshFromS3(context.Background(), sel.pool.S3Client()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	base := time.Now().Add(-3 * time.Hour).Truncate(time.Hour)
+	e.ingest(base.Add(10*time.Minute), 20)
+	e.ingest(base.Add(70*time.Minute), 20)
+	e.exactOn(sel, "unflushed rows through the bridge")
+
+	g, _ := e.segs.Seal()
+	e.exactOn(sel, "sealed")
+
+	var groups atomic.Int32
+	e.s.writer.SetStatsCallback(func(_, _ uint32, _, _, _ int64, _ string) {
+		groups.Add(1)
+		listing() // the select pod lists the bucket between the groups
+		e.exactOn(sel, fmt.Sprintf("mid-drain after group %d", groups.Load()))
+	})
+	if err := e.f.drain(context.Background(), g); err != nil {
+		t.Fatal(err)
+	}
+	e.s.writer.SetStatsCallback(nil)
+	if groups.Load() < 2 {
+		t.Fatalf("the drain wrote %d groups; want several", groups.Load())
+	}
+	listing()
+	e.exactOn(sel, "committed, the pod still serves the segment")
+
+	// Late rows, older than everything already in Parquet.
+	e.ingest(base.Add(5*time.Minute), 7)
+	e.exactOn(sel, "late rows in the active segment")
+
+	if n := e.segs.Reap(time.Now().Add(time.Hour), time.Minute); n != 1 {
+		t.Fatalf("reaped %d", n)
+	}
+	e.exactOn(sel, "first segment removed from the pod, its objects listed")
+}
+
+// The bridge answers a peer that sends no segment header (an older build)
+// without dropping any object: every row stays exactly once only if nothing was
+// flushed from the peer's buffer, which is the case this pins.
+func TestBufferView_PeerWithoutNoncesExcludesNothing(t *testing.T) {
+	v := &bufferView{bridged: true}
+	files := []manifest.FileInfo{{Key: "logs/dt=2026-10-02/hour=06/65000000aaaabbbb-0.parquet"}}
+	if got := v.exclude(files); len(got) != 1 {
+		t.Errorf("a view without nonces dropped %d objects", len(files)-len(got))
 	}
 }

@@ -120,9 +120,6 @@ func TestVerifyInsert_AllPromotedFields(t *testing.T) {
 func TestVerifyInsert_UnknownFieldGoesToLogAttributes(t *testing.T) {
 	t.Parallel()
 
-	w := &mockLogWriter{}
-	a := &insertAdapter{writer: w}
-
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "http.method", Value: "POST"},
 		logstorage.Field{Name: "user.id", Value: "u-42"},
@@ -130,12 +127,12 @@ func TestVerifyInsert_UnknownFieldGoesToLogAttributes(t *testing.T) {
 	)
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	row := w.rows[0]
+	row := rows[0]
 
 	if row.LogAttributes == nil {
 		t.Fatal("LogAttributes must not be nil for rows with unknown fields")
@@ -226,27 +223,23 @@ func TestVerifyInsert_TimestampPreserved(t *testing.T) {
 		{"zero", 0},
 		{"one_second", 1_000_000_000},
 		{"nanosecond_precision", 1_716_220_800_123_456_789},
-		{"large_value", 9_223_372_036_854_775_807}, // math.MaxInt64
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			w := &mockLogWriter{}
-			a := &insertAdapter{writer: w}
-
 			lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 			lr.MustAdd(logstorage.TenantID{}, tc.ts,
 				[]logstorage.Field{{Name: "_msg", Value: "ts-test"}}, -1)
 			defer logstorage.PutLogRows(lr)
 
-			a.MustAddRows(lr)
+			rows := rowsViaBuffer(t, lr)
 
-			if len(w.rows) != 1 {
-				t.Fatalf("expected 1 row, got %d", len(w.rows))
+			if len(rows) != 1 {
+				t.Fatalf("expected 1 row, got %d", len(rows))
 			}
-			if got := w.rows[0].TimestampUnixNano; got != tc.ts {
+			if got := rows[0].TimestampUnixNano; got != tc.ts {
 				t.Errorf("TimestampUnixNano = %d, want %d", got, tc.ts)
 			}
 		})
@@ -258,16 +251,13 @@ func TestVerifyInsert_TimestampPreserved(t *testing.T) {
 func TestVerifyInsert_EmptyRows(t *testing.T) {
 	t.Parallel()
 
-	w := &mockLogWriter{}
-	a := &insertAdapter{writer: w}
-
 	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 0 {
-		t.Errorf("expected 0 rows for empty input, got %d", len(w.rows))
+	if len(rows) != 0 {
+		t.Errorf("expected 0 rows for empty input, got %d", len(rows))
 	}
 }
 

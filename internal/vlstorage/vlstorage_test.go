@@ -640,8 +640,7 @@ func TestGetStreamIDs(t *testing.T) {
 // TestSetInsertStorage_NoPanic exercises SetInsertStorage (previously 0%).
 func TestSetInsertStorage_NoPanic(t *testing.T) {
 	// SetInsertStorage registers with VL global state — just ensure no panic.
-	w := &mockLogWriter{}
-	SetInsertStorage(w)
+	SetInsertStorage(&recordingBuffer{}, t.TempDir())
 }
 
 // errStoreForFieldValues returns an error from GetFieldValues and GetStreamFieldValues.
