@@ -40,6 +40,8 @@
     - internal/config/config_test.go#TestLoad_RemovedInsertKeysAreRefused
     - tests/e2e/chaos_durability_test.go#TestChaos_RestartRestoresTheBuffer
     - tests/e2e/chaos_durability_test.go#TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow
+    - tests/e2e/chaos_durability_traces_test.go#TestChaos_TracesRestartRestoresTheBuffer
+    - tests/e2e/chaos_durability_traces_test.go#TestChaos_TracesKill9LosesNothingBeyondTheUpstreamWindow
     - lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go
     - lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go
     - lakehouse-traces/internal/vlstorage/insert_adapter_test.go
