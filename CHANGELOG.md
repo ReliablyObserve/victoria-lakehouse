@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Parity workflow's flaky failures, traced to their causes.** Two upstream behaviours that hot and cold share
+  made the hot/cold comparison fail at random. Neither tier's `sort` breaks `_time` ties, so a limit that cuts a tie
+  group keeps different rows on each tier. `RowsMatch` now accepts that difference only for cases ordered by `_time`
+  alone, and only after re-reading the whole group from both tiers and finding it identical. VictoriaTraces'
+  `singleFieldQueryHelper` appends Tempo tag values from parallel goroutines without a lock, so hot and cold both
+  drop values at random (#316); the Tempo tag helpers compare the union of five reads and fail on any non-200
+  answer. The settle probe now counts with `disable_latency_offset=true`, so the newest 30s of spans no longer make
+  the counts creep after datagen exits. One deterministic divergence that had surfaced only as a flake is now pinned
+  on every run as B8 (#324): a sort over all columns (`sort`, `first|last N` without `by`) orders rows that share a
+  `_time` by `_msg` on cold and by `_stream_id` on hot. The B7 entry records its measured width: cold drops the row
+  until the end bound reaches the next whole microsecond.
+
 ## [0.143.14] - 2026-10-02
 
 ### Fixed
@@ -115,20 +129,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The 24.7 MB `compression_ab` binary at the repo root.** A local build of `scripts/bench/compression_ab`
   was committed by accident in #143; nothing referenced it. `/compression_ab` is now ignored. The tool still
   runs from source (`go run ./scripts/bench/compression_ab`).
-
-### Fixed
-
-- **The Parity workflow's flaky failures, traced to their causes.** Two upstream behaviours that hot and cold share
-  made the hot/cold comparison fail at random. Neither tier's `sort` breaks `_time` ties, so a limit that cuts a tie
-  group keeps different rows on each tier. `RowsMatch` now accepts that difference only for cases ordered by `_time`
-  alone, and only after re-reading the whole group from both tiers and finding it identical. VictoriaTraces'
-  `singleFieldQueryHelper` appends Tempo tag values from parallel goroutines without a lock, so hot and cold both
-  drop values at random (#316); the Tempo tag helpers compare the union of five reads and fail on any non-200
-  answer. The settle probe now counts with `disable_latency_offset=true`, so the newest 30s of spans no longer make
-  the counts creep after datagen exits. One deterministic divergence that had surfaced only as a flake is now pinned
-  on every run as B8 (#324): a sort over all columns (`sort`, `first|last N` without `by`) orders rows that share a
-  `_time` by `_msg` on cold and by `_stream_id` on hot. The B7 entry records its measured width: cold drops the row
-  until the end bound reaches the next whole microsecond.
 
 ## [0.143.10] - 2026-10-01
 
