@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Trace IDs collected for the trace-by-ID fast path are copied before they are kept (both binaries, closes #278).**
+  A block a reader hands out may point into memory the reader reuses for its next block; enumeration answers kept
+  such strings as map keys and returned corrupted Jaeger service names until #296 made them copy their values. The
+  trace-ID list collected while scanning now copies its ids too. Regression tests reuse a block's memory after the
+  callback and check that service, field and trace-ID values come back intact.
+
 ### Documentation
 
 - **Market comparison of log and trace stores.** `docs/market-comparison.md` and an interactive matrix
@@ -21,12 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.143.13] - 2026-10-02
 
 ### Fixed
-
-- **Trace IDs collected for the trace-by-ID fast path are copied before they are kept (both binaries, closes #278).**
-  A block a reader hands out may point into memory the reader reuses for its next block; enumeration answers kept
-  such strings as map keys and returned corrupted Jaeger service names until #296 made them copy their values. The
-  trace-ID list collected while scanning now copies its ids too. Regression tests reuse a block's memory after the
-  callback and check that service, field and trace-ID values come back intact.
 
 - **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**
   The cold read decided which Parquet columns to load by scanning the query text, and that scan missed the default
