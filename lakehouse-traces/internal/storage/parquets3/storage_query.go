@@ -1854,6 +1854,9 @@ func extractTraceIDs(db *logstorage.DataBlock, dest *[]string) {
 		seen := make(map[string]bool)
 		for _, v := range col.Values {
 			if v != "" && !seen[v] && len(*dest) < 200 {
+				// Copy: the ids outlive the callback, and a block's strings may
+				// point into memory its reader reuses for the next block (#278).
+				v = strings.Clone(v)
 				seen[v] = true
 				*dest = append(*dest, v)
 			}
