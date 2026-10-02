@@ -766,7 +766,11 @@ var (
 // for terminationGracePeriodSeconds tuning. DeferredRingThrash counts
 // rate-gate trips (spec §11.4).
 var (
-	CompactionPartitionsOwned          = NewGauge("lakehouse_compaction_partitions_owned")
+	CompactionPartitionsOwned = NewGauge("lakehouse_compaction_partitions_owned")
+	// CompactionFrozenFiles: files in owned partitions the last scan kept out
+	// of compaction, by reason (storage_class: recorded or cached class is not
+	// rewritable; age: past the first lifecycle transition minus the margin).
+	CompactionFrozenFiles              = NewGaugeVec("lakehouse_compaction_frozen_files", "reason")
 	CompactionOwnershipSelfInPeers     = NewGauge("lakehouse_compaction_ownership_self_in_peers")
 	CompactionDeferredStabilizing      = NewCounter("lakehouse_compaction_deferred_stabilizing_total")
 	CompactionSweepDeferredStabilizing = NewCounterVec("lakehouse_compaction_sweep_deferred_stabilizing_total", "tier")

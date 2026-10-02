@@ -247,6 +247,36 @@ func parseTenantFromKey(key string) (uint32, uint32, bool) {
 	return uint32(acc), uint32(proj), true
 }
 
+// FirstNonRewritableTransition returns the earliest lifecycle transition, in
+// days after an object's creation, that moves key's objects into a class
+// whose objects must not be rewritten (CanRewrite false: IA, Glacier, Deep
+// Archive). The tenant's own rules apply when it has an override, the global
+// rules otherwise. ok is false when no such rule exists.
+func (d *StorageClassDetector) FirstNonRewritableTransition(key string) (days int, ok bool) {
+	rules := d.rules
+	if acc, proj, parsed := parseTenantFromKey(key); parsed {
+		d.mu.RLock()
+		if tr, has := d.perTenant[tenantKey{acc, proj}]; has {
+			rules = tr
+		}
+		d.mu.RUnlock()
+	}
+	return FirstNonRewritableTransition(rules)
+}
+
+// FirstNonRewritableTransition is the rule-list form of the method above.
+func FirstNonRewritableTransition(rules []LifecycleRule) (days int, ok bool) {
+	for _, r := range rules {
+		if r.Class.CanRewrite() {
+			continue
+		}
+		if !ok || r.TransitionDays < days {
+			days, ok = r.TransitionDays, true
+		}
+	}
+	return days, ok
+}
+
 // SetCache manually sets a cached storage class for a key.
 func (d *StorageClassDetector) SetCache(key string, class StorageClass) {
 	d.mu.Lock()

@@ -11,12 +11,11 @@ import (
 // persistent cursor so no tenant gets starved by another with a large
 // backlog. compactionsPerTenant slots per tenant per tick (default 1).
 //
-// Tenant identity is derived from the FIRST TWO path segments of a
-// candidate's partition string (the standard "{accountID}/{projectID}/..."
-// shape that lakehouse uses) or "default" when the partition has no
-// slash prefix. This makes the scheduler tenant-aware without needing
-// to know the tenant config — the prefix is already in the partition
-// key.
+// Tenant identity is the candidate's tenant: the "<account>/<project>" of
+// the object keys it merges, set by the planner. Production partition keys
+// are "dt=…/hour=…" with no tenant in them, so the partition string cannot
+// tell tenants apart (issue #343); it is only the fallback for candidates
+// built without a tenant.
 type FairShareScheduler struct {
 	mu                   sync.Mutex
 	cursor               int
@@ -141,7 +140,10 @@ func extractTenant(partition string) string {
 func groupCandidatesByTenant(candidates []partitionCandidate) map[string][]partitionCandidate {
 	out := make(map[string][]partitionCandidate)
 	for _, c := range candidates {
-		t := extractTenant(c.partition)
+		t := c.tenant
+		if t == "" {
+			t = extractTenant(c.partition)
+		}
 		out[t] = append(out[t], c)
 	}
 	return out

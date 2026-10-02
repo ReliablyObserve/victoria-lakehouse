@@ -46,6 +46,9 @@ type OrphanSweepConfig struct {
 	Ownership *OwnershipResolver
 	Policy    *LevelPolicy
 	Lister    S3Lister
+	// Freeze is the scheduler's lifecycle freeze; a steal never rewrites what
+	// the scheduler would not.
+	Freeze *LifecycleFreeze
 
 	Prefix           string
 	Mode             config.Mode
@@ -210,10 +213,12 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 		if err != nil {
 			continue
 		}
-		level, eligible := o.cfg.Policy.Eligible(files, pt)
-		if !eligible {
-			continue // nothing to do; primary will pick it up when
-			// the partition becomes eligible again.
+		// The same per-(tenant, partition) planner as the scheduler (issue
+		// #343): no plan means nothing to do; the primary picks the partition
+		// up when one of its tenants has a merge again.
+		plans := o.cfg.Policy.planPartition(partition, files, pt, planClock(), "", o.cfg.Freeze.frozen, nil)
+		if len(plans) == 0 {
+			continue
 		}
 
 		// Secondary-owner gate prevents a thundering herd: only the
@@ -229,12 +234,6 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 		}
 		primary := ranked[0]
 
-		fp := MajoritySchemaFingerprint(files, level)
-		selected := o.cfg.Policy.SelectFiles(files, level, fp)
-		if len(selected) < 2 {
-			continue
-		}
-
 		// Mark our own attempt BEFORE invoking compactor so a crash
 		// during steal leaves a fresh attempt timestamp — symmetric
 		// with the scheduler's contract.
@@ -249,11 +248,29 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 			CompressionLevel: o.cfg.CompressionLevel,
 			BloomRebuilder:   o.cfg.BloomRebuilder,
 		})
-		result, err := compactor.Compact(ctx, partition, selected, level)
-		if err != nil {
-			logger.Warnf("tier_a steal failed; partition=%s primary=%s: %s",
-				partition, primary, err)
-			metrics.CompactionErrorsTotal.Inc()
+		var (
+			removed []string
+			outputs []string
+			blooms  map[string]map[string][]string
+		)
+		for _, plan := range plans {
+			result, err := compactor.Compact(ctx, partition, plan.files, plan.level)
+			if err != nil {
+				logger.Warnf("tier_a steal failed; partition=%s tenant=%s primary=%s: %s",
+					partition, plan.tenant, primary, err)
+				metrics.CompactionErrorsTotal.Inc()
+				continue
+			}
+			removed = append(removed, fileKeys(plan.files)...)
+			outputs = append(outputs, result.OutputFiles...)
+			for k, v := range result.OutputBlooms {
+				if blooms == nil {
+					blooms = make(map[string]map[string][]string)
+				}
+				blooms[k] = v
+			}
+		}
+		if len(outputs) == 0 {
 			continue
 		}
 
@@ -262,12 +279,7 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 			o.cfg.OnSteal(partition, primary)
 		}
 		if o.cfg.OnCompacted != nil {
-			added := o.cfg.Manifest.FilesForPartition(partition)
-			removed := make([]string, 0, len(selected))
-			for _, s := range selected {
-				removed = append(removed, s.Key)
-			}
-			o.cfg.OnCompacted(added, removed, result.OutputBlooms)
+			o.cfg.OnCompacted(outputsOf(o.cfg.Manifest, partition, &CompactResult{OutputFiles: outputs}), removed, blooms)
 		}
 		logger.Infof("tier_a: stolen partition; partition=%s primary_owner=%s last_attempt=%v",
 			partition, primary, lastAttempt)
