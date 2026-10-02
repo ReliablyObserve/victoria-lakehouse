@@ -102,7 +102,7 @@ observed, so a fixed gap cannot stay on the list.
 |---|---|---|
 | After the flush, Lakehouse returns `severity_number: "0"` on rows VictoriaLogs stores without it | logs, every protocol that does not carry a severity | [#274](https://github.com/ReliablyObserve/victoria-lakehouse/issues/274) |
 | After the flush, an OTLP log row comes back with `level` in place of `severity_text` | logs, OTLP/HTTP protobuf | [#331](https://github.com/ReliablyObserve/victoria-lakehouse/issues/331) |
-| Spans are stored with `_msg` = VictoriaLogs' default text instead of VictoriaTraces' `-` | traces, every protocol, buffer and Parquet | [#332](https://github.com/ReliablyObserve/victoria-lakehouse/issues/332) |
+| Spans are stored with `_msg` = VictoriaLogs' default text instead of VictoriaTraces' `-` | traces, OTLP protobuf, OTLP/gRPC and native (OTLP/JSON spans carry the right `_msg`), buffer and Parquet | [#332](https://github.com/ReliablyObserve/victoria-lakehouse/issues/332) |
 | Spans flushed to Parquet come back without `_msg` (VictoriaTraces returns `-`) | traces, every protocol, after the flush | [#333](https://github.com/ReliablyObserve/victoria-lakehouse/issues/333) |
 | A `trace_id` query returns each flushed span twice while the buffer still holds it (the trace-ID fast path skips the buffer watermark) | traces, every protocol, after the flush | [#279](https://github.com/ReliablyObserve/victoria-lakehouse/issues/279) |
 

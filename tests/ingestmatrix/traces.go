@@ -24,6 +24,8 @@ import (
 
 const spans3 = 3
 
+var jsonGap = []string{"traces-flushed-spans-lack-msg", "traces-trace-id-path-returns-flushed-spans-twice"}
+
 var msgGap = []string{"traces-default-msg-value", "traces-flushed-spans-lack-msg", "traces-trace-id-path-returns-flushed-spans-twice"}
 
 func tracesCases() []Case {
@@ -48,7 +50,7 @@ func tracesCases() []Case {
 			Read: ReadSpec{Query: `trace_id:="%MARKER%"`},
 		},
 		{
-			ID: "otlp_traces_json", Signal: Traces, Gaps: msgGap, Title: "/insert/opentelemetry/v1/traces: OTLP/HTTP traces, JSON", Transport: HTTP,
+			ID: "otlp_traces_json", Signal: Traces, Gaps: jsonGap, Title: "/insert/opentelemetry/v1/traces: OTLP/HTTP traces, JSON", Transport: HTTP,
 			Forms: bothForms, Rows: spans3, Routes: []string{"/insert/opentelemetry/v1/traces"},
 			Counter: `vt_rows_ingested_total{type="opentelemetry_traces_otlphttp_json"}`, Build: buildOTLPTracesJSON,
 			Read: ReadSpec{Query: `trace_id:="%MARKER%"`},
