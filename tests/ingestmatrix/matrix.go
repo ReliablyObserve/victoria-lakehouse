@@ -227,6 +227,36 @@ func GapByID(id string) (Gap, bool) {
 	return Gap{}, false
 }
 
+// RouteGap is an upstream ingest route that Lakehouse answers differently from the
+// hot binary, observed rather than excluded: the matrix sends the request to both,
+// requires the documented pair of statuses and fails when Lakehouse starts
+// answering like hot (the gap is closed and the entry must go).
+type RouteGap struct {
+	ID     string
+	Signal Signal
+	Route  string // inventory route name
+	Method string
+	Path   string // request path with query
+	// HotStatus and LHStatus are the statuses the two sides answer today.
+	HotStatus, LHStatus int
+	Issue               string
+	Title               string
+}
+
+// RouteGaps lists the observed route gaps.
+func RouteGaps() []RouteGap {
+	return []RouteGap{
+		{ID: "internal_insert", Signal: Traces, Route: "/internal/insert", Method: "POST", Path: "/internal/insert?version=v1",
+			HotStatus: 200, LHStatus: 404, Issue: "https://github.com/ReliablyObserve/victoria-lakehouse/issues/334",
+			Title: "/internal/insert: storage-node ingest used by a vtinsert tier (not mounted in lakehouse-traces)"},
+	}
+}
+
+// RouteGapRowID is the registry row id of a route gap, e.g. "vt.ingest.internal_insert.numeric".
+func RouteGapRowID(g RouteGap) string {
+	return fmt.Sprintf("%s.ingest.%s.%s", surface(g.Signal), g.ID, Numeric)
+}
+
 // Probe is a non-data ingest route (readiness, compatibility stub, health):
 // the matrix sends the same GET to hot and to Lakehouse and compares the
 // status and body.
@@ -279,6 +309,9 @@ func RowIDs() []string {
 			ids = append(ids, RowID(c, f))
 		}
 	}
+	for _, g := range RouteGaps() {
+		ids = append(ids, RouteGapRowID(g))
+	}
 	sort.Strings(ids)
 	return ids
 }
@@ -303,6 +336,11 @@ func Exercised(s Signal) map[string]string {
 		}
 		for _, f := range c.Flags {
 			m["flag:"+f] = c.ID
+		}
+	}
+	for _, g := range RouteGaps() {
+		if g.Signal == s {
+			m["route:"+g.Route] = "route gap " + g.ID
 		}
 	}
 	for _, p := range Probes() {

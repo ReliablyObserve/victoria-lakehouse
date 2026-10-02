@@ -160,7 +160,6 @@ func Probes() []Probe {
 func Exclusions() []Exclusion {
 	return []Exclusion{
 		{Logs, "flag:syslog.listenAddr.unix", "a unix-socket listener cannot be published by the compose file or the Helm Service; same code path as the TCP listener"},
-		{Traces, "route:/internal/insert", "known gap, tracked in https://github.com/ReliablyObserve/victoria-lakehouse/issues/334: lakehouse-traces does not mount VictoriaTraces' storage-node ingest route (404 where hot VT answers 200); the registry row vt.internal.insert.count stays pending"},
 	}
 }
 

@@ -346,6 +346,27 @@ func TestIngestMatrix_RegistryRowsMatchCases(t *testing.T) {
 			}
 		}
 	}
+	for _, g := range im.RouteGaps() {
+		id := im.RouteGapRowID(g)
+		wantRows[id] = true
+		row := reg.ByID[id]
+		if row == nil {
+			t.Errorf("no registry row %s for route gap %s", id, g.ID)
+			continue
+		}
+		if row.Pending || row.Expect != registry.ExpectDiffer || !strings.Contains(row.DifferNote, g.Issue) {
+			t.Errorf("%s: a route gap row is executed (not pending), expect: differ and cites %s", id, g.Issue)
+		}
+		if row.Upstream == nil || row.Upstream.Route != g.Route {
+			t.Errorf("%s: upstream route must be %s", id, g.Route)
+		}
+		if row.Refs == nil || !contains(row.Refs.Tests, e2eFile+"#TestIngestMatrix_RouteGaps") {
+			t.Errorf("%s: refs.tests must cite %s#TestIngestMatrix_RouteGaps", id, e2eFile)
+		}
+		if !strings.Contains(string(src), "func TestIngestMatrix_RouteGaps(") {
+			t.Errorf("%s does not define TestIngestMatrix_RouteGaps", e2eFile)
+		}
+	}
 	for _, r := range reg.Rows {
 		if (strings.HasPrefix(r.ID, "vl.ingest.") || strings.HasPrefix(r.ID, "vt.ingest.")) && !wantRows[r.ID] {
 			t.Errorf("registry row %s has no case in tests/ingestmatrix", r.ID)
@@ -398,6 +419,11 @@ func TestIngestMatrix_GapsAreTrackedAndUsed(t *testing.T) {
 	e2e, err := os.ReadFile(filepath.Join(root, "tests", "e2e", "ingest_matrix_test.go"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, g := range im.RouteGaps() {
+		if !strings.Contains(string(doc), g.Issue) {
+			t.Errorf("route gap %s: docs/ingest-parity.md does not list %s", g.ID, g.Issue)
+		}
 	}
 	used := map[string]bool{}
 	for _, c := range im.AllCases() {

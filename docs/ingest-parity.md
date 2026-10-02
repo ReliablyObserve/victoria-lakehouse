@@ -18,15 +18,20 @@ sends the **same payload** to the hot binary and to Lakehouse and checks, in ord
 
 | Step | Check |
 |---|---|
-| `ingest` | status code and body of the ingest answer are equal (ES `took` aside); for a payload upstream refuses, both refuse it the same way |
-| `counters` | the upstream `vl_rows_ingested_total{type=...}` / `vt_rows_ingested_total{type=...}` series moves on hot and on Lakehouse, and so does `lakehouse_insert_rows_total` |
-| `buffer` | straight after the write, before any flush, Lakehouse returns the same rows as hot, field for field (the `_stream`, `_stream_id` and `_time` included) |
-| `parquet` | after the flush, the tenant's Parquet objects hold exactly those rows (read with a plain Parquet reader, as DuckDB or pyarrow would), and Lakehouse still equals hot, with no dip and no duplicate while the buffer hands the rows over |
+| `ingest` | status code and body of the ingest answer are equal (ES `took` aside); for a payload upstream refuses, both refuse it the same way. Right after the cell's own write the ingest counters are checked: `vl_rows_ingested_total{type=...}` / `vt_rows_ingested_total{type=...}` moved on hot and on Lakehouse, and so did `lakehouse_insert_rows_total`. The counters are per-protocol series of the whole process, not per tenant, so this is a **lower bound** (moved by at least the rows the cell wrote). |
+| `buffer` | straight after the write Lakehouse returns the same rows as hot, field for field (`_stream_id` and `_time` included), apart from the cell's declared known gaps (below) |
+| `parquet` | the tenant's Parquet objects, read with a plain Parquet reader as DuckDB or pyarrow would, hold **exactly** the cell's rows: logs, exactly Rows rows carrying the marker; traces, exactly Rows span rows (rows with a `span_id`) with Rows distinct span ids, trace-index rows excluded. A writer that writes a row twice fails here. Then Lakehouse is compared with hot again |
+| `stable` | after one shared 10 s settle window the Parquet content is unchanged and Lakehouse still equals hot: no dip and no duplicate while the buffer hands its rows over |
+| `known_gaps` | every gap a cell declares was observed in that cell (see Known gaps) |
 | `storage_health` | `lakehouse_insert_rows_lost_total` and `lakehouse_insert_rejected_total` did not move |
-| `other_signal_unaffected` | the other binary did not receive any of the rows |
+| `other_signal_unaffected` | for every tenant written, a word/`trace_id` query that finds the rows on their own binary (self-check) finds none on the other binary |
+
+Whether a Parquet-only gap may apply to a cell is decided on every read from S3 (the cell has rows in
+Parquet), never from the step the test is in, so a flush that lands during `buffer` cannot flip a result.
 
 The non-data ingest routes (readiness, health, and the Elasticsearch, Datadog and Splunk
 compatibility stubs) are probed by `TestIngestMatrix_Probes`: same status and body on both sides.
+`TestIngestMatrix_RouteGaps` sends the observed route gaps (below) and requires the documented statuses.
 
 ## Protocols
 
@@ -36,11 +41,10 @@ compatibility stubs) are probed by `TestIngestMatrix_Probes`: same status and bo
 | `lakehouse-traces` vs VictoriaTraces v0.12 | OTLP/HTTP traces (protobuf and JSON), OTLP/gRPC traces, `/insert/native`, `/insert/multitenant/native` (span rows) |
 
 Splunk HEC *raw* is not a protocol in the pinned VictoriaLogs (only `/event` and `/event/1.0`
-are routed), so there is no raw cell. VictoriaTraces' `/internal/insert` route is listed with a reason in
-`tests/ingestmatrix` (`Exclusions`); the drift gate checks that list too. `/internal/insert` is a case for `lakehouse-logs` (native-format rows, the tenant
-inside each row); for `lakehouse-traces` it is an exclusion because the route is not mounted there
-(`404` where hot VictoriaTraces answers `200`), tracked in
-[#334](https://github.com/ReliablyObserve/victoria-lakehouse/issues/334).
+are routed), so there is no raw cell. `/internal/insert` is a case for `lakehouse-logs` (native-format
+rows, the tenant inside each row); for `lakehouse-traces` it is an observed route gap (see Known gaps).
+The one listener the matrix does not reach, `-syslog.listenAddr.unix`, is listed with its reason in
+`tests/ingestmatrix` (`Exclusions`); the drift gate checks that list too.
 
 Payloads are built with upstream's own libraries where it exports them (`logstorage.InsertRow` for
 the native protocol, the OTLP proto types the upstream parsers decode) and with the documented wire
@@ -94,17 +98,28 @@ them in your own file add the same flags to the `command` list and publish the p
 
 ## Known gaps
 
-Each gap is an explicit entry in `knownGaps` in the e2e test with a tracking issue. It applies to the
-one named field and value, only after the flush, and the run **fails** when the gap is no longer
-observed, so a fixed gap cannot stay on the list.
+A divergence from hot is never a skip. Each one is a gap with a tracking issue, declared **per case**
+in `Gaps()` and `Case.Gaps` in `tests/ingestmatrix`, with its rewrite in `gapRewrites` in the e2e test:
+
+* the cell still compares every other field exactly; a gap rewrites a Lakehouse row into the form hot
+  returns, and only counts when the rewritten row then equals a hot row;
+* the set-level gap #279 (a span returned twice) is accepted only when the result is **exactly two
+  copies of every hot row**, so a writer that duplicates spans fails;
+* the registry rows of an affected cell are `expect: differ` and cite the issues, and a test keeps
+  `Case.Gaps` and the rows in step in both directions;
+* a cell **fails when a declared gap is no longer observed**, so a fixed gap cannot stay on the list.
 
 | Gap | Where | Issue |
 |---|---|---|
 | After the flush, Lakehouse returns `severity_number: "0"` on rows VictoriaLogs stores without it | logs, every protocol that does not carry a severity | [#274](https://github.com/ReliablyObserve/victoria-lakehouse/issues/274) |
 | After the flush, an OTLP log row comes back with `level` in place of `severity_text` | logs, OTLP/HTTP protobuf | [#331](https://github.com/ReliablyObserve/victoria-lakehouse/issues/331) |
-| Spans are stored with `_msg` = VictoriaLogs' default text instead of VictoriaTraces' `-` | traces, OTLP protobuf, OTLP/gRPC and native (OTLP/JSON spans carry the right `_msg`), buffer and Parquet | [#332](https://github.com/ReliablyObserve/victoria-lakehouse/issues/332) |
+| Spans are stored with `_msg` = VictoriaLogs' default text instead of VictoriaTraces' `-` | traces: OTLP protobuf, OTLP/gRPC and native (OTLP/JSON spans are right), buffer and Parquet | [#332](https://github.com/ReliablyObserve/victoria-lakehouse/issues/332) |
 | Spans flushed to Parquet come back without `_msg` (VictoriaTraces returns `-`) | traces, every protocol, after the flush | [#333](https://github.com/ReliablyObserve/victoria-lakehouse/issues/333) |
 | A `trace_id` query returns each flushed span twice while the buffer still holds it (the trace-ID fast path skips the buffer watermark) | traces, every protocol, after the flush | [#279](https://github.com/ReliablyObserve/victoria-lakehouse/issues/279) |
+
+Route gap, observed by `TestIngestMatrix_RouteGaps` (hot answers `200`, Lakehouse `404`; the test fails
+if Lakehouse starts answering `200`): [#334](https://github.com/ReliablyObserve/victoria-lakehouse/issues/334),
+`lakehouse-traces` does not mount `/internal/insert`.
 
 ## Drift gate
 
@@ -112,7 +127,7 @@ observed, so a fixed gap cannot stay on the list.
 `app/vlinsert` and `app/vtinsert`) and the listener flags (`*listenAddr*`) from the vendored upstream
 trees and fails when:
 
-* upstream has a route or listener flag that no case, probe or exclusion accounts for (a new
+* upstream has a route or listener flag that no case, probe, route gap or exclusion accounts for (a new
   protocol), or
 * the matrix sends to a route or flag upstream no longer has (a removed protocol), or
 * a case has no registry row, a row is pending or does not cite the e2e test, or a registry
@@ -131,15 +146,41 @@ mutated inventory.
 
 ## Running it locally
 
-On the e2e compose stack (own project name and ports so it never touches another stack):
+The test needs the e2e stack (hot VL/VT, `lakehouse-logs`, `lakehouse-traces`, S3) and the seeded data the
+e2e package's `TestMain` waits for (the `datagen-seed` service, which also leaves a manifest with files in
+both binaries; allow about two minutes for the first flush). Use your own compose project name and ports so
+it never touches another stack. The fixed ports of the e2e file (S3 29000, the two Lakehouse HTTP ports,
+hot VT 10428) are remapped with an override file:
+
+```yaml
+# my-ports.yml
+services:
+  s3:               { ports: !override ["127.0.0.1:39300:9000"] }
+  victoriatraces:   { ports: !override ["127.0.0.1:39301:10428", "127.0.0.1:39302:4317"] }
+  victorialogs:     { ports: !override ["127.0.0.1:39303:9428", "127.0.0.1:39304:5140", "127.0.0.1:39305:5141/udp"] }
+  lakehouse-logs:   { ports: !override ["127.0.0.1:39310:9428", "127.0.0.1:39311:5140", "127.0.0.1:39312:5141/udp"] }
+  lakehouse-traces: { ports: !override ["127.0.0.1:39313:10428", "127.0.0.1:39314:4317"] }
+  datagen-seed:
+    command: !override ["--logs=2000", "--traces=500", "--hours-back=3", "--vl-endpoint=http://victorialogs:9428", "--vt-endpoint=http://victoriatraces:10428", "--lh-logs-endpoint=http://lakehouse-logs:9428", "--lh-traces-endpoint=http://lakehouse-traces:10428"]
+```
 
 ```bash
 cd deployment/docker
-export E2E_HOT_VL_HTTP_PORT=39303 E2E_HOT_VL_SYSLOG_TCP_PORT=39304 E2E_HOT_VL_SYSLOG_UDP_PORT=39305 \
-       E2E_HOT_VT_GRPC_PORT=39302 E2E_LH_SYSLOG_TCP_PORT=39311 E2E_LH_SYSLOG_UDP_PORT=39312 E2E_LH_TRACES_GRPC_PORT=39314
-docker compose -p lhingest -f docker-compose-e2e.yml -f my-ports-override.yml up -d --build   # override remaps 29428, 20428, 10428, 29000
-cd ../.. && go test -tags=e2e -count=1 -timeout=40m ./tests/e2e/ -run 'TestIngestMatrix_'
+docker compose -p lhingest -f docker-compose-e2e.yml -f my-ports.yml up -d --build \
+  s3 s3-init s3-latency victorialogs victoriatraces lakehouse-logs lakehouse-traces datagen-seed
+cd ../..
+GOWORK=off \
+LOGS_BASE_URL=http://127.0.0.1:39310 TRACES_BASE_URL=http://127.0.0.1:39313 \
+HOT_VL_URL=http://127.0.0.1:39303 HOT_VT_URL=http://127.0.0.1:39301 \
+LH_SYSLOG_TCP_ADDR=127.0.0.1:39311 LH_SYSLOG_UDP_ADDR=127.0.0.1:39312 \
+HOT_VL_SYSLOG_TCP_ADDR=127.0.0.1:39304 HOT_VL_SYSLOG_UDP_ADDR=127.0.0.1:39305 \
+LH_TRACES_GRPC_ADDR=127.0.0.1:39314 HOT_VT_GRPC_ADDR=127.0.0.1:39302 \
+S3_URL=http://127.0.0.1:39300 \
+  go test -tags=e2e -count=1 -timeout=40m ./tests/e2e/ -run 'TestIngestMatrix_'
 docker compose -p lhingest -f deployment/docker/docker-compose-e2e.yml down -v --remove-orphans
 ```
 
-The flush wait is one flush interval (120 s in the e2e stack) per signal.
+Set the `E2E_*` host-port variables of the compose file (see `docs/docker-compose-setup.md`) to the same
+ports when the compose file, not the override, publishes them. The package needs the vendored
+VictoriaLogs tree (`make deps-logs`), because the native payloads are built with `logstorage.InsertRow`.
+The flush wait is one flush interval (120 s in the e2e stack); the Logs and Traces matrices run in parallel.

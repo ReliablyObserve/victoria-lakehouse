@@ -223,7 +223,9 @@ var gapRewrites = map[string]func(row map[string]any) bool{
 const defaultMsgVL = "missing _msg field; see https://docs.victoriametrics.com/victorialogs/keyconcepts/#message-field"
 
 // applyKnownGaps rewrites the Lakehouse rows that match a hot row once the cell's
-// declared gaps are applied, and records which gaps it observed.
+// declared gaps are applied, and records which gaps it observed. A gap that only
+// exists on the Parquet read applies only once the cell has rows in Parquet (s.flushed,
+// decided from S3 on every read, never from the test phase).
 func (r *matrixRun) applyKnownGaps(s *caseState, hot, lh []string) []string {
 	hotSet := map[string]bool{}
 	for _, h := range hot {
@@ -242,7 +244,7 @@ func (r *matrixRun) applyKnownGaps(s *caseState, hot, lh []string) []string {
 		var applied []string
 		for _, id := range s.c.Gaps {
 			g, ok := im.GapByID(id)
-			if !ok || rewriteOf(id) == nil || (g.AfterFlush && !r.afterFlush) {
+			if !ok || rewriteOf(id) == nil || (g.AfterFlush && !s.flushed) {
 				continue
 			}
 			if rewriteOf(id)(m) {
@@ -261,16 +263,25 @@ func (r *matrixRun) applyKnownGaps(s *caseState, hot, lh []string) []string {
 		}
 	}
 	sort.Strings(out)
-	// Set-level gap: the same span returned more than once. Collapse exact
-	// duplicates only when that makes the set equal to hot's.
-	if r.afterFlush && hasGap(s.c, "traces-trace-id-path-returns-flushed-spans-twice") && len(out) > len(hot) {
-		var dedup []string
-		for i, row := range out {
-			if i == 0 || row != out[i-1] {
-				dedup = append(dedup, row)
-			}
+	// Set-level gap (#279): the trace-ID fast path returns a flushed span from the
+	// buffer AND from Parquet. It is accepted only as exactly two copies of every
+	// hot row, so a writer that duplicates spans (three or more copies, or copies
+	// of only some rows) still fails.
+	if s.flushed && hasGap(s.c, "traces-trace-id-path-returns-flushed-spans-twice") && len(out) == 2*len(hot) && len(hot) > 0 {
+		counts := map[string]int{}
+		for _, row := range out {
+			counts[row]++
 		}
-		if len(dedup) == len(hot) && firstRowDiff(hot, dedup) == "" {
+		exactlyTwice := true
+		var dedup []string
+		for row, n := range counts {
+			if n != 2 {
+				exactlyTwice = false
+			}
+			dedup = append(dedup, row)
+		}
+		sort.Strings(dedup)
+		if exactlyTwice && len(dedup) == len(hot) && firstRowDiff(hot, dedup) == "" {
 			s.gapHits["traces-trace-id-path-returns-flushed-spans-twice"]++
 			out = dedup
 		}
@@ -295,10 +306,10 @@ type matrixRun struct {
 	runID    string
 	base     time.Time
 	ingestAt time.Time
-	// afterFlush: the tenants' Parquet exists; known gaps that only exist on the
-	// cold read apply from here on.
-	afterFlush bool
-	states     []*caseState
+	states   []*caseState
+	// pq caches what each Parquet object under the matrix tenants holds, by S3 key.
+	pq  map[string]*pqObject
+	s3c *s3.Client
 	// lakehouse insert counters before the run
 	lostBefore, rejectedBefore float64
 }
@@ -312,6 +323,8 @@ type caseState struct {
 	hotBefore, lhBefore, lhRowsBefore float64
 	// gapHits counts, per declared known gap, the row comparisons that needed it.
 	gapHits map[string]int
+	// flushed: at least one Parquet row of this cell has been seen in S3. Monotonic.
+	flushed bool
 }
 
 func (s *caseState) name() string { return s.c.ID + "/" + string(s.f) }
@@ -323,7 +336,7 @@ func newMatrixRun(t *testing.T, sig im.Signal) *matrixRun {
 		waitForHealth(t, e.base, 60*time.Second)
 	}
 	runID := strconv.FormatInt(time.Now().UnixNano()/1e6, 36)
-	r := &matrixRun{sig: sig, hot: hot, lh: lh, runID: runID, base: time.Now().UTC().Truncate(time.Second), ingestAt: time.Now()}
+	r := &matrixRun{pq: map[string]*pqObject{}, sig: sig, hot: hot, lh: lh, runID: runID, base: time.Now().UTC().Truncate(time.Second), ingestAt: time.Now()}
 	for _, c := range im.CasesFor(sig) {
 		for _, f := range c.Forms {
 			r.states = append(r.states, &caseState{c: c, f: f, p: im.NewParams(c, f, runID, r.base), gapHits: map[string]int{}})
@@ -393,6 +406,10 @@ func (r *matrixRun) waitSame(t *testing.T, s *caseState, want int, within time.D
 		hot, herr := r.readRows(t, r.hot, s)
 		lh, lerr := r.readRows(t, r.lh, s)
 		if herr == nil && lerr == nil {
+			// Cold-read gaps apply from the moment the cell has rows in Parquet, which
+			// is decided from S3 after the read (a flush between the read and the check
+			// only allows a gap that was not needed).
+			r.refreshParquet(t, s)
 			// Declared known gaps are applied before anything is compared, so a gap
 			// that changes the number of rows (a span returned twice) is handled too.
 			lh = r.applyKnownGaps(s, hot, lh)
@@ -422,7 +439,7 @@ func (r *matrixRun) waitSame(t *testing.T, s *caseState, want int, within time.D
 		if time.Now().After(deadline) {
 			t.Fatalf("rows differ from hot after %s: %s", within, last)
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(time.Second)
 	}
 }
 
@@ -460,13 +477,246 @@ func firstRowDiff(hot, lh []string) string {
 	return ""
 }
 
+// pqObject is what one Parquet object under a matrix tenant holds, per marker.
+type pqObject struct {
+	cells map[string]*pqCell
+}
+
+// pqCell counts one cell's rows in one Parquet object. spans maps span_id to the
+// number of rows carrying it (traces only); trace-index rows have no span_id.
+type pqCell struct {
+	rows     int
+	spanRows int
+	spans    map[string]int
+}
+
+func (r *matrixRun) markers() map[string]bool {
+	m := map[string]bool{}
+	for _, s := range r.states {
+		m[s.p.Marker] = true
+	}
+	return m
+}
+
+// refreshParquet scans the Parquet objects of the cell's tenant that were written
+// since the run started and have not been read yet, drops cache entries of objects
+// that are gone (compaction), and marks the cell flushed once any of its rows is
+// in Parquet.
+func (r *matrixRun) refreshParquet(t *testing.T, s *caseState) {
+	t.Helper()
+	if r.s3c == nil {
+		r.s3c = newS3Client(t)
+	}
+	client := r.s3c
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("%d/%d/%s/", s.p.Tenant.Account, s.p.Tenant.Project, r.sig)
+	live := map[string]bool{}
+	pg := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{Bucket: aws.String(s3Bucket), Prefix: aws.String(prefix)})
+	for pg.HasMorePages() {
+		page, err := pg.NextPage(ctx)
+		if err != nil {
+			t.Fatalf("list s3://%s/%s: %v", s3Bucket, prefix, err)
+		}
+		for _, o := range page.Contents {
+			key := aws.ToString(o.Key)
+			if !strings.HasSuffix(key, ".parquet") || o.LastModified == nil || o.LastModified.Before(r.ingestAt.Add(-time.Second)) {
+				continue
+			}
+			live[key] = true
+			if _, done := r.pq[key]; done {
+				continue
+			}
+			obj, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s3Bucket), Key: aws.String(key)})
+			if err != nil {
+				t.Fatalf("get s3://%s/%s: %v", s3Bucket, key, err)
+			}
+			data, err := io.ReadAll(obj.Body)
+			_ = obj.Body.Close()
+			if err != nil {
+				t.Fatalf("read s3://%s/%s: %v", s3Bucket, key, err)
+			}
+			r.pq[key] = &pqObject{cells: scanParquetObject(t, key, data, r.markers())}
+		}
+	}
+	for key := range r.pq {
+		if strings.HasPrefix(key, prefix) && !live[key] {
+			delete(r.pq, key)
+		}
+	}
+	if rows, _, _ := r.pqCounts(s); rows > 0 {
+		s.flushed = true
+	}
+}
+
+// pqCounts totals a cell over the tenant's cached objects: all rows carrying the
+// marker, span rows (traces: rows with a span_id) and distinct span ids.
+func (r *matrixRun) pqCounts(s *caseState) (rows, spanRows, distinctSpans int) {
+	prefix := fmt.Sprintf("%d/%d/%s/", s.p.Tenant.Account, s.p.Tenant.Project, r.sig)
+	spans := map[string]bool{}
+	for key, o := range r.pq {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if c := o.cells[s.p.Marker]; c != nil {
+			rows += c.rows
+			spanRows += c.spanRows
+			for id := range c.spans {
+				spans[id] = true
+			}
+		}
+	}
+	return rows, spanRows, len(spans)
+}
+
+// parquetExact reports whether the cell's Parquet content is exactly what was
+// written: logs, Rows rows; traces, Rows span rows with Rows distinct span ids
+// (trace-index rows excluded). More is a writer that duplicates, fewer is not flushed yet.
+func (r *matrixRun) parquetExact(s *caseState) (bool, string) {
+	rows, spanRows, distinct := r.pqCounts(s)
+	if r.sig == im.Traces {
+		return spanRows == s.c.Rows && distinct == s.c.Rows, fmt.Sprintf("%d span rows, %d distinct span ids, %d rows carrying trace_id (want %d span rows and %d distinct span ids)", spanRows, distinct, rows, s.c.Rows, s.c.Rows)
+	}
+	return rows == s.c.Rows, fmt.Sprintf("%d rows carrying the marker (want exactly %d)", rows, s.c.Rows)
+}
+
+// waitParquetExact polls S3 until the cell's Parquet content is exact, or fails with
+// the counts at the deadline. An exact content that later grows or shrinks is caught
+// by the stable step.
+func (r *matrixRun) waitParquetExact(t *testing.T, s *caseState) {
+	t.Helper()
+	deadline := r.ingestAt.Add(360 * time.Second)
+	for {
+		r.refreshParquet(t, s)
+		ok, what := r.parquetExact(s)
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Parquet content never became exact within 360s of the write: %s", what)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func scanParquetObject(t *testing.T, key string, data []byte, markers map[string]bool) map[string]*pqCell {
+	t.Helper()
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("open %s as Parquet: %v", key, err)
+	}
+	var names []string
+	for _, path := range f.Schema().Columns() {
+		names = append(names, strings.Join(path, "."))
+	}
+	cells := map[string]*pqCell{}
+	for _, rg := range f.RowGroups() {
+		rows := rg.Rows()
+		buf := make([]parquet.Row, 256)
+		for {
+			k, err := rows.ReadRows(buf)
+			for _, row := range buf[:k] {
+				var marker, spanID string
+				for _, v := range row {
+					if v.Kind() != parquet.ByteArray {
+						continue
+					}
+					str := string(v.ByteArray())
+					name := ""
+					if c := v.Column(); c >= 0 && c < len(names) {
+						name = names[c]
+					}
+					switch {
+					case name == "span_id":
+						spanID = str
+					case markers[str]:
+						marker = str
+					default:
+						if i := strings.Index(str, "ingm"); i >= 0 {
+							j := i
+							for j < len(str) && (str[j] >= 'a' && str[j] <= 'z' || str[j] >= '0' && str[j] <= '9') {
+								j++
+							}
+							if markers[str[i:j]] {
+								marker = str[i:j]
+							}
+						}
+					}
+				}
+				if marker == "" {
+					continue
+				}
+				c := cells[marker]
+				if c == nil {
+					c = &pqCell{spans: map[string]int{}}
+					cells[marker] = c
+				}
+				c.rows++
+				if spanID != "" {
+					c.spanRows++
+					c.spans[spanID]++
+				}
+			}
+			if err != nil {
+				if err != io.EOF {
+					t.Fatalf("read rows of %s: %v", key, err)
+				}
+				break
+			}
+		}
+		_ = rows.Close()
+	}
+	return cells
+}
+
+// queryCount runs a LogsQL query against one binary for one tenant and returns the
+// number of rows.
+func queryCount(t *testing.T, base string, sig im.Signal, tn im.Tenant, query string, from time.Time) int {
+	t.Helper()
+	form := url.Values{}
+	form.Set("query", query)
+	form.Set("start", strconv.FormatInt(from.UnixNano(), 10))
+	form.Set("end", strconv.FormatInt(time.Now().Add(5*time.Minute).UnixNano(), 10))
+	form.Set("limit", "10000")
+	if sig == im.Traces {
+		form.Set("disable_latency_offset", "true")
+	}
+	req, err := http.NewRequest("POST", base+"/select/logsql/query", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("AccountID", strconv.FormatUint(uint64(tn.Account), 10))
+	req.Header.Set("ProjectID", strconv.FormatUint(uint64(tn.Project), 10))
+	resp, err := ingestClient.Do(req)
+	if err != nil {
+		t.Fatalf("query %s: %v", base, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("query %s: status %d: %s", base, resp.StatusCode, string(b))
+	}
+	n := 0
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(l) != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // runIngestMatrix is the body of TestIngestMatrix_Logs and TestIngestMatrix_Traces.
 func runIngestMatrix(t *testing.T, sig im.Signal) {
 	r := newMatrixRun(t, sig)
 	t.Logf("run %s: %d case/form cells, marker base %s", r.runID, len(r.states), r.base.Format(time.RFC3339))
 	r.ingestAt = time.Now()
 
-	// 1. ingest: the same payload to hot and to Lakehouse, answers compared.
+	// 1. ingest: the same payload to hot and to Lakehouse, answers compared; then,
+	// right after this cell's own write, the ingest counters. The counters are
+	// per-protocol series of the whole process, not per tenant, so the check is a
+	// lower bound: they moved by at least the rows this cell wrote (a continuous
+	// writer on the same stack can only add to it).
 	for _, s := range r.states {
 		s := s
 		t.Run("ingest/"+s.name(), func(t *testing.T) {
@@ -511,18 +761,8 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 				}
 			}
 			s.ok = true
-		})
-	}
-
-	// 2. counters: the ingest counters moved on both sides.
-	for _, s := range r.states {
-		s := s
-		t.Run("counters/"+s.name(), func(t *testing.T) {
-			if !s.ok {
-				t.Fatalf("not run: the ingest step of this cell failed")
-			}
 			if s.c.Rejected {
-				t.Log("payload refused on both sides (verified in the ingest step); no rows to count")
+				t.Log("payload refused with the same answer on both sides; no rows to count")
 				return
 			}
 			want := float64(s.c.Rows)
@@ -535,15 +775,16 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 					return
 				}
 				if time.Now().After(deadline) {
-					t.Fatalf("ingest counters did not move by %v: hot %s +%v, lakehouse %s +%v, lakehouse_insert_rows_total +%v", want, s.c.Counter, hd, s.c.Counter, ld, rd)
+					t.Fatalf("ingest counters did not move by at least %v after this cell's write: hot %s +%v, lakehouse %s +%v, lakehouse_insert_rows_total +%v", want, s.c.Counter, hd, s.c.Counter, ld, rd)
 				}
 				time.Sleep(time.Second)
 			}
 		})
 	}
 
-	// 3. buffer: straight after the write, before any flush, Lakehouse serves
-	// exactly the rows hot serves.
+	// 2. buffer: straight after the write Lakehouse serves exactly the rows hot
+	// serves. A flush tick can land during this step; whether a cold-read gap
+	// applies is decided from what is in Parquet on each read, not from the step.
 	for _, s := range r.states {
 		s := s
 		t.Run("buffer/"+s.name(), func(t *testing.T) {
@@ -554,53 +795,42 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 		})
 	}
 
-	// 4. flush: wait for each tenant's Parquet, then compare again and read the
-	// Parquet itself.
-	flushed := false
-	t.Run("flush", func(t *testing.T) {
-		client := newS3Client(t)
-		deadline := time.Now().Add(300 * time.Second)
-		for {
-			pending := 0
-			for _, tn := range tenantsOf(r.states) {
-				if !scopeHasObjectSince(t, client, s3Bucket, fmt.Sprintf("%d/%d/%s/", tn.Account, tn.Project, r.sig), r.ingestAt) {
-					pending++
-				}
-			}
-			if pending == 0 {
-				flushed = true
-				r.afterFlush = true
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%d tenant(s) never flushed Parquet within 300s", pending)
-			}
-			time.Sleep(5 * time.Second)
-		}
-	})
+	// 3. parquet: wait until the tenant's Parquet holds exactly the cell's rows
+	// (traces: exactly Rows span rows with Rows distinct span ids, trace-index rows
+	// excluded), then compare with hot again.
 	for _, s := range r.states {
 		s := s
 		t.Run("parquet/"+s.name(), func(t *testing.T) {
-			if !s.ok || !flushed {
-				t.Fatalf("not run: the ingest step (ok=%v) or the flush wait (flushed=%v) of this cell failed", s.ok, flushed)
+			if !s.ok {
+				t.Fatalf("not run: the ingest step of this cell failed")
 			}
 			if s.c.Rejected {
 				// Nothing was stored; both sides must still agree on that.
 				r.waitSame(t, s, 0, 30*time.Second)
 				return
 			}
-			got := countParquetRows(t, newS3Client(t), s.p.Tenant, r.sig, s.p.Marker, r.ingestAt)
-			if r.sig == im.Traces {
-				if got < s.c.Rows {
-					t.Fatalf("Parquet holds %d rows carrying trace_id %s, want at least %d spans", got, s.p.Marker, s.c.Rows)
-				}
-			} else if got != s.c.Rows {
-				t.Fatalf("Parquet holds %d rows carrying marker %s, want exactly %d", got, s.p.Marker, s.c.Rows)
-			}
-			// After the flush Lakehouse must still equal hot: no dip and no
-			// duplicate while the buffer hands the rows over.
+			r.waitParquetExact(t, s)
 			r.waitSame(t, s, s.c.Rows, 90*time.Second)
-			time.Sleep(10 * time.Second)
+		})
+	}
+
+	// 4. stable: one shared settle window, then every cell again. The buffer
+	// hands its rows over during it: no dip, no duplicate, Parquet unchanged.
+	t.Run("settle", func(t *testing.T) { time.Sleep(10 * time.Second) })
+	for _, s := range r.states {
+		s := s
+		t.Run("stable/"+s.name(), func(t *testing.T) {
+			if !s.ok {
+				t.Fatalf("not run: the ingest step of this cell failed")
+			}
+			if s.c.Rejected {
+				r.waitSame(t, s, 0, 20*time.Second)
+				return
+			}
+			r.refreshParquet(t, s)
+			if ok, what := r.parquetExact(s); !ok {
+				t.Fatalf("Parquet content changed after it was exact: %s", what)
+			}
 			r.waitSame(t, s, s.c.Rows, 30*time.Second)
 		})
 	}
@@ -633,38 +863,28 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 		}
 	})
 	t.Run("other_signal_unaffected", func(t *testing.T) {
-		otherBase := tracesBaseURL
-		other := im.Traces
+		otherBase, other := tracesBaseURL, im.Traces
 		if sig == im.Traces {
 			otherBase, other = logsBaseURL, im.Logs
 		}
-		var markers []string
-		for _, s := range r.states {
-			markers = append(markers, strconv.Quote(s.p.Marker))
-		}
-		form := url.Values{}
-		form.Set("query", "_msg:in("+strings.Join(markers, ",")+") OR trace_id:in("+strings.Join(markers, ",")+")")
-		form.Set("start", strconv.FormatInt(r.base.Add(-10*time.Minute).UnixNano(), 10))
-		form.Set("end", strconv.FormatInt(time.Now().Add(5*time.Minute).UnixNano(), 10))
-		if other == im.Traces {
-			form.Set("disable_latency_offset", "true")
-		}
-		for _, tn := range []im.Tenant{im.NumericTenant, im.AliasTenant} {
-			req, _ := http.NewRequest("POST", otherBase+"/select/logsql/query", strings.NewReader(form.Encode()))
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			req.Header.Set("AccountID", strconv.FormatUint(uint64(tn.Account), 10))
-			req.Header.Set("ProjectID", strconv.FormatUint(uint64(tn.Project), 10))
-			resp, err := ingestClient.Do(req)
-			if err != nil {
-				t.Fatalf("query the %s binary: %v", other, err)
+		from := r.base.Add(-10 * time.Minute)
+		for _, tn := range tenantsOf(r.states) {
+			var terms []string
+			wantOwn := 0
+			for _, s := range r.states {
+				if s.p.Tenant == tn {
+					terms = append(terms, fmt.Sprintf(`(_msg:%s OR trace_id:=%q)`, s.p.Marker, s.p.Marker))
+					wantOwn += s.c.Rows
+				}
 			}
-			b, _ := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("query the %s binary: status %d: %s", other, resp.StatusCode, string(b))
+			q := strings.Join(terms, " OR ")
+			// The query must be able to find the rows: it returns them from the binary
+			// they were written to, so an empty answer from the other binary means something.
+			if got := queryCount(t, r.lh.base, sig, tn, q, from); got < wantOwn {
+				t.Fatalf("self-check: the isolation query finds %d rows for tenant %d:%d on the binary that holds them, want at least %d", got, tn.Account, tn.Project, wantOwn)
 			}
-			if strings.TrimSpace(string(b)) != "" {
-				t.Fatalf("the %s binary returned rows written through the %s matrix:\n%s", other, sig, string(b))
+			if got := queryCount(t, otherBase, other, tn, q, from); got != 0 {
+				t.Fatalf("the %s binary holds %d rows written through the %s matrix for tenant %d:%d", other, got, sig, tn.Account, tn.Project)
 			}
 		}
 	})
@@ -680,73 +900,6 @@ func tenantsOf(states []*caseState) []im.Tenant {
 		}
 	}
 	return out
-}
-
-// countParquetRows reads the tenant's Parquet objects written since `since`
-// with a plain Parquet reader (the same way DuckDB or pyarrow would) and counts
-// the rows that carry marker in any string column.
-func countParquetRows(t *testing.T, client *s3.Client, tn im.Tenant, sig im.Signal, marker string, since time.Time) int {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	prefix := fmt.Sprintf("%d/%d/%s/", tn.Account, tn.Project, sig)
-	p := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{Bucket: aws.String(s3Bucket), Prefix: aws.String(prefix)})
-	total := 0
-	for p.HasMorePages() {
-		page, err := p.NextPage(ctx)
-		if err != nil {
-			t.Fatalf("list s3://%s/%s: %v", s3Bucket, prefix, err)
-		}
-		for _, o := range page.Contents {
-			key := aws.ToString(o.Key)
-			if !strings.HasSuffix(key, ".parquet") || o.LastModified == nil || o.LastModified.Before(since.Add(-time.Second)) {
-				continue
-			}
-			obj, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s3Bucket), Key: aws.String(key)})
-			if err != nil {
-				t.Fatalf("get s3://%s/%s: %v", s3Bucket, key, err)
-			}
-			data, err := io.ReadAll(obj.Body)
-			_ = obj.Body.Close()
-			if err != nil {
-				t.Fatalf("read s3://%s/%s: %v", s3Bucket, key, err)
-			}
-			total += countMarkerRows(t, key, data, marker)
-		}
-	}
-	return total
-}
-
-func countMarkerRows(t *testing.T, key string, data []byte, marker string) int {
-	t.Helper()
-	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		t.Fatalf("open %s as Parquet: %v", key, err)
-	}
-	n := 0
-	for _, rg := range f.RowGroups() {
-		rows := rg.Rows()
-		buf := make([]parquet.Row, 256)
-		for {
-			k, err := rows.ReadRows(buf)
-			for _, row := range buf[:k] {
-				for _, v := range row {
-					if v.Kind() == parquet.ByteArray && strings.Contains(string(v.ByteArray()), marker) {
-						n++
-						break
-					}
-				}
-			}
-			if err != nil {
-				if err != io.EOF {
-					t.Fatalf("read rows of %s: %v", key, err)
-				}
-				break
-			}
-		}
-		_ = rows.Close()
-	}
-	return n
 }
 
 // TestIngestMatrix_Logs runs every VictoriaLogs ingest protocol against hot VL
@@ -795,3 +948,35 @@ func TestIngestMatrix_Probes(t *testing.T) {
 // normalizeProbe collapses whitespace: the upstream stubs are indented raw
 // strings and only their content matters.
 func normalizeProbe(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// TestIngestMatrix_RouteGaps sends the observed route gaps to hot and to Lakehouse
+// and requires exactly the documented statuses. It fails when Lakehouse starts
+// answering like hot: the gap is closed and its entry has to go.
+func TestIngestMatrix_RouteGaps(t *testing.T) {
+	for _, g := range im.RouteGaps() {
+		g := g
+		t.Run(string(g.Signal)+g.Route, func(t *testing.T) {
+			hot, lh := ingestEnds(g.Signal)
+			status := func(e ingestEnd) int {
+				req, _ := http.NewRequest(g.Method, e.base+g.Path, nil)
+				req.Header.Set("Content-Type", "application/octet-stream")
+				resp, err := ingestClient.Do(req)
+				if err != nil {
+					t.Fatalf("%s: %v", e.name, err)
+				}
+				_ = resp.Body.Close()
+				return resp.StatusCode
+			}
+			if h := status(hot); h != g.HotStatus {
+				t.Fatalf("%s %s: hot answers %d, the gap entry says %d", g.Method, g.Path, h, g.HotStatus)
+			}
+			l := status(lh)
+			if l == g.HotStatus {
+				t.Fatalf("%s %s: Lakehouse now answers %d like hot: the gap is closed; delete the RouteGaps entry %q, set the registry row %s to expect: pass and update docs/ingest-parity.md (%s)", g.Method, g.Path, l, g.ID, im.RouteGapRowID(g), g.Issue)
+			}
+			if l != g.LHStatus {
+				t.Fatalf("%s %s: Lakehouse answers %d, the gap entry says %d (hot %d)", g.Method, g.Path, l, g.LHStatus, g.HotStatus)
+			}
+		})
+	}
+}

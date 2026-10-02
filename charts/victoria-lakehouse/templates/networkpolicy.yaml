@@ -28,7 +28,7 @@ spec:
         {{- end }}
         {{- range $signal := list "logs" "traces" }}
         {{- $sv := index $.Values $signal }}
-        {{- if $sv.enabled }}
+        {{- if and $sv.enabled $sv.insert.enabled }}
         {{- range (include "victoria-lakehouse.ingestListeners" (dict "signal" $signal "role" "insert" "roleVals" $sv.insert) | fromYamlArray) }}
         - port: {{ .port }}
           protocol: {{ .protocol }}
