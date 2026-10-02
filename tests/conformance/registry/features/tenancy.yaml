@@ -59,7 +59,7 @@
   changelog_bullets:
     - 'Multi-tenant S3 isolation (PR #111)'
   highlight: >-
-    **In-path S3 isolation**: `BatchWriter` groups rows by `(AccountID, ProjectID)` at flush and writes one Parquet file per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback). Every Parquet tool (DuckDB, ClickHouse, Trino, Spark) can query a tenant's prefix directly.
+    **In-path S3 isolation**: The `BufferFlusher` drains each segment per `(AccountID, ProjectID)` and writes Parquet files per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback). Every Parquet tool (DuckDB, ClickHouse, Trino, Spark) can query a tenant's prefix directly.
   description: >-
     Isolation happens where the bytes are written, not as a filter on the way out: a file
     contains exactly one tenant's rows and lives under that tenant's prefix. That is what makes

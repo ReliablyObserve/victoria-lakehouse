@@ -31,11 +31,18 @@
   readme_section: Write Path
   surfaces: [ingest, flag]
   tests:
-    - internal/storage/parquets3/buffer_flusher_test.go
-    - tests/e2e/chaos_durability_test.go#TestChaos_BufferRestoreOnRestart
-    - internal/lifecycle/staleness_test.go#TestReconcileWAL_SomeNeedReflush
-    - internal/config/config_test.go#TestValidate_AckMode
-    - lakehouse-traces/internal/storage/parquets3/buffer_flusher_test.go
+    - internal/storage/parquets3/buffer_flusher_segments_test.go
+    - internal/storage/parquets3/buffer_restart_test.go
+    - internal/vlstorage/insert_adapter_test.go
+    - internal/manifest/segments_test.go
+    - internal/compaction/scheduler_segments_test.go
+    - internal/delete/scheduler_test.go#TestSchedulerRunOnce_WaitsForTheBufferSegmentOfAnObject
+    - internal/config/config_test.go#TestLoad_RemovedInsertKeysAreRefused
+    - tests/e2e/chaos_durability_test.go#TestChaos_RestartRestoresTheBuffer
+    - tests/e2e/chaos_durability_test.go#TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow
+    - lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go
+    - lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go
+    - lakehouse-traces/internal/vlstorage/insert_adapter_test.go
   docs:
     - docs/durability.md
     - docs/storage-flow.md
@@ -43,15 +50,17 @@
     - 'Write-ahead log (WAL)'
     - 'WAL integration in BatchWriter'
   notes: >-
-    The original write-ahead log was replaced by the logstore insert buffer plus a persisted
-    flush watermark; the WAL changelog bullets belong to this feature's history.
+    The original write-ahead log was replaced by the insert buffer: a sequence of upstream
+    logstorage segments drained whole to Parquet; the WAL changelog bullets belong to this
+    feature's history.
   highlight: >-
-    **Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](docs/durability.md).
+    **Crash-safe durability (no WAL)**: the insert buffer is a sequence of upstream logstorage segments on a persistent volume (the same engine hot VL/VT use, parts fsynced within 5 s, restored on open); every sealed segment is drained completely to Parquet — late and backfilled rows included — and a restart drains whatever is left without rewriting what is stored, so the crash-loss window matches hot VL/VT. See [Persistence & Durability](docs/durability.md).
   description: >-
     Buffered rows are persisted by the same logstorage engine the hot tier uses, so a pod that
-    dies mid-window restores its parts on open. A persisted flush watermark records what already
-    reached S3, so the restart re-flushes only the uncommitted window and does so idempotently.
-    `ack_mode=flush-sync` trades throughput for acknowledging only after the S3 write.
+    dies mid-window restores its segments on open. The flusher's state records which segments
+    are committed and which one was being drained, so a restart writes only what is missing,
+    with the same bytes and keys, and never twice. An insert is acknowledged once upstream
+    has the rows, as in hot VL/VT.
 
 - id: lh.feature.ingest.adaptive_file_sizing
   title: Adaptive Parquet file sizing
@@ -60,8 +69,11 @@
   readme_section: Write Path
   surfaces: [ingest, flag]
   tests:
-    - internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize
-    - lakehouse-traces/internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize
+    - internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_GroupsAreBoundedInRows
+    - internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_SealPolicy
+    - internal/storage/parquets3/buffer_flusher_segments_test.go#TestPlanSlices
+    - lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_GroupsAreBoundedInRows
+    - lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_SealPolicy
     - internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesLogs_CountsEveryStringColumn
     - lakehouse-traces/internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesTraces_CountsEveryStringColumn
   docs:
@@ -70,11 +82,13 @@
   changelog_bullets:
     - 'Adaptive file sizing'
   highlight: >-
-    **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
+    **Adaptive file sizing**: a buffer segment is sealed early once its estimated size approaches `insert.target_file_size`, and is written in objects of at most that size, for optimal Parquet file sizes with bounded flush memory.
   description: >-
-    The writer tracks an estimated on-disk size per partition and flushes as it approaches the
-    configured target, so files land in the size band that keeps S3 request counts and row-group
-    geometry sane instead of being dictated by wall-clock flush intervals alone.
+    The flusher seals a segment when its estimated size approaches the configured target (or
+    after the flush interval) and plans each tenant's objects from the segment's per-second row
+    counts, so files land in the size band that keeps S3 request counts and row-group geometry
+    sane instead of being dictated by wall-clock flush intervals alone, and one object is all
+    that is ever in memory.
 
 - id: lh.feature.ingest.atomic_s3_writes
   title: Atomic single-PutObject Parquet writes
@@ -84,17 +98,17 @@
   readme_section: Write Path
   surfaces: [storage, ingest]
   tests:
-    - internal/storage/parquets3/writer_test.go#TestFlushAll_Logs
-    - internal/storage/parquets3/writer_test.go#TestFlushAll_MultiplePartitions
-    - lakehouse-traces/internal/storage/parquets3/buffer_flusher_roundtrip_test.go#TestInteg_FlusherRoundTrip_MultiFilePartition
+    - internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_FailedPutIsRetriedWithTheSameBytes
+    - internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_LateRowsReachParquet
+    - lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_FailedPutIsRetriedWithTheSameBytes
   docs:
     - docs/write-path.md
     - docs/durability.md
   highlight: >-
     **Atomic S3 writes**: each Parquet file is written via a single S3 PutObject (1x write amplification). No WAL replay deduplication, no compactor reconciliation — contrast with Loki/Tempo's 3-5x write amplification from WAL→chunk→S3 pipelines.
   description: >-
-    A flush produces one complete Parquet object per (partition, tenant) and uploads it with one
-    PutObject, so a file is either absent or complete — there is no partially visible object to
+    A drain produces complete Parquet objects per (partition, tenant, slice) and uploads each with
+    one PutObject, so a file is either absent or complete — there is no partially visible object to
     reconcile, and write amplification stays at 1x.
 
 - id: lh.feature.ingest.buffer_query_bridge
@@ -123,30 +137,29 @@
 
 - id: lh.feature.ingest.logstore_buffer
   title: Engine-native queryable insert buffer
-  status: in-progress
+  status: shipped
   area: ingest
-  surfaces: [ingest, flag]
+  surfaces: [ingest]
   tests:
     - internal/membuffer/store_test.go
     - internal/storage/parquets3/local_buffer_readmerge_test.go#TestQueryBufferBridge_LocalBufferServesRecent
-    - internal/vlstorage/buffer_dualwrite_test.go#TestDualWrite_LogsLegacyAndBufferParity
-    - internal/config/buffer_engine_test.go
-    - lakehouse-traces/internal/storage/parquets3/local_buffer_readmerge_test.go#TestQueryBufferBridge_WatermarkPreventsDoubleCount
+    - internal/storage/parquets3/buffer_view_test.go#TestBufferView_EachRowOnceThroughTheWholeHandoff
+    - internal/vlstorage/buffer_rows_test.go
+    - lakehouse-traces/internal/storage/parquets3/buffer_view_test.go#TestBufferView_EachRowOnceThroughTheWholeHandoff
+    - lakehouse-traces/internal/storage/parquets3/buffer_view_test.go#TestBufferView_TraceByIDThroughTheHandoff
   docs:
     - docs/read-path.md
     - docs/storage-flow.md
   changelog_bullets:
     - 'Option B — logstorage-native queryable buffer (cold-tier recently-flushed parity).'
     - 'Option B — logstorage-native queryable insert buffer (cold-tier recently-flushed parity with hot VT).'
-  notes: >-
-    Opt-in: `-lakehouse.insert.buffer-engine=logstore` (the default is still the legacy staging
-    buffer), which is why the roadmap lists it as in progress rather than shipped.
   highlight: >-
     **Engine-native insert buffer**: recently ingested rows are held in the upstream logstorage engine and answered through the same query path as flushed data, so the recently-flushed window matches hot VL/VT instead of degrading.
   description: >-
     Instead of a bespoke in-memory buffer with its own query semantics, the insert buffer is the
-    upstream logstorage engine itself. Queries read buffered and flushed rows through one path,
-    with a watermark preventing double counting of rows that have just been flushed.
+    upstream logstorage engine itself. Queries read buffered and flushed rows through one path;
+    the objects a buffered segment wrote carry its nonce and are dropped from the scan while the
+    segment is served, so a row is answered exactly once at every stage of the drain.
 
 - id: lh.feature.ingest.label_extraction
   title: Write-time label extraction for manifest pruning
@@ -155,7 +168,7 @@
   surfaces: [storage, ingest]
   tests:
     - internal/storage/parquets3/labels_test.go
-    - internal/storage/parquets3/writer_test.go#TestFlushAll_PopulatesLabels
+    - internal/storage/parquets3/writer_test.go#TestUploadGroups_PopulatesLabels
     - internal/schema/label_columns_test.go
     - internal/compaction/labels_merge_test.go
   docs:
