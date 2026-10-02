@@ -679,7 +679,7 @@ Controls how select pods read rows not yet flushed to S3.
 | `select.buffer_query_enabled` | bool | `true` | enable-only |  | max-cost-savings: `false` | Queries the insert pods for rows not yet flushed to S3. |
 | `select.buffer_query_timeout` | duration | `2s` | set |  | max-performance: `1s` | Bounds a buffer query to the insert pods. |
 | `select.cross_az_fallback` | bool | `true` | enable-only |  |  | **Not read.** Queries insert pods in other zones when no same-zone pod answers. |
-| `select.insert_headless_service` | string | `""` | set |  |  | **Not read.** The Kubernetes headless service that resolves the insert pods for buffer queries. |
+| `select.insert_headless_service` | string | `""` | set |  |  | The Kubernetes headless service that resolves the insert pods for buffer queries. |
 
 ### `shutdown`
 

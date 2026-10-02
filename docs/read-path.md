@@ -273,7 +273,11 @@ After querying S3, the read path adds the recent rows that haven't been flushed 
 
 **`logstore` engine (co-located, no peers):** the recent window is served from the local `logstorage.Storage` buffer through the **same** exported `Storage.RunQuery` the S3-Parquet scan uses — no struct→DataBlock reconstruction. The buffer query is scoped to `(watermark, now]`, where the watermark is the newest timestamp the just-scanned Parquet files already cover, so the buffer and Parquet never both emit the same row (no aggregation double-count). `trace_id`-filtered queries (Jaeger/Tempo span fetch) bypass the watermark and serve the full buffer window — span retrieval is reader-deduped on `(trace_id, span_id)`, so completeness matters more than the (harmless) double-emission.
 
-**Buffer-bridge fan-out (multi-pod, or the legacy `buffer` engine):** when peers are present (multi-pod `role=all`, or when select pods are configured with `--lakehouse.select.insert-headless-service`), the read path fans out to every insert pod via `GET /internal/buffer/query?start=X&end=Y&mode=logs`. Each pod returns only its own unflushed rows, so the fan-out gathers all pods' recent data with no double-count (and no need to identify/exclude self from the peer list). With the `logstore` engine on a single node (no peers), the local-buffer path above is used directly; with peers, the read path falls through to this fan-out.
+**Buffer-bridge fan-out (multi-pod, or the legacy `buffer` engine):** when peers are present, the read path fans out to every insert pod via `GET /internal/buffer/query?start=X&end=Y&mode=logs`. The insert pods are found by DNS:
+- on a select pod, through `select.insert_headless_service` (`name` or `name:port`), resolved on every `discovery.peer_refresh_interval`; the Helm chart sets it to the release's insert headless service of the same signal;
+- otherwise, through the peer ring (`discovery.peer_headless_service`, multi-pod `role=all`).
+
+Discovered `host:port` addresses are requested over `http://`. Each pod returns only its own unflushed rows, so the fan-out gathers all pods' recent data with no double-count (and no need to identify/exclude self from the peer list). With the `logstore` engine on a single node (no peers), the local-buffer path above is used directly; with peers, the read path falls through to this fan-out.
 
 ```
 RunQuery:

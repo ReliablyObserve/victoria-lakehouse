@@ -300,7 +300,10 @@ lakehouseConfig:
   select:
     # -- Query insert pods for unflushed data (zero-delay reads).
     buffer_query_enabled: true
-    # -- Headless service for discovering insert pods.
+    # -- Headless service ("name" or "name:port") that resolves to the insert
+    # pods whose unflushed rows select pods read through the buffer bridge.
+    # Empty: the chart sets it to this release's insert headless service of the
+    # same signal (when both roles and the insert headless service are enabled).
     insert_headless_service: ""
     # -- Timeout for buffer query requests to insert pods.
     buffer_query_timeout: 2s
