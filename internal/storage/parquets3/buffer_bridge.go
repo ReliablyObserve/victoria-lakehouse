@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -108,11 +109,25 @@ func NewBufferBridge(cfg *config.SelectConfig, mode config.Mode) *BufferBridge {
 	}
 }
 
+// bridgeEndpoint makes a discovered "host:port" a URL the bridge can request:
+// DNS discovery yields addresses without a scheme, and a request to
+// "host:port/internal/buffer/query" does not parse.
+func bridgeEndpoint(ep string) string {
+	if strings.Contains(ep, "://") {
+		return ep
+	}
+	return "http://" + ep
+}
+
 // SetEndpoints updates the list of insert pod endpoints to query.
 // Typically called by the DNS discovery loop when the headless service resolves.
 func (b *BufferBridge) SetEndpoints(endpoints []string) {
+	eps := make([]string, 0, len(endpoints))
+	for _, ep := range endpoints {
+		eps = append(eps, bridgeEndpoint(ep))
+	}
 	b.mu.Lock()
-	b.endpoints = endpoints
+	b.endpoints = eps
 	b.mu.Unlock()
 }
 
@@ -127,6 +142,7 @@ func (b *BufferBridge) SetEndpointsWithZones(epZones map[string]string, selfAZ s
 	b.crossAZEndpoints = nil
 
 	for ep, zone := range epZones {
+		ep = bridgeEndpoint(ep)
 		b.endpoints = append(b.endpoints, ep)
 		if zone == selfAZ {
 			b.sameAZEndpoints = append(b.sameAZEndpoints, ep)

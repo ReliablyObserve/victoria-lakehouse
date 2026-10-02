@@ -15,7 +15,18 @@ data:
       mode: {{ $signal }}
       {{- /* mode is set per signal above; a user-supplied lakehouseConfig.mode would
              duplicate the key, which the binaries reject */}}
-      {{- omit $.Values.lakehouseConfig "mode" | toYaml | nindent 6 }}
+      {{- $shared := deepCopy (omit $.Values.lakehouseConfig "mode") }}
+      {{- /* Select pods reach the insert pods' unflushed rows through the insert
+             headless service of the same signal, unless one is set explicitly. */}}
+      {{- if and $signalVals.select.enabled $signalVals.insert.enabled $signalVals.insert.headlessService.enabled }}
+      {{- $sel := default dict (get $shared "select") }}
+      {{- if not (get $sel "insert_headless_service") }}
+      {{- $port := include "victoria-lakehouse.signalPort" (dict "signal" $signal) }}
+      {{- $_ := set $sel "insert_headless_service" (printf "%s-%s-insert-headless:%s" (include "victoria-lakehouse.fullname" $) $signal $port) }}
+      {{- $_ := set $shared "select" $sel }}
+      {{- end }}
+      {{- end }}
+      {{- $shared | toYaml | nindent 6 }}
       {{ $signal }}:
         {{- $signalVals.config | toYaml | nindent 8 }}
 {{- end }}

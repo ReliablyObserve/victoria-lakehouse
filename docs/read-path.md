@@ -269,11 +269,17 @@ The `SchemaRegistry` (`internal/schema/registry.go`) translates between Parquet 
 
 ## Serving the recent (unflushed) window
 
-Before it lists any object, a query takes a **buffer view**: a snapshot of the insert buffer's live segments (co-located), or the rows and segment nonces returned by every insert pod through `GET /internal/buffer/query?start=X&end=Y&mode=logs` (select pods and multi-pod `role=all`, using `--lakehouse.select.insert-headless-service`). The nonces come back in the `X-Lakehouse-Buffer-Segments` response header. Each pod returns only its own rows, so the fan-out gathers all pods' recent data with no double count.
+Before it lists any object, a query takes a **buffer view**: a snapshot of the insert buffer's live segments (co-located), or the rows and segment nonces returned by every insert pod through `GET /internal/buffer/query?start=X&end=Y&mode=logs` (select pods and multi-pod `role=all`; see "Finding the insert pods" below). The nonces come back in the `X-Lakehouse-Buffer-Segments` response header. Each pod returns only its own rows, so the fan-out gathers all pods' recent data with no double count.
 
 **No time watermark.** Every object a segment writes has the segment's nonce in its key. The scan drops every object whose key carries a nonce the view serves (`lakehouse_buffer_view_excluded_objects_total`), so each row comes from exactly one place: the segment while the segment is live, the object after it is removed. This holds before, during and after the drain, for late and backfilled rows, after a restart, and for an object the manifest knows only from a listing; none of those needs a time boundary. `trace_id` lookups (Jaeger/Tempo span fetch) take the same path. A peer that fails contributes neither rows nor nonces, so none of its objects is dropped and the query degrades to S3 data only.
 
 The recent window is served from the segments through the **same** exported `Storage.RunQuery` the S3-Parquet scan uses — no struct→DataBlock reconstruction.
+
+**Finding the insert pods.** The bridge's insert pods are found by DNS:
+- on a select pod, through `select.insert_headless_service` (`name` or `name:port`), resolved on every `discovery.peer_refresh_interval`; the Helm chart sets it to the release's insert headless service of the same signal;
+- otherwise, through the peer ring (`discovery.peer_headless_service`, multi-pod `role=all`).
+
+Discovered `host:port` addresses are requested over `http://`. A single node with no peers reads its own segments directly.
 
 ```
 RunQuery:

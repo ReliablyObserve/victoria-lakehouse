@@ -1126,17 +1126,28 @@ func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 						stats.SameAZMembers, s.cfg.Peer.AZMinPeersPerAZ)
 				}
 			}
-			if s.bufferBridge != nil {
+			if s.bufferBridge != nil && s.cfg.Select.InsertHeadlessService == "" {
 				s.bufferBridge.SetEndpointsWithZones(peerZones, s.selfAZ)
 			}
 		} else {
 			if s.peerCache != nil {
 				s.peerCache.UpdatePeers(peers)
 			}
-			if s.bufferBridge != nil {
+			if s.bufferBridge != nil && s.cfg.Select.InsertHeadlessService == "" {
 				s.bufferBridge.SetEndpoints(peers)
 			}
 		}
+	}
+	// A select pod of a split deployment reaches the insert pods' unflushed
+	// rows through select.insert_headless_service; the peer ring above is the
+	// bridge's source only when that is not set.
+	if svc := s.cfg.Select.InsertHeadlessService; svc != "" && s.bufferBridge != nil {
+		eps, err := s.discovery.ResolveService(ctx, svc)
+		if err != nil {
+			return fmt.Errorf("discover insert pods (%s): %w", svc, err)
+		}
+		s.bufferBridge.SetEndpoints(eps)
+		logger.Infof("buffer bridge: insert pods from %s: %v", svc, eps)
 	}
 	return nil
 }

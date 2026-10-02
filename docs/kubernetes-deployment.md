@@ -202,13 +202,16 @@ lakehouseConfig:
 
 ### Buffer Query Bridge
 
-Select pods discover insert pods via headless service DNS and query unflushed data:
+Select pods find the insert pods through their headless service and query their unflushed rows.
+- The chart sets `select.insert_headless_service` to the release's insert headless service of the same signal (`<release>-<signal>-insert-headless:<port>`), so no setting is needed.
+- The service is resolved on every `discovery.peer_refresh_interval` (30s).
+- Set it explicitly only for a service outside the release. It is shared by both signals' configs, so an explicit value applies to both.
 
 ```yaml
 lakehouseConfig:
   select:
     buffer_query_enabled: true
-    insert_headless_service: "lakehouse-logs-insert-headless.monitoring.svc.cluster.local"
+    insert_headless_service: "lakehouse-logs-insert-headless.monitoring.svc.cluster.local:9428"
     buffer_query_timeout: 2s
 ```
 

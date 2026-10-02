@@ -462,6 +462,47 @@ check_render "a pod without persistence gets an emptyDir (select pods need no PV
   'emptyDir: \{\}' '' \
   --set "logs.select.persistence.enabled=false"
 
+# ---------------------------------------------------------------------------
+# Rendered content
+# ---------------------------------------------------------------------------
+# expect_render <description> <yes|no> <pattern> [--set flags...]: the rendered
+# manifests contain (yes) or do not contain (no) the fixed string pattern.
+expect_render() {
+  local description="$1" want="$2" pattern="$3"
+  shift 3
+  local out
+  if ! out="$(helm template test-release "${CHART_DIR}" "$@" --validate=false 2>/tmp/helm_test_err)"; then
+    echo "  FAIL  ${description} (render)"
+    sed 's/^/         /' /tmp/helm_test_err
+    FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1)); return
+  fi
+  if grep -qF -- "${pattern}" <<<"${out}"; then local has=yes; else local has=no; fi
+  if [[ "${has}" == "${want}" ]]; then
+    echo "  PASS  ${description}"
+    PASSED=$((PASSED + 1))
+  else
+    echo "  FAIL  ${description}: expected '${pattern}' present=${want}"
+    FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  fi
+}
+
+# Select pods read the insert pods' unflushed rows through the insert headless
+# service of their own signal; nothing read it before, so the buffer bridge of a
+# split deployment had no insert pods to ask.
+expect_render "logs select pods find the logs insert pods" yes \
+  "insert_headless_service: test-release-victoria-lakehouse-logs-insert-headless:9428"
+expect_render "traces select pods find the traces insert pods" yes \
+  "insert_headless_service: test-release-victoria-lakehouse-traces-insert-headless:10428" \
+  --set "traces.enabled=true"
+expect_render "an explicit insert_headless_service wins" yes \
+  "insert_headless_service: custom-insert:9428" \
+  --set "lakehouseConfig.select.insert_headless_service=custom-insert:9428"
+expect_render "no insert service without insert pods" no \
+  "insert-headless:9428" \
+  --set "logs.insert.enabled=false"
+expect_render "no insert service without its headless service" no \
+  "insert_headless_service: test-release" \
+  --set "logs.insert.headlessService.enabled=false"
 
 # ---------------------------------------------------------------------------
 # Results
