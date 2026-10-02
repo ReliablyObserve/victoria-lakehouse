@@ -27,10 +27,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   New metrics: `lakehouse_buffer_pending_rows`, `lakehouse_buffer_segments{state}`,
   `lakehouse_buffer_oldest_pending_age_seconds`, `lakehouse_buffer_view_excluded_objects_total`; dashboards and
   alerts (`LakehouseBufferNotDraining`, `LakehouseInsertRefusedDiskFloor`) follow. `lakehouse_insert_rows_total`
-  now counts the rows admitted into the buffer, and `lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}`
+  now counts the rows admitted into the buffer (spans only for traces), and `lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}`
   counts at flush. See `docs/durability.md`.
 
 ### Fixed
+
+- **Select pods see the unflushed rows of the insert pods (both binaries).** Every query a select pod answers
+  also asks the insert pods for the rows they have not written to S3 yet (the buffer bridge), but it never
+  reached them:
+  - Addresses found by DNS (`host:port`) were requested without a scheme, so the request URL did not parse and
+    every peer's unflushed rows were missing from every answer: on a select pod, and on any `role=all` pod with
+    peers.
+  - `select.insert_headless_service`, the setting meant to point select pods at the insert pods, was read by
+    nothing.
+
+  The bridge now requests discovered addresses over `http://`, and select pods resolve
+  `select.insert_headless_service` on every `discovery.peer_refresh_interval`. The Helm chart sets it to the
+  release's insert headless service of each signal. In a split deployment a row is visible from a select pod as
+  soon as it is acknowledged, instead of only after its insert pod flushed it (up to the flush interval plus a
+  manifest refresh).
 
 - **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**
   The cold read decided which Parquet columns to load by scanning the query text, and that scan missed the default

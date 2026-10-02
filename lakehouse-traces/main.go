@@ -889,8 +889,14 @@ func setupCompaction(
 // peers to push to. Without this RefreshDiscovery is never called and GetPeers()
 // is always empty — single-instance works, but multi-instance silently never
 // gossips. No-op unless a peer headless service is configured.
+// discoveryEnabled reports whether the discovery loop has anything to resolve:
+// the peer ring, or the insert pods a select pod reads unflushed rows from.
+func discoveryEnabled(cfg *config.Config) bool {
+	return cfg.Discovery.PeerHeadlessService != "" || cfg.Select.InsertHeadlessService != ""
+}
+
 func startPeerDiscovery(cfg *config.Config, store *parquets3.Storage, stopCh <-chan struct{}) {
-	if cfg.Discovery.PeerHeadlessService == "" {
+	if !discoveryEnabled(cfg) {
 		return
 	}
 	interval := cfg.Discovery.PeerRefreshInterval
