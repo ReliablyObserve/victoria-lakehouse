@@ -11,8 +11,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// Trap 1 regression tests (parquet-compression-research.md, "The three
-// correctness traps under item 1"): manifest FileInfo MinTimeNs/MaxTimeNs must
+// Time-bounds regression tests: manifest FileInfo MinTimeNs/MaxTimeNs must
 // be the TRUE min/max of the flushed rows, not the first/last row's
 // timestamps. The tests call the group upload directly (below the
 // partition-level time sort) with deliberately shuffled timestamps — exactly

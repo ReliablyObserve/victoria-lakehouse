@@ -90,12 +90,26 @@ func SetInsertStorage(buf BufferStore, dir string) {
 func (a *vtInsertAdapter) MustAddRows(lr *logstorage.LogRows) {
 	blr, owned := admittedRows(lr)
 	if blr != nil {
-		metrics.InsertRowsTotal.Add(blr.RowsCount())
+		metrics.InsertRowsTotal.Add(spanRows(blr))
 		a.buf.MustAddRows(blr)
 	}
 	if owned {
 		logstorage.PutLogRows(blr)
 	}
+}
+
+// spanRows counts the rows of lr that are spans: VictoriaTraces' trace-ID index
+// rows (its trace_id_idx_stream) are kept in the buffer like upstream keeps
+// them, but they are not written to Parquet, and lakehouse_insert_rows_total
+// counts what the Lakehouse stores.
+func spanRows(lr *logstorage.LogRows) int {
+	n := 0
+	lr.ForEachRow(func(_ uint64, r *logstorage.InsertRow) {
+		if !strings.Contains(r.StreamTagsCanonical, otelpb.TraceIDIndexStreamName) {
+			n++
+		}
+	})
+	return n
 }
 
 // admittedRows returns the rows of lr that keepStream admits: lr itself when it

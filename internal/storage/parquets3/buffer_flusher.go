@@ -572,17 +572,33 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 		}
 		return tenants[i].ProjectID < tenants[j].ProjectID
 	})
+	// A tenant whose group fails waits for the retry from that group on; the
+	// other tenants' groups are still written in this pass, so one tenant's
+	// failing bucket holds back the commit but not everyone's objects.
+	var firstErr error
 	for _, tenant := range tenants {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		counts, err := tenantSecondCounts(ctx, g, tenant)
 		if err != nil {
 			metrics.BufferFlushErrors.Inc("collect")
-			return fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+			}
+			continue
 		}
 		for _, sl := range planSlices(counts, f.maxRows) {
 			if err := f.writeGroup(ctx, g, tenant, sl); err != nil {
-				return err
+				if firstErr == nil {
+					firstErr = err
+				}
+				break
 			}
 		}
+	}
+	if firstErr != nil {
+		return firstErr
 	}
 
 	// The marker tells compaction and delete rewrites on every node that the
