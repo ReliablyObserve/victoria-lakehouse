@@ -1,9 +1,9 @@
 # Isolated stack for the compaction A/B (issue #343): one RustFS, and the main
 # and PR builds of both binaries, each writing to its own bucket so the
 # compaction of one never touches the other. Ports 39700-39799 only; project
-# name lhcmp343 (see README.md). The binaries are static linux builds from
+# name lhfix343 (see README.md). The binaries are static linux builds from
 # build.sh, run in a bare alpine container.
-name: lhcmp343
+name: lhfix343
 
 x-lh: &lh
   image: alpine:3

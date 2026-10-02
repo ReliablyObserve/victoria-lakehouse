@@ -6,7 +6,7 @@ data into separate buckets of one RustFS, compact on a fast cadence, and are
 then compared on object layout, exact rows and query latency. Everything is
 measured; nothing here is extrapolated.
 
-Isolation: compose project `lhcmp343`, ports 39700-39799 (S3 39700, logs
+Isolation: compose project `lhfix343`, ports 39700-39799 (S3 39700, logs
 39701 main / 39702 PR, traces 39703 main / 39704 PR). Each instance has 2 CPUs
 and 1 GiB. Do not use other projects' ports.
 
@@ -21,7 +21,7 @@ cd scripts/bench/compaction
 ./build.sh HEAD pr
 
 # 2. Bring the stack up (insert flush 5 s, compaction scan 20 s: lh.yml)
-docker compose -p lhcmp343 -f compose.yml up -d
+docker compose -p lhfix343 -f compose.yml up -d
 for p in 39701 39702 39703 39704; do until curl -sf 127.0.0.1:$p/ready >/dev/null; do sleep 1; done; done
 
 # 3. Ingest: 11 rounds x 7 s, both signals, 40 rows per call to main AND PR.
@@ -38,7 +38,7 @@ sleep 120
 ./ab.py     | tee out/ab.md
 
 # 5. Tear down (the volumes and the project's containers only; never prune)
-docker compose -p lhcmp343 -f compose.yml down -v --remove-orphans
+docker compose -p lhfix343 -f compose.yml down -v --remove-orphans
 ```
 
 ## What each step produces
