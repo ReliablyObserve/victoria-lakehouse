@@ -12,7 +12,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Storage | 21 | 0 | 2 | 2 | 25 |
 | Query | 14 | 1 | 0 | 1 | 16 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
-| Compaction | 6 | 0 | 0 | 1 | 7 |
+| Compaction | 7 | 0 | 0 | 1 | 8 |
 | Deletion | 11 | 0 | 0 | 0 | 11 |
 | Traces | 10 | 0 | 0 | 3 | 13 |
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **134** | **1** | **3** | **8** | **146** |
+| **Total** | **135** | **1** | **3** | **8** | **147** |
 
 ## Coverage gaps
 
@@ -733,7 +733,7 @@ The writer already holds the complete file in memory at upload time. Handing it 
 - Verification: tests: `internal/storage/parquets3/cache_on_flush_test.go`, `lakehouse-traces/internal/storage/parquets3/cache_on_flush_test.go`
 - Docs: `docs/cache-architecture.md`, `docs/storage-flow.md`
 
-## Compaction (7)
+## Compaction (8)
 
 ### ✅ Attribute re-promotion during compaction
 
@@ -792,9 +792,20 @@ Operators need an answer to "is this partition fragmented, and can I fix it now"
 
 Ingest optimizes for latency and produces many modest files; compaction optimizes for reads and cost, merging them upward through levels. Each level re-encodes at a higher compression level and a larger row-group size, which is also exactly the shape S3 lifecycle transitions want.
 
-- Verification: rows: `lh.stats.compaction.schema` (pass, pending) · tests: `internal/compaction/policy_test.go`, `internal/compaction/compactor_test.go`, `internal/compaction/scheduler_test.go`, `internal/compaction/integration_test.go`
+- Verification: rows: `lh.stats.compaction.schema` (pass, pending), `lh.storage_health.compaction.second_scan_noop_logs` (pass, pending), `lh.storage_health.compaction.second_scan_noop_traces` (pass, pending) · tests: `internal/compaction/policy_test.go`, `internal/compaction/compactor_test.go`, `internal/compaction/scheduler_test.go`, `internal/compaction/integration_test.go`, `internal/compaction/planner_test.go`, `internal/compaction/per_tenant_planning_test.go`, `internal/compaction/property_test.go#TestStorageHealth_CompactionProperties`, `internal/compaction/fault_matrix_test.go`, `internal/compaction/concurrency_test.go`, `internal/compaction/tenant_paths_test.go`, `internal/manifest/compaction_groups_test.go`
 - Docs: `docs/operations.md`, `docs/write-path.md`
 - Changelog: `0.10.0`
+
+### ✅ Compaction never rewrites tiered objects
+
+`lh.feature.compaction.lifecycle_freeze` · status: shipped · surfaces: storage, flag
+
+**Tiered objects are never rewritten**: compaction skips objects S3 lifecycle has moved to IA or Glacier, and partitions about to be, so it cannot trigger retrieval fees, early-deletion charges or Glacier errors.
+
+Rewriting an object after lifecycle moved it costs a retrieval fee plus the early-deletion charge, and fails outright in Glacier Flexible Retrieval and Deep Archive. Compaction removes such objects from planning: by the storage class recorded or detected for them, and by partition age against the first lifecycle transition (delete.lifecycle_rules, per-tenant overrides, stats.s3_lifecycle_rules) minus a margin. The frozen-files gauge reports what a scan skipped. The manual recompact trigger and the orphan sweep honour the same freeze.
+
+- Verification: tests: `internal/compaction/lifecycle_freeze_test.go`, `internal/compaction/per_tenant_planning_test.go#TestScan_NeverRewritesTieredObjects`, `internal/compaction/tenant_paths_test.go#TestTierA_RespectsFreeze`, `internal/compaction/tenant_paths_test.go#TestForceCompactPartition_RespectsFreeze`, `internal/delete/storageclass_transition_test.go`, `cmd/lakehouse-logs/compaction_freeze_test.go`, `lakehouse-traces/compaction_freeze_test.go`
+- Docs: `docs/operations.md`, `docs/observability.md`, `docs/write-path.md`
 
 ### 📝 Parallel compaction under resource caps
 

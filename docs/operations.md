@@ -199,7 +199,7 @@ exactly one pod, so no leader election is involved. Tune it in the config file:
 lakehouse:
   compaction:
     interval: 5m
-    max_concurrent: 1
+    max_concurrent: 1        # merges per tenant per scan
     min_files_l0: 10
     min_files_l1: 10
     min_age: 1h
@@ -213,6 +213,94 @@ selects the `max-cost-savings` or `dev` profile does. See
 
 Compaction is only meaningful where inserts are active.
 
+### How a scan plans merges
+
+Compaction plans per **tenant and partition**, the unit it actually merges: it writes one output
+per tenant (and bucket) of an hour, so it counts and selects files per tenant too. One tenant's
+files never make another tenant's single file look mergeable (issue #343). For each tenant of
+each owned partition, in order:
+
+1. **Open hour.** `compaction.min_files_l0` L0 files merge into one L1 file; else
+   `compaction.min_files_l1` L1 files merge into one L2 file. Only files older than
+   `compaction.min_age` (partition age) count.
+2. **Closed hour.** Once the partition is `compaction.daily_rollup_age` old, every file of the
+   tenant in that hour that is **under 32 MiB** and carries the majority schema merges into one
+   file, whatever its level; the output is one level above the highest input. Late data landing
+   in an old hour therefore folds into the hour's file instead of staying as loose small files.
+   Files of 32 MiB or more are never rewritten for this (write amplification stays proportional
+   to the late data, not the hour's size).
+3. **Hints.** A stale-schema pair, or two files at the top level L2 or above, merge as before
+   (see Compaction Hints & Stats).
+
+Every merge needs at least two files: a tenant with a single file in an hour is left alone, so a
+settled manifest produces **zero** merges on the next scan.
+
+`compaction.max_concurrent` is the number of merges per tenant per scan. The scan picks open-hour
+merges first, then the plans that remove the most files per byte rewritten, then the oldest
+partition; fair share (keyed by the tenant in the object keys) decides who goes first when a
+tenant has several plans.
+
+### Lifecycle freeze: tiered objects are never rewritten
+
+Rewriting an object that S3 lifecycle moved to STANDARD_IA, ONEZONE_IA, Glacier Instant/Flexible
+Retrieval or Deep Archive costs a retrieval fee plus the early-deletion charge for the class's
+minimum duration, and fails outright in Glacier Flexible Retrieval and Deep Archive. Compaction
+leaves such objects alone:
+
+- an object whose recorded or detected storage class is not STANDARD / INTELLIGENT_TIERING is
+  skipped (`lakehouse_compaction_frozen_files{reason="storage_class"}`);
+- a partition older than the **first lifecycle transition out of a rewritable class, minus 48 h**
+  is skipped before S3 gets to it (`reason="age"`). The margin is capped at half the transition
+  (a 1-day rule freezes at 12 h). The transition comes from `delete.lifecycle_rules` (per-tenant
+  overrides first) and `stats.s3_lifecycle_rules`; the earliest wins. Rules that only move objects
+  to INTELLIGENT_TIERING never freeze anything.
+
+The gauge reports the files the last scan skipped. The same freeze applies to the manual
+recompact trigger and to the orphan sweep's steal path.
+
+### Measured effect of per-tenant planning (issue #343)
+
+Simulation with the shipped defaults (`min_files_l0/l1: 10`, `min_age: 1h`,
+`daily_rollup_age: 24h`, `max_concurrent: 1`, fair share 1) over an in-memory counting pool: the
+planner clock advances 5 min per scan (288 scans/day) and every tenant flushes one 20-row L0 file
+per scan, for 3 simulated days. **Measured** (request and byte counts of the compaction code; not
+S3 latency or cost). Reproduce with `LH_COMPACTION_SIM=1 go test ./internal/compaction -run
+TestSimWriteAmplification -v` (`internal/compaction/wa_sim_test.go`).
+
+| Scenario (day 3) | | merges/day | objects written/day | PUT/scan mean (max) | GET/scan mean (max) | write amplification (bytes) | rows rewritten / ingested | L0 backlog (oldest) | highest level | total objects | merges in 5 idle scans |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| logs-4-tenants | before | 288 | 1152 | 4.00 (4) | 4.00 (4) | 1.19 | 11.00 | 2352 (49 h) | L578 | 2448 | 5 |
+| logs-4-tenants | after | 96 | 96 | 0.33 (4) | 4.00 (48) | 0.10 | 1.00 | 0 (0 h) | L1 | 292 | 0 |
+| logs-20-tenants | before | 288 | 5760 | 20.00 (20) | 20.00 (20) | 1.19 | 11.00 | 17040 (71 h) | L853 | 17080 | 5 |
+| logs-20-tenants | after | 480 | 480 | 1.67 (20) | 20.00 (240) | 0.10 | 1.00 | 0 (0 h) | L1 | 1460 | 0 |
+| traces-4-tenants | before | 288 | 1152 | 4.00 (4) | 4.00 (4) | 1.69 | 11.00 | 2352 (49 h) | L578 | 2448 | 5 |
+| traces-4-tenants | after | 96 | 96 | 0.33 (4) | 4.00 (48) | 0.15 | 1.00 | 0 (0 h) | L1 | 292 | 0 |
+
+Before the fix, an hour older than `daily_rollup_age` with one file per tenant was rewritten 1 to 1
+on every scan (the level climbed to L853 in three days), those rewrites won every scan, and the
+newer hours' L0 files were never merged (backlog 17,040 files, oldest 71 h). After it, the first
+scan after ingest stops, and every later one, merges nothing. The byte ratio is for tiny
+20-row objects whose footers dominate; read the rows ratio. Scaling to larger deployments is
+**assumed**: if the rows-rewritten ratio of 1.00 holds for real objects, compaction reads and
+writes about 1x the daily ingest (1, 10, 100 TB/day read and written), and request counts follow
+tenants x hours, not TB: with 12 flushes per tenant-hour the measured pattern is 24 merges per
+tenant-day of 12 GET + 1 PUT + 12 DELETE, i.e. 288 GET, 24 PUT and 288 DELETE per tenant-day.
+In this synthetic load every hour closes as one L1 file per tenant, so the closed-hour rollup
+is exercised by the property tests (`TestStorageHealth_CompactionProperties`), not by this table.
+
+### Compaction health checks
+
+The storage-health cells that guard compaction (CI job `storage-health-compaction`, registry rows
+`lh.storage_health.compaction.*`):
+
+- a second scan over a settled manifest does zero merges (`TestScan_SecondScanDoesNothing`);
+- a lone file is never rewritten, and objects in a non-rewritable class are never touched;
+- randomized multi-day, multi-tenant runs (legacy keys, a second bucket, late data, mature
+  files) keep the storage invariants after every scan, lose and duplicate no row, never mix
+  tenants, converge, and then stay at zero merges;
+- injected download, upload, delete and publish-conflict faults leave other tenants' merges
+  running, conserve every row and converge on later scans.
+
 ### Monitoring Compaction
 
 Key metrics to watch:
@@ -221,6 +309,8 @@ Key metrics to watch:
 |---|---|
 | `lakehouse_compaction_errors_total` (rate) | Any sustained errors |
 | `lakehouse_compaction_level_files{level="0"}` | Should trend down over time |
+| `lakehouse_compaction_frozen_files{reason}` | Files the last scan kept out of compaction (`storage_class`, `age`); a sudden rise after a lifecycle-rule change is expected |
+| `rate(lakehouse_compaction_runs_total[1h])` on a settled tenant | Should reach 0; steady merges with no new data is the #343 churn |
 | `lakehouse_compaction_duration_seconds` (p95) | >60s may indicate S3 saturation |
 | `lakehouse_compaction_dual_ownership_total` (rate) | Any increase: two pods compacted the same partition (ring flap or DNS lag) |
 

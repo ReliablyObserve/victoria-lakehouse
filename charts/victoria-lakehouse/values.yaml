@@ -572,15 +572,18 @@ lakehouseConfig:
     enabled: true
     # -- Compaction scan interval.
     interval: 5m
-    # -- Maximum concurrent compaction workers per pod.
+    # -- Merges a pod runs per tenant on each scan (every tenant with
+    #    compactable files gets up to this many; fair share picks the order).
     max_concurrent: 1
-    # -- Minimum L0 files in a partition to trigger compaction.
+    # -- Minimum L0 files of one tenant in a partition to trigger compaction.
     min_files_l0: 10
-    # -- Minimum L1 files in a partition to trigger compaction.
+    # -- Minimum L1 files of one tenant in a partition to trigger compaction.
     min_files_l1: 10
     # -- Minimum file age before eligible for compaction.
     min_age: 1h
-    # -- Minimum partition age for daily rollup compaction (merges ≥2 L1 files in old partitions).
+    # -- Partition age after which every file of a tenant in the hour that is
+    #    under 32 MiB merges into one, whatever its level (a lone file is never
+    #    rewritten; objects S3 lifecycle has moved out of STANDARD are skipped).
     daily_rollup_age: 24h
     # -- Progressive zstd compression schedule: slot N = level for output files
     #    at compaction level N (saturates at the last slot; empty list falls back

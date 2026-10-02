@@ -180,6 +180,31 @@ flips `draining=true`, blocks until `inFlight==0` (or `DrainTimeout`
 elapses), and emits the
 `lakehouse_compaction_aborted_during_drain_total` counter on timeout.
 
+### 3.5 Planning: per (tenant, partition), never a lone file
+
+`planner.go` turns the manifest into merges. A partition is split into tenant groups
+(`groupFilesByTenant`: key prefix plus bucket, the unit `Compactor.Compact` writes one output
+for) and each group is planned alone (`planGroup`), so one tenant's files never make another
+tenant's single file look mergeable (issue #343). Branch order: L0 count, L1 count, closed-hour
+rollup (every non-mature file under 32 MiB of the majority schema, any level, output one above
+the top level), then the stale-schema / top-level-fragmentation hints. Every branch needs two or
+more files. `sortPlans` orders open-hour merges first, then files removed per byte rewritten,
+then oldest partition. `SchedulerConfig.MaxConcurrent` is merges per tenant per scan; fair share
+is keyed by the tenant of the object keys (`<account>/<project>`, or `default` for legacy keys).
+The orphan sweep's Tier A steal and `ForceCompactPartition` use the same per-group rules.
+
+`lifecycle_freeze.go` (`LifecycleFreeze`, `SchedulerConfig.Freeze`, `OrphanSweepConfig.Freeze`)
+removes objects S3 lifecycle has moved, or is about to move, out of STANDARD /
+INTELLIGENT_TIERING before anything is counted: a recorded or cached non-rewritable class, or a
+partition older than the first non-rewritable transition minus 48 h (margin capped at half the
+transition). Gauge: `lakehouse_compaction_frozen_files{reason}`.
+
+Tests: `planner_test.go` (planner units), `lifecycle_freeze_test.go`, `per_tenant_planning_test.go`
+(the #343 reproductions), `property_test.go` (multi-day randomized runs, invariants after every
+scan), `fault_matrix_test.go`, `concurrency_test.go`, and `wa_sim_test.go` (env-gated simulation:
+`LH_COMPACTION_SIM=1`). The measured before/after table is in
+[docs/operations.md](../../docs/operations.md#measured-effect-of-per-tenant-planning-issue-343).
+
 ## 4. Failure modes
 
 ### 4.1 Empty peer list

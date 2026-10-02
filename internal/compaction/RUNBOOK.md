@@ -271,7 +271,35 @@ kubectl exec -it lakehouse-logs-0 -- curl -s \
 
 ---
 
-## 8. When to roll back
+## 8. "Compaction keeps merging with no new data" / "the L0 backlog never drains"
+
+**Symptom:** `lakehouse_compaction_runs_total` increases every scan for a tenant that has
+stopped writing, objects carry ever higher levels (`compacted-L40-...`), or the oldest L0 file
+keeps ageing. This was issue #343: the planner counted files across all tenants of an hour
+while the compactor merges per tenant, so a lone file was rewritten 1 to 1 on every scan and
+those rewrites won every scan.
+
+### Checks
+
+1. `rate(lakehouse_compaction_runs_total[1h])` for a tenant with no ingest should be 0 after one
+   or two scans. If it is not, you are running a build older than the fix.
+2. `lakehouse_compaction_level_files{level="0"}` should trend down. Open-hour merges go first;
+   a closed-hour rollup backlog cannot starve them.
+3. `GET /lakehouse/api/v1/stats/compaction`: `fragmented_partitions` counts a partition only
+   when one tenant holds two or more top-level (L2+) files; one L2 file per tenant is healthy.
+
+## 9. "Objects in IA/Glacier are not being compacted"
+
+By design. Compaction never rewrites an object whose recorded or detected storage class is not
+STANDARD / INTELLIGENT_TIERING, nor a partition older than the first lifecycle transition minus
+48 h. Check `lakehouse_compaction_frozen_files{reason="storage_class"|"age"}`. If the freeze
+hides data you want compacted, the lifecycle rules in `delete.lifecycle_rules` /
+`stats.s3_lifecycle_rules` (or the tenant's override) are the knob: it follows the bucket's real
+rules.
+
+---
+
+## 10. When to roll back
 
 Roll back to the previous release if ANY two of these are true for
 > 24 h continuously:

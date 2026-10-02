@@ -1049,18 +1049,21 @@ type CompactionConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Interval is the compaction scan interval.
 	Interval time.Duration `yaml:"interval"`
-	// MaxConcurrent is the number of partitions a pod compacts concurrently.
+	// MaxConcurrent is the number of merges a pod runs per tenant on each
+	// scan; every tenant with compactable files gets up to this many, and fair
+	// share decides who goes first.
 	MaxConcurrent int `yaml:"max_concurrent"`
-	// MinFilesL0 is the number of L0 files a partition needs before L0 to L1
-	// compaction; at least 2.
+	// MinFilesL0 is the number of L0 files one tenant needs in a partition
+	// before L0 to L1 compaction; at least 2.
 	MinFilesL0 int `yaml:"min_files_l0"`
-	// MinFilesL1 is the number of L1 files a partition needs before L1 to L2
-	// compaction; at least 2.
+	// MinFilesL1 is the number of L1 files one tenant needs in a partition
+	// before L1 to L2 compaction; at least 2.
 	MinFilesL1 int `yaml:"min_files_l1"`
 	// MinAge keeps files younger than this out of compaction.
 	MinAge time.Duration `yaml:"min_age"`
-	// DailyRollupAge is the partition age after which L1 files roll up into
-	// daily files.
+	// DailyRollupAge is the partition age after which every file of a tenant
+	// in the hour that is under 32 MiB merges into one, whatever its level;
+	// files already that large are left alone.
 	DailyRollupAge time.Duration `yaml:"daily_rollup_age"`
 
 	// CompressionLevelByOutputLevel sets the zstd level used when

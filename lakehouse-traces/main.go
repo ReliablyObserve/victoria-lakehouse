@@ -96,7 +96,7 @@ var (
 
 	compactionEnabled        = flag.Bool("lakehouse.compaction.enabled", false, "Enable the compaction scheduler (on by default; false does not turn it off — select a profile that disables compaction in the config file)")
 	compactionInterval       = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
-	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
+	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Partition age after which a tenant's files in an hour (each under 32 MiB) merge into one (default: 24h)")
 	compactionRowGroupSizes  = flag.String("lakehouse.compaction.row-group-size-by-output-level", "", "Comma-separated Parquet row-group sizes per compaction output level, slot N = output level N (default: 10000,10000,20000)")
 
 	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 64)")

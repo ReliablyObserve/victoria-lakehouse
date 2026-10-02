@@ -6,12 +6,22 @@
   status: shipped
   area: compaction
   surfaces: [storage, flag]
-  rows: [lh.stats.compaction.schema]
+  rows:
+    - lh.stats.compaction.schema
+    - lh.storage_health.compaction.second_scan_noop_logs
+    - lh.storage_health.compaction.second_scan_noop_traces
   tests:
     - internal/compaction/policy_test.go
     - internal/compaction/compactor_test.go
     - internal/compaction/scheduler_test.go
     - internal/compaction/integration_test.go
+    - internal/compaction/planner_test.go
+    - internal/compaction/per_tenant_planning_test.go
+    - internal/compaction/property_test.go#TestStorageHealth_CompactionProperties
+    - internal/compaction/fault_matrix_test.go
+    - internal/compaction/concurrency_test.go
+    - internal/compaction/tenant_paths_test.go
+    - internal/manifest/compaction_groups_test.go
   docs:
     - docs/operations.md
     - docs/write-path.md
@@ -146,3 +156,30 @@
     Aged data is scanned in bulk and pruned coarsely, so larger row groups are strictly better
     there, while recent data keeps small groups for selective queries. The schedule is a
     configuration table, not a constant.
+
+- id: lh.feature.compaction.lifecycle_freeze
+  title: Compaction never rewrites tiered objects
+  status: shipped
+  area: compaction
+  surfaces: [storage, flag]
+  tests:
+    - internal/compaction/lifecycle_freeze_test.go
+    - internal/compaction/per_tenant_planning_test.go#TestScan_NeverRewritesTieredObjects
+    - internal/compaction/tenant_paths_test.go#TestTierA_RespectsFreeze
+    - internal/compaction/tenant_paths_test.go#TestForceCompactPartition_RespectsFreeze
+    - internal/delete/storageclass_transition_test.go
+    - cmd/lakehouse-logs/compaction_freeze_test.go
+    - lakehouse-traces/compaction_freeze_test.go
+  docs:
+    - docs/operations.md
+    - docs/observability.md
+    - docs/write-path.md
+  highlight: >-
+    **Tiered objects are never rewritten**: compaction skips objects S3 lifecycle has moved to IA or Glacier, and partitions about to be, so it cannot trigger retrieval fees, early-deletion charges or Glacier errors.
+  description: >-
+    Rewriting an object after lifecycle moved it costs a retrieval fee plus the early-deletion
+    charge, and fails outright in Glacier Flexible Retrieval and Deep Archive. Compaction
+    removes such objects from planning: by the storage class recorded or detected for them, and
+    by partition age against the first lifecycle transition (delete.lifecycle_rules, per-tenant
+    overrides, stats.s3_lifecycle_rules) minus a margin. The frozen-files gauge reports what a
+    scan skipped. The manual recompact trigger and the orphan sweep honour the same freeze.

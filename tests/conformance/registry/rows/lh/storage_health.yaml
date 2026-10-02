@@ -1,0 +1,58 @@
+# Storage-health cells: properties of the cold tier at rest that must keep
+# holding as compaction, flush and lifecycle code change. Both signals.
+
+- id: lh.storage_health.compaction.second_scan_noop_logs
+  title: "Logs compaction: a second scan over a settled manifest does nothing, and the stats report no fragmentation"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/stats/compaction }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/operations.md
+    tests:
+      - internal/compaction/per_tenant_planning_test.go#TestScan_SecondScanDoesNothing
+      - internal/compaction/per_tenant_planning_test.go#TestScan_NoChurn_MultiTenantSingleFiles
+      - internal/compaction/property_test.go#TestStorageHealth_CompactionProperties
+      - internal/manifest/compaction_groups_test.go#TestCompactionStats_FragmentationIsPerTenantGroup
+  notes: >-
+    The cell is the compaction planner's fixed point. After all the work there is has been
+    done, the next scan makes zero merges and rewrites no object: a tenant with one file in an
+    hour is never rewritten, whatever other tenants share the hour (issue #343). The stats
+    endpoint must agree: fragmented_partitions counts a partition only when one tenant holds
+    two or more top-level files. The same cell covers the tiered-object property: objects whose
+    storage class is not STANDARD or INTELLIGENT_TIERING, and partitions past the first
+    lifecycle transition minus the freeze margin, are never rewritten
+    (TestScan_NeverRewritesTieredObjects, TestScan_LifecycleFreeze). The endpoint row is the
+    schema check; the scheduler properties are asserted by the listed Go tests, which run in
+    the storage-health-compaction CI job.
+
+- id: lh.storage_health.compaction.second_scan_noop_traces
+  title: "Traces compaction: a second scan over a settled manifest does nothing, and the stats report no fragmentation"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /lakehouse/api/v1/stats/compaction }
+  compare: { type: schema }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/operations.md
+    tests:
+      - internal/compaction/per_tenant_planning_test.go#TestScan_SecondScanDoesNothing
+      - internal/compaction/per_tenant_planning_test.go#TestScan_NoChurn_MultiTenantSingleFiles
+      - internal/compaction/property_test.go#TestStorageHealth_CompactionProperties
+      - internal/manifest/compaction_groups_test.go#TestCompactionStats_FragmentationIsPerTenantGroup
+  notes: >-
+    Traces mirror of the logs cell: the compaction package is shared, and each listed Go test
+    runs the scheduler in both modes (bothModes), so the traces file layout and trace-schema
+    objects are merged, counted and left alone the same way. Tiered objects are covered by
+    TestScan_NeverRewritesTieredObjects and TestScan_LifecycleFreeze in traces mode too.

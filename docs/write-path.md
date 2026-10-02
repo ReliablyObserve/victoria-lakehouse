@@ -171,9 +171,9 @@ Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a spec
 
 After initial flush, small files are merged by the background compactor:
 
-- **Level policy**: once a partition holds `compaction.min_files_l0` L0 files older than `compaction.min_age`, they merge into an L1 file; `compaction.min_files_l1` L1 files merge into L2; partitions older than `compaction.daily_rollup_age` roll up daily
+- **Level policy** (planned per tenant and partition, the unit compaction merges): once a tenant holds `compaction.min_files_l0` L0 files in a partition older than `compaction.min_age`, they merge into an L1 file; `compaction.min_files_l1` L1 files merge into L2; once the partition is `compaction.daily_rollup_age` old, all the tenant's files in it under 32 MiB merge into one, whatever their level. A single file is never rewritten, so a settled partition costs no work (issue #343)
 - **Ownership**: every pod runs the scheduler and HRW ownership assigns each partition to exactly one pod
-- **Safe for S3-IA/Glacier**: once a file reaches target size, it's never read or rewritten — lifecycle transitions are safe
+- **Safe for S3-IA/Glacier**: objects whose storage class is not STANDARD / INTELLIGENT_TIERING, and partitions older than the first lifecycle transition minus 48 h, are never read or rewritten (`lakehouse_compaction_frozen_files{reason}`); see [Operations — Lifecycle freeze](operations.md#lifecycle-freeze-tiered-objects-are-never-rewritten)
 - **Manifest-atomic**: old files removed from manifest only after new merged file is registered
 
 ```yaml
@@ -182,7 +182,7 @@ lakehouse:
     min_files_l0: 10         # L0 files that trigger L0 -> L1
     min_files_l1: 10         # L1 files that trigger L1 -> L2
     min_age: 1h              # younger files are not compacted
-    max_concurrent: 2        # partitions compacted concurrently per pod
+    max_concurrent: 2        # merges per tenant per scan
     interval: 5m             # scan frequency
 ```
 
