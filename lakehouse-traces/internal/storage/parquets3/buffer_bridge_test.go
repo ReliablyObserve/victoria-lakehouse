@@ -36,9 +36,9 @@ func TestBufferBridge_QueryLogs(t *testing.T) {
 	}, config.ModeLogs)
 	bridge.SetEndpoints([]string{srv.URL})
 
-	got, err := bridge.QueryLogs(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal(err)
+	got, nonces := bridge.QueryLogs(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 1 {
 		t.Fatalf("got %d rows, want 1", len(got))
@@ -69,9 +69,9 @@ func TestBufferBridge_QueryTraces(t *testing.T) {
 	}, config.ModeTraces)
 	bridge.SetEndpoints([]string{srv.URL})
 
-	got, err := bridge.QueryTraces(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal(err)
+	got, nonces := bridge.QueryTraces(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 1 {
 		t.Fatalf("got %d rows, want 1", len(got))
@@ -86,9 +86,9 @@ func TestBufferBridge_Disabled(t *testing.T) {
 		BufferQueryEnabled: false,
 	}, config.ModeLogs)
 
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal(err)
+	got, nonces := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 0 {
 		t.Error("disabled bridge should return empty")
@@ -100,9 +100,9 @@ func TestBufferBridge_DisabledTraces(t *testing.T) {
 		BufferQueryEnabled: false,
 	}, config.ModeTraces)
 
-	got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal(err)
+	got, nonces := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 0 {
 		t.Error("disabled bridge should return empty")
@@ -115,9 +115,9 @@ func TestBufferBridge_NoEndpoints(t *testing.T) {
 		BufferQueryTimeout: 2 * time.Second,
 	}, config.ModeLogs)
 
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal(err)
+	got, nonces := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 0 {
 		t.Error("no endpoints should return empty")
@@ -145,9 +145,9 @@ func TestBufferBridge_MultipleEndpoints(t *testing.T) {
 	}, config.ModeLogs)
 	bridge.SetEndpoints([]string{srv1.URL, srv2.URL})
 
-	got, err := bridge.QueryLogs(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal(err)
+	got, nonces := bridge.QueryLogs(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 2 {
 		t.Errorf("got %d rows, want 2 (one from each endpoint)", len(got))
@@ -161,9 +161,9 @@ func TestBufferBridge_EndpointError(t *testing.T) {
 	}, config.ModeLogs)
 	bridge.SetEndpoints([]string{"http://localhost:1"}) // unreachable
 
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal("should not return error for endpoint failures (graceful degradation)")
+	got, nonces := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 0 {
 		t.Error("unreachable endpoint should return empty")
@@ -183,9 +183,9 @@ func TestBufferBridge_ServerError(t *testing.T) {
 	}, config.ModeLogs)
 	bridge.SetEndpoints([]string{srv.URL})
 
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal("should handle server errors gracefully")
+	got, nonces := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 0 {
 		t.Error("500 response should return empty")
@@ -205,9 +205,9 @@ func TestBufferBridge_TraceServerError(t *testing.T) {
 	}, config.ModeTraces)
 	bridge.SetEndpoints([]string{srv.URL})
 
-	got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal("should handle server errors gracefully")
+	got, nonces := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 0 {
 		t.Error("500 response should return empty for traces")
@@ -221,9 +221,9 @@ func TestBufferBridge_TraceEndpointError(t *testing.T) {
 	}, config.ModeTraces)
 	bridge.SetEndpoints([]string{"http://localhost:1"})
 
-	got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal("should not return error for trace endpoint failures")
+	got, nonces := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 0 {
 		t.Error("unreachable endpoint should return empty for traces")
@@ -236,9 +236,9 @@ func TestBufferBridge_NoEndpointsTraces(t *testing.T) {
 		BufferQueryTimeout: 2 * time.Second,
 	}, config.ModeTraces)
 
-	got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal(err)
+	got, nonces := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 0 {
 		t.Error("no endpoints should return empty for traces")
@@ -283,14 +283,54 @@ func TestBufferBridge_BrokenTraceStreamIsAnErrorNotAPartialAnswer(t *testing.T) 
 	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeTraces)
 	bridge.SetEndpoints([]string{srv.URL})
 	before := metrics.BufferBridgeErrors.Get("decode")
-	got, err := bridge.QueryTraces(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
-	if err != nil {
-		t.Fatal(err)
+	got, nonces := bridge.QueryTraces(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(got) != 0 {
 		t.Fatalf("got %d spans from a broken stream, want none", len(got))
 	}
 	if metrics.BufferBridgeErrors.Get("decode") <= before {
 		t.Error("the broken stream was not counted")
+	}
+}
+
+// The nonces of the segments a peer read its spans from come back with the
+// spans, from every peer, and a peer that fails contributes neither spans nor
+// nonces (so none of its objects is dropped from the scan).
+func TestBufferBridge_NoncesComeWithTheRows(t *testing.T) {
+	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
+	peer := func(nonces string, status int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set(buffer.TenantScopeHeader, "0:0")
+			if nonces != "" {
+				w.Header().Set(buffer.SegmentsHeader, nonces)
+			}
+			if status != 0 {
+				w.WriteHeader(status)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(schema.TraceRow{TimestampUnixNano: base.UnixNano(), TraceID: "t", SpanName: "op"})
+		}))
+	}
+	a, b, failing := peer("65000000aaaabbbb,65000000ccccdddd", 0), peer("65000000eeeeffff", 0), peer("65000000deadbeef", http.StatusInternalServerError)
+	defer a.Close()
+	defer b.Close()
+	defer failing.Close()
+
+	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeTraces)
+	bridge.SetEndpoints([]string{a.URL, b.URL, failing.URL})
+	rows, nonces := bridge.QueryTraces(context.Background(), base.UnixNano(), base.Add(time.Hour).UnixNano(), tenantScope{account: "0", project: "0"})
+	if len(rows) != 2 {
+		t.Errorf("%d spans, want 1 from each answering peer", len(rows))
+	}
+	want := []string{"65000000aaaabbbb", "65000000ccccdddd", "65000000eeeeffff"}
+	if len(nonces) != len(want) {
+		t.Fatalf("nonces = %v, want %v (and none of the failing peer's)", nonces, want)
+	}
+	for _, n := range want {
+		if _, ok := nonces[n]; !ok {
+			t.Errorf("nonce %s missing from %v", n, nonces)
+		}
 	}
 }

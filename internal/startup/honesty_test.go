@@ -15,8 +15,6 @@ func TestServingReady_RequiresAllPreconditions(t *testing.T) {
 		name             string
 		minFiles         int64
 		setServingReady  bool
-		walNeeded        bool
-		walDone          bool
 		manifestFiles    int64
 		wantServingReady bool
 	}{
@@ -25,22 +23,8 @@ func TestServingReady_RequiresAllPreconditions(t *testing.T) {
 			wantServingReady: false,
 		},
 		{
-			name:             "serving flipped, no WAL, no min — ready",
+			name:             "serving flipped, no min — ready",
 			setServingReady:  true,
-			wantServingReady: true,
-		},
-		{
-			name:             "serving flipped, WAL needed but not done — not ready",
-			setServingReady:  true,
-			walNeeded:        true,
-			walDone:          false,
-			wantServingReady: false,
-		},
-		{
-			name:             "serving flipped, WAL needed AND done — ready",
-			setServingReady:  true,
-			walNeeded:        true,
-			walDone:          true,
 			wantServingReady: true,
 		},
 		{
@@ -68,26 +52,13 @@ func TestServingReady_RequiresAllPreconditions(t *testing.T) {
 			name:             "all gates present and met — ready",
 			minFiles:         50,
 			setServingReady:  true,
-			walNeeded:        true,
-			walDone:          true,
 			manifestFiles:    1000,
 			wantServingReady: true,
-		},
-		{
-			name:             "all gates, WAL missing — not ready",
-			minFiles:         50,
-			setServingReady:  true,
-			walNeeded:        true,
-			walDone:          false,
-			manifestFiles:    1000,
-			wantServingReady: false,
 		},
 		{
 			name:             "all gates, min files missing — not ready",
 			minFiles:         5000,
 			setServingReady:  true,
-			walNeeded:        true,
-			walDone:          true,
 			manifestFiles:    1000,
 			wantServingReady: false,
 		},
@@ -98,12 +69,6 @@ func TestServingReady_RequiresAllPreconditions(t *testing.T) {
 			m := NewManager(c.minFiles)
 			if c.setServingReady {
 				m.SetServingReady()
-			}
-			if c.walNeeded {
-				m.SetWALReplayNeeded()
-			}
-			if c.walDone {
-				m.SetWALReplayDone()
 			}
 			if c.manifestFiles > 0 {
 				m.SetManifestFiles(c.manifestFiles)
@@ -203,18 +168,5 @@ func TestNewManager_DefaultGateOff(t *testing.T) {
 	}
 	if m.MinManifestFiles() != 0 {
 		t.Errorf("MinManifestFiles() = %d, want 0", m.MinManifestFiles())
-	}
-}
-
-// TestSetWALReplayDone_WithoutNeeded — calling SetWALReplayDone
-// without SetWALReplayNeeded first should be harmless (idempotent),
-// not panic. Defensive coverage for select-only roles that may
-// call the API in their init paths.
-func TestSetWALReplayDone_WithoutNeeded(t *testing.T) {
-	m := NewManager(0)
-	m.SetWALReplayDone() // should be no-op for select-only path
-	m.SetServingReady()
-	if !m.ServingReady() {
-		t.Errorf("SetWALReplayDone without WALReplayNeeded broke ServingReady — should be inert")
 	}
 }

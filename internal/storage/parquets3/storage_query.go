@@ -72,7 +72,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			time.Unix(0, startNs), time.Unix(0, endNs))
 		// Don't early-return here. Buffer-bridge may still have rows newer
 		// than the latest flushed parquet. The GetFilesForRange branch below
-		// detects len(files) == 0 and calls queryBufferBridge before returning.
+		// detects len(files) == 0 and serves the insert buffer before returning.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
 	}
 
@@ -202,6 +202,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// no other tenant's object can enter the answer. Twin of
 	// lakehouse-traces/internal/storage/parquets3/storage_query.go.
 	files := s.filesForScope("query", startNs, endNs, scope)
+	// The insert buffer as this query sees it, taken before the object list is
+	// used: the objects of the segments it serves are not read (see bufferView).
+	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
+	defer view.release()
+	files = view.exclude(files)
 	if len(files) == 0 {
 		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
 		// is the co-located logstorage buffer. Push the FULL query (aggregation
@@ -215,10 +220,10 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// carries no row the tombstone filter could drop, so deleted buffered
 		// rows would be counted; the raw-row path below filters them.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
-		if s.servePureBufferQuery(ctx, q, tenantIDs, hasTombstones, filteredWriteBlock) {
+		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
 		}
-		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
+		s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 		return nil
 	}
 
@@ -244,11 +249,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	plan := planMetadataOnly(q)
 	ctx = withMetadataOnlyPlan(ctx, plan)
 
-	// served collects the objects answered from metadata below. They leave
-	// `files` (nothing is read from them) but their rows are in the answer, so
-	// the buffer watermark must still cover them (see watermarkFiles).
-	var served []manifest.FileInfo
-
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
 		// The fast path stops emitting as soon as the query's max-rows or
@@ -261,10 +261,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
-			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
+			s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 			return nil
 		}
-		served = append(served, subtractFiles(files, remaining)...)
 		files = remaining
 	}
 
@@ -277,16 +276,15 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
-			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
+			s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 			return nil
 		}
-		served = append(served, subtractFiles(files, remaining)...)
 		files = remaining
 	}
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
+		s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 		return nil
 	}
 
@@ -345,7 +343,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	wg.Wait()
 
-	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
+	s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -495,7 +493,7 @@ func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
 // isn't a single-node logstore buffer: with peers, other pods hold unflushed
 // rows reachable only via the bridge fan-out. No upstream modification — this
 // calls the buffer's public RunQuery.
-func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query, tenantIDs []logstorage.TenantID, hasTombstones bool, writeBlock logstorage.WriteDataBlockFunc) bool {
+func (s *Storage) servePureBufferQuery(ctx context.Context, view *bufferView, q *logstorage.Query, tenantIDs []logstorage.TenantID, hasTombstones bool, writeBlock logstorage.WriteDataBlockFunc) bool {
 	// While a tombstone overlaps the window, decline this fast path and let the
 	// caller serve the rows through the standard path, which applies the storage
 	// tombstone filter to every emitted block.
@@ -503,7 +501,7 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query,
 		noteFieldsScanFallback("pure_buffer")
 		return false
 	}
-	if s.localBuffer == nil || (s.bufferBridge != nil && s.bufferBridge.HasPeers()) {
+	if view.local == nil {
 		return false
 	}
 	startNs, endNs := q.GetFilterTimeRange()
@@ -517,103 +515,12 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query,
 	if logstorage.QueryHasPipes(q) {
 		qBuf = logstorage.CloneWithoutPipes(q)
 	}
-	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs), qBuf, false, nil)
-	if err := s.localBuffer.RunQuery(qctx, writeBlock); err != nil {
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, view.tenantIDs(ctx, tenantIDs, startNs, endNs), qBuf, false, nil)
+	if err := view.local.RunQuery(qctx, writeBlock); err != nil {
 		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
 		return false
 	}
 	return true
-}
-
-// queryBufferBridge is queryBufferBridgeTo for a caller with one write
-// function for every tenant.
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, wm watermarkSource, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
-	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, rowsEmitted, wm, q, tenantIDs, uniformSink(writeBlock))
-}
-
-// queryBufferBridgeTo serves the unflushed rows of the request's tenants.
-// Each tenant's rows go through sink.forTenant, so a tenant-scoped
-// tombstone only hides the buffered rows of its own tenants.
-func (s *Storage) queryBufferBridgeTo(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, wmSrc watermarkSource, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
-	if maxRows > 0 && rowsEmitted.Load() >= maxRows {
-		return
-	}
-	// The watermark boundary exists ONLY to stop aggregation queries
-	// (count()/stats) from counting a row twice across the buffer↔Parquet
-	// overlap. trace_id-filtered queries are span/log RETRIEVAL (Jaeger/Tempo
-	// fetch, trace-by-id, log→trace correlation): completeness matters and the
-	// watermark would wrongly exclude a trace's buffer rows whenever a scanned
-	// Parquet file (holding other, newer data) has a MaxTimeNs above this
-	// trace's time. So ignore the watermarks for trace_id-filtered queries and
-	// serve the buffer's full window.
-	//
-	// The watermarks are computed HERE, once the buffer is known to be
-	// consulted: computing them can mean reading object footers (see
-	// bufferWatermarksFor), which a query without a buffer, with a trace_id
-	// filter or past its row limit must not do.
-	if s.localBuffer == nil && s.bufferBridge == nil {
-		return
-	}
-	var wm bufferWatermarks
-	if wmSrc != nil && (q == nil || !queryFiltersTraceID(q.String())) {
-		wm = wmSrc.watermarks(ctx)
-	}
-	scope := scopeFor(ctx, tenantIDs)
-
-	// The buffer serves each tenant only the rows STRICTLY newer than that
-	// tenant's flush watermark (the newest MaxTimeNs among the Parquet objects
-	// this query selected for it), so no row is emitted from both tiers. The
-	// watermark is per tenant: under a global read one tenant's newer flush
-	// must not hide another tenant's still-unflushed rows.
-	//
-	// Option B (P3): use the co-located logstorage-native buffer directly
-	// (zero-conversion) ONLY when this node has no peers — single-node role=all,
-	// where the local buffer holds ALL unflushed rows. In a multi-pod deployment
-	// the local buffer holds only THIS pod's rows; other insert pods' unflushed
-	// rows live in their buffers, reachable only via the BufferBridge HTTP
-	// fan-out. So with peers we fall through to the fan-out (every pod's handler
-	// returns its own rows — no double-count, no need to exclude self from the
-	// unfiltered peer list).
-	if s.localBuffer != nil && (s.bufferBridge == nil || !s.bufferBridge.HasPeers()) {
-		for _, id := range s.localBufferTenantIDs(ctx, tenantIDs, startNs, endNs) {
-			bufStartNs := bufferWindowStart(startNs, wm[id])
-			if bufStartNs > endNs {
-				continue // Parquet already covers this tenant's whole window.
-			}
-			qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), bufStartNs, endNs)
-			qBuf.DropAllPipes()
-			qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, qBuf, false, nil)
-			if err := s.localBuffer.RunQuery(qctx, sink.forTenant(id)); err != nil {
-				logger.Warnf("Option B local buffer query failed (cold-tier results may miss the recent window): %s", err)
-			}
-		}
-		return
-	}
-	if s.bufferBridge == nil {
-		return
-	}
-	// Multi-pod fan-out. The bridge asks each peer for ONE tenant's rows (or
-	// every tenant's, for a validated global read), and the row→block
-	// conversion re-checks every row's account/project — belt and braces, so a
-	// peer that answers without scoping cannot leak into this answer.
-	// Twin of the other module's queryBufferBridge.
-	fetchStartNs := startNs
-	if scope.single() {
-		fetchStartNs = bufferWindowStart(startNs, wm[singleTenantID(tenantIDs)])
-		if fetchStartNs > endNs {
-			return
-		}
-	}
-	switch s.cfg.Mode {
-	case config.ModeLogs:
-		bufRows, _ := s.bufferBridge.QueryLogs(ctx, fetchStartNs, endNs, scope)
-		bufRows = logRowsAfterWatermarks(bufRows, startNs, wm)
-		s.emitBridgeLogRows(scope, bufRows, sink)
-	case config.ModeTraces:
-		bufRows, _ := s.bufferBridge.QueryTraces(ctx, fetchStartNs, endNs, scope)
-		bufRows = traceRowsAfterWatermarks(bufRows, startNs, wm)
-		s.emitBridgeTraceRows(scope, bufRows, sink)
-	}
 }
 
 // countByPushdownField returns the single field a query groups/projects by when

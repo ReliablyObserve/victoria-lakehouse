@@ -268,7 +268,7 @@ not speed up *finding* a specific value (that's the trace index).
 **Wiring (both modules):** the flush tap (`catalogObserver.tapLogRows`/`tapTraceRows`)
 streams the configured `always_sketch_fields` id columns into `Store.AddCardinality`;
 `Store.Cardinality(field)` + the gauge read it. Verified e2e
-(`TestInteg_PmetaCatalog_CardinalityTapE2E`): a real `BatchWriter` flush of 5,000
+(`TestInteg_PmetaCatalog_CardinalityTapE2E`): a real `BufferFlusher` drain of 5,000
 `trace_id`s → `Cardinality` within 3 % and the gauge published.
 
 **Field names.** Facets are keyed by the Parquet column name the flush-time

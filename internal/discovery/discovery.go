@@ -139,6 +139,19 @@ func (d *Discovery) DiscoverPeers(ctx context.Context) ([]string, error) {
 	return peers, nil
 }
 
+// ResolveService resolves a headless service ("name" or "name:port") to the
+// host:port address of each pod behind it, the same way the peer ring is
+// resolved (SRV records first, then A records with the service's or the
+// default port).
+func (d *Discovery) ResolveService(ctx context.Context, service string) ([]string, error) {
+	addrs, err := d.resolveHeadlessService(ctx, service)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(addrs)
+	return addrs, nil
+}
+
 func (d *Discovery) resolveHeadlessService(ctx context.Context, service string) ([]string, error) {
 	host, port := splitHostPort(service)
 

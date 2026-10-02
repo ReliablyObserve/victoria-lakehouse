@@ -169,7 +169,7 @@ jobs:
           - internal/storage/parquets3:FuzzStorageFetchPeerAZ
           - internal/storage/parquets3:FuzzExtractTraceBloomValues
           - internal/storage/parquets3:FuzzParseFilterFromQuery_TimeOnlyIsSound
-          - internal/storage/parquets3:FuzzRestartWatermark
+          - internal/storage/parquets3:FuzzBufferRestart
           - internal/storage/parquets3:FuzzProjectionEquivalence
           - internal/schema:FuzzResolveToParquet
           - internal/schema:FuzzResolveToParquet_Traces
@@ -220,6 +220,7 @@ jobs:
           - internal/traceindex:FuzzUnmarshalIndex
           - internal/traceindex:FuzzRoundTripIndex
           - internal/vlstorage:FuzzRepromoteLogRow
+          - internal/vlstorage:FuzzDataBlockToLogRows
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -315,7 +316,7 @@ jobs:
           - internal/storage/parquets3:FuzzContainsOrOperatorQuoted
           - internal/storage/parquets3:FuzzParseFilterFromQuery
           - internal/storage/parquets3:FuzzParseFilterFromQuery_TimeOnlyIsSound
-          - internal/storage/parquets3:FuzzRestartWatermark
+          - internal/storage/parquets3:FuzzBufferRestart
           - internal/storage/parquets3:FuzzProjectionEquivalence
           - internal/storage/parquets3:FuzzExtractFilterValuesAST
           - internal/storage/parquets3:FuzzPreFilterFiles_TraceID
@@ -323,8 +324,8 @@ jobs:
           - internal/storage/parquets3:FuzzExtractTraceBloomValues
           - internal/vlstorage:FuzzMapFieldToTraceRow
           - internal/vlstorage:FuzzUnmarshalStreamTags
-          - internal/vlstorage:FuzzLogRowsToTraceRows
           - internal/vlstorage:FuzzRepromoteTraceRow
+          - internal/vlstorage:FuzzDataBlockToTraceRows
           - internal/vtstorage_adapter:FuzzTraceIndexLookupTraceID
           - internal/vtstorage_adapter:FuzzRewriteTraceIndexQuery
     steps:

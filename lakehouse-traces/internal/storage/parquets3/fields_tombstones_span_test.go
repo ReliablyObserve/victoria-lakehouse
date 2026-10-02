@@ -32,11 +32,11 @@ func newTraceSpanFixture(t *testing.T) *traceSpanFixture {
 
 	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
 	early := now.Add(-10 * time.Second)
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.stageTraceRows([]schema.TraceRow{
 		{TimestampUnixNano: early.UnixNano(), ServiceName: "old-svc", SpanName: "GET /old", TraceID: "t1", SpanID: "s1", Stream: `{svc="old"}`, StreamID: "stream-old"},
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "new-svc", SpanName: "GET /new", TraceID: "t2", SpanID: "s2", Stream: `{svc="new"}`, StreamID: "stream-new"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(early.UnixNano(), now.UnixNano())
 	if len(files) != 1 || files[0].MinTimeNs == files[0].MaxTimeNs {
@@ -107,14 +107,14 @@ func TestTraceFieldValues_SeededLabelIndexNeverListsATombstonedValue(t *testing.
 
 	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
 	yesterday := now.Add(-24 * time.Hour)
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.stageTraceRows([]schema.TraceRow{
 		{TimestampUnixNano: yesterday.UnixNano(), ServiceName: "secret-svc", SpanName: "x", TraceID: "t1", SpanID: "s1"},
 	})
-	bw.triggerFlush()
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.flushStagedNow()
+	bw.stageTraceRows([]schema.TraceRow{
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "web", SpanName: "y", TraceID: "t2", SpanID: "s2"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 	s.labelIndex.Add("service.name", []string{"secret-svc", "web"})
 
 	store := delete.NewTombstoneStore()

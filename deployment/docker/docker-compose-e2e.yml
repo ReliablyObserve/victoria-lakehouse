@@ -263,7 +263,6 @@ services:
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
-      - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.compaction.interval=2m"
       - "-lakehouse.query.file-workers=16"
       # pmeta unified metadata layer (default-on; legacy sidecar writers deleted).
@@ -336,7 +335,6 @@ services:
       - "-lakehouse.s3.secret-key=minioadmin"
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=30s"
-      - "-lakehouse.insert.flush-interval=120s"
       - "-lakehouse.query.file-workers=16"
       # pmeta unified metadata layer (default-on; legacy sidecar writers deleted).
       - "-lakehouse.pmeta.enabled=true"
@@ -360,8 +358,9 @@ services:
       - "-lakehouse.tenant.alias=acme-corp:1001:0,staging-team:1002:0"
       - "-lakehouse.tenant.metrics-format=name"
       - "-lakehouse.tenant.prefix-template={AccountID}/{ProjectID}/"
-      # VT upstream defaults latencyOffset=30s. Our cold tier flushes
-      # parquet files every -lakehouse.insert.flush-interval=120s, so
+      # VT upstream defaults latencyOffset=30s. Our cold tier writes
+      # parquet files at the latest insert.buffer_flush_interval=2m (in
+      # lakehouse-e2e-config.yml) after a buffer segment opened, so
       # the freshest queryable span lags real time by up to ~2 min.
       # Setting latencyOffset to 2m matches that lag and stops the
       # upstream Jaeger search loop from clamping endTime past the data

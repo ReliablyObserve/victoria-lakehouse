@@ -36,7 +36,7 @@ We are not aware of another system that combines VictoriaLogs/VictoriaTraces ing
 > **Two binaries, one architecture.** `lakehouse-logs` reimplements the VL storage layer. `lakehouse-traces` reimplements the VT storage layer. Both use Parquet on S3 and expose identical HTTP APIs, LogsQL query syntax, binary DataBlock protocol, and insert endpoints as their upstream counterparts. Each binary pins to its own VL/VT dependency version for maximum compatibility.
 
 - **Drop-in VL/VT storage node.** Register as a `-storageNode` on vlselect/vtselect. Queries spanning hot and cold data work transparently.
-- **Write path with crash recovery.** Full VL insert protocol support (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk) via upstream `vlinsert` handlers. With the `logstore` engine, data buffers in a durable per-pod `logstorage.Storage` (on-disk parts, restored on open) and flushes to S3 Parquet — surviving process crashes **without a separate WAL**. See [Persistence & Durability](docs/durability.md).
+- **Write path with crash recovery.** Full VL insert protocol support (jsonline, Loki JSON+protobuf, ES bulk, syslog, journald, Datadog, OTLP, Splunk) via upstream `vlinsert` handlers. Data buffers in durable per-pod `logstorage.Storage` segments (on-disk parts, restored on open) and is drained to S3 Parquet — surviving process crashes **without a separate WAL**. See [Persistence & Durability](docs/durability.md).
 - **Zero-delay reads.** Select pods query ALL insert pods across ALL AZs for unflushed buffer data, merging with S3 results for immediate read-after-write visibility. Single-node deployments self-loop so they serve their own unflushed buffer without a peer fan-out.
 - **Instant-warm restart.** Manifest + footer-cache persist to local disk on shutdown; the next start reloads the manifest in milliseconds and asynchronously re-prefetches every footer the previous pod had cached — first user query after restart hits a hot cache instead of paying an S3 round-trip.
 - **Three-state `/ready` lifecycle.** `503 not_ready` → `204 serving_warming` (queries answered, background warmup in progress) → `200 ready`. Load balancers see fully-warm pods only; queries never block on a half-loaded manifest.
@@ -302,8 +302,8 @@ graph TB
     end
 
     subgraph "Cold Tier — Unlimited (S3) — Victoria Lakehouse"
-        LHL["lakehouse-logs<br/>(insert)"] --> B1["Buffer<br/>(logstore, durable)"]
-        LHT["lakehouse-traces<br/>(insert)"] --> B2["Buffer<br/>(logstore, durable)"]
+        LHL["lakehouse-logs<br/>(insert)"] --> B1["Insert buffer<br/>(segments, durable)"]
+        LHT["lakehouse-traces<br/>(insert)"] --> B2["Insert buffer<br/>(segments, durable)"]
         B1 -->|flush| S3[("S3 Parquet<br/>(11 nines)")]
         B2 -->|flush| S3
         LHLS["lakehouse-logs<br/>(select)"] --> S3
@@ -517,10 +517,10 @@ Each binary supports three roles for independent scaling:
 
 <!-- features:begin -->
 ### Write Path
-- **Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
+- **Adaptive file sizing**: a buffer segment is sealed early once its estimated size approaches `insert.target_file_size`, and is written in objects of at most that size, for optimal Parquet file sizes with bounded flush memory.
 - **Atomic S3 writes**: each Parquet file is written via a single S3 PutObject (1x write amplification). No WAL replay deduplication, no compactor reconciliation — contrast with Loki/Tempo's 3-5x write amplification from WAL→chunk→S3 pipelines.
 - **Buffer query bridge**: select pods fan out to ALL insert pods across ALL AZs via `/internal/buffer/query` for zero-delay reads of unflushed data. AZ-aware routing is only used for peer cache (L3), never for buffer queries — same-AZ-only would miss 2/3 of buffered rows in a 3-AZ deployment.
-- **Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](docs/durability.md).
+- **Crash-safe durability (no WAL)**: the insert buffer is a sequence of upstream logstorage segments on a persistent volume (the same engine hot VL/VT use, parts on disk within about 11 s as upstream, restored on open); every sealed segment is drained completely to Parquet — late and backfilled rows included — and a restart drains whatever is left without rewriting what is stored, so the crash-loss window matches hot VL/VT. See [Persistence & Durability](docs/durability.md).
 - **Full VL insert protocol support**: jsonline, Loki (JSON + protobuf), ES bulk, syslog, journald, Datadog, OTLP, Splunk, native insert — all via VL's upstream `vlinsert` handlers.
 - **Manifest label pruning**: `FileInfo.Labels` enables query-time file skipping based on label values without opening Parquet files.
 
@@ -574,7 +574,7 @@ Each binary supports three roles for independent scaling:
 - **Per-tenant lifecycle overrides**: tenants with their own S3 transition schedule (e.g. `ONEZONE_IA @ 7d` → `GLACIER @ 60d`) shadow the global rules; the storage-class detector and rewriter scheduler both consult the per-tenant rules so manual predictions and the background rewriter agree.
 - **One process, many buckets**: optional per-tenant bucket overrides route a tenant's reads and writes to its own S3 bucket via the YAML policy file's `tenant.bucket` field (no template required). The s3reader pool registry caches a separate client per bucket so a single lakehouse process serves isolated buckets without restart. Manifest sidecars stay in the default bucket so a fleet-wide manifest still resolves files across many tenant buckets.
 - **Per-tenant config overrides** with global-default inheritance: `Retention`, `Cardinality`, `Ingest` rate limits, `Lifecycle` transitions, and `S3` bucket can be overridden per `(AccountID, ProjectID)` via a YAML policy file. Unspecified knobs fall back to the global defaults. Overrides keyed by OrgID alias re-resolve on the same cadence as alias sync, so late-registered tenants pick up their overrides without a restart.
-- **In-path S3 isolation**: `BatchWriter` groups rows by `(AccountID, ProjectID)` at flush and writes one Parquet file per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback). Every Parquet tool (DuckDB, ClickHouse, Trino, Spark) can query a tenant's prefix directly.
+- **In-path S3 isolation**: The `BufferFlusher` drains each segment per `(AccountID, ProjectID)` and writes Parquet files per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback). Every Parquet tool (DuckDB, ClickHouse, Trino, Spark) can query a tenant's prefix directly.
 - **Tenant stats & monitoring**: real-time per-tenant statistics (files, bytes, rows, cost) with CRDT fleet sync, JSON API, and Prometheus metrics. `/api/v1/stats/breakdown?group_by=tenant` returns exact per-tenant facets (not estimated shares) with `org_id` decoration; `/api/v1/tenants/policy` lists every resolved override plus pending aliases; `/api/v1/tenants/{id}` includes a `policy` block when configured.
 
 ### Tenant Stats & Storage Metrics
@@ -609,13 +609,13 @@ Five named presets, each an explicit set of overrides on the built-in defaults. 
 <!-- BEGIN GENERATED: config-profile-summary -->
 <!-- Generated by `make config-docs` from the code; do not edit. -->
 
-| Profile | Ack mode (not read) | Flush interval | zstd level | Cache memory | Cache disk | Compaction | GC | Retention | Stats | Cross-signal |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `balanced` | buffer | 1m | 3 | 512MB | 50GB | on | on | off | on | off |
-| `max-performance` | buffer | 5s | 3 | 2GB | 100GB | on | on | off | on | on |
-| `max-durability` | flush-sync | 1m | 7 | 512MB | 50GB | on | on | on | on | off |
-| `max-cost-savings` | buffer | 30s | 11 | 128MB | 10GB | off | off | on | off | off |
-| `dev` | buffer | 1s | 1 | 64MB | 1GB | off | off | off | off | off |
+| Profile | Buffer flush interval | zstd level | Cache memory | Cache disk | Compaction | GC | Retention | Stats | Cross-signal |
+|---|---|---|---|---|---|---|---|---|---|
+| `balanced` | 5m | 3 | 512MB | 50GB | on | on | off | on | off |
+| `max-performance` | 5m | 3 | 2GB | 100GB | on | on | off | on | on |
+| `max-durability` | 5m | 7 | 512MB | 50GB | on | on | on | on | off |
+| `max-cost-savings` | 5m | 11 | 128MB | 10GB | off | off | on | off | off |
+| `dev` | 10s | 1 | 64MB | 1GB | off | off | off | off | off |
 
 <!-- END GENERATED: config-profile-summary -->
 

@@ -288,8 +288,8 @@ func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 				unflushed = append(unflushed, rows...)
 				continue
 			}
-			bw.AddTraceRows(rows)
-			bw.triggerFlush()
+			bw.stageTraceRows(rows)
+			bw.flushStagedNow()
 		}
 	}
 	if layout == "peer" {

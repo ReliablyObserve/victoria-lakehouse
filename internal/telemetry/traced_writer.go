@@ -3,38 +3,39 @@ package telemetry
 import (
 	"context"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// LogWriter is the subset of parquets3.Storage needed for the insert path.
-type LogWriter interface {
-	MustAddLogRows(rows []schema.LogRow)
-	CanWriteData() error
+// Buffer is the insert buffer as the insert path uses it.
+type Buffer interface {
+	MustAddRows(lr *logstorage.LogRows)
+	IsReadOnly() bool
 }
 
-// TracedWriter wraps a LogWriter and adds OTEL tracing spans
-// to the MustAddLogRows method.
-type TracedWriter struct {
-	inner LogWriter
+// TracedBuffer wraps the insert buffer and adds an OTEL span to every add.
+type TracedBuffer struct {
+	inner Buffer
 }
 
-// NewTracedWriter returns a TracedWriter decorator around w.
-func NewTracedWriter(w LogWriter) *TracedWriter {
-	return &TracedWriter{inner: w}
+// NewTracedBuffer returns a TracedBuffer decorator around b.
+func NewTracedBuffer(b Buffer) *TracedBuffer {
+	return &TracedBuffer{inner: b}
 }
 
-func (t *TracedWriter) MustAddLogRows(rows []schema.LogRow) {
+// MustAddRows adds lr to the buffer inside a "storage.add_rows" span.
+func (t *TracedBuffer) MustAddRows(lr *logstorage.LogRows) {
 	_, span := otel.Tracer("lakehouse").Start(context.Background(), "storage.add_rows",
-		trace.WithAttributes(attribute.Int("row_count", len(rows))),
+		trace.WithAttributes(attribute.Int("row_count", lr.RowsCount())),
 	)
 	defer span.End()
-	t.inner.MustAddLogRows(rows)
+	t.inner.MustAddRows(lr)
 }
 
-func (t *TracedWriter) CanWriteData() error {
-	return t.inner.CanWriteData()
+// IsReadOnly reports whether the buffer refuses writes.
+func (t *TracedBuffer) IsReadOnly() bool {
+	return t.inner.IsReadOnly()
 }

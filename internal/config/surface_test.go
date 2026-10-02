@@ -148,7 +148,7 @@ func TestDescribeSurface_KeysCoverEveryYAMLLeaf(t *testing.T) {
 	wantTypes := map[string]string{
 		"compaction.enabled":                           "bool",
 		"query.file_workers":                           "int",
-		"insert.flush_interval":                        "duration",
+		"insert.buffer_flush_interval":                 "duration",
 		"cache.eviction_watermark":                     "float",
 		"logs.bloom_columns":                           "[]string",
 		"compaction.compression_level_by_output_level": "[]int",
@@ -165,12 +165,12 @@ func TestDescribeSurface_KeysCoverEveryYAMLLeaf(t *testing.T) {
 	}
 
 	wantDefaults := map[string]any{
-		"query.file_workers":    int64(64),
-		"compaction.enabled":    true,
-		"insert.flush_interval": "1m",
-		"cache.footer_ttl":      "1h",
-		"logs.bloom_columns":    []any{"service.name", "trace_id"},
-		"tenant.known_tenants":  []any{},
+		"query.file_workers":           int64(64),
+		"compaction.enabled":           true,
+		"insert.buffer_flush_interval": "5m",
+		"cache.footer_ttl":             "1h",
+		"logs.bloom_columns":           []any{"service.name", "trace_id"},
+		"tenant.known_tenants":         []any{},
 	}
 	for key, want := range wantDefaults {
 		if got := keyInfo(t, s, key).Default; !sameValue(got, want) {
@@ -194,7 +194,7 @@ func TestDescribeSurface_FileMergeOfTheRealLoader(t *testing.T) {
 		"compaction.enabled":           FileMergeEnableOnly,
 		"traces.jaeger_enabled":        FileMergeEnableOnly,
 		"query.file_workers":           FileMergeSet,
-		"insert.flush_interval":        FileMergeSet,
+		"insert.buffer_flush_interval": FileMergeSet,
 		"logs.bloom_columns":           FileMergeSet,
 		"query.max_files_per_query":    FileMergeIgnored,
 		"pmeta.enabled":                FileMergeIgnored,

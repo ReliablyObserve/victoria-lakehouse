@@ -125,12 +125,11 @@ Smart cache TTL settings (in `smart_cache`):
 
 | Setting | Default | Impact |
 |---|---|---|
-| `insert.flush_interval` | `1m` | How often partition buffers are flushed to S3. Lower reduces tail latency to S3; higher improves write throughput and compression. |
-| `insert.target_file_size` | `128MB` | Compressed size threshold that triggers an early flush. Tune with `insert.row_group_size` together. |
+| `insert.buffer_flush_interval` | `5m` | The longest a buffer segment stays open before it is sealed and written to S3. Lower reduces the time to S3; higher gives bigger objects and fewer PUTs. |
+| `insert.target_file_size` | `128MB` | Object size target; a segment holding about this much seals early. Tune with `insert.row_group_size` together. |
 | `insert.row_group_size` | `10000` | Rows per Parquet row group. Larger row groups improve column stats pruning; smaller groups reduce memory per flush. |
 | `insert.compression_level` | `3` | ZSTD level of fresh writes; compaction recompresses older files at the levels in `compaction.compression_level_by_output_level`. Level 7 gives 6x+ compression at ~260 MB/s write speed; level 3 writes 5x faster with ~25% less compression; level 11+ gains <2% at 5x slower writes. |
-| `insert.buffer_engine` | `buffer` | `logstore` selects the durable logstorage-native buffer (crash recovery via on-disk parts, no WAL). |
-| `insert.buffer_retention` | `1h` | How long the logstore buffer keeps a row; the crash-recovery ceiling (validated `>= 4x buffer_flush_interval`). |
+| `insert.buffer_dir` | `/data/lakehouse/buffer` | The durable insert buffer; put it on a persistent volume with local-SSD latency. Acknowledged rows live here until they are in Parquet. |
 
 ### Bloom index
 

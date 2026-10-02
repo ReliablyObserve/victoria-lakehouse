@@ -1,8 +1,10 @@
 package vlstorage
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
@@ -157,41 +159,37 @@ func FuzzUnmarshalStreamTags(f *testing.F) {
 	})
 }
 
-// FuzzLogRowsToTraceRows fuzzes the full pipeline: feed two arbitrary
-// (name, value) pairs through LogRows.MustAdd, then convert. The
-// resulting row(s) must satisfy the same no-collision invariant.
-func FuzzLogRowsToTraceRows(f *testing.F) {
+// FuzzDataBlockToTraceRows fuzzes the conversion every Parquet row goes
+// through: a block with arbitrary column names and values must convert without
+// panicking, and the rows must not alias the block's memory (the engine reuses
+// it) — overwriting the block afterwards must not change a row.
+func FuzzDataBlockToTraceRows(f *testing.F) {
 	f.Add("trace_id", "abc", "service.name", "svc")
 	f.Add("duration_ns", "5000000", "span.kind", "2")
 	f.Add(otelpb.TraceIDField, "tid", otelpb.NameField, "op")
 	f.Add(otelpb.ResourceAttrPrefix+"service.name", "svc-r", otelpb.SpanAttrPrefixField+"http.method", "GET")
+	f.Add("_time", "2026-01-02T03:04:05.123456789Z", "_stream", `{resource_attr:service.name="x"}`)
 	f.Add("", "ignored", "custom.tag", "val")
 	f.Add("trace_id", "", "span_id", "")
 	f.Add(strings.Repeat("x", 256), strings.Repeat("y", 1024), "trace_id", "t1")
 
 	f.Fuzz(func(t *testing.T, n1, v1, n2, v2 string) {
-		lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
-		defer logstorage.PutLogRows(lr)
-		lr.MustAdd(logstorage.TenantID{}, 1_000_000_000, []logstorage.Field{
-			{Name: n1, Value: v1},
-			{Name: n2, Value: v2},
-		}, -1)
-
-		rows := logRowsToTraceRows(lr)
-		// Inspectability invariant: walk every produced row.
-		for i := range rows {
-			row := &rows[i]
-			_ = row.TraceID
-			_ = row.SpanID
-			_ = row.ServiceName
-			for k, v := range row.SpanAttributes {
-				_ = k
-				_ = v
-			}
-			for k, v := range row.ResourceAttributes {
-				_ = k
-				_ = v
-			}
+		// Values live in one arena the "engine" wipes afterwards.
+		arena := []byte(v1 + v2)
+		vals1 := unsafe.String(unsafe.SliceData(arena), len(v1))
+		vals2 := unsafe.String(unsafe.SliceData(arena[len(v1):]), len(v2))
+		db := &logstorage.DataBlock{}
+		db.SetColumns([]logstorage.BlockColumn{
+			{Name: n1, Values: []string{vals1}},
+			{Name: n2, Values: []string{vals2}},
+		})
+		rows := DataBlockToTraceRows(db, logstorage.TenantID{AccountID: 1, ProjectID: 2})
+		before := fmt.Sprintf("%+v", rows)
+		for i := range arena {
+			arena[i] = 'X'
+		}
+		if after := fmt.Sprintf("%+v", rows); after != before {
+			t.Fatalf("a converted row aliases the block's memory:\nbefore %s\nafter  %s", before, after)
 		}
 	})
 }

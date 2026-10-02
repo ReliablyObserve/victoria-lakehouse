@@ -609,9 +609,3 @@ func windowRowGroups(f *parquet.File, lo, hi int64) []int {
 	}
 	return all
 }
-
-// bufferRowsTo streams the unflushed spans of the request's tenants into
-// sink, the same spans RunQuery merges (see queryBufferBridgeTo).
-func (s *Storage) bufferRowsTo(ctx context.Context, startNs, endNs int64, wm watermarkSource, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
-	s.queryBufferBridgeTo(ctx, startNs, endNs, wm, q, tenantIDs, sink)
-}

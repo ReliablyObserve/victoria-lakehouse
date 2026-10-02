@@ -12,8 +12,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 )
 
-// Trap 3 regression tests (parquet-compression-research.md, "The three
-// correctness traps under item 1"): every helper that derives a row group's
+// Page-index time-bounds regression tests: every helper that derives a row group's
 // timestamp bounds from the page index must aggregate across ALL pages
 // (columnIndexTimeBounds) — never MinValue(0)/MaxValue(N-1). The fixture
 // writes rows grouped by stream with interleaved time blocks and a tiny

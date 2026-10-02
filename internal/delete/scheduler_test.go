@@ -2,6 +2,8 @@ package delete
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -424,5 +426,74 @@ func TestSchedulerRunOnce_RewriteError(t *testing.T) {
 	got, _ := store.Get("ts-err")
 	if got.Reaped[key] {
 		t.Error("key should not be reaped after rewrite error")
+	}
+}
+
+type fakeSegmentMarkers struct {
+	markers map[string]time.Time
+	err     error
+}
+
+func (f fakeSegmentMarkers) ListModTimes(_ context.Context, _ string) (map[string]time.Time, error) {
+	return f.markers, f.err
+}
+
+// A rewrite replaces an object by one without the buffer segment's nonce, so an
+// object whose segment may still be served from its insert pod waits: until the
+// segment is committed and the protection has passed (or it is old enough to be
+// presumed orphaned), the rewrite is deferred and the tombstone's query-time
+// filter keeps the rows hidden.
+func TestSchedulerRunOnce_WaitsForTheBufferSegmentOfAnObject(t *testing.T) {
+	created := time.Now().Add(-time.Hour)
+	nonce := fmt.Sprintf("%08x%08x", uint32(created.Unix()), uint32(7))
+	key := "logs/dt=2026-01-01/hour=10/" + nonce + "-0.parquet"
+
+	for _, tc := range []struct {
+		name        string
+		lister      func() fakeSegmentMarkers
+		wantRewrite bool
+	}{
+		{"no marker yet", func() fakeSegmentMarkers { return fakeSegmentMarkers{markers: map[string]time.Time{}} }, false},
+		{"committed a moment ago", func() fakeSegmentMarkers {
+			return fakeSegmentMarkers{markers: map[string]time.Time{"logs/_segments/" + nonce: time.Now().Add(-time.Minute)}}
+		}, false},
+		{"marker listing fails", func() fakeSegmentMarkers { return fakeSegmentMarkers{err: errors.New("list: boom")} }, false},
+		{"committed and protected long enough", func() fakeSegmentMarkers {
+			return fakeSegmentMarkers{markers: map[string]time.Time{"logs/_segments/" + nonce: time.Now().Add(-time.Hour)}}
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewTombstoneStore()
+			pool := newMockRewriterPool()
+			pool.Put(key, buildTestParquet(t, []schema.LogRow{
+				{TimestampUnixNano: 1000, Body: "delete me", SeverityText: "error", ServiceName: "web"},
+				{TimestampUnixNano: 2000, Body: "keep this", SeverityText: "info", ServiceName: "web"},
+			}))
+			store.Add(Tombstone{
+				Tenants: []TenantRef{{}}, ID: "ts-seg", Query: `severity_text:="error"`, StartNs: 0, EndNs: 5000,
+				AffectedKeys: []string{key}, CreatedAt: time.Now().Add(-2 * time.Hour), Mode: "permanent", Reaped: make(map[string]bool),
+			})
+			sched := buildSchedulerForTest(t, store, NewStorageClassDetector(nil), pool, []string{"STANDARD"})
+			sched.SetSegmentGuard(tc.lister(), "logs/", 5*time.Minute)
+
+			deferred0 := metrics.DeleteRewriteDeferred.Get("segment_live")
+			results := sched.RunOnce(context.Background())
+
+			if tc.wantRewrite {
+				if len(results) != 1 || results[0].RowsRemoved != 1 {
+					t.Fatalf("results = %+v, want the object rewritten", results)
+				}
+				return
+			}
+			if len(results) != 0 {
+				t.Fatalf("an object of a live segment was rewritten: %+v", results)
+			}
+			if metrics.DeleteRewriteDeferred.Get("segment_live") != deferred0+1 {
+				t.Error("the deferral was not counted (reason segment_live)")
+			}
+			if _, active := store.Get("ts-seg"); !active {
+				t.Error("the tombstone was retired before its object was rewritten")
+			}
+		})
 	}
 }

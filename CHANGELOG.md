@@ -7,7 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The insert buffer is durable by default: a sequence of upstream storage segments, drained whole to Parquet.**
+  Every acknowledged row goes into one active `logstorage` segment under `insert.buffer_dir`, cut by ingest time
+  rather than by `_time`; a segment is sealed after `insert.buffer_flush_interval` (default 5m) or earlier at
+  about `insert.target_file_size`, then written completely, per tenant, in objects of at most the target size, so
+  flush memory is bounded by one object. An insert is acknowledged exactly as in hot VictoriaLogs and
+  VictoriaTraces: the rows are on disk within upstream's flush window (about 11 s at worst), inserts get upstream's 429 when the buffer
+  volume is below its free-space floor, and an unreachable object store refuses nothing. Late and backfilled rows
+  of any age are written with the segment they arrived in (before, a row older than the buffer retention was
+  dropped from the flush). A restart reopens the segments and writes only what is missing, with the same keys and
+  bytes. The read handoff is exact and has no time watermark: objects carry their segment's nonce, a query serves
+  the live segments' rows and drops their objects from the scan, and select pods get the rows and nonces from the
+  insert pods (`X-Lakehouse-Buffer-Segments`). Compaction and delete rewrites leave the objects of live segments
+  alone, guided by commit markers under `_segments/`. Both binaries; the defaults need no configuration. The Helm
+  chart gives the insert StatefulSet a PVC for `insert.buffer_dir` and an emptyDir when persistence is off (with a
+  warning in `NOTES.txt`); a buffer directory of an earlier release is moved aside to `legacy-<unix>/` at startup.
+  New metrics: `lakehouse_buffer_pending_rows`, `lakehouse_buffer_segments{state}`,
+  `lakehouse_buffer_oldest_pending_age_seconds`, `lakehouse_buffer_view_excluded_objects_total`; dashboards and
+  alerts (`LakehouseBufferNotDraining`, `LakehouseInsertRefusedDiskFloor`) follow. `lakehouse_insert_rows_total`
+  now counts the rows admitted into the buffer (spans only for traces), and `lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}`
+  counts at flush. See `docs/durability.md`.
+
 ### Fixed
+
+- **Select pods see the unflushed rows of the insert pods (both binaries).** Every query a select pod answers
+  also asks the insert pods for the rows they have not written to S3 yet (the buffer bridge), but it never
+  reached them:
+  - Addresses found by DNS (`host:port`) were requested without a scheme, so the request URL did not parse and
+    every peer's unflushed rows were missing from every answer: on a select pod, and on any `role=all` pod with
+    peers.
+  - `select.insert_headless_service`, the setting meant to point select pods at the insert pods, was read by
+    nothing.
+
+  The bridge now requests discovered addresses over `http://`, and select pods resolve
+  `select.insert_headless_service` on every `discovery.peer_refresh_interval`. The Helm chart sets it to the
+  release's insert headless service of each signal. In a split deployment a row is visible from a select pod as
+  soon as it is acknowledged, instead of only after its insert pod flushed it (up to the flush interval plus a
+  manifest refresh).
 
 - **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**
   The cold read decided which Parquet columns to load by scanning the query text, and that scan missed the default
@@ -52,6 +90,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validates it, regenerates both views, freezes dated snapshots and shows what changed between two reviews, and the
   `Market data` workflow fails a pull request whose generated files are out of date and lists cells due for a re-check
   every week.
+
+### Removed
+
+- **The staging buffer engine and its settings.** `insert.buffer_engine`, `buffer_flush_enabled`,
+  `buffer_retention`, `ack_mode`, `flush_interval` (and the `-lakehouse.insert.flush-interval` flag), `flush_linger`,
+  `flush_max_rows`, `max_buffer_rows`, `max_buffer_bytes` and `peer_replicate*` are gone, together with the
+  in-memory `BatchWriter` flush path, the shadow exporter and the flush watermark. A config file that still sets one
+  of them is refused at startup with a message naming the key (`insert.buffer_dir` and
+  `insert.buffer_flush_interval` are now required). Metrics removed: `lakehouse_insert_rows_buffered`,
+  `lakehouse_insert_bytes_buffered`, `lakehouse_insert_rows_requeued_total`, `lakehouse_insert_rows_lost_total`,
+  `lakehouse_insert_rows_lost_at_shutdown_total`, `lakehouse_insert_partitions_active`,
+  `lakehouse_insert_flush_watermark_timestamp`, `lakehouse_watermark_inferred_unresolved_total`,
+  `lakehouse_buffer_store_dualwrite_failures_total` and `lakehouse_buffer_shadow_export_*`; `lakehouse_insert_rejected_total` keeps only
+  `reason="read_only"`.
 
 ## [0.143.12] - 2026-10-02
 

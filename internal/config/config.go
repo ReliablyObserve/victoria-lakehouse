@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -252,19 +253,9 @@ func (c *Config) ActiveCompatVersion() string {
 
 // InsertConfig controls buffering and flushing on the write path.
 type InsertConfig struct {
-	// FlushInterval is the interval at which buffered rows are flushed to
-	// Parquet on S3.
-	FlushInterval time.Duration `yaml:"flush_interval"`
-	// MaxBufferRows is the number of rows a partition buffer holds before it
-	// flushes.
-	MaxBufferRows int `yaml:"max_buffer_rows"`
-	// MaxBufferBytes bounds the rows not yet written to object storage —
-	// buffered, being uploaded, or put back after a failed upload — as a size
-	// string. Past it inserts are refused with 429, as VictoriaLogs does when
-	// it cannot take writes, until flushes catch up.
-	MaxBufferBytes string `yaml:"max_buffer_bytes"`
-	// TargetFileSize is the target Parquet file size, as a size string; a
-	// buffer reaching it flushes early.
+	// TargetFileSize is the target size of a Parquet object, as a size string:
+	// the buffer flusher cuts a segment into objects of about this size, and a
+	// segment that reaches it (while few segments wait) is sealed early.
 	TargetFileSize string `yaml:"target_file_size"`
 	// RowGroupSize is the number of rows per Parquet row group in freshly
 	// written files.
@@ -277,62 +268,18 @@ type InsertConfig struct {
 	// compaction.compression_level_by_output_level.
 	CompressionLevel int `yaml:"compression_level"`
 
-	// AckMode selects when an insert is acknowledged: buffer (once buffered),
-	// wal or flush-sync (once S3 confirms the write).
-	AckMode string `yaml:"ack_mode"`
-	// FlushLinger delays a flush to coalesce small writes.
-	FlushLinger time.Duration `yaml:"flush_linger"`
-	// FlushMaxRows caps the rows of one flush batch.
-	FlushMaxRows int `yaml:"flush_max_rows"`
-	// PeerReplicate replicates inserts to peer insert pods.
-	PeerReplicate bool `yaml:"peer_replicate"`
-	// PeerReplicateTimeout bounds one peer replication.
-	PeerReplicateTimeout time.Duration `yaml:"peer_replicate_timeout"`
-	// PeerReplicateTTL is how long replicated rows are kept on peers.
-	PeerReplicateTTL time.Duration `yaml:"peer_replicate_ttl"`
-
-	// BufferEngine selects how the insert buffer (recently-ingested,
-	// not-yet-flushed rows) is held and queried (Option B):
-	//   "buffer"   (default) — legacy []schema.{Log,Trace}Row staging +
-	//                           struct→DataBlock conversion at query time.
-	//   "logstore"           — a per-pod logstorage.Storage, queried via the
-	//                           same engine as the S3-Parquet scan (no
-	//                           conversion). Rolled out in phases behind this
-	//                           flag; during P1 it dual-writes alongside the
-	//                           legacy buffer, which stays authoritative.
-	BufferEngine string `yaml:"buffer_engine"`
-	// BufferDir is the local/tmpfs directory for the logstore buffer's
-	// parts (durability is logstorage persistence here + the S3 Parquet flush).
+	// BufferDir is the directory of the insert buffer: a sequence of upstream
+	// VictoriaLogs storages ("segments"), one directory each, holding every
+	// acknowledged row until it has been written to Parquet. It must be a
+	// persistent volume (a StatefulSet PVC): a pod that loses it loses the rows
+	// it had not written yet. Size it for buffer_flush_interval plus the
+	// longest object-store outage you want to ride out (docs/sizing.md).
 	BufferDir string `yaml:"buffer_dir"`
-	// BufferRetention bounds how long rows live in the logstore buffer before
-	// VL drops them; once the flush sink is active this is just a ceiling.
-	BufferRetention time.Duration `yaml:"buffer_retention"`
-	// BufferFlushEnabled makes the logstore buffer the AUTHORITATIVE Parquet
-	// producer via the BufferFlusher (the WAL cutover). Default false: the
-	// legacy []row path stays authoritative and the buffer is read-only shadow.
-	// Requires BufferEngine == "logstore".
-	BufferFlushEnabled bool `yaml:"buffer_flush_enabled"`
-	// BufferFlushInterval is the BufferFlusher's object-store flush CAP: the max
-	// time a sub-target window waits before being flushed to S3 Parquet anyway.
-	// The flusher checks more often than this but only flushes a window once it
-	// reaches target_file_size OR has lingered this long — so S3 gets
-	// ~target-sized objects, not one tiny file per tick. Must be << BufferRetention
-	// (validated: retention >= 2*interval). Default 5m.
+	// BufferFlushInterval is the longest a segment stays open: the active
+	// segment is sealed this long after it opened (earlier if it reaches
+	// target_file_size while few segments wait), then written to object storage
+	// completely and removed after a short grace period. Default 5m.
 	BufferFlushInterval time.Duration `yaml:"buffer_flush_interval"`
-}
-
-// BufferEngineLogstore reports whether the logstorage-native buffer (Option B)
-// is selected. Default ("" or "buffer") keeps the legacy staging buffer.
-func (c *InsertConfig) BufferEngineLogstore() bool {
-	return c.BufferEngine == "logstore"
-}
-
-func (c *InsertConfig) MaxBufferBytesN() int64 {
-	n, _ := ParseSizeBytes(c.MaxBufferBytes)
-	if n <= 0 {
-		return 256 * 1024 * 1024
-	}
-	return n
 }
 
 func (c *InsertConfig) TargetFileSizeN() int64 {
@@ -1359,25 +1306,12 @@ func Default() *Config {
 		},
 
 		Insert: InsertConfig{
-			FlushInterval:    60 * time.Second,
-			MaxBufferRows:    50000,
-			MaxBufferBytes:   "256MB",
 			TargetFileSize:   "128MB",
 			RowGroupSize:     10000,
 			BloomColumns:     []string{"service.name", "trace_id"},
 			CompressionLevel: 3,
 
-			AckMode:              "buffer",
-			FlushLinger:          200 * time.Millisecond,
-			FlushMaxRows:         5000,
-			PeerReplicate:        false,
-			PeerReplicateTimeout: 5 * time.Millisecond,
-			PeerReplicateTTL:     30 * time.Second,
-
-			BufferEngine:        "buffer", // legacy staging buffer; "logstore" opts into Option B
 			BufferDir:           "/data/lakehouse/buffer",
-			BufferRetention:     time.Hour,
-			BufferFlushEnabled:  false, // cutover off by default; legacy path authoritative
 			BufferFlushInterval: 5 * time.Minute,
 		},
 
@@ -1587,6 +1521,9 @@ func loadConfigBytes(data []byte, mode Mode, role Role) (*Config, error) {
 	if err := yaml.Unmarshal(data, &wrapper); err != nil {
 		return nil, err
 	}
+	if err := rejectRemovedKeys(data); err != nil {
+		return nil, err
+	}
 
 	fileConfig := &wrapper.Lakehouse
 
@@ -1604,6 +1541,57 @@ func loadConfigBytes(data []byte, mode Mode, role Role) (*Config, error) {
 	merged.Profile = profile
 
 	return merged, nil
+}
+
+// removedInsertKeys are insert.* keys of earlier releases. The insert buffer is
+// now always the segmented upstream storage and an acknowledgement means what
+// it means in hot VictoriaLogs/VictoriaTraces, so these settings have nothing
+// to act on; a file that still sets one is refused rather than silently
+// ignored, because the operator would believe a durability or memory setting
+// is in force.
+var removedInsertKeys = map[string]string{
+	"buffer_engine":          "the insert buffer is always the segmented upstream storage",
+	"buffer_flush_enabled":   "the buffer flusher always runs",
+	"buffer_retention":       "a segment is removed once its rows are in Parquet",
+	"ack_mode":               "an insert is acknowledged as in hot VictoriaLogs/VictoriaTraces: once upstream has the rows, on disk within about 11 s as upstream",
+	"flush_interval":         "use insert.buffer_flush_interval: the longest a buffer segment stays open",
+	"max_buffer_rows":        "the buffer is bounded by its volume (insert.buffer_dir), and inserts get 429 below upstream's free-space floor",
+	"max_buffer_bytes":       "the buffer is bounded by its volume (insert.buffer_dir), and inserts get 429 below upstream's free-space floor",
+	"flush_linger":           "segments are written whole; there is no per-flush linger",
+	"flush_max_rows":         "object sizes follow insert.target_file_size",
+	"peer_replicate":         "there is no peer replication of inserts",
+	"peer_replicate_timeout": "there is no peer replication of inserts",
+	"peer_replicate_ttl":     "there is no peer replication of inserts",
+}
+
+// rejectRemovedKeys refuses a config file that sets a removed insert.* key.
+func rejectRemovedKeys(data []byte) error {
+	var doc struct {
+		Lakehouse struct {
+			Insert map[string]any `yaml:"insert"`
+		} `yaml:"lakehouse"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	var found []string
+	for k := range doc.Lakehouse.Insert {
+		if _, removed := removedInsertKeys[k]; removed {
+			found = append(found, k)
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	sort.Strings(found)
+	var b strings.Builder
+	for i, k := range found {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "insert.%s was removed (%s)", k, removedInsertKeys[k])
+	}
+	return fmt.Errorf("%s: delete it from the config file", b.String())
 }
 
 func MergeConfigs(base, overlay *Config) *Config {
@@ -1731,63 +1719,20 @@ func (c *Config) validateInsert() error {
 	if c.Insert.TargetFileSize == "" {
 		return fmt.Errorf("--lakehouse.insert.target-file-size is required when insert enabled")
 	}
-	if c.Insert.FlushInterval <= 0 {
-		return fmt.Errorf("--lakehouse.insert.flush-interval must be positive")
-	}
-	if c.Insert.MaxBufferRows <= 0 {
-		return fmt.Errorf("--lakehouse.insert.max-buffer-rows must be positive")
-	}
 	if c.Insert.RowGroupSize <= 0 {
 		return fmt.Errorf("--lakehouse.insert.row-group-size must be positive")
 	}
 	if c.Insert.CompressionLevel < 1 || c.Insert.CompressionLevel > 22 {
 		return fmt.Errorf("--lakehouse.insert.compression-level must be 1-22, got %d", c.Insert.CompressionLevel)
 	}
-	switch c.Insert.BufferEngine {
-	case "", "buffer", "logstore":
-	default:
-		return fmt.Errorf("--lakehouse.insert.buffer-engine must be \"buffer\" or \"logstore\", got %q", c.Insert.BufferEngine)
+	if c.Insert.BufferDir == "" {
+		return fmt.Errorf("--lakehouse.insert.buffer-dir is required when insert enabled: it holds every row until it is written to object storage")
 	}
-	if c.Insert.BufferFlushEnabled {
-		if !c.Insert.BufferEngineLogstore() {
-			return fmt.Errorf("--lakehouse.insert.buffer-flush-enabled requires buffer-engine=logstore, got %q", c.Insert.BufferEngine)
-		}
-		if c.Insert.BufferFlushInterval <= 0 {
-			return fmt.Errorf("--lakehouse.insert.buffer-flush-interval must be > 0 when flush is enabled")
-		}
-		// CRASH-SAFETY constraint: un-flushed rows live ONLY in the buffer until
-		// the flusher commits them, so the buffer must retain them across (a) a
-		// full linger window before they flush AND (b) any restart downtime before
-		// recovery re-flushes. Require retention >= 4x the flush cap so there is a
-		// generous recovery margin beyond the 2x linger floor — if retention is
-		// too tight, a row could age out of the buffer before a crashed flusher
-		// recovers, which IS data loss (there is no LH WAL backstop anymore).
-		if c.Insert.BufferRetention < 4*c.Insert.BufferFlushInterval {
-			return fmt.Errorf("--lakehouse.insert.buffer-retention (%s) must be >= 4x buffer-flush-interval (%s): un-flushed rows must survive a linger window PLUS restart downtime, since the buffer is their only store until flushed",
-				c.Insert.BufferRetention, c.Insert.BufferFlushInterval)
-		}
-	}
-	if c.Insert.MaxBufferBytes != "" {
-		if _, err := ParseSizeBytes(c.Insert.MaxBufferBytes); err != nil {
-			return fmt.Errorf("--lakehouse.insert.max-buffer-bytes: invalid size %q: %w", c.Insert.MaxBufferBytes, err)
-		}
+	if c.Insert.BufferFlushInterval <= 0 {
+		return fmt.Errorf("--lakehouse.insert.buffer-flush-interval must be positive")
 	}
 	if _, err := ParseSizeBytes(c.Insert.TargetFileSize); err != nil {
 		return fmt.Errorf("--lakehouse.insert.target-file-size: invalid size %q: %w", c.Insert.TargetFileSize, err)
-	}
-	switch c.Insert.AckMode {
-	case "buffer", "wal", "flush-sync":
-	default:
-		return fmt.Errorf("--lakehouse.insert.ack-mode must be one of: buffer, wal, flush-sync; got %q", c.Insert.AckMode)
-	}
-	if c.Insert.FlushLinger < 0 {
-		return fmt.Errorf("--lakehouse.insert.flush-linger must be non-negative")
-	}
-	if c.Insert.FlushMaxRows < 0 {
-		return fmt.Errorf("--lakehouse.insert.flush-max-rows must be non-negative")
-	}
-	if c.Insert.PeerReplicateTTL < 0 {
-		return fmt.Errorf("--lakehouse.insert.peer-replicate-ttl must be non-negative")
 	}
 	return nil
 }
@@ -2494,15 +2439,6 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 
 	// Insert
-	if overlay.Insert.FlushInterval > 0 {
-		base.Insert.FlushInterval = overlay.Insert.FlushInterval
-	}
-	if overlay.Insert.MaxBufferRows > 0 {
-		base.Insert.MaxBufferRows = overlay.Insert.MaxBufferRows
-	}
-	if overlay.Insert.MaxBufferBytes != "" {
-		base.Insert.MaxBufferBytes = overlay.Insert.MaxBufferBytes
-	}
 	if overlay.Insert.RowGroupSize > 0 {
 		base.Insert.RowGroupSize = overlay.Insert.RowGroupSize
 	}
@@ -2515,38 +2451,11 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.Insert.TargetFileSize != "" {
 		base.Insert.TargetFileSize = overlay.Insert.TargetFileSize
 	}
-	if overlay.Insert.BufferEngine != "" {
-		base.Insert.BufferEngine = overlay.Insert.BufferEngine
-	}
 	if overlay.Insert.BufferDir != "" {
 		base.Insert.BufferDir = overlay.Insert.BufferDir
 	}
-	if overlay.Insert.BufferRetention > 0 {
-		base.Insert.BufferRetention = overlay.Insert.BufferRetention
-	}
-	if overlay.Insert.BufferFlushEnabled {
-		base.Insert.BufferFlushEnabled = true
-	}
 	if overlay.Insert.BufferFlushInterval > 0 {
 		base.Insert.BufferFlushInterval = overlay.Insert.BufferFlushInterval
-	}
-	if overlay.Insert.AckMode != "" {
-		base.Insert.AckMode = overlay.Insert.AckMode
-	}
-	if overlay.Insert.FlushLinger > 0 {
-		base.Insert.FlushLinger = overlay.Insert.FlushLinger
-	}
-	if overlay.Insert.FlushMaxRows > 0 {
-		base.Insert.FlushMaxRows = overlay.Insert.FlushMaxRows
-	}
-	if overlay.Insert.PeerReplicate {
-		base.Insert.PeerReplicate = true
-	}
-	if overlay.Insert.PeerReplicateTimeout > 0 {
-		base.Insert.PeerReplicateTimeout = overlay.Insert.PeerReplicateTimeout
-	}
-	if overlay.Insert.PeerReplicateTTL > 0 {
-		base.Insert.PeerReplicateTTL = overlay.Insert.PeerReplicateTTL
 	}
 
 	// Select

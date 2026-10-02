@@ -269,22 +269,28 @@ The `SchemaRegistry` (`internal/schema/registry.go`) translates between Parquet 
 
 ## Serving the recent (unflushed) window
 
-After querying S3, the read path adds the recent rows that haven't been flushed to Parquet yet. How depends on `insert.buffer_engine`:
+Before it lists any object, a query takes a **buffer view**: a snapshot of the insert buffer's live segments (co-located), or the rows and segment nonces returned by every insert pod through `GET /internal/buffer/query?start=X&end=Y&mode=logs` (select pods and multi-pod `role=all`; see "Finding the insert pods" below). The nonces come back in the `X-Lakehouse-Buffer-Segments` response header. Each pod returns only its own rows, so the fan-out gathers all pods' recent data with no double count.
 
-**`logstore` engine (co-located, no peers):** the recent window is served from the local `logstorage.Storage` buffer through the **same** exported `Storage.RunQuery` the S3-Parquet scan uses — no struct→DataBlock reconstruction. The buffer query is scoped to `(watermark, now]`, where the watermark is the newest timestamp the just-scanned Parquet files already cover, so the buffer and Parquet never both emit the same row (no aggregation double-count). `trace_id`-filtered queries (Jaeger/Tempo span fetch) bypass the watermark and serve the full buffer window — span retrieval is reader-deduped on `(trace_id, span_id)`, so completeness matters more than the (harmless) double-emission.
+**No time watermark.** Every object a segment writes has the segment's nonce in its key. The scan drops every object whose key carries a nonce the view serves (`lakehouse_buffer_view_excluded_objects_total`), so each row comes from exactly one place: the segment while the segment is live, the object after it is removed. This holds before, during and after the drain, for late and backfilled rows, after a restart, and for an object the manifest knows only from a listing; none of those needs a time boundary. `trace_id` lookups (Jaeger/Tempo span fetch) take the same path. A peer that fails contributes neither rows nor nonces, so none of its objects is dropped and the query degrades to S3 data only.
 
-**Buffer-bridge fan-out (multi-pod, or the legacy `buffer` engine):** when peers are present (multi-pod `role=all`, or when select pods are configured with `--lakehouse.select.insert-headless-service`), the read path fans out to every insert pod via `GET /internal/buffer/query?start=X&end=Y&mode=logs`. Each pod returns only its own unflushed rows, so the fan-out gathers all pods' recent data with no double-count (and no need to identify/exclude self from the peer list). With the `logstore` engine on a single node (no peers), the local-buffer path above is used directly; with peers, the read path falls through to this fan-out.
+The recent window is served from the segments through the **same** exported `Storage.RunQuery` the S3-Parquet scan uses — no struct→DataBlock reconstruction.
+
+**Finding the insert pods.** The bridge's insert pods are found by DNS:
+- on a select pod, through `select.insert_headless_service` (`name` or `name:port`), resolved on every `discovery.peer_refresh_interval`; the Helm chart sets it to the release's insert headless service of the same signal;
+- otherwise, through the peer ring (`discovery.peer_headless_service`, multi-pod `role=all`).
+
+Discovered `host:port` addresses are requested over `http://`. A single node with no peers reads its own segments directly.
 
 ```
 RunQuery:
-  1. Query S3 Parquet files (via manifest + cache); track the Parquet watermark
-  2. recent window:
-       - logstore + no peers: localBuffer.RunQuery((watermark,now]) -> DataBlocks
-       - peers present:       bufferBridge.Query{Logs,Traces}(...) -> []Row -> DataBlock
-  3. emit via writeBlock (outer RunQuery applies pipes once over Parquet + recent blocks)
+  1. view = snapshot of live segments (local) or rows + nonces from the insert peers
+  2. list objects via manifest + cache, drop those whose nonce is in the view
+  3. scan the remaining Parquet objects
+  4. emit the view's rows
+  5. emit via writeBlock (outer RunQuery applies pipes once over Parquet + recent blocks)
 ```
 
-**The watermark is per tenant and exact.** It is the newest `MaxTimeNs` among the objects whose rows are in the answer for that tenant, and the buffer serves only rows strictly after it. That selection is: the objects the query reads, **plus the objects answered from metadata** (manifest fast path, count pushdown), whose rows are in the answer without being read. Only pruning before the read leaves an object out of the selection (bloom, label and trace-index pruning): its rows are not in the answer, so the buffer rows timed before its end are still served. Leaving the metadata-served objects out would let a newer metadata-served object fall below the watermark of an older object that is read, and the buffer would re-serve its rows (a count of 5 instead of 3). `trace_id` lookups skip the watermark altogether and serve the buffer's full window (completeness over exactness; spans can then appear twice, #279). The watermark is computed when the buffer is consulted, not before. Only an object's **exact** time bounds raise it by knowledge. An object the manifest knows only from the S3 listing (the final flush of a graceful shutdown, a peer's flush) carries bounds inferred from the partition hour, flagged `bounds_inferred`. For those that can change the answer, the exact bounds are resolved first from the pmeta file-meta facet, then from the `_time` statistics in the object's Parquet footer (the shared ranged footer fetch: one tail read, plus one exact-length read for a footer larger than the tail; bounded to 2 s per computation and backed off after a failure or a timeout). An object that still cannot be resolved, or is older than the buffer-retention floor and so is not read, contributes its inferred end: the buffer is hidden up to the end of its hour, rows are never counted twice, and metadata-only answers (manifest fast path, count pushdown) are not used for it. `lakehouse_watermark_inferred_unresolved_total` counts the objects a read was tried for. Without all this, rows buffered after a restart in the same UTC hour as the data flushed at shutdown were hidden until the next flush (#272). See [Persistence & Durability](durability.md#22-restart-and-the-read-watermark).
+An object the manifest knows only from the S3 listing carries bounds inferred from its partition hour, flagged `bounds_inferred`: good enough to prune, never used for a metadata-only answer (manifest fast path, count pushdown), which sends the object to the scan. The startup warmup resolves the exact bounds of the last 6 hours' objects from the pmeta file-meta facet or one ranged footer read. See [Persistence & Durability](durability.md#23-the-read-handoff-exactly-once).
 
 Buffer/peer errors are silently ignored for graceful degradation — S3 data is always available even if insert pods are temporarily unreachable.
 

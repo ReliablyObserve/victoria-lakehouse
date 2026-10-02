@@ -57,8 +57,8 @@ func seedSampledSpanIndex(t *testing.T, pmetaOn bool) (s *Storage, lo, hi int64,
 			TraceID: "t" + fvServices[i], SpanID: "s" + fvServices[i],
 		})
 	}
-	bw.AddTraceRows(rows)
-	bw.triggerFlush()
+	bw.stageTraceRows(rows)
+	bw.flushStagedNow()
 
 	lo, hi = small.Add(-time.Hour).UnixNano(), full.Add(time.Hour).UnixNano()
 
@@ -182,8 +182,8 @@ func TestFieldValues_AliasedField_CatalogStaysTenantScoped(t *testing.T) {
 			i++
 		}
 	}
-	bw.AddTraceRows(rows)
-	bw.triggerFlush()
+	bw.stageTraceRows(rows)
+	bw.flushStagedNow()
 	s.labelIndex.Add("resource_attr:service.name", []string{"svc-a", "svc-b", "svc-c", "svc-d"})
 
 	q := mustParseQueryWithTime(t, "*", base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())

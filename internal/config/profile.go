@@ -96,12 +96,7 @@ func maxPerformanceConfig() *Config {
 	cfg := Default()
 	cfg.Profile = ProfileMaxPerformance
 
-	cfg.Insert.FlushInterval = 5 * time.Second
-	cfg.Insert.FlushLinger = 100 * time.Millisecond
-	cfg.Insert.AckMode = "buffer"
 	cfg.Insert.CompressionLevel = 3
-	cfg.Insert.MaxBufferRows = 100000
-	cfg.Insert.MaxBufferBytes = "512MB"
 	cfg.Insert.TargetFileSize = "64MB"
 	cfg.Insert.RowGroupSize = 5000
 
@@ -165,8 +160,6 @@ func maxDurabilityConfig() *Config {
 	cfg := Default()
 	cfg.Profile = ProfileMaxDurability
 
-	cfg.Insert.AckMode = "flush-sync"
-	cfg.Insert.FlushLinger = 0
 	cfg.Insert.CompressionLevel = 7
 
 	cfg.Compaction.Enabled = true
@@ -196,15 +189,9 @@ func maxCostSavingsConfig() *Config {
 	cfg := Default()
 	cfg.Profile = ProfileMaxCostSavings
 
-	cfg.Insert.FlushInterval = 30 * time.Second
-	cfg.Insert.FlushLinger = 1 * time.Second
 	cfg.Insert.CompressionLevel = 11
-	cfg.Insert.MaxBufferRows = 25000
-	cfg.Insert.MaxBufferBytes = "128MB"
 	cfg.Insert.TargetFileSize = "256MB"
 	cfg.Insert.RowGroupSize = 50000
-	cfg.Insert.AckMode = "buffer"
-	cfg.Insert.PeerReplicate = false
 
 	cfg.Select.BufferQueryEnabled = false
 	cfg.Query.FileWorkers = 4
@@ -271,15 +258,10 @@ func devConfig() *Config {
 	cfg := Default()
 	cfg.Profile = ProfileDev
 
-	cfg.Insert.FlushInterval = 1 * time.Second
-	cfg.Insert.FlushLinger = 0
-	cfg.Insert.AckMode = "buffer"
+	cfg.Insert.BufferFlushInterval = 10 * time.Second
 	cfg.Insert.CompressionLevel = 1
-	cfg.Insert.MaxBufferRows = 1000
-	cfg.Insert.MaxBufferBytes = "32MB"
 	cfg.Insert.TargetFileSize = "8MB"
 	cfg.Insert.RowGroupSize = 1000
-	cfg.Insert.PeerReplicate = false
 
 	cfg.Select.BufferQueryTimeout = 2 * time.Second
 	cfg.Query.FileWorkers = 2

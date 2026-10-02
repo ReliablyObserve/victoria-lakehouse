@@ -2,6 +2,7 @@ package buffer
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,7 +16,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// concurrentLogStore is a minimal Querier whose internal slice is guarded
+// concurrentLogStore is a minimal Source whose internal slice is guarded
 // by a mutex. It models the BatchWriter contract (BufferedLogRows takes a
 // snapshot under lock) so the race detector can flag any handler-side
 // aliasing of the underlying buffer.
@@ -49,6 +50,14 @@ func (c *concurrentLogStore) BufferedLogRows(startNs, endNs int64) []schema.LogR
 
 func (c *concurrentLogStore) BufferedTraceRows(_, _ int64) []schema.TraceRow {
 	return nil
+}
+
+// ReadBuffer implements Source.
+func (c *concurrentLogStore) ReadBuffer(_ context.Context, _ Selection, startNs, endNs int64, mode string) (Answer, error) {
+	if mode != "logs" {
+		return Answer{}, nil
+	}
+	return Answer{Logs: c.BufferedLogRows(startNs, endNs)}, nil
 }
 
 // TestStress_ConcurrentReadsDuringWrites verifies the handler is race-clean

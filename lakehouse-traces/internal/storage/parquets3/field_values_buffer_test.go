@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,10 +21,13 @@ import (
 
 // fvcPeer is an insert peer holding unflushed spans, answering
 // /internal/buffer/query for the default tenant.
-func fvcPeer(t *testing.T, rows []schema.TraceRow) *BufferBridge {
+func fvcPeer(t *testing.T, rows []schema.TraceRow, nonces ...string) *BufferBridge {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(buffer.TenantScopeHeader, "0:0")
+		if len(nonces) > 0 {
+			w.Header().Set(buffer.SegmentsHeader, strings.Join(nonces, ","))
+		}
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)
@@ -36,17 +40,22 @@ func fvcPeer(t *testing.T, rows []schema.TraceRow) *BufferBridge {
 }
 
 // Values and hits cover a peer's unflushed spans, merged as a query merges
-// them: newer than the flushed objects only, filtered, tenant re-checked.
+// them: the objects flushed from the segments the peer serves are not read (no
+// span counted twice), filtered, tenant re-checked.
 func TestTraceFieldValues_IncludeUnflushedSpansFromPeers(t *testing.T) {
-	s := fvcStorage(t, []schema.TraceRow{fvcSpan(5*time.Minute, "GET"), fvcSpan(6*time.Minute, "GET")})
+	const nonce = "65000000aaaabbbb"
+	// The peer's segment was flushed into the first object; the peer still
+	// serves its spans (in grace) and names the segment.
+	s := fvcStorageNonce(t, nonce, []schema.TraceRow{fvcSpan(5*time.Minute, "GET"), fvcSpan(6*time.Minute, "GET")})
 	other := fvcSpan(22*time.Minute, "DELETE")
 	other.AccountID = 7
 	s.bufferBridge = fvcPeer(t, []schema.TraceRow{
-		fvcSpan(4*time.Minute, "GET"), // already in Parquet
+		fvcSpan(5*time.Minute, "GET"), // in the segment's object too
+		fvcSpan(6*time.Minute, "GET"),
 		fvcSpan(20*time.Minute, "GET"),
 		fvcSpan(21*time.Minute, "PUT"),
 		other,
-	})
+	}, nonce)
 	q := mustParseQueryWithTime(t, "*", fvcBase.UnixNano(), fvcBase.Add(time.Hour).UnixNano())
 	got, err := s.GetFieldValues(context.Background(), nil, q, "name", 0)
 	if err != nil {

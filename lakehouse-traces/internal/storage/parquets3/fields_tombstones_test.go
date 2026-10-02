@@ -41,12 +41,12 @@ func newTraceFieldsTombstoneFixture(t *testing.T, withCatalog bool) *traceFields
 	}
 
 	now := time.Now()
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.stageTraceRows([]schema.TraceRow{
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "api-gateway", SpanName: "GET /a", TraceID: "t1", SpanID: "s1"},
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "order-service", SpanName: "POST /b", TraceID: "t2", SpanID: "s2"},
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "api-gateway", SpanName: "GET /a", TraceID: "t3", SpanID: "s3"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	return &traceFieldsTombstoneFixture{
 		storage: s,

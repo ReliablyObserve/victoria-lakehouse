@@ -29,6 +29,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
 type Storage struct {
@@ -51,6 +52,7 @@ type Storage struct {
 	writer            *BatchWriter
 	bufferBridge      *BufferBridge
 	localBuffer       LocalBuffer
+	bufferFlusher     *BufferFlusher
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
 	bloomIdx          *bloomindex.Index
@@ -287,42 +289,9 @@ func New(cfg *config.Config) (*Storage, error) {
 	}, nil
 }
 
-// StartWriter begins the background flush loop. Call after New().
-func (s *Storage) StartWriter() {
-	if s.writer == nil {
-		return
-	}
-	if s.smartCache != nil {
-		s.writer.SetFlushCacheCallback(func(fileKey string, data []byte) {
-			cacheOnFlush(s.smartCache, fileKey, data)
-		})
-	}
-	s.writer.Start()
-}
-
 // Writer returns the batch writer (nil if insert not enabled).
 func (s *Storage) Writer() *BatchWriter {
 	return s.writer
-}
-
-// MustAddLogRows adds log rows to the write buffer. Panics on nil writer.
-func (s *Storage) MustAddLogRows(rows []schema.LogRow) {
-	s.writer.AddLogRows(rows)
-}
-
-// MustAddTraceRows adds trace rows to the write buffer. Panics on nil writer.
-func (s *Storage) MustAddTraceRows(rows []schema.TraceRow) {
-	s.writer.AddTraceRows(rows)
-}
-
-// CanWriteData checks S3 connectivity for writes.
-func (s *Storage) CanWriteData() error {
-	if s.writer == nil {
-		return fmt.Errorf("insert not enabled (role=%s)", s.cfg.Role)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return s.writer.CanWriteData(ctx)
 }
 
 func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]byte, error) {
@@ -428,15 +397,15 @@ func (s *Storage) Close() error {
 	if s.crossSignalClient != nil {
 		s.crossSignalClient.Close()
 	}
-	if s.writer != nil {
-		s.writer.Stop()
-		logger.Infof("writer stopped and final flush completed")
+	// The flusher stops first (a drain cut short resumes after the restart),
+	// then the insert buffer closes: upstream writes every segment's in-memory
+	// rows to disk, so a clean restart loses nothing.
+	if s.bufferFlusher != nil {
+		s.bufferFlusher.Stop()
 	}
-	// Option B: flush + close the logstorage-native buffer so the persistent
-	// data dir captures the last sub-FlushInterval window before exit.
 	if s.localBuffer != nil {
 		s.localBuffer.Close()
-		logger.Infof("Option B logstore buffer flushed and closed")
+		logger.Infof("insert buffer closed")
 	}
 	if s.persister != nil {
 		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
@@ -756,23 +725,26 @@ func (s *Storage) BufferBridge() *BufferBridge {
 	return s.bufferBridge
 }
 
-// LocalBuffer is the narrow query surface of the Option B logstorage-native
-// buffer (membuffer.Store). Declared as an interface to keep parquets3's
-// imports narrow. When set (BufferEngine=logstore, co-located insert+select),
-// the SELECT path serves the recent/unflushed window from it via the same
-// engine the S3-Parquet scan uses — no struct→DataBlock conversion.
+// LocalBuffer is the co-located insert buffer (membuffer.Segments) as the
+// query path uses it: every query takes a snapshot of the live segments (see
+// bufferView), and the buffer is closed at shutdown after the flusher stops.
 type LocalBuffer interface {
-	RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error
-	// Close flushes the in-memory window to the persistent data dir and
-	// releases the store — called on graceful shutdown so a clean restart
-	// loses nothing, not even the sub-FlushInterval window.
+	Snapshot() *membuffer.Snapshot
+	// Close writes every segment's in-memory rows to its directory and closes
+	// it, so a clean restart reopens them all.
 	Close()
 }
 
-// SetLocalBuffer wires the co-located logstorage-native buffer into the query
-// path (Option B P3). nil falls back to the BufferBridge HTTP path.
+// SetLocalBuffer wires the co-located insert buffer into the query path. nil
+// (a select-only node) serves the unflushed rows through the buffer bridge.
 func (s *Storage) SetLocalBuffer(lb LocalBuffer) {
 	s.localBuffer = lb
+}
+
+// SetBufferFlusher records the running flusher so Close stops it before it
+// closes the insert buffer.
+func (s *Storage) SetBufferFlusher(f *BufferFlusher) {
+	s.bufferFlusher = f
 }
 
 // SetTombstoneStore injects a TombstoneStore for query-time row filtering.
@@ -1148,17 +1120,28 @@ func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 						stats.SameAZMembers, s.cfg.Peer.AZMinPeersPerAZ)
 				}
 			}
-			if s.bufferBridge != nil {
+			if s.bufferBridge != nil && s.cfg.Select.InsertHeadlessService == "" {
 				s.bufferBridge.SetEndpointsWithZones(peerZones, s.selfAZ)
 			}
 		} else {
 			if s.peerCache != nil {
 				s.peerCache.UpdatePeers(peers)
 			}
-			if s.bufferBridge != nil {
+			if s.bufferBridge != nil && s.cfg.Select.InsertHeadlessService == "" {
 				s.bufferBridge.SetEndpoints(peers)
 			}
 		}
+	}
+	// A select pod of a split deployment reaches the insert pods' unflushed
+	// rows through select.insert_headless_service; the peer ring above is the
+	// bridge's source only when that is not set.
+	if svc := s.cfg.Select.InsertHeadlessService; svc != "" && s.bufferBridge != nil {
+		eps, err := s.discovery.ResolveService(ctx, svc)
+		if err != nil {
+			return fmt.Errorf("discover insert pods (%s): %w", svc, err)
+		}
+		s.bufferBridge.SetEndpoints(eps)
+		logger.Infof("buffer bridge: insert pods from %s: %v", svc, eps)
 	}
 	return nil
 }
