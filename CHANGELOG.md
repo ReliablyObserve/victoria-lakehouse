@@ -7,29 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.143.14] - 2026-10-02
-
-### Fixed
-
-- **Trace IDs collected for the trace-by-ID fast path are copied before they are kept (both binaries, closes #278).**
-  A block a reader hands out may point into memory the reader reuses for its next block; enumeration answers kept
-  such strings as map keys and returned corrupted Jaeger service names until #296 made them copy their values. The
-  trace-ID list collected while scanning now copies its ids too. Regression tests reuse a block's memory after the
-  callback and check that service, field and trace-ID values come back intact.
-
-### Documentation
-
-- **Market comparison of log and trace stores.** `docs/market-comparison.md` and an interactive matrix
-  (`website/static/market/`, published on the docs site) compare Victoria Lakehouse with 48 other log and trace
-  stores, under the headings interfaces, ingest, storage, read, durability, scalability and operations. Every cell
-  names its source and says whether that source is documentation, a vendor claim, our own measurement, this
-  repository, or unverified. The data lives in one YAML file per system under `docs/market/data`; `scripts/market/build.py`
-  validates it, regenerates both views, freezes dated snapshots and shows what changed between two reviews, and the
-  `Market data` workflow fails a pull request whose generated files are out of date and lists cells due for a re-check
-  every week.
-
-## [0.143.13] - 2026-10-02
-
 ### Fixed
 
 - **Compaction plans merges per tenant, stops rewriting a lone file forever, and keeps away from tiered objects (both binaries, closes #343).**
@@ -54,6 +31,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`lakehouse_compaction_scan_budget_exhausted_total`); the Tier A steal applies tombstones like a scheduled merge; and the
   compaction stats count a partition as fragmented only when one tenant holds two or more non-mature top-level files.
   A settled scan costs 47 to 53 ns and 5 bytes per file (main: 35 ns and 248 bytes), measured.
+
+## [0.143.14] - 2026-10-02
+
+### Fixed
+
+- **Trace IDs collected for the trace-by-ID fast path are copied before they are kept (both binaries, closes #278).**
+  A block a reader hands out may point into memory the reader reuses for its next block; enumeration answers kept
+  such strings as map keys and returned corrupted Jaeger service names until #296 made them copy their values. The
+  trace-ID list collected while scanning now copies its ids too. Regression tests reuse a block's memory after the
+  callback and check that service, field and trace-ID values come back intact.
+
+### Documentation
+
+- **Market comparison of log and trace stores.** `docs/market-comparison.md` and an interactive matrix
+  (`website/static/market/`, published on the docs site) compare Victoria Lakehouse with 48 other log and trace
+  stores, under the headings interfaces, ingest, storage, read, durability, scalability and operations. Every cell
+  names its source and says whether that source is documentation, a vendor claim, our own measurement, this
+  repository, or unverified. The data lives in one YAML file per system under `docs/market/data`; `scripts/market/build.py`
+  validates it, regenerates both views, freezes dated snapshots and shows what changed between two reviews, and the
+  `Market data` workflow fails a pull request whose generated files are out of date and lists cells due for a re-check
+  every week.
+
+## [0.143.13] - 2026-10-02
+
+### Fixed
 
 - **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**
   The cold read decided which Parquet columns to load by scanning the query text, and that scan missed the default
