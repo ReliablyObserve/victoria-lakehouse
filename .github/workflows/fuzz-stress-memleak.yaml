@@ -159,6 +159,7 @@ jobs:
           # Format: <package>:<FuzzFnName>
           # See discover-fuzz.sh for how to keep this list in sync.
           - internal/storage/parquets3:FuzzExtractExactMatch
+          - internal/storage/parquets3:FuzzPhraseExactLogs
           - internal/storage/parquets3:FuzzIsPrintable
           - internal/storage/parquets3:FuzzTraceRowToDataBlock
           - internal/storage/parquets3:FuzzLogRowToDataBlock
@@ -308,6 +309,7 @@ jobs:
         # resolution under that working directory.
         target:
           - internal/storage/parquets3:FuzzExtractExactMatch
+          - internal/storage/parquets3:FuzzPhraseExact
           - internal/storage/parquets3:FuzzIsPrintable
           - internal/storage/parquets3:FuzzTraceRowToDataBlock
           - internal/storage/parquets3:FuzzMultiRowDataBlock

@@ -819,7 +819,7 @@ func TestMedium_extractExactMatch(t *testing.T) {
 		want      string
 	}{
 		{"quoted exact match :=", `trace_id:="abc123"`, "trace_id", "abc123"},
-		{"quoted substring :", `trace_id:"abc123"`, "trace_id", "abc123"},
+		{"phrase is not exact (#319)", `trace_id:"abc123"`, "trace_id", ""},
 		{"unquoted exact match", `trace_id:=abc123`, "trace_id", "abc123"},
 		{"unquoted with space", `trace_id:=abc123 other`, "trace_id", "abc123"},
 		{"unquoted with pipe", `trace_id:=abc123|something`, "trace_id", "abc123"},

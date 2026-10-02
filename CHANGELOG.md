@@ -42,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   predicate, the traces `_trace_idx` prefilter and the `_msg` token bloom), so `NOT trace_id:="x"` returns the other
   rows instead of none.
 
+- **Cold reads no longer prune a quoted phrase filter as an exact match (both binaries).** `field:"v"` is a phrase
+  filter: VictoriaLogs matches any value that contains `v` on token boundaries, for example `trace_id:"abc-def"`
+  matches `abc-def-ghi` and `service.name:"api-gw"` matches `api-gw-v2`. The cold tier read it as the exact value `v`
+  and pruned the pmeta and per-file bloom, the row-group and footer bloom and the pushdown on it, so it returned no
+  rows where hot VictoriaLogs/VictoriaTraces returned them (#319). A phrase is now pruned only by its tokens; only
+  `field:="v"` and `field:in(...)` prune on the value. The traces binary keeps value pruning for `trace_id:"X"`,
+  VictoriaTraces' trace-by-ID form, because VictoriaTraces writes `trace_id` only as hex (a single token) for which
+  a phrase and equality coincide; the logs binary has no such column, so a logs phrase on `trace_id` is no longer
+  bloom-pruned, while `trace_id:="X"` is unchanged. Tests in both modules check the cold answer against upstream's
+  `MatchRow` for every phrase shape and every pruning layer.
+
 ### Documentation
 
 - **Market comparison of log and trace stores.** `docs/market-comparison.md` and an interactive matrix

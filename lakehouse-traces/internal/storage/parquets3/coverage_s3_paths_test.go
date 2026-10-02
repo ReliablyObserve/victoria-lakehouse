@@ -2453,7 +2453,7 @@ func TestS3_extractExactMatch_Variations(t *testing.T) {
 		want      string
 	}{
 		{`service.name:="api-gw"`, "service.name", "api-gw"},
-		{`service.name:"api-gw"`, "service.name", "api-gw"},
+		{`service.name:"api-gw"`, "service.name", ""}, /* a phrase is not exact (#319) */
 		{`service.name:=api-gw`, "service.name", "api-gw"},
 		{`service.name:=api-gw body:=test`, "service.name", "api-gw"},
 		{`body:="hello"`, "service.name", ""},

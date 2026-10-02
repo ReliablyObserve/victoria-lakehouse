@@ -194,6 +194,22 @@ Bloom filters provide definite negative answers: if the bloom filter says a valu
 - **Logs**: `service.name`, `trace_id`, `host.name`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`, `deployment.environment`
 - **Traces**: `trace_id`, `service.name`, `span.name`
 
+### Phrase filters (`field:"v"`) and the pruning layers
+
+A quoted or bare word filter is a **phrase**, not an equality: upstream (`filter_phrase.go`, `matchPhrase`) matches a row when the field *contains* the phrase on token boundaries, so `trace_id:"abc-def"` matches the stored value `abc-def-ghi`, and `service.name:"api-gw"` matches `api-gw-v2`. Only `field:="v"` and `field:in(...)` mean "equals".
+
+| Layer | Exact `field:="v"` / `in()` | Phrase `field:"v"` |
+|---|---|---|
+| L2c labels, column stats, pushdown | pruned on the value | never pruned |
+| L2d file bloom (pmeta facet, `.bloom`) | pruned on the value | never pruned by an exact value (exception below) |
+| L6 footer / row-group bloom (SBBF) | pruned on the value | never pruned by an exact value (exception below) |
+| `_trace_idx` (traces) | pruned on the trace ID | never pruned by an exact value (exception below) |
+| Token bloom (`_msg` words) | pruned when every token is present | pruned when every phrase token is present |
+
+A phrase is pruned only by "every token of the phrase is present" (the token bloom), which is sound because the first and last phrase tokens must be whole tokens of the stored value.
+
+**Exception: `trace_id` on the traces binary.** VictoriaTraces' trace-by-ID span fetch is the phrase `trace_id:"X"`. VictoriaTraces writes `trace_id` only as the hex encoding of the span's trace-id bytes (`deps/VictoriaTraces/app/vtinsert/opentelemetry/pb.go`: `fb.formatHex(traceIDBytes)`), so every stored value is a single upstream token (letters, digits, `_`). With no rune before or after a match possible, a value contains an ASCII token phrase `X` on token boundaries only when it equals `X`; the phrase is then equivalent to `trace_id:="X"` and the exact-value layers above prune it. `phraseExactColumns` (`phrase_exact.go`) lists such columns, and `TestPhraseExact_EquivalentToExactOnSingleTokenDomain` checks the equivalence against upstream's own matcher. A phrase that is not a plain ASCII token (for example `abc-def`) is never exact. The logs binary has no such column: its `trace_id` carries whatever the shipper sent (UUIDs contain `-`), so a logs phrase on `trace_id` is read without bloom pruning, while `trace_id:="X"` keeps every layer.
+
 ### Level 7: Pre-Where Bitmap Filter
 
 After row-group-level pruning passes, the engine reads only the filter columns first and builds a boolean bitmap of matching rows. The projected read (Level 9) then skips rows where `bitmap[i] == false`.

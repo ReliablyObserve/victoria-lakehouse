@@ -421,7 +421,7 @@ func TestExtractExactMatch(t *testing.T) {
 	}{
 		{`service.name:="api-gw"`, "service.name", "api-gw"},
 		{`trace_id:="abc123"`, "trace_id", "abc123"},
-		{`service.name:"api-gw"`, "service.name", "api-gw"},
+		{`service.name:"api-gw"`, "service.name", ""}, /* a phrase is not exact (#319) */
 		{`body:~"error.*"`, "body", ""},
 		{``, "service.name", ""},
 		{`level:INFO`, "level", ""},
