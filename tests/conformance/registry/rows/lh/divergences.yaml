@@ -175,3 +175,51 @@
     delete references; before, a narrow read showed the deleted rows again in counts, group-bys
     and histograms. The delete step is a runner precondition, so the unit and RunQuery-level
     tests above carry the proof until the runner can sequence it. Issue #285.
+
+- id: lh.cold.phrase_filter_matches_hot_logs
+  title: "A quoted phrase filter on cold matches the same rows as hot — logs"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "k8s.pod.name:\"api-gateway\" | stats count() rows", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/parity/phrase_pruning_parity_test.go
+      - internal/storage/parquets3/phrase_pruning_test.go
+      - internal/storage/parquets3/phrase_exact_test.go
+  notes: >-
+    field:"v" is a phrase: it matches any value that contains v on token boundaries, so
+    k8s.pod.name:"api-gateway" matches api-gateway-7d9f8b6c4. Cold used to prune it as the
+    exact value v and returned 0 rows. A phrase is now pruned only by its tokens (token
+    bloom); no logs column is treated as exact (trace_id may hold UUIDs).
+
+- id: lh.cold.phrase_filter_matches_hot_traces
+  title: "A quoted phrase filter on cold matches the same rows as hot — traces"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "span_id:* name:\"GET /api/v1\" | stats count() rows", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/parity/phrase_pruning_parity_test.go
+      - lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go
+      - lakehouse-traces/internal/storage/parquets3/phrase_exact_test.go
+  notes: >-
+    Same rule as the logs row. trace_id keeps exact-value pruning for VictoriaTraces' own
+    trace-by-ID form trace_id:"X", because VictoriaTraces stores trace_id only as the hex
+    encoding of the span's trace-id bytes (a single upstream token), for which phrase and
+    equality coincide; any other traces column prunes a phrase by tokens only.

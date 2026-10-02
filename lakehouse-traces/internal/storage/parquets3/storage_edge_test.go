@@ -12,7 +12,7 @@ func TestExtractExactMatch_TableDriven(t *testing.T) {
 		want  string
 	}{
 		{"exact with :=", `service.name:="api-gw"`, "service.name", "api-gw"},
-		{"exact with :", `service.name:"api-gw"`, "service.name", "api-gw"},
+		{"phrase is not exact (#319)", `service.name:"api-gw"`, "service.name", ""},
 		{"no match", "no match here", "service.name", ""},
 		{"empty query", "", "service.name", ""},
 		// An empty field name no longer substring-matches inside another field's
