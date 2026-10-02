@@ -95,3 +95,80 @@ func TestCompactionGroupPrefix(t *testing.T) {
 		}
 	}
 }
+
+// TestCompactionGroupPrefix_Edges guards the allocation-free parser against
+// the shapes the strconv version rejected or accepted: overflow, empty or
+// non-numeric segments, a missing fourth segment, a trailing slash.
+func TestCompactionGroupPrefix_Edges(t *testing.T) {
+	for key, want := range map[string]string{
+		"4294967295/0/logs/x":      "4294967295/0/logs/", // max uint32
+		"4294967296/0/logs/x":      "",                   // overflow
+		"99999999999/0/logs/x":     "",                   // 11 digits
+		"0/4294967296/logs/x":      "",
+		"/0/logs/x":                "", // empty account
+		"1//logs/x":                "", // empty project
+		"1/0//x":                   "", // empty mode segment
+		"1/0/logs/":                "", // nothing after the mode: no 4th segment
+		"1/0/logs":                 "",
+		"1/0":                      "",
+		"1":                        "",
+		"-1/0/logs/x":              "",
+		"+1/0/logs/x":              "",
+		"1a/0/logs/x":              "",
+		"007/008/logs/x":           "007/008/logs/", // leading zeros parse
+		"1/0/logs/dt=x/hour=00/a":  "1/0/logs/",
+		"1/0/traces/a/b/c/d":       "1/0/traces/",
+		"logs/dt=2026-01-01/a.par": "",
+	} {
+		if got := CompactionGroupPrefix(key); got != want {
+			t.Errorf("CompactionGroupPrefix(%q) = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// TestCompactionGroupPrefix_NoAllocation guards the per-file scan cost.
+func TestCompactionGroupPrefix_NoAllocation(t *testing.T) {
+	key := "1001/0/logs/dt=2026-06-01/hour=00/compacted-L1-abcdef01.parquet"
+	if n := testing.AllocsPerRun(100, func() { _ = CompactionGroupPrefix(key) }); n != 0 {
+		t.Fatalf("CompactionGroupPrefix allocates %v per call", n)
+	}
+}
+
+// TestCompactionStats_FragmentedMatchesPlanner guards that the stats flag only
+// what the planner would merge (M19): many L0/L1 files (top level below L2) are
+// the level thresholds' business, not fragmentation; two mature (>= 32 MiB)
+// top-level files are never rewritten by the hint; two small ones are, and only
+// their bytes count. Without these rules the compaction panel reports a
+// fragmented partition that compaction will never touch.
+func TestCompactionStats_FragmentedMatchesPlanner(t *testing.T) {
+	const part = "dt=2026-06-01/hour=00"
+	build := func(files ...FileInfo) CompactionStats {
+		m := New("bucket", "logs/")
+		for _, f := range files {
+			m.AddFile(part, f)
+		}
+		return m.ComputeCompactionStats("v1", nil)
+	}
+	l := func(name string, level int, size int64) FileInfo { return groupedFile(1001, name, level, size) }
+
+	if st := build(l("a", 0, 10), l("b", 0, 10), l("c", 1, 10), l("d", 1, 10)); st.FragmentedPartitions != 0 {
+		t.Fatal("several L0/L1 files reported as fragmented")
+	}
+	if st := build(l("a", 2, MatureObjectBytes), l("b", 2, MatureObjectBytes)); st.FragmentedPartitions != 0 {
+		t.Fatal("two mature L2 files reported as fragmented")
+	}
+	if st := build(l("a", 2, MatureObjectBytes), l("b", 2, 100)); st.FragmentedPartitions != 0 {
+		t.Fatal("one mature plus one small L2 file reported as fragmented (the small one is alone)")
+	}
+	st := build(l("a", 2, MatureObjectBytes), l("b", 2, 100), l("c", 2, 300))
+	if st.FragmentedPartitions != 1 || len(st.Candidates) != 1 {
+		t.Fatalf("two small L2 files next to a mature one: fragmented=%d", st.FragmentedPartitions)
+	}
+	if want := int64(float64(400) * mergeOverheadGainEstimate); st.Candidates[0].EstimatedSavingsBytes != want {
+		t.Fatalf("savings %d, want %d (only the two small files' 400 bytes)", st.Candidates[0].EstimatedSavingsBytes, want)
+	}
+	// One byte under the threshold is not mature.
+	if st := build(l("a", 2, MatureObjectBytes-1), l("b", 2, MatureObjectBytes-1)); st.FragmentedPartitions != 1 {
+		t.Fatal("files just under 32 MiB must count")
+	}
+}
