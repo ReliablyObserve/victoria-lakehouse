@@ -388,3 +388,28 @@ func TestPlanPartition_SeparateBucketsAreSeparateGroups(t *testing.T) {
 		t.Fatalf("files in different buckets merged: %+v", plans)
 	}
 }
+
+// TestPlanGroup_ThresholdsNeedTwoSelectedFiles guards the >= 2 check on the
+// files SELECTED (not on the threshold count): ten L0 (or L1) files that all
+// carry different schemas have a majority of one, and merging one file is a
+// 1 to 1 rewrite. Also a policy whose threshold is 1 must still not plan a
+// lone file.
+func TestPlanGroup_ThresholdsNeedTwoSelectedFiles(t *testing.T) {
+	p := unitPolicy()
+	for _, level := range []int{0, 1} {
+		var files []manifest.FileInfo
+		for i := 0; i < 10; i++ {
+			files = append(files, pf(fmt.Sprintf("f%d", i), level, 1000, fmt.Sprintf("fp-%02d", i)))
+		}
+		if _, sel, reason, ok := p.planGroup(files, ago(2*time.Hour), unitNow, "", true); ok {
+			t.Fatalf("level %d: ten files with ten different schemas planned %d (%s)", level, len(sel), reason)
+		}
+	}
+	one := NewLevelPolicy(1, 1, 0)
+	one.DailyRollupAge = 24 * time.Hour
+	for _, level := range []int{0, 1, 2} {
+		if _, sel, reason, ok := one.planGroup([]manifest.FileInfo{pf("a", level, 1000, "fp")}, ago(72*time.Hour), unitNow, "fp", true); ok {
+			t.Fatalf("threshold 1, level %d: lone file planned %d (%s)", level, len(sel), reason)
+		}
+	}
+}
