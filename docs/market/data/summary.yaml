@@ -1,0 +1,76 @@
+strengths:
+- 'Interfaces (the widest open set among object-storage-native stores): 8 native write protocols (jsonline, VL native,
+  Loki push, ES bulk, Splunk HEC, Datadog logs, journald, OTLP/HTTP logs+traces) and 3 native read APIs (LogsQL,
+  Jaeger, Tempo/TraceQL subset) plus the Loki API via the separate loki-vl-proxy, all from upstream VL/VT handlers
+  mounted unchanged. OpenObserve also has 8 write protocols but only SQL/PromQL on read; Parseable 5/1; Tempo 3/1;
+  GreptimeDB 7/3.'
+- 'Reach (direct file reads): the stored files are the product. Plain Parquet + hive dt=/hour= paths on S3, readable
+  in place with no export: pyarrow and DuckDB proven by a CI readback gate on every file, ClickHouse on every benchmark
+  run with answers equal to LogsQL; Spark/Trino documented only; Athena/Polars expected, untested. 3 verified /
+  7 claimed vs 0 named for OpenObserve, Parseable, Tempo and GreptimeDB. Limits: no Iceberg/Delta catalog, LH-specific
+  schema, pmeta and footer blooms help only LH.'
+- 'One S3 copy with the VictoriaLogs/VictoriaTraces query engine on top: compatible answers with hot VL/VT (parity
+  suite, 428+ passing, ratchet), and the object-storage tier that upstream VictoriaLogs still lacks (issue #48 open,
+  PR #1155 draft).'
+- 'Simple footprint: 2 binaries x 2 roles + S3; no Kafka, Keeper, Postgres or NATS (Tempo microservices 8+ services
+  + Kafka; OpenObserve HA 5 node types + Postgres + NATS).'
+- Apache-2.0 with no enterprise gate (OpenObserve, Parseable, Loki, Tempo are AGPL with paid tiers for HA, multi-tenancy,
+  RBAC or live tail).
+- Reproducible, labelled cost model; tombstone/hide/rewrite delete design that avoids Glacier retrieval [U].
+weaknesses:
+- No production users, one maintainer, 5 months old, 4 GitHub stars; every one of 394 registry rows is still unexecuted.
+- Default ack = buffered in pod memory; the default buffer loses its in-flight window on crash; insert.ack_mode
+  is accepted but unused; durable logstore engine is opt-in and in progress.
+- 'Cold answers diverge from hot VL/VT in known shapes (#319 phrase filter misses rows, #318 limit=N wrong rows
+  above 10M, #289, #324, B2/B3/B4/B7).'
+- 'Multi-replica is unproven and partly wrong: select replicas compact and duplicate rows 2-4x and write shared
+  state (#311), shared-bucket double compaction (#290), pmeta under tenant 0 (#307).'
+- Compaction is hour-only with ~71 KB median files and stats that report healthy (#281); compaction v2 is only designed.
+- 'Slow cold paths: trace by ID ~11-12 s (#294), first query after restart 45-51 s (#308), mixed load gate fails
+  (#320); best measured word-filter result still loses to ClickHouse by ~7% at 4 CPUs (measured, unmerged draft
+  PR #310).'
+- Self-declared not ready above ~50 TB/day (full LIST per refresh, per-replica manifest RAM, O(F) trace-ID lookup).
+- No metrics signal, no Iceberg/Delta catalog, live tail hot-only, Loki API needs a separate proxy, Traces Drilldown
+  unverified, Tempo service graph empty.
+threats:
+- 'VictoriaLogs native object storage: PR #1155 (draft, read-only offload of retained partitions, ''very slow''
+  per its author) would remove LH''s main reason to exist for users who only need cheap retention behind VL.'
+- 'Iceberg entrants: Observe by Snowflake (Iceberg v3 + REST catalog, Spark/DuckDB/Trino named, private preview),
+  CloudWatch Logs S3 Tables (Iceberg, no extra storage charge), IceGate (Apache-2.0 prototype with Loki + Tempo
+  APIs on Iceberg). They offer catalog discovery, snapshots and schema evolution that plain Parquet globs do not.'
+- 'OpenObserve''s maturity and traction: 22k stars, ~159 contributors, Parquet on S3, logs+metrics+traces+RUM, Tantivy
+  full-text index, compaction to 2 GB, managed Cloud.'
+- 'Grafana Tempo 3.x for traces: documented Parquet schema on S3, full TraceQL + metrics, Kafka-acked durability,
+  Grafana-native Drilldown, managed Cloud.'
+- 'ClickHouse/ClickStack: text index GA, Netflix-scale references, cheaper single-replica cost at long retention
+  in LH''s own model.'
+fix_list:
+- item: 'Make durable ingest the default: logstore + buffer_flush on by default, wire or remove insert.ack_mode,
+    document RPO; fix #306 and #245'
+  issue: '#306, #245, #37'
+- item: Select pods read-only (no compaction, no shared-state PUTs) and a cross-instance compaction owner
+  issue: '#311, #290'
+- item: Close cold-vs-hot divergences that return wrong or missing rows
+  issue: '#319, #318, #289, #298, #299, #324, #273'
+- item: 'Compaction v2 (time-tiered 1h/1d, 256 MiB target, lease + generation commits): decide D1-D11, then build;
+    truthful compaction stats'
+  issue: '#281, #287'
+- item: 'Cold read latency: R1 zero-GET open (draft PR #310), trace-by-ID profile, persisted label index, ranged-read
+    re-fetch'
+  issue: '#294, #308, #317, PR #310'
+- item: 'S3 request minimisation: windowed LIST, wave scheduler, pmeta plan facet'
+  issue: '#300, #301'
+- item: Buffer/flush seam visibility bugs
+  issue: '#268, #272, #279'
+- item: 'Tenant layout: pmeta under each tenant prefix; honour s3.prefix'
+  issue: '#307, #254'
+- item: Nightly load gate green with plausible QPS
+  issue: '#320'
+- item: Execute the conformance registry (394 pending rows) so 'matches hot VL/VT' is a CI fact
+  issue: registry runner
+- item: Decide the Iceberg catalog question (optional manifest/REST export vs plain globs), scored per the decision
+    rules
+  issue: design decision
+- item: 'Maturity: first users, multi-replica e2e, bench v3.4 with probe-verified S3 latency, Loki/Tempo measured
+    side by side'
+  issue: bench v3.4

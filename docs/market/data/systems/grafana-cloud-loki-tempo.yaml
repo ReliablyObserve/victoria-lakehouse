@@ -1,0 +1,256 @@
+name: Grafana Cloud (Loki/Tempo)
+group: Commercial SaaS
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: 4 (Loki push, OTLP, Jaeger, Zipkin)
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: 2 (Loki API, Tempo API) + PromQL
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (managed)
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: + profiles
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: Loki chunks; Tempo Parquet
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: no bucket access
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: 🟡
+    text: 30 d Pro; custom Ent.
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❓
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: 🟡
+    text: labels
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: LogQL, TraceQL
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: + Drilldown apps
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: Grafana
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ✅
+    text: (Loki RF / Tempo Kafka)
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ''
+    text: SaaS
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ''
+    text: SaaS
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: SaaS (AGPL core)
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: $0.05+$0.40/GB + $0.10/GB retain; $19/mo
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'

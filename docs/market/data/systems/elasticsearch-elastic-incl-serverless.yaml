@@ -1,0 +1,258 @@
+name: Elasticsearch / Elastic (incl. Serverless)
+group: Search engines
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🟡
+    text: 2 (ES bulk/index, OTLP)
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: 3 (Query DSL/KQL, ES|QL, SQL)
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (Lucene)
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: '[K]'
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: unverified
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ✅
+    text: native
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❌
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: 🟡
+    text: tier (searchable snapshots 🔒); Serverless ✅
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: Lucene
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: segment merges
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: ILM per data stream
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: 🟡
+    text: repo storage_class; Glacier unsupported
+    note: Snapshot repos take storage_class / data_storage_class; lifecycle to Glacier or Intelligent-Tiering archive
+      tiers can lose repository contents.
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/s3-repository
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ✅
+    text: delete-by-query
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: inverted
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: ES|QL, KQL, DSL
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: 🟡
+    text: as Jaeger backend
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: ES datasource
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: Kibana
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: data tiers
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: frozen tier 🔒
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ✅
+    text: translog + replicas [K]
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: unverified
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ✅
+    text: replicas
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ✅
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ❌
+    text: (Serverless ✅)
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: 🟡
+    text: Serverless only
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: 🟡
+    text: node roles
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: 🟡
+    text: spaces / index security
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: cluster with node roles + Kibana
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🟡
+    text: AGPL / SSPL / ELv2
+    source: https://www.elastic.co/blog/elasticsearch-is-open-source-again
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: Elastic Cloud / Serverless
+    source: https://www.elastic.co/docs/deploy-manage/tools/snapshot-and-restore/searchable-snapshots
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: since 2010, 78k stars
+    source: https://github.com/elastic/elasticsearch
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: Serverless $0.07-0.09/GB + $0.017-0.019/GB-mo
+    source: https://www.elastic.co/pricing/serverless-observability
+    label: docs
+    checked: '2026-10-02'

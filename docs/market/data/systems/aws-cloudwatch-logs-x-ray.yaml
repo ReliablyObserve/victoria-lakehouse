@@ -1,0 +1,258 @@
+name: AWS CloudWatch Logs + X-Ray
+group: Commercial SaaS
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🟡
+    text: 2 (PutLogEvents/agents, OTLP) [K]
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: unverified
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: 3 (Logs Insights QL, PPL, SQL)
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🟡
+    text: 1 named (Athena) via S3 Tables Iceberg
+    note: Logs are delivered to an AWS-managed S3 table bucket in Iceberg; Athena, Redshift and third-party Iceberg
+      engines; no backfill; no extra storage charge.
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: Transaction Search
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: '[K]'
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: unverified
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❌
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ❓
+    text: managed
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: proprietary + Iceberg view
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ✅
+    text: via S3 Tables (new data only)
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ✅
+    text: S3 Tables (Iceberg)
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: managed
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: per log group
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: 🟡
+    text: Standard vs IA log class
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CloudWatch_Logs_Log_Classes.html
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: 🟡
+    text: retention
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: 🟡
+    text: field indexes [K]
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: unverified
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: Insights QL, PPL, SQL
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: CloudWatch ds
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: 🟡
+    text: Standard class only
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ❓
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ✅
+    text: regional [K]
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: unverified
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ''
+    text: SaaS
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: 🟡
+    text: accounts
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ''
+    text: SaaS
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: AWS only
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: ''
+    source: https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/s3-tables-integration.html
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: $0.50/GB (IA $0.25) + $0.03/GB-mo
+    source: https://aws.amazon.com/cloudwatch/pricing/
+    label: docs
+    checked: '2026-10-02'

@@ -1,0 +1,259 @@
+name: GreptimeDB
+group: Object-storage-native and open-format
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: '7'
+    note: OTLP, Prometheus RW, Loki push, ES _bulk, InfluxDB LP, MySQL/PostgreSQL wire, gRPC.
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: 3 (+ES DSL 🔒)
+    note: SQL, PromQL, Jaeger query API; ES Query DSL partial and Enterprise; LogQL not implemented.
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🟡
+    text: 0 named
+    note: Parquet SSTs, key-ordered, region/manifest layout; external read untested.
+    source: https://docs.greptime.com/contributor-guide/datanode/storage-engine/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: 🧪
+    text: experimental
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❓
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ✅
+    text: Parquet SSTs
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: 🟡
+    text: Parquet, untested
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: 🟡
+    text: TTL per table
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❓
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: inverted, skipping, fulltext
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: SQL, PromQL
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: LogQL not implemented
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ✅
+    text: ''
+    source: https://docs.greptime.com/user-guide/traces/read-write/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: via Jaeger/Prom/MySQL ds
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: dashboard
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❓
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ❓
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ✅
+    text: WAL before ack (local or Kafka)
+    source: https://docs.greptime.com/user-guide/deployments-administration/wal/overview/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: 🟡
+    text: 0 if WAL on EBS/Kafka
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: 🟡
+    text: via Kafka WAL / storage
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: 🟡
+    text: frontend stateless
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ❓
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: frontend, metasrv, datanode (+flownode)
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: Apache-2.0 (+Enterprise)
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: Greptime Cloud [K]
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: unverified
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: since 2022, 6.7k stars, v1.3 beta
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ❓
+    text: ''
+    source: https://github.com/GreptimeTeam/greptimedb
+    label: docs
+    checked: '2026-10-02'

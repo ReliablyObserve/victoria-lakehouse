@@ -1,0 +1,256 @@
+name: Kloudfuse
+group: ClickHouse family and OLAP databases
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ❓
+    text: (OTel, Datadog, Prometheus agents)
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: 4 (PromQL, LogQL, TraceQL, FuseQL)
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❓
+    text: archive format undocumented
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  st_obj:
+    icon: 🟡
+    text: Pinot + object store
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  st_format:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  st_compact:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: per team/app/stream
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: fingerprints
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: PromQL, LogQL, TraceQL
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_loki:
+    icon: 🟡
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: 🟡
+    text: Kfuse ds
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: 🟡
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ❌
+    text: archive rehydrates
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  du_ack:
+    icon: ❓
+    text: (Kafka)
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  sc_largest:
+    icon: 🟡
+    text: tiers up to 50 TB/day
+    source: https://www.kloudfuse.com/pricing
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ❓
+    text: ''
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: Kafka + Pinot + services (in your VPC)
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: proprietary
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: self-SaaS in VPC
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: commercial
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'
+  op_price:
+    icon: ❓
+    text: tiers by TB/day
+    source: https://www.kloudfuse.com/observability-data-lake
+    label: vendor
+    checked: '2026-10-02'

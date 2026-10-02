@@ -1,0 +1,256 @@
+name: Azure Monitor Logs
+group: Commercial SaaS
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🟡
+    text: 2 (Logs Ingestion API, OTLP) [K]
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: unverified
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (KQL)
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (Sentinel lake separate)
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: App Insights
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: '[K]'
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: unverified
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❌
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ❓
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: Kusto [K]
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: unverified
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: managed
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: per table, up to 12 y
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ✅
+    text: Analytics/Basic/Auxiliary plans
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ✅
+    text: purge [K]
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: unverified
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: '[K]'
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: unverified
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: KQL
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: Azure Monitor ds
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❓
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: 🟡
+    text: search jobs / restore
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ❓
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ✅
+    text: '[K]'
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: unverified
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ''
+    text: SaaS
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: 🟡
+    text: workspaces
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ''
+    text: SaaS
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: Azure only
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: ''
+    source: https://azure.microsoft.com/en-us/pricing/details/monitor/
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: Aux $0.05/GB, Basic $0.50/GB, Analytics ~$2.30 [K]
+    source: https://prices.azure.com/api/retail/prices
+    label: unverified
+    checked: '2026-10-02'

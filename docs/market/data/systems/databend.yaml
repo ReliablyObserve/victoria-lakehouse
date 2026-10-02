@@ -1,0 +1,46 @@
+name: Databend
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_read_n:
+    icon: 🟡
+    text: 1 (SQL)
+    source: https://docs.databend.com/guides/how-databend-works/how-databend-fuse-engine-works
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🟡
+    text: 0 named (Parquet blocks under own snapshots)
+    source: https://docs.databend.com/guides/how-databend-works/how-databend-fuse-engine-works
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ❌
+    text: no log model
+    source: https://docs.databend.com/guides/how-databend-works/how-databend-fuse-engine-works
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: ''
+    source: https://docs.databend.com/guides/how-databend-works/how-databend-fuse-engine-works
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: 🟡
+    text: Parquet blocks + own metadata
+    source: https://docs.databend.com/guides/how-databend-works/how-databend-fuse-engine-works
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🟡
+    text: Apache-2.0 + Elastic-2.0
+    source: https://docs.databend.com/guides/how-databend-works/how-databend-fuse-engine-works
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: 9.5k stars
+    source: https://docs.databend.com/guides/how-databend-works/how-databend-fuse-engine-works
+    label: docs
+    checked: '2026-10-02'

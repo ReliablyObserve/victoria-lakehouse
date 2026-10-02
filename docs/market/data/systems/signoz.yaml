@@ -1,0 +1,256 @@
+name: SigNoz
+group: ClickHouse family and OLAP databases
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: 5 (OTLP, Jaeger, Zipkin, Kafka, OpenCensus)
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: 3 (query builder, CH SQL, PromQL)
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: '0'
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: 🟡
+    text: = ClickHouse
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: MergeTree
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: 🟡
+    text: per signal, global
+    source: https://signoz.io/docs/userguide/retention-period/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❓
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❓
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: builder, SQL, PromQL
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ❌
+    text: no official ds
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: '[K]'
+    source: https://signoz.io/docs/architecture/
+    label: unverified
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: 🟡
+    text: = ClickHouse
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: 🟡
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: 🟡
+    text: optional
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: 🟡
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ❌
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: 🟡
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ❓
+    text: ''
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: CH + Keeper + SigNoz + collector
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🟡
+    text: MIT + ee/
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: SigNoz Cloud
+    source: https://signoz.io/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: 32k stars
+    source: https://github.com/SigNoz/signoz
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: $0.30/GB logs+traces
+    source: https://signoz.io/pricing/
+    label: docs
+    checked: '2026-10-02'

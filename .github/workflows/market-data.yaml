@@ -1,0 +1,35 @@
+name: Market data
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - docs/market/**
+      - docs/market-comparison.md
+      - scripts/market/**
+      - website/static/market/**
+      - .github/workflows/market-data.yaml
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pyyaml==6.0.2
+      - name: Tests
+        run: python -m unittest discover -s scripts/market/tests -t . -v
+      - name: Generated files are current
+        run: python scripts/market/build.py --check
+      - name: Cells due for a re-check
+        # Informational on pull requests; the weekly run fails so stale cells get re-verified.
+        run: python scripts/market/build.py --stale || [ "${{ github.event_name }}" != "schedule" ]

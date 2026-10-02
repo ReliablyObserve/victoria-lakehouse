@@ -1,0 +1,265 @@
+name: Parseable
+group: Object-storage-native and open-format
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: '5'
+    note: HTTP JSON, OTLP, Prometheus RW, Kafka, Kinesis.
+    source: https://www.parseable.com/docs/api
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (+PromQL 🔒)
+    note: SQL (DataFusion); PromQL on Cloud/Enterprise only.
+    source: https://www.parseable.com/docs/key-concepts/query
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🟡
+    text: 0 named (generic claim)
+    note: 'Docs: ''standard format readable by many tools''; real hive paths date=/hour=/minute=; per-file schema
+      drift.'
+    source: https://www.parseable.com/docs/key-concepts/storage
+    label: vendor
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❓
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❓
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❓
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ✅
+    text: Parquet + JSON manifests
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: 🟡
+    text: Parquet + hive paths, untested
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ❌
+    text: none found in OSS code
+    note: No compaction code in the OSS repo (code search); one file per minute per node per stream. Enterprise
+      may differ (?).
+    source: https://github.com/parseablehq/parseable
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: 🟡
+    text: per dataset, days; tenants 🔒
+    source: https://www.parseable.com/docs/user-guide/retention
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❌
+    text: local hot tier only
+    source: https://www.parseable.com/docs/user-guide/smart-cache
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: 🟡
+    text: dataset delete + retention
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: 🟡
+    text: min/max; text index node 🔒
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: SQL (PromQL 🔒)
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: community plugin (11 stars)
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: Prism
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: 🔒
+    text: Enterprise only
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: in UI
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: staging + S3
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ranged GETs
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: 🟡
+    text: Arrow staging on disk, no fsync
+    note: writer.rs flushes BufWriter per batch; no fsync/sync_all in the write path (only sync_all_streams, an
+      upload function).
+    source: https://github.com/parseablehq/parseable/blob/main/src/parseable/staging/writer.rs
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: 🟡
+    text: staging not yet uploaded (>=1 min)
+    note: Docs recommend EFS/NFS for staging.
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❌
+    text: none
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: 🟡
+    text: ingest shared-nothing
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: 🔒
+    text: query scale-out Enterprise only
+    source: https://www.parseable.com/docs/editions/compare
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: (vendor test 2 TB/h, 4 nodes)
+    source: https://www.parseable.com/docs/benchmarks
+    label: vendor
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: 🔒
+    text: Enterprise only
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ✅
+    text: single binary / 4 roles + S3
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🟡
+    text: AGPL-3.0 + Enterprise
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: Cloud
+    source: https://www.parseable.com/docs/architecture
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: 🟡
+    text: since 2022, 2.5k stars, ~63 contrib.
+    source: https://github.com/parseablehq/parseable
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: $0.39/GB ingested
+    source: https://www.parseable.com/pricing
+    label: vendor
+    checked: '2026-10-02'

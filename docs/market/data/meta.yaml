@@ -1,0 +1,229 @@
+title: Victoria Lakehouse and the log and trace storage market
+icons:
+  ✅: yes / strong
+  🟡: partial / limited / beta / paid tier only
+  ❌: 'no'
+  ❓: unknown (not found in sources)
+  🧪: experimental / preview / prototype
+  🔒: enterprise / paid only
+  📐: designed or planned (LH)
+  🐞: shipped but known-broken (LH, with issue number)
+labels:
+  docs: the system's own documentation or source code
+  vendor: a vendor marketing figure, not independently checked
+  measured: our own measurement
+  repo: 'this repository: code, tests, CI and issues'
+  unverified: prior knowledge, not re-checked against a source
+stale_after_days: 120
+sections:
+- Interfaces
+- Ingest
+- Storage
+- Read
+- Durability
+- Scalability
+- Ops
+dimensions:
+- id: if_write_n
+  section: Interfaces
+  label: Write protocols (n)
+  counting_rule: 'Distinct ingest protocol families accepted by the product''s own server endpoints, from its own
+    docs: OTLP, Loki push, ES bulk, Splunk HEC, Datadog, syslog, journald, Jaeger, Zipkin, Prometheus RW, Influx
+    LP, SQL-wire INSERT, own/native API, and each built-in queue or stream consumer (Kafka, Kinesis, Pulsar, SQS).
+    External collectors, agents and separately deployed components do not count. Transports of one protocol (HTTP
+    vs gRPC, JSON vs protobuf) count once. Unconfirmed protocols are excluded and named.'
+- id: if_read_n
+  section: Interfaces
+  label: Read APIs (n)
+  counting_rule: 'Distinct query APIs served natively over the network: the product''s own query API/language counts
+    once, each compatible ecosystem API (Loki, Tempo/TraceQL, Jaeger, Zipkin, ES search, Prometheus, SQL wire or
+    Flight SQL) counts once. APIs needing a separately deployed component are shown as (+n via ...). UIs and Grafana
+    datasources are not counted.'
+- id: if_files_n
+  section: Interfaces
+  label: External engines reading stored files (n of 7)
+  counting_rule: 'Of the fixed list DuckDB, ClickHouse, Spark, Trino, Athena, pyarrow, Polars: how many the vendor
+    names in its docs (or proves in CI) as reading the stored files in place while the system serves them, with
+    no export step. A generic ''any Parquet tool'' claim counts as 0 named. Export copies and archives are marked
+    separately. For LH the count is split into verified (CI or benchmark) and claimed (documented or expected).'
+- id: sig_logs
+  section: Ingest
+  label: Logs
+- id: sig_traces
+  section: Ingest
+  label: Traces
+- id: sig_metrics
+  section: Ingest
+  label: Metrics
+- id: in_otlp
+  section: Ingest
+  label: OTLP
+- id: in_loki
+  section: Ingest
+  label: Loki push
+- id: in_esbulk
+  section: Ingest
+  label: ES bulk
+- id: in_jz
+  section: Ingest
+  label: Jaeger / Zipkin ingest
+- id: st_obj
+  section: Storage
+  label: Object storage primary
+- id: st_format
+  section: Storage
+  label: Stored format
+- id: st_ext
+  section: Storage
+  label: External engines read stored files
+- id: st_catalog
+  section: Storage
+  label: Open table catalog (Iceberg/Delta)
+- id: st_compact
+  section: Storage
+  label: Compaction
+- id: st_ret
+  section: Storage
+  label: Per-tenant / per-stream retention
+- id: st_tier
+  section: Storage
+  label: S3 storage-class tiering
+- id: st_delete
+  section: Storage
+  label: Deletes
+- id: st_index
+  section: Storage
+  label: Blooms / indexes
+- id: rd_lang
+  section: Read
+  label: Query languages
+- id: rd_loki
+  section: Read
+  label: Loki query API
+- id: rd_tempo
+  section: Read
+  label: Tempo API / TraceQL
+- id: rd_jaeger
+  section: Read
+  label: Jaeger query API
+- id: rd_grafana
+  section: Read
+  label: Grafana native
+- id: rd_ui
+  section: Read
+  label: Own UI
+- id: rd_tail
+  section: Read
+  label: Live tail
+- id: rd_corr
+  section: Read
+  label: Log-trace correlation
+- id: rd_hotcold
+  section: Read
+  label: Hot+cold unified
+- id: rd_cold
+  section: Read
+  label: Query cold without rehydration
+- id: du_ack
+  section: Durability
+  label: What an ack means
+- id: du_rpo
+  section: Durability
+  label: RPO on node loss
+- id: du_repl
+  section: Durability
+  label: Replication
+- id: sc_stateless
+  section: Scalability
+  label: Stateless compute
+- id: sc_sep
+  section: Scalability
+  label: Storage/compute separation
+- id: sc_indep
+  section: Scalability
+  label: Ingest/query scale independently
+- id: sc_largest
+  section: Scalability
+  label: Largest public deployment
+- id: sc_tenancy
+  section: Scalability
+  label: Multi-tenancy
+- id: sc_components
+  section: Scalability
+  label: Components to run
+- id: op_license
+  section: Ops
+  label: License
+- id: op_managed
+  section: Ops
+  label: Managed offering
+- id: op_maturity
+  section: Ops
+  label: Maturity
+- id: op_price
+  section: Ops
+  label: Public price (list)
+groups:
+- name: Victoria Lakehouse
+  systems:
+  - victoria-lakehouse-lh
+- name: Object-storage-native and open-format
+  systems:
+  - openobserve
+  - parseable
+  - grafana-tempo-3-x
+  - icegate
+  - observe-by-snowflake-iceberg
+  - greptimedb
+  - quickwit-datadog-owned
+  - coralogix-s3-archive
+  - cribl-lake-search
+- name: Victoria, Grafana and CNCF open source
+  systems:
+  - victorialogs-upstream
+  - victoriatraces-upstream
+  - grafana-loki-3-x
+  - jaeger-v2
+  - apache-skywalking-banyandb
+- name: Search engines
+  systems:
+  - elasticsearch-elastic-incl-serverless
+  - opensearch
+- name: ClickHouse family and OLAP databases
+  systems:
+  - clickhouse-oss-cloud
+  - clickstack-hyperdx
+  - signoz
+  - uptrace
+  - qryn-gigapipe
+  - hydrolix
+  - apache-doris
+  - kloudfuse
+- name: Commercial SaaS
+  systems:
+  - datadog-husky-flex-archives
+  - splunk-cisco
+  - new-relic
+  - honeycomb
+  - dynatrace-grail
+  - chronosphere-palo-alto-cortex-xcor
+  - sumo-logic
+  - grafana-cloud-loki-tempo
+  - aws-cloudwatch-logs-x-ray
+  - google-cloud-logging-trace
+  - azure-monitor-logs
+  - axiom
+- name: Briefly (fewer cells)
+  systems:
+  - starrocks
+  - databend
+  - influxdb-3
+  - apache-pinot
+  - oodle
+  - logz-io
+  - better-stack
+  - mezmo
+  - grepr
+  - otel-arrow-parquet-exporter
+  - microsoft-sentinel-data-lake
+  - amazon-security-lake

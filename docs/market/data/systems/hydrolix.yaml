@@ -1,0 +1,256 @@
+name: Hydrolix
+group: ClickHouse family and OLAP databases
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: 5 (HTTP stream, Kinesis, Firehose, autoingest, OTel)
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (ClickHouse SQL; Spark/Splunk connectors)
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (Hydrolix format)
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: 🟡
+    text: via OTel transforms
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: 🟡
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: customer bucket
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: proprietary
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: merge controller
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: partition blooms
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: ClickHouse SQL
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: plugin
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: 🟡
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: 🟡
+    text: S3
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ✅
+    text: stateless K8s (vendor)
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ✅
+    text: Super Bowl 200 TB ingested
+    source: https://hydrolix.io/
+    label: vendor
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: K8s stack
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: proprietary
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: SaaS + self-managed
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: commercial
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ❓
+    text: ''
+    source: https://docs.hydrolix.io/latest/
+    label: docs
+    checked: '2026-10-02'

@@ -1,0 +1,259 @@
+name: Datadog (Husky, Flex, Archives)
+group: Commercial SaaS
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🟡
+    text: 3 (Agent, OTLP, HTTP intake) [K]
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: unverified
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (own API)
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🟡
+    text: 0 (Husky); archives = JSON copy
+    note: 'Archives are .json.zst/.json.gz in the customer bucket with dt=/hour= paths: readable by any JSON tool,
+      but a forwarded copy, not the store Datadog queries.'
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❓
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: Husky on object storage
+    source: https://www.datadoghq.com/blog/engineering/introducing-husky/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: proprietary (archives JSON)
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: 🟡
+    text: archives only
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: '[K]'
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: unverified
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: per index / Flex tiers
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ✅
+    text: archive storage class + lifecycle
+    note: Archive Search supports some classes incl. Glacier IR; others must be moved first.
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❓
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: own
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: plugin [K]
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: unverified
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: 🟡
+    text: Archive Search or rehydrate
+    source: https://docs.datadoghq.com/logs/log_configuration/rehydrating.md
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ✅
+    text: Kafka-backed (Husky blog)
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ✅
+    text: '[K]'
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: unverified
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ''
+    text: SaaS (BYOC logs option)
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: proprietary
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: SaaS; BYOC logs
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: ''
+    source: https://docs.datadoghq.com/logs/log_configuration/archives/
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: $0.10/GB ingest + $1.70/M events (15 d)
+    source: https://www.datadoghq.com/pricing/list/
+    label: docs
+    checked: '2026-10-02'

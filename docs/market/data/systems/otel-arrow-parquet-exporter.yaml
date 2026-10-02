@@ -1,0 +1,28 @@
+name: OTel Arrow Parquet exporter
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🧪
+    text: OTLP/OTAP
+    source: https://github.com/open-telemetry/otel-arrow
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🧪
+    text: Parquet output (experimental)
+    source: https://github.com/open-telemetry/otel-arrow
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: 🧪
+    text: Parquet
+    source: https://github.com/open-telemetry/otel-arrow
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: Apache-2.0
+    source: https://github.com/open-telemetry/otel-arrow
+    label: docs
+    checked: '2026-10-02'

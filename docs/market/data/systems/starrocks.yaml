@@ -1,0 +1,52 @@
+name: StarRocks
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🟡
+    text: 2 (Stream Load, Kafka)
+    source: https://docs.starrocks.io/docs/table_design/indexes/inverted_index/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (SQL)
+    source: https://docs.starrocks.io/docs/table_design/indexes/inverted_index/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (export only)
+    source: https://docs.starrocks.io/docs/table_design/indexes/inverted_index/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: 🟡
+    text: shared-data mode
+    source: https://docs.starrocks.io/docs/table_design/indexes/inverted_index/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: own segments
+    source: https://docs.starrocks.io/docs/table_design/indexes/inverted_index/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: 🧪
+    text: GIN beta, flag-gated
+    source: https://docs.starrocks.io/docs/table_design/indexes/inverted_index/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: Apache-2.0
+    source: https://docs.starrocks.io/docs/table_design/indexes/inverted_index/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: 12k stars
+    source: https://docs.starrocks.io/docs/table_design/indexes/inverted_index/
+    label: docs
+    checked: '2026-10-02'

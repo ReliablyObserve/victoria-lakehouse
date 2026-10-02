@@ -1,0 +1,34 @@
+name: Oodle
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_files_n:
+    icon: ❓
+    text: ''
+    source: https://oodle.ai/product/technology
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: S3 (vendor)
+    source: https://oodle.ai/product/technology
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❓
+    text: ''
+    source: https://oodle.ai/product/technology
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: ''
+    source: https://oodle.ai/product/technology
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ❓
+    text: ''
+    source: https://oodle.ai/product/technology
+    label: docs
+    checked: '2026-10-02'

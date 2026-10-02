@@ -1,0 +1,40 @@
+name: Apache Pinot
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🟡
+    text: 3 (Kafka, Pulsar, Kinesis)
+    source: https://github.com/apache/pinot
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (SQL)
+    source: https://github.com/apache/pinot
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: '0'
+    source: https://github.com/apache/pinot
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: own segments
+    source: https://github.com/apache/pinot
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: Lucene text index
+    source: https://github.com/apache/pinot
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: Apache-2.0
+    source: https://github.com/apache/pinot
+    label: docs
+    checked: '2026-10-02'

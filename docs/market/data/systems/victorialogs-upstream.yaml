@@ -1,0 +1,259 @@
+name: VictoriaLogs (upstream)
+group: Victoria, Grafana and CNCF open source
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: '9'
+    note: jsonline, native, Loki push, ES _bulk, OTLP, syslog (incl. CEF), Datadog, journald, Splunk HEC.
+    source: https://docs.victoriametrics.com/victorialogs/data-ingestion/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (LogsQL HTTP API)
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (own format, local disk)
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ❌
+    text: (VictoriaTraces)
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ❌
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ✅
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ✅
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❌
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ❌
+    text: 'local disk; S3 = draft PR #1155'
+    note: 'Roadmap item, issue #48 open (2026-09-28 ''any progress?''); PR #1155 draft since 2026-03-05, last update
+      2026-08-05, read-only offload of retained partitions; author notes it is ''very slow''.'
+    source: https://github.com/VictoriaMetrics/VictoriaLogs/pull/1155
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: own columnar blocks
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: background merges
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: 🟡
+    text: global; per-stream filters 🔒/roadmap
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❌
+    text: (manual partition snapshots)
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ✅
+    text: opt-in delete tasks
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: blooms + stream index
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: LogsQL
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: (push only)
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: VictoriaLogs plugin
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: vmui
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: via Grafana
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ''
+    text: n/a (all local)
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ''
+    text: n/a
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: 🟡
+    text: in-memory buffer -> local parts
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: 🟡
+    text: seconds; disk loss = all
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❌
+    text: none; dual-write via vlagent
+    source: https://docs.victoriametrics.com/victorialogs/cluster/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: 🟡
+    text: vlinsert/vlselect yes
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ❌
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: cluster mode
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ✅
+    text: AccountID/ProjectID
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ✅
+    text: 1 binary (3 roles)
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: Apache-2.0 (+Enterprise)
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ❓
+    text: ''
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: 2.3k stars, v1.53.0 (2026-10-01)
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: free OSS
+    source: https://github.com/VictoriaMetrics/VictoriaLogs
+    label: docs
+    checked: '2026-10-02'
