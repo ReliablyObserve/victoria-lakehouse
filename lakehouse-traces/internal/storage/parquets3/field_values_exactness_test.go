@@ -43,8 +43,8 @@ func TestFieldValues_CatalogUnionWithAHighCardPartitionScans(t *testing.T) {
 	s, bw := newFieldValuesStorage(t, &config.PmetaConfig{Enabled: true, CardinalityThreshold: 2})
 	a := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
 	b := a.Add(2 * time.Hour)
-	bw.AddTraceRows(append(spanRows(a, "GET /a", "POST /b"), spanRows(b, "PUT /c", "DELETE /d", "GET /a")...))
-	bw.triggerFlush()
+	bw.stageTraceRows(append(spanRows(a, "GET /a", "POST /b"), spanRows(b, "PUT /c", "DELETE /d", "GET /a")...))
+	bw.flushStagedNow()
 
 	got := fieldValueSet(t, s, a.Add(-time.Hour).UnixNano(), b.Add(time.Hour).UnixNano(), "name", 0)
 	if want := []string{"DELETE /d", "GET /a", "POST /b", "PUT /c"}; !equalStrings(got, want) {
@@ -57,11 +57,11 @@ func TestFieldValues_CatalogMissingAFileScans(t *testing.T) {
 	obs := bw.catalogObserver
 	bw.catalogObserver = nil
 	at := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
-	bw.AddTraceRows(spanRows(at, "GET /a"))
-	bw.triggerFlush()
+	bw.stageTraceRows(spanRows(at, "GET /a"))
+	bw.flushStagedNow()
 	bw.catalogObserver = obs
-	bw.AddTraceRows(spanRows(at.Add(time.Minute), "POST /b"))
-	bw.triggerFlush()
+	bw.stageTraceRows(spanRows(at.Add(time.Minute), "POST /b"))
+	bw.flushStagedNow()
 
 	got := fieldValueSet(t, s, at.Add(-time.Hour).UnixNano(), at.Add(time.Hour).UnixNano(), "name", 0)
 	if want := []string{"GET /a", "POST /b"}; !equalStrings(got, want) {
@@ -73,8 +73,8 @@ func TestFieldValues_CatalogServesWhenComplete(t *testing.T) {
 	s, bw := newFieldValuesStorage(t, &config.PmetaConfig{Enabled: true})
 	a := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
 	b := a.Add(2 * time.Hour)
-	bw.AddTraceRows(append(spanRows(a, "GET /a", "POST /b"), spanRows(b, "PUT /c")...))
-	bw.triggerFlush()
+	bw.stageTraceRows(append(spanRows(a, "GET /a", "POST /b"), spanRows(b, "PUT /c")...))
+	bw.flushStagedNow()
 
 	before := metrics.CatalogValueLookups.Get("catalog")
 	got := fieldValueSet(t, s, a.Add(-time.Hour).UnixNano(), b.Add(time.Hour).UnixNano(), "name", 0)
@@ -89,8 +89,8 @@ func TestFieldValues_CatalogServesWhenComplete(t *testing.T) {
 func TestFieldValues_ScanIsConfinedToTheWindow(t *testing.T) {
 	s, bw := newFieldValuesStorage(t, nil)
 	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
-	bw.AddTraceRows(append(spanRows(base.Add(15*time.Minute), "GET /a", "GET /a"), spanRows(base.Add(45*time.Minute), "POST /b")...))
-	bw.triggerFlush()
+	bw.stageTraceRows(append(spanRows(base.Add(15*time.Minute), "GET /a", "GET /a"), spanRows(base.Add(45*time.Minute), "POST /b")...))
+	bw.flushStagedNow()
 	if n := len(s.manifest.GetFilesForRange(base.UnixNano(), base.Add(time.Hour).UnixNano())); n != 1 {
 		t.Fatalf("fixture: want one file straddling the window, got %d", n)
 	}
@@ -124,10 +124,10 @@ func TestFieldValues_ScanWindowBoundsAreInclusive(t *testing.T) {
 	row := func(ts int64, name string) schema.TraceRow {
 		return schema.TraceRow{TimestampUnixNano: ts, ServiceName: "svc", SpanName: name, TraceID: "t-" + name, SpanID: "s-" + name}
 	}
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.stageTraceRows([]schema.TraceRow{
 		row(startNs-1, "BEFORE"), row(startNs, "AT_START"), row(endNs, "AT_END"), row(endNs+1, "AFTER"),
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 	if n := len(s.manifest.GetFilesForRange(startNs, endNs)); n != 1 {
 		t.Fatalf("fixture: want one file straddling both bounds, got %d", n)
 	}
@@ -164,8 +164,8 @@ func TestStreams_ScanIsConfinedToTheWindow(t *testing.T) {
 	in[0].Stream, in[0].StreamID = `{resource_attr:service.name="in-window"}`, "id-in-window"
 	out := spanRows(base.Add(45*time.Minute), "POST /b")
 	out[0].Stream, out[0].StreamID = `{resource_attr:service.name="outside"}`, "id-outside"
-	bw.AddTraceRows(append(in, out...))
-	bw.triggerFlush()
+	bw.stageTraceRows(append(in, out...))
+	bw.flushStagedNow()
 	q := mustParseQueryWithTime(t, "*", base.UnixNano(), base.Add(30*time.Minute).UnixNano())
 	streams, err := s.GetStreams(context.Background(), nil, q, 0)
 	if err != nil {

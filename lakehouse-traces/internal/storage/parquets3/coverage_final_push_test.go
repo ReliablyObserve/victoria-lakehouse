@@ -153,66 +153,6 @@ func TestDictionaryContainsMatch_PrefixMiss(t *testing.T) {
 	_ = got
 }
 
-// --- flushLoop (60% -> higher) ---
-
-func TestFlushLoop_StopsOnClose(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(buffer.TenantScopeHeader, "0:0")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	pool := testPool(t, srv.URL)
-	m := manifest.New("test", "traces/")
-	cfg := config.Default()
-	cfg.Insert.FlushInterval = 50 * time.Millisecond
-	cfg.Insert.MaxBufferRows = 1000000
-
-	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-	bw.Start()
-	time.Sleep(120 * time.Millisecond)
-	bw.Stop()
-}
-
-// --- CanWriteData (75% -> higher) ---
-
-func TestCanWriteData_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(buffer.TenantScopeHeader, "0:0")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	pool := testPool(t, srv.URL)
-	m := manifest.New("test", "traces/")
-	cfg := config.Default()
-	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-
-	err := bw.CanWriteData(context.Background())
-	if err != nil {
-		t.Errorf("CanWriteData failed: %v", err)
-	}
-}
-
-func TestCanWriteData_S3Error(t *testing.T) {
-	singleAttemptS3(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(buffer.TenantScopeHeader, "0:0")
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	pool := testPool(t, srv.URL)
-	m := manifest.New("test", "traces/")
-	cfg := config.Default()
-	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-
-	err := bw.CanWriteData(context.Background())
-	if err == nil {
-		t.Error("expected error from failing S3")
-	}
-}
-
 // --- writeLogsParquet / writeTracesParquet error recovery ---
 
 func TestWriteLogsParquet_EmptyRows(t *testing.T) {
@@ -281,10 +221,10 @@ func TestTriggerFlush_WithData(t *testing.T) {
 	cfg.Insert.MaxBufferRows = 1000000
 
 	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.stageTraceRows([]schema.TraceRow{
 		{TimestampUnixNano: time.Now().UnixNano(), SpanName: "test", ServiceName: "svc"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 }
 
 // --- detectConstantColumns multi-page (73.3% -> higher) ---
@@ -610,60 +550,6 @@ func TestReadRowGroupProjectedBitmap_AllCols(t *testing.T) {
 	}
 }
 
-// --- AddTraceRows with WAL ---
-
-func TestAddTraceRows_BufferingAndPartitioning(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(buffer.TenantScopeHeader, "0:0")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	pool := testPool(t, srv.URL)
-	m := manifest.New("test", "traces/")
-	cfg := config.Default()
-	cfg.Insert.FlushInterval = 10 * time.Minute
-	cfg.Insert.MaxBufferRows = 1000000
-	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-
-	now := time.Now()
-	rows := []schema.TraceRow{
-		{TimestampUnixNano: now.UnixNano(), ServiceName: "svc-a", SpanName: "op1"},
-		{TimestampUnixNano: now.Add(time.Hour).UnixNano(), ServiceName: "svc-b", SpanName: "op2"},
-	}
-	bw.AddTraceRows(rows)
-
-	bw.mu.Lock()
-	partCount := len(bw.traceBufs)
-	bw.mu.Unlock()
-
-	if partCount == 0 {
-		t.Error("expected at least one partition")
-	}
-}
-
-func TestAddTraceRows_EmptyInput(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(buffer.TenantScopeHeader, "0:0")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	pool := testPool(t, srv.URL)
-	m := manifest.New("test", "traces/")
-	cfg := config.Default()
-	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-	bw.AddTraceRows(nil)
-
-	bw.mu.Lock()
-	partCount := len(bw.traceBufs)
-	bw.mu.Unlock()
-
-	if partCount != 0 {
-		t.Error("expected no partitions for empty rows")
-	}
-}
-
 // --- New() constructor (0% -> exercised) ---
 
 func TestNew_TracesMode(t *testing.T) {
@@ -832,32 +718,6 @@ func TestNew_WithPersistPath(t *testing.T) {
 // SKIP: RefreshManifest requires fully initialized Storage with bloomIdx, pool.S3Client(),
 // and other internal dependencies that are not available in unit tests.
 
-// --- StartWriter (0% -> exercised) ---
-
-func TestStartWriter_NilWriterFinal(t *testing.T) {
-	s := &Storage{}
-	s.StartWriter()
-}
-
-func TestStartWriter_WithWriterFinal(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(buffer.TenantScopeHeader, "0:0")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	pool := testPool(t, srv.URL)
-	m := manifest.New("test", "traces/")
-	cfg := config.Default()
-	cfg.Insert.FlushInterval = 50 * time.Millisecond
-	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-
-	s := &Storage{writer: bw}
-	s.StartWriter()
-	time.Sleep(80 * time.Millisecond)
-	bw.Stop()
-}
-
 // --- Close (0% -> exercised) ---
 
 func TestClose_NilWriter(t *testing.T) {
@@ -879,7 +739,6 @@ func TestClose_WithWriterAndPersister(t *testing.T) {
 	cfg := config.Default()
 	cfg.Insert.FlushInterval = 10 * time.Minute
 	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-	bw.Start()
 
 	s := &Storage{
 		writer:     bw,

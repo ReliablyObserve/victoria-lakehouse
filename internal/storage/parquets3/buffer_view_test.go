@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -68,9 +69,6 @@ func (e *viewEnv) ingest(ts time.Time, n int) {
 	logstorage.PutLogRows(lr)
 	e.segs.DebugFlush() // upstream makes rows searchable within about a second on its own
 }
-
-// answer runs `*` over the last day and returns each row's count.
-func (e *viewEnv) answer() map[string]int { return e.answerOn(e.s) }
 
 // answerOn is answer on another Storage (a select pod reading the same bucket).
 func (e *viewEnv) answerOn(s *Storage) map[string]int {
@@ -305,5 +303,37 @@ func TestBufferView_PeerWithoutNoncesExcludesNothing(t *testing.T) {
 	files := []manifest.FileInfo{{Key: "logs/dt=2026-10-02/hour=06/65000000aaaabbbb-0.parquet"}}
 	if got := v.exclude(files); len(got) != 1 {
 		t.Errorf("a view without nonces dropped %d objects", len(files)-len(got))
+	}
+}
+
+// The flusher writes the pmeta bundles a drain changed, and retries a bundle a
+// failed PUT left dirty on a tick that drained nothing: the catalog's bloom
+// facet cannot be rebuilt from the manifest, so it must reach the bucket.
+func TestBufferFlusher_PersistsThePmetaBundles(t *testing.T) {
+	e := newViewEnv(t)
+	cs := newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+	e.s.catalog = cs
+	e.s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	e.s.writer.catalogObserver = &catalogObserver{store: cs, pool: e.s.pool}
+	bundles := func() int {
+		e.srv.mu.RLock()
+		defer e.srv.mu.RUnlock()
+		n := 0
+		for k := range e.srv.files {
+			if strings.Contains(k, "_pmeta") {
+				n++
+			}
+		}
+		return n
+	}
+
+	e.ingest(time.Now().Add(-2*time.Hour), 10)
+	e.segs.Seal()
+	e.f.tick(context.Background(), time.Now())
+	if len(e.segs.Pending()) != 0 {
+		t.Fatal("the segment was not drained")
+	}
+	if bundles() == 0 {
+		t.Fatal("no pmeta bundle reached the bucket after the drain")
 	}
 }

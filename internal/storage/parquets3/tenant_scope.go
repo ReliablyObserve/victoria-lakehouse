@@ -357,33 +357,3 @@ func (s *Storage) DataTenantAccountIDs() []uint32 {
 	}
 	return out
 }
-
-// tenantIDOfKey maps an object key to the numeric tenant it belongs to. A key
-// without tenant segments is legacy data of 0:0. ok=false for a segment that is
-// not a VL numeric tenant id (no watermark is recorded for it).
-func tenantIDOfKey(parse func(string) (string, string, bool), key string) (logstorage.TenantID, bool) {
-	account, project, tenanted := parse(key)
-	if !tenanted {
-		return logstorage.TenantID{}, true
-	}
-	a, err := strconv.ParseUint(account, 10, 32)
-	if err != nil {
-		return logstorage.TenantID{}, false
-	}
-	var p uint64
-	if project != "" {
-		if p, err = strconv.ParseUint(project, 10, 32); err != nil {
-			return logstorage.TenantID{}, false
-		}
-	}
-	return logstorage.TenantID{AccountID: uint32(a), ProjectID: uint32(p)}, true
-}
-
-// singleTenantID is the first tenant of a request (0:0 for an empty list,
-// matching resolveTenantScope).
-func singleTenantID(tenantIDs []logstorage.TenantID) logstorage.TenantID {
-	if len(tenantIDs) == 0 {
-		return logstorage.TenantID{}
-	}
-	return tenantIDs[0]
-}

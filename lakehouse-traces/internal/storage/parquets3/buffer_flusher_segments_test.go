@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -826,4 +827,99 @@ func TestSegments_IngestDuringDrainLosesNothing(t *testing.T) {
 		t.Fatalf("%d segments still pending", n)
 	}
 	e.mustHaveExactly(batches*7, "ingest during drains")
+}
+
+// An upload "fails" on the client side but the store kept the object, and a
+// manifest refresh adopts it: it is live. The drain's retry must not upload it
+// again (that would rewrite a stored object) nor add it a second time — and it
+// is not "superseded": nothing replaced it, its rows are simply already in the
+// manifest.
+func TestSegments_AdoptedObjectIsNotUploadedAgain(t *testing.T) {
+	e := newSegEnv(t)
+	e.ingest(segTenantA, hourAgo, 10)
+	g := e.seal()
+	f := e.flusher(1000)
+	e.failFn.Store(func(key string) bool { return !strings.Contains(key, manifest.SegmentMarkerDir) })
+	if err := f.drain(context.Background(), g); err == nil {
+		t.Fatal("expected the first drain to fail")
+	}
+	e.failFn.Store(func(string) bool { return false })
+	if len(f.retry) != 1 {
+		t.Fatalf("%d groups kept for the retry, want 1", len(f.retry))
+	}
+	var key string
+	for k := range f.retry {
+		key = k
+	}
+	attempts := e.u.attempts(key)
+	// The refresh lists the bucket and adopts the object the store kept.
+	e.m.AddFile(partitionFromNano(hourAgo.UnixNano()), manifest.FileInfo{Key: key, Size: 1000, RowCount: 10, MinTimeNs: hourAgo.UnixNano(), MaxTimeNs: hourAgo.Add(time.Second).UnixNano()})
+	superseded0 := metrics.InsertRowsSuperseded.Get()
+
+	if err := f.drain(context.Background(), g); err != nil {
+		t.Fatalf("the retry of an adopted group must complete, not fail: %v", err)
+	}
+	if got := e.u.attempts(key); got != attempts {
+		t.Errorf("%s was uploaded again (%d attempts, was %d)", key, got, attempts)
+	}
+	if rows, files := committedRows(e.m); rows != 10 || files != 1 {
+		t.Fatalf("committed %d rows in %d files, want 10 in 1 (the adopted object)", rows, files)
+	}
+	if d := metrics.InsertRowsSuperseded.Get() - superseded0; d != 0 {
+		t.Errorf("superseded counter rose by %d: an adopted live object is not superseded", d)
+	}
+	if len(e.segs.Pending()) != 0 {
+		t.Error("the segment is still pending")
+	}
+}
+
+// Random PUT failures while rows keep arriving: every row is stored exactly
+// once when the failures stop, and no key is ever stored with other bytes
+// (faultyUploader checks that at cleanup).
+func TestSegments_RandomFailuresUnderConcurrentIngestLoseNothing(t *testing.T) {
+	e := newSegEnv(t)
+	f := e.flusher(40)
+	rng := rand.New(rand.NewSource(1))
+	var rngMu sync.Mutex
+	e.failFn.Store(func(string) bool {
+		rngMu.Lock()
+		defer rngMu.Unlock()
+		return rng.Intn(100) < 35
+	})
+
+	const workers, batches, perBatch = 3, 40, 5
+	var wg sync.WaitGroup
+	var done atomic.Int32
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			tenant := segTenantA
+			if w%2 == 1 {
+				tenant = segTenantB
+			}
+			for i := 0; i < batches; i++ {
+				e.ingest(tenant, hourAgo.Add(time.Duration(w*batches+i)*time.Second), perBatch)
+				time.Sleep(100 * time.Microsecond)
+			}
+			done.Add(1)
+		}(w)
+	}
+	for i := 0; done.Load() < workers; i++ {
+		f.nextTry = time.Time{}
+		f.tick(context.Background(), time.Now().Add(time.Duration(i)*2*time.Hour))
+	}
+	wg.Wait()
+
+	// The failures stop; whatever is left drains.
+	e.failFn.Store(func(string) bool { return false })
+	e.segs.Seal()
+	for i := 0; i < 50 && len(e.segs.Pending()) > 0; i++ {
+		f.nextTry = time.Time{}
+		f.tick(context.Background(), time.Now().Add(time.Duration(i)*2*time.Hour))
+	}
+	if n := len(e.segs.Pending()); n != 0 {
+		t.Fatalf("%d segments still pending", n)
+	}
+	e.mustHaveExactly(workers*batches*perBatch, "random failures under concurrent ingest")
 }

@@ -5,8 +5,6 @@ import "testing"
 func BenchmarkReadyGates(b *testing.B) {
 	m := NewManager(1)
 	m.SetManifestFiles(1)
-	m.SetWALReplayNeeded()
-	m.SetWALReplayDone()
 	m.SetServingReady()
 	m.SetWarmupComplete()
 	for _, tc := range []struct {

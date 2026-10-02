@@ -38,19 +38,18 @@ func TestReviewStartup_WarmupCannotGrantServing(t *testing.T) {
 	}
 }
 
-func TestReviewStartup_WALGateMetricsMatchState(t *testing.T) {
+func TestReviewStartup_ManifestGateMetricsMatchState(t *testing.T) {
 	clearReviewMetrics()
-	m := NewManager(0)
-	m.SetWALReplayNeeded()
+	m := NewManager(3)
 	m.SetServingReady()
 	m.SetPhase(PhaseS3Refresh)
 	m.SetWarmupComplete()
 	if m.ServingReady() || m.IsReady() || metrics.Ready.Get() != 0 || metrics.ServingReady.Get() != 0 {
-		t.Fatal("replay gate bypassed")
+		t.Fatal("manifest gate bypassed")
 	}
-	m.SetWALReplayDone()
+	m.SetManifestFiles(3)
 	if !m.IsReady() || metrics.Ready.Get() != 1 || metrics.ServingReady.Get() != 1 {
-		t.Fatalf("after replay: ready=%v ready_metric=%d serving=%v serving_metric=%d", m.IsReady(), metrics.Ready.Get(), m.ServingReady(), metrics.ServingReady.Get())
+		t.Fatalf("after the manifest gate opened: ready=%v ready_metric=%d serving=%v serving_metric=%d", m.IsReady(), metrics.Ready.Get(), m.ServingReady(), metrics.ServingReady.Get())
 	}
 }
 
@@ -101,7 +100,6 @@ func TestReviewStartup_CompletedTimingsAndGates(t *testing.T) {
 func TestReviewStartup_ConcurrentTimingAndReadinessReaders(t *testing.T) {
 	clearReviewMetrics()
 	m := NewManager(10)
-	m.SetWALReplayNeeded()
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
@@ -119,12 +117,12 @@ func TestReviewStartup_ConcurrentTimingAndReadinessReaders(t *testing.T) {
 	}
 	m.SetPhase(PhaseS3Refresh)
 	m.SetServingReady()
-	m.SetManifestFiles(10)
+	m.SetManifestFiles(9)
 	m.SetWarmupComplete()
 	if m.IsReady() {
-		t.Fatal("concurrent readers affected replay gate")
+		t.Fatal("concurrent readers affected the manifest gate")
 	}
-	m.SetWALReplayDone()
+	m.SetManifestFiles(10)
 	wg.Wait()
 	if !m.IsReady() {
 		t.Fatal("startup did not finish")

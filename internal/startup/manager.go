@@ -63,19 +63,17 @@ func (p Phase) String() string {
 type Manager struct {
 	// Serialize gate mutations together with their metric publication. Atomic
 	// readers remain lock-free, while the final gauges cannot lag a later setter.
-	stateMu         sync.Mutex
-	phase           atomic.Int32
-	servingReady    atomic.Bool
-	warmupComplete  atomic.Bool
-	walReplayDone   atomic.Bool
-	manifestFiles   atomic.Int64
-	minReadyFiles   int64
-	walReplayNeeded atomic.Bool
-	startTime       time.Time
-	recoveryTime    atomic.Int64
-	refreshTime     atomic.Int64
-	totalTime       atomic.Int64
-	catchupFiles    int64
+	stateMu        sync.Mutex
+	phase          atomic.Int32
+	servingReady   atomic.Bool
+	warmupComplete atomic.Bool
+	manifestFiles  atomic.Int64
+	minReadyFiles  int64
+	startTime      time.Time
+	recoveryTime   atomic.Int64
+	refreshTime    atomic.Int64
+	totalTime      atomic.Int64
+	catchupFiles   int64
 }
 
 // NewManager returns a fresh lifecycle manager. minReadyFiles is the
@@ -106,15 +104,11 @@ func (m *Manager) IsReady() bool {
 	return m.ServingReady() && m.WarmupComplete()
 }
 
-// ServingReady is true when the HTTP layer + disk recovery + WAL
-// replay are done AND the manifest holds enough files to honestly
+// ServingReady is true when the HTTP layer + disk recovery are done AND the manifest holds enough files to honestly
 // answer queries. Background warmup (S3 refresh, cache warmup)
 // may still be in progress.
 func (m *Manager) ServingReady() bool {
 	if !m.servingReady.Load() {
-		return false
-	}
-	if m.walReplayNeeded.Load() && !m.walReplayDone.Load() {
 		return false
 	}
 	if m.minReadyFiles > 0 && m.manifestFiles.Load() < m.minReadyFiles {
@@ -132,7 +126,7 @@ func (m *Manager) WarmupComplete() bool {
 
 // SetServingReady flips the "queries may be answered" bit. Called
 // after disk recovery completes; the gate's other preconditions
-// (WAL replay, MinManifestFiles) are checked lazily by ServingReady.
+// (MinManifestFiles) are checked lazily by ServingReady.
 func (m *Manager) SetServingReady() {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
@@ -171,26 +165,6 @@ func (m *Manager) SetManifestFiles(n int64) {
 	m.updateReadyMetric()
 }
 
-// SetWALReplayNeeded marks this pod as one that needs WAL replay
-// before serving (insert role). select-only roles never call this.
-func (m *Manager) SetWALReplayNeeded() {
-	m.stateMu.Lock()
-	defer m.stateMu.Unlock()
-	m.walReplayNeeded.Store(true)
-	m.updateReadyMetric()
-}
-
-// SetWALReplayDone is called after the insert path finishes replaying
-// the on-disk WAL. ServingReady becomes true only after this is set
-// (when WALReplayNeeded was true).
-func (m *Manager) SetWALReplayDone() {
-	m.stateMu.Lock()
-	defer m.stateMu.Unlock()
-	m.walReplayDone.Store(true)
-	m.updateReadyMetric()
-	logger.Infof("startup: WAL replay complete")
-}
-
 func (m *Manager) SetPhase(p Phase) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
@@ -212,7 +186,7 @@ func (m *Manager) SetPhase(p Phase) {
 	case PhaseReady:
 		m.recordCompletion()
 		// Legacy: reaching PhaseReady completes warmup and grants serving
-		// permission. Effective readiness still honors manifest and WAL gates.
+		// permission. Effective readiness still honors the manifest gate.
 		m.servingReady.Store(true)
 		m.warmupComplete.Store(true)
 		m.updateReadyMetric()

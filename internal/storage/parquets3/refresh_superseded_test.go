@@ -22,8 +22,8 @@ func TestRefreshManifest_DoesNotReadoptASupersededObject(t *testing.T) {
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
 
 	now := time.Now().UnixNano()
-	bw.AddLogRows([]schema.LogRow{{TimestampUnixNano: now, Body: "a", ServiceName: "svc"}})
-	bw.triggerFlush()
+	bw.stageLogRows([]schema.LogRow{{TimestampUnixNano: now, Body: "a", ServiceName: "svc"}})
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(now-1, now+1)
 	if len(files) != 1 {

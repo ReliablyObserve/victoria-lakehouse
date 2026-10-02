@@ -58,12 +58,12 @@ func newFieldsTombstoneFixture(t *testing.T, withCatalog bool) *fieldsTombstoneF
 func seedFieldRows(t *testing.T, bw *BatchWriter) {
 	t.Helper()
 	now := time.Now().UnixNano()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now, Body: "a", ServiceName: "api-gateway", SeverityText: "info"},
 		{TimestampUnixNano: now, Body: "b", ServiceName: "order-service", SeverityText: "error"},
 		{TimestampUnixNano: now, Body: "c", ServiceName: "api-gateway", SeverityText: "info"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 }
 
 func (f *fieldsTombstoneFixture) addTombstone() {
@@ -602,11 +602,11 @@ func TestFieldNames_TombstoneInsideACountedFileButOutsideTheWindow(t *testing.T)
 
 	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
 	early := now.Add(-10 * time.Second)
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: early.UnixNano(), Body: "early", ServiceName: "old-svc"},
 		{TimestampUnixNano: now.UnixNano(), Body: "late", ServiceName: "new-svc"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(early.UnixNano(), now.UnixNano())
 	if len(files) != 1 || files[0].MinTimeNs == files[0].MaxTimeNs {

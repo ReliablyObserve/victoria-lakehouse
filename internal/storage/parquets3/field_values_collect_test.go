@@ -180,12 +180,12 @@ func TestFieldValues_RowGroupPruningKeepsTheWindowEnd(t *testing.T) {
 	s := testStorageWithS3(t, mock.url())
 	s.cfg.Insert.RowGroupSize = 2
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		fvcRow(1*time.Minute, "INFO"), fvcRow(2*time.Minute, "INFO"),
 		fvcRow(3*time.Minute, "WARN"), fvcRow(4*time.Minute, "WARN"),
 		fvcRow(5*time.Minute, "ERROR"), fvcRow(6*time.Minute, "ERROR"),
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	skipped0 := metrics.ParquetRowGroupsSkipped.Get("stats")
 	// [2m, 3m]: the second row of the first group and the row opening the

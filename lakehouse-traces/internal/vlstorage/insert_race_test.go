@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-
 )
 
 // raceBuffer is a concurrency-safe BufferStore used to detect data races

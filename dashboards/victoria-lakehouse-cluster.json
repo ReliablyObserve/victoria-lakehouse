@@ -293,9 +293,9 @@
       "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 42 },
       "id": 52,
-      "title": "Fleet Rows Buffered",
+      "title": "Fleet Rows Waiting To Be Written",
       "type": "timeseries",
-      "targets": [{ "expr": "sum(lakehouse_insert_rows_buffered{job=~\"$job\"})", "legendFormat": "total buffered" }]
+      "targets": [{ "expr": "sum(lakehouse_buffer_pending_rows{job=~\"$job\"})", "legendFormat": "rows in sealed segments" }]
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },

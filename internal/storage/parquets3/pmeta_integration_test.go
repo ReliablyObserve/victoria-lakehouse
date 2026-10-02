@@ -47,12 +47,12 @@ func TestInteg_PmetaCatalog_CrossPathParity(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: catalog}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
 		{TimestampUnixNano: now.UnixNano(), Body: "b", ServiceName: "order-service"},
 		{TimestampUnixNano: now.UnixNano(), Body: "c", ServiceName: "api-gateway"},
 	})
-	bw.triggerFlush() // upload to mock S3 + manifest.AddFile + catalogObserver.OnFileFlush
+	bw.flushStagedNow() // upload to mock S3 + manifest.AddFile + catalogObserver.OnFileFlush
 
 	startNs := now.Add(-time.Hour).UnixNano()
 	endNs := now.Add(time.Hour).UnixNano()
@@ -106,11 +106,11 @@ func TestInteg_PmetaCatalog_BundlePersistWarmRoundTrip(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
 		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if len(files) == 0 {
@@ -164,11 +164,11 @@ func TestInteg_PmetaCatalog_NoLimitUsesIndex(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(nil)}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
 		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	before := metrics.CatalogValueLookups.Get("catalog")
@@ -235,11 +235,11 @@ func TestInteg_PmetaCatalog_RefuseSketchEnumeration(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
 		{TimestampUnixNano: now.UnixNano(), Body: "b", ServiceName: "order-service"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 
@@ -293,8 +293,8 @@ func TestInteg_PmetaCatalog_CardinalityTapE2E(t *testing.T) {
 			TraceID:           fmt.Sprintf("%032x", i),
 		}
 	}
-	bw.AddLogRows(rows)
-	bw.triggerFlush()
+	bw.stageLogRows(rows)
+	bw.flushStagedNow()
 
 	// The flush tap fed the trace_id HLL: cardinality ≈ n.
 	got := s.catalog.Cardinality("trace_id")
@@ -327,11 +327,11 @@ func TestInteg_PmetaCatalog_FileMetaFacetParity(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog, sketch: sketchSet(nil)}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
 		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if len(files) == 0 {
@@ -423,8 +423,8 @@ func TestInteg_PmetaCatalog_AllFacetsE2E(t *testing.T) {
 			SpanID:            fmt.Sprintf("%016x", i),
 		}
 	}
-	bw.AddLogRows(rows)
-	bw.triggerFlush()
+	bw.stageLogRows(rows)
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if len(files) == 0 {
@@ -505,8 +505,8 @@ func TestInteg_PmetaCatalog_TraceRowTap(t *testing.T) {
 			SpanID:            fmt.Sprintf("%016x", i),
 		}
 	}
-	bw.AddTraceRows(rows)
-	bw.triggerFlush()
+	bw.stageTraceRows(rows)
+	bw.flushStagedNow()
 
 	if c := s.catalog.Cardinality("trace_id"); math.Abs(float64(c)-float64(n))/float64(n) > 0.03 {
 		t.Fatalf("trace_id cardinality = %d (true %d)", c, n)
@@ -576,11 +576,11 @@ func TestInteg_PmetaFlip_FieldNamesAndBloom(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "msg", ServiceName: "api-gateway", TraceID: "t1", SpanID: "s1"},
 		{TimestampUnixNano: now.Add(time.Millisecond).UnixNano(), Body: "msg", ServiceName: "order-service", TraceID: "t2", SpanID: "s2"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if len(files) == 0 {
@@ -622,8 +622,8 @@ func TestInteg_PmetaRetire_SkipsFileMetaSidecar(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"}})
-	bw.triggerFlush()
+	bw.stageLogRows([]schema.LogRow{{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"}})
+	bw.flushStagedNow()
 
 	// The _file_metadata.json sidecar is NOT written — unconditionally (no
 	// sidecar writer exists anymore, so no goroutine is spawned; race-free).
@@ -663,11 +663,11 @@ func TestInteg_PmetaFlip_ORBranchFacet(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
 		{TimestampUnixNano: now.Add(time.Millisecond).UnixNano(), Body: "m", ServiceName: "order-service"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if len(files) == 0 {
@@ -710,10 +710,10 @@ func TestInteg_PmetaFlip_LogsBloomColdRestart(t *testing.T) {
 	// The legacy bloom observer no longer exists — the facet is the only feed.
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if len(files) == 0 {
@@ -779,10 +779,10 @@ func TestInteg_PmetaFlip_WarmMetadataViaRealAdapter(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 	if _, err := s.catalog.PersistDirty(context.Background(), poolObjectStore{s.pool}); err != nil {
 		t.Fatal(err)
 	}
@@ -836,12 +836,12 @@ func TestInteg_EnrichEquivalence_ProviderVsSidecar(t *testing.T) {
 	// Two partitions (2h apart) → two files, so the equivalence is asserted
 	// across more than one sidecar/bundle.
 	base := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: base.UnixNano(), Body: "a", ServiceName: "api-gateway"},
 		{TimestampUnixNano: base.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
 		{TimestampUnixNano: base.Add(2 * time.Hour).UnixNano(), Body: "c", ServiceName: "user-service"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(3*time.Hour).UnixNano())
 	if len(files) < 2 {
@@ -925,11 +925,11 @@ func TestInteg_GetFieldNames_CatalogFlip(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
 		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	hasName := func(vs []logstorage.ValueWithHits, name string) bool {
@@ -1005,13 +1005,13 @@ func TestInteg_CatalogFieldValues_MultiPartitionUnion(t *testing.T) {
 
 	t1 := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
 	t2 := t1.Add(2 * time.Hour) // different hour ⇒ different partition
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: t1.UnixNano(), Body: "a", ServiceName: "checkout"},
 		{TimestampUnixNano: t1.Add(time.Second).UnixNano(), Body: "b", ServiceName: "shared-svc"},
 		{TimestampUnixNano: t2.UnixNano(), Body: "c", ServiceName: "billing"},
 		{TimestampUnixNano: t2.Add(time.Second).UnixNano(), Body: "d", ServiceName: "shared-svc"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	// Catalog facets are keyed by the tenant-isolated partition (the full key dir),
 	// so derive each partition from the flushed file's key (NOT partitionFromNano,
@@ -1080,8 +1080,8 @@ func TestInteg_CatalogTruncatedField_FallsToScan(t *testing.T) {
 			K8sPodName:        fmt.Sprintf("pod-%03d", i),
 		}
 	}
-	bw.AddLogRows(rows)
-	bw.triggerFlush()
+	bw.stageLogRows(rows)
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
 	if len(files) == 0 {
@@ -1145,10 +1145,10 @@ func TestInteg_PmetaFlip_CheckFileBloomFacetExcludes(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog}
 
 	now := time.Now()
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "m", ServiceName: "api-gateway"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if len(files) == 0 {
 		t.Fatal("no file after flush")

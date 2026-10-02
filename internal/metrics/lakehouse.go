@@ -355,11 +355,9 @@ var (
 
 // Insert / writer metrics
 var (
-	InsertRowsTotal    = NewCounter("lakehouse_insert_rows_total")
-	InsertRowsBuffered = NewGauge("lakehouse_insert_rows_buffered")
-	// InsertRowsRequeued counts rows a flush could not write and put back into
-	// the buffers for the next flush (never dropped).
-	InsertRowsRequeued = NewCounter("lakehouse_insert_rows_requeued_total")
+	// InsertRowsTotal counts the rows admitted into the insert buffer (after
+	// the admission filter), by the insert adapter of each binary.
+	InsertRowsTotal = NewCounter("lakehouse_insert_rows_total")
 	// InsertRowsSuperseded counts rows of flush groups skipped because their
 	// object's key was retired (compacted, rewritten or removed) after an earlier
 	// attempt stored it: whatever replaced it carries those rows.
@@ -399,64 +397,28 @@ var (
 	// the insert-buffer segment markers; objects of unconfirmed segments were
 	// left alone in that scan.
 	CompactionSegmentGuardErrors = NewCounter("lakehouse_compaction_segment_guard_errors_total")
-	// WatermarkInferredUnresolved counts objects whose time bounds were still
-	// only inferred from the listing when a query needed them for the buffer
-	// watermark and could not be resolved (no pmeta entry, the footer read
-	// failed or was backed off). Such an object contributes its inferred
-	// MaxTimeNs - the buffer is hidden up to the end of its hour rather than
-	// risk counting its rows twice - so a sustained rate means rows newer than
-	// the object are invisible until it resolves (S3 errors, a peer's object
-	// compacted away). Should stay 0.
-	WatermarkInferredUnresolved = NewCounter("lakehouse_watermark_inferred_unresolved_total")
-	// InsertRowsLostAtShutdown counts buffered rows the final flush could not
-	// write before the process exited (the legacy staging path has no WAL).
-	InsertRowsLostAtShutdown = NewCounter("lakehouse_insert_rows_lost_at_shutdown_total")
-	// InsertRowsLost counts rows that are gone for a stated reason:
-	// buffer_expired is rows the buffer flusher recorded for a window and could
-	// not upload because the buffer no longer had them (retention, or a changed
-	// flush filter) when recovery came back for them.
-	InsertRowsLost = NewCounterVec("lakehouse_insert_rows_lost_total", "reason")
-	// InsertRejected counts insert requests refused by CanWriteData:
-	// buffer_full (429) or storage_unavailable (503).
+	// InsertRejected counts insert requests refused by the insert adapter:
+	// reason="read_only" is the 429 upstream answers while the buffer's volume
+	// is below its free-space floor. An unreachable object store refuses
+	// nothing: the rows wait in the buffer.
 	InsertRejected = NewCounterVec("lakehouse_insert_rejected_total", "reason")
-	// InsertBytesBuffered is the estimated raw size of the rows not yet
-	// written to object storage (buffered, being uploaded, or put back after a
-	// failed upload); CanWriteData answers 429 above insert.max_buffer_bytes.
-	InsertBytesBuffered    = NewGauge("lakehouse_insert_bytes_buffered")
+	// InsertFlushTotal counts buffer segments written to object storage
+	// completely; InsertFlushErrorsTotal the drains that stopped on an error
+	// (they resume, with the same bytes, after a back-off); InsertFlushDuration
+	// is the time a segment's drain took.
 	InsertFlushTotal       = NewCounter("lakehouse_insert_flush_total")
 	InsertFlushErrorsTotal = NewCounter("lakehouse_insert_flush_errors_total")
-	// InsertFlushWatermarkNs is the BufferFlusher's last committed flush
-	// watermark (ns). Everything at or below it is durably on S3; the buffer
-	// covers (watermark, now]. Crash-survival tests assert against this boundary.
-	InsertFlushWatermarkNs = NewGauge("lakehouse_insert_flush_watermark_timestamp")
 	InsertFlushDuration    = NewHistogram("lakehouse_insert_flush_duration_seconds",
 		[]float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10})
-	InsertBytesUploaded    = NewCounter("lakehouse_insert_bytes_uploaded_total")
-	InsertPartitionsActive = NewGauge("lakehouse_insert_partitions_active")
+	InsertBytesUploaded = NewCounter("lakehouse_insert_bytes_uploaded_total")
 
-	// VT emits internal "index" log rows alongside span data (trace-ID index
-	// stream and service-graph stream). Lakehouse drops them at insert time
-	// since they aren't OTLP span data; this counter, keyed by kind, exposes
-	// how many we discard so a missing-trace-index regression is visible.
+	// VT emits internal "index" rows alongside span data (trace-ID index
+	// stream and service-graph stream). The trace-ID index rows stay in the
+	// insert buffer, as in hot VictoriaTraces, and are dropped when the buffer
+	// is flushed (the Parquet footer index replaces them); this counter, keyed
+	// by kind, exposes how many are dropped so the parity check can explain
+	// the difference from hot VictoriaTraces.
 	VTInternalRowsDropped = NewCounterVec("lakehouse_vt_internal_rows_dropped_total", "kind")
-
-	// BufferStoreDualWriteFailures counts batches the Option B logstorage-native
-	// buffer (BufferEngine=logstore) failed to accept. The dual-write is
-	// isolated with recover() so a buffer failure can NEVER break ingestion —
-	// the legacy staging path remains authoritative. A non-zero value means the
-	// buffer is missing recent rows and any buffer-served query may under-return
-	// until the next healthy flush; alert on rate > 0.
-	BufferStoreDualWriteFailures = NewCounter("lakehouse_buffer_store_dualwrite_failures_total")
-
-	// Option B P5 shadow export: the buffer→Parquet path runs in parallel with
-	// the authoritative legacy flush, writing to a SHADOW S3 prefix (not the
-	// manifest), so an operator can confirm row/byte parity vs the legacy
-	// Parquet before the cutover. Compare BufferShadowExportRows against the
-	// legacy insert row rate; BufferShadowExportErrors must stay flat at 0.
-	BufferShadowExportRows   = NewCounter("lakehouse_buffer_shadow_export_rows_total")
-	BufferShadowExportFiles  = NewCounter("lakehouse_buffer_shadow_export_files_total")
-	BufferShadowExportBytes  = NewCounter("lakehouse_buffer_shadow_export_bytes_total")
-	BufferShadowExportErrors = NewCounter("lakehouse_buffer_shadow_export_errors_total")
 
 	// TraceIndexLookups counts VT-format trace-by-ID lookups served from the
 	// embedded `_trace_idx` Parquet footer index. `result` is one of:

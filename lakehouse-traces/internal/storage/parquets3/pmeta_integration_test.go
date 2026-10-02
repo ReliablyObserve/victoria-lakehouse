@@ -40,12 +40,12 @@ func TestInteg_PmetaCatalog_TracesCrossPathParity(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: catalog}
 
 	now := time.Now()
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.stageTraceRows([]schema.TraceRow{
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "api-gateway", SpanName: "GET /a"},
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "order-service", SpanName: "POST /b"},
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "api-gateway", SpanName: "GET /a"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	startNs := now.Add(-time.Hour).UnixNano()
 	endNs := now.Add(time.Hour).UnixNano()
@@ -100,11 +100,11 @@ func TestInteg_PmetaFlip_TracesBloomFacet(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog}
 
 	now := time.Now()
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.stageTraceRows([]schema.TraceRow{
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "api-gateway", SpanName: "GET /a"},
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "order-service", SpanName: "POST /b"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if len(files) == 0 {
@@ -146,10 +146,10 @@ func TestInteg_PmetaFlip_BloomHybridColdRestart(t *testing.T) {
 	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
 
 	now := time.Now()
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.stageTraceRows([]schema.TraceRow{
 		{TimestampUnixNano: now.UnixNano(), ServiceName: "api-gateway", SpanName: "GET /a"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	files := s.manifest.GetFilesForRange(now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
 	if len(files) == 0 {

@@ -9,10 +9,11 @@
 //	docker compose -f deployment/docker/docker-compose-e2e.yml up -d
 //	go test -tags 'e2e chaos' ./tests/e2e/ -run Chaos -v -count=1
 //
-// They validate the no-WAL durability claim: with buffer_engine=logstore the
-// insert buffer persists rows to on-disk parts and restores them on open, so a
-// container restart loses at most the buffer flush interval — the same crash-loss
-// window as hot VL/VT.
+// They validate the durability claim of the insert buffer (docs/durability.md):
+// every acknowledged row is in an upstream logstorage segment on the pod's
+// persistent volume, so a restart or a kill -9 loses at most upstream's own
+// in-memory window (5 s) — the same crash-loss window as hot VL/VT — and the
+// restarted pod restores its segments and writes them to object storage.
 package e2e
 
 import (
@@ -24,27 +25,38 @@ import (
 	"time"
 )
 
-// restartContainer hard-restarts a compose container and waits for the cold tier
-// to report healthy again.
+const chaosContainer = "victoria-lakehouse-lakehouse-logs-1"
+
+// docker runs a docker command and fails the test on error.
+func docker(t *testing.T, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {
+		t.Fatalf("docker %s: %v (%s)", strings.Join(args, " "), err, out)
+	}
+}
+
+// restartContainer stops a compose container gracefully and starts it again,
+// then waits for the cold tier to report healthy.
 func restartContainer(t *testing.T, name, baseURL string) {
 	t.Helper()
-	out, err := exec.Command("docker", "restart", name).CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker restart %s: %v (%s)", name, err, out)
-	}
+	docker(t, "restart", name)
 	waitForHealth(t, baseURL, 90*time.Second)
 }
 
-// TestChaos_BufferRestoreOnRestart proves the logstore buffer survives a cold-tier
-// container restart: data ingested moments before the restart — still inside the
-// buffer's flush window — must be queryable afterward, served from the restored
-// on-disk parts. This is the concrete, end-to-end form of TestBufferFlusher_
-// CrashRecovery and the buffer-restore-on-restart row in docs/durability.md §8.
-func TestChaos_BufferRestoreOnRestart(t *testing.T) {
-	const container = "victoria-lakehouse-lakehouse-logs-1"
+// killContainer SIGKILLs a compose container (no graceful close of the insert
+// buffer), starts it again, then waits for the cold tier to report healthy.
+func killContainer(t *testing.T, name, baseURL string) {
+	t.Helper()
+	docker(t, "kill", "-s", "KILL", name)
+	docker(t, "start", name)
+	waitForHealth(t, baseURL, 90*time.Second)
+}
 
-	// Unique marker so the assertion can't be satisfied by pre-existing data.
-	marker := fmt.Sprintf("chaos-restore-%d", time.Now().UnixNano())
+// ingestMarker acknowledges one uniquely marked row and returns the marker and
+// its timestamp.
+func ingestMarker(t *testing.T, prefix string) (string, int64) {
+	t.Helper()
+	marker := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 	nowNs := time.Now().UnixNano()
 	body := fmt.Sprintf(
 		`{"_time":"%s","_msg":"%s","service.name":"chaos-svc"}`+"\n",
@@ -55,28 +67,62 @@ func TestChaos_BufferRestoreOnRestart(t *testing.T) {
 		t.Fatalf("ingest marker: status %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+	return marker, nowNs
+}
 
-	// Give the buffer a moment to persist the row to an on-disk part (the
-	// logstore flush interval), then restart WITHOUT a graceful flush window.
-	time.Sleep(8 * time.Second)
-	restartContainer(t, container, logsBaseURL)
-
-	// After restart the row must be queryable from the restored buffer (or S3 if
-	// it had already flushed). Poll briefly to let warmup/restore settle.
+// waitForMarker polls the select path until the marker is returned.
+func waitForMarker(t *testing.T, marker string, nowNs int64, what string) {
+	t.Helper()
 	q := url.Values{}
 	q.Set("query", fmt.Sprintf(`_msg:%q`, marker))
 	q.Set("start", fmt.Sprintf("%d", nowNs-int64(time.Minute)))
-	q.Set("end", fmt.Sprintf("%d", time.Now().UnixNano()))
-
+	q.Set("end", fmt.Sprintf("%d", time.Now().Add(time.Minute).UnixNano()))
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		body := httpGetBody(t, logsBaseURL, "/select/logsql/query", q)
 		if strings.Contains(string(body), marker) {
-			return // survived the restart — durability holds
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("marker %q NOT found after restart — data ingested before the restart was lost (no-WAL durability regression)", marker)
+			t.Fatalf("marker %q NOT found %s — a row acknowledged before the restart was lost (durability regression)", marker, what)
 		}
 		time.Sleep(3 * time.Second)
+	}
+}
+
+// TestChaos_RestartRestoresTheBuffer proves the insert buffer survives a
+// graceful cold-tier container restart: a row acknowledged moments before the
+// restart — still unflushed — is queryable afterwards, served from the restored
+// segments, and is neither lost nor shown twice.
+func TestChaos_RestartRestoresTheBuffer(t *testing.T) {
+	marker, nowNs := ingestMarker(t, "chaos-restart")
+	restartContainer(t, chaosContainer, logsBaseURL)
+	waitForMarker(t, marker, nowNs, "after a restart")
+	assertMarkerOnce(t, marker, nowNs)
+}
+
+// TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow proves the crash claim: a
+// row that has been in the buffer for longer than upstream's in-memory window
+// (5 s, after which its part is fsynced) survives a SIGKILL; the restarted pod
+// restores its segments and drains them to object storage.
+func TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow(t *testing.T) {
+	marker, nowNs := ingestMarker(t, "chaos-kill9")
+	time.Sleep(8 * time.Second) // past upstream's flush interval: the part is on disk
+	killContainer(t, chaosContainer, logsBaseURL)
+	waitForMarker(t, marker, nowNs, "after kill -9")
+	assertMarkerOnce(t, marker, nowNs)
+}
+
+// assertMarkerOnce checks the row is returned exactly once (the segments and the
+// objects written from them are never both read).
+func assertMarkerOnce(t *testing.T, marker string, nowNs int64) {
+	t.Helper()
+	q := url.Values{}
+	q.Set("query", fmt.Sprintf(`_msg:%q | stats count() as n`, marker))
+	q.Set("start", fmt.Sprintf("%d", nowNs-int64(time.Minute)))
+	q.Set("end", fmt.Sprintf("%d", time.Now().Add(time.Minute).UnixNano()))
+	body := string(httpGetBody(t, logsBaseURL, "/select/logsql/query", q))
+	if !strings.Contains(body, `"n":"1"`) {
+		t.Errorf("marker %q is not counted exactly once: %s", marker, body)
 	}
 }
