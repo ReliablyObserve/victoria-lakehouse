@@ -49,12 +49,12 @@ func TestPlanGroup_NeverASingleFile(t *testing.T) {
 	p := unitPolicy()
 	for _, age := range []time.Duration{2 * time.Hour, 48 * time.Hour} {
 		for _, lvl := range []int{0, 1, 2, 5} {
-			if _, sel, _, ok := p.planGroup([]manifest.FileInfo{pf("a", lvl, 10, "fp")}, ago(age), unitNow, "fp"); ok {
+			if _, sel, _, ok := p.planGroup([]manifest.FileInfo{pf("a", lvl, 10, "fp")}, ago(age), unitNow, "fp", true); ok {
 				t.Fatalf("age %s level %d: planned %v for a single file", age, lvl, sel)
 			}
 		}
 	}
-	if _, _, _, ok := p.planGroup(nil, ago(48*time.Hour), unitNow, "fp"); ok {
+	if _, _, _, ok := p.planGroup(nil, ago(48*time.Hour), unitNow, "fp", true); ok {
 		t.Fatal("planned a merge of nothing")
 	}
 }
@@ -64,10 +64,10 @@ func TestPlanGroup_MinAge(t *testing.T) {
 	// merged while writers add to it.
 	p := unitPolicy()
 	files := pfs("a", 12, 0, "fp")
-	if _, _, _, ok := p.planGroup(files, ago(30*time.Minute), unitNow, "fp"); ok {
+	if _, _, _, ok := p.planGroup(files, ago(30*time.Minute), unitNow, "fp", true); ok {
 		t.Fatal("merged a partition younger than MinAge")
 	}
-	if _, _, _, ok := p.planGroup(files, ago(61*time.Minute), unitNow, "fp"); !ok {
+	if _, _, _, ok := p.planGroup(files, ago(61*time.Minute), unitNow, "fp", true); !ok {
 		t.Fatal("did not merge a partition older than MinAge")
 	}
 }
@@ -75,10 +75,10 @@ func TestPlanGroup_MinAge(t *testing.T) {
 func TestPlanGroup_L0Threshold(t *testing.T) {
 	// Guards countAtLevel(0) >= MinFilesL0: nine L0 files are left to grow, ten merge.
 	p := unitPolicy()
-	if _, _, _, ok := p.planGroup(pfs("a", 9, 0, "fp"), ago(2*time.Hour), unitNow, "fp"); ok {
+	if _, _, _, ok := p.planGroup(pfs("a", 9, 0, "fp"), ago(2*time.Hour), unitNow, "fp", true); ok {
 		t.Fatal("nine L0 files must wait")
 	}
-	level, sel, reason, ok := p.planGroup(pfs("a", 10, 0, "fp"), ago(2*time.Hour), unitNow, "fp")
+	level, sel, reason, ok := p.planGroup(pfs("a", 10, 0, "fp"), ago(2*time.Hour), unitNow, "fp", true)
 	if !ok || level != 0 || len(sel) != 10 || reason != reasonL0Count {
 		t.Fatalf("got level=%d n=%d reason=%q ok=%v", level, len(sel), reason, ok)
 	}
@@ -87,10 +87,10 @@ func TestPlanGroup_L0Threshold(t *testing.T) {
 func TestPlanGroup_L1Threshold(t *testing.T) {
 	// Guards the L1 -> L2 branch: ten L1 files merge to L2; nine do not (open hour).
 	p := unitPolicy()
-	if _, _, _, ok := p.planGroup(pfs("a", 9, 1, "fp"), ago(2*time.Hour), unitNow, "fp"); ok {
+	if _, _, _, ok := p.planGroup(pfs("a", 9, 1, "fp"), ago(2*time.Hour), unitNow, "fp", true); ok {
 		t.Fatal("nine L1 files must wait")
 	}
-	level, sel, reason, ok := p.planGroup(pfs("a", 10, 1, "fp"), ago(2*time.Hour), unitNow, "fp")
+	level, sel, reason, ok := p.planGroup(pfs("a", 10, 1, "fp"), ago(2*time.Hour), unitNow, "fp", true)
 	if !ok || level != 1 || len(sel) != 10 || reason != reasonL1Count {
 		t.Fatalf("got level=%d n=%d reason=%q ok=%v", level, len(sel), reason, ok)
 	}
@@ -99,7 +99,7 @@ func TestPlanGroup_L1Threshold(t *testing.T) {
 func TestPlanGroup_L0BeforeL1(t *testing.T) {
 	// Guards branch order: L0 -> L1 wins over L1 -> L2 when both are eligible.
 	p := unitPolicy()
-	level, _, reason, ok := p.planGroup(cat(pfs("a", 10, 0, "fp"), pfs("b", 10, 1, "fp")), ago(2*time.Hour), unitNow, "fp")
+	level, _, reason, ok := p.planGroup(cat(pfs("a", 10, 0, "fp"), pfs("b", 10, 1, "fp")), ago(2*time.Hour), unitNow, "fp", true)
 	if !ok || level != 0 || reason != reasonL0Count {
 		t.Fatalf("level=%d reason=%q", level, reason)
 	}
@@ -109,7 +109,7 @@ func TestPlanGroup_OnlyMajorityFingerprintAtLevel(t *testing.T) {
 	// Guards SelectFiles' fingerprint filter: a merge never mixes schemas.
 	p := unitPolicy()
 	files := cat(pfs("a", 6, 0, "fpA"), pfs("b", 5, 0, "fpB"))
-	_, sel, _, ok := p.planGroup(files, ago(2*time.Hour), unitNow, "fpA")
+	_, sel, _, ok := p.planGroup(files, ago(2*time.Hour), unitNow, "fpA", true)
 	if !ok || len(sel) != 6 {
 		t.Fatalf("selected %d, want the 6 majority files", len(sel))
 	}
@@ -126,7 +126,7 @@ func TestPlanGroup_Rollup(t *testing.T) {
 	// Without it a quiet tenant's few small files are never merged.
 	p := unitPolicy()
 	files := cat(pfs("a", 2, 0, "fp"), pfs("b", 1, 1, "fp"), pfs("c", 1, 2, "fp"))
-	level, sel, reason, ok := p.planGroup(files, ago(30*time.Hour), unitNow, "fp")
+	level, sel, reason, ok := p.planGroup(files, ago(30*time.Hour), unitNow, "fp", true)
 	if !ok || reason != reasonRollup || len(sel) != 4 {
 		t.Fatalf("got n=%d reason=%q ok=%v", len(sel), reason, ok)
 	}
@@ -138,7 +138,7 @@ func TestPlanGroup_Rollup(t *testing.T) {
 func TestPlanGroup_RollupNeedsClosedHour(t *testing.T) {
 	// Guards age >= rollupAge: a 12 h old hour with two files is not rolled up.
 	p := unitPolicy()
-	if _, _, _, ok := p.planGroup(cat(pfs("a", 1, 0, "fp"), pfs("b", 1, 1, "fp")), ago(12*time.Hour), unitNow, "fp"); ok {
+	if _, _, _, ok := p.planGroup(cat(pfs("a", 1, 0, "fp"), pfs("b", 1, 1, "fp")), ago(12*time.Hour), unitNow, "fp", true); ok {
 		t.Fatal("rolled up before DailyRollupAge")
 	}
 }
@@ -149,15 +149,15 @@ func TestPlanGroup_RollupDisabledAndHourFloor(t *testing.T) {
 	files := cat(pfs("a", 1, 0, "fp"), pfs("b", 1, 1, "fp"))
 	off := unitPolicy()
 	off.DailyRollupAge = 0
-	if _, _, _, ok := off.planGroup(files, ago(72*time.Hour), unitNow, "fp"); ok {
+	if _, _, _, ok := off.planGroup(files, ago(72*time.Hour), unitNow, "fp", true); ok {
 		t.Fatal("rollup ran with DailyRollupAge 0")
 	}
 	short := NewLevelPolicy(10, 10, 0)
 	short.DailyRollupAge = 10 * time.Minute
-	if _, _, _, ok := short.planGroup(files, ago(30*time.Minute), unitNow, "fp"); ok {
+	if _, _, _, ok := short.planGroup(files, ago(30*time.Minute), unitNow, "fp", true); ok {
 		t.Fatal("rollup ran inside the one-hour floor")
 	}
-	if _, _, _, ok := short.planGroup(files, ago(61*time.Minute), unitNow, "fp"); !ok {
+	if _, _, _, ok := short.planGroup(files, ago(61*time.Minute), unitNow, "fp", true); !ok {
 		t.Fatal("rollup did not run after the one-hour floor")
 	}
 }
@@ -168,7 +168,7 @@ func TestPlanGroup_RollupExcludesMatureFiles(t *testing.T) {
 	p := unitPolicy()
 	mature := pf("big", 2, matureBytes, "fp")
 	files := cat([]manifest.FileInfo{mature}, pfs("a", 2, 0, "fp"))
-	_, sel, reason, ok := p.planGroup(files, ago(30*time.Hour), unitNow, "fp")
+	_, sel, reason, ok := p.planGroup(files, ago(30*time.Hour), unitNow, "fp", true)
 	if !ok || reason != reasonRollup || len(sel) != 2 {
 		t.Fatalf("n=%d reason=%q ok=%v", len(sel), reason, ok)
 	}
@@ -178,12 +178,12 @@ func TestPlanGroup_RollupExcludesMatureFiles(t *testing.T) {
 		}
 	}
 	// One small file next to a mature one: nothing to merge.
-	if _, _, _, ok := p.planGroup(cat([]manifest.FileInfo{mature}, pfs("a", 1, 0, "fp")), ago(30*time.Hour), unitNow, "fp"); ok {
+	if _, _, _, ok := p.planGroup(cat([]manifest.FileInfo{mature}, pfs("a", 1, 0, "fp")), ago(30*time.Hour), unitNow, "fp", true); ok {
 		t.Fatal("a lone small file was merged with a mature one")
 	}
 	// One byte under the threshold is not mature.
 	almost := pf("almost", 1, matureBytes-1, "fp")
-	if _, sel, _, ok := p.planGroup(cat([]manifest.FileInfo{almost}, pfs("a", 1, 0, "fp")), ago(30*time.Hour), unitNow, "fp"); !ok || len(sel) != 2 {
+	if _, sel, _, ok := p.planGroup(cat([]manifest.FileInfo{almost}, pfs("a", 1, 0, "fp")), ago(30*time.Hour), unitNow, "fp", true); !ok || len(sel) != 2 {
 		t.Fatalf("matureBytes-1 must still be rolled up: n=%d ok=%v", len(sel), ok)
 	}
 }
@@ -193,7 +193,7 @@ func TestPlanGroup_RollupMajorityFingerprint(t *testing.T) {
 	// file stays for the stale-schema hint.
 	p := unitPolicy()
 	files := cat(pfs("a", 3, 0, "fpA"), pfs("b", 1, 0, "fpB"))
-	_, sel, _, ok := p.planGroup(files, ago(30*time.Hour), unitNow, "fpA")
+	_, sel, _, ok := p.planGroup(files, ago(30*time.Hour), unitNow, "fpA", true)
 	if !ok || len(sel) != 3 {
 		t.Fatalf("n=%d ok=%v", len(sel), ok)
 	}
@@ -205,7 +205,7 @@ func TestPlanGroup_RollupMajorityFingerprint(t *testing.T) {
 	// A 1-1 tie goes to the current fingerprint, so a rollup moves toward the
 	// schema new files are written with.
 	tie := cat(pfs("a", 2, 0, "fpA"), pfs("b", 2, 0, "fpB"))
-	_, sel, _, _ = p.planGroup(tie, ago(30*time.Hour), unitNow, "fpB")
+	_, sel, _, _ = p.planGroup(tie, ago(30*time.Hour), unitNow, "fpB", true)
 	if len(sel) != 2 || sel[0].SchemaFingerprint != "fpB" {
 		t.Fatalf("tie must go to the current fingerprint: %+v", sel)
 	}
@@ -217,20 +217,20 @@ func TestPlanGroup_HintStaleVsFragmented(t *testing.T) {
 	// is "fragmented". Without the branch a stale or fragmented open hour is
 	// never healed.
 	p := unitPolicy()
-	level, sel, reason, ok := p.planGroup(pfs("a", 2, 1, "old"), ago(2*time.Hour), unitNow, "new")
+	level, sel, reason, ok := p.planGroup(pfs("a", 2, 1, "old"), ago(2*time.Hour), unitNow, "new", true)
 	if !ok || reason != reasonStale || level != 1 || len(sel) != 2 {
 		t.Fatalf("stale: level=%d n=%d reason=%q ok=%v", level, len(sel), reason, ok)
 	}
-	level, sel, reason, ok = p.planGroup(pfs("a", 2, 2, "new"), ago(2*time.Hour), unitNow, "new")
+	level, sel, reason, ok = p.planGroup(pfs("a", 2, 2, "new"), ago(2*time.Hour), unitNow, "new", true)
 	if !ok || reason != reasonFragmented || level != 2 || len(sel) != 2 {
 		t.Fatalf("fragmented: level=%d n=%d reason=%q ok=%v", level, len(sel), reason, ok)
 	}
 	// A lone stale file has no peer: left alone.
-	if _, _, _, ok := p.planGroup(cat(pfs("a", 1, 1, "old"), pfs("b", 1, 0, "new")), ago(2*time.Hour), unitNow, "new"); ok {
+	if _, _, _, ok := p.planGroup(cat(pfs("a", 1, 1, "old"), pfs("b", 1, 0, "new")), ago(2*time.Hour), unitNow, "new", true); ok {
 		t.Fatal("a lone stale file was rewritten")
 	}
 	// No current fingerprint disables the stale hint.
-	if _, _, _, ok := p.planGroup(pfs("a", 2, 1, "old"), ago(2*time.Hour), unitNow, ""); ok {
+	if _, _, _, ok := p.planGroup(pfs("a", 2, 1, "old"), ago(2*time.Hour), unitNow, "", true); ok {
 		t.Fatal("stale hint fired without a current fingerprint")
 	}
 }
@@ -364,15 +364,11 @@ func TestPlanPartition_SplitsTenantsAndFreezesFirst(t *testing.T) {
 		t.Fatalf("tenants planned: %v", seen)
 	}
 
-	// Freezing one of 1001/0's two files leaves a lone file: no plan for it.
+	// Freezing one of 1001/0's two files (its listed class is Glacier) leaves a
+	// lone file: no plan for it.
 	var frozenReasons []string
-	frozen := func(fi manifest.FileInfo, _, _ time.Time) (bool, string) {
-		if fi.Key == "1001/0/logs/dt=x/a" {
-			return true, "storage_class"
-		}
-		return false, ""
-	}
-	plans = p.planPartition("dt=x", cat(t1, t2, legacy), pt, unitNow, "fp", frozen, func(r string) { frozenReasons = append(frozenReasons, r) })
+	t1[0].StorageClass = "GLACIER"
+	plans = p.planPartition("dt=x", cat(t1, t2, legacy), pt, unitNow, "fp", nil, func(r string) { frozenReasons = append(frozenReasons, r) })
 	if len(plans) != 1 || plans[0].tenant != "default" {
 		t.Fatalf("after freezing: %+v", plans)
 	}

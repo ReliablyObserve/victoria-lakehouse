@@ -12,11 +12,12 @@ import (
 // write-amplification simulation can drive days of scans deterministically.
 var planClock = time.Now
 
-// matureBytes: a file at least this large is never selected by the closed-hour
-// rollup. Merging it would rewrite a large object to absorb a few late small
-// ones, so write amplification under backfill would grow with the hour's total
-// bytes instead of with the late data. Half of a 64 MiB target object size.
-const matureBytes = 32 << 20
+// matureBytes: a file at least this large is never selected to reduce the
+// file count (closed-hour rollup, fragmentation hint). Merging it would rewrite
+// a large object to absorb a few small ones, so write amplification under
+// backfill would grow with the hour's total bytes instead of with the late
+// data. Stale-schema heal and the open-hour thresholds still take it.
+const matureBytes = manifest.MatureObjectBytes
 
 // Why a merge was planned. The first two are open-hour merges driven by the
 // level thresholds; the rest act on closed hours or on compaction hints.
@@ -33,6 +34,8 @@ const (
 // A plan never holds a single file, so nothing is ever rewritten 1 → 1.
 type mergePlan struct {
 	partition string
+	// group identifies the tenant group (prefix + bucket) for failure backoff.
+	group string
 	// tenant is the fair-share key: "<account>/<project>" from the object
 	// keys, or "default" for keys without a tenant prefix.
 	tenant string
@@ -59,31 +62,112 @@ func (p mergePlan) debt() float64 {
 	return float64(len(p.files)-1) / float64(b)
 }
 
-// frozenFunc reports whether a file must stay out of compaction, and why.
-type frozenFunc func(fi manifest.FileInfo, partitionTime, now time.Time) (bool, string)
+// groupKey is a tenant group: the tenant prefix of its keys and its bucket,
+// the unit the compactor writes one output for.
+type groupKey struct{ prefix, bucket string }
 
-// planPartition plans the merges of one partition: it splits the files into
-// tenant groups and plans each group on its own, so one tenant's files never
-// make another tenant's lone file look mergeable. Held files (a delete rewrite
-// swapped them in but has not recorded it) and frozen files (lifecycle) are
-// excluded before anything is counted. frozenSeen, when set, is told about
-// every frozen file.
-func (p *LevelPolicy) planPartition(partition string, files []manifest.FileInfo, pt, now time.Time, currentFP string, frozen frozenFunc, frozenSeen func(reason string)) []mergePlan {
-	var eligible []manifest.FileInfo
-	for _, f := range files {
-		if frozen != nil {
-			if ok, reason := frozen(f, pt, now); ok {
-				if frozenSeen != nil {
-					frozenSeen(reason)
-				}
-				continue
-			}
+// planner plans every partition of one scan. It reuses its scratch map across
+// partitions and copies a FileInfo only into a group that has a merge to plan,
+// so a settled manifest costs a key parse and a map update per file and no
+// allocation (RangePartitions hands it the manifest's own slices).
+type planner struct {
+	policy    *LevelPolicy
+	currentFP string
+	now       time.Time
+	held      map[string]bool
+	freeze    *freezeView
+	// seen, when set, is told how many files were kept out and why.
+	seen    func(reason string, n int)
+	counts  map[groupKey]int
+	members map[groupKey][]int
+}
+
+func newPlanner(policy *LevelPolicy, currentFP string, now time.Time, held map[string]bool, freeze *LifecycleFreeze, seen func(string, int)) *planner {
+	return &planner{
+		policy: policy, currentFP: currentFP, now: now, held: held, freeze: freeze.view(), seen: seen,
+		counts: make(map[groupKey]int), members: make(map[groupKey][]int),
+	}
+}
+
+func (pl *planner) saw(reason string, n int) {
+	if pl.seen != nil && n > 0 {
+		pl.seen(reason, n)
+	}
+}
+
+// skip reports whether a file stays out before grouping: held (a delete
+// rewrite swapped it in but has not recorded it) or in a non-rewritable class.
+func (pl *planner) skip(f *manifest.FileInfo) bool {
+	if len(pl.held) > 0 && pl.held[f.Key] {
+		return true
+	}
+	return classFrozen(f)
+}
+
+// partition plans the merges of one partition: files are split into tenant
+// groups and each group is planned on its own, so one tenant's files never
+// make another tenant's lone file look mergeable. files may be the manifest's
+// own slice: it is only read, and plans hold copies.
+func (pl *planner) partition(partition string, files []manifest.FileInfo, pt time.Time) []mergePlan {
+	age := pl.now.Sub(pt)
+	clear(pl.counts)
+	classFrozenN := 0
+	for i := range files {
+		f := &files[i]
+		if len(pl.held) > 0 && pl.held[f.Key] {
+			continue
 		}
-		eligible = append(eligible, f)
+		if classFrozen(f) {
+			classFrozenN++
+			continue
+		}
+		pl.counts[groupKey{manifest.CompactionGroupPrefix(f.Key), f.Bucket}]++
+	}
+	pl.saw(frozenStorageClass, classFrozenN)
+
+	// Decide per group before touching files again; collect only groups that
+	// may plan a merge.
+	clear(pl.members)
+	sizeOK := map[groupKey]bool(nil)
+	for gk, n := range pl.counts {
+		lim := pl.freeze.limitsFor(gk.prefix)
+		if lim.frozenAt(age) {
+			pl.saw(frozenAge, n)
+			continue
+		}
+		if n < 2 {
+			continue
+		}
+		ok := lim.sizeMergesAt(age)
+		if !ok {
+			pl.saw(frozenSizeAge, n)
+		}
+		if sizeOK == nil {
+			sizeOK = make(map[groupKey]bool)
+		}
+		sizeOK[gk] = ok
+		pl.members[gk] = nil
+	}
+	if len(pl.members) == 0 {
+		return nil
+	}
+	for i := range files {
+		f := &files[i]
+		if pl.skip(f) {
+			continue
+		}
+		gk := groupKey{manifest.CompactionGroupPrefix(f.Key), f.Bucket}
+		if idx, ok := pl.members[gk]; ok {
+			pl.members[gk] = append(idx, i)
+		}
 	}
 	var plans []mergePlan
-	for _, g := range groupFilesByTenant(eligible) {
-		level, selected, reason, ok := p.planGroup(g.Files, pt, now, currentFP)
+	for gk, idx := range pl.members {
+		group := make([]manifest.FileInfo, len(idx))
+		for j, i := range idx {
+			group[j] = files[i]
+		}
+		level, selected, reason, ok := pl.policy.planGroup(group, pt, pl.now, pl.currentFP, sizeOK[gk])
 		if !ok {
 			continue
 		}
@@ -93,7 +177,8 @@ func (p *LevelPolicy) planPartition(partition string, files []manifest.FileInfo,
 		}
 		plans = append(plans, mergePlan{
 			partition: partition,
-			tenant:    fairShareTenant(g.TenantPrefix),
+			group:     gk.prefix + "|" + gk.bucket,
+			tenant:    fairShareTenant(gk.prefix),
 			level:     level,
 			files:     selected,
 			reason:    reason,
@@ -102,6 +187,20 @@ func (p *LevelPolicy) planPartition(partition string, files []manifest.FileInfo,
 		})
 	}
 	return plans
+}
+
+// planPartition plans one partition on its own (the Tier A steal and tests).
+// frozenSeen, when set, is called once per file kept out, with the reason.
+func (p *LevelPolicy) planPartition(partition string, files []manifest.FileInfo, pt, now time.Time, currentFP string, freeze *LifecycleFreeze, frozenSeen func(reason string)) []mergePlan {
+	var seen func(string, int)
+	if frozenSeen != nil {
+		seen = func(r string, n int) {
+			for i := 0; i < n; i++ {
+				frozenSeen(r)
+			}
+		}
+	}
+	return newPlanner(p, currentFP, now, nil, freeze, seen).partition(partition, files, pt)
 }
 
 // planGroup decides the one merge, if any, for one tenant group's files in one
@@ -114,14 +213,21 @@ func (p *LevelPolicy) planPartition(partition string, files []manifest.FileInfo,
 //     its level. This replaces "≥ 2 L1 files", which (counted per partition)
 //     fired forever on one file per tenant and (counted per tenant) would
 //     leave a quiet tenant's few L0 files unmerged for good.
-//  3. Hints: stale schema or ≥ 2 files at a top level ≥ L2 (recompactionLevel).
-func (p *LevelPolicy) planGroup(files []manifest.FileInfo, pt, now time.Time, currentFP string) (int, []manifest.FileInfo, string, bool) {
+//  3. Hints: stale schema, or ≥ 2 non-mature files at a top level ≥ L2
+//     (recompactionLevel).
+//
+// sizeOK false (a tenant with no lifecycle rule past SizeMergeMaxAge) leaves
+// only the stale-schema heal.
+func (p *LevelPolicy) planGroup(files []manifest.FileInfo, pt, now time.Time, currentFP string, sizeOK bool) (int, []manifest.FileInfo, string, bool) {
 	if len(files) < 2 {
 		return 0, nil, "", false
 	}
 	age := now.Sub(pt)
 	if age < p.MinAge {
 		return 0, nil, "", false
+	}
+	if !sizeOK {
+		return p.planHint(files, currentFP, false)
 	}
 	if countAtLevel(files, 0) >= p.MinFilesL0 {
 		if sel := p.SelectFiles(files, 0, MajoritySchemaFingerprint(files, 0)); len(sel) >= 2 {
@@ -155,17 +261,42 @@ func (p *LevelPolicy) planGroup(files []manifest.FileInfo, pt, now time.Time, cu
 			return top, sel, reasonRollup, true
 		}
 	}
-	if lvl, needs := recompactionLevel(files, currentFP); needs {
-		if sel := p.SelectFiles(files, lvl, MajoritySchemaFingerprint(files, lvl)); len(sel) >= 2 {
-			reason := reasonFragmented
-			for _, f := range sel {
-				if currentFP != "" && f.SchemaFingerprint != currentFP {
-					reason = reasonStale
-					break
-				}
-			}
-			return lvl, sel, reason, true
+	return p.planHint(files, currentFP, true)
+}
+
+// planHint plans the compaction-hint merge (recompactionLevel): stale-schema
+// files heal whatever their size; a fragmented top level merges only its
+// non-mature files, and only when fragmentation merges are allowed.
+func (p *LevelPolicy) planHint(files []manifest.FileInfo, currentFP string, fragmentOK bool) (int, []manifest.FileInfo, string, bool) {
+	lvl, needs := recompactionLevel(files, currentFP)
+	if !needs {
+		return 0, nil, "", false
+	}
+	sel := p.SelectFiles(files, lvl, MajoritySchemaFingerprint(files, lvl))
+	stale := false
+	for _, f := range sel {
+		if currentFP != "" && f.SchemaFingerprint != currentFP {
+			stale = true
+			break
 		}
+	}
+	if stale {
+		if len(sel) >= 2 {
+			return lvl, sel, reasonStale, true
+		}
+		return 0, nil, "", false
+	}
+	if !fragmentOK {
+		return 0, nil, "", false
+	}
+	small := sel[:0:0]
+	for _, f := range sel {
+		if f.Size < matureBytes {
+			small = append(small, f)
+		}
+	}
+	if len(small) >= 2 {
+		return lvl, small, reasonFragmented, true
 	}
 	return 0, nil, "", false
 }
@@ -197,6 +328,9 @@ func sortPlans(plans []mergePlan) {
 		}
 		if a.partition != b.partition {
 			return a.partition < b.partition
+		}
+		if a.group != b.group {
+			return a.group < b.group
 		}
 		return a.tenant < b.tenant
 	})

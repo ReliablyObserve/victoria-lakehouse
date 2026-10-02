@@ -101,6 +101,18 @@ func (f *FairShareScheduler) PickCandidates(
 	return picked
 }
 
+// Advance moves the cursor n tenants further. The scheduler calls it when a
+// scan stops early (scan budget) after serving n+1 tenants, so the next scan
+// starts with the tenants this one did not reach.
+func (f *FairShareScheduler) Advance(n int) {
+	if n <= 0 {
+		return
+	}
+	f.mu.Lock()
+	f.cursor += n
+	f.mu.Unlock()
+}
+
 // extractTenant derives the tenant identifier from a partition string
 // or partition candidate. For "<acct>/<proj>/...", returns "<acct>/<proj>".
 // For "...dt=YYYY-MM-DD/hour=HH" without a tenant prefix, returns

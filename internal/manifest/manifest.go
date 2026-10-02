@@ -750,6 +750,10 @@ func listBucketPrefix(ctx context.Context, client *s3.Client, bucket, listPrefix
 	var totalFiles int
 	var totalBytes int64
 
+	// The listing reports each object's storage class at no extra request;
+	// recording it lets compaction keep away from objects S3 lifecycle has
+	// already moved (see mergeRefreshedFilesLocked for tracked keys).
+	listedAt := time.Now()
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
 		Prefix: aws.String(listPrefix),
@@ -773,10 +777,14 @@ func listBucketPrefix(ctx context.Context, client *s3.Client, bucket, listPrefix
 			if partition == "" {
 				continue
 			}
-			files[partition] = append(files[partition], FileInfo{
+			fi := FileInfo{
 				Key:  key,
 				Size: aws.ToInt64(obj.Size),
-			})
+			}
+			if c := string(obj.StorageClass); c != "" {
+				fi.StorageClass, fi.ClassCheckedAt, fi.ClassSource = c, listedAt, ClassSourceList
+			}
+			files[partition] = append(files[partition], fi)
 			totalFiles++
 			totalBytes += aws.ToInt64(obj.Size)
 		}
@@ -978,6 +986,12 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo, listSt
 				// flush registers the object before any refresh has seen it).
 				if old.Bucket == "" {
 					old.Bucket = newFiles[i].Bucket
+				}
+				// The storage class is the one thing about an immutable object
+				// that changes: S3 lifecycle moves it. The listing's class is
+				// newer than anything tracked, so it replaces the old one.
+				if listed := newFiles[i]; listed.StorageClass != "" {
+					old.StorageClass, old.ClassCheckedAt, old.ClassSource = listed.StorageClass, listed.ClassCheckedAt, listed.ClassSource
 				}
 				newFiles[i] = old
 			}
@@ -1633,6 +1647,30 @@ func (m *Manifest) FilesForPartition(partition string) []FileInfo {
 	cp := make([]FileInfo, len(files))
 	copy(cp, files)
 	return cp
+}
+
+// ClassSourceList marks a FileInfo.StorageClass taken from an S3 listing.
+const ClassSourceList = "list"
+
+// MatureObjectBytes: an object at least this large is never rewritten to
+// reduce the file count (closed-hour rollup, fragmentation hint): merging it
+// would rewrite a large object to absorb small ones. Half of a 64 MiB target
+// object size.
+const MatureObjectBytes = 32 << 20
+
+// RangePartitions calls fn for every partition under the manifest's read lock,
+// without copying. fn must not retain files (or anything inside them), modify
+// them, or call back into the manifest; it stops early when fn returns false.
+// For per-scan planning over every file, where AllFiles' deep copy would cost
+// one FileInfo copy per file per scan.
+func (m *Manifest) RangePartitions(fn func(partition string, files []FileInfo) bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for p, files := range m.files {
+		if !fn(p, files) {
+			return
+		}
+	}
 }
 
 func (m *Manifest) AllFiles() map[string][]FileInfo {

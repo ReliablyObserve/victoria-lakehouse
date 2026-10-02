@@ -40,6 +40,10 @@ type SchedulerConfig struct {
 	RowGroupSize     int
 	CompressionLevel int
 
+	// ScanBudget: a scan starts no new merge once it has run this long. 0
+	// means the scan interval; negative disables the budget.
+	ScanBudget time.Duration
+
 	// Freeze keeps objects that S3 lifecycle has moved, or is about to move,
 	// out of STANDARD out of every merge. nil still never rewrites an object
 	// whose manifest entry records a non-rewritable class.
@@ -147,6 +151,8 @@ type Scheduler struct {
 	compressionLevel int
 	currentFP        string
 	freeze           *LifecycleFreeze
+	scanBudget       time.Duration
+	backoff          planBackoff
 	compactionCfg    config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
 	tombstones       *delete.TombstoneStore
@@ -194,6 +200,10 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		// zero-value case picks the default.
 		rate = 6
 	}
+	scanBudget := cfg.ScanBudget
+	if scanBudget == 0 {
+		scanBudget = interval
+	}
 	drainTimeout := cfg.DrainTimeout
 	if drainTimeout <= 0 {
 		drainTimeout = 90 * time.Second
@@ -214,6 +224,7 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		compressionLevel: cfg.CompressionLevel,
 		currentFP:        cfg.CurrentSchemaFingerprint,
 		freeze:           cfg.Freeze,
+		scanBudget:       scanBudget,
 		compactionCfg:    cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
 		tombstones:       cfg.Tombstones,
@@ -360,34 +371,51 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	allFiles := s.manifest.AllFiles()
 	now := planClock()
+	scanStart := time.Now()
+
+	// Held keys are snapshotted once: checking them per file would take the
+	// manifest lock once per file per scan.
+	var held map[string]bool
+	if keys := s.manifest.HeldKeys(); len(keys) > 0 {
+		held = make(map[string]bool, len(keys))
+		for _, k := range keys {
+			held[k] = true
+		}
+	}
 
 	// (D) HRW-based ownership, then a plan per (tenant, partition): the
 	// compactor writes one output per tenant group, so files are counted and
 	// selected per tenant group, never across the tenants of a partition
-	// (issue #343).
+	// (issue #343). The planner reads the manifest in place (RangePartitions)
+	// and copies only the files of a group it plans a merge for.
 	owned := 0
-	frozen := map[string]int{frozenStorageClass: 0, frozenAge: 0}
+	frozen := map[string]int{frozenStorageClass: 0, frozenAge: 0, frozenSizeAge: 0}
+	pl := newPlanner(s.policy, s.currentFP, now, held, s.freeze, func(reason string, n int) { frozen[reason] += n })
 	var candidates []partitionCandidate
-	for partition, files := range allFiles {
+	s.manifest.RangePartitions(func(partition string, files []manifest.FileInfo) bool {
 		if !s.ownership.OwnsPartition(partition) {
-			continue
+			return true
 		}
 		owned++
 		pt, err := manifest.ParsePartitionTime(partition)
 		if err != nil {
 			logger.Warnf("skip partition: cannot parse time; partition=%s, error=%s", partition, err)
-			continue
+			return true
 		}
-		candidates = append(candidates, s.policy.planPartition(partition, withoutHeld(s.manifest, files), pt, now,
-			s.currentFP, s.freeze.frozen, func(reason string) { frozen[reason]++ })...)
-	}
+		candidates = append(candidates, pl.partition(partition, files, pt)...)
+		return true
+	})
 	metrics.CompactionPartitionsOwned.Set(int64(owned))
 	metrics.CompactionOwnershipSelfInPeers.Set(s.ownership.SelfInPeersGauge())
 	for reason, n := range frozen {
 		metrics.CompactionFrozenFiles.Set(reason, int64(n))
 	}
+
+	// (D2) A plan that failed recently waits out its backoff, so a merge that
+	// fails every time (an object S3 cannot serve) does not take its tenant's
+	// slot on every scan; the tenant's next plan goes instead.
+	candidates = s.backoff.filter(candidates, now)
 
 	// (E) Priority: open-hour merges, then small-file debt, then oldest.
 	sortPlans(candidates)
@@ -405,12 +433,26 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 	}
 
 	compacted := 0
-	for _, c := range picked {
+	served := make(map[string]struct{})
+	for i, c := range picked {
 		// Bail at a merge boundary if draining (spec §11.1 invariant: never
 		// mid-merge).
 		if s.draining.Load() {
 			break
 		}
+		// The scan budget: no new merge starts once a scan has run for it, so
+		// a scan with thousands of tenants with work cannot run for hours. The
+		// fair-share cursor moves past the tenants served, so the next scan
+		// starts with the ones this scan did not reach.
+		if i > 0 && s.scanBudget > 0 && time.Since(scanStart) >= s.scanBudget {
+			metrics.CompactionScanBudgetExhausted.Inc()
+			if s.fairShare != nil && len(served) > 1 {
+				s.fairShare.Advance(len(served) - 1)
+			}
+			logger.Infof("compaction scan budget %v reached; merges=%d, plans left=%d", s.scanBudget, compacted, len(picked)-i)
+			break
+		}
+		served[c.tenant] = struct{}{}
 		// The plan was made from a snapshot; drop any file that left the
 		// manifest or became held since, and re-check there is still a merge.
 		selected := stillLive(s.manifest, c.partition, c.files)
@@ -418,9 +460,11 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			continue
 		}
 		if _, err := s.runMerge(ctx, c.partition, selected, c.level, "compacted partition"); err != nil {
+			s.backoff.failed(c, now, s.interval)
 			logger.Errorf("compaction failed: %s; partition=%s, tenant=%s", err, c.partition, c.tenant)
 			continue
 		}
+		s.backoff.succeeded(c)
 		compacted++
 	}
 

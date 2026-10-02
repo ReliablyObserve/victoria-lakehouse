@@ -232,19 +232,38 @@ func (d *StorageClassDetector) DetectForKey(fileAgeHours float64, key string) St
 // any key that doesn't match the expected layout (legacy single-prefix
 // deployments, sidecars under _meta/, etc.).
 func parseTenantFromKey(key string) (uint32, uint32, bool) {
-	parts := strings.SplitN(key, "/", 4)
-	if len(parts) < 3 {
+	// No allocation: called per tenant group on every compaction scan.
+	i1 := strings.IndexByte(key, '/')
+	if i1 < 0 {
 		return 0, 0, false
 	}
-	acc, err := strconv.ParseUint(parts[0], 10, 32)
+	rest := key[i1+1:]
+	i2 := strings.IndexByte(rest, '/')
+	if i2 < 0 {
+		return 0, 0, false
+	}
+	acc, err := strconv.ParseUint(key[:i1], 10, 32)
 	if err != nil {
 		return 0, 0, false
 	}
-	proj, err := strconv.ParseUint(parts[1], 10, 32)
+	proj, err := strconv.ParseUint(rest[:i2], 10, 32)
 	if err != nil {
 		return 0, 0, false
 	}
 	return uint32(acc), uint32(proj), true
+}
+
+// HasTenantRules reports whether any per-tenant lifecycle override is installed.
+func (d *StorageClassDetector) HasTenantRules() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return len(d.perTenant) > 0
+}
+
+// FirstGlobalNonRewritableTransition is FirstNonRewritableTransition for the
+// global rules alone (tenants without an override).
+func (d *StorageClassDetector) FirstGlobalNonRewritableTransition() (int, bool) {
+	return FirstNonRewritableTransition(d.rules)
 }
 
 // FirstNonRewritableTransition returns the earliest lifecycle transition, in

@@ -770,7 +770,10 @@ var (
 	// CompactionFrozenFiles: files in owned partitions the last scan kept out
 	// of compaction, by reason (storage_class: recorded or cached class is not
 	// rewritable; age: past the first lifecycle transition minus the margin).
-	CompactionFrozenFiles              = NewGaugeVec("lakehouse_compaction_frozen_files", "reason")
+	CompactionFrozenFiles = NewGaugeVec("lakehouse_compaction_frozen_files", "reason")
+	// CompactionScanBudgetExhausted counts scans that stopped starting merges
+	// because they reached the scan budget (the scan interval by default).
+	CompactionScanBudgetExhausted      = NewCounter("lakehouse_compaction_scan_budget_exhausted_total")
 	CompactionOwnershipSelfInPeers     = NewGauge("lakehouse_compaction_ownership_self_in_peers")
 	CompactionDeferredStabilizing      = NewCounter("lakehouse_compaction_deferred_stabilizing_total")
 	CompactionSweepDeferredStabilizing = NewCounterVec("lakehouse_compaction_sweep_deferred_stabilizing_total", "tier")

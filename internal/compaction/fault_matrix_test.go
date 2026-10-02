@@ -56,9 +56,17 @@ func scan(t *testing.T, s *Scheduler) int {
 	return n
 }
 
+// converge scans until nothing is left to merge. Each scan runs a backoff
+// period later on the planner clock, so a merge that failed earlier is retried
+// (the backoff keeps it out of the scans right after its failure).
 func converge(t *testing.T, l *ledger, s *Scheduler, stage string) {
 	t.Helper()
+	base := planClock
+	var offset time.Duration
+	planClock = func() time.Time { return base().Add(offset) }
+	t.Cleanup(func() { planClock = base })
 	for i := 0; i < 10; i++ {
+		offset += maxPlanBackoff + time.Minute
 		if scan(t, s) == 0 {
 			l.check(stage+": converged", false)
 			if scan(t, s) != 0 {

@@ -216,7 +216,7 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 		// The same per-(tenant, partition) planner as the scheduler (issue
 		// #343): no plan means nothing to do; the primary picks the partition
 		// up when one of its tenants has a merge again.
-		plans := o.cfg.Policy.planPartition(partition, files, pt, planClock(), "", o.cfg.Freeze.frozen, nil)
+		plans := o.cfg.Policy.planPartition(partition, files, pt, planClock(), "", o.cfg.Freeze, nil)
 		if len(plans) == 0 {
 			continue
 		}

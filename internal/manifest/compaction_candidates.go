@@ -2,7 +2,6 @@ package manifest
 
 import (
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -225,22 +224,47 @@ func (m *Manifest) CompactionCandidates(currentFP string) []CompactionCandidate 
 // one output per (group prefix, bucket); the compaction stats judge
 // fragmentation with the same grouping.
 func CompactionGroupPrefix(key string) string {
-	parts := strings.SplitN(key, "/", 4)
-	if len(parts) < 4 {
+	// Three '/'-terminated segments with a fourth after them; no allocation:
+	// the result is a substring of key. Called per file per compaction scan.
+	i1 := strings.IndexByte(key, '/')
+	if i1 <= 0 {
 		return ""
 	}
-	if _, err := strconv.ParseUint(parts[0], 10, 32); err != nil {
+	i2 := i1 + 1 + strings.IndexByte(key[i1+1:], '/')
+	if i2 <= i1+1 {
 		return ""
 	}
-	if _, err := strconv.ParseUint(parts[1], 10, 32); err != nil {
+	i3 := i2 + 1 + strings.IndexByte(key[i2+1:], '/')
+	if i3 <= i2+1 || i3 == len(key)-1 {
 		return ""
 	}
-	return parts[0] + "/" + parts[1] + "/" + parts[2] + "/"
+	if !isUint32(key[:i1]) || !isUint32(key[i1+1:i2]) {
+		return ""
+	}
+	return key[:i3+1]
+}
+
+// isUint32 reports whether s is a decimal that fits a uint32, as
+// strconv.ParseUint(s, 10, 32) would accept it, without allocating.
+func isUint32(s string) bool {
+	if s == "" || len(s) > 10 {
+		return false
+	}
+	var n uint64
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+		n = n*10 + uint64(c-'0')
+	}
+	return n <= 1<<32-1
 }
 
 // fragmentedGroups reports whether any tenant group of a partition holds two
-// or more files at its own top level, that level being L2 or above, and the
-// bytes at the top level of those groups.
+// or more files under MatureObjectBytes at its own top level, that level being
+// L2 or above, and the bytes of those files. Mature files are never merged for
+// fragmentation, so they never make a partition look fragmented.
 func fragmentedGroups(files []FileInfo) (bool, int64) {
 	type groupKey struct{ prefix, bucket string }
 	type group struct {
@@ -250,6 +274,9 @@ func fragmentedGroups(files []FileInfo) (bool, int64) {
 	}
 	groups := make(map[groupKey]*group)
 	for _, f := range files {
+		if f.Size >= MatureObjectBytes {
+			continue
+		}
 		k := groupKey{CompactionGroupPrefix(f.Key), f.Bucket}
 		g := groups[k]
 		if g == nil {

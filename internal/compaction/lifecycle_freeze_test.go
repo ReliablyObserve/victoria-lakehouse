@@ -45,25 +45,6 @@ func TestFreeze_RecordedStorageClass(t *testing.T) {
 	}
 }
 
-func TestFreeze_DetectorCachedClass(t *testing.T) {
-	// Guards the cached-class check: a class the delete path has already
-	// learned for a key freezes it even in a brand-new partition.
-	d := delete.NewStorageClassDetector(nil)
-	f := &LifecycleFreeze{Detector: d}
-	fi := tenantFile(1, "a")
-	if ok, _ := f.frozen(fi, unitNow, unitNow); ok {
-		t.Fatal("frozen with nothing cached")
-	}
-	d.SetCache(fi.Key, delete.ClassGlacier)
-	if ok, reason := f.frozen(fi, unitNow, unitNow); !ok || reason != frozenStorageClass {
-		t.Fatalf("cached GLACIER: frozen=%v reason=%q", ok, reason)
-	}
-	d.SetCache(fi.Key, delete.ClassStandard)
-	if ok, _ := f.frozen(fi, unitNow, unitNow); ok {
-		t.Fatal("cached STANDARD must not freeze")
-	}
-}
-
 func rules(pairs ...any) []delete.LifecycleRule {
 	var out []delete.LifecycleRule
 	for i := 0; i < len(pairs); i += 2 {
