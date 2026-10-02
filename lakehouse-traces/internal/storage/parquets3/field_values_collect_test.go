@@ -25,17 +25,40 @@ func fvcSpan(at time.Duration, name string) schema.TraceRow {
 	}
 }
 
+// fvcUpload writes spans as one object of their partition. A non-empty nonce
+// names it as the buffer segment of that nonce would.
+func fvcUpload(t *testing.T, bw *BatchWriter, nonce string, rows []schema.TraceRow) {
+	t.Helper()
+	up := &traceGroupUpload{partition: partitionFromNano(rows[0].TimestampUnixNano), rows: rows}
+	if nonce != "" {
+		up.batchID = segmentBatchID(nonce, 0)
+	}
+	bw.assignTraceKey(up)
+	if err := bw.uploadTraceGroup(context.Background(), up); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // fvcStorage flushes each batch as its own object in the same partition.
 func fvcStorage(t *testing.T, batches ...[]schema.TraceRow) *Storage {
+	t.Helper()
+	return fvcStorageNonce(t, "", batches...)
+}
+
+// fvcStorageNonce is fvcStorage with the first object named after one buffer segment.
+func fvcStorageNonce(t *testing.T, nonce string, batches ...[]schema.TraceRow) *Storage {
 	t.Helper()
 	mock := newMockS3Server()
 	t.Cleanup(mock.close)
 	s := testStorageWithS3(t, mock.url())
 	s.cfg.Mode = config.ModeTraces // as the traces binary runs (the buffer bridge decodes spans)
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
-	for _, b := range batches {
-		bw.AddTraceRows(b)
-		bw.triggerFlush()
+	for i, b := range batches {
+		n := nonce
+		if i > 0 {
+			n = "" // only the first batch is the segment's
+		}
+		fvcUpload(t, bw, n, b)
 	}
 	return s
 }

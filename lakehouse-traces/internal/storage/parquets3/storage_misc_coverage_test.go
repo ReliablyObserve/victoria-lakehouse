@@ -8,49 +8,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
 // ---------------------------------------------------------------------------
 // SetLocalBuffer / FooterCache accessor / cache adapters
 // ---------------------------------------------------------------------------
 
-type fakeLocalBuffer struct {
-	closed   bool
-	queryErr error
-	// records below let the pure-buffer fast-path tests assert what reached the
-	// buffer (see pure_buffer_test.go); the original SetLocalBuffer tests ignore
-	// them.
-	ran      bool
-	gotQuery string
-	emit     bool
-	emitted  bool
-}
+// fakeLocalBuffer is a LocalBuffer with no segments that records its Close.
+type fakeLocalBuffer struct{ closed bool }
 
-func (f *fakeLocalBuffer) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
-	f.ran = true
-	if qctx != nil && qctx.Query != nil {
-		f.gotQuery = qctx.Query.String()
-	}
-	if f.queryErr != nil {
-		return f.queryErr
-	}
-	if f.emit && writeBlock != nil {
-		writeBlock(0, nil)
-		f.emitted = true
-	}
-	return nil
-}
-func (f *fakeLocalBuffer) Close() { f.closed = true }
+func (f *fakeLocalBuffer) Snapshot() *membuffer.Snapshot { return &membuffer.Snapshot{} }
+func (f *fakeLocalBuffer) Close()                        { f.closed = true }
 
-// TestSetLocalBuffer_ClosedOnShutdown: the Option B buffer wired via
-// SetLocalBuffer must be flushed+closed by Storage.Close so the last
-// sub-FlushInterval window survives a graceful restart.
+// TestSetLocalBuffer_ClosedOnShutdown: the insert buffer wired via
+// SetLocalBuffer must be closed by Storage.Close (upstream writes the
+// in-memory rows of every segment to disk) so a graceful restart loses nothing.
 func TestSetLocalBuffer_ClosedOnShutdown(t *testing.T) {
 	s := testStorage()
 	lb := &fakeLocalBuffer{}
@@ -404,34 +382,6 @@ func TestShouldSkipByFooter(t *testing.T) {
 			t.Errorf("got (skip=%v, err=%v), want (false, nil)", skip, err)
 		}
 	})
-}
-
-// ---------------------------------------------------------------------------
-// ShadowExporter.Run / discovery + manifest refresh
-// ---------------------------------------------------------------------------
-
-// TestShadowExporter_RunStopsOnCancel: the shadow loop must exit
-// promptly on context cancellation (shutdown path) without exporting.
-func TestShadowExporter_RunStopsOnCancel(t *testing.T) {
-	se := NewShadowExporter(&fakeLocalBuffer{}, nil, "shadow/", 1000, 3)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	done := make(chan struct{})
-	go func() {
-		// interval <= 0 exercises the default-interval guard; the
-		// cancelled ctx wins before the first tick.
-		se.Run(ctx, 0, func(_, _ int64) []logstorage.TenantID {
-			t.Error("tenantsFn must not be called after cancellation")
-			return nil
-		})
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("ShadowExporter.Run did not stop on context cancellation")
-	}
 }
 
 // TestRefreshDiscovery_NoPeersConfigured: with no peer cache or bridge,

@@ -18,9 +18,9 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
 // The durable insert path (membuffer.Segments + BufferFlusher) for spans. The
