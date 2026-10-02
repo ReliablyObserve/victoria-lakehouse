@@ -6,22 +6,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// Trap 1+2 regression tests (parquet-compression-research.md, "The three
+// Trap 1 regression tests (parquet-compression-research.md, "The three
 // correctness traps under item 1"): manifest FileInfo MinTimeNs/MaxTimeNs must
 // be the TRUE min/max of the flushed rows, not the first/last row's
 // timestamps. The tests call the tenant-group flush directly (below the
 // partition-level time sort) with deliberately shuffled timestamps — exactly
 // what the flush sees once rows are ordered (stream_id, timestamp) for
 // compression. With positional bounds the manifest would understate MaxTimeNs
-// → range pruning skips files containing matches AND bufferWatermark re-opens
-// the buffer↔Parquet double-count.
+// → range pruning skips files containing matches and metadata-only answers
+// cover the wrong range.
 //
 // Mirror of the root module's
 // internal/storage/parquets3/writer_timebounds_test.go — keep in sync.
@@ -73,15 +71,6 @@ func TestFlushLogTenantGroup_ShuffledRows_ManifestHoldsTrueBounds(t *testing.T) 
 	}
 	if fi.MaxTimeNs == last {
 		t.Errorf("MaxTimeNs %d equals rows[len-1] timestamp — positional derivation regressed", fi.MaxTimeNs)
-	}
-
-	// Trap 2: bufferWatermark is max(MaxTimeNs) of the scanned files — with
-	// positional bounds it would sit at the LAST row's timestamp (+40s),
-	// re-opening the 2× buffer↔Parquet double-count for rows in (+40s, +90s].
-	tenant := logstorage.TenantID{AccountID: 0, ProjectID: 0}
-	if wm := (&Storage{manifest: m}).bufferWatermarksFor(context.Background(), 0, files)[tenant]; wm != wantMax {
-		t.Errorf("bufferWatermark = %d, want true max %d (positional bounds would give %d)",
-			wm, wantMax, last)
 	}
 }
 

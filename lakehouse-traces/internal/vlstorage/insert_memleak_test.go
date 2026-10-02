@@ -1,21 +1,26 @@
 package vlstorage
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
-// TestMemLeak_SustainedIngest_NoCachedRowGrowth pushes synthetic span
-// rows through logRowsToTraceRows in tight repeated iterations and
-// verifies the heap doesn't grow unboundedly across iterations.
+// TestMemLeak_SustainedIngest_NoCachedRowGrowth converts the spans of an insert
+// buffer through DataBlockToTraceRows in tight repeated iterations and verifies
+// the heap doesn't grow across iterations.
 //
-// Rationale: catches the class of bug we hit on the logs side where
-// dropping strings.Clone left dangling references into VL's arena that
-// pinned per-batch memory until the next allocation, defeating GC.
+// Rationale: catches the class of bug where dropping strings.Clone leaves
+// dangling references into the engine's block memory that pin per-batch memory
+// until the next allocation, defeating GC.
 // Budget: 10 MB across all iterations (matches the budget convention
 // in this package's other memleak tests).
 func TestMemLeak_SustainedIngest_NoCachedRowGrowth(t *testing.T) {
@@ -24,13 +29,42 @@ func TestMemLeak_SustainedIngest_NoCachedRowGrowth(t *testing.T) {
 	}
 
 	const iterations = 5
-	const rowsPerIter = 20_000 // 5 * 20k = 100k total
+	const rowsPerIter = 20_000 // 5 * 20k = 100k converted rows in total
+
+	st, err := membuffer.Open(membuffer.Config{Path: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	lr := buildSyntheticLogRows(rowsPerIter)
+	st.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	st.DebugFlush()
+	q, err := logstorage.ParseQueryAtTimestamp("*", math.MaxInt64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = q.CloneWithTimeFilter(q.GetTimestamp(), 0, math.MaxInt64)
+	convert := func() int {
+		n := 0
+		var mu sync.Mutex
+		qctx := logstorage.NewQueryContext(context.Background(), &logstorage.QueryStats{}, []logstorage.TenantID{{}}, q, false, nil)
+		if err := st.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
+			rows := DataBlockToTraceRows(db, logstorage.TenantID{})
+			mu.Lock()
+			n += len(rows)
+			mu.Unlock()
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
 
 	// Warm-up so any one-shot init (pools, sync.Once, schema bootstrap)
 	// is amortized before the first sample.
-	lr := buildSyntheticLogRows(rowsPerIter)
-	_ = logRowsToTraceRows(lr)
-	logstorage.PutLogRows(lr)
+	if n := convert(); n != rowsPerIter {
+		t.Fatalf("warm-up converted %d rows, want %d", n, rowsPerIter)
+	}
 
 	runtime.GC()
 	runtime.GC()
@@ -40,15 +74,9 @@ func TestMemLeak_SustainedIngest_NoCachedRowGrowth(t *testing.T) {
 	heapBefore := m.HeapInuse
 
 	for it := 0; it < iterations; it++ {
-		lr := buildSyntheticLogRows(rowsPerIter)
-		rows := logRowsToTraceRows(lr)
-		if len(rows) != rowsPerIter {
-			t.Fatalf("iter %d: got %d rows, want %d", it, len(rows), rowsPerIter)
+		if n := convert(); n != rowsPerIter {
+			t.Fatalf("iter %d: got %d rows, want %d", it, n, rowsPerIter)
 		}
-		// Drop references so GC can reclaim.
-		rows = nil
-		_ = rows
-		logstorage.PutLogRows(lr)
 	}
 
 	runtime.GC()
@@ -57,23 +85,23 @@ func TestMemLeak_SustainedIngest_NoCachedRowGrowth(t *testing.T) {
 	runtime.ReadMemStats(&m)
 	heapAfter := m.HeapInuse
 
-	t.Logf("Sustained ingest: heap_before=%dKB, heap_after=%dKB, iterations=%d, rows_per_iter=%d",
+	t.Logf("Sustained conversion: heap_before=%dKB, heap_after=%dKB, iterations=%d, rows_per_iter=%d",
 		heapBefore/1024, heapAfter/1024, iterations, rowsPerIter)
 
 	const maxGrowth = uint64(10 * 1024 * 1024)
 	if heapAfter > heapBefore+maxGrowth {
-		t.Errorf("Possible memory leak: heap grew from %dKB to %dKB after %d ingest iterations (budget=10MB)",
+		t.Errorf("Possible memory leak: heap grew from %dKB to %dKB after %d iterations (budget=10MB)",
 			heapBefore/1024, heapAfter/1024, iterations)
 	}
 }
 
 // buildSyntheticLogRows returns a populated *logstorage.LogRows with
 // n trace-style rows. Mirrors the field shape used by
-// BenchmarkLogRowsToTraceRows so the cost profile matches real ingest.
+// BenchmarkDataBlockToTraceRows so the cost profile matches real ingest.
 func buildSyntheticLogRows(n int) *logstorage.LogRows {
 	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	for i := 0; i < n; i++ {
-		lr.MustAdd(logstorage.TenantID{}, int64(i)*1_000_000_000, []logstorage.Field{
+		lr.MustAdd(logstorage.TenantID{}, int64(i+1)*1_000_000_000, []logstorage.Field{
 			{Name: "trace_id", Value: fmt.Sprintf("abc123def456-%d", i)},
 			{Name: "span_id", Value: fmt.Sprintf("span-%d", i)},
 			{Name: "service.name", Value: "benchmark-svc"},

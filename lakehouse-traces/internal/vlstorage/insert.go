@@ -51,10 +51,14 @@ func keepStream(accountID, projectID uint32, stream string) bool {
 // and the drop of VictoriaTraces' trace_id_idx rows. Those rows stay in the
 // insert buffer, where hot VictoriaTraces also returns them for unflushed
 // data; they are never written to Parquet (only the _trace_idx footer is used
-// in reads, never a Parquet row). service_graph rows are kept.
+// in reads, never a Parquet row); each one dropped is counted in
+// lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}, which the
+// parity check uses to explain the difference from hot VictoriaTraces.
+// service_graph rows are kept.
 func FlushRowKeeper() func(accountID, projectID uint32, stream string) bool {
 	return func(accountID, projectID uint32, stream string) bool {
 		if strings.Contains(stream, otelpb.TraceIDIndexStreamName) {
+			metrics.VTInternalRowsDropped.Inc(vtInternalKindTraceIDIdx)
 			return false
 		}
 		return keepStream(accountID, projectID, stream)

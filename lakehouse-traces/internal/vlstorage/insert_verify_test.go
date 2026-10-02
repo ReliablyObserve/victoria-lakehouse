@@ -230,18 +230,15 @@ func TestVerifyTraceInsert_AllPromotedFields(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.fieldName, func(t *testing.T) {
-			w := &mockTraceWriter{}
-			a := &vtInsertAdapter{writer: w}
-
 			lr := makeLogRows(t, logstorage.Field{Name: tc.fieldName, Value: tc.value})
 			defer logstorage.PutLogRows(lr)
 
-			a.MustAddRows(lr)
+			rows := rowsViaBuffer(t, lr)
 
-			if len(w.rows) != 1 {
-				t.Fatalf("expected 1 row, got %d", len(w.rows))
+			if len(rows) != 1 {
+				t.Fatalf("expected 1 row, got %d", len(rows))
 			}
-			tc.check(t, w.rows[0])
+			tc.check(t, rows[0])
 		})
 	}
 }
@@ -249,30 +246,24 @@ func TestVerifyTraceInsert_AllPromotedFields(t *testing.T) {
 // TestVerifyTraceInsert_StartTimePreserved verifies that start_time_unix_nano
 // is mapped to StartTimeUnixNano on the TraceRow.
 func TestVerifyTraceInsert_StartTimePreserved(t *testing.T) {
-	w := &mockTraceWriter{}
-	a := &vtInsertAdapter{writer: w}
-
 	const wantNano = int64(1_700_000_000_000_000_000)
 
 	lr := makeLogRows(t, logstorage.Field{Name: "start_time_unix_nano", Value: "1700000000000000000"})
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if w.rows[0].StartTimeUnixNano != wantNano {
-		t.Errorf("StartTimeUnixNano = %d, want %d", w.rows[0].StartTimeUnixNano, wantNano)
+	if rows[0].StartTimeUnixNano != wantNano {
+		t.Errorf("StartTimeUnixNano = %d, want %d", rows[0].StartTimeUnixNano, wantNano)
 	}
 }
 
 // TestVerifyTraceInsert_UnknownFieldGoesToSpanAttributes verifies that fields
 // not matching any promoted column are stored in SpanAttributes.
 func TestVerifyTraceInsert_UnknownFieldGoesToSpanAttributes(t *testing.T) {
-	w := &mockTraceWriter{}
-	a := &vtInsertAdapter{writer: w}
-
 	lr := makeLogRows(t,
 		logstorage.Field{Name: "trace_id", Value: "t-custom"},
 		logstorage.Field{Name: "custom.verify.field", Value: "custom-value"},
@@ -280,12 +271,12 @@ func TestVerifyTraceInsert_UnknownFieldGoesToSpanAttributes(t *testing.T) {
 	)
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	row := w.rows[0]
+	row := rows[0]
 
 	if row.SpanAttributes == nil {
 		t.Fatal("SpanAttributes should not be nil for unknown fields")
@@ -300,15 +291,12 @@ func TestVerifyTraceInsert_UnknownFieldGoesToSpanAttributes(t *testing.T) {
 
 // TestVerifyTraceInsert_EmptyRows verifies that zero input rows produce zero output.
 func TestVerifyTraceInsert_EmptyRows(t *testing.T) {
-	w := &mockTraceWriter{}
-	a := &vtInsertAdapter{writer: w}
-
 	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	defer logstorage.PutLogRows(lr)
 
-	a.MustAddRows(lr)
+	rows := rowsViaBuffer(t, lr)
 
-	if len(w.rows) != 0 {
-		t.Errorf("expected 0 rows for empty input, got %d", len(w.rows))
+	if len(rows) != 0 {
+		t.Errorf("expected 0 rows for empty input, got %d", len(rows))
 	}
 }
