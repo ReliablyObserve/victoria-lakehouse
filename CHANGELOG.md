@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than by `_time`; a segment is sealed after `insert.buffer_flush_interval` (default 5m) or earlier at
   about `insert.target_file_size`, then written completely, per tenant, in objects of at most the target size, so
   flush memory is bounded by one object. An insert is acknowledged exactly as in hot VictoriaLogs and
-  VictoriaTraces: the rows are fsynced within upstream's 5 s window, inserts get upstream's 429 when the buffer
+  VictoriaTraces: the rows are on disk within upstream's flush window (about 11 s at worst), inserts get upstream's 429 when the buffer
   volume is below its free-space floor, and an unreachable object store refuses nothing. Late and backfilled rows
   of any age are written with the segment they arrived in (before, a row older than the buffer retention was
   dropped from the flush). A restart reopens the segments and writes only what is missing, with the same keys and

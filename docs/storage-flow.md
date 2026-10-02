@@ -59,7 +59,7 @@ sequenceDiagram
     VLH->>A: MustAddRows(*LogRows)
     A->>A: admission (drop trace-shaped / over-limit streams)
     A->>SEG: MustAddRows into the active segment
-    A-->>C: 200 (parts fsynced within 5s)
+    A-->>C: 200 (parts fsynced within ~11 s, as upstream)
 
     Note over F: seal: age (buffer_flush_interval)<br/>or size (target_file_size)
 

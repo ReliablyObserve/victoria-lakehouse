@@ -70,6 +70,13 @@ func ingestMarker(t *testing.T, prefix string) (string, int64) {
 	return marker, nowNs
 }
 
+// upstreamDiskWindow is how long after its ack a row is certainly in an fsynced
+// part: upstream turns buffered rows into an in-memory part within 1 s and
+// writes the part to disk at the first 5 s flush tick after it is 5 s old (at
+// most 11 s), plus a margin for the merge on a busy CI runner. A row newer than
+// this may be lost by kill -9, in hot VL/VT too.
+const upstreamDiskWindow = 15 * time.Second
+
 // waitForMarker polls the select path until the marker is returned.
 func waitForMarker(t *testing.T, marker string, nowNs int64, what string) {
 	t.Helper()
@@ -107,7 +114,7 @@ func TestChaos_RestartRestoresTheBuffer(t *testing.T) {
 // restores its segments and drains them to object storage.
 func TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow(t *testing.T) {
 	marker, nowNs := ingestMarker(t, "chaos-kill9")
-	time.Sleep(8 * time.Second) // past upstream's flush interval: the part is on disk
+	time.Sleep(upstreamDiskWindow)
 	killContainer(t, chaosContainer, logsBaseURL)
 	waitForMarker(t, marker, nowNs, "after kill -9")
 	assertMarkerOnce(t, marker, nowNs)

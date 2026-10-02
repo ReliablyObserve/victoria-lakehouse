@@ -56,7 +56,7 @@
     logstorage segments drained whole to Parquet; the WAL changelog bullets belong to this
     feature's history.
   highlight: >-
-    **Crash-safe durability (no WAL)**: the insert buffer is a sequence of upstream logstorage segments on a persistent volume (the same engine hot VL/VT use, parts fsynced within 5 s, restored on open); every sealed segment is drained completely to Parquet — late and backfilled rows included — and a restart drains whatever is left without rewriting what is stored, so the crash-loss window matches hot VL/VT. See [Persistence & Durability](docs/durability.md).
+    **Crash-safe durability (no WAL)**: the insert buffer is a sequence of upstream logstorage segments on a persistent volume (the same engine hot VL/VT use, parts on disk within about 11 s as upstream, restored on open); every sealed segment is drained completely to Parquet — late and backfilled rows included — and a restart drains whatever is left without rewriting what is stored, so the crash-loss window matches hot VL/VT. See [Persistence & Durability](docs/durability.md).
   description: >-
     Buffered rows are persisted by the same logstorage engine the hot tier uses, so a pod that
     dies mid-window restores its segments on open. The flusher's state records which segments
