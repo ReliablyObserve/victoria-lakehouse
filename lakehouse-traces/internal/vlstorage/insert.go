@@ -2,10 +2,12 @@ package vlstorage
 
 import (
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 	vtinsertutil "github.com/VictoriaMetrics/VictoriaTraces/app/vtinsert/insertutil"
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
@@ -20,12 +22,6 @@ const (
 	vtInternalKindTraceIDIdx   = "trace_id_idx"
 	vtInternalKindServiceGraph = "service_graph"
 )
-
-// TraceWriter is the subset of parquets3.Storage needed for the insert path.
-type TraceWriter interface {
-	MustAddTraceRows(rows []schema.TraceRow)
-	CanWriteData() error
-}
 
 // TenantCardinalityGate gates rows by per-tenant cardinality limits.
 // Implemented by *tenant.CardinalityLimiter; declared here as an
@@ -42,103 +38,125 @@ func SetCardinalityGate(g TenantCardinalityGate) {
 	globalCardinalityGate = g
 }
 
-// FlushRowKeeper returns the gate-at-flush predicate for the WAL cutover's
-// BufferFlusher: it keeps exactly the rows the legacy authoritative path would
-// have written to Parquet. The buffer (a raw query cache) holds rows the legacy
-// path drops, so when the buffer becomes authoritative those must be filtered
-// out — namely the VT-internal trace_id_idx rows (only the _trace_idx footer is
-// used in reads, never a Parquet row) and streams over the per-tenant
-// cardinality limit. The gate is read live so it tracks SetCardinalityGate.
-// service_graph rows are KEPT (the legacy path keeps them too).
+// keepStream is the admission rule of the traces binary, applied when a row is
+// added to the insert buffer and again when it is flushed: a stream over its
+// tenant's cardinality limit is dropped.
+func keepStream(accountID, projectID uint32, stream string) bool {
+	return globalCardinalityGate == nil || stream == "" ||
+		globalCardinalityGate.AllowStream(accountID, projectID, stream)
+}
+
+// FlushRowKeeper returns the flusher's keep filter: the admission rule the
+// insert path applies (keepStream), read live so it tracks SetCardinalityGate,
+// and the drop of VictoriaTraces' trace_id_idx rows. Those rows stay in the
+// insert buffer, where hot VictoriaTraces also returns them for unflushed
+// data; they are never written to Parquet (only the _trace_idx footer is used
+// in reads, never a Parquet row). service_graph rows are kept.
 func FlushRowKeeper() func(accountID, projectID uint32, stream string) bool {
 	return func(accountID, projectID uint32, stream string) bool {
 		if strings.Contains(stream, otelpb.TraceIDIndexStreamName) {
 			return false
 		}
-		if globalCardinalityGate != nil && stream != "" &&
-			!globalCardinalityGate.AllowStream(accountID, projectID, stream) {
-			return false
-		}
-		return true
+		return keepStream(accountID, projectID, stream)
 	}
+}
+
+// BufferStore is the insert buffer: upstream logstorage, cut into segments by
+// ingest time (membuffer.Segments). Every acknowledged row is added to it, and
+// it is the only place the row lives until the flusher writes it to Parquet.
+type BufferStore interface {
+	MustAddRows(lr *logstorage.LogRows)
+	IsReadOnly() bool
 }
 
 // vtInsertAdapter satisfies VT's insertutil.LogRowsStorage interface
 // (MustAddRows + CanWriteData + IsLocalStorage).
 type vtInsertAdapter struct {
-	writer TraceWriter
+	buf BufferStore
+	dir string // the buffer directory, named in the read-only error
 }
 
-// SetInsertStorage configures VT's vtinsert handler to route all ingested
-// trace spans through the given TraceWriter.
-func SetInsertStorage(w TraceWriter) {
-	vtinsertutil.SetLogRowsStorage(&vtInsertAdapter{writer: w})
+// SetInsertStorage routes every span VT's insert handlers parse into buf.
+// dir is the buffer directory (insert.buffer_dir).
+func SetInsertStorage(buf BufferStore, dir string) {
+	vtinsertutil.SetLogRowsStorage(&vtInsertAdapter{buf: buf, dir: dir})
 }
 
-// BufferStore is the narrow write surface of the Option B logstorage-native
-// buffer (membuffer.Store). Declared here as an interface to keep this
-// package's imports narrow. nil unless BufferEngine=="logstore".
-type BufferStore interface {
-	MustAddRows(lr *logstorage.LogRows)
-}
-
-var bufferStore BufferStore
-
-// bufferAuthoritative is the WAL-cutover FLIP. When true the logstore buffer is
-// the authoritative Parquet producer (via the BufferFlusher), so MustAddRows
-// feeds ONLY the buffer and SKIPS the legacy TraceRow staging path — no double
-// Parquet, no LH WAL. When false (default) the legacy path is authoritative and
-// the buffer is a read-side shadow (dual-write). Reversible: flip the flag.
-var bufferAuthoritative bool
-
-// SetBufferStore enables Option B dual-write: every ingested LogRows batch is
-// ALSO added to the logstorage-native buffer, in parallel with the legacy
-// TraceRow staging path. Call once at startup before serving. nil disables.
-func SetBufferStore(bs BufferStore) {
-	bufferStore = bs
-}
-
-// SetBufferAuthoritative performs the cutover flip (true) or reverts it (false).
-// Must be called before serving; when true, a BufferFlusher must be running to
-// produce Parquet from the buffer, else recent data never reaches S3.
-func SetBufferAuthoritative(v bool) {
-	bufferAuthoritative = v
-}
-
+// MustAddRows adds the admitted rows of lr to the buffer while lr is valid
+// (vtinsert reuses its memory after this returns; upstream copies the rows).
+// A failure inside the buffer is not recovered here: as in upstream, it fails
+// the request, so the client retries instead of getting an ack for rows that
+// were stored nowhere.
 func (a *vtInsertAdapter) MustAddRows(lr *logstorage.LogRows) {
-	// Legacy staging path — SKIPPED once the buffer is authoritative (the flip),
-	// so the BufferFlusher is the sole Parquet producer (no double-write, no WAL).
-	if !bufferAuthoritative {
-		rows := logRowsToTraceRows(lr)
-		if len(rows) > 0 {
-			a.writer.MustAddTraceRows(rows)
-		}
+	blr, owned := admittedRows(lr)
+	if blr != nil {
+		metrics.InsertRowsTotal.Add(blr.RowsCount())
+		a.buf.MustAddRows(blr)
 	}
-	// Feed the logstorage-native buffer (dual-write shadow when legacy is
-	// authoritative; the sole sink once flipped), while lr is still valid —
-	// vtinsert resets the arena-backed LogRows immediately after this returns;
-	// logstorage copies the rows into its own parts, so this is safe.
-	if bufferStore != nil {
-		addRowsToBufferSafely(lr)
+	if owned {
+		logstorage.PutLogRows(blr)
 	}
 }
 
-// addRowsToBufferSafely isolates the Option B dual-write so a buffer failure
-// (panic in logstorage.MustAddRows, e.g. unexpected internal state) can NEVER
-// break ingestion. The legacy staging path above already accepted the rows and
-// stays authoritative; on failure we only count it and drop this batch from the
-// buffer (the buffer may under-return for those rows until the next flush).
-func addRowsToBufferSafely(lr *logstorage.LogRows) {
-	defer func() {
-		if r := recover(); r != nil {
-			metrics.BufferStoreDualWriteFailures.Inc()
+// admittedRows returns the rows of lr that keepStream admits: lr itself when it
+// admits them all (the common case), nil when it admits none, otherwise a copy
+// (owned is then true and the caller releases it). The decision is made once
+// per stream of the batch.
+func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) {
+	if globalCardinalityGate == nil {
+		return lr, false
+	}
+	decided := map[uint64]bool{}
+	var st logstorage.StreamTags
+	dropped, total := 0, 0
+	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
+		total++
+		keep, ok := decided[streamHash]
+		if !ok {
+			stream := ""
+			if r.StreamTagsCanonical != "" {
+				st.Reset()
+				if err := unmarshalStreamTags(&st, r.StreamTagsCanonical); err == nil {
+					stream = st.String()
+				}
+			}
+			keep = keepStream(r.TenantID.AccountID, r.TenantID.ProjectID, stream)
+			decided[streamHash] = keep
 		}
-	}()
-	bufferStore.MustAddRows(lr)
+		if !keep {
+			dropped++
+		}
+	})
+	switch dropped {
+	case 0:
+		return lr, false
+	case total:
+		return nil, false
+	}
+	cp := logstorage.GetLogRows(nil, nil, nil, nil, "")
+	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
+		if decided[streamHash] {
+			cp.MustAddInsertRow(r)
+		}
+	})
+	return cp, true
 }
 
+// CanWriteData is upstream's rule (VictoriaLogs app/vlstorage
+// Storage.CanWriteData): 429 Too Many Requests while the buffer's volume is
+// below its free-space floor, and nothing else. An unreachable object store
+// does not refuse writes: the rows wait on the local disk, as they would in
+// VictoriaTraces' own storage, and the disk floor turns into 429 if it lasts.
 func (a *vtInsertAdapter) CanWriteData() error {
-	return a.writer.CanWriteData()
+	if a.buf.IsReadOnly() {
+		metrics.InsertRejected.Inc("read_only")
+		return &httpserver.ErrorWithStatusCode{
+			Err: fmt.Errorf("cannot add rows into storage in read-only mode; the storage can be in read-only mode "+
+				"because of lack of free disk space at insert.buffer_dir=%s", a.dir),
+			StatusCode: http.StatusTooManyRequests,
+		}
+	}
+	return nil
 }
 
 func (a *vtInsertAdapter) IsLocalStorage() bool {

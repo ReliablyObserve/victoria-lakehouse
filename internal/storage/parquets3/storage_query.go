@@ -249,7 +249,6 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	plan := planMetadataOnly(q)
 	ctx = withMetadataOnlyPlan(ctx, plan)
 
-
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
 		// The fast path stops emitting as soon as the query's max-rows or

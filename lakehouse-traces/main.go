@@ -474,6 +474,7 @@ func run(cfg *config.Config, addr string) {
 			Manifest:    store.Manifest(),
 			OnPublished: rewritePublishHook(store, pusher),
 		})
+		rewriteSched.SetSegmentGuard(store.Pool(), cfg.AutoPrefix(), 2*bufferGrace(cfg))
 		rewriteSched.Start(cfg.Delete.VerifyInterval)
 		logger.Infof("delete rewrite scheduler started; rewrite_delay=%v, verify_interval=%v",
 			cfg.Delete.RewriteDelay, cfg.Delete.VerifyInterval)
@@ -860,6 +861,7 @@ func setupCompaction(
 			notifyPusher(added, removed)
 		},
 	})
+	sched.SetSegmentGuard(store.Pool(), 2*bufferGrace(cfg))
 	sched.Start()
 
 	sweep := compaction.NewOrphanSweep(compaction.OrphanSweepConfig{
@@ -1302,61 +1304,32 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	}
 
 	if cfg.InsertEnabled() {
-		internalvlstorage.SetInsertStorage(store)
-		// Option B (P1): when buffer-engine=logstore, stand up the
-		// logstorage-native buffer and dual-write to it alongside the legacy
-		// TraceRow staging path. Off by default; the legacy path stays
-		// authoritative until later phases.
-		if cfg.Insert.BufferEngineLogstore() {
-			bufStore, err := membuffer.Open(membuffer.Config{
-				Path:      cfg.Insert.BufferDir,
-				Retention: cfg.Insert.BufferRetention,
-			})
-			if err != nil {
-				logger.Fatalf("open logstore buffer: %s", err)
-			}
-			internalvlstorage.SetBufferStore(bufStore)
-			// P3 read-merge: when this process also serves SELECT (role=all /
-			// co-located insert+select), the query path serves the recent
-			// window from the same store via RunQuery. On a SELECT-only node
-			// (no bufStore) this stays nil and queries use the BufferBridge
-			// HTTP fan-out, unchanged.
-			store.SetLocalBuffer(bufStore)
-			// bufStore is process-lived (held via the package vars). Graceful
-			// DebugFlush+Close on shutdown comes with P4.
-			logger.Infof("Option B: logstore buffer enabled at %s (retention=%s); read-merge active", bufStore.Path(), cfg.Insert.BufferRetention)
-
-			// Cutover flip (default off): make the buffer the AUTHORITATIVE
-			// Parquet producer. SetBufferAuthoritative stops the legacy staging
-			// feed (no double-write, no WAL), and the BufferFlusher drains the
-			// buffer to S3 Parquet via the existing flush machinery, applying the
-			// gate-at-flush filter (drop trace_id_idx + cardinality-exceeding
-			// streams) so output matches the legacy path. Reversible by flag.
-			if cfg.Insert.BufferFlushEnabled {
-				w := store.Writer()
-				if w == nil {
-					logger.Fatalf("buffer_flush_enabled but the insert writer is nil")
-				}
-				internalvlstorage.SetBufferAuthoritative(true)
-				// buffer_flush_interval is the object-store flush cap (max linger
-				// before a sub-target window is flushed). The flusher CHECKS more
-				// often than that (so recent rows become queryable / size is
-				// re-evaluated) but only FLUSHES on target_file_size OR the linger
-				// cap — so S3 gets ~target-sized objects, not one tiny file/tick.
-				maxLinger := cfg.Insert.BufferFlushInterval
-				checkInterval := maxLinger
-				if checkInterval > 30*time.Second {
-					checkInterval = 30 * time.Second
-				}
-				flusher := parquets3.NewBufferFlusher(w, bufStore, cfg.Insert.BufferDir, internalvlstorage.FlushRowKeeper(), cfg.Insert.TargetFileSizeN(), maxLinger)
-				// Process-lived goroutine. On shutdown the watermark simply
-				// doesn't advance, so the in-flight window re-flushes on restart
-				// (no loss). Graceful flusher-stop coordinated with buffer Close
-				// is a pre-flip hardening item.
-				go flusher.Run(context.Background(), checkInterval, time.Now().UnixNano())
-				logger.Warnf("Option B CUTOVER ACTIVE: buffer is the authoritative Parquet producer; BufferFlusher running (interval=%s); legacy staging + WAL bypassed", cfg.Insert.BufferFlushInterval)
-			}
+		// The insert buffer: upstream logstorage, cut into segments by ingest
+		// time. Every acknowledged span is in it until the flusher has written
+		// it to Parquet; the query path reads it, and the buffer bridge serves
+		// it to select pods.
+		segs, err := membuffer.OpenSegments(membuffer.Config{Path: cfg.Insert.BufferDir})
+		if err != nil {
+			logger.Fatalf("open the insert buffer: %s", err)
 		}
+		var bs internalvlstorage.BufferStore = segs
+		if cfg.Telemetry.Enabled {
+			bs = telemetry.NewTracedBuffer(segs)
+		}
+		internalvlstorage.SetInsertStorage(bs, cfg.Insert.BufferDir)
+		store.SetLocalBuffer(segs)
+		w := store.Writer()
+		if w == nil {
+			logger.Fatalf("insert is enabled but the Parquet writer is nil")
+		}
+		flusher := parquets3.NewBufferFlusher(w, segs, cfg.Insert.BufferDir, internalvlstorage.FlushRowKeeper(), parquets3.BufferFlusherConfig{
+			TargetBytes: cfg.Insert.TargetFileSizeN(),
+			MaxAge:      cfg.Insert.BufferFlushInterval,
+			Grace:       bufferGrace(cfg),
+		})
+		flusher.Start(time.Second)
+		store.SetBufferFlusher(flusher)
+		logger.Infof("insert buffer at %s: segments sealed after %s or %s, kept %s after they are written", segs.Path(), cfg.Insert.BufferFlushInterval, cfg.Insert.TargetFileSize, bufferGrace(cfg))
 		vtinsert.Init()
 
 		vtinsertHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -1366,10 +1339,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		}
 		mux.HandleFunc("/insert/", vtinsertHandler)
 
-		if w := store.Writer(); w != nil {
-			bh := buffer.NewHandler(w, cfg.Peer.AuthKey)
-			mux.Handle("/internal/buffer/query", bh)
-		}
+		mux.Handle("/internal/buffer/query", buffer.NewHandler(parquets3.BridgeSource{Segments: segs}, cfg.Peer.AuthKey))
 	}
 
 	if cfg.Delete.Enabled && tombstoneStore != nil {
@@ -2379,4 +2349,15 @@ func adapterStorage(store storage.Storage, telemetryEnabled bool) storage.Storag
 		return internalvlstorage.NewTracedStorage(store)
 	}
 	return store
+}
+
+// bufferGrace is how long a written buffer segment stays readable: two
+// manifest refreshes plus a margin, so a select pod has listed the segment's
+// objects before the insert pod stops serving its rows through the bridge.
+func bufferGrace(cfg *config.Config) time.Duration {
+	refresh := cfg.Manifest.RefreshInterval
+	if refresh <= 0 {
+		refresh = 30 * time.Second
+	}
+	return 2*refresh + 30*time.Second
 }

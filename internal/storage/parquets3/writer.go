@@ -76,11 +76,11 @@ type PoolWriter interface {
 // Parquet files to S3 on a configurable interval or size threshold.
 type BatchWriter struct {
 	markerPool PoolWriter // segment markers; nil = pool
-	cfg      *config.InsertConfig
-	pool     *s3reader.ClientPool
-	manifest *manifest.Manifest
-	prefix   string
-	mode     config.Mode
+	cfg        *config.InsertConfig
+	pool       *s3reader.ClientPool
+	manifest   *manifest.Manifest
+	prefix     string
+	mode       config.Mode
 
 	mu         sync.Mutex
 	logBufs    map[string][]schema.LogRow

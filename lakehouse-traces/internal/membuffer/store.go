@@ -35,9 +35,12 @@ type Config struct {
 	// flush.
 	Path string
 
-	// Retention bounds how long rows live in the buffer before VL drops the
-	// oldest per-day partition. Bounds buffer memory; data older than the
-	// retention is served from S3 Parquet, not the buffer. Default 1h.
+	// Retention is upstream's acceptance window into the past: a row whose day
+	// is before day(now - Retention) is dropped at ingest, with upstream's
+	// warning and counter. A segment is removed once its rows are in Parquet,
+	// so this does not bound the buffer's size. Default: no limit (100 years),
+	// so every row the Lakehouse takes is kept until it is written, whatever
+	// its age; Lakehouse retention then applies to the Parquet objects.
 	Retention time.Duration
 
 	// FlushInterval is VL's in-memory rowsBuffer→inmemoryPart→disk interval
@@ -57,7 +60,7 @@ type Config struct {
 
 func (c *Config) withDefaults() {
 	if c.Retention <= 0 {
-		c.Retention = time.Hour
+		c.Retention = 100 * 365 * 24 * time.Hour
 	}
 	if c.FlushInterval <= 0 {
 		c.FlushInterval = 5 * time.Second
@@ -137,3 +140,10 @@ func (st *Store) Close() {
 
 // Path returns the store's data directory.
 func (st *Store) Path() string { return st.path }
+
+// Snapshot presents the store as a buffer of one segment with no nonce (a
+// single upstream storage, as tests and tools use it): nothing of the cold tier
+// is excluded for it and Release is a no-op.
+func (st *Store) Snapshot() *Snapshot {
+	return &Snapshot{segs: []*Segment{{st: st.s, created: time.Now()}}}
+}

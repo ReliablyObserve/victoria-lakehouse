@@ -59,11 +59,12 @@ type PoolWriter interface {
 }
 
 type BatchWriter struct {
-	cfg      *config.InsertConfig
-	pool     *s3reader.ClientPool
-	manifest *manifest.Manifest
-	prefix   string
-	mode     config.Mode
+	markerPool PoolWriter // segment markers; nil = pool
+	cfg        *config.InsertConfig
+	pool       *s3reader.ClientPool
+	manifest   *manifest.Manifest
+	prefix     string
+	mode       config.Mode
 
 	mu         sync.Mutex
 	logBufs    map[string][]schema.LogRow
@@ -1184,6 +1185,29 @@ func (w *BatchWriter) settled(onStored func(key string), key string) {
 	if onStored != nil {
 		onStored(key)
 	}
+}
+
+// SetMarkerPool overrides where segment markers are written (tests); by
+// default they go to the writer's default bucket, where compaction lists them.
+func (w *BatchWriter) SetMarkerPool(p PoolWriter) {
+	w.markerPool = p
+}
+
+// putSegmentMarker writes the "segment committed" marker of a buffer segment
+// (manifest.SegmentMarkerKey) to the default bucket. Its time is the object
+// store's LastModified; the body is the same on every attempt.
+func (w *BatchWriter) putSegmentMarker(ctx context.Context, nonce string, seq uint64) error {
+	var p PoolWriter = w.pool
+	if w.markerPool != nil {
+		p = w.markerPool
+	}
+	body := fmt.Sprintf(`{"seq":%d}`, seq)
+	metrics.S3RequestsTotal.Inc("PUT")
+	if err := p.Upload(ctx, manifest.SegmentMarkerKey(w.prefix, nonce), []byte(body)); err != nil {
+		metrics.S3ErrorsTotal.Inc("PUT")
+		return err
+	}
+	return nil
 }
 
 // objectExists asks the object store, by HEAD, whether key exists in the bucket
