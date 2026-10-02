@@ -1,0 +1,112 @@
+# Isolated stack for the compaction A/B (issue #343): one RustFS, and the main
+# and PR builds of both binaries, each writing to its own bucket so the
+# compaction of one never touches the other. Ports 39700-39799 only; project
+# name lhcmp343 (see README.md). The binaries are static linux builds from
+# build.sh, run in a bare alpine container.
+name: lhcmp343
+
+x-lh: &lh
+  image: alpine:3
+  depends_on:
+    s3-init: {condition: service_completed_successfully}
+  cpus: 2
+  mem_limit: 1g
+
+services:
+  s3:
+    image: rustfs/rustfs:1.0.0
+    ports: ["127.0.0.1:39700:9000"]
+    environment:
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
+      interval: 3s
+      retries: 20
+    cpus: 2
+    mem_limit: 1g
+
+  s3-init:
+    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on: {s3: {condition: service_healthy}}
+    entrypoint: >
+      /bin/sh -c "mc alias set local http://s3:9000 minioadmin minioadmin &&
+      mc mb local/lhm343 --ignore-existing && mc mb local/lhp343 --ignore-existing"
+
+  logs-main:
+    <<: *lh
+    ports: ["127.0.0.1:39701:9428"]
+    volumes:
+      - ${LH_BIN_DIR:-./bin}:/bin-lh:ro
+      - logs-main-data:/data/lakehouse
+      - ./lh.yml:/etc/lakehouse/config.yml:ro
+    entrypoint: ["/bin-lh/logs-main"]
+    command:
+      - "-lakehouse.s3.bucket=lhm343"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=30s"
+      - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
+      - "-lakehouse.config=/etc/lakehouse/config.yml"
+
+  logs-pr:
+    <<: *lh
+    ports: ["127.0.0.1:39702:9428"]
+    volumes:
+      - ${LH_BIN_DIR:-./bin}:/bin-lh:ro
+      - logs-pr-data:/data/lakehouse
+      - ./lh.yml:/etc/lakehouse/config.yml:ro
+    entrypoint: ["/bin-lh/logs-pr"]
+    command:
+      - "-lakehouse.s3.bucket=lhp343"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=30s"
+      - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
+      - "-lakehouse.config=/etc/lakehouse/config.yml"
+
+  traces-main:
+    <<: *lh
+    ports: ["127.0.0.1:39703:10428"]
+    volumes:
+      - ${LH_BIN_DIR:-./bin}:/bin-lh:ro
+      - traces-main-data:/data/lakehouse
+      - ./lh.yml:/etc/lakehouse/config.yml:ro
+    entrypoint: ["/bin-lh/traces-main"]
+    command:
+      - "-lakehouse.s3.bucket=lhm343"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=30s"
+      - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
+      - "-lakehouse.config=/etc/lakehouse/config.yml"
+
+  traces-pr:
+    <<: *lh
+    ports: ["127.0.0.1:39704:10428"]
+    volumes:
+      - ${LH_BIN_DIR:-./bin}:/bin-lh:ro
+      - traces-pr-data:/data/lakehouse
+      - ./lh.yml:/etc/lakehouse/config.yml:ro
+    entrypoint: ["/bin-lh/traces-pr"]
+    command:
+      - "-lakehouse.s3.bucket=lhp343"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=30s"
+      - "-lakehouse.cache.disk-path=/data/lakehouse/cache"
+      - "-lakehouse.config=/etc/lakehouse/config.yml"
+
+volumes:
+  logs-main-data: {}
+  logs-pr-data: {}
+  traces-main-data: {}
+  traces-pr-data: {}
