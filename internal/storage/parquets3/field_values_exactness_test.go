@@ -49,8 +49,8 @@ func TestFieldValues_CatalogUnionWithAHighCardPartitionScans(t *testing.T) {
 	s, bw := newFieldValuesStorage(t, &config.PmetaConfig{Enabled: true, CardinalityThreshold: 2})
 	a := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
 	b := a.Add(2 * time.Hour)
-	bw.AddLogRows(append(levelRows(a, "INFO", "ERROR"), levelRows(b, "DEBUG", "WARN", "INFO")...))
-	bw.triggerFlush()
+	bw.stageLogRows(append(levelRows(a, "INFO", "ERROR"), levelRows(b, "DEBUG", "WARN", "INFO")...))
+	bw.flushStagedNow()
 
 	got := fieldValueSet(t, s, a.Add(-time.Hour).UnixNano(), b.Add(time.Hour).UnixNano(), "level", 0)
 	if want := []string{"DEBUG", "ERROR", "INFO", "WARN"}; !equalStrings(got, want) {
@@ -68,11 +68,11 @@ func TestFieldValues_CatalogMissingAFileScans(t *testing.T) {
 	obs := bw.catalogObserver
 	bw.catalogObserver = nil
 	at := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
-	bw.AddLogRows(levelRows(at, "ERROR"))
-	bw.triggerFlush()
+	bw.stageLogRows(levelRows(at, "ERROR"))
+	bw.flushStagedNow()
 	bw.catalogObserver = obs
-	bw.AddLogRows(levelRows(at.Add(time.Minute), "INFO"))
-	bw.triggerFlush()
+	bw.stageLogRows(levelRows(at.Add(time.Minute), "INFO"))
+	bw.flushStagedNow()
 
 	got := fieldValueSet(t, s, at.Add(-time.Hour).UnixNano(), at.Add(time.Hour).UnixNano(), "level", 0)
 	if want := []string{"ERROR", "INFO"}; !equalStrings(got, want) {
@@ -86,8 +86,8 @@ func TestFieldValues_CatalogServesWhenComplete(t *testing.T) {
 	s, bw := newFieldValuesStorage(t, &config.PmetaConfig{Enabled: true})
 	a := time.Date(2026, 6, 9, 10, 15, 0, 0, time.UTC)
 	b := a.Add(2 * time.Hour)
-	bw.AddLogRows(append(levelRows(a, "INFO", "ERROR"), levelRows(b, "DEBUG", "WARN")...))
-	bw.triggerFlush()
+	bw.stageLogRows(append(levelRows(a, "INFO", "ERROR"), levelRows(b, "DEBUG", "WARN")...))
+	bw.flushStagedNow()
 
 	before := metrics.CatalogValueLookups.Get("catalog")
 	got := fieldValueSet(t, s, a.Add(-time.Hour).UnixNano(), b.Add(time.Hour).UnixNano(), "level", 0)
@@ -105,8 +105,8 @@ func TestFieldValues_CatalogServesWhenComplete(t *testing.T) {
 func TestFieldValues_ScanIsConfinedToTheWindow(t *testing.T) {
 	s, bw := newFieldValuesStorage(t, nil)
 	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
-	bw.AddLogRows(append(levelRows(base.Add(15*time.Minute), "INFO", "INFO"), levelRows(base.Add(45*time.Minute), "ERROR")...))
-	bw.triggerFlush()
+	bw.stageLogRows(append(levelRows(base.Add(15*time.Minute), "INFO", "INFO"), levelRows(base.Add(45*time.Minute), "ERROR")...))
+	bw.flushStagedNow()
 	if n := len(s.manifest.GetFilesForRange(base.UnixNano(), base.Add(time.Hour).UnixNano())); n != 1 {
 		t.Fatalf("fixture: want one file straddling the window, got %d", n)
 	}
@@ -144,10 +144,10 @@ func TestFieldValues_ScanWindowBoundsAreInclusive(t *testing.T) {
 	row := func(ts int64, lvl string) schema.LogRow {
 		return schema.LogRow{TimestampUnixNano: ts, Body: "row", ServiceName: "svc", SeverityText: lvl}
 	}
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		row(startNs-1, "BEFORE"), row(startNs, "AT_START"), row(endNs, "AT_END"), row(endNs+1, "AFTER"),
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 	if n := len(s.manifest.GetFilesForRange(startNs, endNs)); n != 1 {
 		t.Fatalf("fixture: want one file straddling both bounds, got %d", n)
 	}
@@ -182,13 +182,13 @@ func TestFieldValues_ScanWindowBoundsAreInclusive(t *testing.T) {
 func TestStreams_ScanIsConfinedToTheWindow(t *testing.T) {
 	s, bw := newFieldValuesStorage(t, nil)
 	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
-	bw.AddLogRows([]schema.LogRow{
+	bw.stageLogRows([]schema.LogRow{
 		{TimestampUnixNano: base.Add(15 * time.Minute).UnixNano(), Body: "a", ServiceName: "in-window", SeverityText: "INFO",
 			Stream: `{service.name="in-window"}`, StreamID: "id-in-window"},
 		{TimestampUnixNano: base.Add(45 * time.Minute).UnixNano(), Body: "b", ServiceName: "outside", SeverityText: "INFO",
 			Stream: `{service.name="outside"}`, StreamID: "id-outside"},
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 	q := mustParseQueryWithTime(t, "*", base.UnixNano(), base.Add(30*time.Minute).UnixNano())
 	streams, err := s.GetStreams(context.Background(), nil, q, 0)
 	if err != nil {

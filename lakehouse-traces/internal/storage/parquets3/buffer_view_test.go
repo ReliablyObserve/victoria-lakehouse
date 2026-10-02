@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -303,4 +304,36 @@ func TestBufferView_SegmentsInOnePartitionAreReadTogether(t *testing.T) {
 	}
 	e.segs.Reap(time.Now().Add(time.Hour), time.Minute)
 	e.exact("three segments, one partition, buffer empty")
+}
+
+// The flusher writes the pmeta bundles a drain changed, and retries a bundle a
+// failed PUT left dirty on a tick that drained nothing: the catalog's bloom
+// facet cannot be rebuilt from the manifest, so it must reach the bucket.
+func TestBufferFlusher_PersistsThePmetaBundles(t *testing.T) {
+	e := newViewEnv(t)
+	cs := newCatalogStore(config.PmetaConfig{Enabled: true}, "traces/")
+	e.s.catalog = cs
+	e.s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	e.s.writer.catalogObserver = &catalogObserver{store: cs, pool: e.s.pool}
+	bundles := func() int {
+		e.srv.mu.RLock()
+		defer e.srv.mu.RUnlock()
+		n := 0
+		for k := range e.srv.files {
+			if strings.Contains(k, "_pmeta") {
+				n++
+			}
+		}
+		return n
+	}
+
+	e.ingest(time.Now().Add(-2*time.Hour), 10)
+	e.segs.Seal()
+	e.f.tick(context.Background(), time.Now())
+	if len(e.segs.Pending()) != 0 {
+		t.Fatal("the segment was not drained")
+	}
+	if bundles() == 0 {
+		t.Fatal("no pmeta bundle reached the bucket after the drain")
+	}
 }

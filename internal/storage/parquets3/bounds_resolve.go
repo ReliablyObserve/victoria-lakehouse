@@ -16,29 +16,24 @@ import (
 // Resolving the exact time range of an object the manifest only knows from the
 // S3 listing.
 //
-// The buffer watermark is the newest MaxTimeNs among the objects a query
-// selected. An object learned from the listing has no recorded range; the
-// manifest infers the partition hour for it (FileInfo.BoundsInferred), whose
-// end would hide every buffered row of the rest of the hour. The exact range
-// comes from, in order: the manifest itself (something enriched it meanwhile),
-// the pmeta file-meta facet (RAM), and the `_time` column-chunk statistics in
-// the object's Parquet footer, read with ONE ranged GET of the object's tail -
-// never the whole object and never its page index.
+// An object learned from the listing (the flushes of a peer, the objects of a
+// pod that restarted without a post-flush snapshot) has no recorded range; the
+// manifest infers the partition hour for it (FileInfo.BoundsInferred), and
+// every metadata-only answer declines an object whose range is inferred. The
+// exact range comes from, in order: the manifest itself (something enriched it
+// meanwhile), the pmeta file-meta facet (RAM), and the `_time` column-chunk
+// statistics in the object's Parquet footer, read with ONE ranged GET of the
+// object's tail - never the whole object and never its page index.
 //
-// The rule that governs every shortcut here: a count must never be doubled.
-// An object that cannot be resolved therefore keeps its INFERRED MaxTimeNs in
-// the watermark (the buffer is hidden up to the end of its hour until it
-// resolves) instead of dropping out of it, and a failed read is not repeated on
-// every query: it is retried with back-off.
+// The rule that governs every shortcut here: an inferred range is never taken
+// for an exact one. An object that cannot be resolved stays inferred, and a
+// failed read is not repeated on every attempt: it is retried with back-off.
+// The startup pass (enrichRecentInferredBounds) resolves the recent objects so
+// the first query after a restart can answer from metadata.
 
 const (
-	// boundsResolveConcurrency caps the footer reads one watermark computation
-	// runs at once.
+	// boundsResolveConcurrency caps the footer reads one pass runs at once.
 	boundsResolveConcurrency = 8
-	// boundsResolveTimeout is the budget of ONE watermark computation. A
-	// query never waits longer than this on object-store reads that main does
-	// not make at all; whatever is unresolved by then keeps its inferred end.
-	boundsResolveTimeout = 2 * time.Second
 	// A failed resolution of an object is not retried before boundsBackoffMin,
 	// doubling per consecutive failure up to boundsBackoffMax.
 	boundsBackoffMin = 5 * time.Second
@@ -49,7 +44,8 @@ const (
 // check of resolveFileBounds (to land a removal in the check-then-act gap).
 var resolveAfterExistsCheck func()
 
-// nowFn is the clock the buffer-retention floor reads; tests replace it.
+// nowFn is the clock the startup pass reads to find the recent objects; tests
+// replace it.
 var nowFn = time.Now
 
 type boundsRetry struct {
@@ -64,10 +60,6 @@ type boundsResolver struct {
 	mu       sync.Mutex
 	retry    map[string]boundsRetry
 	inflight map[string]chan struct{}
-	// pausedUntil is set when a computation ran out of its time budget: while
-	// it lies ahead no further footer reads are started (rows hide, none are
-	// counted twice) instead of making every query wait the budget again.
-	pausedUntil time.Time
 	// watching is the manifest whose removals prune the back-off entries.
 	watching *manifest.Manifest
 	// removals counts the removal notifications seen: a failure recorded for a
@@ -95,18 +87,6 @@ func (r *boundsResolver) watch(m *manifest.Manifest) {
 		r.removals++
 		r.mu.Unlock()
 	})
-}
-
-func (r *boundsResolver) paused(now time.Time) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return now.Before(r.pausedUntil)
-}
-
-func (r *boundsResolver) pause(now time.Time) {
-	r.mu.Lock()
-	r.pausedUntil = now.Add(boundsBackoffMin)
-	r.mu.Unlock()
 }
 
 // backedOff reports whether key's last resolution failed recently enough that
@@ -182,70 +162,6 @@ func (r *boundsResolver) end(key string) {
 	}
 }
 
-// watermarkFloor is the oldest timestamp the buffer can still hold a row for:
-// the later of the query's start and now - buffer retention. An object whose
-// inferred end is below it cannot change what the buffer serves.
-func (s *Storage) watermarkFloor(startNs int64) int64 {
-	floor := startNs
-	if s.cfg != nil && s.cfg.Insert.BufferRetention > 0 {
-		if r := nowFn().Add(-s.cfg.Insert.BufferRetention).UnixNano(); r > floor {
-			floor = r
-		}
-	}
-	return floor
-}
-
-// withExactBounds returns files with the inferred bounds of every listed
-// object replaced by exact ones where a source has them. Objects it cannot
-// resolve within boundsResolveTimeout (or that are backed off) are returned
-// unchanged, still BoundsInferred. The caller's slice is not modified.
-func (s *Storage) withExactBounds(ctx context.Context, files []manifest.FileInfo) []manifest.FileInfo {
-	var todo []int
-	for i := range files {
-		if files[i].BoundsInferred {
-			todo = append(todo, i)
-		}
-	}
-	if len(todo) == 0 {
-		return files
-	}
-	if s.inferredBounds.paused(time.Now()) {
-		return files
-	}
-	out := append([]manifest.FileInfo(nil), files...)
-
-	ctx, cancel := context.WithTimeout(ctx, boundsResolveTimeout)
-	defer cancel()
-	defer func() {
-		// The budget ran out (not the caller going away): stop starting reads.
-		if ctx.Err() == context.DeadlineExceeded {
-			s.inferredBounds.pause(time.Now())
-		}
-	}()
-
-	workers := boundsResolveConcurrency
-	if workers > len(todo) {
-		workers = len(todo)
-	}
-	idxCh := make(chan int, len(todo))
-	for _, i := range todo {
-		idxCh <- i
-	}
-	close(idxCh)
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range idxCh {
-				out[i] = s.resolveFileBounds(ctx, out[i])
-			}
-		}()
-	}
-	wg.Wait()
-	return out
-}
-
 // resolveFileBounds makes one object's bounds exact if any source can say what
 // they are, and returns the manifest's resulting entry (still BoundsInferred
 // when nothing could).
@@ -314,7 +230,7 @@ func (s *Storage) resolveFileBounds(ctx context.Context, fi manifest.FileInfo) m
 		// out DURING the read is: a slow object is backed off like a failing one.)
 	default:
 		s.inferredBounds.failed(fi.Key, now, seen)
-		logger.Warnf("buffer watermark: cannot read the footer of %s to resolve its time bounds (retrying with back-off): %s", fi.Key, err)
+		logger.Warnf("cannot read the footer of %s to resolve its time bounds (retrying with back-off): %s", fi.Key, err)
 	}
 	return current()
 }
@@ -465,7 +381,7 @@ func (s *Storage) enrichRecentInferredBounds(ctx context.Context) int {
 // timestamp column from its page index. The range is only reported when EVERY
 // row group has a usable index: a row group without one could hold the newest
 // (or oldest) row, and a range that leaves it out understates MaxTimeNs, which
-// would let the buffer watermark sit below rows the object holds. Without a
+// would understate the range of the rows the object holds. Without a
 // complete index the bounds are (0, 0), "unknown", and an inferred range stays
 // inferred.
 func pageIndexTimeBounds(pf *parquet.File, tsColumn string) (rows, minNs, maxNs int64) {

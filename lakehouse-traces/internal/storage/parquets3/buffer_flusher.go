@@ -504,10 +504,12 @@ func (f *BufferFlusher) tick(ctx context.Context, now time.Time) {
 		}
 	}
 	f.segs.Reap(time.Now(), f.grace)
+	f.writer.persistCatalog(ctx)
 	f.observe(time.Now())
 }
 
 func (f *BufferFlusher) failed(now time.Time, g *membuffer.Segment, err error) {
+	metrics.InsertFlushErrorsTotal.Inc()
 	switch {
 	case f.backoff == 0:
 		f.backoff = time.Second
@@ -540,6 +542,7 @@ func (f *BufferFlusher) maybeSeal(now time.Time) {
 
 // drain writes every group of g that is not settled yet and then commits g.
 func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
+	started := time.Now()
 	switch {
 	case f.state.DrainingSeq != g.Seq():
 		// The first upload of g in any process: record it first, durably.
@@ -600,6 +603,8 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 	f.marksFor, f.marks, f.head = "", nil, false
 	f.segs.Commit(g, time.Now())
 	metrics.BufferSegmentsCommitted.Inc()
+	metrics.InsertFlushTotal.Inc()
+	metrics.InsertFlushDuration.Observe(time.Since(started).Seconds())
 	return nil
 }
 

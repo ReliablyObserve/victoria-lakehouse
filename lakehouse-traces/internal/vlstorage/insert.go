@@ -15,13 +15,9 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// VT-internal row kinds reported by vtInternalRowKind. Used as the "kind"
-// label of metrics.VTInternalRowsDropped so an operator can tell which of
-// VT's internal streams is being discarded by the cold-tier insert path.
-const (
-	vtInternalKindTraceIDIdx   = "trace_id_idx"
-	vtInternalKindServiceGraph = "service_graph"
-)
+// vtInternalKindTraceIDIdx is the "kind" label of metrics.VTInternalRowsDropped
+// for VictoriaTraces' trace-ID index rows, which the flush drops.
+const vtInternalKindTraceIDIdx = "trace_id_idx"
 
 // TenantCardinalityGate gates rows by per-tenant cardinality limits.
 // Implemented by *tenant.CardinalityLimiter; declared here as an
@@ -165,107 +161,6 @@ func (a *vtInsertAdapter) CanWriteData() error {
 
 func (a *vtInsertAdapter) IsLocalStorage() bool {
 	return true
-}
-
-// logRowsToTraceRows converts VL's LogRows into trace schema rows.
-// VL handles all protocol parsing — we map fields to TraceRow columns.
-//
-// IMPORTANT: All string values are cloned via strings.Clone because VL uses
-// arena-allocated unsafe strings that become invalid after ResetKeepSettings()
-// is called (immediately after MustAddRows returns). Since our writer buffers
-// rows asynchronously, we must own the string memory.
-func logRowsToTraceRows(lr *logstorage.LogRows) []schema.TraceRow {
-	n := lr.RowsCount()
-	if n == 0 {
-		return nil
-	}
-
-	rows := make([]schema.TraceRow, 0, n)
-
-	lr.ForEachRow(func(_ uint64, r *logstorage.InsertRow) {
-		// Detect VT-internal stream rows. trace_id_idx drops (we
-		// have a smaller cold-tier index in `_trace_idx` footer KV);
-		// service_graph rows pass through to the writer so the
-		// upstream `/select/jaeger/api/dependencies` reader works
-		// unchanged. The metric counter still ticks for both kinds
-		// so the parity check's expected_drift accounts for what
-		// the writer dropped.
-		if kind, drop := vtInternalRowKind(r); drop {
-			metrics.VTInternalRowsDropped.Inc(kind)
-			return
-		}
-
-		row := schema.TraceRow{
-			AccountID:         r.TenantID.AccountID,
-			ProjectID:         r.TenantID.ProjectID,
-			TimestampUnixNano: r.Timestamp,
-		}
-
-		if r.StreamTagsCanonical != "" {
-			st := logstorage.GetStreamTags()
-			if err := unmarshalStreamTags(st, r.StreamTagsCanonical); err == nil {
-				row.Stream = strings.Clone(st.String())
-			}
-			logstorage.PutStreamTags(st)
-
-			// Mirror VL/VT's stream-ID computation so /select/jaeger and
-			// /select/logsql/stream_ids return the same value VT would for
-			// the equivalent insert. Required by the 100% VL/VT API
-			// compatibility rule.
-			row.StreamID = computeStreamID(r.TenantID, r.StreamTagsCanonical)
-		}
-
-		if globalCardinalityGate != nil && r.StreamTagsCanonical != "" {
-			if !globalCardinalityGate.AllowStream(r.TenantID.AccountID, r.TenantID.ProjectID, r.StreamTagsCanonical) {
-				return
-			}
-		}
-
-		for _, f := range r.Fields {
-			mapFieldToTraceRow(&row, f.Name, f.Value)
-		}
-
-		rows = append(rows, row)
-	})
-
-	return rows
-}
-
-// vtInternalRowKind classifies VT-internal index entries (trace_id_idx,
-// service-graph) that the writer treats specially. Returns the metric
-// "kind" label for the detected stream, or "" for normal spans.
-//
-// Drop policy (per kind):
-//
-//   - trace_id_idx: DROP. VT's hot-tier trace-by-ID index is high
-//     cardinality (one row per trace_id per partition bucket) and
-//     we replace it with our `_trace_idx` Parquet footer KV — much
-//     smaller, single-file lookup. Persisting the upstream index
-//     rows would 10–100× our cold-tier row count for no read win.
-//
-//   - service_graph: KEEP. These are LOW-cardinality aggregate rows
-//     emitted by VT's `servicegraph` background task (bounded by
-//     services² × time bucket, not per-trace), and the
-//     `/select/jaeger/api/dependencies` reader expects to find them
-//     in storage via {trace_service_graph_stream="-"} | stats by
-//     (parent,child) sum(callCount). Dropping them silently breaks
-//     Grafana's Service Graph view; persisting them lets the
-//     upstream task + reader work unchanged.
-//
-// Caller still receives a non-empty kind for service_graph rows so
-// metrics.VTInternalRowsDropped's "kind" label can record activity
-// without us actually dropping anything; the writer checks the
-// boolean returned to decide whether to skip the row.
-func vtInternalRowKind(r *logstorage.InsertRow) (kind string, drop bool) {
-	for _, f := range r.Fields {
-		switch f.Name {
-		case otelpb.TraceIDIndexFieldName, otelpb.TraceIDIndexStreamName:
-			return vtInternalKindTraceIDIdx, true
-		case otelpb.ServiceGraphStreamName:
-			return vtInternalKindServiceGraph, false
-		}
-	}
-	return "", false
 }
 
 // unmarshalStreamTags unmarshals canonical stream tags into dst.

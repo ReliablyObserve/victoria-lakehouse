@@ -270,19 +270,6 @@ func run(cfg *config.Config, addr string) {
 		store.BufferBridge().SetSelfEndpoint("http://localhost" + addr)
 	}
 
-	// StartWriter replays the on-disk WAL before serving inserts.
-	// We mark WAL-replay-needed before calling it so the lifecycle
-	// manager gates /ready=200 on completion, then mark done right
-	// after. select-only roles skip both calls (writer is nil) so
-	// they don't pay the gate.
-	if store.Writer() != nil {
-		sm.SetWALReplayNeeded()
-	}
-	store.StartWriter()
-	if store.Writer() != nil {
-		sm.SetWALReplayDone()
-	}
-
 	writerTenantKey := deriveTenantKey(cfg.AutoPrefix())
 
 	var pusher *manifest.Pusher
@@ -680,26 +667,27 @@ func runShutdown(
 		}
 	}
 
-	// Close runs the writer's final flush; the snapshot persisted at the top of
-	// this function cannot contain what that flush wrote, so persist again.
+	// Close stops the flusher and closes the insert buffer; the snapshot
+	// persisted at the top of this function cannot contain what the flusher
+	// wrote while the Stop() calls above ran, so persist again.
 	closeStoreAndPersistManifest(store, manifestSnapshotPath(cfg), persistTimeout)
 
 	logger.Infof("lakehouse-traces stopped")
 }
 
-// closeStoreAndPersistManifest closes the storage (its writer's final flush
-// runs here) and then persists the manifest snapshot AGAIN: the objects that
-// flush wrote are not in the snapshot taken at the top of runShutdown, and a
-// restart would learn them only from the S3 listing, with time bounds it can
-// only guess (the partition hour). With this snapshot the next boot starts with
-// their exact bounds, so rows buffered after it are visible from the first
-// query. The first snapshot stays: it is the one that survives a SIGKILL during
-// the long Stop() calls before Close. Mirror of the other binary's helper.
+// closeStoreAndPersistManifest closes the storage (the flusher stops, the insert
+// buffer closes) and then persists the manifest snapshot AGAIN: the objects the
+// flusher wrote since the snapshot taken at the top of runShutdown are not in
+// it, and a restart would learn them only from the S3 listing, with time bounds
+// it can only guess (the partition hour). With this snapshot the next boot
+// starts with their exact bounds. The first snapshot stays: it is the one that
+// survives a SIGKILL during the long Stop() calls before Close. Mirror of the
+// other binary's helper.
 func closeStoreAndPersistManifest(store *parquets3.Storage, path string, timeout time.Duration) {
 	if err := store.Close(); err != nil {
 		logger.Errorf("storage close error: %s", err)
 	}
-	persistManifestSnapshot(store, path, timeout, "after final flush")
+	persistManifestSnapshot(store, path, timeout, "after close")
 }
 
 // persistManifestSnapshot saves the manifest snapshot to path, bounded by

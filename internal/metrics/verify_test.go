@@ -112,9 +112,6 @@ func TestVerifyMetrics_AllGaugesExist(t *testing.T) {
 		{"ManifestFiles", ManifestFiles},
 		{"ManifestBytes", ManifestBytes},
 		{"ManifestPushPeers", ManifestPushPeers},
-		{"InsertRowsBuffered", InsertRowsBuffered},
-		{"InsertBytesBuffered", InsertBytesBuffered},
-		{"InsertPartitionsActive", InsertPartitionsActive},
 		{"SmartCacheEntriesTotal", SmartCacheEntriesTotal},
 		{"SmartCacheBytesUsed", SmartCacheBytesUsed},
 		{"SmartCacheBytesLimit", SmartCacheBytesLimit},
@@ -262,11 +259,6 @@ func TestVerifyMetrics_GaugeSetGet(t *testing.T) {
 	ManifestFiles.Set(42)
 	if got := ManifestFiles.Get(); got != 42 {
 		t.Fatalf("ManifestFiles.Set(42): expected 42, got %d", got)
-	}
-
-	InsertPartitionsActive.Set(3)
-	if got := InsertPartitionsActive.Get(); got != 3 {
-		t.Fatalf("InsertPartitionsActive.Set(3): expected 3, got %d", got)
 	}
 
 	Ready.Set(1)

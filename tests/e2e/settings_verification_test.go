@@ -109,19 +109,9 @@ func TestSetting_Insert_BloomColumns_TraceID(t *testing.T) {
 	}
 }
 
-func TestSetting_Insert_RowsBuffered_MetricExists(t *testing.T) {
+func TestSetting_Insert_PendingRows_MetricExists(t *testing.T) {
 	metrics := scrapeMetrics(t, logsBaseURL)
-	assertMetricExists(t, metrics, "lakehouse_insert_rows_buffered")
-}
-
-func TestSetting_Insert_BytesBuffered_MetricExists(t *testing.T) {
-	metrics := scrapeMetrics(t, logsBaseURL)
-	assertMetricExists(t, metrics, "lakehouse_insert_bytes_buffered")
-}
-
-func TestSetting_Insert_WAL_MetricReflectsConfig(t *testing.T) {
-	metrics := scrapeMetrics(t, logsBaseURL)
-	assertMetricExists(t, metrics, "lakehouse_insert_wal_bytes")
+	assertMetricExists(t, metrics, "lakehouse_buffer_pending_rows")
 }
 
 func TestSetting_Insert_FlushTotal_IncreasesAfterInsert(t *testing.T) {
@@ -129,7 +119,7 @@ func TestSetting_Insert_FlushTotal_IncreasesAfterInsert(t *testing.T) {
 	beforeFlush := sumMetric(metricsBefore, "lakehouse_insert_flush_total")
 
 	insertTestLogs(t, logsBaseURL, 50, "flush-test-svc")
-	time.Sleep(15 * time.Second) // wait for flush interval
+	time.Sleep(15 * time.Second) // wait for the buffer segment to be sealed and written
 
 	metricsAfter := scrapeMetrics(t, logsBaseURL)
 	afterFlush := sumMetric(metricsAfter, "lakehouse_insert_flush_total")

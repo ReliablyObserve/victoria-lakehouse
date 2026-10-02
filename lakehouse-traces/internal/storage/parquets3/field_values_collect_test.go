@@ -148,12 +148,12 @@ func TestTraceFieldValues_RowGroupPruningKeepsTheWindowEnd(t *testing.T) {
 	s.cfg.Mode = config.ModeTraces
 	s.cfg.Insert.RowGroupSize = 2
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
-	bw.AddTraceRows([]schema.TraceRow{
+	bw.stageTraceRows([]schema.TraceRow{
 		fvcSpan(1*time.Minute, "GET"), fvcSpan(2*time.Minute, "GET"),
 		fvcSpan(3*time.Minute, "PUT"), fvcSpan(4*time.Minute, "PUT"),
 		fvcSpan(5*time.Minute, "POST"), fvcSpan(6*time.Minute, "POST"),
 	})
-	bw.triggerFlush()
+	bw.flushStagedNow()
 
 	skipped0 := metrics.ParquetRowGroupsSkipped.Get("stats")
 	q := mustParseQueryWithTime(t, "*", fvcBase.Add(2*time.Minute).UnixNano(), fvcBase.Add(3*time.Minute).UnixNano())

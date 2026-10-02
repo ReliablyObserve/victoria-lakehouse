@@ -52,12 +52,12 @@ func TestDeleteRewrite_CatalogForgetsTheDeletedValue(t *testing.T) {
 			bw.catalogObserver = &catalogObserver{store: catalog}
 
 			now := time.Now()
-			bw.AddLogRows([]schema.LogRow{
+			bw.stageLogRows([]schema.LogRow{
 				{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
 				{TimestampUnixNano: now.UnixNano(), Body: "b", ServiceName: "order-service"},
 				{TimestampUnixNano: now.UnixNano(), Body: "c", ServiceName: "api-gateway"},
 			})
-			bw.triggerFlush()
+			bw.flushStagedNow()
 
 			startNs := now.Add(-time.Hour).UnixNano()
 			endNs := now.Add(time.Hour).UnixNano()

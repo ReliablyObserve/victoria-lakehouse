@@ -289,42 +289,9 @@ func New(cfg *config.Config) (*Storage, error) {
 	}, nil
 }
 
-// StartWriter begins the background flush loop. Call after New().
-func (s *Storage) StartWriter() {
-	if s.writer == nil {
-		return
-	}
-	if s.smartCache != nil {
-		s.writer.SetFlushCacheCallback(func(fileKey string, data []byte) {
-			cacheOnFlush(s.smartCache, fileKey, data)
-		})
-	}
-	s.writer.Start()
-}
-
 // Writer returns the batch writer (nil if insert not enabled).
 func (s *Storage) Writer() *BatchWriter {
 	return s.writer
-}
-
-// MustAddLogRows adds log rows to the write buffer. Panics on nil writer.
-func (s *Storage) MustAddLogRows(rows []schema.LogRow) {
-	s.writer.AddLogRows(rows)
-}
-
-// MustAddTraceRows adds trace rows to the write buffer. Panics on nil writer.
-func (s *Storage) MustAddTraceRows(rows []schema.TraceRow) {
-	s.writer.AddTraceRows(rows)
-}
-
-// CanWriteData checks S3 connectivity for writes.
-func (s *Storage) CanWriteData() error {
-	if s.writer == nil {
-		return fmt.Errorf("insert not enabled (role=%s)", s.cfg.Role)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return s.writer.CanWriteData(ctx)
 }
 
 func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]byte, error) {
@@ -435,9 +402,6 @@ func (s *Storage) Close() error {
 	// rows to disk, so a clean restart loses nothing.
 	if s.bufferFlusher != nil {
 		s.bufferFlusher.Stop()
-	}
-	if s.writer != nil {
-		s.writer.Stop()
 	}
 	if s.localBuffer != nil {
 		s.localBuffer.Close()

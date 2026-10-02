@@ -44,7 +44,14 @@ type restartEnv struct {
 
 func newRestartEnv(t *testing.T) *restartEnv {
 	t.Helper()
-	e := &restartEnv{t: t, mock: newMockS3Server(), dir: t.TempDir(), written: map[string]uint64{}}
+	return newRestartEnvWith(t, newMockS3Server())
+}
+
+// newRestartEnvWith is newRestartEnv over a given bucket (one that injects
+// faults or counts reads).
+func newRestartEnvWith(t *testing.T, mock *mockS3Server) *restartEnv {
+	t.Helper()
+	e := &restartEnv{t: t, mock: mock, dir: t.TempDir(), written: map[string]uint64{}}
 	t.Cleanup(e.mock.close)
 	e.snapshot = filepath.Join(e.dir, "manifest.snapshot")
 	e.boot(manifest.New("test-bucket", "logs/"))
@@ -173,6 +180,11 @@ func (e *restartEnv) levelHits(from, to time.Time) map[string]uint64 {
 }
 
 func at(base time.Time, d time.Duration) time.Time { return base.Add(d) }
+
+// objects lists every object the manifest holds.
+func (e *restartEnv) objects() []manifest.FileInfo {
+	return e.s.manifest.GetFilesForRange(0, 1<<62)
+}
 
 func rwWindow() (time.Time, time.Time) { return rwHour.Add(-time.Hour), rwHour.Add(2 * time.Hour) }
 

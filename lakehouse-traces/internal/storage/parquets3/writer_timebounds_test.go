@@ -14,7 +14,7 @@ import (
 // Trap 1 regression tests (parquet-compression-research.md, "The three
 // correctness traps under item 1"): manifest FileInfo MinTimeNs/MaxTimeNs must
 // be the TRUE min/max of the flushed rows, not the first/last row's
-// timestamps. The tests call the tenant-group flush directly (below the
+// timestamps. The tests call the group upload directly (below the
 // partition-level time sort) with deliberately shuffled timestamps — exactly
 // what the flush sees once rows are ordered (stream_id, timestamp) for
 // compression. With positional bounds the manifest would understate MaxTimeNs
@@ -46,8 +46,8 @@ func TestFlushLogTenantGroup_ShuffledRows_ManifestHoldsTrueBounds(t *testing.T) 
 	wantMin := base.Add(10 * time.Second).UnixNano()
 	wantMax := base.Add(90 * time.Second).UnixNano()
 
-	if err := bw.flushLogTenantGroup(context.Background(), "dt=2026-05-03/hour=14", 0, 0, rows); err != nil {
-		t.Fatalf("flushLogTenantGroup: %v", err)
+	if err := bw.uploadLogGroup(context.Background(), &logGroupUpload{partition: "dt=2026-05-03/hour=14", rows: rows}); err != nil {
+		t.Fatalf("uploadLogGroup: %v", err)
 	}
 
 	files := m.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
@@ -96,8 +96,8 @@ func TestFlushTraceTenantGroup_ShuffledRows_ManifestHoldsTrueBounds(t *testing.T
 	wantMin := base.Add(10 * time.Second).UnixNano()
 	wantMax := base.Add(90 * time.Second).UnixNano()
 
-	if err := bw.flushTraceTenantGroup(context.Background(), "dt=2026-05-03/hour=14", 0, 0, rows); err != nil {
-		t.Fatalf("flushTraceTenantGroup: %v", err)
+	if err := bw.uploadTraceGroup(context.Background(), &traceGroupUpload{partition: "dt=2026-05-03/hour=14", rows: rows}); err != nil {
+		t.Fatalf("uploadTraceGroup: %v", err)
 	}
 
 	files := m.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())

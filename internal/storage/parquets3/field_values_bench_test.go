@@ -75,8 +75,8 @@ func benchFieldValuesLevel(b *testing.B, pmetaOn bool, window string, base, lo, 
 				})
 			}
 		}
-		bw.AddLogRows(rows)
-		bw.triggerFlush()
+		bw.stageLogRows(rows)
+		bw.flushStagedNow()
 
 		q, err := logstorage.ParseQuery("*")
 		if err != nil {
@@ -671,8 +671,8 @@ func buildFmEnv(tb testing.TB, layout string, pmetaOn bool) *fmEnv {
 				unflushed = append(unflushed, fmSlotRows(h, slot)...)
 				continue
 			}
-			bw.AddLogRows(fmSlotRows(h, slot))
-			bw.triggerFlush()
+			bw.stageLogRows(fmSlotRows(h, slot))
+			bw.flushStagedNow()
 		}
 	}
 	if layout == "peer" {
