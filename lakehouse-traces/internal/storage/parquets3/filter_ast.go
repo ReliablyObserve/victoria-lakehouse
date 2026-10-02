@@ -305,6 +305,15 @@ func FilterExtractFieldValues(f *logstorage.Filter, fieldName string) []string {
 			switch astTypeName(innerF) {
 			case astTypeExact:
 				values = append(values, stringField(innerF, "value"))
+			case astTypePhrase:
+				// `field:"v"` is a PHRASE, not equality: it matches any value
+				// that contains v on token boundaries (matchPhrase in upstream
+				// filter_phrase.go), so `trace_id:"abc-def"` matches the stored
+				// `abc-def-ghi`. It is a usable exact value only where a stored
+				// value can contain the phrase solely by equalling it.
+				if ph := stringField(innerF, "phrase"); phraseIsExactForField(fieldName, ph) {
+					values = append(values, ph)
+				}
 			case astTypeIn:
 				// filterIn has `values inValues` containing `values []string`.
 				vs := innerF.FieldByName("values")

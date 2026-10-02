@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Checks that no longer matched the product were fixed: S3 key names (`<id>-<n>.parquet`), other seeded tenants, Lakehouse's own `_meta/` and `_segments/` objects, the UI strings that moved to `lakehouse-ui.js`, and the removed leader-election metrics (also dropped from `docs/observability.md`).
   `TestGolden_*` now creates its `testdata/` directory on the first run (it failed with "no such file"); no golden file is committed, so those tests still only snapshot until goldens are checked in.
   Real defects the suite found stay as declared known gaps with issue links (#269, #281, #307, #373 to #376): each logs `KNOWN GAP` while it holds and fails once it is fixed.
+- **Cold reads no longer prune a quoted phrase filter as an exact match (both binaries).** PLACEHOLDER (#319)
 
 ## [0.145.0] - 2026-10-05
 

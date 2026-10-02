@@ -1835,9 +1835,9 @@ func (s *Storage) buildBloomChecks(queryStr string) []bloomCheck {
 		if !col.HasBloom {
 			continue
 		}
-		vals := extractFilterValues(queryStr, col.InternalName)
+		vals := extractFilterValuesAST(queryStr, col.InternalName)
 		if len(vals) == 0 {
-			vals = extractFilterValues(queryStr, col.ParquetColumn)
+			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
 		for _, val := range vals {
 			checks = append(checks, bloomCheck{
@@ -1986,10 +1986,11 @@ func fieldTokenIndex(query, prefix string) int {
 }
 
 func extractExactMatch(query, fieldName string) string {
-	// Quoted patterns: trace_id:="abc" or trace_id:"abc"
+	// Quoted pattern: trace_id:="abc". The phrase form trace_id:"abc" is NOT
+	// equality (it matches any value containing abc on token boundaries) and
+	// is deliberately not extracted here (#319).
 	quotedPatterns := []string{
 		fieldName + `:="`,
-		fieldName + `:"`,
 	}
 	for _, prefix := range quotedPatterns {
 		idx := fieldTokenIndex(query, prefix)

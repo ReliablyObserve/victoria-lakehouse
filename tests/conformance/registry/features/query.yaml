@@ -249,13 +249,15 @@
   area: query
   readme_section: Read Path
   surfaces: [api, storage, flag]
-  rows: [lh.bloom.status.schema]
+  rows: [lh.bloom.status.schema, lh.cold.phrase_filter_matches_hot_logs, lh.cold.phrase_filter_matches_hot_traces]
   tests:
     - internal/bloomindex/bloomindex_test.go
     - internal/bloomindex/bloom_tiering_test.go
     - internal/bloomindex/cache_test.go
     - internal/bloomindex/controller_test.go
     - tests/e2e/bloom_verification_test.go#TestBloomVerify_StatusAPI_FullResponse
+    - internal/storage/parquets3/phrase_pruning_test.go
+    - lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go
   docs:
     - docs/bloom-index.md#architecture
     - docs/bloom-index.md#age-based-tiering
