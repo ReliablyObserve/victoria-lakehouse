@@ -73,7 +73,7 @@ func TestChaos_TracesRestartRestoresTheBuffer(t *testing.T) {
 
 func TestChaos_TracesKill9LosesNothingBeyondTheUpstreamWindow(t *testing.T) {
 	marker, nowNs := ingestSpanMarker(t, "chaos-traces-kill9")
-	time.Sleep(8 * time.Second) // past upstream's flush interval: the part is on disk
+	time.Sleep(upstreamDiskWindow)
 	killContainer(t, chaosTracesContainer, tracesBaseURL)
 	waitForSpanOnce(t, marker, nowNs, "after kill -9")
 }

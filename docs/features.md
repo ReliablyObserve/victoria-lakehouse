@@ -70,7 +70,7 @@ Rows are queryable the moment they are accepted: a select pod asks every insert 
 
 `lh.feature.ingest.crash_safe_durability` · status: shipped · since: v0.8.0 · surfaces: ingest, flag
 
-**Crash-safe durability (no WAL)**: the insert buffer is a sequence of upstream logstorage segments on a persistent volume (the same engine hot VL/VT use, parts fsynced within 5 s, restored on open); every sealed segment is drained completely to Parquet — late and backfilled rows included — and a restart drains whatever is left without rewriting what is stored, so the crash-loss window matches hot VL/VT. See [Persistence & Durability](durability.md).
+**Crash-safe durability (no WAL)**: the insert buffer is a sequence of upstream logstorage segments on a persistent volume (the same engine hot VL/VT use, parts on disk within about 11 s as upstream, restored on open); every sealed segment is drained completely to Parquet — late and backfilled rows included — and a restart drains whatever is left without rewriting what is stored, so the crash-loss window matches hot VL/VT. See [Persistence & Durability](durability.md).
 
 Buffered rows are persisted by the same logstorage engine the hot tier uses, so a pod that dies mid-window restores its segments on open. The flusher's state records which segments are committed and which one was being drained, so a restart writes only what is missing, with the same bytes and keys, and never twice. An insert is acknowledged once upstream has the rows, as in hot VL/VT.
 

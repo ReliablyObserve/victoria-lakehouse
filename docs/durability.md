@@ -41,7 +41,7 @@ wrong.
 
 ```mermaid
 flowchart LR
-    I["Ingest (VL/VT APIs)"] --> A["Active segment<br/>(upstream storage,<br/>fsynced parts ≤ 5 s)"]
+    I["Ingest (VL/VT APIs)"] --> A["Active segment<br/>(upstream storage,<br/>fsynced parts ≤ ~11 s)"]
     A -->|"seal: age or size"| S["Sealed segment<br/>(immutable, durable)"]
     S -->|"drain: per tenant,<br/>≤ target_file_size objects"| P["Parquet on S3<br/>key = &lt;nonce&gt;-&lt;slice&gt;.parquet"]
     S -->|"marker _segments/&lt;nonce&gt;,<br/>commit, grace, remove"| X["removed"]
@@ -59,9 +59,11 @@ The insert adapter adds the rows to the active segment with upstream's own
 VictoriaLogs/VictoriaTraces:
 
 - **Durable within upstream's window.** The rows are in upstream's in-memory
-  buffer at the ack and in an fsynced on-disk part within upstream's flush
-  interval, **5 s**. A crash (`kill -9`, power loss) loses at most those last
-  seconds — the same window hot VL/VT lose. Everything older is on the pod's
+  buffer at the ack. Upstream turns them into an in-memory part within 1 s and
+  writes that part to an fsynced on-disk part at the first flush tick (every
+  **5 s**) after the part is 5 s old, so a row is on disk **within about 11 s**
+  at worst (6 s at best). A crash (`kill -9`, power loss) loses at most those
+  last seconds — the same window hot VL/VT lose, with the same settings. Everything older is on the pod's
   disk and is restored when the pod starts.
 - **Refused only as upstream refuses.** When the buffer's volume has less than
   its free-space floor (1 GiB) the storage is read-only and inserts get **429 Too
@@ -105,7 +107,7 @@ Proof: `TestInsertAdapter_EveryAdmittedRowReachesTheBuffer`,
 
 | Event | What happens |
 |---|---|
-| **`kill -9` / power loss** | Rows older than upstream's 5 s window are in fsynced parts and are restored when the pod starts; the restarted flusher drains every segment it finds. Loss window = upstream's, as in hot VL/VT. |
+| **`kill -9` / power loss** | Rows older than upstream's flush window (about 11 s at worst) are in fsynced parts and are restored when the pod starts; the restarted flusher drains every segment it finds. Loss window = upstream's, as in hot VL/VT. |
 | **Normal shutdown (SIGTERM)** | The flusher stops (a drain cut short resumes after the restart) and the buffer closes: upstream writes the in-memory rows of every segment to disk. Nothing is lost. The manifest snapshot is saved before and after the close. |
 | **Object store unreachable or slow** | Nothing is refused. Sealed segments wait on disk; each failed drain is retried with the same bytes after a back-off (1 s doubling to 30 s). Past the volume's free-space floor inserts get 429. |
 | **Pod restarts while a segment drains** | The segment is found again; groups already stored are recognised (§3) and not sent again. |
@@ -287,8 +289,8 @@ Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheF
 ## 3. Crash recovery ("the pod dies")
 
 1. **Where in-flight rows live.** Every acknowledged row is in a segment of
-   `insert.buffer_dir`. Upstream flushes its in-memory rows to an on-disk part
-   every 5 s and restores every part on open, so the at-risk window is the rows
+   `insert.buffer_dir`. Upstream writes in-memory parts older than 5 s to an
+   on-disk part at every 5 s tick and restores every part on open, so the at-risk window is the rows
    newer than the last part flush.
 2. **The flusher's state.** `buffer_flush_state.json` (mirrored to `.prev`)
    holds `committed_through_seq` and `draining_seq`. A missing state means
@@ -519,7 +521,7 @@ engine that owns the flushed data.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `insert.buffer_dir` | `/data/lakehouse/buffer` | The insert buffer: one directory per segment. **Must be a persistent volume** (a StatefulSet PVC); size it for `buffer_flush_interval` + drain + grace of ingest plus the outage you want to ride out ([Sizing](sizing.md)). |
+| `insert.buffer_dir` | `/data/lakehouse/buffer` | The insert buffer: one directory per segment. **Must be a persistent volume** (a StatefulSet PVC); size it for `buffer_flush_interval` + drain + grace of ingest plus the outage you want to ride out ([Sizing](operations/sizing.md)). |
 | `insert.buffer_flush_interval` | `5m` | The longest a segment stays open: sealed this long after it opened (earlier at `target_file_size`), then written whole and removed after a grace. |
 | `insert.target_file_size` | `128MB` | The object size target and the early-seal trigger; compaction target. |
 | `delete.persist_path` | `/data/lakehouse/tombstones` | Directory holding the local tombstone copy. **Must be a durable volume** — it is the copy that survives a `kill -9` when S3 is also unreachable. |
@@ -536,7 +538,7 @@ file that still sets one is refused at startup with a message naming the key.
 
 - [Write Path](write-path.md) — the ingest→Parquet pipeline.
 - [Read Path](read-path.md) — the manifest scan + the buffer read handoff.
-- [Sizing](sizing.md) — the buffer's disk formula and numbers.
+- [Sizing](operations/sizing.md) — the buffer's disk formula and numbers.
 - [Lifecycle & readiness](operations/lifecycle.md) — restart behavior, `/ready` semantics, warmup.
 - [Configuration](configuration.md) — all insert/buffer flags.
 - [Deletion strategy](deletion-strategy.md) — tombstone modes, cost model, rewrite scheduling.

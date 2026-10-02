@@ -1553,7 +1553,7 @@ var removedInsertKeys = map[string]string{
 	"buffer_engine":          "the insert buffer is always the segmented upstream storage",
 	"buffer_flush_enabled":   "the buffer flusher always runs",
 	"buffer_retention":       "a segment is removed once its rows are in Parquet",
-	"ack_mode":               "an insert is acknowledged as in hot VictoriaLogs/VictoriaTraces: once upstream has the rows, fsynced within 5 s",
+	"ack_mode":               "an insert is acknowledged as in hot VictoriaLogs/VictoriaTraces: once upstream has the rows, on disk within about 11 s as upstream",
 	"flush_interval":         "use insert.buffer_flush_interval: the longest a buffer segment stays open",
 	"max_buffer_rows":        "the buffer is bounded by its volume (insert.buffer_dir), and inserts get 429 below upstream's free-space floor",
 	"max_buffer_bytes":       "the buffer is bounded by its volume (insert.buffer_dir), and inserts get 429 below upstream's free-space floor",

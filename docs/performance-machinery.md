@@ -309,7 +309,7 @@ hit rate as high as possible without blowing the memory budget".
 | **Stream-shape filter at ingest** | `streamshape.go::IsTraceShapedStream` | Drops trace rows from logs ingest at write time |
 | **Tenant cardinality gate** | `vlstorage.SetCardinalityGate` | Refuses to admit rows above per-tenant `MaxStreams` |
 | **Severity backfill at compaction** | `LogsSeverityTextBackfilledAtCompaction` metric | Heals historical files via `schema.DeriveSeverityText` |
-| **Membuffer durability (no separate WAL)** | logstorage parts on the PVC | Unflushed rows persist via the buffer's own disk parts (written within 5 s, restored on open) |
+| **Membuffer durability (no separate WAL)** | logstorage parts on the PVC | Unflushed rows persist via the buffer's own disk parts (written within about 11 s as upstream, restored on open) |
 
 ### F. Lifecycle / startup speedups {#f-lifecycle}
 
