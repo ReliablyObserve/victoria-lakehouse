@@ -183,6 +183,9 @@ services:
       - "--logs=10000"
       - "--traces=2000"
       - "--hours-back=24"
+      # Five fixed rows with UUID / hyphenated trace_id and service.name
+      # values, for the quoted-phrase-filter parity cases.
+      - "--phrase-fixture"
       - "--vl-endpoint=http://victorialogs:9428"
       - "--vt-endpoint=http://victoriatraces:10428"
       - "--lh-logs-endpoint=http://lakehouse-logs:9428"
