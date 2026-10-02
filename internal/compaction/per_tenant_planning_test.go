@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,5 +276,60 @@ func TestScan_NeverRewritesTieredObjects(t *testing.T) {
 				}
 			})
 		}
+	})
+}
+
+// TestScan_StalePlanRunsOnLiveFiles: plans are made from one manifest snapshot
+// per scan. When a planned file leaves the manifest before its merge runs (here
+// a concurrent removal while another tenant's merge uploads), the merge must
+// run on the files still registered instead of carrying the stale file into a
+// merge whose publish would be refused. Without the re-check this scan does one
+// merge instead of two and leaves the other tenant's hour unmerged.
+func TestScan_StalePlanRunsOnLiveFiles(t *testing.T) {
+	bothModes(t, func(t *testing.T, mode config.Mode) {
+		w := newPlanWorld(t, mode)
+		p := partitionAt(time.Now().Add(-72 * time.Hour))
+		keys := map[string][]string{
+			"1001/0": w.add("1001/0", p, 0, 3, 2, nil),
+			"1002/0": w.add("1002/0", p, 0, 3, 2, nil),
+		}
+		fp := &faultPool{mockPool: w.pool}
+		var once sync.Once
+		var removed string
+		fp.set(func() {
+			fp.uploadErr = func(key string) error {
+				once.Do(func() {
+					other := "1002/0"
+					if strings.HasPrefix(key, "1002/0/") {
+						other = "1001/0"
+					}
+					removed = keys[other][0]
+					w.m.RemoveFile(p, removed)
+					w.pool.Delete(context.Background(), removed)
+				})
+				return nil
+			}
+		})
+		d := config.Default().Compaction
+		sched := NewScheduler(SchedulerConfig{
+			Manifest: w.m, Pool: fp, Ownership: soleOwnerResolver(),
+			FairShare: NewFairShareScheduler(1), Policy: shippedPolicy(),
+			Prefix: string(mode) + "/", Mode: mode, MaxConcurrent: d.MaxConcurrent,
+			RowGroupSize: 1000, CompressionLevel: 3, CurrentSchemaFingerprint: planFP, CompactionConfig: d,
+		})
+		n, err := sched.Scan(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 2 {
+			t.Fatalf("compactions=%d, want 2 (the tenant whose file vanished still merges its two live files)", n)
+		}
+		if got := len(w.m.FilesForPartition(p)); got != 2 {
+			t.Fatalf("partition holds %d files, want one per tenant", got)
+		}
+		if got, want := w.rows(), int64(5*2); got != want {
+			t.Fatalf("rows %d, want %d (6 files × 2 rows minus the removed file)", got, want)
+		}
+		_ = removed
 	})
 }
