@@ -40,7 +40,7 @@ func reviewRunner(t *testing.T, st storage.Storage, start, end int64) func(ctx c
 
 // tombstone shapes x stats shapes, with and without the hits timestamp-only hint.
 func TestColdReview_TombstoneShapes(t *testing.T) {
-	for _, tq := range []string{
+	shapes := []string{
 		`needle-exact`,
 		`_msg:="needle-exact"`,
 		`{service.name="alpha"}`,
@@ -51,7 +51,17 @@ func TestColdReview_TombstoneShapes(t *testing.T) {
 		`service.name:=beta repro_layer:=cold`,
 		`host.name:=host-gamma`,
 		`seq("MARKER", "from")`,
-	} {
+	}
+	// -short (the unit job) runs every other shape; the heavy job, which runs
+	// every test that consults testing.Short(), runs all of them.
+	if testing.Short() {
+		var half []string
+		for i := 0; i < len(shapes); i += 2 {
+			half = append(half, shapes[i])
+		}
+		shapes = half
+	}
+	for _, tq := range shapes {
 		t.Run(tq, func(t *testing.T) {
 			s, start, end := coldFilteredStatsFixture(t)
 			run := reviewRunner(t, s, start, end)

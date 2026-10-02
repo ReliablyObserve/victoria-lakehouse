@@ -51,6 +51,23 @@ class CheckChangelogPRTests(unittest.TestCase):
         self.assertTrue(should_require_changelog(["test: add coverage"], ["internal/delete/handler.go"]))
         self.assertTrue(should_require_changelog(["docs: mention thing"], ["go.mod"]))
 
+    def test_should_skip_for_traces_module_unit_test_only_changes(self):
+        self.assertFalse(
+            should_require_changelog(
+                ["test(read): smaller sample under -short"],
+                [
+                    "internal/storage/parquets3/restart_watermark_test.go",
+                    "lakehouse-traces/internal/storage/parquets3/restart_watermark_test.go",
+                ],
+            )
+        )
+        self.assertTrue(
+            should_require_changelog(
+                ["test(read): smaller sample under -short"],
+                ["lakehouse-traces/internal/storage/parquets3/storage.go"],
+            )
+        )
+
     def test_should_skip_for_unit_test_only_changes(self):
         self.assertFalse(
             should_require_changelog(
