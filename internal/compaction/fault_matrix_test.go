@@ -186,7 +186,7 @@ func TestStorageHealth_Fault_SourceRemovedMidMerge(t *testing.T) {
 		if n := scan(t, s); n != 2 {
 			t.Fatalf("compactions=%d, want 2 (1001/0 abandoned)", n)
 		}
-		w.pool.Delete(context.Background(), victim())
+		_ = w.pool.Delete(context.Background(), victim())
 		l.check("after abandoned merge", true)
 		for _, k := range l.pool.Keys() {
 			if strings.HasPrefix(k, "1001/0/") && strings.Contains(k, "compacted-") {
@@ -212,7 +212,7 @@ func TestStorageHealth_Fault_SourceRemovedMidMergeAndOutputDeleteFails(t *testin
 		if n := scan(t, s); n != 2 {
 			t.Fatalf("compactions=%d, want 2", n)
 		}
-		w.pool.Delete(context.Background(), victim())
+		_ = w.pool.Delete(context.Background(), victim())
 		l.check("abandoned output still in bucket", true)
 		leftover := 0
 		for _, k := range l.pool.Keys() {

@@ -305,7 +305,7 @@ func TestScan_StalePlanRunsOnLiveFiles(t *testing.T) {
 					}
 					removed = keys[other][0]
 					w.m.RemoveFile(p, removed)
-					w.pool.Delete(context.Background(), removed)
+					_ = w.pool.Delete(context.Background(), removed)
 				})
 				return nil
 			}
