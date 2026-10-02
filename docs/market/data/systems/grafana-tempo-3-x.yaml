@@ -1,0 +1,266 @@
+name: Grafana Tempo 3.x
+group: Object-storage-native and open-format
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: '3'
+    note: OTLP, Jaeger, Zipkin receivers on the distributor.
+    source: https://grafana.com/docs/tempo/latest/configuration/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: '1'
+    note: Tempo HTTP API with TraceQL and TraceQL metrics. No Jaeger query API [K].
+    source: https://grafana.com/docs/tempo/latest/api_docs/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🟡
+    text: 0 named
+    note: Docs name only tempo-cli as the 'ecosystem of tools'; no DuckDB/Spark/Trino recipe; 0 GitHub issues mention
+      DuckDB.
+    source: https://grafana.com/docs/tempo/latest/configuration/parquet/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: 🟡
+    text: derived (metrics-generator)
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ✅
+    text: both
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ✅
+    text: Parquet vParquet5 (documented)
+    note: Schema documented column by column; one row per trace, deeply nested; data.parquet + meta.json + bloom
+      shards + index per block.
+    source: https://grafana.com/docs/tempo/latest/operations/schema/
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: 🟡
+    text: standard Parquet, no tested path
+    note: Readable as Parquet in principle; dedicated attribute columns are assigned per block and the mapping lives
+      in meta.json; block discovery needs meta.json. Not tested here.
+    source: https://grafana.com/docs/tempo/latest/reference-tempo-architecture/block-format/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: scheduler + workers
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: per-tenant overrides [K]
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: unverified
+    checked: '2026-10-02'
+  st_tier:
+    icon: 🟡
+    text: one write-time storage_class
+    note: storage_class sets the class of uploaded objects; no age-based tiering or rehydration.
+    source: https://grafana.com/docs/tempo/latest/configuration/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ✅
+    text: redaction by TraceQL (3.1)
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: 🟡
+    text: own trace-ID blooms; no Parquet SBBF
+    note: 'Docs: ''Parquet has native support for bloom filters. However, Tempo doesn''t use them''.'
+    source: https://grafana.com/docs/tempo/latest/operations/schema/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: TraceQL + metrics
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ✅
+    text: native
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: '[K]'
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: unverified
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: first-party + Traces Drilldown
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ❌
+    text: (Grafana)
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: 🟡
+    text: live-stores [K]
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: unverified
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: via Grafana
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: live-stores + blocks
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ✅
+    text: after Kafka ack
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ✅
+    text: = Kafka durability
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: 🟡
+    text: Kafka RF; blocks RF1
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ✅
+    text: mostly
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ✅
+    text: X-Scope-OrgID
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ❌
+    text: 8+ services + Kafka (microservices)
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🟡
+    text: AGPL-3.0
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: Grafana Cloud
+    source: https://grafana.com/docs/tempo/latest/introduction/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: since 2020, 5.5k stars, v3.1.0
+    source: https://github.com/grafana/tempo
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: 'Cloud: $0.45/GB + $0.10/GB retain'
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'

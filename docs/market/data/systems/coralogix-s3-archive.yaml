@@ -1,0 +1,258 @@
+name: Coralogix (S3 archive)
+group: Object-storage-native and open-format
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 2 (DataPrime, Lucene)
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🟡
+    text: 2 named (pandas/pyarrow, Athena)
+    note: Archive Parquet has three JSON-string columns (src_obj__event_metadata/labels/user_data); queries must
+      parse JSON.
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: '[K]'
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: unverified
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: 🟡
+    text: archive tier in customer S3
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: 🟡
+    text: Parquet of 3 JSON strings
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: 🟡
+    text: yes, untyped
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: 4 retention classes by tag
+    source: https://coralogix.com/docs/user-guides/data-flow/s3-archive/archive-retention-policy/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: 🟡
+    text: customer bucket lifecycle by tag
+    source: https://coralogix.com/docs/user-guides/data-flow/s3-archive/archive-retention-policy/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: 🟡
+    text: hot tier OpenSearch
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: DataPrime, Lucene
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: plugin [K]
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: unverified
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: '[K]'
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: unverified
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: '[K]'
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: unverified
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: tier param
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: direct archive query
+    source: https://coralogix.com/docs/dataprime/API/direct-archive-query-http/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ''
+    text: SaaS
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ✅
+    text: team_id
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ''
+    text: SaaS
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: proprietary
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: SaaS
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: commercial
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ❓
+    text: units
+    source: https://coralogix.com/docs/user-guides/data-query/archive-query/access-cx-data-directly/
+    label: docs
+    checked: '2026-10-02'

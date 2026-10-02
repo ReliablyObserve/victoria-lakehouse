@@ -1,0 +1,257 @@
+name: Apache SkyWalking + BanyanDB
+group: Victoria, Grafana and CNCF open source
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ❓
+    text: (native agents, OTLP, Zipkin [K])
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: unverified
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: '5'
+    note: GraphQL/MQE plus PromQL, LogQL, TraceQL and Zipkin query compatibility endpoints in OAP (v11 release notes).
+    source: https://github.com/apache/skywalking/releases
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: '0'
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: + profiling
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: '[K]'
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: unverified
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❓
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: 🟡
+    text: Zipkin [K]
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: unverified
+    checked: '2026-10-02'
+  st_obj:
+    icon: ❌
+    text: local disk (BanyanDB)
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: own
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: 🟡
+    text: TTL per group
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: 🟡
+    text: hot/warm/cold node groups
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❌
+    text: no direct delete
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: inverted (Bluge)
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: GraphQL, BydbQL
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: 🟡
+    text: LogQL endpoint
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: 🟡
+    text: TraceQL endpoint
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: via compat APIs
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❓
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: 🟡
+    text: node tiers
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ''
+    text: n/a
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ❓
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: 🟡
+    text: group replicas
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: 🟡
+    text: OAP
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ❌
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ❓
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: OAP + liaison + data nodes
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: Apache-2.0
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ❌
+    text: ''
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: 25k stars; BanyanDB pre-1.0
+    source: https://github.com/apache/skywalking
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: free OSS
+    source: https://github.com/apache/skywalking/blob/master/docs/en/setup/backend/backend-storage.md
+    label: docs
+    checked: '2026-10-02'

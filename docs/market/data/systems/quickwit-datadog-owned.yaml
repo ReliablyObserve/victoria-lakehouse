@@ -1,0 +1,258 @@
+name: Quickwit (Datadog-owned)
+group: Object-storage-native and open-format
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: '7'
+    note: OTLP, ES _bulk, native ingest API, Kafka, Kinesis, Pulsar, SQS.
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: '3'
+    note: ES-compatible search API, Jaeger storage API, native search API.
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (tantivy splits)
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ❌
+    text: roadmap
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: 🟡
+    text: Jaeger read side
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: tantivy splits
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: split merges
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: 🟡
+    text: per index
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❌
+    text: none documented
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ✅
+    text: delete tasks [K]
+    source: https://github.com/quickwit-oss/quickwit
+    label: unverified
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: full inverted index
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: ES DSL / Lucene-like
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: Quickwit plugin
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: 🟡
+    text: basic
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❓
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ❓
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: 🟡
+    text: local WAL; replication 'not working yet'
+    source: https://github.com/quickwit-oss/quickwit/blob/main/docs/ingest-data/ingest-api.md
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: 🟡
+    text: un-indexed WAL on node
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❌
+    text: (Kafka source as option)
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ✅
+    text: searchers
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ✅
+    text: Binance 100 PB logs
+    source: https://quickwit.io/blog/quickwit-binance-story
+    label: vendor
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: 🟡
+    text: index per tenant
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: searcher, indexer, metastore (Postgres), control plane, janitor
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: Apache-2.0
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ❌
+    text: ''
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: 🟡
+    text: 11.7k stars; 25-month release gap; Datadog-owned
+    source: https://quickwit.io/blog/quickwit-joins-datadog
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: free OSS
+    source: https://github.com/quickwit-oss/quickwit
+    label: docs
+    checked: '2026-10-02'

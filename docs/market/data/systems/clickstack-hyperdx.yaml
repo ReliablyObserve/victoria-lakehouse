@@ -1,0 +1,256 @@
+name: ClickStack / HyperDX
+group: ClickHouse family and OLAP databases
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🟡
+    text: 1 (OTLP via bundled collector)
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 2 (search, SQL)
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: '0'
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: + session replay
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❌
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: 🟡
+    text: = ClickHouse
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: MergeTree
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: 🟡
+    text: TTL
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❌
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: 🟡
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: Lucene-style + SQL
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: ClickHouse ds
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: HyperDX
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: 🟡
+    text: = ClickHouse + collector queue
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: 🟡
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: 🟡
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: 🟡
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: 🟡
+    text: managed
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: 🟡
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ('multi-PB' vendor)
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ❓
+    text: ''
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: ClickHouse + Keeper + collector + HyperDX + MongoDB
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: MIT (HyperDX)
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: Managed ClickStack
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: 9.9k stars
+    source: https://github.com/hyperdxio/hyperdx
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ❓
+    text: = CH Cloud compute+storage
+    source: https://clickhouse.com/docs/clickstack/architecture
+    label: docs
+    checked: '2026-10-02'

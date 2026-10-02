@@ -1,0 +1,257 @@
+name: Cribl Lake + Search
+group: Object-storage-native and open-format
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ❓
+    text: (via Cribl Stream; HTTP, ES bulk, HEC)
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (KQL-like)
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❓
+    text: JSON/Parquet, layout Cribl-managed
+    note: 'Format per dataset: JSON (default), Parquet or DDSS.'
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: '[K]'
+    source: https://docs.cribl.io/lake/datasets/
+    label: unverified
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ✅
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: 🟡
+    text: JSON default; Parquet option
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: 🟡
+    text: layout not user-controlled
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: per dataset (upload date)
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: Cribl Search (KQL-like)
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: 🟡
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: search in place
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ''
+    text: SaaS
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: 🟡
+    text: workspaces
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ''
+    text: SaaS
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: proprietary
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: Cribl.Cloud
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: commercial
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ❓
+    text: credits
+    source: https://docs.cribl.io/lake/datasets/
+    label: docs
+    checked: '2026-10-02'

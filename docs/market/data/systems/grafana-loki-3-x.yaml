@@ -1,0 +1,258 @@
+name: Grafana Loki 3.x
+group: Victoria, Grafana and CNCF open source
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🟡
+    text: 2 (Loki push, OTLP)
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (Loki API / LogQL)
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (chunks / DOBJ)
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: 🟡
+    text: from logs
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: HTTP
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ✅
+    text: native
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: chunks + TSDB; DOBJ 🧪
+    note: Next-gen 'data objects' are a custom DOBJ container, experimental.
+    source: https://raw.githubusercontent.com/grafana/loki/main/pkg/dataobj/README.md
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: index compactor
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: per tenant + per stream
+    source: https://grafana.com/docs/loki/latest/operations/storage/retention/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: 🟡
+    text: one write-time storage_class
+    note: S3 storage_class default STANDARD; lifecycle rules only 'as an additional safeguard'.
+    source: https://grafana.com/docs/loki/latest/configure/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ✅
+    text: delete API
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: 🟡
+    text: label index; blooms 🧪
+    source: https://grafana.com/docs/loki/latest/operations/bloom-filters/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: LogQL
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ✅
+    text: native
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: + Logs Drilldown
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: 🟡
+    text: ops UI plugin
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: derived fields
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ingesters + store
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ✅
+    text: ingester quorum (RF) + WAL
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ✅
+    text: replicas
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ✅
+    text: RF3 [K]
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: unverified
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: 🟡
+    text: ingesters stateful
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ('petabytes a day' vendor)
+    source: https://grafana.com/docs/loki/latest/get-started/overview/
+    label: vendor
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ✅
+    text: ''
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ❌
+    text: ~8 microservices
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🟡
+    text: AGPL-3.0
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: Grafana Cloud
+    source: https://grafana.com/docs/loki/latest/get-started/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: since 2018, 29k stars
+    source: https://github.com/grafana/loki
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: 'Cloud: $0.45/GB + $0.10/GB retain'
+    source: https://grafana.com/pricing/
+    label: docs
+    checked: '2026-10-02'

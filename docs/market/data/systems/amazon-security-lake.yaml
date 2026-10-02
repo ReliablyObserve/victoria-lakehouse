@@ -1,0 +1,22 @@
+name: Amazon Security Lake
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  st_obj:
+    icon: ✅
+    text: customer S3
+    source: https://docs.aws.amazon.com/security-lake/latest/userguide/what-is-security-lake.html
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ✅
+    text: Parquet + OCSF
+    source: https://docs.aws.amazon.com/security-lake/latest/userguide/what-is-security-lake.html
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: ''
+    source: https://docs.aws.amazon.com/security-lake/latest/userguide/what-is-security-lake.html
+    label: docs
+    checked: '2026-10-02'

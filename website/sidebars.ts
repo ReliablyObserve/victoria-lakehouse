@@ -70,6 +70,7 @@ const sidebars: SidebarsConfig = {
         'performance-machinery',
         'cost-estimates',
         'cost-comparison',
+        'market-comparison',
         'cross-az-optimization',
         'vl-comparison',
         'benchmarks',

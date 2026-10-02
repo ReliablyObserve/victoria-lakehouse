@@ -1,0 +1,256 @@
+name: Jaeger v2
+group: Victoria, Grafana and CNCF open source
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: 3 (OTLP, Zipkin, legacy Jaeger)
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (Jaeger query API v2/v3)
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (backend-defined)
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: 🟡
+    text: SPM view
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ✅
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ❌
+    text: (ES/OpenSearch/Cassandra)
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ''
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ''
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ''
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ''
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: 🟡
+    text: Jaeger API
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ✅
+    text: reference
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: Jaeger ds
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: Jaeger UI
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: 🟡
+    text: via Grafana
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: 🟡
+    text: archive backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ''
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ''
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ''
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ''
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ✅
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: 🟡
+    text: backend
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: 🟡
+    text: '[K]'
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: unverified
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: collector, query + backend cluster
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: Apache-2.0 (CNCF)
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ❌
+    text: ''
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: 23k stars, v2.21.0
+    source: https://github.com/jaegertracing/jaeger
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: free OSS
+    source: https://www.jaegertracing.io/docs/latest/storage/
+    label: docs
+    checked: '2026-10-02'

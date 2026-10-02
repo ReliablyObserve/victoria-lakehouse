@@ -1,0 +1,28 @@
+name: Mezmo
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_files_n:
+    icon: ❓
+    text: ''
+    source: https://www.mezmo.com/pricing
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❓
+    text: ''
+    source: https://www.mezmo.com/pricing
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: ''
+    source: https://www.mezmo.com/pricing
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ❓
+    text: quote
+    source: https://www.mezmo.com/pricing
+    label: docs
+    checked: '2026-10-02'

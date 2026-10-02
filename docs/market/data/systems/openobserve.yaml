@@ -1,0 +1,268 @@
+name: OpenObserve
+group: Object-storage-native and open-format
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: '8'
+    note: OTLP, Loki push, ES _bulk, JSON, Splunk HEC, Prometheus RW, syslog, Kinesis Firehose.
+    source: https://openobserve.ai/docs/ingestion/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: '2'
+    note: SQL search API (DataFusion) and PromQL; own /traces/latest endpoint. No Loki, Tempo, Jaeger or ES query
+      API.
+    source: https://openobserve.ai/docs/reference/api/traces/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🟡
+    text: 0 named (generic claim)
+    note: 'Vendor: ''any tool that reads Parquet''; no engine-specific recipe found; file list lives in Postgres;
+      non-hive yyyy/MM/dd/HH paths.'
+    source: https://openobserve.ai/docs/overview/comparison-with-alternatives/clickhouse-alternative/
+    label: vendor
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: + profiles, RUM
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: gRPC + HTTP
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ✅
+    text: push only
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ✅
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❌
+    text: via OTel Collector only
+    source: https://openobserve.ai/docs/features/distributed-tracing/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: in HA mode
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ✅
+    text: Parquet (Vortex opt-in)
+    note: ZO_FILE_FORMAT default parquet; per-stream vortex option (code-verified config.rs L1915).
+    source: https://github.com/openobserve/openobserve/blob/main/src/config/src/config.rs
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: 🟡
+    text: Parquet, but file list in Postgres
+    note: Untested by anyone in this research; internal _all column; Tantivy/.bf indexes are OO-private sidecars.
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: Compactor nodes, up to 2 GB
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: per stream; extended 🔒
+    source: https://openobserve.ai/docs/user-guide/data-processing/streams/extended-retention/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: 🟡
+    text: one IA flag for 'compliance'
+    note: ZO_S3_FEATURE_FORCE_INFREQUENT_ACCESS (code-verified); no age-based tiering or rehydration.
+    source: https://github.com/openobserve/openobserve/blob/main/src/config/src/config.rs
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: 🟡
+    text: stream delete + retention
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: Tantivy inverted + SBBF
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: SQL, PromQL
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: unsigned plugin
+    source: https://openobserve.ai/docs/administration/maintenance/operator-guide/openobserve-plugin-for-grafana/
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: full (dashboards, alerts, RUM)
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❓
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: in UI [K]
+    source: https://openobserve.ai/docs/architecture/
+    label: unverified
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ingesters on read path
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: direct from S3
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: 🟡
+    text: local WAL; fsync off in binary, on in Helm
+    note: 'Code: ZO_WAL_FSYNC_DISABLED default true (config.rs L2041); write_batch syncs only if !wal_fsync_disabled.
+      Official Helm charts set ZO_WAL_FSYNC_DISABLED="false" (fsync on).'
+    source: https://github.com/openobserve/openobserve/blob/main/src/ingester/src/writer.rs ; https://github.com/openobserve/openobserve-helm-chart/blob/main/charts/openobserve/values.yaml
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: 🟡
+    text: un-uploaded WAL if volume lost
+    note: ~10 s push interval, up to 600 s for slow partitions; replayed if the volume survives (inference from
+      docs+code, not tested).
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❌
+    text: none (docs argue EBS/S3 suffice)
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: 🟡
+    text: queriers yes, ingesters no
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: (single node ~2.6 TB/day vendor)
+    source: https://openobserve.ai/docs/architecture/
+    label: vendor
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: 🟡
+    text: orgs; RBAC 🔒
+    source: https://openobserve.ai/docs/user-guide/account-administration/identity-and-access-management/organizations/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: 5 node types + Postgres + NATS + S3
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🟡
+    text: AGPL-3.0; Enterprise >50 GB/day 🔒
+    source: https://openobserve.ai/docs/enterprise-setup/license-and-pricing/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: Cloud (BYOB 🔒)
+    source: https://openobserve.ai/docs/architecture/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: since 2023, 22.2k stars, ~159 contrib.
+    source: https://github.com/openobserve/openobserve
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: $0.50/GB ingest + $0.01/GB queried
+    source: https://openobserve.ai/pricing/
+    label: vendor
+    checked: '2026-10-02'

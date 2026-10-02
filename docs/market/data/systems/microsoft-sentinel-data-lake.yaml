@@ -1,0 +1,22 @@
+name: Microsoft Sentinel data lake
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_read_n:
+    icon: 🟡
+    text: KQL, Spark (Fabric)
+    source: https://learn.microsoft.com/en-us/azure/sentinel/datalake/sentinel-lake-overview
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ✅
+    text: Parquet (security data)
+    source: https://learn.microsoft.com/en-us/azure/sentinel/datalake/sentinel-lake-overview
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: ''
+    source: https://learn.microsoft.com/en-us/azure/sentinel/datalake/sentinel-lake-overview
+    label: docs
+    checked: '2026-10-02'

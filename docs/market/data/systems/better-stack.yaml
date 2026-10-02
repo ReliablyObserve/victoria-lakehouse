@@ -1,0 +1,34 @@
+name: Better Stack
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_read_n:
+    icon: 🟡
+    text: SQL, PromQL
+    source: https://betterstack.com/pricing
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❓
+    text: own-bucket option ($250/mo)
+    source: https://betterstack.com/pricing
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❓
+    text: ClickHouse [K]
+    source: https://betterstack.com/pricing
+    label: unverified
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: ''
+    source: https://betterstack.com/pricing
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: $0.10-0.35/GB (columns unclear)
+    source: https://betterstack.com/pricing
+    label: docs
+    checked: '2026-10-02'

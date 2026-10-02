@@ -1,0 +1,258 @@
+name: Observe by Snowflake (Iceberg)
+group: Object-storage-native and open-format
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ❓
+    text: (Observe agent, OTel)
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (OPAL)
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🧪
+    text: 3 named (Spark, DuckDB, Trino) + PyIceberg
+    note: '''Apache Spark, DuckDB, Trino and PyIceberg all work today''; external engines read straight from the
+      customer bucket via a read-only Iceberg REST catalog. Private preview.'
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: '[K]'
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  st_obj:
+    icon: 🧪
+    text: customer S3 (preview)
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  st_format:
+    icon: 🧪
+    text: Iceberg v3 tables
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  st_ext:
+    icon: 🧪
+    text: yes, via REST catalog
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  st_catalog:
+    icon: 🧪
+    text: Iceberg REST (Horizon)
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: managed
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  st_ret:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  st_index:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: OPAL
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: full
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: '[K]'
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  du_ack:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ✅
+    text: SaaS
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ❓
+    text: ''
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  sc_components:
+    icon: ''
+    text: SaaS
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: proprietary
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: SaaS only
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: vendor
+    checked: '2026-10-02'
+  op_maturity:
+    icon: 🧪
+    text: Iceberg mode private preview (2026-07-30)
+    source: https://www.snowflake.com/en/blog/observe-apache-iceberg-open-observability/
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: logs $0.49/GiB, traces $0.59/GiB (30 d)
+    source: https://www.observeinc.com/pricing
+    label: vendor
+    checked: '2026-10-02'

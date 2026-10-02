@@ -1,0 +1,256 @@
+name: Sumo Logic
+group: Commercial SaaS
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ❓
+    text: (HTTP source, OTel, collectors)
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 1 (Sumo QL)
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: '0'
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: '[K]'
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: unverified
+    checked: '2026-10-02'
+  in_loki:
+    icon: ❌
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ❌
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❓
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ❓
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: proprietary
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ❓
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ✅
+    text: partitions
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: 🟡
+    text: data tiers (logs)
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❓
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: Sumo QL
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ❌
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ❌
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❌
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: '[K]'
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: unverified
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: '[K]'
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: unverified
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ❌
+    text: archive needs re-ingest
+    source: https://help.sumologic.com/docs/manage/data-archiving/archive/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ❓
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❓
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ''
+    text: SaaS
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ❓
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: ''
+    text: SaaS
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: ''
+    source: https://help.sumologic.com/docs/manage/partitions/data-tiers/
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: 'Flex: $0 ingest, pay per scan'
+    source: https://www.sumologic.com/pricing
+    label: vendor
+    checked: '2026-10-02'

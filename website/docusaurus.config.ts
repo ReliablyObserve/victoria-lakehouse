@@ -98,7 +98,7 @@ const config: Config = {
           sidebarPath: './sidebars.ts',
           editUrl: 'https://github.com/ReliablyObserve/victoria-lakehouse/tree/main/',
           showLastUpdateTime: true,
-          exclude: ['superpowers/**'],
+          exclude: ['superpowers/**', 'market/**'],
         },
         blog: false,
         theme: {

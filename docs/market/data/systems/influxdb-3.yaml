@@ -1,0 +1,70 @@
+name: InfluxDB 3
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: 🟡
+    text: 1 (line protocol)
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: 🟡
+    text: 2 (SQL, InfluxQL)
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: 🟡
+    text: 0 named (Parquet)
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ❌
+    text: ''
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ❌
+    text: ''
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: ''
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: ''
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ✅
+    text: Parquet
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: ✅
+    text: after WAL on object store (1 s)
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: MIT/Apache-2.0
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ✅
+    text: 31.8k stars
+    source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
+    label: docs
+    checked: '2026-10-02'

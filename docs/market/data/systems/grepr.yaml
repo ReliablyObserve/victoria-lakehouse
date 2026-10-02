@@ -1,0 +1,28 @@
+name: Grepr
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_files_n:
+    icon: 🟡
+    text: Parquet + Iceberg data lake (vendor)
+    source: https://www.grepr.ai/blog/store-logs-s3
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ✅
+    text: Parquet + Iceberg (vendor)
+    source: https://www.grepr.ai/blog/store-logs-s3
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: 🟡
+    text: Iceberg (vendor)
+    source: https://www.grepr.ai/blog/store-logs-s3
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: pipeline SaaS
+    source: https://www.grepr.ai/blog/store-logs-s3
+    label: docs
+    checked: '2026-10-02'

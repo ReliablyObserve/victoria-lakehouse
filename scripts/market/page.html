@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lakehouse Market Matrix</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a storage-tier ledger. Summary strip on top, one wide matrix below with a sticky system column; detail drawer for each cell's source. */
+:root {
+  --bg: #f3f5f4;
+  --surface: #ffffff;
+  --ink: #17201d;
+  --muted: #5b6863;
+  --line: #d6ddda;
+  --accent: #0f6b5c;
+  --accent-soft: #e2f0ec;
+  --lh-row: #fff8e6;
+  --good: #1d7a3e;
+  --warn: #9a6400;
+  --bad: #a3322a;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111715; --surface: #18201d; --ink: #e4ebe8; --muted: #9aa8a2; --line: #2c3833;
+    --accent: #5cc2ad; --accent-soft: #1c302b; --lh-row: #2a2614;
+    --good: #6fcf8f; --warn: #e3b25a; --bad: #ef8a80; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111715; --surface: #18201d; --ink: #e4ebe8; --muted: #9aa8a2; --line: #2c3833;
+  --accent: #5cc2ad; --accent-soft: #1c302b; --lh-row: #2a2614;
+  --good: #6fcf8f; --warn: #e3b25a; --bad: #ef8a80; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-body); }
+.wrap { max-width: 1480px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 28px; }
+header { display: grid; gap: 10px; }
+.eyebrow { font: 500 12px/1 var(--font-data); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { font: 600 clamp(28px, 4vw, 42px)/1.1 var(--font-display); margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+h2 { font: 600 20px/1.2 var(--font-display); margin: 0; text-wrap: balance; }
+.lede { max-width: 68ch; color: var(--muted); margin: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; color: var(--muted); }
+.legend span { white-space: nowrap; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.panel h2 { font-size: 16px; }
+.panel ul, .panel ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; }
+.panel.str h2 { color: var(--good); } .panel.weak h2 { color: var(--bad); } .panel.thr h2 { color: var(--warn); }
+.issue { font-family: var(--font-data); font-size: 12px; color: var(--accent); overflow-wrap: anywhere; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tab, .chip { font: 500 13px/1 var(--font-body); border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: 8px 12px; border-radius: 999px; cursor: pointer; }
+.tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.chip[aria-pressed="false"] { opacity: .5; text-decoration: line-through; }
+.tab:focus-visible, .chip:focus-visible, input:focus-visible, td button:focus-visible, .close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#q { font: 14px var(--font-body); padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); min-width: 0; width: 220px; max-width: 100%; }
+.cmp { font-size: 13px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+.cmp select { font: 13px var(--font-body); background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
+td.chg button { box-shadow: inset 3px 0 0 var(--warn); }
+td.old button .tx { text-decoration: underline dotted var(--bad); }
+.groups { display: flex; flex-wrap: wrap; gap: 6px; }
+.tablebox { overflow: auto; max-height: 78vh; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+table { border-collapse: separate; border-spacing: 0; font-size: 13px; }
+th, td { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); padding: 0; vertical-align: top; }
+thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); font: 600 12px/1.25 var(--font-display); text-align: left; padding: 8px 10px; min-width: 128px; max-width: 170px; }
+thead th.sec { top: 0; }
+thead tr.secrow th { font: 500 11px/1 var(--font-data); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); background: var(--accent-soft); padding: 6px 10px; }
+thead tr.dimrow th { top: 25px; }
+th.sys, td.sys { position: sticky; left: 0; z-index: 1; background: var(--surface); min-width: 190px; max-width: 220px; }
+thead th.sys { z-index: 3; }
+td.sys { padding: 8px 10px; font-weight: 600; }
+td.sys small { display: block; font: 400 11px/1.3 var(--font-data); color: var(--muted); }
+tr.group td { background: var(--bg); font: 600 12px/1 var(--font-display); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; position: sticky; left: 0; }
+tr.lh td, tr.lh td.sys { background: var(--lh-row); }
+td button { all: unset; display: grid; grid-template-columns: 20px 1fr; gap: 4px; padding: 7px 9px; width: 100%; box-sizing: border-box; cursor: pointer; min-height: 100%; }
+td button:hover { background: var(--accent-soft); }
+.ic { font-size: 14px; line-height: 1.35; }
+.tx { color: var(--ink); line-height: 1.35; overflow-wrap: anywhere; }
+.lbl { font: 400 10px/1 var(--font-data); color: var(--muted); grid-column: 2; }
+.empty { color: var(--muted); padding: 7px 9px; display: block; }
+dialog { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); max-width: min(560px, calc(100vw - 32px)); padding: 20px; }
+dialog::backdrop { background: rgb(0 0 0 / .35); }
+dialog h3 { font: 600 18px/1.2 var(--font-display); margin: 0 0 4px; }
+dialog .meta { font: 12px var(--font-data); color: var(--muted); margin-bottom: 12px; }
+dialog p { margin: 0 0 10px; }
+dialog a { color: var(--accent); overflow-wrap: anywhere; }
+.close { float: right; font: 500 13px var(--font-body); border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+.fixlist { counter-reset: none; }
+footer { font-size: 13px; color: var(--muted); display: grid; gap: 6px; max-width: 90ch; }
+@media (max-width: 640px) { .wrap { padding-inline: 16px; } th.sys, td.sys { min-width: 140px; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow" id="gen"></div>
+    <h1>Lakehouse Market Matrix</h1>
+    <p class="lede">Victoria Lakehouse next to every log and trace store we could document: what each one ingests, how it stores data, how you read it, what an acknowledged write survives, and how it scales. Every cell links to its source and says whether that source is documentation, a vendor claim, our own measurement, or unverified prior knowledge.</p>
+    <div class="legend" id="legend"></div>
+  </header>
+
+  <section class="summary" aria-label="Summary">
+    <div class="panel str"><h2>Where Lakehouse leads</h2><ul id="s-str"></ul></div>
+    <div class="panel weak"><h2>Where Lakehouse falls short</h2><ul id="s-weak"></ul></div>
+    <div class="panel thr"><h2>Competitive threats</h2><ul id="s-thr"></ul></div>
+    <div class="panel"><h2>Fix list, in order</h2><ol id="s-fix" class="fixlist"></ol></div>
+  </section>
+
+  <section style="display:grid; gap:12px; min-width:0">
+    <div class="controls">
+      <div class="tabs" role="group" aria-label="Section" id="tabs"></div>
+      <input id="q" type="search" placeholder="Filter systems" aria-label="Filter systems">
+      <label class="cmp" for="snap">Show changes since <select id="snap"><option value="">(no comparison)</option></select></label>
+      <label class="cmp" for="stale"><input type="checkbox" id="stale"> Mark cells older than the review window</label>
+    </div>
+    <div class="groups" role="group" aria-label="System groups" id="groups"></div>
+    <div class="tablebox"><table id="m"></table></div>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+
+<dialog id="dlg" aria-labelledby="dlg-h">
+  <button class="close" id="dlg-x" type="button">Close</button>
+  <h3 id="dlg-h"></h3>
+  <div class="meta" id="dlg-m"></div>
+  <p id="dlg-t"></p>
+  <p id="dlg-n"></p>
+  <p id="dlg-s"></p>
+</dialog>
+
+<script>
+const DATA = /*__DATA__*/null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let LABELS = {};
+const state = { section: "Interfaces", hidden: new Set(), q: "", snap: "", stale: false };
+try { const s = localStorage.getItem("lhmm-section"); if (s) state.section = s; } catch (e) {}
+
+function renderHeader() {
+  $("gen").textContent = "Compiled " + DATA.generated;
+  $("legend").innerHTML = Object.entries(DATA.icons || {}).map(([k, v]) => `<span>${esc(k)} ${esc(v)}</span>`).join("");
+  const s = DATA.summary || {};
+  $("s-str").innerHTML = (s.strengths || []).map((x) => `<li>${esc(x)}</li>`).join("");
+  $("s-weak").innerHTML = (s.weaknesses || []).map((x) => `<li>${esc(x)}</li>`).join("");
+  $("s-thr").innerHTML = (s.threats || []).map((x) => `<li>${esc(x)}</li>`).join("");
+  $("s-fix").innerHTML = (s.fix_list || []).map((x) => `<li>${esc(x.item)} ${x.issue ? `<span class="issue">${esc(x.issue)}</span>` : ""}</li>`).join("");
+  const sections = ["All", ...new Set(DATA.dimensions.map((d) => d.section))];
+  if (!sections.includes(state.section)) state.section = "All";
+  $("tabs").innerHTML = sections.map((s) => `<button class="tab" type="button" aria-pressed="${s === state.section}" data-s="${esc(s)}">${esc(s)}</button>`).join("");
+  $("groups").innerHTML = DATA.groups.map((g) => `<button class="chip" type="button" aria-pressed="true" data-g="${esc(g.name)}">${esc(g.name)} <span class="lbl">${g.systems.length}</span></button>`).join("");
+  $("foot").innerHTML = [`<div><strong>Source labels.</strong> ${Object.entries(DATA.labels).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join("; ")}.</div>`, ...DATA.dimensions.filter((d) => d.counting_rule).map((d) => `<div><strong>${esc(d.label)}.</strong> ${esc(d.counting_rule)}</div>`), `<div>Generated from docs/market/data in the victoria-lakehouse repository by scripts/market/build.py. Snapshots: ${(DATA.snapshots || []).map((s) => esc(s.date)).join(", ") || "none older than this data"}.</div>`].join("");
+  $("snap").innerHTML = `<option value="">(no comparison)</option>` + (DATA.snapshots || []).map((s) => `<option value="${esc(s.date)}">${esc(s.date)}</option>`).join("");
+}
+
+function renderTable() {
+  const dims = DATA.dimensions.filter((d) => state.section === "All" || d.section === state.section);
+  const secs = [];
+  dims.forEach((d) => { const last = secs[secs.length - 1]; if (last && last.name === d.section) last.n++; else secs.push({ name: d.section, n: 1 }); });
+  let h = `<thead><tr class="secrow"><th class="sys" rowspan="2">System</th>${secs.map((s) => `<th colspan="${s.n}">${esc(s.name)}</th>`).join("")}</tr>`;
+  h += `<tr class="dimrow">${dims.map((d) => `<th scope="col">${esc(d.label)}</th>`).join("")}</tr></thead><tbody>`;
+  const q = state.q.trim().toLowerCase();
+  DATA.groups.forEach((g) => {
+    if (state.hidden.has(g.name)) return;
+    const systems = g.systems.filter((s) => !q || s.toLowerCase().includes(q));
+    if (!systems.length) return;
+    h += `<tr class="group"><td colspan="${dims.length + 1}">${esc(g.name)}</td></tr>`;
+    systems.forEach((sys) => {
+      const row = (DATA.cells || {})[sys] || {};
+      const isLH = /lakehouse/i.test(sys);
+      const meta = (DATA.systemMeta || {})[sys];
+      h += `<tr class="${isLH ? "lh" : ""}"><td class="sys">${esc(sys)}${meta ? `<small>${esc(meta)}</small>` : ""}</td>`;
+      dims.forEach((d) => {
+        const c = row[d.id];
+        if (!c) { h += `<td><span class="empty">—</span></td>`; return; }
+        const prev = state.snap ? (((DATA.snapshots || []).find((s) => s.date === state.snap) || {}).cells || {})[sys] : null;
+        const was = prev ? prev[d.id] : undefined;
+        const changed = state.snap && (!was || (was.icon || "") !== (c.icon || "") || (was.text || "") !== (c.text || ""));
+        const old = state.stale && (Date.now() - Date.parse(c.checked)) / 864e5 > (DATA.stale_after_days || 120);
+        h += `<td class="${changed ? "chg" : ""} ${old ? "old" : ""}"><button type="button" data-sys="${esc(sys)}" data-dim="${esc(d.id)}" title="${esc(c.note || c.text)}"><span class="ic">${esc(c.icon)}</span><span class="tx">${esc(c.text)}</span><span class="lbl">${esc(LABELS[c.label] || c.label || "")}</span></button></td>`;
+      });
+      h += `</tr>`;
+    });
+  });
+  $("m").innerHTML = h + `</tbody>`;
+}
+
+function openCell(sys, dimId) {
+  const c = DATA.cells[sys][dimId];
+  const d = DATA.dimensions.find((x) => x.id === dimId);
+  $("dlg-h").textContent = `${sys} · ${d.label}`;
+  $("dlg-m").textContent = `${d.section} · ${LABELS[c.label] || c.label || "unlabelled"}`;
+  $("dlg-t").textContent = `${c.icon} ${c.text}`;
+  const prev = state.snap ? (((DATA.snapshots || []).find((s) => s.date === state.snap) || {}).cells || {})[sys] : null;
+  const was = prev && prev[dimId];
+  $("dlg-n").textContent = (c.note || "") + ` Checked ${c.checked}.` + (state.snap ? (was ? ((was.icon || "") !== (c.icon || "") || (was.text || "") !== (c.text || "") ? ` On ${state.snap}: ${was.icon} ${was.text}.` : ` Unchanged since ${state.snap}.`) : ` Not in the ${state.snap} snapshot.`) : "");
+  const src = c.source || "";
+  $("dlg-s").innerHTML = src ? (/^https?:\/\//.test(src) ? `Source: <a href="${esc(src)}" target="_blank" rel="noopener">${esc(src)}</a>` : `Source: ${esc(src)}`) : "No source recorded.";
+  const dlg = $("dlg");
+  if (typeof dlg.showModal === "function") dlg.showModal(); else dlg.setAttribute("open", "");
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.s) { state.section = t.dataset.s; try { localStorage.setItem("lhmm-section", state.section); } catch (err) {} document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.s === state.section))); renderTable(); }
+  else if (t.dataset.g) { const on = t.getAttribute("aria-pressed") === "true"; t.setAttribute("aria-pressed", String(!on)); on ? state.hidden.add(t.dataset.g) : state.hidden.delete(t.dataset.g); renderTable(); }
+  else if (t.dataset.sys) openCell(t.dataset.sys, t.dataset.dim);
+  else if (t.id === "dlg-x") $("dlg").close();
+});
+$("q").addEventListener("input", (e) => { state.q = e.target.value; renderTable(); });
+$("snap").addEventListener("change", (e) => { state.snap = e.target.value; renderTable(); });
+$("stale").addEventListener("change", (e) => { state.stale = e.target.checked; renderTable(); });
+
+if (DATA) { LABELS = Object.fromEntries(Object.keys(DATA.labels || {}).map((k) => [k, k])); renderHeader(); renderTable(); }
+</script>
+
+</body>
+</html>

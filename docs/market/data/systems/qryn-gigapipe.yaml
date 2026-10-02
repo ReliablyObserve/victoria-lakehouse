@@ -1,0 +1,256 @@
+name: qryn / gigapipe
+group: ClickHouse family and OLAP databases
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: 8+ (OTLP, Loki, Prom RW, Tempo/Zipkin, Pyroscope, Influx, Datadog, Elastic)
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: 4 (Loki, Prometheus, Tempo/TraceQL, Pyroscope)
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ❌
+    text: 0 (CH mode); GigAPI Parquet 🧪
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ✅
+    text: + profiles
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  in_loki:
+    icon: ✅
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ✅
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  in_jz:
+    icon: ✅
+    text: Zipkin
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  st_obj:
+    icon: 🟡
+    text: via ClickHouse/GigAPI
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: MergeTree (GigAPI Parquet 🧪)
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  st_ext:
+    icon: ❌
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  st_compact:
+    icon: ✅
+    text: (CH)
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  st_ret:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  st_tier:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  st_delete:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  st_index:
+    icon: 🟡
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: LogQL, PromQL, TraceQL
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_loki:
+    icon: ✅
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: ✅
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: ✅
+    text: native ds
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_ui:
+    icon: 🟡
+    text: Explorer
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_tail:
+    icon: ✅
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_corr:
+    icon: ✅
+    text: via Grafana
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  du_ack:
+    icon: 🟡
+    text: = ClickHouse
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  sc_indep:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  sc_components:
+    icon: 🟡
+    text: gigapipe + ClickHouse
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  op_license:
+    icon: 🟡
+    text: AGPL-3.0
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  op_managed:
+    icon: ✅
+    text: gigapipe cloud
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  op_maturity:
+    icon: 🟡
+    text: 1.7k stars, v5.5.3
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ❓
+    text: ''
+    source: https://github.com/metrico/gigapipe
+    label: docs
+    checked: '2026-10-02'

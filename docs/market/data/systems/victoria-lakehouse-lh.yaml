@@ -1,0 +1,311 @@
+name: Victoria Lakehouse (LH)
+group: Victoria Lakehouse
+reviewed: '2026-10-02'
+cells:
+  if_write_n:
+    icon: ✅
+    text: 9, the same set as VL + VT (2 proven in CI)
+    note: 'Lakehouse mounts the upstream handlers unchanged: cmd/lakehouse-logs/main.go calls vlinsert.Init and
+      routes /insert/* to vlinsert.RequestHandler; lakehouse-traces/main.go does the same with vtinsert. Protocol
+      families: jsonline, VL native, Loki push (JSON and protobuf), Elasticsearch _bulk, Splunk HEC, Datadog logs
+      v2, journald, OTLP over HTTP (logs and traces; traces also over gRPC with -otlpGRPCListenAddr) and syslog
+      over TCP/UDP (-syslog.listenAddr.*, off by default as in upstream). Proof today: jsonline and OTLP traces
+      run in CI e2e; Loki JSON, ES, Datadog, journald and Splunk passed a manual ingest and readback check in May
+      2026; syslog and OTLP gRPC have no test yet. A CI matrix for every protocol on both binaries is planned. Zipkin
+      and Jaeger-protocol ingest are not offered by VictoriaTraces either.'
+    source: cmd/lakehouse-logs/main.go (vlinsert.Init); lakehouse-traces/main.go (vtinsert.Init); tests/verification/matrix.md
+    label: repo
+    checked: '2026-10-02'
+  if_read_n:
+    icon: ✅
+    text: 3 native (+1 via proxy)
+    note: LogsQL HTTP API (VL), Jaeger query API (VT handlers), Tempo HTTP API with the VT TraceQL subset. Loki
+      API only through loki-vl-proxy, a separate component in a separate repo. Plus VMUI/VTUI and the ClickHouse
+      datasource over the same files.
+    source: github.com/ReliablyObserve/victoria-lakehouse README.md; docs/parity-and-gaps.md
+    label: repo
+    checked: '2026-10-02'
+  if_files_n:
+    icon: ✅
+    text: 3 verified / 7 claimed
+    note: 'pyarrow + DuckDB: CI readback gate on every generated file. ClickHouse: read on every benchmark run,
+      answers must equal LogsQL. Spark, Trino: documented examples, not tested in CI. Athena, Polars: ''expected
+      to work; not tested''.'
+    source: github.com/ReliablyObserve/victoria-lakehouse README.md 'Readers' table; docs/open-parquet-format.md
+    label: repo
+    checked: '2026-10-02'
+  sig_logs:
+    icon: ✅
+    text: VL API (lakehouse-logs)
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  sig_traces:
+    icon: ✅
+    text: VT API (lakehouse-traces)
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  sig_metrics:
+    icon: ❌
+    text: none; LogsQL stats on demand
+    note: No TSDB; Tempo service-graph metrics not generated (span_metrics is planned).
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  in_otlp:
+    icon: ✅
+    text: OTLP/HTTP logs+traces; traces gRPC opt-in
+    source: lakehouse-traces/main.go (vtinsert.Init); deps VictoriaTraces app/vtinsert/main.go (otlpGRPCListenAddr)
+    label: repo
+    checked: '2026-10-02'
+    note: OTLP over HTTP for logs and traces through the upstream handlers; OTLP traces over gRPC through upstream
+      vtinsert with -otlpGRPCListenAddr (off by default, as upstream). Only OTLP/HTTP traces are tested in CI so
+      far.
+  in_loki:
+    icon: ✅
+    text: JSON + protobuf
+    note: Manual probe PASS (May 2026), not CI.
+    source: github.com/ReliablyObserve/victoria-lakehouse tests/verification/matrix.md
+    label: repo
+    checked: '2026-10-02'
+  in_esbulk:
+    icon: ✅
+    text: _bulk + stub endpoints
+    note: Manual probe PASS (May 2026), not CI.
+    source: github.com/ReliablyObserve/victoria-lakehouse tests/verification/matrix.md
+    label: repo
+    checked: '2026-10-02'
+  in_jz:
+    icon: ❌
+    text: not exposed (VT has none)
+    source: github.com/ReliablyObserve/victoria-lakehouse tests/verification/matrix.md row TI2
+    label: repo
+    checked: '2026-10-02'
+  st_obj:
+    icon: ✅
+    text: S3 is the only durable copy
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  st_format:
+    icon: ✅
+    text: plain Parquet, ZSTD, hive dt=/hour=
+    note: 'LH-specific schema: OTLP column names, MAP spill, ded_s01..08 slots, tenant columns; blooms and trace
+      index in footer KV (footers up to 2.1 MB, #303).'
+    source: github.com/ReliablyObserve/victoria-lakehouse docs/open-parquet-format.md
+    label: repo
+    checked: '2026-10-02'
+  st_ext:
+    icon: ✅
+    text: in place, no export
+    note: CI-gated for pyarrow/DuckDB; ClickHouse benchmarked; others documented or untested (see Interfaces).
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  st_catalog:
+    icon: ❌
+    text: none (no Iceberg/Delta)
+    note: Readers use globs + hive partitions; pmeta and footer blooms help only LH.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  st_compact:
+    icon: 🐞
+    text: 'hour-only; #281 #287 #290 #311'
+    note: Median file ~71 KB at low volume, stats report 'healthy' (#281); duplicate compaction on shared buckets
+      (#290) and by select replicas (#311, measured 2-4x rows). Compaction v2 is designed (📐), decisions D1-D11
+      pending.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  st_ret:
+    icon: 🟡
+    text: per-tenant lifecycle overrides [U]
+    note: TTL per file over the whole manifest, O(F); retention leaks pmeta bundles (#307).
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  st_tier:
+    icon: 🟡
+    text: bucket lifecycle, mirrored per tenant [U]
+    note: 'Transition is an operator-configured S3 lifecycle rule; LH mirrors it for stats/cost/deletes. IA and
+      Glacier IR stay queryable; Deep Archive needs a manual restore. #287: compaction may rewrite IA/Glacier objects.'
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  st_delete:
+    icon: 🟡
+    text: tombstone/hide/rewrite [U]
+    note: 'Upstream /delete/* POST-only, tenant-scoped; #285 (tombstones vs projection, suspected).'
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  st_index:
+    icon: 🐞
+    text: 'SBBF + footer token blooms; #319 #289'
+    note: 'No inverted index; word search = scan + bloom pruning. #319 phrase filter misses rows; #289 NOT/OR around
+      bloom filter returns nothing; #298, #299. N-gram bloom 📐.'
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_lang:
+    icon: ✅
+    text: LogsQL, TraceQL (VT subset)
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_loki:
+    icon: 🟡
+    text: via loki-vl-proxy (separate)
+    note: Drilldown suite runs against VL, not yet against LH.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_tempo:
+    icon: 🟡
+    text: 'VT subset; #316'
+    note: Search, tags, trace by ID, TraceQL metrics set; 5 documented response-shape differences; no streaming
+      gRPC search; not full Tempo TraceQL.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_jaeger:
+    icon: ✅
+    text: VT handlers on cold
+    note: e2e tests/e2e/traces_jaeger_test.go + parity.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_grafana:
+    icon: 🟡
+    text: stock datasources; Drilldown [U]
+    note: No plugin needed (VL, Jaeger, Tempo, ClickHouse datasources). Traces Drilldown unverified; Tempo service
+      graph empty.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_ui:
+    icon: ✅
+    text: VMUI, VTUI, LH Explorer
+    note: '#265: VTUI duration heatmap empty on cold.'
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_tail:
+    icon: 🟡
+    text: hot/buffer only; cold = 501
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_corr:
+    icon: 🟡
+    text: via Grafana derived fields
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_hotcold:
+    icon: 🐞
+    text: 'buffer bridge; #268 #272 #279'
+    note: Within LH the unflushed buffer is merged with cold; with hot VL/VT via vlselect overlay or proxy time
+      split.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  rd_cold:
+    icon: ✅
+    text: 'in place; slow paths #294 #308 #318'
+    note: Trace by ID ~11-12 s on cold (#294); first query after restart 45-51 s (#308); limit=N reads every row
+      group (#318).
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  du_ack:
+    icon: 🟡
+    text: buffered in pod (default RAM)
+    note: insert.ack_mode is accepted but read by no binary; no ack-after-S3 mode. Opt-in logstore engine writes
+      on-disk parts every ~5 s.
+    source: github.com/ReliablyObserve/victoria-lakehouse docs/write-path.md; docs/configuration.md
+    label: repo
+    checked: '2026-10-02'
+  du_rpo:
+    icon: ❌
+    text: unflushed window (10 s-1 m); ~5 s opt-in
+    note: 'Default legacy buffer loses its in-flight window on crash (docs/durability.md:62-68). logstore + buffer_flush_enabled:
+      ~5 s, single-node crash matrix tested, not default.'
+    source: github.com/ReliablyObserve/victoria-lakehouse docs/durability.md
+    label: repo
+    checked: '2026-10-02'
+  du_repl:
+    icon: ❌
+    text: none before ack; S3 after flush
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  sc_stateless:
+    icon: 🟡
+    text: roles stateless-ish (manifest, pmeta, cache)
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  sc_sep:
+    icon: ✅
+    text: S3 + compute pods
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  sc_indep:
+    icon: 🟡
+    text: insert/select roles; multi-replica [U]
+    note: 'Multi-replica never e2e-tested (retrospective); #311 select pods compact and write shared state; #290.'
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  sc_largest:
+    icon: ❌
+    text: none; no production users
+    note: Self-declared not ready above ~50 TB/day; full LIST per refresh; manifest RAM per replica.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  sc_tenancy:
+    icon: 🟡
+    text: 'numeric + alias; #307 #254'
+    note: Four S1 isolation bugs found and fixed in Sep 2026; 48+ tenant_scope registry rows not executed.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  sc_components:
+    icon: ✅
+    text: 2 binaries x 2 roles + S3
+    note: No Kafka, Keeper, Postgres or NATS. Loki API needs loki-vl-proxy as an extra component.
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  op_license:
+    icon: ✅
+    text: Apache-2.0
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  op_managed:
+    icon: ❌
+    text: none
+    source: github.com/ReliablyObserve/victoria-lakehouse
+    label: repo
+    checked: '2026-10-02'
+  op_maturity:
+    icon: ❌
+    text: 5 months, 4 stars, 1 maintainer
+    note: Created 2026-05-02; v0.143.11 on 2026-10-01; ~55 open issues; 394 registry rows all pending (runner is
+      future work).
+    source: https://github.com/ReliablyObserve/victoria-lakehouse
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ✅
+    text: free; infra only
+    note: 'Cost model: $1,453/mo at 1 TB/day, 1 y (LH CPU assumed, not measured).'
+    source: github.com/ReliablyObserve/victoria-lakehouse docs/cost-estimates.md
+    label: repo
+    checked: '2026-10-02'

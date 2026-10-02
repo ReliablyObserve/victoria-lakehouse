@@ -1,0 +1,28 @@
+name: Logz.io
+group: Briefly (fewer cells)
+reviewed: '2026-10-02'
+cells:
+  if_files_n:
+    icon: ❌
+    text: '0'
+    source: https://logz.io/pricing/
+    label: docs
+    checked: '2026-10-02'
+  st_format:
+    icon: ❌
+    text: OpenSearch-based [K]
+    source: https://logz.io/pricing/
+    label: unverified
+    checked: '2026-10-02'
+  op_license:
+    icon: 🔒
+    text: ''
+    source: https://logz.io/pricing/
+    label: docs
+    checked: '2026-10-02'
+  op_price:
+    icon: ''
+    text: $0.92/GB/day (7 d)
+    source: https://logz.io/pricing/
+    label: docs
+    checked: '2026-10-02'
