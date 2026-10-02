@@ -1,0 +1,40 @@
+services:
+  s3:
+    image: rustfs/rustfs:1.0.0
+    environment: {RUSTFS_ACCESS_KEY: minioadmin, RUSTFS_SECRET_KEY: minioadmin}
+    healthcheck: {test: ["CMD","curl","-sf","http://127.0.0.1:9000/health"], interval: 3s, retries: 20}
+  s3-init:
+    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on: {s3: {condition: service_healthy}}
+    entrypoint: ["/bin/sh","-c","for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do mc alias set l http://s3:9000 minioadmin minioadmin && mc mb l/obs-archive --ignore-existing && exit 0; sleep 2; done; exit 1"]
+  hot-vl:
+    image: victoriametrics/victoria-logs:v1.52.0
+    command: ["-storageDataPath=/data","-retentionPeriod=1d"]
+    ports: ["127.0.0.1:${PORT_BASE}4:9428"]
+  hot-vt:
+    image: victoriametrics/victoria-traces:v0.12.0
+    command: ["-storageDataPath=/data","-retentionPeriod=1d"]
+    ports: ["127.0.0.1:${PORT_BASE}5:10428"]
+  lakehouse-logs:
+    image: ${LOGS_IMAGE}
+    volumes: ["/tmp/fix272-vis/engine.yml:/etc/lakehouse/engine.yml:ro"]
+    depends_on: {s3-init: {condition: service_completed_successfully}}
+    ports: ["127.0.0.1:${PORT_BASE}1:9428"]
+    command: ["-lakehouse.s3.bucket=obs-archive","-lakehouse.s3.endpoint=http://s3:9000","-lakehouse.s3.access-key=minioadmin","-lakehouse.s3.secret-key=minioadmin","-lakehouse.s3.force-path-style=true","-lakehouse.manifest.refresh-interval=30s","-lakehouse.insert.flush-interval=3600s","-lakehouse.pmeta.enabled=true","-lakehouse.config=/etc/lakehouse/engine.yml","-loggerLevel=INFO"]
+  lakehouse-traces:
+    image: ${TRACES_IMAGE}
+    volumes: ["/tmp/fix272-vis/engine.yml:/etc/lakehouse/engine.yml:ro"]
+    depends_on: {s3-init: {condition: service_completed_successfully}}
+    ports: ["127.0.0.1:${PORT_BASE}2:10428"]
+    command: ["-lakehouse.s3.bucket=obs-archive","-lakehouse.s3.endpoint=http://s3:9000","-lakehouse.s3.access-key=minioadmin","-lakehouse.s3.secret-key=minioadmin","-lakehouse.s3.force-path-style=true","-lakehouse.manifest.refresh-interval=30s","-lakehouse.insert.flush-interval=3600s","-lakehouse.pmeta.enabled=true","-lakehouse.config=/etc/lakehouse/engine.yml","-loggerLevel=INFO"]
+  grafana:
+    image: lh-review-grafana:latest
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: victoriametrics-logs-datasource
+      GF_FEATURE_TOGGLES_ENABLE: traceqlSearch
+    volumes: ["/tmp/fix272-vis/provisioning:/etc/grafana/provisioning:ro"]
+    depends_on: [lakehouse-logs, lakehouse-traces, hot-vl, hot-vt]
+    ports: ["127.0.0.1:${PORT_BASE}3:3000"]

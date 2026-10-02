@@ -42,10 +42,16 @@ func UnmarshalFileMetaSidecar(data []byte) (*FileMetaSidecar, error) {
 }
 
 func FileInfoToMeta(fi FileInfo) FileMeta {
+	// Inferred bounds are the listing's guess, never a fact to persist or hand to
+	// another reader as if the object's footer had said so.
+	minNs, maxNs := fi.MinTimeNs, fi.MaxTimeNs
+	if fi.BoundsInferred {
+		minNs, maxNs = 0, 0
+	}
 	return FileMeta{
 		RowCount:          fi.RowCount,
-		MinTimeNs:         fi.MinTimeNs,
-		MaxTimeNs:         fi.MaxTimeNs,
+		MinTimeNs:         minNs,
+		MaxTimeNs:         maxNs,
 		RawBytes:          fi.RawBytes,
 		SchemaFingerprint: fi.SchemaFingerprint,
 		Labels:            fi.Labels,
@@ -56,11 +62,20 @@ func (fm FileMeta) ApplyTo(fi *FileInfo) {
 	if fi.RowCount == 0 && fm.RowCount > 0 {
 		fi.RowCount = fm.RowCount
 	}
-	if fi.MinTimeNs == 0 && fm.MinTimeNs > 0 {
-		fi.MinTimeNs = fm.MinTimeNs
-	}
-	if fi.MaxTimeNs == 0 && fm.MaxTimeNs > 0 {
-		fi.MaxTimeNs = fm.MaxTimeNs
+	if fi.BoundsInferred {
+		// Exact bounds replace the listing's inferred hour, never fill beside it.
+		if fm.MinTimeNs > 0 && fm.MaxTimeNs >= fm.MinTimeNs && !hourShaped(fi.Key, fm.MinTimeNs, fm.MaxTimeNs) {
+			fi.MinTimeNs = fm.MinTimeNs
+			fi.MaxTimeNs = fm.MaxTimeNs
+			fi.BoundsInferred = false
+		}
+	} else {
+		if fi.MinTimeNs == 0 && fm.MinTimeNs > 0 {
+			fi.MinTimeNs = fm.MinTimeNs
+		}
+		if fi.MaxTimeNs == 0 && fm.MaxTimeNs > 0 {
+			fi.MaxTimeNs = fm.MaxTimeNs
+		}
 	}
 	if fi.RawBytes == 0 && fm.RawBytes > 0 {
 		fi.RawBytes = fm.RawBytes

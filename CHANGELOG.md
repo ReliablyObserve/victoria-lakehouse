@@ -16,6 +16,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `govulncheck` reported the advisory as reachable from the self-tracing exporter. Transitive updates: `otlp` proto
   v1.11.0, `grpc-gateway` v2.29.0, `genproto` 2026-08-03. No configuration or behaviour change.
 
+### Fixed
+
+- **After a graceful restart, rows ingested in the same hour as the data flushed at shutdown no longer stay hidden
+  until the next flush (#272).** Queries (`*`, field and stream lists, `stats`) and the Jaeger and Tempo reads of
+  both binaries returned only the older rows for the rest of that UTC hour, because the objects written by the
+  shutdown's final flush were learned from the S3 listing with the hour's end as their newest row, and the read
+  path treated everything up to that time as already flushed. The manifest now marks such time ranges as
+  inferred (also those older versions stored unmarked) and no longer uses them as the buffer watermark when it can
+  get the real range: from the pmeta facet or the `_time` statistics in the Parquet footer (a ranged read of the
+  footer, never the whole object, also for trace footers larger than the tail; bounded to 2 s per query and backed
+  off after a failure; the startup warmup does it for the last six hours, a query only for objects that can change
+  the watermark). Shutdown also saves the manifest snapshot a second time after the final flush, so the next boot
+  already has the exact ranges. When the range cannot be had (S3 errors, an object retired by a compaction, or
+  an object older than the buffer retention) the buffer stays hidden up to the end of that object's hour, as it
+  was before, and the object is read for real instead of answered from metadata, so its rows are not counted
+  twice; `lakehouse_watermark_inferred_unresolved_total` counts those cases. Rows the buffer held before the
+  restart are still counted once.
+
+- **A count or stats query no longer counts rows twice when a newer object is answered from metadata and an older one
+  is read (#272).** The buffer watermark was computed over the objects still to be read only, so an object answered
+  from the manifest (the count fast path, the label-count pushdown) fell out of it, and the buffer served that
+  object's rows again next to the manifest's count: for example 5 instead of 3 rows over a window with one
+  recent fully covered object and one older object at its boundary, after any restart or flush in the same hour.
+  The watermark is now computed over the objects read plus the objects answered from metadata; bloom, label and
+  trace-index pruning still leave an object out, as before.
+
+- **`field_values`, `streams`, `stream_ids`, stream field values and the Jaeger service and operation lists no longer
+  show wrong values for rows not yet flushed (#272, partly #278).** The values of the buffered rows were kept in
+  the result map as strings pointing into memory the buffer reuses once the block callback returns, and Go's map
+  assignment replaces the stored key on every increment, so one value could overwrite another: on the traces
+  binary all 15 buffered spans of a query were counted under one span name, and the right names were missing.
+  Keys are now copied. It surfaced once the rows buffered after a restart became visible; the affected rows are
+  the unflushed ones of any window.
+
 ### Removed
 
 - **The 24.7 MB `compression_ab` binary at the repo root.** A local build of `scripts/bench/compression_ab`

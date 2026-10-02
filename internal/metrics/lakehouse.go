@@ -372,6 +372,15 @@ var (
 	// group's rows are gone from the buffer, once per group). All but mark and
 	// missing are retried on the next tick.
 	BufferFlushErrors = NewCounterVec("lakehouse_buffer_flush_errors_total", "stage")
+	// WatermarkInferredUnresolved counts objects whose time bounds were still
+	// only inferred from the listing when a query needed them for the buffer
+	// watermark and could not be resolved (no pmeta entry, the footer read
+	// failed or was backed off). Such an object contributes its inferred
+	// MaxTimeNs - the buffer is hidden up to the end of its hour rather than
+	// risk counting its rows twice - so a sustained rate means rows newer than
+	// the object are invisible until it resolves (S3 errors, a peer's object
+	// compacted away). Should stay 0.
+	WatermarkInferredUnresolved = NewCounter("lakehouse_watermark_inferred_unresolved_total")
 	// InsertRowsLostAtShutdown counts buffered rows the final flush could not
 	// write before the process exited (the legacy staging path has no WAL).
 	InsertRowsLostAtShutdown = NewCounter("lakehouse_insert_rows_lost_at_shutdown_total")

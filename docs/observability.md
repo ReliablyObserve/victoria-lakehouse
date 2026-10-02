@@ -124,6 +124,7 @@ graph LR
 | `lakehouse_insert_rows_lost_total` | Counter | `reason` | Rows lost for a stated reason. `buffer_expired`: rows the buffer flusher recorded for a window and could not upload because the buffer no longer had them (retention expired, or the flush filter changed) when recovery came back for them. Should stay 0 |
 | `lakehouse_insert_rejected_total` | Counter | `reason` | Insert requests refused by `CanWriteData`: `buffer_full` (429, over `insert.max_buffer_bytes`), `storage_unavailable` (503, the write probe failed; reused for 10 s) |
 | `lakehouse_insert_rows_lost_at_shutdown_total` | Counter | | Buffered rows the final flush at shutdown could not write (the legacy staging path has no WAL). Should stay 0 |
+| `lakehouse_watermark_inferred_unresolved_total` | Counter | | Objects whose time bounds were still only inferred from the S3 listing when a query needed them for the buffer watermark and could not be resolved (no pmeta entry, footer read failed or backed off). The object then contributes its inferred end-of-hour to the watermark: no row is counted twice, but buffered rows newer than the object stay hidden until it resolves. Should stay 0 |
 | `lakehouse_insert_flush_duration_seconds` | Histogram | | Flush wall time |
 
 ### Parquet Engine Metrics

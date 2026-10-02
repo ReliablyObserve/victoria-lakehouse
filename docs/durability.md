@@ -49,7 +49,7 @@ flowchart LR
 | Event | `logstore` engine, flush **enabled** (the cutover target) | `logstore` engine, flush **disabled** (current default) | legacy `buffer` engine |
 |---|---|---|---|
 | **Process crash / kill -9** | Rows in the buffer's on-disk parts survive; the flush watermark re-flushes the uncommitted window on restart. Loss window ≈ buffer flush interval (~5s), matching hot VL/VT. | Buffer parts survive and serve **reads** for `buffer_retention`, but the **legacy staging** (authoritative for Parquet) loses its in-flight window — that window is never re-persisted to S3. | In-flight `[]row` staging is lost (no WAL). Loss window = up to `flush_interval`. |
-| **Normal shutdown (SIGTERM)** | Buffer `Close()` flushes parts to disk; readiness gate holds `/ready`; manifest + footer-cache snapshots saved. | Same buffer `Close()`; legacy staging flush-on-shutdown. | Graceful flush of staging before exit. |
+| **Normal shutdown (SIGTERM)** | Buffer `Close()` flushes parts to disk; readiness gate holds `/ready`; manifest + footer-cache snapshots saved (the manifest snapshot is saved a second time after the final flush; see §2.2). | Same buffer `Close()`; legacy staging flush-on-shutdown. | Graceful flush of staging before exit. |
 | **S3 unreachable or slow (uploads fail or time out)** | Buffer keeps accepting (bounded by `buffer_retention` + disk); the watermark does not advance, so the same window is flushed again to the same objects (see the buffer-authoritative paragraph in §2.1). | Legacy staging: every upload that fails, or that the flush does not reach before its deadline, is put back and retried by the next flush; its rows stay readable meanwhile. Past `insert.max_buffer_bytes` of unwritten rows inserts get **429** (as VictoriaLogs answers when it cannot take writes) until flushes catch up. | Same as the middle column. |
 | **Already-flushed data** | Immutable Parquet on S3; survives everything. | Same. | Same. |
 | **A delete (tombstone)** | Written through to local disk synchronously and to S3 in the same call before the API returns; retried until S3 confirms. Survives `kill -9`. | Same. | Same. |
@@ -265,6 +265,33 @@ path `TestFlush_ARetryOfAnAdoptedThenCompactedObjectIsSkipped` and
 
 ---
 
+### 2.2 Restart and the read watermark
+
+The shutdown order matters for what the next boot can see:
+
+1. `runShutdown` saves a first manifest snapshot before the long `Stop()` calls, so a SIGKILL during them still leaves a recent snapshot.
+2. `store.Close()` stops the writer, whose **final flush** writes the last window to Parquet (and closes the buffer).
+3. The manifest snapshot is saved **again**. The objects the final flush wrote are in no earlier snapshot; without this second save the next boot would learn them only from the S3 listing. The saves are serialised and write through a unique temp file renamed into place, so a first save that outlived its timeout cannot corrupt the second.
+
+**Restored buffer rows.** Rows the buffer held before the shutdown are restored on open only with `insert.buffer_engine: logstore` (its parts live on the data dir). They are then both in the buffer and in the final flush's object, and the watermark below is what counts them once. The default legacy engine starts with an empty buffer after a restart, so there is nothing to double count.
+
+**Inferred bounds.** An object the manifest knows only from a listing has no recorded time range. The manifest infers the partition hour for it and marks the entry `bounds_inferred`; an entry whose bounds are exactly the partition hour (written that way by older versions, which did not mark them) is treated as inferred too, whether it comes from a snapshot or from a metadata source. Inferred bounds are good enough to prune (they are a superset of the truth) but never decide what the buffer still owes: the buffer read watermark is the newest `MaxTimeNs` of the selected objects, and an inferred `MaxTimeNs` is the end of the hour. Used as it was, it hid every row buffered after the restart in that hour until the next flush (#272).
+
+**Where exact bounds come from.** The pmeta file-meta facet, when it has the object, and otherwise the object's own Parquet footer: the `_time` column-chunk statistics, read with the same ranged footer fetch the field APIs use (one ranged GET of the object's tail, plus one exact-length GET when the footer is larger than the tail, as trace footers with a large `_trace_idx` are; never data pages, never the page index, never the whole object). A cached footer costs no read. Replacement is an overwrite of the inferred pair, not a fill of zero fields. The startup metadata warmup resolves the objects of the last 6 hours (newest first, at most 512, bounded to 30 s) before the first query. A query resolves lazily, and only when the buffer is actually consulted (not for a pod without a buffer, a `trace_id` lookup or a query past its row limit), only for objects that can change the watermark (inferred end above the tenant's exact watermark and not older than the later of the query start and now minus `insert.buffer_retention`). The file-metadata cache, the facet replay and the facet rebuild never export inferred bounds as fact.
+
+**Cost bounds and the price of a slow object.** One computation waits at most 2 s for footer reads, reads of one object are shared between concurrent queries, and a failed or slow read of an object is remembered and not retried for 5 s, doubling to 5 min (the table forgets objects that leave the manifest and is capped). When a computation runs out of its 2 s budget, no further reads are started for 5 s. A query that meets an unresolved object therefore pays at most the budget once, and the rows that depend on it stay hidden until it resolves.
+
+**The guarantee when an object cannot be resolved** (S3 error, the object retired by a peer's compaction, a result that is exactly the partition hour, the budget running out). The watermark never sits below a row the object holds, so the buffer does not re-serve its rows (rows are hidden, not counted twice), over the objects the query reads plus those answered from metadata:
+
+- the object contributes its inferred end to the watermark, so the buffer is hidden up to the end of its hour rather than counted against rows the object already holds;
+- the same holds for an object too old to be worth a read (its inferred end is before the later of the query start and now minus `insert.buffer_retention`): it is not read, and it still contributes its inferred end, because the buffer's retention is applied per day partition and can still hold its rows;
+- no metadata-only answer (manifest fast path, count pushdown, 404 recovery, field-value aggregates) uses an object whose bounds are still inferred: it goes to the scan path, where an unreadable object contributes nothing;
+- `lakehouse_watermark_inferred_unresolved_total` counts the objects a read was tried for and failed to resolve.
+
+What this does not promise: that rows buffered after the restart in the same hour are visible while an object is unresolved or too old to read. They appear once it resolves (the next successful read after its back-off) or at the next flush.
+
+In a multi-pod deployment the same applies to a peer's flushes this pod learns by listing, as long as the peer's rows come through this pod's buffer bridge; the pod's own restored buffer (logstore engine) is the case the tests cover end to end.
+
 ## 3. Crash recovery ("the pod dies")
 
 1. **Where in-flight rows live.** Every ingested row is added to the buffer via
@@ -453,6 +480,11 @@ On SIGTERM the insert pod:
    backstop, not the durability mechanism — tombstones were already written
    through on every change — so a pod that never reaches this step loses
    nothing.
+5. Closes the storage, whose writer runs its **final flush**, and then saves
+   the **manifest snapshot a second time**. The first snapshot (step 2) cannot
+   contain the objects the final flush wrote; the second one lets the next boot
+   start with their exact time bounds instead of bounds inferred from the S3
+   listing (see §2.2).
 
 > **Hardening item:** a graceful *flusher* stop (drain the current window to S3
 > on SIGTERM rather than re-flushing it on restart) is tracked as a follow-up.

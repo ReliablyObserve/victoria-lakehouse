@@ -33,13 +33,16 @@ import (
 )
 
 type Storage struct {
-	cfg               *config.Config
-	pool              *s3reader.ClientPool
-	manifest          *manifest.Manifest
-	registry          *schema.Registry
-	memCache          *cache.LRU
-	diskCache         *cache.DiskCache
-	sfGroup           *cache.Group
+	cfg       *config.Config
+	pool      *s3reader.ClientPool
+	manifest  *manifest.Manifest
+	registry  *schema.Registry
+	memCache  *cache.LRU
+	diskCache *cache.DiskCache
+	sfGroup   *cache.Group
+	// inferredBounds is the negative cache and the in-flight set of the exact-
+	// bounds resolution (bounds_resolve.go); the zero value is ready to use.
+	inferredBounds    boundsResolver
 	labelIndex        *cache.LabelIndex
 	persister         *cache.Persister
 	discovery         *discovery.Discovery
@@ -1432,8 +1435,19 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 		}
 	}
 
-	logger.Infof("metadata warmup: disk=%d facet=%d sidecar=%d footer=%d small=%d need_enrich=%d total_files=%d",
-		diskLoaded, facetEnriched, sidecarLoaded, footerEnriched, smallEnriched, len(needEnrich), len(files))
+	// Phase 3c: exact time bounds for the recent objects the listing alone told
+	// the manifest about (the final flush of a graceful shutdown, a peer's
+	// flushes). Their inferred bounds are the end of the partition hour, which
+	// must never feed the buffer watermark. The footer prefetch phases above
+	// only supply a row count (bounds come from column statistics, which this
+	// pass reads with a ranged read of each object's footer - never the whole
+	// object, and the newest objects first).
+	// Bounded to the recent window the buffer can still hold; the watermark
+	// resolves anything older lazily (withExactBounds).
+	boundsEnriched := s.enrichRecentInferredBounds(ctx)
+
+	logger.Infof("metadata warmup: disk=%d facet=%d sidecar=%d footer=%d small=%d bounds=%d need_enrich=%d total_files=%d",
+		diskLoaded, facetEnriched, sidecarLoaded, footerEnriched, smallEnriched, boundsEnriched, len(needEnrich), len(files))
 
 	// Phase 4: Save enriched metadata to disk for next restart.
 	s.saveFileMetadataToDisk()
@@ -1449,33 +1463,7 @@ func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFoo
 }
 
 func (s *Storage) enrichFromParquetFile(fi manifest.FileInfo, pf *parquet.File) bool {
-	var totalRows int64
-	var minTs, maxTs int64
-	tsIdx := findColumnIndex(pf.Root(), s.registry.TimestampColumn())
-	for _, rg := range pf.RowGroups() {
-		totalRows += rg.NumRows()
-		if tsIdx < 0 {
-			continue
-		}
-		cols := rg.ColumnChunks()
-		if tsIdx >= len(cols) {
-			continue
-		}
-		idx, err := cols[tsIdx].ColumnIndex()
-		if err != nil || idx == nil || idx.NumPages() == 0 {
-			continue
-		}
-		// Aggregate across all pages — see columnIndexTimeBounds
-		// (storage_query.go). Positional MinValue(0)/MaxValue(N-1) bounds
-		// understate the manifest time range when pages are not time-sorted.
-		rgMin, rgMax := columnIndexTimeBounds(idx)
-		if minTs == 0 || rgMin < minTs {
-			minTs = rgMin
-		}
-		if rgMax > maxTs {
-			maxTs = rgMax
-		}
-	}
+	totalRows, minTs, maxTs := pageIndexTimeBounds(pf, s.registry.TimestampColumn())
 	if totalRows > 0 {
 		s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
 		return true
@@ -1560,11 +1548,12 @@ func (s *Storage) saveFileMetadataToDisk() {
 	var entries []cache.FileMetaEntry
 	for _, fi := range files {
 		if fi.RowCount > 0 {
+			exMin, exMax := fi.ExactBounds() // inferred bounds are not persisted as fact
 			entries = append(entries, cache.FileMetaEntry{
 				Key:               fi.Key,
 				RowCount:          fi.RowCount,
-				MinTimeNs:         fi.MinTimeNs,
-				MaxTimeNs:         fi.MaxTimeNs,
+				MinTimeNs:         exMin,
+				MaxTimeNs:         exMax,
 				RawBytes:          fi.RawBytes,
 				SchemaFingerprint: fi.SchemaFingerprint,
 				Labels:            fi.Labels,

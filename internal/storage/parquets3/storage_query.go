@@ -213,7 +213,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		if s.servePureBufferQuery(ctx, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
 		}
-		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
 		return nil
 	}
 
@@ -239,6 +239,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	plan := planMetadataOnly(q)
 	ctx = withMetadataOnlyPlan(ctx, plan)
 
+	// served collects the objects answered from metadata below. They leave
+	// `files` (nothing is read from them) but their rows are in the answer, so
+	// the buffer watermark must still cover them (see watermarkFiles).
+	var served []manifest.FileInfo
+
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
 		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
 		// The fast path stops emitting as soon as the query's max-rows or
@@ -251,9 +256,10 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
-			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, files}, q, tenantIDs, sink)
 			return nil
 		}
+		served = append(served, subtractFiles(files, remaining)...)
 		files = remaining
 	}
 
@@ -266,15 +272,16 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
 		if len(remaining) == 0 {
 			recordQueryRows(&rowsEmitted)
-			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+			s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 			return nil
 		}
+		served = append(served, subtractFiles(files, remaining)...)
 		files = remaining
 	}
 
 	files = s.preFilterFiles(ctx, files, queryStr)
 	if len(files) == 0 {
-		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+		s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 		return nil
 	}
 
@@ -333,7 +340,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	wg.Wait()
 
-	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, s.bufferWatermarksFor(files), q, tenantIDs, sink)
+	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, &rowsEmitted, lazyWatermarks{s, startNs, watermarkFiles(files, served)}, q, tenantIDs, sink)
 
 	if v := firstErr.Load(); v != nil {
 		if err, ok := v.(error); ok && ctx.Err() != nil {
@@ -509,14 +516,14 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, q *logstorage.Query,
 
 // queryBufferBridge is queryBufferBridgeTo for a caller with one write
 // function for every tenant.
-func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
+func (s *Storage) queryBufferBridge(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, wm watermarkSource, q *logstorage.Query, tenantIDs []logstorage.TenantID, writeBlock logstorage.WriteDataBlockFunc) {
 	s.queryBufferBridgeTo(ctx, startNs, endNs, maxRows, rowsEmitted, wm, q, tenantIDs, uniformSink(writeBlock))
 }
 
 // queryBufferBridgeTo serves the unflushed rows of the request's tenants.
 // Each tenant's rows go through sink.forTenant, so a tenant-scoped
 // tombstone only hides the buffered rows of its own tenants.
-func (s *Storage) queryBufferBridgeTo(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, wm bufferWatermarks, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
+func (s *Storage) queryBufferBridgeTo(ctx context.Context, startNs, endNs int64, maxRows int64, rowsEmitted *atomic.Int64, wmSrc watermarkSource, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
 	if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 		return
 	}
@@ -528,8 +535,17 @@ func (s *Storage) queryBufferBridgeTo(ctx context.Context, startNs, endNs int64,
 	// Parquet file (holding other, newer data) has a MaxTimeNs above this
 	// trace's time. So ignore the watermarks for trace_id-filtered queries and
 	// serve the buffer's full window.
-	if q != nil && queryFiltersTraceID(q.String()) {
-		wm = nil
+	//
+	// The watermarks are computed HERE, once the buffer is known to be
+	// consulted: computing them can mean reading object footers (see
+	// bufferWatermarksFor), which a query without a buffer, with a trace_id
+	// filter or past its row limit must not do.
+	if s.localBuffer == nil && s.bufferBridge == nil {
+		return
+	}
+	var wm bufferWatermarks
+	if wmSrc != nil && (q == nil || !queryFiltersTraceID(q.String())) {
+		wm = wmSrc.watermarks(ctx)
 	}
 	scope := scopeFor(ctx, tenantIDs)
 
@@ -669,7 +685,7 @@ func (s *Storage) manifestCountFastPath(files []manifest.FileInfo, startNs, endN
 	var remaining []manifest.FileInfo
 	served := 0
 	for _, fi := range files {
-		contained := fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+		contained := fi.RowCount > 0 && !fi.BoundsInferred && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
 			fi.MinTimeNs >= startNs && fi.MaxTimeNs <= endNs
 		if contained && s.streamSyntheticAggBlocks(fi, aggField, func(db *logstorage.DataBlock) {
 			if db != nil && db.RowsCount() > 0 {
@@ -2816,33 +2832,7 @@ func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File
 	if fi.RowCount > 0 {
 		return
 	}
-	var totalRows int64
-	var minTs, maxTs int64
-	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
-	for _, rg := range f.RowGroups() {
-		totalRows += rg.NumRows()
-		if tsIdx < 0 {
-			continue
-		}
-		cols := rg.ColumnChunks()
-		if tsIdx >= len(cols) {
-			continue
-		}
-		idx, err := cols[tsIdx].ColumnIndex()
-		if err != nil || idx == nil || idx.NumPages() == 0 {
-			continue
-		}
-		// Aggregate across all pages — see columnIndexTimeBounds. Positional
-		// bounds would land an understated time range in the manifest and
-		// break range pruning for every later query on this file.
-		rgMin, rgMax := columnIndexTimeBounds(idx)
-		if minTs == 0 || rgMin < minTs {
-			minTs = rgMin
-		}
-		if rgMax > maxTs {
-			maxTs = rgMax
-		}
-	}
+	totalRows, minTs, maxTs := pageIndexTimeBounds(f, s.registry.TimestampColumn())
 	if totalRows > 0 {
 		s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
 	}
@@ -3104,7 +3094,7 @@ func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, f
 	metrics.QueryFileNotFoundTotal.Inc()
 	plan := metadataOnlyPlanFromContext(ctx)
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
-		fi.RowCount > 0 && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+		fi.RowCount > 0 && !fi.BoundsInferred && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
 		fi.RowCount <= maxPlausibleRowCount && plan.coversFile(fi) {
 		if s.streamConstTimeBlocks(ctx, fi, filteredWriteBlock) {
 			metrics.MetadataOnlyFiles.Inc()

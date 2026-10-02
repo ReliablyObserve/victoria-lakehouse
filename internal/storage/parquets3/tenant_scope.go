@@ -407,13 +407,36 @@ type bufferWatermarks map[logstorage.TenantID]int64
 // bufferWatermarksFor attributes every selected object to its tenant (legacy
 // untenanted objects to 0:0, where the read path serves them) and records each
 // tenant's newest MaxTimeNs.
-func (s *Storage) bufferWatermarksFor(files []manifest.FileInfo) bufferWatermarks {
+//
+// Only an object's EXACT MaxTimeNs may raise a watermark from knowledge; an
+// object the manifest knows only from the S3 listing carries bounds inferred
+// from the partition hour, whose end would hide every buffered row of the rest
+// of the hour (the final flush of a graceful shutdown lands in the listing, not
+// the snapshot). So the exact bounds are resolved first
+// (withExactBounds: manifest, pmeta facet, the shared ranged footer fetch,
+// bounded in time and backed off after a failure) for the objects whose
+// inferred end is above the tenant's exact watermark and not older than
+// max(the query's start, now - buffer retention).
+//
+// An object that stays unresolved - or is too old to be worth a read, because
+// the buffer's retention is per DAY partition and it can still hold that
+// object's rows - keeps its INFERRED end in the watermark: the buffer is
+// hidden up to the end of its hour, never counted against rows the object
+// already holds. That is the conservative side - rows hide until it resolves,
+// nothing is counted twice - and lakehouse_watermark_inferred_unresolved_total
+// counts the ones a read was tried for.
+func (s *Storage) bufferWatermarksFor(ctx context.Context, startNs int64, files []manifest.FileInfo) bufferWatermarks {
 	if len(files) == 0 {
 		return nil
 	}
 	parse := s.manifest.TenantKeyParser()
 	wm := make(bufferWatermarks, 2)
+	var inferred []int
 	for i := range files {
+		if files[i].BoundsInferred {
+			inferred = append(inferred, i)
+			continue
+		}
 		tid, ok := tenantIDOfKey(parse, files[i].Key)
 		if !ok {
 			continue
@@ -422,7 +445,109 @@ func (s *Storage) bufferWatermarksFor(files []manifest.FileInfo) bufferWatermark
 			wm[tid] = files[i].MaxTimeNs
 		}
 	}
+	if len(inferred) == 0 {
+		return wm
+	}
+	floor := s.watermarkFloor(startNs)
+	var cand []int
+	candTenant := make(map[int]logstorage.TenantID, len(inferred))
+	for _, i := range inferred {
+		tid, ok := tenantIDOfKey(parse, files[i].Key)
+		if !ok {
+			continue
+		}
+		end := files[i].MaxTimeNs
+		if end <= wm[tid] {
+			continue // cannot change what the buffer serves
+		}
+		if end < floor {
+			// Too old to be worth a read - but the buffer's retention is per
+			// DAY partition, so it can still hold this object's rows: keep the
+			// conservative inferred end (hide, never double count).
+			wm[tid] = end
+			continue
+		}
+		cand = append(cand, i)
+		candTenant[i] = tid
+	}
+	if len(cand) == 0 {
+		return wm
+	}
+	sub := make([]manifest.FileInfo, len(cand))
+	for k, i := range cand {
+		sub[k] = files[i]
+	}
+	sub = s.withExactBounds(ctx, sub)
+	for k, i := range cand {
+		tid := candTenant[i]
+		if _, exact := sub[k].ExactBounds(); exact > 0 {
+			if exact > wm[tid] {
+				wm[tid] = exact
+			}
+			continue
+		}
+		// Unresolved: the conservative inferred end.
+		metrics.WatermarkInferredUnresolved.Inc()
+		if sub[k].MaxTimeNs > wm[tid] {
+			wm[tid] = sub[k].MaxTimeNs
+		}
+	}
 	return wm
+}
+
+// watermarkSource yields the per-tenant buffer watermarks at the moment the
+// buffer is actually consulted. Computing them can mean reading object footers,
+// so a query that never reaches the buffer (no buffer, a trace_id lookup,
+// the row limit already reached) must not pay for it.
+type watermarkSource interface {
+	watermarks(ctx context.Context) bufferWatermarks
+}
+
+func (w bufferWatermarks) watermarks(context.Context) bufferWatermarks { return w }
+
+// subtractFiles returns the files of all that are not in remaining (by key).
+func subtractFiles(all, remaining []manifest.FileInfo) []manifest.FileInfo {
+	if len(remaining) == len(all) {
+		return nil
+	}
+	keep := make(map[string]struct{}, len(remaining))
+	for i := range remaining {
+		keep[remaining[i].Key] = struct{}{}
+	}
+	var out []manifest.FileInfo
+	for i := range all {
+		if _, ok := keep[all[i].Key]; !ok {
+			out = append(out, all[i])
+		}
+	}
+	return out
+}
+
+// watermarkFiles is the object selection the buffer watermark is computed
+// over: the objects still to be read plus the ones answered from metadata
+// (manifest fast path, count pushdown). The latter must stay in: their rows are
+// part of the answer, so the buffer must not re-serve them. Objects dropped
+// BEFORE the read by pruning (bloom, label, trace-index filters) stay out, as
+// they always did.
+func watermarkFiles(files, served []manifest.FileInfo) []manifest.FileInfo {
+	if len(served) == 0 {
+		return files
+	}
+	out := make([]manifest.FileInfo, 0, len(files)+len(served))
+	out = append(out, files...)
+	return append(out, served...)
+}
+
+// lazyWatermarks computes the watermarks over the query's selected objects on
+// first use.
+type lazyWatermarks struct {
+	s       *Storage
+	startNs int64
+	files   []manifest.FileInfo
+}
+
+func (l lazyWatermarks) watermarks(ctx context.Context) bufferWatermarks {
+	return l.s.bufferWatermarksFor(ctx, l.startNs, l.files)
 }
 
 // tenantIDOfKey maps an object key to the numeric tenant it belongs to. A key

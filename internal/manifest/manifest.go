@@ -66,7 +66,16 @@ type FileInfo struct {
 	RowCount  int64  `json:"row_count,omitempty"`
 	MinTimeNs int64  `json:"min_time_ns,omitempty"`
 	MaxTimeNs int64  `json:"max_time_ns,omitempty"`
-	RawBytes  int64  `json:"raw_bytes,omitempty"`
+	// BoundsInferred marks MinTimeNs/MaxTimeNs as the partition hour
+	// [hour, hour+1h) the manifest assumed for an object it learned only from the
+	// S3 listing, not the object's real row range. Inferred bounds are good
+	// enough to prune (they are a superset of the truth) but must never decide
+	// what the buffer still owes: the per-tenant buffer watermark is the newest
+	// MaxTimeNs among the selected objects, and an hour-end MaxTimeNs hides every
+	// buffered row of the rest of the hour. Exact bounds (flush, footer, pmeta
+	// facet, sidecar) replace the inferred ones and clear the flag.
+	BoundsInferred bool  `json:"bounds_inferred,omitempty"`
+	RawBytes       int64 `json:"raw_bytes,omitempty"`
 	// BloomBytes is the on-disk footprint of this file's FOOTER blooms (sum of the
 	// per-row-group column-chunk bloom filter sizes), captured at write time so the
 	// compaction stats can report bloom storage cost without reading any file.
@@ -91,6 +100,17 @@ type FileInfo struct {
 	ClassCheckedAt time.Time        `json:"class_checked_at,omitempty"`
 	ClassSource    string           `json:"class_source,omitempty"`
 	CreatedAt      time.Time        `json:"created_at,omitempty"`
+}
+
+// ExactBounds returns the object's real time range, or (0, 0) while the manifest
+// only has the bounds it inferred from the listing (BoundsInferred). Anything
+// that exports bounds as fact (pmeta facets, the file-metadata cache) or lets
+// them decide what the buffer owes (the flush watermark) goes through this.
+func (fi FileInfo) ExactBounds() (minNs, maxNs int64) {
+	if fi.BoundsInferred {
+		return 0, 0
+	}
+	return fi.MinTimeNs, fi.MaxTimeNs
 }
 
 // BucketOr returns the file's bucket, falling back to defaultBucket
@@ -140,6 +160,9 @@ type partitionEntry struct {
 }
 
 type Manifest struct {
+	// saveMu serialises SaveTo: a persist that outlived its timeout during
+	// shutdown must not race the next one on the snapshot file.
+	saveMu           sync.Mutex
 	mu               sync.RWMutex
 	files            map[string][]FileInfo // "dt=2026-05-02/hour=10" -> files
 	sortedPartitions []partitionEntry
@@ -169,6 +192,9 @@ type Manifest struct {
 	// keep per-field/per-tenant size totals current without rescanning.
 	onAdd    func(partition string, fi FileInfo)
 	onRemove func(partition string, fi FileInfo)
+	// removeHooks are called with the key of every object removeFileLocked
+	// drops; like onRemove they run under the write lock and must not call back.
+	removeHooks []func(key string)
 
 	// tenantAggregates is the incremental per-tenant cache backing
 	// TenantSummaries(). Without this, /api/v1/tenants, /stats/overview,
@@ -967,9 +993,11 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo, listSt
 		for i := range pFiles {
 			if pFiles[i].MinTimeNs == 0 {
 				pFiles[i].MinTimeNs = pMinNs
+				pFiles[i].BoundsInferred = true
 			}
 			if pFiles[i].MaxTimeNs == 0 {
 				pFiles[i].MaxTimeNs = pMaxNs
+				pFiles[i].BoundsInferred = true
 			}
 		}
 	}
@@ -1129,6 +1157,24 @@ func (m *Manifest) applyRefreshedFiles(files map[string][]FileInfo, listStart ti
 		metrics.ManifestRefreshCliffGuardRejections.Inc()
 		m.mu.Unlock()
 		return false
+	}
+
+	// A refresh replaces the file set wholesale: tell the remove hooks about the
+	// objects it drops (a peer's compaction deleted them) before byKey is rebuilt.
+	if len(m.removeHooks) > 0 {
+		kept := make(map[string]struct{}, totalFiles)
+		for _, pFiles := range files {
+			for i := range pFiles {
+				kept[pFiles[i].Key] = struct{}{}
+			}
+		}
+		for key := range m.byKey {
+			if _, ok := kept[key]; !ok {
+				for _, h := range m.removeHooks {
+					h(key)
+				}
+			}
+		}
 	}
 
 	m.files = files
@@ -1626,6 +1672,9 @@ func (m *Manifest) removeFileLocked(partition string, key string) bool {
 			if m.onRemove != nil {
 				m.onRemove(partition, fi)
 			}
+			for _, h := range m.removeHooks {
+				h(key)
+			}
 			m.files[partition] = append(files[:i], files[i+1:]...)
 			if len(m.files[partition]) == 0 {
 				delete(m.files, partition)
@@ -1872,7 +1921,9 @@ func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinM
 
 // EnrichFileMetadata updates RowCount and time bounds for a file identified
 // by key. Called after first opening a file during a query, using metadata
-// from the Parquet footer. Only updates fields that are zero (not already set).
+// from the Parquet footer. Only updates fields that are zero (not already set),
+// except for time bounds the manifest merely inferred from the listing
+// (FileInfo.BoundsInferred): exact bounds REPLACE those and clear the flag.
 //
 // Updates the tenant aggregate cache by the delta — a query may bump a
 // file's RowCount from 0 to (say) 1M, and TenantSummaries must reflect
@@ -1890,11 +1941,21 @@ func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, max
 		rowDelta = rowCount
 		files[i].RowCount = rowCount
 	}
-	if files[i].MinTimeNs == 0 && minTimeNs > 0 {
-		files[i].MinTimeNs = minTimeNs
-	}
-	if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
-		files[i].MaxTimeNs = maxTimeNs
+	if files[i].BoundsInferred {
+		// Both bounds or neither: a lone exact bound next to an inferred one
+		// would leave a range that is neither the truth nor the inferred hour.
+		if minTimeNs > 0 && maxTimeNs >= minTimeNs && !hourShaped(files[i].Key, minTimeNs, maxTimeNs) {
+			files[i].MinTimeNs = minTimeNs
+			files[i].MaxTimeNs = maxTimeNs
+			files[i].BoundsInferred = false
+		}
+	} else {
+		if files[i].MinTimeNs == 0 && minTimeNs > 0 {
+			files[i].MinTimeNs = minTimeNs
+		}
+		if files[i].MaxTimeNs == 0 && maxTimeNs > 0 {
+			files[i].MaxTimeNs = maxTimeNs
+		}
 	}
 
 	if rowDelta != 0 {
@@ -1904,6 +1965,16 @@ func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, max
 			}
 		}
 	}
+}
+
+// OnFileRemoved registers fn to be called (under the write lock) with the key
+// of every object removed from the manifest by RemoveFile and friends. fn must
+// be cheap and MUST NOT call back into the manifest. Unlike SetChangeObserver
+// it adds to, never replaces, what is registered.
+func (m *Manifest) OnFileRemoved(fn func(key string)) {
+	m.mu.Lock()
+	m.removeHooks = append(m.removeHooks, fn)
+	m.mu.Unlock()
 }
 
 // SetChangeObserver registers callbacks fired (under the write lock) on every
@@ -2195,7 +2266,13 @@ type persistedManifest struct {
 	Retired []RetiredKey `json:"retired,omitempty"`
 }
 
+// saveTestHook, when set by a test, runs in SaveTo after the snapshot is
+// captured and encoded and before it is written (to make a save slow).
+var saveTestHook func()
+
 func (m *Manifest) SaveTo(path string) error {
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
 	now := time.Now()
 	m.mu.Lock()
 	m.pruneRetiredLocked(now)
@@ -2228,15 +2305,33 @@ func (m *Manifest) SaveTo(path string) error {
 		return fmt.Errorf("encode manifest: %w", err)
 	}
 
+	if saveTestHook != nil {
+		saveTestHook()
+	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create dir: %w", err)
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+	// A unique temp name per call, renamed atomically: even a writer that is not
+	// serialised by saveMu (another process, a stale one) never shares a temp
+	// file with this one.
+	tf, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
+	tmp := tf.Name()
+	if _, err := tf.Write(buf.Bytes()); err != nil {
+		_ = tf.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write manifest: %w", err)
+	}
+	if err := tf.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write manifest: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("rename manifest: %w", err)
 	}
 
@@ -2320,6 +2415,10 @@ func (m *Manifest) LoadFrom(path string) error {
 		}
 		format = "json"
 	}
+
+	// Entries written before bounds were marked carry the inferred partition
+	// hour as if it were exact; they are inferred, whatever the snapshot says.
+	markHourShapedInferred(snap.Files)
 
 	m.mu.Lock()
 	m.files = snap.Files
@@ -2650,4 +2749,34 @@ func (m *Manifest) TenantSummaries() []TenantSummary {
 		return result[i].TotalBytes > result[j].TotalBytes
 	})
 	return result
+}
+
+// hourShaped reports whether [minNs, maxNs] is exactly the partition hour of
+// key: the range the manifest INFERS for an object it knows only from a
+// listing. Older versions stored it unmarked, in snapshots, the file-metadata
+// cache and the facets, so a source that hands it back is not evidence of the
+// object's real range. (A real object whose first row is on the hour's first
+// nanosecond and whose last is on its last is not a case worth keeping.)
+func hourShaped(key string, minNs, maxNs int64) bool {
+	part := extractPartition(key)
+	if part == "" {
+		return false
+	}
+	t, err := parsePartitionTime(part)
+	if err != nil {
+		return false
+	}
+	return minNs == t.UnixNano() && maxNs == t.Add(time.Hour).UnixNano()-1
+}
+
+// markHourShapedInferred flags every entry whose bounds are exactly the
+// partition hour (see hourShaped) as inferred.
+func markHourShapedInferred(files map[string][]FileInfo) {
+	for _, pFiles := range files {
+		for i := range pFiles {
+			if !pFiles[i].BoundsInferred && hourShaped(pFiles[i].Key, pFiles[i].MinTimeNs, pFiles[i].MaxTimeNs) {
+				pFiles[i].BoundsInferred = true
+			}
+		}
+	}
 }

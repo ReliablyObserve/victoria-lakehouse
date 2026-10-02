@@ -1,0 +1,3 @@
+lakehouse:
+  insert:
+    buffer_engine: logstore
