@@ -30,26 +30,14 @@ func TestProfileRegression_InsertPath(t *testing.T) {
 		t.Run(string(profile), func(t *testing.T) {
 			cfg := ProfileConfig(profile)
 
-			if cfg.Insert.FlushInterval != expect.flushInterval {
-				t.Errorf("flush_interval = %v, want %v", cfg.Insert.FlushInterval, expect.flushInterval)
-			}
 			if cfg.Insert.CompressionLevel != expect.compressionLevel {
 				t.Errorf("compression_level = %d, want %d", cfg.Insert.CompressionLevel, expect.compressionLevel)
-			}
-			if cfg.Insert.MaxBufferRows != expect.maxBufferRows {
-				t.Errorf("max_buffer_rows = %d, want %d", cfg.Insert.MaxBufferRows, expect.maxBufferRows)
-			}
-			if cfg.Insert.MaxBufferBytes != expect.maxBufferBytes {
-				t.Errorf("max_buffer_bytes = %q, want %q", cfg.Insert.MaxBufferBytes, expect.maxBufferBytes)
 			}
 			if cfg.Insert.TargetFileSize != expect.targetFileSize {
 				t.Errorf("target_file_size = %q, want %q", cfg.Insert.TargetFileSize, expect.targetFileSize)
 			}
 			if cfg.Insert.RowGroupSize != expect.rowGroupSize {
 				t.Errorf("row_group_size = %d, want %d", cfg.Insert.RowGroupSize, expect.rowGroupSize)
-			}
-			if cfg.Insert.AckMode != expect.ackMode {
-				t.Errorf("ack_mode = %q, want %q", cfg.Insert.AckMode, expect.ackMode)
 			}
 		})
 	}
@@ -271,29 +259,26 @@ func TestProfileRegression_Prefetch(t *testing.T) {
 	}
 }
 
-func TestProfileRegression_InsertDurability(t *testing.T) {
-	type durExpect struct {
-		flushLinger   time.Duration
-		peerReplicate bool
+// Every profile writes through the same insert buffer: the segments of
+// insert.buffer_dir. A profile differs only in how long a segment stays open
+// (dev writes within seconds so a developer sees objects at once).
+func TestProfileRegression_InsertBuffer(t *testing.T) {
+	tests := map[Profile]time.Duration{
+		ProfileBalanced:       5 * time.Minute,
+		ProfileMaxPerformance: 5 * time.Minute,
+		ProfileMaxDurability:  5 * time.Minute,
+		ProfileMaxCostSavings: 5 * time.Minute,
+		ProfileDev:            10 * time.Second,
 	}
 
-	tests := map[Profile]durExpect{
-		ProfileBalanced:       {200 * time.Millisecond, false},
-		ProfileMaxPerformance: {100 * time.Millisecond, false},
-		ProfileMaxDurability:  {0, false},
-		ProfileMaxCostSavings: {1 * time.Second, false},
-		ProfileDev:            {0, false},
-	}
-
-	for profile, expect := range tests {
+	for profile, wantInterval := range tests {
 		t.Run(string(profile), func(t *testing.T) {
 			cfg := ProfileConfig(profile)
-
-			if cfg.Insert.FlushLinger != expect.flushLinger {
-				t.Errorf("flush_linger = %v, want %v", cfg.Insert.FlushLinger, expect.flushLinger)
+			if cfg.Insert.BufferFlushInterval != wantInterval {
+				t.Errorf("buffer_flush_interval = %v, want %v", cfg.Insert.BufferFlushInterval, wantInterval)
 			}
-			if cfg.Insert.PeerReplicate != expect.peerReplicate {
-				t.Errorf("peer_replicate = %v, want %v", cfg.Insert.PeerReplicate, expect.peerReplicate)
+			if cfg.Insert.BufferDir != "/data/lakehouse/buffer" {
+				t.Errorf("buffer_dir = %q, want the default", cfg.Insert.BufferDir)
 			}
 		})
 	}

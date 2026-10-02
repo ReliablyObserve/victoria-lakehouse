@@ -39,8 +39,8 @@ lakehouse:
 	}
 
 	// Dev profile defaults
-	if cfg.Insert.FlushInterval != 1*time.Second {
-		t.Errorf("flush_interval = %v, want 1s", cfg.Insert.FlushInterval)
+	if cfg.Insert.BufferFlushInterval != 10*time.Second {
+		t.Errorf("buffer_flush_interval = %v, want 10s", cfg.Insert.BufferFlushInterval)
 	}
 	if cfg.Insert.CompressionLevel != 1 {
 		t.Errorf("compression_level = %d, want 1", cfg.Insert.CompressionLevel)
@@ -87,9 +87,6 @@ lakehouse:
 	}
 
 	// Max-durability profile fields
-	if cfg.Insert.AckMode != "flush-sync" {
-		t.Errorf("ack_mode = %q, want flush-sync", cfg.Insert.AckMode)
-	}
 	if !cfg.Compaction.Enabled {
 		t.Error("max-durability compaction should be enabled")
 	}
@@ -115,7 +112,7 @@ lakehouse:
     bucket: test
   insert:
     compression_level: 11
-    flush_interval: 30s
+    buffer_flush_interval: 30s
 `)
 
 	cfg, err := Load(path)
@@ -130,13 +127,13 @@ lakehouse:
 	if cfg.Insert.CompressionLevel != 11 {
 		t.Errorf("compression_level = %d, want 11 (file override)", cfg.Insert.CompressionLevel)
 	}
-	if cfg.Insert.FlushInterval != 30*time.Second {
-		t.Errorf("flush_interval = %v, want 30s (file override)", cfg.Insert.FlushInterval)
+	if cfg.Insert.BufferFlushInterval != 30*time.Second {
+		t.Errorf("buffer_flush_interval = %v, want 30s (file override)", cfg.Insert.BufferFlushInterval)
 	}
 
 	// Other balanced defaults should remain
-	if cfg.Insert.MaxBufferRows != 50000 {
-		t.Errorf("max_buffer_rows = %d, want 50000 (balanced default)", cfg.Insert.MaxBufferRows)
+	if cfg.Insert.BufferDir != "/data/lakehouse/buffer" {
+		t.Errorf("buffer_dir = %q, want the balanced default", cfg.Insert.BufferDir)
 	}
 }
 
@@ -226,19 +223,10 @@ lakehouse:
 	}
 
 	// ack_mode from max-durability profile
-	if cfg.Insert.AckMode != "flush-sync" {
-		t.Errorf("ack_mode = %q, want flush-sync", cfg.Insert.AckMode)
-	}
 
 	// flush_linger is 0 for max-durability (immediate flush for durability)
-	if cfg.Insert.FlushLinger != 0 {
-		t.Errorf("flush_linger = %v, want 0", cfg.Insert.FlushLinger)
-	}
 
 	// flush_max_rows from balanced defaults
-	if cfg.Insert.FlushMaxRows != 5000 {
-		t.Errorf("flush_max_rows = %d, want 5000", cfg.Insert.FlushMaxRows)
-	}
 
 	// GC interval from file override
 	if cfg.GC.Interval != 2*time.Hour {
@@ -273,9 +261,6 @@ lakehouse:
 	}
 
 	// Logs should use max-durability
-	if logsCfg.Insert.AckMode != "flush-sync" {
-		t.Errorf("logs ack_mode = %q, want flush-sync (max-durability)", logsCfg.Insert.AckMode)
-	}
 	if logsCfg.S3.RetryMax != 5 {
 		t.Errorf("logs retry_max = %d, want 5 (max-durability)", logsCfg.S3.RetryMax)
 	}
@@ -284,11 +269,11 @@ lakehouse:
 	}
 
 	// Traces should use balanced
-	if tracesCfg.Insert.AckMode != "buffer" {
-		t.Errorf("traces ack_mode = %q, want buffer (balanced)", tracesCfg.Insert.AckMode)
+	if tracesCfg.Insert.CompressionLevel != Default().Insert.CompressionLevel {
+		t.Errorf("traces compression_level = %d, want the balanced default %d", tracesCfg.Insert.CompressionLevel, Default().Insert.CompressionLevel)
 	}
-	if tracesCfg.Insert.FlushInterval != 60*time.Second {
-		t.Errorf("traces flush_interval = %v, want 60s (balanced)", tracesCfg.Insert.FlushInterval)
+	if tracesCfg.S3.RetryMax == 5 && Default().S3.RetryMax != 5 {
+		t.Errorf("traces took the max-durability retry_max")
 	}
 }
 
@@ -317,9 +302,6 @@ lakehouse:
 	}
 
 	// Insert role uses max-performance
-	if insertCfg.Insert.FlushInterval != 5*time.Second {
-		t.Errorf("insert flush_interval = %v, want 5s (max-performance)", insertCfg.Insert.FlushInterval)
-	}
 	if insertCfg.Insert.CompressionLevel != 3 {
 		t.Errorf("insert compression_level = %d, want 3 (max-performance)", insertCfg.Insert.CompressionLevel)
 	}
@@ -361,12 +343,6 @@ lakehouse:
 	}
 
 	// Other max-performance settings should remain from profile
-	if cfg.Insert.FlushInterval != 5*time.Second {
-		t.Errorf("flush_interval = %v, want 5s (max-performance profile)", cfg.Insert.FlushInterval)
-	}
-	if cfg.Insert.MaxBufferRows != 100000 {
-		t.Errorf("max_buffer_rows = %d, want 100000 (max-performance profile)", cfg.Insert.MaxBufferRows)
-	}
 	if cfg.Query.FileWorkers != 16 {
 		t.Errorf("file_workers = %d, want 16 (max-performance profile)", cfg.Query.FileWorkers)
 	}
@@ -394,9 +370,6 @@ lakehouse:
 	// Should use "dev" from logs.profile, not "max-performance" from logs.insert.profile
 	if cfg.Profile != ProfileDev {
 		t.Errorf("profile = %q, want dev (per-signal, not per-role)", cfg.Profile)
-	}
-	if cfg.Insert.FlushInterval != 1*time.Second {
-		t.Errorf("flush_interval = %v, want 1s (dev profile)", cfg.Insert.FlushInterval)
 	}
 	if cfg.Insert.CompressionLevel != 1 {
 		t.Errorf("compression_level = %d, want 1 (dev profile)", cfg.Insert.CompressionLevel)
