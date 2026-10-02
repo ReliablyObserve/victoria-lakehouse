@@ -161,6 +161,15 @@ jobs:
         env: *e2e-env
         run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ -run "^(?!TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_|TestStringTenant_)" 2>&1 | tee -a e2e-results.txt
 
+      # Last: these restart and SIGKILL the Lakehouse containers. A row/span
+      # acknowledged before the restart or kill -9 must be returned exactly once
+      # afterwards (restored from the insert buffer's segments), for both binaries.
+      - name: Durability chaos (graceful restart and kill -9, both binaries)
+        env: *e2e-env
+        run: |
+          set -o pipefail
+          go test -tags='e2e chaos' -v -count=1 -timeout=10m ./tests/e2e/ -run "TestChaos_" 2>&1 | tee -a e2e-results.txt
+
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v7
