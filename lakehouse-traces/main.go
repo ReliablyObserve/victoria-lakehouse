@@ -337,8 +337,13 @@ func run(cfg *config.Config, addr string) {
 	})
 	store.SetTombstoneStore(tombstoneStore)
 
+	// The detector carries the delete lifecycle rules (per-tenant overrides are
+	// installed later on the same pointer); compaction reads it to keep away from
+	// objects S3 lifecycle has moved out of STANDARD.
+	detector := newStorageClassDetector(cfg)
+
 	var tenantPolicyHolder *tenant.PolicyRegistry
-	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder, tombstoneStore)
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder, tombstoneStore, detector)
 	if stopCompaction != nil {
 		defer stopCompaction()
 	}
@@ -447,15 +452,6 @@ func run(cfg *config.Config, addr string) {
 	classTracker := stats.NewStorageClassTracker(cfg.Stats.S3LifecycleRules, nil)
 
 	costCalc := stats.NewCostCalculator(cfg.Stats.S3PricePerGB, cfg.Stats.S3RequestPrices)
-
-	lifecycleRules := make([]delete.LifecycleRule, len(cfg.Delete.LifecycleRules))
-	for i, r := range cfg.Delete.LifecycleRules {
-		lifecycleRules[i] = delete.LifecycleRule{
-			TransitionDays: r.TransitionDays,
-			Class:          delete.ParseStorageClass(r.StorageClass),
-		}
-	}
-	detector := delete.NewStorageClassDetector(lifecycleRules)
 
 	rewriter := newDeleteRewriter(store.Pool(), cfg, "traces")
 
@@ -765,6 +761,7 @@ func setupCompaction(
 	addr string,
 	tenantPolicyHolder **tenant.PolicyRegistry,
 	tombstoneStore *delete.TombstoneStore,
+	detector *delete.StorageClassDetector,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
 	if !cfg.Compaction.Enabled {
 		return nil, nil, nil
@@ -815,6 +812,8 @@ func setupCompaction(
 		}
 	}
 
+	freeze := compactionFreeze(cfg, detector)
+
 	sched := compaction.NewScheduler(compaction.SchedulerConfig{
 		// Compaction is the second reaper: it already rewrites every row it
 		// touches, so suppressing tombstoned rows there costs one predicate
@@ -833,6 +832,7 @@ func setupCompaction(
 		RowGroupSize:             cfg.Insert.RowGroupSize,
 		CompressionLevel:         cfg.Insert.CompressionLevel,
 		CurrentSchemaFingerprint: parquets3.CurrentSchemaFingerprint(cfg.Mode),
+		Freeze:                   freeze,
 		CompactionConfig:         cfg.Compaction,
 		TenantCompressionLookup: func(prefix string) []int {
 			if tenantPolicyHolder == nil || *tenantPolicyHolder == nil || prefix == "" {
@@ -867,6 +867,7 @@ func setupCompaction(
 		Pool:             store.Pool(),
 		Ownership:        ownership,
 		Policy:           policy,
+		Freeze:           freeze,
 		Lister:           s3Pool,
 		Prefix:           cfg.AutoPrefix(),
 		Mode:             cfg.Mode,
