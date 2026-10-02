@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sync/atomic"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -753,11 +752,4 @@ func windowRowGroups(f *parquet.File, lo, hi int64) []int {
 		all = append(all, i)
 	}
 	return all
-}
-
-// bufferRowsTo streams the unflushed rows of the request's tenants into sink,
-// the same rows RunQuery merges (see queryBufferBridgeTo).
-func (s *Storage) bufferRowsTo(ctx context.Context, startNs, endNs int64, wm watermarkSource, q *logstorage.Query, tenantIDs []logstorage.TenantID, sink *tombstoneSink) {
-	var emitted atomic.Int64
-	s.queryBufferBridgeTo(ctx, startNs, endNs, 0, &emitted, wm, q, tenantIDs, sink)
 }

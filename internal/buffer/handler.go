@@ -1,19 +1,50 @@
 package buffer
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// Querier provides read access to unflushed in-memory rows.
-// BatchWriter satisfies this interface.
-type Querier interface {
-	BufferedLogRows(startNs, endNs int64) []schema.LogRow
-	BufferedTraceRows(startNs, endNs int64) []schema.TraceRow
+// Selection is the tenant selection of one buffer query: one tenant, or every
+// tenant for a cross-tenant read the select pod has already authorised.
+type Selection struct {
+	All                  bool
+	AccountID, ProjectID uint32
+}
+
+// Answer is what an insert pod's buffer returns for one query: the rows of its
+// live segments and those segments' nonces.
+type Answer struct {
+	Nonces []string
+	Logs   []schema.LogRow
+	Traces []schema.TraceRow
+}
+
+// Source is the insert pod's buffer as the bridge serves it. Each binary
+// provides it over its own segments (parquets3.BridgeSource), because the
+// rows are converted with that binary's VictoriaLogs pin.
+type Source interface {
+	ReadBuffer(ctx context.Context, sel Selection, startNs, endNs int64, mode string) (Answer, error)
+}
+
+// SegmentsHeader is the response header listing the nonces of the segments an
+// answer was read from, comma-separated. The select pod drops the objects
+// flushed from those segments from its scan, so no row is answered twice.
+const SegmentsHeader = "X-Lakehouse-Buffer-Segments"
+
+// ParseSegments reads SegmentsHeader.
+func ParseSegments(h string) []string {
+	if h == "" {
+		return nil
+	}
+	return strings.Split(h, ",")
 }
 
 // TenantScopeVersion is the value the select side sends in the
@@ -36,14 +67,14 @@ const (
 // Handler serves the internal buffer query endpoint, allowing select
 // pods to read unflushed data from insert pods over HTTP.
 type Handler struct {
-	store   Querier
+	store   Source
 	authKey string
 }
 
 // NewHandler creates a handler backed by the given Querier.
 // If authKey is non-empty, requests must include a matching
 // Authorization: Bearer <key> header.
-func NewHandler(store Querier, authKey string) *Handler {
+func NewHandler(store Source, authKey string) *Handler {
 	return &Handler{store: store, authKey: authKey}
 }
 
@@ -104,14 +135,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ans, err := h.store.ReadBuffer(r.Context(), Selection{All: sel.all, AccountID: sel.accountID, ProjectID: sel.projectID}, startNs, endNs, mode)
+	if err != nil {
+		http.Error(w, "read the insert buffer: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sort.Strings(ans.Nonces)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	// Echo the tenant this answer is filtered to, so the caller can prove the
 	// peer honoured the scope before merging the rows.
 	w.Header().Set(TenantScopeHeader, sel.String())
+	w.Header().Set(SegmentsHeader, strings.Join(ans.Nonces, ","))
 
 	enc := json.NewEncoder(w)
 	if mode == "logs" {
-		for _, row := range h.store.BufferedLogRows(startNs, endNs) {
+		for _, row := range ans.Logs {
 			if !sel.owns(row.AccountID, row.ProjectID) {
 				continue
 			}
@@ -121,7 +159,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	for _, row := range h.store.BufferedTraceRows(startNs, endNs) {
+	for _, row := range ans.Traces {
 		if !sel.owns(row.AccountID, row.ProjectID) {
 			continue
 		}

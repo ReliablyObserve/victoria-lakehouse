@@ -69,6 +69,46 @@ type RewriteScheduler struct {
 	// both consumers take idempotently.
 	handoffMu sync.Mutex
 	handedOff map[string]bool
+
+	// segmentLister lists the insert-buffer "segment committed" markers;
+	// segmentProtect is how long after a commit a segment can still be served
+	// from its insert pod. A rewrite replaces an object by one without the
+	// segment's nonce, so it waits for the segment like compaction does
+	// (manifest.SegmentGuard).
+	segmentLister  interface {
+		ListModTimes(ctx context.Context, prefix string) (map[string]time.Time, error)
+	}
+	segmentPrefix  string
+	segmentProtect time.Duration
+	guard          *manifest.SegmentGuard
+}
+
+// SetSegmentGuard makes rewrites wait for the insert-buffer segment an object
+// was drained from (see manifest.SegmentGuard). prefix is the signal prefix the
+// markers live under.
+func (s *RewriteScheduler) SetSegmentGuard(l interface {
+	ListModTimes(ctx context.Context, prefix string) (map[string]time.Time, error)
+}, prefix string, protect time.Duration) {
+	s.segmentLister, s.segmentPrefix, s.segmentProtect = l, prefix, protect
+}
+
+// loadSegmentGuard lists the markers once for a pass; a failed listing
+// releases no segment object this pass.
+func (s *RewriteScheduler) loadSegmentGuard(ctx context.Context) {
+	g := &manifest.SegmentGuard{Protect: s.segmentProtect}
+	if s.segmentLister != nil {
+		dir := s.segmentPrefix + manifest.SegmentMarkerDir
+		if listed, err := s.segmentLister.ListModTimes(ctx, dir); err == nil {
+			g.Markers = make(map[string]time.Time, len(listed))
+			for key, mod := range listed {
+				g.Markers[key[len(dir):]] = mod
+			}
+			g.Listed = true
+		} else {
+			logger.Warnf("delete rewrite: cannot list the buffer segment markers; objects of unconfirmed segments wait for the next pass: %s", err)
+		}
+	}
+	s.guard = g
 }
 
 func (s *RewriteScheduler) markHandedOff(source, newKey string) {
@@ -155,6 +195,7 @@ func (s *RewriteScheduler) Stop() {
 func (s *RewriteScheduler) RunOnce(ctx context.Context) []RewriteResult {
 	now := time.Now()
 	var results []RewriteResult
+	s.loadSegmentGuard(ctx)
 
 	// A store whose S3 copy could not be read may be missing records and
 	// progress other nodes (or this one, before the crash) wrote. Nothing may
@@ -273,6 +314,14 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 		if !s.allowedClasses[string(class)] {
 			metrics.DeleteRewriteSkippedGlacier.Inc()
 			logger.Infof("skipping rewrite: storage class not allowed; key=%s, class=%s", key, string(class))
+			continue
+		}
+
+		// An object of an insert-buffer segment that may still be served from
+		// its insert pod: replacing it now would serve its kept rows twice.
+		// The rows stay hidden by the query-time filter meanwhile.
+		if s.guard != nil && !s.guard.Released(key, now) {
+			metrics.DeleteRewriteDeferred.Inc("segment_live")
 			continue
 		}
 
