@@ -1,6 +1,11 @@
+import pathlib
+import subprocess
+import tempfile
 import unittest
 
 from scripts.ci.check_changelog_pr import (
+    comparison_base,
+    run_git,
     extract_unreleased_section,
     has_genuinely_new_unreleased_entries,
     has_meaningful_changelog_content,
@@ -332,6 +337,57 @@ class ReflowIsInvisibleToTheGatesTests(unittest.TestCase):
         base = "## [1.0.0]\n\n- **Shipped.** old body.\n"
         head = "## [1.0.0]\n\n- **Shipped.** old body.\n- **Also shipped.** new body.\n"
         self.assertTrue(has_new_versioned_entries(head, base))
+
+
+class StaleBaseTests(unittest.TestCase):
+    """A PR branch cut before another PR merged is compared from its merge-base."""
+
+    def _git(self, repo, *args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+    def _commit(self, repo, path, text, msg):
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text)
+        self._git(repo, "add", path)
+        self._git(repo, "commit", "-q", "--no-gpg-sign", "-m", msg)
+        return run_git("rev-parse", "HEAD", cwd=repo)
+
+    def test_release_metadata_pr_behind_main_is_metadata_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = pathlib.Path(d)
+            self._git(repo, "init", "-q", "-b", "main")
+            self._git(repo, "config", "user.email", "t@example.com")
+            self._git(repo, "config", "user.name", "t")
+            fork = self._commit(repo, "CHANGELOG.md", "## [Unreleased]\n\n- **Fix.** body.\n", "fix: x")
+            # Release-metadata branch cut here.
+            self._git(repo, "checkout", "-q", "-b", "release-meta")
+            head = self._commit(
+                repo, "CHANGELOG.md", "## [Unreleased]\n\n## [1.0.1]\n\n- **Fix.** body.\n", "chore: release metadata"
+            )
+            # Meanwhile main moves on with an unrelated workflow change.
+            self._git(repo, "checkout", "-q", "main")
+            base_tip = self._commit(repo, ".github/workflows/x.yml", "on: push\n", "ci: x")
+
+            two_dot = run_git("diff", "--name-only", f"{base_tip}..{head}", cwd=repo).splitlines()
+            self.assertIn(".github/workflows/x.yml", two_dot)  # the defect: main's change looks like the PR's
+            self.assertFalse(is_release_metadata_sync(two_dot))
+
+            mb = comparison_base(base_tip, head, cwd=repo)
+            self.assertEqual(mb, fork)
+            files = run_git("diff", "--name-only", f"{mb}..{head}", cwd=repo).splitlines()
+            self.assertEqual(files, ["CHANGELOG.md"])
+            self.assertTrue(is_release_metadata_sync(files))
+
+    def test_up_to_date_branch_base_is_the_tip(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = pathlib.Path(d)
+            self._git(repo, "init", "-q", "-b", "main")
+            self._git(repo, "config", "user.email", "t@example.com")
+            self._git(repo, "config", "user.name", "t")
+            tip = self._commit(repo, "a.txt", "a\n", "chore: a")
+            self._git(repo, "checkout", "-q", "-b", "pr")
+            head = self._commit(repo, "b.txt", "b\n", "fix: b")
+            self.assertEqual(comparison_base(tip, head, cwd=repo), tip)
 
 
 if __name__ == "__main__":
