@@ -26,6 +26,15 @@ spec:
           protocol: TCP
         {{- end }}
         {{- end }}
+        {{- range $signal := list "logs" "traces" }}
+        {{- $sv := index $.Values $signal }}
+        {{- if $sv.enabled }}
+        {{- range (include "victoria-lakehouse.ingestListeners" (dict "signal" $signal "role" "insert" "roleVals" $sv.insert) | fromYamlArray) }}
+        - port: {{ .port }}
+          protocol: {{ .protocol }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
       {{- if .Values.networkPolicy.ingressFrom }}
       from:
         {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}

@@ -7,6 +7,7 @@ on:
       - 'internal/**'
       - 'cmd/**'
       - 'tests/e2e/**'
+      - 'tests/ingestmatrix/**'
       - 'deployment/docker/**'
       - 'Dockerfile.*'
       - 'go.mod'
@@ -18,6 +19,7 @@ on:
       - 'internal/**'
       - 'cmd/**'
       - 'tests/e2e/**'
+      - 'tests/ingestmatrix/**'
       - 'deployment/docker/**'
       - 'Dockerfile.*'
   schedule:
@@ -141,6 +143,12 @@ jobs:
         run: |
           set -o pipefail
           go test -tags=e2e -v -count=1 -timeout=15m ./tests/e2e/ -run "TestMultitenancy_TenantScope_" 2>&1 | tee -a e2e-results.txt
+
+      - name: Verify ingest parity (every VL/VT ingest protocol vs hot, both binaries, both tenant forms)
+        env: *e2e-env
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=30m ./tests/e2e/ -run "TestIngestMatrix_" 2>&1 | tee -a e2e-results.txt
 
       - name: Run remaining E2E tests
         env: *e2e-env

@@ -8,7 +8,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 
 | Area | ✅ covered by a test | 🟡 declared only | 🔧 in progress | 📝 planned | Total |
 |---|---|---|---|---|---|
-| Ingest | 6 | 0 | 1 | 0 | 7 |
+| Ingest | 7 | 0 | 1 | 0 | 8 |
 | Storage | 21 | 0 | 2 | 2 | 25 |
 | Query | 14 | 1 | 0 | 1 | 16 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **134** | **1** | **3** | **8** | **146** |
+| **Total** | **135** | **1** | **3** | **8** | **147** |
 
 ## Coverage gaps
 
@@ -29,7 +29,7 @@ Shipped features with no linked test, whose only verification is a declared, not
 
 - `lh.feature.query.live_tail_unsupported` — Live tail answers as documented rather than silently (Query)
 
-## Ingest (7)
+## Ingest (8)
 
 ### ✅ Adaptive Parquet file sizing
 
@@ -103,6 +103,18 @@ Instead of a bespoke in-memory buffer with its own query semantics, the insert b
 - Docs: `docs/read-path.md`, `docs/storage-flow.md`
 - Changelog: `0.39.0`, `0.59.0`
 - Note: Opt-in: `-lakehouse.insert.buffer-engine=logstore` (the default is still the legacy staging buffer), which is why the roadmap lists it as in progress rather than shipped.
+
+### ✅ Opt-in syslog and OTLP/gRPC ingest listeners
+
+`lh.feature.ingest.optin_listeners` · status: shipped · since: the release after v0.143.12 · surfaces: ingest, flag, cli
+
+**Opt-in syslog and OTLP/gRPC listeners**: Helm values and compose flags start the upstream syslog (TCP/UDP) and OTLP/gRPC trace listeners, off by default, with the ports wired into the Service and NetworkPolicy.
+
+Both listeners are upstream VictoriaLogs/VictoriaTraces code that the Lakehouse binaries already link; the chart only had no way to open them. The insert pods now get the flag, container port, Service port and NetworkPolicy port per enabled listener, and every protocol, including these two, is proven against hot VL/VT by the ingest parity matrix.
+
+- Verification: tests: `charts/victoria-lakehouse/test_templates.sh`, `tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Logs`, `tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Traces`, `tests/conformance/ingest_matrix_test.go#TestIngestMatrix_E2EComposeEnablesListenersOnBothSides`
+- Docs: `docs/ingest-parity.md`, `docs/kubernetes-deployment.md`
+- Changelog: the release after `0.143.12`
 
 ### ✅ Full VictoriaLogs insert protocol surface
 
@@ -1666,7 +1678,7 @@ The chart encodes the operational rules that keep a stateful cold tier safe unde
 - Verification: tests: `charts/victoria-lakehouse/test_templates.sh`
 - Docs: `docs/kubernetes-deployment.md`
 - Changelog: `0.10.0`, `0.37.1`
-- Note: The linked chart template test is not run in CI; CI runs `helm lint` and the Helm drift check (`scripts/ci/helmdrift`) instead.
+- Note: CI runs the chart template test (`charts/victoria-lakehouse/test_templates.sh`) in the `helm` job, next to `helm lint --strict`, and the Helm drift check (`scripts/ci/helmdrift`).
 
 ### ✅ Insert and select role separation
 

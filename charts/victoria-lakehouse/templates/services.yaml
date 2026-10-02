@@ -30,6 +30,12 @@ spec:
       targetPort: jaeger-grpc
       protocol: TCP
     {{- end }}
+    {{- range (include "victoria-lakehouse.ingestListeners" (dict "signal" $signal "role" $role "roleVals" $roleVals) | fromYamlArray) }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .name }}
+      protocol: {{ .protocol }}
+    {{- end }}
   selector:
     {{- include "victoria-lakehouse.componentSelectorLabels" (dict "root" $ "signal" $signal "role" $role) | nindent 4 }}
 {{- end }}

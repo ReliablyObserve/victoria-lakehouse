@@ -810,6 +810,23 @@ logs:
     # -- Per-role profile override for logs insert. Empty = inherit logs.profile.
     profile: ""
     replicaCount: 2
+    # -- Opt-in syslog listeners (VictoriaLogs -syslog.listenAddr.*). Off by default:
+    # nothing but the HTTP port is exposed until you enable one. Each enabled listener
+    # adds the flag, a container port and a Service port (also the headless Service
+    # and the NetworkPolicy) on the insert pods. Upstream syslog has no per-message
+    # tenant: a listener writes to the one tenant named by tenantID.
+    syslog:
+      tcp:
+        # -- Listen for syslog over TCP (RFC3164 and RFC5424, newline or octet-counted).
+        enabled: false
+        port: 5140
+        # -- Tenant of every message on this listener, "AccountID:ProjectID". Empty = 0:0.
+        tenantID: ""
+      udp:
+        # -- Listen for syslog over UDP (one message per datagram).
+        enabled: false
+        port: 5141
+        tenantID: ""
     image: {}
     extraArgs: {}
     extraEnv: []
@@ -1054,6 +1071,19 @@ traces:
     # -- Per-role profile override for traces insert. Empty = inherit traces.profile.
     profile: ""
     replicaCount: 2
+    # -- Opt-in OTLP/gRPC trace listener (VictoriaTraces -otlpGRPCListenAddr). Off by
+    # default. Enabling it adds the flag, a container port and a Service port (also the
+    # headless Service and the NetworkPolicy) on the insert pods. The OTLP/HTTP route
+    # (/insert/opentelemetry/v1/traces on the HTTP port) is always available.
+    otlpGrpc:
+      enabled: false
+      port: 4317
+      tls:
+        # -- Serve gRPC over TLS (upstream default). Needs certFile and keyFile, mounted
+        # with insert.extraVolumes and insert.extraVolumeMounts; set false for plaintext.
+        enabled: true
+        certFile: ""
+        keyFile: ""
     image: {}
     extraArgs: {}
     extraEnv: []

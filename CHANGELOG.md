@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in syslog and OTLP/gRPC ingest listeners in the Helm chart (both binaries).**
+  `logs.insert.syslog.tcp` and `logs.insert.syslog.udp` start VictoriaLogs' syslog listeners
+  (`-syslog.listenAddr.tcp/udp`, with `tenantID` for `-syslog.tenantID.*`), and `traces.insert.otlpGrpc` starts
+  VictoriaTraces' OTLP/gRPC trace listener (`-otlpGRPCListenAddr`, TLS on by default with `certFile` and `keyFile`,
+  or `tls.enabled: false` for plaintext). Each enabled listener adds the container port, a Service port, the same
+  port on the headless Service and a NetworkPolicy ingress port on the insert pods. All of them are off by default,
+  so an unchanged `values.yaml` renders exactly what it did before; TLS on without a certificate fails at render
+  time. The e2e compose stack now runs the same listeners on the hot VictoriaLogs/VictoriaTraces containers and on
+  Lakehouse. See `docs/ingest-parity.md`.
+
 ### Fixed
 
 - **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**

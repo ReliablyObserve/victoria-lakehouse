@@ -67,6 +67,12 @@ spec:
             - "-http.maxGracefulShutdownDuration={{ .max_graceful_duration }}"
             {{- end }}
             {{- end }}
+            {{- $listeners := include "victoria-lakehouse.ingestListeners" (dict "signal" $signal "role" $role "roleVals" $roleVals) | fromYamlArray }}
+            {{- range $listeners }}
+            {{- range .args }}
+            - {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- range $key, $val := $roleVals.extraArgs }}
             - "--{{ $key }}={{ $val }}"
             {{- end }}
@@ -78,6 +84,11 @@ spec:
             - name: jaeger-grpc
               containerPort: {{ dig "jaeger_grpc_port" 16685 $signalVals.config }}
               protocol: TCP
+            {{- end }}
+            {{- range $listeners }}
+            - name: {{ .name }}
+              containerPort: {{ .port }}
+              protocol: {{ .protocol }}
             {{- end }}
           {{- with (include "victoria-lakehouse.securityContext" (dict "component" $roleVals "common" $.Values.common)) }}
           securityContext:

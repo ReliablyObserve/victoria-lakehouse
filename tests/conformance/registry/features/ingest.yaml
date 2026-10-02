@@ -169,3 +169,27 @@
     The writer extracts the label values present in each flushed file and stores them on the
     manifest entry. Compaction merges the label sets of its inputs so the pruning information
     survives rollups.
+
+- id: lh.feature.ingest.optin_listeners
+  title: Opt-in syslog and OTLP/gRPC ingest listeners
+  status: shipped
+  area: ingest
+  readme_section: Write Path
+  surfaces: [ingest, flag, cli]
+  tests:
+    - charts/victoria-lakehouse/test_templates.sh
+    - tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Logs
+    - tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Traces
+    - tests/conformance/ingest_matrix_test.go#TestIngestMatrix_E2EComposeEnablesListenersOnBothSides
+  docs:
+    - docs/ingest-parity.md
+    - docs/kubernetes-deployment.md
+  changelog_bullets:
+    - 'Opt-in syslog and OTLP/gRPC ingest listeners in the Helm chart (both binaries).'
+  highlight: >-
+    **Opt-in syslog and OTLP/gRPC listeners**: Helm values and compose flags start the upstream syslog (TCP/UDP) and OTLP/gRPC trace listeners, off by default, with the ports wired into the Service and NetworkPolicy.
+  description: >-
+    Both listeners are upstream VictoriaLogs/VictoriaTraces code that the Lakehouse binaries already link;
+    the chart only had no way to open them. The insert pods now get the flag, container port, Service port
+    and NetworkPolicy port per enabled listener, and every protocol, including these two, is proven against hot
+    VL/VT by the ingest parity matrix.
