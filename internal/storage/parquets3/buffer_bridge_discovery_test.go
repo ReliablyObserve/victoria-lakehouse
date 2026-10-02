@@ -27,6 +27,7 @@ func insertPod(t *testing.T, n int) *httptest.Server {
 			return
 		}
 		w.Header().Set(buffer.TenantScopeHeader, "0:0")
+		w.Header().Set(buffer.SegmentsHeader, "65000000aaaabbbb")
 		enc := json.NewEncoder(w)
 		for i := 0; i < n; i++ {
 			_ = enc.Encode(schema.LogRow{TimestampUnixNano: int64(i + 1), Body: "buffered"})
@@ -43,15 +44,15 @@ func TestBufferBridge_ReachesDiscoveredHostPort(t *testing.T) {
 	srv := insertPod(t, 3)
 	b := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeLogs)
 	b.SetEndpoints([]string{strings.TrimPrefix(srv.URL, "http://")})
-	rows, err := b.QueryLogs(context.Background(), 0, math.MaxInt64, tenantScope{account: "0", project: "0"})
-	if err != nil || len(rows) != 3 {
-		t.Fatalf("QueryLogs = %d rows, %v; want the pod's 3 rows", len(rows), err)
+	rows, nonces := b.QueryLogs(context.Background(), 0, math.MaxInt64, tenantScope{account: "0", project: "0"})
+	if _, ok := nonces["65000000aaaabbbb"]; len(rows) != 3 || !ok {
+		t.Fatalf("QueryLogs = %d rows, nonces %v; want the pod's 3 rows and its segment", len(rows), nonces)
 	}
 	// With AZ zones too.
 	b.SetEndpointsWithZones(map[string]string{strings.TrimPrefix(srv.URL, "http://"): "az-a"}, "az-a")
-	rows, err = b.QueryLogs(context.Background(), 0, math.MaxInt64, tenantScope{account: "0", project: "0"})
-	if err != nil || len(rows) != 3 {
-		t.Fatalf("QueryLogs with zones = %d rows, %v; want 3", len(rows), err)
+	rows, nonces = b.QueryLogs(context.Background(), 0, math.MaxInt64, tenantScope{account: "0", project: "0"})
+	if _, ok := nonces["65000000aaaabbbb"]; len(rows) != 3 || !ok {
+		t.Fatalf("QueryLogs with zones = %d rows, nonces %v; want 3 and the segment", len(rows), nonces)
 	}
 }
 
