@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -377,12 +378,6 @@ func TestDefaultInsertConfig(t *testing.T) {
 	if cfg.Role != RoleAll {
 		t.Errorf("default role = %q, want %q", cfg.Role, RoleAll)
 	}
-	if cfg.Insert.FlushInterval != 60*time.Second {
-		t.Errorf("default flush interval = %v, want 60s", cfg.Insert.FlushInterval)
-	}
-	if cfg.Insert.MaxBufferRows != 50000 {
-		t.Errorf("default max buffer rows = %d, want 50000", cfg.Insert.MaxBufferRows)
-	}
 	if cfg.Insert.RowGroupSize != 10000 {
 		t.Errorf("default row group size = %d, want 10000", cfg.Insert.RowGroupSize)
 	}
@@ -423,37 +418,22 @@ func TestValidate_InvalidRole(t *testing.T) {
 	}
 }
 
-func TestMaxBufferBytesN(t *testing.T) {
-	cfg := Default()
-	got := cfg.Insert.MaxBufferBytesN()
-	want := int64(256 * 1024 * 1024)
-	if got != want {
-		t.Errorf("MaxBufferBytesN() = %d, want %d", got, want)
-	}
-}
-
-func TestMaxBufferBytesN_Invalid(t *testing.T) {
-	cfg := Default()
-	cfg.Insert.MaxBufferBytes = "invalid"
-	got := cfg.Insert.MaxBufferBytesN()
-	want := int64(256 * 1024 * 1024)
-	if got != want {
-		t.Errorf("MaxBufferBytesN with invalid = %d, want default %d", got, want)
-	}
-}
-
 func TestValidate_InsertInvalid(t *testing.T) {
 	tests := []struct {
 		name   string
 		modify func(c *Config)
 	}{
 		{
-			"zero flush interval",
-			func(c *Config) { c.Insert.FlushInterval = 0 },
+			"zero buffer flush interval",
+			func(c *Config) { c.Insert.BufferFlushInterval = 0 },
 		},
 		{
-			"zero max buffer rows",
-			func(c *Config) { c.Insert.MaxBufferRows = 0 },
+			"negative buffer flush interval",
+			func(c *Config) { c.Insert.BufferFlushInterval = -time.Second },
+		},
+		{
+			"empty buffer dir",
+			func(c *Config) { c.Insert.BufferDir = "" },
 		},
 		{
 			"zero row group size",
@@ -479,7 +459,6 @@ func TestValidate_SelectSkipsInsertValidation(t *testing.T) {
 	cfg.Mode = ModeLogs
 	cfg.S3.Bucket = "test"
 	cfg.Role = RoleSelect
-	cfg.Insert.FlushInterval = 0
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("select role should skip insert validation: %v", err)
 	}
@@ -867,22 +846,10 @@ func TestMergeConfig_TopLevelFields(t *testing.T) {
 func TestMergeConfig_InsertFields(t *testing.T) {
 	base := Default()
 	overlay := &Config{}
-	overlay.Insert.FlushInterval = 5 * time.Second
-	overlay.Insert.MaxBufferRows = 100000
-	overlay.Insert.MaxBufferBytes = "512MB"
 	overlay.Insert.RowGroupSize = 20000
 	overlay.Insert.BloomColumns = []string{"trace_id"}
 	result := mergeConfig(base, overlay)
 
-	if result.Insert.FlushInterval != 5*time.Second {
-		t.Errorf("FlushInterval = %v", result.Insert.FlushInterval)
-	}
-	if result.Insert.MaxBufferRows != 100000 {
-		t.Errorf("MaxBufferRows = %d", result.Insert.MaxBufferRows)
-	}
-	if result.Insert.MaxBufferBytes != "512MB" {
-		t.Errorf("MaxBufferBytes = %q", result.Insert.MaxBufferBytes)
-	}
 	if result.Insert.RowGroupSize != 20000 {
 		t.Errorf("RowGroupSize = %d", result.Insert.RowGroupSize)
 	}
@@ -918,9 +885,8 @@ lakehouse:
     bucket: test-bucket
   role: insert
   insert:
-    flush_interval: 5s
-    max_buffer_rows: 100000
-    max_buffer_bytes: 512MB
+    buffer_flush_interval: 5s
+    buffer_dir: /var/lib/lakehouse/buffer
     row_group_size: 20000
     bloom_columns:
       - trace_id
@@ -939,20 +905,17 @@ lakehouse:
 	if cfg.Role != RoleInsert {
 		t.Errorf("Role = %q, want insert", cfg.Role)
 	}
-	if cfg.Insert.FlushInterval != 5*time.Second {
-		t.Errorf("FlushInterval = %v, want 5s", cfg.Insert.FlushInterval)
-	}
-	if cfg.Insert.MaxBufferRows != 100000 {
-		t.Errorf("MaxBufferRows = %d, want 100000", cfg.Insert.MaxBufferRows)
-	}
-	if cfg.Insert.MaxBufferBytes != "512MB" {
-		t.Errorf("MaxBufferBytes = %q, want 512MB", cfg.Insert.MaxBufferBytes)
-	}
 	if cfg.Insert.RowGroupSize != 20000 {
 		t.Errorf("RowGroupSize = %d, want 20000", cfg.Insert.RowGroupSize)
 	}
 	if len(cfg.Insert.BloomColumns) != 1 || cfg.Insert.BloomColumns[0] != "trace_id" {
 		t.Errorf("BloomColumns = %v", cfg.Insert.BloomColumns)
+	}
+	if cfg.Insert.BufferFlushInterval != 5*time.Second {
+		t.Errorf("BufferFlushInterval = %v, want 5s", cfg.Insert.BufferFlushInterval)
+	}
+	if cfg.Insert.BufferDir != "/var/lib/lakehouse/buffer" {
+		t.Errorf("BufferDir = %q", cfg.Insert.BufferDir)
 	}
 }
 
@@ -1407,16 +1370,8 @@ func TestValidate_MalformedSizeStrings(t *testing.T) {
 		modify func(c *Config)
 	}{
 		{
-			"invalid MaxBufferBytes",
-			func(c *Config) { c.Insert.MaxBufferBytes = "notasize" },
-		},
-		{
 			"invalid TargetFileSize",
 			func(c *Config) { c.Insert.TargetFileSize = "xyz" },
-		},
-		{
-			"MaxBufferBytes with bad suffix",
-			func(c *Config) { c.Insert.MaxBufferBytes = "256ZZ" },
 		},
 		{
 			"TargetFileSize non-numeric",
@@ -1441,7 +1396,6 @@ func TestValidate_ValidSizeStrings(t *testing.T) {
 	cfg := Default()
 	cfg.Mode = ModeLogs
 	cfg.S3.Bucket = "test"
-	cfg.Insert.MaxBufferBytes = "512MB"
 	cfg.Insert.TargetFileSize = "128MB"
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("expected no error for valid sizes, got: %v", err)
@@ -1497,26 +1451,14 @@ func TestValidate_HotBoundaryEmpty(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig_DurabilityFields(t *testing.T) {
+func TestDefaultConfig_InsertBufferFields(t *testing.T) {
 	cfg := Default()
 
-	if cfg.Insert.AckMode != "buffer" {
-		t.Errorf("default ack_mode = %q, want buffer", cfg.Insert.AckMode)
+	if cfg.Insert.BufferDir != "/data/lakehouse/buffer" {
+		t.Errorf("default insert.buffer_dir = %q, want /data/lakehouse/buffer", cfg.Insert.BufferDir)
 	}
-	if cfg.Insert.FlushLinger != 200*time.Millisecond {
-		t.Errorf("default flush_linger = %v, want 200ms", cfg.Insert.FlushLinger)
-	}
-	if cfg.Insert.FlushMaxRows != 5000 {
-		t.Errorf("default flush_max_rows = %d, want 5000", cfg.Insert.FlushMaxRows)
-	}
-	if cfg.Insert.PeerReplicate {
-		t.Error("default peer_replicate should be false")
-	}
-	if cfg.Insert.PeerReplicateTimeout != 5*time.Millisecond {
-		t.Errorf("default peer_replicate_timeout = %v, want 5ms", cfg.Insert.PeerReplicateTimeout)
-	}
-	if cfg.Insert.PeerReplicateTTL != 30*time.Second {
-		t.Errorf("default peer_replicate_ttl = %v, want 30s", cfg.Insert.PeerReplicateTTL)
+	if cfg.Insert.BufferFlushInterval != 5*time.Minute {
+		t.Errorf("default insert.buffer_flush_interval = %v, want 5m", cfg.Insert.BufferFlushInterval)
 	}
 }
 
@@ -1534,50 +1476,78 @@ func TestDefaultConfig_GCFields(t *testing.T) {
 	}
 }
 
-func TestValidate_AckMode(t *testing.T) {
-	for _, mode := range []string{"buffer", "wal", "flush-sync"} {
-		cfg := Default()
-		cfg.Mode = ModeLogs
-		cfg.S3.Bucket = "test"
-		cfg.Insert.AckMode = mode
-		if err := cfg.Validate(); err != nil {
-			t.Errorf("ack_mode=%q should be valid: %v", mode, err)
-		}
+// A config file that sets a key of an earlier release's staging buffer is
+// refused, naming the key and what replaced it: the operator would otherwise
+// believe a durability or memory setting is in force. The file of each key is
+// valid without it.
+func TestLoad_RemovedInsertKeysAreRefused(t *testing.T) {
+	values := map[string]string{
+		"buffer_engine": "logstore", "buffer_flush_enabled": "true", "buffer_retention": "1h",
+		"ack_mode": "flush-sync", "flush_interval": "5s", "max_buffer_rows": "1000",
+		"max_buffer_bytes": "256MB", "flush_linger": "100ms", "flush_max_rows": "100",
+		"peer_replicate": "true", "peer_replicate_timeout": "10ms", "peer_replicate_ttl": "60s",
 	}
-
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.Insert.AckMode = "invalid"
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for invalid ack_mode")
+	if len(values) != len(removedInsertKeys) {
+		t.Fatalf("the test covers %d keys, the code removed %d", len(values), len(removedInsertKeys))
+	}
+	for key, val := range values {
+		t.Run(key, func(t *testing.T) {
+			content := "lakehouse:\n  mode: logs\n  s3:\n    bucket: test\n  insert:\n    " + key + ": " + val + "\n"
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("insert.%s was accepted", key)
+			}
+			if !strings.Contains(err.Error(), "insert."+key+" was removed") {
+				t.Errorf("error does not name the key: %v", err)
+			}
+		})
+	}
+	// A key that was never an insert key keeps its meaning elsewhere: the same
+	// name under another section is not refused.
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("lakehouse:\n  mode: logs\n  s3:\n    bucket: test\n  manifest:\n    refresh_interval: 30s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("a file without removed keys was refused: %v", err)
 	}
 }
 
-func TestValidate_PeerReplicateWarning(t *testing.T) {
-	cfg := Default()
-	cfg.Mode = ModeLogs
-	cfg.S3.Bucket = "test"
-	cfg.Insert.AckMode = "flush-sync"
-	cfg.Insert.PeerReplicate = true
+// The segment buffer's keys load from a file and merge over a profile.
+func TestLoad_InsertBufferKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := "lakehouse:\n  mode: logs\n  s3:\n    bucket: test\n  insert:\n    buffer_dir: /pvc/buffer\n    buffer_flush_interval: 90s\n    target_file_size: 64MB\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Insert.BufferDir != "/pvc/buffer" || cfg.Insert.BufferFlushInterval != 90*time.Second || cfg.Insert.TargetFileSize != "64MB" {
+		t.Errorf("insert = %+v", cfg.Insert)
+	}
 	if err := cfg.Validate(); err != nil {
-		t.Errorf("flush-sync + peer_replicate should be valid (with warning): %v", err)
+		t.Errorf("valid buffer config rejected: %v", err)
+	}
+
+	// An empty overlay does not clobber the defaults.
+	merged := mergeConfig(Default(), &Config{})
+	if merged.Insert.BufferDir != "/data/lakehouse/buffer" || merged.Insert.BufferFlushInterval != 5*time.Minute {
+		t.Errorf("an empty overlay changed the buffer defaults: %+v", merged.Insert)
 	}
 }
 
-func TestLoad_DurabilityFields(t *testing.T) {
+func TestLoad_GCFields(t *testing.T) {
 	content := `
 lakehouse:
   mode: logs
   s3:
     bucket: test
-  insert:
-    ack_mode: flush-sync
-    flush_linger: 500ms
-    flush_max_rows: 10000
-    peer_replicate: true
-    peer_replicate_timeout: 10ms
-    peer_replicate_ttl: 60s
   gc:
     enabled: true
     interval: 12h
@@ -1594,24 +1564,6 @@ lakehouse:
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.Insert.AckMode != "flush-sync" {
-		t.Errorf("ack_mode = %q, want flush-sync", cfg.Insert.AckMode)
-	}
-	if cfg.Insert.FlushLinger != 500*time.Millisecond {
-		t.Errorf("flush_linger = %v, want 500ms", cfg.Insert.FlushLinger)
-	}
-	if cfg.Insert.FlushMaxRows != 10000 {
-		t.Errorf("flush_max_rows = %d, want 10000", cfg.Insert.FlushMaxRows)
-	}
-	if !cfg.Insert.PeerReplicate {
-		t.Error("peer_replicate should be true")
-	}
-	if cfg.Insert.PeerReplicateTimeout != 10*time.Millisecond {
-		t.Errorf("peer_replicate_timeout = %v, want 10ms", cfg.Insert.PeerReplicateTimeout)
-	}
-	if cfg.Insert.PeerReplicateTTL != 60*time.Second {
-		t.Errorf("peer_replicate_ttl = %v, want 60s", cfg.Insert.PeerReplicateTTL)
-	}
 	if cfg.GC.Interval != 12*time.Hour {
 		t.Errorf("GC interval = %v, want 12h", cfg.GC.Interval)
 	}

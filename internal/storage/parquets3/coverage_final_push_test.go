@@ -216,8 +216,6 @@ func TestTriggerFlush_WithData(t *testing.T) {
 	pool := testPool(t, srv.URL)
 	m := manifest.New("test", "logs/")
 	cfg := config.Default()
-	cfg.Insert.FlushInterval = 10 * time.Minute
-	cfg.Insert.MaxBufferRows = 1000000
 
 	bw := NewBatchWriter(&cfg.Insert, pool, m, "logs/", config.ModeLogs)
 	bw.stageLogRows([]schema.LogRow{
@@ -802,7 +800,6 @@ func TestClose_WithWriterAndPersister(t *testing.T) {
 	pool := testPool(t, srv.URL)
 	m := manifest.New("test", "logs/")
 	cfg := config.Default()
-	cfg.Insert.FlushInterval = 10 * time.Minute
 	bw := NewBatchWriter(&cfg.Insert, pool, m, "logs/", config.ModeLogs)
 
 	s := &Storage{

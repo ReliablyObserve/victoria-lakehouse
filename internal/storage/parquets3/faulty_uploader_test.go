@@ -141,7 +141,6 @@ func durabilityWriter(t *testing.T, u *faultyUploader) (*BatchWriter, *manifest.
 	s3srv := mockS3()
 	t.Cleanup(s3srv.Close)
 	bw, m := testWriter(t, s3srv.URL)
-	bw.cfg.MaxBufferRows = 1 << 30 // flushes happen only when the test calls FlushAll
 	bw.SetTenantBucket(func(uint32, uint32) string { return "durability" })
 	bw.SetTenantPool(func(string) PoolWriter { return u })
 	t.Cleanup(func() { u.checkByteInvariant(t) })

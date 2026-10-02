@@ -225,9 +225,6 @@ func testPool(t *testing.T, endpoint string) *s3reader.ClientPool {
 
 func testInsertConfig() *config.InsertConfig {
 	return &config.InsertConfig{
-		FlushInterval:    1 * time.Second,
-		MaxBufferRows:    100,
-		MaxBufferBytes:   "256MB",
 		TargetFileSize:   "128MB",
 		RowGroupSize:     50,
 		BloomColumns:     []string{"service.name", "trace_id"},

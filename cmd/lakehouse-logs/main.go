@@ -77,7 +77,6 @@ var (
 	hotBoundary     = flag.String("lakehouse.hot-boundary", "", "Manual hot boundary override (e.g., 7d)")
 	role            = flag.String("lakehouse.role", "", "Role: all, insert, select (default: all)")
 	profileFlag     = flag.String("lakehouse.profile", "", "Configuration profile: balanced, max-performance, max-durability, max-cost-savings, dev. Applied under the already-loaded config, so only keys left at zero take the profile value; prefer profile: in the config file")
-	flushInterval   = flag.Duration("lakehouse.insert.flush-interval", 0, "Insert flush interval (e.g., 10s)")
 	listenAddrFlag  = flag.String("httpListenAddr", ":9428", "HTTP listen address")
 	manifestRefresh = flag.Duration("lakehouse.manifest.refresh-interval", 0, "Manifest refresh interval (e.g., 30s)")
 
@@ -1744,9 +1743,6 @@ func applyTopLevelFlags(cfg *config.Config) {
 	}
 	if r := *role; r != "" {
 		cfg.Role = config.Role(r)
-	}
-	if *flushInterval > 0 {
-		cfg.Insert.FlushInterval = *flushInterval
 	}
 }
 
