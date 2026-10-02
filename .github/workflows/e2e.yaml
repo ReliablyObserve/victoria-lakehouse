@@ -158,7 +158,7 @@ jobs:
         env: *e2e-env
         run: |
           set -o pipefail
-          go test -tags=e2e -v -count=1 -timeout=30m ./tests/e2e/ -run . -skip "^(TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_|TestStringTenant_|TestMultitenancy_TenantScope_)" 2>&1 | tee -a e2e-results.txt
+          go test -tags=e2e -v -count=1 -timeout=30m ./tests/e2e/ -run . -skip "^(TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_|TestStringTenant_|TestMultitenancy_TenantScope_|TestIngestMatrix_)" 2>&1 | tee -a e2e-results.txt
 
       - name: Upload E2E results
         if: always()
