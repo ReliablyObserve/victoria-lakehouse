@@ -14,8 +14,8 @@ const (
 )
 
 // defaultFreezeMargin is how long before the first lifecycle transition out of
-// a rewritable class compaction stops touching a partition (compaction v2
-// §2.6, D7: first transition − 2 d). S3 runs lifecycle asynchronously, so an
+// a rewritable class compaction stops touching a partition (first transition
+// − 2 d). S3 runs lifecycle asynchronously, so an
 // object can move up to about a day after it becomes eligible; the margin keeps
 // compaction clear of that window.
 const defaultFreezeMargin = 48 * time.Hour

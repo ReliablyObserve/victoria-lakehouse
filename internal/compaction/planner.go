@@ -15,8 +15,7 @@ var planClock = time.Now
 // matureBytes: a file at least this large is never selected by the closed-hour
 // rollup. Merging it would rewrite a large object to absorb a few late small
 // ones, so write amplification under backfill would grow with the hour's total
-// bytes instead of with the late data. Half of the 64 MiB effective target
-// object size of the compaction v2 design (mature_fraction 0.5).
+// bytes instead of with the late data. Half of a 64 MiB target object size.
 const matureBytes = 32 << 20
 
 // Why a merge was planned. The first two are open-hour merges driven by the
@@ -50,8 +49,8 @@ type mergePlan struct {
 // most, and a closed-hour rollup backlog must not starve them.
 func (p mergePlan) open() bool { return p.reason == reasonL0Count || p.reason == reasonL1Count }
 
-// debt is the files a plan removes per byte it rewrites (compaction v2 §2.3):
-// the heaviest small-file debt first.
+// debt is the files a plan removes per byte it rewrites: the heaviest
+// small-file debt first.
 func (p mergePlan) debt() float64 {
 	b := p.bytes
 	if b < 1 {
