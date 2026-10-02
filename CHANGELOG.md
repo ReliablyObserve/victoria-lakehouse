@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Market comparison of log and trace stores.** `docs/market-comparison.md` and an interactive matrix
+  (`website/static/market/`, published on the docs site) compare Victoria Lakehouse with 48 other log and trace
+  stores, under the headings interfaces, ingest, storage, read, durability, scalability and operations. Every cell
+  names its source and says whether that source is documentation, a vendor claim, our own measurement, this
+  repository, or unverified. The data lives in one YAML file per system under `docs/market/data`; `scripts/market/build.py`
+  validates it, regenerates both views, freezes dated snapshots and shows what changed between two reviews, and the
+  `Market data` workflow fails a pull request whose generated files are out of date and lists cells due for a re-check
+  every week.
+
+## [0.143.13] - 2026-10-02
+
 ### Fixed
 
 - **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**
@@ -41,17 +54,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not have to match, in any layer (footer bloom row-group skip, file-level `.bloom` sidecar, the pushdown
   predicate, the traces `_trace_idx` prefilter and the `_msg` token bloom), so `NOT trace_id:="x"` returns the other
   rows instead of none.
-
-### Documentation
-
-- **Market comparison of log and trace stores.** `docs/market-comparison.md` and an interactive matrix
-  (`website/static/market/`, published on the docs site) compare Victoria Lakehouse with 48 other log and trace
-  stores, under the headings interfaces, ingest, storage, read, durability, scalability and operations. Every cell
-  names its source and says whether that source is documentation, a vendor claim, our own measurement, this
-  repository, or unverified. The data lives in one YAML file per system under `docs/market/data`; `scripts/market/build.py`
-  validates it, regenerates both views, freezes dated snapshots and shows what changed between two reviews, and the
-  `Market data` workflow fails a pull request whose generated files are out of date and lists cells due for a re-check
-  every week.
 
 ## [0.143.12] - 2026-10-02
 
