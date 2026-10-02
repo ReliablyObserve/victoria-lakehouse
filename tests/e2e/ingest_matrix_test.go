@@ -747,11 +747,17 @@ func countMarkerRows(t *testing.T, key string, data []byte, marker string) int {
 
 // TestIngestMatrix_Logs runs every VictoriaLogs ingest protocol against hot VL
 // and lakehouse-logs, in both tenant forms where upstream has both.
-func TestIngestMatrix_Logs(t *testing.T) { runIngestMatrix(t, im.Logs) }
+func TestIngestMatrix_Logs(t *testing.T) {
+	t.Parallel() // independent binaries and tenants: the flush waits overlap with the traces run
+	runIngestMatrix(t, im.Logs)
+}
 
 // TestIngestMatrix_Traces runs every VictoriaTraces ingest protocol against hot
 // VT and lakehouse-traces, in both tenant forms where upstream has both.
-func TestIngestMatrix_Traces(t *testing.T) { runIngestMatrix(t, im.Traces) }
+func TestIngestMatrix_Traces(t *testing.T) {
+	t.Parallel()
+	runIngestMatrix(t, im.Traces)
+}
 
 // TestIngestMatrix_Probes sends the non-data ingest routes (readiness, health,
 // the Elasticsearch, Datadog and Splunk compatibility stubs) to hot and to

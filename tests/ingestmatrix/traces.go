@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	coltrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -31,6 +32,19 @@ func tracesCases() []Case {
 			ID: "otlp_traces_protobuf", Signal: Traces, Gaps: msgGap, Title: "/insert/opentelemetry/v1/traces: OTLP/HTTP traces, protobuf", Transport: HTTP,
 			Forms: bothForms, Rows: spans3, Routes: []string{"/insert/opentelemetry/v1/traces"},
 			Counter: `vt_rows_ingested_total{type="opentelemetry_traces_otlphttp_protobuf"}`, Build: buildOTLPTracesProtobuf,
+			Read: ReadSpec{Query: `trace_id:="%MARKER%"`},
+		},
+		{
+			ID: "native", Signal: Traces, Gaps: msgGap, Title: "/insert/native: VictoriaTraces native binary protocol (span rows)", Transport: HTTP,
+			Forms: bothForms, Rows: spans3, Routes: []string{"/insert/native"},
+			Counter: `vt_rows_ingested_total{type="nativeinsert"}`, Build: buildTraceNativeAt("/insert/native"),
+			Read: ReadSpec{Query: `trace_id:="%MARKER%"`},
+		},
+		{
+			ID: "multitenant_native", Signal: Traces, Gaps: msgGap, Title: "/insert/multitenant/native: native protocol, tenant inside each span row", Transport: HTTP,
+			Forms: []Form{Numeric}, FormNote: "the tenant is carried by each row of the payload and request tenant headers are ignored upstream, so there is no header or alias form",
+			Rows: spans3, Routes: []string{"/insert/multitenant/native"}, NoTenantHeaders: true,
+			Counter: `vt_rows_ingested_total{type="nativemultitenant"}`, Build: buildTraceNativeAt("/insert/multitenant/native"),
 			Read: ReadSpec{Query: `trace_id:="%MARKER%"`},
 		},
 		{
@@ -148,3 +162,49 @@ func GRPCExport(ctx context.Context, addr string, p Params) GRPCResult {
 }
 
 func grpcCode(err error) string { return status.Code(err).String() }
+
+// traceNativeRows builds the span rows of a run as vtagent sends them over the
+// native protocol: upstream's own logstorage.InsertRow with the VictoriaTraces
+// span field names, stream tags {name, resource_attr:service.name}.
+func traceNativeRows(p Params, tenant Tenant) []byte {
+	var out []byte
+	for i := 1; i <= spans3; i++ {
+		name := fmt.Sprintf("ingest-matrix op %d", i)
+		start := p.RowTime(i, spans3)
+		st := logstorage.GetStreamTags()
+		st.Add("name", name)
+		st.Add("resource_attr:service.name", svcName)
+		r := logstorage.InsertRow{
+			TenantID:            logstorage.TenantID{AccountID: tenant.Account, ProjectID: tenant.Project},
+			StreamTagsCanonical: string(st.MarshalCanonical(nil)),
+			Timestamp:           start.UnixNano(),
+		}
+		logstorage.PutStreamTags(st)
+		fields := []logstorage.Field{
+			{Name: "name", Value: name},
+			{Name: "resource_attr:service.name", Value: svcName},
+			{Name: "trace_id", Value: p.Marker},
+			{Name: "span_id", Value: spanID(p.Marker, i)},
+			{Name: "kind", Value: "2"},
+			{Name: "start_time_unix_nano", Value: strconv.FormatInt(start.UnixNano(), 10)},
+			{Name: "end_time_unix_nano", Value: strconv.FormatInt(start.Add(250*time.Millisecond).UnixNano(), 10)},
+			{Name: "duration", Value: "250000000"},
+			{Name: "status_code", Value: "1"},
+			{Name: "span_attr:row", Value: strconv.Itoa(i)},
+			{Name: "span_attr:env", Value: "e2e"},
+		}
+		if i > 1 {
+			fields = append(fields, logstorage.Field{Name: "parent_span_id", Value: spanID(p.Marker, 1)})
+		}
+		r.Fields = fields
+		out = r.Marshal(out)
+	}
+	return out
+}
+
+func buildTraceNativeAt(path string) func(Params) []Request {
+	return func(p Params) []Request {
+		return []Request{{Method: "POST", Path: path, Query: "version=v1",
+			Header: map[string]string{"Content-Type": "application/octet-stream"}, Body: traceNativeRows(p, p.Tenant), Rows: spans3}}
+	}
+}

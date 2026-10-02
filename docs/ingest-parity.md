@@ -8,7 +8,7 @@ every write protocol, on both binaries.
 The matrix cells are registry rows (`vl.ingest.<protocol>.<form>` and
 `vt.ingest.<protocol>.<form>`, in `tests/conformance/registry/rows/{vl,vt}/ingest_matrix.yaml`).
 The generated table of all cells, with the upstream route or flag each one exercises, is the
-"Ingest protocols (parity matrix)" section of [`UPSTREAM_COVERAGE.md`](../UPSTREAM_COVERAGE.md).
+"Ingest protocols (parity matrix)" section of the generated `UPSTREAM_COVERAGE.md` at the repository root.
 
 ## What each cell proves
 
@@ -33,13 +33,14 @@ compatibility stubs) are probed by `TestIngestMatrix_Probes`: same status and bo
 | Binary | Protocols |
 |---|---|
 | `lakehouse-logs` vs VictoriaLogs v1.52 | `/insert/jsonline`, `/insert/native`, `/insert/multitenant/native`, Loki push (JSON and snappy protobuf), Elasticsearch `_bulk`, Splunk HEC events (four route spellings), Datadog v2 logs (two spellings), journald upload, OTLP/HTTP logs (protobuf stored; JSON refused upstream and by Lakehouse the same way), syslog over TCP and over UDP in RFC3164 and RFC5424 |
-| `lakehouse-traces` vs VictoriaTraces v0.12 | OTLP/HTTP traces (protobuf and JSON), OTLP/gRPC traces |
+| `lakehouse-traces` vs VictoriaTraces v0.12 | OTLP/HTTP traces (protobuf and JSON), OTLP/gRPC traces, `/insert/native`, `/insert/multitenant/native` (span rows) |
 
 Splunk HEC *raw* is not a protocol in the pinned VictoriaLogs (only `/event` and `/event/1.0`
-are routed), so there is no raw cell. VictoriaTraces' own `/insert/native` and
-`/insert/multitenant/native` and both `/internal/insert` routes (peer replication, not a client
-protocol) are listed with a reason in `tests/ingestmatrix` (`Exclusions`); the drift gate
-checks that list too.
+are routed), so there is no raw cell. VictoriaTraces' `/internal/insert` route is listed with a reason in
+`tests/ingestmatrix` (`Exclusions`); the drift gate checks that list too. `/internal/insert` is a case for `lakehouse-logs` (native-format rows, the tenant
+inside each row); for `lakehouse-traces` it is an exclusion because the route is not mounted there
+(`404` where hot VictoriaTraces answers `200`), tracked in
+[#334](https://github.com/ReliablyObserve/victoria-lakehouse/issues/334).
 
 Payloads are built with upstream's own libraries where it exports them (`logstorage.InsertRow` for
 the native protocol, the OTLP proto types the upstream parsers decode) and with the documented wire

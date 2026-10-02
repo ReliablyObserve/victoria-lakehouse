@@ -50,6 +50,12 @@ func logsCases() []Case {
 			Counter: `vl_rows_ingested_total{type="nativemultitenant"}`, Build: buildNative(true),
 		},
 		{
+			ID: "internal_insert", Signal: Logs, Gaps: sevGap, Title: "/internal/insert: storage-node ingest used by a vlinsert tier (native rows)", Transport: HTTP,
+			Forms: []Form{Numeric}, FormNote: "the tenant is carried by each row of the payload and request tenant headers are ignored upstream, so there is no header or alias form",
+			Rows: rows3, Routes: []string{"/internal/insert"}, NoTenantHeaders: true,
+			Counter: `vl_rows_ingested_total{type="internalinsert"}`, Build: buildNativeAt("/internal/insert"),
+		},
+		{
 			ID: "loki_json", Signal: Logs, Gaps: sevGap, Title: "/insert/loki/api/v1/push: Loki push, JSON", Transport: HTTP,
 			Forms: bothForms, Rows: rows3, Routes: []string{"/insert/loki/api/v1/push"},
 			Counter: `vl_rows_ingested_total{type="loki_json"}`, Build: buildLokiJSON,
@@ -153,11 +159,8 @@ func Probes() []Probe {
 // drift gate deletes none silently: an entry that stops matching fails.
 func Exclusions() []Exclusion {
 	return []Exclusion{
-		{Logs, "route:/internal/insert", "peer-to-peer storage-node replication (vlinsert to vlstorage), not a client ingest protocol; its registry row stays pending until peer-ingest has its own matrix"},
 		{Logs, "flag:syslog.listenAddr.unix", "a unix-socket listener cannot be published by the compose file or the Helm Service; same code path as the TCP listener"},
-		{Traces, "route:/insert/native", "VT native binary protocol: the registry row vt.insert.native.differ stays declared; not part of this matrix"},
-		{Traces, "route:/insert/multitenant/native", "VT multitenant native binary protocol: the registry row vt.insert.multitenant_native.differ stays declared; not part of this matrix"},
-		{Traces, "route:/internal/insert", "peer-to-peer storage-node replication, not a client ingest protocol; its registry row stays pending"},
+		{Traces, "route:/internal/insert", "known gap, tracked in https://github.com/ReliablyObserve/victoria-lakehouse/issues/334: lakehouse-traces does not mount VictoriaTraces' storage-node ingest route (404 where hot VT answers 200); the registry row vt.internal.insert.count stays pending"},
 	}
 }
 
@@ -217,11 +220,14 @@ func nativeRows(p Params, tenant Tenant) []byte {
 }
 
 func buildNative(multitenant bool) func(Params) []Request {
+	if multitenant {
+		return buildNativeAt("/insert/multitenant/native")
+	}
+	return buildNativeAt("/insert/native")
+}
+
+func buildNativeAt(path string) func(Params) []Request {
 	return func(p Params) []Request {
-		path := "/insert/native"
-		if multitenant {
-			path = "/insert/multitenant/native"
-		}
 		return []Request{{Method: "POST", Path: path, Query: "version=v1",
 			Header: map[string]string{"Content-Type": "application/octet-stream"}, Body: nativeRows(p, p.Tenant), Rows: rows3}}
 	}

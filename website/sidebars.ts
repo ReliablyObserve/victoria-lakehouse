@@ -78,6 +78,7 @@ const sidebars: SidebarsConfig = {
         'zstd-compression-benchmark',
         'petabyte-scale-audit',
         'parity-and-gaps',
+        'ingest-parity',
       ],
     },
     {

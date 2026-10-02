@@ -8,13 +8,12 @@
 - { id: vt.insert.ready.status, title: "/insert/ready — ingest readiness probe", surface: vt, kind: insert, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /insert/ready }, request: { method: GET, path: /insert/ready }, compare: { type: status }, layers: [api], refs: { doc: docs/ingest-parity.md, tests: [tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Probes] } }
 - { id: vt.internal.insert.count, title: "/internal/insert — peer-to-peer ingest replication", surface: vt, kind: internal, origin: native, expect: pass, targets: [global], seed: [traces.base], upstream: { route: /internal/insert }, request: { method: POST, path: /internal/insert }, compare: { type: count }, layers: [api], pending: true }
 
-- id: vt.insert.native.differ
+- id: vt.insert.native.count
   title: "/insert/native — VT native binary protocol ingest (VT 0.11.0+)"
   surface: vt
   kind: insert
   origin: native
-  expect: differ
-  differ_note: "Live at the pinned VT 0.12.0: lakehouse-traces mounts vtinsert.RequestHandler wholesale, so the route is served. End-to-end native ingest through the cold tier (a vtagent payload landing in Parquet) is not exercised yet — the verification round covers it (docs/parity-and-gaps.md)."
+  expect: pass
   since: { vt: "0.11.0" }
   targets: [hot]
   seed: [traces.base]
@@ -22,15 +21,14 @@
   request: { method: POST, path: /insert/native }
   compare: { type: count }
   layers: [api]
-  pending: true
+  refs: { doc: docs/ingest-parity.md, tests: [tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Traces] }
 
-- id: vt.insert.multitenant_native.differ
+- id: vt.insert.multitenant_native.count
   title: "/insert/multitenant/native — multi-tenant native ingest (VT 0.11.0+)"
   surface: vt
   kind: insert
   origin: native
-  expect: differ
-  differ_note: "Live at the pinned VT 0.12.0 alongside /insert/native, with the same unverified cold-tier end-to-end path; additionally carries the per-request tenant, which the cold writer must honour (docs/parity-and-gaps.md)."
+  expect: pass
   since: { vt: "0.11.0" }
   targets: [hot]
   seed: [tenants.iso]
@@ -38,4 +36,4 @@
   request: { method: POST, path: /insert/multitenant/native }
   compare: { type: count }
   layers: [api]
-  pending: true
+  refs: { doc: docs/ingest-parity.md, tests: [tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Traces] }
