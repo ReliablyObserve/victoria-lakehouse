@@ -1,0 +1,314 @@
+name: parquet-readers
+
+# The external Parquet reader matrix: every engine docs/open-parquet-format.md names runs its
+# documented example against real Lakehouse files on S3 (logs and traces; numeric, alias and
+# >= 2^31 tenants, a hand-written edge-case batch and a 60-row bloom tenant; raw flushed files and
+# compacted files; Hive partition pruning) and is compared with the WRITER-SIDE truth: the manifests
+# the fixture computes from the rows before it sends them, not with what Lakehouse reads back. Runs on
+# every change that can alter the files (see the path list) and daily.
+#
+#   selftest   harness unit tests + the committed coverage table is the generated one
+#   fixture    builds both binaries (Docker layers cached), ingests, flushes, compacts on an isolated
+#              compose project (lhreaders, ports 39400-39499), checks Lakehouse and the files against
+#              the truth and uploads every object of both layers (the `_` objects included)
+#   readers-*  one job per engine family restores the fixture into a bare RustFS and runs the
+#              examples; the long-running engines (ClickHouse, Trino, Spark) run in parallel
+#   summary    one table for the whole matrix
+
+on:
+  # One path list for push and pull_request (a YAML anchor), so a change that can alter the files
+  # Lakehouse writes cannot reach main without the matrix having run on it: the writers and the
+  # storage layer, the schema, compaction, tombstones and lifecycle, the buffer, manifest and tenant
+  # code the flush goes through, the build, the docs examples and this harness. The traces binary has its
+  # own copies of the adapters (lakehouse-traces/**).
+  pull_request:
+    branches: [main]
+    paths: &readers_paths
+      - 'internal/storage/**'
+      - 'internal/schema/**'
+      - 'internal/compaction/**'
+      - 'internal/traceindex/**'
+      - 'internal/delete/**'
+      - 'internal/config/**'
+      - 'internal/vlstorage/**'
+      - 'internal/manifest/**'
+      - 'internal/membuffer/**'
+      - 'internal/buffer/**'
+      - 'internal/tenant/**'
+      - 'internal/bloomindex/**'
+      - 'internal/lifecycle/**'
+      - 'internal/retention/**'
+      - 'cmd/**'
+      - 'lakehouse-traces/**'
+      - 'patches/**'
+      - 'tests/readers/**'
+      - 'docs/open-parquet-format.md'
+      - 'scripts/ci/parquet-readback/**'
+      - 'Dockerfile.*'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/parquet-readers.yaml'
+  push:
+    branches: [main]
+    paths: *readers_paths
+  schedule:
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The daily run has its own group (a push to main must not cancel it, nor it a push), and only a pull
+# request supersedes an older run of itself.
+concurrency:
+  group: parquet-readers-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOWORK: "off"
+  OUT: ${{ github.workspace }}/readers-out
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/readers/requirements.txt
+      - name: Install the pinned readers
+        run: pip install -r tests/readers/requirements.txt
+      - name: Harness self-tests
+        working-directory: tests/readers
+        run: python -m pytest -q
+      - name: The coverage table in the docs is the generated one
+        run: python tests/readers/report.py --check-doc
+
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/readers/requirements.txt
+      - name: Install the pinned readers
+        run: pip install -r tests/readers/requirements.txt
+      # The three images are built here with the GitHub Actions layer cache (the dependency layers do not
+      # change between runs) and loaded under the names the compose file uses; run.sh then finds them and
+      # does not build again.
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.logs
+          load: true
+          tags: lhreaders-lakehouse-logs:dev
+          cache-from: type=gha,scope=readers-logs
+          cache-to: type=gha,mode=max,scope=readers-logs
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.traces
+          load: true
+          tags: lhreaders-lakehouse-traces:dev
+          cache-from: type=gha,scope=readers-traces
+          cache-to: type=gha,mode=max,scope=readers-traces
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.datagen
+          load: true
+          tags: lhreaders-datagen:dev
+          cache-from: type=gha,scope=readers-datagen
+          cache-to: type=gha,mode=max,scope=readers-datagen
+      - name: Ingest, flush, compact, check against the writer-side truth
+        env:
+          SKIP_BUILD: "1"
+        run: tests/readers/run.sh fixture
+      - name: Stack logs on failure
+        if: failure()
+        run: |
+          docker compose -p lhreaders -f tests/readers/docker-compose.yml logs --no-color --tail=200 || true
+      - name: Tear down
+        if: always()
+        run: tests/readers/run.sh down || true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: readers-fixture
+          path: ${{ env.OUT }}
+          retention-days: 7
+
+  readers-inprocess:
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ENGINES: duckdb,pyarrow,pandas,polars,datafusion,parquet-tools
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/readers/requirements.txt
+      - run: pip install -r tests/readers/requirements.txt
+      - uses: actions/download-artifact@v8
+        with:
+          name: readers-fixture
+          path: ${{ env.OUT }}
+      - name: Run the documented examples
+        run: tests/readers/run.sh engines "$ENGINES"
+      - name: Assert per engine and signal
+        working-directory: tests/readers
+        env:
+          READERS_RESULTS: ${{ env.OUT }}
+        run: python -m pytest -q -m results -k "duckdb or pyarrow or pandas or polars or datafusion or parquet_tools"
+      - if: always()
+        run: tests/readers/run.sh down || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: readers-result-inprocess
+          path: ${{ env.OUT }}/result-*.json
+
+  readers-clickhouse:
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/readers/requirements.txt
+      - run: pip install -r tests/readers/requirements.txt
+      - uses: actions/download-artifact@v8
+        with:
+          name: readers-fixture
+          path: ${{ env.OUT }}
+      - name: Run the documented examples
+        run: tests/readers/run.sh engines clickhouse
+      - name: Assert per engine and signal
+        working-directory: tests/readers
+        env:
+          READERS_RESULTS: ${{ env.OUT }}
+        run: python -m pytest -q -m results -k clickhouse
+      - if: always()
+        run: tests/readers/run.sh down || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: readers-result-clickhouse
+          path: ${{ env.OUT }}/result-*.json
+
+  readers-trino:
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/readers/requirements.txt
+      - run: pip install -r tests/readers/requirements.txt
+      - uses: actions/download-artifact@v8
+        with:
+          name: readers-fixture
+          path: ${{ env.OUT }}
+      - name: Run the documented examples
+        run: tests/readers/run.sh engines trino
+      - name: Assert per engine and signal
+        working-directory: tests/readers
+        env:
+          READERS_RESULTS: ${{ env.OUT }}
+        run: python -m pytest -q -m results -k trino
+      - if: always()
+        run: tests/readers/run.sh down || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: readers-result-trino
+          path: ${{ env.OUT }}/result-*.json
+
+  readers-spark:
+    needs: fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/readers/requirements.txt
+      - run: pip install -r tests/readers/requirements.txt
+      - uses: actions/download-artifact@v8
+        with:
+          name: readers-fixture
+          path: ${{ env.OUT }}
+      # hadoop-aws pulls the AWS SDK v2 bundle (~600 MB); keep it between runs.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/lhreaders-ivy
+          key: lhreaders-ivy-spark-4.0.0-hadoop-aws-3.4.1
+      - name: Run the documented examples
+        run: tests/readers/run.sh engines spark
+      - name: Assert per engine and signal
+        working-directory: tests/readers
+        env:
+          READERS_RESULTS: ${{ env.OUT }}
+        run: python -m pytest -q -m results -k spark
+      - if: always()
+        run: tests/readers/run.sh down || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: readers-result-spark
+          path: ${{ env.OUT }}/result-*.json
+
+  summary:
+    needs: [selftest, fixture, readers-inprocess, readers-clickhouse, readers-trino, readers-spark]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/readers/requirements.txt
+      - run: pip install -r tests/readers/requirements.txt
+      - uses: actions/download-artifact@v8
+        with:
+          name: readers-fixture
+          path: ${{ env.OUT }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: readers-result-*
+          path: ${{ env.OUT }}
+          merge-multiple: true
+      - name: Fixture-level assertions (Lakehouse equals the writer-side truth; a second compaction scan does nothing; the bucket is restored as Lakehouse left it; what readers see of known divergences)
+        working-directory: tests/readers
+        env:
+          READERS_RESULTS: ${{ env.OUT }}
+        run: python -m pytest -q -m results -k "lakehouse_answers or known_divergences or second_compaction or restored"
+      - name: Matrix table
+        working-directory: tests/readers
+        run: |
+          python report.py "$OUT" | tee "$OUT/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Every job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | python -c 'import json,sys; n=json.load(sys.stdin); bad={k:v["result"] for k,v in n.items() if v["result"]!="success"}; print(bad); sys.exit(1 if bad else 0)'

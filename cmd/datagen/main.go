@@ -76,7 +76,23 @@ func main() {
 	accountID := flag.String("account-id", "0", "tenant AccountID header")
 	projectID := flag.String("project-id", "0", "tenant ProjectID header")
 	orgID := flag.String("org-id", "", "string tenant ID via X-Scope-OrgID header (overrides account-id/project-id)")
+	seed := flag.Int64("seed", 0, "seed of the row generator and of the generated trace/span IDs (0 = random, the default)")
+	nowFlag := flag.String("now", "", "RFC3339 instant the generated timestamps are relative to (default: the current time)")
+	manifestPath := flag.String("manifest", "", "write the writer-side truth of this run (computed from the generated rows before they are sent) to this JSON file")
+	manifestName := flag.String("manifest-name", "", "tenant name recorded in the manifest")
 	flag.Parse()
+
+	if *seed != 0 {
+		idRng = mrand.New(mrand.NewSource(*seed ^ 0x5eed)) // #nosec G404 -- synthetic test data
+	}
+	if *nowFlag != "" {
+		t, err := time.Parse(time.RFC3339Nano, *nowFlag)
+		if err != nil {
+			log.Fatalf("--now: %v", err)
+		}
+		anchor = t.UTC()
+	}
+	runSeed, runManifest, runManifestName = *seed, *manifestPath, *manifestName
 
 	// At least one destination of EITHER signal. Requiring a logs endpoint
 	// specifically made a traces-only seed impossible, which is exactly what
@@ -239,7 +255,14 @@ func phraseFixtureSpans(now time.Time) []traceRow {
 
 func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, lokiEndpoint, tempoEndpoint, accountID, projectID, orgID string) {
 	now := time.Now().UTC()
-	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data
+	if !anchor.IsZero() {
+		now = anchor
+	}
+	seed := now.UnixNano()
+	if runSeed != 0 {
+		seed = runSeed
+	}
+	rng := mrand.New(mrand.NewSource(seed)) // #nosec G404 -- synthetic test data
 
 	if orgID != "" {
 		log.Printf("Generating %d logs + %d trace spans over %dh (org_id=%s)...",
@@ -602,10 +625,32 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 	}
 
 	log.Printf("Batch done: %d logs (%d correlated), %d trace spans", len(allLogs), correlatedCount, len(allTraces))
+	if runManifest != "" {
+		if err := writeManifest(runManifest, runManifestName, accountID, projectID, orgID, runSeed, allLogs, allTraces); err != nil {
+			log.Fatalf("manifest: %v", err)
+		}
+		log.Printf("  manifest written to %s", runManifest)
+	}
 }
+
+// idRng, when set by --seed, makes trace, span and request IDs reproducible.
+var idRng *mrand.Rand
+
+// anchor, when set by --now, replaces the current time as the reference of every generated timestamp.
+var anchor time.Time
+
+var (
+	runSeed         int64
+	runManifest     string
+	runManifestName string
+)
 
 func randomHex(length int) string {
 	b := make([]byte, length/2)
+	if idRng != nil {
+		_, _ = idRng.Read(b)
+		return fmt.Sprintf("%x", b)
+	}
 	if _, err := rand.Read(b); err != nil {
 		n, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
 		return fmt.Sprintf("%0*x", length, n)

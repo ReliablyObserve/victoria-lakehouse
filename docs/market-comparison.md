@@ -103,15 +103,15 @@ This is LH's strongest dimension. Counting rules (applied identically to every s
 
 | Engine | Status | Label |
 |---|---|---|
-| pyarrow | ✅ reads every generated file; aggregates and row-level equality checked | **CI-proven** (`parquet-readback` job) |
-| DuckDB | ✅ same gate | **CI-proven** |
-| ClickHouse | ✅ `s3(…, 'Parquet')` on every benchmark run; answers must equal LogsQL | **benchmarked** |
-| Spark | 🟡 documented example (`docs/open-parquet-format.md`) | **documented only**, not tested in CI |
-| Trino | 🟡 documented example | **documented only** |
-| Athena | 🟡 "expected to work; not tested" | **claimed** |
-| Polars | 🟡 "expected to work; not tested" | **claimed** |
+| DuckDB | ✅ documented example run against real files, every check equal to the truth the fixture computed from the rows it sent | **CI-proven** (`parquet-readers` workflow; also the `parquet-readback` gate) |
+| pyarrow | ✅ same, plus the readback gate's aggregates and row-level equality | **CI-proven** |
+| Spark | ✅ `spark.read.parquet` on s3a, every check equal to the truth | **CI-proven** |
+| ClickHouse | 🟡 S3 table engine; an equality filter on any bloom column fails on files whose bloom filter is not a power-of-two size while bloom push down is on (#341) | **CI-proven, open issue** |
+| Trino | 🟡 Hive connector; tenant IDs of 2^31 and above read negative (#342) | **CI-proven, open issue** |
+| Polars | 🔴 refuses every traces file, every raw logs file and the compacted logs files that carry a body token bloom: footer metadata is not UTF-8 (#340); only some compacted logs files read | **CI-observed, not counted as verified** |
+| Athena | 🟡 Trino SQL dialect; documented, not run | **claimed** |
 
-**Count: 3 verified / 7 claimed.**
+**Count: 5 verified / 1 partial / 1 claimed.**
 
 ### Reach, and its honest limits
 
@@ -151,7 +151,7 @@ The limits are stated plainly:
 ### Where Lakehouse leads
 
 - Interfaces (the widest open set among object-storage-native stores): 8 native write protocols (jsonline, VL native, Loki push, ES bulk, Splunk HEC, Datadog logs, journald, OTLP/HTTP logs+traces) and 3 native read APIs (LogsQL, Jaeger, Tempo/TraceQL subset) plus the Loki API via the separate loki-vl-proxy, all from upstream VL/VT handlers mounted unchanged. OpenObserve also has 8 write protocols but only SQL/PromQL on read; Parseable 5/1; Tempo 3/1; GreptimeDB 7/3.
-- Reach (direct file reads): the stored files are the product. Plain Parquet + hive dt=/hour= paths on S3, readable in place with no export: pyarrow and DuckDB proven by a CI readback gate on every file, ClickHouse on every benchmark run with answers equal to LogsQL; Spark/Trino documented only; Athena/Polars expected, untested. 3 verified / 7 claimed vs 0 named for OpenObserve, Parseable, Tempo and GreptimeDB. Limits: no Iceberg/Delta catalog, LH-specific schema, pmeta and footer blooms help only LH.
+- Reach (direct file reads): the stored files are the product. Plain Parquet + hive dt=/hour= paths on S3, readable in place with no export: DuckDB, pyarrow and Spark each run a documented example against real files in CI and are compared with the truth the fixture computed from the rows it sent; ClickHouse and Trino likewise, each with an open issue (#341, #342); Polars refuses every traces file and every raw logs file (#340) and is not counted as verified; Athena documented only. 5 verified / 1 partial / 1 claimed vs 0 named for OpenObserve, Parseable, Tempo and GreptimeDB. Limits: no Iceberg/Delta catalog, LH-specific schema, pmeta and footer blooms help only LH.
 - One S3 copy with the VictoriaLogs/VictoriaTraces query engine on top: compatible answers with hot VL/VT (parity suite, 428+ passing, ratchet), and the object-storage tier that upstream VictoriaLogs still lacks (issue #48 open, PR #1155 draft).
 - Simple footprint: 2 binaries x 2 roles + S3; no Kafka, Keeper, Postgres or NATS (Tempo microservices 8+ services + Kafka; OpenObserve HA 5 node types + Postgres + NATS).
 - Apache-2.0 with no enterprise gate (OpenObserve, Parseable, Loki, Tempo are AGPL with paid tiers for HA, multi-tenancy, RBAC or live tail).
@@ -200,7 +200,7 @@ The limits are stated plainly:
 | System | Write protocols (n) | Read APIs (n) | External engines reading stored files (n of 7) |
 |---|---|---|---|
 | **Victoria Lakehouse** | | | |
-| Victoria Lakehouse (LH) | ✅ 9, the same set as VL + VT (2 proven in CI)[^1] | ✅ 3 native (+1 via proxy)[^2] | ✅ 3 verified / 7 claimed[^3] |
+| Victoria Lakehouse (LH) | ✅ 9, the same set as VL + VT (2 proven in CI)[^1] | ✅ 3 native (+1 via proxy)[^2] | ✅ 5 verified / 1 partial / 1 claimed[^3] |
 | **Object-storage-native and open-format** | | | |
 | OpenObserve | ✅ 8[^4] | 🟡 2[^5] | 🟡 0 named (generic claim)[^6] |
 | Parseable | ✅ 5[^7] | 🟡 1 (+PromQL 🔒)[^8] | 🟡 0 named (generic claim)[^9] |
@@ -771,7 +771,7 @@ So the earlier statement that "select replicas also compact and duplicate rows 2
 
 [^1]: Victoria Lakehouse (LH) · Write protocols (n): Lakehouse mounts the upstream handlers unchanged: cmd/lakehouse-logs/main.go calls vlinsert.Init and routes /insert/* to vlinsert.RequestHandler; lakehouse-traces/main.go does the same with vtinsert. Protocol families: jsonline, VL native, Loki push (JSON and protobuf), Elasticsearch _bulk, Splunk HEC, Datadog logs v2, journald, OTLP over HTTP (logs and traces; traces also over gRPC with -otlpGRPCListenAddr) and syslog over TCP/UDP (-syslog.listenAddr.*, off by default as in upstream). Proof today: jsonline and OTLP traces run in CI e2e; Loki JSON, ES, Datadog, journald and Splunk passed a manual ingest and readback check in May 2026; syslog and OTLP gRPC have no test yet. A CI matrix for every protocol on both binaries is planned. Zipkin and Jaeger-protocol ingest are not offered by VictoriaTraces either. [repo; checked 2026-10-02] Source: cmd/lakehouse-logs/main.go (vlinsert.Init); lakehouse-traces/main.go (vtinsert.Init); tests/verification/matrix.md
 [^2]: Victoria Lakehouse (LH) · Read APIs (n): LogsQL HTTP API (VL), Jaeger query API (VT handlers), Tempo HTTP API with the VT TraceQL subset. Loki API only through loki-vl-proxy, a separate component in a separate repo. Plus VMUI/VTUI and the ClickHouse datasource over the same files. [repo; checked 2026-10-02] Source: github.com/ReliablyObserve/victoria-lakehouse README.md; docs/parity-and-gaps.md
-[^3]: Victoria Lakehouse (LH) · External engines reading stored files (n of 7): pyarrow + DuckDB: CI readback gate on every generated file. ClickHouse: read on every benchmark run, answers must equal LogsQL. Spark, Trino: documented examples, not tested in CI. Athena, Polars: 'expected to work; not tested'. [repo; checked 2026-10-02] Source: github.com/ReliablyObserve/victoria-lakehouse README.md 'Readers' table; docs/open-parquet-format.md
+[^3]: Victoria Lakehouse (LH) · External engines reading stored files (n of 7): DuckDB, Spark and pyarrow run the documented example against real Lakehouse files in CI (parquet-readers workflow: logs and traces, five tenants, raw and compacted files, partition pruning), compared with the truth the fixture computed from the rows before it sent them. ClickHouse and Trino are verified the same way with an open issue each: an equality filter on any bloom column fails on files whose bloom filter is not a power-of-two size unless bloom push down is off (#341), and tenant IDs of 2^31 and above read back negative in Trino (#342). Polars is NOT counted as verified: it refuses every traces file, every raw logs file and the compacted logs files that carry a body token bloom because the footer metadata is not UTF-8 (#340), so only some compacted logs files read (Apache DataFusion, which is outside the fixed list, behaves the same). Athena is documented only (Trino dialect, not run). [repo; checked 2026-10-05] Source: github.com/ReliablyObserve/victoria-lakehouse docs/open-parquet-format.md (reader coverage table); .github/workflows/parquet-readers.yaml
 [^4]: OpenObserve · Write protocols (n): OTLP, Loki push, ES _bulk, JSON, Splunk HEC, Prometheus RW, syslog, Kinesis Firehose. [docs; checked 2026-10-02] Source: https://openobserve.ai/docs/ingestion/
 [^5]: OpenObserve · Read APIs (n): SQL search API (DataFusion) and PromQL; own /traces/latest endpoint. No Loki, Tempo, Jaeger or ES query API. [docs; checked 2026-10-02] Source: https://openobserve.ai/docs/reference/api/traces/
 [^6]: OpenObserve · External engines reading stored files (n of 7): Vendor: 'any tool that reads Parquet'; no engine-specific recipe found; file list lives in Postgres; non-hive yyyy/MM/dd/HH paths. [vendor; checked 2026-10-02] Source: https://openobserve.ai/docs/overview/comparison-with-alternatives/clickhouse-alternative/
@@ -1165,7 +1165,7 @@ So the earlier statement that "select replicas also compact and duplicate rows 2
 [^394]: InfluxDB 3 · Metrics: ✅ [docs; checked 2026-10-02] Source: https://docs.influxdata.com/influxdb3/core/reference/internals/durability/
 [^395]: Victoria Lakehouse (LH) · Object storage primary: S3 is the only durable copy [repo; checked 2026-10-02] Source: github.com/ReliablyObserve/victoria-lakehouse
 [^396]: Victoria Lakehouse (LH) · Stored format: LH-specific schema: OTLP column names, MAP spill, ded_s01..08 slots, tenant columns; blooms and trace index in footer KV (footers up to 2.1 MB, #303). [repo; checked 2026-10-02] Source: github.com/ReliablyObserve/victoria-lakehouse docs/open-parquet-format.md
-[^397]: Victoria Lakehouse (LH) · External engines read stored files: CI-gated for pyarrow/DuckDB; ClickHouse benchmarked; others documented or untested (see Interfaces). [repo; checked 2026-10-02] Source: github.com/ReliablyObserve/victoria-lakehouse
+[^397]: Victoria Lakehouse (LH) · External engines read stored files: CI-gated with real data for DuckDB, Spark and pyarrow, and for ClickHouse and Trino with an open issue each; Polars and DataFusion read only some files (#340); Athena documented only (see Interfaces). [repo; checked 2026-10-02] Source: github.com/ReliablyObserve/victoria-lakehouse
 [^398]: Victoria Lakehouse (LH) · Open table catalog (Iceberg/Delta): Readers use globs + hive partitions; pmeta and footer blooms help only LH. [repo; checked 2026-10-02] Source: github.com/ReliablyObserve/victoria-lakehouse
 [^399]: Victoria Lakehouse (LH) · Compaction: Median file ~71 KB at low volume, stats report 'healthy' (#281); duplicate compaction on shared buckets (#290) and by select replicas (#311, measured 2-4x rows). Compaction v2 is designed (📐), decisions D1-D11 pending. [repo; checked 2026-10-02] Source: github.com/ReliablyObserve/victoria-lakehouse
 [^400]: Victoria Lakehouse (LH) · Per-tenant / per-stream retention: TTL per file over the whole manifest, O(F); retention leaks pmeta bundles (#307). [repo; checked 2026-10-02] Source: github.com/ReliablyObserve/victoria-lakehouse

@@ -1,0 +1,153 @@
+# Isolated stack for the external Parquet reader matrix (tests/readers).
+#
+# Compose project: lhreaders. Host ports: 39400-39499, bound to 127.0.0.1.
+#   39400 RustFS S3        39401 lakehouse-logs     39402 lakehouse-traces
+#   39410 ClickHouse HTTP  39411 ClickHouse native  39420 Trino
+#
+# Only what the matrix needs: an S3 backend, the two Lakehouse binaries, and the
+# engines that run as servers. Engines that are libraries (DuckDB, pyarrow,
+# pandas, Polars, DataFusion, PySpark) run from the pinned Python environment in
+# tests/readers/requirements.txt against the same S3 endpoint.
+#
+# Compaction is driven by LH_COMPACTION_INTERVAL: the harness starts with a very
+# long interval (no compaction, raw files), copies the raw objects aside, then
+# restarts with a short interval (compacted files).
+name: lhreaders
+
+networks:
+  net:
+    driver: bridge
+
+services:
+  s3:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    networks: [net]
+    ports: ["127.0.0.1:39400:9000"]
+    environment:
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  s3-init:
+    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z@sha256:14bff146d9be89b316c591a14c1c69fe18aba06143bcf8fbc77e696d393b9855
+    depends_on:
+      s3: {condition: service_healthy}
+    networks: [net]
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://s3:9000 minioadmin minioadmin &&
+      mc mb local/obs-archive --ignore-existing &&
+      mc mb local/obs-raw --ignore-existing &&
+      mc mb local/trino-meta --ignore-existing &&
+      echo buckets ready"
+
+  lakehouse-logs:
+    image: ${LH_LOGS_IMAGE:-lhreaders-lakehouse-logs:dev}
+    build:
+      context: ../../
+      dockerfile: Dockerfile.logs
+    depends_on:
+      s3-init: {condition: service_completed_successfully}
+    networks: [net]
+    ports: ["127.0.0.1:39401:9428"]
+    command:
+      - "-lakehouse.s3.bucket=obs-archive"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=5s"
+      - "-lakehouse.compaction.interval=${LH_COMPACTION_INTERVAL:-720h}"
+      - "-lakehouse.pmeta.enabled=true"
+      - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
+      - "-lakehouse.tenant.alias=acme-corp:1001:0"
+      - "-lakehouse.tenant.prefix-template={AccountID}/{ProjectID}/"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
+      - "-loggerLevel=INFO"
+    volumes:
+      - ./lakehouse-policy.yml:/etc/lakehouse/policy.yml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/lakehouse-logs", "healthcheck", "http://localhost:9428/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: "no"
+
+  lakehouse-traces:
+    image: ${LH_TRACES_IMAGE:-lhreaders-lakehouse-traces:dev}
+    build:
+      context: ../../
+      dockerfile: Dockerfile.traces
+    depends_on:
+      s3-init: {condition: service_completed_successfully}
+    networks: [net]
+    ports: ["127.0.0.1:39402:10428"]
+    command:
+      - "-lakehouse.s3.bucket=obs-archive"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=5s"
+      - "-lakehouse.compaction.interval=${LH_COMPACTION_INTERVAL:-720h}"
+      - "-lakehouse.pmeta.enabled=true"
+      - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
+      - "-lakehouse.tenant.alias=acme-corp:1001:0"
+      - "-lakehouse.tenant.prefix-template={AccountID}/{ProjectID}/"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
+      - "-loggerLevel=INFO"
+    volumes:
+      - ./lakehouse-policy.yml:/etc/lakehouse/policy.yml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/lakehouse-traces", "healthcheck", "http://localhost:10428/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: "no"
+
+  datagen:
+    image: ${DATAGEN_IMAGE:-lhreaders-datagen:dev}
+    build:
+      context: ../../
+      dockerfile: Dockerfile.datagen
+    profiles: ["datagen"]
+    networks: [net]
+    volumes:
+      - ${MANIFEST_DIR:-./.out/manifest}:/manifest
+    depends_on:
+      lakehouse-logs: {condition: service_healthy}
+      lakehouse-traces: {condition: service_healthy}
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8.33.6@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77
+    profiles: ["clickhouse"]
+    networks: [net]
+    ports: ["127.0.0.1:39410:8123", "127.0.0.1:39411:9000"]
+    ulimits: {nofile: {soft: 262144, hard: 262144}}
+    environment:
+      CLICKHOUSE_USER: lh
+      CLICKHOUSE_PASSWORD: lh
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  trino:
+    image: trinodb/trino:476@sha256:00125e40d063bc4816d165482f6044872b18b56026fb959d3b28ce1f96ffbbee
+    profiles: ["trino"]
+    networks: [net]
+    ports: ["127.0.0.1:39420:8080"]
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/v1/info"]
+      interval: 5s
+      timeout: 5s
+      retries: 40

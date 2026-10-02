@@ -2498,7 +2498,6 @@ the change below. Release runs are now serialized, so this cannot recur.
   `RowGroupSizeByOutputLevel`), parallel column writes (not write-bound), low-level page reads
   (OffsetIndex page-granular measured 0% on our footers).
 
-
 ## [0.88.0] - 2026-06-11
 
 ### Added
@@ -2845,7 +2844,6 @@ the change below. Release runs are now serialized, so this cannot recur.
 
   Post-switch benchmark recorded in : cold LH at parity with hot VL on every scan scenario and
   2.7–10× faster on metadata queries; CH-over-S3 trails 30–40×.
-
 
 ## [0.81.0] - 2026-06-10
 

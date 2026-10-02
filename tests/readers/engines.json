@@ -1,0 +1,90 @@
+{
+  "_comment": "Engines the reader matrix runs in CI. `version` is what the pins give (requirements.txt, docker-compose.yml, engines.py SPARK_IMAGE); test_harness.py checks the two agree. `job` is the job of .github/workflows/parquet-readers.yaml that runs the engine.",
+  "engines": [
+    {
+      "id": "duckdb",
+      "name": "DuckDB",
+      "version": "1.5.6",
+      "job": "readers-inprocess",
+      "access": "httpfs read_parquet, Hive partitioning"
+    },
+    {
+      "id": "pyarrow",
+      "name": "pyarrow",
+      "version": "25.0.1",
+      "job": "readers-inprocess",
+      "access": "pyarrow.dataset on S3FileSystem, Hive partitioning"
+    },
+    {
+      "id": "pandas",
+      "name": "pandas",
+      "version": "2.3.3",
+      "job": "readers-inprocess",
+      "access": "read_parquet with s3fs, filters= for pruning (2.3.x: parquet-tools pins pandas<3)"
+    },
+    {
+      "id": "polars",
+      "name": "Polars",
+      "version": "1.44.2",
+      "job": "readers-inprocess",
+      "access": "scan_parquet glob, hive_partitioning"
+    },
+    {
+      "id": "datafusion",
+      "name": "Apache DataFusion",
+      "version": "54.0.0",
+      "job": "readers-inprocess",
+      "access": "register_parquet with partition columns"
+    },
+    {
+      "id": "clickhouse",
+      "name": "ClickHouse",
+      "version": "25.8.33.6",
+      "job": "readers-clickhouse",
+      "access": "S3 table engine, use_hive_partitioning"
+    },
+    {
+      "id": "trino",
+      "name": "Trino",
+      "version": "476",
+      "job": "readers-trino",
+      "access": "Hive connector, file metastore, external table"
+    },
+    {
+      "id": "spark",
+      "name": "Apache Spark",
+      "version": "4.0.0",
+      "job": "readers-spark",
+      "access": "spark.read.parquet on s3a, hadoop-aws 3.4.1"
+    },
+    {
+      "id": "parquet-tools",
+      "name": "parquet-tools",
+      "version": "0.2.16",
+      "job": "readers-inprocess",
+      "access": "inspect / show on one object (inspection, not a query engine)"
+    }
+  ],
+  "cloud": [
+    {
+      "name": "Amazon Athena",
+      "equivalent": "trino",
+      "note": "Athena engine v3 is Trino; Hive external tables over the same S3 layout"
+    },
+    {
+      "name": "Google BigQuery",
+      "equivalent": null,
+      "note": "external table over Parquet with Hive partitioning mode; no tested engine shares its reader, so nothing here proves it"
+    },
+    {
+      "name": "Snowflake",
+      "equivalent": null,
+      "note": "external table with PARTITION BY over the dt/hour path; no tested engine shares its reader, so nothing here proves it"
+    },
+    {
+      "name": "Databricks / Spark SQL",
+      "equivalent": "spark",
+      "note": "same Spark Parquet reader on s3:// or abfss://"
+    }
+  ]
+}
