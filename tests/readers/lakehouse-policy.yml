@@ -1,0 +1,9 @@
+# Compaction thresholds for the reader matrix: compact as soon as a partition has two
+# files, so a handful of small flushes is enough to produce compacted objects, and
+# compact every partition of a scan in parallel so the wait stays short.
+lakehouse:
+  compaction:
+    min_files_l0: 2
+    min_files_l1: 2
+    min_age: 1m
+    max_concurrent: 64

@@ -9,7 +9,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Area | ✅ covered by a test | 🟡 declared only | 🔧 in progress | 📝 planned | Total |
 |---|---|---|---|---|---|
 | Ingest | 6 | 0 | 1 | 0 | 7 |
-| Storage | 21 | 0 | 2 | 2 | 25 |
+| Storage | 30 | 0 | 2 | 2 | 34 |
 | Query | 14 | 1 | 0 | 1 | 16 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 6 | 0 | 0 | 1 | 7 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **134** | **1** | **3** | **8** | **146** |
+| **Total** | **143** | **1** | **3** | **8** | **155** |
 
 ## Coverage gaps
 
@@ -116,7 +116,7 @@ Lakehouse mounts the upstream `vlinsert` handlers instead of re-implementing the
 - Docs: `docs/write-path.md`, `docs/getting-started.md`
 - Changelog: `0.8.0`
 
-## Storage (25)
+## Storage (34)
 
 ### 📝 Cold-open round-trip elimination
 
@@ -315,6 +315,114 @@ Read-ahead that only grows is a bandwidth tax on point lookups. The reader track
 - Verification: tests: `internal/s3reader/waste_feedback_test.go`, `internal/s3reader/adaptive_test.go#TestBufferedReaderAt_WastedBytes`, `internal/config/s3_readpath_knobs_test.go#TestS3ReadAheadWasteThreshold_DefaultAndMerge`
 - Docs: `docs/architecture/metadata-and-s3-optimization.md`
 - Changelog: `0.85.0`
+
+### ✅ ClickHouse reads Lakehouse Parquet in place
+
+`lh.feature.storage.reader_clickhouse` · status: shipped · surfaces: storage
+
+**ClickHouse reads Lakehouse Parquet in place**: ClickHouse 25.8 reads logs and traces through the S3 table engine with use_hive_partitioning, on raw and compacted files.
+
+ClickHouse 25.8 reads logs and traces through the S3 table engine with use_hive_partitioning, on raw and compacted files. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the answers Lakehouse gives.
+
+- Verification: tests: `tests/readers/test_matrix_result.py#test_clickhouse_logs`, `tests/readers/test_matrix_result.py#test_clickhouse_traces`
+- Docs: `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias and 3000000000 tenants; raw and compacted files) and is compared with Lakehouse's own answers. Known gap, issue-linked and still run in CI: #341 (split-block bloom filters are not a power-of-two size, so an equality filter on a bloom column such as trace_id fails while bloom filter push down is on; the same table with input_format_parquet_bloom_filter_push_down = 0 answers correctly and is checked in CI as the workaround).
+
+### ✅ Apache DataFusion reads Lakehouse Parquet in place
+
+`lh.feature.storage.reader_datafusion` · status: shipped · surfaces: storage
+
+**Apache DataFusion reads Lakehouse Parquet in place**: DataFusion 54.0.0 registers Lakehouse Parquet on S3 with Hive partition columns.
+
+DataFusion 54.0.0 registers Lakehouse Parquet on S3 with Hive partition columns. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the answers Lakehouse gives.
+
+- Verification: tests: `tests/readers/test_matrix_result.py#test_datafusion_logs`, `tests/readers/test_matrix_result.py#test_datafusion_traces`
+- Docs: `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias and 3000000000 tenants; raw and compacted files) and is compared with Lakehouse's own answers. Known gaps, issue-linked and still run in CI: #340 (the _trace_idx footer value is not UTF-8: DataFusion refuses every traces file; logs read correctly) and an engine caveat (register_parquet reads every footer before partition filters apply, so partition pruning needs an explicit schema).
+
+### ✅ DuckDB reads Lakehouse Parquet in place
+
+`lh.feature.storage.reader_duckdb` · status: shipped · surfaces: storage
+
+**DuckDB reads Lakehouse Parquet in place**: DuckDB 1.5.6 reads logs and traces through httpfs read_parquet with Hive partitioning, on raw and compacted files, with partition pruning.
+
+DuckDB 1.5.6 reads logs and traces through httpfs read_parquet with Hive partitioning, on raw and compacted files, with partition pruning. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the answers Lakehouse gives.
+
+- Verification: tests: `tests/readers/test_matrix_result.py#test_duckdb_logs`, `tests/readers/test_matrix_result.py#test_duckdb_traces`
+- Docs: `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias and 3000000000 tenants; raw and compacted files) and is compared with Lakehouse's own answers.
+
+### ✅ pandas reads Lakehouse Parquet in place
+
+`lh.feature.storage.reader_pandas` · status: shipped · surfaces: storage
+
+**pandas reads Lakehouse Parquet in place**: pandas 2.3.3 reads logs and traces through read_parquet with s3fs, on raw and compacted files, with partition pruning through filters=.
+
+pandas 2.3.3 reads logs and traces through read_parquet with s3fs, on raw and compacted files, with partition pruning through filters=. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the answers Lakehouse gives.
+
+- Verification: tests: `tests/readers/test_matrix_result.py#test_pandas_logs`, `tests/readers/test_matrix_result.py#test_pandas_traces`
+- Docs: `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias and 3000000000 tenants; raw and compacted files) and is compared with Lakehouse's own answers.
+
+### ✅ parquet-tools reads Lakehouse Parquet in place
+
+`lh.feature.storage.reader_parquet_tools` · status: shipped · surfaces: storage
+
+**parquet-tools reads Lakehouse Parquet in place**: parquet-tools 0.2.16 inspects one logs and one traces object: footer metadata, schema and a few rows, with the row count equal to pyarrow's.
+
+parquet-tools 0.2.16 inspects one logs and one traces object: footer metadata, schema and a few rows, with the row count it prints equal to the footer's row count read by pyarrow. It downloads the object through boto3, so it works against any S3-compatible endpoint (AWS_ENDPOINT_URL). It is an inspection tool, not a query engine.
+
+- Verification: tests: `tests/readers/test_matrix_result.py#test_parquet_tools_logs`, `tests/readers/test_matrix_result.py#test_parquet_tools_traces`
+- Docs: `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias and 3000000000 tenants; raw and compacted files) and is compared with Lakehouse's own answers.
+
+### ✅ Polars reads Lakehouse Parquet in place
+
+`lh.feature.storage.reader_polars` · status: shipped · surfaces: storage
+
+**Polars reads Lakehouse Parquet in place**: Polars 1.44.2 scans Lakehouse Parquet over S3 with Hive partitioning.
+
+Polars 1.44.2 scans Lakehouse Parquet over S3 with Hive partitioning. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the answers Lakehouse gives.
+
+- Verification: tests: `tests/readers/test_matrix_result.py#test_polars_logs`, `tests/readers/test_matrix_result.py#test_polars_traces`
+- Docs: `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias and 3000000000 tenants; raw and compacted files) and is compared with Lakehouse's own answers. Known gaps, issue-linked and still run in CI: #340 (footer key-value values are not UTF-8: Polars refuses every traces file and every raw logs file, compacted logs files read correctly). A gap cell that starts passing turns the CI job red so the entry is removed with the fix.
+
+### ✅ pyarrow reads Lakehouse Parquet in place
+
+`lh.feature.storage.reader_pyarrow` · status: shipped · surfaces: storage
+
+**pyarrow reads Lakehouse Parquet in place**: pyarrow 25.0.1 reads logs and traces through pyarrow.dataset on S3, on raw and compacted files, with partition pruning.
+
+pyarrow 25.0.1 reads logs and traces through pyarrow.dataset on S3, on raw and compacted files, with partition pruning. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the answers Lakehouse gives.
+
+- Verification: tests: `tests/readers/test_matrix_result.py#test_pyarrow_logs`, `tests/readers/test_matrix_result.py#test_pyarrow_traces`
+- Docs: `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias and 3000000000 tenants; raw and compacted files) and is compared with Lakehouse's own answers.
+
+### ✅ Apache Spark reads Lakehouse Parquet in place
+
+`lh.feature.storage.reader_spark` · status: shipped · surfaces: storage
+
+**Apache Spark reads Lakehouse Parquet in place**: Spark 4.0.0 with hadoop-aws 3.4.1 reads logs and traces through spark.read.parquet on s3a, on raw and compacted files, with partition pruning.
+
+Spark 4.0.0 with hadoop-aws 3.4.1 reads logs and traces through spark.read.parquet on s3a, on raw and compacted files, with partition pruning. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the answers Lakehouse gives.
+
+- Verification: tests: `tests/readers/test_matrix_result.py#test_spark_logs`, `tests/readers/test_matrix_result.py#test_spark_traces`
+- Docs: `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias and 3000000000 tenants; raw and compacted files) and is compared with Lakehouse's own answers.
+
+### ✅ Trino reads Lakehouse Parquet in place
+
+`lh.feature.storage.reader_trino` · status: shipped · surfaces: storage
+
+**Trino reads Lakehouse Parquet in place**: Trino 476 reads logs and traces through the Hive connector (file metastore) as external tables with partition sync, on raw and compacted files.
+
+Trino 476 reads logs and traces through the Hive connector (file metastore) as external tables with partition sync, on raw and compacted files. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the answers Lakehouse gives.
+
+- Verification: tests: `tests/readers/test_matrix_result.py#test_trino_logs`, `tests/readers/test_matrix_result.py#test_trino_traces`
+- Docs: `docs/open-parquet-format.md#querying-with-external-tools`
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias and 3000000000 tenants; raw and compacted files) and is compared with Lakehouse's own answers. Known gap, issue-linked and still run in CI: #342 (account_id / project_id are unsigned 32-bit; Trino reads tenant 3000000000 as -1294967296; masking with bitwise_and is checked in CI as the workaround).
 
 ### ✅ Retention enforcement
 

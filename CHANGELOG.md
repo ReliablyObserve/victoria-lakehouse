@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Every external Parquet reader named in the docs now runs its documented example against real Lakehouse files in CI (no runtime change; see #340, #341, #342).**
+  A new `parquet-readers` workflow ingests logs and traces for a numeric tenant, a string alias and a tenant above
+  2^31, flushes and compacts, records Lakehouse's own answers, and runs DuckDB, pyarrow, pandas, Polars, DataFusion,
+  ClickHouse, Trino and Spark (plus parquet-tools for inspection) on the raw and the compacted files, with partition
+  pruning checked. `docs/open-parquet-format.md` is rewritten around those examples and its coverage table is
+  generated; the S3 layout it described was wrong and is corrected. The run found three gaps that stay open and are
+  tracked as expectations that must keep failing until fixed: footer key-values that are not UTF-8 (Polars and
+  DataFusion refuse the files, #340), bloom filter bitsets that are not a power of two (ClickHouse fails trace-ID
+  lookups, #341) and tenant IDs of 2^31 and above reading negative in Trino (#342).
+
 ### Fixed
 
 - **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**

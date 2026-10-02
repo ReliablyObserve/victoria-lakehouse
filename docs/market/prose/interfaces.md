@@ -51,15 +51,15 @@ This is LH's strongest dimension. Counting rules (applied identically to every s
 
 | Engine | Status | Label |
 |---|---|---|
-| pyarrow | ✅ reads every generated file; aggregates and row-level equality checked | **CI-proven** (`parquet-readback` job) |
-| DuckDB | ✅ same gate | **CI-proven** |
-| ClickHouse | ✅ `s3(…, 'Parquet')` on every benchmark run; answers must equal LogsQL | **benchmarked** |
-| Spark | 🟡 documented example (`docs/open-parquet-format.md`) | **documented only**, not tested in CI |
-| Trino | 🟡 documented example | **documented only** |
-| Athena | 🟡 "expected to work; not tested" | **claimed** |
-| Polars | 🟡 "expected to work; not tested" | **claimed** |
+| DuckDB | ✅ documented example run against real files, every check equal to LH | **CI-proven** (`parquet-readers` workflow; also the `parquet-readback` gate) |
+| pyarrow | ✅ same, plus the readback gate's aggregates and row-level equality | **CI-proven** |
+| Spark | ✅ `spark.read.parquet` on s3a, every check equal to LH | **CI-proven** |
+| ClickHouse | 🟡 S3 table engine; trace-ID lookups fail while bloom push down is on (#341) | **CI-proven, open issue** |
+| Trino | 🟡 Hive connector; tenant IDs of 2^31 and above read negative (#342) | **CI-proven, open issue** |
+| Polars | 🟡 refuses files whose footer metadata is not UTF-8 (#340) | **CI-proven, open issue** |
+| Athena | 🟡 Trino SQL dialect; documented, not run | **claimed** |
 
-**Count: 3 verified / 7 claimed.**
+**Count: 6 verified / 1 claimed.**
 
 ### Reach, and its honest limits
 
