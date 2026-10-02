@@ -418,3 +418,33 @@
   refs: { doc: docs/durability.md, tests: [lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go, lakehouse-traces/internal/storage/parquets3/inferred_bounds_test.go, lakehouse-traces/internal/storage/parquets3/bounds_resolve_test.go, lakehouse-traces/shutdown_snapshot_test.go] }
   notes: "The traces binary's twin of the logs row: spans ingested after a graceful restart, in the same UTC hour as the spans flushed at shutdown, are returned by the LogsQL query API (and the Jaeger and Tempo reads built on it) exactly once alongside the cold spans. trace_id lookups take the same segment handoff as every other query and are not the case under test. SCHEMA LIMIT: as for the logs row, the registry has no target or seed for the unflushed (buffer) layer and no window placeholder past {{seed.cold_end}}, so the request covers the cold-side half only; the post-restart spans are asserted by TestBufferRestart_*, TestResolveFaults_* and TestResolveBounds_* in lakehouse-traces/internal/storage/parquets3. Stays pending."
 
+- id: lh.select.split.insert_buffer_visible_logs
+  title: "LH select pod answers with the insert pods' unflushed rows through the buffer bridge (logs)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/read-path.md, tests: [internal/storage/parquets3/buffer_bridge_discovery_test.go, cmd/lakehouse-logs/discovery_enabled_test.go, charts/victoria-lakehouse/test_templates.sh] }
+  notes: "A select pod (role=select) of a split deployment finds the insert pods through select.insert_headless_service (the chart sets it to the release's insert headless service of the signal), requests each discovered host:port over http://, and returns the rows they have not flushed yet together with the cold rows, each once. Before, the bridge requested host:port without a scheme (the URL did not parse) and select.insert_headless_service was read by nothing, so a select pod saw a row only after its insert pod flushed it. Covered by TestBufferBridge_ReachesDiscoveredHostPort, TestRefreshDiscovery_* and TestDiscoveryEnabled, and by the chart's rendered-content checks. SCHEMA LIMIT: the runner has one Lakehouse node per signal (no select/insert split) and no target for the unflushed layer, so this row can only express the cold-side request. Stays pending."
+
+- id: lh.select.split.insert_buffer_visible_traces
+  title: "LH select pod answers with the insert pods' unflushed spans through the buffer bridge (traces)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/read-path.md, tests: [lakehouse-traces/internal/storage/parquets3/buffer_bridge_discovery_test.go, lakehouse-traces/discovery_enabled_test.go, charts/victoria-lakehouse/test_templates.sh] }
+  notes: "The traces binary's twin of the logs row: a traces select pod resolves select.insert_headless_service and returns the traces insert pods' unflushed spans (LogsQL, and the Jaeger and Tempo reads built on it) with the cold spans, each once. Covered by the twin tests in lakehouse-traces. SCHEMA LIMIT: as for the logs row. Stays pending."
+
