@@ -122,8 +122,8 @@ func TestVTInsertAdapter_DropsOverLimitStreamsKeepsTheRest(t *testing.T) {
 	if lr.RowsCount() != total {
 		t.Errorf("the caller's batch changed: %d rows, was %d", lr.RowsCount(), total)
 	}
-	if d := metrics.InsertRowsTotal.Get() - rowsBefore; d != 3 {
-		t.Errorf("lakehouse_insert_rows_total rose by %d, want 3 (admitted rows only)", d)
+	if d := metrics.InsertRowsTotal.Get() - rowsBefore; d != 2 {
+		t.Errorf("lakehouse_insert_rows_total rose by %d, want 2 (admitted spans only; the index row is not counted)", d)
 	}
 }
 
@@ -233,5 +233,34 @@ func TestVTInsertAdapter_SpansAreInTheSegments(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("%d spans searchable in the segments, want 2", n)
+	}
+}
+
+// VictoriaTraces' trace-ID index rows reach the buffer, as upstream stores
+// them, but lakehouse_insert_rows_total counts spans only: the index rows are
+// not written to Parquet, and the legacy path did not count them either.
+func TestVTInsertAdapter_IndexRowsAreBufferedNotCounted(t *testing.T) {
+	SetCardinalityGate(nil)
+	buf := &recordingBuffer{}
+	a := &vtInsertAdapter{buf: buf, dir: "/data/buffer"}
+	spans := spanBatch("api", "s1", "s2")
+	defer logstorage.PutLogRows(spans)
+	index := logstorage.GetLogRows([]string{"trace_id_idx_stream"}, nil, nil, nil, "")
+	defer logstorage.PutLogRows(index)
+	for i := 0; i < 3; i++ {
+		index.MustAdd(logstorage.TenantID{AccountID: 1, ProjectID: 2}, time.Now().UnixNano(), []logstorage.Field{
+			{Name: "trace_id_idx_stream", Value: "7"},
+			{Name: "_msg", Value: "-"},
+			{Name: "trace_id_idx", Value: "t-x"},
+		}, 1)
+	}
+	before := metrics.InsertRowsTotal.Get()
+	a.MustAddRows(spans)
+	a.MustAddRows(index)
+	if buf.rows != 5 {
+		t.Errorf("the buffer got %d rows; want all 5 (2 spans, 3 index rows)", buf.rows)
+	}
+	if d := metrics.InsertRowsTotal.Get() - before; d != 2 {
+		t.Errorf("lakehouse_insert_rows_total rose by %d; want 2 (the spans)", d)
 	}
 }

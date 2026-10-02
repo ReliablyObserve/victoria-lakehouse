@@ -923,3 +923,55 @@ func TestSegments_RandomFailuresUnderConcurrentIngestLoseNothing(t *testing.T) {
 	}
 	e.mustHaveExactly(workers*batches*perBatch, "random failures under concurrent ingest")
 }
+
+// One tenant whose uploads fail holds back the segment's commit, not the other
+// tenants' objects: they are written in the same pass. The failing tenant's
+// later groups wait for the retry.
+func TestSegments_OneFailingTenantDoesNotHoldBackOthers(t *testing.T) {
+	e := newSegEnv(t)
+	// Tenant A sorts first and has two groups (two hours); tenant B one.
+	e.ingest(segTenantA, hourAgo.Add(-50*time.Minute), 10)
+	e.ingest(segTenantA, hourAgo.Add(10*time.Minute), 10)
+	e.ingest(segTenantB, hourAgo, 10)
+	g := e.seal()
+	f := e.flusher(1000)
+	e.failFn.Store(func(key string) bool { return strings.HasPrefix(key, "t1-2/") })
+	if err := f.drain(context.Background(), g); err == nil {
+		t.Fatal("the segment committed with a failing tenant")
+	}
+	var storedA, storedB int
+	for _, k := range e.storedDataKeys() {
+		switch {
+		case strings.HasPrefix(k, "t1-2/"):
+			storedA++
+		case strings.HasPrefix(k, "t2-3/"):
+			storedB++
+		}
+	}
+	if storedB != 1 || storedA != 0 {
+		t.Errorf("stored: tenant A %d, tenant B %d; want 0 and 1 (B is written although A fails)", storedA, storedB)
+	}
+	e.u.mu.Lock()
+	attemptedA := 0
+	for k := range e.u.attemptHashes {
+		if strings.HasPrefix(k, "t1-2/") {
+			attemptedA++
+		}
+	}
+	e.u.mu.Unlock()
+	if attemptedA != 1 {
+		t.Errorf("tenant A had %d groups attempted; want only the first (its later groups wait for the retry)", attemptedA)
+	}
+	if len(e.segs.Pending()) != 1 || e.markerStored(g.Nonce()) {
+		t.Fatal("the segment must stay pending, without a marker, until every group is written")
+	}
+	e.failFn.Store(func(string) bool { return false })
+	if err := f.drain(context.Background(), g); err != nil {
+		t.Fatal(err)
+	}
+	e.mustHaveExactly(30, "after the retry")
+	e.storedOnce("after the retry")
+	if !e.markerStored(g.Nonce()) {
+		t.Error("no marker after the commit")
+	}
+}
