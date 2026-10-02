@@ -80,7 +80,8 @@ func (g *Segment) Seq() uint64 { return g.seq }
 // Nonce is the random name every object of the segment carries in its key.
 func (g *Segment) Nonce() string { return g.nonce }
 
-// Created is when the segment was opened (or found at startup).
+// Created is when the segment was created; for a segment found at startup it
+// is the time its nonce carries, so its pending age survives a restart.
 func (g *Segment) Created() time.Time { return g.created }
 
 // Rows is the number of rows added to the segment by this process.
@@ -127,6 +128,18 @@ func newNonce() string {
 	return fmt.Sprintf("%08x", uint32(time.Now().Unix())) + hex.EncodeToString(b)
 }
 
+// nonceTime is the creation time a nonce carries, or now if it carries none.
+func nonceTime(nonce string) time.Time {
+	if len(nonce) < 8 {
+		return time.Now()
+	}
+	sec, err := strconv.ParseUint(nonce[:8], 16, 32)
+	if err != nil {
+		return time.Now()
+	}
+	return time.Unix(int64(sec), 0)
+}
+
 // OpenSegments opens the buffer at cfg.Path: every segment directory found is
 // opened (upstream restores its parts) and is sealed — it takes no new rows —
 // and a new active segment is created for the writes. Which of the found
@@ -161,7 +174,7 @@ func OpenSegments(cfg Config) (*Segments, error) {
 			continue
 		}
 		dir := filepath.Join(cfg.Path, e.Name())
-		g := &Segment{seq: seq, nonce: m[2], dir: dir, created: time.Now(), sealed: true}
+		g := &Segment{seq: seq, nonce: m[2], dir: dir, created: nonceTime(m[2]), sealed: true}
 		g.st = logstorage.MustOpenStorage(dir, s.storageConfig())
 		s.list = append(s.list, g)
 		if seq >= s.nextSeq {
