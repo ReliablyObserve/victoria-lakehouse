@@ -339,7 +339,13 @@ func TestRestartWatermark_PeerObjectLearnedByListing(t *testing.T) {
 // Property: random sequences of (write, flush+restart, buffer-write) with random
 // times across hour boundaries; every written row is visible exactly once.
 func TestRestartWatermark_Property_EveryRowVisibleExactlyOnce(t *testing.T) {
-	for seed := int64(1); seed <= 6; seed++ {
+	// -short (the unit job) runs two seeds; the heavy job, which runs every
+	// test that consults testing.Short(), runs all six under -race.
+	seeds := int64(6)
+	if testing.Short() {
+		seeds = 2
+	}
+	for seed := int64(1); seed <= seeds; seed++ {
 		seed := seed
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			rwPropertyRun(t, seed, 12)

@@ -279,15 +279,21 @@ func TestProjectionEquivalence_Random(t *testing.T) {
 	rng := rand.New(rand.NewSource(273))
 	g := projGen{pick: rng.Intn}
 	runnable := 0
-	for i := 0; i < 600; i++ {
+	// -short (the unit job) checks the first 150 generated queries; the heavy
+	// job, which runs every test that consults testing.Short(), checks all 600.
+	total := 600
+	if testing.Short() {
+		total = 150
+	}
+	for i := 0; i < total; i++ {
 		query := g.query()
 		if _, ok := runProjectedQuery(t, s, f, base, query, false); ok {
 			runnable++
 		}
 		checkProjectionEquivalence(t, s, f, base, query)
 	}
-	if runnable < 300 {
-		t.Fatalf("only %d of 600 generated queries were runnable; the generator no longer exercises the property", runnable)
+	if runnable < total/2 {
+		t.Fatalf("only %d of %d generated queries were runnable; the generator no longer exercises the property", runnable, total)
 	}
 }
 
