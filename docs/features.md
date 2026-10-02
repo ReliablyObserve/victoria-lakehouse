@@ -62,8 +62,8 @@ A flush produces one complete Parquet object per (partition, tenant) and uploads
 
 Rows are queryable the moment they are accepted: a select pod asks every insert pod for its unflushed window over `/internal/buffer/query` and merges the answer with what S3 already holds. The fan-out is deliberately AZ-blind — buffered rows live wherever the writer that accepted them runs.
 
-- Verification: tests: `internal/buffer/handler_test.go`, `internal/storage/parquets3/buffer_bridge_test.go`, `internal/storage/parquets3/buffer_bridge_az_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_az_test.go`
-- Docs: `docs/write-path.md`, `docs/read-path.md`
+- Verification: rows: `lh.select.split.insert_buffer_visible_logs` (pass, pending), `lh.select.split.insert_buffer_visible_traces` (pass, pending) · tests: `internal/buffer/handler_test.go`, `internal/storage/parquets3/buffer_bridge_test.go`, `internal/storage/parquets3/buffer_bridge_az_test.go`, `internal/storage/parquets3/buffer_bridge_discovery_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_az_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_discovery_test.go`
+- Docs: `docs/write-path.md`, `docs/read-path.md`, `docs/kubernetes-deployment.md`
 - Changelog: `0.8.0`
 
 ### ✅ Crash-safe durability without a WAL
