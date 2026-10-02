@@ -31,6 +31,7 @@ permissions:
 
 env:
   GOWORK: "off"
+  VL_VERSION_LOGS: v1.52.0
 
 jobs:
   e2e:
@@ -42,6 +43,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+
+      # tests/ingestmatrix builds the native-protocol payloads with VictoriaLogs'
+      # own logstorage.InsertRow, so the e2e test package needs the vendored
+      # VictoriaLogs tree (the replace directive in go.mod) on the runner too.
+      - name: Prepare the VictoriaLogs tree for the e2e test package
+        run: make deps-logs
 
       - name: Start E2E stack
         run: |
