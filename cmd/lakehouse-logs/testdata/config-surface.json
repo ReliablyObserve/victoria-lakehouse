@@ -27,6 +27,7 @@
     {"key":"compaction.min_files_l0","type":"int","default":10,"file":"set"},
     {"key":"compaction.min_files_l1","type":"int","default":10,"file":"set"},
     {"key":"compaction.row_group_size_by_output_level","type":"[]int","default":[10000,10000,20000],"file":"set","flags":["lakehouse.compaction.row-group-size-by-output-level"]},
+    {"key":"compaction.size_merge_max_age","type":"duration","default":"168h","file":"set"},
     {"key":"cross_signal.auth_key","type":"string","default":"","file":"set"},
     {"key":"cross_signal.batch_interval","type":"duration","default":"500ms","file":"set"},
     {"key":"cross_signal.enabled","type":"bool","default":false,"file":"enable-only"},

@@ -585,6 +585,11 @@ lakehouseConfig:
     #    under 32 MiB merges into one, whatever its level (a lone file is never
     #    rewritten; objects S3 lifecycle has moved out of STANDARD are skipped).
     daily_rollup_age: 24h
+    # -- Partition age beyond which a tenant with no lifecycle rule gets no size
+    #    merges (only stale-schema heal still runs), so backfill into old data
+    #    cannot keep rewriting objects S3 may have moved. 0 means 7d; negative
+    #    removes the cap.
+    size_merge_max_age: 168h
     # -- Progressive zstd compression schedule: slot N = level for output files
     #    at compaction level N (saturates at the last slot; empty list falls back
     #    to insert.compression_level). Default escalates CPU as files age.

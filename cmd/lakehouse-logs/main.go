@@ -541,6 +541,7 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	applyTenantStorageOverrides(store, policy, detector)
+	logCompactionFreezeWarnings(cfg, detector, policy)
 
 	if cfg.Stats.Enabled {
 		startStatsLoops(cfg, store, registry, resolver, addr, stopCh)
@@ -886,17 +887,20 @@ func setupCompaction(
 	sched.Start()
 
 	sweep := compaction.NewOrphanSweep(compaction.OrphanSweepConfig{
-		Manifest:         store.Manifest(),
-		Pool:             store.Pool(),
-		Ownership:        ownership,
-		Policy:           policy,
-		Freeze:           freeze,
-		Lister:           s3Pool,
-		Prefix:           cfg.AutoPrefix(),
-		Mode:             cfg.Mode,
-		Interval:         cfg.Compaction.Interval,
-		RowGroupSize:     cfg.Insert.RowGroupSize,
-		CompressionLevel: cfg.Insert.CompressionLevel,
+		Manifest:  store.Manifest(),
+		Pool:      store.Pool(),
+		Ownership: ownership,
+		Policy:    policy,
+		Freeze:    freeze,
+		// Tier A steals tombstone-filter like the scheduler does.
+		Tombstones:            tombstoneStore,
+		TombstoneRewriteDelay: cfg.Delete.RewriteDelay,
+		Lister:                s3Pool,
+		Prefix:                cfg.AutoPrefix(),
+		Mode:                  cfg.Mode,
+		Interval:              cfg.Compaction.Interval,
+		RowGroupSize:          cfg.Insert.RowGroupSize,
+		CompressionLevel:      cfg.Insert.CompressionLevel,
 		// Orphan-sweep (Tier-A steal) feeds pmeta the same as the scheduler path —
 		// the stolen partition's catalog + combined bloom go to the facets and the
 		// merged-away inputs are purged — then pushes the manifest. (Symmetric with

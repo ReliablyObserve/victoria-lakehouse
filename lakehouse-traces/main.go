@@ -541,6 +541,7 @@ func run(cfg *config.Config, addr string) {
 	compaction.SetTraceRepromote(internalvlstorage.RepromoteTraceRow)
 
 	applyTenantStorageOverrides(store, policy, detector)
+	logCompactionFreezeWarnings(cfg, detector, policy)
 
 	// statsAgg is the materialized per-field/per-tenant size aggregate, maintained
 	// by manifest change-observer diffs (flush + compaction), seeded by a Recompute
@@ -863,17 +864,20 @@ func setupCompaction(
 	sched.Start()
 
 	sweep := compaction.NewOrphanSweep(compaction.OrphanSweepConfig{
-		Manifest:         store.Manifest(),
-		Pool:             store.Pool(),
-		Ownership:        ownership,
-		Policy:           policy,
-		Freeze:           freeze,
-		Lister:           s3Pool,
-		Prefix:           cfg.AutoPrefix(),
-		Mode:             cfg.Mode,
-		Interval:         cfg.Compaction.Interval,
-		RowGroupSize:     cfg.Insert.RowGroupSize,
-		CompressionLevel: cfg.Insert.CompressionLevel,
+		Manifest:  store.Manifest(),
+		Pool:      store.Pool(),
+		Ownership: ownership,
+		Policy:    policy,
+		Freeze:    freeze,
+		// Tier A steals tombstone-filter like the scheduler does.
+		Tombstones:            tombstoneStore,
+		TombstoneRewriteDelay: cfg.Delete.RewriteDelay,
+		Lister:                s3Pool,
+		Prefix:                cfg.AutoPrefix(),
+		Mode:                  cfg.Mode,
+		Interval:              cfg.Compaction.Interval,
+		RowGroupSize:          cfg.Insert.RowGroupSize,
+		CompressionLevel:      cfg.Insert.CompressionLevel,
 		OnCompacted: func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
 			store.PmetaOnCompacted(added, removed, blooms)
 			notifyPusher(added, removed)

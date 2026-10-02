@@ -1065,6 +1065,12 @@ type CompactionConfig struct {
 	// in the hour that is under 32 MiB merges into one, whatever its level;
 	// files already that large are left alone.
 	DailyRollupAge time.Duration `yaml:"daily_rollup_age"`
+	// SizeMergeMaxAge is the partition age beyond which a tenant with no
+	// lifecycle rule (delete.lifecycle_rules, stats.s3_lifecycle_rules or its
+	// own override) gets no size merges: only stale-schema heal still runs, so
+	// backfill into old data cannot keep rewriting objects S3 may already have
+	// moved. 0 means 7 days; a negative value removes the cap.
+	SizeMergeMaxAge time.Duration `yaml:"size_merge_max_age"`
 
 	// CompressionLevelByOutputLevel sets the zstd level used when
 	// emitting a compacted file at output level i (index 0 = L0
@@ -1407,13 +1413,14 @@ func Default() *Config {
 		},
 
 		Compaction: CompactionConfig{
-			Enabled:        true,
-			Interval:       5 * time.Minute,
-			MaxConcurrent:  1,
-			MinFilesL0:     10,
-			MinFilesL1:     10,
-			MinAge:         1 * time.Hour,
-			DailyRollupAge: 24 * time.Hour,
+			Enabled:         true,
+			Interval:        5 * time.Minute,
+			MaxConcurrent:   1,
+			MinFilesL0:      10,
+			MinFilesL1:      10,
+			MinAge:          1 * time.Hour,
+			DailyRollupAge:  24 * time.Hour,
+			SizeMergeMaxAge: 168 * time.Hour,
 			// Progressive compression schedule, indexed by the output
 			// file's compaction level (slot N = level for files at
 			// compaction-level N). Default [3, 7, 11] maps to the
@@ -2590,6 +2597,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Compaction.DailyRollupAge > 0 {
 		base.Compaction.DailyRollupAge = overlay.Compaction.DailyRollupAge
+	}
+	if overlay.Compaction.SizeMergeMaxAge != 0 { // negative removes the cap
+		base.Compaction.SizeMergeMaxAge = overlay.Compaction.SizeMergeMaxAge
 	}
 	if len(overlay.Compaction.CompressionLevelByOutputLevel) > 0 {
 		base.Compaction.CompressionLevelByOutputLevel = overlay.Compaction.CompressionLevelByOutputLevel

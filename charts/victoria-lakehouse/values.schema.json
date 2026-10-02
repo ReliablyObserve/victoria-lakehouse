@@ -171,6 +171,10 @@
               "type": "string",
               "description": "Partition age after which every file of a tenant in the hour under 32 MiB merges into one, whatever its level (Go duration)"
             },
+            "size_merge_max_age": {
+              "type": "string",
+              "description": "Partition age beyond which a tenant with no lifecycle rule gets no size merges, only stale-schema heal (Go duration; 0 = 7d, negative = no cap)"
+            },
             "compression_level_by_output_level": {
               "type": "array",
               "items": {
