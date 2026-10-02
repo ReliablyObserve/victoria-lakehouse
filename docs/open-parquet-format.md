@@ -29,7 +29,7 @@ All query engines that support Hive partitioning (DuckDB, Spark, Trino) will aut
 ```mermaid
 graph TD
     subgraph "Write Path"
-    VL["VL/VT Insert APIs"] -->|LogRows| B["Buffer (logstore, durable)"]
+    VL["VL/VT Insert APIs"] -->|LogRows| B["Insert buffer (segments, durable)"]
     B -->|flush| PW[Parquet Writer<br/>ZSTD + Bloom]
     PW -->|PutObject| S3
     end

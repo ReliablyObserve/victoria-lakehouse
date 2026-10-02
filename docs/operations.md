@@ -51,13 +51,15 @@ Set `--lakehouse.startup.serve-stale=true` to serve from persisted cache (Phase 
 
 ### Buffer durability (no WAL)
 
-There is no lakehouse WAL. With `--lakehouse.insert.buffer-engine=logstore` the
-insert buffer persists rows as on-disk parts and re-flushes any uncommitted
-window on restart (see [Persistence & Durability](durability.md)). Operators
-should monitor:
-- **Buffer dir**: `--lakehouse.insert.buffer-dir` must be on durable storage (not tmpfs) — it is the crash-recovery substrate.
-- **Retention vs flush cap**: `--lakehouse.insert.buffer-retention` must stay `>= 4x --lakehouse.insert.buffer-flush-interval` (enforced at startup) so un-flushed rows survive a linger window plus restart downtime.
-- **Restore on start**: check logs for buffer-restore + the `/ready` readiness gate clearing before the pod takes traffic.
+There is no lakehouse WAL. The insert buffer is a sequence of upstream
+`logstorage` segments under `insert.buffer_dir`; acknowledged rows are fsynced
+within upstream's 5 s window, and the flusher drains every segment it finds on
+restart (see [Persistence & Durability](durability.md)). Operators should
+monitor:
+- **Buffer dir**: `insert.buffer_dir` must be on a persistent volume (a StatefulSet PVC; the Helm chart provides one) — it is the only copy of acknowledged rows until they are in Parquet.
+- **Backlog**: `lakehouse_buffer_segments{state="pending"}`, `lakehouse_buffer_pending_rows` and `lakehouse_buffer_oldest_pending_age_seconds`. A growing backlog means object storage is slower than ingest or unreachable; the rows are safe on disk meanwhile (alert `LakehouseBufferNotDraining`).
+- **Disk floor**: below its free-space floor (1 GiB) the buffer volume makes inserts get 429 (`lakehouse_insert_rejected_total{reason="read_only"}`, alert `LakehouseInsertRefusedDiskFloor`). Size the volume as in [Sizing](operations/sizing.md).
+- **Restore on start**: check logs for the segments found and the `/ready` readiness gate clearing before the pod takes traffic. A buffer directory of an earlier release is moved aside to `legacy-<unix>/` with a warning; delete it when no longer needed.
 
 ### Buffer Query Bridge
 
@@ -68,9 +70,9 @@ When running separate insert and select pods:
 
 ### Flush Pipeline
 
-- **Periodic flush**: every `--lakehouse.insert.flush-interval` (default 10s)
-- **Adaptive flush**: when per-partition estimate reaches `--lakehouse.insert.target-file-size` (default 128MB)
-- **Graceful shutdown flush**: all buffers flushed before process exit (preStop hook)
+- **Age seal**: a segment is sealed after `insert.buffer_flush_interval` (default 5m) and then drained completely to Parquet.
+- **Size seal**: earlier, once the segment holds about `insert.target_file_size` (default 128MB) of rows while fewer than 64 segments are pending.
+- **Graceful shutdown**: the flusher stops and the buffer closes (upstream persists every segment); the next start drains what is left.
 
 ## Graceful Shutdown
 
@@ -91,9 +93,9 @@ sequenceDiagram
 
 On SIGTERM:
 1. Stop accepting new queries (readiness -> false)
-2. Flush all pending write buffers to S3
+2. Stop the buffer flusher (a drain cut short resumes after the restart)
 3. Drain in-flight queries (30s timeout)
-4. Close the insert buffer (flush its parts to disk; any un-flushed window re-flushes on restart from the persisted watermark)
+4. Close the insert buffer (upstream flushes every segment's parts to disk; segments not yet written to S3 are drained on the next start)
 5. Persist manifest, label index, peer ring to disk
 6. Close S3 and peer connections
 7. Exit
@@ -904,15 +906,17 @@ Normal mode (default): runs the query through the normal read path — if result
 4. Reduce `--lakehouse.startup.warmup-window` to warm fewer partitions
 5. Set `--lakehouse.startup.max-warmup-time` as safety valve
 
-### Insert returns 503
+### Insert returns 429
 
-1. Check `CanWriteData()` — S3 connectivity issue, or the buffer is at its disk/retention ceiling
-2. If the buffer is backpressured: the flush pipeline may be stalled (check S3 write errors)
-3. Investigate S3 permissions/latency, or raise `--lakehouse.insert.buffer-retention` (keeping `>= 4x buffer-flush-interval`)
+(The status is 429, with upstream's read-only message.)
+
+1. The buffer volume is below its free-space floor (`lakehouse_insert_rejected_total{reason="read_only"}`). An unreachable object store alone never refuses inserts.
+2. Check whether the drain is stalled (`lakehouse_buffer_flush_errors_total{stage}`, `lakehouse_buffer_oldest_pending_age_seconds`).
+3. Investigate S3 permissions/latency, or grow the buffer volume (see [Sizing](operations/sizing.md)).
 
 ### Recently ingested data not visible in queries
 
-1. Check flush interval: data is visible in S3 after `--lakehouse.insert.flush-interval`
+1. Recent rows are served from the insert buffer immediately; they reach S3 within `insert.buffer_flush_interval` plus the drain time.
 2. If buffer query bridge is enabled, data should be visible immediately via insert pod buffers
 3. Check `--lakehouse.select.buffer-query-enabled` is `true`
 4. Check `--lakehouse.select.insert-headless-service` resolves to insert pods
@@ -920,8 +924,8 @@ Normal mode (default): runs the query through the normal read path — if result
 
 ### After a restart, recent data is briefly missing then reappears
 
-1. On restart the `logstore` buffer restores its on-disk parts and the flusher re-flushes `(watermark, now-offset]` — recent rows are served from the restored buffer via the read-merge while that completes.
-2. If a row is permanently missing after a crash, check that `--lakehouse.insert.buffer-dir` is a durable volume (not tmpfs) and that `buffer-retention >= 4x buffer-flush-interval`.
+1. On restart the buffer reopens its segments and recent rows are served from them straight away, each exactly once, while the flusher drains them.
+2. If a row is permanently missing after a crash, check that `insert.buffer_dir` is a persistent volume (not tmpfs or an emptyDir) and that the loss is not within upstream's 5 s window.
 3. See [Persistence & Durability](durability.md) for the crash-recovery model.
 
 ### Persisted trace message compatibility

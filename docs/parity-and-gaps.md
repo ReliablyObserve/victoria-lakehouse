@@ -192,9 +192,8 @@ a comparison into a silent no-op or a result that depends on timing:
   rather than on a fixed offset that is empty in some seeds.
 - **Assert on cold rows only once they have settled.** For rows written
   seconds ago the cold tier's answer depends on where they are: the local
-  buffer answers first, the first flushed file hides the other still-buffered
-  rows behind its time watermark, and a manifest refresh racing the flush can
-  drop the new file for one refresh interval. A tenant-scoped read that leaks
+  buffer answers first, and a manifest refresh racing the drain can
+  delay the new file for one refresh interval. A tenant-scoped read that leaks
   on flushed data looks correctly scoped while the rows are buffered. So the
   settle step requires its counts to stay unchanged for three manifest refresh
   intervals, and a test that writes its own rows

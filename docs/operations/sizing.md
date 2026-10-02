@@ -44,7 +44,7 @@ Per pod, steady state:
                                       of live partitions — watch
                                       lakehouse_catalog_resident_bytes
   + Smart cache (L1)               ≈ cfg.cache.memory_mb MiB
-  + Buffer restore (logstore parts)   ≈ 100 MiB peak during startup
+  + Buffer restore (segment parts)    ≈ 100 MiB peak during startup
   + Per-query memory (max_live_bytes)  default 512 MiB × query.max_concurrent (default 32)
   + Background goroutine pools     ≈ 100-200 MiB
   + Go runtime overhead            ≈ 300 MiB
@@ -60,7 +60,7 @@ Per pod, steady state:
 manifest        : 200 B × 10k    = 2 MB
 footer cache    : 50 KB × 10k    = 500 MB
 smart cache L1  : 256 MB
-logstore buffer : 100 MB (recent ingest)
+insert buffer   : 100 MB (recent ingest)
 query memory    : 512 MB × max_concurrent=8 = 4 GB (worst-case)
 goroutines      : 200 MB
 Go runtime      : 300 MB
@@ -79,7 +79,7 @@ manifest        : 200 B × 5M     = 1 GB   (estimate)
 footer cache    : 50 KB × 200k   = 10 GB  (logs pod: 50 KB × 10k = 500 MB)
 pmeta bundles   : not measured at this scale — excluded from the total
 smart cache L1  : 1 GB (cfg.cache.memory_mb=1024)
-logstore buffer : 200 MB (recent ingest)
+insert buffer   : 200 MB (recent ingest)
 query memory    : 512 MB × max_concurrent=16 = 8 GB
 goroutines      : 500 MB
 Go runtime      : 500 MB
@@ -117,7 +117,7 @@ Per-pod PVC holds:
 + Footer cache key list              ≈ one length-prefixed object key per cached footer
                                        (keys only — footers are re-fetched from S3
                                        asynchronously after /ready)
-+ logstore buffer                    ≈ recent ingest (bounded by cfg.insert.buffer_retention)
++ Insert buffer (insert.buffer_dir)  ≈ see "Insert buffer volume" below; insert pods only
 + Smart cache L2 (disk)              ≈ cfg.cache.disk_max_mb MiB
 + Tombstones                         ≈ negligible unless heavy delete traffic
 + Lifecycle / readiness state        ≈ < 10 MiB
@@ -128,7 +128,7 @@ Per-pod PVC holds:
 ```
 manifest snapshot     : 100 B × 5M    = 500 MB  (estimate)
 footer cache key list : 200k keys     < 40 MB   (code sizes 1 M keys at well under 200 MiB)
-logstore buffer       : 2 GB (recent ingest, cfg.insert.buffer_retention)
+insert buffer         : see the formula below (insert pods only)
 smart cache L2        : 100 GB (cfg.cache.disk_max_mb)
 ────────────────────────────────────────
 PVC size              ≈ 105-130 GB
@@ -137,6 +137,36 @@ PVC size              ≈ 105-130 GB
 Recommend **PVC = 1.5× the working-set L2 cache** for headroom on
 compaction temp files and log rotation. The `data` PVC in the helm
 chart defaults to 50 Gi; bump to 200 Gi for PB-scale.
+
+### Insert buffer volume
+
+The insert buffer (`insert.buffer_dir`) holds every acknowledged row until the
+segment holding it is written to S3, plus the committed-segment grace. It lives on
+the insert StatefulSet's PVC (`logs.insert.persistence` / `traces.insert.persistence`,
+on by default); select pods hold no buffer and need no volume for it.
+
+```
+buffer disk ≈ ingest_bytes_per_s × (buffer_flush_interval + drain time + grace)
+                / upstream_compression_ratio
+            + ingest_bytes_per_s × outage_seconds / upstream_compression_ratio
+            + 1 GiB free-space floor
+```
+
+`grace = 2 × manifest.refresh_interval + 30 s`. With the defaults
+(`buffer_flush_interval` 5m, `manifest.refresh_interval` 5m) a segment is held for
+about 7.5 minutes of ingest in steady state; during an object-store outage sealed
+segments accumulate for as long as it lasts. The last term is the margin below
+which upstream makes the volume read-only and inserts get 429.
+
+Measured on synthetic data (the compression ratio depends on the data; measure
+yours): upstream's on-disk compression is about 13-15x for logs and about 5x for
+traces. At 1 TB/day per pod that is about **0.4 GB steady plus 3.1 GB per outage
+hour for logs** and about 2.7 times that for traces. The 50 Gi default therefore
+absorbs about **15 hours (logs) or 5.5 hours (traces) of object-store outage at
+1 TB/day per pod**, not counting the cache and other data sharing the volume. Scale
+the volume with the outage you want to ride out; alert on
+`lakehouse_buffer_oldest_pending_age_seconds` and on
+`lakehouse_insert_rejected_total{reason="read_only"}`.
 
 ## Peer count
 

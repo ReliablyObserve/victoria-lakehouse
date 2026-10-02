@@ -11,9 +11,9 @@
 > [field-value-catalog.md](field-value-catalog.md) (born as a
 > facet of this layer) and [performance-machinery.md](../performance-machinery.md).
 >
-> Note: §3 below says "WAL" stays separate — read that as the **membuffer**
-> (logstorage parts on PVC). There is no separate LH WAL; see the corrected
-> durability note in performance-machinery.md.
+> Note: §3 below says "WAL" stays separate — read that as the **insert
+> buffer** (logstorage segments on a PVC). There is no separate LH WAL and no
+> replay gate on `/ready`; see [Persistence & Durability](../durability.md).
 
 # Victoria Lakehouse Cold-Tier Metadata Consolidation
 
@@ -135,7 +135,7 @@ Net: `internal/bloomindex` (math), `internal/traceindex` (footer codec), `cache.
 
 ## (3) WHAT STAYS SEPARATE (and why — not everything should merge)
 
-1. **WAL / membuffer** — different *durability class*. WAL is the write path's crash-recovery log (replay gates `/ready`); pmeta is read-optimization metadata that is always *re-derivable from S3*. Merging would couple a correctness-critical subsystem to a rebuildable cache. **Keep separate.**
+1. **WAL / membuffer** — different *durability class*. The insert buffer is the write path's crash-recovery store; pmeta is read-optimization metadata that is always *re-derivable from S3*. Merging would couple a correctness-critical subsystem to a rebuildable cache. **Keep separate.**
 
 2. **SmartCache L2 raw bytes (`DiskCache`)** — this is **bulk column-chunk data**, not metadata. It's GBs, watermark-evicted, peer-shardable. pmeta bundles are KBs/partition. Sharing one tier would let cold data evictions thrash hot metadata. **Keep separate**, but align the *eviction watermark constant* (fixes the 80%/100% inconsistency) and share the `pmeta_*` metric verbs for comparability.
 
@@ -351,7 +351,7 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   catalog fast-path that unions values across the range's partitions (nil/empty →
   legacy path unchanged). All builds; existing storage tests green with the flag off.
 - [x] **Level-2 cross-path parity test** — `TestInteg_PmetaCatalog_CrossPathParity`
-  drives a real `BatchWriter` flush with `--pmeta` on and asserts catalog == ground
+  drives a real `BufferFlusher` drain with `--pmeta` on and asserts catalog == ground
   truth == legacy scan result on real Parquet. The gate passes; safe to enable behind
   the flag.
 - [x] **Cold-start warm (manifest-derived)** — `Storage.WarmCatalog` rebuilds the
@@ -483,6 +483,6 @@ at any level reverts the flag (data is safe regardless via skip+rebuild).
   - **Roles**: the catalog store is built for EVERY role — select-only pods serve
     dropdowns/file-meta/bloom from bundle-warmed facets instead of scanning.
 - [x] **One comprehensive e2e** — `TestInteg_PmetaCatalog_AllFacetsE2E`: one real
-  `BatchWriter` flush with `--pmeta` fully on, asserting **catalog + HLL + file-meta +
+  `BufferFlusher` drain with `--pmeta` fully on, asserting **catalog + HLL + file-meta +
   bloom + cold-start warm** in one place.
 - [x] **Coverage** — `internal/pmeta` 91.2 %, connected `pmeta_wire.go` 91.4 % (≥85 % gate).

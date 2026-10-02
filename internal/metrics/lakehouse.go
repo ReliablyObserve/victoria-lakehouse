@@ -362,13 +362,14 @@ var (
 	// object's key was retired (compacted, rewritten or removed) after an earlier
 	// attempt stored it: whatever replaced it carries those rows.
 	InsertRowsSuperseded = NewCounter("lakehouse_insert_rows_superseded_total")
-	// BufferFlushErrors counts buffer-flusher failures by stage: collect (reading
-	// the window from the buffer), intent (recording the pending window before
-	// its uploads), head (checking whether an object exists during recovery),
-	// upload (a group's PUT failed), watermark (saving the watermark failed),
-	// mark (a durable stored mark could not be written) and missing (a recorded
-	// group's rows are gone from the buffer, once per group). All but mark and
-	// missing are retried on the next tick.
+	// BufferFlushErrors counts buffer-flusher failures by stage: intent
+	// (recording the segment as draining failed), collect (reading a group from
+	// the segment), head (checking whether an object exists while recovering a
+	// segment a previous process was draining), upload (a group's PUT failed),
+	// marker (the segment's commit marker could not be written), commit
+	// (recording the segment as committed failed) and mark (a durable stored
+	// mark could not be written; the group is stored and committed anyway). All
+	// but mark are retried, with the same bytes, after a back-off.
 	BufferFlushErrors = NewCounterVec("lakehouse_buffer_flush_errors_total", "stage")
 	// BufferSegments is the number of insert-buffer segments by state: active
 	// (taking writes, always 1), pending (sealed and not yet fully written to

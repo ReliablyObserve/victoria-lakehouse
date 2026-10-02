@@ -12,7 +12,7 @@ Victoria Lakehouse tracks per-tenant and global storage statistics in real-time,
 ```mermaid
 graph TD
     subgraph Write Path
-        BW[BatchWriter flush] -->|RecordWrite| TR[TenantRegistry]
+        BW[BufferFlusher drain] -->|RecordWrite| TR[TenantRegistry]
     end
 
     subgraph Query Path

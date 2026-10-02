@@ -15,7 +15,7 @@ The bloom index supports multiple indexed columns (e.g., `trace_id`, `service.na
 ```mermaid
 flowchart TB
     subgraph Insert Path
-        W[BatchWriter] -->|flush| PQ[Parquet File]
+        W[BufferFlusher] -->|drain| PQ[Parquet File]
         W -->|column values| BH[FlushHook]
         BH -->|build filter| BI[In-Memory Bloom Index]
         BI -->|persist every 30s| S3B[S3: _bloom_index.bin]

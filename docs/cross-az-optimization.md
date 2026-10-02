@@ -163,128 +163,38 @@ graph TD
 
 ### Write Path Durability — AZ Failure Protection
 
-The insert path buffers data in memory before flushing to S3 as Parquet. The **acknowledge mode** (`ack_mode`) is designed to control when Lakehouse tells the client "your data is safe".
+An insert is acknowledged once its rows are in the **insert buffer**: upstream `logstorage` segments on the insert pod's volume (`insert.buffer_dir`), fsynced within upstream's 5 s part flush, the same guarantee as hot VictoriaLogs/VictoriaTraces. A sealed segment is then written to S3 as Parquet. There is no acknowledge-mode setting: the guarantee is the same for every profile. See [Persistence & Durability](durability.md).
 
-> **Not implemented in this release.** `insert.ack_mode` is accepted and validated, and the
-> `max-durability` profile sets it to `flush-sync`, but neither binary reads it: every
-> insert is acknowledged once it is buffered, whatever the setting. The `flush-sync` flow
-> below describes the design. For crash durability today, use the `logstore` buffer engine
-> (see [Persistence & Durability](durability.md)); the configuration reference marks every
-> key no binary reads.
+The consequence for AZ failures is that **the buffer's volume is zone-bound** (an EBS volume lives in one AZ). Rows that are acknowledged but not yet in Parquet are on that volume:
+
+- **Pod crash, OOMKill, eviction or rollout** — the pod restarts on the same volume, reopens its segments and drains them. Loss window: upstream's 5 s part flush for a `kill -9`; none for a graceful stop.
+- **AZ outage** — the volume is unreachable until the AZ returns. Rows already in Parquet are safe (S3 is regional). Acknowledged rows still in the AZ's undrained segments are **not lost** but are **not available** until the pod runs again on that volume (or the AZ recovers); they are lost only if the volume is. The drain interval (`buffer_flush_interval`, 5 m by default, plus the drain time) bounds how much that is in steady state.
+- **S3 outage or partition** — nothing is refused. Segments wait on disk and drain when S3 returns; inserts get 429 only if the buffer volume reaches its free-space floor.
+- **Loss of the volume itself** (EBS failure, PVC deleted) — the undrained segments are lost. This is the one residual that replication would remove; it is the same exposure as hot VictoriaLogs on a single node.
+
+Clients should retry on any non-2xx (all VL/VT-compatible shippers do), so a rejected request (429, connection reset) is not lost; only acknowledged-then-volume-lost rows are.
 
 #### Choose Your Durability Level
 
-```mermaid
-flowchart TD
-    Q1{Can you accept<br/>10s of data loss<br/>on AZ failure?}
-    Q1 -->|"Yes — this is<br/>observability data"| BUFFER["✅ ack_mode=buffer (default)<br/>Fastest ingest, 10s risk window"]
-    Q1 -->|No| Q2{Is insert latency<br/>critical? Sub-5ms?}
-    Q2 -->|"Yes — high-throughput<br/>streaming pipeline"| WAL["✅ buffer_engine=logstore<br/>Durable buffer parts, survives pod crash<br/>AZ failure: un-flushed window at risk"]
-    Q2 -->|"No — 100-500ms<br/>latency is acceptable"| FLUSH["✅ ack_mode=flush-sync<br/>Zero data loss, zero extra cost<br/>S3 confirms before acknowledge"]
-
-    style BUFFER fill:#FF9800,color:#fff
-    style WAL fill:#2196F3,color:#fff
-    style FLUSH fill:#4CAF50,color:#fff
-```
-
-#### What Exactly Happens in Each Mode
-
-**`buffer` (default) — Fastest ingest, accept small risk window**
-
-```
-Client POST → Buffer in memory → Respond 200 immediately → Async flush to S3 every 10s
-```
-
-Your data sits in memory for up to `flush-interval` (default 10s) before reaching S3. If the pod or AZ dies in that window, buffered data is lost. Once on S3, data has 11-nines durability across all AZs.
-
-**`flush-sync` — Zero data loss, slightly higher latency**
-
-```
-Client POST → Buffer rows → Accumulate for linger-time → S3 PutObject → S3 confirms → Respond 200
-```
-
-Lakehouse does NOT send 200 until S3 confirms the write. If the pod dies at any point before 200, the client never received confirmation and retries to another pod — zero data loss. This is identical to a database commit: your data isn't "accepted" until it's durable.
-
-**`buffer_engine: logstore` — Fast writes, survives pod crashes (no WAL)**
-
-```
-Client POST → logstore buffer (on-disk parts ~5s) → Respond 200 → Flusher drains to S3
-```
-
-This is the durable-buffer engine, not an ack mode (it composes with `ack_mode: buffer`). Rows persist to the buffer's on-disk parts (the same engine hot VL/VT use) before/around acknowledging; pod crash → restart → the parts are restored and the flush watermark re-flushes any uncommitted window → loss window ≈ the buffer flush interval. There is **no separate WAL**. The on-disk parts live on the pod's volume, so as with any local disk an AZ outage puts the *un-flushed* window at risk until recovery — already-flushed Parquet has 11-nines S3 durability across AZs. See [Persistence & Durability](durability.md). (The legacy `ack_mode=wal` value is accepted as a vestigial alias but no longer fronts a write-ahead log.)
-
-#### What Can Go Wrong — Full Risk Matrix
-
-| Failure | Probability | `buffer` Impact | `flush-sync` Impact | `logstore` Impact |
-|---|---|---|---|---|
-| **Pod OOMKill / crash** | Common (weekly in large clusters) | Lose up to flush-interval of data | **Zero loss** — 200 never sent, client retries | **Zero loss** — buffer parts restored, watermark re-flushes |
-| **Pod eviction (preempt, rollout)** | Common (planned) | Graceful shutdown flushes buffer — **zero loss** | **Zero loss** | **Zero loss** |
-| **Single AZ outage** | Rare (~1-2/year per region) | Lose buffered data on pods in that AZ | **Zero loss** — S3 is multi-AZ, unflushed data was never confirmed to client | Lose un-flushed window on the failed AZ's disk |
-| **S3 outage** | Extremely rare (99.99% SLA) | Buffer fills up → backpressure → client retries | Flush blocked → client requests timeout → retries later | Buffer keeps accepting (bounded by retention), flushes when S3 returns |
-| **Network partition (pod alive, S3 unreachable)** | Rare | Buffer accumulates, flushes when connectivity returns | Client requests timeout (no 200 until S3 reachable) | Buffer accepts locally, flushes when S3 reachable |
-| **Full cluster loss** | Extremely rare | Buffered data lost. All S3 data safe (100%). | **Zero loss of confirmed data.** In-flight unconfirmed requests retry. | Un-flushed window lost. All S3 data safe. |
-| **Disk / EBS failure** | Rare | No impact (buffer is in memory) | No impact (no local disk used) | Un-flushed buffer parts on the failed disk lost |
-
-#### Quantifying the Risk — What "10 Seconds of Data" Actually Means
-
-"Flush-interval of data" sounds abstract. Here's what you actually lose per insert pod crash, in concrete terms:
-
-| Daily Ingest (total) | Per-Pod Ingest Rate (3 pods) | `buffer` 10s Risk | `buffer` 2s Risk | `flush-sync` Risk |
-|---|---|---|---|---|
-| 8 GB/day (250 GB/mo) | 0.03 MB/s | **0.3 MB** — ~150 log lines | 0.06 MB | **Zero** |
-| 100 GB/day | 0.39 MB/s | **3.9 MB** — ~2,000 log lines | 0.78 MB | **Zero** |
-| 500 GB/day | 1.9 MB/s | **19 MB** — ~10,000 log lines | 3.8 MB | **Zero** |
-| 33 TB/day (1 PB/mo) | 128 MB/s | **1.3 GB** — ~650,000 log lines | 256 MB | **Zero** |
-
-At small scale (≤100 GB/day), buffer-mode risk is negligible — a pod crash loses a few thousand log lines. At PB scale, 1.3 GB per pod is ~650,000 log lines and may matter for compliance or debugging.
-
-**Important context**: this is per-pod, per-crash. In a 3-pod cluster, a single pod crash affects 1/3 of the ingest stream for the duration of the flush interval. The other 2 pods are unaffected.
-
-#### How flush-sync Achieves Zero Loss — Step by Step
-
-The mechanism is simple: **don't tell the client "OK" until the data is on S3.**
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant I as Insert Pod
-    participant S3 as S3 (multi-AZ)
-
-    C->>I: POST /insert/jsonline (batch)
-    I->>I: Buffer rows, accumulate batch
-    Note over I: Linger up to 200ms for batch efficiency
-    I->>S3: PutObject (Parquet file)
-    S3-->>I: 200 OK (data is multi-AZ durable)
-    I-->>C: 200 OK (your data is safe)
-
-    Note over C,S3: If insert pod dies anywhere before<br/>final 200 OK → client got no response<br/>→ client retries to another pod → zero loss
-```
-
-**AZ failure during this flow:**
-- Pod dies **before** S3 PutObject → client never got 200 → client retries to another AZ → **zero loss**
-- Pod dies **during** S3 PutObject → S3 is regional, PUT may or may not complete. Client never got 200 → retries → if PUT completed, manifest dedup handles it → **zero loss**
-- Pod dies **after** S3 PutObject but before 200 → data is safe on S3. Client retries → duplicate → manifest dedup → **zero loss**
-
-No WAL. No replication. No compactor. Just: "don't say OK until S3 has it."
-
-#### Comparison: Lakehouse flush-sync vs Loki/Tempo RF=3
-
-Both achieve zero data loss on AZ failure. The approach and cost are fundamentally different:
-
-| Aspect | Lakehouse `flush-sync` | Loki/Tempo RF=3 |
+| Need | Setting | Effect |
 |---|---|---|
-| **How it works** | Delay HTTP 200 until S3 PutObject confirms | Replicate WAL to 3 ingesters across AZs before acknowledge |
-| **Cross-AZ replication cost** | **$0** — S3 is regional, no cross-AZ transfer | **$0.01/GB × 2 replicas × ingest volume** |
-| **Monthly cost at 500 GB/day** | **~$0.15/mo** (extra S3 PUTs only) | **~$300/mo** (cross-AZ WAL replication + 3× EBS) |
-| **Dedup required** | No — manifest prevents double-counting | No — re-flush is idempotent (manifest dedups) |
-| **Extra infrastructure** | None — one config flag | Replication ring, compactor, WAL EBS volumes per ingester |
-| **Insert latency** | +100-500ms (linger + S3 write) | +1-5ms (local buffer part write) |
-| **Operational complexity** | Trivial — no new components | High — ring management, replication factor tuning, compaction |
-| **Storage overhead** | **1×** — data written once to S3 | **3-5×** — WAL × 3 replicas + compaction rewrites |
+| Standard observability (hot VL/VT equivalent) | Defaults | Acknowledged rows survive a pod crash (5 s window for `kill -9`). Undrained rows are exposed to loss of the volume only. |
+| Less data exposed to a lost volume | Lower `insert.buffer_flush_interval` (for example `1m`) | Segments are written to S3 sooner; more, smaller objects before compaction (more PUTs). |
+| An AZ failure must not make acknowledged rows unavailable | Run insert pods in several AZs behind the load balancer, each with its own volume | New ingest continues in the surviving AZs; the failed AZ's backlog drains when its volume is available again. |
+| Replicated acknowledgement | Not provided | Lakehouse does not replicate rows between insert pods; acknowledgement is local-disk durability. |
 
-**The trade-off is clear**: Lakehouse flush-sync adds 100-500ms insert latency but costs $0 and has zero operational complexity. Loki/Tempo RF=3 has lower latency but costs ~$300/mo at 500 GB/day and requires managing a replication ring + compactor.
+#### Quantifying the Window
 
-For observability data where 100-500ms insert latency is acceptable (and it almost always is — the data is already seconds old by the time it's shipped from agents), flush-sync is strictly better.
+What "5 seconds of ingest" is per insert pod (assumed: uniform rate, raw ingest bytes, 3 pods; arithmetic on the rates, not a measurement):
+
+| Daily Ingest (total) | Per-Pod Ingest Rate (3 pods) | `kill -9` window (5 s) |
+|---|---|---|
+| 8 GB/day (250 GB/mo) | 0.03 MB/s | 0.15 MB |
+| 100 GB/day | 0.39 MB/s | 1.9 MB |
+| 500 GB/day | 1.9 MB/s | 9.7 MB |
+| 33 TB/day (1 PB/mo) | 128 MB/s | 640 MB |
+
+This is per pod, per hard crash; a graceful stop loses nothing. The much larger exposure is a lost volume, which holds up to `buffer_flush_interval` plus drain time of ingest (about 5 minutes by default, more during an S3 outage).
 
 #### Configuration
 
@@ -292,34 +202,16 @@ For observability data where 100-500ms insert latency is acceptable (and it almo
 # Helm values.yaml
 lakehouseConfig:
   insert:
-    flush_interval: 1m           # periodic flush to S3
-    # durable buffer (crash recovery, no WAL):
-    buffer_engine: logstore      # on-disk parts, restored on open
-    buffer_dir: /data/lakehouse/buffer
-    # ack_mode (buffer | wal | flush-sync), flush_linger and flush_max_rows are
-    # accepted but not read by the binaries in this release.
+    buffer_dir: /data/lakehouse/buffer   # on the insert StatefulSet's PVC
+    buffer_flush_interval: 5m            # longest a segment stays open
 ```
 
-```bash
-# CLI — shorter flush interval (the buffer settings have no flags; set them in the config file)
-lakehouse-logs -lakehouse.insert.flush-interval=2s
-```
+Spread the insert StatefulSet over zones (see below). The buffer settings have no CLI flags; set them in the config file.
 
-#### Recommendation
-
-| Scenario | Mode | Why |
-|---|---|---|
-| **Observability logs/traces** | `buffer` (default) | Fastest. 10s of logs per pod crash is acceptable. This is the standard for all observability systems. |
-| **Cost-sensitive, higher volume** | `buffer` with `flush_interval=2s` | Reduces risk window 5× with negligible extra S3 PUTs. Best latency/risk trade-off. |
-| **Compliance, audit, security logs** | `flush-sync` | Zero data loss. $0 extra cost. 100-500ms latency is invisible for compliance pipelines. |
-| **Financial / regulated data** | `flush-sync` | Audit trail requires every event preserved. flush-sync gives database-level durability. |
-| **High-throughput streaming (sub-5ms SLA)** | `wal` | Fast local writes. Survives pod crashes (the common failure). AZ failure risk accepted as extremely rare. |
-| **PB-scale, zero-loss mandate** | `flush-sync` | At PB scale, buffer mode risks 1+ GB per pod. flush-sync eliminates this at near-zero cost. |
-| **Loki/Tempo replacement** | `flush-sync` | Matches Loki/Tempo RF=3 durability guarantee at $0 cross-AZ cost and zero operational complexity. |
 
 #### AZ Failure Resilience — Write Availability Under Partial Outage
 
-With `flush-sync`, accepted data is always safe (S3 multi-AZ). The remaining question: **can the surviving AZs keep accepting new data at full ingest rate?**
+Data already written to S3 is safe (S3 is multi-AZ). The remaining question: **can the surviving AZs keep accepting new data at full ingest rate?**
 
 ```mermaid
 graph TD
@@ -369,82 +261,21 @@ Where `N` = pods needed to handle full ingest load (e.g., 3 pods for 500 GB/day)
 - AZ-a fails: 8 pods handle 33 TB/day → 4.1 TB/day each
 - Cost: 12 × ~$140/mo m5.xlarge = $1,680/mo (vs $840/mo without resilience)
 
-##### The Accepted-But-Not-Flushed Gap
+##### AZ Failure Lifecycle — From Failure to Recovery
 
-This is the critical risk to understand: **in `buffer` and `wal` modes, the insert pod sends 200 OK BEFORE data reaches S3.** The client believes the data is safe, but it only exists in the pod's memory (buffer) or local disk (wal). If the AZ fails, that data is gone — and the client won't retry because it already got 200.
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant I as Insert Pod (AZ-a)
-    participant S3 as S3
-
-    C->>I: POST /insert/jsonline
-    I->>I: Buffer in memory
-    I-->>C: 200 OK ← client thinks data is safe
-    Note over I: Data only in memory!
-    Note over I,S3: ⏳ 10 seconds pass...
-    
-    rect rgb(255, 200, 200)
-        Note over I: 💥 AZ-a fails here
-        Note over I: Buffer lost — data gone
-        Note over C: Client already got 200
-        Note over C: Will NOT retry
-    end
-```
-
-**This gap does NOT exist in `flush-sync` mode** — the 200 is only sent after S3 confirms. But for customers who need buffer-mode performance with near-zero data loss, there is an additional option:
-
-##### Protecting Accepted Data — Two Approaches
-
-| Approach | How It Works | Data at Risk | Latency | Cost | Complexity |
-|---|---|---|---|---|---|
-| **`flush-sync`** (recommended) | Don't send 200 until S3 PutObject confirms | **Zero** | +100-500ms | ~$0.15/mo | None — config flag |
-| **`buffer` + shorter flush** | Send 200 after buffer, flush to S3 every 1-2s instead of 10s | **1-2s of data** (~2-4 MB/pod at 500GB/day) | ~0ms | ~$0.15/mo | None — config flag |
-
-**`flush-sync`** eliminates the accepted-but-not-flushed gap entirely and is the simplest. Use it unless you have a hard sub-5ms insert latency requirement; otherwise shorten `flush_interval` to trade a little S3 cost for a smaller window.
-
-> Note: an earlier design contemplated an async-S3-WAL ack mode (`async_wal_enabled`) for buffer-mode speed with near-zero loss. It was never implemented and the flag has been removed — use `flush-sync`, or the `logstore` buffer engine (whose own disk persistence gives a VT/VL-equivalent crash-loss window), instead.
-
-##### What Protects Data at Each Stage
-
-Data flows through four stages from client to S3. Here's what protects it at each point and what happens when an AZ fails:
-
-```
-Stage 1        Stage 2          Stage 3         Stage 4
-Client  ──→  Network/LB  ──→  Insert Pod  ──→  S3
-```
-
-| Stage | What Happens on AZ Failure | Protection Mechanism | Complexity |
-|---|---|---|---|
-| **1. Client → Network** | Client detects connection failure | **Client retry** — all VL/VT-compatible clients retry on error. Load balancer health checks remove dead pods within seconds. | Built-in (HTTP) |
-| **2. Network → Insert Pod** | Request in transit is lost | **Client retry** — no response received = client resends. TCP guarantees: no partial delivery without error. | Built-in (TCP/HTTP) |
-| **3. In Insert Pod buffer** | Buffer lost with pod | **`flush-sync`** — 200 never sent, client retries → **zero loss**. **`buffer`** — data acknowledged but lost → **flush-interval of data lost** (shorten `flush_interval` to shrink it). **`wal`** — on local EBS, at risk if AZ fails → **WAL data lost**. | Config: `ack_mode` + `flush_interval` |
-| **4. Insert Pod → S3** | PutObject may or may not complete | **S3 is regional** — once PUT succeeds, data survives any AZ failure. If PUT fails, no 200 sent (flush-sync), client retries. | Built-in (S3) |
-
-**Stage 3 is the only stage where configuration choices matter.** Every other stage is inherently protected by HTTP retry semantics and S3's regional architecture.
-
-##### Decision Matrix: AZ Tolerance + Durability
-
-| Goal | Configuration | Cost Premium | Data at Risk on AZ Failure | New Ingest Availability |
-|---|---|---|---|---|
-| **Best effort** (standard observability) | `ack_mode=buffer` | $0 | flush-interval per pod (19 MB at 500GB/day) | Wait for LB failover (~5-30s) |
-| **Reduced risk** | `ack_mode=buffer` + `flush_interval=2s` | ~$0.15/mo | 2s per pod (~4 MB at 500GB/day) | Wait for LB failover |
-| **Zero data loss** | `ack_mode=flush-sync` | ~$0.15/mo | **Zero** — 200 only after S3 | Wait for LB failover, surviving pods may be overloaded |
-| **Zero loss + HA** | `flush-sync` + over-provision (N-1 AZ) | +50% pod cost | **Zero** | Full throughput maintained |
-| **Zero loss + multi-AZ HA** | `flush-sync` + over-provision (N-2 AZ) | +200% pod cost | **Zero** | Full throughput through 2 AZ failures |
+1. **AZ fails.** The load balancer's health checks remove the AZ's insert pods within seconds; clients get connection errors or non-2xx and retry, and the retries land on surviving AZs. Requests acknowledged before the failure are in the failed AZ's buffer volumes or already in Parquet.
+2. **During the outage.** Surviving pods absorb the load (capacity planning above). Queries see everything in Parquet and in the surviving buffers; the failed AZ's undrained rows are not visible until its pods return.
+3. **AZ returns.** The pods restart on their volumes, reopen their segments and drain them. Objects already stored are recognised (stored marks, manifest, or a HEAD for the segment being drained) and not written twice, so recovery needs no dedup and leaves no orphans except a PUT still in flight from the dead process, which garbage collection reclaims.
+4. **Duplicates.** A segment's objects carry its nonce and every query drops the objects of the segments it reads from the buffer, so a row is never answered twice, in flight or after recovery.
 
 ##### Helm Configuration for AZ-Resilient Insert
 
 ```yaml
-# 3 AZ, tolerate 1 AZ failure, zero data loss
-lakehouseConfig:
-  insert:
-    ack_mode: "flush-sync"
-    flush_linger: "200ms"
-
+# 3 AZ, tolerate 1 AZ failure
 insert:
   replicaCount: 6              # 2 per AZ (over-provisioned for N-1)
+  persistence:
+    enabled: true              # the buffer volume (the default)
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
@@ -461,192 +292,20 @@ insert:
       memory: "4Gi"
 ```
 
-This ensures: pods spread evenly across AZs (`maxSkew: 1`), scheduler won't place 2 pods in the same AZ if another AZ has 0 (`DoNotSchedule`), and each pod has headroom for 1.5× normal load.
-
-##### AZ Failure Lifecycle — From Failure to Recovery
-
-This section traces the complete lifecycle: what happens when an AZ fails, how data is protected during the outage, and how the system recovers when the AZ comes back — including how duplicates are prevented.
-
-**Phase 1: AZ Failure**
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant LB as Load Balancer
-    participant A as Insert Pod (AZ-a)
-    participant B as Insert Pod (AZ-b)
-    participant S3 as S3 (regional)
-    participant M as Manifest
-
-    C->>LB: POST /insert/jsonline (batch X)
-    LB->>A: Route to AZ-a
-    A->>S3: PutObject (batch X as Parquet)
-    
-    rect rgb(255, 200, 200)
-        Note over A: 💥 AZ-a fails
-        Note over A: Pod dies mid-S3-PUT
-        Note over A: 200 never sent to client
-    end
-
-    Note over S3: S3 PUT may or may not<br/>complete (S3 is regional)
-
-    C->>LB: No response → retry batch X
-    LB->>B: Route to AZ-b (AZ-a failed health check)
-    B->>S3: PutObject (batch X as NEW file)
-    S3-->>B: Confirmed
-    B->>M: manifest.AddFile(batch-X-from-B)
-    B-->>C: 200 OK
-
-    Note over S3: Two possible files on S3:<br/>1. AZ-a's orphaned file (maybe)<br/>2. AZ-b's manifested file (confirmed)
-    Note over M: Only AZ-b's file is in manifest<br/>→ only AZ-b's file is queryable
-```
-
-**Key outcomes:**
-- **Client data safe**: client only got 200 after AZ-b confirmed S3 write
-- **No query duplicates**: manifest only contains AZ-b's file. AZ-a's orphaned file (if it completed) is on S3 but NOT in manifest → invisible to queries
-- **Zero coordination needed**: AZ-b doesn't know about AZ-a's failed write. It doesn't need to. Each insert pod operates independently.
-
-**Phase 2: During Outage — Surviving AZs Handle All Traffic**
-
-```mermaid
-graph TD
-    subgraph "AZ-a (DOWN)"
-        A_DEAD["Insert pods: DEAD ❌"]
-    end
-
-    subgraph "AZ-b (absorbing extra load)"
-        B1["Insert pod-2 ✅"] -->|"S3 PUT"| S3[(S3)]
-        B2["Insert pod-3 ✅"] -->|"S3 PUT"| S3
-    end
-
-    subgraph "AZ-c (absorbing extra load)"
-        C1["Insert pod-4 ✅"] -->|"S3 PUT"| S3
-        C2["Insert pod-5 ✅"] -->|"S3 PUT"| S3
-    end
-
-    LB[Load Balancer] -->|"0%"| A_DEAD
-    LB -->|"50%"| B1
-    LB -->|"50%"| C1
-
-    S3 --> MANIFEST[Manifest: tracks<br/>all confirmed files]
-
-    style A_DEAD fill:#F44336,color:#fff
-    style B1 fill:#4CAF50,color:#fff
-    style B2 fill:#4CAF50,color:#fff
-    style C1 fill:#4CAF50,color:#fff
-    style C2 fill:#4CAF50,color:#fff
-```
-
-- All new data flows to AZ-b/c insert pods
-- Each S3 write is confirmed → added to manifest → queryable
-- Select pods query data from manifest (all data on S3, regardless of which AZ wrote it)
-- **No data gaps in queries** — S3 is regional, readable from any AZ
-
-**Phase 3: AZ Recovers**
-
-```mermaid
-sequenceDiagram
-    participant A as Insert Pods (AZ-a, restarting)
-    participant LB as Load Balancer
-    participant S3 as S3
-    participant M as Manifest
-    participant GC as Orphan GC (periodic)
-
-    Note over A: AZ-a comes back online
-    A->>A: Pods restart FRESH<br/>(no local state, no WAL, stateless)
-    A->>M: Load manifest from S3/peers
-    Note over A: Manifest already has ALL data<br/>(written by AZ-b/c during outage)
-    
-    A->>LB: Pass health check
-    LB->>A: Resume routing traffic to AZ-a
-    Note over A: Accept NEW data normally
-    Note over A: No recovery, no replay,<br/>no special handling needed
-
-    GC->>S3: List files in partitions
-    GC->>M: Compare with manifest entries
-    Note over GC: Find AZ-a's orphaned files<br/>(on S3 but not in manifest)
-    GC->>S3: Delete orphaned files
-    Note over GC: Storage reclaimed
-```
-
-**Why this is so simple:**
-1. **Insert pods are stateless** — restart fresh, no state to recover, no WAL to replay
-2. **Manifest is the source of truth** — all data written during outage is already in manifest
-3. **No dedup needed at query time** — orphaned files from AZ-a are not in manifest → not queried
-4. **Orphan cleanup is background** — periodic GC compares S3 files vs manifest, deletes orphans
-5. **No coordination between insert pods** — each pod writes independently to S3, manifest tracks everything
-
-##### Why No Duplicates
-
-The dedup question resolves itself through the manifest architecture:
-
-| Scenario | AZ-a's file | AZ-b's file | Query result | Why |
-|---|---|---|---|---|
-| AZ-a PUT failed, client retried to AZ-b | Does not exist on S3 | In S3 + manifest ✅ | **One copy** | AZ-a's write never completed |
-| AZ-a PUT completed, client retried to AZ-b | On S3, NOT in manifest | In S3 + manifest ✅ | **One copy** | Manifest only knows about AZ-b's file. AZ-a's file is orphaned. |
-| AZ-a PUT completed AND manifest.AddFile() completed | In S3 + manifest | In S3 + manifest | **Two copies ⚠️** | Extremely rare: pod survived long enough for both S3 PUT and manifest update, then died before HTTP 200. |
-
-The third scenario (both copies in manifest) is **extremely rare** — it requires the pod to complete S3 PutObject + manifest.AddFile() but die before sending HTTP 200. The timing window is microseconds (manifest update is in-memory). If it does happen:
-
-**Compaction dedup handles it**: during the normal compaction merge of small files, rows are deduped by `(timestamp_ns, _stream_id, body)`. Identical rows from the two copies are merged into one. Zero operator intervention needed.
-
-##### Orphan Garbage Collection
-
-Orphaned files (on S3 but not in manifest) waste storage but don't affect query correctness. A periodic GC scan cleans them up:
-
-```yaml
-lakehouseConfig:
-  gc:
-    enabled: true
-    interval: "6h"              # scan every 6 hours
-    orphan_grace_period: "1h"   # don't delete files younger than 1h (may be in-flight)
-```
-
-**How GC works:**
-1. List S3 files in each Hive partition
-2. Compare with manifest entries
-3. Files on S3 but not in manifest AND older than `orphan_grace_period` → delete
-4. Cost: one S3 ListObjects per partition + one DeleteObject per orphan. Negligible.
-
-**At-scale impact**: AZ failures produce ~1-10 orphaned files per event (one per in-flight batch per insert pod in the failed AZ). At 3 insert pods with 200ms linger, that's ~3 orphaned files × ~5 MB each = ~15 MB of orphaned storage per AZ failure event. GC reclaims this within hours.
-
-##### Two-AZ Failure — Same Mechanism, Larger Scale
-
-When 2 out of 3 AZs fail simultaneously:
-
-1. **During failure**: one surviving AZ absorbs all traffic (if over-provisioned for N-2)
-2. **Data safety**: flush-sync ensures zero loss — clients retry to the surviving AZ
-3. **Orphaned files**: both failed AZs may leave orphans on S3 → GC cleans up
-4. **Recovery**: both AZs restart fresh, manifest already has all data from the surviving AZ
-5. **Duplicates**: same mechanism — manifest is source of truth, compaction handles the rare edge case
-
-The only additional concern: **can one AZ handle the full ingest load?** This is the capacity planning question (see sizing table above). With N-2 over-provisioning, each AZ can handle 100% of traffic.
-
-##### Summary: End-to-End AZ Failure Protection
-
-| Component | Mechanism | Complexity |
-|---|---|---|
-| **Data safety** | `flush-sync` — 200 only after S3 confirms | Config flag |
-| **Client failover** | HTTP retry — no 200 = resend to another AZ | Built-in (HTTP) |
-| **LB failover** | Health check removes failed AZ pods | Built-in (K8s/LB) |
-| **Load absorption** | Over-provisioned insert pods in surviving AZs | Capacity planning |
-| **Dedup prevention** | Manifest is source of truth — orphans not queryable | Built-in (architecture) |
-| **Orphan cleanup** | Periodic GC compares S3 vs manifest | Background job |
-| **Edge-case dedup** | Compaction merges duplicate rows | Built-in (compaction) |
-| **AZ recovery** | Pods restart stateless — no recovery logic needed | Zero — stateless |
-
-**No replication protocol. No WAL replay. No ring management. No compactor dedup queue.** The entire AZ failure protection relies on three things that already exist: S3's regional durability, HTTP retry semantics, and the manifest's role as source of truth for queries.
+This ensures: pods spread evenly across AZs (`maxSkew: 1`), the scheduler won't place 2 pods in the same AZ if another AZ has 0 (`DoNotSchedule`), and each pod has headroom for 1.5x normal load.
 
 ##### Monitoring AZ Failure Readiness
 
 | Metric | Alert Threshold | Meaning |
 |---|---|---|
 | `lakehouse_insert_pods_per_az` | < 2 | Not enough pods in an AZ for N-1 tolerance |
-| `lakehouse_insert_buffer_rows` | > 80% of `flush_max_rows` | Pod approaching flush threshold — may need more pods |
-| `lakehouse_insert_flush_duration_seconds` | p99 > 1s | S3 write latency too high — check network/S3 throttling |
+| `lakehouse_buffer_oldest_pending_age_seconds` | > several `buffer_flush_interval` | The drain is behind: S3 is slow or unreachable (alert `LakehouseBufferNotDraining`) |
+| `lakehouse_buffer_pending_rows` | growing | Rows waiting in segments; the volume's size must cover the backlog |
+| `lakehouse_insert_rejected_total{reason="read_only"}` | > 0 | The buffer volume is below its free-space floor; inserts get 429 (alert `LakehouseInsertRefusedDiskFloor`) |
+| `lakehouse_insert_flush_duration_seconds` | p99 > 1s | S3 write latency too high; check network/S3 throttling |
 | `kube_pod_status_ready` by AZ | < expected per AZ | AZ may be degrading |
 | `lakehouse_gc_orphans_deleted_total` | > 0 after AZ event | Confirms GC is cleaning up orphaned files |
-| `lakehouse_gc_orphan_bytes_total` | spike | Quantifies orphaned storage from AZ failure |
+
 
 ### Preferred vs Strict Mode
 
