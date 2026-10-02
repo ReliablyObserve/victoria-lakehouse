@@ -262,15 +262,9 @@ lakehouseConfig:
   # Insert — Write path (flush to Parquet + S3)
   # ---------------------------------------------------------------------------
   insert:
-    # -- Periodic flush interval. Lower = less read delay, more S3 PUTs.
-    flush_interval: 1m
-    # -- Max rows per partition buffer before triggering flush.
-    max_buffer_rows: 50000
-    # -- Bound on rows not yet written to object storage (buffered, being
-    # uploaded, or put back after a failed upload). Past it inserts get 429
-    # until flushes catch up.
-    max_buffer_bytes: 256MB
-    # -- Target Parquet file size before starting a new file.
+    # -- Target Parquet object size. A buffer segment is cut into objects of
+    # about this size; a segment that reaches it (while few segments wait) is
+    # sealed early.
     target_file_size: 128MB
     # -- Rows per Parquet row group.
     row_group_size: 10000
@@ -281,18 +275,29 @@ lakehouseConfig:
     # -- ZSTD level for fresh writes (1=fast, 22=max compression). Compaction
     # recompresses older files per compaction.compression_level_by_output_level.
     compression_level: 3
-    # -- Insert buffer engine. "buffer" = legacy in-memory staging; "logstore" =
-    # durable logstorage-native buffer (on-disk parts, restored on open) — crash
-    # recovery WITHOUT a separate WAL. See docs/durability.md.
-    # Deployment override: the binaries default to "buffer"; the chart runs
-    # "logstore" on its persistent /data/lakehouse volume.
-    buffer_engine: logstore
-    # -- Buffer parts directory. MUST be a durable volume (not tmpfs) for crash
-    # recovery.
+    # -- The insert buffer: a sequence of upstream VictoriaLogs/VictoriaTraces
+    # storages ("segments"), one directory each, holding every acknowledged
+    # row until it has been written to Parquet. MUST be a persistent volume
+    # (the insert StatefulSet's PVC, logs.insert.persistence /
+    # traces.insert.persistence, enabled by default): a pod that loses it loses
+    # the rows it had not written yet. Select pods never open it.
+    #
+    # Sizing. The buffer holds about buffer_flush_interval + the time to write
+    # a segment + the grace after it (about 7.5 min with the defaults) of
+    # ingest, plus the backlog of any object-store outage: an outage refuses
+    # nothing, the segments wait on disk, and inserts get 429 only when the
+    # volume reaches upstream's free-space floor. Upstream compresses the
+    # buffered rows about 13-15x for logs and about 5x for traces (measured on
+    # synthetic data; check your own data). At 1 TB/day that is about 0.4 GB
+    # steady plus 3.1 GB per outage hour per pod for logs (about 2.7x that for
+    # traces). The 50Gi default absorbs about 15 h (logs) or 5.5 h (traces) of
+    # outage at 1 TB/day per pod. See docs/sizing.md.
     buffer_dir: /data/lakehouse/buffer
-    # -- How long the buffer retains a row before VL drops it. When flush is
-    # enabled this is the recovery ceiling (validated >= 4x buffer_flush_interval).
-    buffer_retention: 1h
+    # -- The longest a segment stays open: it is sealed this long after it
+    # opened (earlier if it reaches target_file_size), written to object
+    # storage completely and removed after a short grace. Longer = fewer,
+    # larger objects and more time in the buffer; shorter = more objects.
+    buffer_flush_interval: 5m
 
   # ---------------------------------------------------------------------------
   # Select — Read path (buffer query bridge)
@@ -774,6 +779,9 @@ logs:
       enabled: false
       interval: 30s
       labels: {}
+    # -- Persistent volume of the pod (manifest snapshot and caches under
+    # /data/lakehouse). Select pods never open an insert buffer; with it
+    # disabled the volume is an emptyDir and the pod rebuilds its state at start.
     persistence:
       enabled: true
       size: 50Gi
@@ -878,6 +886,9 @@ logs:
       enabled: false
       interval: 30s
       labels: {}
+    # -- Persistent volume of the pod. For insert pods this is the insert buffer's
+    # disk (insert.buffer_dir under /data/lakehouse): keep it enabled and size it
+    # for the outage you want to ride out (see insert.buffer_dir, docs/sizing.md).
     persistence:
       enabled: true
       size: 50Gi
@@ -1018,6 +1029,9 @@ traces:
       enabled: false
       interval: 30s
       labels: {}
+    # -- Persistent volume of the pod (manifest snapshot and caches under
+    # /data/lakehouse). Select pods never open an insert buffer; with it
+    # disabled the volume is an emptyDir and the pod rebuilds its state at start.
     persistence:
       enabled: true
       size: 50Gi
@@ -1122,6 +1136,9 @@ traces:
       enabled: false
       interval: 30s
       labels: {}
+    # -- Persistent volume of the pod. For insert pods this is the insert buffer's
+    # disk (insert.buffer_dir under /data/lakehouse): keep it enabled and size it
+    # for the outage you want to ride out (see insert.buffer_dir, docs/sizing.md).
     persistence:
       enabled: true
       size: 50Gi

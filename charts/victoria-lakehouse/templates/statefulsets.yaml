@@ -148,6 +148,10 @@ spec:
         - name: config
           configMap:
             name: {{ include "victoria-lakehouse.fullname" $ }}-{{ $signal }}-config
+        {{- if not $roleVals.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
         {{- with $roleVals.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

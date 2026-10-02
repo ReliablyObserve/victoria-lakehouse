@@ -317,6 +317,43 @@ run_test "all major features enabled" \
   --set "vmauth.ingress.hosts[0].paths[0].pathType=Prefix"
 
 # ---------------------------------------------------------------------------
+# Insert buffer: durable by default
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Insert buffer ---"
+
+# check_render <description> <helm args...> -- <grep -E pattern that must match> [<pattern that must not>]
+check_render() {
+  local description="$1" must="$2" mustnot="$3"
+  shift 3
+  local out
+  if ! out="$(helm template test-release "${CHART_DIR}" "$@" 2>/tmp/helm_test_err)"; then
+    echo "  FAIL  ${description}"; sed 's/^/         /' /tmp/helm_test_err
+    FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1)); return
+  fi
+  if ! grep -Eq "${must}" <<<"${out}"; then
+    echo "  FAIL  ${description}: no match for ${must}"
+    FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1)); return
+  fi
+  if [[ -n "${mustnot}" ]] && grep -Eq "${mustnot}" <<<"${out}"; then
+    echo "  FAIL  ${description}: unexpected match for ${mustnot}"
+    FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1)); return
+  fi
+  echo "  PASS  ${description}"
+  PASSED=$((PASSED + 1))
+}
+
+check_render "the rendered config sets the segment buffer and none of the removed keys" \
+  'buffer_dir: /data/lakehouse/buffer' \
+  '(buffer_engine|buffer_flush_enabled|buffer_retention|ack_mode|max_buffer_rows|max_buffer_bytes|flush_linger|flush_max_rows|peer_replicate)'
+check_render "insert and select pods get a persistent volume claim by default" \
+  'volumeClaimTemplates:' ''
+check_render "a pod without persistence gets an emptyDir (select pods need no PVC for the buffer)" \
+  'emptyDir: \{\}' '' \
+  --set "logs.select.persistence.enabled=false"
+
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 echo ""
