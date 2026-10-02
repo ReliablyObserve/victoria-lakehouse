@@ -1658,16 +1658,29 @@ const ClassSourceList = "list"
 // object size.
 const MatureObjectBytes = 32 << 20
 
-// RangePartitions calls fn for every partition under the manifest's read lock,
-// without copying. fn must not retain files (or anything inside them), modify
-// them, or call back into the manifest; it stops early when fn returns false.
-// For per-scan planning over every file, where AllFiles' deep copy would cost
-// one FileInfo copy per file per scan.
+// RangePartitions calls fn for every partition without copying its files. The
+// read lock is held for one partition at a time (the partition names are
+// snapshotted first), so a writer waits at most one partition's fn, not the
+// whole walk. fn must not retain files (or anything inside them), modify them,
+// or call back into the manifest; it stops early when fn returns false. For
+// per-scan planning over every file, where AllFiles' deep copy would cost one
+// FileInfo copy per file per scan.
 func (m *Manifest) RangePartitions(fn func(partition string, files []FileInfo) bool) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for p, files := range m.files {
-		if !fn(p, files) {
+	parts := make([]string, 0, len(m.files))
+	for p := range m.files {
+		parts = append(parts, p)
+	}
+	m.mu.RUnlock()
+	for _, p := range parts {
+		m.mu.RLock()
+		files, ok := m.files[p]
+		cont := true
+		if ok && len(files) > 0 {
+			cont = fn(p, files)
+		}
+		m.mu.RUnlock()
+		if !cont {
 			return
 		}
 	}
