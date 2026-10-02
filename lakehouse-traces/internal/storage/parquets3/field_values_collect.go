@@ -90,42 +90,51 @@ func (s *Storage) collectBufferedValues(ctx context.Context, files []manifest.Fi
 	}
 	var mu sync.Mutex
 	count := func(tss []tombstone) logstorage.WriteDataBlockFunc {
-		return func(_ uint, db *logstorage.DataBlock) {
-			if db = filterDataBlock(db, r.filter); db == nil || db.RowsCount() == 0 {
-				return
-			}
-			if len(tss) > 0 {
-				if db = suppressTombstonedRows(db, tss); db == nil || db.RowsCount() == 0 {
-					return
-				}
-			}
-			for _, c := range db.GetColumns(false) {
-				if c.Name != r.field {
-					continue
-				}
-				// Count per distinct value within the block first: the block's
-				// strings point into memory the engine reuses once this callback
-				// returns (the logstore buffer's block arena), so a key kept in
-				// `seen` must be its own copy - and a Go map assignment, also an
-				// increment of an existing key, REPLACES the stored key with the
-				// one assigned, so every assignment below uses a fresh copy.
-				local := make(map[string]uint64, 8)
-				for _, v := range c.Values {
-					if v != "" {
-						local[v]++
-					}
-				}
-				mu.Lock()
-				for v, n := range local {
-					seen[strings.Clone(v)] += n
-				}
-				mu.Unlock()
-			}
-		}
+		return newFieldValueCounter(r.field, r.filter, tss, &mu, seen)
 	}
 	scope := scopeFor(ctx, r.tenantIDs)
 	sink := newTombstoneSink(scope, r.tombstones, r.parse, s.AccountOnlyTenantKeys(), count)
 	s.bufferRowsTo(ctx, r.startNs, r.endNs, lazyWatermarks{s, r.startNs, files}, r.query, r.tenantIDs, sink)
+}
+
+// newFieldValueCounter returns the block callback that counts the values of
+// one field into seen.
+//
+// A block handed to the callback by the co-located logstorage buffer points
+// into memory the engine reuses for the next block as soon as the callback
+// returns, and that block may belong to any concurrent query, of any tenant
+// (#278). So the values of a block are counted into a local map first (keys
+// borrowed, dropped with the map), and merged into seen with copies: a Go map
+// assignment, even an increment of an existing key, replaces the stored key
+// with the one assigned, so "seen[v]++" with a borrowed v would put the
+// block's memory back into seen.
+func newFieldValueCounter(field string, filter *logstorage.Filter, tss []tombstone, mu *sync.Mutex, seen map[string]uint64) logstorage.WriteDataBlockFunc {
+	return func(_ uint, db *logstorage.DataBlock) {
+		if db = filterDataBlock(db, filter); db == nil || db.RowsCount() == 0 {
+			return
+		}
+		if len(tss) > 0 {
+			if db = suppressTombstonedRows(db, tss); db == nil || db.RowsCount() == 0 {
+				return
+			}
+		}
+		for _, c := range db.GetColumns(false) {
+			if c.Name != field {
+				continue
+			}
+			local := make(map[string]uint64, 8)
+			for _, v := range c.Values {
+				if v != "" {
+					local[v]++
+				}
+			}
+			mu.Lock()
+			for v, n := range local {
+				seen[strings.Clone(v)] += n
+			}
+			mu.Unlock()
+		}
+	}
 }
 
 // fileAggregate returns the file's exact per-value counts for the request's
