@@ -1,0 +1,7 @@
+# Lakehouse settings of the parity stack, mounted into both services.
+#
+# A buffer segment is written to Parquet, whole, at the latest 5 s after it
+# opened, so the cold tier answers from objects within seconds.
+lakehouse:
+  insert:
+    buffer_flush_interval: 5s
