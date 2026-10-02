@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.14] - 2026-10-02
+
 ### Fixed
 
 - **Trace IDs collected for the trace-by-ID fast path are copied before they are kept (both binaries, closes #278).**
