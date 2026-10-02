@@ -153,7 +153,7 @@
   status: shipped
   area: query
   surfaces: [storage]
-  rows: [lh.cold.count_exact_above_1m_rows, lh.cold.hits_bucket_counts_exact]
+  rows: [lh.cold.count_exact_above_1m_rows, lh.cold.hits_bucket_counts_exact, lh.cold.stats_hide_tombstoned_rows]
   tests:
     - internal/storage/parquets3/count_pushdown_test.go
     - internal/storage/parquets3/filtered_count_pushdown_test.go

@@ -36,7 +36,9 @@ func blockRowFields(blocks []*logstorage.DataBlock) []map[string]string {
 				if i >= len(c.Values) || c.Values[i] == "" {
 					continue
 				}
-				row[c.Name] = c.Values[i]
+				// Clone: block values can alias memory a pipe reuses after the
+				// write callback returns.
+				row[strings.Clone(c.Name)] = strings.Clone(c.Values[i])
 			}
 			rows = append(rows, row)
 		}

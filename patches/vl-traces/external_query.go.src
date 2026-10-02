@@ -2,6 +2,7 @@ package logstorage
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
 )
@@ -247,6 +248,11 @@ func QueryFilter(q *Query) *Filter {
 // and performance change that must be measured, not folded into an
 // upstream bump. Reuse-first target: replace this function with
 // getNeededColumns plus a prefix-to-column resolution step.
+//
+// The Parquet projection no longer uses this function: GetQueryNeededFields
+// is that replacement and fixed divergence B4 for the projection. This one is
+// kept only for the count pushdown's single-field gate and the traces alias
+// logic, which want the pipes' by-fields alone.
 func GetQueryPipeFields(q *Query) []string {
 	if q == nil {
 		return nil
@@ -300,6 +306,91 @@ func GetQueryPipeFields(q *Query) []string {
 		}
 	}
 	return fields
+}
+
+// GetQueryNeededFields returns the field names a storage backend must read for
+// each row so that BOTH the query's filter and its pipes see every field they
+// reference, or []string{"*"} when the set cannot be named exactly (a pipe that
+// passes every field through, such as `sort` or `limit`, a wildcard field
+// filter, a `delete`/`rename` that needs a prefix). The `_time` field is always
+// included. An empty or "*"-containing result means "read every column".
+//
+// It is the column list a Parquet projection needs: the fields upstream's own
+// search would unpack for this query. The filter contributes through each
+// filter's updateNeededFields (a default-field term such as `_msg:="x"` or a
+// bare word reports `_msg`; a stream selector reports `_stream`; a `_time`
+// term reports `_time`), and the pipe chain through getNeededColumns, which
+// asks every pipe — stats by-fields and function arguments, fields, uniq, top,
+// sort, filter, extract, unpack_*, math, format and every pipe upstream adds.
+//
+// upstream-original: composes upstream's getNeededColumns (pipes) and the
+// filter interface's updateNeededFields (filter) behind one exported accessor;
+// no upstream logic is copied, and a pipe or filter upstream adds is covered
+// by its own updateNeededFields with no change here.
+func GetQueryNeededFields(q *Query) []string {
+	all := []string{"*"}
+	if q == nil || QueryNeedsAllFields(q) {
+		// Upstream answers field_names/field_values/facets/block_stats from
+		// block metadata, so its pipe chain names no columns for them; an
+		// external backend has only rows to enumerate and must read them all.
+		return all
+	}
+	pf := getNeededColumns(q.pipes)
+	if f := q.getFinalFilter(); f != nil {
+		f.updateNeededFields(pf)
+	}
+	pf.AddAllowFilter("_time")
+	names, ok := pf.GetAllowStrings()
+	if !ok {
+		return all
+	}
+	fields := append([]string(nil), names...)
+	sort.Strings(fields)
+	return fields
+}
+
+// GetQueryPipeNeededFields is GetQueryNeededFields for the pipe chain alone:
+// the fields the pipes read from the stored rows, without the filter's. A
+// metadata-only shortcut that fabricates rows (the count pushdown) uses it to
+// ask whether anything AFTER the filter reads a field it cannot reproduce, such
+// as `_time` in `count() if (_time:...)`, which the filter-inclusive list
+// cannot tell apart from the always-present global time range.
+//
+// upstream-original: upstream's getNeededColumns over the unexported pipes;
+// no logic is copied.
+func GetQueryPipeNeededFields(q *Query) []string {
+	all := []string{"*"}
+	if q == nil || QueryNeedsAllFields(q) {
+		return all
+	}
+	names, ok := getNeededColumns(q.pipes).GetAllowStrings()
+	if !ok {
+		return all
+	}
+	fields := append([]string(nil), names...)
+	sort.Strings(fields)
+	return fields
+}
+
+// QueryFirstPipeIsAggregate reports whether the first pipe of q is one that
+// REPLACES the row stream with its own output built only from the named input
+// fields: stats, uniq, top or fields. A count pushed down to per-file label
+// aggregates is only sound when the rows reaching such a pipe are the stored
+// rows themselves, so a pipe ahead of it (copy, extract, format, math, rename,
+// unpack_*, ...) that can rewrite a field the pipe groups by makes the answer
+// wrong.
+//
+// upstream-original: a type test on the unexported Query.pipes slice using
+// upstream's own pipe types; no upstream logic is duplicated.
+func QueryFirstPipeIsAggregate(q *Query) bool {
+	if q == nil || len(q.pipes) == 0 {
+		return false
+	}
+	switch q.pipes[0].(type) {
+	case *pipeStats, *pipeUniq, *pipeTop, *pipeFields:
+		return true
+	}
+	return false
 }
 
 // TimeBucket describes one `_time` bucketing applied by a `stats by (_time:<step>)`

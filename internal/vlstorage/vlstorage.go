@@ -29,7 +29,8 @@ func (a *adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	hiddenFilters := qctx.HiddenFieldsFilters
 
 	// IMPORTANT: pass the FULL query (with pipes intact) to a.store.RunQuery.
-	// Our storage's queryColumns() consults logstorage.GetQueryPipeFields() to
+	// Our storage derives the Parquet column projection from the parsed query
+	// (logstorage.GetQueryNeededFields: filter AND pipes) to
 	// expand the parquet column projection to cover fields referenced only by
 	// pipes (e.g. `| fields _time, trace_id` or `| partition by (trace_id)`).
 	// If we strip pipes here, the projection misses those fields, the emitted

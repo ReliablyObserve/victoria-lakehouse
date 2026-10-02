@@ -84,6 +84,11 @@ declare -a SCN=(
   "fulltext_scan_1h|/select/logsql/query?query=$(enc 'error | stats count() c')"
   "filtered_count_1h|/select/logsql/query?query=$(enc 'service.name:api-gateway | stats count() c')"
   "groupby_service_1h|/select/logsql/query?query=$(enc '* | stats by (service.name) count() c')"
+  # Filtered stats on cold data (#273): the projection must carry the filter's
+  # fields (message, stream, level) AND the by() key, however the terms are ordered.
+  "filtered_groupby_1h|/select/logsql/query?query=$(enc 'error | stats by (level) count() c')"
+  "time_fulltext_count_1h|/select/logsql/query?query=$(enc '_time:50m error | stats count() c')"
+  "stream_filtered_groupby_1h|/select/logsql/query?query=$(enc '{service.name="api-gateway"} error | stats by (level) count() c')"
   # Filter on a PROMOTED high-cardinality dedicated column. In LH this is a typed
   # column with a bloom + label aggregates (served from metadata / pruned row
   # groups); in CH the same key lives in the ResourceAttributes MAP (a map scan).

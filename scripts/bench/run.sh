@@ -109,7 +109,7 @@ is_miss_query() { [[ "$MISS_QUERIES" == *" $1 "* ]]; }
 # would validate the TOTAL only — two systems could split the same total
 # across different groups and still "match". extract_result instead hashes
 # the sorted (group, count) pairs for these.
-GROUPBY_QUERIES=" count_by_service high_card "
+GROUPBY_QUERIES=" count_by_service high_card filtered_groupby "
 is_groupby_query() { [[ "$GROUPBY_QUERIES" == *" $1 "* ]]; }
 
 # VALUES_QUERIES are the field-metadata kinds: LogsQL systems answer them from
@@ -206,7 +206,7 @@ result_is_empty() {
 # iteration, to check a truncated scan's rows are members of that window.
 extract_result() {
   local qkind="$1" system="$2" file="$3" keysout="${4:-}"
-  if [[ "$system" == clickhouse && "$qkind" != scan && "$qkind" != count_by_service && "$qkind" != high_card ]] && ! is_values_query "$qkind"; then
+  if [[ "$system" == clickhouse && "$qkind" != scan && "$qkind" != count_by_service && "$qkind" != high_card && "$qkind" != filtered_groupby ]] && ! is_values_query "$qkind"; then
     case "$qkind" in
       trace_by_id)
         awk -F'\t' '{n++; v=$NF} END{if(n==0){print "invalid:empty-body"} else {print "spans="(v+0)}}' "$file" ;;
@@ -284,7 +284,7 @@ h = hashlib.sha256("\n".join("{}\x00{}".format(k, c) for k, c in pairs).encode()
 print("rows={};total={};hash={}".format(len(pairs), sum(c for _, c in pairs), h))
 PY
         ;;
-      count_by_service|high_card)
+      count_by_service|high_card|filtered_groupby)
         # Shared by every system, ClickHouse included (see the module
         # comment above): CH's group-by is requested as JSONEachRow with
         # `count() AS n`, same shape as VL/VT/LH's `stats by(...) count()`.
@@ -673,6 +673,9 @@ _prep_body() {
       level_filter)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND SeverityText='"'"'ERROR'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\tlevel:ERROR | stats count() n' "$logs_url" "$sns" "$ens" ;;
       multi_filter)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND SeverityText='"'"'ERROR'"'"' AND ServiceName='"'"'api-gateway'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\tlevel:ERROR service.name:="api-gateway" | stats count() n' "$logs_url" "$sns" "$ens" ;;
       negation)         [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND SeverityText!='"'"'INFO'"'"'' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\t-level:INFO | stats count() n' "$logs_url" "$sns" "$ens" ;;
+      # A filtered group-by: a default-field (word) filter AND a by() field, the shape whose
+      # cold projection must carry BOTH the message column and the group key (#273).
+      filtered_groupby) [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT SeverityText,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND position(Body,'"'"'error'"'"')>0 GROUP BY SeverityText FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\terror | stats by (level) count()' "$logs_url" "$sns" "$ens" ;;
       trace_lookup)     [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT count() FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) AND TraceId='"'"'%s'"'"'' "${EP[ch]}" "$sns" "$ens" "$SAMPLE_TID" || printf 'POST\t%s?start=%s&end=%s\ttrace_id:=%s | stats count() n' "$logs_url" "$sns" "$ens" "$SAMPLE_TID" ;;
       high_card)        [[ "$sys" == clickhouse ]] && printf 'CH\t%s\tSELECT TraceId,count() AS n FROM lakehouse.otel_logs WHERE Timestamp>=fromUnixTimestamp64Nano(%s) AND Timestamp<=fromUnixTimestamp64Nano(%s) GROUP BY TraceId FORMAT JSONEachRow' "${EP[ch]}" "$sns" "$ens" || printf 'POST\t%s?start=%s&end=%s\t* | stats by (trace_id) count()' "$logs_url" "$sns" "$ens" ;;
       # CH: Body/TraceId/SpanId aliased to LogsQL's own field names and the
@@ -728,7 +731,7 @@ _prep_body() {
   fi
 }
 
-LOG_QUERIES="count_total count_by_service fulltext level_filter multi_filter negation trace_lookup high_card scan fv_level fv_service streams_list"
+LOG_QUERIES="count_total count_by_service filtered_groupby fulltext level_filter multi_filter negation trace_lookup high_card scan fv_level fv_service streams_list"
 TRACE_QUERIES="count_total count_by_service service_filter trace_by_id span_name slow_spans scan fv_name fv_service streams_list"
 # --queries "a b c" overrides the per-signal list (intersected with what's valid
 # for each signal), so a focused cold run can target just scan/count.
