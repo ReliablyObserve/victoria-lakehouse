@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.143.15] - 2026-10-03
+
 ### Fixed
 
 - **Compaction plans merges per tenant, stops rewriting a lone file forever, and keeps away from tiered objects (both binaries, closes #343).**
