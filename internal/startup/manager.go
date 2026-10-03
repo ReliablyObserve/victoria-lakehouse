@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -60,6 +61,9 @@ func (p Phase) String() string {
 // catches the first-ever-boot scenario where a pod with no snapshot
 // would otherwise lie about being ready while the manifest is empty.
 type Manager struct {
+	// Serialize gate mutations together with their metric publication. Atomic
+	// readers remain lock-free, while the final gauges cannot lag a later setter.
+	stateMu         sync.Mutex
 	phase           atomic.Int32
 	servingReady    atomic.Bool
 	warmupComplete  atomic.Bool
@@ -130,10 +134,9 @@ func (m *Manager) WarmupComplete() bool {
 // after disk recovery completes; the gate's other preconditions
 // (WAL replay, MinManifestFiles) are checked lazily by ServingReady.
 func (m *Manager) SetServingReady() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	m.servingReady.Store(true)
-	if m.ServingReady() {
-		metrics.ServingReady.Set(1)
-	}
 	m.updateReadyMetric()
 	logger.Infof("startup: serving-ready flipped; warmup may still be in progress")
 }
@@ -142,6 +145,8 @@ func (m *Manager) SetServingReady() {
 // runs S3 refresh + cache warmup + bloom backfill finishes. After
 // this, /ready returns 200 (was 204 while warming).
 func (m *Manager) SetWarmupComplete() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	// Phase describes the completed startup work, independently of serving
 	// gates. Do not use SetPhase(PhaseReady), whose legacy behavior grants
 	// serving readiness as well as completing warmup.
@@ -149,7 +154,6 @@ func (m *Manager) SetWarmupComplete() {
 	m.phase.Store(int32(PhaseReady))
 	metrics.StartupPhase.Set(int64(PhaseReady))
 	m.warmupComplete.Store(true)
-	metrics.WarmupComplete.Set(1)
 	m.updateReadyMetric()
 	logger.Infof("startup: warmup complete; /ready will report 200")
 }
@@ -160,19 +164,18 @@ func (m *Manager) SetWarmupComplete() {
 // ServingReady and ManifestFiles metrics so operators can spot the gate
 // flipping live and watch the manifest-size health gauge.
 func (m *Manager) SetManifestFiles(n int64) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	m.manifestFiles.Store(n)
 	metrics.ManifestFiles.Set(n)
-	if m.ServingReady() {
-		metrics.ServingReady.Set(1)
-	} else {
-		metrics.ServingReady.Set(0)
-	}
 	m.updateReadyMetric()
 }
 
 // SetWALReplayNeeded marks this pod as one that needs WAL replay
 // before serving (insert role). select-only roles never call this.
 func (m *Manager) SetWALReplayNeeded() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	m.walReplayNeeded.Store(true)
 	m.updateReadyMetric()
 }
@@ -181,12 +184,16 @@ func (m *Manager) SetWALReplayNeeded() {
 // the on-disk WAL. ServingReady becomes true only after this is set
 // (when WALReplayNeeded was true).
 func (m *Manager) SetWALReplayDone() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	m.walReplayDone.Store(true)
 	m.updateReadyMetric()
 	logger.Infof("startup: WAL replay complete")
 }
 
 func (m *Manager) SetPhase(p Phase) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	old := Phase(m.phase.Swap(int32(p)))
 	logger.Infof("startup phase transition; from=%s, to=%s, elapsed=%v", old.String(), p.String(), time.Since(m.startTime))
 	metrics.StartupPhase.Set(int64(p))
@@ -227,7 +234,18 @@ func (m *Manager) recordCompletion() {
 }
 
 func (m *Manager) updateReadyMetric() {
-	if m.IsReady() {
+	serving, warmup := m.ServingReady(), m.WarmupComplete()
+	if serving {
+		metrics.ServingReady.Set(1)
+	} else {
+		metrics.ServingReady.Set(0)
+	}
+	if warmup {
+		metrics.WarmupComplete.Set(1)
+	} else {
+		metrics.WarmupComplete.Set(0)
+	}
+	if serving && warmup {
 		metrics.Ready.Set(1)
 	} else {
 		metrics.Ready.Set(0)
