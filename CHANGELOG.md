@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Startup readiness reports the completed warmup phase in both binaries.** Background warmup now advances `/lakehouse/info` and the startup phase metric to `ready` and records completion timing. The ready boolean and metric continue to honor manifest and buffer replay gates.
 
+## [0.143.15] - 2026-10-03
+
+### Fixed
+
 - **Compaction plans merges per tenant, stops rewriting a lone file forever, and keeps away from tiered objects (both binaries, closes #343).**
   The planner counted files across every tenant of an hour while the compactor merges one tenant at a time, so an hour
   older than `daily_rollup_age` holding one compacted file per tenant was rewritten 1 to 1 on every scan (L2, L3, ... up to

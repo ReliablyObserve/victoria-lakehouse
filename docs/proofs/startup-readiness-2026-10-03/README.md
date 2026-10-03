@@ -1,6 +1,6 @@
 # Startup readiness API proof
 
-Current main `f84e440f` versus the startup fix (`aa47b12f` plus current-main integration in the commit containing this report). Isolated Compose project `lhstartupfinish`, Linux arm64 binaries built from both source trees, RustFS, ports 39900–39902. Before and after use separate empty buckets and freshly created Lakehouse containers. Each signal receives the same deterministic 40-row `startup-proof` corpus after boot.
+Release source `f84e440f` (the runtime code is unchanged by metadata merge `8943ce3e`) versus the startup fix (`aa47b12f` plus current-main integration in the commit containing this report). Isolated Compose project `lhstartupfinish`, Linux arm64 binaries built from both source trees, RustFS, ports 39900–39902. Before and after use separate empty buckets and freshly created Lakehouse containers. Each signal receives the same deterministic 40-row `startup-proof` corpus after boot.
 
 | Public state after warmup | Main, logs/traces | Fixed, logs/traces |
 |---|---|---|
