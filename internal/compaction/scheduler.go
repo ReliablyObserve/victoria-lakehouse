@@ -455,7 +455,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		served[c.tenant] = struct{}{}
 		// The plan was made from a snapshot; drop any file that left the
 		// manifest or became held since, and re-check there is still a merge.
-		selected := stillLive(s.manifest, c.partition, c.files)
+		selected := compactableNow(s.manifest, c.partition, c.files, s.freeze)
 		if len(selected) < 2 {
 			continue
 		}
@@ -480,15 +480,31 @@ func tenantsWithWork(plans []mergePlan) int {
 	return len(seen)
 }
 
-// stillLive returns the planned files that are still registered and not held.
+// stillLive returns current metadata for planned files still registered and
+// not held. A listing refresh may have changed their storage class.
 func stillLive(m *manifest.Manifest, partition string, planned []manifest.FileInfo) []manifest.FileInfo {
-	live := make(map[string]bool)
+	live := make(map[string]manifest.FileInfo)
 	for _, f := range withoutHeld(m, m.FilesForPartition(partition)) {
-		live[f.Key] = true
+		live[f.Key] = f
 	}
 	out := planned[:0:0]
 	for _, f := range planned {
-		if live[f.Key] {
+		if current, ok := live[f.Key]; ok && current.Bucket == f.Bucket {
+			out = append(out, current)
+		}
+	}
+	return out
+}
+
+// compactableNow rechecks the freeze immediately before each merge, including
+// later tenants of a forced recompact or Tier A steal.
+func compactableNow(m *manifest.Manifest, partition string, planned []manifest.FileInfo, freeze *LifecycleFreeze) []manifest.FileInfo {
+	live := stillLive(m, partition, planned)
+	pt, _ := manifest.ParsePartitionTime(partition)
+	now := planClock()
+	out := live[:0]
+	for _, f := range live {
+		if frozen, _ := freeze.frozen(f, pt, now); !frozen {
 			out = append(out, f)
 		}
 	}
@@ -619,6 +635,7 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 			}
 		}
 		selected := s.policy.SelectFiles(live, lvl, MajoritySchemaFingerprint(live, lvl))
+		selected = compactableNow(s.manifest, partition, selected, s.freeze)
 		if len(selected) < 2 {
 			continue
 		}
@@ -652,6 +669,9 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 	}
 	if len(result.OutputFiles) > 0 {
 		result.OutputFile = result.OutputFiles[0]
+	}
+	if firstErr != nil {
+		return result, fmt.Errorf("forced compaction of %s partially completed: %w", partition, firstErr)
 	}
 	return result, nil
 }

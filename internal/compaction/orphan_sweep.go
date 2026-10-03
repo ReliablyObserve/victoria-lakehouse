@@ -264,14 +264,18 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 			blooms  map[string]map[string][]string
 		)
 		for _, plan := range plans {
-			result, err := compactor.Compact(ctx, partition, plan.files, plan.level)
+			selected := compactableNow(o.cfg.Manifest, partition, plan.files, o.cfg.Freeze)
+			if len(selected) < 2 {
+				continue
+			}
+			result, err := compactor.Compact(ctx, partition, selected, plan.level)
 			if err != nil {
 				logger.Warnf("tier_a steal failed; partition=%s tenant=%s primary=%s: %s",
 					partition, plan.tenant, primary, err)
 				metrics.CompactionErrorsTotal.Inc()
 				continue
 			}
-			removed = append(removed, fileKeys(plan.files)...)
+			removed = append(removed, fileKeys(selected)...)
 			outputs = append(outputs, result.OutputFiles...)
 			for k, v := range result.OutputBlooms {
 				if blooms == nil {

@@ -163,6 +163,9 @@
     - internal/compaction/lifecycle_freeze_test.go
     - internal/compaction/size_cap_test.go
     - internal/compaction/refresh_class_test.go
+    - internal/compaction/class_refresh_regression_test.go
+    - internal/manifest/class_refresh_order_test.go
+    - internal/delete/storageclass_snapshot_test.go
     - internal/compaction/freeze_warnings_test.go
     - internal/compaction/per_tenant_planning_test.go#TestScan_NeverRewritesTieredObjects
     - internal/compaction/tenant_paths_test.go#TestTierA_RespectsFreeze

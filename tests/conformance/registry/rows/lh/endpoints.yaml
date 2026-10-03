@@ -37,6 +37,9 @@
       - internal/compaction/per_tenant_planning_test.go#TestScan_NeverRewritesTieredObjects
       - internal/compaction/lifecycle_freeze_test.go#TestScan_LifecycleFreeze
       - internal/compaction/refresh_class_test.go#TestScan_ObjectMovedToGlacierByRefreshIsNeverSelected
+      - internal/compaction/class_refresh_regression_test.go
+      - internal/manifest/class_refresh_order_test.go
+      - internal/delete/storageclass_snapshot_test.go
       - internal/compaction/property_test.go#TestStorageHealth_CompactionProperties
       - internal/manifest/compaction_groups_test.go#TestCompactionStats_FragmentationIsPerTenantGroup
       - internal/manifest/compaction_groups_test.go#TestCompactionStats_FragmentedMatchesPlanner

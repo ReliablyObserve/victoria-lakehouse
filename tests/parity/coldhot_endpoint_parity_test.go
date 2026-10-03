@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -364,18 +365,82 @@ func jaegerSpans(t *testing.T, base, traceID string) int {
 	return len(d.Data[0].Spans)
 }
 
+// tempoRaceSamples is how many times the Tempo tag helpers below read an
+// answer before taking the union of the samples.
+//
+// VictoriaTraces answers /api/v2/search/tags and /api/v2/search/tag/*/values
+// through singleFieldQueryHelper (app/vtselect/traces/tempo/tempo.go, v0.12.0
+// and current master). Its writeBlock callback appends to a slice without a
+// lock, but the `field_values` / `field_names` pipe it runs flushes its shards
+// to that callback from several goroutines at once (pipeUniqProcessor.flush in
+// VictoriaLogs lib/logstorage/pipe_uniq.go). Concurrent appends lose values, so
+// one call can drop a value that exists. Hot VictoriaTraces and the cold tier
+// serve the API through the same upstream handler, so both drop values at
+// random: on the parity stack about one call pair in twenty differs, and in
+// half of those it is hot that came back short. Tracked in issue #316.
+//
+// The race only ever loses values; it never invents one. The union of several
+// reads therefore converges on the true answer for each tier, and a value one
+// tier never returns in any sample is a real divergence that still fails.
+const tempoRaceSamples = 5
+
+// unionOfSamples calls read tempoRaceSamples times and returns the sorted
+// union of the answers. It logs how many samples came back short of that
+// union, so a run records how often the race fired on each tier and a tier
+// that loses values far more often than the other shows up in the log.
+func unionOfSamples(t *testing.T, what string, read func() []string) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	samples := make([][]string, 0, tempoRaceSamples)
+	for i := 0; i < tempoRaceSamples; i++ {
+		vals := read()
+		samples = append(samples, vals)
+		for _, v := range vals {
+			seen[v] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for v := range seen {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	short := 0
+	for _, vals := range samples {
+		distinct := map[string]bool{}
+		for _, v := range vals {
+			distinct[v] = true
+		}
+		if len(distinct) < len(out) {
+			short++
+		}
+	}
+	if short > 0 {
+		t.Logf("%s: %d of %d samples were missing values (upstream singleFieldQueryHelper race, issue #316); comparing their union %v", what, short, tempoRaceSamples, out)
+	}
+	return out
+}
+
 func tempoTagScopeNames(t *testing.T, base string) []string {
+	t.Helper()
+	return unionOfSamples(t, base+" search/tags scopes", func() []string {
+		return tempoTagScopeNamesOnce(t, base)
+	})
+}
+
+func tempoTagScopeNamesOnce(t *testing.T, base string) []string {
 	t.Helper()
 	r := fetch(t, base, "/select/tempo/api/v2/search/tags", nil)
 	if r.StatusCode != 200 {
-		return nil
+		t.Fatalf("%s search/tags returned %d: %s", base, r.StatusCode, r.Body)
 	}
 	var d struct {
 		Scopes []struct {
 			Name string `json:"name"`
 		} `json:"scopes"`
 	}
-	_ = json.Unmarshal(r.Body, &d)
+	if err := json.Unmarshal(r.Body, &d); err != nil {
+		t.Fatalf("%s search/tags: decode %q: %v", base, r.Body, err)
+	}
 	var out []string
 	for _, s := range d.Scopes {
 		out = append(out, s.Name)
@@ -385,16 +450,25 @@ func tempoTagScopeNames(t *testing.T, base string) []string {
 
 func tempoTagValues(t *testing.T, base, tag string) []string {
 	t.Helper()
+	return unionOfSamples(t, base+" search/tag/"+tag+"/values", func() []string {
+		return tempoTagValuesOnce(t, base, tag)
+	})
+}
+
+func tempoTagValuesOnce(t *testing.T, base, tag string) []string {
+	t.Helper()
 	r := fetch(t, base, "/select/tempo/api/v2/search/tag/"+tag+"/values", nil)
 	if r.StatusCode != 200 {
-		return nil
+		t.Fatalf("%s search/tag/%s/values returned %d: %s", base, tag, r.StatusCode, r.Body)
 	}
 	var d struct {
 		TagValues []struct {
 			Value string `json:"value"`
 		} `json:"tagValues"`
 	}
-	_ = json.Unmarshal(r.Body, &d)
+	if err := json.Unmarshal(r.Body, &d); err != nil {
+		t.Fatalf("%s search/tag/%s/values: decode %q: %v", base, tag, r.Body, err)
+	}
 	var out []string
 	for _, v := range d.TagValues {
 		out = append(out, v.Value)

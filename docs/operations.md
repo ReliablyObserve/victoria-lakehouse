@@ -332,32 +332,34 @@ The storage-health cells that guard compaction (CI job `storage-health-compactio
 ### Scan cost
 
 A scan walks the manifest in place (one partition at a time under the read lock, so a flush or a
-refresh waits for at most one partition) and plans each tenant group; a settled manifest allocates
-nothing per file. **Measured** (Apple M5 Pro, `-count=10`, benchstat; reproduce with `go test
-./internal/compaction -run '^$' -bench BenchmarkScanSettled -benchtime=20x -count=10`):
+refresh waits for at most one partition) and plans each tenant group; a settled manifest avoids copying
+the full metadata of every file. **Measured** (Apple M5 Pro, `-count=10`, benchstat; reproduce with `go test
+./internal/compaction -run '^$' -bench BenchmarkScanSettled -benchtime=50x -count=10`):
 
 | Build | ns per file per scan | bytes per file | allocs per file |
 |---|---|---|---|
-| main | 35.4 (±10%) | 248 | 0.24 |
-| this change | 46.7 (±4%) | 5.2 | 0.22 |
-| this change, lifecycle freeze wired | 52.8 (±3%) | 5.2 | 0.22 |
+| main (`71895244`) | 35.3 (±2%) | 260 | 0.24 |
+| this change | 45.3 (±2%) | 5.2 | 0.22 |
+| this change, lifecycle freeze wired | 54.0 (±12%) | 5.2 | 0.22 |
 
-That is 1.32x and 1.49x main's time per file, with 98% fewer bytes allocated.
+That is 1.28x and 1.53x main's time per file, with 98% fewer bytes allocated.
+The main allocation is 26,003,000 bytes per 100k files (260 decimal bytes per file;
+the earlier 248-byte figure mixed binary and decimal units).
 
 **Scaling (assumed, not measured):** file counts below are assumptions, not measurements: 10x
 compression, 100 tenants, objects of about 64 MiB for the large tenants and a floor of one file per
 tenant-hour (2,400 files per day), which gives about 4k, 18k and 160k files per day at 1, 10 and
-100 TB/day. Files = per day x days; CPU = files x 53 ns (this change) or x 35 ns (main); allocation =
-files x 5 B (this change) or x 248 B (main), per scan.
+100 TB/day. Files = per day x days; CPU = files x 54 ns (this change) or x 35.3 ns (main); allocation =
+files x 5.2 B (this change) or x 260 B (main), per scan.
 
 | TB/day | Days | Files (assumed) | CPU per scan, this change / main | Allocated per scan, this change / main |
 |---|---|---|---|---|
-| 1 | 30 | 120 k | 6.4 ms / 4.2 ms | 0.6 MB / 29.8 MB |
-| 10 | 30 | 540 k | 28.6 ms / 18.9 ms | 2.7 MB / 133.9 MB |
-| 100 | 30 | 4.8 M | 254 ms / 168 ms | 24 MB / 1.19 GB |
-| 1 | 365 | 1.46 M | 77 ms / 51 ms | 7.3 MB / 362 MB |
-| 10 | 365 | 6.57 M | 348 ms / 230 ms | 32.9 MB / 1.63 GB |
-| 100 | 365 | 58.4 M | 3.10 s / 2.04 s | 292 MB / 14.5 GB |
+| 1 | 30 | 120 k | 6.5 ms / 4.2 ms | 0.6 MB / 31.2 MB |
+| 10 | 30 | 540 k | 29.2 ms / 19.1 ms | 2.8 MB / 140.4 MB |
+| 100 | 30 | 4.8 M | 259.2 ms / 169.4 ms | 25.0 MB / 1.25 GB |
+| 1 | 365 | 1.46 M | 78.8 ms / 51.5 ms | 7.6 MB / 379.6 MB |
+| 10 | 365 | 6.57 M | 354.8 ms / 231.9 ms | 34.2 MB / 1.71 GB |
+| 100 | 365 | 58.4 M | 3.15 s / 2.06 s | 303.7 MB / 15.18 GB |
 
 The scan costs more CPU than before but allocates about 50x less, and at the default
 5-minute interval even the largest row is about 1% of one core. This covers the settled-scan walk

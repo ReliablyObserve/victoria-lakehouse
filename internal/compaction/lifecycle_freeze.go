@@ -134,6 +134,7 @@ type freezeView struct {
 	global    freezeLimits
 	perTenant bool
 	cache     map[string]freezeLimits
+	classes   map[string]struct{}
 }
 
 func (f *LifecycleFreeze) view() *freezeView {
@@ -143,6 +144,7 @@ func (f *LifecycleFreeze) view() *freezeView {
 	v := &freezeView{f: f}
 	gd, gok := delete.FirstNonRewritableTransition(f.ExtraRules)
 	if f.Detector != nil {
+		v.classes = f.Detector.CachedNonRewritableKeys()
 		if d, has := f.Detector.FirstGlobalNonRewritableTransition(); has && (!gok || d < gd) {
 			gd, gok = d, true
 		}
@@ -171,6 +173,17 @@ func (v *freezeView) limitsFor(prefix string) freezeLimits {
 	return l
 }
 
+func (v *freezeView) classFrozen(fi *manifest.FileInfo) bool {
+	if classFrozen(fi) {
+		return true
+	}
+	if v != nil && len(v.classes) > 0 {
+		_, ok := v.classes[fi.Key]
+		return ok
+	}
+	return false
+}
+
 // frozen reports whether fi must stay out of compaction, and why: its recorded
 // class (checked even when f is nil), or its partition's age against the
 // tenant's first lifecycle transition.
@@ -180,6 +193,11 @@ func (f *LifecycleFreeze) frozen(fi manifest.FileInfo, partitionTime, now time.T
 	}
 	if f == nil {
 		return false, ""
+	}
+	if f.Detector != nil {
+		if class, ok := f.Detector.GetCached(fi.Key); ok && !class.CanRewrite() {
+			return true, frozenStorageClass
+		}
 	}
 	if f.limits(fi.Key).frozenAt(now.Sub(partitionTime)) {
 		return true, frozenAge

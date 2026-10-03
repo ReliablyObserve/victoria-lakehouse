@@ -4,7 +4,7 @@
 # The level is read from the key (compacted-L<N>-...); a flushed file is L0.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-dc=(docker compose -p lhfix343 -f "$here/compose.yml")
+dc=(docker compose -p "${LH_COMPOSE_PROJECT:-lhfix343}" -f "$here/compose.yml")
 for pair in main:lhm343 pr:lhp343; do
   build=${pair%%:*}; bucket=${pair##*:}
   "${dc[@]}" run --rm --no-deps -e "MC_HOST_l=http://minioadmin:minioadmin@s3:9000" --entrypoint mc s3-init \

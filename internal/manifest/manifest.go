@@ -988,9 +988,10 @@ func (m *Manifest) mergeRefreshedFilesLocked(files map[string][]FileInfo, listSt
 					old.Bucket = newFiles[i].Bucket
 				}
 				// The storage class is the one thing about an immutable object
-				// that changes: S3 lifecycle moves it. The listing's class is
-				// newer than anything tracked, so it replaces the old one.
-				if listed := newFiles[i]; listed.StorageClass != "" {
+				// that changes: S3 lifecycle moves it. Concurrent LISTs can
+				// finish out of order; an older observation cannot thaw a
+				// newer known archive class.
+				if listed := newFiles[i]; listed.StorageClass != "" && !listed.ClassCheckedAt.Before(old.ClassCheckedAt) {
 					old.StorageClass, old.ClassCheckedAt, old.ClassSource = listed.StorageClass, listed.ClassCheckedAt, listed.ClassSource
 				}
 				newFiles[i] = old

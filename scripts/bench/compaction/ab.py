@@ -59,15 +59,21 @@ def call(url, tenant):
     return status, time.perf_counter() - t0, body
 
 
-def canon(body):
+def canon(body, unordered_values=False):
     lines = []
     for ln in body.decode("utf-8", "replace").splitlines():
         ln = ln.strip()
         if not ln:
             continue
         try:
-            ln = json.dumps(json.loads(ln), sort_keys=True)
+            obj = json.loads(ln)
+            if unordered_values and isinstance(obj, dict) and isinstance(obj.get("values"), list):
+                # Enumeration ties have no stable order on hot or cold. Keep
+                # every name and hit count while comparing their multiset.
+                obj["values"] = sorted(obj["values"], key=lambda value: json.dumps(value, sort_keys=True))
+            ln = json.dumps(obj, sort_keys=True)
         except ValueError:
+            # Plain-text responses are compared verbatim.
             pass
         lines.append(ln)
     return hashlib.sha256("\n".join(sorted(lines)).encode()).hexdigest()[:16], len(lines)
@@ -78,11 +84,13 @@ def main():
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "out"))
     ap.add_argument("--reps", type=int, default=6)
     a = ap.parse_args()
-    start = int(open(os.path.join(a.out, "ingest_start")).read())
+    with open(os.path.join(a.out, "ingest_start")) as f:
+        start = int(f.read())
     runs = {}
-    for ln in open(os.path.join(a.out, "runs.tsv")):
-        sig, tenant, run, rnd = ln.rstrip("\n").split("\t")
-        runs.setdefault((sig, tenant), run)  # first run of the tenant
+    with open(os.path.join(a.out, "runs.tsv")) as f:
+        for ln in f:
+            sig, tenant, run, rnd = ln.rstrip("\n").split("\t")
+            runs.setdefault((sig, tenant), run)  # first run of the tenant
     results, bad = [], 0
     for sig in ("logs", "traces"):
         for tenant in TENANTS:
@@ -100,7 +108,8 @@ def main():
                         for build in order:
                             status, el, body = call(f"http://127.0.0.1:{PORT[(sig, build)]}{path}?{qs}", tenant)
                             times[build].append(el)
-                            answers[build].append((status, canon(body) if status == 200 else ("-", 0)))
+                            unordered_values = path.endswith(("/field_names", "/field_values"))
+                            answers[build].append((status, canon(body, unordered_values) if status == 200 else ("-", 0)))
                     ok = all(s == 200 for b in answers.values() for s, _ in b)
                     same = len({h for b in answers.values() for _, (h, _) in b}) == 1
                     rows = answers["main"][0][1][1]

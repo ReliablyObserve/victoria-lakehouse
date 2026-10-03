@@ -10,6 +10,9 @@ Isolation: compose project `lhfix343`, ports 39700-39799 (S3 39700, logs
 39701 main / 39702 PR, traces 39703 main / 39704 PR). Each instance has 2 CPUs
 and 1 GiB. Do not use other projects' ports.
 
+For a different isolated project name, pass the same name with
+`docker compose -p NAME` and set `LH_COMPOSE_PROJECT` when running `snap.sh`.
+
 ## Steps
 
 ```bash
@@ -45,7 +48,7 @@ docker compose -p lhfix343 -f compose.yml down -v --remove-orphans
 
 | Step | Numbers |
 |---|---|
-| `snap.sh` | Per (build, signal, tenant, partition): `objects`, `bytes`, `top_level`. On main a closed hour with one file per tenant keeps being rewritten (the top level climbs between `snap-1` and `snap-2`); on the PR it is stable and the object count of a tenant-hour is 1 after its rollup. Compare the two snapshots for settling. |
+| `snap.sh` | Per (build, signal, tenant, partition): `objects`, `bytes`, `top_level`. The PR's quiet closed hours converge to one object per tenant-hour and remain stable between snapshots. This fixture places each tenant at a different hour, so it does not reproduce the cross-tenant lone-file churn; `TestScan_NoChurn_MultiTenantSingleFiles` and the multi-day simulation cover that case. Compare the two snapshots for settling. |
 | `verify.sh` | Per instance `runs`, `acked`, `returned_distinct`, `missing_acked`, `duplicates`, `unacked_present`, `non200`. Compaction must not change any row: all of `missing_acked`, `duplicates`, `unacked_present`, `non200` are 0 on both builds. |
 | `ab.py` | Interleaved main/PR queries (6 reps, rep 1 cold, p50 of the rest) for logs: stats count, stats by `_stream`, filtered `{run="..."}` count, raw `_msg` rows, field_names, field_values, hits 10m; for traces: stats count, `stats by ("resource_attr:service.name")`, raw `span_attr:seq, trace_id` rows, field_names, Jaeger services. Windows: the aligned hours 72 h, 30 h and 2 h before the ingest start; tenants 1001 and 1003. A shape counts only when both answers are HTTP 200 and their canonical hashes are equal; otherwise it is flagged (`non-200` / `ANSWERS DIFFER`) and the script exits non-zero. |
 

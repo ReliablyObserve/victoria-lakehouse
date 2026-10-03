@@ -101,7 +101,7 @@ func (pl *planner) skip(f *manifest.FileInfo) bool {
 	if len(pl.held) > 0 && pl.held[f.Key] {
 		return true
 	}
-	return classFrozen(f)
+	return pl.freeze.classFrozen(f)
 }
 
 // partition plans the merges of one partition: files are split into tenant
@@ -117,7 +117,7 @@ func (pl *planner) partition(partition string, files []manifest.FileInfo, pt tim
 		if len(pl.held) > 0 && pl.held[f.Key] {
 			continue
 		}
-		if classFrozen(f) {
+		if pl.freeze.classFrozen(f) {
 			classFrozenN++
 			continue
 		}

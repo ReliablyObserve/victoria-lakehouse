@@ -310,3 +310,21 @@ func (d *StorageClassDetector) GetCached(key string) (StorageClass, bool) {
 	sc, ok := d.cache[key]
 	return sc, ok
 }
+
+// CachedNonRewritableKeys snapshots the cache's frozen keys for a compaction
+// scan. Empty caches allocate nothing; the planner needs no per-file lock.
+func (d *StorageClassDetector) CachedNonRewritableKeys() map[string]struct{} {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var keys map[string]struct{}
+	for key, class := range d.cache {
+		if class.CanRewrite() {
+			continue
+		}
+		if keys == nil {
+			keys = make(map[string]struct{})
+		}
+		keys[key] = struct{}{}
+	}
+	return keys
+}

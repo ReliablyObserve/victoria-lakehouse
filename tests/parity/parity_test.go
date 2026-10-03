@@ -80,7 +80,7 @@ func RunParity(t *testing.T, refBase, sutBase string, cases []ParityCase) {
 			params := buildParams(pc, fullRangeParams())
 			ref := fetch(t, refBase, pc.Endpoint, params)
 			sut := fetch(t, sutBase, pc.Endpoint, params)
-			compareParity(t, pc, ref, sut)
+			compareParityAt(t, pc, refBase, sutBase, params, ref, sut)
 		})
 	}
 }
@@ -92,12 +92,25 @@ func RunParityWithRange(t *testing.T, refBase, sutBase string, dur time.Duration
 			params := buildParams(pc, rangeParams(dur))
 			ref := fetch(t, refBase, pc.Endpoint, params)
 			sut := fetch(t, sutBase, pc.Endpoint, params)
-			compareParity(t, pc, ref, sut)
+			compareParityAt(t, pc, refBase, sutBase, params, ref, sut)
 		})
 	}
 }
 
 func compareParity(t *testing.T, pc ParityCase, ref, sut fetchResult) {
+	t.Helper()
+	compareParityWithTies(t, pc, ref, sut, nil)
+}
+
+// compareParityAt is compareParity for a case the caller fetched from refBase
+// and sutBase with params. Knowing where the answers came from lets RowsMatch
+// re-read a _time tie group that a row limit cut in two (see rows_ties.go).
+func compareParityAt(t *testing.T, pc ParityCase, refBase, sutBase string, params url.Values, ref, sut fetchResult) {
+	t.Helper()
+	compareParityWithTies(t, pc, ref, sut, newTieGroupFetcher(refBase, sutBase, pc.Endpoint, params))
+}
+
+func compareParityWithTies(t *testing.T, pc ParityCase, ref, sut fetchResult, ties tieGroupFetcher) {
 	t.Helper()
 	if pc.ExpectEmpty && pc.Compare != CountEqual && pc.Compare != CountTolerance {
 		t.Fatalf("ExpectEmpty is only defined for count comparisons, not %s", pc.Compare)
@@ -116,7 +129,7 @@ func compareParity(t *testing.T, pc ParityCase, ref, sut fetchResult) {
 	case SetSuperset:
 		compareSetSuperset(t, pc, ref, sut)
 	case RowsMatch:
-		compareRowsMatch(t, ref, sut, pc.SkipFields)
+		compareRowsMatch(t, ref, sut, pc.SkipFields, ties)
 	case StatusEqual:
 		compareStatusEqual(t, ref, sut)
 	case StructureMatch:
@@ -308,7 +321,7 @@ func compareSetSuperset(t *testing.T, pc ParityCase, ref, sut fetchResult) {
 	t.Logf("set_superset: ref=%d sut=%d", len(refVals), len(sutSet))
 }
 
-func compareRowsMatch(t *testing.T, ref, sut fetchResult, skipFields []string) {
+func compareRowsMatch(t *testing.T, ref, sut fetchResult, skipFields []string, ties tieGroupFetcher) {
 	t.Helper()
 	if ref.StatusCode != 200 {
 		t.Fatalf("reference returned status %d", ref.StatusCode)
@@ -319,28 +332,51 @@ func compareRowsMatch(t *testing.T, ref, sut fetchResult, skipFields []string) {
 	refRows := parseNDJSON(ref.Body)
 	sutRows := parseNDJSON(sut.Body)
 	requireNonEmptyReference(t, RowsMatch, len(refRows), "reference returned no rows")
+	problems, note := judgeRows(t, refRows, sutRows, skipFields, ties)
+	for _, p := range problems {
+		t.Error(p)
+	}
+	t.Log(note)
+}
+
+// judgeRows compares two non-empty answers row by row as multisets and
+// returns the problems to report (none when they match) and a summary line.
+// A difference that only a limit cutting a _time tie group explains is not a
+// problem; see rows_ties.go.
+func judgeRows(t *testing.T, refRows, sutRows []map[string]any, skipFields []string, ties tieGroupFetcher) (problems []string, note string) {
+	t.Helper()
 	if len(refRows) != len(sutRows) {
-		t.Errorf("row count mismatch: ref=%d sut=%d", len(refRows), len(sutRows))
-		return
+		return []string{fmt.Sprintf("row count mismatch: ref=%d sut=%d", len(refRows), len(sutRows))}, "rows_match: row counts differ"
 	}
 	refKeys := extractRowKeys(refRows, skipFields)
 	sutKeys := extractRowKeys(sutRows, skipFields)
+	refOnly, sutOnly := multisetDiff(refKeys, sutKeys)
+	if len(refOnly) == 0 && len(sutOnly) == 0 {
+		return nil, fmt.Sprintf("rows_match: %d rows, 0 mismatches", len(refRows))
+	}
+	// The row sets differ. The one legitimate cause is a row limit cutting
+	// through a group of rows that share the boundary _time: neither tier's
+	// sort breaks _time ties, so each may keep different members of the group.
+	// That is accepted only once the whole group, re-read from both tiers, is
+	// identical and every differing row belongs to it.
+	at, why, ok := explainedByTruncatedTie(t, ties, refKeys, sutKeys, skipFields)
+	if ok {
+		return nil, fmt.Sprintf("rows_match: %d rows; %d rows differ only inside the _time tie group at %s that the limit cut, and that group is identical on both tiers",
+			len(refRows), len(refOnly), at.Format(time.RFC3339Nano))
+	}
 	mismatches := 0
 	for i := range refKeys {
-		if i >= len(sutKeys) {
-			break
-		}
 		if refKeys[i] != sutKeys[i] {
 			mismatches++
 			if mismatches <= 3 {
-				t.Errorf("row %d mismatch:\n  ref: %s\n  sut: %s", i, refKeys[i], sutKeys[i])
+				problems = append(problems, fmt.Sprintf("row %d mismatch:\n  ref: %s\n  sut: %s", i, refKeys[i], sutKeys[i]))
 			}
 		}
 	}
 	if mismatches > 3 {
-		t.Errorf("... and %d more mismatches", mismatches-3)
+		problems = append(problems, fmt.Sprintf("... and %d more mismatches", mismatches-3))
 	}
-	t.Logf("rows_match: %d rows, %d mismatches", len(refRows), mismatches)
+	return problems, fmt.Sprintf("rows_match: %d rows, %d mismatches; not a tie cut by the limit: %s", len(refRows), mismatches, why)
 }
 
 func compareStatusEqual(t *testing.T, ref, sut fetchResult) {

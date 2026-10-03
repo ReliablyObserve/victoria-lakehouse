@@ -1,0 +1,26 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/compaction
+cpu: Apple M5 Pro
+BenchmarkScanSettledWithFreeze-18    	      50	   5254429 ns/op	        52.54 ns/file	  523384 B/op	   22031 allocs/op
+BenchmarkScanSettledWithFreeze-18    	      50	   5433378 ns/op	        54.33 ns/file	  523384 B/op	   22031 allocs/op
+BenchmarkScanSettledWithFreeze-18    	      50	   5294177 ns/op	        52.94 ns/file	  523392 B/op	   22031 allocs/op
+BenchmarkScanSettledWithFreeze-18    	      50	   5218991 ns/op	        52.19 ns/file	  523384 B/op	   22031 allocs/op
+BenchmarkScanSettledWithFreeze-18    	      50	   5366059 ns/op	        53.66 ns/file	  523394 B/op	   22031 allocs/op
+BenchmarkScanSettledWithFreeze-18    	      50	   5276586 ns/op	        52.77 ns/file	  523384 B/op	   22031 allocs/op
+BenchmarkScanSettledWithFreeze-18    	      50	   6580750 ns/op	        65.81 ns/file	  523384 B/op	   22031 allocs/op
+BenchmarkScanSettledWithFreeze-18    	      50	   5467848 ns/op	        54.68 ns/file	  523509 B/op	   22031 allocs/op
+BenchmarkScanSettledWithFreeze-18    	      50	   6034053 ns/op	        60.34 ns/file	  523384 B/op	   22031 allocs/op
+BenchmarkScanSettledWithFreeze-18    	      50	   5994455 ns/op	        59.94 ns/file	  523505 B/op	   22031 allocs/op
+BenchmarkScanSettled-18              	      50	   4507779 ns/op	        45.08 ns/file	  518016 B/op	   22021 allocs/op
+BenchmarkScanSettled-18              	      50	   4555161 ns/op	        45.55 ns/file	  518016 B/op	   22021 allocs/op
+BenchmarkScanSettled-18              	      50	   4534395 ns/op	        45.34 ns/file	  518143 B/op	   22021 allocs/op
+BenchmarkScanSettled-18              	      50	   4520963 ns/op	        45.21 ns/file	  518016 B/op	   22021 allocs/op
+BenchmarkScanSettled-18              	      50	   4607588 ns/op	        46.08 ns/file	  518016 B/op	   22021 allocs/op
+BenchmarkScanSettled-18              	      50	   4548519 ns/op	        45.49 ns/file	  518124 B/op	   22021 allocs/op
+BenchmarkScanSettled-18              	      50	   4512115 ns/op	        45.12 ns/file	  518033 B/op	   22021 allocs/op
+BenchmarkScanSettled-18              	      50	   4440442 ns/op	        44.40 ns/file	  518016 B/op	   22021 allocs/op
+BenchmarkScanSettled-18              	      50	   4479079 ns/op	        44.79 ns/file	  518024 B/op	   22021 allocs/op
+BenchmarkScanSettled-18              	      50	   4921864 ns/op	        49.22 ns/file	  518141 B/op	   22021 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/compaction	9.390s

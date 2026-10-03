@@ -30,7 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   most 1 h) so one failing partition cannot starve its tenant; a scan starts no new merge after one scan interval
   (`lakehouse_compaction_scan_budget_exhausted_total`); the Tier A steal applies tombstones like a scheduled merge; and the
   compaction stats count a partition as fragmented only when one tenant holds two or more non-mature top-level files.
-  A settled scan costs 47 to 53 ns and 5 bytes per file (main: 35 ns and 248 bytes), measured.
+  Cached archive classes and class changes between tenant merges are checked before scheduled, forced and Tier A merges; older LIST observations cannot thaw newer archive metadata. Forced recompaction reports partial tenant failures.
+  A settled scan costs 45 to 54 ns and 5.2 bytes per file (main: 35.3 ns and 260 bytes), measured.
+- **The Parity workflow's flaky failures, traced to their causes.** Two upstream behaviours that hot and cold share
+  made the hot/cold comparison fail at random. Neither tier's `sort` breaks `_time` ties, so a limit that cuts a tie
+  group keeps different rows on each tier. `RowsMatch` now accepts that difference only for cases ordered by `_time`
+  alone, and only after re-reading the whole group from both tiers and finding it identical. VictoriaTraces'
+  `singleFieldQueryHelper` appends Tempo tag values from parallel goroutines without a lock, so hot and cold both
+  drop values at random (#316); the Tempo tag helpers compare the union of five reads and fail on any non-200
+  answer. The settle probe now counts with `disable_latency_offset=true`, so the newest 30s of spans no longer make
+  the counts creep after datagen exits. One deterministic divergence that had surfaced only as a flake is now pinned
+  on every run as B8 (#324): a sort over all columns (`sort`, `first|last N` without `by`) orders rows that share a
+  `_time` by `_msg` on cold and by `_stream_id` on hot. The B7 entry records its measured width: cold drops the row
+  until the end bound reaches the next whole microsecond.
 
 ## [0.143.14] - 2026-10-02
 
