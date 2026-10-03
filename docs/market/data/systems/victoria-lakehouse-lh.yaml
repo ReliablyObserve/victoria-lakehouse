@@ -27,11 +27,14 @@ cells:
     checked: '2026-10-02'
   if_files_n:
     icon: ✅
-    text: 3 verified / 7 claimed
-    note: 'pyarrow + DuckDB: CI readback gate on every generated file. ClickHouse: read on every benchmark run,
-      answers must equal LogsQL. Spark, Trino: documented examples, not tested in CI. Athena, Polars: ''expected
-      to work; not tested''.'
-    source: github.com/ReliablyObserve/victoria-lakehouse README.md 'Readers' table; docs/open-parquet-format.md
+    text: 6 verified / 1 claimed
+    note: 'DuckDB, ClickHouse, Spark, Trino, pyarrow and Polars each run the documented example against real
+      Lakehouse files in CI (parquet-readers workflow: logs and traces, three tenants, raw and compacted files,
+      partition pruning), compared with Lakehouse''s own answers. Three of the six have open issues: ClickHouse
+      fails trace-ID lookups unless bloom push down is off (#341), Trino reads tenant IDs of 2^31 and above as
+      negative (#342), Polars refuses files whose footer metadata is not UTF-8 (#340). Athena is documented
+      only (Trino dialect, not run).'
+    source: github.com/ReliablyObserve/victoria-lakehouse docs/open-parquet-format.md (reader coverage table); .github/workflows/parquet-readers.yaml
     label: repo
     checked: '2026-10-02'
   sig_logs:
@@ -99,7 +102,7 @@ cells:
   st_ext:
     icon: ✅
     text: in place, no export
-    note: CI-gated for pyarrow/DuckDB; ClickHouse benchmarked; others documented or untested (see Interfaces).
+    note: CI-gated with real data for DuckDB, ClickHouse, Spark, Trino, pyarrow and Polars (three with open issues); Athena documented only (see Interfaces).
     source: github.com/ReliablyObserve/victoria-lakehouse
     label: repo
     checked: '2026-10-02'

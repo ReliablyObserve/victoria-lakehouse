@@ -99,13 +99,16 @@ Per-endpoint status lives in the [conformance registry](tests/conformance/regist
 
 ### Readers that query the Parquet files directly on S3
 
+Every engine below runs the documented example from [Open Parquet format](docs/open-parquet-format.md#querying-with-external-tools) against real Lakehouse files in CI (`parquet-readers` workflow: logs and traces, numeric, alias and 2^31+ tenants, raw and compacted files, partition pruning) and is compared with Lakehouse's own answers.
+
 | Engine | How | Verified |
 |---|---|---|
-| pyarrow | `pq.read_table("s3://…/logs/")` | in CI: the readback gate checks every generated file against writer-side truth |
-| DuckDB | `read_parquet('s3://…/**/*.parquet', hive_partitioning=1)` | in CI: same readback gate |
-| ClickHouse | `s3('…/*.parquet', 'Parquet')` | every benchmark run; results must match LogsQL exactly |
-| Spark, Trino | Hive-partitioned Parquet table | documented examples in [Open Parquet format](docs/open-parquet-format.md); not tested in CI |
-| Athena, Polars, DataFusion, Snowflake external tables | standard Parquet + Hive partitions | expected to work; not tested |
+| DuckDB, pyarrow, pandas, Apache Spark | `read_parquet`, `pyarrow.dataset`, `pd.read_parquet`, `spark.read.parquet` | in CI, every check passes |
+| ClickHouse | `S3` table engine with `use_hive_partitioning` | in CI; trace-ID lookups fail on small-row-group bloom filters unless bloom push down is off ([#341](https://github.com/ReliablyObserve/victoria-lakehouse/issues/341)) |
+| Trino | Hive connector, file metastore, external table | in CI; tenant IDs of 2^31 and above read back negative ([#342](https://github.com/ReliablyObserve/victoria-lakehouse/issues/342)) |
+| Polars, Apache DataFusion | `scan_parquet`, `register_parquet` | in CI; some files are refused because footer metadata is not UTF-8 ([#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340)) |
+| parquet-tools | `inspect`, `show` | in CI (inspection of one object) |
+| Athena, BigQuery, Snowflake external tables, Databricks | standard Parquet + Hive partitions | documented, not CI-tested |
 
 ---
 
