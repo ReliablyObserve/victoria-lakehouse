@@ -67,6 +67,9 @@ var Seeds = map[string]bool{
 	"traces.base":  true,
 	"traces.sg":    true,
 	"tenants.iso":  true,
+	// The ingest parity matrix writes its own rows (unique markers per run) and
+	// reads them back; there is no pre-seeded dataset behind its rows.
+	"ingest.matrix": true,
 	// Field-metadata perf cells: the deterministic generators of
 	// internal/storage/parquets3/field_values_bench_test.go (fmSlotRows) and its
 	// traces twin (fmtSlotRows) — a quiet and a busy hour with known truth.

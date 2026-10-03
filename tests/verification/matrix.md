@@ -80,16 +80,20 @@ Related rules (memories): `feedback_per_component_verification`,
 
 ## Logs insert
 
+CI-executed rows (the ingest parity matrix, `tests/e2e/ingest_matrix_test.go`; rows in `tests/conformance/registry/rows/vl/ingest_matrix.yaml`, listed in `docs/ingest-parity.md`). The manual probes that used to back LI2-LI8 are retired.
+
 | # | Endpoint | state | layer | last_state | verified |
 |---|----------|-------|-------|-----------|----------|
-| LI1 | `/insert/jsonline` | PASS | e2e | datagen pushes succeed | 2026-05-29 |
-| LI2 | `/insert/loki/api/v1/push` (JSON) | PASS | manual | 204 ingest, queryable via `service.name:"matrix-probe-li2"`; locked by probe_matrix_sweep.sh (ROW=LI2) | 2026-05-30 |
-| LI3 | `/insert/loki/api/v1/push` (protobuf) | PASS | manual | endpoint reachable (400 on empty body, snappy-protobuf accepted in VL upstream); locked by probe_matrix_sweep.sh (ROW=LI3) | 2026-05-30 |
-| LI4 | `/insert/elasticsearch/_bulk` | PASS | manual | 200 ingest of ndjson, readback via `service.name:"matrix-probe-li4"`; locked by probe_matrix_sweep.sh (ROW=LI4) | 2026-05-30 |
-| LI5 | `/insert/opentelemetry/v1/logs` | PASS | manual | endpoint reachable; VL upstream rejects JSON ("json encoding isn't supported for opentelemetry format. Use protobuf encoding"); LH inherits same behavior. Probe asserts canonical upstream error message. Locked by probe_matrix_sweep.sh (ROW=LI5) | 2026-05-30 |
-| LI6 | `/insert/datadog/api/v2/logs` | PASS | manual | 202 ingest, queryable via `ddsource:"matrix-probe"`; locked by probe_matrix_sweep.sh (ROW=LI6) | 2026-05-30 |
-| LI7 | `/insert/journald/upload` | PASS | manual | matrix path corrected — VL routes only `/insert/journald/upload` (not bare `/insert/journald`); 200 ingest with native journald binary, queryable; locked by probe_matrix_sweep.sh (ROW=LI7) | 2026-05-30 |
-| LI8 | `/insert/splunk/services/collector/event` | PASS | manual | matrix path corrected — VL routes `/event` and `/event/1.0` only (not bare `/services/collector`); 200 ingest, queryable; locked by probe_matrix_sweep.sh (ROW=LI8) | 2026-05-30 |
+| LI1 | `/insert/jsonline` | DIFFER | e2e (CI) | `TestIngestMatrix_Logs`, rows `vl.ingest.jsonline.numeric` / `.alias`: same answer as hot VL, rows equal in the buffer and after the flush to Parquet (known gap #274 after the flush); known gap #274 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| LI2 | `/insert/loki/api/v1/push` (JSON) | DIFFER | e2e (CI) | retired manual probe; rows `vl.ingest.loki_json.numeric` / `.alias` in `tests/e2e/ingest_matrix_test.go` (`TestIngestMatrix_Logs`); known gap #274 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| LI3 | `/insert/loki/api/v1/push` (protobuf) | DIFFER | e2e (CI) | retired manual probe (it only checked reachability); rows `vl.ingest.loki_protobuf.numeric` / `.alias` send a snappy-protobuf `PushRequest` and compare the stored rows with hot VL; known gap #274 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| LI4 | `/insert/elasticsearch/_bulk` | DIFFER | e2e (CI) | retired manual probe; rows `vl.ingest.elasticsearch_bulk.numeric` / `.alias`; known gap #274 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| LI5 | `/insert/opentelemetry/v1/logs` | DIFFER | e2e (CI) | retired manual probe (it only checked reachability); rows `vl.ingest.otlp_logs_protobuf.*` store protobuf rows and compare them with hot VL; `vl.ingest.otlp_logs_json.*` prove VL refuses JSON ("json encoding isn't supported for opentelemetry format") and Lakehouse answers the same status and body; known gap #331 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| LI6 | `/insert/datadog/api/v2/logs` | DIFFER | e2e (CI) | retired manual probe; rows `vl.ingest.datadog_logs.numeric` / `.alias` (both `/insert/datadog/api/v2/logs` and `/api/v2/logs`); known gap #274 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| LI7 | `/insert/journald/upload` | DIFFER | e2e (CI) | retired manual probe; rows `vl.ingest.journald.numeric` / `.alias`; known gap #274 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| LI8 | `/insert/splunk/services/collector/event` | DIFFER | e2e (CI) | retired manual probe; rows `vl.ingest.splunk_event.numeric` / `.alias` cover `/event` and `/event/1.0` under `/insert/splunk` and the bare `/services/collector` spelling; known gap #274 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| LI9 | syslog TCP and UDP (`-syslog.listenAddr.tcp/udp`) | DIFFER | e2e (CI) | never tested before; rows `vl.ingest.syslog_{tcp,udp}_rfc{3164,5424}.numeric`; the listeners are opt-in (compose and Helm); known gap #274 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| LI10 | `/insert/native`, `/insert/multitenant/native` | DIFFER | e2e (CI) | rows `vl.ingest.native.*`, `vl.ingest.multitenant_native.numeric`: payload built with upstream's `logstorage.InsertRow`; known gap #274 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
 
 ## Traces query surface (`lakehouse-traces:10428`)
 
@@ -120,7 +124,8 @@ Related rules (memories): `feedback_per_component_verification`,
 |---|----------|-------|-------|-----------|----------|
 | TI1 | `/insert/jsonline` | PASS | e2e | datagen succeeds | 2026-05-29 |
 | TI2 | `/insert/zipkin/api/v2/spans` | DIFFER | manual | endpoint NOT implemented in VT v0.9.2 (`deps/VictoriaTraces/app/vtinsert/main.go` only routes `/insert/opentelemetry/`); VT returns 400 "unsupported path", LH returns 404. Both reject. Per `feedback_vl_vt_upstream` LH should not add what VT doesn't expose. Locked by probe_matrix_sweep.sh (ROW=TI2) | 2026-05-30 |
-| TI3 | `/insert/opentelemetry/v1/traces` | PASS | manual | 200 ingest of OTLP-JSON span, queryable in lakehouse-traces via `resource_attr:service.name:"matrix-probe-ti3"`; locked by probe_matrix_sweep.sh (ROW=TI3) | 2026-05-30 |
+| TI3 | `/insert/opentelemetry/v1/traces` (JSON, protobuf) | DIFFER | e2e (CI) | retired manual probe; rows `vt.ingest.otlp_traces_json.*`, `vt.ingest.otlp_traces_protobuf.*`; known gap #279, #332 (protobuf), #333 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| TI4 | OTLP gRPC (`-otlpGRPCListenAddr`) | DIFFER | e2e (CI) | never tested before; row `vt.ingest.otlp_traces_grpc.numeric`; the listener is opt-in (compose and Helm); known gap #279, #332, #333 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
 
 ## Grafana datasources (e2e compose; smoke query each)
 

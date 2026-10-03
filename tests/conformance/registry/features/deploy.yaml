@@ -8,8 +8,8 @@
   tests:
     - charts/victoria-lakehouse/test_templates.sh
   notes: >-
-    The linked chart template test is not run in CI; CI runs `helm lint` and the Helm drift check
-    (`scripts/ci/helmdrift`) instead.
+    CI runs the chart template test (`charts/victoria-lakehouse/test_templates.sh`) in the `helm` job,
+    next to `helm lint --strict`, and the Helm drift check (`scripts/ci/helmdrift`).
   docs:
     - docs/kubernetes-deployment.md
   changelog_bullets:

@@ -96,6 +96,50 @@ Usage: {{ include "victoria-lakehouse.signalPort" (dict "signal" "logs") }}
 Resolve podSecurityContext: component-specific overrides common.
 Usage: {{ include "victoria-lakehouse.podSecurityContext" (dict "component" .Values.logs.select "common" .Values.common) }}
 */}}
+{{/*
+Opt-in ingest listeners of one component, as a YAML list of {name, port, protocol, arg}.
+Off by default: only the insert role serves them, and only when enabled in values.
+  logs.insert.syslog.{tcp,udp}.enabled -> -syslog.listenAddr.{tcp,udp} (+ -syslog.tenantID.*)
+  traces.insert.otlpGrpc.enabled        -> -otlpGRPCListenAddr (+ TLS flags)
+Usage: include "victoria-lakehouse.ingestListeners" (dict "signal" $signal "role" $role "roleVals" $roleVals) | fromYamlArray
+*/}}
+{{- define "victoria-lakehouse.ingestListeners" -}}
+{{- $out := list }}
+{{- if eq .role "insert" }}
+{{- if eq .signal "logs" }}
+{{- range $proto := list "tcp" "udp" }}
+{{- $l := dig "syslog" $proto (dict) $.roleVals }}
+{{- if $l.enabled }}
+{{- $args := list (printf "-syslog.listenAddr.%s=:%v" $proto (default 5140 $l.port | int)) }}
+{{- if $l.tenantID }}
+{{- $args = append $args (printf "-syslog.tenantID.%s=%s" $proto $l.tenantID) }}
+{{- end }}
+{{- $defPort := ternary 5140 5141 (eq $proto "tcp") }}
+{{- $out = append $out (dict "name" (printf "syslog-%s" $proto) "port" (default $defPort $l.port | int) "protocol" (upper $proto) "args" $args) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if eq .signal "traces" }}
+{{- $g := dig "otlpGrpc" (dict) .roleVals }}
+{{- if $g.enabled }}
+{{- $port := default 4317 $g.port | int }}
+{{- $args := list (printf "-otlpGRPCListenAddr=:%d" $port) }}
+{{- if dig "tls" "enabled" true $g }}
+{{- if not (and (dig "tls" "certFile" "" $g) (dig "tls" "keyFile" "" $g)) }}
+{{- fail "traces.insert.otlpGrpc.tls.enabled=true needs tls.certFile and tls.keyFile (mount them with traces.insert.extraVolumes/extraVolumeMounts), or set traces.insert.otlpGrpc.tls.enabled=false for a plaintext listener" }}
+{{- end }}
+{{- $args = append $args (printf "-otlpGRPC.tlsCertFile=%s" (dig "tls" "certFile" "" $g)) }}
+{{- $args = append $args (printf "-otlpGRPC.tlsKeyFile=%s" (dig "tls" "keyFile" "" $g)) }}
+{{- else }}
+{{- $args = append $args "-otlpGRPC.tls=false" }}
+{{- end }}
+{{- $out = append $out (dict "name" "otlp-grpc" "port" $port "protocol" "TCP" "args" $args) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- toYaml $out }}
+{{- end }}
+
 {{- define "victoria-lakehouse.podSecurityContext" -}}
 {{- if .component.podSecurityContext }}
 {{- toYaml .component.podSecurityContext }}

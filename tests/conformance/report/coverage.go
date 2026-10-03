@@ -284,6 +284,7 @@ func RenderCoverage(inv *inventory.Inventory, reg *registry.Registry) string {
 	b.WriteString("\n")
 
 	renderPerfCells(&b, reg)
+	renderIngestMatrix(&b, reg)
 
 	fmt.Fprintf(&b, "## Rows gated on a later upstream version / absent by design\n\n| Row | Since | Expect | Note |\n|---|---|---|---|\n")
 	present := map[string]bool{}
@@ -361,6 +362,51 @@ func renderPerfCells(b *strings.Builder, reg *registry.Registry) {
 		surface, route, _ := strings.Cut(k, "\t")
 		a := byRoute[k]
 		fmt.Fprintf(b, "| %s | `%s` | %d | %d | %d |\n", surface, route, a.total, a.budgeted, a.differ)
+	}
+	b.WriteString("\n")
+}
+
+// IsIngestMatrixRow reports whether r is one cell of the ingest parity matrix
+// (id vl.ingest.<protocol>.<form> or vt.ingest.<protocol>.<form>).
+func IsIngestMatrixRow(r *registry.Row) bool {
+	return strings.HasPrefix(r.ID, "vl.ingest.") || strings.HasPrefix(r.ID, "vt.ingest.")
+}
+
+// renderIngestMatrix lists the ingest parity matrix: one line per protocol x
+// binary x tenant form, with the upstream route or listener flag it exercises
+// and whether the row runs in CI. The rows are the matrix; the case table is
+// tests/ingestmatrix and tests/conformance/ingest_matrix_test.go ties the two.
+func renderIngestMatrix(b *strings.Builder, reg *registry.Registry) {
+	var rows []*registry.Row
+	for i := range reg.Rows {
+		if IsIngestMatrixRow(&reg.Rows[i]) {
+			rows = append(rows, &reg.Rows[i])
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	fmt.Fprintf(b, "## Ingest protocols (parity matrix)\n\nEvery write protocol the pinned VictoriaLogs and VictoriaTraces accept, sent unchanged to the hot binary and to Lakehouse in `tests/e2e/ingest_matrix_test.go`: ingest answers (status and body) compared, rows read back from the unflushed buffer and again after the flush to Parquet and compared field for field with the hot rows, ingest counters checked. %d cells; see `docs/ingest-parity.md`.\n\n| Binary | Protocol | Tenant form | Upstream | Row | Status |\n|---|---|---|---|---|---|\n", len(rows))
+	for _, r := range rows {
+		binary := "lakehouse-logs vs VictoriaLogs"
+		if r.Surface == registry.SurfaceVT {
+			binary = "lakehouse-traces vs VictoriaTraces"
+		}
+		form := r.ID[strings.LastIndex(r.ID, ".")+1:]
+		title := r.Title
+		if i := strings.LastIndex(title, " ["); i > 0 {
+			title = title[:i]
+		}
+		up := ""
+		if r.Upstream != nil {
+			if r.Upstream.Route != "" {
+				up = "route `" + r.Upstream.Route + "`"
+			} else if r.Upstream.Flag != "" {
+				up = "flag `-" + r.Upstream.Flag + "`"
+			}
+		}
+		fmt.Fprintf(b, "| %s | %s | %s | %s | `%s` | %s |\n", binary, title, form, up, r.ID, icon(r))
 	}
 	b.WriteString("\n")
 }
