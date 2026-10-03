@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Startup readiness reports the completed warmup phase in both binaries.** Background warmup now advances `/lakehouse/info` and the startup phase metric to `ready` and records completion timing. The ready boolean and metric continue to honor manifest and buffer replay gates.
+
 - **The Parity workflow's flaky failures, traced to their causes.** Two upstream behaviours that hot and cold share
   made the hot/cold comparison fail at random. Neither tier's `sort` breaks `_time` ties, so a limit that cuts a tie
   group keeps different rows on each tier. `RowsMatch` now accepts that difference only for cases ordered by `_time`

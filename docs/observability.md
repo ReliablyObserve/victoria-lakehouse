@@ -243,7 +243,7 @@ Read scoping (see [multi-tenancy — Read Scoping](multi-tenancy.md#read-scoping
 
 | Metric | Type | Description |
 |---|---|---|
-| `lakehouse_startup_phase` | Gauge | Current phase (0-3) |
+| `lakehouse_startup_phase` | Gauge | Current phase: 0 init, 1 disk recovery, 2 stale check, 3 S3 refresh, 4 peer sync, 5 cache warmup, 6 ready. Background warmup completion advances this to 6. |
 | `lakehouse_startup_total_seconds` | Gauge | Total startup time |
 | `lakehouse_ready` | Gauge | 1=ready, 0=warming |
 | `lakehouse_info` | Gauge | Build info (version, mode, topology) |
