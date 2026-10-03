@@ -143,7 +143,7 @@ func (m *Manager) SetServingReady() {
 
 // SetWarmupComplete is called once the background goroutine that
 // runs S3 refresh + cache warmup + bloom backfill finishes. After
-// this, /ready returns 200 (was 204 while warming).
+// this, /ready returns 200 once the serving gates also pass (was 204 while warming).
 func (m *Manager) SetWarmupComplete() {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
@@ -155,7 +155,7 @@ func (m *Manager) SetWarmupComplete() {
 	metrics.StartupPhase.Set(int64(PhaseReady))
 	m.warmupComplete.Store(true)
 	m.updateReadyMetric()
-	logger.Infof("startup: warmup complete; /ready will report 200")
+	logger.Infof("startup: warmup complete; readiness still depends on serving gates")
 }
 
 // SetManifestFiles updates the file-count gauge that the MinManifestFiles
@@ -211,10 +211,8 @@ func (m *Manager) SetPhase(p Phase) {
 		logger.Infof("startup: entering cache warmup phase")
 	case PhaseReady:
 		m.recordCompletion()
-		// Legacy: the ready gauge stays set for the old IsReady()
-		// callers. New code reads ServingReady / WarmupComplete
-		// directly. Both branches keep monotonic semantics — once
-		// true, never goes back to false (until process restart).
+		// Legacy: reaching PhaseReady completes warmup and grants serving
+		// permission. Effective readiness still honors manifest and WAL gates.
 		m.servingReady.Store(true)
 		m.warmupComplete.Store(true)
 		m.updateReadyMetric()

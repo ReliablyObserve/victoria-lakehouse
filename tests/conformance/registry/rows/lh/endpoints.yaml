@@ -29,6 +29,30 @@
   compare: { type: schema }
   layers: [api]
   pending: true
+  refs:
+    doc: docs/operations.md
+    tests:
+      - internal/compaction/per_tenant_planning_test.go#TestScan_SecondScanDoesNothing
+      - internal/compaction/per_tenant_planning_test.go#TestScan_NoChurn_MultiTenantSingleFiles
+      - internal/compaction/per_tenant_planning_test.go#TestScan_NeverRewritesTieredObjects
+      - internal/compaction/lifecycle_freeze_test.go#TestScan_LifecycleFreeze
+      - internal/compaction/refresh_class_test.go#TestScan_ObjectMovedToGlacierByRefreshIsNeverSelected
+      - internal/compaction/class_refresh_regression_test.go
+      - internal/manifest/class_refresh_order_test.go
+      - internal/delete/storageclass_snapshot_test.go
+      - internal/compaction/property_test.go#TestStorageHealth_CompactionProperties
+      - internal/manifest/compaction_groups_test.go#TestCompactionStats_FragmentationIsPerTenantGroup
+      - internal/manifest/compaction_groups_test.go#TestCompactionStats_FragmentedMatchesPlanner
+  notes: >-
+    The endpoint row checks the response schema. The storage-health properties of the
+    compaction scheduler behind it are asserted by the listed Go tests, which run in both
+    modes in the storage-health-compaction CI job: after all the work there is has been done,
+    the next scan makes zero merges and rewrites no object (a tenant with one file in an hour
+    is never rewritten, whatever other tenants share the hour, issue #343); the stats report
+    a partition as fragmented only when one tenant holds two or more non-mature top-level
+    files; and objects S3 has moved out of STANDARD (the class comes from each manifest LIST
+    refresh, with the mirrored lifecycle rules and the no-rule size-merge cap covering the
+    gap) are never rewritten.
 
 - id: lh.tenants.list.schema
   title: "LH tenant listing — accounts/projects known to the cold tier"
@@ -264,6 +288,18 @@
   compare: { type: schema }
   layers: [api]
   pending: true
+  refs:
+    doc: docs/observability.md
+    tests:
+      - internal/startup/warmup_phase_test.go
+      - internal/startup/review_startup_test.go
+      - tests/e2e/smoke_test.go#TestSmoke_LogsInfo
+      - tests/e2e/smoke_test.go#TestSmoke_TracesInfo
+  notes: >-
+    The schema row remains pending. The listed startup regressions run in both dependency
+    graphs and assert completed phase/timings, manifest and replay readiness gates, and
+    settled readiness gauges under concurrent updates. Background warmup completion
+    must not grant serving readiness before the other gates pass.
 
 - id: lh.manifest.partitions.schema
   title: "LH manifest partitions — partition listing"

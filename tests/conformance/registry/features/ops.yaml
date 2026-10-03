@@ -56,6 +56,8 @@
   tests:
     - internal/startup/honesty_test.go#TestWarmupComplete_OnlyTrueAfterSet
     - internal/startup/manager_test.go#TestManager_Lifecycle
+    - internal/startup/warmup_phase_test.go
+    - internal/startup/review_startup_test.go
     - internal/storage/parquets3/warmup_test.go#TestFilterOwnedFiles_MixedOwnership
     - internal/storage/parquets3/warmup_priority_test.go#TestWarmupSortByMaxTimeNs
     - internal/startup/hints_test.go#TestEmitStartupHints_SlowWarmup

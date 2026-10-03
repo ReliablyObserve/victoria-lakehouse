@@ -1,0 +1,24 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/startup
+cpu: Apple M5 Pro
+BenchmarkReadyGates/Combined-18         	72129818	         1.666 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Combined-18         	73730815	         1.652 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Combined-18         	72876337	         1.640 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Combined-18         	77415158	         1.626 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Combined-18         	70993650	         1.639 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Combined-18         	75127152	         1.630 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Combined-18         	73055668	         1.647 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Combined-18         	73662970	         1.630 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Combined-18         	75084093	         1.622 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Combined-18         	78420660	         1.620 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	73664824	         1.627 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	76439206	         1.632 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	75785516	         1.635 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	72963141	         1.647 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	73200457	         1.658 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	64373365	         1.643 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	74584332	         1.624 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	76039603	         1.643 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	76748817	         1.635 ns/op	       0 B/op	       0 allocs/op
+BenchmarkReadyGates/Serving-18          	72252898	         1.665 ns/op	       0 B/op	       0 allocs/op

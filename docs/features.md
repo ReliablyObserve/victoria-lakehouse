@@ -12,7 +12,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Storage | 21 | 0 | 2 | 2 | 25 |
 | Query | 14 | 1 | 0 | 1 | 16 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
-| Compaction | 6 | 0 | 0 | 1 | 7 |
+| Compaction | 7 | 0 | 0 | 1 | 8 |
 | Deletion | 11 | 0 | 0 | 0 | 11 |
 | Traces | 10 | 0 | 0 | 3 | 13 |
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **134** | **1** | **3** | **8** | **146** |
+| **Total** | **135** | **1** | **3** | **8** | **147** |
 
 ## Coverage gaps
 
@@ -733,7 +733,7 @@ The writer already holds the complete file in memory at upload time. Handing it 
 - Verification: tests: `internal/storage/parquets3/cache_on_flush_test.go`, `lakehouse-traces/internal/storage/parquets3/cache_on_flush_test.go`
 - Docs: `docs/cache-architecture.md`, `docs/storage-flow.md`
 
-## Compaction (7)
+## Compaction (8)
 
 ### ✅ Attribute re-promotion during compaction
 
@@ -792,9 +792,20 @@ Operators need an answer to "is this partition fragmented, and can I fix it now"
 
 Ingest optimizes for latency and produces many modest files; compaction optimizes for reads and cost, merging them upward through levels. Each level re-encodes at a higher compression level and a larger row-group size, which is also exactly the shape S3 lifecycle transitions want.
 
-- Verification: rows: `lh.stats.compaction.schema` (pass, pending) · tests: `internal/compaction/policy_test.go`, `internal/compaction/compactor_test.go`, `internal/compaction/scheduler_test.go`, `internal/compaction/integration_test.go`
+- Verification: rows: `lh.stats.compaction.schema` (pass, pending) · tests: `internal/compaction/policy_test.go`, `internal/compaction/compactor_test.go`, `internal/compaction/scheduler_test.go`, `internal/compaction/integration_test.go`, `internal/compaction/planner_test.go`, `internal/compaction/per_tenant_planning_test.go`, `internal/compaction/property_test.go#TestStorageHealth_CompactionProperties`, `internal/compaction/fault_matrix_test.go`, `internal/compaction/concurrency_test.go`, `internal/compaction/tenant_paths_test.go`, `internal/manifest/compaction_groups_test.go`
 - Docs: `docs/operations.md`, `docs/write-path.md`
 - Changelog: `0.10.0`
+
+### ✅ Compaction keeps away from tiered objects
+
+`lh.feature.compaction.lifecycle_freeze` · status: shipped · surfaces: storage, flag
+
+**Compaction keeps away from tiered objects**: it skips objects the bucket listing reports outside STANDARD, partitions past the first mirrored lifecycle transition, and old data with no mirrored rule, so it does not trigger retrieval fees, early-deletion charges or Glacier errors.
+
+Rewriting an object after lifecycle moved it costs a retrieval fee plus the early-deletion charge, and fails outright in Glacier Flexible Retrieval and Deep Archive. The storage class of each object comes from the manifest's bucket listing refresh, at no extra request, and compaction skips every class that is not STANDARD or INTELLIGENT_TIERING. Between refreshes, and for objects S3 has not moved yet, the lifecycle rules mirrored in the config apply (delete.lifecycle_rules, per-tenant overrides, stats.s3_lifecycle_rules): a partition older than the first transition minus a margin is skipped. A tenant with no rule gets no size merges on partitions older than compaction.size_merge_max_age (7 days by default). Lakehouse never issues a HEAD to learn a class, and the Intelligent-Tiering archive tiers are not detected. The manual recompact trigger and the orphan sweep honour the same rules.
+
+- Verification: tests: `internal/compaction/lifecycle_freeze_test.go`, `internal/compaction/size_cap_test.go`, `internal/compaction/refresh_class_test.go`, `internal/compaction/class_refresh_regression_test.go`, `internal/manifest/class_refresh_order_test.go`, `internal/delete/storageclass_snapshot_test.go`, `internal/compaction/freeze_warnings_test.go`, `internal/compaction/per_tenant_planning_test.go#TestScan_NeverRewritesTieredObjects`, `internal/compaction/tenant_paths_test.go#TestTierA_RespectsFreeze`, `internal/compaction/tenant_paths_test.go#TestForceCompactPartition_RespectsFreeze`, `internal/manifest/class_from_list_test.go`, `internal/delete/storageclass_transition_test.go`, `cmd/lakehouse-logs/compaction_freeze_test.go`, `lakehouse-traces/compaction_freeze_test.go`
+- Docs: `docs/operations.md`, `docs/observability.md`, `docs/write-path.md`
 
 ### 📝 Parallel compaction under resource caps
 
@@ -1604,7 +1615,7 @@ Autoscaling a stateful cold tier is where data is quietly lost: a pod killed mid
 
 A pod that reports ready before it is warm converts a restart into a latency incident. The warmup sequence prioritizes the data most likely to be queried, restricts work to the files the ring says this pod owns, and refuses to claim completion early.
 
-- Verification: tests: `internal/startup/honesty_test.go#TestWarmupComplete_OnlyTrueAfterSet`, `internal/startup/manager_test.go#TestManager_Lifecycle`, `internal/storage/parquets3/warmup_test.go#TestFilterOwnedFiles_MixedOwnership`, `internal/storage/parquets3/warmup_priority_test.go#TestWarmupSortByMaxTimeNs`, `internal/startup/hints_test.go#TestEmitStartupHints_SlowWarmup`
+- Verification: tests: `internal/startup/honesty_test.go#TestWarmupComplete_OnlyTrueAfterSet`, `internal/startup/manager_test.go#TestManager_Lifecycle`, `internal/startup/warmup_phase_test.go`, `internal/startup/review_startup_test.go`, `internal/storage/parquets3/warmup_test.go#TestFilterOwnedFiles_MixedOwnership`, `internal/storage/parquets3/warmup_priority_test.go#TestWarmupSortByMaxTimeNs`, `internal/startup/hints_test.go#TestEmitStartupHints_SlowWarmup`
 - Docs: `docs/operations/lifecycle.md`, `docs/architecture/restart-and-warmup-design.md`
 - Changelog: `0.9.0`
 

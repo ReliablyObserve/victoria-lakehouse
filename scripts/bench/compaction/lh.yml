@@ -1,0 +1,7 @@
+# Fast cadence so a few minutes show what days of production would: flush
+# every 5 s, compaction scan every 20 s. Everything else is the shipped default.
+lakehouse:
+  insert:
+    flush_interval: 5s
+  compaction:
+    interval: 20s

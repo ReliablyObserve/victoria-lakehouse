@@ -1,0 +1,4 @@
+{"instance": "logs-main", "runs": 19, "acked": 760, "returned_distinct": 760, "missing_acked": 0, "duplicates": 0, "unacked_present": 0, "non200": 0}
+{"instance": "logs-pr", "runs": 19, "acked": 760, "returned_distinct": 760, "missing_acked": 0, "duplicates": 0, "unacked_present": 0, "non200": 0}
+{"instance": "traces-main", "runs": 19, "acked": 760, "returned_distinct": 760, "missing_acked": 0, "duplicates": 0, "unacked_present": 0, "non200": 0}
+{"instance": "traces-pr", "runs": 19, "acked": 760, "returned_distinct": 760, "missing_acked": 0, "duplicates": 0, "unacked_present": 0, "non200": 0}

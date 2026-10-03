@@ -120,7 +120,11 @@ lakehouse:
         storage_class: DEEP_ARCHIVE
 ```
 
-Per-tenant overrides are supported in bucket-isolation mode via `tenant.known_tenants[].lifecycle_rules`.
+Per-tenant lifecycle rules go in `tenant.overrides.<tenant>.lifecycle` (a list of `transition_days` /
+`storage_class`, keyed by alias or `<account>:<project>`; see `deployment/docker/lakehouse-e2e-config.yml`).
+They replace the global rules for that tenant's files, in the storage-class prediction and in the
+compaction lifecycle freeze. `tenant.known_tenants[].lifecycle_rules` is accepted by the config loader but
+**not read by anything**; do not rely on it.
 
 ## Cost Estimation
 
@@ -484,6 +488,6 @@ All `stats` and `ui` keys (none of them has a flag; set them in the config file)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `tenant.known_tenants` | `[]` | Tenant list for bucket-isolation cold discovery |
-| `tenant.known_tenants[].lifecycle_rules` | — | Per-tenant lifecycle override |
-| `tenant.known_tenants[].price_per_gb` | — | Per-tenant pricing override |
+| `tenant.known_tenants` | `[]` | Accepted but not read (no code consumes it) |
+| `tenant.known_tenants[].lifecycle_rules` | — | Accepted but not read; per-tenant lifecycle rules are `tenant.overrides.<tenant>.lifecycle` |
+| `tenant.known_tenants[].price_per_gb` | — | Accepted but not read |

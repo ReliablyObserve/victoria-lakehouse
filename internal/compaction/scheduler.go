@@ -10,7 +10,6 @@ package compaction
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +39,15 @@ type SchedulerConfig struct {
 	MaxConcurrent    int
 	RowGroupSize     int
 	CompressionLevel int
+
+	// ScanBudget: a scan starts no new merge once it has run this long. 0
+	// means the scan interval; negative disables the budget.
+	ScanBudget time.Duration
+
+	// Freeze keeps objects that S3 lifecycle has moved, or is about to move,
+	// out of STANDARD out of every merge. nil still never rewrites an object
+	// whose manifest entry records a non-rewritable class.
+	Freeze *LifecycleFreeze
 
 	// CurrentSchemaFingerprint is the fingerprint new files are written with. The
 	// scheduler flags files carrying any OTHER fingerprint as stale and recompacts
@@ -142,6 +150,9 @@ type Scheduler struct {
 	rowGroupSize     int
 	compressionLevel int
 	currentFP        string
+	freeze           *LifecycleFreeze
+	scanBudget       time.Duration
+	backoff          planBackoff
 	compactionCfg    config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
 	tombstones       *delete.TombstoneStore
@@ -189,6 +200,10 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		// zero-value case picks the default.
 		rate = 6
 	}
+	scanBudget := cfg.ScanBudget
+	if scanBudget == 0 {
+		scanBudget = interval
+	}
 	drainTimeout := cfg.DrainTimeout
 	if drainTimeout <= 0 {
 		drainTimeout = 90 * time.Second
@@ -208,6 +223,8 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		rowGroupSize:     cfg.RowGroupSize,
 		compressionLevel: cfg.CompressionLevel,
 		currentFP:        cfg.CurrentSchemaFingerprint,
+		freeze:           cfg.Freeze,
+		scanBudget:       scanBudget,
 		compactionCfg:    cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
 		tombstones:       cfg.Tombstones,
@@ -318,12 +335,8 @@ func withoutHeld(m *manifest.Manifest, files []manifest.FileInfo) []manifest.Fil
 	return out
 }
 
-// partitionCandidate pairs a partition name with its eligible compaction level.
-type partitionCandidate struct {
-	partition string
-	level     int
-	time      time.Time
-}
+// partitionCandidate is a planned merge as the fair-share scheduler sees it.
+type partitionCandidate = mergePlan
 
 // Scan runs one compaction cycle: defer if stabilizing or thrashing,
 // enumerate owned partitions, apply fair-share, compact up to
@@ -358,168 +371,154 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	allFiles := s.manifest.AllFiles()
+	now := planClock()
+	scanStart := time.Now()
 
-	// (D) HRW-based ownership + eligibility.
+	// Held keys are snapshotted once: checking them per file would take the
+	// manifest lock once per file per scan.
+	var held map[string]bool
+	if keys := s.manifest.HeldKeys(); len(keys) > 0 {
+		held = make(map[string]bool, len(keys))
+		for _, k := range keys {
+			held[k] = true
+		}
+	}
+
+	// (D) HRW-based ownership, then a plan per (tenant, partition): the
+	// compactor writes one output per tenant group, so files are counted and
+	// selected per tenant group, never across the tenants of a partition
+	// (issue #343). The planner reads the manifest in place (RangePartitions)
+	// and copies only the files of a group it plans a merge for.
 	owned := 0
+	frozen := map[string]int{frozenStorageClass: 0, frozenAge: 0, frozenSizeAge: 0}
+	pl := newPlanner(s.policy, s.currentFP, now, held, s.freeze, func(reason string, n int) { frozen[reason] += n })
 	var candidates []partitionCandidate
-	for partition, files := range allFiles {
+	s.manifest.RangePartitions(func(partition string, files []manifest.FileInfo) bool {
 		if !s.ownership.OwnsPartition(partition) {
-			continue
+			return true
 		}
 		owned++
 		pt, err := manifest.ParsePartitionTime(partition)
 		if err != nil {
 			logger.Warnf("skip partition: cannot parse time; partition=%s, error=%s", partition, err)
-			continue
+			return true
 		}
-		level, eligible := s.policy.Eligible(files, pt)
-		if !eligible {
-			// Hint-driven recompaction: the level policy only merges L0/L1, so
-			// stale-schema files (re-promotion targets) and top-level fragmentation
-			// are never re-picked. Consume the compaction hints so old /
-			// poorly-compacted areas heal without waiting for new input files — the
-			// existing SelectFiles + compactor path below does the merge + re-promote,
-			// and a partition self-resolves in one pass (becomes non-stale /
-			// non-fragmented, so it isn't re-picked).
-			if lvl, needs := recompactionLevel(files, s.currentFP); needs {
-				level, eligible = lvl, true
-			}
-		}
-		if !eligible {
-			continue
-		}
-		candidates = append(candidates, partitionCandidate{
-			partition: partition,
-			level:     level,
-			time:      pt,
-		})
-	}
+		candidates = append(candidates, pl.partition(partition, files, pt)...)
+		return true
+	})
 	metrics.CompactionPartitionsOwned.Set(int64(owned))
 	metrics.CompactionOwnershipSelfInPeers.Set(s.ownership.SelfInPeersGauge())
+	for reason, n := range frozen {
+		metrics.CompactionFrozenFiles.Set(reason, int64(n))
+	}
 
-	// (E) Sort candidates by partition time, oldest first — same
-	// ordering as the pre-PR-A scheduler.
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].time.Before(candidates[j].time)
-	})
+	// (D2) A plan that failed recently waits out its backoff, so a merge that
+	// fails every time (an object S3 cannot serve) does not take its tenant's
+	// slot on every scan; the tenant's next plan goes instead.
+	candidates = s.backoff.filter(candidates, now)
 
-	// (F) Apply per-tenant fair-share (spec §12.2) if configured.
+	// (E) Priority: open-hour merges, then small-file debt, then oldest.
+	sortPlans(candidates)
+
+	// (F) Per-tenant fair share (spec §12.2). MaxConcurrent is merges per
+	// tenant per scan: the budget grows with the tenants that have work, as the
+	// old per-partition unit (every tenant of one partition) did, while the
+	// fair-share cursor decides who goes first.
+	budget := s.maxConcurrent * tenantsWithWork(candidates)
 	picked := candidates
 	if s.fairShare != nil {
-		picked = s.fairShare.PickCandidates(candidates, s.maxConcurrent)
-	} else if len(candidates) > s.maxConcurrent {
-		picked = candidates[:s.maxConcurrent]
+		picked = s.fairShare.PickCandidates(candidates, budget)
+	} else if len(candidates) > budget {
+		picked = candidates[:budget]
 	}
 
 	compacted := 0
-	for _, c := range picked {
-		// Bail at partition boundary if draining (spec §11.1
-		// invariant: never mid-merge).
+	served := make(map[string]struct{})
+	for i, c := range picked {
+		// Bail at a merge boundary if draining (spec §11.1 invariant: never
+		// mid-merge).
 		if s.draining.Load() {
 			break
 		}
-
-		// (G) Record attempt BEFORE compaction so a crash leaves a
-		// fresh timestamp (Tier A waits 3*Interval before stealing
-		// from us).
-		s.manifest.MarkAttempt(c.partition, time.Now())
-
-		partFiles := withoutHeld(s.manifest, s.manifest.FilesForPartition(c.partition))
-		fp := MajoritySchemaFingerprint(partFiles, c.level)
-		selected := s.policy.SelectFiles(partFiles, c.level, fp)
+		// The scan budget: no new merge starts once a scan has run for it, so
+		// a scan with thousands of tenants with work cannot run for hours. The
+		// fair-share cursor moves past the tenants served, so the next scan
+		// starts with the ones this scan did not reach.
+		if i > 0 && s.scanBudget > 0 && time.Since(scanStart) >= s.scanBudget {
+			metrics.CompactionScanBudgetExhausted.Inc()
+			if s.fairShare != nil && len(served) > 1 {
+				s.fairShare.Advance(len(served) - 1)
+			}
+			logger.Infof("compaction scan budget %v reached; merges=%d, plans left=%d", s.scanBudget, compacted, len(picked)-i)
+			break
+		}
+		served[c.tenant] = struct{}{}
+		// The plan was made from a snapshot; drop any file that left the
+		// manifest or became held since, and re-check there is still a merge.
+		selected := compactableNow(s.manifest, c.partition, c.files, s.freeze)
 		if len(selected) < 2 {
 			continue
 		}
-
-		s.inFlight.Add(1)
-		metrics.CompactionPartitionsInFlight.Inc()
-		compStart := time.Now()
-
-		compactor := NewCompactor(CompactorConfig{
-			Pool:                    s.pool,
-			Manifest:                s.manifest,
-			Prefix:                  s.prefix,
-			Mode:                    s.mode,
-			RowGroupSize:            s.rowGroupSize,
-			CompressionLevel:        s.compressionLevel,
-			BloomRebuilder:          s.bloomRebuilder,
-			CompactionConfig:        s.compactionCfg,
-			TenantCompressionLookup: s.tenantLookup,
-			Tombstones:              s.tombstones,
-			TombstoneRewriteDelay:   s.tombstoneDelay,
-		})
-
-		result, err := compactor.Compact(ctx, c.partition, selected, c.level)
-
-		metrics.CompactionPartitionsInFlight.Dec()
-		metrics.CompactionInFlightDuration.Observe(time.Since(compStart).Seconds())
-		s.inFlight.Done()
-
-		if err != nil {
-			logger.Errorf("compaction failed: %s; partition=%s", err, c.partition)
-			metrics.CompactionErrorsTotal.Inc()
+		if _, err := s.runMerge(ctx, c.partition, selected, c.level, "compacted partition"); err != nil {
+			s.backoff.failed(c, now, s.interval)
+			logger.Errorf("compaction failed: %s; partition=%s, tenant=%s", err, c.partition, c.tenant)
 			continue
 		}
-
-		metrics.CompactionRunsTotal.Inc()
-		metrics.CompactionFilesInputTotal.Add(len(selected))
-		metrics.CompactionFilesOutputTotal.Inc()
-		metrics.CompactionBytesReadTotal.Add(int(result.BytesRead))
-		metrics.CompactionBytesWrittenTotal.Add(int(result.BytesWritten))
-		metrics.CompactionRowsMergedTotal.Add(int(result.RowsMerged))
-		metrics.CompactionDuration.Observe(time.Since(compStart).Seconds())
-
-		if s.onCompacted != nil {
-			addedFiles := s.manifest.FilesForPartition(c.partition)
-			removedKeys := make([]string, 0, len(selected))
-			for _, sel := range selected {
-				removedKeys = append(removedKeys, sel.Key)
-			}
-			s.onCompacted(addedFiles, removedKeys, result.OutputBlooms)
-		}
-
-		logger.Infof("compacted partition; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
-			c.partition, c.level, len(selected), result.OutputFile, result.RowsMerged)
+		s.backoff.succeeded(c)
 		compacted++
 	}
 
 	return compacted, nil
 }
 
-// ForceCompactPartition compacts a partition NOW, bypassing the level-policy
-// eligibility gate — the manual-trigger path behind POST /lakehouse/compaction/recompact
-// for the compaction hints. The CALLER must verify ownership (RecompactHandler does).
-// level <= 0 derives it from the hints (recompactionLevel) or the partition's max
-// level. Runs synchronously through the SAME SelectFiles + compactor (+ re-promote)
-// path as a scheduled compaction, with identical metrics/onCompacted bookkeeping.
-// Returns the result, or an error (draining / not found / fewer than 2 compactable files).
-func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string, level int) (*CompactResult, error) {
-	if s.draining.Load() {
-		return nil, fmt.Errorf("scheduler is draining; no new compaction accepted")
+// tenantsWithWork counts the distinct fair-share tenants among the plans.
+func tenantsWithWork(plans []mergePlan) int {
+	seen := make(map[string]struct{}, len(plans))
+	for _, p := range plans {
+		seen[p.tenant] = struct{}{}
 	}
-	files := withoutHeld(s.manifest, s.manifest.FilesForPartition(partition))
-	if len(files) == 0 {
-		return nil, fmt.Errorf("partition not found or empty: %s", partition)
+	return len(seen)
+}
+
+// stillLive returns current metadata for planned files still registered and
+// not held. A listing refresh may have changed their storage class.
+func stillLive(m *manifest.Manifest, partition string, planned []manifest.FileInfo) []manifest.FileInfo {
+	live := make(map[string]manifest.FileInfo)
+	for _, f := range withoutHeld(m, m.FilesForPartition(partition)) {
+		live[f.Key] = f
 	}
-	if level <= 0 {
-		if lvl, ok := recompactionLevel(files, s.currentFP); ok {
-			level = lvl
-		} else {
-			for _, f := range files {
-				if f.CompactionLevel > level {
-					level = f.CompactionLevel
-				}
-			}
+	out := planned[:0:0]
+	for _, f := range planned {
+		if current, ok := live[f.Key]; ok && current.Bucket == f.Bucket {
+			out = append(out, current)
 		}
 	}
-	fp := MajoritySchemaFingerprint(files, level)
-	selected := s.policy.SelectFiles(files, level, fp)
-	if len(selected) < 2 {
-		return nil, fmt.Errorf("partition %s has fewer than 2 compactable files at level %d", partition, level)
-	}
+	return out
+}
 
+// compactableNow rechecks the freeze immediately before each merge, including
+// later tenants of a forced recompact or Tier A steal.
+func compactableNow(m *manifest.Manifest, partition string, planned []manifest.FileInfo, freeze *LifecycleFreeze) []manifest.FileInfo {
+	live := stillLive(m, partition, planned)
+	pt, _ := manifest.ParsePartitionTime(partition)
+	now := planClock()
+	out := live[:0]
+	for _, f := range live {
+		if frozen, _ := freeze.frozen(f, pt, now); !frozen {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// runMerge compacts one tenant group's selected files with the scheduler's
+// compactor settings and does the shared bookkeeping: attempt mark, in-flight
+// gauge, counters, the OnCompacted feed and the log line.
+func (s *Scheduler) runMerge(ctx context.Context, partition string, selected []manifest.FileInfo, level int, logMsg string) (*CompactResult, error) {
+	// Record the attempt BEFORE compaction so a crash leaves a fresh
+	// timestamp (Tier A waits 3*Interval before stealing from us).
 	s.manifest.MarkAttempt(partition, time.Now())
+
 	s.inFlight.Add(1)
 	metrics.CompactionPartitionsInFlight.Inc()
 	compStart := time.Now()
@@ -545,27 +544,135 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 
 	if err != nil {
 		metrics.CompactionErrorsTotal.Inc()
-		return nil, fmt.Errorf("forced compaction of %s: %w", partition, err)
+		return nil, err
 	}
 
 	metrics.CompactionRunsTotal.Inc()
 	metrics.CompactionFilesInputTotal.Add(len(selected))
-	metrics.CompactionFilesOutputTotal.Inc()
+	metrics.CompactionFilesOutputTotal.Add(len(result.OutputFiles))
 	metrics.CompactionBytesReadTotal.Add(int(result.BytesRead))
 	metrics.CompactionBytesWrittenTotal.Add(int(result.BytesWritten))
 	metrics.CompactionRowsMergedTotal.Add(int(result.RowsMerged))
 	metrics.CompactionDuration.Observe(time.Since(compStart).Seconds())
 
 	if s.onCompacted != nil {
-		added := s.manifest.FilesForPartition(partition)
-		removed := make([]string, 0, len(selected))
-		for _, sel := range selected {
-			removed = append(removed, sel.Key)
-		}
-		s.onCompacted(added, removed, result.OutputBlooms)
+		s.onCompacted(outputsOf(s.manifest, partition, result), fileKeys(selected), result.OutputBlooms)
 	}
-	logger.Infof("forced compaction; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
-		partition, level, len(selected), result.OutputFile, result.RowsMerged)
+
+	logger.Infof("%s; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
+		logMsg, partition, level, len(selected), result.OutputFile, result.RowsMerged)
+	return result, nil
+}
+
+// outputsOf returns the manifest entries of a merge's outputs. Only these are
+// new: re-announcing every file of the partition on each merge would make the
+// pmeta feed and the peer push O(tenants) per merge, O(tenants²) per hour.
+func outputsOf(m *manifest.Manifest, partition string, result *CompactResult) []manifest.FileInfo {
+	want := make(map[string]bool, len(result.OutputFiles))
+	for _, k := range result.OutputFiles {
+		want[k] = true
+	}
+	var out []manifest.FileInfo
+	for _, f := range m.FilesForPartition(partition) {
+		if want[f.Key] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func fileKeys(files []manifest.FileInfo) []string {
+	keys := make([]string, 0, len(files))
+	for _, f := range files {
+		keys = append(keys, f.Key)
+	}
+	return keys
+}
+
+// ForceCompactPartition compacts a partition NOW, bypassing the level-policy
+// eligibility gate — the manual-trigger path behind POST /lakehouse/compaction/recompact
+// for the compaction hints. The CALLER must verify ownership (RecompactHandler does).
+// level <= 0 derives it from the hints (recompactionLevel) or the partition's max
+// level. Runs synchronously through the SAME SelectFiles + compactor (+ re-promote)
+// path as a scheduled compaction, with identical metrics/onCompacted bookkeeping.
+// Returns the result, or an error (draining / not found / fewer than 2 compactable files).
+func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string, level int) (*CompactResult, error) {
+	if s.draining.Load() {
+		return nil, fmt.Errorf("scheduler is draining; no new compaction accepted")
+	}
+	files := withoutHeld(s.manifest, s.manifest.FilesForPartition(partition))
+	if len(files) == 0 {
+		return nil, fmt.Errorf("partition not found or empty: %s", partition)
+	}
+	pt, _ := manifest.ParsePartitionTime(partition)
+	now := planClock()
+
+	// The force bypasses the level thresholds, not the tenant split, the
+	// two-file minimum or the lifecycle freeze: each tenant group with two or
+	// more compactable files at the level is merged on its own; a lone file is
+	// never rewritten.
+	result := &CompactResult{Partition: partition}
+	merged := 0
+	var firstErr error
+	for _, g := range groupFilesByTenant(files) {
+		var live []manifest.FileInfo
+		for _, f := range g.Files {
+			if ok, _ := s.freeze.frozen(f, pt, now); !ok {
+				live = append(live, f)
+			}
+		}
+		lvl := level
+		if lvl <= 0 {
+			lvl = 0
+			if l, ok := recompactionLevel(live, s.currentFP); ok {
+				lvl = l
+			} else {
+				for _, f := range live {
+					if f.CompactionLevel > lvl {
+						lvl = f.CompactionLevel
+					}
+				}
+			}
+		}
+		selected := s.policy.SelectFiles(live, lvl, MajoritySchemaFingerprint(live, lvl))
+		selected = compactableNow(s.manifest, partition, selected, s.freeze)
+		if len(selected) < 2 {
+			continue
+		}
+		r, err := s.runMerge(ctx, partition, selected, lvl, "forced compaction")
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		merged++
+		result.InputFiles = append(result.InputFiles, r.InputFiles...)
+		result.OutputFiles = append(result.OutputFiles, r.OutputFiles...)
+		result.RowsMerged += r.RowsMerged
+		result.BytesRead += r.BytesRead
+		result.BytesWritten += r.BytesWritten
+		result.OutputLevel = r.OutputLevel
+		result.Duration += r.Duration
+		for k, v := range r.OutputBlooms {
+			if result.OutputBlooms == nil {
+				result.OutputBlooms = make(map[string]map[string][]string)
+			}
+			result.OutputBlooms[k] = v
+		}
+	}
+	if merged == 0 {
+		if firstErr != nil {
+			return nil, fmt.Errorf("forced compaction of %s: %w", partition, firstErr)
+		}
+		return nil, fmt.Errorf("partition %s has fewer than 2 compactable files at level %d in any tenant", partition, level)
+	}
+	if len(result.OutputFiles) > 0 {
+		result.OutputFile = result.OutputFiles[0]
+	}
+	if firstErr != nil {
+		return result, fmt.Errorf("forced compaction of %s partially completed: %w", partition, firstErr)
+	}
 	return result, nil
 }
 

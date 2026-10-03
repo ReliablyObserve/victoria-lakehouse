@@ -1049,19 +1049,28 @@ type CompactionConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Interval is the compaction scan interval.
 	Interval time.Duration `yaml:"interval"`
-	// MaxConcurrent is the number of partitions a pod compacts concurrently.
+	// MaxConcurrent is the number of merges a pod runs per tenant on each
+	// scan; every tenant with compactable files gets up to this many, and fair
+	// share decides who goes first.
 	MaxConcurrent int `yaml:"max_concurrent"`
-	// MinFilesL0 is the number of L0 files a partition needs before L0 to L1
-	// compaction; at least 2.
+	// MinFilesL0 is the number of L0 files one tenant needs in a partition
+	// before L0 to L1 compaction; at least 2.
 	MinFilesL0 int `yaml:"min_files_l0"`
-	// MinFilesL1 is the number of L1 files a partition needs before L1 to L2
-	// compaction; at least 2.
+	// MinFilesL1 is the number of L1 files one tenant needs in a partition
+	// before L1 to L2 compaction; at least 2.
 	MinFilesL1 int `yaml:"min_files_l1"`
 	// MinAge keeps files younger than this out of compaction.
 	MinAge time.Duration `yaml:"min_age"`
-	// DailyRollupAge is the partition age after which L1 files roll up into
-	// daily files.
+	// DailyRollupAge is the partition age after which every file of a tenant
+	// in the hour that is under 32 MiB merges into one, whatever its level;
+	// files already that large are left alone.
 	DailyRollupAge time.Duration `yaml:"daily_rollup_age"`
+	// SizeMergeMaxAge is the partition age beyond which a tenant with no
+	// lifecycle rule (delete.lifecycle_rules, stats.s3_lifecycle_rules or its
+	// own override) gets no size merges: only stale-schema heal still runs, so
+	// backfill into old data cannot keep rewriting objects S3 may already have
+	// moved. 0 means 7 days; a negative value removes the cap.
+	SizeMergeMaxAge time.Duration `yaml:"size_merge_max_age"`
 
 	// CompressionLevelByOutputLevel sets the zstd level used when
 	// emitting a compacted file at output level i (index 0 = L0
@@ -1404,13 +1413,14 @@ func Default() *Config {
 		},
 
 		Compaction: CompactionConfig{
-			Enabled:        true,
-			Interval:       5 * time.Minute,
-			MaxConcurrent:  1,
-			MinFilesL0:     10,
-			MinFilesL1:     10,
-			MinAge:         1 * time.Hour,
-			DailyRollupAge: 24 * time.Hour,
+			Enabled:         true,
+			Interval:        5 * time.Minute,
+			MaxConcurrent:   1,
+			MinFilesL0:      10,
+			MinFilesL1:      10,
+			MinAge:          1 * time.Hour,
+			DailyRollupAge:  24 * time.Hour,
+			SizeMergeMaxAge: 168 * time.Hour,
 			// Progressive compression schedule, indexed by the output
 			// file's compaction level (slot N = level for files at
 			// compaction-level N). Default [3, 7, 11] maps to the
@@ -2587,6 +2597,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Compaction.DailyRollupAge > 0 {
 		base.Compaction.DailyRollupAge = overlay.Compaction.DailyRollupAge
+	}
+	if overlay.Compaction.SizeMergeMaxAge != 0 { // negative removes the cap
+		base.Compaction.SizeMergeMaxAge = overlay.Compaction.SizeMergeMaxAge
 	}
 	if len(overlay.Compaction.CompressionLevelByOutputLevel) > 0 {
 		base.Compaction.CompressionLevelByOutputLevel = overlay.Compaction.CompressionLevelByOutputLevel

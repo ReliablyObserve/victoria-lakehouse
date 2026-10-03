@@ -1,0 +1,48 @@
+{
+  "logs": {
+    "info_status": 200,
+    "info": {
+      "mode": "logs",
+      "phase": "s3_refresh",
+      "ready": true
+    },
+    "ready": {
+      "status": 200,
+      "body": "READY"
+    },
+    "metrics": {
+      "lakehouse_ready": 0.0,
+      "lakehouse_serving_ready": 1.0,
+      "lakehouse_startup_phase": 3.0,
+      "lakehouse_startup_total_seconds": 0.0,
+      "lakehouse_warmup_complete": 1.0
+    },
+    "query_control": {
+      "status": 200,
+      "body": "{\"c\":\"40\"}\n"
+    }
+  },
+  "traces": {
+    "info_status": 200,
+    "info": {
+      "mode": "traces",
+      "phase": "s3_refresh",
+      "ready": true
+    },
+    "ready": {
+      "status": 200,
+      "body": "READY"
+    },
+    "metrics": {
+      "lakehouse_ready": 0.0,
+      "lakehouse_serving_ready": 1.0,
+      "lakehouse_startup_phase": 3.0,
+      "lakehouse_startup_total_seconds": 0.0,
+      "lakehouse_warmup_complete": 1.0
+    },
+    "query_control": {
+      "status": 200,
+      "body": "{\"c\":\"40\"}\n"
+    }
+  }
+}
