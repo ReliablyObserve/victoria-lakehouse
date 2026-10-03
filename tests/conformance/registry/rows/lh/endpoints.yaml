@@ -288,6 +288,18 @@
   compare: { type: schema }
   layers: [api]
   pending: true
+  refs:
+    doc: docs/observability.md
+    tests:
+      - internal/startup/warmup_phase_test.go
+      - internal/startup/review_startup_test.go
+      - tests/e2e/smoke_test.go#TestSmoke_LogsInfo
+      - tests/e2e/smoke_test.go#TestSmoke_TracesInfo
+  notes: >-
+    The schema row remains pending. The listed startup regressions run in both dependency
+    graphs and assert completed phase/timings, manifest and replay readiness gates, and
+    settled readiness gauges under concurrent updates. Background warmup completion
+    must not grant serving readiness before the other gates pass.
 
 - id: lh.manifest.partitions.schema
   title: "LH manifest partitions — partition listing"

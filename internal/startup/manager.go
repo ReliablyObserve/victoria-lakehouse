@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -60,6 +61,9 @@ func (p Phase) String() string {
 // catches the first-ever-boot scenario where a pod with no snapshot
 // would otherwise lie about being ready while the manifest is empty.
 type Manager struct {
+	// Serialize gate mutations together with their metric publication. Atomic
+	// readers remain lock-free, while the final gauges cannot lag a later setter.
+	stateMu         sync.Mutex
 	phase           atomic.Int32
 	servingReady    atomic.Bool
 	warmupComplete  atomic.Bool
@@ -68,9 +72,9 @@ type Manager struct {
 	minReadyFiles   int64
 	walReplayNeeded atomic.Bool
 	startTime       time.Time
-	recoveryTime    time.Duration
-	refreshTime     time.Duration
-	totalTime       time.Duration
+	recoveryTime    atomic.Int64
+	refreshTime     atomic.Int64
+	totalTime       atomic.Int64
 	catchupFiles    int64
 }
 
@@ -99,7 +103,7 @@ func (m *Manager) Phase() Phase {
 // warmup-complete (e.g. metrics.Ready gauge). New /ready handler
 // uses ServingReady + WarmupComplete instead.
 func (m *Manager) IsReady() bool {
-	return m.servingReady.Load() && m.WarmupComplete()
+	return m.ServingReady() && m.WarmupComplete()
 }
 
 // ServingReady is true when the HTTP layer + disk recovery + WAL
@@ -130,20 +134,28 @@ func (m *Manager) WarmupComplete() bool {
 // after disk recovery completes; the gate's other preconditions
 // (WAL replay, MinManifestFiles) are checked lazily by ServingReady.
 func (m *Manager) SetServingReady() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	m.servingReady.Store(true)
-	if m.ServingReady() {
-		metrics.ServingReady.Set(1)
-	}
+	m.updateReadyMetric()
 	logger.Infof("startup: serving-ready flipped; warmup may still be in progress")
 }
 
 // SetWarmupComplete is called once the background goroutine that
 // runs S3 refresh + cache warmup + bloom backfill finishes. After
-// this, /ready returns 200 (was 204 while warming).
+// this, /ready returns 200 once the serving gates also pass (was 204 while warming).
 func (m *Manager) SetWarmupComplete() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	// Phase describes the completed startup work, independently of serving
+	// gates. Do not use SetPhase(PhaseReady), whose legacy behavior grants
+	// serving readiness as well as completing warmup.
+	m.recordCompletion()
+	m.phase.Store(int32(PhaseReady))
+	metrics.StartupPhase.Set(int64(PhaseReady))
 	m.warmupComplete.Store(true)
-	metrics.WarmupComplete.Set(1)
-	logger.Infof("startup: warmup complete; /ready will report 200")
+	m.updateReadyMetric()
+	logger.Infof("startup: warmup complete; readiness still depends on serving gates")
 }
 
 // SetManifestFiles updates the file-count gauge that the MinManifestFiles
@@ -152,30 +164,36 @@ func (m *Manager) SetWarmupComplete() {
 // ServingReady and ManifestFiles metrics so operators can spot the gate
 // flipping live and watch the manifest-size health gauge.
 func (m *Manager) SetManifestFiles(n int64) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	m.manifestFiles.Store(n)
 	metrics.ManifestFiles.Set(n)
-	if m.ServingReady() {
-		metrics.ServingReady.Set(1)
-	} else {
-		metrics.ServingReady.Set(0)
-	}
+	m.updateReadyMetric()
 }
 
 // SetWALReplayNeeded marks this pod as one that needs WAL replay
 // before serving (insert role). select-only roles never call this.
 func (m *Manager) SetWALReplayNeeded() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	m.walReplayNeeded.Store(true)
+	m.updateReadyMetric()
 }
 
 // SetWALReplayDone is called after the insert path finishes replaying
 // the on-disk WAL. ServingReady becomes true only after this is set
 // (when WALReplayNeeded was true).
 func (m *Manager) SetWALReplayDone() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	m.walReplayDone.Store(true)
+	m.updateReadyMetric()
 	logger.Infof("startup: WAL replay complete")
 }
 
 func (m *Manager) SetPhase(p Phase) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	old := Phase(m.phase.Swap(int32(p)))
 	logger.Infof("startup phase transition; from=%s, to=%s, elapsed=%v", old.String(), p.String(), time.Since(m.startTime))
 	metrics.StartupPhase.Set(int64(p))
@@ -186,23 +204,19 @@ func (m *Manager) SetPhase(p Phase) {
 	case PhaseStaleCheck:
 		logger.Infof("startup: entering stale check phase")
 	case PhaseS3Refresh:
-		m.recoveryTime = time.Since(m.startTime)
+		m.recoveryTime.Store(int64(time.Since(m.startTime)))
 	case PhasePeerSync:
 		logger.Infof("startup: entering peer sync phase")
 	case PhaseCacheWarmup:
 		logger.Infof("startup: entering cache warmup phase")
 	case PhaseReady:
-		m.totalTime = time.Since(m.startTime)
-		m.refreshTime = m.totalTime - m.recoveryTime
-		// Legacy: the ready gauge stays set for the old IsReady()
-		// callers. New code reads ServingReady / WarmupComplete
-		// directly. Both branches keep monotonic semantics — once
-		// true, never goes back to false (until process restart).
+		m.recordCompletion()
+		// Legacy: reaching PhaseReady completes warmup and grants serving
+		// permission. Effective readiness still honors manifest and WAL gates.
 		m.servingReady.Store(true)
 		m.warmupComplete.Store(true)
-		metrics.Ready.Set(1)
-		metrics.StartupTotalSeconds.Set(m.totalTime.Seconds())
-		logger.Infof("startup complete; recovery_seconds=%v, refresh_seconds=%v, total_seconds=%v, catchup_files=%d", m.recoveryTime.Seconds(), m.refreshTime.Seconds(), m.totalTime.Seconds(), m.catchupFiles)
+		m.updateReadyMetric()
+		logger.Infof("startup complete; recovery_seconds=%v, refresh_seconds=%v, total_seconds=%v, catchup_files=%d", m.RecoverySeconds(), m.RefreshSeconds(), m.TotalSeconds(), m.catchupFiles)
 	}
 }
 
@@ -210,10 +224,40 @@ func (m *Manager) SetCatchupFiles(n int64) {
 	m.catchupFiles = n
 }
 
-func (m *Manager) RecoverySeconds() float64 { return m.recoveryTime.Seconds() }
-func (m *Manager) RefreshSeconds() float64  { return m.refreshTime.Seconds() }
-func (m *Manager) TotalSeconds() float64    { return m.totalTime.Seconds() }
-func (m *Manager) CatchupFiles() int64      { return m.catchupFiles }
+func (m *Manager) recordCompletion() {
+	total := int64(time.Since(m.startTime))
+	m.totalTime.Store(total)
+	m.refreshTime.Store(total - m.recoveryTime.Load())
+	metrics.StartupTotalSeconds.Set(float64(total) / float64(time.Second))
+}
+
+func (m *Manager) updateReadyMetric() {
+	serving, warmup := m.ServingReady(), m.WarmupComplete()
+	if serving {
+		metrics.ServingReady.Set(1)
+	} else {
+		metrics.ServingReady.Set(0)
+	}
+	if warmup {
+		metrics.WarmupComplete.Set(1)
+	} else {
+		metrics.WarmupComplete.Set(0)
+	}
+	if serving && warmup {
+		metrics.Ready.Set(1)
+	} else {
+		metrics.Ready.Set(0)
+	}
+}
+
+func (m *Manager) RecoverySeconds() float64 {
+	return float64(m.recoveryTime.Load()) / float64(time.Second)
+}
+func (m *Manager) RefreshSeconds() float64 {
+	return float64(m.refreshTime.Load()) / float64(time.Second)
+}
+func (m *Manager) TotalSeconds() float64 { return float64(m.totalTime.Load()) / float64(time.Second) }
+func (m *Manager) CatchupFiles() int64   { return m.catchupFiles }
 
 // MinManifestFiles returns the configured readiness gate threshold.
 // Exposed for /lakehouse/info so operators can see what their pod

@@ -1615,7 +1615,7 @@ Autoscaling a stateful cold tier is where data is quietly lost: a pod killed mid
 
 A pod that reports ready before it is warm converts a restart into a latency incident. The warmup sequence prioritizes the data most likely to be queried, restricts work to the files the ring says this pod owns, and refuses to claim completion early.
 
-- Verification: tests: `internal/startup/honesty_test.go#TestWarmupComplete_OnlyTrueAfterSet`, `internal/startup/manager_test.go#TestManager_Lifecycle`, `internal/storage/parquets3/warmup_test.go#TestFilterOwnedFiles_MixedOwnership`, `internal/storage/parquets3/warmup_priority_test.go#TestWarmupSortByMaxTimeNs`, `internal/startup/hints_test.go#TestEmitStartupHints_SlowWarmup`
+- Verification: tests: `internal/startup/honesty_test.go#TestWarmupComplete_OnlyTrueAfterSet`, `internal/startup/manager_test.go#TestManager_Lifecycle`, `internal/startup/warmup_phase_test.go`, `internal/startup/review_startup_test.go`, `internal/storage/parquets3/warmup_test.go#TestFilterOwnedFiles_MixedOwnership`, `internal/storage/parquets3/warmup_priority_test.go#TestWarmupSortByMaxTimeNs`, `internal/startup/hints_test.go#TestEmitStartupHints_SlowWarmup`
 - Docs: `docs/operations/lifecycle.md`, `docs/architecture/restart-and-warmup-design.md`
 - Changelog: `0.9.0`
 

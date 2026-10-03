@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Startup readiness reports the completed warmup phase in both binaries.** Background warmup now advances `/lakehouse/info` and the startup phase metric to `ready` and records completion timing. The ready boolean and metric continue to honor manifest and buffer replay gates.
+
 ## [0.143.15] - 2026-10-03
 
 ### Fixed
