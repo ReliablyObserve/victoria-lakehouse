@@ -271,7 +271,53 @@ kubectl exec -it lakehouse-logs-0 -- curl -s \
 
 ---
 
-## 8. When to roll back
+## 8. "Compaction keeps merging with no new data" / "the L0 backlog never drains"
+
+**Symptom:** `lakehouse_compaction_runs_total` increases every scan for a tenant that has
+stopped writing, objects carry ever higher levels (`compacted-L40-...`), or the oldest L0 file
+keeps ageing. This was issue #343: the planner counted files across all tenants of an hour
+while the compactor merges per tenant, so a lone file was rewritten 1 to 1 on every scan and
+those rewrites won every scan.
+
+### Checks
+
+1. `rate(lakehouse_compaction_runs_total[1h])` for a tenant with no ingest should be 0 after one
+   or two scans. If it is not, you are running a build older than the fix.
+2. `lakehouse_compaction_level_files{level="0"}` should trend down. Open-hour merges go first;
+   a closed-hour rollup backlog cannot starve them.
+3. `GET /lakehouse/api/v1/stats/compaction`: `fragmented_partitions` counts a partition only
+   when one tenant holds two or more top-level (L2+) files; one L2 file per tenant is healthy.
+
+## 9. "Objects in IA/Glacier are not being compacted" / "old data is not being merged"
+
+By design. Compaction does not rewrite:
+
+- an object whose storage class, as reported by the bucket listing at the last manifest refresh,
+  is not STANDARD / INTELLIGENT_TIERING (`lakehouse_compaction_frozen_files{reason="storage_class"}`);
+- a partition older than the first lifecycle transition minus 48 h of the mirrored rules
+  (`delete.lifecycle_rules`, the tenant's `tenant.overrides.<tenant>.lifecycle`,
+  `stats.s3_lifecycle_rules`) (`reason="age"`);
+- for a tenant with no mirrored rule, a partition older than `compaction.size_merge_max_age`
+  (7 days by default), except for stale-schema heal (`reason="size_age"`). If the bucket's real
+  lifecycle rule is not mirrored in the config, mirror it: that is the correct fix, a larger
+  `size_merge_max_age` (or a negative value) only widens the window in which objects S3 has
+  already moved may be rewritten.
+
+At startup a freeze age that is not later than `compaction.daily_rollup_age` logs a warning (`the
+lifecycle freeze for ... starts at partition age ..., not later than compaction.daily_rollup_age`):
+the closed-hour rollup can never run for that data. Move the first transition later or lower
+`daily_rollup_age`.
+
+## 9b. "One partition's merge fails every scan"
+
+A failing merge backs off for the scan interval doubled per consecutive failure (at most 1 h), so the
+tenant's other partitions still compact; look for `compaction failed` in the logs. If
+`lakehouse_compaction_scan_budget_exhausted_total` keeps rising, a scan cannot serve every tenant with
+work in one interval: add pods or raise `compaction.max_concurrent`; the budget itself has no config key.
+
+---
+
+## 10. When to roll back
 
 Roll back to the previous release if ANY two of these are true for
 > 24 h continuously:

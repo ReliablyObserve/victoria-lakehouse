@@ -17,9 +17,17 @@ func NewLevelPolicy(minFilesL0, minFilesL1 int, minAge time.Duration) *LevelPoli
 	return &LevelPolicy{MinFilesL0: minFilesL0, MinFilesL1: minFilesL1, MinAge: minAge}
 }
 
-// Eligible checks if a partition needs compaction. L0→L1 is prioritized over L1→L2.
+// Eligible applies the level thresholds to a set of files. L0→L1 is
+// prioritized over L1→L2.
+//
+// The files must be ONE tenant group's files of one partition: the compactor
+// writes one output per tenant group, so counting several tenants together
+// makes each tenant's lone file look mergeable (issue #343). The scheduler
+// plans through planPartition, which splits by tenant first; Eligible is the
+// threshold check alone.
 func (p *LevelPolicy) Eligible(files []manifest.FileInfo, partitionTime time.Time) (level int, eligible bool) {
-	if time.Since(partitionTime) < p.MinAge {
+	age := planClock().Sub(partitionTime)
+	if age < p.MinAge {
 		return 0, false
 	}
 	l0Count := countAtLevel(files, 0)
@@ -31,11 +39,7 @@ func (p *LevelPolicy) Eligible(files []manifest.FileInfo, partitionTime time.Tim
 		return 1, true
 	}
 	// Daily rollup: merge any L1 files (≥2) in partitions older than DailyRollupAge.
-	rollupAge := p.DailyRollupAge
-	if rollupAge > 0 && rollupAge < time.Hour {
-		rollupAge = time.Hour
-	}
-	if rollupAge > 0 && time.Since(partitionTime) >= rollupAge && l1Count >= 2 {
+	if rollupAge := p.rollupAge(); rollupAge > 0 && age >= rollupAge && l1Count >= 2 {
 		return 1, true
 	}
 	return 0, false
@@ -62,21 +66,9 @@ func countAtLevel(files []manifest.FileInfo, level int) int {
 	return n
 }
 
-// MajoritySchemaFingerprint returns the most common schema fingerprint at the given level.
+// MajoritySchemaFingerprint returns the most common schema fingerprint at the
+// given level; a tie goes to the smallest fingerprint, so the choice does not
+// depend on map order and every pod selects the same files.
 func MajoritySchemaFingerprint(files []manifest.FileInfo, level int) string {
-	counts := make(map[string]int)
-	for _, f := range files {
-		if f.CompactionLevel == level {
-			counts[f.SchemaFingerprint]++
-		}
-	}
-	var best string
-	var bestCount int
-	for fp, c := range counts {
-		if c > bestCount {
-			best = fp
-			bestCount = c
-		}
-	}
-	return best
+	return majorityFingerprint(files, "", func(f manifest.FileInfo) bool { return f.CompactionLevel == level })
 }

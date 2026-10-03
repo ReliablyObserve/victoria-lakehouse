@@ -1,6 +1,9 @@
 package manifest
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // Estimated per-byte storage gains used to PRIORITIZE recompaction work (highest
 // saving first). Rough hints for ranking + UI, not guarantees:
@@ -137,12 +140,10 @@ func (m *Manifest) ComputeCompactionStats(currentFP string, zstdForLevel func(le
 			partBytes += f.Size
 		}
 
-		var maxLevelBytes int64
-		for _, f := range files {
-			if f.CompactionLevel == maxLevel {
-				maxLevelBytes += f.Size
-			}
-		}
+		// Fragmentation is judged per tenant group, the unit compaction merges:
+		// one top-level file per tenant is fully compacted, however many
+		// tenants share the hour (issue #343).
+		fragmented, maxLevelBytes := fragmentedGroups(files)
 
 		var reasons []string
 		var savings int64
@@ -150,7 +151,7 @@ func (m *Manifest) ComputeCompactionStats(currentFP string, zstdForLevel func(le
 			reasons = append(reasons, "stale_schema")
 			savings += int64(float64(staleBytes) * repromoteGainEstimate)
 		}
-		if maxLevel >= 2 && levelCounts[maxLevel] >= 2 {
+		if fragmented {
 			reasons = append(reasons, "fragmented")
 			savings += int64(float64(maxLevelBytes) * mergeOverheadGainEstimate)
 			st.FragmentedPartitions++
@@ -215,4 +216,88 @@ func (m *Manifest) ComputeCompactionStats(currentFP string, zstdForLevel func(le
 // of ComputeCompactionStats the forced-recompaction trigger consumes.
 func (m *Manifest) CompactionCandidates(currentFP string) []CompactionCandidate {
 	return m.ComputeCompactionStats(currentFP, nil).Candidates
+}
+
+// CompactionGroupPrefix returns the tenant prefix "<acct>/<proj>/<mode>/" of an
+// object key written by the per-tenant flush path, or "" for keys without
+// numeric tenant segments (legacy layouts share one group). Compaction writes
+// one output per (group prefix, bucket); the compaction stats judge
+// fragmentation with the same grouping.
+func CompactionGroupPrefix(key string) string {
+	// Three '/'-terminated segments with a fourth after them; no allocation:
+	// the result is a substring of key. Called per file per compaction scan.
+	i1 := strings.IndexByte(key, '/')
+	if i1 <= 0 {
+		return ""
+	}
+	i2 := i1 + 1 + strings.IndexByte(key[i1+1:], '/')
+	if i2 <= i1+1 {
+		return ""
+	}
+	i3 := i2 + 1 + strings.IndexByte(key[i2+1:], '/')
+	if i3 <= i2+1 || i3 == len(key)-1 {
+		return ""
+	}
+	if !isUint32(key[:i1]) || !isUint32(key[i1+1:i2]) {
+		return ""
+	}
+	return key[:i3+1]
+}
+
+// isUint32 reports whether s is a decimal that fits a uint32, as
+// strconv.ParseUint(s, 10, 32) would accept it, without allocating.
+func isUint32(s string) bool {
+	if s == "" || len(s) > 10 {
+		return false
+	}
+	var n uint64
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+		n = n*10 + uint64(c-'0')
+	}
+	return n <= 1<<32-1
+}
+
+// fragmentedGroups reports whether any tenant group of a partition holds two
+// or more files under MatureObjectBytes at its own top level, that level being
+// L2 or above, and the bytes of those files. Mature files are never merged for
+// fragmentation, so they never make a partition look fragmented.
+func fragmentedGroups(files []FileInfo) (bool, int64) {
+	type groupKey struct{ prefix, bucket string }
+	type group struct {
+		top   int
+		count int
+		bytes int64
+	}
+	groups := make(map[groupKey]*group)
+	for _, f := range files {
+		if f.Size >= MatureObjectBytes {
+			continue
+		}
+		k := groupKey{CompactionGroupPrefix(f.Key), f.Bucket}
+		g := groups[k]
+		if g == nil {
+			g = &group{top: -1}
+			groups[k] = g
+		}
+		switch {
+		case f.CompactionLevel > g.top:
+			g.top, g.count, g.bytes = f.CompactionLevel, 1, f.Size
+		case f.CompactionLevel == g.top:
+			g.count++
+			g.bytes += f.Size
+		}
+	}
+	fragmented := false
+	var bytes int64
+	for _, g := range groups {
+		if g.top >= 2 && g.count >= 2 {
+			fragmented = true
+			bytes += g.bytes
+		}
+	}
+	return fragmented, bytes
 }

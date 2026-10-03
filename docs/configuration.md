@@ -310,7 +310,7 @@ The **Effect** column says what a flag does to the config key it writes:
 | `-lakehouse.cache.partition-mode` | both | `cache.partition_mode` | set | ` ` | Cache partition mode: az-local (default), global, distributed |
 | `-lakehouse.cache.warmup-max-files` | both | `cache.warmup_max_files` | set | `0` | Max files to warm on startup; warmup runs only when this or -lakehouse.cache.warmup-partitions is set (default: 0 = 500 when warmup runs) |
 | `-lakehouse.cache.warmup-partitions` | both | `cache.warmup_partitions` | set | `0` | Number of recent hourly partitions to warm on startup; warmup runs only when this or -lakehouse.cache.warmup-max-files is set (default: 0 = 6 when warmup runs) |
-| `-lakehouse.compaction.daily-rollup-age` | both | `compaction.daily_rollup_age` | set | `0s` | Minimum partition age for daily rollup compaction (default: 24h) |
+| `-lakehouse.compaction.daily-rollup-age` | both | `compaction.daily_rollup_age` | set | `0s` | Partition age after which a tenant's files in an hour (each under 32 MiB) merge into one (default: 24h) |
 | `-lakehouse.compaction.enabled` | both | `compaction.enabled` | enable-only | `false` | Enable the compaction scheduler (on by default; false does not turn it off — select a profile that disables compaction in the config file) |
 | `-lakehouse.compaction.interval` | both | `compaction.interval` | set | `0s` | Compaction scan interval |
 | `-lakehouse.compaction.row-group-size-by-output-level` | both | `compaction.row_group_size_by_output_level` | set | ` ` | Comma-separated Parquet row-group sizes per compaction output level, slot N = output level N (default: 10000,10000,20000) |
@@ -448,14 +448,15 @@ Controls background Parquet compaction.
 | Key | Type | Default | Config file | Flags | Profile overrides | Description |
 |---|---|---|---|---|---|---|
 | `compaction.compression_level_by_output_level` | []int | `[3, 7, 11]` | set |  |  | Sets the zstd level used when emitting a compacted file at output level i (index 0 = L0 rewrite, 1 = L0→L1, 2 = L1→L2, ...). |
-| `compaction.daily_rollup_age` | duration | `24h` | set | `-lakehouse.compaction.daily-rollup-age` |  | The partition age after which L1 files roll up into daily files. |
+| `compaction.daily_rollup_age` | duration | `24h` | set | `-lakehouse.compaction.daily-rollup-age` |  | The partition age after which every file of a tenant in the hour that is under 32 MiB merges into one, whatever its level; files already that large are left alone. |
 | `compaction.enabled` | bool | `true` | enable-only | `-lakehouse.compaction.enabled` (enable-only) | max-cost-savings: `false`; dev: `false` | Runs the compaction scheduler. |
 | `compaction.interval` | duration | `5m` | set | `-lakehouse.compaction.interval` | max-performance: `2m` | The compaction scan interval. |
-| `compaction.max_concurrent` | int | `1` | set |  | max-performance: `2` | The number of partitions a pod compacts concurrently. |
+| `compaction.max_concurrent` | int | `1` | set |  | max-performance: `2` | The number of merges a pod runs per tenant on each scan; every tenant with compactable files gets up to this many, and fair share decides who goes first. |
 | `compaction.min_age` | duration | `1h` | set |  |  | Keeps files younger than this out of compaction. |
-| `compaction.min_files_l0` | int | `10` | set |  | max-performance: `5` | The number of L0 files a partition needs before L0 to L1 compaction; at least 2. |
-| `compaction.min_files_l1` | int | `10` | set |  |  | The number of L1 files a partition needs before L1 to L2 compaction; at least 2. |
+| `compaction.min_files_l0` | int | `10` | set |  | max-performance: `5` | The number of L0 files one tenant needs in a partition before L0 to L1 compaction; at least 2. |
+| `compaction.min_files_l1` | int | `10` | set |  |  | The number of L1 files one tenant needs in a partition before L1 to L2 compaction; at least 2. |
 | `compaction.row_group_size_by_output_level` | []int | `[10000, 10000, 20000]` | set | `-lakehouse.compaction.row-group-size-by-output-level` |  | Sets the Parquet row-group size (max rows per row group) used when emitting a compacted file at output level i — same slot semantics as CompressionLevelByOutputLevel (index 0 = L0 rewrite, 1 = L0→L1, 2 = L1→L2, ...). |
+| `compaction.size_merge_max_age` | duration | `168h` | set |  |  | The partition age beyond which a tenant with no lifecycle rule (delete.lifecycle_rules, stats.s3_lifecycle_rules or its own override) gets no size merges: only stale-schema heal still runs, so backfill into old data cannot keep rewriting objects S3 may already have moved. 0 means 7 days; a negative value removes the cap. |
 
 ### `cross_signal`
 

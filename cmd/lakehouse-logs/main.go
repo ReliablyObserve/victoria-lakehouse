@@ -90,7 +90,7 @@ var (
 
 	compactionEnabled        = flag.Bool("lakehouse.compaction.enabled", false, "Enable the compaction scheduler (on by default; false does not turn it off — select a profile that disables compaction in the config file)")
 	compactionInterval       = flag.Duration("lakehouse.compaction.interval", 0, "Compaction scan interval")
-	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Minimum partition age for daily rollup compaction (default: 24h)")
+	compactionDailyRollupAge = flag.Duration("lakehouse.compaction.daily-rollup-age", 0, "Partition age after which a tenant's files in an hour (each under 32 MiB) merge into one (default: 24h)")
 	compactionRowGroupSizes  = flag.String("lakehouse.compaction.row-group-size-by-output-level", "", "Comma-separated Parquet row-group sizes per compaction output level, slot N = output level N (default: 10000,10000,20000)")
 
 	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 64)")
@@ -344,8 +344,13 @@ func run(cfg *config.Config, addr string) {
 	})
 	store.SetTombstoneStore(tombstoneStore)
 
+	// The detector carries the delete lifecycle rules (per-tenant overrides are
+	// installed later on the same pointer); compaction reads it to keep away from
+	// objects S3 lifecycle has moved out of STANDARD.
+	detector := newStorageClassDetector(cfg)
+
 	var tenantPolicyHolder *tenant.PolicyRegistry
-	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder, tombstoneStore)
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder, tombstoneStore, detector)
 	if stopCompaction != nil {
 		defer stopCompaction()
 	}
@@ -455,15 +460,6 @@ func run(cfg *config.Config, addr string) {
 
 	costCalc := stats.NewCostCalculator(cfg.Stats.S3PricePerGB, cfg.Stats.S3RequestPrices)
 
-	lifecycleRules := make([]delete.LifecycleRule, len(cfg.Delete.LifecycleRules))
-	for i, r := range cfg.Delete.LifecycleRules {
-		lifecycleRules[i] = delete.LifecycleRule{
-			TransitionDays: r.TransitionDays,
-			Class:          delete.ParseStorageClass(r.StorageClass),
-		}
-	}
-	detector := delete.NewStorageClassDetector(lifecycleRules)
-
 	rewriter := newDeleteRewriter(store.Pool(), cfg, "logs")
 
 	var rewriteSched *delete.RewriteScheduler
@@ -545,6 +541,7 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	applyTenantStorageOverrides(store, policy, detector)
+	logCompactionFreezeWarnings(cfg, detector, policy)
 
 	if cfg.Stats.Enabled {
 		startStatsLoops(cfg, store, registry, resolver, addr, stopCh)
@@ -781,6 +778,7 @@ func setupCompaction(
 	addr string,
 	tenantPolicyHolder **tenant.PolicyRegistry,
 	tombstoneStore *delete.TombstoneStore,
+	detector *delete.StorageClassDetector,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
 	if !cfg.Compaction.Enabled {
 		return nil, nil, nil
@@ -838,6 +836,8 @@ func setupCompaction(
 		}
 	}
 
+	freeze := compactionFreeze(cfg, detector)
+
 	sched := compaction.NewScheduler(compaction.SchedulerConfig{
 		// Compaction is the second reaper: it already rewrites every row it
 		// touches, so suppressing tombstoned rows there costs one predicate
@@ -856,6 +856,7 @@ func setupCompaction(
 		RowGroupSize:             cfg.Insert.RowGroupSize,
 		CompressionLevel:         cfg.Insert.CompressionLevel,
 		CurrentSchemaFingerprint: parquets3.CurrentSchemaFingerprint(cfg.Mode),
+		Freeze:                   freeze,
 		CompactionConfig:         cfg.Compaction,
 		TenantCompressionLookup: func(prefix string) []int {
 			if tenantPolicyHolder == nil || *tenantPolicyHolder == nil || prefix == "" {
@@ -886,16 +887,20 @@ func setupCompaction(
 	sched.Start()
 
 	sweep := compaction.NewOrphanSweep(compaction.OrphanSweepConfig{
-		Manifest:         store.Manifest(),
-		Pool:             store.Pool(),
-		Ownership:        ownership,
-		Policy:           policy,
-		Lister:           s3Pool,
-		Prefix:           cfg.AutoPrefix(),
-		Mode:             cfg.Mode,
-		Interval:         cfg.Compaction.Interval,
-		RowGroupSize:     cfg.Insert.RowGroupSize,
-		CompressionLevel: cfg.Insert.CompressionLevel,
+		Manifest:  store.Manifest(),
+		Pool:      store.Pool(),
+		Ownership: ownership,
+		Policy:    policy,
+		Freeze:    freeze,
+		// Tier A steals tombstone-filter like the scheduler does.
+		Tombstones:            tombstoneStore,
+		TombstoneRewriteDelay: cfg.Delete.RewriteDelay,
+		Lister:                s3Pool,
+		Prefix:                cfg.AutoPrefix(),
+		Mode:                  cfg.Mode,
+		Interval:              cfg.Compaction.Interval,
+		RowGroupSize:          cfg.Insert.RowGroupSize,
+		CompressionLevel:      cfg.Insert.CompressionLevel,
 		// Orphan-sweep (Tier-A steal) feeds pmeta the same as the scheduler path —
 		// the stolen partition's catalog + combined bloom go to the facets and the
 		// merged-away inputs are purged — then pushes the manifest. (Symmetric with

@@ -1,0 +1,14 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/compaction
+cpu: Apple M5 Pro
+BenchmarkScanSettled-18 50	   3547622 ns/op	        35.48 ns/file	26003328 B/op	   24309 allocs/op
+BenchmarkScanSettled-18 50	   3569719 ns/op	        35.70 ns/file	26003117 B/op	   24309 allocs/op
+BenchmarkScanSettled-18 50	   3463283 ns/op	        34.63 ns/file	26002896 B/op	   24308 allocs/op
+BenchmarkScanSettled-18 50	   3407092 ns/op	        34.07 ns/file	26002870 B/op	   24309 allocs/op
+BenchmarkScanSettled-18 50	   3623412 ns/op	        36.23 ns/file	26003173 B/op	   24309 allocs/op
+BenchmarkScanSettled-18 50	   3525223 ns/op	        35.25 ns/file	26003051 B/op	   24309 allocs/op
+BenchmarkScanSettled-18 50	   3511824 ns/op	        35.12 ns/file	26003088 B/op	   24309 allocs/op
+BenchmarkScanSettled-18 50	   3531880 ns/op	        35.32 ns/file	26002951 B/op	   24308 allocs/op
+BenchmarkScanSettled-18 50	   3540318 ns/op	        35.40 ns/file	26003101 B/op	   24309 allocs/op
+BenchmarkScanSettled-18 50	   3452885 ns/op	        34.53 ns/file	26002940 B/op	   24308 allocs/op

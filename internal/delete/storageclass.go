@@ -232,19 +232,68 @@ func (d *StorageClassDetector) DetectForKey(fileAgeHours float64, key string) St
 // any key that doesn't match the expected layout (legacy single-prefix
 // deployments, sidecars under _meta/, etc.).
 func parseTenantFromKey(key string) (uint32, uint32, bool) {
-	parts := strings.SplitN(key, "/", 4)
-	if len(parts) < 3 {
+	// No allocation: called per tenant group on every compaction scan.
+	i1 := strings.IndexByte(key, '/')
+	if i1 < 0 {
 		return 0, 0, false
 	}
-	acc, err := strconv.ParseUint(parts[0], 10, 32)
+	rest := key[i1+1:]
+	i2 := strings.IndexByte(rest, '/')
+	if i2 < 0 {
+		return 0, 0, false
+	}
+	acc, err := strconv.ParseUint(key[:i1], 10, 32)
 	if err != nil {
 		return 0, 0, false
 	}
-	proj, err := strconv.ParseUint(parts[1], 10, 32)
+	proj, err := strconv.ParseUint(rest[:i2], 10, 32)
 	if err != nil {
 		return 0, 0, false
 	}
 	return uint32(acc), uint32(proj), true
+}
+
+// HasTenantRules reports whether any per-tenant lifecycle override is installed.
+func (d *StorageClassDetector) HasTenantRules() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return len(d.perTenant) > 0
+}
+
+// FirstGlobalNonRewritableTransition is FirstNonRewritableTransition for the
+// global rules alone (tenants without an override).
+func (d *StorageClassDetector) FirstGlobalNonRewritableTransition() (int, bool) {
+	return FirstNonRewritableTransition(d.rules)
+}
+
+// FirstNonRewritableTransition returns the earliest lifecycle transition, in
+// days after an object's creation, that moves key's objects into a class
+// whose objects must not be rewritten (CanRewrite false: IA, Glacier, Deep
+// Archive). The tenant's own rules apply when it has an override, the global
+// rules otherwise. ok is false when no such rule exists.
+func (d *StorageClassDetector) FirstNonRewritableTransition(key string) (days int, ok bool) {
+	rules := d.rules
+	if acc, proj, parsed := parseTenantFromKey(key); parsed {
+		d.mu.RLock()
+		if tr, has := d.perTenant[tenantKey{acc, proj}]; has {
+			rules = tr
+		}
+		d.mu.RUnlock()
+	}
+	return FirstNonRewritableTransition(rules)
+}
+
+// FirstNonRewritableTransition is the rule-list form of the method above.
+func FirstNonRewritableTransition(rules []LifecycleRule) (days int, ok bool) {
+	for _, r := range rules {
+		if r.Class.CanRewrite() {
+			continue
+		}
+		if !ok || r.TransitionDays < days {
+			days, ok = r.TransitionDays, true
+		}
+	}
+	return days, ok
 }
 
 // SetCache manually sets a cached storage class for a key.
@@ -260,4 +309,22 @@ func (d *StorageClassDetector) GetCached(key string) (StorageClass, bool) {
 	defer d.mu.RUnlock()
 	sc, ok := d.cache[key]
 	return sc, ok
+}
+
+// CachedNonRewritableKeys snapshots the cache's frozen keys for a compaction
+// scan. Empty caches allocate nothing; the planner needs no per-file lock.
+func (d *StorageClassDetector) CachedNonRewritableKeys() map[string]struct{} {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var keys map[string]struct{}
+	for key, class := range d.cache {
+		if class.CanRewrite() {
+			continue
+		}
+		if keys == nil {
+			keys = make(map[string]struct{})
+		}
+		keys[key] = struct{}{}
+	}
+	return keys
 }

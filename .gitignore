@@ -73,3 +73,7 @@ go.work.sum
 
 # scripts/bench/field_metadata/run.sh default worktree of the "before" build
 /.before-*/
+
+# compaction A/B: built binaries and run output
+/scripts/bench/compaction/bin/
+/scripts/bench/compaction/out/
