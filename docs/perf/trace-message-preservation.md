@@ -145,3 +145,9 @@ spoofing, prefixes, AND/OR/NOT and a pipe that changes the message before
 filtering. Additional property fuzz runs exercise 19,187 cases under the logs
 pin and 91,238 under the traces pin; fourteen semantic mutations were caught
 across the two pins.
+
+The integration parity run also passes its escaped-double-quote message filter.
+Its stale known-failure entry is removed, shrinking the list from 15 to 14;
+no failure is newly allowlisted. The unchanged ratchet accepts the downloaded
+run results: 487 passed, zero skipped or aborted, and the remaining 23 failed
+test nodes are covered by the 14 existing known gaps.
