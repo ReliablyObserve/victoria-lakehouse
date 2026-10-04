@@ -491,3 +491,25 @@ func TruncateTimestampToBucket(ts int64, b TimeBucket) int64 {
 	}
 	return truncateTimestamp(ts, size, b.Offset, b.SizeStr)
 }
+
+// QueryRequiredMessageTokens returns native tokens required by the input filter
+// on the canonical message column. Customer fields and pipeline predicates do
+// not constrain the original message bloom.
+//
+// upstream-original: exposes the existing native AND/OR guaranteed-token
+// collector without copying its filter, negation or prefix semantics.
+func QueryRequiredMessageTokens(q *Query) []string {
+	if q == nil {
+		return nil
+	}
+	filters := []filter{q.f}
+	if fa, ok := q.f.(*filterAnd); ok {
+		filters = fa.filters
+	}
+	for _, ft := range getCommonTokensForAndFilters(filters) {
+		if ft.field == "_msg" {
+			return append([]string(nil), ft.tokens...)
+		}
+	}
+	return nil
+}

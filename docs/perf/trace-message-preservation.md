@@ -106,3 +106,42 @@ native messages absent from legacy objects cannot be reconstructed.
 Existing ingestion conversion and trace-map fuzz targets pass 20 seconds each:
 233,063 ingestion executions, 86,151 map executions under the logs pin and
 86,237 under the traces pin.
+
+## Safe message bloom pruning
+
+Indexing the preserved native message exposed an unsafe query-text extractor:
+`name:="HTTP GET /api/v1/users"` incorrectly required the message token `GET`.
+The trace parity job returned zero rows where hot VT returned 467. Both pins
+now reuse upstream's parsed filter guarantees. Customer fields contribute no
+message tokens, OR branches contribute only common required tokens, negation
+contributes none, and prefixes never require an incomplete final word.
+
+The parsed query computes these tokens once before file workers start. Empty
+token sets are cached too. Per-file lookups allocate nothing; direct per-file
+tooling falls back to native parsing, and malformed queries disable pruning.
+
+A second identical-input fixture uses five quoted operation names and customer
+body attributes. Both Lakehouse builds were restarted with native buffers
+disabled. [Complete count responses](trace-message-bloom-comparison.json) cover
+60 endpoint/window cells and 1,080 responses, with six interleaved repetitions.
+Across 10m, 1h, 6h, 24h and 7d, the corrected span-name query returns 1, 2, 3,
+5 and 5, matching hot VT; the previous PR build returned zero at every range.
+Logs operation-name filtering also now matches hot VL. Trace customer-body
+filtering matches hot VT. Unfiltered, OR, NOT and prefix controls match their
+references. The existing logs literal `body` schema alias still loses that
+customer field in both main and the corrected build; these five cells are
+reported as different and receive no valid timings.
+
+[Ten-sample extraction benchmarks](trace-message-bloom-bench.txt) include the
+native parser fallback and the cached runtime lookup. The native parser is
+slower than the old unsafe text scanner: the logs module takes 0.293–4.390 µs
+across the measured fallback shapes versus 0.108–1.252 µs before. Runtime scans
+reuse the already parsed query and measure 4.176 ns/file under the logs pin and
+3.621 ns/file under the traces pin, with zero bytes and zero allocations. These
+are local microbenchmarks, not an end-to-end throughput improvement claim.
+
+Persisted and native row-match regressions cover customer names, message-field
+spoofing, prefixes, AND/OR/NOT and a pipe that changes the message before
+filtering. Additional property fuzz runs exercise 19,187 cases under the logs
+pin and 91,238 under the traces pin; fourteen semantic mutations were caught
+across the two pins.

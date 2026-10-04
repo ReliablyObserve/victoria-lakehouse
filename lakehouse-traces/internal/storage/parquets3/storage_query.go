@@ -101,6 +101,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	queryStr := q.String()
+	ctx = withSearchTokens(ctx, q)
 	pipeFields := logstorage.GetQueryPipeFields(q)
 	// The columns every per-file read projects come from the parsed query
 	// (filter AND pipes), not from the query text — see neededColumns. The
@@ -1170,7 +1171,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	rowGroups := f.RowGroups()
 
 	// Extract file-level key-value metadata for token bloom checks.
-	searchTokens := extractSearchTokens(queryStr)
+	searchTokens := searchTokensFromContext(ctx, queryStr)
 	var fileKVMeta map[string]string
 	if len(searchTokens) > 0 {
 		if meta := f.Metadata(); meta != nil {
@@ -2825,7 +2826,9 @@ func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, sta
 		keySet[k] = true
 	}
 
+	ctx = withSearchTokens(ctx, nil)
 	if q, err := logstorage.ParseQuery(queryStr); err == nil {
+		ctx = withSearchTokens(ctx, q)
 		ctx = withNeededFields(ctx, logstorage.GetQueryNeededFields(q))
 		ctx = withRowFilter(ctx, parseFilterFromQuery(q) != nil)
 	}
