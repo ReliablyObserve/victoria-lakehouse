@@ -86,6 +86,9 @@ type LogRow struct {
 }
 
 type TraceRow struct {
+	// Body preserves the native _msg value. Optional permits legacy objects
+	// without this column to remain readable without inventing a message.
+	Body              string `json:"body,omitempty" parquet:"body,optional"`
 	AccountID         uint32 `json:"account_id" parquet:"account_id"`
 	ProjectID         uint32 `json:"project_id" parquet:"project_id"`
 	TimestampUnixNano int64  `json:"timestamp_unix_nano" parquet:"timestamp_unix_nano,delta"`

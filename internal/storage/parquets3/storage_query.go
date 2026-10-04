@@ -1457,14 +1457,14 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 					if v == "" {
 						continue
 					}
-					if scalarFieldNames[k] {
+					if scalarFieldNames[k] && (k != "body" || s.registry.ResolveFromParquet("span.name") == nil) {
 						continue
 					}
 					// Same naming rule the scalar columns go through
 					// (mapAttrFieldName / queryFieldName share
 					// emittableFieldName), so a MAP key cannot introduce a
 					// field name a column is forbidden to produce.
-					attrName, ok := mapAttrFieldName(fld.name, k)
+					attrName, ok := mapAttrFieldName(fld.name, k, s.registry)
 					if !ok {
 						continue
 					}
@@ -1629,6 +1629,9 @@ func appendIfSet(buf []field, name, value string) []field {
 }
 
 func traceRowToFields(r *schema.TraceRow, buf []field) []field {
+	if r.Body != "" {
+		buf = append(buf, field{"_msg", r.Body})
+	}
 	buf = append(buf,
 		field{"_time", r.TimestampUnixNano},
 		field{"start_time", r.StartTimeUnixNano},
@@ -1679,16 +1682,19 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 	}
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
-			buf = append(buf, field{k, v})
+			name := schema.TraceMessageAttributeName("resource_attr:", k)
+			buf = append(buf, field{name, v})
 		}
 	}
 	for k, v := range r.SpanAttributes {
 		if !tracePromotedSpanKeys[k] {
-			buf = append(buf, field{k, v})
+			name := schema.TraceMessageAttributeName("span_attr:", k)
+			buf = append(buf, field{name, v})
 		}
 	}
 	for k, v := range r.ScopeAttributes {
-		buf = append(buf, field{k, v})
+		name := schema.TraceMessageAttributeName("scope_attr:", k)
+		buf = append(buf, field{name, v})
 	}
 	return buf
 }

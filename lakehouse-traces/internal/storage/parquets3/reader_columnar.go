@@ -364,7 +364,7 @@ func readMapColumnToBlockCols(
 		if i >= len(vals) || vals[i] == "" {
 			continue
 		}
-		if promotedKeys[kv.key] {
+		if promotedKeys[kv.key] && kv.key != "body" {
 			continue
 		}
 		// Same naming rule the scalar columns go through: a MAP key that

@@ -1034,6 +1034,7 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 
 	for i, row := range rows {
 		set("_time", i, s.registry.FormatField("_time", row.TimestampUnixNano))
+		set("_msg", i, row.Body)
 		set("trace_id", i, row.TraceID)
 		set("span_id", i, row.SpanID)
 		set("parent_span_id", i, row.ParentSpanID)
@@ -1089,6 +1090,11 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 				set(k, i, v)
 			} else {
 				set("span_attr:"+k, i, v)
+			}
+		}
+		for k, v := range row.ScopeAttributes {
+			if name := schema.TraceMessageAttributeName("scope_attr:", k); name != k {
+				set(name, i, v)
 			}
 		}
 	}

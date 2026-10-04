@@ -212,6 +212,28 @@ type gatedPool struct {
 
 var errDeleteInjected = errors.New("injected delete failure")
 
+// A source can disappear between the manifest lookup and GET when the other
+// actor retires it. S3 reports an error in that case, not an empty successful
+// object. Preserve that contract in the concurrent fixture.
+func (g *gatedPool) Download(ctx context.Context, key string) ([]byte, error) {
+	data, err := g.mockPool.Download(ctx, key)
+	if err == nil && data == nil {
+		return nil, fmt.Errorf("object %q not found", key)
+	}
+	return data, err
+}
+
+func TestDeleteRace_DownloadRetiredSourceReturnsError(t *testing.T) {
+	p := &gatedPool{mockPool: newMockPool()}
+	p.put("source.parquet", []byte("source"))
+	if err := p.Delete(context.Background(), "source.parquet"); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := p.Download(context.Background(), "source.parquet"); err == nil || data != nil {
+		t.Fatalf("missing source GET returned data=%q err=%v", data, err)
+	}
+}
+
 func (g *gatedPool) gate(match func(string) bool) (reached <-chan struct{}, release func()) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

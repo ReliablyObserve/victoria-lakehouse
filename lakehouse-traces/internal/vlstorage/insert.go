@@ -369,10 +369,9 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 
 	// Legacy flat field names (from jsonline insert path)
 	switch name {
-	case "":
-		return
-	case "_msg":
-		storeSpanAttr(row, "_msg", strings.Clone(value))
+	case "", "_msg":
+		// LogRows canonicalizes the native _msg name to an empty string.
+		row.Body = strings.Clone(value)
 		return
 	case "trace_id":
 		row.TraceID = strings.Clone(value)

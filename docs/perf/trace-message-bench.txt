@@ -1,0 +1,323 @@
+Measured main logs
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3245823	       367.4 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.729s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3868808	       308.3 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.699s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3902096	       315.3 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.733s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3295784	       330.6 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.593s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3874905	       323.8 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.743s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4036692	       366.9 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.949s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3756223	       317.3 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.663s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3793008	       305.7 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.630s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3806587	       274.5 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.536s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 5801395	       220.2 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.729s
+
+Measured pr logs
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 2413791	       425.0 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.531s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3703545	       318.5 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.684s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3689667	       368.5 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.856s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 2563365	       437.3 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.652s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4146903	       319.0 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.805s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3817980	       326.6 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.721s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4621590	       285.3 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.784s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4131908	       295.6 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.690s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3873460	       306.9 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.652s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 5038545	       225.6 ns/op	     816 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	1.580s
+
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+                             │ main-logs │ pr-logs │
+                             │                              sec/op                               │                    sec/op                      vs base          │
+TraceMessageLegacyControl-18                                                        316.3n ± 16%                                    318.8n ± 33%  ~ (p=0.631 n=10)
+
+                             │ main-logs │ pr-logs │
+                             │                               B/op                                │                    B/op                      vs base            │
+TraceMessageLegacyControl-18                                                          816.0 ± 0%                                    816.0 ± 0%  ~ (p=1.000 n=10) ¹
+¹ all samples are equal
+
+                             │ main-logs │ pr-logs │
+                             │                             allocs/op                             │                  allocs/op                   vs base            │
+TraceMessageLegacyControl-18                                                          4.000 ± 0%                                    4.000 ± 0%  ~ (p=1.000 n=10) ¹
+¹ all samples are equal
+
+Measured main traces
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4425606	       296.9 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.805s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3982573	       306.6 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.704s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4494070	       291.0 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.755s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3740816	       438.0 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	2.101s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3555507	       332.7 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.728s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3622116	       330.0 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.647s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3723636	       366.7 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.837s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3816004	       325.3 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.708s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3574148	       348.7 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.739s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3702382	       338.1 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.747s
+
+Measured pr traces
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3509527	       347.0 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.691s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3266928	       332.1 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.547s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4743136	       269.2 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.722s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4389889	       295.2 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.742s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4181016	       282.1 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.647s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4370010	       280.1 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.767s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3814225	       311.8 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.686s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4225417	       303.5 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.744s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 4228099	       292.7 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.723s
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTraceMessageLegacyControl-18    	 3554359	       330.2 ns/op	    1072 B/op	       4 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.678s
+
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+                             │ main-traces │ pr-traces │
+                             │                               sec/op                                │                     sec/op                       vs base          │
+TraceMessageLegacyControl-18                                                          331.3n ± 11%                                      299.4n ± 11%  ~ (p=0.052 n=10)
+
+                             │ main-traces │ pr-traces │
+                             │                                B/op                                 │                     B/op                       vs base            │
+TraceMessageLegacyControl-18                                                          1.047Ki ± 0%                                    1.047Ki ± 0%  ~ (p=1.000 n=10) ¹
+¹ all samples are equal
+
+                             │ main-traces │ pr-traces │
+                             │                              allocs/op                              │                   allocs/op                    vs base            │
+TraceMessageLegacyControl-18                                                            4.000 ± 0%                                      4.000 ± 0%  ~ (p=1.000 n=10) ¹
+¹ all samples are equal

@@ -364,7 +364,7 @@ func TestTraceMapFieldToRow_OTELSpanAttributes(t *testing.T) {
 
 // TestTraceMapFieldToRow_StoredOTELMetadata verifies that VT OTLP metadata
 // fields (end_time, flags, dropped counts, scope version, _msg) are stored
-// in SpanAttributes for VT field parity, while scope attrs, events, and
+// in the durable row (message in Body, other metadata in SpanAttributes), while scope attrs, events, and
 // links remain truly ignored.
 func TestTraceMapFieldToRow_StoredOTELMetadata(t *testing.T) {
 	row := schema.TraceRow{}
@@ -393,12 +393,12 @@ func TestTraceMapFieldToRow_StoredOTELMetadata(t *testing.T) {
 			t.Errorf("SpanAttributes[%q] = %q, want %q", name, got, want)
 		}
 	}
-	if row.SpanAttributes["_msg"] != "-" {
-		t.Errorf("SpanAttributes[_msg] = %q, want %q", row.SpanAttributes["_msg"], "-")
+	if row.Body != "-" {
+		t.Errorf("native message Body=%q, want -", row.Body)
 	}
-	if len(row.SpanAttributes) != len(storedFields)+1 {
+	if len(row.SpanAttributes) != len(storedFields) {
 		t.Errorf("SpanAttributes should have %d entries, got %d: %v",
-			len(storedFields)+1, len(row.SpanAttributes), row.SpanAttributes)
+			len(storedFields), len(row.SpanAttributes), row.SpanAttributes)
 	}
 	if len(row.ResourceAttributes) != 0 {
 		t.Errorf("ResourceAttributes should be empty, got %v", row.ResourceAttributes)

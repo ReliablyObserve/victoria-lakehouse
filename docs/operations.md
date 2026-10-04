@@ -923,3 +923,7 @@ Normal mode (default): runs the query through the normal read path — if result
 1. On restart the `logstore` buffer restores its on-disk parts and the flusher re-flushes `(watermark, now-offset]` — recent rows are served from the restored buffer via the read-merge while that completes.
 2. If a row is permanently missing after a crash, check that `--lakehouse.insert.buffer-dir` is a durable volume (not tmpfs) and that `buffer-retention >= 4x buffer-flush-interval`.
 3. See [Persistence & Durability](durability.md) for the crash-recovery model.
+
+### Persisted trace message compatibility
+
+New trace writes retain the actual upstream `_msg` value in the optional Parquet `body` column. A customer `span_attr:_msg` remains an independent span attribute. Existing objects without `body` are readable; a message lost by the previous buffer-to-Parquet conversion cannot be reconstructed. Older ambiguous `_msg` keys inside `span.attributes` remain attribute values under `span_attr:_msg`; they are not silently attributed to the native message. Compaction carries available message values forward and never fabricates a missing value.

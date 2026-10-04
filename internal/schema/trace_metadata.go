@@ -1,5 +1,7 @@
 package schema
 
+import "strings"
+
 // VTTopLevelSpanAttrKeys lists OTLP metadata field names that VT stores as
 // top-level VL LogRow fields (without any prefix). LH stores them inside
 // the span.attributes MAP for Parquet persistence but must emit and index
@@ -13,5 +15,13 @@ var VTTopLevelSpanAttrKeys = map[string]bool{
 	"dropped_events_count":     true,
 	"dropped_links_count":      true,
 	"scope_version":            true,
-	"_msg":                     true,
+}
+
+// TraceMessageAttributeName preserves customer attributes that collide with the
+// native message or its physical column. Other field naming remains unchanged.
+func TraceMessageAttributeName(prefix, key string) string {
+	if key == "_msg" || key == "body" || strings.HasSuffix(key, ":_msg") || strings.HasSuffix(key, ":body") {
+		return prefix + key
+	}
+	return key
 }

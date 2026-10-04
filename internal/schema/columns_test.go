@@ -91,6 +91,7 @@ var wantLogColumnKinds = map[string]ColumnKind{
 // the Jaeger Dependencies reader queries them by name. They are NULL on regular
 // span rows, so the read paths' null-skip keeps them out of span results.
 var wantTraceColumnKinds = map[string]ColumnKind{
+	"body":                       ColumnUserVisible, // native _msg mapped through TracesProfile
 	"account_id":                 ColumnInternal,
 	"project_id":                 ColumnInternal,
 	"timestamp_unix_nano":        ColumnUserVisible,

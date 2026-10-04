@@ -1499,7 +1499,7 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 					if v == "" {
 						continue
 					}
-					if !schema.VTTopLevelSpanAttrKeys[k] && scalarFieldNames[k] {
+					if k != "body" && !schema.VTTopLevelSpanAttrKeys[k] && scalarFieldNames[k] {
 						continue
 					}
 					// Same naming rule the scalar columns go through
@@ -1646,6 +1646,9 @@ func logRowToFields(r *schema.LogRow, buf []field) []field {
 }
 
 func traceRowToFields(r *schema.TraceRow, buf []field) []field {
+	if r.Body != "" {
+		buf = append(buf, field{"_msg", r.Body})
+	}
 	buf = append(buf,
 		field{"_time", r.TimestampUnixNano},
 		field{"start_time_unix_nano", r.StartTimeUnixNano},
@@ -1712,17 +1715,20 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 	}
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
-			buf = append(buf, field{k, v})
+			name := schema.TraceMessageAttributeName("resource_attr:", k)
+			buf = append(buf, field{name, v})
 		}
 	}
 	for k, v := range r.SpanAttributes {
 		if tracePromotedSpanKeys[k] {
 			continue
 		}
-		buf = append(buf, field{k, v})
+		name := schema.TraceMessageAttributeName("span_attr:", k)
+		buf = append(buf, field{name, v})
 	}
 	for k, v := range r.ScopeAttributes {
-		buf = append(buf, field{k, v})
+		name := schema.TraceMessageAttributeName("scope_attr:", k)
+		buf = append(buf, field{name, v})
 	}
 	return buf
 }
