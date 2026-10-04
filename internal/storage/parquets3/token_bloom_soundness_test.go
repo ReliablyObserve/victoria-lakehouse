@@ -185,6 +185,7 @@ func FuzzMessageTokensMatchImplication(f *testing.F) {
 	}{{"-", "HTTP GET /api/v1/users", 1}, {"nativeprefixSuffix stablemarker", "HTTP GET /api/v1/users", 2}, {"nativeprefixSuffix", "customer", 4}, {"stablemarker nativeprefixSuffix", "HTTP GET", 6}, {"éclair café", "éclair", 8}, {"FOO_bar", "foo", 8}, {"", "_msg:missingtoken", 7}, {"actual native", "body:missing message:missing", 3}} {
 		f.Add(seed.body, seed.customer, seed.op)
 	}
+	f.Add("éclair 000é", "\xa9clair", uint8(5))
 	f.Fuzz(func(t *testing.T, body, customer string, op uint8) {
 		if len(body) > 2048 || len(customer) > 2048 {
 			t.Skip()

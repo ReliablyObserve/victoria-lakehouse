@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
@@ -209,6 +210,12 @@ func searchTokensFromQuery(q *logstorage.Query) []string {
 	seen := make(map[string]bool)
 	var tokens []string
 	for _, nativeToken := range logstorage.QueryRequiredMessageTokens(q) {
+		// Native phrase matching can match invalid bytes inside a UTF-8 rune.
+		// Rune tokenization would turn that byte suffix into a different word,
+		// which is not guaranteed to exist in the persisted body bloom.
+		if !utf8.ValidString(nativeToken) {
+			continue
+		}
 		for _, token := range tokenize(nativeToken) {
 			if !seen[token] {
 				seen[token] = true

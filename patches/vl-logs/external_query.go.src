@@ -3,6 +3,7 @@ package logstorage
 import (
 	"fmt"
 	"sort"
+	"unicode/utf8"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/prefixfilter"
 )
@@ -499,7 +500,7 @@ func TruncateTimestampToBucket(ts int64, b TimeBucket) int64 {
 // upstream-original: exposes the existing native AND/OR guaranteed-token
 // collector without copying its filter, negation or prefix semantics.
 func QueryRequiredMessageTokens(q *Query) []string {
-	if q == nil {
+	if q == nil || visitFilterRecursive(q.f, messageFilterHasInvalidUTF8) {
 		return nil
 	}
 	filters := []filter{q.f}
@@ -512,4 +513,37 @@ func QueryRequiredMessageTokens(q *Query) []string {
 		}
 	}
 	return nil
+}
+
+// upstream-original: validates raw native message literals before the native
+// rune tokenizer can discard invalid bytes. Byte phrase matches may start
+// inside a valid UTF-8 rune, so those tokens are unsafe for the external bloom.
+func messageFilterHasInvalidUTF8(f filter) bool {
+	fg, ok := f.(*filterGeneric)
+	if !ok || fg.fieldName != "_msg" {
+		return false
+	}
+	switch t := fg.f.(type) {
+	case *filterPhrase:
+		return !utf8.ValidString(t.phrase)
+	case *filterPrefix:
+		return !utf8.ValidString(t.prefix)
+	case *filterExact:
+		return !utf8.ValidString(t.value)
+	case *filterExactPrefix:
+		return !utf8.ValidString(t.prefix)
+	case *filterSubstring:
+		return !utf8.ValidString(t.substring)
+	case *filterSequence:
+		for _, phrase := range t.phrases {
+			if !utf8.ValidString(phrase) {
+				return true
+			}
+		}
+	case *filterPatternMatch:
+		return !utf8.ValidString(t.pm.String())
+	case *filterRegexp:
+		return !utf8.ValidString(t.re.String())
+	}
+	return false
 }

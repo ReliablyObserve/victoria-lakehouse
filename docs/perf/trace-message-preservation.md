@@ -94,7 +94,7 @@ canonicalization and ownership when the pooled arena is overwritten.
 | Shared deletion | 96.1% | 96.2% |
 | Shared compaction | 95.7% | 95.7% |
 | Logs storage | 90.7% | 90.8% |
-| Traces storage | 92.1% | 92.2% |
+| Traces storage | 92.1% | 92.3% |
 | Traces ingestion | 92.3% | 92.3% |
 
 Full suites, lint, conformance and repeated race runs pass. The concurrent
@@ -151,3 +151,18 @@ Its stale known-failure entry is removed, shrinking the list from 15 to 14;
 no failure is newly allowlisted. The unchanged ratchet accepts the downloaded
 run results: 487 passed, zero skipped or aborted, and the remaining 23 failed
 test nodes are covered by the 14 existing known gaps.
+
+The new CI fuzz target found a byte-boundary case: the native phrase
+`"\xa9clair"` matches inside the valid UTF-8 body `"éclair 000é"`, while the
+native tokenizer drops the invalid leading byte and reports `clair`. That is
+not a complete physical bloom token in this body. Both exports now validate
+raw parsed message literals before tokenization and decline pruning for invalid
+UTF-8. Checking only the tokens after normalization is insufficient. The
+failing input remains in both fuzz seed sets. Follow-up 60-second runs pass
+588,634 cases under the logs pin and 450,688 under the traces pin. Independently
+run 60-second fuzz checks pass another 92,790 and 405,722 cases. A persisted
+fresh-manifest regression queries the invalid phrase against valid Parquet
+strings and requires the matching row. Removing the raw-literal guard, while
+retaining the normalized-token guard, makes that test return zero rows under
+both pins. These two extra mutations bring message-bloom mutation coverage to
+16, in addition to the original 24 message-preservation mutations.
