@@ -48,11 +48,6 @@ TestParity_Traces_LogsQL/traces_field_names_resource_attr_prefix  # B2: resource
 TestParity_Traces_LogsQL/traces_field_names_span_attr_prefix  # B2: span_attr:* absent from cold field_names
 TestParity_Traces_LogsQL/traces_field_names_vt_metadata  # B2: VT metadata fields absent from cold field_names
 
-# --- B3: a filter + any pipe returns 0 rows ---------------------------------
-# Seen for filters on map attributes, for an exact `_msg` literal containing
-# `:`, and for a `_msg` regexp containing an escaped double quote.
-TestParity_FiltersGapfill/escaped_special_chars/filter_with_double_quote  # B3: map-attribute filter plus pipe returns 0 rows
-
 # --- B4: rename/format/len/math/extract/unpack lose input columns -----------
 
 # --- B5: /hits at sub-hour steps returns synthetic buckets ------------------

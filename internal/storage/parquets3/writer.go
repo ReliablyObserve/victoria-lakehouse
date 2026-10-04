@@ -986,8 +986,8 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		}
 		bodies := make([]string, 0, end-start)
 		for i := start; i < end; i++ {
-			if rows[i].SpanName != "" {
-				bodies = append(bodies, rows[i].SpanName)
+			if rows[i].Body != "" {
+				bodies = append(bodies, rows[i].Body)
 			}
 		}
 		if len(bodies) > 0 {

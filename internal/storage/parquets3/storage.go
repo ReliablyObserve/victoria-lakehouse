@@ -1196,7 +1196,7 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 	}
 
 	db := &logstorage.DataBlock{}
-	db.SetColumns([]logstorage.BlockColumn{
+	cols := []logstorage.BlockColumn{
 		{Name: "_time", Values: times},
 		{Name: "trace_id", Values: traceIDs},
 		{Name: "span_id", Values: spanIDs},
@@ -1206,7 +1206,45 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 		{Name: "status_code", Values: statusCodes},
 		{Name: "parent_span_id", Values: parentSpanIDs},
 		{Name: "status_message", Values: statusMsgs},
-	})
+	}
+	messageCols := make(map[string][]string)
+	set := func(name string, i int, value string) {
+		if value == "" {
+			return
+		}
+		if messageCols[name] == nil {
+			messageCols[name] = make([]string, len(rows))
+		}
+		messageCols[name][i] = value
+	}
+	for i, row := range rows {
+		set("_msg", i, row.Body)
+		for key, val := range row.ResourceAttributes {
+			if name := schema.TraceMessageAttributeName("resource_attr:", key); name != key {
+				set(name, i, val)
+			}
+		}
+		for key, val := range row.SpanAttributes {
+			if name := schema.TraceMessageAttributeName("span_attr:", key); name != key {
+				set(name, i, val)
+			}
+		}
+		for key, val := range row.ScopeAttributes {
+			if name := schema.TraceMessageAttributeName("scope_attr:", key); name != key {
+				set(name, i, val)
+			}
+		}
+	}
+	messageNames := make([]string, 0, len(messageCols))
+	for name := range messageCols {
+		messageNames = append(messageNames, name)
+	}
+	sort.Strings(messageNames)
+	for _, name := range messageNames {
+		cols = append(cols, logstorage.BlockColumn{Name: name, Values: messageCols[name]})
+	}
+
+	db.SetColumns(cols)
 	return db
 }
 

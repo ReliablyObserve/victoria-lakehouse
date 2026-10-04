@@ -171,6 +171,7 @@ jobs:
           - internal/storage/parquets3:FuzzParseFilterFromQuery_TimeOnlyIsSound
           - internal/storage/parquets3:FuzzRestartWatermark
           - internal/storage/parquets3:FuzzProjectionEquivalence
+          - internal/storage/parquets3:FuzzMessageTokensMatchImplication
           - internal/schema:FuzzResolveToParquet
           - internal/schema:FuzzResolveToParquet_Traces
           - internal/schema:FuzzSlotMapping
@@ -318,6 +319,7 @@ jobs:
           - internal/storage/parquets3:FuzzRestartWatermark
           - internal/storage/parquets3:FuzzProjectionEquivalence
           - internal/storage/parquets3:FuzzExtractFilterValuesAST
+          - internal/storage/parquets3:FuzzMessageTokensMatchImplication
           - internal/storage/parquets3:FuzzPreFilterFiles_TraceID
           - internal/storage/parquets3:FuzzExtractFilterValuesAST_TraceID
           - internal/storage/parquets3:FuzzExtractTraceBloomValues

@@ -55,7 +55,7 @@ func DataBlockToTraceRows(db *logstorage.DataBlock, tenant logstorage.TenantID) 
 			v := strings.Clone(c.Values[i])
 			switch c.Name {
 			case "_msg":
-				// empty for traces.
+				row.Body = v
 			case "_time":
 				// _time IS the row's event timestamp (VL stores the span END
 				// time here) and is what the legacy path (r.Timestamp) and hot VT

@@ -554,7 +554,8 @@ func logRowToMap(row *schema.LogRow) map[string]string {
 // traceRowToMap converts a TraceRow into a map[string]string for tombstone matching.
 func traceRowToMap(row *schema.TraceRow) map[string]string {
 	m := map[string]string{
-		"body":                   row.SpanName,
+		"body":                   row.Body,
+		"_msg":                   row.Body,
 		"trace_id":               row.TraceID,
 		"span_id":                row.SpanID,
 		"parent_span_id":         row.ParentSpanID,
@@ -584,12 +585,15 @@ func traceRowToMap(row *schema.TraceRow) map[string]string {
 		m["duration_ns"] = fmt.Sprintf("%d", row.DurationNs)
 	}
 	for k, v := range row.ResourceAttributes {
+		k = schema.TraceMessageAttributeName("resource_attr:", k)
 		m[k] = v
 	}
 	for k, v := range row.SpanAttributes {
+		k = schema.TraceMessageAttributeName("span_attr:", k)
 		m[k] = v
 	}
 	for k, v := range row.ScopeAttributes {
+		k = schema.TraceMessageAttributeName("scope_attr:", k)
 		m[k] = v
 	}
 	return m
