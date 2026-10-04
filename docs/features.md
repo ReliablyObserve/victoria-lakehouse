@@ -1674,10 +1674,10 @@ SRV records are the membership list. Adding a replica makes it discoverable and 
 
 The chart encodes the operational rules that keep a stateful cold tier safe under autoscaling — drain before termination, stabilize before reshuffling the ring, report ready only when warm — and a drift check keeps its rendered output honest in CI.
 
-- Verification: tests: `charts/victoria-lakehouse/test_templates.sh`
+- Verification: tests: `charts/victoria-lakehouse/test_templates.sh`, `charts/victoria-lakehouse/test_images.sh`
 - Docs: `docs/kubernetes-deployment.md`
 - Changelog: `0.10.0`, `0.37.1`
-- Note: The linked chart template test is not run in CI; CI runs `helm lint` and the Helm drift check (`scripts/ci/helmdrift`) instead.
+- Note: CI runs the linked chart template and exact image-reference tests, strict `helm lint`, and the Helm drift check (`scripts/ci/helmdrift`).
 
 ### ✅ Insert and select role separation
 
@@ -1715,7 +1715,7 @@ The default deployment should be the safe one. The images carry no shell-level e
 
 - Verification: tests: `tests/verification/probe_fips_active.sh`, `tests/verification/probe_image_size.sh`, `charts/victoria-lakehouse/test_templates.sh`
 - Docs: `docs/security.md`, `docs/kubernetes-deployment.md`
-- Note: The linked probes and the chart template test are not run in CI: the probes check built images and a deployed stack, and are run by hand.
+- Note: CI runs the linked chart template test. The linked probes check built images and a deployed stack, and are run by hand.
 
 ### ✅ Cross-signal hint authentication
 
