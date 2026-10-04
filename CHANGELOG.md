@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Helm defaults use the published container image references for both signals.** Logs and traces now point to the release repository namespace and prepend the release tag prefix to the chart app version. Explicit image repository and tag overrides remain unchanged. Installation examples use the chart signal toggles and current configuration keys.
+
 - Preserve the native trace `_msg` in an optional Parquet `body` column through buffer export, reads, peer queries and compaction. Keep customer message attributes separate and use the native message for token blooms and deletion matching. Bloom pruning now uses upstream parsed message guarantees, preventing false empty results for quoted span names, customer fields, partial message prefixes and invalid UTF-8 message literals in both binaries. Legacy objects remain readable without fabricating lost messages.
 
 ## [0.143.16] - 2026-10-03

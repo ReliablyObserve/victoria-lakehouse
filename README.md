@@ -216,13 +216,13 @@ Full model, assumptions, 0.1–500 TB/day tables, the long-term tiering calculat
 ```bash
 # Logs (VL-compatible, port 9428)
 docker run -p 9428:9428 \
-  ghcr.io/reliablyobserve/lakehouse-logs:latest \
+  ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-logs:latest \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.region=us-east-1
 
 # Traces (VT-compatible, port 10428)
 docker run -p 10428:10428 \
-  ghcr.io/reliablyobserve/lakehouse-traces:latest \
+  ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-traces:latest \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.region=us-east-1
 ```
@@ -240,14 +240,14 @@ Starts 13 services: RustFS (S3), VictoriaLogs + VictoriaTraces (hot tiers, 24h),
 ```bash
 # Deploy logs cold tier
 helm install lakehouse-logs oci://ghcr.io/reliablyobserve/charts/victoria-lakehouse \
-  --set lakehouseConfig.mode=logs \
+  --set logs.enabled=true --set traces.enabled=false \
   --set lakehouseConfig.s3.bucket=obs-archive \
   --set lakehouseConfig.s3.region=us-east-1 \
   --set lakehouseConfig.discovery.headless_service=vlstorage.monitoring.svc.cluster.local
 
 # Deploy traces cold tier (separate release, same chart)
 helm install lakehouse-traces oci://ghcr.io/reliablyobserve/charts/victoria-lakehouse \
-  --set lakehouseConfig.mode=traces \
+  --set logs.enabled=false --set traces.enabled=true \
   --set lakehouseConfig.s3.bucket=obs-archive \
   --set lakehouseConfig.s3.region=us-east-1 \
   --set lakehouseConfig.discovery.headless_service=vtstorage.monitoring.svc.cluster.local
@@ -498,8 +498,8 @@ Two separate binaries, each pinned to its own VL/VT upstream version for maximum
 
 | Binary | Port | Upstream Compat | Insert APIs | Select APIs | Docker Image |
 |---|---|---|---|---|---|
-| `lakehouse-logs` | 9428 | VL v1.52.0 | All VL insert protocols (jsonline, Loki, ES bulk, syslog, journald, Datadog, OTLP, Splunk) | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/lakehouse-logs` |
-| `lakehouse-traces` | 10428 | VT v0.12.0 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, Tempo `/select/tempo/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/lakehouse-traces` |
+| `lakehouse-logs` | 9428 | VL v1.52.0 | All VL insert protocols (jsonline, Loki, ES bulk, syslog, journald, Datadog, OTLP, Splunk) | `/select/logsql/*`, `/delete/logsql/*`, `/internal/select/*` | `ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-logs` |
+| `lakehouse-traces` | 10428 | VT v0.12.0 | `/insert/jsonline`, Zipkin `/api/v2/spans`, OTLP | `/select/logsql/*`, Jaeger `/select/jaeger/api/*`, Tempo `/select/tempo/api/*`, `/delete/tracessql/*` | `ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-traces` |
 
 Each binary supports three roles for independent scaling:
 

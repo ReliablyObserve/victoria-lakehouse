@@ -349,9 +349,9 @@ jobs:
           \`\`\`bash
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           helm install lakehouse-logs oci://ghcr.io/\${OWNER}/charts/victoria-lakehouse \\
-            --set lakehouseConfig.mode=logs
+            --set logs.enabled=true --set traces.enabled=false
           helm install lakehouse-traces oci://ghcr.io/\${OWNER}/charts/victoria-lakehouse \\
-            --set lakehouseConfig.mode=traces
+            --set logs.enabled=false --set traces.enabled=true
           \`\`\`
 
           ${NOTES}

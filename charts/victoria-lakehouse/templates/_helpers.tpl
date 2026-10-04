@@ -76,7 +76,7 @@ Container image for a signal.
 Usage: {{ include "victoria-lakehouse.signalImage" (dict "root" . "signal" "logs") }}
 */}}
 {{- define "victoria-lakehouse.signalImage" -}}
-{{- $tag := default .root.Chart.AppVersion .root.Values.image.tag -}}
+{{- $tag := default (printf "v%s" .root.Chart.AppVersion) .root.Values.image.tag -}}
 {{- if eq .signal "traces" -}}
 {{- printf "%s:%s" .root.Values.image.traces.repository $tag -}}
 {{- else -}}

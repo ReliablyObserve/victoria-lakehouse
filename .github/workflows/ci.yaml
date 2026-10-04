@@ -754,6 +754,11 @@ jobs:
         run: |
           helm lint charts/victoria-lakehouse/ --strict
 
+      - name: Verify Helm images and templates
+        run: |
+          bash charts/victoria-lakehouse/test_images.sh
+          bash charts/victoria-lakehouse/test_templates.sh
+
   # Benchmark smoke run (informational: nothing gates on the numbers, the
   # registry-backed perf jobs above do that). What it guarantees is that every
   # benchmark still compiles, starts and finishes, and it lists the slowest ones

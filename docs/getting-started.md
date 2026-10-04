@@ -90,13 +90,13 @@ make build-logs    # or: make build-traces
 ```bash
 # Logs
 docker run -p 9428:9428 \
-  ghcr.io/reliablyobserve/lakehouse-logs:latest \
+  ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-logs:latest \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.region=us-east-1
 
 # Traces
 docker run -p 10428:10428 \
-  ghcr.io/reliablyobserve/lakehouse-traces:latest \
+  ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-traces:latest \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.region=us-east-1
 ```
@@ -105,7 +105,7 @@ For MinIO (local development):
 
 ```bash
 docker run -p 9428:9428 \
-  ghcr.io/reliablyobserve/lakehouse-logs:latest \
+  ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-logs:latest \
   --lakehouse.s3.bucket=obs-archive \
   --lakehouse.s3.endpoint=http://minio:9000 \
   --lakehouse.s3.access-key=minioadmin \
@@ -129,26 +129,26 @@ This starts:
 ```bash
 # Logs mode
 helm install lakehouse-logs oci://ghcr.io/reliablyobserve/charts/victoria-lakehouse \
-  --set mode=logs \
-  --set s3.bucket=obs-archive \
-  --set s3.region=us-east-1
+  --set logs.enabled=true --set traces.enabled=false \
+  --set lakehouseConfig.s3.bucket=obs-archive \
+  --set lakehouseConfig.s3.region=us-east-1
 
 # Traces mode
 helm install lakehouse-traces oci://ghcr.io/reliablyobserve/charts/victoria-lakehouse \
-  --set mode=traces \
-  --set s3.bucket=obs-archive \
-  --set s3.region=us-east-1
+  --set logs.enabled=false --set traces.enabled=true \
+  --set lakehouseConfig.s3.bucket=obs-archive \
+  --set lakehouseConfig.s3.region=us-east-1
 ```
 
 With auto-discovery (recommended for cluster mode):
 
 ```bash
 helm install lakehouse-logs oci://ghcr.io/reliablyobserve/charts/victoria-lakehouse \
-  --set mode=logs \
-  --set s3.bucket=obs-archive \
-  --set s3.region=us-east-1 \
-  --set discovery.headlessService=vlstorage.monitoring.svc.cluster.local \
-  --set discovery.partitionAuthKey=secret
+  --set logs.enabled=true --set traces.enabled=false \
+  --set lakehouseConfig.s3.bucket=obs-archive \
+  --set lakehouseConfig.s3.region=us-east-1 \
+  --set lakehouseConfig.discovery.headless_service=vlstorage.monitoring.svc.cluster.local \
+  --set lakehouseConfig.discovery.partition_auth_key=secret
 ```
 
 ## Ingesting Data
