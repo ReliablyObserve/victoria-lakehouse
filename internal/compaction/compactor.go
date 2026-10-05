@@ -326,6 +326,9 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	var minTime, maxTime int64
 	var labelAggregates map[string]map[string]int64
 	var bloomValues map[string][]string
+	// traceIDHex is the output's lh.trace_id_hex attestation (see
+	// schema.CompactedTraceIDHex), recorded in its footer and its manifest entry.
+	var traceIDHex bool
 	// survivors describes the merged output when tombstoned rows were dropped
 	// from it (nil otherwise). The label set and raw size normally come from
 	// the INPUT files' manifest entries, which is exact for a pure row union;
@@ -407,7 +410,9 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		// rows (= across all inputs), so the compacted file retains file-level bloom
 		// pruning. Same shared extractor the flush writer uses → identical bloom set.
 		bloomValues = schema.ExtractLogBloomValues(merged)
-		outputData, err = writeCompactedLogs(merged, rowGroupSizeForOutput, levelForOutput)
+		// lh.trace_id_hex: AND across the inputs' footers, and true of the rows.
+		traceIDHex = schema.CompactedTraceIDHex(allData, schema.LogRowsTraceIDHex(merged))
+		outputData, err = writeCompactedLogs(merged, rowGroupSizeForOutput, levelForOutput, traceIDHex)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted logs: %w", err)
 		}
@@ -436,7 +441,9 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		labelAggregates = schema.ExtractTraceLabelAggregates(merged)
 		// Combined pmeta bloom — same rationale as the logs branch above.
 		bloomValues = schema.ExtractTraceBloomValues(merged)
-		outputData, err = writeCompactedTraces(merged, rowGroupSizeForOutput, levelForOutput)
+		// lh.trace_id_hex: AND across the inputs' footers, and true of the rows.
+		traceIDHex = schema.CompactedTraceIDHex(allData, schema.TraceRowsTraceIDHex(merged))
+		outputData, err = writeCompactedTraces(merged, rowGroupSizeForOutput, levelForOutput, traceIDHex)
 		if err != nil {
 			return nil, fmt.Errorf("write compacted traces: %w", err)
 		}
@@ -533,6 +540,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		Labels:            mergedLabels,
 		LabelAggregates:   labelAggregates,
 		ColumnBytes:       columnBytesFromFooter(outputData),
+		TraceIDHex:        traceIDHex,
 	}) {
 		metrics.CompactionPublishConflicts.Inc()
 		if c.manifest.HasKey(outputKey) {
@@ -803,18 +811,23 @@ func columnBytesFromFooter(data []byte) map[string]int64 {
 // compaction output of the same rows — a rewrite must never reduce a file's
 // prunability, and sharing the one writer means a later improvement to the
 // output format reaches both producers at once.
+//
+// The footer's lh.trace_id_hex attestation is derived from the rows written; a
+// delete rewrite keeps a subset of one file's rows, so it never needs more.
 func WriteLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
-	return writeCompactedLogs(rows, rowGroupSize, compressionLevel)
+	return writeCompactedLogs(rows, rowGroupSize, compressionLevel, schema.LogRowsTraceIDHex(rows))
 }
 
 // WriteTraces is WriteLogs for spans; it also carries the per-file `_trace_idx`
 // footer index, recomputed from the rows written, so trace-by-ID lookups keep
 // their fast path on a rewritten file.
 func WriteTraces(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
-	return writeCompactedTraces(rows, rowGroupSize, compressionLevel)
+	return writeCompactedTraces(rows, rowGroupSize, compressionLevel, schema.TraceRowsTraceIDHex(rows))
 }
 
-func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
+// traceIDHex is the lh.trace_id_hex attestation to record; the caller derives it
+// (schema.CompactedTraceIDHex for a merge, the rows for a rewrite).
+func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int, traceIDHex bool) ([]byte, error) {
 	var buf bytes.Buffer
 	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
 	opts := []parquet.WriterOption{
@@ -822,6 +835,7 @@ func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
 		schema.ParquetCreatedBy(),
 		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns(activeSlotResolver.BloomSlots()...))...),
+		schema.TraceIDHexOption(traceIDHex),
 	}
 	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
 		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
@@ -836,7 +850,7 @@ func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel
 	return buf.Bytes(), nil
 }
 
-func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) ([]byte, error) {
+func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionLevel int, traceIDHex bool) ([]byte, error) {
 	var buf bytes.Buffer
 	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
 	opts := []parquet.WriterOption{
@@ -844,6 +858,7 @@ func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionL
 		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
 		schema.ParquetCreatedBy(),
 		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns(activeSlotResolver.BloomSlots()...))...),
+		schema.TraceIDHexOption(traceIDHex),
 	}
 
 	// Tier-2: re-stamp the slot→name mapping so the compacted file stays

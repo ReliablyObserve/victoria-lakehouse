@@ -249,7 +249,7 @@
   area: query
   readme_section: Read Path
   surfaces: [api, storage, flag]
-  rows: [lh.bloom.status.schema, lh.cold.phrase_filter_matches_hot_logs, lh.cold.phrase_filter_matches_hot_traces]
+  rows: [lh.bloom.status.schema, lh.cold.phrase_filter_matches_hot_logs, lh.cold.phrase_filter_matches_hot_traces, lh.cold.phrase_filter_non_hex_trace_id_traces, lh.cold.exact_prefix_filter_matches_hot_logs, lh.cold.exact_prefix_filter_matches_hot_traces]
   tests:
     - internal/bloomindex/bloomindex_test.go
     - internal/bloomindex/bloom_tiering_test.go
@@ -258,8 +258,11 @@
     - tests/e2e/bloom_verification_test.go#TestBloomVerify_StatusAPI_FullResponse
     - internal/storage/parquets3/phrase_pruning_test.go
     - lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go
+    - internal/schema/trace_id_hex_test.go
+    - internal/compaction/trace_id_hex_test.go#TestCompaction_TraceIDHexIsANDOfInputs
   docs:
     - docs/bloom-index.md#architecture
+    - docs/read-path.md#attested-lowercase-hex-trace_id-files-lhtrace_id_hex
     - docs/bloom-index.md#age-based-tiering
   bench: [trace_lookup, trace_by_id]
   highlight: >-

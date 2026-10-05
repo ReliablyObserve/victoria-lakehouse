@@ -38,7 +38,7 @@ func TestWriteCompactedLogs_VariousCompressionLevels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data, err := writeCompactedLogs(input, 100, tt.level)
+			data, err := writeCompactedLogs(input, 100, tt.level, false)
 			if err != nil {
 				t.Fatalf("writeCompactedLogs level %d: %v", tt.level, err)
 			}
@@ -78,7 +78,7 @@ func TestWriteCompactedTraces_VariousCompressionLevels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data, err := writeCompactedTraces(input, 100, tt.level)
+			data, err := writeCompactedTraces(input, 100, tt.level, false)
 			if err != nil {
 				t.Fatalf("writeCompactedTraces level %d: %v", tt.level, err)
 			}
@@ -108,7 +108,7 @@ func TestWriteCompactedLogs_SmallRowGroupSize(t *testing.T) {
 		}
 	}
 
-	data, err := writeCompactedLogs(input, 3, 1)
+	data, err := writeCompactedLogs(input, 3, 1, false)
 	if err != nil {
 		t.Fatalf("writeCompactedLogs: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestWriteCompactedTraces_SmallRowGroupSize(t *testing.T) {
 		}
 	}
 
-	data, err := writeCompactedTraces(input, 3, 1)
+	data, err := writeCompactedTraces(input, 3, 1, false)
 	if err != nil {
 		t.Fatalf("writeCompactedTraces: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestWriteCompactedLogs_SingleRow(t *testing.T) {
 		{TimestampUnixNano: 100, Body: "single", ServiceName: "svc"},
 	}
 
-	data, err := writeCompactedLogs(input, 100, 1)
+	data, err := writeCompactedLogs(input, 100, 1, false)
 	if err != nil {
 		t.Fatalf("writeCompactedLogs: %v", err)
 	}

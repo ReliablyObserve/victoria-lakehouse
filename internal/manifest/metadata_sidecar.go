@@ -19,6 +19,8 @@ type FileMeta struct {
 	RawBytes          int64               `json:"rb,omitempty"`
 	SchemaFingerprint string              `json:"sf,omitempty"`
 	Labels            map[string][]string `json:"lb,omitempty"`
+	// TraceIDHex mirrors FileInfo.TraceIDHex (the footer's lh.trace_id_hex).
+	TraceIDHex bool `json:"th,omitempty"`
 }
 
 type FileMetaSidecar struct {
@@ -55,6 +57,7 @@ func FileInfoToMeta(fi FileInfo) FileMeta {
 		RawBytes:          fi.RawBytes,
 		SchemaFingerprint: fi.SchemaFingerprint,
 		Labels:            fi.Labels,
+		TraceIDHex:        fi.TraceIDHex,
 	}
 }
 
@@ -85,6 +88,11 @@ func (fm FileMeta) ApplyTo(fi *FileInfo) {
 	}
 	if fi.Labels == nil && fm.Labels != nil {
 		fi.Labels = fm.Labels
+	}
+	// The attestation describes the immutable object behind this key (a
+	// rewrite or a compaction writes a new key), so a recorded "1" is kept.
+	if !fi.TraceIDHex && fm.TraceIDHex {
+		fi.TraceIDHex = true
 	}
 }
 

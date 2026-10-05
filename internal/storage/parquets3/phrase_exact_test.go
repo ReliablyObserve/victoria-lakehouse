@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 func phraseMatches(t testing.TB, phrase, value string) bool {
@@ -15,41 +17,85 @@ func phraseMatches(t testing.TB, phrase, value string) bool {
 	return f.MatchRow([]logstorage.Field{{Name: "trace_id", Value: value}})
 }
 
-// Logs has no column with a provable single-token value domain, so a phrase is
-// never an exact value. trace_id in particular carries what the shipper sent
-// (UUIDs contain '-'), and upstream matches a phrase inside a longer value.
-
-func TestPhraseExact_NotEquivalentOnLogsColumns(t *testing.T) {
-	if !phraseMatches(t, "4bf92f35", "4bf92f35-77b3-4da6-a3ce-929d0e0bf736") {
-		t.Fatal("expected upstream to match phrase 4bf92f35 inside a UUID")
+// allStrings returns every string over alphabet with length 0..maxLen.
+func allStrings(alphabet []string, maxLen int) []string {
+	out := []string{""}
+	cur := []string{""}
+	for l := 1; l <= maxLen; l++ {
+		var next []string
+		for _, c := range cur {
+			for _, a := range alphabet {
+				next = append(next, c+a)
+			}
+		}
+		out = append(out, next...)
+		cur = next
 	}
-	for _, c := range []string{"trace_id", "span_id", "service.name", "_msg", "body", "k8s.pod.name"} {
-		if phraseIsExactForField(c, "abc") {
-			t.Errorf("logs: phraseIsExactForField(%q, abc) = true; no logs column is proven single-token", c)
+	return out
+}
+
+// TestPhraseExact_EquivalentToExactOnAttestedDomain is the proof behind the
+// lh.trace_id_hex exception, run against upstream's own matcher: in a file
+// whose every trace_id is lowercase hex (empty included), a phrase that is a
+// full lowercase-hex token matches a value exactly when the value equals it.
+// So the exact-value blooms and _trace_idx may prune that phrase there.
+func TestPhraseExact_EquivalentToExactOnAttestedDomain(t *testing.T) {
+	alphabet := []string{"0", "9", "a", "f"}
+	domain := allStrings(alphabet, 5)
+	checked := 0
+	for _, p := range allStrings(alphabet, 4) {
+		if !schema.IsLowerHexToken(p) {
+			continue // the empty phrase is never offered
+		}
+		for _, v := range domain {
+			if !schema.IsLowerHex(v) {
+				t.Fatalf("domain value %q is not lowercase hex", v)
+			}
+			if got, want := phraseMatches(t, p, v), v == p; got != want {
+				t.Fatalf("phrase %q vs value %q: upstream match=%v, equality=%v", p, v, got, want)
+			}
+			checked++
 		}
 	}
-	if len(phraseExactColumns) != 0 {
-		t.Errorf("phraseExactColumns = %v, want empty for logs", phraseExactColumns)
+	t.Logf("%d (phrase, value) pairs agree with upstream matchPhrase", checked)
+}
+
+// TestPhraseExact_NotEquivalentOutsideDomain is the negative control: the
+// review's stored ids are not lowercase hex, and upstream matches the review's
+// phrases inside them. A file holding any such id must not attest.
+func TestPhraseExact_NotEquivalentOutsideDomain(t *testing.T) {
+	uuid := "4bf92f35-77b3-4da6-a3ce-929d0e0bf736"
+	for _, c := range [][2]string{
+		{"abc", "abc-def-ghi"}, {"ghi", "abc-def-ghi"}, {"abc-def", "abc-def-ghi"},
+		{"4bf92f35", uuid}, {"929d0e0bf736", uuid}, {"77b3-4da6", uuid},
+		{"kvNXezTaajzpKdDvc2Aw", "S/kvNXezTaajzpKdDvc2Aw=="},
+	} {
+		if !phraseMatches(t, c[0], c[1]) {
+			t.Errorf("upstream does not match phrase %q in %q", c[0], c[1])
+		}
+		if schema.IsLowerHex(c[1]) {
+			t.Errorf("%q counted as lowercase hex", c[1])
+		}
+	}
+	// Uppercase hex is outside the domain too: ABCDEF is one token but a
+	// lowercase phrase cannot equal it and the writer must not attest it.
+	if schema.IsLowerHex("ABCDEF") || schema.IsLowerHexToken("ABC") {
+		t.Error("uppercase hex must not be attested or offered")
 	}
 }
 
-// TestPhraseExact_TokenPhraseStillMatchesLongerValue: the failure mode the
-// exact-value prune used to have, against upstream's matcher.
-func TestPhraseExact_TokenPhraseStillMatchesLongerValue(t *testing.T) {
-	for _, tc := range [][2]string{{"abc-def", "abc-def-ghi"}, {"def-ghi", "abc-def-ghi"}, {"ghi", "abc-def-ghi"}} {
-		if !phraseMatches(t, tc[0], tc[1]) {
-			t.Errorf("upstream does not match phrase %q in %q", tc[0], tc[1])
-		}
-	}
-}
-
-// FuzzPhraseExactLogs: logs never treats any phrase as exact.
+// FuzzPhraseExactLogs: on the attested domain upstream's matcher agrees with
+// equality for every phrase the reader may offer as a value.
 func FuzzPhraseExactLogs(f *testing.F) {
-	f.Add("trace_id", "abc")
-	f.Add("service.name", "")
-	f.Fuzz(func(t *testing.T, field, phrase string) {
-		if phraseIsExactForField(field, phrase) {
-			t.Fatalf("logs: phraseIsExactForField(%q, %q) = true", field, phrase)
+	for _, s := range [][2]string{{"abc", "abc"}, {"abc", "abcd"}, {"a", "0a"}, {"0f", "00f"}, {"f", ""}} {
+		f.Add(s[0], s[1])
+	}
+	f.Fuzz(func(t *testing.T, phrase, value string) {
+		if !schema.IsLowerHexToken(phrase) || !schema.IsLowerHex(value) {
+			return // outside what an attested file holds or the reader offers
+		}
+		if got, want := phraseMatches(t, phrase, value), value == phrase; got != want {
+			t.Fatalf("phrase %q value %q: upstream=%v equality=%v", phrase, value, got, want)
 		}
 	})
 }

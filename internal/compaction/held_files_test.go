@@ -117,7 +117,7 @@ func TestCompaction_PublishOntoARegisteredKeyIsRefusedAndKeepsTheObject(t *testi
 		{{TimestampUnixNano: 2000, Body: "b-1", SeverityText: "info", ServiceName: "api"}},
 	} {
 		key := partition + "/src-" + string(rune('a'+i)) + ".parquet"
-		data, err := writeCompactedLogs(batch, 100, 1)
+		data, err := writeCompactedLogs(batch, 100, 1, false)
 		if err != nil {
 			t.Fatalf("write source parquet: %v", err)
 		}

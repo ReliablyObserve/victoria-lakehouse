@@ -159,6 +159,19 @@ Ratios measured on real E2E data (377K logs, 159K traces). See [ZSTD Benchmark](
 
 Low-cardinality string columns (`service.name`, `k8s.namespace.name`) achieve 50-200x compression due to Parquet's dictionary encoding combined with ZSTD. High-entropy columns (`body`, `trace_id`) compress 2-4x.
 
+## Footer key/value entries
+
+Lakehouse metadata that belongs to one file lives in standard Parquet footer key/value entries, which every reader exposes (`pyarrow` `ParquetFile.metadata.metadata`, DuckDB `parquet_kv_metadata()`) and ignores otherwise:
+
+| Key | Written by | Value |
+|---|---|---|
+| `_trace_idx` | traces writers | the file's trace IDs with their time bounds |
+| `_bloom_body_rg_N` | flush writers | token bloom of row group N's message bodies |
+| `lakehouse.dedicated_slots` | all writers, when slots are configured | the Tier-2 slot-to-attribute binding |
+| `lh.trace_id_hex` | all writers (flush, compaction, delete rewrite; both binaries) | ASCII `1` when every `trace_id` value in the file is lowercase hex (or empty), `0` otherwise; see [read-path.md](read-path.md#attested-lowercase-hex-trace_id-files-lhtrace_id_hex) |
+
+`lh.trace_id_hex` is plain ASCII, so the footer stays valid UTF-8 for every reader.
+
 ## Writer Library
 
 Files are written with [parquet-go](https://github.com/parquet-go/parquet-go). Every Lakehouse writer (flush, compaction and delete rewrite, in both binaries) sets the footer's `created_by` string to `victoria-lakehouse version <release>(build )`, where `<release>` is the version the binary was built as (`dev` for an unstamped build). `parquet-tools meta` prints it. It is the only place the writer identifies itself; it carries no meaning for readers and no Lakehouse metadata. The parquet-go version behind a release is the one in that release's `go.mod`.

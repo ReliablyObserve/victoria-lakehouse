@@ -53,15 +53,17 @@ var continuousSpreadSec int
 // timed-out push drops that one batch/endpoint and the next tick recovers.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
-// phraseFixture appends a handful of fixed log rows whose trace_id and
-// service.name are hyphenated values that contain shorter phrases, so the
-// hot-vs-cold parity suite can check quoted phrase filters against a value
-// that is longer than the phrase (#319). Set by --phrase-fixture.
+// phraseFixture appends a handful of fixed log rows and spans whose trace_id
+// values are hyphenated (or otherwise not hex) and contain shorter phrases, so
+// the hot-vs-cold parity suite can check quoted phrase filters against a value
+// that is longer than the phrase (#319). The spans go over OTLP/HTTP JSON,
+// where VictoriaTraces stores traceId as sent (lowercased), not as hex. Set by
+// --phrase-fixture.
 var phraseFixture bool
 
 func main() {
 	logsCount := flag.Int("logs", 5000, "number of log rows per batch")
-	flag.BoolVar(&phraseFixture, "phrase-fixture", false, "append fixed log rows with UUID/hyphenated trace_id and service.name values (hot-vs-cold phrase-filter parity)")
+	flag.BoolVar(&phraseFixture, "phrase-fixture", false, "append fixed log rows and OTLP/JSON spans with UUID/hyphenated trace_id values (hot-vs-cold phrase-filter parity)")
 	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
 	hoursBack := flag.Int("hours-back", 48, "generate historical data for this many hours back")
 	interval := flag.Duration("interval", 0, "continuous mode: generate new data every interval (e.g. 30s)")
@@ -200,6 +202,36 @@ func phraseFixtureLogRows(now time.Time) []logRow {
 			HostName:          hostNames[0],
 			TraceID:           f.traceID,
 			ResourceAttrs:     map[string]string{"service.name": svc},
+		})
+	}
+	return rows
+}
+
+// phraseFixtureSpans returns the fixed spans behind --phrase-fixture: OTLP
+// spans whose traceId is not hex. They are sent only to VictoriaTraces and the
+// Lakehouse (Tempo rejects such ids); the other fields come from the
+// generator's own value lists.
+func phraseFixtureSpans(now time.Time) []traceRow {
+	fixed := []struct{ traceID, spanID string }{
+		{"abc-def-ghi", "a1b2c3d4e5f60001"},
+		{"abc-def-ghi", "a1b2c3d4e5f60002"},
+		{"4bf92f35-77b3-4da6-a3ce-929d0e0bf736", "a1b2c3d4e5f60003"},
+	}
+	rows := make([]traceRow, 0, len(fixed))
+	for i, f := range fixed {
+		svc := services[i%len(services)]
+		start := now.Add(-time.Duration(3+i) * time.Hour)
+		rows = append(rows, traceRow{
+			TimestampUnixNano: start.UnixNano(),
+			StartTimeUnixNano: start.UnixNano(),
+			TraceID:           f.traceID,
+			SpanID:            f.spanID,
+			SpanName:          "phrase fixture",
+			SpanKind:          1,
+			DurationNs:        int64(time.Millisecond),
+			ServiceName:       svc,
+			ResourceAttrs:     map[string]string{"service.name": svc},
+			SpanAttrs:         map[string]string{"code.function": "phrase fixture"},
 		})
 	}
 	return rows
@@ -420,19 +452,24 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 		traceContexts = append(traceContexts, tc)
 	}
 
-	// Push traces to all configured endpoints
+	// Push traces to all configured endpoints. The phrase fixture's non-hex ids
+	// go to VictoriaTraces and the Lakehouse only.
+	otlpTraces := allTraces
+	if phraseFixture && tracesCount > 0 {
+		otlpTraces = append(append([]traceRow(nil), allTraces...), phraseFixtureSpans(now)...)
+	}
 	if vtEndpoint != "" {
-		if err := pushOTLPTraces(vtEndpoint, allTraces, accountID, projectID, orgID); err != nil {
+		if err := pushOTLPTraces(vtEndpoint, otlpTraces, accountID, projectID, orgID); err != nil {
 			log.Printf("WARNING: push traces to VT hot failed: %v", err)
 		} else {
-			log.Printf("  pushed %d traces to VT hot at %s", len(allTraces), vtEndpoint)
+			log.Printf("  pushed %d traces to VT hot at %s", len(otlpTraces), vtEndpoint)
 		}
 	}
 	if lhTracesEndpoint != "" {
-		if err := pushOTLPTraces(lhTracesEndpoint, allTraces, accountID, projectID, orgID); err != nil {
+		if err := pushOTLPTraces(lhTracesEndpoint, otlpTraces, accountID, projectID, orgID); err != nil {
 			log.Printf("WARNING: push traces to LH cold failed: %v", err)
 		} else {
-			log.Printf("  pushed %d traces to LH cold at %s", len(allTraces), lhTracesEndpoint)
+			log.Printf("  pushed %d traces to LH cold at %s", len(otlpTraces), lhTracesEndpoint)
 		}
 	}
 	if tempoEndpoint != "" {

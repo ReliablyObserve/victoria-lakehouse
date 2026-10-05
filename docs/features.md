@@ -427,8 +427,8 @@ Ingest writes at a level chosen for throughput; each compaction level re-encodes
 
 Point lookups over an object store are a file-skipping problem. Blooms answer "this file cannot contain that value" without a read, and their footprint is tiered by age so recent data keeps the most precise filters while archives keep the cheapest.
 
-- Verification: rows: `lh.bloom.status.schema` (pass, pending), `lh.cold.phrase_filter_matches_hot_logs` (pass, pending), `lh.cold.phrase_filter_matches_hot_traces` (pass, pending) · tests: `internal/bloomindex/bloomindex_test.go`, `internal/bloomindex/bloom_tiering_test.go`, `internal/bloomindex/cache_test.go`, `internal/bloomindex/controller_test.go`, `tests/e2e/bloom_verification_test.go#TestBloomVerify_StatusAPI_FullResponse`, `internal/storage/parquets3/phrase_pruning_test.go`, `lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go` · bench: `trace_lookup`, `trace_by_id`
-- Docs: `docs/bloom-index.md#architecture`, `docs/bloom-index.md#age-based-tiering`
+- Verification: rows: `lh.bloom.status.schema` (pass, pending), `lh.cold.phrase_filter_matches_hot_logs` (pass, pending), `lh.cold.phrase_filter_matches_hot_traces` (pass, pending), `lh.cold.phrase_filter_non_hex_trace_id_traces` (pass, pending), `lh.cold.exact_prefix_filter_matches_hot_logs` (pass, pending), `lh.cold.exact_prefix_filter_matches_hot_traces` (pass, pending) · tests: `internal/bloomindex/bloomindex_test.go`, `internal/bloomindex/bloom_tiering_test.go`, `internal/bloomindex/cache_test.go`, `internal/bloomindex/controller_test.go`, `tests/e2e/bloom_verification_test.go#TestBloomVerify_StatusAPI_FullResponse`, `internal/storage/parquets3/phrase_pruning_test.go`, `lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go`, `internal/schema/trace_id_hex_test.go`, `internal/compaction/trace_id_hex_test.go#TestCompaction_TraceIDHexIsANDOfInputs` · bench: `trace_lookup`, `trace_by_id`
+- Docs: `docs/bloom-index.md#architecture`, `docs/read-path.md#attested-lowercase-hex-trace_id-files-lhtrace_id_hex`, `docs/bloom-index.md#age-based-tiering`
 
 ### ✅ Rows buffered after a graceful restart are visible from the first query
 

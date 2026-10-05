@@ -73,6 +73,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestGolden_*` now creates its `testdata/` directory on the first run (it failed with "no such file"); no golden file is committed, so those tests still only snapshot until goldens are checked in.
   Real defects the suite found stay as declared known gaps with issue links (#269, #281, #307, #373 to #376): each logs `KNOWN GAP` while it holds and fails once it is fixed.
 - **Cold reads no longer prune a quoted phrase filter as an exact match (both binaries).** PLACEHOLDER (#319)
+- **Cold reads no longer prune a quoted phrase filter as an exact match (both binaries).** `field:"v"` is a phrase
+  filter: VictoriaLogs matches any value that contains `v` on token boundaries, for example `trace_id:"abc-def"`
+  matches `abc-def-ghi` and `service.name:"api-gw"` matches `api-gw-v2`. The cold tier read it as the exact value `v`
+  and pruned the pmeta and per-file bloom, the row-group and footer bloom and the trace-id index on it, so it returned
+  no rows where hot VictoriaLogs/VictoriaTraces returned them (#319). A phrase is now pruned by its tokens. The exact
+  prefix `field:="v"*` (and `field:=v*`) was pruned as the exact value `v` too and no longer is, nor is the quoted
+  phrase prefix `field:"v"*` (#298). Every
+  Parquet file now records in its footer whether all of its `trace_id` values are lowercase hex
+  (`lh.trace_id_hex`, ASCII `1` or `0`), derived from the rows written; compaction writes `1` only when every input
+  says `1` and every merged row is hex, and the manifest, the file-metadata sidecar and the pmeta file-meta facet
+  carry the same bit, re-learned from the footer. In a file that says `1`, a phrase that is a full lowercase-hex
+  token can only match a value equal to it, so `trace_id:"X"` gains the exact-value pruning there: VictoriaTraces'
+  trace-by-ID form on files written from OTLP protobuf (which VictoriaTraces stores as hex), and a hex `trace_id`
+  phrase in the logs binary. A file holding any id that is not lowercase hex (VictoriaTraces keeps OTLP/HTTP JSON
+  and `/insert/native` ids as sent; a log shipper may send UUIDs) says `0` and keeps token pruning only. Tests in both modules check the cold answer against upstream's `MatchRow` for every phrase, prefix, `OR`,
+  `NOT` and `if (...)` shape and every pruning layer. New `result` value `kept_unattested` on
+  `lakehouse_trace_idx_prefilter_files_total`.
 
 ## [0.145.0] - 2026-10-05
 

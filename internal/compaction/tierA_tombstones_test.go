@@ -30,12 +30,14 @@ func tombstoneMergeWorld(t *testing.T, mode config.Mode, tsMode string, createdA
 			data, err = writeCompactedTraces([]schema.TraceRow{
 				{TimestampUnixNano: ts, TraceID: "keep-" + tag, SpanID: "k" + tag, ServiceName: "keep"},
 				{TimestampUnixNano: ts + 1, TraceID: "drop-" + tag, SpanID: "d" + tag, ServiceName: "drop"},
-			}, 100, 1)
+			}, 100, 1, false)
+
 		} else {
 			data, err = writeCompactedLogs([]schema.LogRow{
 				{TimestampUnixNano: ts, Body: "keep-" + tag, ServiceName: "keep"},
 				{TimestampUnixNano: ts + 1, Body: "drop-" + tag, ServiceName: "drop"},
-			}, 100, 1)
+			}, 100, 1, false)
+
 		}
 		if err != nil {
 			t.Fatal(err)

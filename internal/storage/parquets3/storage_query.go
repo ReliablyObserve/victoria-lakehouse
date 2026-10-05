@@ -974,7 +974,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	s.enrichManifestFromFooter(fi, f)
 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
-	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecks(queryStr))
+	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecksFor(queryStr, schema.FooterTraceIDHex(f.Metadata())))
 	pdf := resolvePushDownIndices(f, buildPushDownFilter(stripPipeOutsideQuotes(queryStr), s.registry))
 
 	// Footer-bloom row-group skip is SOUND ONLY when the file body is fully
@@ -1778,6 +1778,13 @@ type bloomCheck struct {
 }
 
 func (s *Storage) buildBloomChecks(queryStr string) []bloomCheck {
+	return s.buildBloomChecksFor(queryStr, false)
+}
+
+// buildBloomChecksFor builds the row-group bloom checks of one file. attested
+// is the file's own footer attestation of lowercase-hex trace ids: only then may
+// a full-hex `trace_id:"X"` phrase be checked as the value X.
+func (s *Storage) buildBloomChecksFor(queryStr string, attested bool) []bloomCheck {
 	if queryStr == "" {
 		return nil
 	}
@@ -1794,6 +1801,7 @@ func (s *Storage) buildBloomChecks(queryStr string) []bloomCheck {
 		if len(vals) == 0 {
 			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
+		vals = attestedPruneValues(vals, queryStr, col, attested)
 		for _, val := range vals {
 			checks = append(checks, bloomCheck{
 				colName: col.ParquetColumn,
@@ -1806,6 +1814,30 @@ func (s *Storage) buildBloomChecks(queryStr string) []bloomCheck {
 
 func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInfo, queryStr string) []manifest.FileInfo {
 	if s.bloomCache == nil || queryStr == "" {
+		return files
+	}
+	if len(files) == 0 || len(extractHexTraceIDPhrasesAST(queryStr)) == 0 {
+		return s.bloomFilterFilesWith(ctx, files, queryStr, false)
+	}
+	// A full-hex `trace_id:"X"` phrase prunes as the value X only the files whose
+	// manifest entry carries the lh.trace_id_hex attestation; every other file is
+	// pruned on the exact filters alone.
+	var attestedFiles, otherFiles []manifest.FileInfo
+	for _, fi := range files {
+		if fi.TraceIDHex {
+			attestedFiles = append(attestedFiles, fi)
+		} else {
+			otherFiles = append(otherFiles, fi)
+		}
+	}
+	out := s.bloomFilterFilesWith(ctx, attestedFiles, queryStr, true)
+	return append(out, s.bloomFilterFilesWith(ctx, otherFiles, queryStr, false)...)
+}
+
+// bloomFilterFilesWith is the file-level bloom pre-filter for files that all
+// share one attestation state (see attestedPruneValues).
+func (s *Storage) bloomFilterFilesWith(ctx context.Context, files []manifest.FileInfo, queryStr string, attested bool) []manifest.FileInfo {
+	if len(files) == 0 {
 		return files
 	}
 	if containsOrOperatorAST(queryStr) {
@@ -1837,6 +1869,7 @@ func (s *Storage) bloomFilterFiles(ctx context.Context, files []manifest.FileInf
 		if len(vals) == 0 {
 			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
+		vals = attestedPruneValues(vals, queryStr, col, attested)
 		if len(vals) > 0 {
 			perColumn = append(perColumn, bloomColumnValues{Column: col.ParquetColumn, Values: vals})
 		}
@@ -2155,6 +2188,8 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 	if queryStr == "" {
 		return false
 	}
+	// A full-hex trace_id phrase may prune only a file that attests hex ids.
+	attested := fi.TraceIDHex
 
 	// Per-column candidate value sets, with the traces module's semantics: a
 	// query like trace_id:in(t1,t2) means the file may match if it contains ANY
@@ -2175,6 +2210,7 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		if len(vals) == 0 {
 			vals = extractFilterValuesAST(queryStr, col.ParquetColumn)
 		}
+		vals = attestedPruneValues(vals, queryStr, col, attested)
 		if len(vals) > 0 {
 			perColumn = append(perColumn, bloomColumnValues{Column: col.ParquetColumn, Values: vals})
 		}
@@ -2440,12 +2476,23 @@ func extractExactMatch(query, fieldName string) string {
 		if idx < 0 {
 			continue
 		}
-		start := idx + len(prefix)
-		end := strings.Index(query[start:], `"`)
+		open := idx + len(prefix) - 1 // the opening quote
+		end := closingQuote(query, open)
 		if end < 0 {
-			continue
+			return ""
 		}
-		return query[start : start+end]
+		// `field:="v"*` is the exact PREFIX filter (filterExactPrefix): it
+		// matches every value starting with v, so v is not a value to prune by.
+		// Anything glued to the closing quote other than a filter separator
+		// means the same: not a plain exact match.
+		if end+1 < len(query) && !isExactValueTerminator(query[end+1]) {
+			return ""
+		}
+		v, err := strconv.Unquote(query[open : end+1])
+		if err != nil {
+			return ""
+		}
+		return v
 	}
 
 	// Unquoted pattern: trace_id:=abc123 (produced by q.String())
@@ -2456,13 +2503,43 @@ func extractExactMatch(query, fieldName string) string {
 			return ""
 		}
 		end := strings.IndexAny(query[start:], " |)")
-		if end < 0 {
-			return query[start:]
+		v := query[start:]
+		if end >= 0 {
+			v = query[start : start+end]
 		}
-		return query[start : start+end]
+		// `field:=v*` is the exact prefix filter; Query.String() quotes any
+		// value that itself holds a '*', so an unquoted '*' is the prefix mark.
+		if strings.Contains(v, "*") {
+			return ""
+		}
+		return v
 	}
 
 	return ""
+}
+
+// closingQuote returns the index of the double quote closing the quoted string
+// that opens at query[open], honouring backslash escapes, or -1.
+func closingQuote(query string, open int) int {
+	for j := open + 1; j < len(query); j++ {
+		switch query[j] {
+		case '\\':
+			j++
+		case '"':
+			return j
+		}
+	}
+	return -1
+}
+
+// isExactValueTerminator reports whether c may follow a complete `field:="v"`
+// exact filter: whitespace, a closing parenthesis, a pipe or a comma.
+func isExactValueTerminator(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', ')', '|', ',':
+		return true
+	}
+	return false
 }
 
 // filterFilesByLabels uses manifest-level labels to skip files that definitely
@@ -2763,6 +2840,9 @@ func (s *Storage) syntheticTimestampBlock(rg parquet.RowGroup, tsColIdx int, sta
 // in the manifest for a file using its Parquet row group metadata. This ensures
 // subsequent queries can use the manifest-only fast path.
 func (s *Storage) enrichManifestFromFooter(fi manifest.FileInfo, f *parquet.File) {
+	if f != nil && !fi.TraceIDHex && schema.FooterTraceIDHex(f.Metadata()) {
+		s.manifest.MarkTraceIDHex(fi.Key)
+	}
 	if fi.RowCount > 0 {
 		return
 	}

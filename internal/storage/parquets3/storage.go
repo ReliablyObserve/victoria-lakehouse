@@ -1486,6 +1486,9 @@ func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFoo
 }
 
 func (s *Storage) enrichFromParquetFile(fi manifest.FileInfo, pf *parquet.File) bool {
+	if pf != nil && !fi.TraceIDHex && schema.FooterTraceIDHex(pf.Metadata()) {
+		s.manifest.MarkTraceIDHex(fi.Key)
+	}
 	totalRows, minTs, maxTs := pageIndexTimeBounds(pf, s.registry.TimestampColumn())
 	if totalRows > 0 {
 		s.manifest.EnrichFileMetadata(fi.Key, totalRows, minTs, maxTs)
@@ -1555,6 +1558,9 @@ func (s *Storage) loadFileMetadataFromDisk() int {
 	}
 	enriched := 0
 	for _, entry := range fmc.Entries {
+		if entry.TraceIDHex {
+			s.manifest.MarkTraceIDHex(entry.Key)
+		}
 		if entry.RowCount > 0 {
 			s.manifest.EnrichFileMetadata(entry.Key, entry.RowCount, entry.MinTimeNs, entry.MaxTimeNs)
 			enriched++
@@ -1580,6 +1586,7 @@ func (s *Storage) saveFileMetadataToDisk() {
 				RawBytes:          fi.RawBytes,
 				SchemaFingerprint: fi.SchemaFingerprint,
 				Labels:            fi.Labels,
+				TraceIDHex:        fi.TraceIDHex,
 			})
 		}
 	}

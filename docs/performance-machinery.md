@@ -595,7 +595,7 @@ Today's coverage:
 | 4A.4 file-level bloom | `lakehouse_parquet_files_skipped_bloom_total` | ✅ |
 | 4A.5 row-group bloom | `lakehouse_parquet_row_groups_skipped_total{reason="bloom"}` | ✅ |
 | 4A.6 token bloom | `lakehouse_parquet_row_groups_skipped_total{reason="token_bloom"}` | ✅ |
-| 4A.8 trace_idx pre-filter | `lakehouse_trace_idx_prefilter_files_total{result="dropped\|kept_match\|kept_unindexed\|kept_error"}` | ✅ |
+| 4A.8 trace_idx pre-filter | `lakehouse_trace_idx_prefilter_files_total{result="dropped\|kept_match\|kept_unindexed\|kept_unattested\|kept_error"}` | ✅ |
 | 4A.9 trace-id smart cache | `lakehouse_trace_id_cache_hits_total` | ✅ |
 | 4A.10 LookupTraceIndex | `lakehouse_trace_index_lookups_total{result}` | ✅ |
 | 4B caches | `lakehouse_cache_*_total / _bytes` (multiple) | ✅ |

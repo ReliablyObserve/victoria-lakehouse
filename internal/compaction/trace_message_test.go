@@ -33,7 +33,7 @@ func TestTraceMessageCompactionAndRestartPreserveProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := writeCompactedTraces(rows, 1, 3)
+	data, err := writeCompactedTraces(rows, 1, 3, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestTraceMessageCompactionAndRestartPreserveProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err = writeCompactedTraces(rows, 2, 3)
+	data, err = writeCompactedTraces(rows, 2, 3, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -60,7 +60,7 @@ func newOutputCollisionWorld(t *testing.T) *outputCollisionWorld {
 		{{TimestampUnixNano: 2000, Body: "b-1", SeverityText: "info", ServiceName: "api"}},
 	} {
 		key := partition + "/src-" + string(rune('a'+i)) + ".parquet"
-		data, err := writeCompactedLogs(batch, 100, 1)
+		data, err := writeCompactedLogs(batch, 100, 1, false)
 		if err != nil {
 			t.Fatalf("write source parquet: %v", err)
 		}
@@ -80,7 +80,7 @@ func newOutputCollisionWorld(t *testing.T) *outputCollisionWorld {
 		{TimestampUnixNano: 3000, Body: "bystander-1", SeverityText: "info", ServiceName: "db"},
 		{TimestampUnixNano: 4000, Body: "bystander-2", SeverityText: "info", ServiceName: "db"},
 	}
-	data, err := writeCompactedLogs(bystanderRows, 100, 1)
+	data, err := writeCompactedLogs(bystanderRows, 100, 1, false)
 	if err != nil {
 		t.Fatalf("write bystander parquet: %v", err)
 	}

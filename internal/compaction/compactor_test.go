@@ -576,7 +576,7 @@ func TestWriteCompactedTraces_RoundTrip(t *testing.T) {
 		{TimestampUnixNano: 200, TraceID: "t2", SpanID: "s2", SpanName: "op2", ServiceName: "svc-b", DurationNs: 1000},
 	}
 
-	data, err := writeCompactedTraces(input, 100, 3)
+	data, err := writeCompactedTraces(input, 100, 3, false)
 	if err != nil {
 		t.Fatalf("writeCompactedTraces: %v", err)
 	}
@@ -602,7 +602,7 @@ func TestWriteCompactedLogs_RoundTrip(t *testing.T) {
 		{TimestampUnixNano: 200, Body: "world", ServiceName: "svc"},
 	}
 
-	data, err := writeCompactedLogs(input, 100, 3)
+	data, err := writeCompactedLogs(input, 100, 3, false)
 	if err != nil {
 		t.Fatalf("writeCompactedLogs: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestWriteCompactedLogs_RoundTrip(t *testing.T) {
 }
 
 func TestWriteCompactedTraces_EmptyRows(t *testing.T) {
-	data, err := writeCompactedTraces(nil, 100, 1)
+	data, err := writeCompactedTraces(nil, 100, 1, false)
 	if err != nil {
 		t.Fatalf("writeCompactedTraces with nil rows: %v", err)
 	}
@@ -634,7 +634,7 @@ func TestWriteCompactedTraces_EmptyRows(t *testing.T) {
 }
 
 func TestWriteCompactedLogs_EmptyRows(t *testing.T) {
-	data, err := writeCompactedLogs(nil, 100, 1)
+	data, err := writeCompactedLogs(nil, 100, 1, false)
 	if err != nil {
 		t.Fatalf("writeCompactedLogs with nil rows: %v", err)
 	}
