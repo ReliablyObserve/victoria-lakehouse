@@ -77,6 +77,12 @@ func DataBlockToLogRows(db *logstorage.DataBlock, tenant logstorage.TenantID) []
 				// level, service.name, k8s.*, trace_id, span_id, resource_attr:*,
 				// log_attr:*, … all go through the SAME mapper the insert path
 				// uses.
+				if v == "" {
+					// A block lists every column any of its rows has; a row without
+					// the field reads "" there. Upstream ignores empty-valued fields
+					// at ingest, so "" is an absent field, never a stored one.
+					continue
+				}
 				mapFieldToRow(&row, c.Name, v)
 			}
 		}

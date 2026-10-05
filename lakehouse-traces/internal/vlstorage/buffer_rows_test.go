@@ -57,3 +57,32 @@ func rowsViaBuffer(t *testing.T, lr *logstorage.LogRows) []schema.TraceRow {
 	})
 	return out
 }
+
+// The traces twin: a span without an attribute that another span of its block
+// has is converted without it, not with "" (upstream ignores empty fields).
+func TestBufferRows_AbsentSpanAttributeIsNotWrittenEmpty(t *testing.T) {
+	lr := logstorage.GetLogRows([]string{"resource_attr:service.name"}, nil, nil, nil, "")
+	defer logstorage.PutLogRows(lr)
+	tenant := logstorage.TenantID{AccountID: 4401, ProjectID: 1}
+	lr.MustAdd(tenant, 1000, []logstorage.Field{{Name: "resource_attr:service.name", Value: "svc"}, {Name: "trace_id", Value: "t1"}, {Name: "span_id", Value: "s1"}, {Name: "span_attr:payload.n", Value: "7"}}, -1)
+	lr.MustAdd(tenant, 2000, []logstorage.Field{{Name: "resource_attr:service.name", Value: "svc"}, {Name: "trace_id", Value: "t2"}, {Name: "span_id", Value: "s2"}}, -1)
+	rows := rowsViaBuffer(t, lr)
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	for _, r := range rows {
+		v, has := r.SpanAttributes["payload.n"]
+		switch r.SpanID {
+		case "s1":
+			if v != "7" {
+				t.Errorf("span with payload.n: got %q (%+v)", v, r.SpanAttributes)
+			}
+		case "s2":
+			if has {
+				t.Errorf("span without payload.n carries it as %q: %+v", v, r.SpanAttributes)
+			}
+		default:
+			t.Errorf("unexpected span %+v", r)
+		}
+	}
+}
