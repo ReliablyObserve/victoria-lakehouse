@@ -69,5 +69,5 @@ TestParity_TimeRange/boundary_ns_start_inclusive  # B7: [oldest, oldest+1ns) rea
 # `sort` without `by` and `first|last N` without `by` compare every column in
 # block order; hot lists _stream_id right after _time, cold lists _msg there,
 # so tied rows come out in a different order. Issue #324.
-TestParity_AllColumnSortTieOrder/logs  # B8: first/last/sort over all columns, rows sharing a _time ordered by _msg on cold, by _stream_id on hot
-TestParity_AllColumnSortTieOrder/traces  # B8: first/last/sort over all columns, rows sharing a _time ordered by _msg on cold, by _stream_id on hot
+TestParity_AllColumnSortTieOrder/logs/parquet  # B8: first/last/sort over all columns, rows sharing a _time ordered by _msg on cold, by _stream_id on hot
+TestParity_AllColumnSortTieOrder/traces/parquet  # B8: first/last/sort over all columns, rows sharing a _time ordered by _msg on cold, by _stream_id on hot
