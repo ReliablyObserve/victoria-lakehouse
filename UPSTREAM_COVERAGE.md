@@ -15,7 +15,7 @@ route: 140/140 covered by at least one registry row.
 | route | Source | Rows | Status |
 |---|---|---|---|
 | `/api/v1/validate` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v1_validate.status | ✅ native, verified |
-| `/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v2_logs.count | 🔁 differs: Known divergence from hot, tracked: after the flush Lakehouse adds severity_number=0 to rows VictoriaLogs stores without it (https://github.com/ReliablyObserve/victoria-lakehouse/issues/274). Executed by the ingest parity matrix (docs/ingest-parity.md#known-gaps). |
+| `/api/v2/logs` | `app/vlinsert/datadog/datadog.go` | vl.insert.api_v2_logs.count | ✅ native, verified |
 | `/delete/active_tasks` | `app/vlselect/main.go` | vl.delete.active_tasks.status, lh.delete.upstream_tasks_tenant_scoped | 🟡 declared, not yet executed |
 | `/delete/active_tasks` | `app/vtselect/logsql.go` | vt.delete.active_tasks.status, lh.delete.upstream_tasks_tenant_scoped | 🟡 declared, not yet executed |
 | `/delete/run_task` | `app/vlselect/main.go` | vl.delete.run_task.non_post.differ, vl.delete.run_task.status | 🔁 differs: Upstream VictoriaLogs master (app/vlselect/main.go processDeleteRunTaskRequest) refuses non-POST; the pinned VL v1.52.0 has no such check, so the logs binary enforces it in internaldelete.RunTaskPOSTOnly and answers 405 where the pinned upstream would accept the GET. Redundant once the pin includes the upstream check (drift test TestUpstreamRunTaskStillLacksMethodCheck fails then). (declared, not yet executed) |
@@ -54,7 +54,7 @@ route: 140/140 covered by at least one registry row.
 | `/insert/ready` | `app/vtinsert/main.go` | vt.insert.ready.status | ✅ native, verified |
 | `/insert/splunk/` | `app/vlinsert/main.go` | vl.ingest.splunk_event.alias, vl.ingest.splunk_event.numeric, vl.insert.splunk_event.count, vl.insert.splunk_event_v1.count, vl.insert.splunk_health.status | 🔁 differs: Known divergence from hot, tracked: after the flush Lakehouse adds severity_number="0" to rows VictoriaLogs stores without it (https://github.com/ReliablyObserve/victoria-lakehouse/issues/274). The matrix compares every other field exactly and fails when the divergence goes away (docs/ingest-parity.md#known-gaps). |
 | `/insert/splunk/services/collector/event` | `app/vlinsert/splunk/splunk.go` | vl.ingest.splunk_event.alias, vl.ingest.splunk_event.numeric, vl.insert.splunk_event.count | 🔁 differs: Known divergence from hot, tracked: after the flush Lakehouse adds severity_number="0" to rows VictoriaLogs stores without it (https://github.com/ReliablyObserve/victoria-lakehouse/issues/274). The matrix compares every other field exactly and fails when the divergence goes away (docs/ingest-parity.md#known-gaps). |
-| `/insert/splunk/services/collector/event/1.0` | `app/vlinsert/splunk/splunk.go` | vl.insert.splunk_event_v1.count | 🔁 differs: Known divergence from hot, tracked: after the flush Lakehouse adds severity_number=0 to rows VictoriaLogs stores without it (https://github.com/ReliablyObserve/victoria-lakehouse/issues/274). Executed by the ingest parity matrix (docs/ingest-parity.md#known-gaps). |
+| `/insert/splunk/services/collector/event/1.0` | `app/vlinsert/splunk/splunk.go` | vl.insert.splunk_event_v1.count | ✅ native, verified |
 | `/insert/splunk/services/collector/health` | `app/vlinsert/splunk/splunk.go` | vl.insert.splunk_health.status | ✅ native, verified |
 | `/internal/delete/active_tasks` | `app/vlselect/internalselect/internalselect.go` | vl.internal.delete_active_tasks.status | 🟡 declared, not yet executed |
 | `/internal/delete/active_tasks` | `app/vtselect/internalselect/internalselect.go` | vt.internal.delete_active_tasks.status | 🟡 declared, not yet executed |
@@ -150,9 +150,9 @@ route: 140/140 covered by at least one registry row.
 | `/select/vmui` | `app/vtselect/main.go` | vt.select.vmui.basic | 🟡 declared, not yet executed |
 | `/select/vmui/` | `app/vlselect/main.go` | vl.select.vmui_slash.basic | 🟡 declared, not yet executed |
 | `/select/vmui/` | `app/vtselect/main.go` | vt.select.vmui_slash.basic | 🟡 declared, not yet executed |
-| `/services/collector/` | `app/vlinsert/main.go` | vl.insert.services_collector.status, vl.insert.services_collector_event.count, vl.insert.services_collector_event_v1.count, vl.insert.services_collector_health.status | 🔁 differs: Known divergence from hot, tracked: after the flush Lakehouse adds severity_number=0 to rows VictoriaLogs stores without it (https://github.com/ReliablyObserve/victoria-lakehouse/issues/274). Executed by the ingest parity matrix (docs/ingest-parity.md#known-gaps). |
-| `/services/collector/event` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_event.count | 🔁 differs: Known divergence from hot, tracked: after the flush Lakehouse adds severity_number=0 to rows VictoriaLogs stores without it (https://github.com/ReliablyObserve/victoria-lakehouse/issues/274). Executed by the ingest parity matrix (docs/ingest-parity.md#known-gaps). |
-| `/services/collector/event/1.0` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_event_v1.count | 🔁 differs: Known divergence from hot, tracked: after the flush Lakehouse adds severity_number=0 to rows VictoriaLogs stores without it (https://github.com/ReliablyObserve/victoria-lakehouse/issues/274). Executed by the ingest parity matrix (docs/ingest-parity.md#known-gaps). |
+| `/services/collector/` | `app/vlinsert/main.go` | vl.insert.services_collector.status, vl.insert.services_collector_event.count, vl.insert.services_collector_event_v1.count, vl.insert.services_collector_health.status | ✅ native, verified |
+| `/services/collector/event` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_event.count | ✅ native, verified |
+| `/services/collector/event/1.0` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_event_v1.count | ✅ native, verified |
 | `/services/collector/health` | `app/vlinsert/splunk/splunk.go` | vl.insert.services_collector_health.status | ✅ native, verified |
 
 ## Upstream pipe (50)

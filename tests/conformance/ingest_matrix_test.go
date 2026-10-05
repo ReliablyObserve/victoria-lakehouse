@@ -14,6 +14,40 @@ import (
 	im "github.com/ReliablyObserve/victoria-lakehouse/tests/ingestmatrix"
 )
 
+// A field-only difference is not a count difference. These existing count
+// obligations remain strict; the new ndjson cells describe field divergence.
+func TestIngestMatrix_FieldGapsPreserveLegacyCountObligations(t *testing.T) {
+	reg, err := registry.LoadDir("registry/rows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{
+		"vl.insert.jsonline.count", "vl.insert.native.count", "vl.insert.multitenant_native.count",
+		"vl.insert.elasticsearch_bulk.count", "vl.insert.loki_push_json.count", "vl.insert.loki_push_protobuf.count",
+		"vl.insert.otel_logs.count", "vl.insert.journald.count", "vl.insert.splunk_event.count",
+		"vl.insert.splunk_event_v1.count", "vl.insert.services_collector_event.count", "vl.insert.services_collector_event_v1.count",
+		"vl.insert.datadog_logs.count", "vl.insert.api_v2_logs.count", "vl.internal.insert.count",
+	} {
+		row := reg.ByID[id]
+		if row == nil {
+			t.Fatalf("missing existing count obligation %s", id)
+		}
+		if row.Compare == nil || row.Compare.Type != "count" || row.Expect != registry.ExpectPass || row.Pending {
+			t.Errorf("%s must execute the unchanged passing count obligation", id)
+		}
+		want := registry.TargetHot
+		if id == "vl.internal.insert.count" {
+			want = registry.TargetGlobal
+		}
+		if len(row.Targets) != 1 || row.Targets[0] != want {
+			t.Errorf("%s targets %v, want [%s]", id, row.Targets, want)
+		}
+		if row.DifferNote != "" || !strings.Contains(row.Notes, "Separate vl.ingest.* ndjson") {
+			t.Errorf("%s must distinguish field notes from count expectations", id)
+		}
+	}
+}
+
 // The ingest parity matrix (tests/ingestmatrix, run by tests/e2e/ingest_matrix_test.go)
 // must follow the upstream ingest surface. These tests are its drift gate:
 //
