@@ -156,7 +156,7 @@ func isOwnMetadata(key string) bool {
 
 // foreignPmetaRe matches the _pmeta.bundle sidecars written under the default
 // tenant's prefix on behalf of every tenant, tenant path repeated.
-// KNOWN GAP #372: they belong under the owning tenant's prefix.
+// KNOWN GAP #307: they belong under the owning tenant's prefix.
 var foreignPmetaRe = regexp.MustCompile(`^0/0/(logs|traces)/\d+/\d+/(logs|traces)/.*_pmeta\.bundle$`)
 
 // parquetKeys returns the Parquet objects among keys.
@@ -219,7 +219,7 @@ func TestMultitenancy_S3ParquetFileExtension(t *testing.T) {
 			switch {
 			case strings.HasSuffix(key, ".parquet"), isOwnMetadata(key):
 			case foreignPmetaRe.MatchString(key):
-				t.Logf("KNOWN GAP #372: %s is another tenant's sidecar under %s", key, prefix)
+				t.Logf("KNOWN GAP #307: %s is another tenant's sidecar under %s", key, prefix)
 			default:
 				t.Errorf("unexpected non-parquet object under %s: %s", prefix, key)
 			}
