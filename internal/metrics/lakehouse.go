@@ -521,9 +521,12 @@ var (
 	QueryPeerErrorsTotal      = NewCounterVec("lakehouse_query_peer_errors_total", "type")
 	BufferBridgeFallbackTotal = NewCounter("lakehouse_buffer_bridge_fallback_total")
 	// BufferBridgeErrors counts peer answers the buffer bridge dropped:
-	// request (unreachable, timed out), status (non-200), scope (the peer did
-	// not echo the tenant scope), decode (the row stream broke off). A dropped
-	// answer leaves that peer's unflushed rows out of the result.
+	// request (unreachable, timed out), auth (the peer refused this pod's
+	// peer key with 401/403: peer.auth_key differs between pods, or an
+	// all_tenants read reached a pod without one), status (any other non-200),
+	// scope (the peer did not echo the tenant scope), decode (the row stream
+	// broke off). A dropped answer leaves that peer's unflushed rows out of
+	// the result.
 	BufferBridgeErrors = NewCounterVec("lakehouse_buffer_bridge_errors_total", "reason")
 )
 

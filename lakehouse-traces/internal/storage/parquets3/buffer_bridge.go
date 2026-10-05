@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -96,6 +97,11 @@ type BufferBridge struct {
 	// unflushed buffer — queries against the last <flush-interval>
 	// window return zero data until the next flush.
 	selfEndpoint string
+
+	// authKey is peer.auth_key, sent as Authorization: Bearer on every
+	// request. An insert pod with a key refuses a request without it (401),
+	// and every pod refuses all_tenants=true to a caller that has none.
+	authKey string
 }
 
 // NewBufferBridge creates a BufferBridge configured for the given mode.
@@ -107,6 +113,26 @@ func NewBufferBridge(cfg *config.SelectConfig, mode config.Mode) *BufferBridge {
 			Timeout: cfg.BufferQueryTimeout,
 		},
 	}
+}
+
+// newBufferBridgeFor is the bridge a Storage built from cfg reads the insert
+// pods' unflushed rows with: nil unless the pod serves selects with
+// select.buffer_query_enabled, and carrying peer.auth_key, the key the insert
+// pods' /internal/buffer/query checks.
+func newBufferBridgeFor(cfg *config.Config) *BufferBridge {
+	if !cfg.SelectEnabled() || !cfg.Select.BufferQueryEnabled {
+		return nil
+	}
+	b := NewBufferBridge(&cfg.Select, cfg.Mode)
+	b.SetAuthKey(cfg.Peer.AuthKey)
+	return b
+}
+
+// SetAuthKey sets the peer key the bridge presents to the insert pods.
+func (b *BufferBridge) SetAuthKey(key string) {
+	b.mu.Lock()
+	b.authKey = key
+	b.mu.Unlock()
 }
 
 // bridgeEndpoint makes a discovered "host:port" a URL the bridge can request:
@@ -213,6 +239,7 @@ func queryPeers[T any](b *BufferBridge, ctx context.Context, startNs, endNs int6
 	}
 	b.mu.RLock()
 	eps := b.getQueryEndpoints()
+	authKey := b.authKey
 	b.mu.RUnlock()
 	if len(eps) == 0 {
 		return nil, nil
@@ -227,7 +254,7 @@ func queryPeers[T any](b *BufferBridge, ctx context.Context, startNs, endNs int6
 			wg.Add(1)
 			go func(endpoint string, sub tenantScope) {
 				defer wg.Done()
-				rows, segs, err := fetchPeer[T](b, ctx, endpoint, startNs, endNs, sub)
+				rows, segs, err := fetchPeer[T](b, ctx, endpoint, authKey, startNs, endNs, sub)
 				if err != nil {
 					if ctx.Err() == nil {
 						logger.Warnf("buffer bridge: %s; the peer's unflushed rows are missing from this answer", err)
@@ -249,10 +276,13 @@ func queryPeers[T any](b *BufferBridge, ctx context.Context, startNs, endNs int6
 	return all, nonces
 }
 
-func fetchPeer[T any](b *BufferBridge, ctx context.Context, endpoint string, startNs, endNs int64, scope tenantScope) ([]T, []string, error) {
+func fetchPeer[T any](b *BufferBridge, ctx context.Context, endpoint, authKey string, startNs, endNs int64, scope tenantScope) ([]T, []string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.bufferQueryURL(endpoint, startNs, endNs, scope), nil)
 	if err != nil {
 		return nil, nil, err
+	}
+	if authKey != "" {
+		req.Header.Set("Authorization", "Bearer "+authKey)
 	}
 	resp, err := b.client.Do(req)
 	if err != nil {
@@ -261,7 +291,17 @@ func fetchPeer[T any](b *BufferBridge, ctx context.Context, endpoint string, sta
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden:
+		// The peer refused this pod's credential: peer.auth_key differs
+		// between the pods, or an all_tenants read reached a pod without
+		// one. That is a configuration error, not a smaller answer, and it
+		// is counted apart from other failures so it can be alerted on.
+		metrics.BufferBridgeErrors.Inc("auth")
+		return nil, nil, fmt.Errorf("buffer query to %s refused this pod's peer key (%d %s): set the same peer.auth_key on every pod",
+			endpoint, resp.StatusCode, readErrorBody(resp))
+	default:
 		metrics.BufferBridgeErrors.Inc("status")
 		return nil, nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
 	}
@@ -284,4 +324,12 @@ func fetchPeer[T any](b *BufferBridge, ctx context.Context, endpoint string, sta
 		rows = append(rows, row)
 	}
 	return rows, buffer.ParseSegments(resp.Header.Get(buffer.SegmentsHeader)), nil
+}
+
+// readErrorBody returns the first line of an error answer, bounded, for the
+// log line that reports it.
+func readErrorBody(resp *http.Response) string {
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+	line, _, _ := strings.Cut(strings.TrimSpace(string(b)), "\n")
+	return line
 }

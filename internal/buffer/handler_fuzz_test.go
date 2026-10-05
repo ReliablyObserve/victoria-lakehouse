@@ -163,10 +163,9 @@ func FuzzHandlerTenantParams(f *testing.F) {
 			t.Fatalf("handler answered 200 without declaring the tenant it filtered to (account=%q project=%q)", account, project)
 		}
 		if scope == AllTenantsScope {
-			if q.Get("all_tenants") != "true" || q.Has("account_id") || q.Has("project_id") {
-				t.Fatalf("handler widened to all tenants without an exact all_tenants=true request: %s", req.URL.RawQuery)
-			}
-			return // a cross-tenant answer may carry any tenant's rows
+			// This handler has no peer key, so no caller can prove it is a
+			// peer and every-tenant answers are never served (#384).
+			t.Fatalf("handler without a peer key served all tenants: %s", req.URL.RawQuery)
 		}
 		dec := json.NewDecoder(rec.Body)
 		for dec.More() {

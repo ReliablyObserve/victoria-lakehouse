@@ -229,7 +229,7 @@ Peers are discovered via Kubernetes headless service DNS. The `DiscoveryConfig.P
 
 | Key | Default | Config file | Flags | Description |
 |---|---|---|---|---|
-| `peer.auth_key` | `""` | set |  | The bearer key protecting the peer cache HTTP endpoints. |
+| `peer.auth_key` | `""` | set | `-lakehouse.peer.auth-key` | The bearer key of the pods' internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync); empty serves them without a credential. |
 | `peer.timeout` | `5s` | set |  | Bounds a single peer cache fetch. |
 | `peer.max_connections` | `32` | set |  | Caps HTTP connections per peer. |
 | `discovery.peer_headless_service` | `""` | set |  | The Kubernetes headless service that resolves the peer fleet for the distributed cache and stats gossip. |

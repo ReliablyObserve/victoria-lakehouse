@@ -632,7 +632,9 @@ type PrefetchConfig struct {
 
 // PeerConfig controls the distributed peer cache.
 type PeerConfig struct {
-	// AuthKey is the bearer key protecting the peer cache HTTP endpoints.
+	// AuthKey is the bearer key of the pods' internal endpoints (the buffer
+	// bridge, the peer cache, manifest, stats and tenant sync); empty serves
+	// them without a credential.
 	AuthKey string `yaml:"auth_key"`
 	// Timeout bounds a single peer cache fetch.
 	Timeout time.Duration `yaml:"timeout"`

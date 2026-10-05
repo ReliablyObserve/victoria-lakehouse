@@ -19,9 +19,10 @@ import (
 //
 // -internaldelete.enable and -delete.enable are honoured: /internal/delete/* and
 // /delete/* are served through vlselect.RequestHandler (mountInternalProtocol,
-// mountPublicDelete).
+// mountPublicDelete). -internalselect.disable is honoured too: it turns off
+// /internal/select/* (mountInternalProtocol) and /internal/buffer/query
+// (buffer.Gate), the two protocols other nodes read this node's data with.
 var vlselectFlagsNotHonoured = []string{
-	"internalselect.disable",
 	"search.logSlowQueryDuration",
 	"search.maxConcurrentRequests",
 	"search.maxQueryDuration",
