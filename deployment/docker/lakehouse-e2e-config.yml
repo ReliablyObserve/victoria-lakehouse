@@ -19,6 +19,13 @@ lakehouse:
   insert:
     buffer_flush_interval: 2m
 
+  # The key the pods require on their /internal/* peer endpoints, and that
+  # every select needs to read the insert buffer of all tenants at once
+  # (docs/security.md). The e2e tests send it as LH_PEER_AUTH_KEY
+  # (.github/workflows/e2e.yaml), so the stack runs with peer auth on.
+  peer:
+    auth_key: e2e-peer-key
+
   retention:
     enabled: true
     default: "30d"

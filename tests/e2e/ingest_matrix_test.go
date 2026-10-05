@@ -795,10 +795,7 @@ func (r *matrixRun) bufferHeld(t *testing.T, s *caseState) int {
 	if err != nil {
 		t.Fatalf("buffer query on %s: %v", r.lh.base, err)
 	}
-	if b := bearer(); b != "" { // a stack whose pods carry peer.auth_key
-		req.Header.Set("Authorization", b)
-	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(withPeerKey(req))
 	if err != nil {
 		t.Fatalf("buffer query on %s: %v", r.lh.base, err)
 	}

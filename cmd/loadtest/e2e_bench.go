@@ -252,6 +252,7 @@ func runE2EBench(cfg E2EBenchConfig) E2EReport {
 func clearCache(target string) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequest(http.MethodPost, target+"/internal/cache/clear", nil)
+	withPeerKey(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("  Warning: could not clear cache: %v\n", err)
@@ -259,7 +260,19 @@ func clearCache(target string) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode/100 != 2 {
+		fmt.Printf("  Warning: could not clear cache: status %d (set LH_PEER_AUTH_KEY to the stack's peer.auth_key); the cold test runs warm\n", resp.StatusCode)
+		return
+	}
 	fmt.Println("  Cache cleared for cold test")
+}
+
+// withPeerKey presents the stack's peer key (LH_PEER_AUTH_KEY), which the pods
+// require on /internal/* when peer.auth_key is set.
+func withPeerKey(req *http.Request) {
+	if k := os.Getenv("LH_PEER_AUTH_KEY"); k != "" {
+		req.Header.Set("Authorization", "Bearer "+k)
+	}
 }
 
 func runE2ESuite(target string, scenarios []E2EScenario, iterations, warmup int) []E2EResult {

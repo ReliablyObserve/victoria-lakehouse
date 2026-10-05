@@ -141,7 +141,7 @@ const seededBefore = 2 * time.Hour
 
 // waitBufferOlderThanDrained waits until the binary's insert buffer holds no
 // row older than seededBefore, read through the endpoint select pods read it
-// with (/internal/buffer/query, every tenant): from then on such rows are
+// with (/internal/buffer/query, every tenant, with the peer key): from then on such rows are
 // answered from Parquet only. It fails the run when they are still buffered
 // after manifestWait.
 func waitBufferOlderThanDrained(baseURL, label string) {
@@ -154,7 +154,13 @@ func waitBufferOlderThanDrained(baseURL, label string) {
 	last := "no answer"
 	for time.Since(start) < manifestWait {
 		end := time.Now().Add(-seededBefore).UnixNano()
-		resp, err := client.Get(fmt.Sprintf("%s/internal/buffer/query?start=0&end=%d&mode=%s&tenant_scope=v1&all_tenants=true", baseURL, end, mode))
+		// every tenant at once is served only to a caller presenting the
+		// stack's peer key (docs/security.md)
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/internal/buffer/query?start=0&end=%d&mode=%s&tenant_scope=v1&all_tenants=true", baseURL, end, mode), nil)
+		var resp *http.Response
+		if err == nil {
+			resp, err = client.Do(withPeerKey(req))
+		}
 		if err == nil {
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()

@@ -772,6 +772,7 @@ func runComparePerfCold(lhTarget string, scenarios []CompareScenario, iterations
 func clearCacheSilent(target string) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequest(http.MethodPost, target+"/internal/cache/clear", nil)
+	withPeerKey(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return

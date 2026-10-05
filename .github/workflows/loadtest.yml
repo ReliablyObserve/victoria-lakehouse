@@ -50,6 +50,10 @@ jobs:
           docker compose -f deployment/docker/docker-compose-e2e.yml ps
           exit 1
       - name: Run load tests
+        env:
+          # peer.auth_key of the e2e stack (deployment/docker/lakehouse-e2e-config.yml):
+          # the cold runs clear the cache through /internal/cache/clear, which needs it.
+          LH_PEER_AUTH_KEY: e2e-peer-key
         run: |
           MODE="${{ github.event.inputs.mode || 'all' }}"
           go run ./cmd/loadtest --target=http://localhost:29428 --mode="$MODE" --duration=120s --output=loadtest-results.json

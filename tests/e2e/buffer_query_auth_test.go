@@ -20,10 +20,10 @@ import (
 // The insert pods serve their unflushed rows to the select pods' buffer
 // bridge at /internal/buffer/query. Who may read what:
 //
-//   - LH_PEER_AUTH_KEY empty (the CI e2e stack sets no peer.auth_key): a
+//   - LH_PEER_AUTH_KEY empty (a stack whose pods carry no peer.auth_key): a
 //     single-tenant request is answered with that tenant's rows only, and
 //     all_tenants=true is refused with 403 to every caller;
-//   - LH_PEER_AUTH_KEY set (a stack whose pods carry that peer.auth_key):
+//   - LH_PEER_AUTH_KEY set (the CI e2e stack, whose pods carry that peer.auth_key):
 //     every request needs Authorization: Bearer <key> (401 otherwise), and
 //     all_tenants=true is served with it.
 //
@@ -36,7 +36,6 @@ import (
 // auth on, a select pod sees every unflushed row.
 
 var (
-	peerAuthKey     = envOrDefault("LH_PEER_AUTH_KEY", "")
 	logsInsertURL   = envOrDefault("LOGS_INSERT_URL", logsBaseURL)
 	tracesInsertURL = envOrDefault("TRACES_INSERT_URL", tracesBaseURL)
 	// bufferAuthOrgID is a configured alias of the e2e stack and its pair.
@@ -186,13 +185,6 @@ func markerRows(rows []bufferRow, marker string) []bufferRow {
 		}
 	}
 	return out
-}
-
-func bearer() string {
-	if peerAuthKey == "" {
-		return ""
-	}
-	return "Bearer " + peerAuthKey
 }
 
 // selectCount counts the marker's rows through the select path as ten.

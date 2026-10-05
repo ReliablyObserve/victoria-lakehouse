@@ -133,6 +133,7 @@ jobs:
           TRACES_BASE_URL: http://localhost:20428
           LOKI_PROXY_URL: http://localhost:23100
           VLSELECT_URL: http://localhost:29471
+          LH_PEER_AUTH_KEY: e2e-peer-key
           VTSELECT_URL: http://localhost:20471
           S3_URL: http://localhost:29000
           S3_BUCKET: obs-archive
