@@ -19,7 +19,7 @@ sends the **same payload** to the hot binary and to Lakehouse and checks, in ord
 | Step | Check |
 |---|---|
 | `ingest` | status code and body of the ingest answer are equal (ES `took` aside); for a payload upstream refuses, both refuse it the same way. Right after the cell's own write the ingest counters are checked: `vl_rows_ingested_total{type=...}` / `vt_rows_ingested_total{type=...}` moved on hot and on Lakehouse, and so did `lakehouse_insert_rows_total`. The counters are per-protocol series of the whole process, not per tenant, so this is a **lower bound** (moved by at least the rows the cell wrote). |
-| `buffer` | each cell is queried before later protocol writes; Lakehouse equals hot field for field (`_stream_id` and `_time` included), apart from declared gaps, and fresh S3 scans before and after that observation must find zero marker rows. A flush already on S3 fails the preflush observation |
+| `buffer` | each cell is queried before later protocol writes; Lakehouse equals hot field for field (`_stream_id` and `_time` included), apart from declared gaps, and Lakehouse's insert buffer (`/internal/buffer/query`) must hold every row of the cell before and after that observation, so the read was answered from the buffer. S3 may already hold the rows: a drained segment keeps serving them, and its objects stay out of the scan, through its grace period |
 | `parquet` | a standard Parquet reader checks exact marker/span counts, every captured hot field and value, timestamps in nanoseconds, numeric tenant columns (also on trace-index rows), promoted scalars and spilled MAP values. Conflicting duplicate representations, extra fields and malformed MAPs fail. The exact documented #332 message value is the sole physical-value exception below. Lakehouse is compared with hot again once `/internal/buffer/query` reports that the insert buffer no longer holds the cell's rows, so that comparison reads Parquet: a drained buffer segment stays readable for its grace period (90 s in the e2e stack) and is answered by upstream's engine until it is removed |
 | `stable` | established cells are sampled throughout later writes and flush polling, then repeatedly over a shared 10 s window. A missing, duplicate or changed result fails on its first sampled observation. Logs report sample counts and the largest observed gap between samples; changes between samples are not ruled out |
 | `known_gaps` | every gap a cell declares was observed in that cell (see Known gaps) |
@@ -33,7 +33,7 @@ and persisted raw parity, and checks negative reads. It uses nonhexadecimal trac
 by the native parser; it does not send those IDs through OTLP.
 
 Parquet-only gaps require observed persisted marker rows. A cell's preflush gate fails if
-those rows appear before its buffer observation completes.
+its rows leave the insert buffer before its buffer observation completes.
 
 The non-data ingest routes (readiness, health, and the Elasticsearch, Datadog and Splunk
 compatibility stubs) are probed by `TestIngestMatrix_Probes`: same status and body on both sides.
