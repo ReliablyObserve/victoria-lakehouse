@@ -215,6 +215,7 @@ type Registry struct {
 	ByID map[string]*Row
 }
 
+//nolint:gocyclo // one flat check per row field and rule, in field order; splitting it would scatter the rules a row must satisfy
 func (r *Row) Validate() error {
 	var errs []string
 	add := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }

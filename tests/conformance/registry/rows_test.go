@@ -289,7 +289,7 @@ func leadingIdentifier(s string) string {
 	end := 0
 	for end < len(s) {
 		c := s[end]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
 			break
 		}
 		end++

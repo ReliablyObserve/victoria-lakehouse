@@ -172,7 +172,7 @@ func TestExtractVLRoutes_UnreadableSubdir(t *testing.T) {
 
 	// Set up cleanup to restore permissions
 	t.Cleanup(func() {
-		os.Chmod(lockedDir, 0755)
+		_ = os.Chmod(lockedDir, 0755)
 	})
 
 	// chmod 0000 the directory

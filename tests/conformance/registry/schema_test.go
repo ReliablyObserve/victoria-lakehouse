@@ -222,10 +222,11 @@ func TestRow_Validate_AllKinds(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			r := validRow()
 			r.Kind = kind
-			if kind == KindUI {
+			switch kind {
+			case KindUI:
 				r.Request = nil
 				r.Compare.Type = "ui"
-			} else if kind == KindFlag {
+			case KindFlag:
 				r.Request = nil
 				r.Seed = nil
 			}
@@ -244,10 +245,11 @@ func TestRow_Validate_AllExpectValues(t *testing.T) {
 			if expect == ExpectDiffer {
 				r.DifferNote = "some note"
 			}
-			if expect == ExpectAbsent {
+			switch expect {
+			case ExpectAbsent:
 				r.Seed = nil
 				r.Compare.Type = "absent"
-			} else if expect == ExpectUnsupported {
+			case ExpectUnsupported:
 				r.Seed = nil
 			}
 			if err := r.Validate(); err != nil {

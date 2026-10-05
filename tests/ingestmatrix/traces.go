@@ -24,7 +24,6 @@ import (
 
 const spans3 = 3
 
-
 var msgGap = []string{"traces-default-msg-value"}
 
 func tracesCases() []Case {

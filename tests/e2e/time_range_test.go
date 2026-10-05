@@ -75,8 +75,8 @@ func TestTimeRange_BoundaryPrecision(t *testing.T) {
 
 	var startT, endT time.Time
 	var startNano, endNano int64
-	fmt.Sscanf(params.Get("start"), "%d", &startNano)
-	fmt.Sscanf(params.Get("end"), "%d", &endNano)
+	_, _ = fmt.Sscanf(params.Get("start"), "%d", &startNano)
+	_, _ = fmt.Sscanf(params.Get("end"), "%d", &endNano)
 	startT = time.Unix(0, startNano).UTC()
 	endT = time.Unix(0, endNano).UTC()
 
@@ -313,7 +313,7 @@ var _ = func() bool { assertInRange(nil, "", 0, 0, 0); return true }
 // handling (used only in test helpers above where errors are already checked).
 func mustSscanInt64(s string) int64 {
 	var v int64
-	fmt.Sscanf(s, "%d", &v)
+	_, _ = fmt.Sscanf(s, "%d", &v)
 	return v
 }
 

@@ -137,24 +137,6 @@ func assertMetricWithLabelExists(t *testing.T, metrics map[string][]metricLine, 
 	t.Errorf("metric %q with %s=%q not found", name, labelKey, labelValue)
 }
 
-func assertMetricWithLabelGE(t *testing.T, metrics map[string][]metricLine, name, labelKey, labelValue string, minVal float64) {
-	t.Helper()
-	lines, ok := metrics[name]
-	if !ok {
-		t.Errorf("metric %q not found", name)
-		return
-	}
-	for _, l := range lines {
-		if l.labels[labelKey] == labelValue {
-			if l.value < minVal {
-				t.Errorf("metric %q{%s=%q} = %f, want >= %f", name, labelKey, labelValue, l.value, minVal)
-			}
-			return
-		}
-	}
-	t.Errorf("metric %q with %s=%q not found", name, labelKey, labelValue)
-}
-
 // =============================================================================
 // HTTP / RED Metrics
 // =============================================================================

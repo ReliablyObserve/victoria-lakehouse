@@ -653,7 +653,6 @@ func TestMultitenancy_ConcurrentQueriesBothEndpoints(t *testing.T) {
 	type result struct {
 		name  string
 		count int
-		err   error
 	}
 
 	ch := make(chan result, 2)

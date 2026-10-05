@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -47,26 +46,6 @@ func httpGetWithHeaders(t *testing.T, baseURL, path string, params map[string]st
 		t.Fatalf("reading body from %s: %v", u, err)
 	}
 	return resp.StatusCode, body
-}
-
-// countNDJSONLines counts non-empty newline-delimited JSON lines.
-func countNDJSONLines(data []byte) int {
-	count := 0
-	start := 0
-	for i := 0; i <= len(data); i++ {
-		if i == len(data) || data[i] == '\n' {
-			line := data[start:i]
-			if len(line) > 0 {
-				// quick check: valid JSON object?
-				var obj map[string]any
-				if json.Unmarshal(line, &obj) == nil {
-					count++
-				}
-			}
-			start = i + 1
-		}
-	}
-	return count
 }
 
 // ---------------------------------------------------------------------------
