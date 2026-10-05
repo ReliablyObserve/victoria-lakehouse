@@ -209,24 +209,55 @@ def per_group(keys):
     return g
 
 
+PARTITION_RE = __import__("re").compile(r"(dt=[^/]+/hour=\d+)")
+
+
+def raw_partitions(fs):
+    """{(tenant prefix, signal): {partition: [relative keys]}} of the raw layer (obs-raw)."""
+    out = {}
+    for k in parquet_keys(fs, "obs-raw"):
+        rel = k.split("/", 1)[1]
+        parts = rel.split("/")
+        m = PARTITION_RE.search(rel)
+        if m:
+            out.setdefault(("/".join(parts[0:2]), parts[2]), {}).setdefault(m.group(1), []).append(rel)
+    return out
+
+
+def mergeable_groups(fs):
+    """Groups that hold at least one partition with two or more raw objects: the only ones
+    compaction may rewrite. A lone object in a partition is never rewritten (#343)."""
+    return {g for g, parts in raw_partitions(fs).items() if any(len(v) >= 2 for v in parts.values())}
+
+
 def verify_compacted():
-    """The compacted layer is complete and consistent: every tenant/signal group has compacted
-    objects, and the Parquet rows still equal Lakehouse's own count (no row lost, none doubled by a
-    half-finished rewrite)."""
+    """The compacted layer is complete and consistent:
+      * every group with a mergeable partition (two or more raw objects) has compacted objects;
+      * every partition that held a single raw object still holds that same object (a lone file is
+        never rewritten, #343);
+      * the Parquet rows still equal Lakehouse's own count (no row lost, none doubled by a
+        half-finished rewrite)."""
     fs = lib.s3fs_client()
     fs.invalidate_cache()
     keys = parquet_keys(fs, "obs-archive")
+    archive_rel = {k.split("/", 1)[1] for k in keys}
+    raw = raw_partitions(fs)
+    mergeable = mergeable_groups(fs)
     want = lh_counts()
     bad = []
     for (prefix, sig), n in want.items():
         ks = [k for k in keys if k.startswith("obs-archive/%s/%s/" % (prefix, sig))]
         compacted = [k for k in ks if "/compacted-" in k]
         got = rows_in(fs, ks)
-        print("compacted layer %-22s files=%-3d compacted=%-3d rows=%d (lakehouse %d)" % ("%s/%s" % (prefix, sig), len(ks), len(compacted), got, n))
-        if not compacted or got != n:
-            bad.append((prefix, sig, len(compacted), got, n))
+        lone = [v[0] for v in raw.get((prefix, sig), {}).values() if len(v) == 1]
+        lone_rewritten = [k for k in lone if k not in archive_rel]
+        needs_merge = (prefix, sig) in mergeable
+        print("compacted layer %-22s files=%-3d compacted=%-3d lone=%-3d mergeable=%-5s rows=%d (lakehouse %d)"
+              % ("%s/%s" % (prefix, sig), len(ks), len(compacted), len(lone), needs_merge, got, n))
+        if (needs_merge and not compacted) or lone_rewritten or got != n:
+            bad.append((prefix, sig, len(compacted), len(lone_rewritten), got, n))
     if bad:
-        sys.exit("compacted layer is not complete and consistent: %s" % bad)
+        sys.exit("compacted layer is not complete and consistent (prefix, signal, compacted, lone rewritten, rows, lakehouse): %s" % bad)
 
 
 def dump(outdir):
@@ -265,7 +296,7 @@ def wait_compacted(timeout=300):
         print("compaction: %d of %d raw objects replaced, %d objects now" % (gone, len(raw), len(cur)))
         # Stable for two polls and something was compacted for every tenant/signal group.
         groups_rewritten = {"/".join(k.split("/")[:3]) for k in (raw - cur)}
-        want_groups = {"%s/%s" % (t["prefix"], s) for t in lib.TENANTS.values() for s in lib.SIGNALS}
+        want_groups = {"%s/%s" % g for g in mergeable_groups(fs)}
         if want_groups <= groups_rewritten:
             time.sleep(10)
             fs.invalidate_cache()

@@ -18,7 +18,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 P=${COMPOSE_PROJECT_NAME:-lhreaders}
 PY=${PYTHON:-python3}
-FLUSH_WAIT=${FLUSH_WAIT:-20}
 OUT=${OUT:-$PWD/.out}
 export MANIFEST_DIR=${MANIFEST_DIR:-$OUT/manifest}
 rm -rf "$MANIFEST_DIR"; mkdir -p "$MANIFEST_DIR"; chmod 777 "$MANIFEST_DIR"   # the datagen image runs as a non-root user
@@ -37,6 +36,9 @@ for round in 1 2; do
   gen $round big $((3000000 + round)) --logs=300 --traces=60 --hours-back=48 --account-id=3000000000 --project-id=0
   gen $round alias $((1001000 + round)) --logs=300 --traces=60 --hours-back=48 --org-id=acme-corp
   "$PY" golden.py send $round "$MANIFEST_DIR"
-  [ "$round" = 1 ] && sleep "$FLUSH_WAIT"
+  # Round 2 starts only after round 1 is in Parquet (insert buffers drained, Parquet rows equal
+  # Lakehouse's count). With the durable insert buffer, a fixed sleep let both rounds land in one
+  # segment, so a tenant could end up with one object per hour and no compaction input at all.
+  if [ "$round" = 1 ]; then "$PY" fixture.py wait-flushed; fi
 done
 echo "ingest done"
