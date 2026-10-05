@@ -63,7 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Closing the insert buffer waits for the queries reading it (both binaries, closes #351).** A query still
   inside the buffer's upstream storage when the pod shut down made upstream panic ("BUG: there are 1 users of
   partition"), and a query that started after the close read a closed storage and answered nothing. Closing now
-  waits for the queries in flight, and a later query gets an error ("insert buffer is closed").
+  waits for the queries in flight, and a later query gets an error ("insert buffer is closed"). Upstream closed a
+  partition's index before stopping the in-memory merges that read it, a data race the race detector reported when a
+  buffer segment was closed during a merge; `patches/vl-*/vl-partition-close-order.patch` closes the data first.
 
 - **Select pods see the unflushed rows of the insert pods (both binaries).** Every query a select pod answers
   also asks the insert pods for the rows they have not written to S3 yet (the buffer bridge), but it never
