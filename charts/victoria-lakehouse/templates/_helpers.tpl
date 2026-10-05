@@ -76,12 +76,16 @@ Container image for a signal.
 Usage: {{ include "victoria-lakehouse.signalImage" (dict "root" . "signal" "logs") }}
 */}}
 {{- define "victoria-lakehouse.signalImage" -}}
-{{- $tag := default .root.Chart.AppVersion .root.Values.image.tag -}}
+{{- $repository := .root.Values.image.logs.repository -}}
 {{- if eq .signal "traces" -}}
-{{- printf "%s:%s" .root.Values.image.traces.repository $tag -}}
-{{- else -}}
-{{- printf "%s:%s" .root.Values.image.logs.repository $tag -}}
+{{- $repository = .root.Values.image.traces.repository -}}
 {{- end -}}
+{{- $defaultTag := .root.Chart.AppVersion -}}
+{{- $publishedRepository := printf "ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-%s" .signal -}}
+{{- if eq $repository $publishedRepository -}}
+{{- $defaultTag = printf "v%s" .root.Chart.AppVersion -}}
+{{- end -}}
+{{- printf "%s:%s" $repository (default $defaultTag .root.Values.image.tag) -}}
 {{- end }}
 
 {{/*

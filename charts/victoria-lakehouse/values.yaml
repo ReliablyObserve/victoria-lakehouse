@@ -8,9 +8,9 @@ global:
 
 image:
   logs:
-    repository: ghcr.io/reliablyobserve/lakehouse-logs
+    repository: ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-logs
   traces:
-    repository: ghcr.io/reliablyobserve/lakehouse-traces
+    repository: ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-traces
   tag: ""
   pullPolicy: IfNotPresent
 

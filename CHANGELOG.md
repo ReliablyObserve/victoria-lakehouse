@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Helm defaults use the published container image references for both signals. Logs and traces now point to the release repository namespace and prepend the release tag prefix to the chart app version only for each signal's canonical published repository. Custom and legacy repositories retain the unprefixed app-version fallback when the image tag is blank; explicit tags remain unchanged. Future releases publish canonical and legacy flat GHCR repositories with prefixed, unprefixed and latest tags from the same multiarchitecture build for both default and FIPS variants, without backfilling historical versions; Docker Hub tags remain unchanged. Installation examples use the chart signal toggles and current configuration keys.
+
 ## [0.143.17] - 2026-10-04
 
 - Preserve the native trace `_msg` in an optional Parquet `body` column through buffer export, reads, peer queries and compaction. Keep customer message attributes separate and use the native message for token blooms and deletion matching. Bloom pruning now uses upstream parsed message guarantees, preventing false empty results for quoted span names, customer fields, partial message prefixes and invalid UTF-8 message literals in both binaries. Legacy objects remain readable without fabricating lost messages.

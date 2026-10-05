@@ -40,8 +40,8 @@ Traces insert API:
 {{- end }}
 
 Deployment modes:
-  All-in-one: logs.enabled=true, traces.enabled=true (default)
-  Logs only:  logs.enabled=true, traces.enabled=false
+  All-in-one: logs.enabled=true, traces.enabled=true
+  Logs only:  logs.enabled=true, traces.enabled=false (default)
   Traces only: logs.enabled=false, traces.enabled=true
 
 Documentation: https://reliablyobserve.github.io/victoria-lakehouse/
