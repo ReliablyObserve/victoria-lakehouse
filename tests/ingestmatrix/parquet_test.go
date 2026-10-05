@@ -161,3 +161,15 @@ func TestRawTruthChecksNativeSpanMetadataCopies(t *testing.T) {
 		}
 	}
 }
+
+func TestRawTruthRejectsConflictingDefaultScalar(t *testing.T) {
+	hot := map[string]string{"_msg": "native", "start_time_unix_nano": "100"}
+	for _, scalar := range [][]string{{"100"}, {"0"}, {""}, {"100", "100"}} {
+		r := RawParquetRow{"account_id": {"4401"}, "project_id": {"1"}, "body": {"native"}, "start_time_unix_nano": scalar, "span.attributes.key_value.key": {"start_time_unix_nano"}, "span.attributes.key_value.value": {"100"}}
+		err := r.CheckHot(Traces, NumericTenant, hot)
+		valid := len(scalar) == 1 && scalar[0] == "100"
+		if (err == nil) != valid {
+			t.Fatalf("scalar %v: %v", scalar, err)
+		}
+	}
+}

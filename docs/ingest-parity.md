@@ -32,8 +32,8 @@ control sends six rows for two tenants in one multitenant request, requires actu
 and persisted raw parity, and checks negative reads. It uses nonhexadecimal trace IDs accepted
 by the native parser; it does not send those IDs through OTLP.
 
-Whether a Parquet-only gap may apply to a cell is decided on every read from S3 (the cell has rows in
-Parquet), never from the step the test is in, so a flush that lands during `buffer` cannot flip a result.
+Parquet-only gaps require observed persisted marker rows. A cell's preflush gate fails if
+those rows appear before its buffer observation completes.
 
 The non-data ingest routes (readiness, health, and the Elasticsearch, Datadog and Splunk
 compatibility stubs) are probed by `TestIngestMatrix_Probes`: same status and body on both sides.

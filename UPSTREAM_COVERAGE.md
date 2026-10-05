@@ -539,7 +539,7 @@ Measured cells (layer `perf`): each carries deterministic counters; exact cells 
 
 ## Ingest protocols (parity matrix)
 
-Every write protocol the pinned VictoriaLogs and VictoriaTraces accept, sent unchanged to the hot binary and to Lakehouse in `tests/e2e/ingest_matrix_test.go`: ingest answers (status and body) compared, rows read back from the unflushed buffer and again after the flush to Parquet and compared field for field with the hot rows, ingest counters checked. 35 cells; see `docs/ingest-parity.md`.
+Representative protocol payloads sent unchanged to the pinned hot binary and Lakehouse in `tests/e2e/ingest_matrix_test.go`: ingest answers and counters compared, actual preflush observations require zero marker rows on S3, and persisted fields, values, timestamps and tenants are checked with a standard Parquet reader. Established rows are sampled through the handoff; changes between samples are not ruled out. Declared divergences remain explicit. 35 cells; see `docs/ingest-parity.md`.
 
 | Binary | Protocol | Tenant form | Upstream | Row | Status |
 |---|---|---|---|---|---|

@@ -460,3 +460,31 @@ func TestRenderCoverage_PerfCellsAreSeparate(t *testing.T) {
 		t.Fatalf("missing or wrong perf summary:\n%s", md)
 	}
 }
+
+func TestRenderIngestMatrixUsesOnlyRegistryCells(t *testing.T) {
+	reg := &registry.Registry{Rows: []registry.Row{
+		{ID: "vt.ingest.grpc.numeric", Title: "gRPC [numeric]", Surface: registry.SurfaceVT, Expect: registry.ExpectDiffer, Upstream: &registry.Upstream{Flag: "otlpGRPCListenAddr"}},
+		{ID: "vl.insert.other", Title: "not a matrix cell", Surface: registry.SurfaceVL},
+		{ID: "vl.ingest.native.alias", Title: "Native [alias]", Surface: registry.SurfaceVL, Expect: registry.ExpectPass, Upstream: &registry.Upstream{Route: "/insert/native"}},
+		{ID: "vl.ingest.control.numeric", Title: "Control", Surface: registry.SurfaceVL, Expect: registry.ExpectPass},
+	}}
+	var b strings.Builder
+	renderIngestMatrix(&b, reg)
+	got := b.String()
+	for _, want := range []string{"3 cells", "Representative protocol payloads", "changes between samples are not ruled out", "| lakehouse-logs vs VictoriaLogs | Native | alias | route `/insert/native` |", "| lakehouse-traces vs VictoriaTraces | gRPC | numeric | flag `-otlpGRPCListenAddr` |", "| Control | numeric |  |", "✅", "🔁 differs"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %s", want, got)
+		}
+	}
+	if strings.Contains(got, "not a matrix cell") || strings.Contains(got, "[alias]") {
+		t.Fatal(got)
+	}
+	if strings.Index(got, "vl.ingest.native.alias") > strings.Index(got, "vt.ingest.grpc.numeric") {
+		t.Fatal("matrix rows not sorted")
+	}
+	b.Reset()
+	renderIngestMatrix(&b, &registry.Registry{})
+	if b.Len() != 0 {
+		t.Fatal("empty registry emitted a matrix")
+	}
+}

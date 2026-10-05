@@ -387,7 +387,7 @@ func renderIngestMatrix(b *strings.Builder, reg *registry.Registry) {
 		return
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
-	fmt.Fprintf(b, "## Ingest protocols (parity matrix)\n\nEvery write protocol the pinned VictoriaLogs and VictoriaTraces accept, sent unchanged to the hot binary and to Lakehouse in `tests/e2e/ingest_matrix_test.go`: ingest answers (status and body) compared, rows read back from the unflushed buffer and again after the flush to Parquet and compared field for field with the hot rows, ingest counters checked. %d cells; see `docs/ingest-parity.md`.\n\n| Binary | Protocol | Tenant form | Upstream | Row | Status |\n|---|---|---|---|---|---|\n", len(rows))
+	fmt.Fprintf(b, "## Ingest protocols (parity matrix)\n\nRepresentative protocol payloads sent unchanged to the pinned hot binary and Lakehouse in `tests/e2e/ingest_matrix_test.go`: ingest answers and counters compared, actual preflush observations require zero marker rows on S3, and persisted fields, values, timestamps and tenants are checked with a standard Parquet reader. Established rows are sampled through the handoff; changes between samples are not ruled out. Declared divergences remain explicit. %d cells; see `docs/ingest-parity.md`.\n\n| Binary | Protocol | Tenant form | Upstream | Row | Status |\n|---|---|---|---|---|---|\n", len(rows))
 	for _, r := range rows {
 		binary := "lakehouse-logs vs VictoriaLogs"
 		if r.Surface == registry.SurfaceVT {
