@@ -245,8 +245,10 @@ each group of the drain, committed, late rows, segment removed, restart),
 
 Compaction merges, and a delete rewrite replaces, objects into objects **without**
 the segment's nonce. While the segment is live that would serve its rows twice
-(from the segment and from the merged object). So both consult a **segment
-guard**: an object that carries a nonce is merged or rewritten only after the
+(from the segment and from the merged object). So every merge path — the
+compaction scan, a forced recompaction, a Tier A steal by the partition's
+secondary owner — and the delete rewriter consult a **segment guard** (listed
+once per scan, steal run or rewrite pass): an object that carries a nonce is merged or rewritten only after the
 segment's marker has been in the bucket for twice the grace period (the pod stops
 serving the segment at the grace; the margin covers clock skew and listing lag),
 or once the nonce is older than 7 days (an owner that never committed — it lost
@@ -257,8 +259,10 @@ tombstone's query-time filter keeps the rows hidden meanwhile. Markers older tha
 8 days are deleted by the compaction scan.
 
 Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheFreeOnes`,
+`TestSegmentGuard_ReleasedFilesCopiesOnlyWhenItDrops`,
 `TestSegmentNonceOfKey` (`internal/manifest`);
 `TestScheduler_LeavesTheObjectsOfLiveBufferSegmentsAlone`,
+`TestOrphanSweep_TierA_LeavesTheObjectsOfLiveBufferSegmentsAlone`,
 `TestScheduler_DeletesMarkersOfSegmentsPastTheReleaseAge` (`internal/compaction`);
 `TestSchedulerRunOnce_WaitsForTheBufferSegmentOfAnObject` (`internal/delete`).
 

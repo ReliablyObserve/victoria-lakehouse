@@ -109,3 +109,36 @@ func TestSegmentGuard_ReleasedFilesKeepsOnlyTheFreeOnes(t *testing.T) {
 		t.Error("the input slice was modified")
 	}
 }
+
+// When the guard releases every file it hands back the caller's slice: the
+// compaction planner passes the manifest's own slices (RangePartitions) and
+// must not pay a copy of every partition on every scan. When it drops one,
+// the input is left as it was.
+func TestSegmentGuard_ReleasedFilesCopiesOnlyWhenItDrops(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	g := &SegmentGuard{Protect: time.Minute, Listed: true}
+	free := []FileInfo{
+		{Key: "logs/dt=2026-10-02/hour=10/0123456789abcdef.parquet"},
+		{Key: "logs/dt=2026-10-02/hour=10/compacted-L1.parquet"},
+	}
+	got := g.ReleasedFiles(free, now)
+	if len(got) != 2 || &got[0] != &free[0] {
+		t.Fatalf("all released: got %v, want the input slice itself", got)
+	}
+	if allocs := testing.AllocsPerRun(100, func() { _ = g.ReleasedFiles(free, now) }); allocs != 0 {
+		t.Errorf("all released: %v allocations per call, want 0", allocs)
+	}
+	live := fmt.Sprintf("%08x%08x", uint32(now.Add(-time.Hour).Unix()), uint32(1))
+	mixed := []FileInfo{free[0], {Key: "logs/dt=2026-10-02/hour=10/" + live + "-0.parquet"}, free[1]}
+	got = g.ReleasedFiles(mixed, now)
+	if len(got) != 2 || got[0].Key != free[0].Key || got[1].Key != free[1].Key {
+		t.Fatalf("one held: got %v", got)
+	}
+	if mixed[1].Key == free[1].Key || len(mixed) != 3 {
+		t.Error("the input slice was modified")
+	}
+	var nilGuard *SegmentGuard
+	if got := nilGuard.ReleasedFiles(mixed, now); len(got) != 2 {
+		t.Errorf("nil guard: got %d files, want the 2 without a live nonce", len(got))
+	}
+}

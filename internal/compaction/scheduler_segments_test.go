@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -147,5 +148,68 @@ func TestScheduler_DeletesMarkersOfSegmentsPastTheReleaseAge(t *testing.T) {
 	}
 	if d, _ := f.pool.Download(context.Background(), freshKey); d == nil {
 		t.Error("a recent marker was deleted")
+	}
+}
+
+// A Tier A steal (the secondary owner compacting a partition its primary has
+// not attempted for a while) leaves the objects of live buffer segments alone
+// exactly as a scheduled merge does, and lists the markers once per run.
+// Before, the steal merged them whatever their segment's state: the merged
+// object carries no nonce, so its rows were answered twice while the insert
+// pod still served the segment.
+func TestOrphanSweep_TierA_LeavesTheObjectsOfLiveBufferSegmentsAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		guard     bool
+		setup     func(f *segmentFixture)
+		wantStole int
+	}{
+		{"no guard configured", false, func(*segmentFixture) {}, 0},
+		{"no marker yet", true, func(*segmentFixture) {}, 0},
+		{"committed a moment ago", true, func(f *segmentFixture) { f.commit(time.Minute) }, 0},
+		{"marker listing fails", true, func(f *segmentFixture) { f.commit(time.Hour); f.markers.err = errors.New("list: boom") }, 0},
+		{"committed and protected long enough", true, func(f *segmentFixture) { f.commit(time.Hour) }, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSegmentFixture(t, true) // the scheduler always has the guard; the sweep may not
+			tc.setup(f)
+			lp := &listingPool{mockPool: f.pool, mtimes: map[string]time.Time{}}
+			ranker := func(s string) uint64 {
+				if strings.HasPrefix(s, "pod-A") {
+					return 100
+				}
+				return 50
+			}
+			self := NewOwnershipResolver("pod-B", staticPeers("pod-A", "pod-B")).WithHashFunc(ranker)
+			f.m.MarkAttempt(segPartition, time.Now().Add(-time.Hour))
+			cfg := OrphanSweepConfig{
+				Manifest: f.m, Pool: lp, Ownership: self, Policy: NewLevelPolicy(10, 20, 0), Lister: lp,
+				Prefix: "logs/", Mode: config.ModeLogs, Interval: time.Minute, RowGroupSize: 1000, CompressionLevel: 7,
+				TierAStalenessMultiplier: 3,
+			}
+			if tc.guard {
+				cfg.SegmentGuard = f.sched.SegmentGuard
+			}
+			n, err := NewOrphanSweep(cfg).RunTierA(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != tc.wantStole {
+				t.Fatalf("%d partitions stolen, want %d", n, tc.wantStole)
+			}
+			files := len(f.m.FilesForPartition(segPartition))
+			if tc.wantStole == 0 && files != 12 {
+				t.Errorf("%d objects left, want all 12 untouched", files)
+			}
+			if tc.wantStole == 1 && files != 1 {
+				t.Errorf("%d objects left, want the compacted one", files)
+			}
+			if tc.guard && len(f.markers.listed) != 1 {
+				t.Errorf("markers listed %d times in one run, want once", len(f.markers.listed))
+			}
+			if !tc.guard && len(f.markers.listed) != 0 {
+				t.Error("markers listed without a guard")
+			}
+		})
 	}
 }

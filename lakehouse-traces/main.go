@@ -861,12 +861,14 @@ func setupCompaction(
 		// Tier A steals tombstone-filter like the scheduler does.
 		Tombstones:            tombstoneStore,
 		TombstoneRewriteDelay: cfg.Delete.RewriteDelay,
-		Lister:                s3Pool,
-		Prefix:                cfg.AutoPrefix(),
-		Mode:                  cfg.Mode,
-		Interval:              cfg.Compaction.Interval,
-		RowGroupSize:          cfg.Insert.RowGroupSize,
-		CompressionLevel:      cfg.Insert.CompressionLevel,
+		// Tier A steals leave live buffer segments alone like the scheduler.
+		SegmentGuard:     sched.SegmentGuard,
+		Lister:           s3Pool,
+		Prefix:           cfg.AutoPrefix(),
+		Mode:             cfg.Mode,
+		Interval:         cfg.Compaction.Interval,
+		RowGroupSize:     cfg.Insert.RowGroupSize,
+		CompressionLevel: cfg.Insert.CompressionLevel,
 		OnCompacted: func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string) {
 			store.PmetaOnCompacted(added, removed, blooms)
 			notifyPusher(added, removed)

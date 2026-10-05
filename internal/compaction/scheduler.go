@@ -357,6 +357,13 @@ func (s *Scheduler) SetSegmentGuard(l SegmentMarkerLister, protect time.Duration
 	s.segmentLister, s.segmentProtect = l, protect
 }
 
+// SegmentGuard lists the segment markers once and returns the guard a merge
+// path applies at now (see segmentGuard); the orphan sweep's Tier A steal uses
+// it so a steal leaves live buffer segments alone as a scan does.
+func (s *Scheduler) SegmentGuard(ctx context.Context, now time.Time) *manifest.SegmentGuard {
+	return s.segmentGuard(ctx, now)
+}
+
 // maxMarkerDeletesPerScan bounds the old markers one scan removes.
 const maxMarkerDeletesPerScan = 1000
 
