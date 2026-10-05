@@ -7,20 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.144.0] - 2026-10-05
-
-### Added
-
-- **Opt-in syslog and OTLP/gRPC ingest listeners in the Helm chart (both binaries).**
-  `logs.insert.syslog.tcp` and `logs.insert.syslog.udp` start VictoriaLogs' syslog listeners
-  (`-syslog.listenAddr.tcp/udp`, with `tenantID` for `-syslog.tenantID.*`), and `traces.insert.otlpGrpc` starts
-  VictoriaTraces' OTLP/gRPC trace listener (`-otlpGRPCListenAddr`, TLS on by default with `certFile` and `keyFile`,
-  or `tls.enabled: false` for plaintext). Each enabled listener adds the container port, a Service port, the same
-  port on the headless Service and a NetworkPolicy ingress port on the insert pods. All of them are off by default,
-  so an unchanged `values.yaml` renders exactly what it did before; TLS on without a certificate fails at render
-  time. The e2e compose stack now runs the same listeners on the hot VictoriaLogs/VictoriaTraces containers and on
-  Lakehouse. See `docs/ingest-parity.md`.
-
 ### Changed
 
 - **The insert buffer is durable by default: a sequence of upstream storage segments, drained whole to Parquet.**
@@ -81,6 +67,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release's insert headless service of each signal. In a split deployment a row is visible from a select pod as
   soon as it is acknowledged, instead of only after its insert pod flushed it (up to the flush interval plus a
   manifest refresh).
+
+## [0.144.0] - 2026-10-05
+
+### Added
+
+- **Opt-in syslog and OTLP/gRPC ingest listeners in the Helm chart (both binaries).**
+  `logs.insert.syslog.tcp` and `logs.insert.syslog.udp` start VictoriaLogs' syslog listeners
+  (`-syslog.listenAddr.tcp/udp`, with `tenantID` for `-syslog.tenantID.*`), and `traces.insert.otlpGrpc` starts
+  VictoriaTraces' OTLP/gRPC trace listener (`-otlpGRPCListenAddr`, TLS on by default with `certFile` and `keyFile`,
+  or `tls.enabled: false` for plaintext). Each enabled listener adds the container port, a Service port, the same
+  port on the headless Service and a NetworkPolicy ingress port on the insert pods. All of them are off by default,
+  so an unchanged `values.yaml` renders exactly what it did before; TLS on without a certificate fails at render
+  time. The e2e compose stack now runs the same listeners on the hot VictoriaLogs/VictoriaTraces containers and on
+  Lakehouse. See `docs/ingest-parity.md`.
 
 ## [0.143.18] - 2026-10-05
 
