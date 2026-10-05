@@ -19,8 +19,7 @@ func TestTraceMessageFiltersAndRestart(t *testing.T) {
 	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
 	bw.catalogObserver = &catalogObserver{store: s.catalog, pool: s.pool}
-	bw.AddTraceRows([]schema.TraceRow{{TimestampUnixNano: base.UnixNano(), TraceID: "trace", SpanID: "span", Body: "needlebodyspecial", SpanName: "nameonlytoken", SpanAttributes: map[string]string{"_msg": "customertoken"}}})
-	bw.triggerFlush()
+	uploadTraceRows(t, bw, []schema.TraceRow{{TimestampUnixNano: base.UnixNano(), TraceID: "trace", SpanID: "span", Body: "needlebodyspecial", SpanName: "nameonlytoken", SpanAttributes: map[string]string{"_msg": "customertoken"}}})
 	run := coldSelectRunner(t, s, base.Add(-time.Minute).UnixNano(), base.Add(time.Minute).UnixNano())
 	if rows := run("*"); len(rows) != 1 || rows[0]["_msg"] != "needlebodyspecial" || rows[0]["span_attr:_msg"] != "customertoken" {
 		t.Fatalf("native/customer fixture=%v", rows)
@@ -100,8 +99,7 @@ func TestTraceMessageLiteralReservedNamesAcrossReaders(t *testing.T) {
 	}
 	row := schema.TraceRow{TimestampUnixNano: base.UnixNano(), Body: "native", SpanAttributes: attrs, ResourceAttributes: attrs, ScopeAttributes: attrs}
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
-	bw.AddTraceRows([]schema.TraceRow{row})
-	bw.triggerFlush()
+	uploadTraceRows(t, bw, []schema.TraceRow{row})
 	run := coldSelectRunner(t, s, base.Add(-time.Minute).UnixNano(), base.Add(time.Minute).UnixNano())
 	for _, text := range []string{"*", "* | fields _msg, span_attr:*, resource_attr:*, scope_attr:*"} {
 		got := run(text)
@@ -145,8 +143,7 @@ func TestTraceMessageLiteralReservedNamesPeer(t *testing.T) {
 	}
 	row := schema.TraceRow{TimestampUnixNano: base.UnixNano(), Body: "native", SpanAttributes: attrs, ResourceAttributes: attrs, ScopeAttributes: attrs}
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
-	bw.AddTraceRows([]schema.TraceRow{row})
-	bw.triggerFlush()
+	uploadTraceRows(t, bw, []schema.TraceRow{row})
 	run := coldSelectRunner(t, s, base.Add(-time.Minute).UnixNano(), base.Add(time.Minute).UnixNano())
 	for _, text := range []string{"*", "* | fields _msg, span_attr:*, resource_attr:*, scope_attr:*"} {
 		got := run(text)

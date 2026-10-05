@@ -69,8 +69,12 @@ func TestPersistedMessageBloomFilters(t *testing.T) {
 	s.registry = schema.NewRegistry(schema.TracesProfile)
 	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
-	bw.AddTraceRows([]schema.TraceRow{{TimestampUnixNano: base.UnixNano(), TraceID: "trace", SpanID: "span", Body: "nativeprefixSuffix stablemarker", SpanName: "HTTP GET /api/v1/users", SpanAttributes: map[string]string{"_msg": "HTTP GET /api/v1/users", "body": "HTTP GET /api/v1/users", "message": "HTTP GET /api/v1/users"}}})
-	bw.triggerFlush()
+	// Written as the segment drain writes it: one trace group, one object.
+	rows := []schema.TraceRow{{TimestampUnixNano: base.UnixNano(), TraceID: "trace", SpanID: "span", Body: "nativeprefixSuffix stablemarker", SpanName: "HTTP GET /api/v1/users", SpanAttributes: map[string]string{"_msg": "HTTP GET /api/v1/users", "body": "HTTP GET /api/v1/users", "message": "HTTP GET /api/v1/users"}}}
+	up := &traceGroupUpload{partition: partitionFromNano(rows[0].TimestampUnixNano), rows: rows}
+	if err := bw.uploadTraceGroup(context.Background(), up); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(t.TempDir(), "manifest.bin")
 	if err := s.manifest.SaveTo(path); err != nil {
 		t.Fatal(err)

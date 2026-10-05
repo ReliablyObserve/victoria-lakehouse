@@ -16,8 +16,7 @@ func TestTraceMessageSurvivesParquet(t *testing.T) {
 	s.registry = schema.NewRegistry(schema.TracesProfile)
 	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
-	bw.AddTraceRows([]schema.TraceRow{{TimestampUnixNano: base.UnixNano(), TraceID: "trace", SpanID: "span", Body: "persisted native message"}})
-	bw.triggerFlush()
+	uploadTraceRows(t, bw, []schema.TraceRow{{TimestampUnixNano: base.UnixNano(), TraceID: "trace", SpanID: "span", Body: "persisted native message"}})
 	got := coldSelectRunner(t, s, base.Add(-time.Minute).UnixNano(), base.Add(time.Minute).UnixNano())("*")
 	if len(got) != 1 || got[0]["_msg"] != "persisted native message" {
 		t.Fatalf("trace message=%v", got)

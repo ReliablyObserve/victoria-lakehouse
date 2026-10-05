@@ -28,8 +28,7 @@ func TestTraceMessageSurvivesNativeBufferAndParquet(t *testing.T) {
 		t.Fatal("missing native row")
 	}
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
-	bw.AddTraceRows(rows)
-	bw.triggerFlush()
+	uploadTraceRows(t, bw, rows)
 	run := coldSelectRunner(t, s, base.Add(-time.Minute).UnixNano(), base.Add(time.Minute).UnixNano())
 	got := run("*")
 	if len(got) != 1 || got[0]["_msg"] != "actual native message" || got[0]["span_attr:_msg"] != "customer attribute" {
