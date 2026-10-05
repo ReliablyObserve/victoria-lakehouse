@@ -256,29 +256,6 @@ func (r *matrixRun) applyKnownGaps(s *caseState, hot, lh []string) []string {
 		}
 	}
 	sort.Strings(out)
-	// Set-level gap (#279): the trace-ID fast path returns a flushed span from the
-	// buffer AND from Parquet. It is accepted only as exactly two copies of every
-	// hot row, so a writer that duplicates spans (three or more copies, or copies
-	// of only some rows) still fails.
-	if s.flushed && hasGap(s.c, "traces-trace-id-path-returns-flushed-spans-twice") && len(out) == 2*len(hot) && len(hot) > 0 {
-		counts := map[string]int{}
-		for _, row := range out {
-			counts[row]++
-		}
-		exactlyTwice := true
-		var dedup []string
-		for row, n := range counts {
-			if n != 2 {
-				exactlyTwice = false
-			}
-			dedup = append(dedup, row)
-		}
-		sort.Strings(dedup)
-		if exactlyTwice && len(dedup) == len(hot) && firstRowDiff(hot, dedup) == "" {
-			s.gapHits["traces-trace-id-path-returns-flushed-spans-twice"]++
-			out = dedup
-		}
-	}
 	return out
 }
 

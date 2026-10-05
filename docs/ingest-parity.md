@@ -112,8 +112,6 @@ in `Gaps()` and `Case.Gaps` in `tests/ingestmatrix`, with its rewrite in `gapRew
 
 * the cell still compares every other field exactly; a gap rewrites a Lakehouse row into the form hot
   returns, and only counts when the rewritten row then equals a hot row;
-* the set-level gap #279 (a span returned twice) is accepted only when the result is **exactly two
-  copies of every hot row**, so a writer that duplicates spans fails;
 * the registry rows of an affected cell are `expect: differ` and cite the issues, and a test keeps
   `Case.Gaps` and the rows in step in both directions;
 * a cell **fails when a declared gap is no longer observed**, so a fixed gap cannot stay on the list.
@@ -123,7 +121,6 @@ in `Gaps()` and `Case.Gaps` in `tests/ingestmatrix`, with its rewrite in `gapRew
 | After the flush, Lakehouse returns `severity_number: "0"` on rows VictoriaLogs stores without it | logs, every protocol that does not carry a severity | [#274](https://github.com/ReliablyObserve/victoria-lakehouse/issues/274) |
 | After the flush, an OTLP log row comes back with `level` in place of `severity_text` | logs, OTLP/HTTP protobuf | [#331](https://github.com/ReliablyObserve/victoria-lakehouse/issues/331) |
 | Spans are stored with `_msg` = VictoriaLogs' default text instead of VictoriaTraces' `-` | traces: OTLP protobuf, OTLP/gRPC and native (OTLP/JSON spans are right), buffer and Parquet | [#332](https://github.com/ReliablyObserve/victoria-lakehouse/issues/332) |
-| A `trace_id` query returns each flushed span twice while the buffer still holds it (the trace-ID fast path skips the buffer watermark) | traces, every protocol, after the flush | [#279](https://github.com/ReliablyObserve/victoria-lakehouse/issues/279) |
 
 Fresh writes after native-message preservation no longer declare #333: physical `body` and
 served `_msg` must be present and match hot, apart from the exact #332 value. The #332 raw
@@ -207,7 +204,10 @@ With the pinned VictoriaLogs v1.52 and VictoriaTraces v0.12, the isolated protoc
 in 153.709 s with all 26 log and 8 trace cells passing, plus probes, route gaps and the two
 mixed-tenant native controls. Every stored span retained its native message; #333 is absent
 from active gap declarations. The run still observed #274, #331, #332 and #279, and does not
-claim those production gaps are fixed.
+claim those production gaps are fixed. #279 (a `trace_id` query returning each flushed span twice
+while the buffer still held it) was closed afterwards by the segment buffer: a query drops the
+objects of the segments it reads from the buffer, on the trace-ID path too, so the matrix no
+longer declares it and requires each span exactly once.
 
 The trace cells had 85–113 sampled observations with a largest observed gap of 2.672 s;
 log cells had 88–183 observations with a largest gap of 3.995 s. The stability windows made
