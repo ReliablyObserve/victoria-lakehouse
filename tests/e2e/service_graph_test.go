@@ -19,12 +19,9 @@ import (
 // can serve from cold storage.
 //
 // Test approach: push a small set of parent/child span pairs that
-// span SRV-A → SRV-B → SRV-C; wait for one task tick (compose runs
-// it every 2 minutes); then assert the Jaeger dependencies endpoint
+// span SRV-A → SRV-B → SRV-C; poll until the task has run over them
+// (bound below); then assert the Jaeger dependencies endpoint
 // returns at least one (parent, child) edge.
-//
-// Patience window matches `-servicegraph.taskInterval=2m` + flush
-// lag. Test is tagged e2e + long-running on purpose.
 func TestServiceGraph_ColdTierGeneratesEdges(t *testing.T) {
 	stamp := time.Now().UnixNano()
 	traceID := fmt.Sprintf("%032x", stamp)
@@ -39,9 +36,23 @@ func TestServiceGraph_ColdTierGeneratesEdges(t *testing.T) {
 		{spanID: "aaaa000000000003", parentSpanID: "aaaa000000000002", service: "service-c", kind: 2, name: "GET /c"},
 	})
 
-	// Wait for: (a) writer flush (120s) (b) one servicegraph task
-	// tick (120s). 5 minutes is the safe upper bound.
-	deadline := time.Now().Add(5 * time.Minute)
+	// VT's service-graph task runs on a ticker every taskInterval and
+	// aggregates the window [now.Truncate(taskInterval) - taskLookbehind,
+	// now.Truncate(taskInterval)] (VT app/victoria-traces/servicegraph), so
+	// the pushed spans are counted by the first run whose truncated time is at
+	// or after the push: at most 2 intervals plus the run time later. Where the
+	// spans live (insert buffer or Parquet) does not matter; both answer the
+	// task's query within seconds. The e2e stack runs lakehouse-traces with
+	// -servicegraph.taskInterval=1m and -servicegraph.taskTimeout=50s
+	// (docker-compose-e2e.yml). A fixed wait shorter than that bound passed or
+	// failed with the ticker's phase against the wall clock (#395).
+	const (
+		taskInterval = time.Minute
+		taskTimeout  = 50 * time.Second
+		poll         = 15 * time.Second
+	)
+	bound := 2*taskInterval + taskTimeout + 2*poll
+	deadline := time.Now().Add(bound)
 	var lastBody []byte
 	for time.Now().Before(deadline) {
 		body, err := fetchJaegerDependencies(t)
@@ -50,9 +61,9 @@ func TestServiceGraph_ColdTierGeneratesEdges(t *testing.T) {
 			return
 		}
 		lastBody = body
-		time.Sleep(30 * time.Second)
+		time.Sleep(poll)
 	}
-	t.Fatalf("service-graph task never produced the expected edge within 5min; last response: %s", string(lastBody))
+	t.Fatalf("service-graph task never produced the expected edge within %s; last response: %s", bound, string(lastBody))
 }
 
 type traceSpan struct {

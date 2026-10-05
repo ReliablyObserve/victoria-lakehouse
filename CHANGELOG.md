@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The e2e service-graph check waits for the bound the task's schedule sets (closes #395).**
+  VictoriaTraces' service-graph task aggregates the window that ends at the current time truncated to its interval,
+  so a span is counted only by the first run whose truncated time is at or after it. With the e2e stack's 5-minute
+  interval that was up to about 10 minutes, and `TestServiceGraph_ColdTierGeneratesEdges` waited 5: it passed or failed
+  with the push's position on the wall clock (measured in CI: 2m30 or 7m30). lakehouse-traces in the e2e stack now runs
+  the task like the hot VictoriaTraces next to it (interval 1m, lookbehind 2m, timeout 50s) and the test polls for two
+  intervals plus the timeout. Test and e2e stack only; no product change.
+
 - **A committed insert-buffer segment is removed even while queries keep overlapping (both binaries, closes #368).**
   A segment past its grace was removed only at a flusher tick that saw no query holding it, and every query took a hold
   on every live segment, so a steady stream of overlapping queries could keep it, its directory and the exclusion of its
