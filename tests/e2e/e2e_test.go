@@ -45,6 +45,14 @@ func TestMain(m *testing.M) {
 	fmt.Println("e2e: waiting for recent Parquet on traces...")
 	waitRecentData(tracesBaseURL, "traces")
 
+	// Phase 2c: an object in the manifest is not yet READ from Parquet. A
+	// committed segment keeps answering its rows from the buffer, and its
+	// objects stay out of the scan, for its grace period (90 s here). Tests that
+	// must read Parquet (cache recovery, cold rows) need a segment past that
+	// point, so wait until each binary has removed one.
+	waitSegmentReaped(logsBaseURL, "logs")
+	waitSegmentReaped(tracesBaseURL, "traces")
+
 	// Phase 3: Store the data time range for use in other tests.
 	storeTimeRange()
 
@@ -117,6 +125,55 @@ func verifyManifest(baseURL string, label string) {
 	}
 	fmt.Fprintf(os.Stderr, "FATAL: %s manifest/range returned 0 files after %s\n", label, manifestWait)
 	os.Exit(1)
+}
+
+// waitSegmentReaped waits until the binary has removed at least one committed
+// insert-buffer segment: lakehouse_buffer_segments_committed_total exceeds the
+// segments still kept (state committed, or retired and still held by a query),
+// so a whole segment's rows are answered from Parquet. It fails the run when
+// none is removed within manifestWait.
+func waitSegmentReaped(baseURL, label string) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	start := time.Now()
+	last := "no answer"
+	for time.Since(start) < manifestWait {
+		if total, kept, err := segmentCounts(client, baseURL); err == nil {
+			if total-kept >= 1 {
+				fmt.Printf("e2e: %s has read-from-Parquet segments (%.0f removed from the buffer) after %s\n", label, total-kept, time.Since(start).Round(time.Second))
+				return
+			}
+			last = fmt.Sprintf("committed_total=%.0f still kept=%.0f", total, kept)
+		} else {
+			last = err.Error()
+		}
+		time.Sleep(2 * time.Second)
+	}
+	fmt.Fprintf(os.Stderr, "FATAL: %s removed no committed insert-buffer segment within %s (%s): no row is answered from Parquet yet\n", label, manifestWait, last)
+	os.Exit(1)
+}
+
+// segmentCounts reads lakehouse_buffer_segments_committed_total and the
+// segments still kept (state committed or retired) from /metrics.
+func segmentCounts(client *http.Client, baseURL string) (total, kept float64, err error) {
+	resp, err := client.Get(baseURL + "/metrics")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, err
+	}
+	m := parsePrometheusText(string(body))
+	for _, l := range m["lakehouse_buffer_segments_committed_total"] {
+		total += l.value
+	}
+	for _, l := range m["lakehouse_buffer_segments"] {
+		if st := l.labels["state"]; st == "committed" || st == "retired" {
+			kept += l.value
+		}
+	}
+	return total, kept, nil
 }
 
 // waitRecentData blocks until /manifest/range reports data newer than 10

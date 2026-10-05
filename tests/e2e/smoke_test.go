@@ -350,13 +350,22 @@ func TestSmoke_CacheClearAndRecovery(t *testing.T) {
 		t.Errorf("cache entries after clear = %v, want 0", entries)
 	}
 
-	// Re-populate by running a query that must read Parquet. The last 30 minutes
-	// are served from the insert buffer (durable by default), which reads no
-	// object, so use the wide window that reaches flushed files.
-	params := wideTimeParams()
+	// Re-populate by running a query that must read Parquet. A query with a
+	// limit is answered newest first (upstream narrows the window from its end
+	// until it has enough rows), and datagen-continuous keeps the last hour in
+	// the insert buffer, so a window reaching now is answered without opening an
+	// object. End the window two hours ago: only the seeded data, which TestMain
+	// waited to be served from Parquet, is in it.
+	now := time.Now()
+	params := url.Values{
+		"start": {fmt.Sprintf("%d", now.Add(-72*time.Hour).UnixNano())},
+		"end":   {fmt.Sprintf("%d", now.Add(-2*time.Hour).UnixNano())},
+	}
 	params.Set("query", "*")
 	params.Set("limit", "5")
-	_ = httpGetBody(t, logsBaseURL, "/select/logsql/query", params)
+	if rows := strings.Count(strings.TrimSpace(string(httpGetBody(t, logsBaseURL, "/select/logsql/query", params))), "\n") + 1; rows < 5 {
+		t.Fatalf("the seeded window returned %d rows, want 5: nothing to re-populate the cache from", rows)
+	}
 
 	statsBody2 := httpGetBody(t, logsBaseURL, "/internal/cache/stats", nil)
 	stats2 := mustParseJSON(t, statsBody2)
