@@ -35,7 +35,9 @@ import (
 //	buffer    Lakehouse's rows equal hot's rows, field for field, straight after
 //	          the write (the unflushed buffer);
 //	parquet   after the flush the tenant's Parquet objects hold exactly those
-//	          rows (read with a plain Parquet reader), and Lakehouse still equals hot.
+//	          rows (read with a plain Parquet reader), and once the rows have left
+//	          the insert buffer (so the read is answered from Parquet) Lakehouse
+//	          still equals hot.
 //
 // The case table, the payload builders and the tenant forms live in
 // tests/ingestmatrix; tests/conformance/ingest_matrix_test.go ties the table to
@@ -655,6 +657,52 @@ func (r *matrixRun) parquetExact(s *caseState) (bool, string) {
 	return rows == s.c.Rows, fmt.Sprintf("%d rows carrying the marker (want exactly %d)", rows, s.c.Rows)
 }
 
+// waitLeftBuffer waits until Lakehouse's insert buffer no longer holds a row of
+// the cell (its marker in its tenant and time window), read through the endpoint
+// select pods read the buffer with (/internal/buffer/query). A drained buffer
+// segment stays readable for its grace period (2 x manifest.refresh_interval +
+// 30 s, 90 s in the e2e stack), and until it is removed a read answers the
+// segment's rows from the buffer, with upstream's engine: the comparison after
+// the flush would not read Parquet, and a gap that exists only on the Parquet
+// read would go unobserved.
+func (r *matrixRun) waitLeftBuffer(t *testing.T, s *caseState) {
+	t.Helper()
+	params := url.Values{
+		"start":        {strconv.FormatInt(s.p.Base.Add(-10*time.Minute).UnixNano(), 10)},
+		"end":          {strconv.FormatInt(s.p.Base.Add(time.Minute).UnixNano(), 10)},
+		"mode":         {string(r.sig)},
+		"tenant_scope": {"v1"},
+		"account_id":   {strconv.FormatUint(uint64(s.p.Tenant.Account), 10)},
+		"project_id":   {strconv.FormatUint(uint64(s.p.Tenant.Project), 10)},
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	deadline := time.Now().Add(240 * time.Second)
+	for {
+		resp, err := client.Get(r.lh.base + "/internal/buffer/query?" + params.Encode())
+		if err != nil {
+			t.Fatalf("buffer query on %s: %v", r.lh.base, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("buffer query on %s: status %d, %v: %s", r.lh.base, resp.StatusCode, err, body)
+		}
+		held := 0
+		for _, line := range strings.Split(string(body), "\n") {
+			if strings.Contains(line, s.p.Marker) {
+				held++
+			}
+		}
+		if held == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d rows of %s still in the Lakehouse insert buffer 240s after their Parquet objects were exact", held, s.name())
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 // waitParquetExact polls S3 until the cell's Parquet content is exact, or fails with
 // the counts at the deadline. An exact content that later grows or shrinks is caught
 // by the stable step.
@@ -900,6 +948,7 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 				return
 			}
 			r.waitParquetExact(t, s)
+			r.waitLeftBuffer(t, s)
 			r.waitSame(t, s, s.c.Rows, 90*time.Second)
 		})
 	}
