@@ -78,6 +78,7 @@ func (c *Config) withDefaults() {
 // the surface to what the lakehouse insert/query paths need.
 type Store struct {
 	s    *logstorage.Storage
+	seg  *Segment // wraps s: queries and Close go through its lock
 	path string
 }
 
@@ -101,7 +102,7 @@ func Open(cfg Config) (*Store, error) {
 		MinFreeDiskSpaceBytes: cfg.MinFreeDiskBytes,
 	}
 	s := logstorage.MustOpenStorage(cfg.Path, sc)
-	return &Store{s: s, path: cfg.Path}, nil
+	return &Store{s: s, seg: &Segment{st: s, created: time.Now()}, path: cfg.Path}, nil
 }
 
 // MustAddRows appends the native LogRows to the buffer. Safe to call from the
@@ -115,7 +116,7 @@ func (st *Store) MustAddRows(lr *logstorage.LogRows) {
 // the same logstorage engine the S3-Parquet path uses, so results are
 // byte-identical in shape to a file scan. Wired into the read merge in P3.
 func (st *Store) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
-	return st.s.RunQuery(qctx, writeBlock)
+	return st.seg.RunQuery(qctx, writeBlock)
 }
 
 // DebugFlush forces VL to flush its in-memory rowsBuffer so just-ingested rows
@@ -129,13 +130,14 @@ func (st *Store) DebugFlush() {
 // Reused from the upstream engine so the P5 shadow exporter can enumerate which
 // tenants to export per window without LH tracking it separately.
 func (st *Store) GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error) {
-	return st.s.GetTenantIDs(ctx, start, end)
+	return st.seg.GetTenantIDs(ctx, start, end)
 }
 
 // Close releases the store. The on-disk path is left for the OS/tmpfs to
 // reclaim; it carries no durable data.
+// It waits for the queries in flight; a query after it returns an error.
 func (st *Store) Close() {
-	st.s.MustClose()
+	st.seg.closeForGood()
 }
 
 // Path returns the store's data directory.
@@ -145,5 +147,5 @@ func (st *Store) Path() string { return st.path }
 // single upstream storage, as tests and tools use it): nothing of the cold tier
 // is excluded for it and Release is a no-op.
 func (st *Store) Snapshot() *Snapshot {
-	return &Snapshot{segs: []*Segment{{st: st.s, created: time.Now()}}}
+	return &Snapshot{segs: []*Segment{st.seg}}
 }

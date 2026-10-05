@@ -2,6 +2,7 @@ package membuffer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -194,11 +195,75 @@ func TestStore_ConcurrentAddAndQuery(t *testing.T) {
 		}(g)
 	}
 	// Concurrent reader while writers run.
-	go func() { _ = countQuery(t, st, []logstorage.TenantID{tid}, "*", now) }()
+	// Joined before Close: a query still inside upstream RunQuery when the
+	// deferred Close ran made upstream panic ("BUG: there are 1 users of
+	// partition", #351).
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		_ = countQuery(t, st, []logstorage.TenantID{tid}, "*", now)
+	}()
 	wg.Wait()
+	<-readerDone
 	st.DebugFlush()
 
 	if got := countQuery(t, st, []logstorage.TenantID{tid}, `_stream:{service.name="api-gateway"}`, now); got != goroutines*perG {
 		t.Fatalf("concurrent: want %d, got %d", goroutines*perG, got)
 	}
+}
+
+// TestStore_CloseWaitsForInFlightQuery reproduces #351 deterministically: the
+// store is closed while a query is parked inside upstream RunQuery. Close used
+// to call upstream MustClose at once, and upstream panicked ("BUG: there are 1
+// users of partition"). Close now waits for the query, and a query after Close
+// gets an error instead of touching the closed storage.
+func TestStore_CloseWaitsForInFlightQuery(t *testing.T) {
+	st, err := Open(Config{Path: t.TempDir()})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	now := time.Now().UnixNano()
+	tid := logstorage.TenantID{}
+	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
+	for i := 0; i < 25; i++ {
+		addRow(lr, tid, now, "api-gateway", fmt.Sprintf("t%d", i))
+	}
+	st.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	st.DebugFlush()
+
+	release, rows, done := blockedQuery(t, st.Snapshot(), tid)
+
+	closed := make(chan struct{})
+	go func() { st.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a query was inside RunQuery")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("in-flight query: %v", err)
+	}
+	if rows.Load() != 25 {
+		t.Fatalf("in-flight query saw %d rows, want 25", rows.Load())
+	}
+	select {
+	case <-closed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Close did not return after the query finished")
+	}
+
+	q, err := logstorage.ParseQueryAtTimestamp("*", time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	qctx := logstorage.NewQueryContext(context.Background(), &logstorage.QueryStats{}, []logstorage.TenantID{tid}, q, false, nil)
+	if err := st.RunQuery(qctx, func(uint, *logstorage.DataBlock) {}); !errors.Is(err, errSegmentClosed) {
+		t.Fatalf("RunQuery after Close = %v, want errSegmentClosed", err)
+	}
+	if _, err := st.GetTenantIDs(context.Background(), 0, time.Now().UnixNano()); !errors.Is(err, errSegmentClosed) {
+		t.Fatalf("GetTenantIDs after Close = %v, want errSegmentClosed", err)
+	}
+	st.Close() // idempotent
 }

@@ -61,9 +61,12 @@ VictoriaLogs/VictoriaTraces:
 - **Durable within upstream's window.** The rows are in upstream's in-memory
   buffer at the ack. Upstream turns them into an in-memory part within 1 s and
   writes that part to an fsynced on-disk part at the first flush tick (every
-  **5 s**) after the part is 5 s old, so a row is on disk **within about 11 s**
-  at worst (6 s at best). A crash (`kill -9`, power loss) loses at most those
-  last seconds — the same window hot VL/VT lose, with the same settings. Everything older is on the pod's
+  **5 s**) after the part is 5 s old, so a row is on disk **within about 10 s**
+  (11 s in theory). A crash (`kill -9`, power loss) loses at most those last
+  seconds — the same window hot VL/VT lose, with the same settings. Measured
+  with `kill -9` on a single small batch: rows 8 s old were lost and rows 10 s
+  old were kept, in every trial, for this release and for hot VictoriaLogs
+  v1.52.0 / VictoriaTraces v0.12.0 alike. Everything older is on the pod's
   disk and is restored when the pod starts.
 - **Refused only as upstream refuses.** When the buffer's volume has less than
   its free-space floor (1 GiB) the storage is read-only and inserts get **429 Too

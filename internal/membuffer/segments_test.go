@@ -2,12 +2,14 @@ package membuffer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -724,5 +726,212 @@ func TestSegments_ReopenKeepsCreationTimeFromNonce(t *testing.T) {
 	}
 	if !nonceTime("x").After(created) {
 		t.Fatal("a nonce without a time must fall back to now")
+	}
+}
+
+// blockedQuery starts a query over snap that parks inside upstream RunQuery
+// (in the writeBlock callback) until release is closed. It returns once the
+// query is parked, and a channel with the query's error.
+func blockedQuery(t *testing.T, snap *Snapshot, tid logstorage.TenantID) (release chan struct{}, rows *atomic.Int64, done chan error) {
+	t.Helper()
+	q, err := logstorage.ParseQueryAtTimestamp("*", time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release = make(chan struct{})
+	parked := make(chan struct{})
+	rows = &atomic.Int64{}
+	done = make(chan error, 1)
+	var once sync.Once
+	qctx := logstorage.NewQueryContext(context.Background(), &logstorage.QueryStats{}, []logstorage.TenantID{tid}, q, false, nil)
+	go func() {
+		done <- snap.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
+			rows.Add(int64(db.RowsCount()))
+			once.Do(func() { close(parked) })
+			<-release
+		})
+	}()
+	select {
+	case <-parked:
+	case err := <-done:
+		t.Fatalf("query ended before parking: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("query never reached writeBlock")
+	}
+	return release, rows, done
+}
+
+func TestSegments_CloseWaitsForQueryThenRefusesEverything(t *testing.T) {
+	s := openSegs(t, t.TempDir())
+	tid := logstorage.TenantID{AccountID: 1, ProjectID: 2}
+	addRows(s, tid, "a", 20)
+	s.DebugFlush()
+	snap := s.Snapshot()
+	defer snap.Release()
+	late := s.Snapshot() // taken before Close, queried after it
+	defer late.Release()
+
+	release, rows, done := blockedQuery(t, snap, tid)
+
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a query was inside RunQuery")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("in-flight query: %v", err)
+	}
+	if rows.Load() != 20 {
+		t.Fatalf("in-flight query saw %d rows, want 20", rows.Load())
+	}
+	select {
+	case <-closed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Close did not return after the query finished")
+	}
+
+	// A snapshot taken before Close, queried after it: an error, not a panic.
+	q, _ := logstorage.ParseQueryAtTimestamp("*", time.Now().UnixNano())
+	qctx := logstorage.NewQueryContext(context.Background(), &logstorage.QueryStats{}, []logstorage.TenantID{tid}, q, false, nil)
+	err := late.RunQuery(qctx, func(uint, *logstorage.DataBlock) {})
+	if !errors.Is(err, errSegmentClosed) || !strings.Contains(err.Error(), "insert buffer is closed") {
+		t.Fatalf("RunQuery after Close = %v, want errSegmentClosed", err)
+	}
+	if _, err := late.GetTenantIDs(context.Background(), 0, time.Now().UnixNano()); !errors.Is(err, errSegmentClosed) {
+		t.Fatalf("GetTenantIDs after Close = %v, want errSegmentClosed", err)
+	}
+	if !s.IsReadOnly() {
+		t.Fatal("IsReadOnly after Close = false, want true")
+	}
+	addRows(s, tid, "after-close", 3) // must not panic or touch the closed storage
+	s.DebugFlush()                    // no-op
+	if _, ok := s.Seal(); ok {
+		t.Fatal("Seal after Close sealed")
+	}
+	s.Close() // idempotent
+}
+
+func TestSegments_ReapWaitsForRefsAndQuery(t *testing.T) {
+	s := openSegs(t, t.TempDir())
+	defer s.Close()
+	tid := logstorage.TenantID{}
+	addRows(s, tid, "a", 10)
+	g, ok := s.Seal()
+	if !ok {
+		t.Fatal("Seal: nothing sealed")
+	}
+	s.Commit(g, time.Now().Add(-time.Hour))
+
+	snap := s.Snapshot()
+	release, rows, done := blockedQuery(t, snap, tid)
+
+	reaped := make(chan int, 1)
+	go func() { reaped <- s.Reap(time.Now(), time.Minute) }()
+	select {
+	case n := <-reaped:
+		if n != 0 {
+			t.Fatalf("Reap removed %d segments while a snapshot held them", n)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Reap blocked on a segment a snapshot holds; it must skip it")
+	}
+	if _, err := os.Stat(g.dir); err != nil {
+		t.Fatalf("segment dir gone while held: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows.Load() != 10 {
+		t.Fatalf("query saw %d rows, want 10", rows.Load())
+	}
+	snap.Release()
+	if n := s.Reap(time.Now(), time.Minute); n != 1 {
+		t.Fatalf("Reap after Release removed %d, want 1", n)
+	}
+	if _, err := os.Stat(g.dir); !os.IsNotExist(err) {
+		t.Fatalf("segment dir still there after Reap: %v", err)
+	}
+	if err := g.RunQuery(nil, nil); !errors.Is(err, errSegmentClosed) {
+		t.Fatalf("RunQuery on a reaped segment = %v, want errSegmentClosed", err)
+	}
+}
+
+func TestSegments_SealWaitsForQueryOnActive(t *testing.T) {
+	s := openSegs(t, t.TempDir())
+	defer s.Close()
+	tid := logstorage.TenantID{}
+	addRows(s, tid, "a", 15)
+	s.DebugFlush()
+	snap := s.Snapshot()
+	defer snap.Release()
+	release, rows, done := blockedQuery(t, snap, tid)
+
+	type sealRes struct {
+		g  *Segment
+		ok bool
+	}
+	sealed := make(chan sealRes, 1)
+	go func() { g, ok := s.Seal(); sealed <- sealRes{g, ok} }()
+	select {
+	case <-sealed:
+		t.Fatal("Seal returned while a query was inside RunQuery on the active segment")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows.Load() != 15 {
+		t.Fatalf("query saw %d rows, want 15", rows.Load())
+	}
+	var r sealRes
+	select {
+	case r = <-sealed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Seal did not finish after the query")
+	}
+	if !r.ok {
+		t.Fatal("Seal sealed nothing")
+	}
+	// The sealed segment is queryable after the close/reopen, and a snapshot
+	// taken before the seal still is.
+	if got := countSnap(t, snap, tid); got != 15 {
+		t.Fatalf("pre-seal snapshot after Seal sees %d, want 15", got)
+	}
+	fresh := s.Snapshot()
+	defer fresh.Release()
+	if got := countSnap(t, fresh, tid); got != 15 {
+		t.Fatalf("fresh snapshot after Seal sees %d, want 15", got)
+	}
+}
+
+// TestSegments_SealLosingToCloseReopensNothing: Close runs between Seal's swap
+// and its close/reopen of the old segment. Seal must not reopen a storage that
+// Close already closed (it would hold the directory's lock and never be
+// closed); the rows stay on disk for the next open.
+func TestSegments_SealLosingToCloseReopensNothing(t *testing.T) {
+	dir := t.TempDir()
+	s := openSegs(t, dir)
+	tid := logstorage.TenantID{AccountID: 3}
+	addRows(s, tid, "a", 5)
+	testHookSealBeforeReopen = s.Close
+	defer func() { testHookSealBeforeReopen = nil }()
+	if g, ok := s.Seal(); ok || g != nil {
+		t.Fatalf("Seal after losing to Close = (%v, %v), want (nil, false)", g, ok)
+	}
+	testHookSealBeforeReopen = nil
+
+	s2 := openSegs(t, dir) // fails on the directory lock if Seal reopened it
+	defer s2.Close()
+	snap := s2.Snapshot()
+	defer snap.Release()
+	if got := countSnap(t, snap, tid); got != 5 {
+		t.Fatalf("rows after reopen = %d, want 5", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,9 +63,15 @@ type Segment struct {
 	dir     string
 	created time.Time
 
-	// stMu guards st across the close/reopen at seal time.
+	// stMu guards st and closed. Every use of st holds it for reading, for as
+	// long as the upstream call runs, and every close of st holds it for
+	// writing, so a close waits for the calls in flight and a later call sees
+	// closed instead of touching a closed storage.
 	stMu sync.RWMutex
 	st   *logstorage.Storage
+	// closed is set, under stMu, when st is closed for good (Segments.Close or
+	// Reap); not by the close/reopen at seal time.
+	closed bool
 
 	rows atomic.Int64 // rows added (sizing; reopened segments start at 0)
 
@@ -87,10 +94,30 @@ func (g *Segment) Created() time.Time { return g.created }
 // Rows is the number of rows added to the segment by this process.
 func (g *Segment) Rows() int64 { return g.rows.Load() }
 
-// RunQuery runs q over the segment's rows with the upstream engine.
+// errSegmentClosed is returned for a query on a segment whose storage was
+// closed for good (the buffer was closed, or the segment was reaped).
+var errSegmentClosed = errors.New("insert buffer is closed")
+
+// closeForGood closes the segment's storage once. It waits for the queries and
+// writes in flight; later calls on the segment see closed.
+func (g *Segment) closeForGood() {
+	g.stMu.Lock()
+	defer g.stMu.Unlock()
+	if g.closed {
+		return
+	}
+	g.closed = true
+	g.st.MustClose()
+}
+
+// RunQuery runs q over the segment's rows with the upstream engine. It returns
+// an error wrapping errSegmentClosed once the segment's storage is closed.
 func (g *Segment) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
 	g.stMu.RLock()
 	defer g.stMu.RUnlock()
+	if g.closed {
+		return fmt.Errorf("segment %s: %w", g.nonce, errSegmentClosed)
+	}
 	return g.st.RunQuery(qctx, writeBlock)
 }
 
@@ -98,6 +125,9 @@ func (g *Segment) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 func (g *Segment) GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error) {
 	g.stMu.RLock()
 	defer g.stMu.RUnlock()
+	if g.closed {
+		return nil, fmt.Errorf("segment %s: %w", g.nonce, errSegmentClosed)
+	}
 	return g.st.GetTenantIDs(ctx, start, end)
 }
 
@@ -226,6 +256,14 @@ func (s *Segments) MustAddRows(lr *logstorage.LogRows) {
 	s.add.RLock()
 	g := s.active
 	g.stMu.RLock()
+	if g.closed {
+		// Unreachable in production: the insert handlers stop before the
+		// buffer is closed. Never touch a closed storage; drop and say so.
+		g.stMu.RUnlock()
+		s.add.RUnlock()
+		logger.Errorf("membuffer: %d rows added after the buffer was closed; dropped", lr.RowsCount())
+		return
+	}
 	g.st.MustAddRows(lr)
 	g.stMu.RUnlock()
 	g.rows.Add(int64(lr.RowsCount()))
@@ -234,13 +272,17 @@ func (s *Segments) MustAddRows(lr *logstorage.LogRows) {
 
 // IsReadOnly reports whether the buffer's volume is below its free-space floor
 // (upstream Storage.IsReadOnly on the active segment; all segments share the
-// volume). Inserts are refused while it is, as upstream refuses them.
+// volume). Inserts are refused while it is, as upstream refuses them. A closed
+// buffer is read-only too: it takes no rows.
 func (s *Segments) IsReadOnly() bool {
 	s.add.RLock()
 	defer s.add.RUnlock()
 	g := s.active
 	g.stMu.RLock()
 	defer g.stMu.RUnlock()
+	if g.closed {
+		return true
+	}
 	return g.st.IsReadOnly()
 }
 
@@ -250,6 +292,10 @@ func (s *Segments) Active() *Segment {
 	defer s.add.RUnlock()
 	return s.active
 }
+
+// testHookSealBeforeReopen, when a test sets it, runs in Seal after the
+// active segment was swapped out and before it is closed and reopened.
+var testHookSealBeforeReopen func()
 
 // Seal hands the writes to a new segment and makes the active one immutable
 // and fully durable: it is closed (upstream flushes every in-memory part to
@@ -269,11 +315,18 @@ func (s *Segments) Seal() (sealed *Segment, ok bool) {
 	old.sealed = true
 	s.list = append(s.list, next)
 	s.mu.Unlock()
+	if testHookSealBeforeReopen != nil {
+		testHookSealBeforeReopen()
+	}
 
 	old.stMu.Lock()
+	defer old.stMu.Unlock()
+	if old.closed {
+		// Close won the race for this segment: nothing to reopen.
+		return nil, false
+	}
 	old.st.MustClose()
 	old.st = logstorage.MustOpenStorage(old.dir, s.storageConfig())
-	old.stMu.Unlock()
 	return old, true
 }
 
@@ -329,9 +382,7 @@ func (s *Segments) Reap(now time.Time, grace time.Duration) int {
 	s.list = keep
 	s.mu.Unlock()
 	for _, g := range gone {
-		g.stMu.Lock()
-		g.st.MustClose()
-		g.stMu.Unlock()
+		g.closeForGood()
 		if err := os.RemoveAll(g.dir); err != nil {
 			logger.Errorf("membuffer: cannot remove committed segment %s: %s", g.dir, err)
 		}
@@ -348,7 +399,9 @@ func (s *Segments) DebugFlush() {
 	s.mu.Unlock()
 	for _, g := range list {
 		g.stMu.RLock()
-		g.st.DebugFlush()
+		if !g.closed {
+			g.st.DebugFlush()
+		}
 		g.stMu.RUnlock()
 	}
 }
@@ -476,9 +529,7 @@ func (s *Segments) Close() {
 	s.add.Lock()
 	defer s.add.Unlock()
 	for _, g := range list {
-		g.stMu.Lock()
-		g.st.MustClose()
-		g.stMu.Unlock()
+		g.closeForGood()
 	}
 }
 
