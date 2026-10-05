@@ -1,9 +1,9 @@
 # Ingest parity matrix
 
 Lakehouse mounts the upstream VictoriaLogs (`vlinsert`) and VictoriaTraces (`vtinsert`) HTTP
-handlers unchanged, so it should accept exactly the writes the pinned VictoriaLogs and
-VictoriaTraces accept and store exactly what they store. This matrix proves that in CI, for
-every write protocol, on both binaries.
+handlers unchanged. The matrix checks the protocol fixtures listed below against the pinned
+hot binaries, on both signals. It covers representative payloads, rather than every payload
+accepted by a protocol.
 
 The matrix cells are registry rows (`vl.ingest.<protocol>.<form>` and
 `vt.ingest.<protocol>.<form>`, in `tests/conformance/registry/rows/{vl,vt}/ingest_matrix.yaml`).
@@ -19,12 +19,18 @@ sends the **same payload** to the hot binary and to Lakehouse and checks, in ord
 | Step | Check |
 |---|---|
 | `ingest` | status code and body of the ingest answer are equal (ES `took` aside); for a payload upstream refuses, both refuse it the same way. Right after the cell's own write the ingest counters are checked: `vl_rows_ingested_total{type=...}` / `vt_rows_ingested_total{type=...}` moved on hot and on Lakehouse, and so did `lakehouse_insert_rows_total`. The counters are per-protocol series of the whole process, not per tenant, so this is a **lower bound** (moved by at least the rows the cell wrote). |
-| `buffer` | straight after the write Lakehouse returns the same rows as hot, field for field (`_stream_id` and `_time` included), apart from the cell's declared known gaps (below) |
-| `parquet` | the tenant's Parquet objects, read with a plain Parquet reader as DuckDB or pyarrow would, hold **exactly** the cell's rows: logs, exactly Rows rows carrying the marker; traces, exactly Rows span rows (rows with a `span_id`) with Rows distinct span ids, trace-index rows excluded. A writer that writes a row twice fails here. Then Lakehouse is compared with hot again |
-| `stable` | after one shared 10 s settle window the Parquet content is unchanged and Lakehouse still equals hot: no dip and no duplicate while the buffer hands its rows over |
+| `buffer` | each cell is queried before later protocol writes; Lakehouse equals hot field for field (`_stream_id` and `_time` included), apart from declared gaps, and fresh S3 scans before and after that observation must find zero marker rows. A flush already on S3 fails the preflush observation |
+| `parquet` | a standard Parquet reader checks exact marker/span counts, every captured hot field and value, timestamps in nanoseconds, numeric tenant columns (also on trace-index rows), promoted scalars and spilled MAP values. Conflicting duplicate representations, extra fields and malformed MAPs fail. The exact documented #332 message value is the sole physical-value exception below. Lakehouse is compared with hot again |
+| `stable` | established cells are sampled throughout later writes and flush polling, then repeatedly over a shared 10 s window. A missing, duplicate or changed result fails on its first sampled observation. Logs report sample counts and the largest observed gap between samples; changes between samples are not ruled out |
 | `known_gaps` | every gap a cell declares was observed in that cell (see Known gaps) |
 | `storage_health` | `lakehouse_insert_rows_lost_total` and `lakehouse_insert_rejected_total` did not move |
 | `other_signal_unaffected` | for every tenant written, a word/`trace_id` query that finds the rows on their own binary (self-check) finds none on the other binary |
+
+`cross_tenant_isolation` queries every marker through the other numeric tenant and configured
+alias, and scans all fresh tenant prefixes for misplaced physical rows. A separate native
+control sends six rows for two tenants in one multitenant request, requires actual preflush
+and persisted raw parity, and checks negative reads. It uses nonhexadecimal trace IDs accepted
+by the native parser; it does not send those IDs through OTLP.
 
 Whether a Parquet-only gap may apply to a cell is decided on every read from S3 (the cell has rows in
 Parquet), never from the step the test is in, so a flush that lands during `buffer` cannot flip a result.
@@ -88,6 +94,9 @@ traces:
         keyFile: /tls/tls.key         # tls.enabled: false gives a plaintext listener
 ```
 
+A null syslog port resolves once for every rendered surface: TCP uses 5140 and UDP uses 5141.
+The listen flag, container port, both Services and NetworkPolicy must agree.
+
 With TLS on and no certificate the chart refuses to render, instead of letting the pod fail at startup.
 
 **Docker Compose**: `deployment/docker/docker-compose-e2e.yml` enables the listeners on the hot
@@ -114,12 +123,19 @@ in `Gaps()` and `Case.Gaps` in `tests/ingestmatrix`, with its rewrite in `gapRew
 | After the flush, Lakehouse returns `severity_number: "0"` on rows VictoriaLogs stores without it | logs, every protocol that does not carry a severity | [#274](https://github.com/ReliablyObserve/victoria-lakehouse/issues/274) |
 | After the flush, an OTLP log row comes back with `level` in place of `severity_text` | logs, OTLP/HTTP protobuf | [#331](https://github.com/ReliablyObserve/victoria-lakehouse/issues/331) |
 | Spans are stored with `_msg` = VictoriaLogs' default text instead of VictoriaTraces' `-` | traces: OTLP protobuf, OTLP/gRPC and native (OTLP/JSON spans are right), buffer and Parquet | [#332](https://github.com/ReliablyObserve/victoria-lakehouse/issues/332) |
-| Spans flushed to Parquet come back without `_msg` (VictoriaTraces returns `-`) | traces, every protocol, after the flush | [#333](https://github.com/ReliablyObserve/victoria-lakehouse/issues/333) |
 | A `trace_id` query returns each flushed span twice while the buffer still holds it (the trace-ID fast path skips the buffer watermark) | traces, every protocol, after the flush | [#279](https://github.com/ReliablyObserve/victoria-lakehouse/issues/279) |
+
+Fresh writes after native-message preservation no longer declare #333: physical `body` and
+served `_msg` must be present and match hot, apart from the exact #332 value. The #332 raw
+exception requires a separately recorded preflush observation: hot `_msg` must be `-` and
+physical `body` must equal `missing _msg field; see https://docs.victoriametrics.com/victorialogs/keyconcepts/#message-field`.
+Absent or arbitrary bodies fail; every other field remains checked.
 
 Route gap, observed by `TestIngestMatrix_RouteGaps` (hot answers `200`, Lakehouse `404`; the test fails
 if Lakehouse starts answering `200`): [#334](https://github.com/ReliablyObserve/victoria-lakehouse/issues/334),
-`lakehouse-traces` does not mount `/internal/insert`.
+`lakehouse-traces` does not mount `/internal/insert`. The existing `vt.internal.insert.count`
+retains its pending count obligation; the distinct `vt.ingest.internal_insert.numeric` row
+measures the status divergence. A route status check does not satisfy the data-count obligation.
 
 ## Drift gate
 

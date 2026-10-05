@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **135** | **1** | **3** | **8** | **147** |
+| **Total** | **136** | **1** | **3** | **8** | **148** |
 
 ## Coverage gaps
 
@@ -106,7 +106,7 @@ Instead of a bespoke in-memory buffer with its own query semantics, the insert b
 
 ### ✅ Opt-in syslog and OTLP/gRPC ingest listeners
 
-`lh.feature.ingest.optin_listeners` · status: shipped · since: the release after v0.143.12 · surfaces: ingest, flag, cli
+`lh.feature.ingest.optin_listeners` · status: shipped · since: the release after v0.143.17 · surfaces: ingest, flag, cli
 
 **Opt-in syslog and OTLP/gRPC listeners**: Helm values and compose flags start the upstream syslog (TCP/UDP) and OTLP/gRPC trace listeners, off by default, with the ports wired into the Service and NetworkPolicy.
 
@@ -114,7 +114,7 @@ Both listeners are upstream VictoriaLogs/VictoriaTraces code that the Lakehouse 
 
 - Verification: tests: `charts/victoria-lakehouse/test_templates.sh`, `tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Logs`, `tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Traces`, `tests/conformance/ingest_matrix_test.go#TestIngestMatrix_E2EComposeEnablesListenersOnBothSides`
 - Docs: `docs/ingest-parity.md`, `docs/kubernetes-deployment.md`
-- Changelog: the release after `0.143.12`
+- Changelog: the release after `0.143.17`
 
 ### ✅ Full VictoriaLogs insert protocol surface
 

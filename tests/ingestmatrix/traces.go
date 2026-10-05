@@ -24,9 +24,9 @@ import (
 
 const spans3 = 3
 
-var jsonGap = []string{"traces-flushed-spans-lack-msg", "traces-trace-id-path-returns-flushed-spans-twice"}
+var jsonGap = []string{"traces-trace-id-path-returns-flushed-spans-twice"}
 
-var msgGap = []string{"traces-default-msg-value", "traces-flushed-spans-lack-msg", "traces-trace-id-path-returns-flushed-spans-twice"}
+var msgGap = []string{"traces-default-msg-value", "traces-trace-id-path-returns-flushed-spans-twice"}
 
 func tracesCases() []Case {
 	return []Case{

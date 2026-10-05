@@ -333,6 +333,14 @@ render_has "syslog udp: UDP protocol on the container port" yes \
 render_has "syslog udp only: no tcp flag" no \
   'syslog.listenAddr.tcp' \
   --set "logs.insert.syslog.udp.enabled=true"
+render_has "syslog UDP null port: listen flag uses UDP fallback" yes \
+  '"-syslog.listenAddr.udp=:5141"' \
+  --set "logs.insert.syslog.udp.enabled=true" \
+  --set "logs.insert.syslog.udp.port=null"
+render_has "syslog TCP null port: listen flag uses TCP fallback" yes \
+  '"-syslog.listenAddr.tcp=:5140"' \
+  --set "logs.insert.syslog.tcp.enabled=true" \
+  --set "logs.insert.syslog.tcp.port=null"
 render_has "syslog tenantID flag" yes \
   '"-syslog.tenantID.tcp=7:1"' \
   --set "logs.insert.syslog.tcp.enabled=true" \

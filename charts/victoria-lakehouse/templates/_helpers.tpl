@@ -114,12 +114,13 @@ Usage: include "victoria-lakehouse.ingestListeners" (dict "signal" $signal "role
 {{- range $proto := list "tcp" "udp" }}
 {{- $l := dig "syslog" $proto (dict) $.roleVals }}
 {{- if $l.enabled }}
-{{- $args := list (printf "-syslog.listenAddr.%s=:%v" $proto (default 5140 $l.port | int)) }}
+{{- $defPort := ternary 5140 5141 (eq $proto "tcp") }}
+{{- $port := default $defPort $l.port | int }}
+{{- $args := list (printf "-syslog.listenAddr.%s=:%d" $proto $port) }}
 {{- if $l.tenantID }}
 {{- $args = append $args (printf "-syslog.tenantID.%s=%s" $proto $l.tenantID) }}
 {{- end }}
-{{- $defPort := ternary 5140 5141 (eq $proto "tcp") }}
-{{- $out = append $out (dict "name" (printf "syslog-%s" $proto) "port" (default $defPort $l.port | int) "protocol" (upper $proto) "args" $args) }}
+{{- $out = append $out (dict "name" (printf "syslog-%s" $proto) "port" $port "protocol" (upper $proto) "args" $args) }}
 {{- end }}
 {{- end }}
 {{- end }}
