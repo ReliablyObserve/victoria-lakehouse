@@ -1219,6 +1219,7 @@ func TestSegments_ReapStress(t *testing.T) {
 	// Each round retires its segment on the same reap that commits it; at most
 	// the snapshots in flight (one per reader, two while it swaps) can hold
 	// retired segments, so the live count never grows with the rounds.
+	t.Logf("%d rounds, %d overlapping reads, at most %d segments live or retired at once", rounds, reads.Load(), maxLive)
 	if maxLive > 2+2*6 {
 		t.Fatalf("up to %d segments were live at once; reaping did not keep up", maxLive)
 	}
