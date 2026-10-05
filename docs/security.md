@@ -171,8 +171,8 @@ storage; set `select.buffer_query_enabled: false` on them so they do not ask.
 **`-httpAuth.*`.** VictoriaMetrics' HTTP server applies `-httpAuth.username`/`-httpAuth.password` to every path
 except `/health`, `/metrics`, `/flags` and a few others, including `/internal/*`. Lakehouse's peer clients (the
 buffer bridge, the peer cache, manifest, stats and tenant sync) do not send basic auth, so on a deployment that
-sets `-httpAuth.*` on its pods those channels are refused. Use the peer key between pods and put basic auth or
-vmauth in front for clients.
+sets `-httpAuth.*` on its pods those channels are refused (tracked in #396). Use the peer key between pods and put
+basic auth or vmauth in front for clients.
 
 ### Public Endpoints
 
