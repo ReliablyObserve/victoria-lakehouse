@@ -20,8 +20,8 @@ storage engine, used the way upstream uses it.
 The insert buffer is a short sequence of **segments**. A segment is an upstream
 `logstorage.Storage` in its own directory under `insert.buffer_dir`
 (`seg-<seq>-<nonce>`), cut by **ingest time**: every acknowledged row goes into
-the one **active** segment, whatever its `_time`. After `insert.buffer_flush_interval`
-(or earlier, once the segment holds about `insert.target_file_size` while few
+the one **active** segment, whatever its `_time`. `insert.buffer_flush_interval`
+after the segment's first row (or earlier, once the segment holds about `insert.target_file_size` while few
 segments wait) the flusher **seals** the segment: the active segment is closed
 and reopened, which makes every row of it durable and the segment immutable, and
 a new active segment takes the writes. A **sealed** segment is **drained
@@ -487,7 +487,7 @@ Readiness holds `/ready` at `503`/`204` until disk recovery plus the
 Small objects are expensive on object stores (per-request cost, read
 amplification). Two mechanisms keep cold-tier Parquet near the 128 MB target:
 
-- **Size-aware segments.** A segment is sealed after `buffer_flush_interval`, or
+- **Size-aware segments.** A segment is sealed `buffer_flush_interval` after its first row, or
   earlier once it holds about `target_file_size` of rows while fewer than 64
   segments wait (past that, only age seals, so an outage builds a few large
   segments rather than many small ones). It is then cut into objects of at most
@@ -529,7 +529,7 @@ engine that owns the flushed data.
 | Key | Default | Meaning |
 |---|---|---|
 | `insert.buffer_dir` | `/data/lakehouse/buffer` | The insert buffer: one directory per segment. **Must be a persistent volume** (a StatefulSet PVC); size it for `buffer_flush_interval` + drain + grace of ingest plus the outage you want to ride out ([Sizing](operations/sizing.md)). |
-| `insert.buffer_flush_interval` | `5m` | The longest a segment stays open: sealed this long after it opened (earlier at `target_file_size`), then written whole and removed after a grace. |
+| `insert.buffer_flush_interval` | `5m` | The longest a row waits in an open segment: sealed this long after its first row (earlier at `target_file_size`), then written whole and removed after a grace. A segment that sat empty is not sealed the moment rows arrive. |
 | `insert.target_file_size` | `128MB` | The object size target and the early-seal trigger; compaction target. |
 | `delete.persist_path` | `/data/lakehouse/tombstones` | Directory holding the local tombstone copy. **Must be a durable volume** — it is the copy that survives a `kill -9` when S3 is also unreachable. |
 

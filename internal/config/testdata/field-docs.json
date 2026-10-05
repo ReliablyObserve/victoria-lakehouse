@@ -238,7 +238,7 @@
     },
     "insert.buffer_flush_interval": {
       "name": "BufferFlushInterval",
-      "doc": "BufferFlushInterval is the longest a segment stays open: the active segment is sealed this long after it opened (earlier if it reaches target_file_size while few segments wait), then written to object storage completely and removed after a short grace period. Default 5m."
+      "doc": "BufferFlushInterval is the longest a row waits in an open segment: the active segment is sealed this long after its first row (earlier if it reaches target_file_size while few segments wait), then written to object storage completely and removed after a short grace period. Default 5m."
     },
     "insert.compression_level": {
       "name": "CompressionLevel",

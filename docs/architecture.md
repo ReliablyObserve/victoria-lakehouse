@@ -117,7 +117,7 @@ flowchart TD
 Key points:
 - The insert adapter hands VL's `*logstorage.LogRows` straight to the insert buffer (an upstream `logstorage.Storage` per segment); rows are converted to Parquet rows only when a sealed segment is drained.
 - Partitions are by hour: `dt=YYYY-MM-DD/hour=HH/`.
-- A segment is sealed after `insert.buffer_flush_interval` (default 5m) or earlier once it holds about `TargetFileSize` (default 128 MB compressed) of rows, then drained completely to Parquet.
+- A segment is sealed `insert.buffer_flush_interval` (default 5m) after its first row, or earlier once it holds about `TargetFileSize` (default 128 MB compressed) of rows, then drained completely to Parquet.
 - Crash recovery (no WAL): the buffer persists rows as upstream on-disk parts (restored on open) and the flusher drains every segment it finds on restart. See [Persistence & Durability](durability.md).
 
 ---

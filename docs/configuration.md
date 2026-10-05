@@ -230,8 +230,8 @@ pod's role) and does not itself set `compaction.enabled: true` runs without comp
 ### Insert buffer (`insert.buffer_dir`, `insert.buffer_flush_interval`)
 
 The insert buffer is a sequence of upstream `logstorage.Storage` segments under
-`insert.buffer_dir`, cut by ingest time. A segment is sealed after
-`insert.buffer_flush_interval` (default `5m`), or earlier once it holds about
+`insert.buffer_dir`, cut by ingest time. A segment is sealed
+`insert.buffer_flush_interval` (default `5m`) after its first row, or earlier once it holds about
 `insert.target_file_size` of rows, and is then written to S3 as Parquet in objects of at
 most that size. `insert.buffer_dir` must be a persistent volume: it holds every
 acknowledged row until its segment is in Parquet. Both keys are required. The Helm chart
@@ -519,7 +519,7 @@ Controls buffering and flushing on the write path.
 |---|---|---|---|---|---|---|
 | `insert.bloom_columns` | []string | `[service.name, trace_id]` | set |  |  | Extra columns to bloom-index on write, in addition to the signal's built-in bloom columns. |
 | `insert.buffer_dir` | string | `/data/lakehouse/buffer` | set |  |  | The directory of the insert buffer: a sequence of upstream VictoriaLogs storages ("segments"), one directory each, holding every acknowledged row until it has been written to Parquet. |
-| `insert.buffer_flush_interval` | duration | `5m` | set |  | dev: `10s` | The longest a segment stays open: the active segment is sealed this long after it opened (earlier if it reaches target_file_size while few segments wait), then written to object storage completely and removed after a short grace period. |
+| `insert.buffer_flush_interval` | duration | `5m` | set |  | dev: `10s` | The longest a row waits in an open segment: the active segment is sealed this long after its first row (earlier if it reaches target_file_size while few segments wait), then written to object storage completely and removed after a short grace period. |
 | `insert.compression_level` | int | `3` | set |  | max-durability: `7`; max-cost-savings: `11`; dev: `1` | The zstd level (1-22) of freshly written files; compaction recompresses older files per compaction.compression_level_by_output_level. |
 | `insert.row_group_size` | int | `10000` | set |  | max-performance: `5000`; max-cost-savings: `50000`; dev: `1000` | The number of rows per Parquet row group in freshly written files. |
 | `insert.target_file_size` | string | `128MB` | set |  | max-performance: `64MB`; max-cost-savings: `256MB`; dev: `8MB` | The target size of a Parquet object, as a size string: the buffer flusher cuts a segment into objects of about this size, and a segment that reaches it (while few segments wait) is sealed early. |

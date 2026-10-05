@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The insert buffer is durable by default: a sequence of upstream storage segments, drained whole to Parquet.**
   Every acknowledged row goes into one active `logstorage` segment under `insert.buffer_dir`, cut by ingest time
-  rather than by `_time`; a segment is sealed after `insert.buffer_flush_interval` (default 5m) or earlier at
+  rather than by `_time`; a segment is sealed `insert.buffer_flush_interval` (default 5m) after its first row or earlier at
   about `insert.target_file_size`, then written completely, per tenant, in objects of at most the target size, so
   flush memory is bounded by one object. An insert is acknowledged exactly as in hot VictoriaLogs and
   VictoriaTraces: the rows are on disk within upstream's flush window (about 11 s at worst), inserts get upstream's 429 when the buffer

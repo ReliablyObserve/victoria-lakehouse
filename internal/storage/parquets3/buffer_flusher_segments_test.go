@@ -733,6 +733,27 @@ func TestSegments_SealPolicy(t *testing.T) {
 	}
 }
 
+// The age limit counts from the segment's first row, not from its creation:
+// a segment that sat empty through an idle period is not sealed (and written
+// as a tiny object) the moment its first rows arrive; they wait the age limit
+// like any other rows.
+func TestSegments_SealAgeCountsFromTheFirstRow(t *testing.T) {
+	e := newSegEnv(t)
+	f := e.flusher(1 << 20)
+	f.maxAge = 400 * time.Millisecond
+	time.Sleep(600 * time.Millisecond) // the active segment idles past the age limit
+	e.ingest(segTenantA, hourAgo, 3)
+	f.maybeSeal(time.Now())
+	if n := len(e.segs.Pending()); n != 0 {
+		t.Fatalf("sealed %d segment(s) right after the first rows of an idle segment", n)
+	}
+	time.Sleep(500 * time.Millisecond)
+	f.maybeSeal(time.Now())
+	if n := len(e.segs.Pending()); n != 1 {
+		t.Fatalf("%d segments sealed once the first row was past the age limit, want 1", n)
+	}
+}
+
 // Committed segments stay readable through the grace period and while a
 // snapshot holds them, and are removed after.
 func TestSegments_ReapRespectsGraceAndSnapshots(t *testing.T) {

@@ -935,3 +935,31 @@ func TestSegments_SealLosingToCloseReopensNothing(t *testing.T) {
 		t.Fatalf("rows after reopen = %d, want 5", got)
 	}
 }
+
+// FirstRowAt is zero until the first row is added and does not move with
+// later rows; a new active segment after a seal starts at zero again.
+func TestSegments_FirstRowAt(t *testing.T) {
+	s := openSegs(t, t.TempDir())
+	defer s.Close()
+	tid := logstorage.TenantID{}
+	if !s.Active().FirstRowAt().IsZero() {
+		t.Fatal("an empty segment has a first-row time")
+	}
+	before := time.Now()
+	addRows(s, tid, "a", 3)
+	first := s.Active().FirstRowAt()
+	if first.Before(before) || first.After(time.Now()) {
+		t.Fatalf("first-row time %v not within the add", first)
+	}
+	time.Sleep(5 * time.Millisecond)
+	addRows(s, tid, "b", 3)
+	if got := s.Active().FirstRowAt(); !got.Equal(first) {
+		t.Fatalf("first-row time moved with a later add: %v -> %v", first, got)
+	}
+	if _, ok := s.Seal(); !ok {
+		t.Fatal("Seal sealed nothing")
+	}
+	if !s.Active().FirstRowAt().IsZero() {
+		t.Fatal("the new active segment has a first-row time before any row")
+	}
+}

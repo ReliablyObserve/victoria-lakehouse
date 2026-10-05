@@ -74,6 +74,10 @@ type Segment struct {
 	closed bool
 
 	rows atomic.Int64 // rows added (sizing; reopened segments start at 0)
+	// firstRow is when the first row was added by this process (Unix ns; 0
+	// until then): the age the seal policy counts, so a segment that sat empty
+	// is not sealed the moment its first row arrives.
+	firstRow atomic.Int64
 
 	// guarded by Segments.mu
 	sealed    bool
@@ -93,6 +97,14 @@ func (g *Segment) Created() time.Time { return g.created }
 
 // Rows is the number of rows added to the segment by this process.
 func (g *Segment) Rows() int64 { return g.rows.Load() }
+
+// FirstRowAt is when this process added the segment's first row; zero before.
+func (g *Segment) FirstRowAt() time.Time {
+	if ns := g.firstRow.Load(); ns != 0 {
+		return time.Unix(0, ns)
+	}
+	return time.Time{}
+}
 
 // errSegmentClosed is returned for a query on a segment whose storage was
 // closed for good (the buffer was closed, or the segment was reaped).
@@ -266,6 +278,7 @@ func (s *Segments) MustAddRows(lr *logstorage.LogRows) {
 	}
 	g.st.MustAddRows(lr)
 	g.stMu.RUnlock()
+	g.firstRow.CompareAndSwap(0, time.Now().UnixNano())
 	g.rows.Add(int64(lr.RowsCount()))
 	s.add.RUnlock()
 }

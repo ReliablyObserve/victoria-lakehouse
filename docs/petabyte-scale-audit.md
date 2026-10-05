@@ -272,8 +272,8 @@ atomic manifest swap, and tombstone and bloom rebuild in the same pass.
 The `BufferFlusher` drains a sealed segment per tenant in groups planned from the
 segment's per-second row counts: at most `insert.target_file_size` divided by an
 estimated bytes-per-row (an assumed constant, not measured) rows per group,
-never crossing an hour partition. A segment is sealed after
-`insert.buffer_flush_interval` (default 5m) or earlier once it holds about the
+never crossing an hour partition. A segment is sealed
+`insert.buffer_flush_interval` (default 5m) after its first row, or earlier once it holds about the
 target. Objects are therefore bounded above by the target in *estimated raw* bytes;
 because Parquet compresses, written objects are smaller than the 128 MiB the
 setting suggests, and a tenant or hour with few rows in a segment gets a small

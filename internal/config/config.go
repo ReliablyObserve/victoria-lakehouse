@@ -275,8 +275,8 @@ type InsertConfig struct {
 	// it had not written yet. Size it for buffer_flush_interval plus the
 	// longest object-store outage you want to ride out (docs/sizing.md).
 	BufferDir string `yaml:"buffer_dir"`
-	// BufferFlushInterval is the longest a segment stays open: the active
-	// segment is sealed this long after it opened (earlier if it reaches
+	// BufferFlushInterval is the longest a row waits in an open segment: the
+	// active segment is sealed this long after its first row (earlier if it reaches
 	// target_file_size while few segments wait), then written to object storage
 	// completely and removed after a short grace period. Default 5m.
 	BufferFlushInterval time.Duration `yaml:"buffer_flush_interval"`

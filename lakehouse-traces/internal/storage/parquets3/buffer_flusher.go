@@ -520,15 +520,18 @@ func (f *BufferFlusher) failed(now time.Time, g *membuffer.Segment, err error) {
 	logger.Warnf("buffer flusher: segment %d (%s) is not fully written yet, retrying in %s: %s", g.Seq(), g.Nonce(), f.backoff, err)
 }
 
-// maybeSeal seals the active segment once it is maxAge old, or has reached
-// the size target while few segments wait to be drained.
+// maybeSeal seals the active segment once its first row is maxAge old, or it
+// has reached the size target while few segments wait to be drained. The age
+// counts from the first row, not from the segment's creation: a segment that
+// sat empty through an idle period would otherwise be sealed, and written as a
+// tiny object, the moment its first rows arrived.
 func (f *BufferFlusher) maybeSeal(now time.Time) {
 	a := f.segs.Active()
 	rows := a.Rows()
 	if rows == 0 {
 		return
 	}
-	due := now.Sub(a.Created()) >= f.maxAge
+	due := now.Sub(a.FirstRowAt()) >= f.maxAge
 	if !due && rows*estBytesPerTraceRow >= f.sealBytes {
 		due = len(f.segs.Pending()) < maxSizeSealBacklog
 	}

@@ -70,7 +70,7 @@ When running separate insert and select pods:
 
 ### Flush Pipeline
 
-- **Age seal**: a segment is sealed after `insert.buffer_flush_interval` (default 5m) and then drained completely to Parquet.
+- **Age seal**: a segment is sealed `insert.buffer_flush_interval` (default 5m) after its first row and then drained completely to Parquet.
 - **Size seal**: earlier, once the segment holds about `insert.target_file_size` (default 128MB) of rows while fewer than 64 segments are pending.
 - **Graceful shutdown**: the flusher stops and the buffer closes (upstream persists every segment); the next start drains what is left.
 

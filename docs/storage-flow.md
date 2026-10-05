@@ -185,7 +185,7 @@ matching hot VL/VT. See [Persistence & Durability](durability.md).
 | Key | Default | Config file | Flags | Description |
 |---|---|---|---|---|
 | `insert.buffer_dir` | `/data/lakehouse/buffer` | set |  | The directory of the insert buffer: a sequence of upstream VictoriaLogs storages ("segments"), one directory each, holding every acknowledged row until it has been written to Parquet. |
-| `insert.buffer_flush_interval` | `5m` | set |  | The longest a segment stays open: the active segment is sealed this long after it opened (earlier if it reaches target_file_size while few segments wait), then written to object storage completely and removed after a short grace period. |
+| `insert.buffer_flush_interval` | `5m` | set |  | The longest a row waits in an open segment: the active segment is sealed this long after its first row (earlier if it reaches target_file_size while few segments wait), then written to object storage completely and removed after a short grace period. |
 
 <!-- END GENERATED: config-keys -->
 
