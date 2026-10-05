@@ -158,6 +158,7 @@ jobs:
         target:
           # Format: <package>:<FuzzFnName>
           # See discover-fuzz.sh for how to keep this list in sync.
+          - tests/ingestmatrix:FuzzRawTruthPhysicalRepresentations
           - internal/storage/parquets3:FuzzExtractExactMatch
           - internal/storage/parquets3:FuzzIsPrintable
           - internal/storage/parquets3:FuzzTraceRowToDataBlock
@@ -307,7 +308,10 @@ jobs:
         # resolves to deps/{VictoriaLogs,VictoriaTraces}. Mixing in
         # `lakehouse-traces/...` prefix would break the package
         # resolution under that working directory.
+        # Shared ingestmatrix source is exercised as named files under this
+        # module's dependency graph; see the explicit case in the fuzz step.
         target:
+          - tests/ingestmatrix:FuzzRawTruthPhysicalRepresentations
           - internal/storage/parquets3:FuzzExtractExactMatch
           - internal/storage/parquets3:FuzzIsPrintable
           - internal/storage/parquets3:FuzzTraceRowToDataBlock
@@ -354,6 +358,16 @@ jobs:
         run: |
           PKG="${TARGET%%:*}"
           FN="${TARGET##*:}"
+          FUZZ_PACKAGE=( "./${PKG}/" )
+          CORPUS_DIRS=( "${PKG}/testdata/fuzz/${FN}" )
+          if [ "$PKG" = "tests/ingestmatrix" ]; then
+            # Keep one source copy, but compile it with the traces module's
+            # distinct VictoriaLogs replacement. Named-file fuzzing can place
+            # a failure corpus relative to its working or source directory;
+            # inspect both, so a real crasher never qualifies for a retry.
+            FUZZ_PACKAGE=( ../tests/ingestmatrix/*.go )
+            CORPUS_DIRS=( "testdata/fuzz/${FN}" "../tests/ingestmatrix/testdata/fuzz/${FN}" )
+          fi
           # See fuzz-logs' equivalent step for why -timeout/-parallel/retry
           # are here: a known Go fuzz-coordinator teardown race at the
           # exact -fuzztime deadline can fail a target with "context
@@ -361,7 +375,7 @@ jobs:
           # crasher-less failure is retried.
           TIMEOUT=$(( SECONDS * 3 + 60 ))
           PARALLEL=4
-          before=$(find "${PKG}/testdata/fuzz/${FN}" -type f 2>/dev/null | sort)
+          before=$(find "${CORPUS_DIRS[@]}" -type f 2>/dev/null | sort)
           attempt=0
           max_attempts=2
           while :; do
@@ -373,12 +387,12 @@ jobs:
                  -fuzzminimizetime=5s \
                  -timeout=${TIMEOUT}s \
                  -parallel=${PARALLEL} \
-                 ./${PKG}/ > fuzz-out.log 2>&1; then
+                 "${FUZZ_PACKAGE[@]}" > fuzz-out.log 2>&1; then
               cat fuzz-out.log
               break
             fi
             cat fuzz-out.log
-            after=$(find "${PKG}/testdata/fuzz/${FN}" -type f 2>/dev/null | sort)
+            after=$(find "${CORPUS_DIRS[@]}" -type f 2>/dev/null | sort)
             if [ "$before" != "$after" ]; then
               echo "::error::${FN}: new crasher written — not retrying"
               exit 1
