@@ -295,6 +295,17 @@ jobs:
             echo "::warning::${FN}: hit the known fuzz-engine deadline race (attempt ${attempt}/${max_attempts}); retrying"
           done
 
+      - name: Preserve failed fuzz inputs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-logs-${{ strategy.job-index }}
+          path: |
+            fuzz-out.log
+            internal/**/testdata/fuzz/**
+            tests/ingestmatrix/testdata/fuzz/**
+          retention-days: 7
+
   fuzz-traces:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -407,6 +418,18 @@ jobs:
             fi
             echo "::warning::${FN}: hit the known fuzz-engine deadline race (attempt ${attempt}/${max_attempts}); retrying"
           done
+
+      - name: Preserve failed fuzz inputs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-traces-${{ strategy.job-index }}
+          path: |
+            lakehouse-traces/fuzz-out.log
+            lakehouse-traces/internal/**/testdata/fuzz/**
+            lakehouse-traces/testdata/fuzz/**
+            tests/ingestmatrix/testdata/fuzz/**
+          retention-days: 7
 
   # -------------------------------------------------------------------
   # Drift guard — if a *_test.go file declares `func Fuzz*` and isn't
