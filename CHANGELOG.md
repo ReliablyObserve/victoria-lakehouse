@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time. The e2e compose stack now runs the same listeners on the hot VictoriaLogs/VictoriaTraces containers and on
   Lakehouse. See `docs/ingest-parity.md`.
 
-### Fixed
+## [0.143.18] - 2026-10-05
 
 - Helm defaults use the published container image references for both signals. Logs and traces now point to the release repository namespace and prepend the release tag prefix to the chart app version only for each signal's canonical published repository. Custom and legacy repositories retain the unprefixed app-version fallback when the image tag is blank; explicit tags remain unchanged. Future releases publish canonical and legacy flat GHCR repositories with prefixed, unprefixed and latest tags from the same multiarchitecture build for both default and FIPS variants, without backfilling historical versions; Docker Hub tags remain unchanged. Installation examples use the chart signal toggles and current configuration keys.
 
