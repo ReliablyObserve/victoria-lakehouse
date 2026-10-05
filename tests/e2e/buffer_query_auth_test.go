@@ -129,7 +129,14 @@ type bufferRow struct {
 	SpanID    string `json:"span_id"`
 }
 
-func (r bufferRow) text() string { return r.Body + r.SpanName }
+// text is the marker-carrying text of a row: the span name of a span (its
+// body is "-"), the message of a log row.
+func (r bufferRow) text() string {
+	if r.SpanName != "" {
+		return r.SpanName
+	}
+	return r.Body
+}
 
 // readBuffer asks the insert pod's /internal/buffer/query; sel is
 // "all" or "<account>:<project>". It returns the status, the rows of a 200
