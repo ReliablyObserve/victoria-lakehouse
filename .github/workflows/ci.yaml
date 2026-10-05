@@ -406,6 +406,41 @@ jobs:
           go test ./internal/storage/parquets3/ -run "$heavy" -race -count=1 -timeout=10m -json | tee heavy.json |
             python3 "$GITHUB_WORKSPACE/scripts/ci/gotest_report.py" --budget-seconds 600 --title "${{ matrix.module }}: parquets3 heavy"
 
+  # Storage-health gate for compaction. internal/compaction is exercised by
+  # test-logs, but that job runs hundreds of packages under -race against a
+  # time budget; this named job runs the compaction storage-health cells on
+  # their own so a regression is one status icon on the PR: a second scan
+  # over a settled manifest does nothing (TestScan_SecondScanDoesNothing),
+  # a lone file is never rewritten, tiered objects are never touched, and the
+  # simulated multi-day runs hold the storage invariants. Both signals run
+  # inside each test (internal/compaction exists once, in the root module).
+  storage-health-compaction:
+    needs: deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+
+      - name: Compaction storage-health cells
+        env:
+          LH_COMPACTION_PROPERTY_SEEDS: "30"
+        run: |
+          GOWORK=off go test ./internal/compaction -run 'TestScan_|TestStorageHealth' -count=1 -timeout=10m
+          GOWORK=off go test ./internal/compaction ./internal/manifest ./internal/delete -run '^TestCompactionSafety_' -count=1 -timeout=5m
+          python3 -m unittest discover -s scripts/bench/compaction -p test_ab.py
+
   # Dedicated hot/cold parity safeguard. The same tests already run as
   # part of `test-traces` and `test-logs`, but pulling them into a named
   # job makes the parity check visible in PR pages and gives reviewers
@@ -729,9 +764,11 @@ jobs:
         run: |
           helm lint charts/victoria-lakehouse/ --strict
 
-      - name: Render the chart in every mode (opt-in ingest listeners included)
+      - name: Verify Helm images and templates
         run: |
+          bash charts/victoria-lakehouse/test_images.sh
           bash charts/victoria-lakehouse/test_templates.sh
+          python3 scripts/ci/tests/test_release_image_tags.py
 
   # Benchmark smoke run (informational: nothing gates on the numbers, the
   # registry-backed perf jobs above do that). What it guarantees is that every

@@ -150,15 +150,18 @@
             },
             "max_concurrent": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "description": "Merges a pod runs per tenant on each scan (every tenant with compactable files gets up to this many)"
             },
             "min_files_l0": {
               "type": "integer",
-              "minimum": 2
+              "minimum": 2,
+              "description": "L0 files of one tenant in a partition needed before L0 to L1 compaction"
             },
             "min_files_l1": {
               "type": "integer",
-              "minimum": 2
+              "minimum": 2,
+              "description": "L1 files of one tenant in a partition needed before L1 to L2 compaction"
             },
             "min_age": {
               "type": "string",
@@ -166,7 +169,11 @@
             },
             "daily_rollup_age": {
               "type": "string",
-              "description": "Minimum partition age for daily rollup compaction (Go duration)"
+              "description": "Partition age after which every file of a tenant in the hour under 32 MiB merges into one, whatever its level (Go duration)"
+            },
+            "size_merge_max_age": {
+              "type": "string",
+              "description": "Partition age beyond which a tenant with no lifecycle rule gets no size merges, only stale-schema heal (Go duration; 0 = 7d, negative = no cap)"
             },
             "compression_level_by_output_level": {
               "type": "array",

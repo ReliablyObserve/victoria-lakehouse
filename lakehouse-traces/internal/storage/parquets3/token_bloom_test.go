@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
 func TestTokenBloomAddTest(t *testing.T) {
@@ -243,9 +245,9 @@ func TestExtractSearchTokens(t *testing.T) {
 			expect: []string{"timeout"},
 		},
 		{
-			name:   "body field",
+			name:   "customer body field",
 			query:  `body:"internal server error"`,
-			expect: []string{"internal", "server", "error"},
+			expect: nil,
 		},
 		{
 			name:   "skip keywords",
@@ -410,5 +412,43 @@ func TestTokenBloomLargeScale(t *testing.T) {
 	t.Logf("large scale FPR: %.4f (%d/%d)", fpr, fp, tests)
 	if fpr > 0.02 {
 		t.Errorf("FPR too high for large scale: %.4f", fpr)
+	}
+}
+
+func TestExtractSearchTokensNativeGuarantees(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  []string
+	}{
+		{`name:="HTTP GET /api/v1/users"`, nil},
+		{`body:"internal server error"`, nil},
+		{`message:"customer value"`, nil},
+		{`"span_attr:message":"customer _msg:missingtoken"`, nil},
+		{`_msg:nativepre*`, nil},
+		{`_msg:=nativepre*`, nil},
+		{`NOT _msg:missingtoken`, nil},
+		{`_msg:error OR name:=operation`, nil},
+		{`_msg:error OR _msg:timeout`, nil},
+		{`(_msg:"common error" OR _msg:"common timeout")`, []string{"common"}},
+		{`_msg:stablemarker AND name:="HTTP GET /api/v1/users"`, []string{"stablemarker"}},
+		{`_msg:"connection refused" | format "missingtoken" as _msg | filter _msg:missingtoken`, []string{"connection", "refused"}},
+		{`_msg:"unterminated`, nil},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			if tc.query != `_msg:"unterminated` {
+				if _, err := logstorage.ParseQuery(tc.query); err != nil {
+					t.Fatalf("invalid fixture: %v", err)
+				}
+			}
+			got := extractSearchTokens(tc.query)
+			if len(got) != len(tc.want) {
+				t.Fatalf("tokens=%v; want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("tokens=%v; want %v", got, tc.want)
+				}
+			}
+		})
 	}
 }

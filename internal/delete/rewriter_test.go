@@ -612,8 +612,8 @@ func TestTraceRowToMap(t *testing.T) {
 	if m["span.name"] != "HTTP GET /users" {
 		t.Fatalf("expected span name, got %s", m["span.name"])
 	}
-	if m["body"] != "HTTP GET /users" {
-		t.Fatal("body should map to SpanName for traces")
+	if m["body"] != row.Body {
+		t.Fatal("body should preserve the actual native message")
 	}
 	if m["status.code"] != "2" {
 		t.Fatalf("expected status.code=2, got %s", m["status.code"])

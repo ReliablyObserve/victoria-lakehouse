@@ -12,9 +12,12 @@ echo ""
 
 # Check if helm is installed
 if ! command -v helm &>/dev/null; then
-  echo "SKIP: helm not found in PATH — install helm to run template verification"
-  exit 0
+  echo "FAIL: helm not found in PATH — install helm to run template verification" >&2
+  exit 1
 fi
+
+ERROR_FILE="$(mktemp)"
+trap 'rm -f "${ERROR_FILE}"' EXIT
 
 HELM_VERSION="$(helm version --short 2>/dev/null || true)"
 echo "Helm: ${HELM_VERSION}"
@@ -29,12 +32,12 @@ run_test() {
   if helm template test-release "${CHART_DIR}" "${set_flags[@]}" \
       --generate-name=false \
       --validate=false \
-      >/dev/null 2>/tmp/helm_test_err; then
+      >/dev/null 2>"${ERROR_FILE}"; then
     echo "  PASS  ${description}"
     PASSED=$((PASSED + 1))
   else
     echo "  FAIL  ${description}"
-    sed 's/^/         /' /tmp/helm_test_err
+    sed 's/^/         /' "${ERROR_FILE}"
     FAILED=$((FAILED + 1))
     ERRORS=$((ERRORS + 1))
   fi

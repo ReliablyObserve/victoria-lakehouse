@@ -69,7 +69,23 @@ func queryFieldName(parquetCol string, reg *schema.Registry, slots schema.SlotMa
 // A key that spells a Tier-2 slot name is suppressed, not renamed: the slot
 // COLUMN already carries that slot's value, and renaming the key would emit a
 // second, unrelated value under the configured attribute name.
-func mapAttrFieldName(mapCol, key string) (string, bool) {
+func mapAttrFieldName(mapCol, key string, registries ...*schema.Registry) (string, bool) {
+	// The logs reader also supports the traces profile. Preserve message-name
+	// provenance there without changing the naming of logs attribute maps.
+	if len(registries) > 0 && registries[0] != nil && registries[0].ResolveFromParquet("span.name") != nil {
+		prefix := ""
+		switch mapCol {
+		case "resource.attributes":
+			prefix = "resource_attr:"
+		case "span.attributes":
+			prefix = "span_attr:"
+		case "scope.attributes":
+			prefix = "scope_attr:"
+		}
+		if prefix != "" {
+			key = schema.TraceMessageAttributeName(prefix, key)
+		}
+	}
 	return mapAttrFieldNameWithPrefix(mapColumnToAttrPrefix(mapCol), key)
 }
 

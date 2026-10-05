@@ -404,6 +404,12 @@ func TestRunQueryProjectionEquivalence_Random(t *testing.T) {
 	}
 	t.Cleanup(func() { vlapp.SetExternalStorage(nil) })
 
+	// -short (the unit job) checks 40 generated queries per tombstone mode; the
+	// heavy job, which runs every test that consults testing.Short(), checks 150.
+	queries := 150
+	if testing.Short() {
+		queries = 40
+	}
 	rng := rand.New(rand.NewSource(285))
 	g := projGen{pick: rng.Intn, extra: extra}
 	for _, tombstone := range []bool{false, true} {
@@ -411,7 +417,7 @@ func TestRunQueryProjectionEquivalence_Random(t *testing.T) {
 			addHideTombstone(s, `level:=ERROR`, start, end)
 		}
 		checked := 0
-		for i := 0; i < 150; i++ {
+		for i := 0; i < queries; i++ {
 			q := g.query()
 			if _, err := logstorage.ParseQuery(q); err != nil || logstorage.QueryHasFilterSubqueries(mustParseQuery(t, q)) {
 				continue
@@ -422,8 +428,8 @@ func TestRunQueryProjectionEquivalence_Random(t *testing.T) {
 			}
 			checked++
 		}
-		if checked < 80 {
-			t.Fatalf("tombstone=%v: only %d runnable queries; the generator no longer exercises the property", tombstone, checked)
+		if checked < queries/2 {
+			t.Fatalf("tombstone=%v: only %d of %d generated queries were runnable; the generator no longer exercises the property", tombstone, checked, queries)
 		}
 	}
 }

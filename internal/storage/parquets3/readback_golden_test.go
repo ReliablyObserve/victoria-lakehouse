@@ -401,6 +401,7 @@ func goldenTraceRows(n int) []schema.TraceRow {
 	for i := range rows {
 		svc := fmt.Sprintf("svc-%02d", i%12)
 		rows[i] = schema.TraceRow{
+			Body:              []string{"-", "persisted native message", ""}[i%3],
 			AccountID:         uint32(i % 3),
 			ProjectID:         uint32(i % 5),
 			TimestampUnixNano: base + int64(i)*1_000_000,

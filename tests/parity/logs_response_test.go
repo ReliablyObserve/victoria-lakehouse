@@ -25,7 +25,7 @@ func TestParity_Response(t *testing.T) {
 		// full hot/cold field-vocabulary comparison.
 		assertNoInternalFields(t, "hot logs", refRows)
 		assertNoInternalFields(t, "cold logs", sutRows)
-		compareParity(t, pc, ref, sut)
+		compareParityAt(t, pc, vlBaseURL, lhBaseURL, params, ref, sut)
 	})
 
 	t.Run("limit_respected", func(t *testing.T) {

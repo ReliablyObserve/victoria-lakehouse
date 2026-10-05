@@ -77,6 +77,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	queryStr := q.String()
+	ctx = withSearchTokens(ctx, q)
 	pipeFields := logstorage.GetQueryPipeFields(q)
 	// The columns every per-file read projects come from the parsed query
 	// (filter AND pipes), not from the query text — see neededColumns. The
@@ -1092,7 +1093,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	rowGroups := f.RowGroups()
 
 	// Extract file-level key-value metadata for token bloom checks.
-	searchTokens := extractSearchTokens(queryStr)
+	searchTokens := searchTokensFromContext(ctx, queryStr)
 	var fileKVMeta map[string]string
 	if len(searchTokens) > 0 {
 		if meta := f.Metadata(); meta != nil {
@@ -1457,14 +1458,14 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 					if v == "" {
 						continue
 					}
-					if scalarFieldNames[k] {
+					if scalarFieldNames[k] && (k != "body" || s.registry.ResolveFromParquet("span.name") == nil) {
 						continue
 					}
 					// Same naming rule the scalar columns go through
 					// (mapAttrFieldName / queryFieldName share
 					// emittableFieldName), so a MAP key cannot introduce a
 					// field name a column is forbidden to produce.
-					attrName, ok := mapAttrFieldName(fld.name, k)
+					attrName, ok := mapAttrFieldName(fld.name, k, s.registry)
 					if !ok {
 						continue
 					}
@@ -1629,6 +1630,9 @@ func appendIfSet(buf []field, name, value string) []field {
 }
 
 func traceRowToFields(r *schema.TraceRow, buf []field) []field {
+	if r.Body != "" {
+		buf = append(buf, field{"_msg", r.Body})
+	}
 	buf = append(buf,
 		field{"_time", r.TimestampUnixNano},
 		field{"start_time", r.StartTimeUnixNano},
@@ -1679,16 +1683,19 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 	}
 	for k, v := range r.ResourceAttributes {
 		if !tracePromotedResourceKeys[k] {
-			buf = append(buf, field{k, v})
+			name := schema.TraceMessageAttributeName("resource_attr:", k)
+			buf = append(buf, field{name, v})
 		}
 	}
 	for k, v := range r.SpanAttributes {
 		if !tracePromotedSpanKeys[k] {
-			buf = append(buf, field{k, v})
+			name := schema.TraceMessageAttributeName("span_attr:", k)
+			buf = append(buf, field{name, v})
 		}
 	}
 	for k, v := range r.ScopeAttributes {
-		buf = append(buf, field{k, v})
+		name := schema.TraceMessageAttributeName("scope_attr:", k)
+		buf = append(buf, field{name, v})
 	}
 	return buf
 }
@@ -1809,6 +1816,9 @@ func extractTraceIDs(db *logstorage.DataBlock, dest *[]string) {
 		seen := make(map[string]bool)
 		for _, v := range col.Values {
 			if v != "" && !seen[v] && len(*dest) < 200 {
+				// Copy: the ids outlive the callback, and a block's strings may
+				// point into memory its reader reuses for the next block (#278).
+				v = strings.Clone(v)
 				seen[v] = true
 				*dest = append(*dest, v)
 			}
@@ -3069,7 +3079,9 @@ func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, sta
 		keySet[k] = true
 	}
 
+	ctx = withSearchTokens(ctx, nil)
 	if q, err := logstorage.ParseQuery(queryStr); err == nil {
+		ctx = withSearchTokens(ctx, q)
 		ctx = withNeededFields(ctx, logstorage.GetQueryNeededFields(q))
 		ctx = withRowFilter(ctx, parseFilterFromQuery(q) != nil)
 	}

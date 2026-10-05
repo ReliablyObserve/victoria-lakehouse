@@ -8,7 +8,6 @@ import (
 	"io"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -283,23 +282,9 @@ func groupFilesByTenant(files []manifest.FileInfo) []tenantFileGroup {
 	return out
 }
 
-// tenantPrefixFromKey extracts "<acct>/<proj>/<mode>/" from an S3 key
-// produced by the writer's per-tenant flush path. Returns the empty
-// string for legacy keys (no leading numeric segments) so they share
-// a single "legacy" group instead of accidentally fanning out.
-func tenantPrefixFromKey(key string) string {
-	parts := strings.SplitN(key, "/", 4)
-	if len(parts) < 4 {
-		return ""
-	}
-	if _, err := strconv.ParseUint(parts[0], 10, 32); err != nil {
-		return ""
-	}
-	if _, err := strconv.ParseUint(parts[1], 10, 32); err != nil {
-		return ""
-	}
-	return parts[0] + "/" + parts[1] + "/" + parts[2] + "/"
-}
+// tenantPrefixFromKey extracts "<acct>/<proj>/<mode>/" from an S3 key; see
+// manifest.CompactionGroupPrefix, which the compaction stats use too.
+func tenantPrefixFromKey(key string) string { return manifest.CompactionGroupPrefix(key) }
 
 type compactGroupResult struct {
 	InputKeys    []string

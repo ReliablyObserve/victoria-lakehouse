@@ -21,6 +21,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Helm defaults use the published container image references for both signals. Logs and traces now point to the release repository namespace and prepend the release tag prefix to the chart app version only for each signal's canonical published repository. Custom and legacy repositories retain the unprefixed app-version fallback when the image tag is blank; explicit tags remain unchanged. Future releases publish canonical and legacy flat GHCR repositories with prefixed, unprefixed and latest tags from the same multiarchitecture build for both default and FIPS variants, without backfilling historical versions; Docker Hub tags remain unchanged. Installation examples use the chart signal toggles and current configuration keys.
+
+## [0.143.17] - 2026-10-04
+
+- Preserve the native trace `_msg` in an optional Parquet `body` column through buffer export, reads, peer queries and compaction. Keep customer message attributes separate and use the native message for token blooms and deletion matching. Bloom pruning now uses upstream parsed message guarantees, preventing false empty results for quoted span names, customer fields, partial message prefixes and invalid UTF-8 message literals in both binaries. Legacy objects remain readable without fabricating lost messages.
+
+## [0.143.16] - 2026-10-03
+
+### Fixed
+
+- **Startup readiness reports the completed warmup phase in both binaries.** Background warmup now advances `/lakehouse/info` and the startup phase metric to `ready` and records completion timing. The ready boolean and metric continue to honor manifest and buffer replay gates.
+
+## [0.143.15] - 2026-10-03
+
+### Fixed
+
+- **Compaction plans merges per tenant, stops rewriting a lone file forever, and keeps away from tiered objects (both binaries, closes #343).**
+  The planner counted files across every tenant of an hour while the compactor merges one tenant at a time, so an hour
+  older than `daily_rollup_age` holding one compacted file per tenant was rewritten 1 to 1 on every scan (L2, L3, ... up to
+  L853 in a three-day simulation), those rewrites won every scan, and newer hours' L0 files were never merged (17,040 L0
+  files, oldest 71 h, with 20 tenants). Fair share also put every candidate into one bucket because production
+  partition keys carry no tenant. Planning now splits each hour by tenant first and every merge needs two or more files;
+  fair share is keyed by the tenant in the object keys; a closed hour merges all of a tenant's files under 32 MiB into one,
+  and files of 32 MiB or more are never merged by the rollup or the fragmentation hint (the open-hour thresholds and the
+  stale-schema heal can still take them). With the shipped defaults a settled manifest does zero merges (0 of 5 idle scans,
+  was 5 of 5). `compaction.max_concurrent` now means merges per tenant per scan, and `compaction.daily_rollup_age` merges
+  every non-mature file of a tenant's closed hour rather than L1 files only. Objects are not rewritten when S3 has moved
+  them out of STANDARD or INTELLIGENT_TIERING: the class comes from each manifest listing refresh at no extra request (no
+  HEAD; the Intelligent-Tiering archive tiers are not detected), between refreshes and for objects not yet moved the
+  mirrored rules apply (`delete.lifecycle_rules`, `tenant.overrides.<tenant>.lifecycle`, `stats.s3_lifecycle_rules`: a
+  partition older than the first transition minus 48 h is skipped), and a tenant with no mirrored rule gets only
+  stale-schema heal on partitions older than the new `compaction.size_merge_max_age` (default 168h; negative removes
+  the cap). `lakehouse_compaction_frozen_files{reason}` reports what a scan skipped, and a startup warning names a freeze
+  age that is not later than `compaction.daily_rollup_age`. A merge that fails now backs off (scan interval, doubled, at
+  most 1 h) so one failing partition cannot starve its tenant; a scan starts no new merge after one scan interval
+  (`lakehouse_compaction_scan_budget_exhausted_total`); the Tier A steal applies tombstones like a scheduled merge; and the
+  compaction stats count a partition as fragmented only when one tenant holds two or more non-mature top-level files.
+  Cached archive classes and class changes between tenant merges are checked before scheduled, forced and Tier A merges; older LIST observations cannot thaw newer archive metadata. Forced recompaction reports partial tenant failures.
+  A settled scan costs 45 to 54 ns and 5.2 bytes per file (main: 35.3 ns and 260 bytes), measured.
+- **The Parity workflow's flaky failures, traced to their causes.** Two upstream behaviours that hot and cold share
+  made the hot/cold comparison fail at random. Neither tier's `sort` breaks `_time` ties, so a limit that cuts a tie
+  group keeps different rows on each tier. `RowsMatch` now accepts that difference only for cases ordered by `_time`
+  alone, and only after re-reading the whole group from both tiers and finding it identical. VictoriaTraces'
+  `singleFieldQueryHelper` appends Tempo tag values from parallel goroutines without a lock, so hot and cold both
+  drop values at random (#316); the Tempo tag helpers compare the union of five reads and fail on any non-200
+  answer. The settle probe now counts with `disable_latency_offset=true`, so the newest 30s of spans no longer make
+  the counts creep after datagen exits. One deterministic divergence that had surfaced only as a flake is now pinned
+  on every run as B8 (#324): a sort over all columns (`sort`, `first|last N` without `by`) orders rows that share a
+  `_time` by `_msg` on cold and by `_stream_id` on hot. The B7 entry records its measured width: cold drops the row
+  until the end bound reaches the next whole microsecond.
+
+## [0.143.14] - 2026-10-02
+
+### Fixed
+
+- **Trace IDs collected for the trace-by-ID fast path are copied before they are kept (both binaries, closes #278).**
+  A block a reader hands out may point into memory the reader reuses for its next block; enumeration answers kept
+  such strings as map keys and returned corrupted Jaeger service names until #296 made them copy their values. The
+  trace-ID list collected while scanning now copies its ids too. Regression tests reuse a block's memory after the
+  callback and check that service, field and trace-ID values come back intact.
+
+### Documentation
+
+- **Market comparison of log and trace stores.** `docs/market-comparison.md` and an interactive matrix
+  (`website/static/market/`, published on the docs site) compare Victoria Lakehouse with 48 other log and trace
+  stores, under the headings interfaces, ingest, storage, read, durability, scalability and operations. Every cell
+  names its source and says whether that source is documentation, a vendor claim, our own measurement, this
+  repository, or unverified. The data lives in one YAML file per system under `docs/market/data`; `scripts/market/build.py`
+  validates it, regenerates both views, freezes dated snapshots and shows what changed between two reviews, and the
+  `Market data` workflow fails a pull request whose generated files are out of date and lists cells due for a re-check
+  every week.
+
+## [0.143.13] - 2026-10-02
+
+### Fixed
+
 - **A filtered `stats count()` or `stats by (field) count()` on flushed (cold) data counted 0 rows or lost the group key (both binaries, closes #273).**
   The cold read decided which Parquet columns to load by scanning the query text, and that scan missed the default
   `_msg` field when it was written as `_msg:="x"` (VictoriaLogs prints it as `="x"`) and sat next to a `_time:` term,
@@ -53,17 +129,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not have to match, in any layer (footer bloom row-group skip, file-level `.bloom` sidecar, the pushdown
   predicate, the traces `_trace_idx` prefilter and the `_msg` token bloom), so `NOT trace_id:="x"` returns the other
   rows instead of none.
-
-### Documentation
-
-- **Market comparison of log and trace stores.** `docs/market-comparison.md` and an interactive matrix
-  (`website/static/market/`, published on the docs site) compare Victoria Lakehouse with 48 other log and trace
-  stores, under the headings interfaces, ingest, storage, read, durability, scalability and operations. Every cell
-  names its source and says whether that source is documentation, a vendor claim, our own measurement, this
-  repository, or unverified. The data lives in one YAML file per system under `docs/market/data`; `scripts/market/build.py`
-  validates it, regenerates both views, freezes dated snapshots and shows what changed between two reviews, and the
-  `Market data` workflow fails a pull request whose generated files are out of date and lists cells due for a re-check
-  every week.
 
 ## [0.143.12] - 2026-10-02
 

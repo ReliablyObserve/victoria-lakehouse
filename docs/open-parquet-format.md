@@ -100,6 +100,7 @@ The trace Parquet schema is defined as the `TraceRow` struct. It includes span-s
 |---|---|---|---|---|
 | `timestamp_unix_nano` | `int64` | INT64 | No | Span end time (nanoseconds) |
 | `start_time_unix_nano` | `int64` | INT64 | No | Span start time |
+| `body` | `string` | BYTE_ARRAY (OPTIONAL) | Token bloom | Actual native `_msg`; absent in legacy objects |
 | `trace_id` | `string` | BYTE_ARRAY | Yes | Primary lookup key |
 | `span_id` | `string` | BYTE_ARRAY | No | Span identity |
 | `parent_span_id` | `string` | BYTE_ARRAY | No | Parent span for tree construction |
@@ -110,6 +111,8 @@ The trace Parquet schema is defined as the `TraceRow` struct. It includes span-s
 | `duration_ns` | `int64` | INT64 | No | Span duration (nanoseconds) |
 | `service.name` | `string` | BYTE_ARRAY (DICT) | Yes | Service that produced the span |
 | `scope.name` | `string` | BYTE_ARRAY | No | Instrumentation library name |
+
+Legacy objects without `body` retain an absent native message through reads and compaction; unavailable historical values are not fabricated. A customer span attribute named `_msg` remains a distinct `span_attr:_msg` map key. An ambiguous legacy map `_msg` is kept as that attribute rather than reclassified as a native message.
 
 ### MAP Columns
 

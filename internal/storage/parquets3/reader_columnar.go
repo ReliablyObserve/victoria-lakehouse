@@ -139,7 +139,7 @@ func readRowGroupColumnar(
 				}
 			}
 			if keyIdx >= 0 && valIdx >= 0 {
-				mapCols := readMapColumnToBlockCols(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name, scalarNames)
+				mapCols := readMapColumnToBlockCols(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name, scalarNames, reg)
 				blockCols = append(blockCols, mapCols...)
 			}
 		}
@@ -252,10 +252,10 @@ func readMapColumnToBlockCols(
 	passCount int,
 	mapColName string,
 	promotedKeys map[string]bool,
+	registries ...*schema.Registry,
 ) []logstorage.BlockColumn {
 	// Resolved once per column; mapAttrFieldNameWithPrefix applies the shared
 	// naming rule per attribute.
-	prefix := mapColumnToAttrPrefix(mapColName)
 
 	// Read all key and value entries with their repetition levels
 	// to reconstruct per-row maps.
@@ -342,12 +342,12 @@ func readMapColumnToBlockCols(
 		if i >= len(vals) || vals[i] == "" {
 			continue
 		}
-		if promotedKeys[kv.key] {
+		if promotedKeys[kv.key] && (kv.key != "body" || len(registries) == 0 || registries[0] == nil || registries[0].ResolveFromParquet("span.name") == nil) {
 			continue
 		}
 		// Same naming rule the scalar columns go through: a MAP key that
 		// spells a reserved internal name never becomes a field.
-		attrName, ok := mapAttrFieldNameWithPrefix(prefix, kv.key)
+		attrName, ok := mapAttrFieldName(mapColName, kv.key, registries...)
 		if !ok {
 			continue
 		}

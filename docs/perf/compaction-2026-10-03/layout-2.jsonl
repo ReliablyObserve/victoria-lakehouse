@@ -1,0 +1,12 @@
+{"build": "main", "signal": "logs", "tenant": "1001:0", "partition": "dt=2026-09-30/hour=10", "objects": 4, "bytes": 53663, "top_level": 0}
+{"build": "main", "signal": "logs", "tenant": "1002:0", "partition": "dt=2026-10-02/hour=04", "objects": 4, "bytes": 53606, "top_level": 0}
+{"build": "main", "signal": "logs", "tenant": "1003:0", "partition": "dt=2026-10-03/hour=08", "objects": 2, "bytes": 33437, "top_level": 1}
+{"build": "main", "signal": "traces", "tenant": "1001:0", "partition": "dt=2026-09-30/hour=10", "objects": 4, "bytes": 73567, "top_level": 0}
+{"build": "main", "signal": "traces", "tenant": "1002:0", "partition": "dt=2026-10-02/hour=04", "objects": 4, "bytes": 73533, "top_level": 0}
+{"build": "main", "signal": "traces", "tenant": "1003:0", "partition": "dt=2026-10-03/hour=08", "objects": 2, "bytes": 48804, "top_level": 1}
+{"build": "pr", "signal": "logs", "tenant": "1001:0", "partition": "dt=2026-09-30/hour=10", "objects": 1, "bytes": 15956, "top_level": 1}
+{"build": "pr", "signal": "logs", "tenant": "1002:0", "partition": "dt=2026-10-02/hour=04", "objects": 1, "bytes": 15935, "top_level": 1}
+{"build": "pr", "signal": "logs", "tenant": "1003:0", "partition": "dt=2026-10-03/hour=08", "objects": 2, "bytes": 33439, "top_level": 1}
+{"build": "pr", "signal": "traces", "tenant": "1001:0", "partition": "dt=2026-09-30/hour=10", "objects": 1, "bytes": 22610, "top_level": 2}
+{"build": "pr", "signal": "traces", "tenant": "1002:0", "partition": "dt=2026-10-02/hour=04", "objects": 1, "bytes": 22836, "top_level": 1}
+{"build": "pr", "signal": "traces", "tenant": "1003:0", "partition": "dt=2026-10-03/hour=08", "objects": 2, "bytes": 49001, "top_level": 1}

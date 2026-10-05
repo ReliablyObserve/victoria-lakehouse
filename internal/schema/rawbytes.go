@@ -59,6 +59,7 @@ func EstimateRawBytesTraces(rows []TraceRow) int64 {
 	for i := range rows {
 		r := &rows[i]
 		total += fixedTraceRowBytes
+		total += int64(len(r.Body))
 		total += int64(len(r.TraceID))
 		total += int64(len(r.SpanID))
 		total += int64(len(r.ParentSpanID))

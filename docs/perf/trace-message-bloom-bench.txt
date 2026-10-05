@@ -1,0 +1,271 @@
+
+logs main
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTokenBloomExtraction/free_text-18         	  168780	       643.1 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18         	  191230	       635.7 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18         	  183786	       640.0 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18         	  178810	       636.7 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18         	  189992	       640.7 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18         	  176534	       653.5 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18         	  174936	       652.6 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18         	  191270	       672.9 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18         	  183750	       638.6 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18         	  187375	       635.0 ns/op	     560 B/op	      16 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       109.1 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       107.9 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       107.2 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       107.7 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       108.0 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       107.1 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       108.3 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       107.9 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       110.7 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/empty-18             	 1000000	       108.3 ns/op	      16 B/op	       1 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  491710	       247.9 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  493826	       246.6 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  514248	       246.0 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  505581	       245.9 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  508707	       243.5 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  499254	       245.7 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  494793	       247.6 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  500312	       250.8 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  502467	       249.9 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/negated-18           	  467448	       264.4 ns/op	      80 B/op	       3 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  321765	       371.1 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  373462	       365.5 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  378602	       346.9 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  320270	       356.6 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  353512	       332.4 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  369111	       339.8 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  359594	       333.3 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  372068	       338.1 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  371080	       336.3 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/simple-18            	  377096	       339.7 ns/op	     176 B/op	       8 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  501627	       237.4 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  484081	       248.3 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  422305	       247.2 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  507873	       235.8 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  513322	       235.4 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  503812	       236.7 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  528022	       236.9 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  502959	       236.6 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  512665	       236.9 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/field-18             	  523189	       238.0 ns/op	      56 B/op	       2 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	   92917	      1380 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	   85070	      1364 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	   94444	      1281 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	   91040	      1243 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	  102788	      1189 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	  101319	      1193 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	  103321	      1240 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	   94808	      1217 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	   96804	      1260 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/body-18              	   99853	      1276 ns/op	    1720 B/op	      18 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  217653	       528.6 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  227970	       536.4 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  231124	       554.6 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  194362	       596.2 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  211731	       574.2 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  215080	       582.2 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  218608	       555.9 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  206274	       569.1 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  219702	       623.7 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18             	  232604	       535.9 ns/op	     320 B/op	      11 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  136737	       904.8 ns/op	     760 B/op	      12 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  151832	       783.4 ns/op	     760 B/op	      12 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  149074	       763.4 ns/op	     760 B/op	      12 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  159446	       765.6 ns/op	     760 B/op	      12 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  156669	       764.5 ns/op	     760 B/op	      12 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  161520	       760.6 ns/op	     760 B/op	      12 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  159586	       760.5 ns/op	     760 B/op	      12 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  162650	       754.4 ns/op	     760 B/op	      12 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  152646	       767.5 ns/op	     760 B/op	      12 allocs/op
+BenchmarkTokenBloomExtraction/complex-18           	  163635	       758.4 ns/op	     760 B/op	      12 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	11.302s
+
+logs pr
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTokenBloomExtraction/field-18         	   60068	      1966 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/field-18         	   62270	      1934 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/field-18         	   61996	      1903 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/field-18         	   63736	      2052 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/field-18         	   47744	      2153 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/field-18         	   55098	      2113 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/field-18         	   57637	      2082 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/field-18         	   59876	      2057 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/field-18         	   56332	      2105 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/field-18         	   57150	      2049 ns/op	    1369 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   72604	      1752 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   69300	      1855 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   64849	      1740 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   68269	      1659 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   72060	      1657 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   67562	      1713 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   62967	      1921 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   64423	      1940 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   60655	      1930 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/body-18          	   62952	      1949 ns/op	    1818 B/op	      30 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   30558	      3848 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   29625	      3931 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   29906	      3960 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   30688	      4033 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   30996	      4545 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   24556	      4234 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   27873	      4567 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   24445	      4829 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   25726	      4558 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/mixed-18         	   26294	      4856 ns/op	    2290 B/op	      47 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   32563	      3937 ns/op	    1393 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   31300	      3248 ns/op	    1394 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   41684	      2908 ns/op	    1394 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   42141	      2878 ns/op	    1394 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   41978	      2619 ns/op	    1393 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   49255	      2505 ns/op	    1393 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   51340	      2345 ns/op	    1393 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   50424	      2393 ns/op	    1394 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   50103	      2348 ns/op	    1393 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/complex-18       	   51157	      2361 ns/op	    1394 B/op	      32 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   34188	      3604 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   31724	      3761 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   32488	      3645 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   33224	      3567 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   31370	      3778 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   32146	      3629 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   32422	      3871 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   29695	      3975 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   30003	      3900 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/free_text-18     	   31573	      3698 ns/op	    2747 B/op	      52 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  445564	       290.2 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  427464	       301.1 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  403915	       292.6 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  434874	       293.6 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  429241	       293.9 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  405417	       291.3 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  438396	       290.5 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  457585	       293.3 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  448346	       317.7 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/empty-18         	  395142	       339.8 ns/op	     424 B/op	       7 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   52893	      2256 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   53707	      2230 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   50746	      2274 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   47665	      2237 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   52195	      2282 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   53244	      2206 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   55747	      2181 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   55548	      2243 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   55144	      2274 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/negated-18       	   51994	      2225 ns/op	    1049 B/op	      38 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   71722	      1699 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   70611	      1727 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   67652	      1730 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   67728	      1834 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   74559	      1826 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   66932	      1840 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   60982	      2264 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   65443	      1714 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   73190	      1724 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomExtraction/simple-18        	   69631	      1788 ns/op	    1161 B/op	      27 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	35274238	         3.985 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	29450258	         4.124 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	26290087	         4.273 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	26230465	         4.092 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	33521499	         4.228 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	27537411	         5.774 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	24278797	         4.521 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	26366863	         4.608 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	29641104	         3.958 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18              	32090571	         4.079 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3	14.291s
+
+logs benchstat
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3
+cpu: Apple M5 Pro
+                                  │ main │ pr │
+                                  │                             sec/op                             │               sec/op                 vs base                 │
+TokenBloomExtraction/free_text-18                                                      640.4n ± 2%                         3729.5n ±  5%  +482.42% (p=0.000 n=10)
+TokenBloomExtraction/empty-18                                                          108.0n ± 1%                          293.4n ±  8%  +171.84% (p=0.000 n=10)
+TokenBloomExtraction/negated-18                                                        247.1n ± 1%                         2240.0n ±  2%  +806.52% (p=0.000 n=10)
+TokenBloomExtraction/simple-18                                                         339.8n ± 8%                         1759.0n ±  5%  +417.73% (p=0.000 n=10)
+TokenBloomExtraction/field-18                                                          236.9n ± 4%                         2054.5n ±  6%  +767.24% (p=0.000 n=10)
+TokenBloomExtraction/body-18                                                           1.252µ ± 9%                          1.804µ ±  8%   +44.11% (p=0.000 n=10)
+TokenBloomExtraction/mixed-18                                                          562.5n ± 6%                         4389.5n ± 10%  +680.36% (p=0.000 n=10)
+TokenBloomExtraction/complex-18                                                        764.0n ± 3%                         2562.0n ± 27%  +235.36% (p=0.000 n=10)
+TokenBloomCachedQuery-18                                                                                                    4.176n ± 10%
+geomean                                                                                406.1n                               968.6n        +371.20%
+
+                                  │ main │ pr │
+                                  │                              B/op                              │               B/op                vs base                    │
+TokenBloomExtraction/free_text-18                                                       560.0 ± 0%                        2747.0 ± 0%   +390.54% (p=0.000 n=10)
+TokenBloomExtraction/empty-18                                                           16.00 ± 0%                        424.00 ± 0%  +2550.00% (p=0.000 n=10)
+TokenBloomExtraction/negated-18                                                         80.00 ± 0%                       1049.00 ± 0%  +1211.25% (p=0.000 n=10)
+TokenBloomExtraction/simple-18                                                          176.0 ± 0%                        1161.0 ± 0%   +559.66% (p=0.000 n=10)
+TokenBloomExtraction/field-18                                                           56.00 ± 0%                       1369.00 ± 0%  +2344.64% (p=0.000 n=10)
+TokenBloomExtraction/body-18                                                          1.680Ki ± 0%                       1.775Ki ± 0%     +5.70% (p=0.000 n=10)
+TokenBloomExtraction/mixed-18                                                           320.0 ± 0%                        2290.0 ± 0%   +615.62% (p=0.000 n=10)
+TokenBloomExtraction/complex-18                                                         760.0 ± 0%                        1393.5 ± 0%    +83.36% (p=0.000 n=10)
+TokenBloomCachedQuery-18                                                                                                   0.000 ± 0%
+geomean                                                                                 203.6                                           +564.73%                ¹
+¹ summaries must be >0 to compute geomean
+
+                                  │ main │ pr │
+                                  │                           allocs/op                            │            allocs/op              vs base                    │
+TokenBloomExtraction/free_text-18                                                       16.00 ± 0%                         52.00 ± 0%   +225.00% (p=0.000 n=10)
+TokenBloomExtraction/empty-18                                                           1.000 ± 0%                         7.000 ± 0%   +600.00% (p=0.000 n=10)
+TokenBloomExtraction/negated-18                                                         3.000 ± 0%                        38.000 ± 0%  +1166.67% (p=0.000 n=10)
+TokenBloomExtraction/simple-18                                                          8.000 ± 0%                        27.000 ± 0%   +237.50% (p=0.000 n=10)
+TokenBloomExtraction/field-18                                                           2.000 ± 0%                        30.000 ± 0%  +1400.00% (p=0.000 n=10)
+TokenBloomExtraction/body-18                                                            18.00 ± 0%                         30.00 ± 0%    +66.67% (p=0.000 n=10)
+TokenBloomExtraction/mixed-18                                                           11.00 ± 0%                         47.00 ± 0%   +327.27% (p=0.000 n=10)
+TokenBloomExtraction/complex-18                                                         12.00 ± 0%                         32.00 ± 0%   +166.67% (p=0.000 n=10)
+TokenBloomCachedQuery-18                                                                                                   0.000 ± 0%
+geomean                                                                                 6.062                                           +378.98%                ¹
+¹ summaries must be >0 to compute geomean
+
+traces main
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	0.587s
+
+traces pr
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+BenchmarkTokenBloomCachedQuery-18    	32333029	         3.424 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18    	36265192	         3.556 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18    	32676400	         3.869 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18    	32006401	         3.686 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18    	33099649	         3.508 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18    	34561384	         3.496 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18    	33631495	         3.447 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18    	35229357	         3.766 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18    	29622921	         3.847 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTokenBloomCachedQuery-18    	28789633	         3.940 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3	1.588s
+
+traces benchstat
+goos: darwin
+goarch: arm64
+pkg: github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3
+cpu: Apple M5 Pro
+                         │ pr │
+                         │                             sec/op                             │
+TokenBloomCachedQuery-18                                                      3.621n ± 7%
+
+                         │ pr │
+                         │                              B/op                              │
+TokenBloomCachedQuery-18                                                       0.000 ± 0%
+
+                         │ pr │
+                         │                           allocs/op                            │
+TokenBloomCachedQuery-18                                                       0.000 ± 0%

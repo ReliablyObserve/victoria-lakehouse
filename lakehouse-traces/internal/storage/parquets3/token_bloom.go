@@ -7,6 +7,9 @@ import (
 	"math"
 	"strings"
 	"unicode"
+	"unicode/utf8"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
 // TokenBloom is a minimal bloom filter for full-text token searches.
@@ -180,98 +183,35 @@ func tokenBloomSkip(metadata map[string]string, rgIndex int, searchTokens []stri
 	return false
 }
 
+// extractSearchTokens uses native filter guarantees before applying the physical
+// bloom tokenizer. Parse failures conservatively disable bloom pruning.
 func extractSearchTokens(queryStr string) []string {
-	if queryStr == "" {
+	q, err := logstorage.ParseQuery(queryStr)
+	if err != nil {
 		return nil
 	}
+	return searchTokensFromQuery(q)
+}
 
-	queryStr = stripPipeOutsideQuotes(queryStr)
-
-	queryStr = stripStreamSelectors(queryStr)
-
+func searchTokensFromQuery(q *logstorage.Query) []string {
+	seen := make(map[string]bool)
 	var tokens []string
-
-	for _, fieldName := range []string{"_msg", "body", "message"} {
-		for _, prefix := range []string{fieldName + `:"`, fieldName + `:"`} {
-			idx := 0
-			for idx < len(queryStr) {
-				pos := strings.Index(queryStr[idx:], prefix)
-				if pos < 0 {
-					break
-				}
-				start := idx + pos + len(prefix)
-				end := strings.Index(queryStr[start:], `"`)
-				if end < 0 {
-					break
-				}
-				tokens = append(tokens, tokenize(queryStr[start:start+end])...)
-				idx = start + end + 1
-			}
+	for _, nativeToken := range logstorage.QueryRequiredMessageTokens(q) {
+		// Native phrase matching can match invalid bytes inside a UTF-8 rune.
+		// Rune tokenization would turn that byte suffix into a different word,
+		// which is not guaranteed to exist in the persisted body bloom.
+		if !utf8.ValidString(nativeToken) {
+			continue
 		}
-
-		unquotedPrefix := fieldName + ":"
-		idx := 0
-		for idx < len(queryStr) {
-			pos := strings.Index(queryStr[idx:], unquotedPrefix)
-			if pos < 0 {
-				break
+		for _, token := range tokenize(nativeToken) {
+			if !seen[token] {
+				seen[token] = true
+				tokens = append(tokens, token)
 			}
-			start := idx + pos + len(unquotedPrefix)
-			if start < len(queryStr) && queryStr[start] == '"' {
-				idx = start + 1
-				continue
-			}
-			if start < len(queryStr) && isNonLiteralFilter(queryStr[start:]) {
-				idx = start + 1
-				continue
-			}
-			end := strings.IndexByte(queryStr[start:], ' ')
-			var val string
-			if end < 0 {
-				val = queryStr[start:]
-			} else {
-				val = queryStr[start : start+end]
-			}
-			tokens = append(tokens, tokenize(val)...)
-			if end < 0 {
-				break
-			}
-			idx = start + end + 1
 		}
 	}
-
-	parts := strings.Fields(queryStr)
-	for _, p := range parts {
-		if strings.Contains(p, ":") {
-			continue
-		}
-		if isLogsQLKeyword(p) {
-			continue
-		}
-		if isNonLiteralFilter(p) {
-			continue
-		}
-		if isSyntaxFragment(p) {
-			continue
-		}
-		tokens = append(tokens, tokenize(p)...)
-	}
-
-	seen := make(map[string]struct{}, len(tokens))
-	deduped := make([]string, 0, len(tokens))
-	for _, t := range tokens {
-		if _, ok := seen[t]; !ok {
-			seen[t] = struct{}{}
-			deduped = append(deduped, t)
-		}
-	}
-	return deduped
+	return tokens
 }
-
-func isSyntaxFragment(s string) bool {
-	return strings.ContainsAny(s, "[]()\"")
-}
-
 func stripPipeOutsideQuotes(s string) string {
 	inQuote := false
 	for i := 0; i < len(s); i++ {
@@ -283,47 +223,4 @@ func stripPipeOutsideQuotes(s string) string {
 		}
 	}
 	return s
-}
-
-func stripStreamSelectors(s string) string {
-	for {
-		start := strings.IndexByte(s, '{')
-		if start < 0 {
-			break
-		}
-		end := strings.IndexByte(s[start:], '}')
-		if end < 0 {
-			break
-		}
-		s = s[:start] + s[start+end+1:]
-	}
-	return s
-}
-
-func isNonLiteralFilter(s string) bool {
-	if strings.HasPrefix(s, "~") {
-		return true
-	}
-	if strings.HasPrefix(s, "!~") {
-		return true
-	}
-	if strings.HasPrefix(s, "range[") || strings.HasPrefix(s, "range(") {
-		return true
-	}
-	if strings.HasPrefix(s, "len_range(") {
-		return true
-	}
-	if strings.HasPrefix(s, "re(") {
-		return true
-	}
-	return false
-}
-
-func isLogsQLKeyword(s string) bool {
-	switch strings.ToLower(s) {
-	case "and", "or", "not", "in", "by", "with", "limit", "offset",
-		"asc", "desc", "pipe", "|", "*", "_time", "_stream":
-		return true
-	}
-	return false
 }

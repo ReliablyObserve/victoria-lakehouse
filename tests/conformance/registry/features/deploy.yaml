@@ -7,9 +7,11 @@
   surfaces: [cli]
   tests:
     - charts/victoria-lakehouse/test_templates.sh
+    - charts/victoria-lakehouse/test_images.sh
+    - scripts/ci/tests/test_release_image_tags.py
   notes: >-
-    CI runs the chart template test (`charts/victoria-lakehouse/test_templates.sh`) in the `helm` job,
-    next to `helm lint --strict`, and the Helm drift check (`scripts/ci/helmdrift`).
+    CI runs the linked chart template and exact image-reference tests, strict `helm lint`,
+    and the Helm drift check (`scripts/ci/helmdrift`).
   docs:
     - docs/kubernetes-deployment.md
   changelog_bullets:

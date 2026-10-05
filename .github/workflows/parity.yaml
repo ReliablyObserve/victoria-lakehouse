@@ -138,11 +138,20 @@ jobs:
           # failing with counts that look like an unflushed cold tier rather
           # than a probe that never ran.
           BUSYBOX=/probe/busybox
+          # disable_latency_offset=true: VictoriaTraces >= v0.12.0 hides the
+          # newest 30s (-search.latencyOffset) from LogsQL, and so does the
+          # traces binary. datagen stamps its newest spans up to a second
+          # before it runs, so without the opt-out both tiers' span counts
+          # keep rising for half a minute after datagen exits (4686 -> 4704
+          # in run 36918592235), which reads like a writer still running and
+          # lets the steady check fire before the corpus is fully visible.
+          # The suite itself opts out the same way (withoutLatencyOffset).
+          # VictoriaLogs ignores the argument.
           probe() { # probe <host:port> <logsql query> <AccountID>
             out=$(docker compose -f tests/parity/docker-compose.yml exec -T victorialogs \
               "$BUSYBOX" wget -qO- --header="Content-Type: application/x-www-form-urlencoded" \
               --header="AccountID: $3" --header="ProjectID: 0" \
-              --post-data="query=$2" "http://$1/select/logsql/stats_query" 2>/dev/null \
+              --post-data="query=$2&disable_latency_offset=true" "http://$1/select/logsql/stats_query" 2>/dev/null \
               | jq -r '.data.result[0].value[1] // empty' 2>/dev/null) || out=""
             # jq exits 0 on empty input, so an unreachable tier or an empty
             # answer yields an empty string, not an error. Report it as 0 so

@@ -43,6 +43,9 @@ IMPACTFUL_PATHS = (
 UNIT_TEST_PATH_PREFIXES = (
     "cmd/",
     "internal/",
+    # The traces binary is its own module with the same layout.
+    "lakehouse-traces/internal/",
+    "lakehouse-traces/cmd/",
 )
 
 IMPACTFUL_FILES = {
