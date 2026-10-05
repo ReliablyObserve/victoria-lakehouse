@@ -263,6 +263,45 @@
             "replicaCount": {
               "type": "integer",
               "minimum": 0
+            },
+            "syslog": {
+              "type": "object",
+              "properties": {
+                "tcp": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "port": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    "tenantID": {
+                      "type": "string",
+                      "pattern": "^([0-9]+:[0-9]+)?$"
+                    }
+                  }
+                },
+                "udp": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "port": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    "tenantID": {
+                      "type": "string",
+                      "pattern": "^([0-9]+:[0-9]+)?$"
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -307,6 +346,33 @@
             "replicaCount": {
               "type": "integer",
               "minimum": 0
+            },
+            "otlpGrpc": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "tls": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "certFile": {
+                      "type": "string"
+                    },
+                    "keyFile": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
             }
           }
         }

@@ -175,6 +175,7 @@ Serves VictoriaLogs-compatible select APIs backed by Parquet files on RustFS. Pr
 
 - **Internal endpoint**: `http://lakehouse-logs:9428`
 - **Health check**: `GET /health` every 5 seconds
+- **Syslog (opt-in)**: the e2e stack also starts `-syslog.listenAddr.tcp=:5140` and `-syslog.listenAddr.udp=:5141` (tenant `4401:1`), on the hot VictoriaLogs and on `lakehouse-logs` alike, published on localhost for the [ingest parity matrix](ingest-parity.md). Other compose files leave the syslog listeners off.
 
 ### Lakehouse Traces
 
@@ -189,6 +190,7 @@ Serves Jaeger and Tempo-compatible trace query APIs backed by the same S3 bucket
 
 - **Internal endpoint**: `http://lakehouse-traces:10428`
 - **Health check**: `GET /health` every 5 seconds
+- **OTLP/gRPC (opt-in)**: the e2e stack also starts `-otlpGRPCListenAddr=:4317 -otlpGRPC.tls=false` on the hot VictoriaTraces and on `lakehouse-traces`, published on localhost for the [ingest parity matrix](ingest-parity.md). The host ports come from `E2E_*` variables with defaults (`E2E_LH_TRACES_GRPC_PORT`, `E2E_HOT_VT_GRPC_PORT`, `E2E_LH_SYSLOG_TCP_PORT`, `E2E_LH_SYSLOG_UDP_PORT`, `E2E_HOT_VL_HTTP_PORT`, `E2E_HOT_VL_SYSLOG_TCP_PORT`, `E2E_HOT_VL_SYSLOG_UDP_PORT`).
 
 ### VictoriaLogs (Hot Tier)
 

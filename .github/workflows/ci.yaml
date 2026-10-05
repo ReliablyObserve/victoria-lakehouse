@@ -555,6 +555,16 @@ jobs:
           args: ./internal/... ./cmd/...
           skip-cache: true
 
+      # The e2e package needs its build tag and the vendored VictoriaLogs tree (restored above).
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --build-tags e2e ./tests/ingestmatrix/... ./tests/e2e/... ./tests/conformance/...
+          skip-cache: true
+          # tests/ has older findings (errcheck on Sscanf, gocyclo on Row.Validate); only
+          # what a PR adds is held to the linters until they are cleaned up.
+          only-new-issues: true
+
   lint-traces:
     needs: deps
     runs-on: ubuntu-latest

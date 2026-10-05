@@ -4,6 +4,9 @@
 # tests/verification/matrix.md that was verified during the
 # `verify/matrix-completion` sweep.
 #
+# The ingest rows (LI2-LI8, TI3) are retired from this script: they run in CI as the
+# ingest parity matrix (tests/e2e/ingest_matrix_test.go), see docs/ingest-parity.md.
+#
 # Each section corresponds to a single matrix row and asserts the
 # minimum contract that the row's `last_state` captures. Failures
 # are loud and exit non-zero so this script can be wired into CI
@@ -56,124 +59,6 @@ if ! skip_row LA8; then
     ok "LA8 (HTTP $http; before/after stats reachable)"
   else
     fail "LA8 (HTTP $http; before=$before after=$after)"
-  fi
-fi
-
-# -------------------- LI2 — Loki JSON push -------------------------------
-if ! skip_row LI2; then
-  echo "=== LI2 — /insert/loki/api/v1/push (JSON) ==="
-  ts_ns=$(python3 -c "import time; print(int(time.time()*1e9))")
-  body=$(python3 -c "import json; print(json.dumps({'streams':[{'stream':{'service.name':'matrix-probe-li2','level':'INFO'},'values':[['$ts_ns','sweep LI2 probe message']]}]}))")
-  http=$(curl -sS --max-time 30 -o /tmp/li2_resp -w "%{http_code}" \
-    -H 'Content-Type: application/json' -H 'X-Scope-OrgID: 0' \
-    -X POST --data "$body" "$LH_LOGS_URL/insert/loki/api/v1/push" || echo "000")
-  sleep 3
-  # Readback via logsql
-  rows=$(curl_get -G "$LH_LOGS_URL/select/logsql/query" --data-urlencode 'query="service.name":"matrix-probe-li2"' --data-urlencode 'limit=1' | wc -c | tr -d ' ')
-  if [[ "$http" =~ ^(200|204)$ ]]; then
-    ok "LI2 (ingest HTTP $http; readback bytes=$rows)"
-  else
-    fail "LI2 (HTTP $http; body=$(head -c200 /tmp/li2_resp))"
-  fi
-fi
-
-# -------------------- LI3 — Loki protobuf (snappy) -----------------------
-# Skip protobuf serialization (requires snappy + protoc); confirm endpoint exists.
-if ! skip_row LI3; then
-  echo "=== LI3 — /insert/loki/api/v1/push (protobuf reachability) ==="
-  # Send an empty protobuf body; expect 4xx (rejected payload) rather than 404/500.
-  http=$(curl -sS --max-time 30 -o /tmp/li3_resp -w "%{http_code}" \
-    -H 'Content-Type: application/x-protobuf' \
-    -X POST --data-binary "" "$LH_LOGS_URL/insert/loki/api/v1/push" || echo "000")
-  if [[ "$http" =~ ^(2..|400|422)$ ]]; then
-    ok "LI3 (HTTP $http; endpoint reachable, accepts protobuf content-type)"
-  else
-    fail "LI3 (HTTP $http unexpected)"
-  fi
-fi
-
-# -------------------- LI4 — Elasticsearch _bulk --------------------------
-if ! skip_row LI4; then
-  echo "=== LI4 — /insert/elasticsearch/_bulk ==="
-  body=$'{"create":{"_index":"logs"}}\n{"_msg":"sweep LI4","service.name":"matrix-probe-li4","level":"INFO"}\n'
-  http=$(curl -sS --max-time 30 -o /tmp/li4_resp -w "%{http_code}" \
-    -H 'Content-Type: application/x-ndjson' \
-    -X POST --data-binary "$body" "$LH_LOGS_URL/insert/elasticsearch/_bulk" || echo "000")
-  sleep 3
-  if [[ "$http" =~ ^(200|201)$ ]]; then
-    ok "LI4 (ingest HTTP $http)"
-  else
-    fail "LI4 (HTTP $http; body=$(head -c200 /tmp/li4_resp))"
-  fi
-fi
-
-# -------------------- LI5 — OTLP HTTP logs -------------------------------
-# VL's OTLP handler only accepts application/x-protobuf — building a
-# valid OTLP protobuf in shell would require protoc; instead, this row's
-# contract per VL upstream is "endpoint exists and rejects JSON with the
-# canonical error" which proves the handler is wired.
-if ! skip_row LI5; then
-  echo "=== LI5 — /insert/opentelemetry/v1/logs (reachability) ==="
-  http=$(curl -sS --max-time 30 -o /tmp/li5_resp -w "%{http_code}" \
-    -H 'Content-Type: application/json' \
-    -X POST --data '{}' "$LH_LOGS_URL/insert/opentelemetry/v1/logs" || echo "000")
-  body=$(head -c200 /tmp/li5_resp)
-  # VL's exact upstream error message:
-  if [[ "$http" == "400" && "$body" == *"json encoding isn't supported for opentelemetry format"* ]]; then
-    ok "LI5 (HTTP 400 with canonical VL OTLP error; matches upstream behavior)"
-  elif [[ "$http" =~ ^(200|202|204)$ ]]; then
-    ok "LI5 (HTTP $http accepted)"
-  else
-    fail "LI5 (HTTP $http; body=$body)"
-  fi
-fi
-
-# -------------------- LI6 — Datadog v2 logs ------------------------------
-if ! skip_row LI6; then
-  echo "=== LI6 — /insert/datadog/api/v2/logs ==="
-  body='[{"message":"sweep LI6","ddsource":"matrix-probe","service":"matrix-probe-li6","ddtags":"env:test","hostname":"probe"}]'
-  http=$(curl -sS --max-time 30 -o /tmp/li6_resp -w "%{http_code}" \
-    -H 'Content-Type: application/json' -H 'DD-API-KEY: dummy' \
-    -X POST --data "$body" "$LH_LOGS_URL/insert/datadog/api/v2/logs" || echo "000")
-  if [[ "$http" =~ ^(200|202|204)$ ]]; then
-    ok "LI6 (HTTP $http)"
-  else
-    fail "LI6 (HTTP $http; body=$(head -c200 /tmp/li6_resp))"
-  fi
-fi
-
-# -------------------- LI7 — journald upload ------------------------------
-# VL upstream registers /insert/journald/upload only — bare /insert/journald
-# returns 404. Send a tiny journald native export blob to /upload.
-if ! skip_row LI7; then
-  echo "=== LI7 — /insert/journald/upload ==="
-  body=$'__CURSOR=s=probe\n__REALTIME_TIMESTAMP=1780000000000000\n__MONOTONIC_TIMESTAMP=1\n_BOOT_ID=00000000000000000000000000000000\nMESSAGE=sweep LI7\n_SYSTEMD_UNIT=matrix-probe-li7.service\n\n'
-  http=$(curl -sS --max-time 30 -o /tmp/li7_resp -w "%{http_code}" \
-    -H 'Content-Type: application/vnd.fdo.journal' \
-    -X POST --data-binary "$body" "$LH_LOGS_URL/insert/journald/upload" || echo "000")
-  if [[ "$http" =~ ^(200|202|204)$ ]]; then
-    ok "LI7 (HTTP $http ingest)"
-  elif [[ "$http" == "400" ]]; then
-    # 400 is acceptable: endpoint exists, payload too small/malformed
-    ok "LI7 (HTTP 400; endpoint reachable, payload rejected)"
-  else
-    fail "LI7 (HTTP $http; body=$(head -c200 /tmp/li7_resp))"
-  fi
-fi
-
-# -------------------- LI8 — Splunk HEC ----------------------------------
-# VL registers /insert/splunk/services/collector/event (and /event/1.0);
-# bare /insert/splunk/services/collector hits the default-not-found branch.
-if ! skip_row LI8; then
-  echo "=== LI8 — /insert/splunk/services/collector/event ==="
-  body='{"event":"sweep LI8","fields":{"service.name":"matrix-probe-li8","level":"INFO"}}'
-  http=$(curl -sS --max-time 30 -o /tmp/li8_resp -w "%{http_code}" \
-    -H 'Content-Type: application/json' -H 'Authorization: Splunk dummy' \
-    -X POST --data "$body" "$LH_LOGS_URL/insert/splunk/services/collector/event" || echo "000")
-  if [[ "$http" =~ ^(200|202|204)$ ]]; then
-    ok "LI8 (HTTP $http)"
-  else
-    fail "LI8 (HTTP $http; body=$(head -c200 /tmp/li8_resp))"
   fi
 fi
 
@@ -265,38 +150,6 @@ if ! skip_row TI2; then
     ok "TI2 (DIFFER: LH=$lh VT=$vt — both reject; endpoint not in VT v0.9.0)"
   else
     fail "TI2 (LH=$lh VT=$vt — unexpected)"
-  fi
-fi
-
-# -------------------- TI3 — OTLP HTTP traces -----------------------------
-if ! skip_row TI3; then
-  echo "=== TI3 — /insert/opentelemetry/v1/traces ==="
-  ts_ns=$(python3 -c "import time; print(int(time.time()*1e9))")
-  body=$(python3 -c "
-import json
-print(json.dumps({
-  'resourceSpans': [{
-    'resource': {'attributes': [{'key':'service.name','value':{'stringValue':'matrix-probe-ti3'}}]},
-    'scopeSpans': [{
-      'scope': {'name':'sweep'},
-      'spans': [{
-        'traceId': '00112233445566778899aabbccddeeff',
-        'spanId':  '0011223344556677',
-        'name': 'sweep-ti3',
-        'kind': 2,
-        'startTimeUnixNano': '$ts_ns',
-        'endTimeUnixNano':   '$((ts_ns+1000000))'
-      }]
-    }]
-  }]
-}))")
-  http=$(curl -sS --max-time 30 -o /tmp/ti3_resp -w "%{http_code}" \
-    -H 'Content-Type: application/json' \
-    -X POST --data "$body" "$LH_TRACES_URL/insert/opentelemetry/v1/traces" || echo "000")
-  if [[ "$http" =~ ^(200|202|204)$ ]]; then
-    ok "TI3 (HTTP $http)"
-  else
-    fail "TI3 (HTTP $http; body=$(head -c200 /tmp/ti3_resp))"
   fi
 fi
 

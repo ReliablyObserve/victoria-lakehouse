@@ -284,6 +284,7 @@ func RenderCoverage(inv *inventory.Inventory, reg *registry.Registry) string {
 	b.WriteString("\n")
 
 	renderPerfCells(&b, reg)
+	renderIngestMatrix(&b, reg)
 
 	fmt.Fprintf(&b, "## Rows gated on a later upstream version / absent by design\n\n| Row | Since | Expect | Note |\n|---|---|---|---|\n")
 	present := map[string]bool{}
@@ -361,6 +362,51 @@ func renderPerfCells(b *strings.Builder, reg *registry.Registry) {
 		surface, route, _ := strings.Cut(k, "\t")
 		a := byRoute[k]
 		fmt.Fprintf(b, "| %s | `%s` | %d | %d | %d |\n", surface, route, a.total, a.budgeted, a.differ)
+	}
+	b.WriteString("\n")
+}
+
+// IsIngestMatrixRow reports whether r is one cell of the ingest parity matrix
+// (id vl.ingest.<protocol>.<form> or vt.ingest.<protocol>.<form>).
+func IsIngestMatrixRow(r *registry.Row) bool {
+	return strings.HasPrefix(r.ID, "vl.ingest.") || strings.HasPrefix(r.ID, "vt.ingest.")
+}
+
+// renderIngestMatrix lists the ingest parity matrix: one line per protocol x
+// binary x tenant form, with the upstream route or listener flag it exercises
+// and whether the row runs in CI. The rows are the matrix; the case table is
+// tests/ingestmatrix and tests/conformance/ingest_matrix_test.go ties the two.
+func renderIngestMatrix(b *strings.Builder, reg *registry.Registry) {
+	var rows []*registry.Row
+	for i := range reg.Rows {
+		if IsIngestMatrixRow(&reg.Rows[i]) {
+			rows = append(rows, &reg.Rows[i])
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	fmt.Fprintf(b, "## Ingest protocols (parity matrix)\n\nRepresentative protocol payloads sent unchanged to the pinned hot binary and Lakehouse in `tests/e2e/ingest_matrix_test.go`: ingest answers and counters compared, actual preflush observations require zero marker rows on S3, and persisted fields, values, timestamps and tenants are checked with a standard Parquet reader. Established rows are sampled through the handoff; changes between samples are not ruled out. Declared divergences remain explicit. %d cells; see `docs/ingest-parity.md`.\n\n| Binary | Protocol | Tenant form | Upstream | Row | Status |\n|---|---|---|---|---|---|\n", len(rows))
+	for _, r := range rows {
+		binary := "lakehouse-logs vs VictoriaLogs"
+		if r.Surface == registry.SurfaceVT {
+			binary = "lakehouse-traces vs VictoriaTraces"
+		}
+		form := r.ID[strings.LastIndex(r.ID, ".")+1:]
+		title := r.Title
+		if i := strings.LastIndex(title, " ["); i > 0 {
+			title = title[:i]
+		}
+		up := ""
+		if r.Upstream != nil {
+			if r.Upstream.Route != "" {
+				up = "route `" + r.Upstream.Route + "`"
+			} else if r.Upstream.Flag != "" {
+				up = "flag `-" + r.Upstream.Flag + "`"
+			}
+		}
+		fmt.Fprintf(b, "| %s | %s | %s | %s | `%s` | %s |\n", binary, title, form, up, r.ID, icon(r))
 	}
 	b.WriteString("\n")
 }

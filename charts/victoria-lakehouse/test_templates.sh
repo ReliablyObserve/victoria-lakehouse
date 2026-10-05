@@ -288,6 +288,113 @@ run_test "custom image tag" \
   --set "image.tag=v0.5.0"
 
 # ---------------------------------------------------------------------------
+# Opt-in ingest listeners (syslog, OTLP gRPC): off by default, wired when enabled
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Ingest listeners (opt-in) ---"
+
+# render_has <description> <expected: yes|no> <regex> [--set flags...]
+# Renders the chart and asserts the regex does (yes) or does not (no) appear.
+render_has() {
+  local description="$1" expect="$2" regex="$3"
+  shift 3
+  local out
+  if ! out="$(helm template test-release "${CHART_DIR}" "$@" --generate-name=false --validate=false 2>/tmp/helm_test_err)"; then
+    echo "  FAIL  ${description} (helm template failed)"
+    sed 's/^/         /' /tmp/helm_test_err
+    FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+    return
+  fi
+  local found=no
+  if grep -Eq -- "${regex}" <<<"${out}"; then found=yes; fi
+  if [[ "${found}" == "${expect}" ]]; then
+    echo "  PASS  ${description}"
+    PASSED=$((PASSED + 1))
+  else
+    echo "  FAIL  ${description} (pattern '${regex}': found=${found}, want ${expect})"
+    FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  fi
+}
+
+render_has "default: no syslog listener, flag, container port or Service port" no \
+  'syslog'
+render_has "default: no OTLP gRPC listener" no \
+  'otlpGRPC|otlp-grpc' \
+  --set "traces.enabled=true"
+render_has "syslog tcp: flag" yes \
+  '"-syslog.listenAddr.tcp=:5140"' \
+  --set "logs.insert.syslog.tcp.enabled=true"
+render_has "syslog tcp: Service port" yes \
+  'name: syslog-tcp' \
+  --set "logs.insert.syslog.tcp.enabled=true"
+render_has "syslog udp: UDP protocol on the container port" yes \
+  'containerPort: 5141' \
+  --set "logs.insert.syslog.udp.enabled=true"
+render_has "syslog udp only: no tcp flag" no \
+  'syslog.listenAddr.tcp' \
+  --set "logs.insert.syslog.udp.enabled=true"
+render_has "syslog UDP null port: listen flag uses UDP fallback" yes \
+  '"-syslog.listenAddr.udp=:5141"' \
+  --set "logs.insert.syslog.udp.enabled=true" \
+  --set "logs.insert.syslog.udp.port=null"
+render_has "syslog TCP null port: listen flag uses TCP fallback" yes \
+  '"-syslog.listenAddr.tcp=:5140"' \
+  --set "logs.insert.syslog.tcp.enabled=true" \
+  --set "logs.insert.syslog.tcp.port=null"
+render_has "syslog tenantID flag" yes \
+  '"-syslog.tenantID.tcp=7:1"' \
+  --set "logs.insert.syslog.tcp.enabled=true" \
+  --set "logs.insert.syslog.tcp.tenantID=7:1"
+render_has "syslog custom port flows to flag" yes \
+  '"-syslog.listenAddr.tcp=:1514"' \
+  --set "logs.insert.syslog.tcp.enabled=true" \
+  --set "logs.insert.syslog.tcp.port=1514"
+# The flag must appear once: on the insert StatefulSet, never on select.
+n="$(helm template test-release "${CHART_DIR}" --set "logs.insert.syslog.tcp.enabled=true" --generate-name=false --validate=false 2>/dev/null | grep -c 'syslog.listenAddr.tcp' || true)"
+if [[ "${n}" == "1" ]]; then
+  echo "  PASS  syslog listener flag is on the insert pods only"
+  PASSED=$((PASSED + 1))
+else
+  echo "  FAIL  syslog listener flag appears ${n} times, want 1 (insert StatefulSet only)"
+  FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+fi
+render_has "syslog ports reach the NetworkPolicy" yes \
+  'port: 5140' \
+  --set "logs.insert.syslog.tcp.enabled=true" \
+  --set "networkPolicy.enabled=true"
+render_has "OTLP gRPC plaintext: flags" yes \
+  '"-otlpGRPC.tls=false"' \
+  --set "traces.enabled=true" \
+  --set "traces.insert.otlpGrpc.enabled=true" \
+  --set "traces.insert.otlpGrpc.tls.enabled=false"
+render_has "OTLP gRPC: Service port" yes \
+  'name: otlp-grpc' \
+  --set "traces.enabled=true" \
+  --set "traces.insert.otlpGrpc.enabled=true" \
+  --set "traces.insert.otlpGrpc.tls.enabled=false"
+render_has "OTLP gRPC with TLS: cert and key flags" yes \
+  '"-otlpGRPC.tlsCertFile=/tls/tls.crt"' \
+  --set "traces.enabled=true" \
+  --set "traces.insert.otlpGrpc.enabled=true" \
+  --set "traces.insert.otlpGrpc.tls.certFile=/tls/tls.crt" \
+  --set "traces.insert.otlpGrpc.tls.keyFile=/tls/tls.key"
+
+# TLS on (the upstream default) without a certificate must fail at render time,
+# not crash the pod at startup.
+if helm template test-release "${CHART_DIR}" --set "traces.enabled=true" --set "traces.insert.otlpGrpc.enabled=true" \
+    --generate-name=false --validate=false >/dev/null 2>/tmp/helm_test_err; then
+  echo "  FAIL  OTLP gRPC with TLS and no certificate must be rejected"
+  FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+elif grep -q "tls.certFile and tls.keyFile" /tmp/helm_test_err; then
+  echo "  PASS  OTLP gRPC with TLS and no certificate is rejected with a clear message"
+  PASSED=$((PASSED + 1))
+else
+  echo "  FAIL  OTLP gRPC with TLS and no certificate failed with an unexpected message"
+  sed 's/^/         /' /tmp/helm_test_err
+  FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Full kitchen-sink
 # ---------------------------------------------------------------------------
 echo ""

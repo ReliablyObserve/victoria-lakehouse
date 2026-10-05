@@ -167,6 +167,26 @@ select:
       memory: 4Gi
 ```
 
+### Opt-in Ingest Listeners (syslog, OTLP/gRPC)
+
+The HTTP port serves every HTTP ingest protocol (jsonline, Loki, Elasticsearch bulk, Splunk, Datadog, journald, OTLP/HTTP). Two protocols need their own listener and are off by default; enable them per insert role:
+
+```yaml
+logs:
+  insert:
+    syslog:
+      tcp: { enabled: true, port: 5140, tenantID: "7:1" }   # "AccountID:ProjectID", empty = 0:0
+      udp: { enabled: true, port: 5141, tenantID: "7:1" }
+traces:
+  insert:
+    otlpGrpc:
+      enabled: true
+      port: 4317
+      tls: { enabled: true, certFile: /tls/tls.crt, keyFile: /tls/tls.key }   # or enabled: false for plaintext
+```
+
+Each enabled listener adds the flag, a container port, a Service port (also on the headless Service) and a NetworkPolicy ingress port. With TLS on and no certificate the chart refuses to render. Details and the CI proof that both listeners behave like the upstream ones: [Ingest parity matrix](ingest-parity.md).
+
 ### Cache Tuning
 
 ```yaml
