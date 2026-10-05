@@ -120,7 +120,7 @@ def pruning_cells(a, truth, snips, facts):
                 got = {}
             pr = got.get("dt_filter")
             ctl = got.get("count")
-            gap = gaps.known_gap(eng, sig, "pruned", "prune", "dt_filter", facts, "prune/1")
+            gap = gaps.known_gap(eng, sig, "pruned", "prune", "dt_filter", facts, "prune/1", params["dt"])
             st, pruned, controlled = judge_pruning(pr, ctl, want["dt_filter"], gap, rec.get("error"))
             rec["queries"]["pruning"] = {"status": st, "ok": st in ("pass", "known-gap"), "got": str(pr), "want": want["dt_filter"],
                                          "control_failed": controlled, "gap": (gap["issue"] or gap["id"]) if gap else None}
@@ -216,7 +216,7 @@ def main():
                         got = {q: engines.QueryError(rec["error"]) for q in list(lib.QUERIES) + [lib.FILES_QUERY]}
                     extras = sorted(k for k in got if k not in lib.QUERIES and k != lib.FILES_QUERY)
                     for q in list(lib.QUERIES) + extras:
-                        gap = known_gap(eng, sig, layer, tenant, q, facts, cell.t["prefix"]) if q in lib.QUERIES else None
+                        gap = known_gap(eng, sig, layer, tenant, q, facts, cell.t["prefix"], params["dt"]) if q in lib.QUERIES else None
                         rec["queries"][q] = judge(got, q, want[lib.base_query(q)], gap, tenant)
                     if eng in REPORTS_FILES:
                         rec["queries"][lib.FILES_QUERY] = files_check(got, inventory(a.fixture, layer, cell.t["prefix"], sig),

@@ -20,6 +20,7 @@ cut to microseconds, rows filed under the wrong tenant) differs from the manifes
 import glob
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -272,6 +273,12 @@ def sbbf_num_bytes(fs, key, offset):
     return (n >> 1) ^ -(n & 1)
 
 
+def dt_of(rel):
+    """The `dt=` partition value of an object path, or None when it has none."""
+    m = re.search(r"/dt=([^/]+)/", "/" + rel)
+    return m.group(1) if m else None
+
+
 def cell_of(rel, layer):
     """(cell key, layer) of an object path relative to its bucket: <account>/<project>/<signal>/..."""
     parts = rel.split("/")
@@ -314,11 +321,14 @@ def facts_scan(out_path):
                     v.decode("utf-8")
                 except UnicodeDecodeError:
                     bad.append(k.decode("ascii", "replace").split("_rg_")[0])
-            f = res["footer"].setdefault(cell, {"objects": 0, "nonutf8": 0, "keys": []})
+            f = res["footer"].setdefault(cell, {"objects": 0, "nonutf8": 0, "keys": [], "nonutf8_dts": []})
             f["objects"] += 1
             if bad:
                 f["nonutf8"] += 1
                 f["keys"] = sorted(set(f["keys"]) | set(bad))
+                # an engine that prunes Hive partitions before it opens a footer (Polars) meets the
+                # value only in a query whose partition holds such an object
+                f["nonutf8_dts"] = sorted(set(f["nonutf8_dts"]) | {dt_of(rel)})
                 res["nonutf8_total"] += 1
     for cell, cols in res["cells"].items():
         for col in cols:

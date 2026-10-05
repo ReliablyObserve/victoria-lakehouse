@@ -15,6 +15,7 @@ import gaps
 import lib
 import matrix
 import report
+import truth
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANIFEST = lib.read_json(os.path.join(HERE, "engines.json"))
@@ -174,8 +175,9 @@ def test_pruning_gaps_are_narrow_and_close():
 FACTS = {"nonpow2_total": 1, "nonutf8_total": 2,
          "cells": {"4402/3/logs/raw": {"trace_id": [96], "service.name": [32]},
                    "4401/1/logs/raw": {"trace_id": [32], "service.name": [32]}},
-         "footer": {"4401/1/logs/raw": {"objects": 3, "nonutf8": 2}, "4401/1/logs/compacted": {"objects": 2, "nonutf8": 0},
-                    "4401/1/traces/raw": {"objects": 3, "nonutf8": 0}}}
+         "footer": {"4401/1/logs/raw": {"objects": 3, "nonutf8": 2, "nonutf8_dts": ["2026-01-01"]},
+                    "4401/1/logs/compacted": {"objects": 2, "nonutf8": 0, "nonutf8_dts": []},
+                    "4401/1/traces/raw": {"objects": 3, "nonutf8": 0, "nonutf8_dts": []}}}
 
 
 def gap_for(engine, sig, layer, tenant, q, prefix, facts=FACTS):
@@ -202,6 +204,35 @@ def test_footer_gap_applies_exactly_where_an_object_has_a_non_utf8_footer_value(
     assert gap_for("polars", "traces", "raw", "numeric", "count", "4401/1") is None       # facts say none here
     assert gap_for("datafusion", "logs", "raw", "numeric", "count", "4401/1")
     assert gap_for("duckdb", "logs", "raw", "numeric", "count", "4401/1") is None
+
+
+def test_footer_gap_of_a_partition_pruned_query_looks_only_at_its_partition():
+    # Polars prunes dt= before it opens a footer: dt_filter meets only the filtered day's objects
+    assert gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1", "2026-01-01")
+    assert gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1", "2026-01-02") is None
+    # a query that is not partition-pruned still meets every object of the cell
+    assert gaps.known_gap("polars", "logs", "raw", "numeric", "count", FACTS, "4401/1", "2026-01-02")
+    # DataFusion infers the schema from every footer at registration: no partition exemption
+    assert gaps.known_gap("datafusion", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1", "2026-01-02")
+    # the CI case: the day's objects are clean, so a Polars answer is a pass, and a UTF-8 error there is a FAIL
+    g = gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1", "2026-01-02")
+    assert matrix.judge({"dt_filter": 5}, "dt_filter", 5, g)["status"] == "pass"
+    assert matrix.judge({"dt_filter": QE("ComputeError: invalid utf-8")}, "dt_filter", 5, g)["status"] == "fail"
+    # the day that holds such an object keeps the gap, and a correct answer there turns red
+    g = gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1", "2026-01-01")
+    assert matrix.judge({"dt_filter": QE("ComputeError: invalid utf-8")}, "dt_filter", 5, g)["status"] == "known-gap"
+    assert matrix.judge({"dt_filter": 5}, "dt_filter", 5, g)["status"] == "gap-closed"
+
+
+def test_a_partition_pruned_footer_gap_needs_the_partition():
+    with pytest.raises(ValueError):
+        gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1")
+
+
+def test_facts_record_the_partition_of_an_object():
+    assert truth.dt_of("4401/1/logs/dt=2026-01-01/hour=03/x.parquet") == "2026-01-01"
+    assert truth.dt_of("dt=2026-01-02/hour=00/x.parquet") == "2026-01-02"
+    assert truth.dt_of("4401/1/logs/x.parquet") is None
 
 
 def test_footer_gap_closes_when_no_object_has_a_non_utf8_footer_value():
@@ -260,11 +291,13 @@ def test_known_gap_lookup_is_specific():
     # compaction keeps the body token bloom footer KV since #344, so compacted logs files are refused too
     assert gaps.known_gap("polars", "logs", "compacted", "numeric", "count")
     assert gaps.known_gap("datafusion", "traces", "pruned", "prune", "dt_filter")["issue"].endswith("/340")
-    pruned_facts = dict(FACTS, footer=dict(FACTS["footer"], **{"prune/1/logs/pruned": {"objects": 24, "nonutf8": 0},
-                                                                "prune/1/traces/pruned": {"objects": 24, "nonutf8": 24}}))
+    pruned_facts = dict(FACTS, footer=dict(FACTS["footer"], **{"prune/1/logs/pruned": {"objects": 24, "nonutf8": 0, "nonutf8_dts": []},
+                                                                "prune/1/traces/pruned": {"objects": 24, "nonutf8": 24,
+                                                                                          "nonutf8_dts": ["2026-01-01"]}}))
     assert gaps.known_gap("datafusion", "logs", "pruned", "prune", "dt_filter", pruned_facts, "prune/1")["issue"] is None
     assert gaps.known_gap("datafusion", "traces", "pruned", "prune", "dt_filter", pruned_facts, "prune/1")["issue"].endswith("/340")
-    assert gaps.known_gap("polars", "logs", "pruned", "prune", "dt_filter", pruned_facts, "prune/1") is None
+    assert gaps.known_gap("polars", "logs", "pruned", "prune", "dt_filter", pruned_facts, "prune/1", "2026-01-01") is None
+    assert gaps.known_gap("polars", "traces", "pruned", "prune", "dt_filter", pruned_facts, "prune/1", "2026-01-01")["issue"].endswith("/340")
     assert gaps.known_gap("clickhouse", "logs", "raw", "numeric", "trace_by_id")["bloom"]
     assert gaps.known_gap("clickhouse", "logs", "raw", "numeric", "count") is None
 

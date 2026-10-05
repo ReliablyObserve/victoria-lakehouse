@@ -25,6 +25,8 @@ UTF8_ERR = r"invalid utf-?8|utf-?8 error|not valid utf-?8"
 GAPS = [
     {"id": "footer-kv-not-utf8/polars", "issue": ISSUES + "340", "engines": ("polars",), "footer": True,
      "layers": ("raw", "compacted", "pruned"), "label": "files with a non-UTF-8 footer value", "error": UTF8_ERR,
+     # scan_parquet prunes the dt= partitions before it opens a footer: these queries meet only their day's objects
+     "partition_pruned": ("dt_filter",),
      # where every object is affected (the doc table says `no` there, `partial` elsewhere)
      "full": (("logs", "raw"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")),
      "note": "the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; Polars refuses a file "
@@ -63,22 +65,23 @@ EQUALITY_COLUMNS = {
 }
 
 
-def known_gap(engine, signal, layer, tenant, query, facts=None, prefix=None):
+def known_gap(engine, signal, layer, tenant, query, facts=None, prefix=None, dt=None):
     """The gap covering this cell and check, or None. Without `facts` a data-dependent gap (`bloom`,
     `footer`) is returned wherever it can occur (the view of the coverage table); with `facts`
     (truth.py facts) only where the files make it happen, and everywhere when no file does any more
-    (the gap is then closed and its cells must start passing)."""
+    (the gap is then closed and its cells must start passing). `dt` is the partition a
+    partition-pruned query reads (the cell's `dt_filter` day)."""
     for g in GAPS:
         if engine in g["engines"] and signal in g.get("signals", ("logs", "traces")) \
                 and layer in g.get("layers", ("raw", "compacted")) \
                 and tenant in g.get("tenants", ALL_TENANTS) \
                 and query in g.get("queries", ALL_QUERIES):
-            if facts is None or applies(g, facts, prefix, signal, layer, query):
+            if facts is None or applies(g, facts, prefix, signal, layer, query, dt):
                 return g
     return None
 
 
-def applies(gap, facts, prefix, signal, layer, query):
+def applies(gap, facts, prefix, signal, layer, query, dt=None):
     cell = "%s/%s/%s" % (prefix, signal, layer)
     if gap.get("bloom"):
         if facts["nonpow2_total"] == 0:
@@ -88,7 +91,12 @@ def applies(gap, facts, prefix, signal, layer, query):
     if gap.get("footer"):
         if facts["nonutf8_total"] == 0:
             return True
-        return facts["footer"].get(cell, {}).get("nonutf8", 0) > 0
+        f = facts["footer"].get(cell, {})
+        if query in gap.get("partition_pruned", ()):
+            if dt is None:
+                raise ValueError("gap %s: query %s reads one partition, the caller must name it" % (gap["id"], query))
+            return dt in f.get("nonutf8_dts", ())
+        return f.get("nonutf8", 0) > 0
     return True
 
 
