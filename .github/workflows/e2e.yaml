@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - '.github/workflows/e2e.yaml'
       - 'internal/**'
       - 'cmd/**'
       - 'tests/e2e/**'
@@ -16,6 +17,7 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/e2e.yaml'
       - 'internal/**'
       - 'cmd/**'
       - 'tests/e2e/**'
@@ -88,6 +90,18 @@ jobs:
             fi
             sleep 2
           done
+          curl -sf http://localhost:29471/health || (echo "FATAL: vlselect not healthy" && exit 1)
+
+      - name: Wait for vtselect
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:20471/health > /dev/null 2>&1; then
+              echo "vtselect healthy"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:20471/health || (echo "FATAL: vtselect not healthy" && exit 1)
 
       - name: Wait for loki-vl-proxy
         run: |
@@ -98,6 +112,7 @@ jobs:
             fi
             sleep 2
           done
+          curl -sf http://localhost:23100/ready || (echo "FATAL: loki-vl-proxy not healthy" && exit 1)
 
       - name: Verify S3 data seeded
         run: |
@@ -123,27 +138,39 @@ jobs:
           S3_BUCKET: obs-archive
           S3_USER: minioadmin
           S3_PASSWORD: minioadmin
-        run: go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestSmoke" 2>&1 | tee e2e-results.txt
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestSmoke" 2>&1 | tee e2e-results.txt
 
       - name: Verify metrics (all 147+ Prometheus metrics)
         env: *e2e-env
-        run: go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestMetrics_" 2>&1 | tee -a e2e-results.txt
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestMetrics_" 2>&1 | tee -a e2e-results.txt
 
       - name: Verify endpoints (all API endpoints)
         env: *e2e-env
-        run: go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestEndpoint_" 2>&1 | tee -a e2e-results.txt
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestEndpoint_" 2>&1 | tee -a e2e-results.txt
 
       - name: Verify settings (all config settings behavior)
         env: *e2e-env
-        run: go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestSetting_" 2>&1 | tee -a e2e-results.txt
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestSetting_" 2>&1 | tee -a e2e-results.txt
 
       - name: Verify bloom (bloom index deep verification)
         env: *e2e-env
-        run: go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestBloomVerify_" 2>&1 | tee -a e2e-results.txt
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=8m ./tests/e2e/ -run "TestBloomVerify_" 2>&1 | tee -a e2e-results.txt
 
       - name: Verify string tenants (OrgID aliases, auto-register)
         env: *e2e-env
-        run: go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestStringTenant_" 2>&1 | tee -a e2e-results.txt
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=5m ./tests/e2e/ -run "TestStringTenant_" 2>&1 | tee -a e2e-results.txt
 
       - name: Verify tenant read scoping (exact per-tenant counts, both binaries, prefix + bucket layouts)
         env: *e2e-env
@@ -157,9 +184,11 @@ jobs:
           set -o pipefail
           go test -tags=e2e -v -count=1 -timeout=30m ./tests/e2e/ -run "TestIngestMatrix_" 2>&1 | tee -a e2e-results.txt
 
-      - name: Run remaining E2E tests
+      - name: Run remaining E2E tests (everything the steps above do not select)
         env: *e2e-env
-        run: go test -tags=e2e -v -count=1 -timeout=10m ./tests/e2e/ -run "^(?!TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_|TestStringTenant_)" 2>&1 | tee -a e2e-results.txt
+        run: |
+          set -o pipefail
+          go test -tags=e2e -v -count=1 -timeout=30m ./tests/e2e/ -run . -skip "^(TestSmoke|TestMetrics_|TestEndpoint_|TestSetting_|TestBloomVerify_|TestStringTenant_|TestMultitenancy_TenantScope_|TestIngestMatrix_|TestChaos_)" 2>&1 | tee -a e2e-results.txt
 
       # Last: these restart and SIGKILL the Lakehouse containers. A row/span
       # acknowledged before the restart or kill -9 must be returned exactly once

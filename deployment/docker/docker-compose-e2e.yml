@@ -434,6 +434,8 @@ services:
   # =========================================================================
 
   vlselect:
+    ports:
+      - "127.0.0.1:29471:9428"
     build:
       context: ../../
       dockerfile: deployment/docker/Dockerfile.upstream-probe
@@ -461,6 +463,8 @@ services:
       start_period: 5s
 
   vtselect:
+    ports:
+      - "127.0.0.1:20471:10428"
     build:
       context: ../../
       dockerfile: deployment/docker/Dockerfile.upstream-probe
@@ -492,6 +496,8 @@ services:
   # =========================================================================
 
   loki-vl-proxy:
+    ports:
+      - "127.0.0.1:23100:3100"
     build:
       context: .
       dockerfile: Dockerfile.loki-vl-proxy
