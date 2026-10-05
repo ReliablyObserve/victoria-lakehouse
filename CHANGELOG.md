@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `vlselect`, `vtselect` and `loki-vl-proxy` now map `29471`, `20471` and `23100` to the host, and the e2e workflow runs each
   `go test` step with `set -o pipefail` and waits for these services before the tests start. The last step selects every test
   the earlier steps do not (`-run . -skip …`) instead of an invalid lookahead pattern, so about 140 previously unselected tests now run.
+- **The e2e suite waits for the durable insert buffer to reach Parquet before it asserts, and its stale checks are repaired or declared as known gaps.**
+  `TestMain` waits up to six minutes for the first Parquet object, for data newer than ten minutes and until the insert buffer holds no row older than two hours (a buffered row is answered from the buffer and its segment's objects are left out of reads), instead of failing after 60 seconds on an empty manifest; the breakdown, cache-recovery and rows-returned checks read a window that reaches Parquet. The cache-recovery query ends two hours back, because a limited query is answered newest first and the continuous writer's last hour is always buffered.
+  Checks that no longer matched the product were fixed: S3 key names (`<id>-<n>.parquet`), other seeded tenants, Lakehouse's own `_meta/` and `_segments/` objects, the UI strings that moved to `lakehouse-ui.js`, and the removed leader-election metrics (also dropped from `docs/observability.md`).
+  `TestGolden_*` now creates its `testdata/` directory on the first run (it failed with "no such file"); no golden file is committed, so those tests still only snapshot until goldens are checked in.
+  Real defects the suite found stay as declared known gaps with issue links (#269, #281, #307, #373 to #376): each logs `KNOWN GAP` while it holds and fails once it is fixed.
 
 ## [0.145.0] - 2026-10-05
 

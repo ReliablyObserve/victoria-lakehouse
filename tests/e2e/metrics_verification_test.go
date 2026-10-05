@@ -586,20 +586,6 @@ func TestMetrics_Compaction_AllExist(t *testing.T) {
 }
 
 // =============================================================================
-// Election Metrics
-// =============================================================================
-
-func TestMetrics_Election_AllExist(t *testing.T) {
-	metrics := scrapeMetrics(t, logsBaseURL)
-	for _, name := range []string{
-		"lakehouse_election_leader",
-		"lakehouse_election_transitions_total",
-	} {
-		assertMetricExists(t, metrics, name)
-	}
-}
-
-// =============================================================================
 // Tenant Metrics
 // =============================================================================
 
@@ -940,8 +926,6 @@ func TestMetrics_Completeness_AllDeclaredMetricsExist(t *testing.T) {
 		"lakehouse_compaction_rows_merged_total",
 		"lakehouse_compaction_errors_total",
 		// Election
-		"lakehouse_election_leader",
-		"lakehouse_election_transitions_total",
 		// Storage
 		"lakehouse_storage_files_total",
 		"lakehouse_storage_bytes_total",

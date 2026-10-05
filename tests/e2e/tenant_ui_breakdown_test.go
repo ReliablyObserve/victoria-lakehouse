@@ -21,17 +21,26 @@ import (
 func TestTenantAPI_BreakdownEndpointGroupsByTenant(t *testing.T) {
 	orgID := fmt.Sprintf("e2e-breakdown-%d", time.Now().UnixNano())
 	ingestLog(t, logsBaseURL, withOrgID(orgID), "breakdown e2e")
-	// Give the writer a couple of flush cycles plus alias-sync window.
-	time.Sleep(45 * time.Second)
-
-	resp, err := http.Get(logsBaseURL + "/lakehouse/api/v1/stats/breakdown?group_by=tenant")
-	if err != nil {
-		t.Fatalf("breakdown request: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("breakdown returned %d: %s", resp.StatusCode, string(body))
+	// The breakdown is computed from the manifest, i.e. from Parquet. Rows are
+	// durable in the insert buffer first and reach S3 at most
+	// insert.buffer_flush_interval (2m on this stack) after their segment opened,
+	// so poll until the tenant's object shows up instead of sleeping.
+	var body []byte
+	deadline := time.Now().Add(5 * time.Minute)
+	for {
+		resp, err := http.Get(logsBaseURL + "/lakehouse/api/v1/stats/breakdown?group_by=tenant")
+		if err != nil {
+			t.Fatalf("breakdown request: %v", err)
+		}
+		body, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("breakdown returned %d: %s", resp.StatusCode, string(body))
+		}
+		if strings.Contains(string(body), orgID) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Second)
 	}
 
 	var parsed struct {
@@ -80,7 +89,7 @@ func TestTenantAPI_BreakdownEndpointGroupsByTenant(t *testing.T) {
 // tenants tab when the file is edited.
 func TestTenantUI_RendersBidirectionalMapping(t *testing.T) {
 	for _, base := range []string{logsBaseURL, tracesBaseURL} {
-		for _, asset := range []string{"/lakehouse/ui/", "/lakehouse/ui/vmui-tab.js"} {
+		for _, asset := range []string{"/lakehouse/ui/lakehouse-ui.js"} {
 			url := base + asset
 			resp, err := http.Get(url)
 			if err != nil {

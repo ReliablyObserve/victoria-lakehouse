@@ -163,9 +163,6 @@ graph LR
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `lakehouse_election_leader` | Gauge | | 1 if this instance is the current leader, 0 otherwise |
-| `lakehouse_election_transitions_total` | Counter | | Total leadership transitions |
-| `lakehouse_election_health_checks_total` | Counter | `result` | Liveness check outcomes (`alive`, `dead`, `timeout`) — S3 election mode |
 
 ### Manifest Push Metrics (M9)
 
