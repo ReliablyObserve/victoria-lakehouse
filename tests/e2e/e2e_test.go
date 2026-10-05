@@ -37,6 +37,14 @@ func TestMain(m *testing.M) {
 	fmt.Println("e2e: verifying manifest/range on traces...")
 	verifyManifest(tracesBaseURL, "traces")
 
+	// Phase 2b: datagen-continuous keeps inserting, but those rows reach S3 one
+	// flush interval after they arrive. Tests that query the last 30 minutes
+	// (defaultTimeParams) need Parquet holding such rows, so wait for it.
+	fmt.Println("e2e: waiting for recent Parquet on logs...")
+	waitRecentData(logsBaseURL, "logs")
+	fmt.Println("e2e: waiting for recent Parquet on traces...")
+	waitRecentData(tracesBaseURL, "traces")
+
 	// Phase 3: Store the data time range for use in other tests.
 	storeTimeRange()
 
@@ -72,9 +80,17 @@ func waitForHealthFatal(baseURL string, timeout time.Duration) {
 	os.Exit(1)
 }
 
+// manifestWait bounds how long the stack may take to write its first Parquet
+// object. The insert buffer is durable by default: seeded rows sit in an
+// upstream storage segment and reach S3 only when it is sealed, at most
+// insert.buffer_flush_interval (2m in lakehouse-e2e-config.yml) after it opened,
+// so the manifest is legitimately empty until then. Wait for real Parquet
+// (totalFiles > 0) rather than treating an empty manifest as a failure.
+const manifestWait = 6 * time.Minute
+
 func verifyManifest(baseURL string, label string) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(manifestWait)
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(baseURL + "/manifest/range")
 		if err != nil {
@@ -99,7 +115,32 @@ func verifyManifest(baseURL string, label string) {
 
 		time.Sleep(2 * time.Second)
 	}
-	fmt.Fprintf(os.Stderr, "FATAL: %s manifest/range returned 0 files after 60s\n", label)
+	fmt.Fprintf(os.Stderr, "FATAL: %s manifest/range returned 0 files after %s\n", label, manifestWait)
+	os.Exit(1)
+}
+
+// waitRecentData blocks until /manifest/range reports data newer than 10
+// minutes, i.e. until the continuous generator's rows have been flushed to
+// Parquet. It fails the run when none arrives within manifestWait.
+func waitRecentData(baseURL string, label string) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	deadline := time.Now().Add(manifestWait)
+	for time.Now().Before(deadline) {
+		if resp, err := client.Get(baseURL + "/manifest/range"); err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			var result map[string]any
+			if json.Unmarshal(body, &result) == nil {
+				if maxT, _ := result["maxTime"].(float64); maxT > 0 &&
+					time.Since(time.Unix(0, int64(maxT))) < 10*time.Minute {
+					fmt.Printf("e2e: %s has recent Parquet\n", label)
+					return
+				}
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+	fmt.Fprintf(os.Stderr, "FATAL: %s manifest has no data newer than 10m after %s\n", label, manifestWait)
 	os.Exit(1)
 }
 

@@ -36,6 +36,9 @@ func compareGoldenJSON(t *testing.T, name string, actual []byte) {
 
 	existing, err := os.ReadFile(path)
 	if os.IsNotExist(err) || update {
+		if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+			t.Fatalf("golden: creating %s: %v", filepath.Dir(path), mkErr)
+		}
 		if writeErr := os.WriteFile(path, normalised, 0o644); writeErr != nil {
 			t.Fatalf("golden: writing %s: %v", path, writeErr)
 		}
