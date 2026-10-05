@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -317,6 +318,17 @@ func TestIngestMatrix_RegistryRowsMatchCases(t *testing.T) {
 					if !strings.Contains(row.DifferNote, g.Issue) {
 						t.Errorf("%s: differ_note must cite %s", id, g.Issue)
 					}
+				}
+			}
+			declaredIssues := map[string]bool{}
+			for _, gid := range c.Gaps {
+				if g, ok := im.GapByID(gid); ok {
+					declaredIssues[g.Issue] = true
+				}
+			}
+			for _, issue := range regexp.MustCompile(`https://github\.com/ReliablyObserve/victoria-lakehouse/issues/[0-9]+`).FindAllString(row.DifferNote, -1) {
+				if !declaredIssues[issue] {
+					t.Errorf("%s: differ_note cites undeclared gap %s", id, issue)
 				}
 			}
 			if string(row.Surface) != im.Surface(c.Signal) {

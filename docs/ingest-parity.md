@@ -200,3 +200,30 @@ Set the `E2E_*` host-port variables of the compose file (see `docs/docker-compos
 ports when the compose file, not the override, publishes them. The package needs the vendored
 VictoriaLogs tree (`make deps-logs`), because the native payloads are built with `logstorage.InsertRow`.
 The flush wait is one flush interval (120 s in the e2e stack); the Logs and Traces matrices run in parallel.
+
+## Verification results
+
+With the pinned VictoriaLogs v1.52 and VictoriaTraces v0.12, the isolated protocol run completed
+in 153.709 s with all 26 log and 8 trace cells passing, plus probes, route gaps and the two
+mixed-tenant native controls. Every stored span retained its native message; #333 is absent
+from active gap declarations. The run still observed #274, #331, #332 and #279, and does not
+claim those production gaps are fixed.
+
+The trace cells had 85–113 sampled observations with a largest observed gap of 2.672 s;
+log cells had 88–183 observations with a largest gap of 3.995 s. The stability windows made
+20 and 11 full sampling cycles respectively. These measurements bound the observed sampling
+cadence, not continuity between samples. The runner logs these values on every run.
+
+| Regression | Previous check | Current check |
+|---|---|---|
+| Correct marker/count with wrong tenant, timestamp or attribute value | count-only raw check accepted the object | independent physical comparison rejects it |
+| Correct spilled value with conflicting promoted scalar, repeated scalar, duplicate MAP key or orphan MAP value | accepted | rejected |
+| Established rows disappear and then recover | eventual equality wait could pass | first missing sampled result fails |
+| UDP enabled with null port | listen flag 5140, exposed ports 5141 | flag and all exposed ports 5141 |
+
+The permanent regressions can be rerun with `GOWORK=off go test ./tests/ingestmatrix ./tests/conformance/...`
+and `bash charts/victoria-lakehouse/test_templates.sh`. The full package command above includes
+its normal health, manifest and cache setup. No query or ingest backend changes are part of
+this slice, and no performance improvement is claimed. Enabling listeners remains opt-in;
+complete default chart manifests match current main for logs, both signals, traces only and
+custom image repositories.
