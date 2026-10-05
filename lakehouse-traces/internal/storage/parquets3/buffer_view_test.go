@@ -67,7 +67,7 @@ func (e *viewEnv) ingest(ts time.Time, n int) {
 	}
 	e.segs.MustAddRows(lr)
 	logstorage.PutLogRows(lr)
-	e.segs.Active() // rows become searchable within upstream's ~1 s
+	e.segs.DebugFlush() // upstream makes rows searchable within about a second on its own
 }
 
 // answer runs `*` over the last two days and returns each span's count.
@@ -115,8 +115,6 @@ func (e *viewEnv) exact(when string) {
 	}
 }
 
-func waitSearchable() { time.Sleep(1500 * time.Millisecond) }
-
 // Every row is answered exactly once at every step of its life: in the
 // active segment, sealed, while its segment drains (after each group), once
 // the segment is committed and still readable, after the segment is removed,
@@ -128,7 +126,6 @@ func TestBufferView_EachRowOnceThroughTheWholeHandoff(t *testing.T) {
 	base := time.Now().Add(-3 * time.Hour).Truncate(time.Hour)
 	e.ingest(base.Add(10*time.Minute), 20)
 	e.ingest(base.Add(70*time.Minute), 20)
-	waitSearchable()
 	e.exact("active segment")
 
 	g, _ := e.segs.Seal()
@@ -151,7 +148,6 @@ func TestBufferView_EachRowOnceThroughTheWholeHandoff(t *testing.T) {
 
 	// Late rows: older than everything already in Parquet.
 	e.ingest(base.Add(5*time.Minute), 7)
-	waitSearchable()
 	e.exact("late rows in the active segment")
 
 	if n := e.segs.Reap(time.Now().Add(time.Hour), time.Minute); n != 1 {
@@ -182,7 +178,6 @@ func TestBufferView_ConcurrentQueriesDuringDrains(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		e.ingest(base.Add(time.Duration(i)*17*time.Minute), 25)
 	}
-	waitSearchable()
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	var queries atomic.Int32
@@ -249,7 +244,6 @@ func TestBufferView_TraceByIDThroughTheHandoff(t *testing.T) {
 	base := time.Now().Add(-2 * time.Hour).Truncate(time.Hour)
 	e.ingest(base.Add(5*time.Minute), 30)
 	e.ingest(base.Add(65*time.Minute), 30) // older/newer mix across two hour partitions
-	waitSearchable()
 
 	byID := func(when string) {
 		t.Helper()
@@ -293,7 +287,6 @@ func TestBufferView_SegmentsInOnePartitionAreReadTogether(t *testing.T) {
 	base := time.Now().Add(-3 * time.Hour).Truncate(time.Hour)
 	for w := 0; w < 3; w++ {
 		e.ingest(base.Add(time.Duration(w)*time.Minute), 40) // all within one hour partition
-		waitSearchable()
 		g, ok := e.segs.Seal()
 		if !ok {
 			t.Fatal("nothing to seal")
