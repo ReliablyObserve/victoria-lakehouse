@@ -129,6 +129,8 @@
   rows:
     - lh.select.split.insert_buffer_visible_logs
     - lh.select.split.insert_buffer_visible_traces
+    - lh.select.split.insert_buffer_visible_with_peer_key_logs
+    - lh.select.split.insert_buffer_visible_with_peer_key_traces
   docs:
     - docs/write-path.md
     - docs/read-path.md

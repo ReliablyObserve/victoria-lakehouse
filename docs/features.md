@@ -62,7 +62,7 @@ A drain produces complete Parquet objects per (partition, tenant, slice) and upl
 
 Rows are queryable the moment they are accepted: a select pod asks every insert pod for its unflushed window over `/internal/buffer/query` and merges the answer with what S3 already holds. The fan-out is deliberately AZ-blind — buffered rows live wherever the writer that accepted them runs.
 
-- Verification: rows: `lh.select.split.insert_buffer_visible_logs` (pass, pending), `lh.select.split.insert_buffer_visible_traces` (pass, pending) · tests: `internal/buffer/handler_test.go`, `internal/storage/parquets3/buffer_bridge_test.go`, `internal/storage/parquets3/buffer_bridge_az_test.go`, `internal/storage/parquets3/buffer_bridge_discovery_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_az_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_discovery_test.go`
+- Verification: rows: `lh.select.split.insert_buffer_visible_logs` (pass, pending), `lh.select.split.insert_buffer_visible_traces` (pass, pending), `lh.select.split.insert_buffer_visible_with_peer_key_logs` (pass, pending), `lh.select.split.insert_buffer_visible_with_peer_key_traces` (pass, pending) · tests: `internal/buffer/handler_test.go`, `internal/storage/parquets3/buffer_bridge_test.go`, `internal/storage/parquets3/buffer_bridge_az_test.go`, `internal/storage/parquets3/buffer_bridge_discovery_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_az_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_discovery_test.go`
 - Docs: `docs/write-path.md`, `docs/read-path.md`, `docs/kubernetes-deployment.md`
 - Changelog: `0.8.0`
 
@@ -105,7 +105,7 @@ Instead of a bespoke in-memory buffer with its own query semantics, the insert b
 
 ### ✅ Opt-in syslog and OTLP/gRPC ingest listeners
 
-`lh.feature.ingest.optin_listeners` · status: shipped · since: the release after v0.143.18 · surfaces: ingest, flag, cli
+`lh.feature.ingest.optin_listeners` · status: shipped · since: v0.144.0 · surfaces: ingest, flag, cli
 
 **Opt-in syslog and OTLP/gRPC listeners**: Helm values and compose flags start the upstream syslog (TCP/UDP) and OTLP/gRPC trace listeners, off by default, with the ports wired into the Service and NetworkPolicy.
 
@@ -113,7 +113,7 @@ Both listeners are upstream VictoriaLogs/VictoriaTraces code that the Lakehouse 
 
 - Verification: tests: `charts/victoria-lakehouse/test_templates.sh`, `tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Logs`, `tests/e2e/ingest_matrix_test.go#TestIngestMatrix_Traces`, `tests/conformance/ingest_matrix_test.go#TestIngestMatrix_E2EComposeEnablesListenersOnBothSides`
 - Docs: `docs/ingest-parity.md`, `docs/kubernetes-deployment.md`
-- Changelog: the release after `0.143.18`
+- Changelog: `0.144.0`
 
 ### ✅ Full VictoriaLogs insert protocol surface
 
@@ -1743,11 +1743,11 @@ Logs and traces deployments exchange hints across deployment boundaries, which m
 
 `lh.feature.security.internal_auth` · status: shipped · since: v0.18.1 · surfaces: api, flag
 
-**Internal endpoint auth**: the cluster-only surfaces — buffer query, peer cache, stats and tenant sync, partition list — require a shared key, so fleet-internal APIs are not open to anything that can reach the pod's network.
+**Internal endpoint auth**: the cluster-only surfaces — buffer query, peer cache, stats and tenant sync, partition list — require a shared key when one is set, and the buffer bridge presents it; a cross-tenant read of the insert buffer is served only to a pod holding the key, and upstream's `-internalselect.disable` turns the buffer endpoint off.
 
 The internal endpoints exist to let pods trust each other, which is exactly why they need a credential: without one, network reachability alone would grant cross-tenant reads. Each surface has a test asserting the rejection path, not only the accept path.
 
-- Verification: tests: `internal/peercache/peercache_test.go#TestPeerCache_Fetch_AuthRejected`, `internal/buffer/handler_test.go#TestBufferQuery_AuthRequired`, `internal/stats/sync_test.go#TestSyncHandlerRejectsBadAuth`, `internal/discovery/discovery_test.go#TestPollPartitionList_WithAuthKey`
+- Verification: rows: `lh.internal.buffer_query.all_tenants_needs_peer_key_logs` (pass, pending), `lh.internal.buffer_query.all_tenants_needs_peer_key_traces` (pass, pending), `lh.internal.buffer_query.peer_key_required_logs` (pass, pending), `lh.internal.buffer_query.peer_key_required_traces` (pass, pending), `lh.internal.buffer_query.single_tenant_scoped_logs` (pass, pending), `lh.internal.buffer_query.single_tenant_scoped_traces` (pass, pending), `lh.internal.buffer_query.internalselect_disable_logs` (pass, pending), `lh.internal.buffer_query.internalselect_disable_traces` (pass, pending) · tests: `internal/peercache/peercache_test.go#TestPeerCache_Fetch_AuthRejected`, `internal/buffer/handler_test.go#TestBufferQuery_AuthRequired`, `internal/buffer/handler_auth_test.go`, `internal/storage/parquets3/buffer_bridge_auth_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_auth_test.go`, `cmd/lakehouse-logs/buffer_query_mount_test.go`, `lakehouse-traces/buffer_query_mount_test.go`, `internal/stats/sync_test.go#TestSyncHandlerRejectsBadAuth`, `internal/discovery/discovery_test.go#TestPollPartitionList_WithAuthKey`
 - Docs: `docs/security.md`
 - Changelog: `0.18.1`
 

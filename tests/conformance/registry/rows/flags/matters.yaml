@@ -8,7 +8,8 @@
 # journald.*, datadog.*, loki.*), storage-node/TLS plumbing (storageNode.*),
 # local-disk and auth-key knobs (storageDataPath, *AuthKey,
 # inmemoryDataFlushInterval, retention.maxDisk*) and the internal peer
-# transport caps (internalinsert.*, internalselect.*) are all in that class:
+# transport caps (internalinsert.*, internalselect.* except
+# -internalselect.disable, which has rows below) are all in that class:
 # they are either pre-storage admission control Lakehouse mounts verbatim, or
 # they act on the hot local storage Lakehouse replaces wholesale. The triage is
 # summarised in tests/conformance/README.md.
@@ -397,3 +398,31 @@
   compare: { type: status }
   layers: [api]
   pending: true
+
+- id: vl.flag.internalselect_disable
+  title: "-internalselect.disable — turns /internal/select/* off with upstream's answer; on LH also /internal/buffer/query"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: internalselect.disable }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/security.md, tests: [cmd/lakehouse-logs/buffer_query_mount_test.go, internal/buffer/handler_auth_test.go] }
+  notes: "VictoriaLogs' vlselect registers the flag in the logs binary. Before #384 the binary refused it at startup (vlselectFlagsNotHonoured); now /internal/select/* answers 400 'requests to /internal/select/* are disabled with -internalselect.disable command-line flag' when it is set, as upstream does (TestDisabledMessage_IsUpstreamsWording checks the wording against the vendored source), and the insert pods' /internal/buffer/query, the Lakehouse's other route other nodes read a node's data with, is turned off the same way. Default off, as upstream."
+
+- id: vt.flag.internalselect_disable
+  title: "-internalselect.disable — turns /internal/select/* off with upstream's answer; on LH also /internal/buffer/query"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  upstream: { flag: internalselect.disable }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/security.md, tests: [lakehouse-traces/buffer_query_mount_test.go, internal/buffer/handler_auth_test.go] }
+  notes: "VictoriaTraces registers the flag in vtselect, which the traces binary cannot link; lakehouse-traces/internal_select.go registers VictoriaTraces' exact declaration (TestInternalSelectDisableFlag_IsVictoriaTracesDeclaration checks it against the vendored source). Before #384 the traces binary had no such flag. Same behaviour as the logs row: /internal/select/* and /internal/buffer/query answer upstream's 400 when it is set. Default off, as upstream."
