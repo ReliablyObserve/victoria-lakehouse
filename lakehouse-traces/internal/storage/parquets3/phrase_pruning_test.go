@@ -322,10 +322,10 @@ func TestPhrasePruning_AttestedFilesPrune(t *testing.T) {
 	if got := keys(s.filterFilesByBloomIndex(slices.Clone(files), absent)); !slices.Equal(got, other) {
 		t.Errorf("bloom pre-filter kept %v, want only the unattested files %v", got, other)
 	}
-	if got := keys(s.filterFilesByTraceIdxAttested(ctx, slices.Clone(files), nil, extractHexTraceIDPhrasesAST(absent))); !slices.Equal(got, other) {
+	if got := keys(s.filterFilesByTraceIdx(ctx, slices.Clone(files), nil, extractHexTraceIDPhrasesAST(absent))); !slices.Equal(got, other) {
 		t.Errorf("_trace_idx kept %v, want only the unattested files %v", got, other)
 	}
-	if got := keys(s.filterFilesByTraceIdxAttested(ctx, slices.Clone(files), extractFilterValuesAST(absent, "trace_id"), nil)); len(got) != len(files) {
+	if got := keys(s.filterFilesByTraceIdx(ctx, slices.Clone(files), extractFilterValuesAST(absent, "trace_id"), nil)); len(got) != len(files) {
 		t.Errorf("_trace_idx with no exact id kept %d files, want all %d", len(got), len(files))
 	}
 	// The exact form prunes every file, attested or not.

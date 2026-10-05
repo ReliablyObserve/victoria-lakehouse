@@ -305,7 +305,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	tids := extractFilterValuesAST(queryStr, "trace_id")
 	hexPhrases := extractHexTraceIDPhrasesAST(queryStr)
 	if (len(tids) > 0 || len(hexPhrases) > 0) && !noFooterBloomFrom(ctx) {
-		files = s.filterFilesByTraceIdxAttested(ctx, files, tids, hexPhrases)
+		files = s.filterFilesByTraceIdx(ctx, files, tids, hexPhrases)
 		if len(files) == 0 {
 			s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 			return nil
@@ -671,16 +671,13 @@ func (s *Storage) preFilterFiles(files []manifest.FileInfo, queryStr string) []m
 // Run in parallel because each footer fetch can still cost an S3
 // round-trip on a cache miss; the bound mirrors LookupTraceIndex
 // and keeps the read budget in line with query.file-workers.
-func (s *Storage) filterFilesByTraceIdx(ctx context.Context, files []manifest.FileInfo, tids []string) []manifest.FileInfo {
-	return s.filterFilesByTraceIdxAttested(ctx, files, tids, nil)
-}
-
-// filterFilesByTraceIdxAttested is filterFilesByTraceIdx where hexPhrases (the
-// full-hex `trace_id:"X"` phrases of the query) count as ids only in a file
-// whose footer attests lowercase-hex trace ids (schema.TraceIDHexMetaKey). In
-// any other file a phrase can match a longer id on token boundaries, so it
-// narrows nothing there: with no exact id the file is kept.
-func (s *Storage) filterFilesByTraceIdxAttested(ctx context.Context, files []manifest.FileInfo, tids, hexPhrases []string) []manifest.FileInfo {
+//
+// hexPhrases (the full-hex `trace_id:"X"` phrases of the query) count as ids
+// only in a file whose footer attests lowercase-hex trace ids
+// (schema.TraceIDHexMetaKey). In any other file a phrase can match a longer id
+// on token boundaries, so it narrows nothing there: with no exact id the file
+// is kept.
+func (s *Storage) filterFilesByTraceIdx(ctx context.Context, files []manifest.FileInfo, tids, hexPhrases []string) []manifest.FileInfo {
 	if len(files) == 0 || (len(tids) == 0 && len(hexPhrases) == 0) {
 		return files
 	}
