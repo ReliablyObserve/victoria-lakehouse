@@ -173,3 +173,52 @@ func TestRawTruthRejectsConflictingDefaultScalar(t *testing.T) {
 		}
 	}
 }
+
+func TestRawTruthNativeAndPromotedColumns(t *testing.T) {
+	for physical, public := range map[string]string{
+		"span.name": "name", "duration_ns": "duration", "status.code": "status_code",
+		"status.message": "status_message", "span.kind": "kind", "scope.name": "scope_name",
+		"cloud.region": "resource_attr:cloud.region", "http.method": "span_attr:http.method",
+	} {
+		r := RawParquetRow{"account_id": {"4401"}, "project_id": {"1"}, physical: {"123"}}
+		if err := r.CheckHot(Traces, NumericTenant, map[string]string{public: "123"}); err != nil {
+			t.Fatal(err)
+		}
+		r[physical] = []string{"456"}
+		if err := r.CheckHot(Traces, NumericTenant, map[string]string{public: "123"}); err == nil {
+			t.Fatalf("%s corruption accepted", physical)
+		}
+	}
+	r := RawParquetRow{"account_id": {"4401"}, "project_id": {"1"}, "start_time_unix_nano": {"100"}, "duration_ns": {"23"}}
+	if err := r.CheckHot(Traces, NumericTenant, map[string]string{"start_time_unix_nano": "100", "duration": "23", "end_time_unix_nano": "123"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func FuzzRawTruthPhysicalRepresentations(f *testing.F) {
+	f.Add("correct", "wrong")
+	f.Add("", "nonempty")
+	f.Add("quoted\"value", "customer value")
+	f.Fuzz(func(t *testing.T, want, other string) {
+		if len(want) > 4096 || len(other) > 4096 {
+			return
+		}
+		for _, sig := range []Signal{Logs, Traces} {
+			key := "service.name"
+			if sig == Traces {
+				key = "resource_attr:service.name"
+			}
+			r := RawParquetRow{"account_id": {"4401"}, "project_id": {"1"}, "service.name": {want}, "resource.attributes.key_value.key": {"service.name"}, "resource.attributes.key_value.value": {want}}
+			hot := map[string]string{key: want}
+			if err := r.CheckHot(sig, NumericTenant, hot); err != nil {
+				t.Fatal(err)
+			}
+			if other != want {
+				r["service.name"] = []string{other}
+				if err := r.CheckHot(sig, NumericTenant, hot); err == nil {
+					t.Fatal("conflicting physical scalar accepted")
+				}
+			}
+		}
+	})
+}

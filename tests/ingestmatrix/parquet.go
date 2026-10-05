@@ -225,7 +225,7 @@ func (r RawParquetRow) hasField(sig Signal, field, want string) bool {
 		key := field
 		if sig == Traces {
 			prefix := family + "_attr:"
-			if !strings.HasPrefix(field, prefix) && !(family == "span" && nativeTraceMetadata(field)) {
+			if !strings.HasPrefix(field, prefix) && (family != "span" || !nativeTraceMetadata(field)) {
 				continue
 			}
 			key = strings.TrimPrefix(field, prefix)

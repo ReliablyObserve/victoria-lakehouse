@@ -972,39 +972,7 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 	}
 
 	// 6. health and isolation of the whole run.
-	t.Run("cross_tenant_isolation", func(t *testing.T) {
-		for _, s := range r.states {
-			for _, tenant := range tenantsOf(r.states) {
-				if tenant.Account == s.p.Tenant.Account && tenant.Project == s.p.Tenant.Project {
-					continue
-				}
-				forms := []im.Form{im.Numeric}
-				if tenant.OrgID != "" {
-					forms = append(forms, im.Alias)
-				}
-				for _, form := range forms {
-					other := *s
-					other.p.Tenant = tenant
-					other.p.Form = form
-					for _, side := range []ingestEnd{r.hot, r.lh} {
-						rows, err := r.readRows(t, side, &other)
-						if err != nil {
-							t.Fatal(err)
-						}
-						if len(rows) != 0 {
-							t.Fatalf("%s marker %s leaked to other tenant %d:%d (%s): %v", side.name, s.p.Marker, tenant.Account, tenant.Project, form, rows)
-						}
-					}
-				}
-				other := *s
-				other.p.Tenant = tenant
-				r.refreshParquet(t, &other)
-				if rows, _, _ := r.pqCounts(&other); rows != 0 {
-					t.Fatalf("marker %s stored %d rows in other tenant prefix %d:%d", s.p.Marker, rows, tenant.Account, tenant.Project)
-				}
-			}
-		}
-	})
+	t.Run("cross_tenant_isolation", r.checkCrossTenantIsolation)
 	t.Run("storage_health", func(t *testing.T) {
 		if v := metricOrZero(t, r.lh.base, "lakehouse_insert_rows_lost_total") - r.lostBefore; v != 0 {
 			t.Fatalf("lakehouse_insert_rows_lost_total moved by %v during the matrix", v)
@@ -1203,5 +1171,39 @@ func TestIngestMatrix_RouteGaps(t *testing.T) {
 				t.Fatalf("%s %s: Lakehouse answers %d, the gap entry says %d (hot %d)", g.Method, g.Path, l, g.LHStatus, g.HotStatus)
 			}
 		})
+	}
+}
+
+func (r *matrixRun) checkCrossTenantIsolation(t *testing.T) {
+	for _, s := range r.states {
+		for _, tenant := range tenantsOf(r.states) {
+			if tenant.Account == s.p.Tenant.Account && tenant.Project == s.p.Tenant.Project {
+				continue
+			}
+			forms := []im.Form{im.Numeric}
+			if tenant.OrgID != "" {
+				forms = append(forms, im.Alias)
+			}
+			for _, form := range forms {
+				other := *s
+				other.p.Tenant = tenant
+				other.p.Form = form
+				for _, side := range []ingestEnd{r.hot, r.lh} {
+					rows, err := r.readRows(t, side, &other)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(rows) != 0 {
+						t.Fatalf("%s marker %s leaked to other tenant %d:%d (%s): %v", side.name, s.p.Marker, tenant.Account, tenant.Project, form, rows)
+					}
+				}
+			}
+			other := *s
+			other.p.Tenant = tenant
+			r.refreshParquet(t, &other)
+			if rows, _, _ := r.pqCounts(&other); rows != 0 {
+				t.Fatalf("marker %s stored %d rows in other tenant prefix %d:%d", s.p.Marker, rows, tenant.Account, tenant.Project)
+			}
+		}
 	}
 }
