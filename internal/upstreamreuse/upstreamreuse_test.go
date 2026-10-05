@@ -67,6 +67,7 @@ func TestRequiredPatchesExist(t *testing.T) {
 		"patches/vl-logs/vl-export-severity.patch",
 		"patches/vl-logs/vl-export-streamtags-get.patch",
 		"patches/vl-logs/vl-const-timestamps-parse.patch",
+		"patches/vl-logs/vl-partition-close-order.patch",
 		// VL — applied to lakehouse-traces/deps/VictoriaLogs/ (mirror of vl-logs)
 		"patches/vl-traces/external.go.src",
 		"patches/vl-traces/external_query.go.src",
@@ -74,6 +75,7 @@ func TestRequiredPatchesExist(t *testing.T) {
 		"patches/vl-traces/vl-export-severity.patch",
 		"patches/vl-traces/vl-export-streamtags-get.patch",
 		"patches/vl-traces/vl-const-timestamps-parse.patch",
+		"patches/vl-traces/vl-partition-close-order.patch",
 		// VT — applied to lakehouse-traces/deps/VictoriaTraces/
 		"patches/vt-traces/external.go.src",
 		"patches/vt-traces/flag_dedup.go.src",
