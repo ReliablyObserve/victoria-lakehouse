@@ -22,7 +22,11 @@ def parquet_keys(fs, bucket):
 
 
 def rows_in(fs, keys):
-    return sum(pq.ParquetFile(fs.open(k)).metadata.num_rows for k in keys)
+    total = 0
+    for k in keys:
+        with fs.open(k) as f:
+            total += pq.ParquetFile(f).metadata.num_rows
+    return total
 
 
 def lh_counts():

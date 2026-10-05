@@ -156,14 +156,16 @@ def read_group(fs, keys, sig):
     required = ["timestamp_unix_nano", "service.name", "severity_text" if sig == "logs" else "status.code", "trace_id",
                 "account_id", "project_id", mapcol]
     for k in keys:
-        pf = pq.ParquetFile(fs.open(k))
-        names = pf.schema_arrow.names
-        gone = [c for c in required if c not in names]
+        with fs.open(k) as f:
+            pf = pq.ParquetFile(f)
+            names = pf.schema_arrow.names
+            gone = [c for c in required if c not in names]
+            t = None if gone else pf.read(columns=[c for c in ["timestamp_unix_nano", "service.name", "severity_text",
+                                                                "status.code", "trace_id", "account_id", "project_id",
+                                                                mapcol] if c in names])
         if gone:  # a column a reader depends on is not in the file: report it, do not crash
             m["missing"].update(gone)
             continue
-        t = pf.read(columns=[c for c in ["timestamp_unix_nano", "service.name", "severity_text", "status.code", "trace_id",
-                                         "account_id", "project_id", mapcol] if c in names])
         d = {c: t[c].to_pylist() for c in t.column_names}
         n = t.num_rows
         m["count"] += n
@@ -242,11 +244,12 @@ def promoted_count(fs, bucket, name, sig, key):
     import pyarrow.parquet as pq
     total, seen = 0, False
     for k in parquet_keys(fs, "%s/%s/%s/" % (bucket, lib.TENANTS[name]["prefix"], sig)):
-        pf = pq.ParquetFile(fs.open(k))
-        if key in pf.schema_arrow.names:
-            seen = True
-            # A promoted column holds "" (or 0) where the row did not carry the attribute.
-            total += sum(1 for v in pf.read(columns=[key])[key].to_pylist() if v not in (None, ""))
+        with fs.open(k) as f:
+            pf = pq.ParquetFile(f)
+            if key in pf.schema_arrow.names:
+                seen = True
+                # A promoted column holds "" (or 0) where the row did not carry the attribute.
+                total += sum(1 for v in pf.read(columns=[key])[key].to_pylist() if v not in (None, ""))
     return total if seen else None
 
 
@@ -293,7 +296,8 @@ def facts_scan(out_path):
                 continue
             rel = key.split("/", 1)[1]
             cell = cell_of(rel, layer)
-            md = pq.ParquetFile(fs.open(key)).metadata
+            with fs.open(key) as f:
+                md = pq.ParquetFile(f).metadata
             cols = {}
             for rg in range(md.num_row_groups):
                 for c in range(md.num_columns):

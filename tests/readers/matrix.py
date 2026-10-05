@@ -149,7 +149,8 @@ def inspection_cells(a, truth, snips):
                 bucket = lib.BUCKET[layer]
                 keys = sorted(k for k in fs.find("%s/%s/%s/" % (bucket, t["prefix"], sig)) if k.endswith(".parquet"))
                 key = keys[len(keys) // 2]
-                want = pq.ParquetFile(fs.open(key)).metadata.num_rows
+                with fs.open(key) as f:
+                    want = pq.ParquetFile(f).metadata.num_rows
                 snip = lib.find_snippet(snips, "parquet-tools", sig)
                 body = lib.materialise(snip["body"], truth["params"][tenant + "/" + sig], lib.S3_HOST, bucket, t["prefix"], t["account"])
                 body = body.replace(literal.replace("2026-01-01", truth["params"][tenant + "/" + sig]["dt"]), key.split("/%s/" % sig, 1)[1])
