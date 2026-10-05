@@ -269,20 +269,21 @@ atomic manifest swap, and tombstone and bloom rebuild in the same pass.
 
 ### Object size at flush
 
-`checkSizeThreshold` (`internal/storage/parquets3/writer.go:265`) flushes when
-buffered rows reach `insert.max_buffer_rows` (default 50 000,
-`internal/config/config.go:1016`), or when a partition's **estimated raw bytes**
-reach `insert.target_file_size` (default 128 MiB, `internal/config/config.go:283`),
-plus the periodic flush interval. Because the byte trigger compares *uncompressed*
-bytes, and the buffer fans out per (tenant, partition), written objects are far
-smaller than the 128 MiB the setting suggests.
+The `BufferFlusher` drains a sealed segment per tenant in groups planned from the
+segment's per-second row counts: at most `insert.target_file_size` divided by an
+estimated bytes-per-row (an assumed constant, not measured) rows per group,
+never crossing an hour partition. A segment is sealed
+`insert.buffer_flush_interval` (default 5m) after its first row, or earlier once it holds about the
+target. Objects are therefore bounded above by the target in *estimated raw* bytes;
+because Parquet compresses, written objects are smaller than the 128 MiB the
+setting suggests, and a tenant or hour with few rows in a segment gets a small
+object.
 
 The resulting object size distribution is **not measured** in this repository.
-The direction is clear — more, smaller objects than intended — and the cost is
-per-file request overhead and read amplification on cold queries.
+Compaction merges the small ones afterwards.
 
-**Planned:** target *compressed* size, hold a partition for a minimum age before
-flushing it, and write one object per (tenant, partition) per flush.
+**Planned:** target *compressed* size with a measured bytes-per-row, and
+coalescing across segments for low-volume tenants.
 
 ### Trace-id lookup
 

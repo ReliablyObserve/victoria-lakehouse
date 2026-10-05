@@ -53,8 +53,7 @@ func TestPersistedInvalidByteMessagePhrase(t *testing.T) {
 	s.registry = schema.NewRegistry(schema.TracesProfile)
 	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
-	bw.AddTraceRows([]schema.TraceRow{{TimestampUnixNano: base.UnixNano(), TraceID: "unicode-trace", SpanID: "unicode-span", Body: "éclair 000é", SpanName: "valid customer name"}})
-	bw.triggerFlush()
+	uploadTraceRows(t, bw, []schema.TraceRow{{TimestampUnixNano: base.UnixNano(), TraceID: "unicode-trace", SpanID: "unicode-span", Body: "éclair 000é", SpanName: "valid customer name"}})
 	path := filepath.Join(t.TempDir(), "manifest.bin")
 	if err := s.manifest.SaveTo(path); err != nil {
 		t.Fatal(err)

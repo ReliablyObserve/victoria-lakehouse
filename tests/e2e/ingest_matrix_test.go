@@ -35,7 +35,9 @@ import (
 //	buffer    Lakehouse's rows equal hot's rows, field for field, straight after
 //	          the write (the unflushed buffer);
 //	parquet   after the flush the tenant's Parquet objects hold exactly those
-//	          rows (read with a plain Parquet reader), and Lakehouse still equals hot.
+//	          rows (read with a plain Parquet reader), and once the rows have left
+//	          the insert buffer (so the read is answered from Parquet) Lakehouse
+//	          still equals hot.
 //
 // The case table, the payload builders and the tenant forms live in
 // tests/ingestmatrix; tests/conformance/ingest_matrix_test.go ties the table to
@@ -256,29 +258,6 @@ func (r *matrixRun) applyKnownGaps(s *caseState, hot, lh []string) []string {
 		}
 	}
 	sort.Strings(out)
-	// Set-level gap (#279): the trace-ID fast path returns a flushed span from the
-	// buffer AND from Parquet. It is accepted only as exactly two copies of every
-	// hot row, so a writer that duplicates spans (three or more copies, or copies
-	// of only some rows) still fails.
-	if s.flushed && hasGap(s.c, "traces-trace-id-path-returns-flushed-spans-twice") && len(out) == 2*len(hot) && len(hot) > 0 {
-		counts := map[string]int{}
-		for _, row := range out {
-			counts[row]++
-		}
-		exactlyTwice := true
-		var dedup []string
-		for row, n := range counts {
-			if n != 2 {
-				exactlyTwice = false
-			}
-			dedup = append(dedup, row)
-		}
-		sort.Strings(dedup)
-		if exactlyTwice && len(dedup) == len(hot) && firstRowDiff(hot, dedup) == "" {
-			s.gapHits["traces-trace-id-path-returns-flushed-spans-twice"]++
-			out = dedup
-		}
-	}
 	return out
 }
 
@@ -678,6 +657,88 @@ func (r *matrixRun) parquetExact(s *caseState) (bool, string) {
 	return rows == s.c.Rows, fmt.Sprintf("%d rows carrying the marker (want exactly %d)", rows, s.c.Rows)
 }
 
+// bufferHeld returns how many of the cell's rows Lakehouse's insert buffer
+// holds now, read through the endpoint select pods read the buffer with
+// (/internal/buffer/query): rows that carry the cell's marker, and for traces
+// span rows only (VictoriaTraces' trace-index rows carry the trace id too).
+// While the buffer holds them, a read is answered from the buffer with
+// upstream's engine, whatever S3 already holds: a drained segment stays
+// readable, and its objects are left out of the scan, for its grace period
+// (2 x manifest.refresh_interval + 30 s, 90 s in the e2e stack).
+func (r *matrixRun) bufferHeld(t *testing.T, s *caseState) int {
+	t.Helper()
+	params := url.Values{
+		"start":        {strconv.FormatInt(s.p.Base.Add(-10*time.Minute).UnixNano(), 10)},
+		"end":          {strconv.FormatInt(s.p.Base.Add(time.Minute).UnixNano(), 10)},
+		"mode":         {string(r.sig)},
+		"tenant_scope": {"v1"},
+		"account_id":   {strconv.FormatUint(uint64(s.p.Tenant.Account), 10)},
+		"project_id":   {strconv.FormatUint(uint64(s.p.Tenant.Project), 10)},
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(r.lh.base + "/internal/buffer/query?" + params.Encode())
+	if err != nil {
+		t.Fatalf("buffer query on %s: %v", r.lh.base, err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("buffer query on %s: status %d, %v: %s", r.lh.base, resp.StatusCode, err, body)
+	}
+	held := 0
+	for _, line := range strings.Split(string(body), "\n") {
+		if !strings.Contains(line, s.p.Marker) {
+			continue
+		}
+		if r.sig == im.Traces {
+			var row struct {
+				SpanID string `json:"span_id"`
+			}
+			if json.Unmarshal([]byte(line), &row) != nil || row.SpanID == "" {
+				continue
+			}
+		}
+		held++
+	}
+	return held
+}
+
+// waitBufferHolds waits (up to 30 s, for upstream to make fresh rows
+// searchable) until the insert buffer holds all want rows of the cell.
+func (r *matrixRun) waitBufferHolds(t *testing.T, s *caseState, want int, what string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		held := r.bufferHeld(t, s)
+		if held == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: the insert buffer holds %d of the cell's %d rows", what, held, want)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// waitLeftBuffer waits until Lakehouse's insert buffer no longer holds a row of
+// the cell, so that a read is answered from Parquet: until then the comparison
+// after the flush would read the buffer, and a gap that exists only on the
+// Parquet read would go unobserved.
+func (r *matrixRun) waitLeftBuffer(t *testing.T, s *caseState) {
+	t.Helper()
+	deadline := time.Now().Add(240 * time.Second)
+	for {
+		held := r.bufferHeld(t, s)
+		if held == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d rows of %s still in the Lakehouse insert buffer 240s after their Parquet objects were exact", held, s.name())
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 // waitParquetExact polls S3 until the cell's Parquet content is exact, or fails with
 // the counts at the deadline. An exact content that later grows or shrinks is caught
 // by the stable step.
@@ -893,18 +954,20 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 			if !s.ok {
 				t.Fatal("the ingest step of this cell failed")
 			}
-			r.refreshParquet(t, s)
-			if rows, _, _ := r.pqCounts(s); rows != 0 {
-				t.Fatalf("preflush observation missed: already %d raw rows", rows)
-			}
+			// The preflush read must be answered from the insert buffer: the
+			// buffer holds every row of the cell before and after it. Whether
+			// S3 already has the rows does not decide it, because a drained
+			// segment keeps serving its rows (and its objects stay out of the
+			// scan) through its grace period.
+			r.waitBufferHolds(t, s, s.c.Rows, "preflush observation missed")
 			r.waitSame(t, s, s.c.Rows, 60*time.Second)
-			r.refreshParquet(t, s)
-			if rows, _, _ := r.pqCounts(s); rows != 0 {
-				t.Fatalf("preflush observation overlapped flush: %d raw rows", rows)
+			if held := r.bufferHeld(t, s); held != s.c.Rows {
+				t.Fatalf("preflush observation overlapped the buffer handoff: the insert buffer holds %d of %d rows", held, s.c.Rows)
 			}
+			r.refreshParquet(t, s)
 			s.visible = true
 			s.preflushDefaultMessageGap = s.gapHits["traces-default-msg-value"] > 0
-			t.Logf("preflush observed: %d exact hot/Lakehouse rows and zero raw S3 rows", s.c.Rows)
+			t.Logf("preflush observed: %d exact hot/Lakehouse rows, all held by the insert buffer", s.c.Rows)
 		})
 	}
 
@@ -923,6 +986,7 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 				return
 			}
 			r.waitParquetExact(t, s)
+			r.waitLeftBuffer(t, s)
 			r.waitSame(t, s, s.c.Rows, 90*time.Second)
 		})
 	}
@@ -1068,21 +1132,19 @@ func TestIngestMatrix_NativeTenantControls(t *testing.T) {
 				t.Fatalf("mixed native: hot=%+v lakehouse=%+v", hot, lh)
 			}
 			for _, s := range r.states {
-				r.refreshParquet(t, s)
-				if rows, _, _ := r.pqCounts(s); rows != 0 {
-					t.Fatalf("mixed native preflush missed: %d raw rows", rows)
-				}
+				r.waitBufferHolds(t, s, c.Rows, "mixed native preflush missed")
 				r.waitSame(t, s, c.Rows, 60*time.Second)
-				r.refreshParquet(t, s)
-				if rows, _, _ := r.pqCounts(s); rows != 0 {
-					t.Fatalf("mixed native preflush overlapped flush: %d raw rows", rows)
+				if held := r.bufferHeld(t, s); held != c.Rows {
+					t.Fatalf("mixed native preflush overlapped the buffer handoff: the insert buffer holds %d of %d rows", held, c.Rows)
 				}
+				r.refreshParquet(t, s)
 				s.preflushDefaultMessageGap = s.gapHits["traces-default-msg-value"] > 0
 				s.visible = true
-				t.Logf("mixed native preflush %s: %d exact rows, zero raw S3 rows", s.f, c.Rows)
+				t.Logf("mixed native preflush %s: %d exact rows, all held by the insert buffer", s.f, c.Rows)
 			}
 			for _, s := range r.states {
 				r.waitParquetExact(t, s)
+				r.waitLeftBuffer(t, s)
 				r.sampleEstablished(t)
 				t.Logf("mixed native persisted %s: exact fields/time/tenant, samples=%d max_gap=%s", s.f, s.samples, s.maxSampleGap)
 				for _, other := range params {

@@ -223,9 +223,6 @@ func testPool(t testing.TB, endpoint string) *s3reader.ClientPool {
 
 func testInsertConfig() *config.InsertConfig {
 	return &config.InsertConfig{
-		FlushInterval:    1 * time.Second,
-		MaxBufferRows:    100,
-		MaxBufferBytes:   "256MB",
 		TargetFileSize:   "128MB",
 		RowGroupSize:     50,
 		BloomColumns:     []string{"service.name", "trace_id"},
@@ -279,159 +276,22 @@ func TestNewBatchWriter(t *testing.T) {
 	if bw == nil {
 		t.Fatal("NewBatchWriter returned nil")
 	}
-	if bw.BufferedRows() != 0 {
-		t.Errorf("initial BufferedRows = %d, want 0", bw.BufferedRows())
-	}
 	if bw.TotalBytesUploaded() != 0 {
 		t.Errorf("initial TotalBytesUploaded = %d, want 0", bw.TotalBytesUploaded())
 	}
 }
 
-func TestAddLogRows_Buffering(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-
-	bw, _ := testWriter(t, s3srv.URL)
-
-	rows := sampleLogRows(10, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC))
-	bw.AddLogRows(rows)
-
-	if got := bw.BufferedRows(); got != 10 {
-		t.Errorf("BufferedRows after add = %d, want 10", got)
-	}
-
-	bw.AddLogRows(sampleLogRows(5, time.Date(2026, 5, 3, 15, 0, 0, 0, time.UTC)))
-
-	if got := bw.BufferedRows(); got != 15 {
-		t.Errorf("BufferedRows after second add = %d, want 15", got)
-	}
-}
-
-func TestAddLogRows_Empty(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-	bw, _ := testWriter(t, s3srv.URL)
-
-	bw.AddLogRows(nil)
-	bw.AddLogRows([]schema.LogRow{})
-
-	if got := bw.BufferedRows(); got != 0 {
-		t.Errorf("BufferedRows = %d, want 0", got)
-	}
-}
-
-func TestAddTraceRows_Buffering(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-
-	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "traces/")
-	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
-
-	rows := sampleTraceRows(8, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC))
-	bw.AddTraceRows(rows)
-
-	if got := bw.BufferedRows(); got != 8 {
-		t.Errorf("BufferedRows = %d, want 8", got)
-	}
-}
-
-func TestAddTraceRows_Empty(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "traces/")
-	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
-
-	bw.AddTraceRows(nil)
-	bw.AddTraceRows([]schema.TraceRow{})
-
-	if got := bw.BufferedRows(); got != 0 {
-		t.Errorf("BufferedRows = %d, want 0", got)
-	}
-}
-
-func TestBufferedLogRows_TimeRange(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-	bw, _ := testWriter(t, s3srv.URL)
-
-	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
-	rows := sampleLogRows(10, base)
-	bw.AddLogRows(rows)
-
-	start := base.Add(3 * time.Second).UnixNano()
-	end := base.Add(7 * time.Second).UnixNano()
-
-	got := bw.BufferedLogRows(start, end)
-	if len(got) != 5 {
-		t.Errorf("BufferedLogRows returned %d rows, want 5 (indices 3-7: inclusive at both ends, as the query window it serves)", len(got))
-	}
-}
-
-func TestBufferedLogRows_Empty(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-	bw, _ := testWriter(t, s3srv.URL)
-
-	got := bw.BufferedLogRows(0, time.Now().UnixNano())
-	if len(got) != 0 {
-		t.Errorf("BufferedLogRows on empty = %d, want 0", len(got))
-	}
-}
-
-func TestBufferedTraceRows_TimeRange(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "traces/")
-	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
-
-	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
-	rows := sampleTraceRows(10, base)
-	bw.AddTraceRows(rows)
-
-	start := base.UnixNano()
-	end := base.Add(5 * time.Second).UnixNano()
-
-	got := bw.BufferedTraceRows(start, end)
-	if len(got) != 6 {
-		t.Errorf("BufferedTraceRows returned %d rows, want 6 (indices 0-5: inclusive at both ends, as the query window it serves)", len(got))
-	}
-}
-
-func TestBufferedTraceRows_Empty(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "traces/")
-	cfg := testInsertConfig()
-	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
-
-	got := bw.BufferedTraceRows(0, time.Now().UnixNano())
-	if len(got) != 0 {
-		t.Errorf("BufferedTraceRows on empty = %d, want 0", len(got))
-	}
-}
-
-func TestFlushAll_Logs(t *testing.T) {
+func TestUploadGroups_Logs(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	bw, m := testWriter(t, s3srv.URL)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
-	bw.AddLogRows(sampleLogRows(20, base))
+	bw.stageLogRows(sampleLogRows(20, base))
 
 	ctx := context.Background()
-	if err := bw.FlushAll(ctx); err != nil {
-		t.Fatalf("FlushAll error: %v", err)
-	}
-
-	if got := bw.BufferedRows(); got != 0 {
-		t.Errorf("BufferedRows after flush = %d, want 0", got)
+	if err := bw.flushStaged(ctx); err != nil {
+		t.Fatalf("upload error: %v", err)
 	}
 
 	if got := m.TotalFiles(); got != 1 {
@@ -443,7 +303,7 @@ func TestFlushAll_Logs(t *testing.T) {
 	}
 }
 
-func TestFlushAll_Traces(t *testing.T) {
+func TestUploadGroups_Traces(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	pool := testPool(t, s3srv.URL)
@@ -452,47 +312,44 @@ func TestFlushAll_Traces(t *testing.T) {
 	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
-	bw.AddTraceRows(sampleTraceRows(15, base))
+	bw.stageTraceRows(sampleTraceRows(15, base))
 
 	ctx := context.Background()
-	if err := bw.FlushAll(ctx); err != nil {
-		t.Fatalf("FlushAll error: %v", err)
+	if err := bw.flushStaged(ctx); err != nil {
+		t.Fatalf("upload error: %v", err)
 	}
 
-	if got := bw.BufferedRows(); got != 0 {
-		t.Errorf("BufferedRows after flush = %d, want 0", got)
-	}
 	if got := m.TotalFiles(); got != 1 {
 		t.Errorf("manifest TotalFiles = %d, want 1", got)
 	}
 }
 
-func TestFlushAll_Empty(t *testing.T) {
+func TestUploadGroups_Empty(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	bw, m := testWriter(t, s3srv.URL)
 
 	ctx := context.Background()
-	if err := bw.FlushAll(ctx); err != nil {
-		t.Fatalf("FlushAll on empty error: %v", err)
+	if err := bw.flushStaged(ctx); err != nil {
+		t.Fatalf("upload of nothing: %v", err)
 	}
 	if got := m.TotalFiles(); got != 0 {
 		t.Errorf("manifest TotalFiles = %d, want 0", got)
 	}
 }
 
-func TestFlushAll_MultiplePartitions(t *testing.T) {
+func TestUploadGroups_MultiplePartitions(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	bw, m := testWriter(t, s3srv.URL)
 
-	bw.AddLogRows(sampleLogRows(5, time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)))
-	bw.AddLogRows(sampleLogRows(5, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)))
-	bw.AddLogRows(sampleLogRows(5, time.Date(2026, 5, 4, 8, 0, 0, 0, time.UTC)))
+	bw.stageLogRows(sampleLogRows(5, time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)))
+	bw.stageLogRows(sampleLogRows(5, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)))
+	bw.stageLogRows(sampleLogRows(5, time.Date(2026, 5, 4, 8, 0, 0, 0, time.UTC)))
 
 	ctx := context.Background()
-	if err := bw.FlushAll(ctx); err != nil {
-		t.Fatalf("FlushAll error: %v", err)
+	if err := bw.flushStaged(ctx); err != nil {
+		t.Fatalf("upload error: %v", err)
 	}
 
 	if got := m.TotalFiles(); got != 3 {
@@ -500,56 +357,7 @@ func TestFlushAll_MultiplePartitions(t *testing.T) {
 	}
 }
 
-func TestCanWriteData(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-	bw, _ := testWriter(t, s3srv.URL)
-
-	ctx := context.Background()
-	if err := bw.CanWriteData(ctx); err != nil {
-		t.Errorf("CanWriteData error: %v", err)
-	}
-}
-
-func TestStartStop(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-	bw, _ := testWriter(t, s3srv.URL)
-
-	bw.Start()
-
-	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
-	bw.AddLogRows(sampleLogRows(5, base))
-
-	bw.Stop()
-
-	if got := bw.BufferedRows(); got != 0 {
-		t.Errorf("BufferedRows after Stop = %d, want 0 (Stop should flush)", got)
-	}
-}
-
-func TestCheckSizeThreshold(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-
-	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "logs/")
-	cfg := testInsertConfig()
-	cfg.MaxBufferRows = 20
-	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs)
-
-	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
-	bw.AddLogRows(sampleLogRows(25, base))
-
-	if got := bw.BufferedRows(); got != 0 {
-		t.Errorf("BufferedRows = %d, want 0 (should have auto-flushed at 20)", got)
-	}
-	if got := m.TotalFiles(); got < 1 {
-		t.Errorf("manifest TotalFiles = %d, want >= 1 after threshold flush", got)
-	}
-}
-
-func TestFlushAll_S3Error(t *testing.T) {
+func TestUploadGroups_S3Error(t *testing.T) {
 	singleAttemptS3(t)
 	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
@@ -561,19 +369,19 @@ func TestFlushAll_S3Error(t *testing.T) {
 	defer errSrv.Close()
 
 	bw, _ := testWriter(t, errSrv.URL)
-	bw.AddLogRows(sampleLogRows(5, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)))
+	bw.stageLogRows(sampleLogRows(5, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)))
 
 	ctx := context.Background()
-	err := bw.FlushAll(ctx)
+	err := bw.flushStaged(ctx)
 	if err == nil {
-		t.Error("FlushAll should return error when S3 fails")
+		t.Error("the upload should return an error when S3 fails")
 	}
 	if !strings.Contains(err.Error(), "flush") {
 		t.Errorf("error should mention flush, got: %v", err)
 	}
 }
 
-func TestFlushAll_TraceS3Error(t *testing.T) {
+func TestUploadGroups_TraceS3Error(t *testing.T) {
 	singleAttemptS3(t)
 	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
@@ -588,32 +396,11 @@ func TestFlushAll_TraceS3Error(t *testing.T) {
 	m := manifest.New("test-bucket", "traces/")
 	cfg := testInsertConfig()
 	bw := NewBatchWriter(cfg, pool, m, "traces/", config.ModeTraces)
-	bw.AddTraceRows(sampleTraceRows(5, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)))
+	bw.stageTraceRows(sampleTraceRows(5, time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)))
 
-	err := bw.FlushAll(context.Background())
+	err := bw.flushStaged(context.Background())
 	if err == nil {
-		t.Error("FlushAll should return error when S3 fails")
-	}
-}
-
-func TestAddLogRows_PartitionGrouping(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-	bw, _ := testWriter(t, s3srv.URL)
-
-	rows := []schema.LogRow{
-		{TimestampUnixNano: time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC).UnixNano(), Body: "a"},
-		{TimestampUnixNano: time.Date(2026, 5, 3, 10, 30, 0, 0, time.UTC).UnixNano(), Body: "b"},
-		{TimestampUnixNano: time.Date(2026, 5, 3, 11, 0, 0, 0, time.UTC).UnixNano(), Body: "c"},
-	}
-	bw.AddLogRows(rows)
-
-	bw.mu.Lock()
-	numPartitions := len(bw.logBufs)
-	bw.mu.Unlock()
-
-	if numPartitions != 2 {
-		t.Errorf("expected 2 partitions (hour=10, hour=11), got %d", numPartitions)
+		t.Error("the upload should return an error when S3 fails")
 	}
 }
 
@@ -832,7 +619,7 @@ func TestSchemaFingerprint(t *testing.T) {
 	}
 }
 
-func TestFlushAll_PopulatesLabels(t *testing.T) {
+func TestUploadGroups_PopulatesLabels(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	bw, m := testWriter(t, s3srv.URL)
@@ -842,9 +629,9 @@ func TestFlushAll_PopulatesLabels(t *testing.T) {
 		{TimestampUnixNano: base.UnixNano(), Body: "a", ServiceName: "api", SeverityText: "INFO"},
 		{TimestampUnixNano: base.Add(time.Second).UnixNano(), Body: "b", ServiceName: "worker", SeverityText: "ERROR"},
 	}
-	bw.AddLogRows(rows)
+	bw.stageLogRows(rows)
 
-	if err := bw.FlushAll(context.Background()); err != nil {
+	if err := bw.flushStaged(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -866,36 +653,16 @@ func TestFlushAll_PopulatesLabels(t *testing.T) {
 	}
 }
 
-func TestAdaptiveFlush_TargetFileSize(t *testing.T) {
-	s3srv := mockS3()
-	defer s3srv.Close()
-
-	pool := testPool(t, s3srv.URL)
-	m := manifest.New("test-bucket", "logs/")
-	cfg := testInsertConfig()
-	cfg.MaxBufferRows = 1000000 // high row limit so it doesn't trigger
-	cfg.TargetFileSize = "1KB"  // very low target so byte check triggers
-	bw := NewBatchWriter(cfg, pool, m, "logs/", config.ModeLogs)
-
-	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
-	bw.AddLogRows(sampleLogRows(50, base))
-
-	// Should have auto-flushed due to per-partition size exceeding 1KB
-	if got := m.TotalFiles(); got < 1 {
-		t.Errorf("TotalFiles = %d, want >= 1 (adaptive flush should trigger)", got)
-	}
-}
-
-func TestFlushAll_EnhancedFileInfo(t *testing.T) {
+func TestUploadGroups_EnhancedFileInfo(t *testing.T) {
 	s3srv := mockS3()
 	defer s3srv.Close()
 	bw, m := testWriter(t, s3srv.URL)
 
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
-	bw.AddLogRows(sampleLogRows(20, base))
+	bw.stageLogRows(sampleLogRows(20, base))
 
-	if err := bw.FlushAll(context.Background()); err != nil {
-		t.Fatalf("FlushAll: %v", err)
+	if err := bw.flushStaged(context.Background()); err != nil {
+		t.Fatalf("upload: %v", err)
 	}
 
 	files := m.GetFilesForRange(base.UnixNano(), base.Add(time.Hour).UnixNano())

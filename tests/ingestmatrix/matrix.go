@@ -208,8 +208,6 @@ func Gaps() []Gap {
 			Title: "after the flush Lakehouse adds severity_number=\"0\" to rows VictoriaLogs stores without it"},
 		{ID: "cold-read-renames-severity-text-to-level", Issue: "https://github.com/ReliablyObserve/victoria-lakehouse/issues/331", AfterFlush: true,
 			Title: "after the flush an OTLP log row comes back with level in place of severity_text"},
-		{ID: "traces-trace-id-path-returns-flushed-spans-twice", Issue: "https://github.com/ReliablyObserve/victoria-lakehouse/issues/279", AfterFlush: true,
-			Title: "a trace_id query returns each flushed span twice while the buffer still holds it (the trace-ID fast path skips the buffer watermark)"},
 		{ID: "traces-default-msg-value", Issue: "https://github.com/ReliablyObserve/victoria-lakehouse/issues/332",
 			Title: "spans are stored with VictoriaLogs' default _msg text instead of VictoriaTraces' \"-\""},
 	}

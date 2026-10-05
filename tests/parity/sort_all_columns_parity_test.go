@@ -19,6 +19,11 @@ package parity
 // a tenant no other test reads (logs: allColumnSortAccount; traces: the
 // latency probe's tenant, which requireSeededTenants already leaves out), and
 // the case returns only once the cold tier has flushed what it wrote.
+//
+// The rows are compared twice. First while Lakehouse still holds them in its
+// insert buffer, which answers with upstream's own engine and must agree with
+// hot ("buffer"). Then once they have left the buffer and are read from
+// Parquet only ("parquet"): that is where B8 lives.
 
 import (
 	"bytes"
@@ -51,7 +56,13 @@ func TestParity_AllColumnSortTieOrder(t *testing.T) {
 		for _, base := range []string{vlBaseURL, lhBaseURL} {
 			postTenant(t, base+"/insert/jsonline?_stream_fields=svc", "application/stream+json", rows.Bytes(), allColumnSortAccount)
 		}
-		compareAllColumnSorts(t, vlBaseURL, lhBaseURL, token, allColumnSortAccount, "_msg")
+		t.Run("buffer", func(t *testing.T) {
+			compareAllColumnSorts(t, vlBaseURL, lhBaseURL, token, allColumnSortAccount, "_msg")
+		})
+		waitLeftBuffer(t, lhBaseURL, "logs", allColumnSortAccount, at.Add(-time.Minute), at.Add(time.Minute))
+		t.Run("parquet", func(t *testing.T) {
+			compareAllColumnSorts(t, vlBaseURL, lhBaseURL, token, allColumnSortAccount, "_msg")
+		})
 		waitTenantRows(t, lhBaseURL, allColumnSortAccount, 6)
 	})
 
@@ -67,7 +78,13 @@ func TestParity_AllColumnSortTieOrder(t *testing.T) {
 			}
 		}
 		filter := "trace_id:in(" + strings.Join(ids, ",") + ")"
-		compareAllColumnSorts(t, vtBaseURL, lhtBaseURL, filter, latencyProbeAccount, "trace_id")
+		t.Run("buffer", func(t *testing.T) {
+			compareAllColumnSorts(t, vtBaseURL, lhtBaseURL, filter, latencyProbeAccount, "trace_id")
+		})
+		waitLeftBuffer(t, lhtBaseURL, "traces", latencyProbeAccount, at.Add(-time.Minute), at.Add(time.Minute))
+		t.Run("parquet", func(t *testing.T) {
+			compareAllColumnSorts(t, vtBaseURL, lhtBaseURL, filter, latencyProbeAccount, "trace_id")
+		})
 		waitTenantRows(t, lhtBaseURL, latencyProbeAccount, before+int64(len(ids)))
 	})
 }

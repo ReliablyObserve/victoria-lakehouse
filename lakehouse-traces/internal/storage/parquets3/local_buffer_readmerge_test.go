@@ -37,7 +37,7 @@ func TestQueryBufferBridge_LocalBufferServesRecent(t *testing.T) {
 	logstorage.PutLogRows(lr)
 	bs.DebugFlush()
 
-	s := &Storage{localBuffer: bs}
+	s := &Storage{localBuffer: snapshotBuffer{bs.Snapshot()}}
 
 	run := func(qStr string) int64 {
 		q, err := logstorage.ParseQueryAtTimestamp(qStr, now)
@@ -62,99 +62,44 @@ func TestQueryBufferBridge_LocalBufferServesRecent(t *testing.T) {
 	}
 }
 
-type spyLocalBuffer struct{ calls int }
-
-func (s *spyLocalBuffer) RunQuery(_ *logstorage.QueryContext, _ logstorage.WriteDataBlockFunc) error {
-	s.calls++
-	return nil
-}
-func (s *spyLocalBuffer) Close() {}
-
 // TestQueryBufferBridge_MultiNodeSkipsLocalBuffer pins the B1 fix: when peers are
 // present (multi-pod role=all), the read path must NOT serve only the local
 // buffer (which holds just this pod's rows) — it must fall through to the
 // BufferBridge fan-out so other pods' unflushed rows are gathered. Without peers
 // (single-node), the local buffer is used directly.
 func TestQueryBufferBridge_MultiNodeSkipsLocalBuffer(t *testing.T) {
-	q, _ := logstorage.ParseQueryAtTimestamp("*", time.Now().UnixNano())
-	now := time.Now().UnixNano()
-	run := func(setPeers bool) int {
-		spy := &spyLocalBuffer{}
-		bb := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: false}, config.ModeTraces)
-		if setPeers {
-			bb.SetEndpoints([]string{"http://peer-a:20428", "http://peer-b:20428"})
-		}
-		s := &Storage{localBuffer: spy, bufferBridge: bb, cfg: &config.Config{Mode: config.ModeTraces}}
-		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour), nil,
-			q, []logstorage.TenantID{{}}, func(_ uint, _ *logstorage.DataBlock) {})
-		return spy.calls
-	}
-	if c := run(false); c != 1 {
-		t.Fatalf("no peers: local buffer should be used directly, calls=%d want 1", c)
-	}
-	if c := run(true); c != 0 {
-		t.Fatalf("with peers: local buffer must be SKIPPED (fall through to fan-out), calls=%d want 0", c)
-	}
-}
-
-// TestQueryBufferBridge_WatermarkPreventsDoubleCount pins the boundary fix: when
-// Parquet already covers [.., watermark], the buffer must serve ONLY strictly
-// newer rows, so the two sources never both emit the same span (the 2× count
-// double-count). Rows ingested at now..now+5; a watermark at now+2 must yield
-// only the rows at now+3, now+4 (2 rows).
-func TestQueryBufferBridge_WatermarkPreventsDoubleCount(t *testing.T) {
 	bs, err := membuffer.Open(membuffer.Config{Path: t.TempDir()})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer bs.Close()
-
 	now := time.Now().UnixNano()
 	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
-	for i := 0; i < 5; i++ {
-		lr.MustAdd(logstorage.TenantID{}, now+int64(i), []logstorage.Field{
-			{Name: "service.name", Value: "api-gateway"},
-			{Name: "trace_id", Value: "t"},
+	for i := 0; i < 4; i++ {
+		lr.MustAdd(logstorage.TenantID{}, now, []logstorage.Field{
+			{Name: "service.name", Value: "api-gateway"}, {Name: "trace_id", Value: "t"},
 		}, 1)
 	}
 	bs.MustAddRows(lr)
 	logstorage.PutLogRows(lr)
 	bs.DebugFlush()
 
-	s := &Storage{localBuffer: bs}
-	q, _ := logstorage.ParseQueryAtTimestamp(`_stream:{service.name="api-gateway"}`, now)
-
-	count := func(watermarkNs int64) int64 {
+	q, _ := logstorage.ParseQueryAtTimestamp("*", now)
+	run := func(setPeers bool) (served int64, local bool) {
+		bb := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: false}, config.ModeTraces)
+		if setPeers {
+			bb.SetEndpoints([]string{"http://peer-a:20428", "http://peer-b:20428"})
+		}
+		s := &Storage{localBuffer: snapshotBuffer{bs.Snapshot()}, bufferBridge: bb, cfg: &config.Config{Mode: config.ModeTraces}}
 		var got atomic.Int64
-		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
-		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour),
-			bufferWatermarks{{}: watermarkNs}, q, []logstorage.TenantID{{}}, wb)
-		return got.Load()
+		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour), nil,
+			q, []logstorage.TenantID{{}}, func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) })
+		return got.Load(), s.useLocalBuffer()
 	}
-
-	if got := count(0); got != 5 {
-		t.Fatalf("watermark=0 (no Parquet): want all 5, got %d", got)
+	if n, local := run(false); n != 4 || !local {
+		t.Fatalf("no peers: the local buffer should be used directly, served %d (local=%v), want 4", n, local)
 	}
-	if got := count(now + 2); got != 2 {
-		t.Fatalf("watermark=now+2: want only the 2 strictly-newer rows, got %d", got)
-	}
-	if got := count(now + 4); got != 0 {
-		t.Fatalf("watermark=now+4 (Parquet covers all): want 0, got %d", got)
-	}
-
-	// A trace_id-filtered query MUST ignore the watermark — span retrieval is
-	// reader-deduped, and the watermark would wrongly drop a trace's buffer
-	// spans (the regression that returned 0 spans for recent traces). Even with
-	// a watermark covering the whole window, a trace_id query returns all rows.
-	qTID, _ := logstorage.ParseQueryAtTimestamp(`trace_id:"t"`, now) // phrase form (the GetTrace bug form)
-	countTID := func(watermarkNs int64) int64 {
-		var got atomic.Int64
-		wb := func(_ uint, db *logstorage.DataBlock) { got.Add(int64(db.RowsCount())) }
-		s.queryBufferBridge(context.Background(), now-int64(time.Hour), now+int64(time.Hour),
-			bufferWatermarks{{}: watermarkNs}, qTID, []logstorage.TenantID{{}}, wb)
-		return got.Load()
-	}
-	if got := countTID(now + 4); got != 5 {
-		t.Fatalf("trace_id query must ignore watermark (got %d, want all 5)", got)
+	if n, local := run(true); n != 0 || local {
+		t.Fatalf("with peers: the local buffer must be SKIPPED (fall through to the fan-out), served %d (local=%v), want 0", n, local)
 	}
 }

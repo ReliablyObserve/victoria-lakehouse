@@ -32,17 +32,16 @@ func TestWarmupCompleteTransitionsPhaseAndTiming(t *testing.T) {
 	}
 }
 
-func TestWarmupCompleteDoesNotBypassWALReplay(t *testing.T) {
-	m := NewManager(0)
-	m.SetWALReplayNeeded()
+func TestWarmupCompleteDoesNotBypassManifestGate(t *testing.T) {
+	m := NewManager(5)
 	m.SetServingReady()
 	m.SetWarmupComplete()
 	if m.IsReady() || m.ServingReady() {
-		t.Fatal("warmup completion must not bypass WAL replay")
+		t.Fatal("warmup completion must not bypass the manifest gate")
 	}
-	m.SetWALReplayDone()
+	m.SetManifestFiles(5)
 	if !m.IsReady() {
-		t.Fatal("completed replay must make both readiness dimensions pass")
+		t.Fatal("an open manifest gate must make both readiness dimensions pass")
 	}
 }
 

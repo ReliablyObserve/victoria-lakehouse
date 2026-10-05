@@ -471,6 +471,35 @@ func (p *ClientPool) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// ListModTimes lists the keys under prefix with their LastModified time (the
+// object store's clock).
+func (p *ClientPool) ListModTimes(ctx context.Context, prefix string) (map[string]time.Time, error) {
+	out := map[string]time.Time{}
+	paginator := s3.NewListObjectsV2Paginator(p.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(p.resolveBucket(prefix)),
+		Prefix: aws.String(prefix),
+	})
+	for paginator.HasMorePages() {
+		metrics.S3RequestsTotal.Inc("ListObjectsV2")
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			metrics.S3ErrorsTotal.Inc("ListObjectsV2")
+			return nil, fmt.Errorf("s3 ListObjectsV2 %s: %w", prefix, err)
+		}
+		for _, o := range page.Contents {
+			if o.Key == nil {
+				continue
+			}
+			var t time.Time
+			if o.LastModified != nil {
+				t = *o.LastModified
+			}
+			out[*o.Key] = t
+		}
+	}
+	return out, nil
+}
+
 func (p *ClientPool) Exists(ctx context.Context, key string) (bool, error) {
 	start := time.Now()
 	metrics.S3RequestsTotal.Inc("HeadObject")

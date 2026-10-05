@@ -209,12 +209,12 @@ func compareVersions(a, b string) int {
 	for i := 0; i < maxLen; i++ {
 		aVal := 0
 		if i < len(aParts) {
-			fmt.Sscanf(aParts[i], "%d", &aVal)
+			_, _ = fmt.Sscanf(aParts[i], "%d", &aVal) // a non-numeric part compares as 0
 		}
 
 		bVal := 0
 		if i < len(bParts) {
-			fmt.Sscanf(bParts[i], "%d", &bVal)
+			_, _ = fmt.Sscanf(bParts[i], "%d", &bVal)
 		}
 
 		if aVal < bVal {

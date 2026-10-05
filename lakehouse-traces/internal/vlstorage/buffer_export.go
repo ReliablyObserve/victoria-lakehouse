@@ -79,6 +79,12 @@ func DataBlockToTraceRows(db *logstorage.DataBlock, tenant logstorage.TenantID) 
 				// start_time_unix_nano (→ StartTimeUnixNano field, kept separate),
 				// resource_attr:*, span_attr:*, … all go through the SAME mapper
 				// the insert path uses.
+				if v == "" {
+					// A block lists every column any of its rows has; a row without
+					// the field reads "" there. Upstream ignores empty-valued fields
+					// at ingest, so "" is an absent field, never a stored one.
+					continue
+				}
 				mapFieldToTraceRow(&row, c.Name, v)
 			}
 		}

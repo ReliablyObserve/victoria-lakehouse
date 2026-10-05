@@ -5,328 +5,324 @@ sidebar_position: 4
 
 # Persistence & Durability
 
-How Victoria Lakehouse keeps data safe across crashes and restarts, how it
-produces optimally-sized S3 objects, and how it serves data that has not yet
-reached S3 — **without a separate write-ahead log**.
+How Victoria Lakehouse keeps data safe across crashes and restarts, what an
+acknowledged insert guarantees, how it produces optimally-sized S3 objects, and
+how it serves data that has not yet reached S3 — exactly once, at every instant.
 
-> **No lakehouse WAL.** Earlier versions shipped a custom `internal/wal/`
-> write-ahead log. It has been **removed**. Durability now comes from the
-> insert buffer's own on-disk persistence (the VictoriaLogs/VictoriaTraces
-> `logstorage` engine), exactly as hot VL/VT achieve it. Any reference to a
-> `--lakehouse.insert.wal-*` flag, `lakehouse_insert_wal_bytes` metric, or "WAL
-> replay" in older docs is obsolete.
+There is no write-ahead log of the Lakehouse's own. Durability is the insert
+buffer's persistence, and the insert buffer **is** the VictoriaLogs/VictoriaTraces
+storage engine, used the way upstream uses it.
 
 ---
 
 ## 1. The model in one paragraph
 
-Ingested rows land in a **per-pod insert buffer**. With
-`insert.buffer_engine: logstore`, that buffer is a real
-`logstorage.Storage` (the same engine hot VL/VT run): it writes its rows to
-**on-disk parts every flush interval (~5s) and restores them on open**. Those
-parts are the durability substrate — they survive a crash the same way hot
-VL/VT data does. A background **`BufferFlusher`** drains settled windows from
-the buffer to **optimally-sized Parquet on S3** and records a **persisted flush
-watermark**; the watermark only advances after a window's Parquet is fully
-written, so a crash simply re-flushes the uncommitted window on restart
-(idempotently — the manifest deduplicates). Until a row reaches S3, the **read
-path serves it directly from the buffer** through the same query engine, so
-reads are never stale.
+The insert buffer is a short sequence of **segments**. A segment is an upstream
+`logstorage.Storage` in its own directory under `insert.buffer_dir`
+(`seg-<seq>-<nonce>`), cut by **ingest time**: every acknowledged row goes into
+the one **active** segment, whatever its `_time`. `insert.buffer_flush_interval`
+after the segment's first row (or earlier, once the segment holds about `insert.target_file_size` while few
+segments wait) the flusher **seals** the segment: the active segment is closed
+and reopened, which makes every row of it durable and the segment immutable, and
+a new active segment takes the writes. A **sealed** segment is **drained
+completely** to Parquet on S3 — per tenant, in objects of at most
+`target_file_size` — a **commit marker** is written to the bucket, the commit is
+recorded locally, and the segment is **removed** after a short grace period.
+Because a segment holds the rows that *arrived* in its time, late and backfilled
+rows are written with the segment they arrived in: nothing depends on a row's
+timestamp being recent.
+
+Every object a segment produces carries the segment's **nonce** in its key
+(`<nonce>-<slice>.parquet`). A query takes a snapshot of the live segments before
+it lists objects, serves their rows from the segments and **drops their objects
+from the scan**, so each row is answered once before, during and after the
+segment's drain — there is no time boundary between "buffer" and "S3" to get
+wrong.
 
 ```mermaid
 flowchart LR
-    I["Ingest (VL/VT APIs)"] --> B["Insert buffer<br/>logstorage.Storage<br/>(on-disk parts, ~5s)"]
-    B -->|"BufferFlusher<br/>(settled windows,<br/>size/linger gated)"| P["Parquet on S3<br/>(~128 MB objects)"]
-    P --> M["Manifest<br/>(time range + labels)"]
-    B -.->|"read-merge: unflushed<br/>(watermark, now]"| Q["Query"]
-    P -.->|"flushed [.., watermark]"| Q
+    I["Ingest (VL/VT APIs)"] --> A["Active segment<br/>(upstream storage,<br/>fsynced parts ≤ ~11 s)"]
+    A -->|"seal: age or size"| S["Sealed segment<br/>(immutable, durable)"]
+    S -->|"drain: per tenant,<br/>≤ target_file_size objects"| P["Parquet on S3<br/>key = &lt;nonce&gt;-&lt;slice&gt;.parquet"]
+    S -->|"marker _segments/&lt;nonce&gt;,<br/>commit, grace, remove"| X["removed"]
+    A -.->|"read: rows"| Q["Query"]
+    S -.->|"read: rows"| Q
+    P -.->|"read: objects whose nonce<br/>is not live"| Q
 ```
 
 ---
 
-## 2. Durability matrix — what survives what
+## 2. What an acknowledgement means
 
-| Event | `logstore` engine, flush **enabled** (the cutover target) | `logstore` engine, flush **disabled** (current default) | legacy `buffer` engine |
-|---|---|---|---|
-| **Process crash / kill -9** | Rows in the buffer's on-disk parts survive; the flush watermark re-flushes the uncommitted window on restart. Loss window ≈ buffer flush interval (~5s), matching hot VL/VT. | Buffer parts survive and serve **reads** for `buffer_retention`, but the **legacy staging** (authoritative for Parquet) loses its in-flight window — that window is never re-persisted to S3. | In-flight `[]row` staging is lost (no WAL). Loss window = up to `flush_interval`. |
-| **Normal shutdown (SIGTERM)** | Buffer `Close()` flushes parts to disk; readiness gate holds `/ready`; manifest + footer-cache snapshots saved (the manifest snapshot is saved a second time after the final flush; see §2.2). | Same buffer `Close()`; legacy staging flush-on-shutdown. | Graceful flush of staging before exit. |
-| **S3 unreachable or slow (uploads fail or time out)** | Buffer keeps accepting (bounded by `buffer_retention` + disk); the watermark does not advance, so the same window is flushed again to the same objects (see the buffer-authoritative paragraph in §2.1). | Legacy staging: every upload that fails, or that the flush does not reach before its deadline, is put back and retried by the next flush; its rows stay readable meanwhile. Past `insert.max_buffer_bytes` of unwritten rows inserts get **429** (as VictoriaLogs answers when it cannot take writes) until flushes catch up. | Same as the middle column. |
-| **Already-flushed data** | Immutable Parquet on S3; survives everything. | Same. | Same. |
-| **A delete (tombstone)** | Written through to local disk synchronously and to S3 in the same call before the API returns; retried until S3 confirms. Survives `kill -9`. | Same. | Same. |
-| **An in-progress delete rewrite** | Two-phase (prepare → publish → commit) with a conditional publish: a crash or a concurrent compaction at any step leaves exactly one manifested copy of every kept row. See §3.1. | Same. | Same. |
+The insert adapter adds the rows to the active segment with upstream's own
+`MustAddRows`, and answers the request. The guarantees are exactly those of hot
+VictoriaLogs/VictoriaTraces:
 
-> **⚠️ Current default has a gap.** The buffer-authoritative flip
-> (`buffer_flush_enabled`) is **off by default** and the LH WAL is deleted. So in
-> the *default* configuration the in-flight window is held in the buffer for
-> `buffer_retention` and served to reads, but is **not** re-flushed to S3 by the
-> legacy path on crash. The clean end-state is to **enable the flip** (full
-> crash-safety, no WAL). `ack_mode: flush-sync` (200 only after S3 confirms) is
-> not an alternative in this release: no binary reads `insert.ack_mode`. See
-> [Configuration](#7-configuration).
+- **Durable within upstream's window.** The rows are in upstream's in-memory
+  buffer at the ack. Upstream turns them into an in-memory part within 1 s and
+  writes that part to an fsynced on-disk part at the first flush tick (every
+  **5 s**) after the part is 5 s old, so a row is on disk **within about 10 s**
+  (11 s in theory). A crash (`kill -9`, power loss) loses at most those last
+  seconds — the same window hot VL/VT lose, with the same settings. Measured
+  with `kill -9` on a single small batch: rows 8 s old were lost and rows 10 s
+  old were kept, in every trial, for this release and for hot VictoriaLogs
+  v1.52.0 / VictoriaTraces v0.12.0 alike. Everything older is on the pod's
+  disk and is restored when the pod starts.
+- **Refused only as upstream refuses.** When the buffer's volume has less than
+  its free-space floor (1 GiB) the storage is read-only and inserts get **429 Too
+  Many Requests** with upstream's message (`cannot add rows into storage in
+  read-only mode; the storage can be in read-only mode because of lack of free
+  disk space at insert.buffer_dir=<dir>`), counted in
+  `lakehouse_insert_rejected_total{reason="read_only"}`. Nothing else refuses a
+  write.
+- **An object-store outage refuses nothing.** The rows wait in sealed segments
+  on the pod's disk and are written when the store is back (see §2.1). If the
+  outage outlasts the disk, the 429 above is the backpressure.
+- **No hidden failure.** A failure inside the buffer is not recovered in the
+  adapter: as in upstream it fails the request, so the client retries instead of
+  receiving an ack for rows that were stored nowhere.
+- **What upstream drops at ingest, the Lakehouse drops too.** A row whose
+  `_time` is more than 2 days in the future (`-futureRetention` of upstream) is
+  rejected by the storage with upstream's warning and counter. There is no limit
+  into the past (the buffer's retention is 100 years): backfilled rows of any
+  age are kept until they are written, and the Lakehouse's own retention then
+  applies to the objects.
+- **Admission.** The logs binary drops, before the buffer, the rows of
+  trace-shaped streams (span data sent to the logs endpoint:
+  `lakehouse_logs_trace_shaped_rows_dropped_at_ingest_total`) and of streams over
+  the tenant's cardinality limit. The traces binary applies the cardinality gate
+  only. VictoriaTraces' `trace_id_idx` rows stay in the buffer, as in hot
+  VictoriaTraces, and are dropped when the buffer is flushed (the `_trace_idx`
+  footer index replaces them; counted in
+  `lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}`).
+  `lakehouse_insert_rows_total` counts the rows admitted into the buffer.
+
+Proof: `TestInsertAdapter_EveryAdmittedRowReachesTheBuffer`,
+`TestInsertAdapter_DropsTraceShapedAndOverLimitStreamsKeepsTheRest`,
+`TestInsertAdapter_CanWriteData`, `TestInsertAdapter_BufferPanicPropagates`,
+`TestInsertAdapter_RowsAreInTheSegments`, `TestLogsBuffer_FieldsNamedLikeTraceIndexRowsAreKept`
+(logs) and `TestVTInsertAdapter_EverySpanReachesTheBuffer`,
+`TestVTInsertAdapter_DropsOverLimitStreamsKeepsTheRest`,
+`TestVTInsertAdapter_CanWriteData`, `TestVTInsertAdapter_BufferPanicPropagates`,
+`TestVTInsertAdapter_DropsTraceIDIndexRow` (traces).
+
+### 2.0 Durability matrix — what survives what
+
+| Event | What happens |
+|---|---|
+| **`kill -9` / power loss** | Rows older than upstream's flush window (about 11 s at worst) are in fsynced parts and are restored when the pod starts; the restarted flusher drains every segment it finds. Loss window = upstream's, as in hot VL/VT. |
+| **Normal shutdown (SIGTERM)** | The flusher stops (a drain cut short resumes after the restart) and the buffer closes: upstream writes the in-memory rows of every segment to disk. Nothing is lost. The manifest snapshot is saved before and after the close. |
+| **Object store unreachable or slow** | Nothing is refused. Sealed segments wait on disk; each failed drain is retried with the same bytes after a back-off (1 s doubling to 30 s). Past the volume's free-space floor inserts get 429. |
+| **Pod restarts while a segment drains** | The segment is found again; groups already stored are recognised (§3) and not sent again. |
+| **Pod loses its disk before a segment drained** | The rows of undrained segments are lost (§2.4). |
+| **Already-written data** | Immutable Parquet on S3; survives everything. |
+| **A delete (tombstone)** | Written through to local disk and to S3 before the API returns; survives `kill -9`. See §3.1. |
+| **An in-progress delete rewrite** | Two-phase with a conditional publish: a crash or a concurrent compaction leaves exactly one manifested copy of every kept row. See §3.1. |
 
 ### 2.1 Failed uploads
 
-A flush writes one object per partition and tenant. When one of those
-`PutObject` calls fails — or the flush's deadline passes before it gets there —
-that tenant group goes back into the write buffer and the next flush writes it;
-the groups that were written are never written again, so a failed flush neither
-loses nor duplicates rows. Until a row is committed to the manifest it is
-served to reads from the buffer (`/internal/buffer/query`, the co-located
-buffer), including while its upload is in flight.
+A drain writes one object per (tenant, hour partition, slice). The slices of a
+tenant are planned from the segment's per-second row counts — at most
+`target_file_size` worth of rows each (`estBytesPerRow` × rows), never crossing
+an hour partition, a single second with more rows than the limit being one
+slice — so **memory is bounded by the slice**, not by the segment, however large
+the segment is. Keys are `<nonce>-<slice>`: the same in every process, because a
+sealed segment is immutable.
 
-The unwritten rows are held in memory, so they are bounded: past
-`insert.max_buffer_bytes` (buffered + uploading + put back) `CanWriteData`
-refuses inserts with **429 Too Many Requests** — the status VictoriaLogs returns
-when it cannot take writes — and clients (vlagent, OpenTelemetry Collector, any
-VictoriaLogs client) back off and retry. When object storage refuses a small
-probe write the answer is **503**; the probe result is reused for 10 s, not
-repeated per insert request.
+The invariant: **an object's bytes never change once uploaded, and no key is
+uploaded twice with different content.** To keep it:
 
-What is still lost: rows the final flush at shutdown cannot write (there is no
-WAL on the legacy staging path) — counted in
-`lakehouse_insert_rows_lost_at_shutdown_total` and logged — and, as before, the
-in-memory window on `kill -9`.
+- Before a segment's first upload the state file (`buffer_flush_state.json`, with
+  a `.prev` mirror; temp file, fsync, rename, fsync of the directory) records it
+  as *draining* (`draining_seq`). Committing a segment records `committed_through_seq`.
+- After each PUT a "stored" mark (segment, tenant, partition, slice) is appended
+  to `buffer_flush_state.json.stored` and fsynced before the object is committed
+  to the manifest, so anything compaction can see has a durable mark. A failed
+  mark write never fails the group — the object is stored and committed at once
+  — but is counted (`lakehouse_buffer_flush_errors_total{stage="mark"}`).
+- A group that fails in this process is kept, encoded, and retried as it is
+  (same key, same bytes); a successful PUT is committed to the manifest at once.
+- A failed drain backs off (1 s, doubling to 30 s) and resumes where it stopped;
+  a segment is never skipped, so segments are written in order.
+- When every group is stored or settled, the **marker** `{prefix}_segments/<nonce>`
+  is written to the bucket, then the commit is recorded locally, then the
+  segment stays readable for the grace period (`2 × manifest.refresh_interval +
+  30 s`) and is removed. A segment committed locally always has its marker.
 
-Proof: `TestFlush_FailedUploadKeepsItsRows`,
-`TestFlush_OnlyTheFailedTenantGroupIsRetried`,
-`TestFlush_PartitionsNotReachedBeforeTheDeadlineArePutBack`,
-`TestFlush_RowsStayVisibleWhileInFlight`,
-`TestFlush_RandomFailuresUnderConcurrentInsertsLoseNothing` (random failures
-and concurrent inserts, every row committed exactly once),
-`TestCanWriteData_TooMuchUnwrittenDataIs429`,
-`TestCanWriteData_ProbeIsReusedAndAnUnwritableStoreIs503`,
-`TestStop_RowsTheFinalFlushCannotWriteAreCounted` — and their `TestTrace*`
-twins in `lakehouse-traces`.
+Each group is *settled*, in order, by: its stored mark; the manifest having
+retired its key (its rows live in what replaced it — counted in
+`lakehouse_insert_rows_superseded_total`); the manifest having the key; or —
+**only for a segment a previous process was draining** — an object-store HEAD
+finding the object (a listing adopts it later). A HEAD error waits for the next
+attempt: the flusher never guesses. (HEAD needs `s3:ListBucket`, else S3 answers
+403 for an absent key and recovery waits with `stage="head"` climbing; it also
+needs the read-after-write consistency S3 provides.) Every other group is
+collected from the segment and uploaded.
 
-**Buffer-authoritative flush (`buffer_flush_enabled`).** The invariant the
-flusher works to keep: **an object's bytes never change once uploaded, and no
-key is uploaded twice with different content.** It never rewrites an object.
-The guarantees below are exact; the residuals that follow them are the cases
-they do not cover.
+The dirty pmeta bundles (the bloom facet cannot be rebuilt from the manifest) are
+written after each drain and retried on every tick.
 
-The `BufferFlusher` records a window before it uploads any of it. The record —
-`buffer_flush_watermark.json`, version 4 — holds the window `(watermark, end]`, a
-random nonce drawn for that window, and the `(account, project, partition)` and
-row count of every group it will upload. Every write of the watermark (this
-record, its additions during recovery, the commit) writes the **same content to
-`buffer_flush_watermark.json.prev` first and then to the main file**, each
-through a temp file: write, fsync, rename, fsync of the directory. A crash can
-leave at most one of the two torn, and the other still holds
-a state that is safe to resume from — the pending record included. If the record
-cannot be written, nothing is uploaded. Object keys are not stored: they are
-derived from the nonce, the window and the group, so two nodes flushing the same
-range, or a later window over it, never derive the same key.
+Proof (both modules; every test also asserts through the `faultyUploader` that no
+key was ever stored with two different byte sequences):
+`TestSegments_FailedPutIsRetriedWithTheSameBytes`,
+`TestSegments_FailedUploadIsKeptForTheRetry`, `TestSegments_HeadErrorWaits`,
+`TestSegments_RetiredGroupIsSettled`, `TestSegments_AdoptedObjectIsNotUploadedAgain`,
+`TestSegments_RandomFailuresUnderConcurrentIngestLoseNothing`,
+`TestSegments_GroupsAreBoundedInRows`, `TestPlanSlices`,
+`TestSegments_UnreadableStateStopsTheFlusher`, `TestSegments_TwoNodesNeverShareKeys`,
+`TestSegments_KeepFilter`, `TestBufferFlusher_PersistsThePmetaBundles`.
 
-After each successful PUT a line is appended to
-`buffer_flush_watermark.json.stored` and **fsynced** (and the directory too when
-the file is created) **before** the object is committed to the manifest, so
-anything compaction can see already has a durable mark. A failed mark write never
-fails the group — the object is stored and is committed at once — but it is
-counted (`lakehouse_buffer_flush_errors_total{stage="mark"}`), because that group
-then depends on HEAD after a restart.
-
-- **A group fails while the process lives** (a failed or timed-out PUT). The next
-  tick retries exactly the groups that failed, with the same keys and the very
-  same bytes, without collecting the window again and ignoring the size and
-  linger gates. Once a tenant's group fails, that tenant's later partitions are
-  not attempted in that attempt (they join the retry set, unencoded): the buffer
-  read watermark is the tenant's newest stored `MaxTimeNs`, so storing a newer
-  partition would hide the buffer rows of the older one that failed. Other
-  tenants proceed.
-- **The process restarts** with a window pending. Recovery does not wait for, or
-  depend on, a bucket listing. Each group of the record is settled by, in order:
-  a stored mark; the manifest having retired its key (its recorded rows are
-  counted in `lakehouse_insert_rows_superseded_total`); the manifest having the
-  key; or an object-store HEAD finding the object (a listing adopts it later).
-  Only a group whose HEAD says the object is absent is uploaded, from a
-  re-collected window; if every group is settled the buffer is not read at all,
-  so a buffer that cannot be queried cannot stall the commit. A HEAD error waits
-  for the next tick — recovery never guesses. Groups the re-collected rows
-  introduce that the record lacks were never uploaded; they are added to the
-  record durably before their first PUT. (HEAD instead of the manifest because a
-  listing can miss an object — the cliff guard can reject every listing after a
-  stale snapshot (#243), and a per-account LIST error can omit an account (#244)
-  — and "not in the manifest" would then be read as "never stored".) HEAD needs
-  `s3:ListBucket` on the bucket: without it S3 answers 403 instead of 404 for an
-  absent key, which `s3reader.ClientPool.Exists` treats as an error, so recovery
-  waits and `stage="head"` climbs. It also needs read-after-write consistency,
-  which S3 provides.
-- **Rows the buffer no longer has.** A group that HEAD reports absent, whose rows
-  are gone from the buffer (`buffer_retention` expired, or the flush filter
-  changed since the record), is uploaded with what is left, and the window
-  commits — recovery never blocks on this. The shortfall against the recorded
-  row count is counted in `lakehouse_insert_rows_lost_total{reason="buffer_expired"}`,
-  `lakehouse_buffer_flush_errors_total{stage="missing"}` counts the group, and
-  the log line names the tenant, partition and counts.
-- **The commit.** The writer checks `IsRetired` / `HasKey` before uploading, and
-  registers the object with `AddFileUnlessRetired`, atomic with the retired
-  check: a key retired while its PUT was in flight is not added back, the
-  recreated object is owed a delete again (`Retire(key, "", true)` keeps the
-  earlier replacement), and its rows are counted as superseded.
-- **Every group is stored but the watermark cannot be saved.** The following ticks
-  upload nothing and only retry the save; on success the pending record and the
-  marks clear and the watermark moves to the window's end.
-- **An unreadable watermark stops the flusher.** The main file falls back to
-  `.prev` (same content). If a file exists but neither can be read, the flusher
-  does not start: `NewBufferFlusher` loads the watermark when the flusher is
-  built and the process exits with a message saying to delete the files
-  to start from now — it never silently jumps to "now", which would skip data.
-
-**Late rows.** Rows that arrive for a window after its first attempt are never
-written to Parquet by an in-process retry — like rows later than the 2-minute
-latency tolerance, they are older than a committed window and never collected
-again. They stay visible from the buffer only while they are newer than the
-tenant's cold watermark (its newest stored `MaxTimeNs`) and within buffer
-retention; at or below that watermark they are not served from the buffer at all,
-so they are not visible. After a restart the window is collected again only if some
-recorded group is absent from the object store: then a group that was never stored
-includes such rows, and groups the record lacks are added; a stored group does not
-change. When every group is settled the buffer is not read, so late rows for
-tenants or partitions the record lacks are skipped and not counted — the same class
-as the in-process retry.
-`lakehouse_insert_rows_superseded_total` counts only rows of groups whose key was
-retired; a group skipped because its object is live is not counted.
-
-The superseded and lost counts are per recovery attempt: a crash after counting
-and before the commit can count them again after the restart, and a recovered
-group uploaded with a different row count keeps its recorded count in the record.
-The lost count is **net of late rows**: a group re-collected with as many rows as
-recorded counts 0 even if some expired and others arrived late, and one
-re-collected with more rows than recorded counts 0 and uploads them all.
-
-Residuals, stated plainly:
-
-- **A failed mark write** (counted, `stage="mark"`), followed by compaction of
-  that object and its retired record being forgotten by a listing before a
-  restart: HEAD then says absent and the group is uploaded again next to the
-  compacted object.
-- **Buffer expiry** loses rows, counted (above), not recovered.
-- **Multi-node (#37).** A group whose object was stored but has neither a mark
-  nor a manifest entry here can be uploaded again if another peer adopted it,
-  compacted it and deleted it while this node was down.
-- **A PUT still in flight from the dead process** can land after the recovery
-  HEAD said the object was absent; the restarted flusher then uploads the same
-  key with possibly different bytes.
-- **A timed-out PUT retried in the same process.** The store kept the object, a
-  listing adopted it, compaction merged and deleted it, and a later listing
-  forgot its retired record — all before the next retry of that group. The retry
-  then sends the key again. It needs upload failures lasting longer than a
-  compaction cycle. The legacy staging path's same-key retry has the same limit.
-- **Legacy staging path visibility (#245).** Its flush continues after a failed
-  group, so a newer stored partition of a tenant can hide the buffer rows of an
-  older one that failed until the retry succeeds. The buffer flusher avoids this
-  (above); the legacy path is unchanged.
-- **Recovered objects are bare listing entries (#246):** an object found by HEAD
-  is registered by the next listing with no row count, an hour-wide time range
-  and no stats or pmeta, until compaction rewrites it.
-
-Proof (both modules unless noted; every test also asserts, through the
-`faultyUploader`, that no key was ever stored with two different byte
-sequences): `TestBufferFlusher_PartialFailureRetriesOnlyTheFailedGroupWithIdenticalBytes`,
-`TestBufferFlusher_PartialFailureThenRestartSendsOnlyWhatWasNeverStored`, the
-crash matrix — `TestBufferFlusher_CrashIntentWrittenNoPutUploadsEverything`,
-`…CrashPutDoneNoMarkIsFoundByHead`, `…CrashStoredMarkNoCommitSettlesWithoutHead`,
-`…CrashAfterAllUploadsBeforeTheWatermarkSendsNothing` —,
-`TestBufferFlusher_HeadErrorUploadsNothingAndIsRetried`,
-`TestBufferFlusher_RecoveryDoesNotNeedAnAcceptedListing`,
-`TestBufferFlusher_RestartWithAFreshOrOlderManifestDoesNotResend`,
-`TestBufferFlusher_ListingMissingAnAccountDoesNotResendAStoredKey`,
-`TestBufferFlusher_DurableMarkAfterCompactionAndForgottenRecordDoesNotResend`,
-`TestBufferFlusher_StoredMarkIsFsyncedBeforeTheCommit`,
-`TestBufferFlusher_EveryWatermarkWriteMirrorsToPrevFirstAndIsFsynced`,
-`TestBufferFlusher_CorruptMainIntentFallsBackToAnIdenticalPrevAndDoesNotDuplicate`,
-`TestBufferFlusher_AbsentGroupWithoutRowsIsCounted`,
-`TestBufferFlusher_PartialShortfallUploadsWhatIsLeftAndCountsTheRest`,
-`TestBufferFlusher_RecoveryWithOnlySettledGroupsNeverReadsTheBuffer`,
-`TestBufferFlusher_RetiredGroupsAreCountedFromTheRecord`,
-`TestBufferFlusher_RecoveryOfARetiredGroupIsSettledAndCounted`,
-`TestBufferFlusher_RetiredRecordForgottenByListingStillNoResendAfterRestart`,
-`TestBufferFlusher_RetryBetweenCompactionReadAndPublishLosesNothing`,
-`TestBufferFlusher_FewerRowsAfterRestartDoNotResendAStoredGroup`,
-`TestBufferFlusher_StoredMarkFailureDoesNotFailTheGroup`,
-`TestBufferFlusher_WatermarkSaveFailureAfterUploadsNeverReuploads`,
-`TestBufferFlusher_IntentWriteFailureAbortsBeforeAnyPut`,
-`TestBufferFlusher_NewGroupsFoundOnRecoveryAreRecordedBeforeUpload`,
-`TestBufferFlusher_TenantsLaterPartitionsAreNotAttemptedAfterItsFailure`,
-`TestBufferFlusher_AFailedGroupDoesNotStopTheRestOfTheWindow`,
-`TestBufferFlusher_KeyRetiredDuringThePutIsNotResurrected`,
-`TestBufferFlusher_LateRowsAreNotAddedByAnInProcessRetry`,
-`TestBufferFlusher_LateRowsAfterARestartReachGroupsNeverStored`,
-`TestBufferFlusher_TwoFlushersOfTheSameWindowUseDistinctKeys`,
-`TestBufferFlusher_LoadWatermarkHandling`,
-`TestBufferFlusher_PendingWindowIgnoresTheSizeGate`,
-`TestWindowBatchID_DeterministicAndSensitiveToEveryInput`,
-`TestUploadGroup_OnStoredRunsAfterThePutAndCannotFailTheGroup`,
-`TestUploadGroup_SettledGroupsRunOnStoredWithoutUploading`,
-`TestUploadGroup_KeyRetiredDuringThePutIsNotAddedBack`, and for the legacy staging
-path `TestFlush_ARetryOfAnAdoptedThenCompactedObjectIsSkipped` and
-`TestFlush_ARetryOfAnAdoptedObjectIsSkipped` (`TestTraceFlush_*` in
-`lakehouse-traces`); `TestAddFileUnlessRetired_*` in `internal/manifest`.
-
----
-
-### 2.2 Restart and the read watermark
+### 2.2 Restart and the read handoff
 
 The shutdown order matters for what the next boot can see:
 
 1. `runShutdown` saves a first manifest snapshot before the long `Stop()` calls, so a SIGKILL during them still leaves a recent snapshot.
-2. `store.Close()` stops the writer, whose **final flush** writes the last window to Parquet (and closes the buffer).
-3. The manifest snapshot is saved **again**. The objects the final flush wrote are in no earlier snapshot; without this second save the next boot would learn them only from the S3 listing. The saves are serialised and write through a unique temp file renamed into place, so a first save that outlived its timeout cannot corrupt the second.
+2. `store.Close()` stops the flusher, then closes the insert buffer.
+3. The manifest snapshot is saved **again**: the objects the flusher wrote since the first snapshot are in no earlier snapshot, and without the second save the next boot would learn them only from the S3 listing. The saves are serialised and write through a unique temp file renamed into place, so a first save that outlived its timeout cannot corrupt the second.
 
-**Restored buffer rows.** Rows the buffer held before the shutdown are restored on open only with `insert.buffer_engine: logstore` (its parts live on the data dir). They are then both in the buffer and in the final flush's object, and the watermark below is what counts them once. The default legacy engine starts with an empty buffer after a restart, so there is nothing to double count.
+After a restart the pod reopens every segment directory it finds — each is
+sealed, none takes new rows — and starts a new active segment. The flusher's
+state says which segments are already committed; the rest are drained. Rows are
+visible from the first query: a segment's rows are served from the segment, its
+objects (known from the snapshot or the listing, with exact or inferred time
+bounds alike) are dropped from the scan, and once the segment is removed the
+objects alone answer. Restart does not depend on the manifest being refreshed,
+and no time boundary is computed from object metadata, so an object learned
+from the listing with only its partition hour as time range cannot hide or
+double any row.
 
-**Inferred bounds.** An object the manifest knows only from a listing has no recorded time range. The manifest infers the partition hour for it and marks the entry `bounds_inferred`; an entry whose bounds are exactly the partition hour (written that way by older versions, which did not mark them) is treated as inferred too, whether it comes from a snapshot or from a metadata source. Inferred bounds are good enough to prune (they are a superset of the truth) but never decide what the buffer still owes: the buffer read watermark is the newest `MaxTimeNs` of the selected objects, and an inferred `MaxTimeNs` is the end of the hour. Used as it was, it hid every row buffered after the restart in that hour until the next flush (#272).
+**Inferred bounds.** An object the manifest knows only from a listing has no
+recorded time range. The manifest infers the partition hour for it and marks the
+entry `bounds_inferred`; an entry whose bounds are exactly the partition hour
+(written that way by older versions) is treated as inferred too. Inferred bounds
+are good enough to prune (they are a superset of the truth) but no metadata-only
+answer (manifest fast path, count pushdown, 404 recovery, field-value
+aggregates) uses such an object: it goes to the scan path. The startup warmup
+resolves the exact bounds of the objects of the last 6 hours (newest first, at
+most 512, bounded to 30 s) from the pmeta file-meta facet or with one ranged read
+of the object's footer — never data pages, never the whole object — so the first
+query after a restart can answer from metadata.
 
-**Where exact bounds come from.** The pmeta file-meta facet, when it has the object, and otherwise the object's own Parquet footer: the `_time` column-chunk statistics, read with the same ranged footer fetch the field APIs use (one ranged GET of the object's tail, plus one exact-length GET when the footer is larger than the tail, as trace footers with a large `_trace_idx` are; never data pages, never the page index, never the whole object). A cached footer costs no read. Replacement is an overwrite of the inferred pair, not a fill of zero fields. The startup metadata warmup resolves the objects of the last 6 hours (newest first, at most 512, bounded to 30 s) before the first query. A query resolves lazily, and only when the buffer is actually consulted (not for a pod without a buffer, a `trace_id` lookup or a query past its row limit), only for objects that can change the watermark (inferred end above the tenant's exact watermark and not older than the later of the query start and now minus `insert.buffer_retention`). The file-metadata cache, the facet replay and the facet rebuild never export inferred bounds as fact.
+Proof: `TestBufferRestart_SameHourBufferedRowsVisibleExactlyOnce` (snapshot
+before/after the drain, listing only, a crash before the drain),
+`TestBufferRestart_NoDoubleCountAcrossRestarts`,
+`TestBufferRestart_LegacyHourWideSnapshotEntry`,
+`TestBufferRestart_MetadataAnsweredObjectsAreNotCountedTwice`,
+`TestBufferRestart_AcrossUTCMidnight`, `TestBufferRestart_Property_EveryRowVisibleExactlyOnce`,
+`TestResolveBounds_*` (the exact-bounds resolution),
+`TestInferredObjectIsNotAnsweredFromMetadata` and the other tests of `inferred_bounds_test.go`.
 
-**Cost bounds and the price of a slow object.** One computation waits at most 2 s for footer reads, reads of one object are shared between concurrent queries, and a failed or slow read of an object is remembered and not retried for 5 s, doubling to 5 min (the table forgets objects that leave the manifest and is capped). When a computation runs out of its 2 s budget, no further reads are started for 5 s. A query that meets an unresolved object therefore pays at most the budget once, and the rows that depend on it stay hidden until it resolves.
+### 2.3 The read handoff, exactly once
 
-**The guarantee when an object cannot be resolved** (S3 error, the object retired by a peer's compaction, a result that is exactly the partition hour, the budget running out). The watermark never sits below a row the object holds, so the buffer does not re-serve its rows (rows are hidden, not counted twice), over the objects the query reads plus those answered from metadata:
+Every query takes a `bufferView` **before** it uses its object list:
 
-- the object contributes its inferred end to the watermark, so the buffer is hidden up to the end of its hour rather than counted against rows the object already holds;
-- the same holds for an object too old to be worth a read (its inferred end is before the later of the query start and now minus `insert.buffer_retention`): it is not read, and it still contributes its inferred end, because the buffer's retention is applied per day partition and can still hold its rows;
-- no metadata-only answer (manifest fast path, count pushdown, 404 recovery, field-value aggregates) uses an object whose bounds are still inferred: it goes to the scan path, where an unreadable object contributes nothing;
-- `lakehouse_watermark_inferred_unresolved_total` counts the objects a read was tried for and failed to resolve.
+- **Co-located buffer (no insert peers):** a snapshot of the live segments, held
+  until the query ends, and their nonces.
+- **Select pod with insert peers:** the rows every insert pod returned through
+  `/internal/buffer/query` and, in the response header
+  `X-Lakehouse-Buffer-Segments`, the nonces of the segments they were read from.
+  A peer that fails contributes neither rows nor nonces, so none of its objects
+  is dropped.
 
-What this does not promise: that rows buffered after the restart in the same hour are visible while an object is unresolved or too old to read. They appear once it resolves (the next successful read after its back-off) or at the next flush.
+The scan then drops every object whose key carries one of those nonces
+(`lakehouse_buffer_view_excluded_objects_total`). A segment is removed only when
+it is committed, its grace has passed and no snapshot holds it; a peer keeps a
+committed segment readable for the grace so that a select node has listed its
+objects before the peer stops serving the rows. The rows are served with **no
+time watermark**: a late row, a backfilled row or a restarted pod needs no
+special case, and a trace-by-ID lookup is the same code path as any other query.
 
-In a multi-pod deployment the same applies to a peer's flushes this pod learns by listing, as long as the peer's rows come through this pod's buffer bridge; the pod's own restored buffer (logstore engine) is the case the tests cover end to end.
+Proof: `TestBufferView_EachRowOnceThroughTheWholeHandoff` (active, sealed, after
+each group of the drain, committed, late rows, segment removed, restart),
+`TestBufferView_ConcurrentQueriesDuringDrains`,
+`TestBufferView_ExcludeOnlyLiveSegmentObjects`, `TestBufferView_BridgedPeerHandoff`,
+`TestBufferView_PeerWithoutNoncesExcludesNothing`, `TestBufferView_TraceByIDThroughTheHandoff`,
+`TestBufferView_SegmentsInOnePartitionAreReadTogether`,
+`TestBufferBridge_NoncesComeWithTheRows`, `TestSegmentsHeader_ListsTheNonces`,
+`TestSegmentsHeader_SentWithAnEmptyAnswer`, `TestParseSegments`.
+
+### 2.4 Compaction and delete rewrites leave live segments alone
+
+Compaction merges, and a delete rewrite replaces, objects into objects **without**
+the segment's nonce. While the segment is live that would serve its rows twice
+(from the segment and from the merged object). So every merge path — the
+compaction scan, a forced recompaction, a Tier A steal by the partition's
+secondary owner — and the delete rewriter consult a **segment guard** (listed
+once per scan, steal run or rewrite pass): an object that carries a nonce is merged or rewritten only after the
+segment's marker has been in the bucket for twice the grace period (the pod stops
+serving the segment at the grace; the margin covers clock skew and listing lag),
+or once the nonce is older than 7 days (an owner that never committed — it lost
+its disk). A failed marker listing releases nothing
+(`lakehouse_compaction_segment_guard_errors_total`); a deferred rewrite is
+counted (`lakehouse_delete_rewrite_deferred_total{reason="segment_live"}`) and the
+tombstone's query-time filter keeps the rows hidden meanwhile. Markers older than
+8 days are deleted by the compaction scan.
+
+Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheFreeOnes`,
+`TestSegmentGuard_ReleasedFilesCopiesOnlyWhenItDrops`,
+`TestSegmentNonceOfKey` (`internal/manifest`);
+`TestScheduler_LeavesTheObjectsOfLiveBufferSegmentsAlone`,
+`TestOrphanSweep_TierA_LeavesTheObjectsOfLiveBufferSegmentsAlone`,
+`TestScheduler_DeletesMarkersOfSegmentsPastTheReleaseAge` (`internal/compaction`);
+`TestSchedulerRunOnce_WaitsForTheBufferSegmentOfAnObject` (`internal/delete`).
+
+### 2.5 Residuals, stated plainly
+
+- **Loss of a pod's disk before its segments are drained.** The buffer is the
+  only copy of acknowledged rows until they are in Parquet; the insert
+  StatefulSet's volume claim is the protection (it is on by default in the Helm
+  chart). A pod that loses the volume loses the rows of its undrained segments —
+  at most `buffer_flush_interval` plus the drain time of ingest in steady state,
+  plus whatever backlog an object-store outage built.
+- **A PUT still in flight from a dead process** can land after the recovery HEAD
+  said the object was absent; the restarted flusher then uploads the same key,
+  possibly with different bytes (it collects the group again).
+- **A failed mark write** (counted, `stage="mark"`), followed by compaction of
+  that object and its retired record being forgotten before a restart, makes
+  recovery send that group again next to the compacted object.
+- **A drain later than 7 days.** After an object-store outage of days the
+  segment's objects are released to compaction by age alone; a segment drained
+  after that may be merged before its own commit.
+- **Multi-node (#37).** A group whose object was stored but has neither a mark
+  nor a manifest entry here can be uploaded again if another peer adopted it,
+  compacted it and deleted it while this node was down.
+- **A buffer directory of an earlier release** (upstream parts directly under
+  `insert.buffer_dir`) is moved aside to `legacy-<unix>/` with a warning at
+  startup. It is not read or flushed (the earlier release wrote those rows to
+  Parquet); delete it when it is no longer needed.
+
+---
 
 ## 3. Crash recovery ("the pod dies")
 
-1. **Where in-flight rows live.** Every ingested row is added to the buffer via
-   the exported `MustAddRows`. logstorage flushes its in-memory `rowsBuffer` to
-   an on-disk part on its flush interval (~5s) and **restores all parts on
-   open**. So at any instant the at-risk window is only the rows newer than the
-   last part flush.
-2. **The flush watermark.** `BufferFlusher` persists
-   `buffer_flush_watermark.json` durably (every write goes to `.prev` first and
-   then to the main file, each through a temp file, fsync, rename and directory
-   fsync) and advances it **only after** every group of a window has been written
-   to S3 and registered in the manifest. Before the first upload it records the
-   window's end, a nonce, and every group of the window (with its row count) as
-   pending. On restart it reloads all of it: a pending window is resumed as
-   `(watermark, pending]` (a pending record without a nonce, or from an older
-   file version, is ignored); otherwise the next window is
-   `(watermark, now-offset]`. A file that exists but cannot be read, with no
-   readable `.prev`, stops the flusher from starting.
-3. **Resuming without rewriting.** After a restart each recorded group is settled
-   by its stored mark, the manifest, or an object-store HEAD; only groups whose
-   object is absent are uploaded, from a re-collected window, and rows the buffer
-   no longer has are counted as lost. No listing is awaited. Objects are never
-   rewritten, so re-flushing loses nothing and writes no row twice, except in the
-   residual cases of §2.1.
-4. **The retention guard.** Un-flushed rows live **only** in the buffer until
-   the flush commits, so the buffer must retain them across a full linger window
-   **plus** restart downtime. Config validation enforces
-   `buffer_retention >= 4 × buffer_flush_interval` for that margin — if retention
-   were too tight, a row could age out before a crashed flusher recovers, which
-   *is* data loss now that there is no WAL backstop.
+1. **Where in-flight rows live.** Every acknowledged row is in a segment of
+   `insert.buffer_dir`. Upstream writes in-memory parts older than 5 s to an
+   on-disk part at every 5 s tick and restores every part on open, so the at-risk window is the rows
+   newer than the last part flush.
+2. **The flusher's state.** `buffer_flush_state.json` (mirrored to `.prev`)
+   holds `committed_through_seq` and `draining_seq`. A missing state means
+   nothing is committed: every segment found is drained. A state file that exists
+   but cannot be read, with no readable `.prev`, stops the process with a message
+   saying how to proceed — it never guesses, because guessing would skip or
+   repeat data.
+3. **Resuming without rewriting.** The segment being drained is found again; each
+   group is settled by its mark, the manifest or a HEAD (§2.1); only absent groups
+   are uploaded. Objects are never rewritten, so re-draining loses nothing and
+   writes no row twice, except in the residual cases of §2.5.
 
-This is pinned by `TestBufferFlusher_CrashRecovery` (both modules): commit a
-watermark at T1, ingest `(T1, T2]`, "crash" (close + reopen the buffer from
-disk), recover → the watermark reloads and the un-flushed window is re-collected
-intact.
+The crash matrix — a restart at every step of a drain (before the draining
+record, after it, after the first PUT before its mark, after a mark, after all
+PUTs, with the marker PUT failing, after the marker before the commit, after the
+commit) — is pinned by `TestSegments_CrashMatrix` (both modules); a restart with
+no flush state at all by `TestSegments_RestartBeforeAnyCommitDrainsEverything`;
+late and backfilled rows by `TestSegments_LateRowsReachParquet` and
+`TestSegments_BackfillIsKept`; ingest while a drain runs by
+`TestSegments_IngestDuringDrainLosesNothing`; the seal policy and the removal
+after the grace by `TestSegments_SealPolicy` and
+`TestSegments_ReapRespectsGraceAndSnapshots`; the moved-aside old directory by
+`TestSegments_SingleStoreBufferIsMovedAside`. The end-to-end form, with the real
+containers, is `TestChaos_RestartRestoresTheBuffer` and
+`TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow` (`tests/e2e`, tags `e2e chaos`).
 
 ### 3.1 Deletes and rewrites
 
@@ -468,44 +464,37 @@ unfinished at the moment of a rollback is never resolved. Drain
 
 On SIGTERM the insert pod:
 
-1. Stops accepting new writes and lets the buffer's `Close()` flush its parts to
-   disk (durable for the next start).
+1. Stops accepting new writes.
 2. Saves the **manifest snapshot** and **footer-cache snapshot** (bounded by
-   `persist_timeout`) so the next start warms instantly instead of re-listing
-   S3.
-3. Holds `/ready` at `503`/`204` until disk recovery + the `MinManifestFiles`
-   gate pass on the next boot, so a load balancer never routes to a pod that
-   hasn't restored its buffer.
+   `persist_timeout`) so the next start warms instantly instead of re-listing S3.
+3. Stops the **flusher** (a drain cut short resumes after the restart) and closes
+   the insert buffer: upstream writes the in-memory rows of every segment to disk.
 4. Drains any tombstone S3 write a transient failure left owed. This is a
    backstop, not the durability mechanism — tombstones were already written
-   through on every change — so a pod that never reaches this step loses
-   nothing.
-5. Closes the storage, whose writer runs its **final flush**, and then saves
-   the **manifest snapshot a second time**. The first snapshot (step 2) cannot
-   contain the objects the final flush wrote; the second one lets the next boot
-   start with their exact time bounds instead of bounds inferred from the S3
-   listing (see §2.2).
+   through on every change.
+5. Saves the **manifest snapshot a second time**. The first snapshot (step 2)
+   cannot contain the objects the flusher wrote while the `Stop()` calls ran; the
+   second lets the next boot start with their exact time bounds instead of
+   bounds inferred from the S3 listing (see §2.2).
 
-> **Hardening item:** a graceful *flusher* stop (drain the current window to S3
-> on SIGTERM rather than re-flushing it on restart) is tracked as a follow-up.
-> It shortens the post-restart re-flush, but is not required for correctness —
-> the watermark already guarantees no loss.
+Readiness holds `/ready` at `503`/`204` until disk recovery plus the
+`MinManifestFiles` gate pass on the next boot.
 
 ---
 
 ## 5. Maintaining big S3 files
 
 Small objects are expensive on object stores (per-request cost, read
-amplification). Two mechanisms keep cold-tier Parquet at the ~128 MB target:
+amplification). Two mechanisms keep cold-tier Parquet near the 128 MB target:
 
-- **Size-gated flush.** The flusher checks frequently but **only flushes a
-  window once it reaches `target_file_size` (128 MB) OR has lingered
-  `buffer_flush_interval`** (the max-linger cap), whichever comes first. High
-  ingest produces big objects directly; the tick cadence is *not* the flush
-  cadence. This is the object-store analogue of the buffer's own (disk-oriented)
-  ~5s part flush — the two are deliberately decoupled.
-- **Compaction.** A background compactor merges the inevitable small L0 files
-  (low-traffic windows) up through L1→L2 into 128 MB+ objects, applying
+- **Size-aware segments.** A segment is sealed `buffer_flush_interval` after its first row, or
+  earlier once it holds about `target_file_size` of rows while fewer than 64
+  segments wait (past that, only age seals, so an outage builds a few large
+  segments rather than many small ones). It is then cut into objects of at most
+  `target_file_size`. High ingest produces big objects directly; the tick cadence
+  is *not* the flush cadence.
+- **Compaction.** A background compactor merges the inevitable small level-0
+  objects (low-traffic segments) up through L1→L2 into 128 MB+ objects, applying
   progressively stronger zstd at each level. Once a file reaches target size it
   is never rewritten, so S3-IA/Glacier lifecycle transitions are safe.
 
@@ -516,23 +505,19 @@ small-file compaction adds a small, amortized overhead).
 
 ## 6. Serving data not yet on S3 (peering reads)
 
-A query must see rows that are still in the buffer (not yet flushed). This is the
-**read-merge**:
+A query must see rows that are still in the buffer. This is the read handoff of
+§2.3:
 
-- The select path queries the manifest for flushed Parquet **and** the unflushed
-  window from the insert buffers.
-- **Single-node (`role=all`):** the local buffer is queried directly through the
-  **same `logstorage` engine** — zero struct→DataBlock conversion.
-- **Multi-pod:** the **BufferBridge** fans out over HTTP to every insert pod's
-  buffer (each returns only its own rows, so there is no double-count), used when
-  `HasPeers()` is true.
-- **No double-emission.** The buffer is served only for
-  `(parquetWatermark, now]`, where `parquetWatermark` is the max `MaxTimeNs` of
-  the Parquet just scanned. Aggregations (`count()`/`stats`) therefore never
-  count a row twice. Trace-retrieval queries (Jaeger/Tempo span fetch) ignore the
-  watermark and serve the buffer's full window, because the reader already
-  deduplicates by `(trace_id, span_id)` — this is what gives cold Jaeger/Tempo
-  **parity with hot VT for just-ingested traces**.
+- **Single-node (`role=all`):** the local segments are queried directly through
+  the **same `logstorage` engine**, with no struct→DataBlock conversion.
+- **Multi-pod:** the **BufferBridge** fans out over HTTP to every insert pod
+  (each returns only its own rows and the nonces of its segments, so there is no
+  double count), used when `HasPeers()` is true. Select pods hold no buffer and
+  need no volume for it.
+- **No double emission.** The scan drops the objects of the segments the view
+  serves, so aggregations (`count()`/`stats`) never count a row twice. A
+  trace-by-ID fetch (Jaeger/Tempo) takes the same path — this is what gives cold
+  Jaeger/Tempo **parity with hot VT for just-ingested traces**.
 
 Result: zero-delay read-after-write on the recent window, served by the same
 engine that owns the flushed data.
@@ -543,21 +528,24 @@ engine that owns the flushed data.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `insert.buffer_engine` | `buffer` | `logstore` selects the logstorage-native durable buffer (Option B). `buffer` is the legacy in-memory staging. |
-| `insert.buffer_dir` | `/data/lakehouse/buffer` | On-disk location of the buffer's parts. **Must be a durable volume** (not tmpfs) for crash recovery. |
-| `insert.buffer_retention` | `1h` | How long the buffer keeps a row. With flush enabled this is the recovery ceiling; validated `>= 4 × buffer_flush_interval`. |
-| `insert.buffer_flush_enabled` | `false` | When `true`, the buffer is the **authoritative** Parquet producer (the WAL cutover). Requires `buffer_engine: logstore`. |
-| `insert.buffer_flush_interval` | `5m` | The object-store flush **cap** (max-linger). The flusher flushes on `target_file_size` OR this, whichever first. Must be `<< buffer_retention`. |
-| `insert.target_file_size` | `128MB` | The size trigger for a flush and the compaction target. |
-| `insert.ack_mode` | `buffer` | Designed as `buffer` (ack after the buffer add) or `flush-sync` (ack only after S3 confirms). **Not read by either binary in this release** — it is validated and a profile sets it, but no code path acts on it, so every insert is acknowledged once buffered. |
+| `insert.buffer_dir` | `/data/lakehouse/buffer` | The insert buffer: one directory per segment. **Must be a persistent volume** (a StatefulSet PVC); size it for `buffer_flush_interval` + drain + grace of ingest plus the outage you want to ride out ([Sizing](operations/sizing.md)). |
+| `insert.buffer_flush_interval` | `5m` | The longest a row waits in an open segment: sealed this long after its first row (earlier at `target_file_size`), then written whole and removed after a grace. A segment that sat empty is not sealed the moment rows arrive. |
+| `insert.target_file_size` | `128MB` | The object size target and the early-seal trigger; compaction target. |
 | `delete.persist_path` | `/data/lakehouse/tombstones` | Directory holding the local tombstone copy. **Must be a durable volume** — it is the copy that survives a `kill -9` when S3 is also unreachable. |
+
+The settings of earlier releases' staging buffer — `insert.buffer_engine`,
+`buffer_flush_enabled`, `buffer_retention`, `ack_mode`, `flush_interval` (and the
+`-lakehouse.insert.flush-interval` flag), `max_buffer_rows`, `max_buffer_bytes`,
+`flush_linger`, `flush_max_rows`, `peer_replicate*` — have been removed. A config
+file that still sets one is refused at startup with a message naming the key.
 
 ---
 
 ## See also
 
 - [Write Path](write-path.md) — the ingest→Parquet pipeline.
-- [Read Path](read-path.md) — the manifest scan + buffer read-merge.
+- [Read Path](read-path.md) — the manifest scan + the buffer read handoff.
+- [Sizing](operations/sizing.md) — the buffer's disk formula and numbers.
 - [Lifecycle & readiness](operations/lifecycle.md) — restart behavior, `/ready` semantics, warmup.
 - [Configuration](configuration.md) — all insert/buffer flags.
 - [Deletion strategy](deletion-strategy.md) — tombstone modes, cost model, rewrite scheduling.

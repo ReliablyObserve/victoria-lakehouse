@@ -19,8 +19,8 @@ sends the **same payload** to the hot binary and to Lakehouse and checks, in ord
 | Step | Check |
 |---|---|
 | `ingest` | status code and body of the ingest answer are equal (ES `took` aside); for a payload upstream refuses, both refuse it the same way. Right after the cell's own write the ingest counters are checked: `vl_rows_ingested_total{type=...}` / `vt_rows_ingested_total{type=...}` moved on hot and on Lakehouse, and so did `lakehouse_insert_rows_total`. The counters are per-protocol series of the whole process, not per tenant, so this is a **lower bound** (moved by at least the rows the cell wrote). |
-| `buffer` | each cell is queried before later protocol writes; Lakehouse equals hot field for field (`_stream_id` and `_time` included), apart from declared gaps, and fresh S3 scans before and after that observation must find zero marker rows. A flush already on S3 fails the preflush observation |
-| `parquet` | a standard Parquet reader checks exact marker/span counts, every captured hot field and value, timestamps in nanoseconds, numeric tenant columns (also on trace-index rows), promoted scalars and spilled MAP values. Conflicting duplicate representations, extra fields and malformed MAPs fail. The exact documented #332 message value is the sole physical-value exception below. Lakehouse is compared with hot again |
+| `buffer` | each cell is queried before later protocol writes; Lakehouse equals hot field for field (`_stream_id` and `_time` included), apart from declared gaps, and Lakehouse's insert buffer (`/internal/buffer/query`) must hold every row of the cell before and after that observation, so the read was answered from the buffer. S3 may already hold the rows: a drained segment keeps serving them, and its objects stay out of the scan, through its grace period |
+| `parquet` | a standard Parquet reader checks exact marker/span counts, every captured hot field and value, timestamps in nanoseconds, numeric tenant columns (also on trace-index rows), promoted scalars and spilled MAP values. Conflicting duplicate representations, extra fields and malformed MAPs fail. The exact documented #332 message value is the sole physical-value exception below. Lakehouse is compared with hot again once `/internal/buffer/query` reports that the insert buffer no longer holds the cell's rows, so that comparison reads Parquet: a drained buffer segment stays readable for its grace period (90 s in the e2e stack) and is answered by upstream's engine until it is removed |
 | `stable` | established cells are sampled throughout later writes and flush polling, then repeatedly over a shared 10 s window. A missing, duplicate or changed result fails on its first sampled observation. Logs report sample counts and the largest observed gap between samples; changes between samples are not ruled out |
 | `known_gaps` | every gap a cell declares was observed in that cell (see Known gaps) |
 | `storage_health` | `lakehouse_insert_rows_lost_total` and `lakehouse_insert_rejected_total` did not move |
@@ -33,7 +33,7 @@ and persisted raw parity, and checks negative reads. It uses nonhexadecimal trac
 by the native parser; it does not send those IDs through OTLP.
 
 Parquet-only gaps require observed persisted marker rows. A cell's preflush gate fails if
-those rows appear before its buffer observation completes.
+its rows leave the insert buffer before its buffer observation completes.
 
 The non-data ingest routes (readiness, health, and the Elasticsearch, Datadog and Splunk
 compatibility stubs) are probed by `TestIngestMatrix_Probes`: same status and body on both sides.
@@ -112,8 +112,6 @@ in `Gaps()` and `Case.Gaps` in `tests/ingestmatrix`, with its rewrite in `gapRew
 
 * the cell still compares every other field exactly; a gap rewrites a Lakehouse row into the form hot
   returns, and only counts when the rewritten row then equals a hot row;
-* the set-level gap #279 (a span returned twice) is accepted only when the result is **exactly two
-  copies of every hot row**, so a writer that duplicates spans fails;
 * the registry rows of an affected cell are `expect: differ` and cite the issues, and a test keeps
   `Case.Gaps` and the rows in step in both directions;
 * a cell **fails when a declared gap is no longer observed**, so a fixed gap cannot stay on the list.
@@ -123,7 +121,6 @@ in `Gaps()` and `Case.Gaps` in `tests/ingestmatrix`, with its rewrite in `gapRew
 | After the flush, Lakehouse returns `severity_number: "0"` on rows VictoriaLogs stores without it | logs, every protocol that does not carry a severity | [#274](https://github.com/ReliablyObserve/victoria-lakehouse/issues/274) |
 | After the flush, an OTLP log row comes back with `level` in place of `severity_text` | logs, OTLP/HTTP protobuf | [#331](https://github.com/ReliablyObserve/victoria-lakehouse/issues/331) |
 | Spans are stored with `_msg` = VictoriaLogs' default text instead of VictoriaTraces' `-` | traces: OTLP protobuf, OTLP/gRPC and native (OTLP/JSON spans are right), buffer and Parquet | [#332](https://github.com/ReliablyObserve/victoria-lakehouse/issues/332) |
-| A `trace_id` query returns each flushed span twice while the buffer still holds it (the trace-ID fast path skips the buffer watermark) | traces, every protocol, after the flush | [#279](https://github.com/ReliablyObserve/victoria-lakehouse/issues/279) |
 
 Fresh writes after native-message preservation no longer declare #333: physical `body` and
 served `_msg` must be present and match hot, apart from the exact #332 value. The #332 raw
@@ -199,7 +196,7 @@ docker compose -p lhingest -f deployment/docker/docker-compose-e2e.yml down -v -
 Set the `E2E_*` host-port variables of the compose file (see `docs/docker-compose-setup.md`) to the same
 ports when the compose file, not the override, publishes them. The package needs the vendored
 VictoriaLogs tree (`make deps-logs`), because the native payloads are built with `logstorage.InsertRow`.
-The flush wait is one flush interval (120 s in the e2e stack); the Logs and Traces matrices run in parallel.
+The flush wait is one flush interval (120 s in the e2e stack), plus up to the buffer grace (90 s) before the Parquet comparison; the Logs and Traces matrices run in parallel.
 
 ## Verification results
 
@@ -207,7 +204,10 @@ With the pinned VictoriaLogs v1.52 and VictoriaTraces v0.12, the isolated protoc
 in 153.709 s with all 26 log and 8 trace cells passing, plus probes, route gaps and the two
 mixed-tenant native controls. Every stored span retained its native message; #333 is absent
 from active gap declarations. The run still observed #274, #331, #332 and #279, and does not
-claim those production gaps are fixed.
+claim those production gaps are fixed. #279 (a `trace_id` query returning each flushed span twice
+while the buffer still held it) was closed afterwards by the segment buffer: a query drops the
+objects of the segments it reads from the buffer, on the trace-ID path too, so the matrix no
+longer declares it and requires each span exactly once.
 
 The trace cells had 85–113 sampled observations with a largest observed gap of 2.672 s;
 log cells had 88–183 observations with a largest gap of 3.995 s. The stability windows made

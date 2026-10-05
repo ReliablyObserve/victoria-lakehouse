@@ -32,7 +32,9 @@ func TestTraceMessageCanonicalLogRowsOwnsNativeAndCustomerValues(t *testing.T) {
 	if !canonical {
 		t.Fatal("fixture did not exercise upstream's canonical native message")
 	}
-	rows := logRowsToTraceRows(lr)
+	// The spans take the path every Parquet row takes: into the insert buffer
+	// (upstream storage), read back and converted by DataBlockToTraceRows.
+	rows := rowsViaBuffer(t, lr)
 	for i := range canonicalBacking {
 		canonicalBacking[i] = 'x'
 	}

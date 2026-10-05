@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -15,10 +13,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
@@ -34,21 +29,6 @@ type poolS3Fetcher struct {
 
 func (f *poolS3Fetcher) Download(ctx context.Context, key string) ([]byte, error) {
 	return f.pool.Download(ctx, key)
-}
-
-// ---------------------------------------------------------------------------
-// Helper: newTestSmartCache creates a smartcache Controller for coverage tests.
-// ---------------------------------------------------------------------------
-
-func newTestSmartCache() *smartcache.Controller {
-	return smartcache.NewController(smartcache.ControllerConfig{
-		L1:          &mockL1{},
-		L2:          &mockL2{},
-		PeerLookup:  &mockPeerLookup{localKeys: map[string]bool{}},
-		S3Fetcher:   &mockS3Fetcher{},
-		Metadata:    smartcache.NewMetadataMap(),
-		GracePeriod: 5 * time.Minute,
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1394,88 +1374,6 @@ func TestCovFinal_RunQuery_HotBoundarySuppression(t *testing.T) {
 // ---------------------------------------------------------------------------
 // 12. StartWriter — flush and cache callback paths
 // ---------------------------------------------------------------------------
-
-// TestCovFinal_StartWriter_FlushPath exercises the StartWriter background
-// flush loop end to end on the traces write path.
-func TestCovFinal_StartWriter_FlushPath(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(buffer.TenantScopeHeader, "0:0")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	pool := testPool(t, srv.URL)
-	m := manifest.New("test", "traces/")
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	cfg.Insert.FlushInterval = 10 * time.Minute
-	cfg.Insert.MaxBufferRows = 1000000
-
-	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-
-	s := &Storage{
-		cfg:        cfg,
-		pool:       pool,
-		manifest:   m,
-		registry:   schema.NewRegistry(schema.TracesProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-		bloomIdx:   bloomindex.New(),
-		writer:     bw,
-	}
-
-	s.StartWriter()
-
-	s.writer.AddTraceRows([]schema.TraceRow{
-		{TimestampUnixNano: time.Now().UnixNano(), SpanName: "test", ServiceName: "svc"},
-	})
-	s.writer.triggerFlush()
-	time.Sleep(50 * time.Millisecond)
-
-	s.writer.Stop()
-}
-
-// TestCovFinal_StartWriter_WithSmartCacheCallback exercises the flush cache callback
-// path when smartCache is set. Uses a manually constructed Storage (not New()) to
-// avoid lifecycle complications.
-func TestCovFinal_StartWriter_WithSmartCacheCallback(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(buffer.TenantScopeHeader, "0:0")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	pool := testPool(t, srv.URL)
-	m := manifest.New("test", "traces/")
-	cfg := config.Default()
-	cfg.Insert.FlushInterval = 10 * time.Minute // Long interval — no automatic flush.
-	cfg.Insert.MaxBufferRows = 1000000
-
-	bw := NewBatchWriter(&cfg.Insert, pool, m, "traces/", config.ModeTraces)
-
-	s := &Storage{
-		cfg:        cfg,
-		pool:       pool,
-		manifest:   m,
-		registry:   schema.NewRegistry(schema.TracesProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-		bloomIdx:   bloomindex.New(),
-		writer:     bw,
-		smartCache: newTestSmartCache(),
-	}
-
-	// StartWriter installs the flush cache callback and starts the flush loop.
-	s.StartWriter()
-
-	time.Sleep(20 * time.Millisecond)
-	// Stop the writer — exactly one Stop call.
-	s.writer.Stop()
-}
 
 // ---------------------------------------------------------------------------
 // 13. openParquetFile — nil pool path (no range reads possible)

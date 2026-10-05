@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
@@ -943,9 +944,9 @@ func TestTenantScope_BufferBridge_FanOutIsScoped(t *testing.T) {
 		bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeLogs)
 		bridge.SetEndpoints([]string{peer.URL})
 
-		got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
-		if err != nil {
-			t.Fatalf("QueryLogs: %v", err)
+		got, nonces := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
+		if len(nonces) != 0 {
+			t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 		}
 		mu.Lock()
 		defer mu.Unlock()
@@ -974,9 +975,9 @@ func TestTenantScope_BufferBridge_FanOutIsScoped(t *testing.T) {
 		bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeLogs)
 		bridge.SetEndpoints([]string{peer.URL})
 
-		got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
-		if err != nil {
-			t.Fatalf("QueryLogs: %v", err)
+		got, nonces := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
+		if len(nonces) != 0 {
+			t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 		}
 		if len(got) != 0 {
 			t.Errorf("rows from a peer that did not prove tenant scoping must be dropped, got %+v", got)
@@ -995,9 +996,9 @@ func TestTenantScope_BufferBridge_FanOutIsScoped(t *testing.T) {
 
 		bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeTraces)
 		bridge.SetEndpoints([]string{peer.URL})
-		got, err := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
-		if err != nil {
-			t.Fatalf("QueryTraces: %v", err)
+		got, nonces := bridge.QueryTraces(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
+		if len(nonces) != 0 {
+			t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 		}
 		if len(got) != 0 {
 			t.Errorf("rows declared for another tenant must be dropped, got %+v", got)
@@ -1079,16 +1080,36 @@ func TestDataTenantAccountIDs_ColdAndBuffered(t *testing.T) {
 		t.Errorf("DataTenantAccountIDs = %v, want exactly the three cold tenants", got)
 	}
 
-	f.s.localBuffer = &tenantListingBuffer{tenants: []logstorage.TenantID{{AccountID: 3003}, {AccountID: 1001}}}
+	f.s.localBuffer = tsBuffer(t, logstorage.TenantID{AccountID: 3003}, logstorage.TenantID{AccountID: 1001})
 	got = ids()
 	if !got[3003] || len(got) != 4 {
 		t.Errorf("with a buffered tenant: %v, want the cold tenants plus 3003", got)
 	}
+}
 
-	f.s.localBuffer = &tenantListingBuffer{listErr: fmt.Errorf("boom")}
-	if got = ids(); len(got) != 3 {
-		t.Errorf("a failing buffer listing must not hide the cold tenants: %v", got)
+// tsBuffer is a local insert buffer holding two rows of each tenant, searchable
+// at once (the single store seen as one segment).
+func tsBuffer(t *testing.T, tenants ...logstorage.TenantID) LocalBuffer {
+	t.Helper()
+	st, err := membuffer.Open(membuffer.Config{Path: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(st.Close)
+	now := time.Now()
+	for _, tn := range tenants {
+		lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
+		for i := 0; i < 2; i++ {
+			lr.MustAdd(tn, now.Add(-time.Duration(i)*time.Second).UnixNano(), []logstorage.Field{
+				{Name: "service.name", Value: fmt.Sprintf("buf-%d", tn.AccountID)},
+				{Name: "_msg", Value: "row"},
+			}, 1)
+		}
+		st.MustAddRows(lr)
+		logstorage.PutLogRows(lr)
+	}
+	st.DebugFlush()
+	return snapshotBuffer{st.Snapshot()}
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,9 +1202,9 @@ func TestTenantScope_BufferBridge_GlobalReadAsksForAllTenants(t *testing.T) {
 
 	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 2 * time.Second}, config.ModeLogs)
 	bridge.SetEndpoints([]string{peer.URL})
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{all: true})
-	if err != nil {
-		t.Fatalf("QueryLogs: %v", err)
+	got, nonces := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{all: true})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -1195,200 +1216,73 @@ func TestTenantScope_BufferBridge_GlobalReadAsksForAllTenants(t *testing.T) {
 	}
 
 	// A scoped request must refuse a peer that answered for all tenants.
-	scoped, err := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
-	if err != nil {
-		t.Fatalf("QueryLogs scoped: %v", err)
+	scoped, nonces := bridge.QueryLogs(context.Background(), 0, 1000, tenantScope{account: "1001", project: "0"})
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	if len(scoped) != 0 {
 		t.Errorf("a peer answering all tenants to a scoped request must be dropped, got %+v", scoped)
 	}
 }
 
-// tenantListingBuffer is a LocalBuffer that also enumerates its tenants, like
-// the logstorage-native buffer does, and records the tenant list it was asked
-// to query.
-type tenantListingBuffer struct {
-	mu       sync.Mutex
-	tenants  []logstorage.TenantID
-	listErr  error
-	queried  [][]logstorage.TenantID
-	starts   []int64 // query window start of each RunQuery, same order as queried
-	listCall int
-}
-
-func (b *tenantListingBuffer) RunQuery(qctx *logstorage.QueryContext, _ logstorage.WriteDataBlockFunc) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.queried = append(b.queried, append([]logstorage.TenantID(nil), qctx.TenantIDs...))
-	start, _ := qctx.Query.GetFilterTimeRange()
-	b.starts = append(b.starts, start)
-	return nil
-}
-
-func (b *tenantListingBuffer) GetTenantIDs(_ context.Context, _, _ int64) ([]logstorage.TenantID, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.listCall++
-	return b.tenants, b.listErr
-}
-
-func (b *tenantListingBuffer) Close() {}
-
 func TestTenantScope_LocalBuffer_TenantList(t *testing.T) {
 	all := []logstorage.TenantID{{}, {AccountID: 1001}, {AccountID: 2002, ProjectID: 7}}
 	global := storage.WithGlobalRead(context.Background())
 
 	cases := []struct {
-		name    string
-		ctx     context.Context
-		ids     []logstorage.TenantID
-		listErr error
-		want    []logstorage.TenantID
+		name string
+		ctx  context.Context
+		ids  []logstorage.TenantID
+		want []logstorage.TenantID
 	}{
-		{"scoped request keeps its tenant", context.Background(), []logstorage.TenantID{{AccountID: 1001}}, nil, []logstorage.TenantID{{AccountID: 1001}}},
-		{"nil tenant list is the default tenant", context.Background(), nil, nil, []logstorage.TenantID{{}}},
-		{"global read enumerates the buffer's tenants", global, []logstorage.TenantID{{}}, nil, all},
-		{"global read falls back to the own tenant if enumeration fails", global, nil, fmt.Errorf("boom"), []logstorage.TenantID{{}}},
+		{"scoped request keeps its tenant", context.Background(), []logstorage.TenantID{{AccountID: 1001}}, []logstorage.TenantID{{AccountID: 1001}}},
+		{"nil tenant list is the default tenant", context.Background(), nil, []logstorage.TenantID{{}}},
+		{"global read enumerates the buffer's tenants", global, []logstorage.TenantID{{}}, all},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			buf := &tenantListingBuffer{tenants: all, listErr: tc.listErr}
-			s := &Storage{localBuffer: buf}
-			got := s.localBufferTenantIDs(tc.ctx, tc.ids, 0, 1)
+			s := &Storage{localBuffer: tsBuffer(t, all...)}
+			v := s.openBufferView(tc.ctx, 0, time.Now().Add(time.Hour).UnixNano(), tc.ids)
+			defer v.release()
+			got := v.tenantIDs(tc.ctx, tc.ids, 0, time.Now().Add(time.Hour).UnixNano())
 			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
 				t.Errorf("tenant list = %v, want %v", got, tc.want)
-			}
-			if !scopeFor(tc.ctx, tc.ids).all && buf.listCall != 0 {
-				t.Error("a scoped request must not enumerate the buffer's tenants")
 			}
 		})
 	}
 
-	t.Run("buffer without enumeration keeps the own tenant under global read", func(t *testing.T) {
-		s := &Storage{localBuffer: &fakeLocalBuffer{}}
-		if got := s.localBufferTenantIDs(global, []logstorage.TenantID{{AccountID: 5}}, 0, 1); fmt.Sprint(got) != fmt.Sprint([]logstorage.TenantID{{AccountID: 5}}) {
-			t.Errorf("tenant list = %v, want the request's own tenant", got)
-		}
-	})
-
 	t.Run("pure-buffer fast path hands the widened list to the buffer", func(t *testing.T) {
-		buf := &tenantListingBuffer{tenants: all}
-		s := &Storage{localBuffer: buf}
-		q := mustParseQueryWithTime(t, "*", 0, 1000)
-		if !s.servePureBufferQuery(global, q, []logstorage.TenantID{{}}, false, func(uint, *logstorage.DataBlock) {}) {
-			t.Fatal("pure-buffer path declined")
+		s := &Storage{localBuffer: tsBuffer(t, all...)}
+		now := time.Now()
+		q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
+		rows := func(ctx context.Context, ids []logstorage.TenantID) int {
+			v := s.openBufferView(ctx, 0, now.Add(time.Hour).UnixNano(), ids)
+			defer v.release()
+			n := 0
+			var mu sync.Mutex
+			if !s.servePureBufferQuery(ctx, v, q, ids, false, func(_ uint, db *logstorage.DataBlock) {
+				mu.Lock()
+				n += db.RowsCount()
+				mu.Unlock()
+			}) {
+				t.Fatal("pure-buffer path declined")
+			}
+			return n
 		}
-		if !s.servePureBufferQuery(context.Background(), q, []logstorage.TenantID{{AccountID: 1001}}, false, func(uint, *logstorage.DataBlock) {}) {
-			t.Fatal("pure-buffer path declined")
+		if got := rows(global, []logstorage.TenantID{{}}); got != 6 {
+			t.Errorf("global read served %d rows from the buffer; want the 2 rows of each of the 3 tenants", got)
 		}
-		buf.mu.Lock()
-		defer buf.mu.Unlock()
-		if len(buf.queried) != 2 || len(buf.queried[0]) != len(all) || len(buf.queried[1]) != 1 || buf.queried[1][0].AccountID != 1001 {
-			t.Errorf("buffer was queried with %v; want every tenant for global read, then only 1001:0", buf.queried)
+		if got := rows(context.Background(), []logstorage.TenantID{{AccountID: 1001}}); got != 2 {
+			t.Errorf("a request for 1001:0 served %d buffered rows; want its 2", got)
 		}
 	})
 }
 
-// ---------------------------------------------------------------------------
-// Per-tenant flush watermarks: no double count, no hidden unflushed rows.
-// ---------------------------------------------------------------------------
-
-func TestTenantScope_BufferWatermarks(t *testing.T) {
-	f := newTenantScopeFixture(t)
-	files := []manifest.FileInfo{
-		{Key: "0/0/logs/" + tsPartition + "/a.parquet", MaxTimeNs: 100},
-		{Key: "0/0/logs/" + tsPartition + "/b.parquet", MaxTimeNs: 300},
-		{Key: "logs/" + tsPartition + "/legacy.parquet", MaxTimeNs: 400},
-		{Key: "1001/0/logs/" + tsPartition + "/c.parquet", MaxTimeNs: 50},
-		{Key: "acme/x/logs/" + tsPartition + "/d.parquet", MaxTimeNs: 999}, // not a numeric tenant
-	}
-	wm := f.s.bufferWatermarksFor(context.Background(), 0, files)
-	if got := wm[logstorage.TenantID{}]; got != 400 {
-		t.Errorf("0:0 watermark = %d, want 400 (its own objects and the legacy object it owns)", got)
-	}
-	if got := wm[logstorage.TenantID{AccountID: 1001}]; got != 50 {
-		t.Errorf("1001:0 watermark = %d, want 50 — another tenant's newer flush must not raise it", got)
-	}
-	if len(wm) != 2 {
-		t.Errorf("watermarks = %v, want exactly 0:0 and 1001:0", wm)
-	}
-	if got := f.s.bufferWatermarksFor(context.Background(), 0, nil); got != nil {
-		t.Errorf("no objects → no watermarks, got %v", got)
-	}
-
-	for _, tc := range []struct{ start, wm, want int64 }{
-		{start: 10, wm: 0, want: 10},  // nothing flushed: whole window
-		{start: 10, wm: 5, want: 10},  // watermark before the window
-		{start: 10, wm: 10, want: 11}, // strictly after the watermark
-		{start: 10, wm: 70, want: 71},
-	} {
-		if got := bufferWindowStart(tc.start, tc.wm); got != tc.want {
-			t.Errorf("bufferWindowStart(%d, %d) = %d, want %d", tc.start, tc.wm, got, tc.want)
-		}
-	}
-	if got := singleTenantID(nil); got != (logstorage.TenantID{}) {
-		t.Errorf("singleTenantID(nil) = %+v, want 0:0", got)
-	}
-
-	logRows := []schema.LogRow{
-		{TimestampUnixNano: 40, AccountID: 1001}, // ≤ 1001's watermark 50: already in Parquet
-		{TimestampUnixNano: 60, AccountID: 1001}, // newer than 1001's watermark: keep
-		{TimestampUnixNano: 60},                  // ≤ 0:0's watermark 400: already in Parquet
-		{TimestampUnixNano: 450},                 // newer than 0:0's watermark: keep
-		{TimestampUnixNano: 5, AccountID: 2002},  // tenant without objects, but before the query start
-		{TimestampUnixNano: 20, AccountID: 2002}, // tenant without objects: whole window
-	}
-	kept := logRowsAfterWatermarks(logRows, 10, wm)
-	if len(kept) != 3 || kept[0].TimestampUnixNano != 60 || kept[0].AccountID != 1001 || kept[1].TimestampUnixNano != 450 || kept[2].AccountID != 2002 {
-		t.Errorf("logRowsAfterWatermarks kept %+v", kept)
-	}
-	traceRows := []schema.TraceRow{
-		{TimestampUnixNano: 40, AccountID: 1001},
-		{TimestampUnixNano: 60, AccountID: 1001},
-	}
-	if kept := traceRowsAfterWatermarks(traceRows, 10, wm); len(kept) != 1 || kept[0].TimestampUnixNano != 60 {
-		t.Errorf("traceRowsAfterWatermarks kept %+v", kept)
-	}
-	if kept := logRowsAfterWatermarks(logRows, 10, nil); len(kept) != len(logRows) {
-		t.Errorf("no watermarks must keep every row, kept %d of %d", len(kept), len(logRows))
-	}
-}
-
-// TestTenantScope_GlobalRead_LocalBufferUsesEachTenantsWatermark: under a
-// global read the co-located buffer is queried once per tenant, each from
-// strictly after that tenant's own flush watermark.
-func TestTenantScope_GlobalRead_LocalBufferUsesEachTenantsWatermark(t *testing.T) {
-	all := []logstorage.TenantID{{}, {AccountID: 1001}, {AccountID: 2002, ProjectID: 7}}
-	buf := &tenantListingBuffer{tenants: all}
-	s := &Storage{localBuffer: buf, cfg: testConfig()}
-	q := mustParseQueryWithTime(t, "*", 1000, 100000)
-	wm := bufferWatermarks{{}: 5000, {AccountID: 1001}: 200000}
-
-	s.queryBufferBridge(storage.WithGlobalRead(context.Background()), 1000, 100000, 0, new(atomic.Int64), wm, q, []logstorage.TenantID{{}}, func(uint, *logstorage.DataBlock) {})
-
-	buf.mu.Lock()
-	defer buf.mu.Unlock()
-	starts := map[logstorage.TenantID]int64{}
-	for i, ids := range buf.queried {
-		if len(ids) != 1 {
-			t.Fatalf("buffer query %d carried %d tenants, want exactly one per query", i, len(ids))
-		}
-		starts[ids[0]] = buf.starts[i]
-	}
-	if got, ok := starts[logstorage.TenantID{}]; !ok || got != 5001 {
-		t.Errorf("0:0 buffer window starts at %d (queried=%v), want 5001 — strictly after its own watermark", got, ok)
-	}
-	if _, ok := starts[logstorage.TenantID{AccountID: 1001}]; ok {
-		t.Error("1001:0's Parquet covers the whole window; its buffer must not be queried")
-	}
-	if got, ok := starts[logstorage.TenantID{AccountID: 2002, ProjectID: 7}]; !ok || got != 1000 {
-		t.Errorf("2002:7 has no flushed objects; its buffer window must start at the query start 1000, got %d (queried=%v)", got, ok)
-	}
-}
-
-// TestTenantScope_GlobalRead_BridgeUsesEachTenantsWatermark: bridged rows are
-// kept per their own tenant's watermark under a global read.
-func TestTenantScope_GlobalRead_BridgeUsesEachTenantsWatermark(t *testing.T) {
+// A global read merges every tenant's rows from the insert pods' buffers; a
+// scoped one only its tenant's. There is no per-tenant time boundary any more:
+// the rows of a segment are answered from the segment and its objects are not
+// read, for every tenant alike.
+func TestTenantScope_GlobalRead_BridgeMergesEveryTenantsRows(t *testing.T) {
 	rows := []schema.LogRow{
 		{TimestampUnixNano: 3000, AccountID: 0, Body: "flushed-0"},
 		{TimestampUnixNano: 6000, AccountID: 0, Body: "new-0"},
@@ -1409,13 +1303,12 @@ func TestTenantScope_GlobalRead_BridgeUsesEachTenantsWatermark(t *testing.T) {
 	s.bufferBridge.SetEndpoints([]string{peer.URL})
 
 	q := mustParseQueryWithTime(t, "*", 1000, 100000)
-	wm := bufferWatermarks{{}: 5000}
 	var got int
 	wb := func(_ uint, db *logstorage.DataBlock) { got += db.RowsCount() }
 
-	s.queryBufferBridge(storage.WithGlobalRead(context.Background()), 1000, 100000, 0, new(atomic.Int64), wm, q, []logstorage.TenantID{{}}, wb)
-	if got != 2 {
-		t.Errorf("global-read bridge merged %d rows, want 2: 0:0's row above its watermark and 2002:7's unflushed row", got)
+	s.queryBufferBridge(storage.WithGlobalRead(context.Background()), 1000, 100000, 0, new(atomic.Int64), nil, q, []logstorage.TenantID{{}}, wb)
+	if got != 3 {
+		t.Errorf("global-read bridge merged %d rows, want all 3 (both tenants' rows)", got)
 	}
 }
 
@@ -1454,9 +1347,9 @@ func TestTenantScope_BufferBridge_TenantListAsksPerTenant(t *testing.T) {
 	bridge.SetEndpoints([]string{peer.URL})
 	scope := resolveTenantScope([]logstorage.TenantID{{AccountID: 1001}, {AccountID: 2002, ProjectID: 7}})
 
-	got, err := bridge.QueryLogs(context.Background(), 0, 1000, scope)
-	if err != nil {
-		t.Fatalf("QueryLogs: %v", err)
+	got, nonces := bridge.QueryLogs(context.Background(), 0, 1000, scope)
+	if len(nonces) != 0 {
+		t.Errorf("segments excluded = %v; an answer without a segment header excludes none", nonces)
 	}
 	bodies := map[string]bool{}
 	for _, r := range got {

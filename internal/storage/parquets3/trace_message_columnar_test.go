@@ -17,10 +17,11 @@ func TestTraceMessageColumnarNativeAndCustomerBody(t *testing.T) {
 	s.registry = schema.NewRegistry(schema.TracesProfile)
 	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
+	var rows []schema.TraceRow
 	for i := 0; i < 2; i++ {
-		bw.AddTraceRows([]schema.TraceRow{{TimestampUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(), Body: fmt.Sprintf("native%d", i), SpanAttributes: map[string]string{"body": fmt.Sprintf("span%d", i)}, ResourceAttributes: map[string]string{"body": fmt.Sprintf("resource%d", i)}, ScopeAttributes: map[string]string{"body": fmt.Sprintf("scope%d", i)}}})
+		rows = append(rows, []schema.TraceRow{{TimestampUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(), Body: fmt.Sprintf("native%d", i), SpanAttributes: map[string]string{"body": fmt.Sprintf("span%d", i)}, ResourceAttributes: map[string]string{"body": fmt.Sprintf("resource%d", i)}, ScopeAttributes: map[string]string{"body": fmt.Sprintf("scope%d", i)}}}...)
 	}
-	bw.triggerFlush()
+	uploadTraceRows(t, bw, rows)
 	run := coldSelectRunner(t, s, base.Add(-time.Minute).UnixNano(), base.Add(time.Minute).UnixNano())
 	got := run("* | fields _msg, span_attr:body, resource_attr:body, scope_attr:body")
 	if len(got) != 2 {

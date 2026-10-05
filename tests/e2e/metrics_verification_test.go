@@ -137,24 +137,6 @@ func assertMetricWithLabelExists(t *testing.T, metrics map[string][]metricLine, 
 	t.Errorf("metric %q with %s=%q not found", name, labelKey, labelValue)
 }
 
-func assertMetricWithLabelGE(t *testing.T, metrics map[string][]metricLine, name, labelKey, labelValue string, minVal float64) {
-	t.Helper()
-	lines, ok := metrics[name]
-	if !ok {
-		t.Errorf("metric %q not found", name)
-		return
-	}
-	for _, l := range lines {
-		if l.labels[labelKey] == labelValue {
-			if l.value < minVal {
-				t.Errorf("metric %q{%s=%q} = %f, want >= %f", name, labelKey, labelValue, l.value, minVal)
-			}
-			return
-		}
-	}
-	t.Errorf("metric %q with %s=%q not found", name, labelKey, labelValue)
-}
-
 // =============================================================================
 // HTTP / RED Metrics
 // =============================================================================
@@ -362,14 +344,18 @@ func TestMetrics_Insert_RowsTotal(t *testing.T) {
 	assertMetricExists(t, metrics, "lakehouse_insert_rows_total")
 }
 
-func TestMetrics_Insert_RowsBuffered(t *testing.T) {
+func TestMetrics_Buffer_PendingRows(t *testing.T) {
 	metrics := scrapeMetrics(t, logsBaseURL)
-	assertMetricExists(t, metrics, "lakehouse_insert_rows_buffered")
+	assertMetricExists(t, metrics, "lakehouse_buffer_pending_rows")
 }
 
-func TestMetrics_Insert_BytesBuffered(t *testing.T) {
+func TestMetrics_Buffer_Segments(t *testing.T) {
 	metrics := scrapeMetrics(t, logsBaseURL)
-	assertMetricExists(t, metrics, "lakehouse_insert_bytes_buffered")
+	assertMetricExists(t, metrics, "lakehouse_buffer_segments")
+	assertMetricExists(t, metrics, "lakehouse_buffer_oldest_pending_age_seconds")
+	assertMetricExists(t, metrics, "lakehouse_buffer_segments_sealed_total")
+	assertMetricExists(t, metrics, "lakehouse_buffer_segments_committed_total")
+	assertMetricExists(t, metrics, "lakehouse_insert_flush_committed_segment")
 }
 
 func TestMetrics_Insert_FlushTotal(t *testing.T) {
@@ -390,16 +376,6 @@ func TestMetrics_Insert_FlushDuration(t *testing.T) {
 func TestMetrics_Insert_BytesUploaded(t *testing.T) {
 	metrics := scrapeMetrics(t, logsBaseURL)
 	assertMetricExists(t, metrics, "lakehouse_insert_bytes_uploaded_total")
-}
-
-func TestMetrics_Insert_PartitionsActive(t *testing.T) {
-	metrics := scrapeMetrics(t, logsBaseURL)
-	assertMetricExists(t, metrics, "lakehouse_insert_partitions_active")
-}
-
-func TestMetrics_Insert_WALBytes(t *testing.T) {
-	metrics := scrapeMetrics(t, logsBaseURL)
-	assertMetricExists(t, metrics, "lakehouse_insert_wal_bytes")
 }
 
 func TestMetrics_Insert_AfterIngestion(t *testing.T) {
@@ -937,14 +913,12 @@ func TestMetrics_Completeness_AllDeclaredMetricsExist(t *testing.T) {
 		"lakehouse_parquet_files_opened_total",
 		// Insert
 		"lakehouse_insert_rows_total",
-		"lakehouse_insert_rows_buffered",
-		"lakehouse_insert_bytes_buffered",
+		"lakehouse_buffer_pending_rows",
+		"lakehouse_buffer_segments",
 		"lakehouse_insert_flush_total",
 		"lakehouse_insert_flush_errors_total",
 		"lakehouse_insert_flush_duration_seconds",
 		"lakehouse_insert_bytes_uploaded_total",
-		"lakehouse_insert_partitions_active",
-		"lakehouse_insert_wal_bytes",
 		// Prefetch
 		"lakehouse_prefetch_hits_total",
 		"lakehouse_prefetch_bytes_total",

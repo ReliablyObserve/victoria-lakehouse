@@ -8,7 +8,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 
 | Area | ✅ covered by a test | 🟡 declared only | 🔧 in progress | 📝 planned | Total |
 |---|---|---|---|---|---|
-| Ingest | 7 | 0 | 1 | 0 | 8 |
+| Ingest | 8 | 0 | 0 | 0 | 8 |
 | Storage | 21 | 0 | 2 | 2 | 25 |
 | Query | 14 | 1 | 0 | 1 | 16 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **136** | **1** | **3** | **8** | **148** |
+| **Total** | **137** | **1** | **2** | **8** | **148** |
 
 ## Coverage gaps
 
@@ -35,11 +35,11 @@ Shipped features with no linked test, whose only verification is a declared, not
 
 `lh.feature.ingest.adaptive_file_sizing` · status: shipped · since: v0.8.0 · surfaces: ingest, flag
 
-**Adaptive file sizing**: per-partition byte estimates trigger flush when approaching `--lakehouse.insert.target-file-size` for optimal Parquet file sizes.
+**Adaptive file sizing**: a buffer segment is sealed early once its estimated size approaches `insert.target_file_size`, and is written in objects of at most that size, for optimal Parquet file sizes with bounded flush memory.
 
-The writer tracks an estimated on-disk size per partition and flushes as it approaches the configured target, so files land in the size band that keeps S3 request counts and row-group geometry sane instead of being dictated by wall-clock flush intervals alone.
+The flusher seals a segment when its estimated size approaches the configured target (or after the flush interval) and plans each tenant's objects from the segment's per-second row counts, so files land in the size band that keeps S3 request counts and row-group geometry sane instead of being dictated by wall-clock flush intervals alone, and one object is all that is ever in memory.
 
-- Verification: tests: `internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize`, `lakehouse-traces/internal/storage/parquets3/writer_test.go#TestAdaptiveFlush_TargetFileSize`, `internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesLogs_CountsEveryStringColumn`, `lakehouse-traces/internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesTraces_CountsEveryStringColumn`
+- Verification: tests: `internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_GroupsAreBoundedInRows`, `internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_SealPolicy`, `internal/storage/parquets3/buffer_flusher_segments_test.go#TestPlanSlices`, `lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_GroupsAreBoundedInRows`, `lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_SealPolicy`, `internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesLogs_CountsEveryStringColumn`, `lakehouse-traces/internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesTraces_CountsEveryStringColumn`
 - Docs: `docs/write-path.md`, `docs/configuration.md`
 - Changelog: `0.8.0`
 
@@ -49,9 +49,9 @@ The writer tracks an estimated on-disk size per partition and flushes as it appr
 
 **Atomic S3 writes**: each Parquet file is written via a single S3 PutObject (1x write amplification). No WAL replay deduplication, no compactor reconciliation — contrast with Loki/Tempo's 3-5x write amplification from WAL→chunk→S3 pipelines.
 
-A flush produces one complete Parquet object per (partition, tenant) and uploads it with one PutObject, so a file is either absent or complete — there is no partially visible object to reconcile, and write amplification stays at 1x.
+A drain produces complete Parquet objects per (partition, tenant, slice) and uploads each with one PutObject, so a file is either absent or complete — there is no partially visible object to reconcile, and write amplification stays at 1x.
 
-- Verification: tests: `internal/storage/parquets3/writer_test.go#TestFlushAll_Logs`, `internal/storage/parquets3/writer_test.go#TestFlushAll_MultiplePartitions`, `lakehouse-traces/internal/storage/parquets3/buffer_flusher_roundtrip_test.go#TestInteg_FlusherRoundTrip_MultiFilePartition`
+- Verification: tests: `internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_FailedPutIsRetriedWithTheSameBytes`, `internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_LateRowsReachParquet`, `lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_FailedPutIsRetriedWithTheSameBytes`
 - Docs: `docs/write-path.md`, `docs/durability.md`
 
 ### ✅ Buffer query bridge across insert pods
@@ -62,22 +62,22 @@ A flush produces one complete Parquet object per (partition, tenant) and uploads
 
 Rows are queryable the moment they are accepted: a select pod asks every insert pod for its unflushed window over `/internal/buffer/query` and merges the answer with what S3 already holds. The fan-out is deliberately AZ-blind — buffered rows live wherever the writer that accepted them runs.
 
-- Verification: tests: `internal/buffer/handler_test.go`, `internal/storage/parquets3/buffer_bridge_test.go`, `internal/storage/parquets3/buffer_bridge_az_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_az_test.go`
-- Docs: `docs/write-path.md`, `docs/read-path.md`
+- Verification: rows: `lh.select.split.insert_buffer_visible_logs` (pass, pending), `lh.select.split.insert_buffer_visible_traces` (pass, pending) · tests: `internal/buffer/handler_test.go`, `internal/storage/parquets3/buffer_bridge_test.go`, `internal/storage/parquets3/buffer_bridge_az_test.go`, `internal/storage/parquets3/buffer_bridge_discovery_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_az_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_bridge_discovery_test.go`
+- Docs: `docs/write-path.md`, `docs/read-path.md`, `docs/kubernetes-deployment.md`
 - Changelog: `0.8.0`
 
 ### ✅ Crash-safe durability without a WAL
 
 `lh.feature.ingest.crash_safe_durability` · status: shipped · since: v0.8.0 · surfaces: ingest, flag
 
-**Crash-safe durability (no WAL)**: the `logstore` insert buffer persists rows as on-disk parts (the same engine hot VL/VT use, restored on open); a persisted **flush watermark** re-flushes any uncommitted window on restart — idempotently — so the crash-loss window matches hot VL/VT. Configurable `ack_mode`: `buffer` (default, fast) or `flush-sync` (zero data loss, used by `max-durability` profile). See [Persistence & Durability](durability.md).
+**Crash-safe durability (no WAL)**: the insert buffer is a sequence of upstream logstorage segments on a persistent volume (the same engine hot VL/VT use, parts on disk within about 11 s as upstream, restored on open); every sealed segment is drained completely to Parquet — late and backfilled rows included — and a restart drains whatever is left without rewriting what is stored, so the crash-loss window matches hot VL/VT. See [Persistence & Durability](durability.md).
 
-Buffered rows are persisted by the same logstorage engine the hot tier uses, so a pod that dies mid-window restores its parts on open. A persisted flush watermark records what already reached S3, so the restart re-flushes only the uncommitted window and does so idempotently. `ack_mode=flush-sync` trades throughput for acknowledging only after the S3 write.
+Buffered rows are persisted by the same logstorage engine the hot tier uses, so a pod that dies mid-window restores its segments on open. The flusher's state records which segments are committed and which one was being drained, so a restart writes only what is missing, with the same bytes and keys, and never twice. An insert is acknowledged once upstream has the rows, as in hot VL/VT.
 
-- Verification: tests: `internal/storage/parquets3/buffer_flusher_test.go`, `tests/e2e/chaos_durability_test.go#TestChaos_BufferRestoreOnRestart`, `internal/lifecycle/staleness_test.go#TestReconcileWAL_SomeNeedReflush`, `internal/config/config_test.go#TestValidate_AckMode`, `lakehouse-traces/internal/storage/parquets3/buffer_flusher_test.go`
+- Verification: tests: `internal/storage/parquets3/buffer_flusher_segments_test.go`, `internal/storage/parquets3/buffer_restart_test.go`, `internal/vlstorage/insert_adapter_test.go`, `internal/manifest/segments_test.go`, `internal/compaction/scheduler_segments_test.go`, `internal/delete/scheduler_test.go#TestSchedulerRunOnce_WaitsForTheBufferSegmentOfAnObject`, `internal/config/config_test.go#TestLoad_RemovedInsertKeysAreRefused`, `tests/e2e/chaos_durability_test.go#TestChaos_RestartRestoresTheBuffer`, `tests/e2e/chaos_durability_test.go#TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow`, `tests/e2e/chaos_durability_traces_test.go#TestChaos_TracesRestartRestoresTheBuffer`, `tests/e2e/chaos_durability_traces_test.go#TestChaos_TracesKill9LosesNothingBeyondTheUpstreamWindow`, `lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go`, `lakehouse-traces/internal/vlstorage/insert_adapter_test.go`
 - Docs: `docs/durability.md`, `docs/storage-flow.md`
 - Changelog: `0.8.0`
-- Note: The original write-ahead log was replaced by the logstore insert buffer plus a persisted flush watermark; the WAL changelog bullets belong to this feature's history.
+- Note: The original write-ahead log was replaced by the insert buffer: a sequence of upstream logstorage segments drained whole to Parquet; the WAL changelog bullets belong to this feature's history.
 
 ### ✅ Write-time label extraction for manifest pruning
 
@@ -87,22 +87,21 @@ Buffered rows are persisted by the same logstorage engine the hot tier uses, so 
 
 The writer extracts the label values present in each flushed file and stores them on the manifest entry. Compaction merges the label sets of its inputs so the pruning information survives rollups.
 
-- Verification: tests: `internal/storage/parquets3/labels_test.go`, `internal/storage/parquets3/writer_test.go#TestFlushAll_PopulatesLabels`, `internal/schema/label_columns_test.go`, `internal/compaction/labels_merge_test.go`
+- Verification: tests: `internal/storage/parquets3/labels_test.go`, `internal/storage/parquets3/writer_test.go#TestUploadGroups_PopulatesLabels`, `internal/schema/label_columns_test.go`, `internal/compaction/labels_merge_test.go`
 - Docs: `docs/manifest-system.md`, `docs/write-path.md`
 - Changelog: `0.8.0`
 
-### 🔧 Engine-native queryable insert buffer
+### ✅ Engine-native queryable insert buffer
 
-`lh.feature.ingest.logstore_buffer` · status: in-progress · since: v0.39.0 · surfaces: ingest, flag
+`lh.feature.ingest.logstore_buffer` · status: shipped · since: v0.39.0 · surfaces: ingest
 
 **Engine-native insert buffer**: recently ingested rows are held in the upstream logstorage engine and answered through the same query path as flushed data, so the recently-flushed window matches hot VL/VT instead of degrading.
 
-Instead of a bespoke in-memory buffer with its own query semantics, the insert buffer is the upstream logstorage engine itself. Queries read buffered and flushed rows through one path, with a watermark preventing double counting of rows that have just been flushed.
+Instead of a bespoke in-memory buffer with its own query semantics, the insert buffer is the upstream logstorage engine itself. Queries read buffered and flushed rows through one path; the objects a buffered segment wrote carry its nonce and are dropped from the scan while the segment is served, so a row is answered exactly once at every stage of the drain.
 
-- Verification: tests: `internal/membuffer/store_test.go`, `internal/storage/parquets3/local_buffer_readmerge_test.go#TestQueryBufferBridge_LocalBufferServesRecent`, `internal/vlstorage/buffer_dualwrite_test.go#TestDualWrite_LogsLegacyAndBufferParity`, `internal/config/buffer_engine_test.go`, `lakehouse-traces/internal/storage/parquets3/local_buffer_readmerge_test.go#TestQueryBufferBridge_WatermarkPreventsDoubleCount`
+- Verification: tests: `internal/membuffer/store_test.go`, `internal/storage/parquets3/local_buffer_readmerge_test.go#TestQueryBufferBridge_LocalBufferServesRecent`, `internal/storage/parquets3/buffer_view_test.go#TestBufferView_EachRowOnceThroughTheWholeHandoff`, `internal/vlstorage/buffer_rows_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_view_test.go#TestBufferView_EachRowOnceThroughTheWholeHandoff`, `lakehouse-traces/internal/storage/parquets3/buffer_view_test.go#TestBufferView_TraceByIDThroughTheHandoff`
 - Docs: `docs/read-path.md`, `docs/storage-flow.md`
 - Changelog: `0.39.0`, `0.59.0`
-- Note: Opt-in: `-lakehouse.insert.buffer-engine=logstore` (the default is still the legacy staging buffer), which is why the roadmap lists it as in progress rather than shipped.
 
 ### ✅ Opt-in syslog and OTLP/gRPC ingest listeners
 
@@ -435,12 +434,12 @@ Point lookups over an object store are a file-skipping problem. Blooms answer "t
 
 `lh.feature.query.buffer_visible_after_restart` · status: shipped · surfaces: api, storage
 
-**Restart-safe read watermark**: after a graceful restart, rows ingested in the same UTC hour as the data flushed at shutdown are visible exactly once from the first query — time ranges the manifest only inferred from the S3 listing never decide what the buffer still owes, and the shutdown manifest snapshot is saved again after the final flush.
+**Restart-safe read handoff**: after a restart, rows ingested in the same UTC hour as the data written at shutdown are visible exactly once from the first query — there is no time boundary between the buffer and Parquet to get wrong (the objects of a served buffer segment are dropped by their segment nonce), and the shutdown manifest snapshot is saved again after the final flush.
 
-The buffer serves only rows newer than the newest time covered by the Parquet objects a query selected. An object the manifest knows only from a listing has no recorded range, so its range is inferred from the partition hour and marked as inferred; the marked range is replaced by the exact one from the pmeta facet or the Parquet footer statistics (one bounded, backed-off ranged read, only for objects that can change the watermark) before the watermark is computed. An object that cannot be resolved keeps its inferred end in the watermark and is never answered from metadata, so no row is counted twice; its rows are hidden until it resolves. The watermark covers the objects read plus those answered from metadata. Shutdown persists the manifest again after the final flush so the next boot starts with exact ranges. Verified for both binaries across restart, hour-boundary and previous-hour cases, a peer's flush learned by listing, and a random write/flush/restart property test.
+Every object a buffer segment writes carries the segment's nonce in its key. A query takes a snapshot of the live segments (or, on a select pod, the rows and nonces each insert pod returns) before it lists objects, serves the segments' rows from the buffer and drops their objects from the scan, so each row comes from exactly one place before, during and after the drain and no time boundary is computed. An object the manifest knows only from a listing has no recorded range, so its range is inferred from the partition hour and marked as inferred; it is good enough to prune but is never answered from metadata, and the startup warmup replaces it with the exact range from the pmeta facet or the Parquet footer statistics (one bounded, backed-off ranged read). Shutdown persists the manifest again after the final flush so the next boot starts with exact ranges. Verified for both binaries across restart, hour-boundary and previous-hour cases, a peer's flush learned by listing, and a random write/flush/restart property test.
 
-- Verification: rows: `lh.select.restart.same_hour_buffer_visible_logs` (pass, pending), `lh.select.restart.same_hour_buffer_visible_traces` (pass, pending) · tests: `internal/storage/parquets3/restart_watermark_test.go`, `internal/storage/parquets3/restart_watermark_bounds_test.go`, `internal/storage/parquets3/restart_watermark_faults_test.go`, `internal/storage/parquets3/restart_watermark_round2_test.go`, `internal/storage/parquets3/restart_watermark_rr3_test.go`, `internal/storage/parquets3/restart_watermark_rr3b_test.go`, `internal/manifest/bounds_inferred_test.go`, `cmd/lakehouse-logs/shutdown_snapshot_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_bounds_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_faults_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_round2_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_rr3_test.go`, `lakehouse-traces/internal/storage/parquets3/restart_watermark_rr3b_test.go`, `lakehouse-traces/shutdown_snapshot_test.go`
-- Docs: `docs/durability.md#22-restart-and-the-read-watermark`, `docs/read-path.md`
+- Verification: rows: `lh.select.restart.same_hour_buffer_visible_logs` (pass, pending), `lh.select.restart.same_hour_buffer_visible_traces` (pass, pending) · tests: `internal/storage/parquets3/buffer_restart_test.go`, `internal/storage/parquets3/inferred_bounds_test.go`, `internal/storage/parquets3/bounds_resolve_test.go`, `internal/manifest/bounds_inferred_test.go`, `cmd/lakehouse-logs/shutdown_snapshot_test.go`, `lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go`, `lakehouse-traces/internal/storage/parquets3/inferred_bounds_test.go`, `lakehouse-traces/internal/storage/parquets3/bounds_resolve_test.go`, `lakehouse-traces/shutdown_snapshot_test.go`
+- Docs: `docs/durability.md#22-restart-and-the-read-handoff`, `docs/read-path.md`
 - Note: The Grafana-level check is tests/playwright/tests/restart-buffer-visibility.spec.ts, run against a stack seeded by scripts/bench/restart-ab/seed.py (not wired into CI yet); the A/B perf and correctness smoke is scripts/bench/restart-ab/perf_smoke.py.
 
 ### ✅ Column projection
@@ -1264,7 +1263,7 @@ One policy file describes every exception; everything unspecified inherits. `/ap
 
 `lh.feature.tenancy.s3_prefix_isolation` · status: shipped · since: v0.49.0 · surfaces: storage, ingest
 
-**In-path S3 isolation**: `BatchWriter` groups rows by `(AccountID, ProjectID)` at flush and writes one Parquet file per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback). Every Parquet tool (DuckDB, ClickHouse, Trino, Spark) can query a tenant's prefix directly.
+**In-path S3 isolation**: The `BufferFlusher` drains each segment per `(AccountID, ProjectID)` and writes Parquet files per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback). Every Parquet tool (DuckDB, ClickHouse, Trino, Spark) can query a tenant's prefix directly.
 
 Isolation happens where the bytes are written, not as a filter on the way out: a file contains exactly one tenant's rows and lives under that tenant's prefix. That is what makes per-tenant cost attribution, per-tenant lifecycle and external analytics per tenant possible at all.
 

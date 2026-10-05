@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -48,6 +49,11 @@ type fieldValuesRequest struct {
 // The per-value set a partition catalog holds cannot serve this: it has no
 // counts, only membership, and answered every value with hits=1.
 func (s *Storage) collectFieldValues(ctx context.Context, files []manifest.FileInfo, r fieldValuesRequest) (map[string]uint64, error) {
+	// The objects of the buffer segments this request reads are not read (see
+	// bufferView): their rows come from the segments.
+	view := s.openBufferView(ctx, r.startNs, r.endNs, r.tenantIDs)
+	defer view.release()
+	files = view.exclude(files)
 	seen := make(map[string]uint64)
 	scan := make([]manifest.FileInfo, 0, len(files))
 	fromMeta := 0
@@ -73,18 +79,16 @@ func (s *Storage) collectFieldValues(ctx context.Context, files []manifest.FileI
 			return nil, err
 		}
 	}
-	s.collectBufferedValues(ctx, files, r, seen)
+	s.collectBufferedValues(ctx, view, r, seen)
 	return seen, ctx.Err()
 }
 
-// collectBufferedValues adds the rows not yet flushed to Parquet — this
-// node's co-located buffer, or every insert peer's through the buffer bridge
-// — exactly as a query merges them: tenant-scoped, only rows newer than each
-// tenant's flush watermark over the selected objects (so no row is counted
-// from both tiers), through the request's filter and its tenants' tombstones.
-// Without them a dropdown over the last minutes misses values upstream
-// returns and undercounts hits.
-func (s *Storage) collectBufferedValues(ctx context.Context, files []manifest.FileInfo, r fieldValuesRequest, seen map[string]uint64) {
+// collectBufferedValues adds the rows of the insert buffer — this node's
+// segments, or every insert peer's through the buffer bridge — exactly as a
+// query merges them: tenant-scoped, through the request's filter and its
+// tenants' tombstones. Without them a dropdown over the last minutes misses
+// values upstream returns and undercounts hits.
+func (s *Storage) collectBufferedValues(ctx context.Context, view *bufferView, r fieldValuesRequest, seen map[string]uint64) {
 	if r.query == nil || r.field == "" {
 		return
 	}
@@ -94,7 +98,8 @@ func (s *Storage) collectBufferedValues(ctx context.Context, files []manifest.Fi
 	}
 	scope := scopeFor(ctx, r.tenantIDs)
 	sink := newTombstoneSink(scope, r.tombstones, r.parse, s.AccountOnlyTenantKeys(), count)
-	s.bufferRowsTo(ctx, r.startNs, r.endNs, lazyWatermarks{s, r.startNs, files}, r.query, r.tenantIDs, sink)
+	var emitted atomic.Int64
+	s.serveBufferView(ctx, view, r.startNs, r.endNs, 0, &emitted, r.query, r.tenantIDs, sink)
 }
 
 // newFieldValueCounter returns the block callback that counts the values of

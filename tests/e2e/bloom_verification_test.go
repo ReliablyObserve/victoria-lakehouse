@@ -453,7 +453,7 @@ func TestBloomVerify_RoundTrip_InsertAndBloomLookup_Traces(t *testing.T) {
 	line := fmt.Sprintf(`{"_msg":"bloom trace roundtrip","_time":"%s","service.name":"bloom-rt-traces","trace_id":"%s","span_id":"sp1","duration":"50ms"}`,
 		now.Format(time.RFC3339Nano), traceID)
 
-	params := fmt.Sprintf("_stream_fields=service.name")
+	params := "_stream_fields=service.name"
 	u := tracesBaseURL + "/insert/jsonline?" + params
 
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Post(u, "application/x-ndjson", strings.NewReader(line))

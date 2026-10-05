@@ -162,6 +162,12 @@ type Scheduler struct {
 	ringChangeRate int
 	drainTimeout   time.Duration
 
+	// segmentLister lists the "segment committed" markers; segmentProtect is
+	// how long after a commit a buffer segment can still be served from its
+	// insert pod (its grace, with margin). See manifest.SegmentGuard.
+	segmentLister  SegmentMarkerLister
+	segmentProtect time.Duration
+
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 
@@ -335,6 +341,63 @@ func withoutHeld(m *manifest.Manifest, files []manifest.FileInfo) []manifest.Fil
 	return out
 }
 
+// SegmentMarkerLister lists keys under a prefix with their LastModified time;
+// s3reader.ClientPool has it.
+type SegmentMarkerLister interface {
+	ListModTimes(ctx context.Context, prefix string) (map[string]time.Time, error)
+}
+
+// SetSegmentGuard makes compaction leave the objects of insert-buffer segments
+// alone until their segment is committed and protect has passed since (see
+// manifest.SegmentGuard): merged into an object without the segment's nonce,
+// their rows would be served twice while the segment is still live. Without
+// it, such objects are merged only SegmentReleaseAfter after their segment
+// was created.
+func (s *Scheduler) SetSegmentGuard(l SegmentMarkerLister, protect time.Duration) {
+	s.segmentLister, s.segmentProtect = l, protect
+}
+
+// SegmentGuard lists the segment markers once and returns the guard a merge
+// path applies at now (see segmentGuard); the orphan sweep's Tier A steal uses
+// it so a steal leaves live buffer segments alone as a scan does.
+func (s *Scheduler) SegmentGuard(ctx context.Context, now time.Time) *manifest.SegmentGuard {
+	return s.segmentGuard(ctx, now)
+}
+
+// maxMarkerDeletesPerScan bounds the old markers one scan removes.
+const maxMarkerDeletesPerScan = 1000
+
+// segmentGuard lists the segment markers once for a scan. A failed listing
+// releases no segment object (until SegmentReleaseAfter). Markers older than
+// SegmentReleaseAfter plus a day are no longer needed and are deleted.
+func (s *Scheduler) segmentGuard(ctx context.Context, now time.Time) *manifest.SegmentGuard {
+	g := &manifest.SegmentGuard{Protect: s.segmentProtect}
+	if s.segmentLister == nil {
+		return g
+	}
+	dir := s.prefix + manifest.SegmentMarkerDir
+	listed, err := s.segmentLister.ListModTimes(ctx, dir)
+	if err != nil {
+		metrics.CompactionSegmentGuardErrors.Inc()
+		logger.Warnf("compaction: cannot list the buffer segment markers; objects of unconfirmed segments are left alone this scan: %s", err)
+		return g
+	}
+	g.Markers = make(map[string]time.Time, len(listed))
+	g.Listed = true
+	deleted := 0
+	for key, mod := range listed {
+		nonce := key[len(dir):]
+		if now.Sub(mod) >= manifest.SegmentReleaseAfter+24*time.Hour && s.pool != nil && deleted < maxMarkerDeletesPerScan {
+			if err := s.pool.Delete(ctx, key); err == nil {
+				deleted++
+			}
+			continue
+		}
+		g.Markers[nonce] = mod
+	}
+	return g
+}
+
 // partitionCandidate is a planned merge as the fair-share scheduler sees it.
 type partitionCandidate = mergePlan
 
@@ -373,6 +436,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 
 	now := planClock()
 	scanStart := time.Now()
+	guard := s.segmentGuard(ctx, now)
 
 	// Held keys are snapshotted once: checking them per file would take the
 	// manifest lock once per file per scan.
@@ -398,6 +462,7 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 			return true
 		}
 		owned++
+		files = guard.ReleasedFiles(files, now)
 		pt, err := manifest.ParsePartitionTime(partition)
 		if err != nil {
 			logger.Warnf("skip partition: cannot parse time; partition=%s, error=%s", partition, err)
@@ -600,12 +665,12 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 	if s.draining.Load() {
 		return nil, fmt.Errorf("scheduler is draining; no new compaction accepted")
 	}
-	files := withoutHeld(s.manifest, s.manifest.FilesForPartition(partition))
+	now := planClock()
+	files := s.segmentGuard(ctx, now).ReleasedFiles(withoutHeld(s.manifest, s.manifest.FilesForPartition(partition)), now)
 	if len(files) == 0 {
 		return nil, fmt.Errorf("partition not found or empty: %s", partition)
 	}
 	pt, _ := manifest.ParsePartitionTime(partition)
-	now := planClock()
 
 	// The force bypasses the level thresholds, not the tenant split, the
 	// two-file minimum or the lifecycle freeze: each tenant group with two or

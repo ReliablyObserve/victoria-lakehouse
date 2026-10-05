@@ -4,8 +4,7 @@ import "testing"
 
 // The shuffled fixtures deliberately place the true MIN and MAX away from the
 // first/last positions so a positional rows[0]/rows[len-1] derivation would
-// return the WRONG values — the regression these helpers exist to prevent
-// (parquet-compression-research.md, trap 1).
+// return the WRONG values — the regression these helpers exist to prevent.
 
 func TestLogRowTimeBounds_Shuffled(t *testing.T) {
 	rows := []LogRow{

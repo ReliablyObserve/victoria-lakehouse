@@ -12,7 +12,7 @@ The partition manifest is the bridge between the write and read paths. It tracks
 ```mermaid
 graph TD
     subgraph Write Path
-        BW[BatchWriter] -->|flush to S3| S3[(S3 Bucket)]
+        BW[BufferFlusher] -->|drain to S3| S3[(S3 Bucket)]
         BW -->|AddFile| M[Manifest]
         BW -->|Notify| PUSH[Pusher]
     end
@@ -95,11 +95,11 @@ graph TD
 
 ## Write Path Integration
 
-When the BatchWriter flushes a Parquet file to S3, it immediately registers it in the manifest:
+When the BufferFlusher writes a Parquet file to S3, it immediately registers it in the manifest:
 
 ```mermaid
 sequenceDiagram
-    participant BW as BatchWriter
+    participant BW as BufferFlusher
     participant S3 as S3
     participant M as Manifest
     participant PUSH as Pusher

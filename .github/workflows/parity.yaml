@@ -110,6 +110,9 @@ jobs:
               exit 1
             fi
           done
+          # Every seeded row is older than this; the settle step below waits
+          # until none of them is still answered from an insert buffer.
+          echo "SEED_END_NS=$(date +%s%N)" >> "$GITHUB_ENV"
 
       # A fixed sleep is not enough: the cold tier keeps flushing and
       # compacting after datagen exits, and a comparison taken mid-flush
@@ -174,6 +177,26 @@ jobs:
             case "$1" in ''|*[!0-9]*) return 1 ;; esac
             [ "$1" -gt 0 ] && [ "$1" = "$2" ]
           }
+          # The suite compares hot with the cold tier's PARQUET path, so the
+          # seeded rows must have left the insert buffer. A drained buffer
+          # segment stays readable for its grace period (2 x
+          # manifest.refresh_interval + 30 s = 40 s in this stack) and its rows
+          # are then answered by upstream's own engine, which agrees with hot by
+          # construction and would hide every Parquet-path divergence. Count the
+          # seeded rows each buffer still holds through the endpoint select
+          # pods read it with (/internal/buffer/query); settled needs 0. The
+          # rows the service-graph task writes every minute carry no span_id
+          # and are not seed rows. ERR (endpoint unreachable) never counts as 0.
+          buffered() { # buffered <host:port> <logs|traces>
+            raw=$(docker compose -f tests/parity/docker-compose.yml exec -T victorialogs \
+              "$BUSYBOX" wget -qO- "http://$1/internal/buffer/query?start=0&end=$SEED_END_NS&mode=$2&tenant_scope=v1&all_tenants=true" \
+              2>/dev/null) || { echo ERR; return; }
+            if [ "$2" = traces ]; then
+              printf '%s\n' "$raw" | jq -c 'select((.span_id // "") != "")' 2>/dev/null | grep -c . || true
+            else
+              printf '%s\n' "$raw" | grep -c . || true
+            fi
+          }
           settled=0
           steady=0
           previous=""
@@ -184,10 +207,13 @@ jobs:
             cold_traces=$(probe lakehouse-traces:10428 'span_id:* | stats count() n' 0)
             hot_traces_t1=$(probe victoriatraces:10428 'span_id:* | stats count() n' 1)
             cold_traces_t1=$(probe lakehouse-traces:10428 'span_id:* | stats count() n' 1)
+            buf_logs=$(buffered lakehouse-logs:9428 logs)
+            buf_traces=$(buffered lakehouse-traces:10428 traces)
             current="$hot_logs $cold_logs $hot_traces $cold_traces $hot_traces_t1 $cold_traces_t1"
             if agree "$hot_logs" "$cold_logs" \
                && agree "$hot_traces" "$cold_traces" \
-               && agree "$hot_traces_t1" "$cold_traces_t1"; then
+               && agree "$hot_traces_t1" "$cold_traces_t1" \
+               && [ "$buf_logs" = 0 ] && [ "$buf_traces" = 0 ]; then
               if [ "$current" = "$previous" ]; then
                 steady=$((steady + 1))
               else
@@ -200,6 +226,7 @@ jobs:
             echo "settle check $i/60: logs hot=$hot_logs cold=$cold_logs" \
               "| traces tenant 0 hot=$hot_traces cold=$cold_traces" \
               "| traces tenant 1 hot=$hot_traces_t1 cold=$cold_traces_t1" \
+              "| seed rows still in the insert buffers: logs=$buf_logs traces=$buf_traces" \
               "| agreeing unchanged for $steady/4 checks"
             if [ "$steady" -ge 4 ]; then
               settled=1
@@ -216,6 +243,7 @@ jobs:
             echo "  logs             hot=$hot_logs cold=$cold_logs" >&2
             echo "  traces tenant 0  hot=$hot_traces cold=$cold_traces" >&2
             echo "  traces tenant 1  hot=$hot_traces_t1 cold=$cold_traces_t1" >&2
+            echo "  seed rows still in the insert buffers: logs=$buf_logs traces=$buf_traces" >&2
             exit 1
           fi
 

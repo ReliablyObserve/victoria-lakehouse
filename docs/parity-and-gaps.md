@@ -123,7 +123,7 @@ the handle the allowlist and the fixes refer to.
 | **B5** | `/select/logsql/hits` at sub-hour `step` returns evenly spaced synthetic buckets — the totals match hot but the per-bucket distribution is flat, because cold partitions are hour-granular and the sub-hour buckets are interpolated rather than counted. | `hits_small_step`, `hits_bucket_keys`. |
 | **B6** | A tenant-scoped read on the cold tier answers with every tenant's rows rather than only the requesting tenant's: the logs query path in `internal/storage/parquets3/storage_query.go` selects files with `GetFilesForRange` instead of `GetFilesForRangeTenant` and never consults the request's tenant ids, and on both binaries `field_names`, `field_values` and `streams`, the pmeta catalog, the label index and the buffer bridge are unscoped; the traces Jaeger path passes `tenantIDs=nil`. | `TestTenantIsolation_Logs_PerTenantCounts/LH/*`, `TestTenantIsolation_Traces_PerTenantParity/*/field_values_hits`. |
 | **B7** | A row whose timestamp is exactly the last nanosecond of the query window is dropped on cold. The HTTP `end` bound is exclusive and the upstream handler turns it into an inclusive bound by subtracting 1 ns; cold row-group pruning (`rowGroupMatchesTimeRange` in `storage_query.go`, both binaries) then compares that inclusive bound exclusively (`rgMin < endNs`), so a row group whose smallest timestamp sits on the bound is skipped. The file-level and row-level checks are inclusive and agree with hot. The miss is wider than one nanosecond: measured on the parity stack (2026-10-01), a window `[T-1ns, T+e]` returns the row at `T` on hot for every `e >= 1ns` and on cold only once `T+e` reaches the next whole microsecond (`e` = 1, 2, 10, 100, 500 ns: nothing; `e` = 999, 1000 ns: the row). | `TestParity_TimeRange/boundary_ns_start_inclusive`. |
-| **B8** | A sort over all columns (`sort` without `by`, `first N` / `last N` without `by`) orders rows that share a `_time` differently on cold. Upstream compares columns in block order, and VictoriaLogs lists `_time`, `_stream_id`, `_stream`, `_msg` first (`blockResult.initColumnsByFilter`), so tied rows are ordered by `_stream_id`; the cold tier builds blocks with `_msg` right after `_time`, so it orders them by `_msg` and a limit keeps different rows. Both binaries. Issue #324. | `TestParity_AllColumnSortTieOrder/logs`, `TestParity_AllColumnSortTieOrder/traces`. |
+| **B8** | A sort over all columns (`sort` without `by`, `first N` / `last N` without `by`) orders rows that share a `_time` differently on cold. Upstream compares columns in block order, and VictoriaLogs lists `_time`, `_stream_id`, `_stream`, `_msg` first (`blockResult.initColumnsByFilter`), so tied rows are ordered by `_stream_id`; the cold tier builds blocks with `_msg` right after `_time`, so it orders them by `_msg` and a limit keeps different rows. Both binaries, on the Parquet read; rows still in the insert buffer are answered by upstream's engine and order like hot. Issue #324. | `TestParity_AllColumnSortTieOrder/logs/parquet`, `TestParity_AllColumnSortTieOrder/traces/parquet` (the `…/buffer` twins pass). |
 
 Each is fixed in its own PR; none of them is a test-harness problem, so the
 suite records them rather than hiding them.
@@ -192,9 +192,8 @@ a comparison into a silent no-op or a result that depends on timing:
   rather than on a fixed offset that is empty in some seeds.
 - **Assert on cold rows only once they have settled.** For rows written
   seconds ago the cold tier's answer depends on where they are: the local
-  buffer answers first, the first flushed file hides the other still-buffered
-  rows behind its time watermark, and a manifest refresh racing the flush can
-  drop the new file for one refresh interval. A tenant-scoped read that leaks
+  buffer answers first, and a manifest refresh racing the drain can
+  delay the new file for one refresh interval. A tenant-scoped read that leaks
   on flushed data looks correctly scoped while the rows are buffered. So the
   settle step requires its counts to stay unchanged for three manifest refresh
   intervals, and a test that writes its own rows

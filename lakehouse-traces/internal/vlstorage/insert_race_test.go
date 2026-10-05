@@ -7,35 +7,24 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// raceTraceWriter is a concurrency-safe TraceWriter used to detect data
-// races introduced by future changes to vtInsertAdapter (e.g. an
-// accidental package-level row buffer or cache without synchronization).
-type raceTraceWriter struct {
+// raceBuffer is a concurrency-safe BufferStore used to detect data races
+// introduced by future changes to vtInsertAdapter (e.g. an accidental
+// package-level row buffer or cache without synchronization).
+type raceBuffer struct {
 	mu       sync.Mutex
 	rowCount int64
-	canWrite atomic.Value // error or nil
+	readOnly atomic.Bool
 }
 
-func (w *raceTraceWriter) MustAddTraceRows(rows []schema.TraceRow) {
+func (w *raceBuffer) MustAddRows(lr *logstorage.LogRows) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.rowCount += int64(len(rows))
+	w.rowCount += int64(lr.RowsCount())
 }
 
-func (w *raceTraceWriter) CanWriteData() error {
-	v := w.canWrite.Load()
-	if v == nil {
-		return nil
-	}
-	if err, _ := v.(error); err != nil {
-		return err
-	}
-	return nil
-}
+func (w *raceBuffer) IsReadOnly() bool { return w.readOnly.Load() }
 
 // TestRace_ConcurrentMustAddRows spawns N goroutines each calling
 // MustAddRows with a disjoint *logstorage.LogRows. If any future change
@@ -43,8 +32,8 @@ func (w *raceTraceWriter) CanWriteData() error {
 // buffer, package-level scratch slice, unsynced stat counter), the
 // race detector will catch it here. Run with `go test -race`.
 func TestRace_ConcurrentMustAddRows(t *testing.T) {
-	w := &raceTraceWriter{}
-	a := &vtInsertAdapter{writer: w}
+	w := &raceBuffer{}
+	a := &vtInsertAdapter{buf: w, dir: "/d"}
 
 	const goroutines = 32
 	const rowsPerGoroutine = 50
@@ -82,8 +71,8 @@ func TestRace_ConcurrentMustAddRows(t *testing.T) {
 // to catch a future regression where a writer hot-path field gets
 // touched from CanWriteData without synchronization.
 func TestRace_ConcurrentReadsDuringIngest(t *testing.T) {
-	w := &raceTraceWriter{}
-	a := &vtInsertAdapter{writer: w}
+	w := &raceBuffer{}
+	a := &vtInsertAdapter{buf: w, dir: "/d"}
 
 	const ingestGoroutines = 8
 	const readerGoroutines = 8
@@ -130,8 +119,8 @@ func TestRace_ConcurrentIngestWithCardinalityGate(t *testing.T) {
 	t.Cleanup(func() { SetCardinalityGate(prev) })
 	SetCardinalityGate(allowAllGate{})
 
-	w := &raceTraceWriter{}
-	a := &vtInsertAdapter{writer: w}
+	w := &raceBuffer{}
+	a := &vtInsertAdapter{buf: w, dir: "/d"}
 
 	const ingestGoroutines = 8
 	const iters = 50

@@ -6,22 +6,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// Trap 1+2 regression tests (parquet-compression-research.md, "The three
-// correctness traps under item 1"): manifest FileInfo MinTimeNs/MaxTimeNs must
+// Time-bounds regression tests: manifest FileInfo MinTimeNs/MaxTimeNs must
 // be the TRUE min/max of the flushed rows, not the first/last row's
-// timestamps. The tests call the tenant-group flush directly (below the
+// timestamps. The tests call the group upload directly (below the
 // partition-level time sort) with deliberately shuffled timestamps — exactly
 // what the flush sees once rows are ordered (stream_id, timestamp) for
 // compression. With positional bounds the manifest would understate MaxTimeNs
-// → range pruning skips files containing matches AND bufferWatermark re-opens
-// the buffer↔Parquet double-count.
+// → range pruning skips files containing matches and metadata-only answers
+// cover the wrong range.
 //
 // Mirror of the root module's
 // internal/storage/parquets3/writer_timebounds_test.go — keep in sync.
@@ -48,8 +45,8 @@ func TestFlushLogTenantGroup_ShuffledRows_ManifestHoldsTrueBounds(t *testing.T) 
 	wantMin := base.Add(10 * time.Second).UnixNano()
 	wantMax := base.Add(90 * time.Second).UnixNano()
 
-	if err := bw.flushLogTenantGroup(context.Background(), "dt=2026-05-03/hour=14", 0, 0, rows); err != nil {
-		t.Fatalf("flushLogTenantGroup: %v", err)
+	if err := bw.uploadLogGroup(context.Background(), &logGroupUpload{partition: "dt=2026-05-03/hour=14", rows: rows}); err != nil {
+		t.Fatalf("uploadLogGroup: %v", err)
 	}
 
 	files := m.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
@@ -73,15 +70,6 @@ func TestFlushLogTenantGroup_ShuffledRows_ManifestHoldsTrueBounds(t *testing.T) 
 	}
 	if fi.MaxTimeNs == last {
 		t.Errorf("MaxTimeNs %d equals rows[len-1] timestamp — positional derivation regressed", fi.MaxTimeNs)
-	}
-
-	// Trap 2: bufferWatermark is max(MaxTimeNs) of the scanned files — with
-	// positional bounds it would sit at the LAST row's timestamp (+40s),
-	// re-opening the 2× buffer↔Parquet double-count for rows in (+40s, +90s].
-	tenant := logstorage.TenantID{AccountID: 0, ProjectID: 0}
-	if wm := (&Storage{manifest: m}).bufferWatermarksFor(context.Background(), 0, files)[tenant]; wm != wantMax {
-		t.Errorf("bufferWatermark = %d, want true max %d (positional bounds would give %d)",
-			wm, wantMax, last)
 	}
 }
 
@@ -107,8 +95,8 @@ func TestFlushTraceTenantGroup_ShuffledRows_ManifestHoldsTrueBounds(t *testing.T
 	wantMin := base.Add(10 * time.Second).UnixNano()
 	wantMax := base.Add(90 * time.Second).UnixNano()
 
-	if err := bw.flushTraceTenantGroup(context.Background(), "dt=2026-05-03/hour=14", 0, 0, rows); err != nil {
-		t.Fatalf("flushTraceTenantGroup: %v", err)
+	if err := bw.uploadTraceGroup(context.Background(), &traceGroupUpload{partition: "dt=2026-05-03/hour=14", rows: rows}); err != nil {
+		t.Fatalf("uploadTraceGroup: %v", err)
 	}
 
 	files := m.GetFilesForRange(base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())

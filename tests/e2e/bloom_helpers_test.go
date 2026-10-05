@@ -66,12 +66,6 @@ func getManifestRange(t *testing.T, baseURL string) map[string]any {
 	return mustParseJSON(t, body)
 }
 
-func getBloomStatus(t *testing.T, baseURL string) map[string]any {
-	t.Helper()
-	body := httpGetBody(t, baseURL, "/api/v1/bloom/status", nil)
-	return mustParseJSON(t, body)
-}
-
 // tryGetBloomStatus returns the bloom status or nil if the endpoint returns 404.
 func tryGetBloomStatus(t *testing.T, baseURL string) map[string]any {
 	t.Helper()
@@ -188,19 +182,6 @@ func getPrometheusMetricWithLabel(t *testing.T, baseURL, metricName, labelKey, l
 		}
 	}
 	return -1
-}
-
-func timeQuery(t *testing.T, baseURL, query string) time.Duration {
-	t.Helper()
-	params := defaultTimeParams()
-	params.Set("query", query)
-	params.Set("limit", "10")
-
-	start := time.Now()
-	body := httpGetBody(t, baseURL, "/select/logsql/query", params)
-	elapsed := time.Since(start)
-	_ = body
-	return elapsed
 }
 
 func assertFieldPresent(t *testing.T, m map[string]any, key string) {

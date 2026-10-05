@@ -8,7 +8,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 // ---------------------------------------------------------------------------
@@ -281,77 +280,9 @@ func TestCoverageBoost_Close_NilCrossSignalClient(t *testing.T) {
 // CanWriteData()
 // ---------------------------------------------------------------------------
 
-func TestCoverageBoost_CanWriteData_NilWriter(t *testing.T) {
-	s := testStorage()
-	s.writer = nil
-	err := s.CanWriteData()
-	if err == nil {
-		t.Error("expected error when writer is nil")
-	}
-	if err.Error() == "" {
-		t.Error("expected non-empty error message")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // MustAddLogRows() / MustAddTraceRows()
 // ---------------------------------------------------------------------------
-
-func TestCoverageBoost_MustAddLogRows(t *testing.T) {
-	cfg := config.Default()
-	cfg.Mode = config.ModeLogs
-	cfg.S3.Bucket = "test-bucket"
-
-	s := testStorage()
-	s.writer = &BatchWriter{
-		cfg:       &cfg.Insert,
-		mode:      cfg.Mode,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-
-	now := time.Now().UnixNano()
-	rows := []schema.LogRow{
-		{TimestampUnixNano: now, Body: "test1", SeverityText: "INFO", ServiceName: "svc1"},
-		{TimestampUnixNano: now + 1, Body: "test2", SeverityText: "ERROR", ServiceName: "svc2"},
-	}
-
-	// Should not panic
-	s.MustAddLogRows(rows)
-
-	if s.writer.BufferedRows() != 2 {
-		t.Errorf("expected 2 buffered rows, got %d", s.writer.BufferedRows())
-	}
-}
-
-func TestCoverageBoost_MustAddTraceRows(t *testing.T) {
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	cfg.S3.Bucket = "test-bucket"
-
-	s := testStorage()
-	s.writer = &BatchWriter{
-		cfg:       &cfg.Insert,
-		mode:      cfg.Mode,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-
-	now := time.Now().UnixNano()
-	rows := []schema.TraceRow{
-		{TimestampUnixNano: now, TraceID: "t1", SpanID: "s1", SpanName: "op1", ServiceName: "svc1"},
-		{TimestampUnixNano: now + 1, TraceID: "t2", SpanID: "s2", SpanName: "op2", ServiceName: "svc2"},
-	}
-
-	// Should not panic
-	s.MustAddTraceRows(rows)
-
-	if s.writer.BufferedRows() != 2 {
-		t.Errorf("expected 2 buffered rows, got %d", s.writer.BufferedRows())
-	}
-}
 
 // ---------------------------------------------------------------------------
 // SetStatsCallback() (writer.go, 0% coverage)
@@ -394,13 +325,7 @@ func TestCoverageBoost_Writer_NonNil(t *testing.T) {
 	cfg := config.Default()
 
 	s := testStorage()
-	bw := &BatchWriter{
-		cfg:       &cfg.Insert,
-		mode:      config.ModeLogs,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
+	bw := &BatchWriter{cfg: &cfg.Insert, mode: config.ModeLogs}
 	s.writer = bw
 
 	if got := s.Writer(); got != bw {

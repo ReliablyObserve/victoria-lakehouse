@@ -124,8 +124,8 @@ CI-executed rows (the ingest parity matrix, `tests/e2e/ingest_matrix_test.go`; r
 |---|----------|-------|-------|-----------|----------|
 | TI1 | `/insert/jsonline` | PASS | e2e | datagen succeeds | 2026-05-29 |
 | TI2 | `/insert/zipkin/api/v2/spans` | DIFFER | manual | endpoint NOT implemented in VT v0.9.2 (`deps/VictoriaTraces/app/vtinsert/main.go` only routes `/insert/opentelemetry/`); VT returns 400 "unsupported path", LH returns 404. Both reject. Per `feedback_vl_vt_upstream` LH should not add what VT doesn't expose. Locked by probe_matrix_sweep.sh (ROW=TI2) | 2026-05-30 |
-| TI3 | `/insert/opentelemetry/v1/traces` (JSON, protobuf) | DIFFER | e2e (CI) | retired manual probe; rows `vt.ingest.otlp_traces_json.*`, `vt.ingest.otlp_traces_protobuf.*`; known gap #279, #332 (protobuf) (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
-| TI4 | OTLP gRPC (`-otlpGRPCListenAddr`) | DIFFER | e2e (CI) | never tested before; row `vt.ingest.otlp_traces_grpc.numeric`; the listener is opt-in (compose and Helm); known gap #279, #332 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
+| TI3 | `/insert/opentelemetry/v1/traces` (JSON, protobuf) | DIFFER | e2e (CI) | retired manual probe; rows `vt.ingest.otlp_traces_json.*`, `vt.ingest.otlp_traces_protobuf.*`; known gap #332 (protobuf rows expect: differ; the JSON rows pass since #279 was fixed; see docs/ingest-parity.md) | 2026-10-02 |
+| TI4 | OTLP gRPC (`-otlpGRPCListenAddr`) | DIFFER | e2e (CI) | never tested before; row `vt.ingest.otlp_traces_grpc.numeric`; the listener is opt-in (compose and Helm); known gap #332 (the rows are expect: differ, see docs/ingest-parity.md) | 2026-10-02 |
 
 ## Grafana datasources (e2e compose; smoke query each)
 

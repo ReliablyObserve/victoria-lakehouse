@@ -39,6 +39,15 @@ Traces insert API:
 {{- end }}
 {{- end }}
 
+{{- if or (and .Values.logs.enabled .Values.logs.insert.enabled (not .Values.logs.insert.persistence.enabled)) (and .Values.traces.enabled .Values.traces.insert.enabled (not .Values.traces.insert.persistence.enabled)) }}
+
+WARNING: an insert pod runs without persistence. The insert buffer (insert.buffer_dir,
+under /data/lakehouse) holds every acknowledged row until it is written to object
+storage; on an emptyDir it is lost when the pod is rescheduled. Enable
+logs.insert.persistence / traces.insert.persistence unless you mount a durable
+volume at /data/lakehouse through extraVolumes.
+{{- end }}
+
 Deployment modes:
   All-in-one: logs.enabled=true, traces.enabled=true
   Logs only:  logs.enabled=true, traces.enabled=false (default)

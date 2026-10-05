@@ -17,9 +17,6 @@ func TestProfilePrecedence_ProfileOverridesDefault(t *testing.T) {
 		S3:   S3Config{Bucket: "test"},
 	})
 
-	if merged.Insert.FlushInterval != 1*time.Second {
-		t.Errorf("dev profile flush_interval = %v, want 1s", merged.Insert.FlushInterval)
-	}
 	if !merged.S3.ForcePathStyle {
 		t.Error("dev profile force_path_style should be true")
 	}
@@ -30,7 +27,7 @@ func TestProfilePrecedence_ConfigFileOverridesProfile(t *testing.T) {
 lakehouse:
   profile: dev
   insert:
-    flush_interval: 5s
+    buffer_flush_interval: 5s
     compression_level: 7
 `
 	dir := t.TempDir()
@@ -44,17 +41,14 @@ lakehouse:
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.Insert.FlushInterval != 5*time.Second {
-		t.Errorf("config file should override dev profile flush_interval: got %v, want 5s", cfg.Insert.FlushInterval)
-	}
 	if cfg.Insert.CompressionLevel != 7 {
 		t.Errorf("config file should override dev profile compression: got %d, want 7", cfg.Insert.CompressionLevel)
 	}
+	if cfg.Insert.BufferFlushInterval != 5*time.Second {
+		t.Errorf("config file should override the dev profile's buffer_flush_interval (10s): got %v, want 5s", cfg.Insert.BufferFlushInterval)
+	}
 	if !cfg.S3.ForcePathStyle {
 		t.Error("dev profile force_path_style should still be true (not overridden by file)")
-	}
-	if cfg.Insert.MaxBufferRows != 1000 {
-		t.Errorf("dev profile max_buffer_rows should still be 1000 (not overridden): got %d", cfg.Insert.MaxBufferRows)
 	}
 }
 
@@ -74,9 +68,8 @@ lakehouse:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-
-	if cfg.Insert.FlushInterval != 60*time.Second {
-		t.Errorf("default (balanced) flush_interval = %v, want 60s", cfg.Insert.FlushInterval)
+	if cfg.Insert.BufferFlushInterval != 5*time.Minute {
+		t.Errorf("balanced buffer_flush_interval = %v, want 5m", cfg.Insert.BufferFlushInterval)
 	}
 }
 
@@ -98,9 +91,6 @@ lakehouse:
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.Insert.AckMode != "flush-sync" {
-		t.Errorf("max-durability ack_mode = %q, want flush-sync", cfg.Insert.AckMode)
-	}
 	if cfg.S3.RetryMax != 5 {
 		t.Errorf("max-durability retry_max = %d, want 5", cfg.S3.RetryMax)
 	}
@@ -152,9 +142,6 @@ lakehouse:
 		t.Fatalf("LoadWithMode: %v", err)
 	}
 
-	if cfg.Insert.AckMode != "flush-sync" {
-		t.Errorf("per-signal max-durability should set ack_mode: got %q, want flush-sync", cfg.Insert.AckMode)
-	}
 	if cfg.S3.RetryMax != 5 {
 		t.Errorf("per-signal max-durability retry_max = %d, want 5", cfg.S3.RetryMax)
 	}
@@ -189,10 +176,9 @@ lakehouse:
 		t.Fatalf("LoadWithMode select: %v", err)
 	}
 
-	if insertCfg.Insert.FlushInterval != 5*time.Second {
-		t.Errorf("insert pod flush_interval = %v, want 5s (max-performance)", insertCfg.Insert.FlushInterval)
+	if insertCfg.Insert.CompressionLevel != 3 {
+		t.Errorf("insert pod compression_level = %d, want 3 (max-performance)", insertCfg.Insert.CompressionLevel)
 	}
-
 	if selectCfg.Query.FileWorkers != 4 {
 		t.Errorf("select pod file_workers = %d, want 4 (max-cost-savings)", selectCfg.Query.FileWorkers)
 	}
@@ -247,9 +233,6 @@ lakehouse:
 		t.Fatalf("LoadWithMode: %v", err)
 	}
 
-	if cfg.Insert.FlushInterval != 1*time.Second {
-		t.Errorf("traces dev profile flush_interval = %v, want 1s", cfg.Insert.FlushInterval)
-	}
 	if !cfg.S3.ForcePathStyle {
 		t.Error("traces dev profile force_path_style should be true")
 	}

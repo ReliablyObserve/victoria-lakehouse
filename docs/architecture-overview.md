@@ -18,7 +18,7 @@ graph TB
         end
 
         subgraph "Storage Layer (parquets3)"
-            BW[BatchWriter<br/>insert.buffer_engine:<br/>buffer | logstore]
+            BW[Insert buffer segments<br/>+ BufferFlusher]
             RQ[RunQuery<br/>Parallel File Scan<br/>+ recent window from buffer]
             FA[Field APIs<br/>field_names/values<br/>stream_fields/ids]
         end
@@ -140,7 +140,7 @@ graph TB
 flowchart LR
     subgraph "Write Path"
         A[Client] -->|HTTP POST| B[VL/VT Insert Handler]
-        B --> C[BatchWriter]
+        B --> C[Insert buffer + BufferFlusher]
         C -->|Buffer| D{Flush Trigger}
         D -->|Size/Time| E[Parquet Writer]
         E --> F[S3 Upload]
@@ -244,8 +244,8 @@ flowchart TB
 graph TB
     subgraph "Kubernetes Cluster"
         subgraph "Insert Tier (StatefulSet)"
-            I1[insert-0<br/>logstore buffer + S3 Flush]
-            I2[insert-1<br/>logstore buffer + S3 Flush]
+            I1[insert-0<br/>insert buffer + S3 drain]
+            I2[insert-1<br/>insert buffer + S3 drain]
         end
 
         subgraph "Select Tier (StatefulSet)"

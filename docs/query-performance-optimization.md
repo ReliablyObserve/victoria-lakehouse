@@ -14,7 +14,7 @@ This document describes the query performance optimization architecture introduc
 ```mermaid
 graph TB
     subgraph "Insert Path"
-        IH[Insert Handler] --> BW[BatchWriter]
+        IH[Insert Handler] --> BW[Insert buffer + BufferFlusher]
         BW --> PF[Parquet File Upload]
         BW --> SC[Metadata Sidecar Write]
         PF -->|PUT .parquet| S3[(S3)]
@@ -380,7 +380,7 @@ Complete data exchange between insert and select nodes:
 graph TB
     subgraph "Insert Node"
         direction TB
-        INS_API[Insert API Handler] -->|OTEL logs/traces| INS_BW[BatchWriter Buffer]
+        INS_API[Insert API Handler] -->|OTEL logs/traces| INS_BW[Insert buffer]
         INS_BW -->|FlushInterval/FlushLinger| INS_FL[Flush to Parquet]
         INS_FL --> INS_S3_PUT["S3 PUT: partition/uuid.parquet"]
         INS_FL --> INS_MAN["manifest.AddFile(partition, FileInfo)"]

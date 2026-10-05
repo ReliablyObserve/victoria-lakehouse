@@ -56,6 +56,14 @@ type OrphanSweepConfig struct {
 	// into the merged output.
 	Tombstones            *delete.TombstoneStore
 	TombstoneRewriteDelay time.Duration
+	// SegmentGuard returns the insert-buffer segment guard for a run
+	// (Scheduler.SegmentGuard), so a steal leaves the objects of live buffer
+	// segments alone exactly as a scheduled merge does. It is called at most
+	// once per Tier A run, when a stale partition has files. Without it a steal
+	// treats every segment as unconfirmed, as a scheduler without a guard does:
+	// a segment's objects are merged only manifest.SegmentReleaseAfter after
+	// the segment was created.
+	SegmentGuard func(ctx context.Context, now time.Time) *manifest.SegmentGuard
 
 	Prefix           string
 	Mode             config.Mode
@@ -196,6 +204,8 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 
 	attempts := o.cfg.Manifest.AttemptsView()
 	stolen := 0
+	var guard *manifest.SegmentGuard
+	guardLoaded := false
 	for partition, lastAttempt := range attempts {
 		select {
 		case <-o.stopCh:
@@ -213,6 +223,17 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 		}
 
 		files := withoutHeld(o.cfg.Manifest, o.cfg.Manifest.FilesForPartition(partition))
+		if len(files) == 0 {
+			continue
+		}
+		// Objects of a buffer segment that its insert pod may still serve stay
+		// out of a steal, as they stay out of a scheduled merge: a merged output
+		// carries no segment nonce, so its rows would be answered twice.
+		if !guardLoaded && o.cfg.SegmentGuard != nil {
+			guard = o.cfg.SegmentGuard(ctx, planClock())
+		}
+		guardLoaded = true
+		files = guard.ReleasedFiles(files, planClock())
 		if len(files) == 0 {
 			continue
 		}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,10 +21,13 @@ import (
 
 // fvcPeer is an insert peer holding unflushed rows, answering
 // /internal/buffer/query for the default tenant.
-func fvcPeer(t *testing.T, rows []schema.LogRow) *BufferBridge {
+func fvcPeer(t *testing.T, rows []schema.LogRow, nonces ...string) *BufferBridge {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(buffer.TenantScopeHeader, "0:0")
+		if len(nonces) > 0 {
+			w.Header().Set(buffer.SegmentsHeader, strings.Join(nonces, ","))
+		}
 		enc := json.NewEncoder(w)
 		for _, row := range rows {
 			_ = enc.Encode(row)
@@ -35,19 +39,25 @@ func fvcPeer(t *testing.T, rows []schema.LogRow) *BufferBridge {
 	return bridge
 }
 
-// Values and hits cover what is not flushed yet: a peer's unflushed rows are
-// merged as a query merges them — only rows newer than the flushed objects
-// (no row counted twice), through the request's filter, re-checked for tenant.
+// Values and hits cover what is not flushed yet: a peer's rows are merged as a
+// query merges them — the objects flushed from the segments the peer serves are
+// not read (no row counted twice) — through the request's filter, re-checked for
+// tenant.
 func TestFieldValues_IncludeUnflushedRowsFromPeers(t *testing.T) {
-	s := fvcStorage(t, []schema.LogRow{fvcRow(5*time.Minute, "INFO"), fvcRow(6*time.Minute, "INFO")})
+	const nonce = "65000000aaaabbbb"
+	flushed := []schema.LogRow{fvcRow(5*time.Minute, "INFO"), fvcRow(6*time.Minute, "INFO")}
+	// The peer's segment was flushed into the first object; the peer still
+	// serves its rows (in grace) and names the segment.
+	s := fvcStorageNonce(t, nonce, flushed)
 	other := fvcRow(22*time.Minute, "ERROR")
 	other.AccountID = 7 // a peer that answers for the wrong tenant must not leak
 	s.bufferBridge = fvcPeer(t, []schema.LogRow{
-		fvcRow(4*time.Minute, "INFO"), // already in Parquet (at or before the watermark)
+		fvcRow(5*time.Minute, "INFO"), // in the segment's object too
+		fvcRow(6*time.Minute, "INFO"),
 		fvcRow(20*time.Minute, "INFO"),
 		fvcRow(21*time.Minute, "WARN"),
 		other,
-	})
+	}, nonce)
 	q := mustParseQueryWithTime(t, "*", fvcBase.UnixNano(), fvcBase.Add(time.Hour).UnixNano())
 
 	got, err := s.GetFieldValues(context.Background(), nil, q, "level", 0)

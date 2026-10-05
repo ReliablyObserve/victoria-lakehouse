@@ -39,10 +39,6 @@ func TestProfileConfig_EmptyIsBalanced(t *testing.T) {
 	if empty == nil {
 		t.Fatal("ProfileConfig(\"\") returned nil")
 	}
-	if empty.Insert.FlushInterval != balanced.Insert.FlushInterval {
-		t.Errorf("empty profile flush_interval = %v, want balanced %v",
-			empty.Insert.FlushInterval, balanced.Insert.FlushInterval)
-	}
 	if empty.Cache.MemoryLimit != balanced.Cache.MemoryLimit {
 		t.Errorf("empty profile cache memory = %q, want balanced %q",
 			empty.Cache.MemoryLimit, balanced.Cache.MemoryLimit)
@@ -65,16 +61,10 @@ func TestProfileConfig_InvalidProfile(t *testing.T) {
 func TestProfileConfig_BalancedSettings(t *testing.T) {
 	cfg := ProfileConfig(ProfileBalanced)
 
-	if cfg.Insert.FlushInterval != 60*time.Second {
-		t.Errorf("balanced flush_interval = %v, want 60s", cfg.Insert.FlushInterval)
-	}
 	// Balanced inherits Default's CompressionLevel, which dropped
 	// from 7 → 3 when progressive compaction compression landed.
 	if cfg.Insert.CompressionLevel != 3 {
 		t.Errorf("balanced compression = %d, want 3 (was 7 before progressive compaction)", cfg.Insert.CompressionLevel)
-	}
-	if cfg.Insert.AckMode != "buffer" {
-		t.Errorf("balanced ack_mode = %q, want buffer", cfg.Insert.AckMode)
 	}
 	if cfg.Cache.MemoryLimit != "512MB" {
 		t.Errorf("balanced cache memory = %q, want 512MB", cfg.Cache.MemoryLimit)
@@ -90,14 +80,8 @@ func TestProfileConfig_BalancedSettings(t *testing.T) {
 func TestProfileConfig_MaxPerformanceSettings(t *testing.T) {
 	cfg := ProfileConfig(ProfileMaxPerformance)
 
-	if cfg.Insert.FlushInterval != 5*time.Second {
-		t.Errorf("max-perf flush_interval = %v, want 5s", cfg.Insert.FlushInterval)
-	}
 	if cfg.Insert.CompressionLevel != 3 {
 		t.Errorf("max-perf compression = %d, want 3", cfg.Insert.CompressionLevel)
-	}
-	if cfg.Insert.MaxBufferRows != 100000 {
-		t.Errorf("max-perf max_buffer_rows = %d, want 100000", cfg.Insert.MaxBufferRows)
 	}
 	if cfg.Cache.MemoryLimit != "2GB" {
 		t.Errorf("max-perf cache memory = %q, want 2GB", cfg.Cache.MemoryLimit)
@@ -119,12 +103,6 @@ func TestProfileConfig_MaxPerformanceSettings(t *testing.T) {
 func TestProfileConfig_MaxDurabilitySettings(t *testing.T) {
 	cfg := ProfileConfig(ProfileMaxDurability)
 
-	if cfg.Insert.AckMode != "flush-sync" {
-		t.Errorf("max-durability ack_mode = %q, want flush-sync", cfg.Insert.AckMode)
-	}
-	if cfg.Insert.PeerReplicate {
-		t.Error("max-durability peer_replicate should be false (flush-sync covers AZ)")
-	}
 	if !cfg.Compaction.Enabled {
 		t.Error("max-durability compaction should be enabled")
 	}
@@ -142,9 +120,6 @@ func TestProfileConfig_MaxDurabilitySettings(t *testing.T) {
 func TestProfileConfig_MaxCostSavingsSettings(t *testing.T) {
 	cfg := ProfileConfig(ProfileMaxCostSavings)
 
-	if cfg.Insert.FlushInterval != 30*time.Second {
-		t.Errorf("max-cost flush_interval = %v, want 30s", cfg.Insert.FlushInterval)
-	}
 	if cfg.Insert.CompressionLevel != 11 {
 		t.Errorf("max-cost compression = %d, want 11", cfg.Insert.CompressionLevel)
 	}
@@ -165,14 +140,8 @@ func TestProfileConfig_MaxCostSavingsSettings(t *testing.T) {
 func TestProfileConfig_DevSettings(t *testing.T) {
 	cfg := ProfileConfig(ProfileDev)
 
-	if cfg.Insert.FlushInterval != 1*time.Second {
-		t.Errorf("dev flush_interval = %v, want 1s", cfg.Insert.FlushInterval)
-	}
 	if cfg.Insert.CompressionLevel != 1 {
 		t.Errorf("dev compression = %d, want 1", cfg.Insert.CompressionLevel)
-	}
-	if cfg.Insert.MaxBufferRows != 1000 {
-		t.Errorf("dev max_buffer_rows = %d, want 1000", cfg.Insert.MaxBufferRows)
 	}
 	if !cfg.S3.ForcePathStyle {
 		t.Error("dev force_path_style should be true for MinIO")

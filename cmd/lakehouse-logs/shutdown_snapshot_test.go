@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage/parquets3"
 )
 
@@ -59,18 +61,17 @@ func shutdownStore(t *testing.T) *parquets3.Storage {
 	return store
 }
 
-// The snapshot persisted AFTER the final flush carries the object that flush
-// wrote, with its exact time bounds, so a restart does not have to guess them
-// from the S3 listing (the partition hour).
-func TestCloseStoreAndPersistManifest_SnapshotCarriesFinalFlush(t *testing.T) {
+// The snapshot persisted AFTER the close carries the objects the flusher wrote
+// since the first snapshot, with their exact time bounds, so a restart does not
+// have to guess them from the S3 listing (the partition hour).
+func TestCloseStoreAndPersistManifest_SnapshotCarriesTheLastObjects(t *testing.T) {
 	store := shutdownStore(t)
-	base := time.Date(2026, 10, 1, 7, 10, 0, 0, time.UTC)
-	last := base.Add(2 * time.Second)
-	store.MustAddLogRows([]schema.LogRow{
-		{TimestampUnixNano: base.UnixNano(), Body: "a", ServiceName: "svc"},
-		{TimestampUnixNano: base.Add(time.Second).UnixNano(), Body: "b", ServiceName: "svc"},
-		{TimestampUnixNano: last.UnixNano(), Body: "c", ServiceName: "svc"},
-	})
+	bufDir := t.TempDir()
+	segs, err := membuffer.OpenSegments(membuffer.Config{Path: bufDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetLocalBuffer(segs)
 
 	path := filepath.Join(t.TempDir(), "manifest-snapshot.json")
 	persistManifestSnapshot(store, path, 10*time.Second, "shutdown") // runShutdown's first persist
@@ -79,7 +80,31 @@ func TestCloseStoreAndPersistManifest_SnapshotCarriesFinalFlush(t *testing.T) {
 		t.Fatal(err)
 	}
 	if before.TotalFiles() != 0 {
-		t.Fatalf("precondition: the snapshot taken before the final flush holds %d objects, want 0", before.TotalFiles())
+		t.Fatalf("precondition: the first snapshot holds %d objects, want 0", before.TotalFiles())
+	}
+
+	// The flusher seals and writes the segment right away.
+	flusher := parquets3.NewBufferFlusher(store.Writer(), segs, bufDir, nil, parquets3.BufferFlusherConfig{
+		TargetBytes: 1 << 20, MaxAge: time.Millisecond, Grace: time.Minute})
+	flusher.Start(10 * time.Millisecond)
+	store.SetBufferFlusher(flusher)
+
+	base := time.Date(2026, 10, 1, 7, 10, 0, 0, time.UTC)
+	last := base.Add(2 * time.Second)
+	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
+	for i, ts := range []time.Time{base, base.Add(time.Second), last} {
+		lr.MustAdd(logstorage.TenantID{}, ts.UnixNano(), []logstorage.Field{
+			{Name: "service.name", Value: "svc"}, {Name: "_msg", Value: fmt.Sprintf("row-%d", i)},
+		}, 1)
+	}
+	segs.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	deadline := time.Now().Add(20 * time.Second)
+	for store.Manifest().TotalFiles() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if store.Manifest().TotalFiles() == 0 {
+		t.Fatal("the flusher wrote nothing")
 	}
 
 	closeStoreAndPersistManifest(store, path, 10*time.Second)
@@ -90,11 +115,11 @@ func TestCloseStoreAndPersistManifest_SnapshotCarriesFinalFlush(t *testing.T) {
 	}
 	files := after.GetFilesForRange(0, 1<<62)
 	if len(files) != 1 {
-		t.Fatalf("snapshot after the final flush holds %d objects, want 1", len(files))
+		t.Fatalf("snapshot after the close holds %d objects, want 1", len(files))
 	}
 	fi := files[0]
 	if fi.BoundsInferred || fi.RowCount != 3 || fi.MaxTimeNs != last.UnixNano() || fi.MinTimeNs != base.UnixNano() {
-		t.Fatalf("object in the post-flush snapshot = %+v, want 3 rows with exact bounds [%d, %d]", fi, base.UnixNano(), last.UnixNano())
+		t.Fatalf("object in the post-close snapshot = %+v, want 3 rows with exact bounds [%d, %d]", fi, base.UnixNano(), last.UnixNano())
 	}
 }
 
@@ -106,7 +131,7 @@ func TestPersistManifestSnapshot_BadPathDoesNotPanic(t *testing.T) {
 }
 
 // runShutdown must not call store.Close() directly (the original ordering, which
-// persisted the manifest only BEFORE the final flush): the close goes through
+// persisted the manifest only BEFORE the flusher stopped): the close goes through
 // closeStoreAndPersistManifest, which persists again after it. It also keeps the
 // first persist ahead of the long Stop() calls.
 func TestRunShutdown_PersistsManifestBeforeAndAfterClose(t *testing.T) {

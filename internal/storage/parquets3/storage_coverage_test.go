@@ -23,15 +23,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
 )
 
-// --- StartWriter tests ---
-
-func TestStartWriter_NilWriter(t *testing.T) {
-	s := testStorage()
-	s.writer = nil
-	// Should not panic
-	s.StartWriter()
-}
-
 // --- Writer getter ---
 
 func TestWriter_NilByDefault(t *testing.T) {
@@ -43,30 +34,10 @@ func TestWriter_NilByDefault(t *testing.T) {
 
 func TestWriter_NonNil(t *testing.T) {
 	s := testStorage()
-	bw := &BatchWriter{
-		cfg:       &config.InsertConfig{},
-		mode:      config.ModeLogs,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
+	bw := &BatchWriter{cfg: &config.InsertConfig{}, mode: config.ModeLogs}
 	s.writer = bw
 	if s.Writer() != bw {
 		t.Error("Writer() did not return the assigned writer")
-	}
-}
-
-// --- CanWriteData tests ---
-
-func TestCanWriteData_NilWriter(t *testing.T) {
-	s := testStorage()
-	s.writer = nil
-	err := s.CanWriteData()
-	if err == nil {
-		t.Fatal("expected error when writer is nil")
-	}
-	if err.Error() == "" {
-		t.Error("expected non-empty error message")
 	}
 }
 
@@ -1117,28 +1088,14 @@ func TestWarmFile_CacheMiss_NoPanic(t *testing.T) {
 	}
 }
 
-// --- Close with writer ---
-
-func TestClose_WriterWithEmptyBuffers(t *testing.T) {
-	// Close() with a non-nil writer that has empty buffers.
-	// Stop() calls FlushAll() which with empty bufs does nothing needing S3.
+func TestClose_WithWriter(t *testing.T) {
+	// Close() with a non-nil writer: the writer holds no rows of its own, so
+	// there is nothing to flush and nothing that needs S3.
 	s := testStorage()
-	insertCfg := &config.InsertConfig{
-		MaxBufferRows: 1000000,
-		FlushInterval: 10 * time.Second,
-	}
-	bw := &BatchWriter{
-		cfg:       insertCfg,
-		mode:      config.ModeLogs,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-	s.writer = bw
-	bw.Start() // Start the flush loop
+	s.writer = &BatchWriter{cfg: &config.InsertConfig{}, mode: config.ModeLogs}
 
 	if err := s.Close(); err != nil {
-		t.Errorf("Close with empty writer: %v", err)
+		t.Errorf("Close with a writer: %v", err)
 	}
 }
 
@@ -1270,86 +1227,6 @@ func TestTraceStorage_Getters(t *testing.T) {
 	}
 	if s.Discovery() == nil {
 		t.Error("expected non-nil discovery")
-	}
-}
-
-// --- MustAddLogRows / MustAddTraceRows with a real writer ---
-
-func TestMustAddLogRows_WithWriter(t *testing.T) {
-	s := testStorage()
-	insertCfg := &config.InsertConfig{
-		MaxBufferRows: 1000000, // prevent threshold-triggered flush
-	}
-	bw := &BatchWriter{
-		cfg:       insertCfg,
-		mode:      config.ModeLogs,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-	s.writer = bw
-
-	rows := []schema.LogRow{
-		{TimestampUnixNano: time.Now().UnixNano(), Body: "test msg", SeverityText: "INFO", ServiceName: "svc"},
-	}
-
-	// Should not panic
-	s.MustAddLogRows(rows)
-
-	if bw.BufferedRows() != 1 {
-		t.Errorf("BufferedRows = %d, want 1", bw.BufferedRows())
-	}
-}
-
-func TestMustAddTraceRows_WithWriter(t *testing.T) {
-	s := testStorage()
-	insertCfg := &config.InsertConfig{
-		MaxBufferRows: 1000000, // prevent threshold-triggered flush
-	}
-	bw := &BatchWriter{
-		cfg:       insertCfg,
-		mode:      config.ModeTraces,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-	s.writer = bw
-
-	rows := []schema.TraceRow{
-		{TimestampUnixNano: time.Now().UnixNano(), TraceID: "t1", SpanID: "s1", SpanName: "op", ServiceName: "svc"},
-	}
-
-	// Should not panic
-	s.MustAddTraceRows(rows)
-
-	if bw.BufferedRows() != 1 {
-		t.Errorf("BufferedRows = %d, want 1", bw.BufferedRows())
-	}
-}
-
-// --- CanWriteData with a writer (will fail because no real S3, but exercises the path) ---
-
-func TestCanWriteData_WithWriter_NoPool(t *testing.T) {
-	s := testStorage()
-	insertCfg := &config.InsertConfig{
-		MaxBufferRows: 1000000,
-	}
-	bw := &BatchWriter{
-		cfg:       insertCfg,
-		mode:      config.ModeLogs,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-	s.writer = bw
-
-	// CanWriteData calls writer.CanWriteData which needs pool.
-	// We just test that the nil-writer error path works (tested above),
-	// and that the non-nil writer path enters the method.
-	// Since pool is nil, it will panic - so we test differently:
-	// just verify writer is non-nil and cfg role path works.
-	if s.Writer() == nil {
-		t.Error("expected non-nil writer")
 	}
 }
 
@@ -1562,29 +1439,6 @@ func TestHasDataForRange_BeforeData(t *testing.T) {
 	if s.HasDataForRange(start, end) {
 		t.Error("should NOT have data for range entirely before partition")
 	}
-}
-
-// --- StartWriter with non-nil writer (exercises ReplayWAL + Start) ---
-
-func TestStartWriter_WithWriter(t *testing.T) {
-	s := testStorage()
-	insertCfg := &config.InsertConfig{
-		MaxBufferRows: 1000000,
-		FlushInterval: 10 * time.Second,
-	}
-	bw := &BatchWriter{
-		cfg:       insertCfg,
-		mode:      config.ModeLogs,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-	s.writer = bw
-	// wal is nil, so ReplayWAL returns (0,0) quickly
-	s.StartWriter() // exercises: ReplayWAL call, condition check, Start()
-
-	// Clean up: stop the writer goroutine
-	bw.Stop()
 }
 
 // --- getFileData disk cache corrupted file (ReadFile fails -> Delete + L2 miss) ---
@@ -1892,40 +1746,6 @@ func TestGetFileData_PeerCacheMiss(t *testing.T) {
 
 	if !panicked {
 		t.Error("expected panic from nil S3 pool after peer cache miss")
-	}
-}
-
-// --- CanWriteData with non-nil writer (exercises the timeout + CanWriteData delegation) ---
-
-func TestCanWriteData_WithWriter(t *testing.T) {
-	s := testStorage()
-	insertCfg := &config.InsertConfig{
-		MaxBufferRows: 1000000,
-		FlushInterval: 10 * time.Second,
-	}
-	bw := &BatchWriter{
-		cfg:       insertCfg,
-		mode:      config.ModeLogs,
-		logBufs:   make(map[string][]schema.LogRow),
-		traceBufs: make(map[string][]schema.TraceRow),
-		stopCh:    make(chan struct{}),
-	}
-	s.writer = bw
-
-	// CanWriteData calls writer.CanWriteData(ctx) which tries S3 Upload.
-	// With nil pool, this will panic. Catch it to verify the path is exercised.
-	panicked := false
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				panicked = true
-			}
-		}()
-		_ = s.CanWriteData()
-	}()
-
-	if !panicked {
-		t.Error("expected panic from nil S3 pool in CanWriteData")
 	}
 }
 

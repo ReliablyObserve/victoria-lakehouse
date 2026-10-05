@@ -59,8 +59,8 @@ func seedSampledLevelIndex(t *testing.T, pmetaOn bool) (s *Storage, lo, hi int64
 			Body:              "row", ServiceName: "svc", SeverityText: lvl,
 		})
 	}
-	bw.AddLogRows(rows)
-	bw.triggerFlush()
+	bw.stageLogRows(rows)
+	bw.flushStagedNow()
 
 	lo, hi = small.Add(-time.Hour).UnixNano(), full.Add(time.Hour).UnixNano()
 
@@ -177,8 +177,8 @@ func TestFieldValues_AliasedField_CatalogStaysTenantScoped(t *testing.T) {
 			i++
 		}
 	}
-	bw.AddLogRows(rows)
-	bw.triggerFlush()
+	bw.stageLogRows(rows)
+	bw.flushStagedNow()
 	s.labelIndex.Add("level", []string{"DEBUG", "ERROR", "INFO", "WARN"})
 
 	q := mustParseQueryWithTime(t, "*", base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())

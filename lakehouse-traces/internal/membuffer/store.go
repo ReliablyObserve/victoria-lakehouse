@@ -35,9 +35,12 @@ type Config struct {
 	// flush.
 	Path string
 
-	// Retention bounds how long rows live in the buffer before VL drops the
-	// oldest per-day partition. Bounds buffer memory; data older than the
-	// retention is served from S3 Parquet, not the buffer. Default 1h.
+	// Retention is upstream's acceptance window into the past: a row whose day
+	// is before day(now - Retention) is dropped at ingest, with upstream's
+	// warning and counter. A segment is removed once its rows are in Parquet,
+	// so this does not bound the buffer's size. Default: no limit (100 years),
+	// so every row the Lakehouse takes is kept until it is written, whatever
+	// its age; Lakehouse retention then applies to the Parquet objects.
 	Retention time.Duration
 
 	// FlushInterval is VL's in-memory rowsBuffer→inmemoryPart→disk interval
@@ -57,7 +60,7 @@ type Config struct {
 
 func (c *Config) withDefaults() {
 	if c.Retention <= 0 {
-		c.Retention = time.Hour
+		c.Retention = 100 * 365 * 24 * time.Hour
 	}
 	if c.FlushInterval <= 0 {
 		c.FlushInterval = 5 * time.Second
@@ -75,6 +78,7 @@ func (c *Config) withDefaults() {
 // the surface to what the lakehouse insert/query paths need.
 type Store struct {
 	s    *logstorage.Storage
+	seg  *Segment // wraps s: queries and Close go through its lock
 	path string
 }
 
@@ -98,7 +102,7 @@ func Open(cfg Config) (*Store, error) {
 		MinFreeDiskSpaceBytes: cfg.MinFreeDiskBytes,
 	}
 	s := logstorage.MustOpenStorage(cfg.Path, sc)
-	return &Store{s: s, path: cfg.Path}, nil
+	return &Store{s: s, seg: &Segment{st: s, created: time.Now()}, path: cfg.Path}, nil
 }
 
 // MustAddRows appends the native LogRows to the buffer. Safe to call from the
@@ -112,7 +116,7 @@ func (st *Store) MustAddRows(lr *logstorage.LogRows) {
 // the same logstorage engine the S3-Parquet path uses, so results are
 // byte-identical in shape to a file scan. Wired into the read merge in P3.
 func (st *Store) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.WriteDataBlockFunc) error {
-	return st.s.RunQuery(qctx, writeBlock)
+	return st.seg.RunQuery(qctx, writeBlock)
 }
 
 // DebugFlush forces VL to flush its in-memory rowsBuffer so just-ingested rows
@@ -126,14 +130,22 @@ func (st *Store) DebugFlush() {
 // Reused from the upstream engine so the P5 shadow exporter can enumerate which
 // tenants to export per window without LH tracking it separately.
 func (st *Store) GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error) {
-	return st.s.GetTenantIDs(ctx, start, end)
+	return st.seg.GetTenantIDs(ctx, start, end)
 }
 
 // Close releases the store. The on-disk path is left for the OS/tmpfs to
 // reclaim; it carries no durable data.
+// It waits for the queries in flight; a query after it returns an error.
 func (st *Store) Close() {
-	st.s.MustClose()
+	st.seg.closeForGood()
 }
 
 // Path returns the store's data directory.
 func (st *Store) Path() string { return st.path }
+
+// Snapshot presents the store as a buffer of one segment with no nonce (a
+// single upstream storage, as tests and tools use it): nothing of the cold tier
+// is excluded for it and Release is a no-op.
+func (st *Store) Snapshot() *Snapshot {
+	return &Snapshot{segs: []*Segment{st.seg}}
+}

@@ -21,7 +21,7 @@ blackout on a simultaneous restart".
 | Footer cache snapshot load | `FooterMaxItems` × ~50 KB each | async load off /ready path (planned) |
 | S3 manifest refresh | manifest delta since snapshot | snapshot persisted every 5 min; only deltas LISTed |
 | Cache warmup | `WarmupPartitions × WarmupMaxFiles` × 50 ms S3 fetch | priority warmup (planned), backoff+jitter (planned) |
-| Buffer restore | logstore parts restored on open | gated on /ready via lifecycle manager |
+| Buffer restore | buffer segments restored on open | gated on /ready via lifecycle manager |
 
 ## Scenarios
 
@@ -46,7 +46,7 @@ t=0       all 6 pods restart
 t=5-15 s  all 6 reach /ready=200, BufferBridges call each other
           ── BUT every peer's buffer is empty post-restart ──
 t=0-120 s no in-memory buffer ANYWHERE in cluster. Recent data
-          (last ~2 min before restart) is in the logstore buffer parts on disk,
+          (last ~2 min before restart) is in the insert buffer segments on disk,
           restoring. Queries see ONLY S3-flushed data (5+ min
           stale at best).
 t=120 s+  buffer restore done, new ingest fills buffers
@@ -154,7 +154,7 @@ the time window. Or wait for compaction to merge L0 files.
 
 - **Live-tail across simultaneous restart.** During scenario 2,
   data ingested in the last 2 min of pre-restart life is in the
-  logstore buffer parts on disk only. We could send it to S3 on SIGTERM but the latency
+  insert buffer segments on disk only. We could send it to S3 on SIGTERM but the latency
   budget doesn't allow it (S3 PUT can take seconds). Accept the
   2-5 min cold-buffer window or run with `maxUnavailable: 1` so
   this scenario never happens.

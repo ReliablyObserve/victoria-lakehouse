@@ -18,10 +18,9 @@ graph TD
     end
 
     subgraph Victoria Lakehouse
-        INS --> INSAD["insertAdapter<br/>logRowsToSchemaRows"]
-        INSAD --> BW[BatchWriter]
-        BW --> BUF["Buffer (logstore)<br/>durable on-disk parts"]
-        BW -->|flush| PQ[Parquet Writer]
+        INS --> INSAD["insertAdapter<br/>(admission)"]
+        INSAD --> BUF["Insert buffer segments<br/>(upstream logstorage, on disk)"]
+        BUF -->|BufferFlusher drain| PQ[Parquet Writer]
         PQ --> S3[(S3)]
         PQ --> MAN[Manifest]
 
@@ -49,35 +48,28 @@ sequenceDiagram
     participant C as Client
     participant VLH as VL vlinsert Handler
     participant A as insertAdapter
-    participant BW as BatchWriter
-    participant W as Buffer (logstore)
+    participant SEG as Segments (logstorage)
+    participant F as BufferFlusher
     participant PW as Parquet Writer
     participant S3 as S3
     participant M as Manifest
-    participant P as Pusher
 
     C->>VLH: POST /insert/* (any protocol)
     VLH->>VLH: Parse protocol (upstream code)
     VLH->>A: MustAddRows(*LogRows)
-    A->>A: logRowsToSchemaRows()
-    A->>BW: MustAddLogRows([]LogRow)
-    BW->>W: MustAddRows (durable on-disk parts)
-    BW->>BW: Buffer by partition
-    
-    Note over BW: Flush trigger:<br/>interval (10s) or<br/>buffer size threshold
+    A->>A: admission (drop trace-shaped / over-limit streams)
+    A->>SEG: MustAddRows into the active segment
+    A-->>C: 200 (parts fsynced within ~11 s, as upstream)
 
-    BW->>BW: Snapshot buffers (atomic swap)
-    BW->>PW: writeLogsParquet(rows)
-    PW->>PW: Sort by timestamp
-    PW->>PW: ZSTD compress + bloom filters
-    PW-->>BW: flushResult{Data, RawBytes}
-    
-    BW->>S3: PutObject(partition/batchID.parquet)
-    S3-->>BW: OK
-    BW->>M: AddFile(partition, FileInfo)
-    BW->>W: Truncate()
-    BW->>P: Notify(added=[FileInfo])
-    P->>P: Broadcast to peers
+    Note over F: seal: age (buffer_flush_interval)<br/>or size (target_file_size)
+
+    F->>SEG: Seal (close + reopen: durable, immutable)
+    F->>SEG: collect one group (tenant, hour, slice)
+    F->>PW: write Parquet (sorted, ZSTD, blooms)
+    F->>S3: PutObject(partition/nonce-slice.parquet)
+    F->>M: AddFile(partition, FileInfo)
+    F->>S3: PutObject(_segments/nonce) marker
+    F->>SEG: Commit, then remove after the grace
 ```
 
 ### Insert API
@@ -100,11 +92,11 @@ All VL insert protocols are supported:
 | `POST /insert/splunk/services/collector/event` | Splunk HEC |
 | `POST /insert/native` | VL native binary format |
 
-The adapter's `logRowsToSchemaRows()` converts VL's `*logstorage.LogRows` into `[]schema.LogRow`, mapping fields to promoted Parquet columns or MAP columns:
+The adapter hands VL's `*logstorage.LogRows` to the insert buffer unchanged. When a sealed segment is drained, `DataBlockToLogRows` converts its rows into `[]schema.LogRow`, mapping fields to promoted Parquet columns or MAP columns:
 
 ```mermaid
 graph LR
-    LR["*logstorage.LogRows<br/>(VL internal format)"] --> CONV["logRowsToSchemaRows()"]
+    LR["*logstorage.LogRows<br/>(VL internal format)"] --> CONV["DataBlockToLogRows()<br/>(at drain)"]
     CONV --> PROM{Promoted?}
     PROM -->|Yes| TOP[Top-level columns<br/>service.name, trace_id,<br/>k8s.namespace.name, ...]
     PROM -->|No| MAP[MAP columns<br/>resource.attributes,<br/>log.attributes]
@@ -116,43 +108,36 @@ Promoted fields (logs): `_time`, `_msg`, `level`, `service.name`, `k8s.namespace
 
 **File:** `lakehouse-traces/internal/vlstorage/insert.go`
 
-The traces binary uses the identical pattern with `TraceWriter` interface. The `logRowsToTraceRows()` function maps VL fields to trace-specific promoted columns:
+The traces binary uses the identical pattern. At drain, `DataBlockToTraceRows()` maps VL fields to trace-specific promoted columns:
 
 Promoted fields (traces): `trace_id`, `span_id`, `parent_span_id`, `span.name`, `service.name`, `duration_ns`, `start_time_unix_nano`, `status.code`, `status.message`, `span.kind`, `http.method`, `http.status_code`, `http.url`, `db.system`, `db.statement`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`, `k8s.node.name`, `deployment.environment`, `cloud.region`, `host.name`, `scope.name`
 
 Non-promoted fields go to `span.attributes` MAP column.
 
-### BatchWriter
+### Insert buffer and BufferFlusher
 
-**File:** `internal/storage/parquets3/writer.go`
+**Files:** `internal/membuffer/segments.go`, `internal/storage/parquets3/buffer_flusher.go` (and the traces-module copies)
 
-Buffers rows in memory, partitioned by time:
+The buffer is a sequence of upstream `logstorage.Storage` segments cut by ingest time. The flusher drains each sealed segment completely, per tenant, in groups of at most `target_file_size` that never cross an hour partition:
 
 ```mermaid
 flowchart TD
-    ADD[AddLogRows] --> PART[Partition by timestamp<br/>dt=YYYY-MM-DD/hour=HH]
-    PART --> BUF1["logBufs[dt=2026-05-02/hour=10]"]
-    PART --> BUF2["logBufs[dt=2026-05-02/hour=11]"]
-
-    TICK[Flush Ticker] -->|every 10s| SNAP[Snapshot & swap buffers]
-    SIZE[Size threshold] --> SNAP
-    SHUT[Graceful shutdown] --> SNAP
-
-    SNAP --> F1[flushLogPartition hour=10]
-    SNAP --> F2[flushLogPartition hour=11]
-
-    F1 --> WRITE[writeLogsParquet]
-    F2 --> WRITE
+    ADD[MustAddRows] --> ACT["active segment<br/>(any _time)"]
+    ACT -->|"age >= buffer_flush_interval<br/>or size >= target_file_size"| SEAL[Seal]
+    SEAL --> PLAN["plan groups from per-second counts<br/>(tenant, hour, slice)"]
+    PLAN --> WRITE[writeLogsParquet per group]
+    WRITE --> PUT["PutObject nonce-slice.parquet<br/>+ stored mark + manifest AddFile"]
+    PUT --> MARK["marker _segments/nonce,<br/>commit, grace, remove"]
 ```
 
-**Flush triggers:**
-- **Periodic:** `FlushInterval` (default 10s)
-- **Size:** when buffer exceeds `TargetFileSize` (default 128 MB)
-- **Shutdown:** `FlushAll()` called from graceful shutdown hook
+**Seal triggers:**
+- **Age:** `insert.buffer_flush_interval` (default 5m)
+- **Size:** about `insert.target_file_size` (default 128 MB) of rows while fewer than 64 segments are pending
+- **Shutdown:** the flusher stops and the buffer closes; the next start drains what is left
 
 ### Parquet Writing
 
-Each flush produces a single Parquet file per partition:
+Each group produces a single Parquet file:
 
 ```mermaid
 flowchart LR
@@ -164,9 +149,9 @@ flowchart LR
     BYTES --> S3[S3 PutObject]
 ```
 
-**S3 key format:** `{prefix}{partition}/{batchID}.parquet`
-- Example: `logs/dt=2026-05-02/hour=10/a1b2c3d4e5f6g7h8.parquet`
-- `batchID` is a random 8-byte hex string
+**S3 key format:** `{prefix}{partition}/{nonce}-{slice}.parquet`
+- Example: `logs/dt=2026-05-02/hour=10/6710a3f1c0de5b21-0000000000000002.parquet`
+- `nonce` identifies the buffer segment (8 hex of Unix seconds plus 8 random hex); `slice` numbers the group inside it. The same key always carries the same bytes.
 
 **Compression levels:**
 - 1-5: ZSTD default speed
@@ -175,35 +160,32 @@ flowchart LR
 
 ### Buffer durability (no WAL)
 
-There is **no separate lakehouse write-ahead log** (the old `internal/wal/` was
-removed). With `insert.buffer_engine: logstore`, durability comes from the insert
-buffer itself: a per-pod `logstorage.Storage` that writes rows to **on-disk parts
-every flush interval (~5s) and restores them on open** — the same mechanism hot
-VL/VT use. A persisted **flush watermark** lets the `BufferFlusher` re-flush any
-uncommitted window on restart, idempotently.
+There is **no separate lakehouse write-ahead log**. Durability comes from the insert
+buffer itself: upstream `logstorage.Storage` segments that write rows to **on-disk
+parts every ~5s and restore them on open** — the same mechanism hot VL/VT use.
+The flusher's state file records which segments are committed, so on restart it
+drains the rest without rewriting any object it already stored.
 
 ```mermaid
 flowchart TD
-    ADD[MustAddRows] --> BUF[logstore buffer<br/>on-disk parts ~5s]
-    BUF -->|BufferFlusher<br/>settled window| S3[Parquet on S3]
-    S3 --> WM[Advance + persist<br/>flush watermark]
-    CRASH[Crash / restart] --> RESTORE[logstorage restores parts]
-    RESTORE --> REFLUSH[Re-flush from watermark<br/>idempotent: manifest dedups]
+    ADD[MustAddRows] --> BUF[active segment<br/>on-disk parts ~5s]
+    BUF -->|seal, BufferFlusher drain| S3[Parquet on S3]
+    S3 --> CM[marker + commit<br/>in the flush state file]
+    CRASH[Crash / restart] --> RESTORE[logstorage restores segments]
+    RESTORE --> REDRAIN[Drain what is not committed<br/>stored objects are recognised, not rewritten]
 ```
 
-**Recovery:** on restart the buffer restores its parts and the flusher re-flushes
-`(watermark, now-offset]`. Crash-loss window ≈ the buffer flush interval (~5s),
+**Recovery:** on restart the buffer reopens its segments and the flusher drains
+the uncommitted ones. Crash-loss window = the buffer's part flush (~5s),
 matching hot VL/VT. See [Persistence & Durability](durability.md).
 
-<!-- BEGIN GENERATED: config-keys insert.buffer_engine insert.buffer_dir insert.buffer_retention insert.buffer_flush_enabled -->
+<!-- BEGIN GENERATED: config-keys insert.buffer_dir insert.buffer_flush_interval -->
 <!-- Generated by `make config-docs` from the code; do not edit. -->
 
 | Key | Default | Config file | Flags | Description |
 |---|---|---|---|---|
-| `insert.buffer_engine` | `buffer` | set |  | Selects how the insert buffer (recently-ingested, not-yet-flushed rows) is held and queried (Option B): "buffer" (default) — legacy []schema.{Log,Trace}Row staging + struct→DataBlock conversion at query time. |
-| `insert.buffer_dir` | `/data/lakehouse/buffer` | set |  | The local/tmpfs directory for the logstore buffer's parts (durability is logstorage persistence here + the S3 Parquet flush). |
-| `insert.buffer_retention` | `1h` | set |  | Bounds how long rows live in the logstore buffer before VL drops them; once the flush sink is active this is just a ceiling. |
-| `insert.buffer_flush_enabled` | `false` | enable-only |  | Makes the logstore buffer the AUTHORITATIVE Parquet producer via the BufferFlusher (the WAL cutover). |
+| `insert.buffer_dir` | `/data/lakehouse/buffer` | set |  | The directory of the insert buffer: a sequence of upstream VictoriaLogs storages ("segments"), one directory each, holding every acknowledged row until it has been written to Parquet. |
+| `insert.buffer_flush_interval` | `5m` | set |  | The longest a row waits in an open segment: the active segment is sealed this long after its first row (earlier if it reaches target_file_size while few segments wait), then written to object storage completely and removed after a short grace period. |
 
 <!-- END GENERATED: config-keys -->
 
@@ -270,7 +252,7 @@ Both INSERT and SELECT use the same adapter pattern — Lakehouse only replaces 
 graph LR
     subgraph "Insert Path"
         VLI["VL vlinsert handlers"] -->|"SetLogRowsStorage"| IA["insertAdapter"]
-        IA -->|"MustAddRows → logRowsToSchemaRows"| STOR[Storage]
+        IA -->|"MustAddRows"| STOR[Insert buffer segments]
     end
     subgraph "Select Path"
         VLS[VL vlstorage dispatch] -->|SetExternalStorage| SA[selectAdapter]
@@ -445,7 +427,7 @@ Uses VL's native `logstorage.Filter.MatchRow()` for evaluation — full LogsQL c
 
 **File:** `internal/storage/parquets3/buffer_bridge.go`
 
-For zero-delay reads, select pods query insert pods for unflushed data:
+For zero-delay reads, select pods query insert pods for unflushed data. Each answer carries the rows and, in the `X-Lakehouse-Buffer-Segments` header, the nonces of the segments they came from; the scan then drops the objects those segments wrote, so no row is served twice:
 
 ```mermaid
 sequenceDiagram
@@ -462,8 +444,8 @@ sequenceDiagram
         INS2-->>SEL: NDJSON LogRows
     end
     
-    SEL->>SEL: logRowsToDataBlock(buffered rows)
-    SEL->>SEL: Merge with S3 results
+    SEL->>SEL: bufferView(rows, nonces)
+    SEL->>SEL: Merge with S3 results (objects of those nonces dropped)
 ```
 
 Insert pods are discovered via Kubernetes headless service DNS (`SelectConfig.InsertHeadlessService`).
@@ -622,15 +604,12 @@ flowchart TD
 
 ## Insert Configuration
 
-<!-- BEGIN GENERATED: config-keys insert.flush_interval insert.max_buffer_rows insert.max_buffer_bytes insert.target_file_size insert.row_group_size insert.bloom_columns insert.compression_level -->
+<!-- BEGIN GENERATED: config-keys insert.target_file_size insert.row_group_size insert.bloom_columns insert.compression_level -->
 <!-- Generated by `make config-docs` from the code; do not edit. -->
 
 | Key | Default | Config file | Flags | Description |
 |---|---|---|---|---|
-| `insert.flush_interval` | `1m` | set | `-lakehouse.insert.flush-interval` | The interval at which buffered rows are flushed to Parquet on S3. |
-| `insert.max_buffer_rows` | `50000` | set |  | The number of rows a partition buffer holds before it flushes. |
-| `insert.max_buffer_bytes` | `256MB` | set |  | Bounds the rows not yet written to object storage — buffered, being uploaded, or put back after a failed upload — as a size string. |
-| `insert.target_file_size` | `128MB` | set |  | The target Parquet file size, as a size string; a buffer reaching it flushes early. |
+| `insert.target_file_size` | `128MB` | set |  | The target size of a Parquet object, as a size string: the buffer flusher cuts a segment into objects of about this size, and a segment that reaches it (while few segments wait) is sealed early. |
 | `insert.row_group_size` | `10000` | set |  | The number of rows per Parquet row group in freshly written files. |
 | `insert.bloom_columns` | `[service.name, trace_id]` | set |  | Extra columns to bloom-index on write, in addition to the signal's built-in bloom columns. |
 | `insert.compression_level` | `3` | set |  | The zstd level (1-22) of freshly written files; compaction recompresses older files per compaction.compression_level_by_output_level. |
