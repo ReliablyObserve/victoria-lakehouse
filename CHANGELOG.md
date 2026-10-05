@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The e2e compose stack publishes the select and Loki-proxy ports its tests use, and every e2e step fails the job on a test failure.**
+  `vlselect`, `vtselect` and `loki-vl-proxy` now map `29471`, `20471` and `23100` to the host, and the e2e workflow runs each
+  `go test` step with `set -o pipefail` and waits for these services before the tests start. The last step selects every test
+  the earlier steps do not (`-run . -skip …`) instead of an invalid lookahead pattern, so about 140 previously unselected tests now run.
+
 ## [0.145.0] - 2026-10-05
 
 ### Changed
