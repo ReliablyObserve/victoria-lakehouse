@@ -106,17 +106,19 @@ func TestInternalSelectDisable_TurnsOffBothInternalReadRoutes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = flag.Set(buffer.InternalSelectDisableFlag, "false") })
 
+	// GET first and Fatalf: an ungated POST would reach upstream's
+	// internalselect, which this test never Inits, and block.
 	for _, tc := range []struct{ method, path, route string }{
-		{http.MethodPost, "/internal/select/query", "/internal/select/*"},
 		{http.MethodGet, "/internal/select/field_names", "/internal/select/*"},
 		{http.MethodGet, buffer.Path + "?all_tenants=true", buffer.Path},
+		{http.MethodPost, "/internal/select/query", "/internal/select/*"},
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		req.Header.Set("Authorization", "Bearer k")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), buffer.DisabledMessage(tc.route)) {
-			t.Errorf("%s %s: got %d %q, want 400 with %q", tc.method, tc.path, rec.Code, rec.Body.String(), buffer.DisabledMessage(tc.route))
+			t.Fatalf("%s %s: got %d %q, want 400 with %q", tc.method, tc.path, rec.Code, rec.Body.String(), buffer.DisabledMessage(tc.route))
 		}
 	}
 
