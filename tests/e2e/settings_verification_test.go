@@ -596,8 +596,20 @@ func TestSetting_Parquet_RowGroupSize_MetricsReflect(t *testing.T) {
 }
 
 func TestSetting_Parquet_BloomChecks_AfterQuery(t *testing.T) {
-	if rows := queryLogs(t, `trace_id:="parquet-bloom-check-test"`, 1); len(rows) != 0 {
-		t.Fatalf("absent trace_id returned %d rows", len(rows))
+	// The query prunes Parquet objects only once the rows written so far are in
+	// objects the scan reads: the objects of an insert-buffer segment stay out
+	// of the scan while the segment still serves its rows (its grace period
+	// after the drain, 90 s in the e2e stack), so early in a run the window can
+	// hold no prunable object yet. Query until a skip is recorded.
+	deadline := time.Now().Add(4 * time.Minute)
+	for {
+		if rows := queryLogs(t, `trace_id:="parquet-bloom-check-test"`, 1); len(rows) != 0 {
+			t.Fatalf("absent trace_id returned %d rows", len(rows))
+		}
+		if sumMetric(scrapeMetrics(t, logsBaseURL), "lakehouse_parquet_row_groups_skipped_total") >= 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Second)
 	}
 
 	metrics := scrapeMetrics(t, logsBaseURL)
