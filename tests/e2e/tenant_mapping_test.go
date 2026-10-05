@@ -39,8 +39,11 @@ func TestTenantMapping_StringAndIntPaths(t *testing.T) {
 	ingestTrace(t, tracesBaseURL, withOrgID(stringOrg))
 	ingestTrace(t, tracesBaseURL, withAccountProject(intAccount, intProject))
 
-	// Give the writer a chance to flush the new tenants into the registry.
-	deadline := time.Now().Add(45 * time.Second)
+	// Per-tenant totals count rows in Parquet. The insert buffer is durable by
+	// default: rows reach Parquet when their segment is sealed
+	// (insert.buffer_flush_interval, 2m in the e2e stack, after its first row)
+	// and drained, so poll for that rather than a fixed 45 s.
+	deadline := time.Now().Add(5 * time.Minute)
 	var resolvedStringAccount uint32
 	for time.Now().Before(deadline) {
 		var ok bool
