@@ -58,6 +58,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `lakehouse_buffer_store_dualwrite_failures_total` and `lakehouse_buffer_shadow_export_*`; `lakehouse_insert_rejected_total` keeps only
   `reason="read_only"`.
 
+### Fixed
+
+- **Closing the insert buffer waits for the queries reading it (both binaries, closes #351).** A query still
+  inside the buffer's upstream storage when the pod shut down made upstream panic ("BUG: there are 1 users of
+  partition"), and a query that started after the close read a closed storage and answered nothing. Closing now
+  waits for the queries in flight, and a later query gets an error ("insert buffer is closed").
+
+- **Select pods see the unflushed rows of the insert pods (both binaries).** Every query a select pod answers
+  also asks the insert pods for the rows they have not written to S3 yet (the buffer bridge), but it never
+  reached them:
+  - Addresses found by DNS (`host:port`) were requested without a scheme, so the request URL did not parse and
+    every peer's unflushed rows were missing from every answer: on a select pod, and on any `role=all` pod with
+    peers.
+  - `select.insert_headless_service`, the setting meant to point select pods at the insert pods, was read by
+    nothing.
+
+  The bridge now requests discovered addresses over `http://`, and select pods resolve
+  `select.insert_headless_service` on every `discovery.peer_refresh_interval`. The Helm chart sets it to the
+  release's insert headless service of each signal. In a split deployment a row is visible from a select pod as
+  soon as it is acknowledged, instead of only after its insert pod flushed it (up to the flush interval plus a
+  manifest refresh).
+
 ## [0.143.18] - 2026-10-05
 
 - Helm defaults use the published container image references for both signals. Logs and traces now point to the release repository namespace and prepend the release tag prefix to the chart app version only for each signal's canonical published repository. Custom and legacy repositories retain the unprefixed app-version fallback when the image tag is blank; explicit tags remain unchanged. Future releases publish canonical and legacy flat GHCR repositories with prefixed, unprefixed and latest tags from the same multiarchitecture build for both default and FIPS variants, without backfilling historical versions; Docker Hub tags remain unchanged. Installation examples use the chart signal toggles and current configuration keys.
@@ -120,21 +142,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such strings as map keys and returned corrupted Jaeger service names until #296 made them copy their values. The
   trace-ID list collected while scanning now copies its ids too. Regression tests reuse a block's memory after the
   callback and check that service, field and trace-ID values come back intact.
-
-- **Select pods see the unflushed rows of the insert pods (both binaries).** Every query a select pod answers
-  also asks the insert pods for the rows they have not written to S3 yet (the buffer bridge), but it never
-  reached them:
-  - Addresses found by DNS (`host:port`) were requested without a scheme, so the request URL did not parse and
-    every peer's unflushed rows were missing from every answer: on a select pod, and on any `role=all` pod with
-    peers.
-  - `select.insert_headless_service`, the setting meant to point select pods at the insert pods, was read by
-    nothing.
-
-  The bridge now requests discovered addresses over `http://`, and select pods resolve
-  `select.insert_headless_service` on every `discovery.peer_refresh_interval`. The Helm chart sets it to the
-  release's insert headless service of each signal. In a split deployment a row is visible from a select pod as
-  soon as it is acknowledged, instead of only after its insert pod flushed it (up to the flush interval plus a
-  manifest refresh).
 
 ### Documentation
 
