@@ -321,13 +321,15 @@ def facts_scan(out_path):
                     v.decode("utf-8")
                 except UnicodeDecodeError:
                     bad.append(k.decode("ascii", "replace").split("_rg_")[0])
-            f = res["footer"].setdefault(cell, {"objects": 0, "nonutf8": 0, "keys": [], "nonutf8_dts": []})
+            # an engine that prunes Hive partitions (Polars) still reads the schema from the first
+            # object of the listing (sorted by key, as parquet_keys is) and then only the objects of
+            # the partitions the filter keeps: record both
+            f = res["footer"].setdefault(cell, {"objects": 0, "nonutf8": 0, "keys": [], "nonutf8_dts": [],
+                                                "first_nonutf8": bool(bad)})
             f["objects"] += 1
             if bad:
                 f["nonutf8"] += 1
                 f["keys"] = sorted(set(f["keys"]) | set(bad))
-                # an engine that prunes Hive partitions before it opens a footer (Polars) meets the
-                # value only in a query whose partition holds such an object
                 f["nonutf8_dts"] = sorted(set(f["nonutf8_dts"]) | {dt_of(rel)})
                 res["nonutf8_total"] += 1
     for cell, cols in res["cells"].items():

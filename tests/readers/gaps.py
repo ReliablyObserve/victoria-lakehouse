@@ -25,7 +25,8 @@ UTF8_ERR = r"invalid utf-?8|utf-?8 error|not valid utf-?8"
 GAPS = [
     {"id": "footer-kv-not-utf8/polars", "issue": ISSUES + "340", "engines": ("polars",), "footer": True,
      "layers": ("raw", "compacted", "pruned"), "label": "files with a non-UTF-8 footer value", "error": UTF8_ERR,
-     # scan_parquet prunes the dt= partitions before it opens a footer: these queries meet only their day's objects
+     # scan_parquet reads the schema from the first object of the listing, then only the objects of the
+     # dt= partitions the filter keeps: these queries meet those objects, not the whole cell
      "partition_pruned": ("dt_filter",),
      # where every object is affected (the doc table says `no` there, `partial` elsewhere)
      "full": (("logs", "raw"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")),
@@ -95,7 +96,7 @@ def applies(gap, facts, prefix, signal, layer, query, dt=None):
         if query in gap.get("partition_pruned", ()):
             if dt is None:
                 raise ValueError("gap %s: query %s reads one partition, the caller must name it" % (gap["id"], query))
-            return dt in f.get("nonutf8_dts", ())
+            return f["first_nonutf8"] or dt in f["nonutf8_dts"]
         return f.get("nonutf8", 0) > 0
     return True
 

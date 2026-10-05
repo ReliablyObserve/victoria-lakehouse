@@ -175,9 +175,9 @@ def test_pruning_gaps_are_narrow_and_close():
 FACTS = {"nonpow2_total": 1, "nonutf8_total": 2,
          "cells": {"4402/3/logs/raw": {"trace_id": [96], "service.name": [32]},
                    "4401/1/logs/raw": {"trace_id": [32], "service.name": [32]}},
-         "footer": {"4401/1/logs/raw": {"objects": 3, "nonutf8": 2, "nonutf8_dts": ["2026-01-01"]},
-                    "4401/1/logs/compacted": {"objects": 2, "nonutf8": 0, "nonutf8_dts": []},
-                    "4401/1/traces/raw": {"objects": 3, "nonutf8": 0, "nonutf8_dts": []}}}
+         "footer": {"4401/1/logs/raw": {"objects": 3, "nonutf8": 2, "nonutf8_dts": ["2026-01-01"], "first_nonutf8": False},
+                    "4401/1/logs/compacted": {"objects": 2, "nonutf8": 0, "nonutf8_dts": [], "first_nonutf8": False},
+                    "4401/1/traces/raw": {"objects": 3, "nonutf8": 0, "nonutf8_dts": [], "first_nonutf8": False}}}
 
 
 def gap_for(engine, sig, layer, tenant, q, prefix, facts=FACTS):
@@ -222,6 +222,15 @@ def test_footer_gap_of_a_partition_pruned_query_looks_only_at_its_partition():
     g = gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1", "2026-01-01")
     assert matrix.judge({"dt_filter": QE("ComputeError: invalid utf-8")}, "dt_filter", 5, g)["status"] == "known-gap"
     assert matrix.judge({"dt_filter": 5}, "dt_filter", 5, g)["status"] == "gap-closed"
+
+
+def test_footer_gap_of_a_partition_pruned_query_includes_the_first_object_of_the_listing():
+    # Polars reads the schema from the first object (sorted by key) before it prunes: a clean day
+    # still fails when that object carries a non-UTF-8 value (CI: 4401/1/logs/compacted, 2026-10-04)
+    first_bad = dict(FACTS, footer=dict(FACTS["footer"], **{"4401/1/logs/raw": dict(FACTS["footer"]["4401/1/logs/raw"],
+                                                                                    first_nonutf8=True)}))
+    g = gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", first_bad, "4401/1", "2026-01-02")
+    assert g and matrix.judge({"dt_filter": QE("ComputeError: invalid utf8")}, "dt_filter", 5, g)["status"] == "known-gap"
 
 
 def test_a_partition_pruned_footer_gap_needs_the_partition():
@@ -291,9 +300,11 @@ def test_known_gap_lookup_is_specific():
     # compaction keeps the body token bloom footer KV since #344, so compacted logs files are refused too
     assert gaps.known_gap("polars", "logs", "compacted", "numeric", "count")
     assert gaps.known_gap("datafusion", "traces", "pruned", "prune", "dt_filter")["issue"].endswith("/340")
-    pruned_facts = dict(FACTS, footer=dict(FACTS["footer"], **{"prune/1/logs/pruned": {"objects": 24, "nonutf8": 0, "nonutf8_dts": []},
+    pruned_facts = dict(FACTS, footer=dict(FACTS["footer"], **{"prune/1/logs/pruned": {"objects": 24, "nonutf8": 0, "nonutf8_dts": [],
+                                                                                        "first_nonutf8": False},
                                                                 "prune/1/traces/pruned": {"objects": 24, "nonutf8": 24,
-                                                                                          "nonutf8_dts": ["2026-01-01"]}}))
+                                                                                          "nonutf8_dts": ["2026-01-01"],
+                                                                                          "first_nonutf8": True}}))
     assert gaps.known_gap("datafusion", "logs", "pruned", "prune", "dt_filter", pruned_facts, "prune/1")["issue"] is None
     assert gaps.known_gap("datafusion", "traces", "pruned", "prune", "dt_filter", pruned_facts, "prune/1")["issue"].endswith("/340")
     assert gaps.known_gap("polars", "logs", "pruned", "prune", "dt_filter", pruned_facts, "prune/1", "2026-01-01") is None
