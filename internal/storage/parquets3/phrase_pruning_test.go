@@ -597,3 +597,18 @@ func TestPhrasePruning_SidecarCarriesAttestation(t *testing.T) {
 		}
 	}
 }
+
+// TestPhrasePruning_PushdownExactPrefix: the pushdown reads the exact prefix
+// `field:="v"*` as a prefix check on v, never as the exact value v; the exact
+// form stays exact.
+func TestPhrasePruning_PushdownExactPrefix(t *testing.T) {
+	s := testStorage()
+	pdf := buildPushDownFilter(`service.name:="api"*`, s.registry)
+	if pdf == nil || len(pdf.Checks) != 1 || pdf.Checks[0].Op != PushDownPrefix || pdf.Checks[0].Value != "api" {
+		t.Fatalf("exact prefix pushdown = %+v, want one prefix check on \"api\"", pdf)
+	}
+	pdf = buildPushDownFilter(`service.name:="api"`, s.registry)
+	if pdf == nil || len(pdf.Checks) != 1 || pdf.Checks[0].Op != PushDownExact || pdf.Checks[0].Value != "api" {
+		t.Fatalf("exact pushdown = %+v, want one exact check on \"api\"", pdf)
+	}
+}
