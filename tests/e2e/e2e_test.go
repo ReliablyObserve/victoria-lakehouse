@@ -38,22 +38,28 @@ func TestMain(m *testing.M) {
 	fmt.Println("e2e: verifying manifest/range on traces...")
 	verifyManifest(tracesBaseURL, "traces")
 
-	// Phase 2b: datagen-continuous keeps inserting, but those rows reach S3 one
-	// flush interval after they arrive. Tests that query the last 30 minutes
-	// (defaultTimeParams) need Parquet holding such rows, so wait for it.
-	fmt.Println("e2e: waiting for recent Parquet on logs...")
-	waitRecentData(logsBaseURL, "logs")
-	fmt.Println("e2e: waiting for recent Parquet on traces...")
-	waitRecentData(tracesBaseURL, "traces")
+	// Phases 2b and 2c wait for the real stack's insert buffer to reach
+	// Parquet. A child process started by a test with its own mock servers
+	// (TestIngestMatrix_EstablishedSampleRejectsDip) has no buffer to wait
+	// for, and its mock manifest is deliberately old.
+	if os.Getenv("LH_INGEST_SAMPLE_CHILD") != "1" {
+		// Phase 2b: datagen-continuous keeps inserting, but those rows reach S3 one
+		// flush interval after they arrive. Tests that query the last 30 minutes
+		// (defaultTimeParams) need Parquet holding such rows, so wait for it.
+		fmt.Println("e2e: waiting for recent Parquet on logs...")
+		waitRecentData(logsBaseURL, "logs")
+		fmt.Println("e2e: waiting for recent Parquet on traces...")
+		waitRecentData(tracesBaseURL, "traces")
 
-	// Phase 2c: an object in the manifest is not yet READ from Parquet. While a
-	// row is in the insert buffer (an open, draining or committed-in-grace
-	// segment) a query answers it from the buffer and leaves that segment's
-	// objects out of the scan. Tests that must read Parquet use windows ending
-	// seededBefore ago (datagen-continuous only writes the last hour), so wait,
-	// as the parity settle step does, until no buffered row is that old.
-	waitBufferOlderThanDrained(logsBaseURL, "logs")
-	waitBufferOlderThanDrained(tracesBaseURL, "traces")
+		// Phase 2c: an object in the manifest is not yet READ from Parquet. While a
+		// row is in the insert buffer (an open, draining or committed-in-grace
+		// segment) a query answers it from the buffer and leaves that segment's
+		// objects out of the scan. Tests that must read Parquet use windows ending
+		// seededBefore ago (datagen-continuous only writes the last hour), so wait,
+		// as the parity settle step does, until no buffered row is that old.
+		waitBufferOlderThanDrained(logsBaseURL, "logs")
+		waitBufferOlderThanDrained(tracesBaseURL, "traces")
+	}
 
 	// Phase 3: Store the data time range for use in other tests.
 	storeTimeRange()
