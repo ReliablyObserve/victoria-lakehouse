@@ -47,7 +47,16 @@ func bufferedRows(base, mode string, sel url.Values, from, to time.Time) (int, e
 	for k, v := range sel {
 		params[k] = v
 	}
-	resp, err := httpClient.Get(base + "/internal/buffer/query?" + params.Encode())
+	req, err := http.NewRequest(http.MethodGet, base+"/internal/buffer/query?"+params.Encode(), nil)
+	if err != nil {
+		return 0, err
+	}
+	// The pods carry peer.auth_key (lakehouse-parity-config.yml): every read
+	// of the buffer, and all_tenants=true in particular, needs it.
+	if k := os.Getenv("LH_PEER_AUTH_KEY"); k != "" {
+		req.Header.Set("Authorization", "Bearer "+k)
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return 0, err
 	}

@@ -1770,7 +1770,7 @@ func applyFlags(cfg *config.Config) {
 // /metrics (VictoriaMetrics' flagutil.IsSecretFlag hides every flag whose name
 // contains "key"), and upstream's envflag expands %{ENV_VAR} in it, so a
 // Kubernetes Secret reaches it through an environment variable.
-var peerAuthKey = flag.String("lakehouse.peer.auth-key", "", "The key every pod presents to the other pods' internal endpoints (Authorization: Bearer) and requires on its own: /internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync. Overrides peer.auth_key from the config file; pass a Secret as -lakehouse.peer.auth-key=%{ENV_VAR}. Empty: those endpoints take no credential and /internal/buffer/query refuses all_tenants=true. See docs/security.md")
+var peerAuthKey = flag.String("lakehouse.peer.auth-key", "", "The key the pods present to each other's internal endpoints and require on their own: /internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync. Overrides peer.auth_key from the config file; pass a Secret as -lakehouse.peer.auth-key=%{ENV_VAR}. Empty: those endpoints take no credential and /internal/buffer/query refuses all_tenants=true. See docs/security.md")
 
 // applyPeerFlags applies -lakehouse.peer.auth-key over peer.auth_key.
 func applyPeerFlags(c *config.PeerConfig) {

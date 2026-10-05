@@ -345,7 +345,11 @@ lakehouseConfig:
   # Peer — Distributed peer cache (L3)
   # ---------------------------------------------------------------------------
   peer:
-    # -- Bearer auth key for peer cache HTTP endpoints.
+    # -- Key of the pods' internal endpoints (/internal/buffer/query, the
+    # peer cache, manifest, stats and tenant sync), sent and required as
+    # Authorization: Bearer. Empty: they take no credential and insert pods
+    # refuse all_tenants reads of their buffer. Rendered into the ConfigMap in
+    # plain text; prefer peerAuth.existingSecret. See docs/security.md.
     auth_key: ""
     # -- Timeout for peer cache fetch requests.
     timeout: 5s
@@ -1250,6 +1254,20 @@ vmauth:
   podAnnotations: {}
   podLabels: {}
   terminationGracePeriodSeconds: 30
+
+# -- The peer key (peer.auth_key) from an existing Secret instead of the
+# ConfigMap. Every Lakehouse pod gets it as LAKEHOUSE_PEER_AUTH_KEY and passes
+# -lakehouse.peer.auth-key=%{LAKEHOUSE_PEER_AUTH_KEY} (VictoriaMetrics expands
+# %{ENV_VAR} in flags and hides flags named *key* from /flags). Insert pods then
+# require it on /internal/buffer/query and select pods present it, so the
+# buffer bridge is authenticated. Create the Secret first, e.g.
+#   kubectl create secret generic lakehouse-peer --from-literal=peer-auth-key="$(openssl rand -hex 32)"
+# Rotate by updating the Secret and restarting every pod.
+peerAuth:
+  # -- Name of a Secret in the release namespace; empty: not used.
+  existingSecret: ""
+  # -- Key inside the Secret that holds the peer key.
+  secretKey: peer-auth-key
 
 networkPolicy:
   enabled: false

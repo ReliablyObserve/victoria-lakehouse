@@ -504,6 +504,39 @@ expect_render "no insert service without its headless service" no \
   "insert_headless_service: test-release" \
   --set "logs.insert.headlessService.enabled=false"
 
+# The peer key (#383/#384): from a Secret, every Lakehouse pod of both signals
+# gets it as an env var from the Secret and passes it with -lakehouse.peer.auth-key;
+# it never lands in the ConfigMap.
+echo ""
+echo "--- Peer key ---"
+check_render "peerAuth.existingSecret wires the Secret into every pod" \
+  'secretKeyRef:' '' \
+  --set "peerAuth.existingSecret=lh-peer" --set "traces.enabled=true"
+expect_render "peerAuth.existingSecret passes the key with the flag" yes \
+  '"-lakehouse.peer.auth-key=%{LAKEHOUSE_PEER_AUTH_KEY}"' \
+  --set "peerAuth.existingSecret=lh-peer"
+expect_render "peerAuth.secretKey selects the Secret's key" yes \
+  "key: custom-key" \
+  --set "peerAuth.existingSecret=lh-peer" --set "peerAuth.secretKey=custom-key"
+expect_render "no peer flag without peerAuth.existingSecret" no \
+  "lakehouse.peer.auth-key"
+expect_render "the key from a Secret is not rendered into the ConfigMap" no \
+  "auth_key: lh-peer" \
+  --set "peerAuth.existingSecret=lh-peer"
+n_pods="$(helm template test-release "${CHART_DIR}" --set "peerAuth.existingSecret=lh-peer" --set "traces.enabled=true" 2>/dev/null | grep -c 'name: LAKEHOUSE_PEER_AUTH_KEY' || true)"
+if [[ "${n_pods}" == "4" ]]; then
+  echo "  PASS  the key reaches all four StatefulSets (logs and traces, insert and select)"; PASSED=$((PASSED + 1))
+else
+  echo "  FAIL  the key reaches ${n_pods} StatefulSet(s), want 4"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+fi
+if helm template test-release "${CHART_DIR}" --set "peerAuth.existingSecret=lh-peer" --set "lakehouseConfig.peer.auth_key=plain" >/dev/null 2>/tmp/helm_test_err; then
+  echo "  FAIL  both peerAuth.existingSecret and lakehouseConfig.peer.auth_key render"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+elif grep -q "set the peer key once" /tmp/helm_test_err; then
+  echo "  PASS  both peerAuth.existingSecret and lakehouseConfig.peer.auth_key are refused"; PASSED=$((PASSED + 1))
+else
+  echo "  FAIL  both keys refused for another reason:"; sed 's/^/         /' /tmp/helm_test_err; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+fi
+
 # ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------

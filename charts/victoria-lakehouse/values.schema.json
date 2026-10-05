@@ -67,7 +67,7 @@
                 "window"
               ],
               "default": "window",
-              "description": "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window — full rollback switch)"
+              "description": "Read strategy for column-projected parquet reads: planned (plan-then-fetch exact coalesced column-chunk ranges, no speculative window) or window (adaptive read-ahead window \u2014 full rollback switch)"
             },
             "projected_fetch_max_bytes": {
               "type": "integer",
@@ -391,6 +391,19 @@
       "properties": {
         "enabled": {
           "type": "boolean"
+        }
+      }
+    },
+    "peerAuth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "secretKey": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }

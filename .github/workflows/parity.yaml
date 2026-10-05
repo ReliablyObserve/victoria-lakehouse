@@ -38,6 +38,10 @@ permissions:
 
 env:
   GOWORK: "off"
+  # peer.auth_key of the parity stack (tests/parity/lakehouse-parity-config.yml):
+  # the settle step reads the insert buffers with all_tenants=true, which a pod
+  # serves only to a caller presenting it.
+  PARITY_PEER_AUTH_KEY: parity-peer-key
 
 jobs:
   parity:
@@ -184,12 +188,14 @@ jobs:
           # are then answered by upstream's own engine, which agrees with hot by
           # construction and would hide every Parquet-path divergence. Count the
           # seeded rows each buffer still holds through the endpoint select
-          # pods read it with (/internal/buffer/query); settled needs 0. The
+          # pods read it with (/internal/buffer/query, with the peer key);
+          # settled needs 0. The
           # rows the service-graph task writes every minute carry no span_id
           # and are not seed rows. ERR (endpoint unreachable) never counts as 0.
           buffered() { # buffered <host:port> <logs|traces>
             raw=$(docker compose -f tests/parity/docker-compose.yml exec -T victorialogs \
-              "$BUSYBOX" wget -qO- "http://$1/internal/buffer/query?start=0&end=$SEED_END_NS&mode=$2&tenant_scope=v1&all_tenants=true" \
+              "$BUSYBOX" wget -qO- --header="Authorization: Bearer $PARITY_PEER_AUTH_KEY" \
+              "http://$1/internal/buffer/query?start=0&end=$SEED_END_NS&mode=$2&tenant_scope=v1&all_tenants=true" \
               2>/dev/null) || { echo ERR; return; }
             if [ "$2" = traces ]; then
               printf '%s\n' "$raw" | jq -c 'select((.span_id // "") != "")' 2>/dev/null | grep -c . || true

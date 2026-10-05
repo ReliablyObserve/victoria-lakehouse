@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`/internal/buffer/query` no longer serves every tenant's unflushed rows to any caller, and the buffer bridge presents the peer key (#384, #383).**
+  Insert pods answer this endpoint on their ingest port; before, `all_tenants=true` returned every tenant's not yet
+  flushed rows without a credential and nothing could turn it off, while the select pods' bridge never sent
+  `peer.auth_key`, so with a key set a select pod answered 200 without any unflushed row. Now the bridge sends
+  `Authorization: Bearer <peer.auth_key>` on every request; with a key set the endpoint answers 401 to a missing or
+  wrong key (upstream's status) and serves `all_tenants=true` only with it, and a pod without a key refuses
+  `all_tenants=true` with 403 while still answering single-tenant reads without a credential, as VictoriaLogs' and
+  VictoriaTraces' `/internal/select/*` do. Upstream's `-internalselect.disable` turns the endpoint off with upstream's
+  answer, and now turns off `/internal/select/*` in both binaries (the logs binary refused the flag at startup; the
+  traces binary registers it as VictoriaTraces does). New flag `-lakehouse.peer.auth-key` overrides `peer.auth_key`
+  and accepts `%{ENV_VAR}`, so the Helm chart's new `peerAuth.existingSecret` passes the key from a Secret to every
+  pod. Refusals show as `lakehouse_buffer_bridge_errors_total{reason="auth"}` with the alert
+  `LakehouseBufferBridgeAuthRefused`. Both binaries. Global-read queries see the unflushed rows only when every pod
+  has the key. See `docs/security.md`.
+
+## [0.145.1] - 2026-10-06
+
 ## [0.145.2] - 2026-10-06
 
 ### Fixed

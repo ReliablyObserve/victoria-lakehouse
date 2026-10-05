@@ -222,7 +222,11 @@ Every query takes a `bufferView` **before** it uses its object list:
   `/internal/buffer/query` and, in the response header
   `X-Lakehouse-Buffer-Segments`, the nonces of the segments they were read from.
   A peer that fails contributes neither rows nor nonces, so none of its objects
-  is dropped.
+  is dropped. That includes a peer that refuses the select pod's peer key
+  (`peer.auth_key`, sent as `Authorization: Bearer`; counted as
+  `lakehouse_buffer_bridge_errors_total{reason="auth"}`): every pod needs the
+  same key, or the select pods miss the other pods' unflushed rows until they
+  are in object storage. See [Security](security.md#internal-endpoints-and-the-peer-key).
 
 The scan then drops every object whose key carries one of those nonces
 (`lakehouse_buffer_view_excluded_objects_total`). A peer keeps a committed

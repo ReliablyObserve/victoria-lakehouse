@@ -791,7 +791,14 @@ func (r *matrixRun) bufferHeld(t *testing.T, s *caseState) int {
 	client := &http.Client{Timeout: 30 * time.Second}
 	start := time.Now()
 	defer func() { r.addStage("buffer_held", time.Since(start)) }()
-	resp, err := client.Get(r.lh.base + "/internal/buffer/query?" + params.Encode())
+	req, err := http.NewRequest(http.MethodGet, r.lh.base+"/internal/buffer/query?"+params.Encode(), nil)
+	if err != nil {
+		t.Fatalf("buffer query on %s: %v", r.lh.base, err)
+	}
+	if b := bearer(); b != "" { // a stack whose pods carry peer.auth_key
+		req.Header.Set("Authorization", b)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("buffer query on %s: %v", r.lh.base, err)
 	}
