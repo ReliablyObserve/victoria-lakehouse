@@ -41,10 +41,12 @@ func bearer() string {
 	return "Bearer " + peerAuthKey
 }
 
-// withPeerKey presents the peer key on requests to the pods' /internal/*
-// endpoints, as the pods themselves do.
+// withPeerKey presents the peer key on requests to the endpoints peer.auth_key
+// guards: the pods' /internal/* endpoints (as the pods themselves do) and the
+// alias admin API (/lakehouse/api/v1/tenants/aliases, POST and DELETE).
 func withPeerKey(req *http.Request) *http.Request {
-	if b := bearer(); b != "" && strings.HasPrefix(req.URL.Path, "/internal/") && req.Header.Get("Authorization") == "" {
+	guarded := strings.HasPrefix(req.URL.Path, "/internal/") || strings.HasPrefix(req.URL.Path, "/lakehouse/api/v1/tenants/aliases")
+	if b := bearer(); b != "" && guarded && req.Header.Get("Authorization") == "" {
 		req.Header.Set("Authorization", b)
 	}
 	return req

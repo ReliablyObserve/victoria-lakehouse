@@ -267,7 +267,7 @@ func TestStringTenant_AliasConflictRejected(t *testing.T) {
 				b, _ := json.Marshal(map[string]any{"org_id": org, "account_id": account, "project_id": 0})
 				req, _ := http.NewRequest("POST", base+"/lakehouse/api/v1/tenants/aliases", bytes.NewReader(b))
 				req.Header.Set("Content-Type", "application/json")
-				resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+				resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(withPeerKey(req))
 				if err != nil {
 					t.Fatal(err)
 				}

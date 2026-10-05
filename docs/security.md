@@ -110,6 +110,7 @@ These endpoints should NOT be exposed externally:
 | `/internal/cache/fetch`, `/internal/cache/has` | every pod | peer cache data transfer and probe | peer key (`X-Peer-Auth-Key`) |
 | `/internal/cache/stats`, `/internal/cache/clear` | every pod | peer cache metrics and reset | peer key |
 | `/internal/manifest/update`, `/internal/stats/sync`, `/internal/tenant/sync` | every pod | manifest push, stats and tenant gossip | peer key |
+| `POST`/`DELETE /lakehouse/api/v1/tenants/aliases` | every pod | alias admin API (not cluster-internal, but guarded by the same key) | peer key |
 
 Use Kubernetes NetworkPolicy to restrict `/internal/*` to the cluster CIDR, and put vmauth in front of the
 pods for clients (the chart's vmauth routes only `/insert/*` and `/internal/insert` to insert pods).
