@@ -51,3 +51,20 @@ with a blank `image.tag` renders `registry.example.test/custom/logs:0.143.17`,
 while an unchanged traces repository renders its published `v0.143.17` tag.
 The regression checks both mixed directions, custom blank tags and legacy flat
 blank tags. No cluster deployment or backend API change is claimed by this proof.
+
+## Future release compatibility
+
+Starting with the next release containing this fix, the publisher assigns the
+same multiarchitecture build to both GHCR repository forms for each signal:
+`ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-{logs,traces}` and
+`ghcr.io/reliablyobserve/lakehouse-{logs,traces}`. Each receives `vX.Y.Z`,
+`X.Y.Z` and `latest`; FIPS builds receive the corresponding `-fips` tags.
+Docker Hub keeps its existing prefixed version and latest tags. This publishes
+aliases for the new release only; historical missing tags are not backfilled.
+
+`python3 scripts/ci/tests/test_release_image_tags.py` executes the actual
+workflow publisher with a mocked Docker command. CI checks all four builds,
+both architectures, complete tag sets, push output, optional Docker Hub
+mirroring and failure propagation. These are dry-run proofs. Public pulls and
+matching alias manifest digests must still be verified after the next release;
+the old flat references in the table above are not claimed available today.

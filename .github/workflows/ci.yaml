@@ -758,6 +758,7 @@ jobs:
         run: |
           bash charts/victoria-lakehouse/test_images.sh
           bash charts/victoria-lakehouse/test_templates.sh
+          python3 scripts/ci/tests/test_release_image_tags.py
 
   # Benchmark smoke run (informational: nothing gates on the numbers, the
   # registry-backed perf jobs above do that). What it guarantees is that every

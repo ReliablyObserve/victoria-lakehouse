@@ -254,8 +254,9 @@ jobs:
           docker buildx create --use
 
           # We publish two variants per module:
-          #   default  -> :vX.Y.Z, :latest
-          #   FIPS     -> :vX.Y.Z-fips, :latest-fips
+          # Canonical and legacy flat GHCR repositories get v-prefixed,
+          # unprefixed and latest aliases from the same multiarch build.
+          # Only this release is published; historical tags are not backfilled.
           # Both go to ghcr.io always. Docker Hub mirroring is conditional
           # on the DOCKERHUB_USERNAME secret being set so forks don't fail
           # on missing creds.
@@ -267,15 +268,19 @@ jobs:
                 TAG_SUFFIX="-fips"
                 FIPS_ARG="1"
               fi
-              GHCR_TAGS="-t ghcr.io/${REPO}/lakehouse-${MODULE}:${VERSION}${TAG_SUFFIX} \
-                         -t ghcr.io/${REPO}/lakehouse-${MODULE}:latest${TAG_SUFFIX}"
-              HUB_TAGS=""
+              GHCR_TAGS=()
+              for GHCR_REPO in "$REPO" "${REPO%%/*}"; do
+                for RELEASE_TAG in "$VERSION" "${VERSION#v}" latest; do
+                  GHCR_TAGS+=(-t "ghcr.io/${GHCR_REPO}/lakehouse-${MODULE}:${RELEASE_TAG}${TAG_SUFFIX}")
+                done
+              done
+              HUB_TAGS=()
               if [[ "${DOCKERHUB_ENABLED:-false}" == "true" && -n "$DOCKERHUB_USERNAME" ]]; then
                 # Use a configurable Docker Hub namespace (must match the
                 # secret's owner). Default to "reliablyobserve" if unset.
                 HUB_OWNER="${DOCKERHUB_NAMESPACE:-reliablyobserve}"
-                HUB_TAGS="-t docker.io/${HUB_OWNER}/lakehouse-${MODULE}:${VERSION}${TAG_SUFFIX} \
-                          -t docker.io/${HUB_OWNER}/lakehouse-${MODULE}:latest${TAG_SUFFIX}"
+                HUB_TAGS=(-t "docker.io/${HUB_OWNER}/lakehouse-${MODULE}:${VERSION}${TAG_SUFFIX}"
+                          -t "docker.io/${HUB_OWNER}/lakehouse-${MODULE}:latest${TAG_SUFFIX}")
               fi
               echo "Building lakehouse-${MODULE} variant=${VARIANT} fips=${FIPS_ARG}..."
               # zstd compression on image layers + OCI media types so
@@ -290,7 +295,7 @@ jobs:
                 --build-arg VL_VERSION=${VL_VERSION_LOGS} \
                 --build-arg VL_COMMIT=${VL_COMMIT_TRACES} \
                 --build-arg VT_VERSION=${VT_VERSION} \
-                ${GHCR_TAGS} ${HUB_TAGS} \
+                "${GHCR_TAGS[@]}" "${HUB_TAGS[@]}" \
                 --output type=image,compression=zstd,compression-level=3,oci-mediatypes=true,push=true \
                 .
             done
