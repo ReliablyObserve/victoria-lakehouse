@@ -88,7 +88,7 @@ func (e *viewEnv) answerOn(s *Storage) map[string]int {
 			}
 			mu.Lock()
 			for _, v := range c.Values {
-				got[v]++
+				got[strings.Clone(v)]++ // c.Values points into a pooled block upstream reuses
 			}
 			mu.Unlock()
 		}
@@ -336,4 +336,81 @@ func TestBufferFlusher_PersistsThePmetaBundles(t *testing.T) {
 	if bundles() == 0 {
 		t.Fatal("no pmeta bundle reached the bucket after the drain")
 	}
+}
+
+// A query that started before a committed segment was retired keeps reading
+// the segment's rows (and leaving out its objects) until it ends, while a query
+// started after the retirement reads the same rows from Parquet: both answer
+// every row exactly once, and the segment is removed at the first reap after
+// the long query ends (#368).
+func TestBufferView_RetiredSegmentHeldByALongQuery(t *testing.T) {
+	e := newViewEnv(t)
+	base := time.Now().Add(-3 * time.Hour).Truncate(time.Hour)
+	// Rows already in Parquet only, so the long query reads a cold object
+	// before it serves the buffer.
+	e.ingest(base.Add(10*time.Minute), 10)
+	g1, _ := e.segs.Seal()
+	if err := e.f.drain(context.Background(), g1); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.segs.Reap(time.Now().Add(time.Hour), time.Minute); n != 1 {
+		t.Fatalf("reaped %d, want the first segment", n)
+	}
+	// Rows of a committed segment in its grace: served from the segment.
+	e.ingest(base.Add(70*time.Minute), 10)
+	g2, _ := e.segs.Seal()
+	if err := e.f.drain(context.Background(), g2); err != nil {
+		t.Fatal(err)
+	}
+	e.exact("committed, in grace")
+
+	now := time.Now()
+	q, err := logstorage.ParseQueryAtTimestamp("*", now.UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = q.CloneWithTimeFilter(q.GetTimestamp(), now.Add(-48*time.Hour).UnixNano(), now.UnixNano())
+	var mu sync.Mutex
+	long := map[string]int{}
+	var once sync.Once
+	retiredMidQuery := false
+	err = e.s.RunQuery(context.Background(), []logstorage.TenantID{{}}, q, func(_ uint, db *logstorage.DataBlock) {
+		// The first block is a cold one (the buffer is served last): retire
+		// the segment the long query holds, and answer a fresh query meanwhile.
+		once.Do(func() {
+			if n := e.segs.Reap(time.Now().Add(time.Hour), time.Minute); n != 0 {
+				t.Errorf("reap removed %d segments while a query holds them", n)
+			}
+			retiredMidQuery = e.segs.Stats(time.Now()).Retired == 1
+			e.exact("fresh query while a long query holds the retired segment")
+		})
+		for _, c := range db.GetColumns(false) {
+			if c.Name != "_msg" {
+				continue
+			}
+			mu.Lock()
+			for _, v := range c.Values {
+				long[strings.Clone(v)]++
+			}
+			mu.Unlock()
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retiredMidQuery {
+		t.Fatal("the segment was not retired while the long query held it")
+	}
+	for i := 1; i <= e.n; i++ {
+		if k := fmt.Sprintf("row-%d", i); long[k] != 1 {
+			t.Errorf("long query: %s answered %d times, want 1", k, long[k])
+		}
+	}
+	if len(long) != e.n {
+		t.Errorf("long query: %d distinct rows, want %d", len(long), e.n)
+	}
+	if n := e.segs.Reap(time.Now().Add(time.Hour), time.Minute); n != 1 {
+		t.Fatalf("reap after the long query removed %d, want the retired segment", n)
+	}
+	e.exact("retired segment removed")
 }

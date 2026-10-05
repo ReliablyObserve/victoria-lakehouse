@@ -963,3 +963,263 @@ func TestSegments_FirstRowAt(t *testing.T) {
 		t.Fatal("the new active segment has a first-row time before any row")
 	}
 }
+
+// holdOverlapping keeps at least one snapshot held at every instant until stop
+// is closed: each of the workers takes a new snapshot before it releases the
+// previous one, the way a steady stream of overlapping queries does (#368).
+// It returns the number of snapshots taken once every worker has stopped.
+func holdOverlapping(s *Segments, workers int, hold time.Duration, stop <-chan struct{}) func() int64 {
+	var wg sync.WaitGroup
+	var taken atomic.Int64
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prev := s.Snapshot()
+			taken.Add(1)
+			for {
+				select {
+				case <-stop:
+					prev.Release()
+					return
+				case <-time.After(hold):
+				}
+				next := s.Snapshot()
+				taken.Add(1)
+				prev.Release()
+				prev = next
+			}
+		}()
+	}
+	return func() int64 { wg.Wait(); return taken.Load() }
+}
+
+// TestSegments_ReapUnderOverlappingSnapshots is #368: a committed segment past
+// its grace must leave new snapshots and be removed once the snapshots that
+// held it are released, even when some snapshot is held at every instant.
+func TestSegments_ReapUnderOverlappingSnapshots(t *testing.T) {
+	root := t.TempDir()
+	s := openSegs(t, root)
+	defer s.Close()
+	tid := logstorage.TenantID{}
+
+	addRows(s, tid, "a", 3)
+	g, _ := s.Seal()
+	at := time.Now()
+	s.Commit(g, at)
+	const grace = time.Minute
+
+	stop := make(chan struct{})
+	wait := holdOverlapping(s, 4, 2*time.Millisecond, stop)
+	defer func() {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+			wait()
+		}
+	}()
+
+	// One reap tick past the grace retires the segment: no snapshot taken after
+	// it serves the segment's rows or excludes its objects.
+	time.Sleep(20 * time.Millisecond) // the workers hold snapshots by now
+	s.Reap(at.Add(grace), grace)
+	if p := s.Snapshot(); func() bool { defer p.Release(); _, ok := p.Nonces()[g.Nonce()]; return ok }() {
+		t.Fatalf("a snapshot taken after the reap past grace still holds the committed segment %s (#368)", g.Nonce())
+	}
+	// The snapshots taken before the reap are released within one hold, so the
+	// segment is closed and its directory removed shortly after, while
+	// overlapping snapshots continue.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(g.dir); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			st := s.Stats(time.Now())
+			t.Fatalf("committed segment %s past its grace was never removed under overlapping snapshots (refs=%d, stats %+v)", g.Nonce(), g.refs, st)
+		}
+		s.Reap(time.Now().Add(grace), grace)
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(stop)
+	if n := wait(); n < 10 {
+		t.Fatalf("only %d snapshots were taken: the overlap never happened", n)
+	}
+	if d := segDirs(t, root); len(d) != 1 {
+		t.Fatalf("segment dirs after the reap = %v, want only the active one", d)
+	}
+	if st := s.Stats(time.Now()); st.Committed != 0 || st.Pending != 0 || st.Active != 1 {
+		t.Fatalf("stats after the reap = %+v", st)
+	}
+}
+
+// TestSegments_RetiredHeldUntilReleased: a snapshot taken before the
+// retirement keeps reading the retired segment; the segment is removed at the
+// first reap after that snapshot is released, not before.
+func TestSegments_RetiredHeldUntilReleased(t *testing.T) {
+	root := t.TempDir()
+	s := openSegs(t, root)
+	defer s.Close()
+	tid := logstorage.TenantID{}
+	addRows(s, tid, "a", 2)
+	g, _ := s.Seal()
+	at := time.Now()
+	s.Commit(g, at)
+
+	old := s.Snapshot()
+	if n := s.Reap(at.Add(time.Minute), time.Minute); n != 0 {
+		t.Fatalf("removed %d segments a snapshot holds", n)
+	}
+	if st := s.Stats(time.Now()); st.Retired != 1 || st.Committed != 0 {
+		t.Fatalf("stats after retiring = %+v, want one retired segment", st)
+	}
+	fresh := s.Snapshot()
+	if _, ok := fresh.Nonces()[g.Nonce()]; ok {
+		t.Fatal("a snapshot taken after the retirement holds the retired segment")
+	}
+	if got := countSnap(t, fresh, tid); got != 0 {
+		t.Fatalf("fresh snapshot reads %d rows of the retired segment", got)
+	}
+	fresh.Release()
+	// Reaps while the old snapshot holds it keep it, however often they run.
+	for i := 0; i < 3; i++ {
+		if n := s.Reap(at.Add(2*time.Minute), time.Minute); n != 0 {
+			t.Fatalf("reap %d removed a held retired segment", i)
+		}
+	}
+	if got := countSnap(t, old, tid); got != 2 {
+		t.Fatalf("the snapshot taken before the retirement reads %d rows, want 2", got)
+	}
+	if _, ok := old.Nonces()[g.Nonce()]; !ok {
+		t.Fatal("the snapshot taken before the retirement lost the segment's nonce")
+	}
+	old.Release()
+	if n := s.Reap(at.Add(2*time.Minute), time.Minute); n != 1 {
+		t.Fatalf("reap after the last release removed %d, want 1", n)
+	}
+	if _, err := os.Stat(g.dir); !os.IsNotExist(err) {
+		t.Fatalf("retired segment dir still there: %v", err)
+	}
+	if st := s.Stats(time.Now()); st.Retired != 0 {
+		t.Fatalf("stats after removal = %+v", st)
+	}
+}
+
+// TestSegments_RetiredHoldLimit: a snapshot held past RetiredHoldLimit (a
+// leaked snapshot) does not keep the segment's disk forever; its late read
+// fails instead of reading a removed storage.
+func TestSegments_RetiredHoldLimit(t *testing.T) {
+	root := t.TempDir()
+	s := openSegs(t, root)
+	defer s.Close()
+	tid := logstorage.TenantID{}
+	addRows(s, tid, "a", 1)
+	g, _ := s.Seal()
+	at := time.Now()
+	s.Commit(g, at)
+	leaked := s.Snapshot()
+	defer leaked.Release()
+	retire := at.Add(time.Minute)
+	if n := s.Reap(retire, time.Minute); n != 0 {
+		t.Fatalf("removed %d at retirement", n)
+	}
+	if n := s.Reap(retire.Add(RetiredHoldLimit-time.Second), time.Minute); n != 0 {
+		t.Fatalf("removed %d before the hold limit", n)
+	}
+	if n := s.Reap(retire.Add(RetiredHoldLimit), time.Minute); n != 1 {
+		t.Fatalf("removed %d at the hold limit, want 1", n)
+	}
+	if _, err := os.Stat(g.dir); !os.IsNotExist(err) {
+		t.Fatalf("segment dir still there after the hold limit: %v", err)
+	}
+	q, err := logstorage.ParseQueryAtTimestamp("*", time.Now().UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	qctx := logstorage.NewQueryContext(context.Background(), &logstorage.QueryStats{}, []logstorage.TenantID{tid}, q, false, nil)
+	if err := leaked.RunQuery(qctx, func(uint, *logstorage.DataBlock) {}); !errors.Is(err, errSegmentClosed) {
+		t.Fatalf("read of a force-closed segment = %v, want errSegmentClosed", err)
+	}
+	if st := s.Stats(time.Now()); st.Retired != 0 {
+		t.Fatalf("stats after the forced removal = %+v", st)
+	}
+}
+
+// TestSegments_ReapStress runs writes, seals, commits and reaps against
+// readers whose snapshots always overlap. No reader may ever read a closed
+// segment, every committed segment must be gone within one reap after the
+// readers stop, and the number of live segments stays bounded throughout.
+func TestSegments_ReapStress(t *testing.T) {
+	root := t.TempDir()
+	s := openSegs(t, root)
+	defer s.Close()
+	tid := logstorage.TenantID{}
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	var readErr atomic.Value
+	var reads atomic.Int64
+	q, err := logstorage.ParseQueryAtTimestamp("*", time.Now().Add(time.Hour).UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for w := 0; w < 6; w++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			prev := s.Snapshot()
+			for {
+				select {
+				case <-stop:
+					prev.Release()
+					return
+				default:
+				}
+				next := s.Snapshot()
+				qctx := logstorage.NewQueryContext(context.Background(), &logstorage.QueryStats{}, []logstorage.TenantID{tid}, q, false, nil)
+				if err := prev.RunQuery(qctx, func(uint, *logstorage.DataBlock) {}); err != nil {
+					readErr.CompareAndSwap(nil, err)
+				}
+				reads.Add(1)
+				prev.Release()
+				prev = next
+			}
+		}()
+	}
+	maxLive := 0
+	const rounds = 40
+	for i := 0; i < rounds; i++ {
+		addRows(s, tid, fmt.Sprintf("r%d", i), 5)
+		g, ok := s.Seal()
+		if !ok {
+			t.Fatalf("round %d: nothing sealed", i)
+		}
+		s.Commit(g, time.Now())
+		s.Reap(time.Now(), 0)
+		s.mu.Lock()
+		if live := len(s.list) + len(s.retired); live > maxLive {
+			maxLive = live
+		}
+		s.mu.Unlock()
+	}
+	close(stop)
+	readers.Wait()
+	if v := readErr.Load(); v != nil {
+		t.Fatalf("a reader read a closed segment: %v", v)
+	}
+	if reads.Load() < rounds {
+		t.Fatalf("only %d reads: the readers never overlapped the reaps", reads.Load())
+	}
+	if n := s.Reap(time.Now(), 0); n == 0 && len(segDirs(t, root)) != 1 {
+		t.Fatal("the final reap removed nothing although retired segments remain")
+	}
+	if d := segDirs(t, root); len(d) != 1 {
+		t.Fatalf("segment dirs after the stress = %v, want only the active one", d)
+	}
+	// Each round retires its segment on the same reap that commits it; at most
+	// the snapshots in flight (one per reader, two while it swaps) can hold
+	// retired segments, so the live count never grows with the rounds.
+	if maxLive > 2+2*6 {
+		t.Fatalf("up to %d segments were live at once; reaping did not keep up", maxLive)
+	}
+}

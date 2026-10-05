@@ -116,7 +116,7 @@ graph LR
 |---|---|---|---|
 | `lakehouse_insert_rows_total` | Counter | | Rows admitted into the insert buffer (after the admission filter) |
 | `lakehouse_buffer_pending_rows` | Gauge | | Rows in segments not yet fully written to object storage. Grows while object storage is slow or unreachable; the rows are safe on the buffer volume |
-| `lakehouse_buffer_segments` | Gauge | `state` | Insert-buffer segments: `active` (taking writes, always 1), `pending` (sealed, not yet fully written), `committed` (written, kept readable for the grace period) |
+| `lakehouse_buffer_segments` | Gauge | `state` | Insert-buffer segments: `active` (taking writes, always 1), `pending` (sealed, not yet fully written), `committed` (written, kept readable for the grace period), `retired` (past the grace; only queries that started before then still read it, and it is removed when the last of them ends) |
 | `lakehouse_buffer_segments_sealed_total` / `lakehouse_buffer_segments_committed_total` | Counter | | Segments sealed and fully written since the process started |
 | `lakehouse_buffer_oldest_pending_age_seconds` | Gauge | | Age of the oldest segment not yet fully written: how far object storage lags behind ingest |
 | `lakehouse_insert_flush_committed_segment` | Gauge | | Sequence number of the newest segment fully written (every older one is too) |
