@@ -29,7 +29,7 @@ def publisher_script():
 
 
 class PublisherTests(unittest.TestCase):
-    def run_publisher(self, hub=False, fail=False):
+    def run_publisher(self, hub=False, fail=False, username="publisher", namespace="customhub"):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
             docker = temporary / "docker"
@@ -43,16 +43,16 @@ class PublisherTests(unittest.TestCase):
             calls = temporary / "calls.jsonl"
             environment = dict(os.environ, PATH=f"{temporary}:{os.environ['PATH']}",
                                CALLS=str(calls), FAIL_BUILD=str(int(fail)),
-                               DOCKERHUB_ENABLED=str(hub).lower(), DOCKERHUB_USERNAME="publisher",
-                               DOCKERHUB_NAMESPACE="customhub", VL_VERSION_LOGS="vl",
+                               DOCKERHUB_ENABLED=str(hub).lower(), DOCKERHUB_USERNAME=username,
+                               DOCKERHUB_NAMESPACE=namespace, VL_VERSION_LOGS="vl",
                                VL_COMMIT_TRACES="vlpin", VT_VERSION="vt")
             result = subprocess.run(["bash", "-euo", "pipefail", "-c", publisher_script()],
                                     cwd=ROOT, env=environment, capture_output=True, text=True)
             records = [json.loads(line) for line in calls.read_text().splitlines()]
             return result, [call for call in records if call[:2] == ["buildx", "build"]]
 
-    def assert_publish(self, hub):
-        result, builds = self.run_publisher(hub=hub)
+    def assert_publish(self, hub, username="publisher", namespace="customhub"):
+        result, builds = self.run_publisher(hub=hub, username=username, namespace=namespace)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(builds), 4, "one build per module/variant, no alias rebuilds")
         for arguments, (module, suffix, fips) in zip(builds, [
@@ -63,8 +63,9 @@ class PublisherTests(unittest.TestCase):
             expected = [f"ghcr.io/{repository}/lakehouse-{module}:{tag}{suffix}"
                         for repository in ["exampleorg/victoria-lakehouse", "exampleorg"]
                         for tag in ["v9.8.7", "9.8.7", "latest"]]
-            if hub:
-                expected += [f"docker.io/customhub/lakehouse-{module}:{tag}{suffix}"
+            if hub and username:
+                owner = namespace or "reliablyobserve"
+                expected += [f"docker.io/{owner}/lakehouse-{module}:{tag}{suffix}"
                              for tag in ["v9.8.7", "latest"]]
             self.assertCountEqual(tags, expected)
             self.assertEqual(len(tags), len(set(tags)))
@@ -79,6 +80,12 @@ class PublisherTests(unittest.TestCase):
 
     def test_dockerhub_mirror_unchanged(self):
         self.assert_publish(True)
+
+    def test_dockerhub_default_namespace_unchanged(self):
+        self.assert_publish(True, namespace="")
+
+    def test_dockerhub_without_username_stays_disabled(self):
+        self.assert_publish(True, username="")
 
     def test_build_failure_propagates(self):
         result, builds = self.run_publisher(fail=True)

@@ -1674,7 +1674,7 @@ SRV records are the membership list. Adding a replica makes it discoverable and 
 
 The chart encodes the operational rules that keep a stateful cold tier safe under autoscaling — drain before termination, stabilize before reshuffling the ring, report ready only when warm — and a drift check keeps its rendered output honest in CI.
 
-- Verification: tests: `charts/victoria-lakehouse/test_templates.sh`, `charts/victoria-lakehouse/test_images.sh`
+- Verification: tests: `charts/victoria-lakehouse/test_templates.sh`, `charts/victoria-lakehouse/test_images.sh`, `scripts/ci/tests/test_release_image_tags.py`
 - Docs: `docs/kubernetes-deployment.md`
 - Changelog: `0.10.0`, `0.37.1`
 - Note: CI runs the linked chart template and exact image-reference tests, strict `helm lint`, and the Helm drift check (`scripts/ci/helmdrift`).

@@ -8,6 +8,7 @@
   tests:
     - charts/victoria-lakehouse/test_templates.sh
     - charts/victoria-lakehouse/test_images.sh
+    - scripts/ci/tests/test_release_image_tags.py
   notes: >-
     CI runs the linked chart template and exact image-reference tests, strict `helm lint`,
     and the Helm drift check (`scripts/ci/helmdrift`).
