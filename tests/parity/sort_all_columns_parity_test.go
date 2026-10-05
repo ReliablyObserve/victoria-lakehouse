@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -191,37 +190,4 @@ func waitTenantRows(t *testing.T, coldBase, account string, want int64) {
 		time.Sleep(time.Second)
 	}
 	t.Logf("the cold manifest did not record %d rows for tenant %s:0 within 45s; a later manifest read may see this case's flush", want, account)
-}
-
-// waitLeftBuffer returns once Lakehouse's insert buffer at base holds no row of
-// account:0 between from and to, read through the endpoint select pods use
-// (/internal/buffer/query); the rows are then answered from Parquet only. A
-// drained buffer segment stays readable for its grace period (2 x
-// manifest.refresh_interval + 30 s, 40 s in the parity stack), so this takes
-// up to about a minute.
-func waitLeftBuffer(t *testing.T, base, mode, account string, from, to time.Time) {
-	t.Helper()
-	params := url.Values{
-		"start":        {strconv.FormatInt(from.UnixNano(), 10)},
-		"end":          {strconv.FormatInt(to.UnixNano(), 10)},
-		"mode":         {mode},
-		"tenant_scope": {"v1"},
-		"account_id":   {account},
-		"project_id":   {"0"},
-	}
-	deadline := time.Now().Add(150 * time.Second)
-	for {
-		r := fetch(t, base, "/internal/buffer/query", params)
-		if r.StatusCode != http.StatusOK {
-			t.Fatalf("%s/internal/buffer/query returned %d: %s", base, r.StatusCode, r.Body)
-		}
-		n := len(parseNDJSON(r.Body))
-		if n == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d rows of tenant %s:0 still in the insert buffer of %s after 150s", n, account, base)
-		}
-		time.Sleep(2 * time.Second)
-	}
 }
