@@ -354,12 +354,12 @@ func TestSmoke_CacheClearAndRecovery(t *testing.T) {
 	// limit is answered newest first (upstream narrows the window from its end
 	// until it has enough rows), and datagen-continuous keeps the last hour in
 	// the insert buffer, so a window reaching now is answered without opening an
-	// object. End the window two hours ago: only the seeded data, which TestMain
-	// waited to be served from Parquet, is in it.
+	// object. End the window seededBefore ago: only the seeded data is in it,
+	// and TestMain waited until none of it is buffered.
 	now := time.Now()
 	params := url.Values{
 		"start": {fmt.Sprintf("%d", now.Add(-72*time.Hour).UnixNano())},
-		"end":   {fmt.Sprintf("%d", now.Add(-2*time.Hour).UnixNano())},
+		"end":   {fmt.Sprintf("%d", now.Add(-seededBefore).UnixNano())},
 	}
 	params.Set("query", "*")
 	params.Set("limit", "5")

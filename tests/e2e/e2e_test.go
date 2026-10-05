@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,13 +46,14 @@ func TestMain(m *testing.M) {
 	fmt.Println("e2e: waiting for recent Parquet on traces...")
 	waitRecentData(tracesBaseURL, "traces")
 
-	// Phase 2c: an object in the manifest is not yet READ from Parquet. A
-	// committed segment keeps answering its rows from the buffer, and its
-	// objects stay out of the scan, for its grace period (90 s here). Tests that
-	// must read Parquet (cache recovery, cold rows) need a segment past that
-	// point, so wait until each binary has removed one.
-	waitSegmentReaped(logsBaseURL, "logs")
-	waitSegmentReaped(tracesBaseURL, "traces")
+	// Phase 2c: an object in the manifest is not yet READ from Parquet. While a
+	// row is in the insert buffer (an open, draining or committed-in-grace
+	// segment) a query answers it from the buffer and leaves that segment's
+	// objects out of the scan. Tests that must read Parquet use windows ending
+	// seededBefore ago (datagen-continuous only writes the last hour), so wait,
+	// as the parity settle step does, until no buffered row is that old.
+	waitBufferOlderThanDrained(logsBaseURL, "logs")
+	waitBufferOlderThanDrained(tracesBaseURL, "traces")
 
 	// Phase 3: Store the data time range for use in other tests.
 	storeTimeRange()
@@ -127,53 +129,51 @@ func verifyManifest(baseURL string, label string) {
 	os.Exit(1)
 }
 
-// waitSegmentReaped waits until the binary has removed at least one committed
-// insert-buffer segment: lakehouse_buffer_segments_committed_total exceeds the
-// segments still kept (state committed, or retired and still held by a query),
-// so a whole segment's rows are answered from Parquet. It fails the run when
-// none is removed within manifestWait.
-func waitSegmentReaped(baseURL, label string) {
-	client := &http.Client{Timeout: 10 * time.Second}
+// seededBefore is how far back the windows that must read Parquet end: older
+// than anything datagen-continuous writes (--hours-back=1).
+const seededBefore = 2 * time.Hour
+
+// waitBufferOlderThanDrained waits until the binary's insert buffer holds no
+// row older than seededBefore, read through the endpoint select pods read it
+// with (/internal/buffer/query, every tenant): from then on such rows are
+// answered from Parquet only. It fails the run when they are still buffered
+// after manifestWait.
+func waitBufferOlderThanDrained(baseURL, label string) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	mode := "logs"
+	if baseURL == tracesBaseURL {
+		mode = "traces"
+	}
 	start := time.Now()
 	last := "no answer"
 	for time.Since(start) < manifestWait {
-		if total, kept, err := segmentCounts(client, baseURL); err == nil {
-			if total-kept >= 1 {
-				fmt.Printf("e2e: %s has read-from-Parquet segments (%.0f removed from the buffer) after %s\n", label, total-kept, time.Since(start).Round(time.Second))
-				return
+		end := time.Now().Add(-seededBefore).UnixNano()
+		resp, err := client.Get(fmt.Sprintf("%s/internal/buffer/query?start=0&end=%d&mode=%s&tenant_scope=v1&all_tenants=true", baseURL, end, mode))
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				rows := 0
+				for _, line := range strings.Split(string(body), "\n") {
+					if strings.TrimSpace(line) != "" {
+						rows++
+					}
+				}
+				if rows == 0 {
+					fmt.Printf("e2e: %s buffers no row older than %s after %s\n", label, seededBefore, time.Since(start).Round(time.Second))
+					return
+				}
+				last = fmt.Sprintf("%d such rows still buffered", rows)
+			} else {
+				last = fmt.Sprintf("status %d", resp.StatusCode)
 			}
-			last = fmt.Sprintf("committed_total=%.0f still kept=%.0f", total, kept)
 		} else {
 			last = err.Error()
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
-	fmt.Fprintf(os.Stderr, "FATAL: %s removed no committed insert-buffer segment within %s (%s): no row is answered from Parquet yet\n", label, manifestWait, last)
+	fmt.Fprintf(os.Stderr, "FATAL: %s still buffers rows older than %s after %s (%s): they are not read from Parquet yet\n", label, seededBefore, manifestWait, last)
 	os.Exit(1)
-}
-
-// segmentCounts reads lakehouse_buffer_segments_committed_total and the
-// segments still kept (state committed or retired) from /metrics.
-func segmentCounts(client *http.Client, baseURL string) (total, kept float64, err error) {
-	resp, err := client.Get(baseURL + "/metrics")
-	if err != nil {
-		return 0, 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, 0, err
-	}
-	m := parsePrometheusText(string(body))
-	for _, l := range m["lakehouse_buffer_segments_committed_total"] {
-		total += l.value
-	}
-	for _, l := range m["lakehouse_buffer_segments"] {
-		if st := l.labels["state"]; st == "committed" || st == "retired" {
-			kept += l.value
-		}
-	}
-	return total, kept, nil
 }
 
 // waitRecentData blocks until /manifest/range reports data newer than 10
