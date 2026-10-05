@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Helm defaults use the published container image references for both signals. Logs and traces now point to the release repository namespace and prepend the release tag prefix to the chart app version. Explicit image repository and tag overrides remain unchanged. Installation examples use the chart signal toggles and current configuration keys.
+- Helm defaults use the published container image references for both signals. Logs and traces now point to the release repository namespace and prepend the release tag prefix to the chart app version only for each signal's canonical published repository. Custom and legacy repositories retain the unprefixed app-version fallback when the image tag is blank; explicit tags remain unchanged. Installation examples use the chart signal toggles and current configuration keys.
 
 ## [0.143.17] - 2026-10-04
 

@@ -42,3 +42,19 @@ assert_images "explicit repositories and tag are preserved" "${logs}"$'\n'"${log
 logs="${LOG_REPO}:v${APP_VERSION}-fips"
 traces="${TRACE_REPO}:v${APP_VERSION}-fips"
 assert_images "explicit FIPS release tag is preserved" "${logs}"$'\n'"${logs}"$'\n'"${traces}"$'\n'"${traces}" --set traces.enabled=true --set "image.tag=v${APP_VERSION}-fips"
+
+logs="registry.example.test/custom/logs:${APP_VERSION}"
+traces="registry.example.test/custom/traces:${APP_VERSION}"
+assert_images "custom repositories retain blank-tag fallback" "${logs}"$'\n'"${logs}"$'\n'"${traces}"$'\n'"${traces}" --set traces.enabled=true --set image.tag= --set image.logs.repository=registry.example.test/custom/logs --set image.traces.repository=registry.example.test/custom/traces
+
+logs="ghcr.io/reliablyobserve/lakehouse-logs:${APP_VERSION}"
+traces="ghcr.io/reliablyobserve/lakehouse-traces:${APP_VERSION}"
+assert_images "legacy repositories retain blank-tag fallback" "${logs}"$'\n'"${logs}"$'\n'"${traces}"$'\n'"${traces}" --set traces.enabled=true --set image.tag= --set image.logs.repository=ghcr.io/reliablyobserve/lakehouse-logs --set image.traces.repository=ghcr.io/reliablyobserve/lakehouse-traces
+
+logs="${LOG_REPO}:v${APP_VERSION}"
+traces="registry.example.test/custom/traces:${APP_VERSION}"
+assert_images "canonical logs and custom traces resolve independently" "${logs}"$'\n'"${logs}"$'\n'"${traces}"$'\n'"${traces}" --set traces.enabled=true --set image.traces.repository=registry.example.test/custom/traces
+
+logs="registry.example.test/custom/logs:${APP_VERSION}"
+traces="${TRACE_REPO}:v${APP_VERSION}"
+assert_images "custom logs and canonical traces resolve independently" "${logs}"$'\n'"${logs}"$'\n'"${traces}"$'\n'"${traces}" --set traces.enabled=true --set image.logs.repository=registry.example.test/custom/logs

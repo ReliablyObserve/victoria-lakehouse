@@ -35,8 +35,19 @@ helm template traces charts/victoria-lakehouse \
   --set logs.enabled=false --set traces.enabled=true
 ```
 
-The CI Helm job runs six exact image-render assertions and the existing 38
+The CI Helm job runs ten exact image-render assertions and the existing 38
 template checks. The image assertions cover default logs, traces only, both
 signals, explicit tags, custom repositories, and explicit FIPS tags. Explicit
 `image.tag=build-123` remains `build-123`; custom repositories also remain
-unchanged. No cluster deployment or backend API change is claimed by this proof.
+unchanged. With a blank tag, custom or explicitly selected legacy flat repositories
+retain the previous unprefixed chart app-version fallback. Only each signal's
+canonical published repository receives the default `v` prefix, so mixed custom
+and default repositories resolve independently. Preserving a legacy reference's
+rendering does not establish that its image is publicly available: the anonymous
+403 results above still apply to the tested flat release references.
+
+For example, `--set image.logs.repository=registry.example.test/custom/logs`
+with a blank `image.tag` renders `registry.example.test/custom/logs:0.143.17`,
+while an unchanged traces repository renders its published `v0.143.17` tag.
+The regression checks both mixed directions, custom blank tags and legacy flat
+blank tags. No cluster deployment or backend API change is claimed by this proof.
