@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI runs every test of both binaries' main packages and keeps the slowest packages inside their time budget (closes #415).**
+  The test jobs ran `./internal/...` only: `cmd/lakehouse-logs` and the `lakehouse-traces` root package ran just their
+  config-surface tests, so route-auth, buffer-query mount, delete-key and peer-key wiring tests never ran in CI; one of
+  them (`TestDiscoveryAgainstRealVTStorage_POSTOnly`) had silently broken because it wrote a fixed date that aged out
+  of VictoriaTraces' backfill window, and now writes inside it. `internal/storage/parquets3` (both modules) and
+  `internal/compaction` run as deterministic test shards, each with its own timeout and headroom gate, guarded so every
+  test runs exactly once; they had drifted to 72-100% of their timeouts and failed CI at random. Tests and CI only.
+
 ## [0.145.5] - 2026-10-06
 
 ### Changed
