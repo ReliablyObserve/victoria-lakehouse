@@ -54,6 +54,24 @@ type fileTruth struct {
 	DistinctCounts map[string]int64    `json:"distinct_counts"`
 	DeltaColumns   []string            `json:"delta_columns"`
 	DictColumns    []string            `json:"dict_columns"`
+	// SpanExtras is the writer-side truth of the span events and links
+	// columns (traces file only): what verify.py recomputes with pyarrow and
+	// with duckdb from the JSON in span.events_json / span.links_json.
+	SpanExtras *spanExtrasTruth `json:"span_extras,omitempty"`
+}
+
+// spanExtrasTruth counts the events and links written into the two JSON blob
+// columns. The columns are plain optional BYTE_ARRAY (UTF-8 JSON arrays), so
+// any engine with a JSON function can answer these.
+type spanExtrasTruth struct {
+	SpansWithEvents   int64 `json:"spans_with_events"`
+	Events            int64 `json:"events"`
+	ExceptionEvents   int64 `json:"exception_events"`
+	SpansWithLinks    int64 `json:"spans_with_links"`
+	Links             int64 `json:"links"`
+	StackTraceBytes   int64 `json:"stacktrace_bytes"`     // sum of len(event_attr:exception.stacktrace) over every event
+	LinkFlagsSum      int64 `json:"link_flags_sum"`       // sum of link_flags over every link
+	FirstSpanEventsAt int64 `json:"first_span_events_at"` // row index of the first span with events (a NULL-vs-value spot check)
 }
 
 type manifest struct {
@@ -268,6 +286,33 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 				"lib.version": fmt.Sprintf("1.2.%d", i%4),
 			},
 		}
+		// Span events and links, as VictoriaTraces writes them: a span with an
+		// exception carries the exception event and its stack trace, some
+		// spans a log event, a few a link. Most spans have neither (NULL).
+		var sub schema.SpanSubFieldCollector
+		if i%7 == 0 {
+			for e, name := range []string{"exception", "retry"} {
+				s := fmt.Sprintf(":%d", e)
+				sub.Add("event:event_time_unix_nano"+s, fmt.Sprintf("%d", end-dur/2+int64(e)))
+				sub.Add("event:event_name"+s, name)
+				sub.Add("event:event_dropped_attributes_count"+s, "0")
+				if name == "exception" {
+					sub.Add("event:event_attr:exception.type"+s, "java.io.IOException")
+					sub.Add("event:event_attr:exception.stacktrace"+s, fmt.Sprintf("java.io.IOException: boom %d\n\tat a.B.c(B.java:%d)\n\tat d.E.f(E.java:%d)", i, i%500, i%300))
+				} else {
+					sub.Add("event:event_attr:attempt"+s, fmt.Sprintf("%d", 1+i%3))
+				}
+			}
+		}
+		if i%13 == 0 {
+			sub.Add("link:link_trace_id:0", hexID(rng, 16))
+			sub.Add("link:link_span_id:0", hexID(rng, 8))
+			sub.Add("link:link_trace_state:0", "vendor=x")
+			sub.Add("link:link_dropped_attributes_count:0", "0")
+			sub.Add("link:link_flags:0", fmt.Sprintf("%d", 256*(i%2)))
+			sub.Add("link:link_attr:messaging.operation:0", "process")
+		}
+		sub.Apply(&row)
 		// Service-graph edge rows appear sparsely in production
 		// (emitted by the servicegraph background task); mirror that
 		// so the optional columns carry both NULLs and values.
@@ -336,6 +381,43 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 		distinct["db.system"][r.DBSystem] = struct{}{}
 		distinct["_stream_id"][r.StreamID] = struct{}{}
 	}
+	extras := &spanExtrasTruth{FirstSpanEventsAt: -1}
+	for i := range traceRows {
+		r := &traceRows[i]
+		if r.EventsJSON != "" {
+			extras.SpansWithEvents++
+			if extras.FirstSpanEventsAt < 0 {
+				extras.FirstSpanEventsAt = int64(i)
+			}
+			var evs []map[string]string
+			if err := json.Unmarshal([]byte(r.EventsJSON), &evs); err != nil {
+				return fileTruth{}, fmt.Errorf("events_json of row %d: %w", i, err)
+			}
+			extras.Events += int64(len(evs))
+			for _, e := range evs {
+				if e["event_name"] == "exception" {
+					extras.ExceptionEvents++
+				}
+				extras.StackTraceBytes += int64(len(e["event_attr:exception.stacktrace"]))
+			}
+		}
+		if r.LinksJSON != "" {
+			extras.SpansWithLinks++
+			var ls []map[string]string
+			if err := json.Unmarshal([]byte(r.LinksJSON), &ls); err != nil {
+				return fileTruth{}, fmt.Errorf("links_json of row %d: %w", i, err)
+			}
+			extras.Links += int64(len(ls))
+			for _, l := range ls {
+				var f int64
+				if _, err := fmt.Sscanf(l["link_flags"], "%d", &f); err != nil {
+					return fileTruth{}, fmt.Errorf("link_flags of row %d: %w", i, err)
+				}
+				extras.LinkFlagsSum += f
+			}
+		}
+	}
+	truth.SpanExtras = extras
 	for col, set := range distinct {
 		truth.DistinctCounts[col] = int64(len(set))
 	}

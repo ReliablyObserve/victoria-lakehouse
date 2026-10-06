@@ -876,6 +876,8 @@ Victoria Lakehouse reads and writes **OTLP-standard Parquet files**. Column name
 | `resource.attributes` | MAP(STRING,STRING) | | Resource attributes (environment, region, K8s metadata) |
 | `span.attributes` | MAP(STRING,STRING) | | Span attributes (HTTP method, status code, DB system) |
 | `scope.attributes` | MAP(STRING,STRING) | | Instrumentation scope attributes |
+| `span.events_json` | STRING (OPTIONAL) | | Span events, one JSON array per span ([format](docs/open-parquet-format.md#span-events-links-and-scope-attributes)) |
+| `span.links_json` | STRING (OPTIONAL) | | Span links, one JSON array per span |
 
 All typed columns (INT32, INT64) are stored as native Parquet types with column statistics for efficient predicate pushdown. The schema registry provides centralized type-aware formatting via `FieldType.FormatValue()` for the VL/VT read path (e.g., INT64 nanoseconds to RFC3339Nano timestamps, INT32 to decimal strings).
 
