@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Every external Parquet reader named in the docs now runs its documented example against real Lakehouse files in CI, and is compared with the rows the writer sent, not with what Lakehouse reads back (no runtime change; see #340, #341, #342).**
+  A new `parquet-readers` workflow ingests logs and traces for a numeric tenant, a string alias, a tenant above 2^31,
+  a hand-written edge-case tenant (every nanosecond digit, a day boundary to the nanosecond, odd map keys, the
+  largest writable tenant) and a 60-row tenant that produces 96-byte bloom filters. The datagen tool gained `--seed`
+  and `--manifest`: the counts, services, errors, map keys and exact nanosecond timestamps of the rows are written
+  before they are sent. Lakehouse's own answers, the Parquet files and DuckDB, pyarrow, pandas, Polars, DataFusion,
+  ClickHouse, Trino and Spark (plus parquet-tools for inspection) are compared with that truth, on the raw and the
+  compacted files, with partition pruning checked (the unfiltered control must fail) and with each engine's list
+  of files read compared with the layer's inventory. Once every group is compacted, later compaction scans must change nothing (#343 is fixed).
+  A mutation script shows the matrix going red for a dropped map key, truncated timestamps, rows filed under the
+  wrong tenant and a raw layer that is really the compacted one. `docs/open-parquet-format.md` is rewritten around
+  those examples and its coverage table is generated; the S3 layout it described was wrong and is corrected. The
+  run found gaps that stay open and are tracked as expectations that must keep failing, narrowly and only where
+  the files make them happen: footer key-values that are not UTF-8, so Polars and DataFusion refuse every traces
+  file, every raw logs file and the compacted logs files that carry a body token bloom (#340); bloom filter
+  bitsets that are not a power of two, so ClickHouse fails an equality filter on any bloom column (#341); and
+  tenant IDs of 2^31 and above reading negative in Trino (#342).
+
 ## [0.145.4] - 2026-10-06
 
 ### Fixed
