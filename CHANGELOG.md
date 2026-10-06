@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.145.1] - 2026-10-06
+
 ### Fixed
 
 - **The e2e ingest matrix lists the fixture bucket once per poll, not once per cell, and finishes within its budget (closes #367).**
