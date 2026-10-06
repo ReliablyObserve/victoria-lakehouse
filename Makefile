@@ -72,6 +72,8 @@ $(VL_DIR_TRACES)/go.mod:
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-const-timestamps-parse.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-partition-close-order.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-allow-duplicate-stream-tags.patch
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-math-keep-quoted-constants.patch
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-syslog-rfc5424-incomplete-sd.patch
 
 deps-vt: $(VT_DIR)/go.mod
 

@@ -162,14 +162,42 @@ check_rc "declaring a one-sided file does not excuse it" "$rc" 1
 check_contains "one-sided file still reported" "$out" "missing:"
 
 # The single exception: a row carrying the upstream-fixed-in-logs-pin marker
-# excuses a patch the logs side dropped because its pin already has the fix.
+# excuses a patch the logs side dropped because its pin already has the fix,
+# and the claim is proven mechanically: the patch must reverse-apply to the
+# logs-pin tree. A synthetic pin tree holds one file that already has the fix.
+PIN_OK="$TMP/pin-ok"; PIN_OLD="$TMP/pin-old"
+mkdir -p "$PIN_OK" "$PIN_OLD"
+printf 'a\nfixed\nb\n' > "$PIN_OK/f.txt"
+printf 'a\nbroken\nb\n' > "$PIN_OLD/f.txt"
+cat > "$TMP/fix.patch" <<'EOF'
+diff --git a/f.txt b/f.txt
+--- a/f.txt
++++ b/f.txt
+@@ -1,3 +1,3 @@
+ a
+-broken
++fixed
+ b
+EOF
 mk upstream-fixed
-printf 'only traces\n' > "$TMP/upstream-fixed/vl-traces/f.patch"
+cp "$TMP/fix.patch" "$TMP/upstream-fixed/vl-traces/f.patch"
 cat > "$TMP/upstream-fixed/vl-traces/DIVERGENCE.md" <<'EOF'
 - `f.patch` — upstream-fixed-in-logs-pin: logs pin includes the fix.
 EOF
-run upstream-fixed
-check_rc "marked upstream-fixed one-sided patch is excused" "$rc" 0
+out="$(LOGS_PIN_TREE="$PIN_OK" "$GUARD" "$TMP/upstream-fixed/vl-logs" "$TMP/upstream-fixed/vl-traces" 2>&1)"; rc=$?
+check_rc "marked upstream-fixed patch passes against a pin tree that has the fix" "$rc" 0
+out="$(LOGS_PIN_TREE="$PIN_OLD" "$GUARD" "$TMP/upstream-fixed/vl-logs" "$TMP/upstream-fixed/vl-traces" 2>&1)"; rc=$?
+check_rc "marked upstream-fixed patch FAILS when the pin tree lacks the fix" "$rc" 1
+check_contains "the missing fix is named" "$out" "does not contain this fix"
+out="$(LOGS_PIN_TREE="$TMP/no-such-tree" "$GUARD" "$TMP/upstream-fixed/vl-logs" "$TMP/upstream-fixed/vl-traces" 2>&1)"; rc=$?
+check_rc "marked upstream-fixed patch FAILS when no pin tree exists" "$rc" 1
+mk upstream-fixed-manual
+printf 'comment differs\n' > "$TMP/upstream-fixed-manual/vl-traces/m.patch"
+cat > "$TMP/upstream-fixed-manual/vl-traces/DIVERGENCE.md" <<'EOF'
+- `m.patch` — upstream-fixed-in-logs-pin(manual): same change, comment text differs upstream.
+EOF
+out="$(LOGS_PIN_TREE="$PIN_OLD" "$GUARD" "$TMP/upstream-fixed-manual/vl-logs" "$TMP/upstream-fixed-manual/vl-traces" 2>&1)"; rc=$?
+check_rc "the (manual) marker skips the mechanical check" "$rc" 0
 # ... only when it is missing from the LOGS side; missing from traces never is.
 mk upstream-fixed-wrong-side
 printf 'only logs\n' > "$TMP/upstream-fixed-wrong-side/vl-logs/g.patch"

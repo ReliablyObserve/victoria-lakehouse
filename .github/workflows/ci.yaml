@@ -524,7 +524,11 @@ jobs:
         run: scripts/ci/tests/check_patches_equal_test.sh
 
       - name: Patch-set consistency (vl-logs vs vl-traces)
-        run: scripts/ci/check_patches_equal.sh
+        run: |
+          # Traces-only patches marked upstream-fixed-in-logs-pin must
+          # reverse-apply to the logs pin: check against a pristine checkout.
+          git clone --quiet --depth 1 --branch "$VL_VERSION_LOGS" https://github.com/VictoriaMetrics/VictoriaLogs.git "$RUNNER_TEMP/vl-logs-pin"
+          LOGS_PIN_TREE="$RUNNER_TEMP/vl-logs-pin" scripts/ci/check_patches_equal.sh
 
       # The daily upstream sync probe, against a fake upstream (local git
       # repositories, shimmed gh and go): every verdict and exit code, no
