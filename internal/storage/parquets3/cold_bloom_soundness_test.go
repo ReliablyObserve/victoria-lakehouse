@@ -77,9 +77,10 @@ func TestColdBloom_BloomSoundness(t *testing.T) {
 			return strings.Join(v, ",")
 		}()), 20},
 		{`trace_id:~"abc01"`, 40},
-		// known gaps (pre-existing, separate issues, not asserted here): a QUOTED trace_id prefix
-		// returns 0 rows on the unprojected row path; a rewriting pipe ahead of a bloom-column
-		// filter (`format "X" as trace_id | filter trace_id:=X`) is pruned on the stored column.
+		{`trace_id:"00000000000000000000000000abc01"*`, 40},
+		{`trace_id:="00000000000000000000000000abc01"*`, 40},
+		// known gap (pre-existing, separate issue, not asserted here): a rewriting pipe ahead of a
+		// bloom-column filter (`format "X" as trace_id | filter trace_id:=X`) is pruned on the stored column.
 		{`trace_id:00000000000000000000000000abc01*`, 40},
 		// pipe-level filters (string-based extraction suspicion)
 		{fmt.Sprintf(`* | filter trace_id:=%s or service.name:=alpha`, t10), 50},

@@ -86,8 +86,8 @@ func benchMergeInputs(tb testing.TB, interleave bool) [][]byte {
 	tb.Helper()
 	out := make([][]byte, benchMergeFiles)
 	for f := 0; f < benchMergeFiles; f++ {
-		data, err := writeCompactedLogs(benchMergeRows(f, benchMergeRowsPerFile, interleave),
-			benchMergeRowGroupSize, benchMergeCompression)
+		data, err := writeCompactedLogs(benchMergeRows(f, benchMergeRowsPerFile, interleave), benchMergeRowGroupSize, benchMergeCompression, false)
+
 		if err != nil {
 			tb.Fatalf("build input %d: %v", f, err)
 		}
@@ -115,7 +115,7 @@ func mergeViaRows(tb testing.TB, inputs [][]byte) []byte {
 		}
 		return merged[i].ServiceName < merged[j].ServiceName
 	})
-	out, err := writeCompactedLogs(merged, benchMergeRowGroupSize, benchMergeCompression)
+	out, err := writeCompactedLogs(merged, benchMergeRowGroupSize, benchMergeCompression, false)
 	if err != nil {
 		tb.Fatalf("writeCompactedLogs: %v", err)
 	}

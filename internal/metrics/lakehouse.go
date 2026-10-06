@@ -449,6 +449,10 @@ var (
 	//   kept_unindexed — file lacks _trace_idx KV entirely; conservatively
 	//                 scanned (older parquets pre-date the index)
 	//   kept_error  — footer fetch failed; conservatively scanned
+	//   kept_unattested — the query names the trace only by a phrase
+	//                 (`trace_id:"X"`) and the file does not attest
+	//                 lowercase-hex trace ids (lh.trace_id_hex), so the
+	//                 phrase cannot narrow it; scanned
 	// dropped / (dropped + kept_match) is the pre-filter's selectivity
 	// — at PB scale this should be > 0.9 for stale trace IDs.
 	TraceIdxPreFilterFiles = NewCounterVec("lakehouse_trace_idx_prefilter_files_total", "result")

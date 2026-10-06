@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 // Filter-AST helpers.
@@ -598,6 +600,75 @@ func isNegatedPredicateAST(queryStr, fieldName string) bool {
 		return FilterIsNegated(f, fieldName)
 	}
 	return isNegatedPredicate(queryStr, fieldName)
+}
+
+// FilterExtractHexTraceIDPhrases returns the phrases of the `trace_id:"P"`
+// filters that constrain every row (directly under the root AND, never under OR
+// or NOT) whose phrase P is a full lowercase-hex token.
+//
+// A phrase is not equality: upstream matches it on token boundaries
+// (matchPhrase, lib/logstorage/filter_phrase.go), so `trace_id:"abc"` matches
+// the stored `abc-def-ghi` and `trace_id:"4bf92f35"` matches a UUID. The values
+// returned here are therefore NOT exact values in general: they may prune only
+// a file whose writer attests that every trace_id in it is lowercase hex
+// (schema.TraceIDHexMetaKey). In such a file a value contains P on token
+// boundaries exactly when it equals P (TestPhraseExact_*), so the exact-value
+// blooms and the trace-id index may prune P there and nowhere else.
+func FilterExtractHexTraceIDPhrases(f *logstorage.Filter) []string {
+	if f == nil {
+		return nil
+	}
+	inner := filterInner(f)
+	if astTypeName(derefValue(inner)) == "" {
+		return nil // unknown layout: no phrase is ever pruned as a value
+	}
+	var out []string
+	var walk func(v reflect.Value)
+	walk = func(v reflect.Value) {
+		v = derefValue(v)
+		switch astTypeName(v) {
+		case astTypeAnd:
+			filters := v.FieldByName("filters")
+			if filters.IsValid() && filters.Kind() == reflect.Slice {
+				for i := 0; i < filters.Len(); i++ {
+					walk(filters.Index(i))
+				}
+			}
+		case astTypeGeneric:
+			if stringField(v, "fieldName") != traceIDField {
+				return
+			}
+			leaf := derefValue(v.FieldByName("f"))
+			if astTypeName(leaf) != astTypePhrase {
+				return
+			}
+			if ph := stringField(leaf, "phrase"); schema.IsLowerHexToken(ph) {
+				out = append(out, ph)
+			}
+		}
+	}
+	walk(inner)
+	return out
+}
+
+// traceIDField is the query field (and Parquet column) the lh.trace_id_hex
+// attestation covers.
+const traceIDField = "trace_id"
+
+// extractHexTraceIDPhrasesAST is FilterExtractHexTraceIDPhrases on query text.
+func extractHexTraceIDPhrasesAST(queryStr string) []string {
+	return FilterExtractHexTraceIDPhrases(parseFilterFromQueryStr(queryStr))
+}
+
+// attestedPruneValues appends to vals the trace_id phrases that may prune a
+// file attesting lowercase-hex trace ids, when col is the trace_id column and
+// the file attests it. For any other column, or a file without the attestation,
+// vals is returned unchanged: a phrase is then pruned only by its tokens.
+func attestedPruneValues(vals []string, queryStr string, col schema.FieldMapping, attested bool) []string {
+	if !attested || col.ParquetColumn != traceIDField {
+		return vals
+	}
+	return append(vals, extractHexTraceIDPhrasesAST(queryStr)...)
 }
 
 // extractFilterValuesAST is the AST-aware variant of extractFilterValues.

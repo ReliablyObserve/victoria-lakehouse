@@ -228,6 +228,7 @@ func rewrittenFileInfo(old manifest.FileInfo, result *RewriteResult) manifest.Fi
 		ColumnStats:       old.ColumnStats,
 		LabelAggregates:   result.LabelAggregates,
 		ColumnBytes:       result.ColumnBytes,
+		TraceIDHex:        result.TraceIDHex,
 		StorageClass:      old.StorageClass,
 		ClassCheckedAt:    old.ClassCheckedAt,
 		ClassSource:       old.ClassSource,

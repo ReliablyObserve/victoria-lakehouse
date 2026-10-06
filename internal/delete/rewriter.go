@@ -59,6 +59,9 @@ type RewriteResult struct {
 	// kept rows, handed to the pmeta bloom facet so the replacement stays
 	// bloom-prunable (the same feed compaction provides for its outputs).
 	BloomValues map[string][]string
+	// TraceIDHex is the replacement's lh.trace_id_hex footer attestation
+	// (schema.TraceIDHexMetaKey), derived from the kept rows by the writer.
+	TraceIDHex bool
 
 	// Published is set by the scheduler once the manifest points at NewKey.
 	// Until then the superseded object MUST NOT be deleted: an unpublished
@@ -208,6 +211,9 @@ func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombsto
 	result.BytesAfter = int64(len(newData))
 	result.BloomBytes = footerBloomBytes(newData)
 	result.ColumnBytes = columnBytesFromFooter(newData)
+	// Read back from the footer the replacement was written with, so the
+	// manifest records exactly what the object attests.
+	result.TraceIDHex = schema.FileTraceIDHex(newData)
 	result.NewKey = replacementKey(key, newReplacementID())
 	result.data = newData
 	result.Duration = time.Since(start)
@@ -404,7 +410,8 @@ func (r *Rewriter) filterLogRows(data []byte, tombstones []Tombstone, result *Re
 	}
 
 	var buf bytes.Buffer
-	writer := parquet.NewGenericWriter[schema.LogRow](&buf, r.writerOptions(data)...)
+	opts := append(r.writerOptions(data), schema.TraceIDHexOption(schema.LogRowsTraceIDHex(kept)))
+	writer := parquet.NewGenericWriter[schema.LogRow](&buf, opts...)
 	if _, err := writer.Write(kept); err != nil {
 		return nil, fmt.Errorf("write parquet: %w", err)
 	}
@@ -459,7 +466,8 @@ func (r *Rewriter) filterTraceRows(data []byte, tombstones []Tombstone, result *
 	}
 
 	var buf bytes.Buffer
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, r.writerOptions(data)...)
+	opts := append(r.writerOptions(data), schema.TraceIDHexOption(schema.TraceRowsTraceIDHex(kept)))
+	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
 	if _, err := writer.Write(kept); err != nil {
 		return nil, fmt.Errorf("write parquet: %w", err)
 	}

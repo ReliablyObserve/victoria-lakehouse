@@ -18,7 +18,7 @@ func TestCompaction_RestampSlotMapping(t *testing.T) {
 	SetSlotResolver(schema.NewSlotResolver([]schema.SlotAttr{{Name: "tenant_id", Bloom: true}}))
 
 	rows := []schema.LogRow{{TimestampUnixNano: 1, Body: "m", DedS01: "acme"}}
-	data, err := writeCompactedLogs(rows, 1000, 0)
+	data, err := writeCompactedLogs(rows, 1000, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestCompaction_RestampSlotMapping(t *testing.T) {
 
 	// No resolver → no footer KV (nil-safe).
 	SetSlotResolver(nil)
-	data2, _ := writeCompactedLogs(rows, 1000, 0)
+	data2, _ := writeCompactedLogs(rows, 1000, 0, false)
 	f2, _ := parquet.OpenFile(bytes.NewReader(data2), int64(len(data2)))
 	for _, kv := range f2.Metadata().KeyValueMetadata {
 		if kv.Key == schema.DedicatedSlotsMetaKey {

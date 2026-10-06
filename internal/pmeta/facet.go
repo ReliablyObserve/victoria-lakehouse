@@ -57,6 +57,9 @@ type FileContribution struct {
 	// enumerable → reads fall through to the scan) rather than ever serving a
 	// silently truncated list as authoritative.
 	TruncatedFields []string
+	// TraceIDHex is the file's footer attestation that every trace_id value is
+	// lowercase hex (schema.TraceIDHexMetaKey), consumed by FacetFileMeta.
+	TraceIDHex bool
 }
 
 // Facet is the per-partition unit of metadata. One implementation per kind.

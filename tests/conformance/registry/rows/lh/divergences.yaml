@@ -175,3 +175,122 @@
     delete references; before, a narrow read showed the deleted rows again in counts, group-bys
     and histograms. The delete step is a runner precondition, so the unit and RunQuery-level
     tests above carry the proof until the runner can sequence it. Issue #285.
+
+- id: lh.cold.phrase_filter_matches_hot_logs
+  title: "A quoted phrase filter on cold matches the same rows as hot — logs"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "k8s.pod.name:\"api-gateway\" | stats count() rows", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/parity/phrase_pruning_parity_test.go#TestParity_PhrasePruning_Logs
+      - internal/storage/parquets3/phrase_pruning_test.go#TestPhrasePruning_ColdMatchesHotMatcher
+      - internal/storage/parquets3/phrase_exact_test.go#TestPhraseExact_EquivalentToExactOnAttestedDomain
+  notes: >-
+    field:"v" is a phrase: it matches any value that contains v on token boundaries, so
+    k8s.pod.name:"api-gateway" matches api-gateway-7d9f8b6c4. Cold used to prune it as the
+    exact value v and returned 0 rows. A phrase is pruned by its tokens; a full lowercase-hex
+    trace_id phrase is pruned as a value only in files whose footer attests lowercase-hex
+    trace ids (lh.trace_id_hex=1).
+
+- id: lh.cold.phrase_filter_matches_hot_traces
+  title: "A quoted phrase filter on cold matches the same rows as hot — traces"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "span_id:* name:\"GET /api/v1\" | stats count() rows", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/parity/phrase_pruning_parity_test.go#TestParity_PhrasePruning_Traces
+      - lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go#TestPhrasePruning_ColdMatchesHotMatcher
+      - lakehouse-traces/internal/storage/parquets3/phrase_exact_test.go#TestPhraseExact_EquivalentToExactOnAttestedDomain
+  notes: >-
+    Same rule as the logs row. VictoriaTraces' trace-by-ID form trace_id:"X" is pruned as the
+    value X only in files whose writer attests that every trace_id in them is lowercase hex
+    (lh.trace_id_hex=1, also carried by the manifest and the pmeta file-meta facet); every
+    other file, and every other traces column, prunes a phrase by tokens only.
+
+- id: lh.cold.phrase_filter_non_hex_trace_id_traces
+  title: "A phrase on part of a non-hex trace_id (OTLP/HTTP JSON, native) finds the span on cold — traces"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "trace_id:\"abc\" | stats count() rows", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/parity/phrase_pruning_parity_test.go#TestParity_PhrasePruning_Traces
+      - lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go#TestPhrasePruning_ColdMatchesHotMatcher
+      - lakehouse-traces/internal/storage/parquets3/ingest_trace_id_hex_test.go#TestIngestPremise_NonHexTraceIDsAreNotAttested
+  notes: >-
+    VictoriaTraces keeps an OTLP/HTTP JSON traceId as sent (lowercased) and a /insert/native
+    trace_id byte for byte, so a stored id can be abc-def-ghi or a UUID, and trace_id:"abc" or
+    trace_id:"4bf92f35" matches it. Files holding such an id say lh.trace_id_hex=0 and are never
+    pruned on a phrase as a value. The parity seed sends such spans with datagen --phrase-fixture.
+
+- id: lh.cold.exact_prefix_filter_matches_hot_logs
+  title: "An exact-prefix filter field:=\"v\"* on cold matches the same rows as hot — logs"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "k8s.pod.name:=\"api-gateway\"* | stats count() rows", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/parity/phrase_pruning_parity_test.go#TestParity_PhrasePruning_Logs
+      - internal/storage/parquets3/phrase_pruning_test.go#TestPhrasePruning_ColdMatchesHotMatcher
+      - internal/storage/parquets3/phrase_pruning_test.go#TestPhrasePruning_ExactMatchStringFallback
+      - internal/storage/parquets3/cold_bloom_soundness_test.go#TestColdBloom_BloomSoundness
+  notes: >-
+    field:="v"* matches every value starting with v. The text extractor and the pushdown read it
+    as the exact value v, so trace_id:="4bf92f35"* returned 0 rows on cold. It is a prefix check
+    now and never reaches the exact-value blooms.
+
+- id: lh.cold.exact_prefix_filter_matches_hot_traces
+  title: "An exact-prefix filter field:=\"v\"* on cold matches the same rows as hot — traces"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "trace_id:=\"abc\"* | stats count() rows", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/parity/phrase_pruning_parity_test.go#TestParity_PhrasePruning_Traces
+      - lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go#TestPhrasePruning_ColdMatchesHotMatcher
+      - lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go#TestPhrasePruning_ExactMatchStringFallback
+      - lakehouse-traces/internal/storage/parquets3/cold_bloom_soundness_test.go#TestColdBloom_BloomSoundness
+  notes: >-
+    Same rule as the logs row; the traces _trace_idx prefilter also never sees the prefix as an id.

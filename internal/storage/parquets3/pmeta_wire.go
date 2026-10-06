@@ -50,6 +50,7 @@ func (p catalogFileMetaProvider) FileMeta(partition, fileKey string) (manifest.F
 		RawBytes:          v.RawBytes,
 		SchemaFingerprint: v.SchemaFingerprint,
 		Labels:            v.Labels,
+		TraceIDHex:        v.TraceIDHex,
 	}, true
 }
 
@@ -130,6 +131,7 @@ func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, la
 		MaxTimeNs:         fi.MaxTimeNs,
 		RawBytes:          fi.RawBytes,
 		SchemaFingerprint: fi.SchemaFingerprint,
+		TraceIDHex:        fi.TraceIDHex,
 		Labels:            labels,
 		BloomValues:       bloomValues,
 		TruncatedFields:   truncated,
@@ -332,6 +334,7 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 				MaxTimeNs:         exMax,
 				RawBytes:          fi.RawBytes,
 				SchemaFingerprint: fi.SchemaFingerprint,
+				TraceIDHex:        fi.TraceIDHex,
 				Labels:            fi.Labels,
 			})
 		}
@@ -396,6 +399,7 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 				MaxTimeNs:         exMax,
 				RawBytes:          fi.RawBytes,
 				SchemaFingerprint: fi.SchemaFingerprint,
+				TraceIDHex:        fi.TraceIDHex,
 				Labels:            fi.Labels,
 			})
 		}
@@ -431,6 +435,7 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string, 
 			MaxTimeNs:         fi.MaxTimeNs,
 			RawBytes:          fi.RawBytes,
 			SchemaFingerprint: fi.SchemaFingerprint,
+			TraceIDHex:        fi.TraceIDHex,
 			Labels:            fi.Labels,
 			TruncatedFields:   truncated,
 			BloomValues:       blooms[fi.Key],

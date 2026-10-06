@@ -42,7 +42,7 @@ func newCompactionTombstoneFixture(t *testing.T, mode string) *compactionTombsto
 		},
 	} {
 		key := partition + "/src-" + string(rune('a'+i)) + ".parquet"
-		data, err := writeCompactedLogs(batch, 100, 1)
+		data, err := writeCompactedLogs(batch, 100, 1, false)
 		if err != nil {
 			t.Fatalf("write source parquet: %v", err)
 		}
@@ -475,7 +475,7 @@ func TestCompaction_DropsTombstonedSpans(t *testing.T) {
 		},
 	} {
 		key := partition + "/span-" + string(rune('a'+i)) + ".parquet"
-		data, err := writeCompactedTraces(batch, 100, 1)
+		data, err := writeCompactedTraces(batch, 100, 1, false)
 		if err != nil {
 			t.Fatalf("write source parquet: %v", err)
 		}

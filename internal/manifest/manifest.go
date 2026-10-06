@@ -100,6 +100,14 @@ type FileInfo struct {
 	ClassCheckedAt time.Time        `json:"class_checked_at,omitempty"`
 	ClassSource    string           `json:"class_source,omitempty"`
 	CreatedAt      time.Time        `json:"created_at,omitempty"`
+	// TraceIDHex records the file's footer attestation (schema.TraceIDHexMetaKey)
+	// that every trace_id value in it is lowercase hex. It lets the file-level
+	// bloom pre-filters prune a full-hex `trace_id:"X"` phrase as an exact value
+	// before any footer is read. Set at flush, compaction and delete rewrite from
+	// what the writer attested, carried by the snapshot, the file-metadata sidecar
+	// and the pmeta file-meta facet, and re-learned from the footer when a file is
+	// opened. False means "not attested": the phrase is pruned by tokens only.
+	TraceIDHex bool `json:"trace_id_hex,omitempty"`
 }
 
 // ExactBounds returns the object's real time range, or (0, 0) while the manifest
@@ -1969,6 +1977,21 @@ func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinM
 		return
 	}
 	files[i].ColumnStats = stats
+}
+
+// MarkTraceIDHex records that the file's footer attests lowercase-hex trace ids
+// (schema.TraceIDHexMetaKey). Called when a footer is read for a file the
+// manifest learned without the attestation (a listing, an older snapshot), so the
+// file-level pre-filters can use it from then on. The attestation belongs to the
+// immutable object under key; it is never cleared.
+func (m *Manifest) MarkTraceIDHex(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	files, i := m.findFileLocked(key)
+	if i < 0 {
+		return
+	}
+	files[i].TraceIDHex = true
 }
 
 // EnrichFileMetadata updates RowCount and time bounds for a file identified

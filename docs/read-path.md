@@ -194,6 +194,31 @@ Bloom filters provide definite negative answers: if the bloom filter says a valu
 - **Logs**: `service.name`, `trace_id`, `host.name`, `k8s.namespace.name`, `k8s.pod.name`, `k8s.deployment.name`, `deployment.environment`
 - **Traces**: `trace_id`, `service.name`, `span.name`
 
+### Phrase filters (`field:"v"`) and the pruning layers
+
+A quoted or bare word filter is a **phrase**, not an equality: upstream (`filter_phrase.go`, `matchPhrase`) matches a row when the field *contains* the phrase on token boundaries, so `trace_id:"abc-def"` matches the stored value `abc-def-ghi`, and `service.name:"api-gw"` matches `api-gw-v2`. Only `field:="v"` and `field:in(...)` mean "equals". The exact **prefix** `field:="v"*` means "starts with v"; it is never read as the exact value `v` (the pushdown checks it as a prefix).
+
+| Layer | Exact `field:="v"` / `in()` | Phrase `field:"v"` |
+|---|---|---|
+| L2c labels, column stats, pushdown | pruned on the value | not pruned |
+| L2d file bloom (pmeta facet, `.bloom`) | pruned on the value | not pruned by a value, except in attested files (below) |
+| L6 footer / row-group bloom (SBBF) | pruned on the value | not pruned by a value, except in attested files (below) |
+| `_trace_idx` (traces) | pruned on the trace ID | not pruned by a value, except in attested files (below) |
+| Token bloom (`_msg` words) | pruned when every token is present | pruned when every phrase token is present |
+
+A phrase is otherwise pruned only by "every token of the phrase is present" (the token bloom), which is sound because the first and last phrase tokens must be whole tokens of the stored value.
+
+#### Attested lowercase-hex `trace_id` files (`lh.trace_id_hex`)
+
+Every Parquet file records, in the footer key/value entry `lh.trace_id_hex`, whether **every** `trace_id` value in it is plain lowercase hex (`[0-9a-f]*`, an empty value included): ASCII `1` when it is, `0` when it is not. The writer derives it from the rows it writes. Nothing about a binary or an ingest path is assumed: VictoriaTraces writes hex for OTLP protobuf, but stores the id as sent for OTLP/HTTP JSON (lowercased, hyphens and base64 kept) and for `/insert/native`, and a logs shipper sends whatever it has. A file holding any such id says `0`.
+
+- **Flush and the durable insert buffer** (segment drain): from the rows written.
+- **Compaction**: `1` only when every input file's footer says `1` (AND) and every merged row is hex. An input without the key (written before it existed) or with `0` makes the output `0`.
+- **Delete and tombstone rewrites**: from the rows kept.
+- **Metadata**: the manifest entry (`trace_id_hex`), the file-metadata sidecar and the pmeta file-meta facet carry the same bit, set from what the writer attested and re-learned from the footer when a file is opened, so pmeta stays rebuildable from footers.
+
+In a file that says `1`, a phrase `trace_id:"P"` whose `P` is a full lowercase-hex token contains-on-token-boundaries a value exactly when it equals it (a hex value has no token boundary inside it). The pruning layers marked above treat such a phrase as the value `P` in that file only; `TestPhraseExact_EquivalentToExactOnAttestedDomain` checks the equivalence against upstream's own matcher. Every other file, and every phrase that is not a full lowercase-hex token, keeps token pruning only. The same rule applies to both binaries, so the logs binary gains value pruning for a hex `trace_id` phrase wherever its files attest hex ids, and VictoriaTraces' trace-by-ID form `trace_id:"X"` gains it on attested files.
+
 ### Level 7: Pre-Where Bitmap Filter
 
 After row-group-level pruning passes, the engine reads only the filter columns first and builds a boolean bitmap of matching rows. The projected read (Level 9) then skips rows where `bitmap[i] == false`.

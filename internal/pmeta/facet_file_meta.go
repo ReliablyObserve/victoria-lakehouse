@@ -17,6 +17,7 @@ type fileMetaEntry struct {
 	RawBytes          int64               `json:"rb,omitempty"`
 	SchemaFingerprint string              `json:"sf,omitempty"`
 	Labels            map[string][]string `json:"lb,omitempty"`
+	TraceIDHex        bool                `json:"th,omitempty"`
 }
 
 // fileMetaFacet folds _file_metadata.json into the unified pmeta bundle: per-file
@@ -48,6 +49,7 @@ func (f *fileMetaFacet) Merge(c FileContribution) {
 		RawBytes:          c.RawBytes,
 		SchemaFingerprint: c.SchemaFingerprint,
 		Labels:            c.Labels,
+		TraceIDHex:        c.TraceIDHex,
 	}
 	f.mu.Unlock()
 }
@@ -140,6 +142,7 @@ type FileMetaView struct {
 	RawBytes          int64
 	SchemaFingerprint string
 	Labels            map[string][]string
+	TraceIDHex        bool
 }
 
 // FileMeta returns a file's metadata from its partition's FacetFileMeta, if loaded.

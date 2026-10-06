@@ -47,7 +47,7 @@ func TestCompactor_BackfillsSeverityTextFromStreamTag(t *testing.T) {
 		},
 	}
 
-	data, err := writeCompactedLogs(rows, 4, 1)
+	data, err := writeCompactedLogs(rows, 4, 1, false)
 	if err != nil {
 		t.Fatalf("write source parquet: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestCompactor_BackfillsSeverityTextFromSeverityNumber(t *testing.T) {
 		},
 	}
 
-	data, err := writeCompactedLogs(rows, 4, 1)
+	data, err := writeCompactedLogs(rows, 4, 1, false)
 	if err != nil {
 		t.Fatalf("write source parquet: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestCompactor_BackfillLeavesEmptyWhenNoSource(t *testing.T) {
 		},
 	}
 
-	data, err := writeCompactedLogs(rows, 4, 1)
+	data, err := writeCompactedLogs(rows, 4, 1, false)
 	if err != nil {
 		t.Fatalf("write source parquet: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestCompactor_BackfillRoundTrip_StreamPreserved(t *testing.T) {
 		Body:              "x",
 		Stream:            `{level="WARN",service.name="api"}`,
 	}
-	data, err := writeCompactedLogs([]schema.LogRow{src}, 1, 1)
+	data, err := writeCompactedLogs([]schema.LogRow{src}, 1, 1, false)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}

@@ -57,9 +57,21 @@ func buildPushDownFilter(queryStr string, registry *schema.Registry) *PushDownFi
 				break
 			}
 
-			// Exact match: field:="value" or field:="prefix*"
-			if val := extractQuotedOp(queryStr, name, `:="`); val != "" {
-				if strings.HasSuffix(val, "*") && !strings.HasSuffix(val, `\*`) {
+			// Exact match: field:="value" or field:="prefix*". The exact
+			// PREFIX filter `field:="prefix"*` (the '*' after the closing
+			// quote, as Query.String() writes filterExactPrefix) matches every
+			// value starting with prefix, so it is a prefix check, never the
+			// exact value.
+			if val, next := extractQuotedOpNext(queryStr, name, `:="`); val != "" {
+				if next == '*' {
+					checks = append(checks, PushDownCheck{
+						Column:    col.ParquetColumn,
+						Op:        PushDownPrefix,
+						Value:     val,
+						FieldType: col.Type,
+						ColIdx:    -1,
+					})
+				} else if strings.HasSuffix(val, "*") && !strings.HasSuffix(val, `\*`) {
 					checks = append(checks, PushDownCheck{
 						Column:    col.ParquetColumn,
 						Op:        PushDownPrefix,
@@ -144,12 +156,20 @@ func isNegatedPredicate(query, fieldName string) bool {
 // drops every file silently. Mirror of the same fix in
 // lakehouse-traces/internal/storage/parquets3/filter_pushdown.go.
 func extractQuotedOp(query, fieldName, op string) string {
+	v, _ := extractQuotedOpNext(query, fieldName, op)
+	return v
+}
+
+// extractQuotedOpNext is extractQuotedOp that also returns the byte right after
+// the closing quote (0 at the end of the query), so a caller can tell
+// `field:="v"` from the exact prefix `field:="v"*`.
+func extractQuotedOpNext(query, fieldName, op string) (string, byte) {
 	pattern := fieldName + op
 	from := 0
 	for {
 		idx := strings.Index(query[from:], pattern)
 		if idx < 0 {
-			return ""
+			return "", 0
 		}
 		abs := from + idx
 		ok := abs == 0
@@ -163,13 +183,17 @@ func extractQuotedOp(query, fieldName, op string) string {
 			start := abs + len(pattern)
 			end := strings.Index(query[start:], `"`)
 			if end < 0 {
-				return ""
+				return "", 0
 			}
-			return query[start : start+end]
+			var next byte
+			if start+end+1 < len(query) {
+				next = query[start+end+1]
+			}
+			return query[start : start+end], next
 		}
 		from = abs + 1
 		if from >= len(query) {
-			return ""
+			return "", 0
 		}
 	}
 }

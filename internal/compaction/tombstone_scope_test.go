@@ -39,7 +39,7 @@ func newTenantCompactionFixture(t *testing.T) *tenantCompactionFixture {
 				{TimestampUnixNano: int64(1001 + 10*i), Body: tenant + "-drop", SeverityText: "error", ServiceName: "web"},
 			}
 			key := tenant + "/logs/" + tenantCompactionPartition + "/src-" + string(rune('a'+i)) + ".parquet"
-			data, err := writeCompactedLogs(batch, 100, 1)
+			data, err := writeCompactedLogs(batch, 100, 1, false)
 			if err != nil {
 				t.Fatalf("write source parquet: %v", err)
 			}

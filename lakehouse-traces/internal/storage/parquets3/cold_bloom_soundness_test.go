@@ -66,7 +66,8 @@ func TestColdBloom_BloomSoundness(t *testing.T) {
 		{fmt.Sprintf(`(trace_id:=%s AND name:op0*) OR trace_id:=%s`, t10, t02), 20},
 		{fmt.Sprintf(`trace_id:in(%s)`, many), 20},
 		{`trace_id:~"abc01"`, 40},
-		// known gap (pre-existing, separate issue): a QUOTED trace_id prefix is treated as an exact value by the _trace_idx prefilter.
+		{`trace_id:"00000000000000000000000000abc01"*`, 40},
+		{`trace_id:="00000000000000000000000000abc01"*`, 40},
 		// Token bloom: a bare word under NOT must not prune.
 		{`NOT zzword`, 80},
 		{`-zzword`, 80},

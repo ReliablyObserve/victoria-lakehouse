@@ -226,6 +226,7 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 		RawBytes:          result.RawBytes,
 		BloomBytes:        footerBloomBytes(result.Data),
 		ColumnBytes:       result.ColumnBytes,
+		TraceIDHex:        result.TraceIDHex,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
 		LabelAggregates:   schema.ExtractLogLabelAggregates(rows),
@@ -356,6 +357,7 @@ func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload
 		RawBytes:          result.RawBytes,
 		BloomBytes:        footerBloomBytes(result.Data),
 		ColumnBytes:       result.ColumnBytes,
+		TraceIDHex:        result.TraceIDHex,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels2,
 		LabelAggregates:   schema.ExtractTraceLabelAggregates(rows),
@@ -400,6 +402,9 @@ type flushResult struct {
 	// name -> bytes, summed across row groups). Aggregated over the manifest's
 	// files it yields the per-field on-S3 storage footprint.
 	ColumnBytes map[string]int64
+	// TraceIDHex is what the file's footer attests under
+	// schema.TraceIDHexMetaKey: every trace_id value in it is lowercase hex.
+	TraceIDHex bool
 }
 
 // columnBytesFromFooter reads the just-written Parquet footer and returns the
@@ -457,6 +462,10 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 		schema.ParquetCreatedBy(),
 		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns(activeSlotResolver.BloomSlots()...))...),
 	}
+	// The writer attests what it writes: lh.trace_id_hex=1 only when every
+	// trace_id in these rows is lowercase hex (see schema.TraceIDHexMetaKey).
+	traceIDHex := schema.LogRowsTraceIDHex(rows)
+	opts = append(opts, schema.TraceIDHexOption(traceIDHex))
 	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
 		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
 	}
@@ -490,6 +499,7 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 		Data:        logData,
 		RawBytes:    estimateRawBytesLogs(rows),
 		ColumnBytes: columnBytesFromFooter(logData),
+		TraceIDHex:  traceIDHex,
 	}, nil
 }
 
@@ -505,6 +515,11 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		schema.ParquetCreatedBy(),
 		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns(activeSlotResolver.BloomSlots()...))...),
 	}
+	// See writeLogsParquet: the footer attests lowercase-hex trace ids only when
+	// every span written here has one. VictoriaTraces' OTLP protobuf path writes
+	// hex; its OTLP/HTTP JSON and native paths store the id as sent.
+	traceIDHex := schema.TraceRowsTraceIDHex(rows)
+	opts = append(opts, schema.TraceIDHexOption(traceIDHex))
 	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
 		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
 	}
@@ -547,6 +562,7 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		Data:        traceData,
 		RawBytes:    estimateRawBytesTraces(rows),
 		ColumnBytes: columnBytesFromFooter(traceData),
+		TraceIDHex:  traceIDHex,
 	}, nil
 }
 

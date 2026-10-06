@@ -15,7 +15,8 @@
         "_bloom_body_rg_0",
         "_bloom_body_rg_1",
         "_bloom_body_rg_2",
-        "_bloom_body_rg_3"
+        "_bloom_body_rg_3",
+        "lh.trace_id_hex"
       ],
       "time_column": "timestamp_unix_nano",
       "time_min": 1760000000000000000,
@@ -1155,7 +1156,8 @@
         "_bloom_body_rg_6",
         "_bloom_body_rg_7",
         "_bloom_body_rg_8",
-        "_bloom_body_rg_9"
+        "_bloom_body_rg_9",
+        "lh.trace_id_hex"
       ],
       "time_column": "timestamp_unix_nano",
       "time_min": 1770000000000000000,
@@ -3023,7 +3025,8 @@
         "_bloom_body_rg_0",
         "_bloom_body_rg_1",
         "_bloom_body_rg_2",
-        "_trace_idx"
+        "_trace_idx",
+        "lh.trace_id_hex"
       ],
       "time_column": "timestamp_unix_nano",
       "time_min": 1760000000000000000,
