@@ -1,5 +1,7 @@
 package parquets3
 
+import "github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
+
 // Per-signal defaults for the S3 read-path knobs whose right value depends
 // on the signal's file/footer geometry (planned-fetch v2 research, Part II
 // §II.1/§II.2). The LOGS values live here; the traces twin holds its own
@@ -38,4 +40,38 @@ func (s *Storage) wholeFileThresholdBytes() int64 {
 		return int64(s.cfg.S3.WholeFileThresholdBytes)
 	}
 	return defaultWholeFileThresholdBytes
+}
+
+const (
+	// footerBudgetPercent, footerBudgetMin and footerBudgetMax size the footer
+	// cache when cache.footer_max_bytes = 0 (auto): 10% of the memory the
+	// process may use for caches (VictoriaMetrics lib/memory.Allowed(), 60% of
+	// the machine or the container limit by default), clamped to
+	// [32 MiB, 1 GiB]. The cache is bounded by resident bytes; an entry is the
+	// raw tail (footer + page-index stripe) plus the decoded metadata, about
+	// ~0.1-0.9 MiB for logs. The percentage scales the cache with the pod, the floor keeps a
+	// small pod useful, the ceiling stops one cache from owning a large heap
+	// (the working set of a hot query window is far smaller than that).
+	footerBudgetPercent = 10
+	footerBudgetMin     = 32 << 20
+	footerBudgetMax     = 1 << 30
+)
+
+// autoFooterMaxBytes is the footer-cache budget for the given allowed memory
+// (memory.Allowed()): footerBudgetPercent of it, clamped to
+// [footerBudgetMin, footerBudgetMax].
+func autoFooterMaxBytes(allowed int64) int64 {
+	b := allowed / 100 * footerBudgetPercent
+	if b < footerBudgetMin {
+		return footerBudgetMin
+	}
+	if b > footerBudgetMax {
+		return footerBudgetMax
+	}
+	return b
+}
+
+// defaultFooterMaxBytes resolves the auto budget against this process.
+func defaultFooterMaxBytes() int64 {
+	return autoFooterMaxBytes(int64(memory.Allowed()))
 }

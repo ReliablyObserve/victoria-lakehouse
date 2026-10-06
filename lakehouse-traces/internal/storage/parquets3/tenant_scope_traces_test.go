@@ -55,7 +55,7 @@ func TestTenantScope_TraceIndexLookup(t *testing.T) {
 			}
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
-					f.s.footerCache = NewFooterCache(1000)
+					f.s.footerCache = NewFooterCache(0)
 					f.mock.reset()
 					_, _, found, err := f.s.LookupTraceIndex(tc.ctx, tc.ids, tc.traceID)
 					if err != nil {

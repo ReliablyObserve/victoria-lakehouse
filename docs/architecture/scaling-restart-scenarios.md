@@ -18,7 +18,7 @@ blackout on a simultaneous restart".
 | Phase | What scales with | Mitigations applied |
 | --- | --- | --- |
 | Disk recovery (snapshot load) | manifest file count × ~100 bytes/entry on gob | binary gob format; streaming decode (planned) |
-| Footer cache snapshot load | `FooterMaxItems` × ~50 KB each | async load off /ready path (planned) |
+| Footer cache snapshot load | footer entries bounded by `cache.footer_max_bytes` (resident bytes, auto: a share of cache memory), each charged its tail + decoded metadata (tens of KB to a few hundred KB) | async load off /ready path (planned) |
 | S3 manifest refresh | manifest delta since snapshot | snapshot persisted every 5 min; only deltas LISTed |
 | Cache warmup | `WarmupPartitions × WarmupMaxFiles` × 50 ms S3 fetch | priority warmup (planned), backoff+jitter (planned) |
 | Buffer restore | buffer segments restored on open | gated on /ready via lifecycle manager |
@@ -127,9 +127,9 @@ Not a restart scenario, but the worst-case query timing at scale:
 - 200 k - 10 k = 190 k cache misses
 - At concurrency 16, 50 ms per S3 footer fetch: **~10 min per query**
 
-**Mitigation:** bump `cfg.cache.footer_max_items` to 200 k, but
-that's ~10 GB RAM (traces only today — the logs binary's footer
-cache is fixed at 10 000 entries; see
+**Mitigation:** raise `cfg.cache.footer_max_bytes` (a 200 k-footer
+working set is 20-200 GB at 0.1-1 MB per footer, so size it to the hot
+window, not the corpus; both binaries honour it, see
 [scale limits](../petabyte-scale-audit.md#footer-cache)). Or shorten
 the time window. Or wait for compaction to merge L0 files.
 
@@ -142,7 +142,7 @@ the time window. Or wait for compaction to merge L0 files.
 | 3 (fresh PVC) | MinManifestFiles gate | **landed** |
 | 4 (fresh PVC, peers up) | none needed (gate self-resolves) | **landed** |
 | 5 (stale snapshot) | handle404Recovery + periodic refresh | already in place |
-| 6 (fragmented L0) | tune footer_max_items + WarmupPartitions | configurable |
+| 6 (fragmented L0) | tune footer_max_bytes + WarmupPartitions | configurable |
 
 ## What we deliberately don't do
 
@@ -173,7 +173,7 @@ shutdown:
   persist_timeout: 60s             # bigger snapshot needs more time
 
 cache:
-  footer_max_items: 100000         # cover fragmented L0 hot zone (traces only today); not read from the config file in this release
+  footer_max_bytes: 4294967296     # 4 GiB: cover the fragmented L0 hot zone
   warmup_partitions: 12            # pre-load last 12 h on /ready; not read from the config file in this release
   warmup_max_files: 2000  # not read from the config file in this release
 
@@ -182,6 +182,5 @@ manifest:
   persist_interval: 2m             # halve staleness window
 ```
 
-`footer_max_items` takes effect on traces only today — the logs
-binary's footer cache is fixed at 10 000 entries; see
+`footer_max_bytes` is honoured by both binaries; see
 [scale limits](../petabyte-scale-audit.md#footer-cache).

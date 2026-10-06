@@ -431,8 +431,11 @@ type S3Config struct {
 	//     fetched and abandoned (the adaptive shrink never fires because
 	//     window state is per-reader-instance).
 	//   "window" — the previous behavior (adaptive read-ahead window),
-	//     kept as the full rollback switch.
-	// Full-scan (non-projected) reads always use the window stack.
+	//     kept as a fallback switch for ONE release; it is deprecated and
+	//     will be removed together with the window reader's projected path.
+	// Planned is the default: with the footer and page index served from
+	// the footer cache a planned read costs one concurrent data wave per
+	// file. Full-scan (non-projected) reads always use the window stack.
 	ProjectedFetchMode string `yaml:"projected_fetch_mode"`
 
 	// ProjectedFetchMaxBytes — DEPRECATED since the planned-fetch v2
@@ -533,16 +536,23 @@ type CacheConfig struct {
 	// availability zone), global (every peer) or distributed.
 	PartitionMode string `yaml:"partition_mode"`
 
-	// FooterMaxItems is the upper bound on the parquet footer cache.
-	// Each entry is ~5 KB so the default 10K caps the working set at
-	// ~50 MB. At PB-scale (50M files, 5 PB at rest) the default leaves
-	// a 0.02% hit rate — too low to be useful. Set to a larger value
-	// (e.g. 50000–100000) for those deployments. When zero, the
-	// storage layer auto-tunes: max(configured, 0.05% of manifest file
-	// count) clamped to [10000, 100000]. The auto-tune re-fires after
-	// every successful RefreshFromS3 so a growing bucket gradually
-	// scales the cache up.
-	FooterMaxItems int `yaml:"footer_max_items"`
+	// FooterMaxBytes is the byte budget of the parquet footer cache. The
+	// cache is bounded by resident bytes, not entry count, because a
+	// footer's size depends on the data: a logs footer with token blooms
+	// runs 40-430 KB and a traces footer with the _trace_idx key-value
+	// runs 470-520 KB, so a count bound meant anything from ~50 MB to
+	// several GB. Each entry is charged its raw tail (footer plus the
+	// page-index stripe, kept so a cached file opens with no S3 round
+	// trip) plus an estimate of the decoded metadata, which grows with the
+	// row groups. Least-recently-used entries are evicted until a new one
+	// fits; an entry larger than the whole budget is not cached. 0 = auto:
+	// logs 10%, traces 20% of the memory the process may use for caches
+	// (60% of the machine or container limit by default), clamped to
+	// 32 MiB..1 GiB for logs and 32 MiB..2 GiB for traces. An explicit
+	// value overrides the auto budget, including its clamps. The resolved
+	// budget is logged at startup. Replaces footer_max_items, which is
+	// rejected in a config file.
+	FooterMaxBytes int `yaml:"footer_max_bytes"`
 
 	// LabelIndexMaxFields caps the number of distinct field names the
 	// in-memory label index will track. When the index reaches this
@@ -1233,7 +1243,7 @@ func Default() *Config {
 			ReadAheadWasteThreshold:  0.5,             // shrink window when >50% of it was never read
 			ReadBufferSize:           1024 * 1024,     // 1MB parquet page read buffer
 			ParquetReadMode:          "sync",
-			ProjectedFetchMode:       ProjectedFetchModeWindow,
+			ProjectedFetchMode:       ProjectedFetchModePlanned,
 			ProjectedFetchMaxBytes:   16 * 1024 * 1024, // DEPRECATED (per-plan cap retired; kept parsed)
 			PlannedFetchMaxInflight:  16,               // min(16, spans) concurrent span GETs per file
 			PlannedFetchSpanCapBytes: 16 * 1024 * 1024, // 16MB per-SPAN cap (CH bytes_per_read_task)
@@ -1577,11 +1587,16 @@ var removedInsertKeys = map[string]string{
 	"peer_replicate_ttl":     "there is no peer replication of inserts",
 }
 
-// rejectRemovedKeys refuses a config file that sets a removed insert.* key.
+// rejectRemovedKeys refuses a config file that sets a removed key (an insert.*
+// key of an earlier release, or cache.footer_max_items), naming the
+// replacement. YAML decoding is not strict, so without this a removed key would
+// be silently ignored and the operator would run with the default instead of
+// the setting they asked for.
 func rejectRemovedKeys(data []byte) error {
 	var doc struct {
 		Lakehouse struct {
 			Insert map[string]any `yaml:"insert"`
+			Cache  map[string]any `yaml:"cache"`
 		} `yaml:"lakehouse"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
@@ -1594,6 +1609,9 @@ func rejectRemovedKeys(data []byte) error {
 		}
 	}
 	if len(found) == 0 {
+		if _, ok := doc.Lakehouse.Cache["footer_max_items"]; ok {
+			return fmt.Errorf("cache.footer_max_items was removed: the footer cache is bounded by bytes, set cache.footer_max_bytes (0 = auto, a share of the memory the process may use)")
+		}
 		return nil
 	}
 	sort.Strings(found)
@@ -1603,6 +1621,9 @@ func rejectRemovedKeys(data []byte) error {
 			b.WriteString("; ")
 		}
 		fmt.Fprintf(&b, "insert.%s was removed (%s)", k, removedInsertKeys[k])
+	}
+	if _, ok := doc.Lakehouse.Cache["footer_max_items"]; ok {
+		fmt.Fprintf(&b, "; cache.footer_max_items was removed (set cache.footer_max_bytes, 0 = auto)")
 	}
 	return fmt.Errorf("%s: delete it from the config file", b.String())
 }
@@ -1828,6 +1849,9 @@ func (c *Config) validateEnums() error {
 	}
 	if c.S3.FooterPrefetchBytes < 0 {
 		return fmt.Errorf("--lakehouse.s3.footer-prefetch-bytes must be >= 0, got %d", c.S3.FooterPrefetchBytes)
+	}
+	if c.Cache.FooterMaxBytes < 0 {
+		return fmt.Errorf("cache.footer_max_bytes must be >= 0, got %d", c.Cache.FooterMaxBytes)
 	}
 
 	return nil
@@ -2148,6 +2172,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Cache.EvictionWatermark > 0 {
 		base.Cache.EvictionWatermark = overlay.Cache.EvictionWatermark
+	}
+	if overlay.Cache.FooterMaxBytes > 0 {
+		base.Cache.FooterMaxBytes = overlay.Cache.FooterMaxBytes
 	}
 	if overlay.Cache.FooterTTL > 0 {
 		base.Cache.FooterTTL = overlay.Cache.FooterTTL

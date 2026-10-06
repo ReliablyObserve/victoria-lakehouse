@@ -5,6 +5,8 @@
 #        sharded_go_test.sh cover <pkg> <shards> [timeout-seconds]
 #
 # env SHARD_SHORT=0 drops -short (packages whose existing run is not -short).
+# env SHARD_RUN_FILTER=<regexp> shards only the listed tests matching it (the
+#     heavy job: the testing.Short()-gated tests, selected by short_gated_tests.sh).
 #
 # race : `go test -short -race -timeout=<budget>s -json` once per shard, each
 #        piped into gotest_report.py (own headroom gate and summary table).
@@ -18,6 +20,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mode="${1:?mode}"; pkg="${2:?pkg}"; shards="${3:?shards}"
 short=(-short); [ "${SHARD_SHORT:-1}" = 0 ] && short=()
+filter=(); [ -n "${SHARD_RUN_FILTER:-}" ] && filter=(--run-filter "$SHARD_RUN_FILTER")
 
 case "$mode" in
 race)
@@ -25,7 +28,7 @@ race)
   rc=0
   files=()
   for ((i = 0; i < shards; i++)); do
-    run=$(python3 "$here/shard_tests.py" regex --pkg "$pkg" --shards "$shards" --index "$i" --go-flags=-race)
+    run=$(python3 "$here/shard_tests.py" regex --pkg "$pkg" --shards "$shards" --index "$i" --go-flags=-race ${filter[@]+"${filter[@]}"})
     out="${prefix}-shard$((i + 1))of${shards}.json"
     files+=("$out")
     # pipefail makes a go test failure (or a headroom-gate failure) fail this shard.
@@ -33,7 +36,7 @@ race)
         python3 "$here/gotest_report.py" --budget-seconds "$budget" \
           --title "$label shard $((i + 1))/$shards${short[*]:+ (-short)}"; } || rc=1
   done
-  python3 "$here/shard_tests.py" verify --pkg "$pkg" --shards "$shards" --go-flags=-race "${files[@]}" || rc=1
+  python3 "$here/shard_tests.py" verify --pkg "$pkg" --shards "$shards" --go-flags=-race ${filter[@]+"${filter[@]}"} "${files[@]}" || rc=1
   exit "$rc"
   ;;
 cover)

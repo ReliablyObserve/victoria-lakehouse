@@ -168,6 +168,8 @@ jobs:
           - internal/storage/parquets3:FuzzMultiRowDataBlock
           - internal/storage/parquets3:FuzzParseFooterBytes
           - internal/storage/parquets3:FuzzFooterLength
+          - internal/storage/parquets3:FuzzCacheFooterFromTail
+          - internal/s3reader:FuzzOverlayReadAt
           - internal/storage/parquets3:FuzzStorageFetchPeerAZ
           - internal/storage/parquets3:FuzzExtractTraceBloomValues
           - internal/storage/parquets3:FuzzParseFilterFromQuery_TimeOnlyIsSound
@@ -326,6 +328,7 @@ jobs:
         # module's dependency graph; see the explicit case in the fuzz step.
         target:
           - tests/ingestmatrix:FuzzRawTruthPhysicalRepresentations
+          - internal/storage/parquets3:FuzzCacheFooterFromTail
           - internal/storage/parquets3:FuzzExtractExactMatch
           - internal/storage/parquets3:FuzzPhraseExact
           - internal/storage/parquets3:FuzzIsPrintable

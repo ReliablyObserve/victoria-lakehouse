@@ -266,6 +266,12 @@ func TestGetFieldValues_UsesColumnProjectedRead(t *testing.T) {
 	mock := newInstrumentedS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
+	// planned is the default read mode. On a COLD footer it downloads files
+	// under s3.whole_file_threshold_bytes whole (the download doubles as the
+	// footer-cache warmup — a deliberate cost-model choice for small objects).
+	// This test pins the column-projected path, so take the 400 KB fixtures
+	// out of that band.
+	s.cfg.S3.WholeFileThresholdBytes = 1
 
 	baseTime := time.Date(2026, 5, 28, 10, 0, 0, 0, time.UTC)
 	const fileBytes = 400 * 1024

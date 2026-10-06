@@ -203,8 +203,8 @@ For every mechanism in sections A–G we record:
 
 The PB-scale numbers assume the [worked example
 in `docs/operations/sizing.md`](operations/sizing.md): 5 M files
-per pod (10 pods in the cluster, 50 M global), `footer_max_items
-= 200 000`, 1 GB L1, 100 GB L2.
+per pod (10 pods in the cluster, 50 M global), `footer_max_bytes
+= 8 GiB`, 1 GB L1, 100 GB L2.
 
 ### A. File narrowing — before any S3 read {#a-file-narrowing}
 
@@ -269,7 +269,7 @@ hit rate as high as possible without blowing the memory budget".
 |---|---|---|---:|---|
 | **Smart Cache L1 (memory)** | `internal/smartcache/Controller` + `internal/cache/LRU` | Decoded parquet row groups in RAM. LRU with peer-aware affinity. | 256 MiB (small), 1 GiB (PB) | `cache.memory_mb` |
 | **Smart Cache L2 (disk)** | `internal/cache/DiskCache` | Raw parquet bytes on local disk; survives restarts. | 2 GiB (small), 100 GiB (PB) | `cache.disk_max_mb` |
-| **Footer cache** | `internal/storage/parquets3/FooterCache` | LRU of parsed parquet footers (with `_trace_idx`, bloom, column index). | 10 000 (small), 200 000 (PB) | `cache.footer_max_items` |
+| **Footer cache** | `internal/storage/parquets3/FooterCache` | LRU of parsed parquet footers plus their page-index tail (with `_trace_idx`, token blooms), bounded by bytes. | auto: 10% logs / 20% traces of the cache memory, clamped to 1 GiB / 2 GiB (default), 8 GiB (PB) | `cache.footer_max_bytes` |
 | **Footer-cache disk snapshot** | `footer_cache_snapshot.go` | LRU key-list snapshot persisted at shutdown; reloaded async after `/ready=200` so a restart doesn't refetch every footer from S3. | 4 B + object key per cached entry (≈ 60–150 B): ~1 MiB at 10 k entries, 10–30 MB at 200 k | persist_path |
 | **PeerCache** | `internal/peercache` | Consistent-hash ring of peers' L1 caches. Local query knows which peer holds a key without asking. | bounded by peer count | k8s headless service |
 | **Self-cache filter** | `storage_query.go::applyOwnedFilesFirst` + `LookupOwner` | Excludes files this pod owns from "fetch from peer" set; prevents peer→peer fan-out for files we already have. | — | none |
@@ -322,7 +322,7 @@ hit rate as high as possible without blowing the memory budget".
 | **S3 backoff + jitter on 503 SlowDown** | `s3reader` | Honors S3 throttle hints |
 | **Manifest tenant-scoped LIST** | `manifest.refreshTenantScoped` | Replaces full-bucket walk with per-tenant LIST × per-tier signal suffix (`6c8fd99`) |
 | **Manifest cliff guard** | `manifest.RefreshFromS3` (`a2c3c3f`) | Rejects refreshes that drop >50 % of files |
-| **Adaptive log hints on slow query** | `internal/startup/hints.go` | Surfaces "try lowering footer_max_items" etc. |
+| **Adaptive log hints on slow query** | `internal/startup/hints.go` | Surfaces "raise footer_max_bytes" etc. |
 
 ### G. Cross-tier / federated {#g-federation}
 
@@ -508,9 +508,7 @@ allocation — every entry past line 4 in the section A table that
 mentions "in footer cache" is sharing this single pool. At PB scale
 the footer cache alone can consume 10 GiB per pod and the manifest
 another 1 GiB; the operator-tunable knobs (`cache.memory_mb`,
-`cache.disk_max_mb`, `cache.footer_max_items`) gate this — except
-that the logs binary currently ignores `cache.footer_max_items` and
-fixes its footer cache at 10 000 entries (see
+`cache.disk_max_mb`, `cache.footer_max_bytes`) gate this (see
 [scale limits](petabyte-scale-audit.md#footer-cache)) — and
 the [sizing guide](operations/sizing.md) records the actual worked
 examples for k8s pod limits.
@@ -565,7 +563,7 @@ compression schedule). See [docs/multi-tenancy.md](multi-tenancy.md).
 
 - `cache.memory_mb`
 - `cache.disk_max_mb`
-- `cache.footer_max_items`
+- `cache.footer_max_bytes`
 - `query.file_workers*`
 - `query.max_live_bytes`
 - `compaction.parallelism`

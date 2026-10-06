@@ -38,7 +38,7 @@ func TestOpenRangedParquet_ReadsRowsOverRanges(t *testing.T) {
 	t.Run("async mode without cached schema", func(t *testing.T) {
 		s.cfg.S3.ParquetReadMode = "async"
 		defer func() { s.cfg.S3.ParquetReadMode = "" }()
-		f, err := s.openRangedParquet(context.Background(), fi, nil)
+		f, err := s.openRangedParquet(context.Background(), fi, nil, nil)
 		if err != nil {
 			t.Fatalf("openRangedParquet: %v", err)
 		}
@@ -58,7 +58,7 @@ func TestOpenRangedParquet_ReadsRowsOverRanges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f, err := s.openRangedParquet(context.Background(), fi, cached.File.Schema())
+		f, err := s.openRangedParquet(context.Background(), fi, cached.File.Schema(), cached)
 		if err != nil {
 			t.Fatalf("openRangedParquet(sync, cached schema): %v", err)
 		}
@@ -74,14 +74,14 @@ func TestOpenRangedParquet_ReadsRowsOverRanges(t *testing.T) {
 	t.Run("read buffer clamped by small file size", func(t *testing.T) {
 		s.cfg.S3.ReadBufferSize = 64 * 1024 * 1024 // absurdly large — must be clamped
 		defer func() { s.cfg.S3.ReadBufferSize = 0 }()
-		if _, err := s.openRangedParquet(context.Background(), fi, nil); err != nil {
+		if _, err := s.openRangedParquet(context.Background(), fi, nil, nil); err != nil {
 			t.Fatalf("openRangedParquet with oversized buffer config: %v", err)
 		}
 	})
 
 	t.Run("missing object surfaces an error", func(t *testing.T) {
 		ghost := manifest.FileInfo{Key: "logs/dt=2026-06-01/hour=10/ghost.parquet", Size: int64(len(data))}
-		if _, err := s.openRangedParquet(context.Background(), ghost, nil); err == nil {
+		if _, err := s.openRangedParquet(context.Background(), ghost, nil, nil); err == nil {
 			t.Fatal("expected error for missing S3 object")
 		}
 	})

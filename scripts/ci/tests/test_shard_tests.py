@@ -83,6 +83,45 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(st.regex_for(["TestA", "TestB"]), "^(TestA|TestB)$")
 
 
+class FilterTest(unittest.TestCase):
+    """--run-filter: shard and verify only the selected (heavy) tests."""
+
+    def test_filter_keeps_only_matching_names(self):
+        all_names = names(20) + ["TestHeavyA", "TestHeavyB", "TestHeavyC"]
+        self.assertEqual(st.filter_tests(all_names, "^(TestHeavyA|TestHeavyC)$"), ["TestHeavyA", "TestHeavyC"])
+        self.assertEqual(st.filter_tests(all_names, ""), all_names)
+
+    def test_filter_matching_nothing_is_an_error(self):
+        with self.assertRaises(SystemExit):
+            st.filter_tests(names(5), "^(TestNope)$")
+
+    def test_filtered_list_is_partitioned_and_verified_over_the_filtered_names_only(self):
+        heavy = ["TestHeavy%d" % i for i in range(8)]
+        everything = names(30) + heavy
+        kept = st.filter_tests(everything, "^(" + "|".join(heavy) + ")$")
+        self.assertEqual(sorted(kept), sorted(heavy))
+        shards = st.assign(kept, 2)
+        st.guard_partition(kept, shards)
+        with tempfile.TemporaryDirectory() as d:
+            files = [write_json(d, "s%d.json" % i, s) for i, s in enumerate(shards)]
+            self.assertEqual(st.verify(kept, 2, files), [])
+            # a heavy test that silently did not run is still caught
+            lost = [list(x) for x in shards]
+            gone = lost[0].pop()
+            files = [write_json(d, "l%d.json" % i, s) for i, s in enumerate(lost)]
+            problems = st.verify(kept, 2, files)
+            self.assertEqual(len(problems), 1)
+            self.assertIn(gone, problems[0])
+
+    def test_cli_regex_passes_the_filter_through(self):
+        out = io.StringIO()
+        with unittest.mock.patch.object(st, "list_tests", return_value=names(10) + ["TestHeavyA", "TestHeavyB"]):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(st.main(["regex", "--pkg", "p", "--shards", "1", "--index", "0",
+                                          "--run-filter", "^(TestHeavyA|TestHeavyB)$"]), 0)
+        self.assertEqual(out.getvalue().strip(), "^(TestHeavyA|TestHeavyB)$")
+
+
 def write_json(d, name, tests):
     p = os.path.join(d, name)
     with open(p, "w") as f:

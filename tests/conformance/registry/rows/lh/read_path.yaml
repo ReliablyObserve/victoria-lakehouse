@@ -1,0 +1,38 @@
+# LH-addition read-path knobs: the cold-read defaults that decide how many S3 requests a query makes.
+# kind: flag rows need no `request` and no `seed`.
+
+- id: lh.flag.projected_fetch_mode
+  title: "LH s3.projected_fetch_mode (-lakehouse.s3.projected-fetch-mode) — planned (default): a projected read fetches the exact coalesced column-chunk ranges in one wave per file; window is a deprecated fallback kept for one release"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - internal/config/s3_readpath_knobs_test.go
+      - internal/storage/parquets3/cold_read_getcount_test.go
+      - internal/storage/parquets3/footer_overlay_test.go
+      - lakehouse-traces/internal/storage/parquets3/cold_read_getcount_test.go
+      - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go
+
+- id: lh.flag.footer_max_bytes
+  title: "LH cache.footer_max_bytes (-lakehouse.cache.footer-max-bytes) — byte budget of the footer cache (0 = auto: 10% logs / 20% traces of the memory the process may use for caches, clamped to 32 MiB..1 GiB / 2 GiB); a cached file opens with zero S3 round trips"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - internal/config/config_test.go
+      - internal/storage/parquets3/footer_cache_test.go
+      - internal/storage/parquets3/footer_overlay_test.go
+      - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go
+      - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go

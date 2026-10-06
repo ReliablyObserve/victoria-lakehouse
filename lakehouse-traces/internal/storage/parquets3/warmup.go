@@ -132,8 +132,8 @@ func (s *Storage) WarmupCache(ctx context.Context) {
 				bytesLoaded.Add(int64(len(data)))
 
 				if s.footerCache != nil {
-					cached, _, parseErr := ParseFooterFromData(fi.Key, data)
-					if parseErr == nil {
+					cached, _, fresh, parseErr := parseObjectFor(s.footerCache, fi.Key, data)
+					if parseErr == nil && fresh {
 						s.footerCache.Put(fi.Key, cached)
 					}
 				}

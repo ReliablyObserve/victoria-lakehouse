@@ -220,22 +220,21 @@ shutdown:
   persist_timeout: 30s             # bound the SIGTERM snapshot save
 
 cache:
-  footer_max_items: 100000         # traces: auto-tuned to manifest size when unset; logs: fixed at 10000 today; not read from the config file in this release
+  footer_max_bytes: 4294967296     # 4 GiB; unset or 0 = auto (10% logs / 20% traces of the cache memory)
   warmup_partitions: 12            # most-recent N partitions to pre-load; not read from the config file in this release
   warmup_max_files: 2000  # not read from the config file in this release
 ```
 
 ### Sizing matrix (current defaults vs PB-scale recommendations)
 
-| Scale | `min_manifest_files` | `footer_max_items` | `persist_interval` |
+| Scale | `min_manifest_files` | `footer_max_bytes` | `persist_interval` |
 | --- | ---: | ---: | ---: |
-| dev / CI (≤1k files) | 0 | 10k (default) | 5m (default) |
-| single-node prod (~10k files) | 1k | 10k | 5m |
-| small cluster (~100k files) | 10k | 50k | 5m |
-| PB-scale (1M+ files) | 100k | 200k+ (~10 GB RAM) | 2m |
+| dev / CI (≤1k files) | 0 | 256 MiB (default) | 5m (default) |
+| single-node prod (~10k files) | 1k | 256 MiB | 5m |
+| small cluster (~100k files) | 10k | 1 GiB | 5m |
+| PB-scale (1M+ files) | 100k | 8 GiB+ | 2m |
 
-The `footer_max_items` column applies to traces only today — the logs
-binary's footer cache is fixed at 10 000 entries; see
+Both binaries honour `footer_max_bytes`; see
 [scale limits](../petabyte-scale-audit.md#footer-cache).
 
 ## Metrics surface

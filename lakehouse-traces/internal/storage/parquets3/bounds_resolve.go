@@ -240,8 +240,12 @@ func (s *Storage) resolveFileBounds(ctx context.Context, fi manifest.FileInfo) m
 // readFooterTimeBounds reads the object's footer - from the footer cache, or
 // with the shared ranged footer fetch (one tail read, plus one exact-length
 // read when the footer is larger than the tail) - and returns its row count and
-// the min/max of the timestamp column from the column-chunk statistics. It
-// never reads data pages or the page index.
+// the min/max of the timestamp column from the column-chunk statistics in the
+// footer. It never reads data pages. A footer it has to fetch is cached with its
+// page-index stripe (one more ranged read, through the same context-bound
+// downloader, when the stripe lies before the fetched tail) so later opens and
+// the page-index bounds of the enrichment are served from memory; the bounds
+// returned here do not depend on that stripe.
 func (s *Storage) readFooterTimeBounds(ctx context.Context, fi manifest.FileInfo) (rows, minNs, maxNs int64, err error) {
 	var pf *parquet.File
 	if s.footerCache != nil {

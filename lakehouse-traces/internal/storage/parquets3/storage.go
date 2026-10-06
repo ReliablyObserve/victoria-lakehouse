@@ -230,15 +230,7 @@ func New(cfg *config.Config) (*Storage, error) {
 
 	var fc *FooterCache
 	if cfg.SelectEnabled() {
-		// Initial cap: operator-configured value or the legacy 10K
-		// default. The cap is re-tuned after every RefreshFromS3 via
-		// retuneFooterCache() so a growing manifest scales it up
-		// without requiring a config reload.
-		initialCap := cfg.Cache.FooterMaxItems
-		if initialCap <= 0 {
-			initialCap = 10000
-		}
-		fc = NewFooterCache(initialCap)
+		fc = newConfiguredFooterCache(cfg)
 	}
 
 	var csClient *crosssignal.Client
@@ -1188,7 +1180,6 @@ func (s *Storage) RefreshManifest(ctx context.Context) error {
 	if err := s.manifest.RefreshFromS3(ctx, s.pool.S3Client()); err != nil {
 		return err
 	}
-	s.retuneFooterCache()
 	s.loadBloomIndex(ctx)
 	s.loadLabelIndexFromS3(ctx)
 	// Persist label index to S3 alongside the bloom index. The local-disk
@@ -1220,55 +1211,6 @@ func (s *Storage) loadBloomIndex(ctx context.Context) {
 	}
 	s.bloomIdx.MergeFrom(idx)
 	logger.Infof("bloom index loaded from S3; entries=%d", idx.Len())
-}
-
-// Footer-cache auto-tune bounds. The auto-tune target is
-// (manifest files) / footerCacheFileCountDivisor, clamped to
-// [footerCacheMinItems, footerCacheMaxItems]. These constants live
-// here (not as cfg knobs) because they're internal sizing heuristics —
-// operators tune the cap via cfg.Cache.FooterMaxItems, which short-
-// circuits the auto-tune entirely when set.
-//
-// Defaults rationale:
-//   - 1/2000 ≈ 0.05% of corpus → ~25K entries at 50M files.
-//   - 10K min keeps small deployments (single-host dev) from churning.
-//   - 100K max bounds the working set at ~500 MB (5 KB/entry).
-const (
-	footerCacheFileCountDivisor = 2000
-	footerCacheMinItems         = 10000
-	footerCacheMaxItems         = 100000
-)
-
-// retuneFooterCache re-sizes the footer cache after a successful
-// manifest refresh. Sized at 0.05% of the manifest's file count to
-// give roughly 25K items per 50M file corpus (~125 MB working set),
-// clamped to [10000, 100000] so small deployments don't see noise
-// and huge ones don't blow memory.
-//
-// If an explicit cfg.Cache.FooterMaxItems is set, that takes precedence
-// over the auto-tune — operators always retain manual control.
-func (s *Storage) retuneFooterCache() {
-	if s.footerCache == nil {
-		return
-	}
-	target := s.cfg.Cache.FooterMaxItems
-	if target <= 0 {
-		// Auto-tune: fraction of file count, clamped.
-		files := s.manifest.LiveAggregate().Files
-		target = files / footerCacheFileCountDivisor
-		if target < footerCacheMinItems {
-			target = footerCacheMinItems
-		}
-		if target > footerCacheMaxItems {
-			target = footerCacheMaxItems
-		}
-	}
-	if target == s.footerCache.MaxItems() {
-		return
-	}
-	evicted := s.footerCache.Resize(target)
-	logger.Infof("footer cache retuned; max_items=%d, evicted=%d, files_in_manifest=%d",
-		target, evicted, s.manifest.LiveAggregate().Files)
 }
 
 // labelIndexKey is the S3 key where the label index is persisted so
@@ -1394,34 +1336,38 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 		}
 	}
 
+	// Every footer is enriched from as it is parsed (visit), not read back from
+	// the footer cache: with a budget smaller than the file set the cache keeps
+	// only what fits, and a read-back would find the rest evicted and download
+	// each of those objects whole.
 	footerEnriched := 0
+	enriched := make(map[string]bool, len(needEnrich))
 	if len(needEnrich) > 0 && s.footerCache != nil {
-		fetched := prefetchFooters(ctx, s.pool, needEnrich, s.footerCache, 0, s.footerPrefetchBytes())
+		var mu sync.Mutex
+		fetched := prefetchFootersOpts(ctx, s.pool, needEnrich, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{
+			fetchAll: true,
+			visit: func(fi manifest.FileInfo, cached *CachedFooter) {
+				if s.enrichFromCachedFooter(fi, cached) {
+					mu.Lock()
+					footerEnriched++
+					enriched[fi.Key] = true
+					mu.Unlock()
+				}
+			},
+		})
 		logger.Infof("metadata warmup: prefetched %d footers for %d files", fetched, len(needEnrich))
-
-		for _, fi := range needEnrich {
-			cached, ok := s.footerCache.Get(fi.Key)
-			if !ok {
-				continue
-			}
-			if s.enrichFromCachedFooter(fi, cached) {
-				footerEnriched++
-			}
-		}
 	}
 
+	// Files below the footer-prefetch size (128KB) that the prefetch skipped:
+	// download fully, they're tiny and cheaper than two round trips. A larger
+	// file the prefetch could not read is left to the planned open at query time
+	// (its bounds resolve lazily), never downloaded whole here.
 	smallEnriched := 0
 	// Same nil guard as Phase 3: insert-only pods run without a footer cache.
 	if len(needEnrich) > 0 && s.footerCache != nil {
 		var stillMissing []manifest.FileInfo
-		enrichedKeys := make(map[string]bool, footerEnriched)
 		for _, fi := range needEnrich {
-			if _, ok := s.footerCache.Get(fi.Key); ok {
-				enrichedKeys[fi.Key] = true
-			}
-		}
-		for _, fi := range needEnrich {
-			if !enrichedKeys[fi.Key] {
+			if !enriched[fi.Key] && fi.Size < minFileSizeForPrefetch {
 				stillMissing = append(stillMissing, fi)
 			}
 		}
@@ -1448,10 +1394,12 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 }
 
 // enrichFromCachedFooter enriches from a footer cache entry. Time bounds come
-// from the page index, which a footer-only entry (the footer prefetch, or the
-// copy ParseFooterFromData caches) cannot read — such an entry contributes the
-// row count only. Callers holding a handle over the object's bytes should use
-// enrichFromParquetFile instead.
+// from the page index: every cache writer keeps the stripe with the footer
+// (own, ParseFooterFromData), so they are the exact bounds, never looser than
+// the partition-hour inference they replace and never excluding a row. An entry
+// that lacks the stripe (its stripe fetch failed) fails the page-index read with
+// errOutsideCachedRange and contributes the row count only. Callers holding a
+// handle over the object's bytes should use enrichFromParquetFile instead.
 func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFooter) bool {
 	return s.enrichFromParquetFile(fi, cached.File)
 }
@@ -1498,11 +1446,11 @@ func (s *Storage) enrichSmallFiles(ctx context.Context, files []manifest.FileInf
 				if err != nil || len(data) == 0 {
 					continue
 				}
-				cached, pf, err := ParseFooterFromData(fi.Key, data)
+				cached, pf, fresh, err := parseObjectFor(s.footerCache, fi.Key, data)
 				if err != nil {
 					continue
 				}
-				if s.footerCache != nil {
+				if fresh && s.footerCache != nil {
 					s.footerCache.Put(fi.Key, cached)
 				}
 				// pf, not the cache entry: the entry keeps only the footer, and

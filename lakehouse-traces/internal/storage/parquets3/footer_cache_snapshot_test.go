@@ -18,7 +18,7 @@ func snapshotPath(t *testing.T) string {
 // the cache's keys MRU-first and Load returns them in the same order,
 // so the next process prefetches the hottest footers first.
 func TestFooterCacheSnapshot_RoundTrip(t *testing.T) {
-	fc := NewFooterCache(10)
+	fc := NewFooterCache(0)
 	fc.Put("logs/dt=2026-06-01/hour=01/a.parquet", &CachedFooter{FileSize: 1})
 	fc.Put("logs/dt=2026-06-01/hour=02/b.parquet", &CachedFooter{FileSize: 2})
 	fc.Put("logs/dt=2026-06-01/hour=03/c.parquet", &CachedFooter{FileSize: 3})
@@ -56,7 +56,7 @@ func TestFooterCacheSnapshot_RoundTrip(t *testing.T) {
 }
 
 func TestFooterCacheSnapshot_EmptyCache(t *testing.T) {
-	fc := NewFooterCache(4)
+	fc := NewFooterCache(0)
 	path := snapshotPath(t)
 	if err := SaveFooterCacheKeys(fc, path); err != nil {
 		t.Fatalf("SaveFooterCacheKeys(empty): %v", err)
@@ -77,7 +77,7 @@ func TestSaveFooterCacheKeys_NilCache(t *testing.T) {
 }
 
 func TestSaveFooterCacheKeys_UnwritablePath(t *testing.T) {
-	fc := NewFooterCache(4)
+	fc := NewFooterCache(0)
 	fc.Put("k", &CachedFooter{})
 	// Parent directory does not exist — OpenFile must fail and the
 	// error must surface (shutdown sequence logs it).
@@ -172,7 +172,7 @@ func TestLoadFooterCacheKeys_Corrupt(t *testing.T) {
 
 	t.Run("missing key length header", func(t *testing.T) {
 		// Count says 2 entries but only 1 is present.
-		fc := NewFooterCache(4)
+		fc := NewFooterCache(0)
 		fc.Put("only-key", &CachedFooter{})
 		good := snapshotPath(t)
 		if err := SaveFooterCacheKeys(fc, good); err != nil {

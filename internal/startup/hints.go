@@ -25,8 +25,11 @@ type HintInputs struct {
 	// File count threshold below which /ready=503 (0 = gate off).
 	MinManifestFiles int64
 
-	// Configured footer cache capacity (entries).
-	FooterCacheMax int
+	// Configured footer cache budget in bytes, and the average resident
+	// bytes of one cached footer (cache bytes / cache entries after warmup;
+	// 0 = unknown, which skips the footer-cache hint).
+	FooterCacheMaxBytes int64
+	FooterAvgBytes      int64
 
 	// Number of insert-pod peers visible to BufferBridge.
 	BufferBridgePeers int
@@ -62,13 +65,13 @@ func EmitStartupHints(in HintInputs) {
 	// Footer cache vs file count. If the cache holds <10% of
 	// recent files, wide-window queries will pay an S3 round
 	// trip per footer. At PB scale this becomes minutes per query.
-	if in.FooterCacheMax > 0 && in.ManifestFiles > 0 {
-		coverage := float64(in.FooterCacheMax) / float64(in.ManifestFiles)
+	if in.FooterCacheMaxBytes > 0 && in.FooterAvgBytes > 0 && in.ManifestFiles > 0 {
+		capacity := in.FooterCacheMaxBytes / in.FooterAvgBytes
+		coverage := float64(capacity) / float64(in.ManifestFiles)
 		if coverage < 0.1 && in.ManifestFiles > 1000 {
-			recommended := int(float64(in.ManifestFiles) * 0.2)
-			memMB := recommended * 50 / 1024 // ~50KB/footer avg
-			logger.Warnf("hint:footer-cache — cache holds %d entries vs %d manifest files (%.0f%% coverage). Wide-window queries will hit S3 footer fetches on every uncached file. Recommend cfg.cache.footer_max_items=%d (~%d MB RAM)",
-				in.FooterCacheMax, in.ManifestFiles, coverage*100, recommended, memMB)
+			recommended := int64(float64(in.ManifestFiles) * 0.2 * float64(in.FooterAvgBytes))
+			logger.Warnf("hint:footer-cache — cache budget %d MB holds about %d footers (avg %d KB) vs %d manifest files (%.0f%% coverage). Wide-window queries will hit S3 footer fetches on every uncached file. Recommend cfg.cache.footer_max_bytes=%d (~%d MB RAM)",
+				in.FooterCacheMaxBytes>>20, capacity, in.FooterAvgBytes>>10, in.ManifestFiles, coverage*100, recommended, recommended>>20)
 		}
 	}
 

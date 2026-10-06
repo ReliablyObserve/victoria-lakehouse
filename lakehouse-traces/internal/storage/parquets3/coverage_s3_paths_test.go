@@ -420,7 +420,7 @@ func TestS3_prefetchFooters_AlreadyCached(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	data := writeLargeParquetToBytes(t, []string{"api-gw"})
 	if int64(len(data)) < minFileSizeForPrefetch {
@@ -446,7 +446,7 @@ func TestS3_prefetchFooters_SmallFiles(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	data := writeParquetToBytes(t, []logRow{
 		{TimestampUnixNano: time.Now().UnixNano(), Body: "small", SeverityText: "INFO", ServiceName: "svc"},
@@ -470,7 +470,7 @@ func TestS3_prefetchFooters_CancelledContext(t *testing.T) {
 	defer mock.close()
 
 	pool := testPool(t, mock.url())
-	footerCache := NewFooterCache(100)
+	footerCache := NewFooterCache(0)
 
 	data := writeLargeParquetToBytes(t, []string{"api-gw"})
 	if int64(len(data)) < minFileSizeForPrefetch {

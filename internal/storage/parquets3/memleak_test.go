@@ -29,7 +29,7 @@ func mlHeapInUse() uint64 {
 // --- FooterCache ---
 
 func TestMemLeak_FooterCache_PutGet(t *testing.T) {
-	fc := NewFooterCache(50) // small capacity to force eviction
+	fc := NewFooterCache(50 * (1000 + cachedFooterOverhead)) // small capacity to force eviction (bare entries are charged FileSize+overhead)
 
 	// Warm up
 	for i := 0; i < 100; i++ {
@@ -63,7 +63,7 @@ func TestMemLeak_FooterCache_PutGet(t *testing.T) {
 }
 
 func TestMemLeak_FooterCache_Remove(t *testing.T) {
-	fc := NewFooterCache(100)
+	fc := NewFooterCache(0)
 
 	// Warm up
 	for i := 0; i < 100; i++ {
@@ -429,11 +429,11 @@ func TestMemLeak_LabelIndex_Updates(t *testing.T) {
 
 func TestMemLeak_FooterCache_CapacityEnforced(t *testing.T) {
 	const cap = 100
-	fc := NewFooterCache(cap)
+	fc := NewFooterCache(cap * (1024 + cachedFooterOverhead)) // 100 entries of the 1 KiB bare footers below
 
 	// Warm up: insert more than capacity
 	for i := 0; i < 200; i++ {
-		fc.Put(fmt.Sprintf("file-%d.parquet", i), &CachedFooter{FileSize: int64(i * 100)})
+		fc.Put(fmt.Sprintf("file-%d.parquet", i), &CachedFooter{FileSize: int64(1024)})
 	}
 	mlForceGC()
 
