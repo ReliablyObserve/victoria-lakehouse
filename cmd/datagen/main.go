@@ -817,7 +817,7 @@ func pushNDJSONBatch(endpoint string, rows []logRow, accountID, projectID, orgID
 func generateSpanExtras(spanID string, statusCode int32, start time.Time, dur time.Duration) ([]traceEvent, []traceLink) {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(spanID))
-	r := mrand.New(mrand.NewSource(int64(h.Sum64()))) // #nosec G404 -- synthetic test data
+	r := mrand.New(mrand.NewSource(int64(h.Sum64()))) // #nosec G404 G115 -- synthetic test data, the seed only needs to be a stable function of the span ID
 
 	at := func() int64 { return start.Add(time.Duration(r.Int63n(int64(dur) + 1))).UnixNano() }
 	var events []traceEvent
@@ -851,7 +851,7 @@ func generateSpanExtras(spanID string, statusCode int32, start time.Time, dur ti
 			SpanID:     fmt.Sprintf("%016x", r.Uint64()),
 			TraceState: []string{"", "vendor=x"}[r.Intn(2)],
 			Attrs:      map[string]string{"messaging.operation": "process"},
-			Flags:      uint32(r.Intn(2)) * 0x100,
+			Flags:      uint32(r.Intn(2)) * 0x100, // #nosec G115 -- 0 or 1
 		})
 	}
 	return events, links

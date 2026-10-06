@@ -214,11 +214,14 @@ func TestParity_Traces_EventsLinksScopeAttrs(t *testing.T) {
 		t.Logf("compared Jaeger spans: %d logs (events), %d non-parent references (links), %d scope tags", logs, refs, scopeTagsSeen)
 	})
 
-	for _, version := range []string{"v2"} {
+	for _, version := range []string{"v1", "v2"} {
 		t.Run("tempo_trace_by_id_"+version, func(t *testing.T) {
 			var events, links int
 			for _, id := range ids {
 				path := "/select/tempo/api/" + version + "/traces/" + id
+				if version == "v1" {
+					path = "/select/tempo/api/traces/" + id // the v1 route has no version segment
+				}
 				ref := fetch(t, vtBaseURL, path, nil)
 				sut := fetch(t, lhtBaseURL, path, nil)
 				if ref.StatusCode != 200 || sut.StatusCode != 200 {
@@ -349,26 +352,31 @@ func jaegerSpansByID(t *testing.T, body []byte) map[string]map[string]any {
 	return out
 }
 
-// tempoSpans returns the spans of a Tempo v2 trace-by-ID response by span ID,
-// and the instrumentation scopes of the trace (name, version, attributes).
+// tempoSpansByID returns the spans of a Tempo trace-by-ID response by span ID,
+// and the instrumentation scopes of the trace (name, version, attributes). It
+// reads both shapes: v2 wraps the resource spans in {"trace": {"resourceSpans"}},
+// v1 answers {"batches": [...]}.
 func tempoSpansByID(t *testing.T, body []byte) (map[string]map[string]any, []any) {
 	t.Helper()
+	type scopeSpans struct {
+		Scope map[string]any   `json:"scope"`
+		Spans []map[string]any `json:"spans"`
+	}
+	type resourceSpans struct {
+		ScopeSpans []scopeSpans `json:"scopeSpans"`
+	}
 	var resp struct {
 		Trace struct {
-			ResourceSpans []struct {
-				ScopeSpans []struct {
-					Scope map[string]any   `json:"scope"`
-					Spans []map[string]any `json:"spans"`
-				} `json:"scopeSpans"`
-			} `json:"resourceSpans"`
+			ResourceSpans []resourceSpans `json:"resourceSpans"`
 		} `json:"trace"`
+		Batches []resourceSpans `json:"batches"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("parse Tempo response: %v\n%.500s", err, body)
 	}
 	spans := map[string]map[string]any{}
 	var scopes []any
-	for _, rs := range resp.Trace.ResourceSpans {
+	for _, rs := range append(resp.Trace.ResourceSpans, resp.Batches...) {
 		for _, ss := range rs.ScopeSpans {
 			scopes = append(scopes, ss.Scope)
 			for _, s := range ss.Spans {

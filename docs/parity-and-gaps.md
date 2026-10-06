@@ -136,6 +136,17 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 | **Tie order under a sort over all columns (B8)** | **Resolved** | — | `sort` without `by` and `first N` / `last N` without `by` compare every column in block order. Cold blocks listed their columns in map-iteration order, which changed on every read, so rows sharing a `_time` came back in a random order and a limit kept random rows: the same query could return different rows from one call to the next (#427, #324). Cold blocks now list their columns in upstream's order (`_time`, `_stream_id`, `_stream`, `_msg`, then the columns with one value in the block by name, then the rest by name), so tied rows are ordered by `_stream_id` like hot. Both binaries. Pinned by `TestParity_AllColumnSortTieOrder/{logs,traces}/parquet` and `TestColdTieOrder_MatchesUpstreamOnEveryRead` (50 reads per query, both binaries). |
 | **Cold row field set** | **Resolved** | UX-degradation | Cold rows used to carry every Parquet leaf column — unset ones as the literal `"<null>"` — plus the tenant columns, the unmapped spare slots, and (on traces) a duplicate of every promoted attribute under its raw Parquet name and the service-graph edge columns. A cold row now carries exactly its ingested fields, under the same names hot returns. See the Closed section below. |
 
+## Span events, links and scope attributes
+
+Cold spans carry the same event, link and instrumentation-scope fields as hot VictoriaTraces: trace-by-ID (Jaeger, Tempo v1 and v2), the `event:*`, `link:*` and `scope_attr:*` fields of LogsQL queries and filters, `field_values` over an event or link field, and TraceQL `instrumentation.*` filters answer as hot does, for rows in the insert buffer, in a freshly flushed object and in a compacted object (`tests/parity/traces_events_links_test.go`). They are stored in the `span.events_json` / `span.links_json` columns and the `scope.attributes` map ([format](open-parquet-format.md#span-events-links-and-scope-attributes)).
+
+What still differs, none of it new:
+
+- `field_names` lists the event, link and scope field names it finds in a sample (one row group per object), not every name hot lists. This is divergence B2 below, which applies to every map-stored attribute.
+- `field_values` over a map attribute (`span_attr:*`, `scope_attr:*`) returns nothing on cold; over an event or link field it answers. Hot also lists the empty value (the spans that lack the field) with its hits; cold omits that bucket for every optional field.
+- Objects written before the columns existed have no events or links, and a trace that was flushed by an older version stays without them. Compaction of such an object together with newer ones keeps the newer events and gives the older spans none. During a rolling upgrade, a pod still running the older version that compacts newer objects drops the two columns from the merged object, so finish the upgrade of all insert and compaction pods before relying on events in compacted data.
+- VictoriaTraces v0.12 never matches TraceQL `event.` or `link.` filters (it stores the span index in the field name), on hot as on cold.
+
 ## Known divergences under investigation
 
 Failures the hot-vs-cold parity suite (`tests/parity`, build tag `parity`)

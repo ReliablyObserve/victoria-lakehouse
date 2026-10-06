@@ -242,3 +242,38 @@ func FuzzSpanSubFields(f *testing.F) {
 }
 
 func validUTF8(s string) bool { return strings.ToValidUTF8(s, "") == s }
+
+// The logs signal is unaffected: no log row has an event, link or composite
+// column, so a logs Parquet file keeps exactly the columns it had before the
+// span events and links columns existed (the logs readback golden pins the
+// bytes-level shape of the file).
+func TestLogRowHasNoSpanEventLinkColumns(t *testing.T) {
+	for _, col := range rowParquetColumnsOf(t, reflect.TypeOf(LogRow{})) {
+		if IsCompositeColumn(col) || strings.HasPrefix(col, "span.") {
+			t.Errorf("LogRow has the span column %q", col)
+		}
+	}
+	got := rowParquetColumnsOf(t, reflect.TypeOf(TraceRow{}))
+	for _, want := range []string{ColSpanEventsJSON, ColSpanLinksJSON} {
+		found := false
+		for _, c := range got {
+			found = found || c == want
+		}
+		if !found {
+			t.Errorf("TraceRow lacks column %q", want)
+		}
+	}
+}
+
+func rowParquetColumnsOf(t *testing.T, typ reflect.Type) []string {
+	t.Helper()
+	var cols []string
+	for i := 0; i < typ.NumField(); i++ {
+		tag := typ.Field(i).Tag.Get("parquet")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		cols = append(cols, strings.Split(tag, ",")[0])
+	}
+	return cols
+}

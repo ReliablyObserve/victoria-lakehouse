@@ -187,3 +187,115 @@ func flushRows(t *testing.T, st *membuffer.Store) []schema.TraceRow {
 	}
 	return rows
 }
+
+// The buffer bridge end to end: spans with events, links and scope attributes in
+// an insert pod's segments, served over the real /internal/buffer/query route,
+// read back by a select pod. The select pod must return the same event, link and
+// scope fields the insert pod's own (upstream) storage holds for them.
+func TestBridge_SpanEventsLinksScopeAttrs_SelectPodMatchesInsertPod(t *testing.T) {
+	e := newViewEnv(t)
+	base := time.Now().Add(-time.Hour)
+	lr := logstorage.GetLogRows([]string{"resource_attr:service.name"}, nil, nil, nil, "")
+	for i := 0; i < 4; i++ {
+		f := []logstorage.Field{
+			{Name: "resource_attr:service.name", Value: "checkout"},
+			{Name: "scope_name", Value: "io.opentelemetry.http"},
+			{Name: "scope_attr:scope.key", Value: fmt.Sprintf("scope-%d", i)},
+			{Name: "span_id", Value: fmt.Sprintf("%016x", i+1)},
+			{Name: "name", Value: "POST /pay"},
+			{Name: "start_time_unix_nano", Value: fmt.Sprintf("%d", base.UnixNano()+int64(i))},
+			{Name: "_msg", Value: "-"},
+		}
+		for ev := 0; ev < i*4; ev++ { // 0, 4, 8, 12 events: past ten, so :10 and :11 sort before :2
+			s := fmt.Sprintf(":%d", ev)
+			f = append(f,
+				logstorage.Field{Name: "event:event_name" + s, Value: "exception"},
+				logstorage.Field{Name: "event:event_time_unix_nano" + s, Value: fmt.Sprintf("%d", base.UnixNano()+int64(ev))},
+				logstorage.Field{Name: "event:event_attr:exception.type" + s, Value: "IOError"},
+			)
+		}
+		if i%2 == 1 {
+			f = append(f,
+				logstorage.Field{Name: "link:link_trace_id:0", Value: strings.Repeat("c", 32)},
+				logstorage.Field{Name: "link:link_span_id:0", Value: strings.Repeat("d", 16)},
+				logstorage.Field{Name: "link:link_attr:why:0", Value: "retry"},
+			)
+		}
+		f = append(f, logstorage.Field{Name: "trace_id", Value: fmt.Sprintf("trace-%d", i)})
+		lr.MustAdd(tenantA, base.Add(time.Duration(i)*time.Millisecond).UnixNano(), f, 1)
+	}
+	e.segs.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	e.segs.DebugFlush()
+
+	peer := authInsertPod(t, e, bridgeAuthKey, false)
+	sel := authSelectPod(t, e, bridgeAuthKey, peer.URL)
+
+	rowsOf := func(run func(*logstorage.Query) []*logstorage.DataBlock) map[string]map[string]string {
+		now := time.Now()
+		q, err := logstorage.ParseQueryAtTimestamp("*", now.UnixNano())
+		if err != nil {
+			t.Fatal(err)
+		}
+		q = q.CloneWithTimeFilter(q.GetTimestamp(), now.Add(-48*time.Hour).UnixNano(), now.UnixNano())
+		out := map[string]map[string]string{}
+		for _, r := range blockRowFields(run(q)) {
+			out[r["span_id"]] = r
+		}
+		return out
+	}
+	var mu sync.Mutex
+	hot := rowsOf(func(q *logstorage.Query) []*logstorage.DataBlock {
+		var blocks []*logstorage.DataBlock
+		snap := e.segs.Snapshot()
+		defer snap.Release()
+		qctx := logstorage.NewQueryContext(context.Background(), &logstorage.QueryStats{}, []logstorage.TenantID{tenantA}, q, false, nil)
+		if err := snap.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
+			mu.Lock()
+			blocks = append(blocks, cloneBlock(db))
+			mu.Unlock()
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return blocks
+	})
+	bridged := rowsOf(func(q *logstorage.Query) []*logstorage.DataBlock {
+		var blocks []*logstorage.DataBlock
+		if err := sel.RunQuery(context.Background(), []logstorage.TenantID{tenantA}, q, func(_ uint, db *logstorage.DataBlock) {
+			mu.Lock()
+			blocks = append(blocks, cloneBlock(db))
+			mu.Unlock()
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return blocks
+	})
+	if len(hot) != 4 || len(bridged) != 4 {
+		t.Fatalf("insert pod holds %d spans, select pod answers %d, want 4", len(hot), len(bridged))
+	}
+	extra := func(r map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range r {
+			if strings.HasPrefix(k, "event:") || strings.HasPrefix(k, "link:") || strings.HasPrefix(k, "scope_attr:") {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	total := 0
+	for id, h := range hot {
+		he, be := extra(h), extra(bridged[id])
+		total += len(he)
+		if len(he) != len(be) {
+			t.Errorf("span %s: select pod has %d event/link/scope fields, insert pod %d", id, len(be), len(he))
+		}
+		for k, v := range he {
+			if be[k] != v {
+				t.Errorf("span %s: select pod %s = %q, insert pod has %q", id, k, be[k], v)
+			}
+		}
+	}
+	if total < 80 {
+		t.Fatalf("vacuous: only %d event/link/scope fields compared", total)
+	}
+}
