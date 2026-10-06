@@ -27,8 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whitespace or a control character inside, or one that is only whitespace, is refused at startup. Both binaries. Global-read queries see the
   unflushed rows only when every pod has the key. See `docs/security.md`.
 
-## [0.145.1] - 2026-10-06
-
 ## [0.145.2] - 2026-10-06
 
 ### Fixed
