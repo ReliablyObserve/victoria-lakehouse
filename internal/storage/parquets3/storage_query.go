@@ -297,13 +297,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// bounded worker pattern; previously 64 here, which on wildcard queries
 	// over many files fanned out S3 downloads + parquet decode buffers wide
 	// enough to OOM a 2 GiB container.
-	fileWorkers := s.cfg.Query.FileWorkers
-	if fileWorkers <= 0 {
-		fileWorkers = 8
-	}
-	if fileWorkers > len(files) {
-		fileWorkers = len(files)
-	}
+	fileWorkers := s.queryFileWorkers(len(files))
 	// The prefetch is bounded by the footer-cache budget (it fetches no more
 	// footers than the cache holds, keeping the workers' own footer Puts from
 	// evicting them before use); the rest open their own footer on demand.
@@ -896,6 +890,17 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 		s.footerCache.Put(fi.Key, cached)
 	}
 	return f, nil, nil
+}
+
+// queryFileWorkers is the size of the per-query file worker pool: the configured
+// query.file_workers (default 8, as VL's bounded worker pattern) capped at the
+// number of files.
+func (s *Storage) queryFileWorkers(files int) int {
+	n := s.cfg.Query.FileWorkers
+	if n <= 0 {
+		n = 8
+	}
+	return min(n, files)
 }
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {

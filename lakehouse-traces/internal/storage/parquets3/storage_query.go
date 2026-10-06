@@ -292,11 +292,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// footers than the cache holds, keeping the file workers' own footer Puts
 	// from evicting them before use); the rest read their own footer on demand
 	// (the trace_id narrowing below, then the worker's open).
-	workers := s.cfg.Query.FileWorkers
-	if workers <= 0 {
-		workers = 8
-	}
-	prefetchFootersOpts(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{reserve: min(workers, len(files))})
+	prefetchFootersOpts(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{reserve: s.queryFileWorkers(len(files))})
 
 	// Deterministic trace_id narrowing — runs after bloom because the
 	// footer cache is now warm. For any file with a `_trace_idx`
@@ -321,13 +317,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	// Parallel file worker pool
-	fileWorkers := s.cfg.Query.FileWorkers
-	if fileWorkers <= 0 {
-		fileWorkers = 8
-	}
-	if fileWorkers > len(files) {
-		fileWorkers = len(files)
-	}
+	fileWorkers := s.queryFileWorkers(len(files))
 
 	queryID := fmt.Sprintf("q-%d", queryStart.UnixNano())
 
@@ -1028,6 +1018,17 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 		s.footerCache.Put(fi.Key, cached)
 	}
 	return f, nil, nil
+}
+
+// queryFileWorkers is the size of the per-query file worker pool: the configured
+// query.file_workers (default 8, as VL's bounded worker pattern) capped at the
+// number of files.
+func (s *Storage) queryFileWorkers(files int) int {
+	n := s.cfg.Query.FileWorkers
+	if n <= 0 {
+		n = 8
+	}
+	return min(n, files)
 }
 
 func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
