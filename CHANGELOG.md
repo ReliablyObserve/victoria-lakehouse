@@ -68,6 +68,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   query window counts its edge rows (3,040 against 2,936 hits for `exception.*` in the benchmark dataset); the traces
   answer never read the page index and is unchanged.
 
+- **After a restart, rows of committed insert-buffer segments are no longer answered twice when the pod was down for longer than the compaction guard (#379).**
+  A restarted pod gave every committed segment that was not yet removed a new full grace counted from the restart,
+  while compaction and the delete rewriter release a segment's objects at twice the grace after its real commit. After a
+  downtime of more than twice the grace (about 21 minutes at the defaults), compaction merged the objects into a
+  `compacted-L1-*` object while the buffer still served the same rows, so `count()`, trace-by-ID, Jaeger and Tempo returned
+  every row twice for up to one grace period (measured on a single node: 11,800 rows for 5,900 acked, over about 80 s).
+  The flush state now records each segment's commit time (`commits` in `buffer_flush_state.json`, no new setting); a restart
+  restores it, so a segment keeps only the remainder of its grace. A restarted pod holds the segments it restores (only
+  those) until a complete S3 manifest refresh has been applied, because its manifest snapshot can predate the segment and
+  what compaction made of it; a refresh that fails, that is rejected (it dropped more than half of the tracked files and a
+  HEAD sample of the dropped keys found live objects, or could not be taken) or that could not list every tenant does not
+  release them; this holds for the first listing after a snapshot load too. Held segments are retired in the same step as
+  that refresh. While the hold lasts their rows are served and can be duplicated if a peer
+  compacted their objects (bounded in size, not in time), and they keep their disk; this is exported as
+  `lakehouse_buffer_held_segments` and `lakehouse_buffer_oldest_held_age_seconds`, logged after twice the refresh
+  interval, and alerted by `LakehouseBufferRestoredSegmentsHeld`. Reads now take their insert-buffer view before the
+  object list, so a refresh between the two cannot hide rows. On the first start after upgrading from a release whose state
+  has no `commits`, each committed segment gets its grace from the restart once, as before. Both binaries.
+  Known residuals: #406, #411. See `docs/durability.md`.
+
+- **An incomplete manifest listing no longer lets the orphan sweep delete live objects, completes delete tombstones over objects that still hold their rows, or forgets an owed compaction retirement (#418).**
+  A refresh that skipped a tenant (its project LIST failed, for example under S3 throttling) was applied as a complete
+  listing: the tenant's files left the manifest, the manifest counted as listed, its retired keys were forgotten (the next full
+  listing served a compaction source next to its output, rows twice), the delete scheduler completed tombstones over
+  objects it merely did not see (the deleted rows came back) and the orphan sweep's Tier B deleted the live objects the
+  manifest was missing. A skipped tenant's previous entries are now kept (each key once, including a file flushed while the
+  listing ran), its retirements are not forgotten, and the refresh is reported as partial
+  (`lakehouse_manifest_refresh_incomplete_total{reason="partial"}`) and does not count as a complete listing. A listing that
+  would drop more than half of the tracked files, on every refresh including the first after a snapshot load, is applied
+  only when HEAD requests on 16 randomly chosen dropped keys all answer 404 (the bucket really shrank); a live key
+  (`reason="rejected"`) or a failing HEAD (`reason="head_unconfirmed"`) keeps the previous state. This also fixes the old
+  fixed 50% rule, which stayed stuck after a legitimate shrink. Destructive decisions no longer rest on "absent from the
+  manifest" alone: Tier B deletes only objects the manifest holds a retirement record for (replaced by a publish, an
+  abandoned output, or removed by a peer's push or retention), retired for at least the orphan TTL and not named by an
+  unfinished delete rewrite, and never an object that is merely unlisted; the delete scheduler marks an absent key reaped
+  only when the manifest retired it or a HEAD finds no object (`lakehouse_delete_rewrite_deferred_total{reason="absent_but_exists"}`
+  otherwise); the scheduler and compaction complete a tombstone only after a complete listing that began after the tombstone
+  was created. Every state is persisted as before (a partial one keeps the skipped tenant's entries and the retired keys; a
+  loaded snapshot is never treated as a listing). A file key tracked twice is now dropped on refresh and load and a merge
+  group naming a source twice is refused (`lakehouse_duplicate_file_keys_total{site}`, alert `LakehouseDuplicateFileKeys`).
+  `lakehouse_manifest_last_refresh_timestamp_seconds` is now exported (the `LakehouseManifestStale` alert read it but nothing
+  set it) along with `lakehouse_manifest_last_complete_refresh_timestamp_seconds` and the new alert
+  `LakehouseManifestNoCompleteRefresh` (no complete listing for four refresh intervals, at least 15 minutes). Both binaries
+  (the manifest, compaction and delete packages are shared). Residuals: a successful LIST that covers every prefix and
+  silently drops fewer than half of the objects is believed for serving (a dropped retired key's record is then forgotten,
+  and an object dropped before the delete scheduler discovered it is not protected by its HEAD check); objects with no
+  record are never reclaimed by Tier B. See `docs/durability.md`.
+
+- **A manifest refresh or snapshot write that overlapped a flush could crash the process (#420).**
+  The refresh computed its storage metrics, and the snapshot writer encoded the file map, after releasing the manifest lock
+  while a flush could add a partition to the same map: a concurrent map iteration and write, which the Go runtime turns
+  into a fatal error. Both now work on data taken under the lock. The snapshot also shared each partition's file array
+  with the writers, which modified it in place while it was encoded: a removal could write one key twice and drop
+  another, or give one file another file's time bounds, and that wrong entry outlived restarts and refreshes and pruned
+  the file out of queries over its own rows. A writer now copies a partition before modifying one a snapshot captured
+  (at most once per partition between two snapshots). Both binaries.
+
 ## [0.145.5] - 2026-10-06
 
 ### Changed

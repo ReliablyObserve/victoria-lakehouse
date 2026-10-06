@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -199,6 +200,19 @@ type Manifest struct {
 	// Kept consistent with m.files in: AddFile, RemoveFile,
 	// RefreshFromS3, rebuildIndex, snapshot Load.
 	byKey map[string]string
+
+	// Copy-on-write state of the partition slices (see writableFilesLocked).
+	// SaveTo copies only the slice headers of m.files and encodes them after it
+	// releases the lock, so a partition a snapshot captured must never be
+	// modified in place again: a writer copies it first. saveEpoch counts the
+	// captures (incremented under the read lock, hence atomic); every slice in
+	// m.files is unshared while saveEpoch == freshAt (no capture since the last
+	// wholesale replacement); owned holds the partitions copied since capture
+	// ownedAt. All but saveEpoch are guarded by mu (write).
+	saveEpoch atomic.Uint64
+	freshAt   uint64
+	ownedAt   uint64
+	owned     map[string]struct{}
 
 	// onAdd / onRemove fire (under the write lock) on every file add/remove.
 	// Flush AND compaction both route through AddFile/RemoveFile, so one observer
@@ -1592,6 +1606,7 @@ func (m *Manifest) applyRefreshedFiles(ctx context.Context, files map[string][]F
 	}
 
 	m.files = files
+	m.filesReplacedLocked()
 	m.rebuildByKey()
 	m.rebuildTenantAggregates()
 	m.rebuildIndex()
@@ -2141,9 +2156,14 @@ func (m *Manifest) removeFileLocked(partition string, key string) bool {
 			for _, h := range m.removeHooks {
 				h(key)
 			}
+			// Shift a copy, never the captured array (writableFilesLocked):
+			// a snapshot encoding it would see one key twice and another
+			// missing, or one key with another's bounds (#424).
+			files = m.writableFilesLocked(partition)
 			m.files[partition] = append(files[:i], files[i+1:]...)
 			if len(m.files[partition]) == 0 {
 				delete(m.files, partition)
+				delete(m.owned, partition)
 			}
 			delete(m.byKey, key)
 			m.rebuildIndex()
@@ -2463,6 +2483,53 @@ func (m *Manifest) findFileLocked(key string) ([]FileInfo, int) {
 	return nil, -1
 }
 
+// findFileForWriteLocked is findFileLocked for a mutator: the returned slice
+// may be modified in place (see writableFilesLocked). Caller must hold m.mu
+// (write).
+func (m *Manifest) findFileForWriteLocked(key string) ([]FileInfo, int) {
+	if _, i := m.findFileLocked(key); i >= 0 {
+		return m.writableFilesLocked(m.byKey[key]), i
+	}
+	return nil, -1
+}
+
+// writableFilesLocked returns m.files[partition] in a form the caller may
+// modify in place. A snapshot SaveTo captured may still be encoding the
+// partition's backing array outside the lock, so the first write to the
+// partition after a capture copies it and installs the copy; later writes until
+// the next capture use that copy directly. Without a capture since the slices
+// were last replaced wholesale there is nothing to copy. The cost is one copy of
+// each partition written between two persists, never one per write; appending
+// beyond the captured length needs no copy (the snapshot's header ends before
+// it). Caller must hold m.mu (write).
+func (m *Manifest) writableFilesLocked(partition string) []FileInfo {
+	files := m.files[partition]
+	epoch := m.saveEpoch.Load()
+	if epoch == m.freshAt || len(files) == 0 {
+		return files
+	}
+	if m.ownedAt != epoch || m.owned == nil {
+		m.owned = make(map[string]struct{})
+		m.ownedAt = epoch
+	}
+	if _, ok := m.owned[partition]; ok {
+		return files
+	}
+	cp := make([]FileInfo, len(files))
+	copy(cp, files)
+	m.files[partition] = cp
+	m.owned[partition] = struct{}{}
+	return cp
+}
+
+// filesReplacedLocked records that every slice in m.files was just built
+// afresh (a refresh, a snapshot load): no snapshot holds any of them. Caller
+// must hold m.mu (write).
+func (m *Manifest) filesReplacedLocked() {
+	m.freshAt = m.saveEpoch.Load()
+	m.owned = nil
+}
+
 // GetFileByKey returns the FileInfo for the given S3 key and a
 // presence boolean. Read-only counterpart of findFileLocked; takes
 // the mutex internally so callers from another goroutine don't have
@@ -2485,7 +2552,7 @@ func (m *Manifest) GetFileByKey(key string) (FileInfo, bool) {
 func (m *Manifest) SetFileBucket(key, bucket string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	files, i := m.findFileLocked(key)
+	files, i := m.findFileForWriteLocked(key)
 	if i < 0 {
 		return
 	}
@@ -2497,7 +2564,7 @@ func (m *Manifest) SetFileBucket(key, bucket string) {
 func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinMax) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	files, i := m.findFileLocked(key)
+	files, i := m.findFileForWriteLocked(key)
 	if i < 0 {
 		return
 	}
@@ -2512,7 +2579,7 @@ func (m *Manifest) UpdateFileColumnStats(key string, stats map[string]ColumnMinM
 func (m *Manifest) MarkTraceIDHex(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	files, i := m.findFileLocked(key)
+	files, i := m.findFileForWriteLocked(key)
 	if i < 0 {
 		return
 	}
@@ -2531,7 +2598,7 @@ func (m *Manifest) MarkTraceIDHex(key string) {
 func (m *Manifest) EnrichFileMetadata(key string, rowCount int64, minTimeNs, maxTimeNs int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	files, i := m.findFileLocked(key)
+	files, i := m.findFileForWriteLocked(key)
 	if i < 0 {
 		return
 	}
@@ -2870,6 +2937,10 @@ type persistedManifest struct {
 // captured and encoded and before it is written (to make a save slow).
 var saveTestHook func()
 
+// saveCapturedTestHook, when set by a test, runs in SaveTo after the partitions
+// are captured and the lock released, before they are encoded.
+var saveCapturedTestHook func()
+
 func (m *Manifest) SaveTo(path string) error {
 	m.saveMu.Lock()
 	defer m.saveMu.Unlock()
@@ -2881,7 +2952,13 @@ func (m *Manifest) SaveTo(path string) error {
 	// The partition map is copied (its slice headers, not the files): the
 	// encoder below runs after the lock is released, and iterating m.files
 	// itself there races with AddFile inserting a partition — a concurrent
-	// map iteration and write, a fatal runtime error (#420).
+	// map iteration and write, a fatal runtime error (#420). The files are not
+	// copied either (50M of them at PB scale): bumping saveEpoch makes every
+	// writer copy a partition before it modifies it (writableFilesLocked), so
+	// the arrays captured here stay as they are until the encoder is done
+	// (#424). Holding the lock through the encode would block writers for
+	// seconds at that scale.
+	m.saveEpoch.Add(1)
 	files := make(map[string][]FileInfo, len(m.files))
 	for p, pf := range m.files {
 		files[p] = pf[:len(pf):len(pf)]
@@ -2899,6 +2976,9 @@ func (m *Manifest) SaveTo(path string) error {
 		snap.Retired = append(snap.Retired, rk)
 	}
 	m.mu.RUnlock()
+	if saveCapturedTestHook != nil {
+		saveCapturedTestHook()
+	}
 
 	// Binary gob format: magic prefix + gob-encoded snapshot. The
 	// magic lets LoadFrom auto-detect the new format vs the legacy
@@ -3041,6 +3121,7 @@ func (m *Manifest) LoadFrom(path string) error {
 
 	m.mu.Lock()
 	m.files = snap.Files
+	m.filesReplacedLocked()
 	m.rebuildByKey()
 	m.rebuildTenantAggregates()
 	m.rebuildIndex()
