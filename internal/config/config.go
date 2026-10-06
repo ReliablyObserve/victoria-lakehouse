@@ -1618,6 +1618,12 @@ func MergeConfigs(base, overlay *Config) *Config {
 // request would fail while looking like a network error.
 func NormalizePeerAuthKey(key string) (string, error) {
 	k := strings.TrimSpace(key)
+	if k == "" && key != "" {
+		// a key that was set but holds only whitespace would turn into "no key"
+		// and open the endpoints the operator meant to protect: refuse it
+		return "", fmt.Errorf("peer.auth_key (-lakehouse.peer.auth-key) is set but holds only whitespace; " +
+			"set a real key, or leave it unset to run without one")
+	}
 	for _, r := range k {
 		if unicode.IsSpace(r) || unicode.IsControl(r) {
 			return "", fmt.Errorf("peer.auth_key (-lakehouse.peer.auth-key) contains a whitespace or control character (U+%04X) inside the key; "+

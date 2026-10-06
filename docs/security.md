@@ -180,7 +180,8 @@ unflushed rows are missing from the queries it serves (a warning is logged at st
 the pods that ingest, or leave the flag unset there.
 
 The peer key is trimmed of surrounding whitespace (a Secret file usually ends in a newline); a key with whitespace or
-a control character inside is refused at startup.
+a control character inside is refused at startup, and so is a key that is only whitespace (it would otherwise
+run the pod without a key).
 
 **`-httpAuth.*`.** VictoriaMetrics' HTTP server applies `-httpAuth.username`/`-httpAuth.password` to every path
 except `/health`, `/metrics`, `/flags` and a few others, including `/internal/*`. Lakehouse's peer clients (the
