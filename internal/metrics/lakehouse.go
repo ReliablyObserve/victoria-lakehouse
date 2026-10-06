@@ -184,6 +184,15 @@ var (
 	// genuinely shrank and the guard is now lying to readers, so
 	// an operator should restart the pod to force a clean rebuild.
 	ManifestRefreshCliffGuardRejections = NewCounter("lakehouse_manifest_refresh_cliff_guard_rejections_total")
+	// ManifestRefreshIncomplete counts refreshes that did not bring the
+	// manifest up to what the bucket holds, by reason: partial (a tenant's
+	// project listing failed; its previous entries were kept), rejected (the
+	// listing dropped most tracked files and a HEAD sample found live objects
+	// among them) and head_unconfirmed (it dropped most tracked files and the
+	// HEAD sample could not be taken or failed). Nothing that infers "this
+	// object is gone" (delete completion, retirement forgetting, the orphan
+	// sweep) acts on such a refresh. All three series are exported at zero.
+	ManifestRefreshIncomplete = NewCounterVec("lakehouse_manifest_refresh_incomplete_total", "reason")
 	// ManifestRetiredKeys is the number of keys the manifest deliberately
 	// stopped listing whose objects may still exist (a publish replaced them,
 	// an output was abandoned, or they were removed on another component's
@@ -245,6 +254,10 @@ var (
 	// created at zero by Manifest.SetTenantBuckets.
 	ManifestTenantBucketListErrors = NewCounterVec("lakehouse_manifest_tenant_bucket_list_errors_total", "bucket")
 )
+
+func init() {
+	ManifestRefreshIncomplete.Init("partial", "rejected", "head_unconfirmed")
+}
 
 // RowGroupSkipReasons is every reason ParquetRowGroupsSkipped is incremented
 // with on either binary: the manifest-level file pre-filters (label_index,
@@ -778,7 +791,9 @@ var (
 // Spec §6.1: Orphan-sweep metrics. StolenTotal counts Tier A successes;
 // OrphansDeleted is the Tier B counter (>100/h pages); OrphansSkipped is
 // labeled by reason ("in_manifest"/"too_young"/"protected_prefix"/
-// "not_parquet"/"manifest_drift_race"/"empty_peers"/"self_not_in_peers");
+// "not_parquet"/"manifest_drift_race"/"empty_peers"/"self_not_in_peers"/
+// "manifest_incomplete"/"listing_older_than_object": the manifest does not
+// hold a complete listing, #418);
 // DualOwnershipTotal is labeled by partition (cardinality bounded to a
 // handful of bad partitions in steady state; 0 expected); DoubleCountWindow
 // is the L0+L1 overlap gauge.

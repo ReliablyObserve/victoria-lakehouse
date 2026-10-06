@@ -160,6 +160,7 @@ func TestCompaction_SIGKILL_OrphanRecovery(t *testing.T) {
 	}
 
 	own := NewOwnershipResolver("self", staticPeers("self"))
+	listCompletely(t, m)
 	sweep := NewOrphanSweep(OrphanSweepConfig{
 		Manifest:                 m,
 		Pool:                     pool,

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,7 +22,9 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // manifestBinaryMagic prefixes every gob-encoded manifest snapshot
@@ -299,8 +303,15 @@ type Manifest struct {
 	// held keys are registered files another publish must not supersede yet
 	// (see Hold); listed reports whether a bucket listing has been applied in
 	// this process (see Listed). Neither is persisted.
-	held   map[string]bool
-	listed bool
+	held map[string]bool
+	// listed is true once a COMPLETE accepted listing ran in this process;
+	// lastComplete names the latest one (see LastCompleteRefresh). A partial
+	// listing, a rejected one and a loaded snapshot leave them as they were
+	// (a snapshot resets them).
+	listed       bool
+	lastComplete CompleteRefresh
+	// prober confirms that a shrinking listing is real (see SetObjectProber).
+	prober ObjectProber
 }
 
 func New(bucket, prefix string) *Manifest {
@@ -814,13 +825,14 @@ func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (
 	return files, totalFiles, totalBytes, err
 }
 
-// refreshTenantScopedPartial is refreshTenantScoped that also reports how many
-// accounts the discovery had to skip (their project listing failed): the file
-// map then lacks them, which the caller must not mistake for a full listing.
-func (m *Manifest) refreshTenantScopedPartial(ctx context.Context, client *s3.Client) (map[string][]FileInfo, int, int64, int, error) {
+// refreshTenantScopedPartial is refreshTenantScoped that also reports the
+// account prefixes ("2/") the discovery had to skip (their project listing
+// failed): the file map then lacks them, which the caller must not mistake for
+// a full listing, and must carry their previous entries over.
+func (m *Manifest) refreshTenantScopedPartial(ctx context.Context, client *s3.Client) (map[string][]FileInfo, int, int64, []string, error) {
 	tenantPrefixes, skipped, err := m.discoverTenantPrefixes(ctx, client)
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("discover tenants: %w", err)
+		return nil, 0, 0, nil, fmt.Errorf("discover tenants: %w", err)
 	}
 	if len(tenantPrefixes) == 0 {
 		// Empty bucket OR no tenant directories yet — surface as
@@ -901,7 +913,7 @@ func (m *Manifest) refreshTenantScopedPartial(ctx context.Context, client *s3.Cl
 		totalBytes += r.byteCount
 	}
 	if firstErr != nil {
-		return nil, 0, 0, 0, firstErr
+		return nil, 0, 0, nil, firstErr
 	}
 	return files, totalFiles, totalBytes, skipped, nil
 }
@@ -913,13 +925,13 @@ func (m *Manifest) refreshTenantScopedPartial(ctx context.Context, client *s3.Cl
 // For an "{OrgID}/" template (single segment), returns just the
 // top-level OrgID prefixes.
 //
-// skipped counts the accounts whose project listing failed: they are left out
-// (the refresh still serves the rest) and the caller learns the listing is
-// partial.
-func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client) (prefixes []string, skipped int, err error) {
+// skipped names the account prefixes whose project listing failed: they are
+// left out (the refresh still serves the rest) and the caller learns the
+// listing is partial and which part of the key space it says nothing about.
+func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client) (prefixes []string, skipped []string, err error) {
 	accounts, err := m.listCommonPrefixes(ctx, client, "")
 	if err != nil {
-		return nil, 0, fmt.Errorf("list accounts: %w", err)
+		return nil, nil, fmt.Errorf("list accounts: %w", err)
 	}
 	// OrgID-only template: one segment is enough. Falls back to direct
 	// prefixTemplate parse for callers that bypass SetPrefixTemplate.
@@ -927,7 +939,7 @@ func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client
 		(m.templateSegments == 0 &&
 			strings.Contains(m.prefixTemplate, "{OrgID}") &&
 			!strings.Contains(m.prefixTemplate, "{ProjectID}")) {
-		return accounts, 0, nil
+		return accounts, nil, nil
 	}
 
 	// Two-level template: walk into each account to find its projects.
@@ -937,7 +949,7 @@ func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client
 		if err != nil {
 			// Skip accounts that fail; log so the operator can correlate.
 			logger.Warnf("list projects under %q failed: %s", acc, err)
-			skipped++
+			skipped = append(skipped, acc)
 			continue
 		}
 		out = append(out, projects...)
@@ -1070,30 +1082,87 @@ func (m *Manifest) SetTenantBuckets(buckets []TenantBucket) {
 	}
 }
 
-// ErrRefreshRejected is returned by RefreshFromS3 when the cliff guard kept the
-// previous file set instead of the listing: the manifest was not brought up to
-// what the bucket holds.
-var ErrRefreshRejected = errors.New("manifest refresh rejected by the cliff guard: the previous file set was kept")
+// ErrRefreshRejected is returned by RefreshFromS3 when the listing was not
+// applied: it would have dropped most tracked files and the sampled HEAD check
+// found live objects among them (or could not confirm them gone), so the
+// previous file set was kept.
+var ErrRefreshRejected = errors.New("manifest refresh rejected: the listing dropped most tracked files and a HEAD sample did not confirm them gone; the previous file set was kept")
 
 // ErrRefreshPartial is returned by RefreshFromS3 when the listing could not
-// cover every tenant (a project listing failed): what was listed was applied,
-// but the manifest may lack that tenant's objects.
+// cover every tenant (a project listing failed). What was listed was applied
+// and the skipped tenants' previous entries were kept, but the manifest is not
+// known to hold what the bucket holds: nothing may infer "this object is gone"
+// from it, and it does not count as listed (Listed, LastCompleteRefresh).
 var ErrRefreshPartial = errors.New("manifest refresh is partial: some tenants could not be listed")
 
+// ObjectProber reports whether one object exists (an S3 HEAD). bucket "" is
+// the manifest's default bucket. A nil error with exists=false means the
+// object is definitely absent (404); any other failure is an error.
+type ObjectProber func(ctx context.Context, bucket, key string) (exists bool, err error)
+
+// cliffProbeSample is how many dropped keys a shrinking listing is checked
+// against with HEAD before it is believed.
+const cliffProbeSample = 16
+
+// cliffProbeTimeout bounds the whole HEAD sample of one refresh.
+const cliffProbeTimeout = 30 * time.Second
+
+// SetObjectProber installs the existence check that confirms a listing which
+// drops most tracked files (see applyRefreshedFiles). RefreshFromS3 uses its
+// own client when none is set; ApplyListing has no client, so without a prober
+// such a listing is rejected as unconfirmed.
+func (m *Manifest) SetObjectProber(p ObjectProber) {
+	m.mu.Lock()
+	m.prober = p
+	m.mu.Unlock()
+}
+
+// CompleteRefresh identifies the last refresh that listed the whole bucket.
+type CompleteRefresh struct {
+	// Start is when that listing began: it saw every object that existed
+	// before Start, and could miss one published after it.
+	Start time.Time
+	// Generation counts complete refreshes in this process; 0 = none yet.
+	Generation uint64
+}
+
+// LastCompleteRefresh returns the last refresh that was accepted AND covered
+// every prefix. A partial, rejected or failed refresh never advances it, and a
+// loaded snapshot resets it: until a complete listing ran in this process,
+// "absent from the manifest" says nothing about the bucket.
+func (m *Manifest) LastCompleteRefresh() CompleteRefresh {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lastComplete
+}
+
+// CompleteSince reports whether a complete refresh began after t: a decision
+// about an event that happened at t ("this object is gone", "this tombstone
+// covers every file") may rely on the manifest only if such a listing ran,
+// because a listing that began before t cannot know what t changed.
+func (m *Manifest) CompleteSince(t time.Time) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lastComplete.Generation > 0 && m.lastComplete.Start.After(t)
+}
+
 // RefreshFromS3 re-lists the bucket and replaces the tracked file set. The
-// listing is applied unless the cliff guard rejects it (ErrRefreshRejected, the
-// old set is kept) and is applied but incomplete when a tenant could not be
-// listed (ErrRefreshPartial). A nil result means the manifest now holds what the
-// whole bucket holds; callers that only serve may treat both sentinels as
-// "best effort", callers that infer "the object is gone" (the insert buffer's
-// release of restored segments) must not.
+// listing is applied unless it would drop more than half of the tracked files
+// and a HEAD sample of the dropped keys does not confirm they are gone
+// (ErrRefreshRejected, the old set is kept). It is applied but incomplete when
+// a tenant could not be listed (ErrRefreshPartial: that tenant's previous
+// entries are kept). A nil result means the manifest now holds what the whole
+// bucket holds; callers that only serve may treat both sentinels as "best
+// effort", callers that infer "the object is gone" (the insert buffer's release
+// of restored segments, the delete scheduler, the orphan sweep, compaction's
+// retirement of tombstones) must not.
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	// The listing's start time bounds what it can know: an object published
 	// or removed after this instant may or may not be in the pages that follow.
 	listStart := time.Now()
 
 	var files map[string][]FileInfo
-	partial := false
+	var skipped []string
 
 	// When per-tenant prefix isolation is configured, the writer
 	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct
@@ -1111,10 +1180,10 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	//   2. Full-bucket fallback: kept for the single-prefix template
 	//      and as a safety net if tenant discovery fails.
 	if strings.Contains(m.prefixTemplate, "{AccountID}") {
-		f, _, _, skipped, err := m.refreshTenantScopedPartial(ctx, client)
+		f, _, _, sk, err := m.refreshTenantScopedPartial(ctx, client)
 		if err == nil {
 			files = f
-			partial = skipped > 0
+			skipped = sk
 		} else {
 			// Tenant discovery failed; fall back to the legacy full-bucket
 			// LIST so a transient list failure doesn't drop the manifest.
@@ -1139,13 +1208,45 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	if _, _, err := m.listTenantBuckets(ctx, client, files); err != nil {
 		return err
 	}
-	if !m.applyRefreshedFiles(files, listStart) {
+	probe := m.proberFor(client)
+	if !m.applyRefreshedFiles(ctx, files, listStart, skipped, probe) {
 		return ErrRefreshRejected
 	}
-	if partial {
+	if len(skipped) > 0 {
+		metrics.ManifestRefreshIncomplete.Inc("partial")
 		return ErrRefreshPartial
 	}
 	return nil
+}
+
+// proberFor returns the installed prober, or an S3 HEAD through client.
+func (m *Manifest) proberFor(client *s3.Client) ObjectProber {
+	m.mu.RLock()
+	p := m.prober
+	bucket := m.bucket
+	m.mu.RUnlock()
+	if p != nil || client == nil {
+		return p
+	}
+	return func(ctx context.Context, b, key string) (bool, error) {
+		if b == "" {
+			b = bucket
+		}
+		_, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(b), Key: aws.String(key)})
+		if err == nil {
+			return true, nil
+		}
+		var nf *s3types.NotFound
+		var nsk *s3types.NoSuchKey
+		if errors.As(err, &nf) || errors.As(err, &nsk) {
+			return false, nil
+		}
+		var re *awshttp.ResponseError
+		if errors.As(err, &re) && re.HTTPStatusCode() == http.StatusNotFound {
+			return false, nil
+		}
+		return false, err
+	}
 }
 
 // ListedObject is one object a bucket listing returned.
@@ -1157,9 +1258,20 @@ type ListedObject struct {
 // ApplyListing folds a bucket listing into the manifest exactly as the periodic
 // S3 refresh does, for listers other than the S3 client (and for tests that
 // drive a refresh against an in-memory bucket). listStart is when the listing
-// began. Non-Parquet keys and keys without a partition are ignored. Returns
-// false when the cliff guard rejected the listing.
+// began. Non-Parquet keys and keys without a partition are ignored. The listing
+// is taken as complete. Returns false when it was rejected: it would drop most
+// tracked files and the manifest's ObjectProber (SetObjectProber) did not
+// confirm a sample of them gone (no prober = unconfirmed).
 func (m *Manifest) ApplyListing(objects []ListedObject, listStart time.Time) bool {
+	return m.ApplyPartialListing(objects, listStart, nil)
+}
+
+// ApplyPartialListing is ApplyListing for a listing that could not cover the
+// key prefixes in skipped (an account whose project LIST failed): their previous
+// entries are kept, their retirements are not settled, and the result is not a
+// complete listing (Listed and LastCompleteRefresh do not move). With no
+// skipped prefixes it is ApplyListing.
+func (m *Manifest) ApplyPartialListing(objects []ListedObject, listStart time.Time, skipped []string) bool {
 	files := make(map[string][]FileInfo)
 	for _, o := range objects {
 		if !strings.HasSuffix(o.Key, ".parquet") {
@@ -1171,14 +1283,172 @@ func (m *Manifest) ApplyListing(objects []ListedObject, listStart time.Time) boo
 		}
 		files[partition] = append(files[partition], FileInfo{Key: o.Key, Size: o.Size})
 	}
-	return m.applyRefreshedFiles(files, listStart)
+	m.mu.RLock()
+	probe := m.prober
+	m.mu.RUnlock()
+	ok := m.applyRefreshedFiles(context.Background(), files, listStart, skipped, probe)
+	if ok && len(skipped) > 0 {
+		metrics.ManifestRefreshIncomplete.Inc("partial")
+	}
+	return ok
+}
+
+// shrinkVerdict is what a HEAD sample of the keys a listing dropped found.
+type shrinkVerdict int
+
+const (
+	// shrinkNotChecked: the listing did not look like a cliff, nothing probed.
+	shrinkNotChecked shrinkVerdict = iota
+	// shrinkConfirmed: every sampled dropped key answered 404 — the bucket
+	// really shrank (a peer's compaction or retention removed them).
+	shrinkConfirmed
+	// shrinkLive: a sampled dropped key still exists — the listing is incomplete.
+	shrinkLive
+	// shrinkUnconfirmed: the sample could not be taken (no prober, HEAD error).
+	shrinkUnconfirmed
+)
+
+func underSkipped(key string, skipped []string) bool {
+	for _, p := range skipped {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// probeShrink decides, before the write lock is taken (HEADs must not run under
+// it), whether a listing that drops most tracked files is real. It samples up to
+// cliffProbeSample dropped keys at random and HEADs them. skipped prefixes are
+// excluded: their entries are carried over, not dropped.
+func (m *Manifest) probeShrink(ctx context.Context, files map[string][]FileInfo, listStart time.Time, skipped []string, probe ObjectProber) shrinkVerdict {
+	type cand struct{ bucket, key, partition string }
+	m.mu.RLock()
+	tracked := m.totalFiles
+	if tracked == 0 {
+		m.mu.RUnlock()
+		return shrinkNotChecked
+	}
+	// What the merge under the write lock will keep: the listed keys that are
+	// neither retired nor pending, the files published after the listing began,
+	// and the carried entries of skipped prefixes.
+	kept := make(map[string]struct{}, tracked)
+	for _, pf := range files {
+		for i := range pf {
+			k := pf[i].Key
+			if _, ok := m.retired[k]; ok {
+				continue
+			}
+			if _, ok := m.pending[k]; ok {
+				continue
+			}
+			kept[k] = struct{}{}
+		}
+	}
+	for _, ra := range m.recentAddsSinceLocked(listStart) {
+		if _, ok := m.byKey[ra.key]; ok {
+			kept[ra.key] = struct{}{}
+		}
+	}
+	var sample []cand
+	dropped := 0
+	for key, partition := range m.byKey {
+		if _, ok := kept[key]; ok {
+			continue
+		}
+		if len(skipped) > 0 && underSkipped(key, skipped) {
+			kept[key] = struct{}{}
+			continue
+		}
+		dropped++
+		// Reservoir sampling: a uniform sample without materialising the set.
+		if len(sample) < cliffProbeSample {
+			sample = append(sample, cand{key: key, partition: partition})
+		} else if j := rand.IntN(dropped); j < cliffProbeSample {
+			sample[j] = cand{key: key, partition: partition}
+		}
+	}
+	if len(kept) >= tracked/2 {
+		m.mu.RUnlock()
+		return shrinkNotChecked
+	}
+	for i := range sample {
+		for _, fi := range m.files[sample[i].partition] {
+			if fi.Key == sample[i].key {
+				sample[i].bucket = fi.Bucket
+				break
+			}
+		}
+	}
+	m.mu.RUnlock()
+
+	if probe == nil {
+		return shrinkUnconfirmed
+	}
+	pctx, cancel := context.WithTimeout(ctx, cliffProbeTimeout)
+	defer cancel()
+	type res struct {
+		exists bool
+		err    error
+	}
+	out := make([]res, len(sample))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for i := range sample {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			out[i].exists, out[i].err = probe(pctx, sample[i].bucket, sample[i].key)
+		}(i)
+	}
+	wg.Wait()
+	verdict := shrinkConfirmed
+	for _, r := range out {
+		switch {
+		case r.err == nil && r.exists:
+			return shrinkLive // one live key settles it
+		case r.err != nil:
+			verdict = shrinkUnconfirmed
+		}
+	}
+	return verdict
+}
+
+// carrySkippedLocked keeps the previous entries of the prefixes a partial
+// listing could not cover, so what the listing says nothing about is not
+// dropped. Caller holds m.mu.
+func (m *Manifest) carrySkippedLocked(files map[string][]FileInfo, skipped []string) {
+	for partition, old := range m.files {
+		for _, fi := range old {
+			if underSkipped(fi.Key, skipped) {
+				files[partition] = append(files[partition], fi)
+			}
+		}
+	}
 }
 
 // applyRefreshedFiles replaces the tracked file set with a listing (merged per
-// mergeRefreshedFilesLocked). Returns false when the cliff guard rejected it.
-func (m *Manifest) applyRefreshedFiles(files map[string][]FileInfo, listStart time.Time) bool {
+// mergeRefreshedFilesLocked). skipped lists key prefixes the listing could not
+// cover: their previous entries are kept, their retirements are not settled,
+// and the result is not a complete listing. Returns false when the listing was
+// rejected (the cliff rule below).
+func (m *Manifest) applyRefreshedFiles(ctx context.Context, files map[string][]FileInfo, listStart time.Time, skipped []string, probe ObjectProber) bool {
+	verdict := m.probeShrink(ctx, files, listStart, skipped, probe)
+
 	m.mu.Lock()
 	confirmedGone := m.mergeRefreshedFilesLocked(files, listStart)
+	if len(skipped) > 0 {
+		m.carrySkippedLocked(files, skipped)
+		kept := confirmedGone[:0]
+		for _, k := range confirmedGone {
+			if !underSkipped(k, skipped) {
+				kept = append(kept, k)
+			}
+		}
+		confirmedGone = kept
+	}
 
 	var (
 		totalFiles int
@@ -1203,28 +1473,32 @@ func (m *Manifest) applyRefreshedFiles(files map[string][]FileInfo, listStart ti
 		}
 	}
 
-	// Cliff guard. A transient S3 LIST hiccup (toxiproxy spike, brief
-	// partial pagination, network blip mid-refresh) can return success
-	// with a sparse file map. Swapping that in clears the manifest
-	// for the ~30s until the next refresh — exactly the "Jaeger Cold
-	// suddenly returning 0 results" symptom the operator sees. If the
-	// new manifest lost more than half its files since the last
-	// refresh AND it wasn't a deliberate empty manifest (m.totalFiles
-	// > 0 before this run), we keep the OLD state and surface a
-	// warning. Genuinely-emptied buckets land on the next refresh
-	// when the count actually drops to zero.
-	//
-	// The first listing after a snapshot load is not guarded: the snapshot is
-	// only a starting point, so a listing that is much smaller than it is most
-	// likely what a peer's compaction really left, and rejecting it would keep
-	// the stale set (and everything that waits for a fresh manifest, such as
-	// the restored insert-buffer segments) for as long as the bucket stays that
-	// small. A cold start has no previous set to guard either.
-	if m.listed && m.totalFiles > 0 && totalFiles < m.totalFiles/2 {
-		logger.Warnf("manifest refresh cliff-guard: rejecting refresh that lost %d/%d files; keeping previous state (likely transient S3 LIST hiccup)", m.totalFiles-totalFiles, m.totalFiles)
-		metrics.ManifestRefreshCliffGuardRejections.Inc()
-		m.mu.Unlock()
-		return false
+	// Cliff rule. A LIST that returns success with a sparse file map (a
+	// truncated page, throttled or skipped listings, a flaky proxy) must not
+	// replace the manifest: it would hide data for a refresh interval, and —
+	// worse — every consumer that reads "absent from the manifest" as "gone"
+	// (delete completion, retirement forgetting, the orphan sweep) would act on
+	// it. A listing that drops more than half of the tracked files is therefore
+	// believed only if HEAD requests on a random sample of the dropped keys all
+	// answer 404 (probeShrink): the bucket really shrank, as after a peer's
+	// compaction or a retention sweep. A live key, a HEAD error or no way to
+	// HEAD keeps the previous state and the insert buffer's restart hold. This
+	// applies to every refresh, the first one after a snapshot load included,
+	// and a legitimate shrink is accepted at once instead of being rejected for
+	// as long as the bucket stays small.
+	if m.totalFiles > 0 && totalFiles < m.totalFiles/2 {
+		if verdict != shrinkConfirmed {
+			reason := "head_unconfirmed"
+			if verdict == shrinkLive {
+				reason = "rejected"
+			}
+			logger.Warnf("manifest refresh rejected: the listing dropped %d/%d tracked files and the HEAD sample did not confirm them gone (%s); keeping the previous state", m.totalFiles-totalFiles, m.totalFiles, reason)
+			metrics.ManifestRefreshCliffGuardRejections.Inc()
+			metrics.ManifestRefreshIncomplete.Inc(reason)
+			m.mu.Unlock()
+			return false
+		}
+		logger.Infof("manifest refresh: the listing dropped %d/%d tracked files; a HEAD sample confirmed them gone, accepting the shrink", m.totalFiles-totalFiles, m.totalFiles)
 	}
 
 	// A refresh replaces the file set wholesale: tell the remove hooks about the
@@ -1254,8 +1528,12 @@ func (m *Manifest) applyRefreshedFiles(files map[string][]FileInfo, listStart ti
 	m.totalFiles = totalFiles
 	m.totalBytes = totalBytes
 	m.lastRefresh = time.Now()
-	m.listed = true
-	m.afterAcceptedRefreshLocked(confirmedGone, listStart)
+	if len(skipped) == 0 {
+		// Only a listing that covered every prefix says what the bucket holds.
+		m.listed = true
+		m.lastComplete = CompleteRefresh{Start: listStart, Generation: m.lastComplete.Generation + 1}
+	}
+	m.afterAcceptedRefreshLocked(confirmedGone, listStart, skipped)
 	m.mu.Unlock()
 
 	metrics.StorageFilesTotal.Set(int64(totalFiles))
@@ -2509,6 +2787,18 @@ type persistedManifest struct {
 // captured and encoded and before it is written (to make a save slow).
 var saveTestHook func()
 
+// SaveCompleteTo is SaveTo for the periodic and post-warmup snapshots: it writes
+// only once this process has applied a complete listing (Listed). Before that
+// the manifest is a loaded snapshot, possibly with a partial listing folded in,
+// and re-persisting it would present an unverified state as the next start's
+// ground truth. Reports whether it wrote.
+func (m *Manifest) SaveCompleteTo(path string) (bool, error) {
+	if !m.Listed() {
+		return false, nil
+	}
+	return true, m.SaveTo(path)
+}
+
 func (m *Manifest) SaveTo(path string) error {
 	m.saveMu.Lock()
 	defer m.saveMu.Unlock()
@@ -2675,6 +2965,7 @@ func (m *Manifest) LoadFrom(path string) error {
 	m.recentAdds = nil
 	m.awaitingAdoption = nil
 	m.listed = false
+	m.lastComplete = CompleteRefresh{}
 	m.retired = make(map[string]RetiredKey, len(snap.Retired))
 	for _, rk := range snap.Retired {
 		if _, tracked := m.byKey[rk.Key]; tracked {

@@ -407,6 +407,7 @@ func TestOrphanSweep_TierB_DeletesOldOrphan(t *testing.T) {
 	_ = pool.UploadWithMtime(ctx, key, []byte("x"), time.Now().Add(-10*time.Hour))
 
 	r := NewOwnershipResolver("self", staticPeers("self"))
+	listCompletely(t, m)
 	sweep := NewOrphanSweep(OrphanSweepConfig{
 		Manifest: m, Pool: pool, Ownership: r, Policy: NewLevelPolicy(10, 20, 0),
 		Lister: pool, Prefix: "logs/", Mode: config.ModeLogs,
@@ -485,6 +486,7 @@ func TestOrphanSweep_TierB_PrefixHashOwnership(t *testing.T) {
 		// uploaded keys; deletions roll back into the shared state
 		// so the next pod sees the reduced set.
 		r := NewOwnershipResolver(self, staticPeers(peers...))
+		listCompletely(t, m)
 		sweep := NewOrphanSweep(OrphanSweepConfig{
 			Manifest: m, Pool: pool, Ownership: r, Policy: NewLevelPolicy(10, 20, 0),
 			Lister: pool, Prefix: "logs/", Mode: config.ModeLogs,
@@ -541,6 +543,7 @@ func TestOrphanSweep_TierB_S3ThrottledList(t *testing.T) {
 	lister := &throwingLister{listingPool: base, failList: true}
 	m := manifest.New("bkt", "logs/")
 	r := NewOwnershipResolver("self", staticPeers("self"))
+	listCompletely(t, m)
 	sweep := NewOrphanSweep(OrphanSweepConfig{
 		Manifest: m, Pool: base, Ownership: r, Policy: NewLevelPolicy(10, 20, 0),
 		Lister: lister, Prefix: "logs/", Mode: config.ModeLogs,

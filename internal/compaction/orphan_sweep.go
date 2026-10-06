@@ -358,6 +358,16 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
+	// "Not in the manifest" means "an orphan" only when the manifest holds what
+	// the bucket holds. Until a refresh has listed the whole bucket in this
+	// process (a snapshot is only a starting point, a partial or sparse listing
+	// is not one), a live object can be missing from it, and deleting it loses
+	// data (#418).
+	if !o.cfg.Manifest.Listed() {
+		metrics.CompactionOrphansSkipped.Inc("manifest_incomplete")
+		return 0, nil
+	}
+
 	keys, err := o.cfg.Lister.List(ctx, o.cfg.Prefix)
 	if err != nil {
 		return 0, fmt.Errorf("tier_b list %s: %w", o.cfg.Prefix, err)
@@ -416,6 +426,14 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 			}
 			if time.Since(mtime) < o.cfg.OrphanTTL {
 				metrics.CompactionOrphansSkipped.Inc("too_young")
+				continue
+			}
+
+			// The manifest's last complete listing must have begun after the
+			// object existed: a listing that began earlier cannot know about it,
+			// so its absence says nothing (#418).
+			if !o.cfg.Manifest.CompleteSince(mtime) {
+				metrics.CompactionOrphansSkipped.Inc("listing_older_than_object")
 				continue
 			}
 

@@ -29,7 +29,7 @@ func TestRefreshFromS3_CliffGuardRejectionIsAnError(t *testing.T) {
 		keys[i] = refreshKey("f" + strconv.Itoa(i))
 	}
 	client := coverageS3Client(t, listingServer(t, keys...))
-	// The first listing of a process is applied unguarded.
+	// A cold start has nothing tracked to guard.
 	if err := m.RefreshFromS3(context.Background(), client); err != nil {
 		t.Fatalf("first refresh: %v", err)
 	}
@@ -43,33 +43,6 @@ func TestRefreshFromS3_CliffGuardRejectionIsAnError(t *testing.T) {
 	}
 	if m.TotalFiles() != 10 {
 		t.Errorf("the rejected refresh changed the manifest: %d files, want 10", m.TotalFiles())
-	}
-}
-
-// A snapshot is only a starting point: the first listing after loading one is
-// applied even when the bucket is much smaller (a peer compacted it), so the
-// manifest catches up instead of staying stale for as long as the bucket
-// stays small.
-func TestRefreshFromS3_FirstListingAfterASnapshotIsNotGuarded(t *testing.T) {
-	src := New("b", "")
-	fillManifest(src, 10)
-	path := t.TempDir() + "/m.snapshot"
-	if err := src.SaveTo(path); err != nil {
-		t.Fatal(err)
-	}
-	m := New("b", "")
-	if err := m.LoadFrom(path); err != nil {
-		t.Fatal(err)
-	}
-	if m.Listed() {
-		t.Fatal("fixture: a loaded snapshot is not a listing")
-	}
-	only := refreshKey("f0")
-	if err := m.RefreshFromS3(context.Background(), coverageS3Client(t, listingServer(t, only))); err != nil {
-		t.Fatalf("the first refresh after a snapshot must be applied: %v", err)
-	}
-	if m.TotalFiles() != 1 || !m.Listed() {
-		t.Errorf("files=%d listed=%v, want 1 file and listed", m.TotalFiles(), m.Listed())
 	}
 }
 

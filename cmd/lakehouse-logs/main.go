@@ -1667,8 +1667,12 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			}
 		}
 
-		if err := store.Manifest().SaveTo(mpath); err != nil {
+		// Only a state that came from a complete listing is persisted: after a
+		// partial or rejected refresh the previous snapshot stays (#418).
+		if saved, err := store.Manifest().SaveCompleteTo(mpath); err != nil {
 			logger.Errorf("manifest snapshot after S3 refresh failed: %s", err)
+		} else if !saved {
+			logger.Warnf("manifest snapshot not rewritten: no complete bucket listing has been applied in this process yet")
 		}
 
 		sm.SetWarmupComplete()
@@ -1742,7 +1746,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		case <-ageTicker.C:
 			updateSnapshotAge()
 		case <-persistTicker.C:
-			if err := store.Manifest().SaveTo(mpath); err != nil {
+			if _, err := store.Manifest().SaveCompleteTo(mpath); err != nil {
 				logger.Errorf("periodic manifest persist failed: %s", err)
 			}
 			updateSnapshotAge()

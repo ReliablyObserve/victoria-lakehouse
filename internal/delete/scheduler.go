@@ -289,7 +289,7 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 		// nothing about the object, which may still hold every row this
 		// tombstone hides.
 		if !s.manifest.HasKey(key) {
-			if !s.manifest.Listed() {
+			if !s.listedSince(ts) {
 				metrics.DeleteRewriteDeferred.Inc("unlisted")
 				continue
 			}
@@ -353,12 +353,22 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 	// the original bug. Retirement is what stops hiding the rows, so it waits
 	// for a manifest that has listed the bucket: the discovery above can only
 	// be complete against a manifest that knows what the bucket holds.
-	if s.manifest.Listed() {
+	if cur, ok := s.store.Get(id); ok && s.listedSince(cur) {
 		s.store.Complete(id)
 	} else {
 		metrics.DeleteRewriteDeferred.Inc("unlisted")
 	}
 	return results, false
+}
+
+// listedSince reports whether the manifest can be trusted to say "this object is
+// gone" for tombstone ts: a refresh that listed the whole bucket began after the
+// tombstone was created. A snapshot, a partial listing and a listing the cliff
+// rule rejected do not count (#418): reading their gaps as deletions completes
+// the tombstone over objects that still hold its rows, and the next full
+// listing shows the deleted rows again.
+func (s *RewriteScheduler) listedSince(ts Tombstone) bool {
+	return s.manifest.Listed() && s.manifest.CompleteSince(ts.CreatedAt)
 }
 
 // discoverAffectedKeys adds every manifest file overlapping the tombstone's

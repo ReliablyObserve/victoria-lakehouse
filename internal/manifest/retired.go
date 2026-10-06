@@ -563,7 +563,7 @@ func (m *Manifest) refreshExclusionsLocked(files map[string][]FileInfo, listStar
 
 // afterAcceptedRefreshLocked forgets what an accepted listing settled. Caller
 // holds m.mu (write).
-func (m *Manifest) afterAcceptedRefreshLocked(confirmedGone []string, listStart time.Time) {
+func (m *Manifest) afterAcceptedRefreshLocked(confirmedGone []string, listStart time.Time, skipped []string) {
 	for _, k := range confirmedGone {
 		delete(m.retired, k)
 	}
@@ -581,7 +581,9 @@ func (m *Manifest) afterAcceptedRefreshLocked(confirmedGone []string, listStart 
 	// found the key (this refresh adopted it) or it did not (the object is
 	// gone). Either way the manifest is no longer the one that is behind.
 	for k, at := range m.awaitingAdoption {
-		if at.Before(listStart) {
+		// A partial listing did not look under the skipped prefixes, so it has
+		// not spoken for keys there.
+		if at.Before(listStart) && !underSkipped(k, skipped) {
 			delete(m.awaitingAdoption, k)
 		}
 	}
