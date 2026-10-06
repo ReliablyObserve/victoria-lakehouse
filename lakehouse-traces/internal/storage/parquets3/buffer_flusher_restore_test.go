@@ -224,7 +224,11 @@ func TestBufferFlusher_CommitRecordsArePruned(t *testing.T) {
 // 2 x grace). The delete rewriter and compaction share that guard.
 func TestBufferFlusher_Property_VisibleLifetimeBelowGuard(t *testing.T) {
 	rng := rand.New(rand.NewSource(379))
-	for i := 0; i < 20; i++ {
+	iterations := 20
+	if testing.Short() {
+		iterations = 6 // each iteration builds a pod over a mock bucket; the CI package budget is tight
+	}
+	for i := 0; i < iterations; i++ {
 		down := time.Duration(rng.Int63n(int64(5 * restoreGrace)))
 		e := newSegEnv(t)
 		f := e.flusher(1000)
