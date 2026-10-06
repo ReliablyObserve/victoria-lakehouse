@@ -27,6 +27,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bitsets that are not a power of two, so ClickHouse fails an equality filter on any bloom column (#341); and
   tenant IDs of 2^31 and above reading negative in Trino (#342).
 
+- **lakehouse-logs embeds VictoriaLogs v1.53.0 (was v1.52.0).**
+  The logs binary, its image, the CI pins, the e2e/parity/benchmark hot-VictoriaLogs reference images, the embedded
+  VMUI and the registry's upstream inventory move to v1.53.0. `lakehouse-traces` is unchanged: it still embeds the
+  VictoriaLogs revision VictoriaTraces v0.12.0 pins (`c945d2949e98`, v1.52.0), because that pin follows VictoriaTraces
+  and not the logs pin. The partition-close-order patch is dropped from `patches/vl-logs/` (v1.53.0 closes the
+  datadb before the indexdb itself) and the dispatch patch is regenerated for the new `RunQuery`; the traces tree keeps both.
+  Both modules' dependencies move with VictoriaLogs' own requirements (VictoriaMetrics library v1.152.1, AWS SDK, OpenTelemetry).
+
+- **lakehouse-traces now links VictoriaMetrics library v1.152.1, newer than the v1.149.1 VictoriaTraces v0.12.0 pins.**
+  The root module needs v1.152.1 for the logs binary, and Go's minimal version selection gives the traces module (which
+  depends on the root module) the same version. VictoriaTraces v0.12.0 itself was built against v1.149.1, so the traces
+  binary runs library code VictoriaTraces never ran with. The behaviour changes that matter, in both binaries:
+  the HTTP server's Basic Auth path-suffix exemption list is replaced by opt-in registration
+  (`httpserver.RegisterAuthKeyProtectedPathsFunc`): lakehouse-logs registers upstream's `-deleteAuthKey` predicate,
+  lakehouse-traces registers nothing, so with `-httpAuth.*` set every path on the traces binary needs the credentials, which is
+  stricter than hot VictoriaTraces; a unix-socket `-httpListenAddr` is accepted; ZSTD decompression is size-limited; and
+  the write-concurrency-limiter fix applies. No lakehouse flag changes.
+
+### Fixed
+
+- **Log rows with duplicate stream field names are accepted, and a syslog RFC5424 message with incomplete structured data no longer crashes the listener (VictoriaLogs v1.53.0).**
+  v1.52.0 rejected a stream with two tags of one name and panicked when it was registered at ingest or read back
+  (VictoriaLogs #1603, #1604); the insert buffer, the flush to Parquet and every read surface now take such rows in
+  both layers (`TestDuplicateStreamFields_IngestFlushQuery`). A syslog message whose structured data ends right after
+  `name=` made v1.52.0 index past the end of the line and kill the process from the listener goroutine (VictoriaLogs #1786); `unpack_syslog`
+  over such a stored message hit the same panic, which the cold path swallowed and answered with no rows at all. A quoted
+  constant in `math` (`math _time - "2026-10-01T00:00:00Z"`) crashed the insert-buffer read when the query was cloned
+  with a time filter. The duplicate-stream-tags, syslog and math fixes have tests that fail without them; the two further
+  v1.53.0 fixes the logs binary takes (`sort by (_time) limit N` over a pipe that overwrites `_time`, and `week_range[Sun,Sun]` inside
+  the `filter` pipe) are covered by parity guards that also pass on v1.52.0. lakehouse-traces, still on VictoriaLogs v1.52.0, carries
+  upstream's exact changes for the three crash fixes as patches: duplicate stream tags
+  (`patches/vl-traces/vl-allow-duplicate-stream-tags.patch`), the quoted `math` constant that exited the process when a window held a
+  cold file plus buffered rows (`vl-math-keep-quoted-constants.patch`), and the incomplete RFC5424 structured data in `unpack_syslog`
+  (`vl-syslog-rfc5424-incomplete-sd.patch`), each with a test that fails without it.
+
+### Security
+
+- **The VictoriaMetrics library bump closes an `-httpAuth.*` bypass present on main in both binaries.**
+  VictoriaMetrics lib v1.146.1 (`isProtectedByAuthFlag`) skipped Basic Auth for any request path that merely ended in `/config`, `/reload`,
+  `/snapshot`, `/force_merge`, `/force_flush`, `/delete_series` and similar, whatever came before it, so with `-httpAuth.*` set
+  `DELETE /lakehouse/api/v1/tenants/aliases/config` or `/delete/logsql/tombstone/reload` was served to a caller without credentials.
+  v1.152.1 exempts only the paths a binary registers itself. Regression tests start the real HTTP server with `-httpAuth.*`
+  in both binaries and require 401 on those paths; they fail on lib v1.146.1 and pass on v1.152.1.
+
+- **`/delete/*` keeps `-httpAuth.*` when `-deleteAuthKey` cannot be read.** `internaldelete.DeleteAuth` used to let every request through when the
+  flag lookup or its type assertion failed; it now behaves as if the key were unset and demands `-httpAuth.*`.
+
+- **`-deleteAuthKey` guards `/delete/*` in lakehouse-logs, and `/delete/run_task`, `/internal/select/*` and `/internal/delete/*` are POST-only from upstream's own handlers (VictoriaLogs v1.53.0).**
+  With `-deleteAuthKey` set, every `/delete/*` request, upstream's delete API and the lakehouse's own `/delete/logsql/*`
+  API alike, must carry the key as `authKey` (401 with upstream's text otherwise), the check comes before every other
+  answer, and the key replaces `-httpAuth.*` on those paths instead of adding to it (VictoriaLogs #1749, #1764). The
+  lakehouse-side POST-only wrappers for `/delete/run_task` and the cluster protocol are removed from the logs binary
+  now that upstream refuses the other methods itself with the same answers; lakehouse-traces keeps its wrappers because
+  its embedded VictoriaLogs revision (v1.52.0) does not. lakehouse-traces has no `-deleteAuthKey`: its VictoriaLogs revision and VictoriaTraces v0.12.0 predate the flag.
+
 ## [0.145.4] - 2026-10-06
 
 ### Fixed
