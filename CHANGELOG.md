@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.145.4] - 2026-10-06
+
 ### Fixed
 
 - **Cold reads no longer prune a quoted phrase filter as an exact match (both binaries).** `field:"v"` is a phrase
