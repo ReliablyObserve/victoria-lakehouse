@@ -391,6 +391,15 @@ func TestCachedFooterWeightCalibration(t *testing.T) {
 		{"rg8", 16000, 2000},
 		{"rg40", 60000, 1500},
 	}
+	// -short keeps the three row-group shapes (1, 8 and about 40 row groups) on
+	// smaller objects and fewer entries per trial; the model is still held to
+	// the same measured <= model <= 1.5x measured window.
+	entries, nTrials := 24, 5
+	if testing.Short() {
+		cases[1].rows, cases[1].rgSize = 8000, 1000
+		cases[2].rows, cases[2].rgSize = 24000, 600
+		entries, nTrials = 12, 4
+	}
 	for _, c := range cases {
 		for _, decoded := range []bool{false, true} {
 			state := "fresh"
@@ -413,15 +422,15 @@ func TestCachedFooterWeightCalibration(t *testing.T) {
 				// with it the entries, before the next one starts.
 				var trials []int64
 				var sample *CachedFooter
-				for trial := 0; trial < 5; trial++ {
-					d, cf := measureFooterEntries(t, region, tailStart, size, 24, decoded)
+				for trial := 0; trial < nTrials; trial++ {
+					d, cf := measureFooterEntries(t, region, tailStart, size, entries, decoded)
 					sample = cf
 					if d > 0 {
 						trials = append(trials, d)
 					}
 				}
 				if len(trials) < 3 {
-					t.Fatalf("only %d usable heap trials of 5", len(trials))
+					t.Fatalf("only %d usable heap trials of %d", len(trials), nTrials)
 				}
 				sort.Slice(trials, func(i, j int) bool { return trials[i] < trials[j] })
 				per := trials[len(trials)/2]
@@ -479,12 +488,13 @@ func measureFooterEntries(t *testing.T, region []byte, tailStart, size int64, n 
 // the page index of the cached footer prunes the row groups, so the plan
 // fetches only the surviving chunks while the window reader reads ahead.
 func TestPlannedDefault_TraceIDLookupUsesPlannedReader(t *testing.T) {
-	rows := traceRows(2*6000, time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC))
+	perFile, rgRows := 6000, 2000
+	rows := traceRows(2*perFile, time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC))
 	tid := rows[1234].TraceID
 	q := fmt.Sprintf(`trace_id:=%s | stats count() n`, tid)
 
 	gets := func(mode string) (string, int, int64) {
-		fx := newColdFixture(t, 2, 6000, 2000, mode)
+		fx := newColdFixture(t, 2, perFile, rgRows, mode)
 		fx.prefetch(t)
 		before := len(fx.mock.Requests())
 		ans := fx.answer(t, q)
@@ -511,7 +521,7 @@ func TestPlannedDefault_TraceIDLookupUsesPlannedReader(t *testing.T) {
 	}
 
 	// The open itself arms a plan view for a trace_id projection.
-	fx := newColdFixture(t, 2, 6000, 2000, config.ProjectedFetchModePlanned)
+	fx := newColdFixture(t, 2, perFile, rgRows, config.ProjectedFetchModePlanned)
 	fx.prefetch(t)
 	f, view, err := fx.s.openParquetFileWithPlan(context.Background(), fx.files[0], map[string]bool{"trace_id": true})
 	if err != nil || f == nil {

@@ -404,6 +404,15 @@ func TestCachedFooterWeightCalibration(t *testing.T) {
 		{"rg8", 16000, 2000},
 		{"rg40", 60000, 1500},
 	}
+	// -short keeps the three row-group shapes (1, 8 and about 40 row groups) on
+	// smaller objects and fewer entries per trial; the model is still held to
+	// the same measured <= model <= 1.5x measured window.
+	entries, nTrials := 24, 5
+	if testing.Short() {
+		cases[1].rows, cases[1].rgSize = 8000, 1000
+		cases[2].rows, cases[2].rgSize = 24000, 600
+		entries, nTrials = 12, 4
+	}
 	for _, c := range cases {
 		for _, decoded := range []bool{false, true} {
 			state := "fresh"
@@ -426,15 +435,15 @@ func TestCachedFooterWeightCalibration(t *testing.T) {
 				// with it the entries, before the next one starts.
 				var trials []int64
 				var sample *CachedFooter
-				for trial := 0; trial < 5; trial++ {
-					d, cf := measureFooterEntries(t, region, tailStart, size, 24, decoded)
+				for trial := 0; trial < nTrials; trial++ {
+					d, cf := measureFooterEntries(t, region, tailStart, size, entries, decoded)
 					sample = cf
 					if d > 0 {
 						trials = append(trials, d)
 					}
 				}
 				if len(trials) < 3 {
-					t.Fatalf("only %d usable heap trials of 5", len(trials))
+					t.Fatalf("only %d usable heap trials of %d", len(trials), nTrials)
 				}
 				sort.Slice(trials, func(i, j int) bool { return trials[i] < trials[j] })
 				per := trials[len(trials)/2]
