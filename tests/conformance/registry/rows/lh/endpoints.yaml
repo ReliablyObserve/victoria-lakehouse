@@ -120,7 +120,7 @@
   pending: true
 
 - id: lh.admin.parity.schema
-  title: "LH parity admin — self-reported parity/drift status vs. pinned upstream"
+  title: "LH parity admin — VL vs manifest rows over every tenant and a file-aligned window; unflushed buffer rows are the expected drift"
   surface: lh
   kind: admin
   origin: lh-addition

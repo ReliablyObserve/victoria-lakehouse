@@ -491,7 +491,7 @@ flag: 35/181 covered by at least one registry row.
 
 | Row | Title | Kind | Status |
 |---|---|---|---|
-| `lh.admin.parity.schema` | LH parity admin — self-reported parity/drift status vs. pinned upstream | admin | 🟡 declared, not yet executed |
+| `lh.admin.parity.schema` | LH parity admin — VL vs manifest rows over every tenant and a file-aligned window; unflushed buffer rows are the expected drift | admin | 🟡 declared, not yet executed |
 | `lh.bloom.status.schema` | LH bloom status — combined-bloom retention and per-partition stats | admin | 🟡 declared, not yet executed |
 | `lh.cardinality.fields.schema` | LH cardinality fields — field cardinality estimates (HLL-backed) | admin | 🟡 declared, not yet executed |
 | `lh.delete.hide_survives_crash` | LH hide-mode delete — suppression survives a non-graceful restart | admin | 🟡 declared, not yet executed |
