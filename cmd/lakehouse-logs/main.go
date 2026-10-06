@@ -1452,21 +1452,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	// LiveAggregate. Both queries answer the same question from
 	// different code paths so any drift is operationally meaningful.
 	if cfg.Stats.Enabled {
-		parityAPI := stats.NewAPI(stats.APIConfig{Manifest: store.Manifest(), Mode: "logs", Bucket: cfg.S3.Bucket})
-		// Use the configured listen address for the in-process VL loopback.
-		listenAddr := *listenAddrFlag
-		if cfg.ListenAddr() != "" {
-			listenAddr = cfg.ListenAddr()
-		}
-		parityAPI.RegisterParity(mux, stats.NewLocalVLQuerier(fmt.Sprintf("http://127.0.0.1%s", listenAddr)), func(r *http.Request) bool {
-			// Same validator the select path uses to widen a query to
-			// every tenant — one credential, one implementation.
-			return tenant.NewGlobalReadAuth(
-				cfg.Tenant.GlobalReadHeader,
-				cfg.Tenant.GlobalReadValue,
-				cfg.Tenant.GlobalReadToken,
-			).Authorize(r)
-		})
+		mountParity(mux, cfg, store.Manifest(), store, *listenAddrFlag)
 	}
 
 	// Stats API. statsAgg (the materialized size-stats aggregate) is created and
@@ -2401,4 +2387,24 @@ func bufferGrace(cfg *config.Config) time.Duration {
 		refresh = 30 * time.Second
 	}
 	return 2*refresh + 30*time.Second
+}
+
+// mountParity registers GET /lakehouse/api/v1/admin/parity. Its loopback query
+// goes to listenAddr, the address this process serves HTTP on (-httpListenAddr),
+// not to the mode's default: another server (a hot VictoriaLogs on :9428) may
+// hold that, and the caller's global-read secret must not travel there.
+func mountParity(mux *http.ServeMux, cfg *config.Config, mf *manifest.Manifest, buf stats.BufferSource, listenAddr string) {
+	parityAPI := stats.NewAPI(stats.APIConfig{
+		Manifest: mf, Buffer: buf, Mode: "logs", Bucket: cfg.S3.Bucket,
+		ParityForwardHeader: cfg.Tenant.GlobalReadHeader,
+	})
+	parityAPI.RegisterParity(mux, stats.NewLoopbackVLQuerier(listenAddr, ""), func(r *http.Request) bool {
+		// Same validator the select path uses to widen a query to
+		// every tenant — one credential, one implementation.
+		return tenant.NewGlobalReadAuth(
+			cfg.Tenant.GlobalReadHeader,
+			cfg.Tenant.GlobalReadValue,
+			cfg.Tenant.GlobalReadToken,
+		).Authorize(r)
+	})
 }

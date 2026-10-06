@@ -5,46 +5,50 @@ package e2e
 import (
 	"encoding/json"
 	"io"
-	"math"
 	"net/http"
 	"testing"
 	"time"
 )
 
-// TestParity_VLViewVsManifest is the operator-facing assertion the
-// user asked for: the embedded VL `* | stats count()` and the
-// manifest's LiveAggregate should agree on row totals for the same
-// time window. Any drift > 10% over a long window is investigated.
-//
-// Per-tenant parity is not yet supported (account_id is a Parquet
-// column, not a VL stream tag); the test verifies the response
-// flags that explicitly so operators don't go looking for a
-// drill-down that isn't there.
-func TestParity_VLViewVsManifest(t *testing.T) {
-	// Per-signal tolerance reflects how precisely the windowed
-	// manifest aggregate can match VL's row-precise time filter:
-	//
-	// - Logs: file time ranges are tight (≤1 hour, partition-aligned)
-	//   so manifest-window ≈ row-window. Drift should be small.
-	//
-	// - Traces: spans of a single trace cluster across multiple
-	//   hours; trace files frequently span much wider [Min,Max]
-	//   than the requested window, so the file-level overlap
-	//   filter counts rows outside the window. Drift up to ~30%
-	//   is structural; tighter assertion requires row-precise
-	//   manifest scan which is much more expensive.
-	endpoints := []struct {
-		base         string
-		tolerancePct float64
-	}{
-		{logsBaseURL, 5},
-		{tracesBaseURL, 30},
+// settledParity fetches the parity sample until the endpoint reports it was
+// not disturbed by a flush, a compaction commit or ingest between its reads
+// (it brackets the buffer and the manifest around the VL read and resamples
+// itself). A sample that never settles fails: with ingest running the
+// comparison is not defined, and that must not pass as parity.
+func settledParity(t *testing.T, base string) map[string]any {
+	t.Helper()
+	var body map[string]any
+	for try := 1; try <= 6; try++ {
+		body = fetchParity(t, base, "24h")
+		if unstable, _ := body["unstable_sample"].(bool); !unstable {
+			return body
+		}
+		time.Sleep(2 * time.Second)
 	}
-	for _, ep := range endpoints {
-		base := ep.base
-		tolerancePct := ep.tolerancePct
-		_ = base
-		body := fetchParity(t, base, "24h")
+	t.Errorf("%s parity: the sample never settled in 6 tries (buffer or manifest kept changing); last: %v", base, body)
+	return body
+}
+
+// TestParity_VLViewVsManifest asserts the operator endpoint's two views agree
+// on the SAME scope: the embedded VL `* | stats count()` (every tenant, via the
+// caller's global-read credential, including rows only the insert buffer holds)
+// and the manifest aggregate over the same hour-aligned window.
+//
+// The expected gap is only the rows of live UNCOMMITTED buffer segments that the
+// manifest does not hold yet (buffer_unflushed_rows). Everything else must be
+// exact:
+//
+//	vl_rows - manifest_rows - buffer_unflushed_rows == 0
+//
+// and no live segment may disagree with its own objects (segment_mismatches
+// empty: a committed segment serves exactly its objects' rows). The comparison
+// has no tolerance: the endpoint reads the buffer and the manifest before and
+// after the VL read and repeats the sample when either changed, so on a settled
+// stack a single lost file of any size is a residual. For BOTH binaries, with no
+// per-signal allowance.
+func TestParity_VLViewVsManifest(t *testing.T) {
+	for _, base := range []string{logsBaseURL, tracesBaseURL} {
+		body := settledParity(t, base)
 
 		vl, _ := body["vl_rows"].(float64)
 		mf, _ := body["manifest_rows"].(float64)
@@ -56,21 +60,27 @@ func TestParity_VLViewVsManifest(t *testing.T) {
 			t.Errorf("%s parity: manifest reports 0 rows but VL reports %.0f", base, vl)
 			continue
 		}
+		if scope, _ := body["scope"].(string); scope != "all_tenants" {
+			t.Errorf("%s parity scope=%q, want all_tenants", base, scope)
+		}
+		if _, ok := body["buffer_unflushed_rows"]; !ok {
+			t.Errorf("%s parity response has no buffer_unflushed_rows", base)
+		}
+		if e, _ := body["buffer_error"].(string); e != "" {
+			t.Errorf("%s parity buffer_error=%q", base, e)
+		}
+		if mm, _ := body["segment_mismatches"].([]any); len(mm) != 0 {
+			t.Errorf("%s parity: live segments disagree with their own objects: %v", base, mm)
+		}
 
-		// Use verified_drift when present (traces) — falls back to
-		// raw rows_delta on the logs side where no internal counter
-		// is wired (logs don't have VT-internal rows).
-		verifiedPct := math.Abs(safeFloat(body["verified_drift_pct"]))
-		rawPct := math.Abs((vl - mf) / mf * 100)
-		expected, _ := body["expected_drift"].(float64)
-
-		if verifiedPct > tolerancePct {
-			t.Errorf("%s parity verified_drift %.2f%% exceeds %.0f%% tolerance "+
-				"(vl=%.0f manifest=%.0f raw_drift=%.2f%% expected_drift=%.0f rows)",
-				base, verifiedPct, tolerancePct, vl, mf, rawPct, expected)
+		buffer, _ := body["buffer_unflushed_rows"].(float64)
+		residual := vl - mf - buffer
+		if residual != 0 {
+			t.Errorf("%s parity residual %.0f rows, want 0 (vl=%.0f manifest=%.0f buffer_unflushed=%.0f attempts=%.0f attribution=%v)",
+				base, residual, vl, mf, buffer, safeFloat(body["sample_attempts"]), body["buffer_attribution"])
 		} else {
-			t.Logf("%s parity OK: verified_drift=%.2f%% (raw=%.2f%% expected=%.0f rows accounted from vt_internal_dropped)",
-				base, verifiedPct, rawPct, expected)
+			t.Logf("%s parity OK: residual=0 vl=%.0f manifest=%.0f buffer_unflushed=%.0f attempts=%.0f",
+				base, vl, mf, buffer, safeFloat(body["sample_attempts"]))
 		}
 
 		if supported, _ := body["per_tenant_supported"].(bool); supported {

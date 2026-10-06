@@ -235,3 +235,105 @@ func TestTenantAggregates_RaceConcurrentMutation(t *testing.T) {
 		}
 	}
 }
+
+func TestAlignedWindowStart(t *testing.T) {
+	const h = int64(time.Hour)
+	m := New("b", "")
+	m.AddFile("p0", FileInfo{Key: "a.parquet", RowCount: 10, MinTimeNs: 10 * h, MaxTimeNs: 11*h - 1})
+	m.AddFile("p1", FileInfo{Key: "b.parquet", RowCount: 10, MinTimeNs: 11 * h, MaxTimeNs: 12*h - 1})
+	m.AddFile("p9", FileInfo{Key: "norange.parquet", RowCount: 10}) // no time range: never straddles
+	cases := []struct {
+		name  string
+		start int64
+		want  int64
+	}{
+		{"inside a file moves back to its first row", 10*h + h/2, 10 * h},
+		{"on a file boundary stays", 11 * h, 11 * h},
+		{"between files stays", 12*h + 5, 12*h + 5},
+		{"zero start is unchanged", 0, 0},
+	}
+	for _, c := range cases {
+		if got := m.AlignedWindowStart(c.start); got != c.want {
+			t.Errorf("%s: got %d want %d", c.name, got, c.want)
+		}
+	}
+
+	// Chained straddles: moving back into the earlier file's range pulls in a
+	// coarser file that covers it.
+	m.AddFile("p2", FileInfo{Key: "day.parquet", RowCount: 100, MinTimeNs: 5 * h, MaxTimeNs: 10*h + 10})
+	if got := m.AlignedWindowStart(10*h + h/2); got != 5*h {
+		t.Errorf("chained: got %d want %d", got, 5*h)
+	}
+}
+
+// A chain of ranges, each reaching the next one's first row, pulls the start
+// back through all of them whatever order the files are held in.
+func TestAlignedWindowStart_LongChainOfStraddles(t *testing.T) {
+	const h = int64(time.Hour)
+	for run := 0; run < 20; run++ { // the file map's iteration order is random
+		m := New("b", "")
+		for i := int64(0); i < 8; i++ {
+			// [ (8-i)h, (9-i)h ]: each ends exactly where the next-earlier one starts.
+			m.AddFile(fmt.Sprintf("p%d", i), FileInfo{Key: fmt.Sprintf("f%d.parquet", i), RowCount: 1, MinTimeNs: (8 - i) * h, MaxTimeNs: (9 - i) * h})
+		}
+		if got := m.AlignedWindowStart(8*h + h/2); got != h {
+			t.Fatalf("run %d: got %d want %d (the whole chain)", run, got, h)
+		}
+	}
+}
+
+func TestWindowSample(t *testing.T) {
+	m := New("b", "")
+	m.AddFile("p0", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-1.parquet", RowCount: 7, Size: 70, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p0", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-2.parquet", RowCount: 3, Size: 30, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p1", FileInfo{Key: "0/0/logs/bbbbbbbbbbbbbbbb-1.parquet", RowCount: 5, Size: 50, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p2", FileInfo{Key: "0/0/logs/plain.parquet", RowCount: 50, Size: 500, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p3", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-3.parquet", RowCount: 9, Size: 90, MinTimeNs: 1, MaxTimeNs: 2}) // before the window
+
+	a, b := "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"
+	got := m.WindowSample(50, 300, map[string]struct{}{a: {}})
+	if got.SegmentRows[a] != 10 || len(got.SegmentRows) != 1 {
+		t.Errorf("one nonce, in window: %v want {a:10}", got.SegmentRows)
+	}
+	// The aggregate is LiveAggregateWindow's over the same window, whatever the nonces.
+	if want := m.LiveAggregateWindow(50, 300); got.Agg != want {
+		t.Errorf("aggregate %+v want %+v", got.Agg, want)
+	}
+	if got.Agg.Rows != 65 || got.Agg.Files != 4 {
+		t.Errorf("aggregate rows/files %d/%d want 65/4", got.Agg.Rows, got.Agg.Files)
+	}
+	two := m.WindowSample(50, 300, map[string]struct{}{a: {}, b: {}})
+	if two.SegmentRows[a] != 10 || two.SegmentRows[b] != 5 {
+		t.Errorf("two nonces: %v", two.SegmentRows)
+	}
+	none := m.WindowSample(0, 0, nil)
+	if none.SegmentRows != nil || none.Agg.Rows != 74 {
+		t.Errorf("no nonces: %+v", none)
+	}
+	// A nonce with no object in the window is absent, not zero.
+	if got := m.WindowSample(50, 300, map[string]struct{}{"cccccccccccccccc": {}}); len(got.SegmentRows) != 0 {
+		t.Errorf("unknown nonce: %v", got.SegmentRows)
+	}
+}
+
+func TestAlignedWindowEnd(t *testing.T) {
+	const h = int64(time.Hour)
+	for run := 0; run < 20; run++ {
+		m := New("b", "")
+		m.AddFile("p0", FileInfo{Key: "a.parquet", RowCount: 1, MinTimeNs: 1 * h, MaxTimeNs: 5 * h})
+		// chain reaching forward: each starts inside the previous one's range
+		m.AddFile("p1", FileInfo{Key: "b.parquet", RowCount: 1, MinTimeNs: 5*h - 1, MaxTimeNs: 7 * h})
+		m.AddFile("p2", FileInfo{Key: "c.parquet", RowCount: 1, MinTimeNs: 7*h - 1, MaxTimeNs: 9 * h})
+		m.AddFile("p3", FileInfo{Key: "far.parquet", RowCount: 1, MinTimeNs: 20 * h, MaxTimeNs: 21 * h}) // wholly after: untouched
+		m.AddFile("p4", FileInfo{Key: "norange.parquet", RowCount: 1})
+		if got := m.AlignedWindowEnd(4 * h); got != 9*h {
+			t.Fatalf("chain: got %d want %d", got, 9*h)
+		}
+		if got := m.AlignedWindowEnd(10 * h); got != 10*h {
+			t.Fatalf("nothing straddles: got %d want %d", got, 10*h)
+		}
+		if got := m.AlignedWindowEnd(0); got != 0 {
+			t.Fatalf("zero: got %d", got)
+		}
+	}
+}

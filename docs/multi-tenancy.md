@@ -579,8 +579,10 @@ Each bucket can have:
 Operators worried "is our LH tenant view actually matching what VL/VT says?" can hit
 `GET /lakehouse/api/v1/admin/parity?window=24h` (auth-gated by the global-read
 header). The response compares the embedded VL stats path against the
-manifest's `LiveAggregateWindow` for the same window and accounts for
-VT-internal index rows that the writer intentionally drops.
+manifest's `LiveAggregateWindow` for the same window and the same tenants (every
+tenant: the loopback query carries the caller's global-read credential), over a
+window aligned to the files, and reports the rows the insert buffer holds but
+the manifest does not yet as `buffer_unflushed_rows`, the expected drift.
 
 See [docs/parity-and-gaps.md](parity-and-gaps.md) for the full expected-drift
 behavior plus the running register of cold-tier feature gaps relative to

@@ -7,7 +7,12 @@ Track what the cold tier (Lakehouse-stored Parquet) does, doesn't, and only-appr
 
 ## Parity endpoint
 
-`GET /lakehouse/api/v1/admin/parity[?window=24h]` runs the embedded VL stats path (`* | stats count() as n` with an embedded `_time:[start, end]` filter) and the manifest's `LiveAggregateWindow` for the same window. Both are answering "how many rows do we hold over this window?" from different code paths.
+`GET /lakehouse/api/v1/admin/parity[?window=24h]` compares two views of "how many rows do we hold over this window?", for **every tenant** and for the same window:
+
+- the **VL view**: `* | stats count() as n` with an embedded `_time:[start, end]` filter, run through the process's own select path. The request carries the caller's global-read credential, so the count covers every tenant and includes rows only the insert buffer holds;
+- the **manifest view**: `LiveAggregateWindow` over the same window, the per-file row counts of every tenant's files.
+
+The window start is **aligned**: if a file straddles the requested start (hour partitions, or a coarser compaction tier), the start moves back to that file's first row, so the file-level sum equals the row-precise count. The window end is aligned the same way (a file holding rows dated after now moves it forward to its last row). The reported `start_unix_nano`/`end_unix_nano` are the aligned bounds; `requested_start_unix_nano`/`requested_end_unix_nano` are what was asked for.
 
 Response shape:
 
@@ -15,36 +20,60 @@ Response shape:
 {
   "start_unix_nano": ...,
   "end_unix_nano": ...,
+  "requested_start_unix_nano": ...,
+  "requested_end_unix_nano": ...,
+  "scope": "all_tenants",
   "vl_rows": <int>,
   "manifest_rows": <int>,
   "manifest_bytes": <int>,
   "manifest_files": <int>,
   "rows_delta": <vl - manifest>,
   "rows_delta_pct": <%>,
+  "buffer_rows": <int>,
+  "buffer_object_rows": <int>,
+  "buffer_unflushed_rows": <rows of live uncommitted segments the manifest does not hold yet>,
+  "buffer_attribution": "per_segment" | "aggregate" | "none",
+  "segment_mismatches": [{"nonce": "...", "committed": <bool>, "buffer_rows": <n>, "object_rows": <n>, "dropped_rows": <n>}],
+  "buffer_error": "<only when a peer's buffer could not be read>",
   "vt_internal_dropped": {"trace_id_idx": <n>, "service_graph": <n>},
-  "expected_drift": <int>,
+  "expected_drift": <buffer_unflushed_rows>,
   "verified_drift": <rows_delta - expected_drift>,
   "verified_drift_pct": <%>,
+  "sample_attempts": <1..3>,
+  "unstable_sample": <bool, only when true>,
   "per_tenant_supported": false,
   "per_tenant_note": "..."
 }
 ```
 
-`verified_drift` is the drift after accounting for VT-internal index rows the writer drops at insert time (`metrics.VTInternalRowsDropped`). Trace-mode drift is dominated by these dropped rows; subtracting them gives the operationally meaningful residual.
+`buffer_rows` is what the live insert-buffer segments hold in the window (every tenant; with insert peers, every peer's, through the buffer bridge). A query counts those rows from the buffer and skips the objects the same segments already wrote, so the two terms are compared **per segment**:
 
-Auth-gated by `X-Lakehouse-Global-Read` (same surface as `/admin/tenant/migrate`).
+- a live segment that is **not committed** yet may hold more rows than it has written: `buffer_unflushed_rows` is the sum of that excess over the segments, and it is the expected drift. On traces it also contains the VT-internal index rows (`trace_id_idx`) the buffer holds and the flush drops, for committed segments too. A segment with fewer buffered rows than object rows is not expected and is reported as a mismatch;
+- a live segment that **is committed** (every object stored and in the manifest) must serve exactly its objects' rows plus the rows the flush drops (traces: the VictoriaTraces `trace_id_idx` rows, which the buffer keeps, hot VictoriaTraces returns for unflushed data, and the flush never writes; they are counted per segment, and are expected drift). Any other difference is listed in `segment_mismatches` (`nonce`, `buffer_rows`, `object_rows`) and is NOT counted as expected drift: it stays in `verified_drift`. This is how a committed object the buffer no longer serves (rows the VL view lacks), or an object compaction merged away while its segment was still live (rows counted twice), shows up instead of being absorbed by the buffer term.
+
+`buffer_attribution` says how precisely the buffer is checked: `per_segment` when the segments are co-located (each one is checked on its own), `aggregate` when the rows come from insert peers through the buffer bridge (rows and nonces only: the peers' total is compared with the objects of their segments, and a total below the objects' rows is reported as a mismatch with nonce `*`; a committed segment that under-serves cannot be told apart from an unflushed one there), `none` when the node has no buffer. `buffer_error` is set when a peer's buffer could not be read: the buffer term is then partial and `verified_drift` must not be read as parity.
+
+`verified_drift` is what remains after the expected drift: rows ingested or flushed between the endpoint's reads, or a real divergence. `vt_internal_dropped` is the process-lifetime drop counter (all tenants, all time), reported for information only; it is not window-correct and is not part of the expected drift. The buffer and the manifest are read before and after the VL read; when either changed (a flush or compaction commit, a row ingested, a peer failing in only one of the two reads) the sample is repeated, up to 3 times (`sample_attempts`), and `unstable_sample` is set if it never settled.
+
+The loopback VL query goes to the address the process actually listens on (`-httpListenAddr`, including a `unix:` socket), never to a default port, and carries only the caller's `Authorization` header and the configured global-read header: no cookies, tenant headers, `Host` or `Connection`.
+
+Auth: the caller must present the global-read credential: the configured global-read header with its value, or `Authorization: Bearer <token>` when a bearer token is configured. When no global-read credential is configured the endpoint answers **403** to everyone. Per-tenant rows are not reported: the comparison is the total over every tenant.
 
 ### Expected drift behavior
 
-| Signal | Typical `rows_delta_pct` | Typical `verified_drift_pct` | What dominates the residual |
-|---|---|---|---|
-| Logs | 0–2% | 0–2% | Manifest-window includes whole files that straddle the boundary; VL filters precisely. |
-| Traces | 90–300% (raw) | 5–30% (after subtracting dropped) | Spans cluster within a trace duration; trace files span wider [Min, Max] than the window. |
+`verified_drift` should be exactly zero on a settled stack on both signals. The e2e gate (`TestParity_VLViewVsManifest`) asserts `vl_rows - manifest_rows - buffer_unflushed_rows == 0`, an empty `segment_mismatches` and an empty `buffer_error` for logs and traces alike, with no tolerance: the endpoint brackets the buffer and the manifest around the VL read and resamples itself, so a single lost file of any size is a residual.
 
-If `verified_drift_pct` jumps significantly above these bands, investigate — most likely:
-- writer stopped dropping VT-internal rows (regression)
+| Signal | `rows_delta` | `verified_drift` | What explains the rest |
+|---|---|---|---|
+| Logs | the unflushed buffer rows | 0 | nothing on a settled stack; rows ingested between the reads show as `unstable_sample` |
+| Traces | the unflushed buffer rows, including buffered `trace_id_idx` rows | 0 | the same |
+
+If `verified_drift` is not zero or `segment_mismatches` is not empty, investigate — most likely:
+- a file in the manifest that VL cannot read (negative drift), or an object missing from the manifest (positive)
 - manifest's RefreshFromS3 missed a prefix (tenant-isolation routing bug)
 - compaction wrote outputs to a different prefix than its inputs
+- the loopback query was refused (`vl_error`)
+- a window edge: files without a time range are counted whole by the manifest, and a pending tombstone hides rows VL no longer counts (known limits of this comparison, #416)
 
 ## Intentional differences
 
@@ -89,7 +118,7 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 | Feature | Status | Severity | Notes |
 |---|---|---|---|
 | **`pipe top`, `pipe unique`, `pipe unroll`** | Untested at scale | Risk-only | The vlselect dispatch overlay forwards these to our cold-tier reader; correctness assumed but not exhaustively tested. |
-| **Sub-second `_time` precision on aggregations** | Hour-bucket precision in cold | Metric-only | Cold partitions are hour-granular; `_time:[<sec1>, <sec2>]` falls back to hour-bucket overlap so sub-hour windowed counts include some adjacent-hour rows. Drives the small parity residual on logs (~2%). |
+| **`hits` at a sub-hour `step`** | Hour-granular cold partitions | Metric-only | Window counts (`stats count()` under `_time:[a, b]`) are row-precise on cold data: every cold read path bounds each row by the query's time range. What is hour-granular is the per-file metadata: a file-level aggregate (the manifest sum) counts a file that straddles a window edge whole, and `hits` at a sub-hour `step` interpolates its buckets (B5 below). The admin parity endpoint aligns its window to the files, so it is not affected. |
 
 ### Cross-cutting
 
