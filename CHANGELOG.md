@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The Parquet reader-matrix harness pins pytest 9.0.3.** pytest below 9.0.3 has vulnerable tmpdir handling
+  (Dependabot alert 17). `tests/readers/requirements.txt` only; nothing in the binaries uses it.
+
 - **Every external Parquet reader named in the docs now runs its documented example against real Lakehouse files in CI, and is compared with the rows the writer sent, not with what Lakehouse reads back (no runtime change; see #340, #341, #342).**
   A new `parquet-readers` workflow ingests logs and traces for a numeric tenant, a string alias, a tenant above 2^31,
   a hand-written edge-case tenant (every nanosecond digit, a day boundary to the nanosecond, odd map keys, the
