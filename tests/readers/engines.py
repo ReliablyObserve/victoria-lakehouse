@@ -125,7 +125,10 @@ def exec_body(body, engine, extra_ns=None):
                 if lib.base_query(target) == "by_service":
                     rows = by_service_fix(rows)
                 out[target] = lib.normalise(lib.base_query(target), rows)
-        except BaseException as e:  # noqa: BLE001 - engines panic (pyo3.PanicException) outside Exception
+        # BaseException on purpose: Rust engines (Polars, DataFusion) raise pyo3_runtime.PanicException, a direct
+        # BaseException subclass that each extension defines privately, so no narrower class catches it;
+        # KeyboardInterrupt and SystemExit are re-raised below.
+        except BaseException as e:  # noqa: BLE001
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
             if not target:
@@ -236,18 +239,24 @@ def versions():
         try:
             v[name] = md.version(dist)
         except md.PackageNotFoundError:
+            # Not installed in this job: the engine runs in another job, which records its version;
+            # leaving the key out keeps that value when the report merges the jobs' results.
             pass
     try:
         req = urllib.request.Request(CH_URL + "/", data=b"SELECT version()", headers={"Authorization": "Basic bGg6bGg="})
         with urllib.request.urlopen(req, timeout=10) as r:
             v["clickhouse"] = r.read().decode().strip()
     except Exception:
+        # The ClickHouse container is not part of this job (the in-process job); the clickhouse job
+        # records the version, and leaving the key out keeps it when the report merges results.
         pass
     try:
         url = "http://%s:%s/v1/info" % (os.environ.get("TRINO_HOST", "127.0.0.1"), os.environ.get("TRINO_PORT", "39420"))
         with urllib.request.urlopen(url, timeout=10) as r:
             v["trino"] = str(json.load(r)["nodeVersion"]["version"])
     except Exception:
+        # The Trino container is not part of this job; the trino job records the version, and leaving
+        # the key out keeps it when the report merges results.
         pass
     v["spark"] = SPARK_IMAGE.split(":", 1)[1].split("-")[0]
     return v

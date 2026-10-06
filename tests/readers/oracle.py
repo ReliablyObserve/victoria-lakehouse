@@ -59,7 +59,8 @@ def compare(a_path, b_path):
 
 def main():
     if sys.argv[1] == "compare":
-        return compare(sys.argv[2], sys.argv[3])
+        compare(sys.argv[2], sys.argv[3])
+        return
     layer, out = sys.argv[2], sys.argv[3]
     assert len(sys.argv) > 5 and sys.argv[4] == "--params", "oracle.py record <layer> <out.json> --params <truth.json>"
     params = lib.read_json(sys.argv[5])

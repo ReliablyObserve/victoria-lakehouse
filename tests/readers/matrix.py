@@ -110,6 +110,8 @@ def pruning_cells(a, truth, snips, facts):
                         raise got
                 else:
                     got = engines.RUNNERS[eng](lib.find_snippet(snips, eng, sig), cell, params)
+            # BaseException on purpose: a Rust engine's pyo3_runtime.PanicException is a direct BaseException
+            # subclass with no importable class to name; KeyboardInterrupt and SystemExit are re-raised.
             except BaseException as e:  # noqa: BLE001
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise

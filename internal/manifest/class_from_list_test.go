@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"encoding/xml"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -169,39 +170,46 @@ func TestRangePartitions_FullWalkAndEarlyStop(t *testing.T) {
 }
 
 // TestRangePartitions_WriterNotBlockedForWholeWalk guards the one-partition-at
-// -a-time lock: a writer that queues up while the walk is inside the first
-// partition gets in as soon as that partition's callback returns, before the
-// second partition is visited. With the read lock held for the whole walk the
-// writer would only finish after the last partition.
+// -a-time lock: a writer that starts while the walk is inside the first
+// partition gets in at a partition boundary, before the walk ends. With the
+// read lock held for the whole walk the writer could only finish after the
+// last partition. The walk has many partitions and the check passes as soon as
+// any later callback sees the write done, so a slow scheduler (a loaded CI
+// runner) only delays the write by a few partitions instead of failing the test.
 func TestRangePartitions_WriterNotBlockedForWholeWalk(t *testing.T) {
+	const parts = 64
 	m := New("b", "logs/")
-	for h := 0; h < 4; h++ {
-		part := "dt=2026-06-10/hour=0" + string(rune('0'+h))
+	for h := 0; h < parts; h++ {
+		part := fmt.Sprintf("dt=2026-06-10/hour=%02d/p=%02d", h%24, h)
 		m.AddFile(part, FileInfo{Key: "logs/" + part + "/a.parquet"})
 	}
+	writerStarted := make(chan struct{})
 	writerDone := make(chan struct{})
 	visited := 0
-	writerRanBetweenPartitions := false
+	doneBeforeEnd := false
 	m.RangePartitions(func(string, []FileInfo) bool {
 		visited++
-		switch visited {
-		case 1:
+		if visited == 1 {
 			go func() {
+				close(writerStarted)
 				m.AddFile("dt=2026-06-11/hour=00", FileInfo{Key: "logs/dt=2026-06-11/hour=00/w.parquet"})
 				close(writerDone)
 			}()
-			time.Sleep(150 * time.Millisecond) // let the writer queue on the lock
-		case 2:
-			select {
-			case <-writerDone:
-				writerRanBetweenPartitions = true
-			default:
+			<-writerStarted
+			time.Sleep(20 * time.Millisecond) // let the writer reach the lock
+			return true
+		}
+		select {
+		case <-writerDone:
+			if visited < parts {
+				doneBeforeEnd = true
 			}
+		default:
 		}
 		return true
 	})
 	<-writerDone
-	if !writerRanBetweenPartitions {
+	if !doneBeforeEnd {
 		t.Fatal("a concurrent writer waited for the whole walk")
 	}
 }

@@ -253,6 +253,25 @@ func phraseFixtureSpans(now time.Time) []traceRow {
 	return rows
 }
 
+// spanProtocol derives the HTTP or database attributes a span name implies. It
+// draws from rng in the same order the inline code did, so a --seed run still
+// produces the same rows.
+func spanProtocol(rng *mrand.Rand, spanName, svc string) (httpMethod, httpCode, httpURL, dbSystem, dbStmt string) {
+	switch {
+	case len(spanName) > 4 && spanName[:4] == "HTTP":
+		httpMethod = httpMethods[rng.Intn(len(httpMethods))]
+		httpCode = httpCodes[rng.Intn(len(httpCodes))]
+		httpURL = fmt.Sprintf("http://%s:8080%s", svc, spanName[len("HTTP "+httpMethod):])
+	case len(spanName) > 2 && spanName[:2] == "DB":
+		dbSystem = dbSystems[0]
+		dbStmt = fmt.Sprintf("SELECT * FROM %s WHERE id = $1", spanName[3:])
+	case spanName == "Redis GET session":
+		dbSystem = "redis"
+		dbStmt = "GET session:user:" + randomHex(8)
+	}
+	return httpMethod, httpCode, httpURL, dbSystem, dbStmt
+}
+
 func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, lokiEndpoint, tempoEndpoint, accountID, projectID, orgID string) {
 	now := time.Now().UTC()
 	if !anchor.IsZero() {
@@ -356,20 +375,7 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 			}
 
 			spanName := spanNames[rng.Intn(len(spanNames))]
-			httpMethod, httpCode, httpUrl := "", "", ""
-			dbSystem, dbStmt := "", ""
-
-			if len(spanName) > 4 && spanName[:4] == "HTTP" {
-				httpMethod = httpMethods[rng.Intn(len(httpMethods))]
-				httpCode = httpCodes[rng.Intn(len(httpCodes))]
-				httpUrl = fmt.Sprintf("http://%s:8080%s", svc, spanName[len("HTTP "+httpMethod):])
-			} else if len(spanName) > 2 && spanName[:2] == "DB" {
-				dbSystem = dbSystems[0]
-				dbStmt = fmt.Sprintf("SELECT * FROM %s WHERE id = $1", spanName[3:])
-			} else if spanName == "Redis GET session" {
-				dbSystem = "redis"
-				dbStmt = "GET session:user:" + randomHex(8)
-			}
+			httpMethod, httpCode, httpUrl, dbSystem, dbStmt := spanProtocol(rng, spanName, svc)
 
 			resAttrs := map[string]string{
 				"service.name":            svc,
