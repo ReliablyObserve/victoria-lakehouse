@@ -135,15 +135,29 @@ const DeleteAuthKeyFlagName = "deleteAuthKey"
 // exempts /delete/* from -httpAuth.* because the handler is expected to check
 // the key itself) would leave the lakehouse-only /delete/logsql/* routes open.
 //
-// A binary that has not registered the flag (the traces binary, whose
-// VictoriaLogs revision lacks it) passes everything through unchanged.
+// Fail closed: when the flag cannot be found, or is not the *flagutil.Password
+// upstream registers (a build whose VictoriaLogs revision lacks the flag, or
+// one that changed its type), the request is treated as if the key were unset:
+// it must pass -httpAuth.* (httpserver.CheckBasicAuth), exactly what
+// httpserver.CheckAuthFlag does for an empty key. A lookup failure never opens
+// /delete/* to everyone.
 func DeleteAuth(next http.Handler) http.Handler {
+	return deleteAuth(next, flag.Lookup)
+}
+
+func deleteAuth(next http.Handler, lookup func(name string) *flag.Flag) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(strings.ReplaceAll(r.URL.Path, "//", "/"), "/delete/") {
-			if f := flag.Lookup(DeleteAuthKeyFlagName); f != nil {
-				if key, ok := f.Value.(*flagutil.Password); ok && !httpserver.CheckAuthFlag(w, r, key) {
+			var key *flagutil.Password
+			if f := lookup(DeleteAuthKeyFlagName); f != nil {
+				key, _ = f.Value.(*flagutil.Password)
+			}
+			if key == nil {
+				if !httpserver.CheckBasicAuth(w, r) {
 					return
 				}
+			} else if !httpserver.CheckAuthFlag(w, r, key) {
+				return
 			}
 		}
 		next.ServeHTTP(w, r)

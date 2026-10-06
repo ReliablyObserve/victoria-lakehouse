@@ -1,6 +1,7 @@
 package internaldelete
 
 import (
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,7 +11,7 @@ import (
 
 // A binary that does not register -deleteAuthKey (the traces binary: its
 // VictoriaLogs revision and VictoriaTraces v0.12.0 predate the flag) is passed
-// through unchanged, whatever the path.
+// through without a key check (with no -httpAuth.* either, nothing is asked).
 func TestDeleteAuth_WithoutTheFlagPassesEverythingThrough(t *testing.T) {
 	for _, p := range []string{"/delete/run_task", "/delete/logsql/delete", "/delete/tracessql/delete", "/select/logsql/query"} {
 		reached := false
@@ -55,3 +56,56 @@ func TestDeleteAuth_FlagSet(t *testing.T) {
 		}
 	}
 }
+
+// When the -deleteAuthKey flag cannot be found, or is not the password type
+// upstream registers, /delete/* behaves as if the key were unset: it keeps
+// -httpAuth.* instead of opening to everyone.
+func TestDeleteAuth_FlagLookupFailureFailsClosedToBasicAuth(t *testing.T) {
+	if err := flag.Set("httpAuth.username", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if err := flag.Set("httpAuth.password", "pw"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = flag.Set("httpAuth.username", "")
+		_ = flag.Set("httpAuth.password", "")
+	})
+
+	wrongType := &flag.Flag{Name: DeleteAuthKeyFlagName, Value: stringValue("x")}
+	for _, lk := range []struct {
+		name   string
+		lookup func(string) *flag.Flag
+	}{
+		{"flag not registered", func(string) *flag.Flag { return nil }},
+		{"flag of another type", func(string) *flag.Flag { return wrongType }},
+	} {
+		for _, tc := range []struct {
+			name, target, user, pass string
+			wantReached              bool
+			wantCode                 int
+		}{
+			{"no credentials", "/delete/run_task", "", "", false, http.StatusUnauthorized},
+			{"the lakehouse API, no credentials", "/delete/logsql/delete", "", "", false, http.StatusUnauthorized},
+			{"wrong password", "/delete/run_task", "ops", "nope", false, http.StatusUnauthorized},
+			{"right credentials", "/delete/run_task", "ops", "pw", true, http.StatusTeapot},
+			{"other paths are not this guard's business", "/select/logsql/query", "", "", true, http.StatusTeapot},
+		} {
+			reached := false
+			req := httptest.NewRequest(http.MethodPost, tc.target, nil)
+			if tc.user != "" {
+				req.SetBasicAuth(tc.user, tc.pass)
+			}
+			rec := httptest.NewRecorder()
+			deleteAuth(upstreamStub(&reached), lk.lookup).ServeHTTP(rec, req)
+			if reached != tc.wantReached || rec.Code != tc.wantCode {
+				t.Errorf("%s / %s: reached=%v status=%d, want reached=%v status=%d", lk.name, tc.name, reached, rec.Code, tc.wantReached, tc.wantCode)
+			}
+		}
+	}
+}
+
+type stringValue string
+
+func (s stringValue) String() string   { return string(s) }
+func (s stringValue) Set(string) error { return nil }

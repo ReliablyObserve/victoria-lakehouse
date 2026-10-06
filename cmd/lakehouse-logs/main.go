@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/azdetect"
@@ -586,17 +587,7 @@ func run(cfg *config.Config, addr string) {
 		handler = otelhttp.NewHandler(handler, "lakehouse")
 	}
 
-	// -deleteAuthKey (VictoriaLogs v1.53.0) guards every /delete/* request first,
-	// and overrides -httpAuth.* there: the HTTP server skips Basic Auth for the
-	// paths upstream reports as checking an authKey flag themselves, and
-	// DeleteAuth is that check for both delete APIs.
-	handler = internaldelete.DeleteAuth(handler)
-	registerAuthKeyProtectedPaths()
-
-	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
-		handler.ServeHTTP(w, r)
-		return true
-	}
+	requestHandler := newRequestHandler(handler)
 
 	go runStartup(sm, cfg, store, registry, writerTenantKey, statsAgg)
 
@@ -1195,6 +1186,20 @@ func mountBufferQuery(mux *http.ServeMux, src buffer.Source, authKey string) {
 	mux.Handle(buffer.Path, buffer.Gate(buffer.Path, buffer.InternalSelectDisabled, buffer.NewHandler(src, authKey)))
 }
 
+// newRequestHandler is the handler the HTTP server serves. -deleteAuthKey
+// (VictoriaLogs v1.53.0) guards every /delete/* request first, and overrides
+// -httpAuth.* there: the HTTP server skips Basic Auth for the paths upstream
+// reports as checking an authKey flag themselves, and DeleteAuth is that check
+// for both delete APIs. Must run once, before httpserver.Serve.
+func newRequestHandler(handler http.Handler) func(http.ResponseWriter, *http.Request) bool {
+	handler = internaldelete.DeleteAuth(handler)
+	registerAuthKeyProtectedPaths()
+	return func(w http.ResponseWriter, r *http.Request) bool {
+		handler.ServeHTTP(w, r)
+		return true
+	}
+}
+
 // registerAuthKeyProtectedPaths tells the HTTP server which requests verify an
 // -*AuthKey flag themselves, so it does not demand -httpAuth.* credentials for
 // them first: that is how -deleteAuthKey overrides -httpAuth.* on /delete/*
@@ -1203,8 +1208,14 @@ func mountBufferQuery(mux *http.ServeMux, src buffer.Source, authKey string) {
 // /internal/log_new_streams or /internal/partition/*, the other paths upstream
 // protects this way. Must run once, before httpserver.Serve.
 func registerAuthKeyProtectedPaths() {
-	httpserver.RegisterAuthKeyProtectedPathsFunc(vlselect.IsAuthKeyProtectedPath)
+	registerAuthKeyPathsOnce.Do(func() {
+		httpserver.RegisterAuthKeyProtectedPathsFunc(vlselect.IsAuthKeyProtectedPath)
+	})
 }
+
+// registerAuthKeyPathsOnce: the HTTP server accepts the predicate once per
+// process and panics on a second registration.
+var registerAuthKeyPathsOnce sync.Once
 
 // mountInternalProtocol mounts VL's cluster protocol for /internal/select/* and
 // /internal/delete/*. /internal/delete/* goes to upstream's own

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"net"
 	"net/http"
@@ -241,16 +242,76 @@ func TestDeleteAuthKey_OverridesHTTPAuthThroughTheServer(t *testing.T) {
 	}
 }
 
-// main must register the predicate and wrap the handler chain; neither can be
-// exercised without running the binary, so pin them in the source.
+// main serves newRequestHandler(handler); the behaviour is checked through the
+// real HTTP server with that very function in TestRequestHandler_*, and the
+// source only has to keep calling it.
 func TestMainWiresDeleteAuth(t *testing.T) {
 	src, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"handler = internaldelete.DeleteAuth(handler)", "registerAuthKeyProtectedPaths()\n\n\trequestHandler :="} {
-		if !strings.Contains(string(src), want) {
-			t.Errorf("main.go no longer contains %q: -deleteAuthKey would stop guarding /delete/* or stop overriding -httpAuth.*", want)
-		}
+	if want := "requestHandler := newRequestHandler(handler)"; !strings.Contains(string(src), want) {
+		t.Errorf("main.go no longer contains %q: -deleteAuthKey would stop guarding /delete/* or stop overriding -httpAuth.*", want)
+	}
+}
+
+// The handler main serves, through the real HTTP server: -deleteAuthKey set
+// replaces -httpAuth.* on /delete/* only; unset, /delete/* keeps -httpAuth.*;
+// every other path always needs it.
+func TestRequestHandler_DeleteKeyOverridesHTTPAuthOnDeleteOnly(t *testing.T) {
+	enablePublicDelete(t)
+	_, delAPI := deleteAPIs(t)
+	root := http.NewServeMux()
+	root.Handle("/delete/", delAPI)
+	root.HandleFunc("/other", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	do := serveBehindHTTPAuthFunc(t, newRequestHandler(root))
+
+	setFlag(t, internaldelete.DeleteAuthKeyFlagName, "s3cret")
+	if code := do(http.MethodPost, "/delete/run_task?filter=*&authKey=s3cret", false); code != http.StatusOK {
+		t.Errorf("delete with the key, no Basic Auth: %d, want 200", code)
+	}
+	if code := do(http.MethodPost, "/delete/run_task?filter=*", true); code != http.StatusUnauthorized {
+		t.Errorf("delete with Basic Auth only, key set: %d, want 401", code)
+	}
+	if code := do(http.MethodGet, "/other", false); code != http.StatusUnauthorized {
+		t.Errorf("/other without Basic Auth: %d, want 401", code)
+	}
+	setFlag(t, internaldelete.DeleteAuthKeyFlagName, "")
+	if code := do(http.MethodPost, "/delete/run_task?filter=*", false); code != http.StatusUnauthorized {
+		t.Errorf("delete without anything, key unset: %d, want 401", code)
+	}
+	if code := do(http.MethodPost, "/delete/run_task?filter=*", true); code != http.StatusOK {
+		t.Errorf("delete with Basic Auth, key unset: %d, want 200", code)
+	}
+}
+
+// A string OrgID tenant (alias acme -> 2002:0) through the tenant middleware
+// the binary puts in front of every route: the delete key is checked first,
+// before the tenant is resolved, and the task lands on the aliased tenant.
+func TestDeleteAuthKey_StringOrgIDThroughTheResolver(t *testing.T) {
+	enablePublicDelete(t)
+	setFlag(t, internaldelete.DeleteAuthKeyFlagName, "s3cret")
+	store, srv := publicDeleteServer(t, true)
+	guarded := internaldelete.DeleteAuth(srv)
+	acme := map[string]string{"X-Scope-OrgID": "acme"}
+
+	rec := queryRequest(guarded, http.MethodPost, "/delete/run_task", url.Values{"filter": {"level:error"}}, acme)
+	if rec.Code != http.StatusUnauthorized || rec.Body.String() != missingKeyAnswer || store.Count() != 0 {
+		t.Errorf("alias tenant without the key: %d %q, %d tasks; want 401 %q and none", rec.Code, rec.Body.String(), store.Count(), missingKeyAnswer)
+	}
+	// An unknown OrgID without the key learns nothing about tenants: 401, not the resolver's 400.
+	rec = queryRequest(guarded, http.MethodPost, "/delete/run_task", url.Values{"filter": {"*"}}, map[string]string{"X-Scope-OrgID": "nobody"})
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("unknown OrgID without the key: %d, want 401 before the tenant is resolved", rec.Code)
+	}
+	rec = queryRequest(guarded, http.MethodPost, "/delete/run_task", url.Values{"filter": {"level:error"}, "authKey": {"s3cret"}}, acme)
+	var resp struct {
+		TaskID string `json:"task_id"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &resp) != nil {
+		t.Fatalf("alias tenant with the key: %d %q", rec.Code, rec.Body.String())
+	}
+	if ts, ok := store.Get(resp.TaskID); !ok || !ts.ScopedExactlyTo(2002, 0) {
+		t.Errorf("task = %+v, want scoped to the alias's tenant 2002:0", ts)
 	}
 }
