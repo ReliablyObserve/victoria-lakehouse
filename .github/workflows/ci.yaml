@@ -517,18 +517,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Pure repo-tree checks: the two VictoriaLogs patch directories must
-      # stay byte-equal except where patches/vl-traces/DIVERGENCE.md declares
-      # a reason. No upstream checkout needed, so it runs before setup-go.
+      # Repo-tree checks: the two VictoriaLogs patch directories must stay
+      # byte-equal except where patches/vl-traces/DIVERGENCE.md declares a
+      # reason, and a traces-only patch marked upstream-fixed-in-logs-pin must
+      # reverse-apply to the logs pin. The pin is a pristine shallow clone
+      # (no Go toolchain needed), shared by the self-test and the check.
+      - name: Clone the logs-pin VictoriaLogs tree
+        run: git clone --quiet --depth 1 --branch "$VL_VERSION_LOGS" https://github.com/VictoriaMetrics/VictoriaLogs.git "$RUNNER_TEMP/vl-logs-pin"
+
       - name: Patch-set consistency guard self-test
+        env:
+          LOGS_PIN_TREE: ${{ runner.temp }}/vl-logs-pin
         run: scripts/ci/tests/check_patches_equal_test.sh
 
       - name: Patch-set consistency (vl-logs vs vl-traces)
-        run: |
-          # Traces-only patches marked upstream-fixed-in-logs-pin must
-          # reverse-apply to the logs pin: check against a pristine checkout.
-          git clone --quiet --depth 1 --branch "$VL_VERSION_LOGS" https://github.com/VictoriaMetrics/VictoriaLogs.git "$RUNNER_TEMP/vl-logs-pin"
-          LOGS_PIN_TREE="$RUNNER_TEMP/vl-logs-pin" scripts/ci/check_patches_equal.sh
+        env:
+          LOGS_PIN_TREE: ${{ runner.temp }}/vl-logs-pin
+        run: scripts/ci/check_patches_equal.sh
 
       # The daily upstream sync probe, against a fake upstream (local git
       # repositories, shimmed gh and go): every verdict and exit code, no

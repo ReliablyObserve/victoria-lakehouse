@@ -239,7 +239,7 @@ out="$("$GUARD" "$TMP/does-not-exist" "$TMP/identical/vl-traces" 2>&1)"
 rc=$?
 check_rc "nonexistent directory exits 2" "$rc" 2
 
-# --- 11. the real repository patch directories pass -------------------
+# --- 11. the real repository patch directories pass (CI sets LOGS_PIN_TREE to a pristine clone of the logs pin) ---
 out="$("$GUARD" 2>&1)"
 rc=$?
 check_rc "repository patch directories pass with default arguments" "$rc" 0
