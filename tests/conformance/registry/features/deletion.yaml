@@ -326,7 +326,6 @@
     - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_ProtectsBothDeleteAPIs
     - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_OverridesHTTPAuthThroughTheServer
     - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_ComesBeforeTheDisabledAnswers
-    - internal/internaldelete/runtask_post_test.go#TestRunTaskPOSTOnly
     - internal/internaldelete/post_only_test.go#TestPOSTOnly
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamInternalProtocolRefusesGET

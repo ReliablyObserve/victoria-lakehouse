@@ -27,8 +27,9 @@ import (
 // /delete/run_task, /internal/delete/* and /internal/select/* are POST-only,
 // from VictoriaLogs v1.53.0's own handlers (issue #1635); the logs binary has no
 // lakehouse wrapper for it. The traces binary still does
-// (internaldelete.RunTaskPOSTOnly / POSTOnly: its VictoriaLogs revision, v1.52.0,
-// lacks the checks). Twin of lakehouse-traces/public_delete_post_only_test.go.
+// (internaldelete.POSTOnly on the cluster protocol: its VictoriaLogs revision,
+// v1.52.0, lacks the check; /delete/run_task comes from VictoriaTraces' own
+// handler). Twin of lakehouse-traces/public_delete_post_only_test.go.
 
 // queryRequest is the SSRF shape of an attack: every argument in the URL query
 // and no body (Go's ParseForm ignores the body of a GET, HEAD or DELETE, so a
@@ -121,22 +122,24 @@ func TestMountPublicDelete_OtherEndpointsStillAcceptGET(t *testing.T) {
 	}
 }
 
-// VictoriaLogs master counts /delete/run_task before refusing it; the wrapper
-// increments upstream's own counter (same instance), once per request, for the
-// refused GET and the served POST alike.
+// VictoriaLogs counts /delete/run_task before refusing it: upstream's own
+// counter moves once per request, for the refused GET and the served POST alike.
+// runTaskRequestsCounter is VictoriaLogs' request counter for /delete/run_task.
+const runTaskRequestsCounter = `vl_http_requests_total{path="/delete/run_task"}`
+
 func TestMountPublicDelete_RunTaskCounterParity(t *testing.T) {
 	enablePublicDelete(t)
-	c := vmmetrics.GetOrCreateCounter(internaldelete.RunTaskRequestsCounter)
+	c := vmmetrics.GetOrCreateCounter(runTaskRequestsCounter)
 	_, srv := postOnlyServer(t, true)
 	before := c.Get()
 	queryRequest(srv, http.MethodGet, "/delete/run_task", url.Values{"filter": {"*"}}, nil)
 	if got := c.Get() - before; got != 1 {
-		t.Errorf("GET moved %s by %d, want 1", internaldelete.RunTaskRequestsCounter, got)
+		t.Errorf("GET moved %s by %d, want 1", runTaskRequestsCounter, got)
 	}
 	before = c.Get()
 	publicDeleteRequest(srv, http.MethodPost, "/delete/run_task", url.Values{"filter": {"*"}}, nil)
 	if got := c.Get() - before; got != 1 {
-		t.Errorf("POST moved %s by %d, want 1 (upstream counts it once)", internaldelete.RunTaskRequestsCounter, got)
+		t.Errorf("POST moved %s by %d, want 1 (upstream counts it once)", runTaskRequestsCounter, got)
 	}
 }
 
