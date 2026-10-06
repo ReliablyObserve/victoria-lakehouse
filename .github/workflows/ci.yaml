@@ -251,11 +251,15 @@ jobs:
       # Two invocations, because -short must reach only parquets3 (other
       # packages gate their own stress/memleak tests on it):
       #   * every other package: -timeout=10m, unchanged.
-      #   * parquets3 (-short): -timeout=8m. Measured on a 2-core runner it
-      #     takes ~3 min (was ~9-10 min and timing out at random); 8m is ~2.5x
-      #     that, and gotest_report.py warns at 70% (5m36s) and fails at 90%
-      #     (7m12s) of it, so a creeping package is caught while it is still
-      #     green. The tests -short skips (the memory-budget, production-shape
+      #   * parquets3 (-short): run as 3 deterministic shards (hash of the
+      #     top-level test name, scripts/ci/shard_tests.py), each its own
+      #     `go test -timeout=8m` and its own gotest_report.py headroom gate
+      #     (warn 70% / fail 90% of 480s). Unsharded it took 345-480s on a
+      #     2-core runner (72-99% of the 8m budget, ~120s spread on identical
+      #     code), so the gate failed at random; each shard is ~1/3 of that.
+      #     A guard fails the job if any listed test ran in no shard or in
+      #     two. Shard names stay inside the one job, so the required checks
+      #     test-logs / test-traces are unchanged. The tests -short skips (the memory-budget, production-shape
       #     and field-metadata matrix tests, i.e. exactly the ones that call
       #     testing.Short()) run in test-parquets3-heavy on every PR.
       # `set -o pipefail` keeps a go test failure from being hidden by the
@@ -263,12 +267,17 @@ jobs:
       - name: Test logs module
         run: |
           set -euo pipefail
-          others=$(go list ./internal/... | grep -v '/internal/storage/parquets3$')
+          others=$(go list ./internal/... | grep -v -e '/internal/storage/parquets3$' -e '/internal/compaction$')
           # shellcheck disable=SC2086
           go test $others -race -count=1 -timeout=10m -json | tee test-logs-others.json |
-            python3 scripts/ci/gotest_report.py --budget-seconds 600 --title "logs: all packages except parquets3"
-          go test ./internal/storage/parquets3/ -short -race -count=1 -timeout=8m -json | tee test-logs-parquets3.json |
-            python3 scripts/ci/gotest_report.py --budget-seconds 480 --title "logs: parquets3 (-short)"
+            python3 scripts/ci/gotest_report.py --budget-seconds 600 --title "logs: all packages except parquets3, compaction"
+          # compaction ran at 501-517s of its 600s budget (it is not -short): 5 shards, same budget each (one test, TestMergePathsAgree, is ~half of it and cannot be split).
+          SHARD_SHORT=0 scripts/ci/sharded_go_test.sh race ./internal/compaction/ 5 "logs: compaction" 600 test-logs-compaction
+          # The binary's own package tests (route auth, buffer-query mount, -internalselect.disable,
+          # -deleteAuthKey, peer-key wiring, ...). Previously only the config-surface golden ran.
+          go test ./cmd/... -race -count=1 -timeout=10m -json | tee test-logs-cmd.json |
+            python3 scripts/ci/gotest_report.py --budget-seconds 600 --title "logs: cmd"
+          scripts/ci/sharded_go_test.sh race ./internal/storage/parquets3/ 3 "logs: parquets3" 480 test-logs-parquets3
 
       - name: Coverage check (logs)
         run: |
@@ -285,8 +294,9 @@ jobs:
               echo "::error::Coverage for $pkg is ${pct}% (minimum: ${THRESHOLD}%)"
               FAILED=1
             fi
-          done < <({ go test $(go list ./internal/... | grep -v '/internal/storage/parquets3$') -cover -count=1 -timeout=10m
-                     go test ./internal/storage/parquets3/ -short -cover -count=1 -timeout=8m; } 2>&1 | grep 'coverage:')
+          done < <({ go test $(go list ./internal/... | grep -v -e '/internal/storage/parquets3$' -e '/internal/compaction$') -cover -count=1 -timeout=10m
+                     SHARD_SHORT=0 scripts/ci/sharded_go_test.sh cover ./internal/compaction/ 5 600
+                     scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | grep 'coverage:')
           [ "$FAILED" -eq 1 ] && exit 1 || echo "All packages above ${THRESHOLD}% coverage"
 
       - name: Vet logs module
@@ -328,8 +338,11 @@ jobs:
           # shellcheck disable=SC2086
           go test $others -race -count=1 -timeout=10m -json | tee test-traces-others.json |
             python3 ../scripts/ci/gotest_report.py --budget-seconds 600 --title "traces: all packages except parquets3"
-          go test ./internal/storage/parquets3/ -short -race -count=1 -timeout=8m -json | tee test-traces-parquets3.json |
-            python3 ../scripts/ci/gotest_report.py --budget-seconds 480 --title "traces: parquets3 (-short)"
+          # The binary's own root package (route auth, buffer-query mount, discovery against the real
+          # vtstorage, ...). Previously only the config-surface golden ran.
+          go test . -race -count=1 -timeout=10m -json | tee test-traces-main.json |
+            python3 ../scripts/ci/gotest_report.py --budget-seconds 600 --title "traces: main package"
+          ../scripts/ci/sharded_go_test.sh race ./internal/storage/parquets3/ 3 "traces: parquets3" 480 test-traces-parquets3
 
       - name: Coverage check (traces)
         working-directory: lakehouse-traces
@@ -348,7 +361,7 @@ jobs:
               FAILED=1
             fi
           done < <({ go test $(go list ./internal/... | grep -v '/internal/storage/parquets3$') -cover -count=1 -timeout=10m
-                     go test ./internal/storage/parquets3/ -short -cover -count=1 -timeout=8m; } 2>&1 | grep 'coverage:')
+                     ../scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | grep 'coverage:')
           [ "$FAILED" -eq 1 ] && exit 1 || echo "All packages above ${THRESHOLD}% coverage"
 
       - name: Vet traces module
