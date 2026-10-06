@@ -437,9 +437,7 @@
     - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestAutoFooterMaxBytes_Table
     - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestNewConfiguredFooterCache_AutoAndExplicit
     - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestFooterCache_ByteBoundNotEntryBound
-    - internal/storage/parquets3/footer_budget_test.go#TestQuery_FooterPrefetchRespectsBudget_SameGETsAsLargeBudget
-    - internal/storage/parquets3/footer_budget_test.go#TestPrefetchFooters_StopsAtTheBudget
-    - internal/storage/parquets3/footer_budget_test.go#TestWarmMetadata_SmallFooterBudget_NoWholeObjectDownloads
+    - internal/storage/parquets3/footer_budget_test.go#TestFooterBudget_FortyFilesFiveEntries
     - internal/storage/parquets3/footer_budget_test.go#TestEnrichSmallFiles_OnlyBelowTheFooterPrefetchFloor
     - internal/storage/parquets3/footer_budget_test.go#TestFieldNames_AllNullColumnsAnswerDoesNotDependOnCacheState
     - internal/storage/parquets3/footer_budget_test.go#TestFieldNames_PageIndexUnavailable_ReportsUnknownNotInventedHits
@@ -449,9 +447,7 @@
     - internal/storage/parquets3/footer_review_test.go#TestOwn_StripeFetchUsesTheCallersDownloader
     - internal/storage/parquets3/footer_review_test.go#TestOverlayOpen_CountsOneFooterCacheHit
     - internal/storage/parquets3/footer_review_test.go#TestEnrichFromCachedFooter_RealPageIndexBounds
-    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestQuery_FooterPrefetchRespectsBudget_SameGETsAsLargeBudget
-    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestPrefetchFooters_StopsAtTheBudget
-    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestWarmMetadata_SmallFooterBudget_NoWholeObjectDownloads
+    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestFooterBudget_FortyFilesFiveEntries
     - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestEnrichSmallFiles_OnlyBelowTheFooterPrefetchFloor
     - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestFieldNames_TracesAnswerUnaffectedByFooterCacheState
     - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestFooterOnlyEntry_PageIndexReadFailsAndIsNotMemoized
