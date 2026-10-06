@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.145.5] - 2026-10-06
+
 ### Changed
 
 - **The Parquet reader-matrix harness pins pytest 9.0.3.** pytest below 9.0.3 has vulnerable tmpdir handling
