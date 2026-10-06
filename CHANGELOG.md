@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.146.0] - 2026-10-06
+
 ### Changed
 
 - **Cached Parquet files open with zero S3 round trips, and the planned read mode is the default (both binaries).**
