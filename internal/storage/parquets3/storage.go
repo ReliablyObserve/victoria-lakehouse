@@ -1136,6 +1136,7 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 
 	db := &logstorage.DataBlock{}
 	db.SetColumns(blockCols)
+	orderColumnsLikeUpstream(db)
 	return db
 }
 
@@ -1220,6 +1221,7 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 	}
 
 	db.SetColumns(cols)
+	orderColumnsLikeUpstream(db)
 	return db
 }
 

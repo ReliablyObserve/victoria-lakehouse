@@ -197,7 +197,7 @@ pipe: 50/50 covered by at least one registry row.
 | `running_stats` | `lib/logstorage/pipe_running_stats.go` | vl.pipe.running_stats.basic | 🟡 declared, not yet executed |
 | `sample` | `lib/logstorage/pipe_sample.go` | vl.pipe.sample.basic | 🔁 differs: sample keeps every Nth block; block ordering/boundaries differ between hot local storage and cold columnar reads, so the same N can select a different subset. See docs/parity-and-gaps.md. (declared, not yet executed) |
 | `set_stream_fields` | `lib/logstorage/pipe_set_stream_fields.go` | vl.pipe.set_stream_fields.basic | 🟡 declared, not yet executed |
-| `sort` | `lib/logstorage/pipe_sort.go` | vl.pipe.sort.basic, vl.pipe.sort.multi_field | 🟡 declared, not yet executed |
+| `sort` | `lib/logstorage/pipe_sort.go` | vl.pipe.sort.all_columns_tie_order, vl.pipe.sort.basic, vl.pipe.sort.multi_field | 🟡 declared, not yet executed |
 | `split` | `lib/logstorage/pipe_split.go` | vl.pipe.split.basic | 🟡 declared, not yet executed |
 | `stats` | `lib/logstorage/pipe_stats.go` | vl.pipe.stats.basic | 🟡 declared, not yet executed |
 | `stream_context` | `lib/logstorage/pipe_stream_context.go` | vl.pipe.stream_context.basic | 🟡 declared, not yet executed |

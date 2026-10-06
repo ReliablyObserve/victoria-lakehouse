@@ -172,6 +172,7 @@ func readRowGroupColumnar(
 
 	db := &logstorage.DataBlock{}
 	db.SetColumns(blockCols)
+	orderColumnsLikeUpstream(db)
 	return db
 }
 

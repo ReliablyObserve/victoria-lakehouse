@@ -940,6 +940,7 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 		{Name: "cloud.region", Values: regions},
 		{Name: "host.name", Values: hosts},
 	})
+	orderColumnsLikeUpstream(db)
 	return db
 }
 
@@ -1067,6 +1068,7 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 	}
 	db := &logstorage.DataBlock{}
 	db.SetColumns(blockCols)
+	orderColumnsLikeUpstream(db)
 	return db
 }
 
