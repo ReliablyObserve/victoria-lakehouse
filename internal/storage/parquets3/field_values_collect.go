@@ -16,9 +16,10 @@ import (
 // fieldValuesRequest is one field enumeration (field_values, streams,
 // stream_ids) over a tenant-scoped file list.
 type fieldValuesRequest struct {
-	op         string // endpoint label for logs and metrics
-	column     string // Parquet column whose values are enumerated
-	field      string // the same field's name in rows (VictoriaLogs naming)
+	view       *bufferView // taken by the caller before it listed the objects
+	op         string      // endpoint label for logs and metrics
+	column     string      // Parquet column whose values are enumerated
+	field      string      // the same field's name in rows (VictoriaLogs naming)
 	tenantIDs  []logstorage.TenantID
 	query      *logstorage.Query
 	aggregates bool // the column may be answered from per-file label aggregates
@@ -51,9 +52,7 @@ type fieldValuesRequest struct {
 func (s *Storage) collectFieldValues(ctx context.Context, files []manifest.FileInfo, r fieldValuesRequest) (map[string]uint64, error) {
 	// The objects of the buffer segments this request reads are not read (see
 	// bufferView): their rows come from the segments.
-	view := s.openBufferView(ctx, r.startNs, r.endNs, r.tenantIDs)
-	defer view.release()
-	files = view.exclude(files)
+	files = r.view.exclude(files)
 	seen := make(map[string]uint64)
 	scan := make([]manifest.FileInfo, 0, len(files))
 	fromMeta := 0
@@ -79,7 +78,7 @@ func (s *Storage) collectFieldValues(ctx context.Context, files []manifest.FileI
 			return nil, err
 		}
 	}
-	s.collectBufferedValues(ctx, view, r, seen)
+	s.collectBufferedValues(ctx, r.view, r, seen)
 	return seen, ctx.Err()
 }
 

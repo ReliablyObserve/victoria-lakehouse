@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -1339,7 +1340,27 @@ func (s *Storage) fetchPeerAZ(ctx context.Context, peer string) string {
 }
 
 func (s *Storage) RefreshManifest(ctx context.Context) error {
-	return s.manifest.RefreshFromS3(ctx, s.pool.S3Client())
+	started := time.Now()
+	switch err := s.manifest.RefreshFromS3(ctx, s.pool.S3Client()); {
+	case err == nil:
+		s.manifestRefreshed(started)
+	case errors.Is(err, manifest.ErrRefreshRejected), errors.Is(err, manifest.ErrRefreshPartial):
+		// Serving is unchanged (the guard kept the old set, or what could be
+		// listed was applied), but the manifest is not known to hold the whole
+		// bucket: the insert buffer keeps the segments it restored (#379).
+		logger.Warnf("manifest refresh did not bring the manifest up to the bucket: %s; the insert buffer keeps its restored segments until a refresh does", err)
+	default:
+		return err
+	}
+	return nil
+}
+
+// manifestRefreshed tells the insert-buffer flusher that a refresh has been
+// applied, which releases the committed segments it restored at start (#379).
+func (s *Storage) manifestRefreshed(started time.Time) {
+	if s.bufferFlusher != nil {
+		s.bufferFlusher.ManifestRefreshed(started)
+	}
 }
 
 func (s *Storage) WarmLabelIndex(ctx context.Context) {

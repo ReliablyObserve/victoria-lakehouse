@@ -291,7 +291,7 @@ func TestReconcileTombstones_HonoursNeverDeletePrefixes(t *testing.T) {
 		CreatedAt:    time.Now().Add(-time.Hour),
 	})
 
-	reconcileTombstones(store, []string{protected, normal}, output, defaultNeverDeletePrefixes(), map[string]bool{"ts": true}, true, nil)
+	reconcileTombstones(store, []string{protected, normal}, output, defaultNeverDeletePrefixes(), map[string]bool{"ts": true}, retireAlways, nil)
 
 	ts, ok := store.Get("ts")
 	if !ok {
@@ -340,7 +340,7 @@ func TestReconcileTombstones_OutputCleanOnlyForTombstonesTheMergeApplied(t *test
 	if dropped != 0 || len(kept) != 2 || applied["t"] {
 		t.Fatalf("fixture: the tombstone is not eligible at the drop, got dropped=%d applied=%v", dropped, applied)
 	}
-	reconcileTombstones(store, []string{src}, out, nil, applied, true, nil)
+	reconcileTombstones(store, []string{src}, out, nil, applied, retireAlways, nil)
 	ts, active := store.Get("t")
 	if !active {
 		t.Fatalf("tombstone retired although its rows were carried into %s unfiltered", out)
@@ -356,7 +356,7 @@ func TestReconcileTombstones_OutputCleanOnlyForTombstonesTheMergeApplied(t *test
 	if dropped != 1 || !applied["t"] {
 		t.Fatalf("fixture: the tombstone is eligible a minute later, got dropped=%d applied=%v", dropped, applied)
 	}
-	reconcileTombstones(store, []string{src}, out, nil, applied, true, nil)
+	reconcileTombstones(store, []string{src}, out, nil, applied, retireAlways, nil)
 	if _, still := store.Get("t"); still {
 		t.Fatal("an output the merge filtered is clean; the tombstone must retire")
 	}
@@ -374,7 +374,7 @@ func TestReconcileTombstones_UntouchedTombstonesAreLeftAlone(t *testing.T) {
 	})
 
 	reconcileTombstones(store, []string{"logs/dt=2026-07-01/hour=00/a.parquet"},
-		"logs/dt=2026-07-01/hour=00/out.parquet", nil, map[string]bool{"other": true}, true, nil)
+		"logs/dt=2026-07-01/hour=00/out.parquet", nil, map[string]bool{"other": true}, retireAlways, nil)
 
 	ts, _ := store.Get("other")
 	if len(ts.AffectedKeys) != 1 || len(ts.Reaped) != 0 {
@@ -383,10 +383,10 @@ func TestReconcileTombstones_UntouchedTombstonesAreLeftAlone(t *testing.T) {
 }
 
 func TestReconcileTombstones_NilStoreAndEmptyInputAreNoOps(t *testing.T) {
-	reconcileTombstones(nil, []string{"a"}, "out", nil, nil, true, nil)
+	reconcileTombstones(nil, []string{"a"}, "out", nil, nil, retireAlways, nil)
 	store := delete.NewTombstoneStore()
-	reconcileTombstones(store, nil, "out", nil, nil, true, nil)
-	reconcileTombstones(store, []string{"logs/_meta/x"}, "out", defaultNeverDeletePrefixes(), nil, true, nil)
+	reconcileTombstones(store, nil, "out", nil, nil, retireAlways, nil)
+	reconcileTombstones(store, []string{"logs/_meta/x"}, "out", defaultNeverDeletePrefixes(), nil, retireAlways, nil)
 	if store.Count() != 0 {
 		t.Error("no tombstone should have been created")
 	}

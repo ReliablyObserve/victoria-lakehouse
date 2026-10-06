@@ -122,8 +122,12 @@ func (m *Manifest) EnrichFromProvider(p FileMetaProvider) (int, []string) {
 	var uncovered []string
 	for partition, pFiles := range m.files {
 		needsSidecar := false
+		writable := false
 		for i := range pFiles {
 			if fm, ok := p.FileMeta(partition, pFiles[i].Key); ok && fm.RowCount > 0 {
+				if !writable { // a snapshot may hold the array (#424)
+					pFiles, writable = m.writableFilesLocked(partition), true
+				}
 				fm.ApplyTo(&pFiles[i])
 				enriched++
 			}
@@ -219,8 +223,12 @@ func (m *Manifest) LoadSidecarsForPartitions(ctx context.Context, client *s3.Cli
 	m.mu.Lock()
 	for r := range results {
 		pFiles := m.files[r.partition]
+		writable := false
 		for i := range pFiles {
 			if fm, ok := r.sc.Files[pFiles[i].Key]; ok {
+				if !writable { // a snapshot may hold the array (#424)
+					pFiles, writable = m.writableFilesLocked(r.partition), true
+				}
 				fm.ApplyTo(&pFiles[i])
 				enriched++
 			}

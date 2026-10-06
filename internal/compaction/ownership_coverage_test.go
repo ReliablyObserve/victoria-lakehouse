@@ -147,6 +147,7 @@ func TestOrphanSweep_RunTierB_ListerError(t *testing.T) {
 	m := manifest.New("bkt", "logs/")
 	own := NewOwnershipResolver("self", staticPeers("self"))
 
+	listCompletely(t, m)
 	sweep := NewOrphanSweep(OrphanSweepConfig{
 		Manifest:                 m,
 		Pool:                     pool,

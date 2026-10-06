@@ -339,7 +339,7 @@ func TestDiscoverTenantPrefixes_OrgIDTemplate(t *testing.T) {
 	m := New("test-bucket", "")
 	m.prefixTemplate = "{OrgID}/"
 
-	got, err := m.discoverTenantPrefixes(t.Context(), client)
+	got, _, err := m.discoverTenantPrefixes(t.Context(), client)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}

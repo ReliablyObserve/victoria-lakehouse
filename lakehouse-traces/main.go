@@ -456,6 +456,10 @@ func run(cfg *config.Config, addr string) {
 			// heard of; the scheduler refuses to rewrite at all when it is nil.
 			Manifest:    store.Manifest(),
 			OnPublished: rewritePublishHook(store, pusher),
+			// A key absent from the manifest is reaped only once a HEAD finds
+			// no object (or the manifest retired it): a listing can miss an
+			// object, and reaping it would bring deleted rows back (#418).
+			ObjectExists: store.Pool().Exists,
 		})
 		rewriteSched.SetSegmentGuard(store.Pool(), cfg.AutoPrefix(), 2*bufferGrace(cfg))
 		rewriteSched.Start(cfg.Delete.VerifyInterval)
@@ -1347,6 +1351,10 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			TargetBytes: cfg.Insert.TargetFileSizeN(),
 			MaxAge:      cfg.Insert.BufferFlushInterval,
 			Grace:       bufferGrace(cfg),
+			// A restored segment waits for one complete manifest refresh: warn
+			// when that takes longer than two refresh intervals (5 minutes at
+			// least, the warm-up refresh's timeout).
+			HoldWarnAfter: max(2*cfg.Manifest.RefreshInterval, 5*time.Minute),
 		})
 		flusher.Start(time.Second)
 		store.SetBufferFlusher(flusher)
@@ -1520,6 +1528,9 @@ func manifestSnapshotPath(cfg *config.Config) string {
 }
 
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string, statsAgg *stats.StatsAggregate) {
+	// Set before the first refresh: LakehouseManifestNoCompleteRefresh reads
+	// it during warm-up too (a 0 here would shrink its budget to 15 minutes).
+	metrics.ManifestRefreshIntervalSeconds.Set(cfg.Manifest.RefreshInterval.Seconds())
 	// Phase 1 (foreground): disk recovery + manifest-files gate.
 	// Disk recovery loads the most-recent snapshot; the lifecycle
 	// manager then checks MinManifestFiles before flipping
@@ -1636,6 +1647,11 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			}
 		}
 
+		// Persisted whatever the refresh's outcome: a partial state carries the
+		// skipped tenants' previous entries and a rejected one is unchanged, so
+		// neither is sparse, and a loaded snapshot is never trusted as a listing
+		// (Listed is false after a load). Skipping the write would lose the keys
+		// retired since the last one (#418, #404).
 		if err := store.Manifest().SaveTo(mpath); err != nil {
 			logger.Errorf("manifest snapshot after S3 refresh failed: %s", err)
 		}

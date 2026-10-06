@@ -155,8 +155,8 @@ brief window.
 
 - **Transient burst** (a few ticks during a ring change): EXPECTED
   during the stabilization window cooldown. `AddFile` idempotency
-  ensures the manifest is correct; Tier B will reclaim the duplicate
-  output within `OrphanTTL`.
+  ensures the manifest is correct; the losing publish abandons its
+  output (retired, delete owed) and the reclaim retry deletes it.
 - **Sustained > 24 h:** SERIOUS. Indicates either the stabilization
   gate isn't firing (resolver `Stabilizing` callback is nil or
   broken), or peer-cache is returning inconsistent results across
@@ -185,11 +185,15 @@ brief window.
 
 ### Likely causes
 
-1. **Many SIGKILLed pods** (recent OOM kills, node drains without
-   graceful shutdown). One partial upload per crash; Tier B reclaims
-   each.
-2. **Duplicate compaction outputs from a dual-ownership window** (see
-   §4) — Tier B catching up.
+Tier B deletes only objects the manifest holds a retirement record for
+(#404 round 4), so a flood means many retired objects whose owner never
+deleted them:
+
+1. **Peers that died before deleting what they compacted** (OOM kills,
+   node drains without graceful shutdown): their manifest pushes retired
+   the sources here, and Tier B reclaims them.
+2. **Abandoned outputs from a dual-ownership window** (see §4) whose
+   reclaim retries keep failing.
 3. **Bug in `AddFile` idempotency:** if duplicates are getting written
    but `addfile_duplicate_key_total` is 0, a different code path is
    writing the duplicates. Audit recent commits to `internal/compaction`
@@ -204,8 +208,8 @@ rate(kube_pod_container_status_terminated_reason_total{reason="OOMKilled"}[1h])
 # Is the duplicate-key canary firing?
 rate(lakehouse_manifest_addfile_duplicate_key_total[1h])
 
-# Is Tier B able to keep up?
-lakehouse_compaction_orphans_skipped{reason!="too_young"}
+# Is Tier B able to keep up? (no_evidence = absent objects kept for lack of a record)
+sum by (reason) (rate(lakehouse_compaction_orphans_skipped_total[1h]))
 ```
 
 ### Fixes
@@ -231,8 +235,13 @@ A single in-flight compaction is taking > `DrainTimeout` (default
 ### Fixes
 
 - **One-off:** wait for `terminationGracePeriodSeconds` to elapse;
-  K8s sends SIGKILL; the partial upload becomes a Tier B orphan
-  (recoverable, see §5).
+  K8s sends SIGKILL. **Known gap
+  ([#423](https://github.com/ReliablyObserve/victoria-lakehouse/issues/423)):**
+  a merge killed after uploading its output and before publishing it leaves
+  that output with no record; the next refresh adopts it next to its still-live
+  sources and their rows are served twice. Tier B does not delete it (no
+  record, see §5). Prefer letting the drain finish (raise the timeouts below)
+  over a SIGKILL while a merge is in flight.
 - **Recurring:** raise `compaction.drain_timeout` in values.yaml AND
   `terminationGracePeriodSeconds` to match. Both must be large enough
   for the slowest realistic merge. Test by triggering a deliberately

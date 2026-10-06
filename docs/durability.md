@@ -268,6 +268,156 @@ counted (`lakehouse_delete_rewrite_deferred_total{reason="segment_live"}`) and t
 tombstone's query-time filter keeps the rows hidden meanwhile. Markers older than
 8 days are deleted by the compaction scan.
 
+The grace counts from the real commit, also across a restart. The flusher's state
+file (`buffer_flush_state.json`) records the commit time of every segment
+committed within the last two graces, and a restarted pod gives each committed
+segment the remainder of its grace from that time, not a new full grace (a pod
+that had been down for longer than twice the grace used to give those segments a
+new grace while compaction had already merged their objects, so every row was
+answered twice for up to one grace, #379).
+
+A restarted pod starts from the manifest snapshot on disk, which can be older than
+the segments (a kill -9 loses what was committed after the last snapshot) and
+lacks what compaction made of their objects while the pod was down. So it holds
+the segments it restored at start (and only those: a segment committed after the
+start follows the normal grace and is retired by it): none of them is retired
+until a **complete** S3 manifest refresh has been applied. A refresh that fails,
+that is rejected (it would drop more than half of the tracked files and a HEAD
+sample of the dropped keys finds live objects or cannot be taken, see below) or
+that could not list one tenant's projects does not count. This holds for the
+first listing after a snapshot load too: a sparse listing is not believed just
+because it is the first. When a complete refresh has been applied, the
+held segments whose grace has passed are retired in the same step, so their rows
+are served from the buffer until the manifest has them.
+
+While the hold lasts, rows are never hidden, but they can be served twice if a
+peer compacted the segment's objects while the pod was down: the duplication is
+bounded in size (by the restored segments, at most about two graces of ingest)
+and **not in time**: it lasts as long as no complete refresh succeeds, not one
+step. The held segments also keep their disk. The hold is visible as
+`lakehouse_buffer_held_segments` and `lakehouse_buffer_oldest_held_age_seconds`
+(both 0 in steady state), a warning in the log once it has lasted longer than
+twice the refresh interval (at least 5 minutes) and the alert
+`LakehouseBufferRestoredSegmentsHeld` (warning, after 10 minutes). Common causes:
+LIST errors or throttling, a dedicated tenant bucket whose listing fails, or a
+full LIST at very large object counts that does not finish inside the 5-minute
+warm-up / 2-minute periodic timeouts. A narrower release (LIST only the partitions
+the restored segments wrote to) is tracked in #411.
+
+**When a listing is believed (the HEAD-confirmation rule, #404 round 3, #418).**
+Every refresh that would leave fewer than half of the tracked files is checked
+before it is applied: up to 16 random dropped keys are sent a HEAD request. All
+404: the bucket really shrank (a peer's compaction or retention), the listing is
+applied at once. Any 200: the listing is incomplete, it is rejected
+(`ErrRefreshRejected`), the previous entries, the hold and `listed` are kept.
+A HEAD that fails (5xx, timeout) counts as unconfirmed and rejects too. The next
+refresh tries again, so a legitimate shrink never leaves the guard stuck. A
+listing that could not cover a tenant (its project LIST failed) is partial: the
+tenant's previous entries are kept, its retirements are not forgotten, the
+manifest does not count as listed, and `ErrRefreshPartial` is returned. All three
+outcomes are counted in `lakehouse_manifest_refresh_incomplete_total{reason="partial|rejected|head_unconfirmed"}`.
+The manifest exposes the last refresh that was accepted and covered everything as
+`Manifest.LastCompleteRefresh()` (start time and generation).
+
+**Per-object evidence for destructive decisions (#404 round 4).** A complete
+listing can still be wrong about a single object (a LIST that succeeds, covers
+every prefix and silently drops a few keys is believed), so nothing deletes or
+un-hides data on "absent from the manifest" alone:
+
+- **The orphan sweep (Tier B)** deletes an object only if the manifest holds a
+  retirement record for it: a publish replaced it (a compaction or rewrite
+  source), an output was abandoned, or it was removed on another component's
+  behalf (a peer's manifest push, retention). The record must be at least
+  `OrphanTTL` old, the object at least `OrphanTTL` old (HEAD), the key not
+  named by an unfinished delete rewrite, not pending and not held, and the
+  manifest and the record are re-read right before the DELETE. An object that is
+  absent but has no record is never deleted: since every refresh adopts each
+  listed object that is not retired or pending, such an object is one a listing
+  missed. Skips are counted in
+  `lakehouse_compaction_orphans_skipped_total{reason="no_evidence|delete_landed|retired_too_recently|rewrite_unfinished|..."}`.
+  What Tier B adds over the compaction scheduler's own retry of owed deletes
+  (`ReclaimRetired`) is the records whose delete another component owed and
+  never completed.
+- **The delete scheduler** marks a key that is absent from the manifest reaped
+  only when the manifest retired it (its rows are in the replacement, which
+  discovery follows) or a HEAD finds no object. A HEAD that finds the object
+  keeps the key pending (`lakehouse_delete_rewrite_deferred_total{reason="absent_but_exists"}`)
+  until a listing adopts it again; a HEAD that fails, or a pool that cannot HEAD,
+  keeps it pending too (`reason="existence_unknown"`). Production wires the S3
+  HEAD of the client pool.
+- **Tombstone completion** (by the scheduler and by compaction alike) needs a
+  complete listing that began after the tombstone was created: a file a peer
+  published between the last complete listing and the tombstone is in no work
+  list until such a listing has run. The rewriter's hand-off of a published
+  rewrite keeps the weaker "a complete listing has run" condition: a replacement
+  that a listing missed still exists, so deleting the source loses nothing.
+- **Snapshots** are written at warm-up and periodically whatever the last
+  refresh's outcome: a partial state keeps the skipped tenant's entries and every
+  retired key, a rejected one is unchanged, and a loaded snapshot is never
+  treated as a listing (`Listed()` is false and `LastCompleteRefresh()` empty
+  until a complete refresh in this process). Not persisting a partial state lost
+  the keys retired since the last snapshot on a kill -9.
+- **Invariant: each key is tracked once.** A refresh and a snapshot load drop a
+  second entry for a key; a compaction group that names a source twice is
+  refused (`lakehouse_duplicate_file_keys_total{site="manifest_refresh|manifest_load|compaction_input"}`,
+  alert `LakehouseDuplicateFileKeys`). A partial listing used to track a file
+  flushed while it ran twice (rows served twice; a compaction would have merged
+  them twice and deleted the source).
+
+Refresh health is exported as `lakehouse_manifest_last_refresh_timestamp_seconds`
+(any applied refresh), `lakehouse_manifest_last_complete_refresh_timestamp_seconds`
+(when the last complete one was applied: its end) and `lakehouse_manifest_refresh_interval_seconds`;
+`LakehouseManifestNoCompleteRefresh` fires when no complete listing has been
+applied for four refresh intervals (at least 15 minutes, `for: 15m`), counted from
+process start until the first one lands (see `docs/observability.md`). While that
+lasts, tombstones are not completed, retired keys are not settled and restored
+buffer segments stay held.
+
+Residuals:
+
+- A LIST that succeeds, covers every prefix and silently drops fewer than half
+  of the objects is believed for serving (S3 does not truncate a successful
+  LIST; the sample only looks at large drops). A retired key it drops has its
+  record forgotten, so the next listing adopts the object again; an object it
+  drops before the delete scheduler has discovered it for a tombstone is not
+  covered by the scheduler's HEAD check (asserted by
+  `TestReview404R4_Residual_SilentDropBeforeDiscovery`).
+- The HEAD sample can miss a few live keys among many dead ones (a sample of 16
+  finds a live key with probability 1-(1-p)^16 for a live share p of the
+  dropped keys). Destructive decisions do not rely on it.
+- An object that is absent from the manifest with no record is never reclaimed
+  by Tier B; none is expected (each listing adopts what it sees), and every such
+  candidate is counted as `no_evidence`.
+
+On a select pod the same hold applies to the segments its bridge answers
+(`/internal/buffer/query`), with two cases to know:
+
+- an insert pod that restarts after a downtime longer than twice the grace, with a
+  peer having compacted its segments' objects, answers the bridge with the held
+  segments for the whole hold, so the select pods' answers carry those rows twice
+  until the insert pod's first complete refresh;
+- a select pod that restarted too and serves while it warms (`/ready` answers 204
+  during the warm-up) can answer without rows an insert pod has already retired,
+  when that insert pod's refresh completed before the select pod's: those rows are
+  missing from that select pod's answers until its own refresh has applied the
+  objects.
+
+Limits of the guarantee:
+
+- A clock that jumps back by more than the grace: a commit time in the future is
+  taken as now, so the segment is served for up to one grace from the restart.
+- Upgrade: a state file written by a release before the commit records existed has
+  no `commits`. For that one start each committed segment gets its grace from the
+  restart (what that release did), also after a graceful shutdown, and the first
+  refresh rule above applies. The next commit writes the records.
+- A crash between the segment's marker PUT and the commit-state write, followed by
+  a downtime above twice the grace and a peer compacting the objects, can serve the
+  segment's rows twice for about one grace (#406).
+- A committed segment with no record next to other records is older than the
+  records' retention and is treated as long committed.
+- Readiness does not wait for the first refresh (serve-while-warming, unchanged);
+  until it succeeds the pod answers from its snapshot plus the buffer.
+
 Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheFreeOnes`,
 `TestSegmentGuard_ReleasedFilesCopiesOnlyWhenItDrops`,
 `TestSegmentNonceOfKey` (`internal/manifest`);
@@ -401,11 +551,17 @@ publish replaced them, or an output was abandoned) and **pending** keys
 (uploaded, not yet published) and the refresh adopts neither. A retired key is
 held until a listing that began after the retirement proves the object gone —
 not until the delete lands, because the listing already in flight was answered
-before it.
-Without that, every "unmanifested object is reclaimed by the orphan sweep" claim
-below was false within one refresh interval: the refresh re-adopted the object
-first — serving its rows twice, bringing deleted rows back once the tombstone
-retired, and hiding it from the sweep for good. See
+before it. Pending keys live in memory only. **Known gap
+([#423](https://github.com/ReliablyObserve/victoria-lakehouse/issues/423)):** a
+compaction output uploaded and not yet published when the process is killed has
+no record after the restart; the refresh adopts it next to its still-live
+sources and their rows are served twice. (A delete rewrite's replacement is
+covered by its durable `prepared` record, see the table below.)
+Without that, every "a retired object is reclaimed" claim below was false
+within one refresh interval: the refresh re-adopted the object first — serving
+its rows twice, bringing deleted rows back once the tombstone retired, and
+hiding it from the reclaim for good. (The orphan sweep reclaims only objects
+the manifest holds a retirement record for, see above.) See
 [Manifest System → What the refresh does not adopt](manifest-system.md#what-the-refresh-does-not-adopt).
 
 A crash is followed by a restart in one of three states — the manifest snapshot

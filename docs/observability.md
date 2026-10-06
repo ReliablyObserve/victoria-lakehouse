@@ -119,6 +119,14 @@ graph LR
 | `lakehouse_buffer_segments` | Gauge | `state` | Insert-buffer segments: `active` (taking writes, always 1), `pending` (sealed, not yet fully written), `committed` (written, kept readable for the grace period), `retired` (past the grace; only queries that started before then still read it, and it is removed when the last of them ends) |
 | `lakehouse_buffer_segments_sealed_total` / `lakehouse_buffer_segments_committed_total` | Counter | | Segments sealed and fully written since the process started |
 | `lakehouse_buffer_oldest_pending_age_seconds` | Gauge | | Age of the oldest segment not yet fully written: how far object storage lags behind ingest |
+| `lakehouse_buffer_held_segments` | Gauge | | Committed segments restored at start and held until the first complete S3 manifest refresh (0 in steady state; alert `LakehouseBufferRestoredSegmentsHeld`) |
+| `lakehouse_buffer_oldest_held_age_seconds` | Gauge | | How long the longest-held restored segment has been held |
+| `lakehouse_manifest_refresh_incomplete_total` | Counter | `reason` | Refreshes that did not bring the manifest up to the bucket: `partial` (a tenant's project LIST failed, its entries were kept), `rejected` (the listing dropped most files and a HEAD sample found live objects), `head_unconfirmed` (the HEAD sample could not be taken). Nothing that infers "gone" acts on such a refresh (#418). All series are exported at zero |
+| `lakehouse_manifest_last_refresh_timestamp_seconds` | Gauge | | Unix time of the last refresh the manifest applied (complete or partial; a rejected one does not count). 0 until the first. Alert `LakehouseManifestStale` |
+| `lakehouse_manifest_last_complete_refresh_timestamp_seconds` | Gauge | | Unix time at which the last complete listing was applied (its end, not its start). Until it moves, tombstones are not completed, retired keys are not settled and restored buffer segments stay held. 0 until the first. Alert `LakehouseManifestNoCompleteRefresh` |
+| `lakehouse_manifest_refresh_interval_seconds` | Gauge | | The configured `manifest.refresh_interval`, for alerts expressed in refresh intervals |
+| `lakehouse_duplicate_file_keys_total` | Counter | `site` | File entries dropped or refused because their key was already tracked: `manifest_refresh`, `manifest_load` (dropped), `compaction_input` (merge group refused). Any increase is a defect: the entry would have served or merged its rows twice. Exported at zero. Alert `LakehouseDuplicateFileKeys` |
+| `lakehouse_compaction_orphans_skipped_total` | Counter | `reason` | Objects the orphan sweep's Tier B kept. `no_evidence`: absent from the manifest but with no retirement record (a listing missed it; never deleted); `delete_landed`, `retired_too_recently`, `rewrite_unfinished`: retired but not yet deletable; `too_young`, `in_manifest`, `manifest_drift_race`, `protected_prefix`, `not_parquet` |
 | `lakehouse_insert_flush_committed_segment` | Gauge | | Sequence number of the newest segment fully written (every older one is too) |
 | `lakehouse_buffer_view_excluded_objects_total` | Counter | | Objects a query skipped because the segment they were written from was served from the buffer in that query: each row is answered once |
 | `lakehouse_compaction_segment_guard_errors_total` | Counter | | Compaction scans that could not list the segment markers; the objects of unconfirmed segments were left alone |
@@ -126,7 +134,7 @@ graph LR
 | `lakehouse_insert_rows_superseded_total` | Counter | | Rows of flush groups skipped because their object's key had been retired (compacted, rewritten or removed) since an earlier attempt stored it: whatever replaced it carries those rows. Counts only groups skipped for that reason; a group whose object is still live is skipped without being counted. Should stay near 0 |
 | `lakehouse_buffer_flush_errors_total` | Counter | `stage` | Buffer-flusher failures by stage. `intent`: recording the segment as draining failed. `collect`: reading a group from the segment failed. `head`: an object-store existence check failed while recovering a segment a previous process was draining (needs `s3:ListBucket`, else S3 answers 403 for absent keys). `upload`: a PUT or Parquet encode failed, or the context was cancelled; counted once per attempt. `marker`: the segment's commit marker could not be written. `commit`: recording the segment as committed failed. `mark`: a durable stored mark could not be written (not retried; that group depends on HEAD after a restart). All but `mark` are retried with the same bytes. Should stay near 0 |
 | `lakehouse_vt_internal_rows_dropped_total` | Counter | `kind` | VictoriaTraces-internal rows dropped when a segment is drained: `trace_id_idx` (the `_trace_idx` footer index replaces them) |
-| `lakehouse_delete_rewrite_deferred_total` | Counter | `reason` | Delete rewrites postponed: `segment_live` (an object's insert-buffer segment is still served from the buffer; the tombstone filter keeps the rows hidden meanwhile) |
+| `lakehouse_delete_rewrite_deferred_total` | Counter | `reason` | Delete rewrites postponed: `segment_live` (an object's insert-buffer segment is still served from the buffer; the tombstone filter keeps the rows hidden meanwhile); `absent_but_exists` (a key absent from the manifest whose object a HEAD found and the manifest did not retire: a listing missed it, so it stays pending); `existence_unknown` (the HEAD failed or is not available; the key stays pending) |
 | `lakehouse_insert_rejected_total` | Counter | `reason` | Insert requests refused by the insert adapter: `read_only` (429, the buffer volume is below its free-space floor, with upstream's message). An unreachable object store refuses nothing |
 | `lakehouse_insert_flush_duration_seconds` | Histogram | | Time a segment's drain took |
 
@@ -298,12 +306,27 @@ Shipped in `alerts/alerts-lakehouse.yml`:
 | `LakehouseCacheDiskFull` | warning | L2 disk >95% for 5m |
 | `LakehouseNotReady` | critical | Not ready for >5m |
 | `LakehouseSlowQueries` | warning | Sustained slow queries for 10m |
-| `LakehouseManifestStale` | warning | Not refreshed in >2h for 15m |
+| `LakehouseManifestStale` | warning | Refreshed at least once, but not in >2h, for 15m |
+| `LakehouseManifestNoCompleteRefresh` | warning | No complete bucket listing applied for more than 4 refresh intervals (at least 15 minutes), for 15m; before the first one, counted from process start (see below) |
+| `LakehouseDuplicateFileKeys` | warning | Any increase of `lakehouse_duplicate_file_keys_total` in 15m |
 | `LakehouseDiscoveryFailed` | critical | No storage nodes found for 10m |
 | `LakehouseS3ThrottleSustained` | warning | Sustained S3 throttling for 5m |
 | `LakehousePeerDown` | warning | High peer error rate for 5m |
 | `LakehouseTenantScopeViolation` | critical | Any `lakehouse_tenant_scope_violations_total` increase in 5m |
 | `LakehouseTenantBucketListFailing` | critical | A tenant's dedicated bucket failed to list for 10m (`lakehouse_manifest_tenant_bucket_list_errors_total`) |
+
+**`LakehouseManifestNoCompleteRefresh` and warm-up.** The alert measures the time since the last complete
+listing was *applied* (`lakehouse_manifest_last_complete_refresh_timestamp_seconds` is set when the listing
+lands, not when it began), so a listing's own duration is counted once, not against the next one. Until the
+first complete listing the gauge is 0; the alert then measures from `process_start_time_seconds` with the
+same budget, `max(4 × manifest.refresh_interval, 15m)` plus `for: 15m`. A pod whose first complete listing
+takes longer than that fires it: with the default 5-minute interval after 35 minutes, with the large profile's
+15-minute interval after 75 minutes. A complete listing slower than that budget in steady state fires it too,
+and that is meant: until such a listing lands, tombstones are not completed, retired keys are not settled and
+restored buffer segments stay held, so raise `manifest.refresh_interval` (or split the bucket) rather than
+silence it. `lakehouse_manifest_refresh_interval_seconds` is exported before the first refresh, so the budget
+is right during warm-up. `process_start_time_seconds` is the standard process metric the `/metrics` endpoint
+exports on Linux; where it is missing, only the warm-up term is lost.
 
 ## Structured Logging
 

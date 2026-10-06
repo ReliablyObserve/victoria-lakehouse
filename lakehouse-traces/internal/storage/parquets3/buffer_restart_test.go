@@ -41,6 +41,9 @@ type restartEnv struct {
 	written  map[string]uint64 // spans written per name
 	total    int
 	spans    int
+	// loadNow, when set, is the clock the restarted flusher loads at (a pod
+	// that was down for a while); nil means time.Now.
+	loadNow func() time.Time
 }
 
 func newRestartEnv(t *testing.T) *restartEnv {
@@ -76,9 +79,20 @@ func (e *restartEnv) boot(m *manifest.Manifest) {
 	e.s, e.segs = s, segs
 	e.f = newBufferFlusher(e.bw, segs, filepath.Join(e.dir, "buffer"), nil, BufferFlusherConfig{
 		TargetBytes: 1000 * estBytesPerTraceRow, MaxAge: time.Hour, Grace: time.Minute})
-	if err := e.f.load(time.Now()); err != nil {
+	now := time.Now()
+	if e.loadNow != nil {
+		now = e.loadNow()
+	}
+	e.f.clock = func() time.Time {
+		if e.loadNow != nil {
+			return e.loadNow()
+		}
+		return time.Now()
+	}
+	if err := e.f.load(now); err != nil {
 		e.t.Fatal(err)
 	}
+	s.bufferFlusher = e.f
 }
 
 // ingest adds one span per time to the insert buffer, named level.
@@ -144,7 +158,14 @@ func (e *restartEnv) restart(snapshotBefore, snapshotAfter, drain bool) {
 		}
 	}
 	e.boot(m)
-	if err := m.RefreshFromS3(context.Background(), e.s.pool.S3Client()); err != nil {
+	e.refresh()
+}
+
+// refresh is the pod's S3 manifest refresh; the first successful one releases
+// the committed segments the flusher restored.
+func (e *restartEnv) refresh() {
+	e.t.Helper()
+	if err := e.s.RefreshManifest(context.Background()); err != nil {
 		e.t.Fatal(err)
 	}
 }

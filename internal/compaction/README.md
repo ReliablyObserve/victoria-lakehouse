@@ -89,11 +89,21 @@ Tier B operates on the storage layer:
                             ▼
    each pod walks its assigned dates:
      for each .parquet key NOT in manifest:
-       if isProtected(key)         → skip (never delete _meta/, _tombstones/)
-       if age < OrphanTTL          → skip
-       if keyInManifestAt(prefix)  → skip (race: peer just published it)
-       else                        → Pool.Delete(key)
+       if isProtected(key)               → skip (never delete _meta/, _tombstones/)
+       if no retirement record           → skip (no_evidence: a listing missed it)
+       if record deleted / < OrphanTTL   → skip
+       if named by an unfinished rewrite → skip
+       if object age < OrphanTTL (HEAD)  → skip
+       if keyInManifestAt / record moved → skip (race: peer just published it)
+       else                              → Pool.Delete(key), ConfirmDeleted(key)
 ```
+
+Absence from the manifest is never enough on its own: every refresh adopts each
+listed object that is not retired or pending, so an absent object without a
+record is one a listing missed and holds live rows (#404 round 4). Tier B
+reclaims the retired objects whose delete another component owed (a peer's
+push, retention) and never completed; the scheduler's `ReclaimRetired` retries
+the deletes this node owes.
 
 ## 3. Public API
 
@@ -266,8 +276,9 @@ Two pods can briefly think they each own a partition during a ring
 change (one pod's peer-cache hasn't refreshed yet). The `Manifest.AddFile`
 idempotency guard catches the duplicate upload — the second upload's
 `AddFile` no-ops and increments
-`lakehouse_manifest_addfile_duplicate_key_total`. Both compacted output
-files exist on S3; Tier B reclaims the duplicate after `OrphanTTL`.
+`lakehouse_manifest_addfile_duplicate_key_total`. A publish that loses the
+race abandons its output (`AbandonPending`: retired, delete owed), and the
+scheduler's reclaim (or, failing that, Tier B after `OrphanTTL`) deletes it.
 
 **Diagnostic:** `lakehouse_compaction_dual_ownership_total` is the
 gold-standard alert (target 0 sustained). The duplicate-key counter is a
@@ -286,12 +297,24 @@ the drain completed within `DrainTimeout`.
 
 ### 4.6 Hard pod death (SIGKILL)
 
-No preStop, no drain. The pod dies mid-compaction. The partial parquet
-upload is on S3 with no manifest entry. Tier B reclaims it after
-`OrphanTTL` (default 1 h) — see edge case 14 in the spec.
+No preStop, no drain. The pod dies mid-compaction. An upload that never
+completed is not visible in S3. An output whose abandonment was recorded and
+persisted with the snapshot is deleted by the reclaim retry or by Tier B
+after `OrphanTTL`.
+
+**Known gap ([#423](https://github.com/ReliablyObserve/victoria-lakehouse/issues/423)):**
+a completed output upload that was not published before the kill has no
+record (pending keys are in memory only). The next refresh adopts it like any
+listed object, next to its sources, which are still live: their rows are then
+served twice until one side is retired. This is not a safe outcome, and nothing
+cleans it up today: Tier B never deletes an object without a retirement record
+(it counts it as `no_evidence`). The fix (a durable intent written before the
+upload and reconciled at start, with a crash-matrix test) is tracked in #423.
 
 **Diagnostic:** `lakehouse_compaction_orphan_files_deleted_total` ticks
-on the next Tier B sweep that owns the date prefix.
+when Tier B deletes a retired object;
+`lakehouse_compaction_orphans_skipped_total{reason="no_evidence"}` counts
+absent objects it kept for lack of a record.
 
 ## 5. Why the merge decodes every row
 

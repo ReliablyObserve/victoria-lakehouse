@@ -40,6 +40,21 @@ type RewriteSchedulerConfig struct {
 	// before the delete means a peer learns the new key while the old object
 	// can still be read. Optional.
 	OnPublished func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
+
+	// ObjectExists answers whether an object is in the bucket (an S3 HEAD).
+	// The scheduler asks it before reading "absent from the manifest" as "the
+	// object is gone" for a key that is not retired: a listing that silently
+	// missed the object leaves exactly that state, and reaping it would bring
+	// the deleted rows back when a later listing adopts the object again. When
+	// nil, the Rewriter's pool is used if it can answer (Exists); without
+	// either, such a key is never reaped on absence alone.
+	ObjectExists func(ctx context.Context, key string) (bool, error)
+}
+
+// objectExister is the existence check a RewriterPool may also offer
+// (s3reader.ClientPool does).
+type objectExister interface {
+	Exists(ctx context.Context, key string) (bool, error)
 }
 
 // RewriteScheduler periodically processes pending tombstones by rewriting
@@ -81,6 +96,9 @@ type RewriteScheduler struct {
 	segmentPrefix  string
 	segmentProtect time.Duration
 	guard          *manifest.SegmentGuard
+
+	// objectExists: see RewriteSchedulerConfig.ObjectExists.
+	objectExists func(ctx context.Context, key string) (bool, error)
 }
 
 // SetSegmentGuard makes rewrites wait for the insert-buffer segment an object
@@ -142,6 +160,13 @@ func NewRewriteScheduler(cfg RewriteSchedulerConfig) *RewriteScheduler {
 		maxConc = 1
 	}
 
+	exists := cfg.ObjectExists
+	if exists == nil && cfg.Rewriter != nil {
+		if e, ok := cfg.Rewriter.pool.(objectExister); ok {
+			exists = e.Exists
+		}
+	}
+
 	return &RewriteScheduler{
 		store:          cfg.Store,
 		rewriter:       cfg.Rewriter,
@@ -153,6 +178,7 @@ func NewRewriteScheduler(cfg RewriteSchedulerConfig) *RewriteScheduler {
 		allowedClasses: allowed,
 		maxConcurrent:  maxConc,
 		stopCh:         make(chan struct{}),
+		objectExists:   exists,
 	}
 }
 
@@ -289,7 +315,7 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 		// nothing about the object, which may still hold every row this
 		// tombstone hides.
 		if !s.manifest.HasKey(key) {
-			if !s.manifest.Listed() {
+			if !s.listedSince(ts) {
 				metrics.DeleteRewriteDeferred.Inc("unlisted")
 				continue
 			}
@@ -299,6 +325,11 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 			// because the object is gone.
 			if s.manifest.AwaitingListing(key) {
 				metrics.DeleteRewriteDeferred.Inc("awaiting_listing")
+				continue
+			}
+			// And a complete-looking listing can still have missed the
+			// object (a LIST that silently drops keys): confirm per object.
+			if !s.absentObjectSettled(ctx, key) {
 				continue
 			}
 			metrics.DeleteRewriteAlreadyReaped.Inc()
@@ -353,12 +384,53 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 	// the original bug. Retirement is what stops hiding the rows, so it waits
 	// for a manifest that has listed the bucket: the discovery above can only
 	// be complete against a manifest that knows what the bucket holds.
-	if s.manifest.Listed() {
+	if cur, ok := s.store.Get(id); ok && s.listedSince(cur) {
 		s.store.Complete(id)
 	} else {
 		metrics.DeleteRewriteDeferred.Inc("unlisted")
 	}
 	return results, false
+}
+
+// absentObjectSettled reports whether an object key that is absent from the
+// manifest can be marked reaped: the manifest retired it (a publish replaced
+// it, so its rows are in the replacement, which discovery follows), or a HEAD
+// finds no object. An object that is still there and not retired is one the
+// listing missed — it holds rows this tombstone hides — so the key stays
+// pending (counted as deferred "absent_but_exists"); so does a key whose HEAD
+// fails or that cannot be checked. One HEAD per such key and pass: absent keys
+// are rare (a crash lost a rewrite's bookkeeping, or compaction merged the key
+// on a peer).
+func (s *RewriteScheduler) absentObjectSettled(ctx context.Context, key string) bool {
+	if _, retired := s.manifest.LookupRetired(key); retired {
+		return true
+	}
+	if s.objectExists == nil {
+		metrics.DeleteRewriteDeferred.Inc("existence_unknown")
+		return false
+	}
+	exists, err := s.objectExists(ctx, key)
+	switch {
+	case err != nil:
+		metrics.DeleteRewriteDeferred.Inc("existence_unknown")
+		logger.Warnf("delete rewrite: cannot confirm that an unlisted object is gone; the key stays pending: %s; key=%s", err, key)
+		return false
+	case exists:
+		metrics.DeleteRewriteDeferred.Inc("absent_but_exists")
+		logger.Warnf("delete rewrite: an object absent from the manifest still exists and is not retired (a listing missed it); the key stays pending until a listing adopts it; key=%s", key)
+		return false
+	}
+	return true
+}
+
+// listedSince reports whether the manifest can be trusted to say "this object is
+// gone" for tombstone ts: a refresh that listed the whole bucket began after the
+// tombstone was created. A snapshot, a partial listing and a listing the cliff
+// rule rejected do not count (#418): reading their gaps as deletions completes
+// the tombstone over objects that still hold its rows, and the next full
+// listing shows the deleted rows again.
+func (s *RewriteScheduler) listedSince(ts Tombstone) bool {
+	return s.manifest.Listed() && s.manifest.CompleteSince(ts.CreatedAt)
 }
 
 // discoverAffectedKeys adds every manifest file overlapping the tombstone's

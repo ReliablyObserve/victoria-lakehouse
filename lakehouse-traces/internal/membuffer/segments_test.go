@@ -1224,3 +1224,34 @@ func TestSegments_ReapStress(t *testing.T) {
 		t.Fatalf("up to %d segments were live at once; reaping did not keep up", maxLive)
 	}
 }
+
+// CommitThroughAt gives each segment its own commit time (#379).
+func TestSegments_CommitThroughAt(t *testing.T) {
+	s := openSegs(t, t.TempDir())
+	defer s.Close()
+	tid := logstorage.TenantID{}
+	var segs []*Segment
+	for i := 0; i < 3; i++ {
+		addRows(s, tid, "x", 1)
+		g, ok := s.Seal()
+		if !ok {
+			t.Fatal("seal failed")
+		}
+		segs = append(segs, g)
+	}
+	base := time.Now().Add(-time.Hour)
+	s.CommitThroughAt(segs[1].Seq(), func(seq uint64) time.Time { return base.Add(time.Duration(seq) * time.Minute) })
+	for i := 0; i < 2; i++ {
+		if want := base.Add(time.Duration(segs[i].Seq()) * time.Minute); !segs[i].committed.Equal(want) {
+			t.Fatalf("segment %d committed at %v, want %v", i, segs[i].committed, want)
+		}
+	}
+	if !segs[2].committed.IsZero() {
+		t.Fatal("segment past the seq must stay uncommitted")
+	}
+	// Reap takes the one whose own commit time is past the grace, not both.
+	now := base.Add(time.Duration(segs[0].Seq())*time.Minute + 90*time.Second)
+	if n := s.Reap(now, time.Minute); n != 1 {
+		t.Fatalf("Reap removed %d, want 1 (only the older commit is past its grace)", n)
+	}
+}

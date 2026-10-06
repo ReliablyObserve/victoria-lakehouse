@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -12,14 +13,14 @@ func TestCompactionSafety_OlderListCannotThawNewerClass(t *testing.T) {
 	newer := time.Now()
 	m := New("test-bucket", "logs/")
 	newerFiles := map[string][]FileInfo{p: {{Key: key, Size: 100, StorageClass: "STANDARD_IA", ClassCheckedAt: newer, ClassSource: ClassSourceList}}}
-	if !m.applyRefreshedFiles(newerFiles, newer) {
+	if !m.applyRefreshedFiles(context.Background(), newerFiles, newer, nil, nil) {
 		t.Fatal("newer listing rejected")
 	}
 	// A LIST started earlier while the object was STANDARD finishes after a
 	// newer LIST observed its transition to IA. Concurrent refresh calls have
 	// no outer serialization, so applying in this order is possible.
 	olderFiles := map[string][]FileInfo{p: {{Key: key, Size: 100, StorageClass: "STANDARD", ClassCheckedAt: older, ClassSource: ClassSourceList}}}
-	if !m.applyRefreshedFiles(olderFiles, older) {
+	if !m.applyRefreshedFiles(context.Background(), olderFiles, older, nil, nil) {
 		t.Fatal("older listing rejected")
 	}
 	f := m.FilesForPartition(p)[0]

@@ -312,7 +312,7 @@ The migrator works file-by-file in this exact order to keep crash recovery safe:
 2. **Manifest flip** — `manifest.SetFileBucket` points the existing file entry at the new bucket. Reads immediately resolve to the new location; the entry is rewritten atomically.
 3. **Delete source** in the old bucket.
 
-A crash between steps 2 and 3 leaves orphaned bytes in the old bucket (cleanable by S3 lifecycle or the orphan sweeper); a crash between 1 and 2 leaves the new copy unreferenced (cleanable the same way). The order never leaves a dangling manifest pointer.
+A crash between steps 2 and 3 leaves orphaned bytes in the old bucket (cleanable by S3 lifecycle; the orphan sweep only deletes objects the manifest holds a retirement record for); a crash between 1 and 2 leaves the new copy unreferenced (cleanable the same way). The order never leaves a dangling manifest pointer.
 
 The endpoint is closed by default. Access is gated by the same global-read credential surface as cross-tenant reads — either:
 - `X-Lakehouse-Global-Read: <value>` matching `tenant.global_read_value`, or

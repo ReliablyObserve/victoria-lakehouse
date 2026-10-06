@@ -201,11 +201,16 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// caller widens the scope. Everything downstream — the fast paths, the scan
 	// and the buffer bridge — works off THIS list. Twin of
 	// internal/storage/parquets3/storage_query.go.
-	files := s.filesForScope("query", startNs, endNs, scope)
-	// The insert buffer as this query sees it, taken before the object list is
-	// used: the objects of the segments it serves are not read (see bufferView).
+	// The insert buffer as this query sees it, taken BEFORE the object list: a
+	// segment retired after this point stays held for the query, while an object
+	// list taken first could predate the flush of a segment the view then no
+	// longer has, hiding its rows. The window that remains is the harmless one:
+	// the view holds a segment whose objects the list also has, and those
+	// objects are not read (see bufferView).
 	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
 	defer view.release()
+	runHookBetweenViewAndList()
+	files := s.filesForScope("query", startNs, endNs, scope)
 	files = view.exclude(files)
 	if len(files) == 0 {
 		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer

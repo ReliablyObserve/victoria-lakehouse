@@ -247,7 +247,8 @@ flowchart TD
 - Uses AWS SDK v2 paginator (handles 1000-item pages)
 - Filters to `.parquet` files only
 - Keeps the full tracked entry (every enrichment field) for keys it already knows
-- Atomically replaces the entire manifest under write lock, unless the cliff guard rejects a listing that lost more than half the files
+- Atomically replaces the entire manifest under write lock. A listing that would lose more than half of the tracked files is applied only if a HEAD sample (16 random dropped keys) finds them all gone (404); a live key or a failing HEAD rejects it (`ErrRefreshRejected`). This applies to every refresh, the first after a snapshot load included
+- A listing that skipped an account (`ErrRefreshPartial`) keeps that account's previous entries and does not count as complete: `Listed()` and `LastCompleteRefresh()` only move on a refresh that covered every prefix, and the retirements of the skipped account are not forgotten
 - Recalculates `minTime`, `maxTime`, `totalFiles`, `totalBytes`
 - `ApplyListing(objects, listStart)` applies a listing from any other lister the same way
 
@@ -260,7 +261,7 @@ go of, so the manifest remembers two kinds of key the refresh must leave out:
 
 | kind | written by | why adopting it is wrong | forgotten when |
 |------|------------|--------------------------|----------------|
-| **retired** | `ReplaceFile` / `ReplaceFiles` (the source a rewrite or compaction publish replaced), `RemoveFileIfPresent`, `AbandonPending` (an output whose publish was refused), `RemoveFile` (retention, a peer's push), `Retire` | its rows would be served next to the replacement's copy, deleted rows would reappear once the tombstone retires, and the orphan sweep — which only reclaims unmanifested objects — would never see it | the first accepted listing that began after the retirement comes back without it — a landed delete only clears the debt (`ConfirmDeleted`), it does not release the key; or after 7 days for a key no delete is owed for (cap 100,000, evicting provably-deleted keys first, then unowed, then owed, oldest first within each) |
+| **retired** | `ReplaceFile` / `ReplaceFiles` (the source a rewrite or compaction publish replaced), `RemoveFileIfPresent`, `AbandonPending` (an output whose publish was refused), `RemoveFile` (retention, a peer's push), `Retire` | its rows would be served next to the replacement's copy, deleted rows would reappear once the tombstone retires, and the orphan sweep — which reclaims only unmanifested objects that hold a retirement record — would never see it | the first accepted listing that began after the retirement comes back without it — a landed delete only clears the debt (`ConfirmDeleted`), it does not release the key; or after 7 days for a key no delete is owed for (cap 100,000, evicting provably-deleted keys first, then unowed, then owed, oldest first within each) |
 | **pending** | `MarkPending`, before a rewrite or compaction uploads an output | its rows would be served next to its still-registered source, and the publish that follows would be dropped as a duplicate key, losing its row counts and labels | its publish, or `AbandonPending` |
 
 Keys the manifest never knew — files flushed by a peer, or flushed after the

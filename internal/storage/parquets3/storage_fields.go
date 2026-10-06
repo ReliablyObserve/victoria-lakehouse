@@ -508,6 +508,10 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		return nil, nil // declared id column: don't enumerate (matches VL), no scan
 	}
 
+	// The buffer view is taken before the object list (see RunQuery).
+	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
+	defer view.release()
+	runHookBetweenViewAndList()
 	files := s.filesForScope("field_values", startNs, endNs, scope)
 	// No early return on an empty object list: a window nothing has been
 	// flushed for yet is answered from the unflushed rows alone.
@@ -540,6 +544,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	}
 
 	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
+		view:       view,
 		op:         "field values",
 		column:     mapping.ParquetColumn,
 		field:      mapping.InternalName,
@@ -576,6 +581,10 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 	startNs, endNs := q.GetFilterTimeRange()
 
+	// The buffer view is taken before the object list (see RunQuery).
+	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
+	defer view.release()
+	runHookBetweenViewAndList()
 	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
 	scope := scopeFor(ctx, tenantIDs)
 	// No early return on an empty object list: a window nothing has been
@@ -597,6 +606,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 	}
 
 	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
+		view:       view,
 		op:         "streams",
 		column:     streamColName,
 		field:      "_stream",
@@ -619,6 +629,10 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 
 	startNs, endNs := q.GetFilterTimeRange()
 
+	// The buffer view is taken before the object list (see RunQuery).
+	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
+	defer view.release()
+	runHookBetweenViewAndList()
 	files := s.filesForTenants(ctx, "stream_ids", startNs, endNs, tenantIDs)
 	scope := scopeFor(ctx, tenantIDs)
 	// No early return on an empty object list: a window nothing has been
@@ -640,6 +654,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 	}
 
 	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
+		view:       view,
 		op:         "stream_ids",
 		column:     colName,
 		field:      "_stream_id",

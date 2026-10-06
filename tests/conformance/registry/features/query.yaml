@@ -338,7 +338,7 @@
   status: shipped
   area: query
   surfaces: [api, storage]
-  rows: [lh.select.restart.same_hour_buffer_visible_logs, lh.select.restart.same_hour_buffer_visible_traces]
+  rows: [lh.select.restart.same_hour_buffer_visible_logs, lh.select.restart.same_hour_buffer_visible_traces, lh.select.restart.downtime_beyond_guard_compaction_logs, lh.select.restart.downtime_beyond_guard_compaction_traces]
   tests:
     - internal/storage/parquets3/buffer_restart_test.go
     - internal/storage/parquets3/inferred_bounds_test.go

@@ -31,12 +31,14 @@
   area: storage
   readme_section: Write Path
   surfaces: [api, storage]
-  rows: [lh.manifest.range.schema, lh.manifest.partitions.schema]
+  rows: [lh.manifest.range.schema, lh.manifest.partitions.schema, lh.select.manifest.incomplete_listing_deletes_nothing_logs, lh.select.manifest.incomplete_listing_deletes_nothing_traces]
   tests:
     - internal/manifest/manifest_test.go
     - internal/manifest/api_test.go
     - internal/manifest/manifest_range_test.go
     - internal/manifest/refresh_tenantscoped_test.go
+    - internal/manifest/refresh_head_confirm_test.go
+    - internal/manifest/listing_property_test.go
   docs:
     - docs/manifest-system.md#data-structures
     - docs/manifest-system.md#api-endpoints

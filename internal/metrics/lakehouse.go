@@ -184,6 +184,39 @@ var (
 	// genuinely shrank and the guard is now lying to readers, so
 	// an operator should restart the pod to force a clean rebuild.
 	ManifestRefreshCliffGuardRejections = NewCounter("lakehouse_manifest_refresh_cliff_guard_rejections_total")
+	// ManifestRefreshIncomplete counts refreshes that did not bring the
+	// manifest up to what the bucket holds, by reason: partial (a tenant's
+	// project listing failed; its previous entries were kept), rejected (the
+	// listing dropped most tracked files and a HEAD sample found live objects
+	// among them) and head_unconfirmed (it dropped most tracked files and the
+	// HEAD sample could not be taken or failed). Nothing that infers "this
+	// object is gone" (delete completion, retirement forgetting, the orphan
+	// sweep) acts on such a refresh. All three series are exported at zero.
+	ManifestRefreshIncomplete = NewCounterVec("lakehouse_manifest_refresh_incomplete_total", "reason")
+	// ManifestLastRefreshTimestamp is the Unix time of the last refresh the
+	// manifest applied (complete or partial; a rejected one does not count).
+	// 0 until the first one. Read by the LakehouseManifestStale alert.
+	ManifestLastRefreshTimestamp = NewFloatGauge("lakehouse_manifest_last_refresh_timestamp_seconds")
+	// ManifestLastCompleteRefreshTimestamp is the Unix time at which the last
+	// COMPLETE listing (every prefix listed, not rejected) was applied: its end,
+	// not its start, so a listing that takes long is not counted against the
+	// next one. Only such a listing lets the manifest say an object is gone,
+	// so while it does not move, tombstones are not completed and retired keys
+	// are not settled. 0 until the first one (the alert then measures from
+	// process_start_time_seconds). Read by the
+	// LakehouseManifestNoCompleteRefresh alert.
+	ManifestLastCompleteRefreshTimestamp = NewFloatGauge("lakehouse_manifest_last_complete_refresh_timestamp_seconds")
+	// ManifestRefreshIntervalSeconds is the configured periodic refresh
+	// interval, so alerts can be expressed as a multiple of it.
+	ManifestRefreshIntervalSeconds = NewFloatGauge("lakehouse_manifest_refresh_interval_seconds")
+	// DuplicateFileKeys counts file entries dropped because their key was
+	// already tracked, by where the invariant check caught it
+	// (site=manifest_refresh: a refresh built a file map with a key twice;
+	// site=manifest_load: a loaded snapshot held a key twice;
+	// site=compaction_input: a compaction group named a source twice and was
+	// refused). Every series is exported at zero; any increase is a defect —
+	// the entry would have served its rows twice.
+	DuplicateFileKeys = NewCounterVec("lakehouse_duplicate_file_keys_total", "site")
 	// ManifestRetiredKeys is the number of keys the manifest deliberately
 	// stopped listing whose objects may still exist (a publish replaced them,
 	// an output was abandoned, or they were removed on another component's
@@ -245,6 +278,11 @@ var (
 	// created at zero by Manifest.SetTenantBuckets.
 	ManifestTenantBucketListErrors = NewCounterVec("lakehouse_manifest_tenant_bucket_list_errors_total", "bucket")
 )
+
+func init() {
+	ManifestRefreshIncomplete.Init("partial", "rejected", "head_unconfirmed")
+	DuplicateFileKeys.Init("manifest_refresh", "manifest_load", "compaction_input")
+}
 
 // RowGroupSkipReasons is every reason ParquetRowGroupsSkipped is incremented
 // with on either binary: the manifest-level file pre-filters (label_index,
@@ -406,6 +444,13 @@ var (
 	// BufferOldestPendingAge is the age in seconds of the oldest segment not yet
 	// fully written: how far object storage lags behind ingest.
 	BufferOldestPendingAge = NewGauge("lakehouse_buffer_oldest_pending_age_seconds")
+	// BufferHeldSegments is the number of committed segments, restored at start,
+	// that are held past their grace until a complete S3 manifest refresh has
+	// finished (0 in steady state); BufferOldestHeldAge is how long the oldest
+	// has been held. A value that stays up means refreshes keep failing: the rows
+	// stay served (possibly duplicated) and the segments keep their disk.
+	BufferHeldSegments  = NewGauge("lakehouse_buffer_held_segments")
+	BufferOldestHeldAge = NewGauge("lakehouse_buffer_oldest_held_age_seconds")
 	// InsertFlushCommittedSeq is the sequence number of the newest segment fully
 	// written to object storage (every older one is too).
 	InsertFlushCommittedSeq = NewGauge("lakehouse_insert_flush_committed_segment")
@@ -771,7 +816,10 @@ var (
 // Spec §6.1: Orphan-sweep metrics. StolenTotal counts Tier A successes;
 // OrphansDeleted is the Tier B counter (>100/h pages); OrphansSkipped is
 // labeled by reason ("in_manifest"/"too_young"/"protected_prefix"/
-// "not_parquet"/"manifest_drift_race"/"empty_peers"/"self_not_in_peers");
+// "not_parquet"/"manifest_drift_race"/"empty_peers"/"self_not_in_peers"/
+// "no_evidence": absent from the manifest with no retirement record, never
+// deleted / "delete_landed"/"retired_too_recently"/"rewrite_unfinished":
+// retired but not deletable yet; #404 round 4);
 // DualOwnershipTotal is labeled by partition (cardinality bounded to a
 // handful of bad partitions in steady state; 0 expected); DoubleCountWindow
 // is the L0+L1 overlap gauge.
@@ -959,8 +1007,10 @@ var (
 	DeleteTombstoneRestorePending = NewGauge("lakehouse_delete_tombstone_restore_pending")
 	// DeleteRewriteDeferred counts rewrite work postponed rather than done, by
 	// reason: the manifest has not listed the bucket yet (unlisted), the
-	// tombstone store is incomplete (restore_pending), or a record is not
-	// durable (not_durable).
+	// tombstone store is incomplete (restore_pending), a record is not
+	// durable (not_durable), a key absent from the manifest still exists and
+	// is not retired (absent_but_exists: a listing missed it), or whether it
+	// exists could not be checked (existence_unknown).
 	DeleteRewriteDeferred = NewCounterVec("lakehouse_delete_rewrite_deferred_total", "reason")
 	// DeleteRewriteKeyCollisions counts replacement keys that could not be
 	// claimed because the key was already in use.

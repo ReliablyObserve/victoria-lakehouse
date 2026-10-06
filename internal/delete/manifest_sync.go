@@ -63,6 +63,10 @@ type ManifestUpdater interface {
 	Hold(key string)
 	Release(key string)
 	Listed() bool
+	// CompleteSince reports whether a refresh that listed the WHOLE bucket
+	// began after t: a partial, rejected or older listing cannot say what
+	// happened at t (#418).
+	CompleteSince(t time.Time) bool
 	ExpectInListing(key string)
 	AwaitingListing(key string) bool
 }

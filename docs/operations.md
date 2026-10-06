@@ -535,7 +535,7 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_delete_tombstone_persist_total{target="disk"|"s3"}` / `..._errors_total` — durability writes
 - `lakehouse_delete_tombstone_persist_pending` — records whose S3 copy is behind; steady state 0
 - `lakehouse_delete_tombstone_not_durable_total` — steps that could not proceed because the change authorising them was not durable yet; the objects are kept and the next pass retries
-- `lakehouse_delete_rewrite_deferred_total{reason="not_durable"|"unlisted"|"awaiting_listing"|"restore_pending"}` — rewrite work postponed rather than done, by why
+- `lakehouse_delete_rewrite_deferred_total{reason="not_durable"|"unlisted"|"awaiting_listing"|"restore_pending"|"absent_but_exists"|"existence_unknown"}` — rewrite work postponed rather than done, by why
 - `lakehouse_delete_rewrites_unfinished` — rewrite records whose objects are not settled yet; **drain to 0 before rolling back** (see *Rolling back*)
 - `lakehouse_delete_tombstone_restore_pending` / `lakehouse_delete_tombstone_restore_attempts_total{result="failed"|"recovered"}` — whether this node has read the S3 copy of the store, and the retries
 - `lakehouse_delete_rewrite_key_collisions_total`, `lakehouse_manifest_key_claim_rejected_total{reason}` — object keys that were already in use and had to be redrawn; a sustained rate means something other than chance is generating them
@@ -617,8 +617,9 @@ rewrite is in flight:
   `tombstones.json` envelope at all (it carries the removed-tombstone markers),
   and the per-id S3 objects it *can* read lose the rewrite records
   (`Superseded`). A rewrite that is half-finished when you roll back is then
-  never resolved: a replacement stays unmanifested until the orphan sweep
-  reclaims it, or a superseded object keeps its rows.
+  never resolved: a replacement stays unmanifested (the orphan sweep only
+  reclaims objects with a retirement record), or a superseded object keeps its
+  rows.
 
 So before rolling back to a release older than this one:
 

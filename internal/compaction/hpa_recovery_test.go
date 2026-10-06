@@ -135,29 +135,37 @@ func TestCompaction_SIGTERM_FinishesCurrentPartition(t *testing.T) {
 // §11.6.2
 // =============================================================================
 
-// TestCompaction_SIGKILL_OrphanRecovery asserts that when a pod dies
-// hard (no Drain) and leaves a partial parquet upload in S3, Tier B's
-// orphan sweeper recognises and deletes it — provided the partial file
-// is older than OrphanTTL and not in the manifest.
+// TestCompaction_SIGKILL_OrphanRecovery asserts that when a pod dies hard
+// (no Drain) after abandoning an upload whose delete never ran, Tier B deletes
+// the object once the abandonment record (persisted with the manifest
+// snapshot) and the object are older than OrphanTTL, and that an object with
+// no record — what a crash between upload and publish leaves, which the next
+// refresh adopts — is never deleted on absence alone (#404 round 4).
 //
-// Negative-control proof: if the keyInManifestAt re-snapshot step (c)
-// of Tier B is removed and the manifest is updated mid-sweep with the
-// would-be-orphan key, the file would be deleted — corrupting recovery.
-// The opposite negative-control: if Tier B's age gate (`time.Since(mtime)
-// < o.cfg.OrphanTTL`) is removed, the partial would be deleted
-// IMMEDIATELY on the first sweep after the SIGKILL, before the next
-// scheduler tick had a chance to re-claim it.
+// Negative-control proof: if the keyInManifestAt re-snapshot step of Tier B
+// is removed and the manifest is updated mid-sweep with the would-be-orphan
+// key, the file would be deleted — corrupting recovery. The opposite
+// negative-control: if Tier B's age gate (`time.Since(mtime) <
+// o.cfg.OrphanTTL`) is removed, the upload would be deleted IMMEDIATELY on the
+// first sweep after the SIGKILL.
 func TestCompaction_SIGKILL_OrphanRecovery(t *testing.T) {
 	pool := newListingPool()
 	m := manifest.New("bkt", "logs/")
 	const partition = "dt=2026-01-01/hour=00"
 
-	// Simulate a partial upload from a SIGKILLed pod: file exists on S3
-	// but was never registered in the manifest. mtime well in the past.
+	// The abandoned upload of a SIGKILLed pod: the object exists on S3, was
+	// never registered, and its abandonment was recorded. mtime in the past.
 	partialKey := "logs/" + partition + "/orphan-partial.parquet"
 	if err := pool.UploadWithMtime(context.Background(), partialKey, []byte("partial"), time.Now().Add(-2*time.Hour)); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
+	// An upload of the same age with no record (a listing missed it): kept.
+	unrecorded := "logs/" + partition + "/unrecorded.parquet"
+	if err := pool.UploadWithMtime(context.Background(), unrecorded, []byte("live"), time.Now().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	m.AbandonPending(partialKey)
+	time.Sleep(20 * time.Millisecond)
 
 	own := NewOwnershipResolver("self", staticPeers("self"))
 	sweep := NewOrphanSweep(OrphanSweepConfig{
@@ -170,7 +178,7 @@ func TestCompaction_SIGKILL_OrphanRecovery(t *testing.T) {
 		Interval:                 time.Minute,
 		TierBInterval:            time.Hour,
 		TierAStalenessMultiplier: 3,
-		OrphanTTL:                time.Hour,
+		OrphanTTL:                10 * time.Millisecond,
 		Mode:                     config.ModeLogs,
 		RowGroupSize:             1000,
 		CompressionLevel:         7,
@@ -182,6 +190,12 @@ func TestCompaction_SIGKILL_OrphanRecovery(t *testing.T) {
 	}
 	if deleted != 1 {
 		t.Fatalf("deleted=%d, want 1", deleted)
+	}
+	if _, _, err := pool.HeadObject(context.Background(), partialKey); err == nil {
+		t.Fatal("the abandoned upload is still there")
+	}
+	if _, _, err := pool.HeadObject(context.Background(), unrecorded); err != nil {
+		t.Fatalf("the unrecorded object was deleted: %v", err)
 	}
 	// Manifest must remain consistent: no entry for the orphan key.
 	if got := m.FilesForPartition(partition); len(got) != 0 {
