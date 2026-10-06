@@ -45,37 +45,57 @@ func (e *restartEnv) rowsOf(queryStr string) []map[string]string {
 	return coldSelectRunner(e.t, e.s, from.UnixNano(), to.UnixNano())(queryStr)
 }
 
-func TestDuplicateStreamFields_IngestFlushQuery(t *testing.T) {
-	e := newRestartEnv(t)
-	e.ingestDuplicateStream("DUP", at(rwHour, 10*time.Minute), at(rwHour, 11*time.Minute), at(rwHour, 12*time.Minute))
-	// A row of an ordinary stream next to them: the duplicate must not disturb it.
-	e.ingest("ONE", at(rwHour, 13*time.Minute))
-
-	stages := []struct {
-		name string
-		do   func()
-	}{
-		{"in the buffer", func() {}},
-		{"object and committed segment", e.flush},
-		{"object only (cold)", e.reap},
+// failFast runs body in its own goroutine and fails the test after d instead of
+// letting a regression (the stream registration blocking or looping on a
+// rejected row) hang until the package's test timeout. A panic in body still
+// takes the process down at once.
+func failFast(t *testing.T, d time.Duration, body func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		body()
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("no result after %s: ingest or query of a row with duplicate stream tags is stuck", d)
 	}
-	for _, st := range stages {
-		st.do()
-		e.check(st.name)
-		rows := e.rowsOf(`level:=DUP | fields _msg, level`)
-		if len(rows) != 3 {
-			t.Fatalf("%s: level:=DUP returned %d rows, want 3: %v", st.name, len(rows), rows)
+}
+
+func TestDuplicateStreamFields_IngestFlushQuery(t *testing.T) {
+	failFast(t, 60*time.Second, func() {
+		e := newRestartEnv(t)
+		e.ingestDuplicateStream("DUP", at(rwHour, 10*time.Minute), at(rwHour, 11*time.Minute), at(rwHour, 12*time.Minute))
+		// A row of an ordinary stream next to them: the duplicate must not disturb it.
+		e.ingest("ONE", at(rwHour, 13*time.Minute))
+
+		stages := []struct {
+			name string
+			do   func()
+		}{
+			{"in the buffer", func() {}},
+			{"object and committed segment", e.flush},
+			{"object only (cold)", e.reap},
 		}
-		for _, r := range rows {
-			if r["_msg"] != "dup-row" || r["level"] != "DUP" {
-				t.Errorf("%s: row %v, want _msg=dup-row level=DUP", st.name, r)
+		for _, st := range stages {
+			st.do()
+			e.check(st.name)
+			rows := e.rowsOf(`level:=DUP | fields _msg, level`)
+			if len(rows) != 3 {
+				t.Fatalf("%s: level:=DUP returned %d rows, want 3: %v", st.name, len(rows), rows)
+			}
+			for _, r := range rows {
+				if r["_msg"] != "dup-row" || r["level"] != "DUP" {
+					t.Errorf("%s: row %v, want _msg=dup-row level=DUP", st.name, r)
+				}
+			}
+			// The ordinary stream is still found by its own stream filter.
+			if n := len(e.rowsOf(`{service.name="svc-ONE"} | fields _msg`)); n != 1 {
+				t.Errorf("%s: the ordinary stream returned %d rows, want 1", st.name, n)
 			}
 		}
-		// The ordinary stream is still found by its own stream filter.
-		if n := len(e.rowsOf(`{service.name="svc-ONE"} | fields _msg`)); n != 1 {
-			t.Errorf("%s: the ordinary stream returned %d rows, want 1", st.name, n)
-		}
-	}
+	})
 }
 
 // unpack_syslog over stored messages reaches the same RFC5424 parser as syslog

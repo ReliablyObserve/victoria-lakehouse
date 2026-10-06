@@ -9,16 +9,24 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
-// LogsQL fixes that ship in VictoriaLogs v1.53.0 and live in the library the
-// Lakehouse executes its pipes with, so cold, buffered and hot answers must all
-// agree with them. Each query runs over the insert buffer, then over the object
-// alone (the cold path), and must return the one right answer both times.
+// LogsQL behaviours that VictoriaLogs v1.53.0 fixes in the library the
+// Lakehouse executes its pipes with. Each query runs over the insert buffer,
+// then over the object alone (the cold path), and must return the one right
+// answer both times.
 //
-//   - sort by (_time ...) limit N with a pipe that overwrites _time
-//     (VictoriaLogs #1360, #1727): the rows came back out of order.
-//   - a quoted constant in the math pipe (e.g. "2026-10-01T00:00:00Z") crashed
-//     the query when it ran with a limit.
-//   - week_range[Sun,Sun] inside the filter pipe missed Sundays (#1335).
+// Only one of the three is a fail-before test on the Lakehouse:
+//
+//   - TestVL153_MathQuotedConstantWithLimit: a quoted constant in the math
+//     pipe (e.g. "2026-10-01T00:00:00Z") crashed the query when it ran with a
+//     limit. Fails on v1.52.0, passes on v1.53.0.
+//   - TestVL153_SortLimitWithPipeWritingTime (sort by (_time ...) limit N with a
+//     pipe that overwrites _time, VictoriaLogs #1360, #1727) and
+//     TestVL153_WeekRangeSundayInFilterPipe (week_range[Sun,Sun] inside the
+//     filter pipe, #1335) are PARITY GUARDS, not fail-before tests: they also
+//     pass on v1.52.0, because the Lakehouse's own read path and the queries'
+//     data shapes do not reach the upstream defect. They pin the answer so a
+//     future change to the read path cannot start to disagree with hot
+//     VictoriaLogs; do not cite them as proof of the upstream fixes.
 
 // sunday and thursday are in the window the tests query.
 var (
@@ -45,6 +53,7 @@ func (e *restartEnv) fixRows(queryStr string) []map[string]string {
 	return coldSelectRunner(e.t, e.s, from.UnixNano(), to.UnixNano())(queryStr)
 }
 
+// Parity guard (also passes on v1.52.0); see the file header.
 func TestVL153_SortLimitWithPipeWritingTime(t *testing.T) {
 	e := newRestartEnv(t)
 	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
@@ -109,6 +118,7 @@ func TestVL153_MathQuotedConstantWithLimit(t *testing.T) {
 	}
 }
 
+// Parity guard (also passes on v1.52.0); see the file header.
 func TestVL153_WeekRangeSundayInFilterPipe(t *testing.T) {
 	e := newRestartEnv(t)
 	lr := logstorage.GetLogRows([]string{"service.name"}, nil, nil, nil, "")
