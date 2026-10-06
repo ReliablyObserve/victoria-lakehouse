@@ -209,9 +209,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// objects are not read (see bufferView).
 	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
 	defer view.release()
-	if testHookBetweenViewAndList != nil {
-		testHookBetweenViewAndList()
-	}
+	runHookBetweenViewAndList()
 	files := s.filesForScope("query", startNs, endNs, scope)
 	files = view.exclude(files)
 	if len(files) == 0 {

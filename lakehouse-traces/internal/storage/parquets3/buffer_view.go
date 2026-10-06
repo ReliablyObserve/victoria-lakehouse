@@ -56,6 +56,12 @@ func (s *Storage) useLocalBuffer() bool {
 // and a reap could slip in (#379).
 var testHookBetweenViewAndList func()
 
+func runHookBetweenViewAndList() {
+	if testHookBetweenViewAndList != nil {
+		testHookBetweenViewAndList()
+	}
+}
+
 // openBufferView takes the query's view of the insert buffer. Call release
 // when the query is done with it.
 func (s *Storage) openBufferView(ctx context.Context, startNs, endNs int64, tenantIDs []logstorage.TenantID) *bufferView {

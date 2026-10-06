@@ -321,9 +321,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	// The buffer view is taken before the object list (see GetQueryResult).
 	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
 	defer view.release()
-	if testHookBetweenViewAndList != nil {
-		testHookBetweenViewAndList()
-	}
+	runHookBetweenViewAndList()
 	files := s.filesForScope("field_values", startNs, endNs, scope)
 	// No early return on an empty object list: a window nothing has been
 	// flushed for yet is answered from the unflushed rows alone.
@@ -388,9 +386,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 	// The buffer view is taken before the object list (see GetQueryResult).
 	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
 	defer view.release()
-	if testHookBetweenViewAndList != nil {
-		testHookBetweenViewAndList()
-	}
+	runHookBetweenViewAndList()
 	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
 	scope := scopeFor(ctx, tenantIDs)
 	// No early return on an empty object list: a window nothing has been
@@ -438,9 +434,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 	// The buffer view is taken before the object list (see GetQueryResult).
 	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
 	defer view.release()
-	if testHookBetweenViewAndList != nil {
-		testHookBetweenViewAndList()
-	}
+	runHookBetweenViewAndList()
 	files := s.filesForTenants(ctx, "stream_ids", startNs, endNs, tenantIDs)
 	scope := scopeFor(ctx, tenantIDs)
 	// No early return on an empty object list: a window nothing has been
