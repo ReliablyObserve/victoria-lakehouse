@@ -16,8 +16,13 @@ import (
 // Safety rules (the overlay must never change what a read returns):
 //   - The cached tail must end exactly at the object size the caller passes
 //     (NewOverlayReaderAt refuses otherwise). Object keys are immutable, so key
-//     and size together identify the bytes; a size mismatch means the cache
+//     and size together identify the bytes: since #345 a flush replayed after
+//     a crash re-PUTs its DETERMINISTIC key with identical bytes only (a
+//     different payload always gets a different key), and compaction writes
+//     new keys rather than rewriting one. A size mismatch means the cache
 //     entry belongs to another version of the key and no overlay is built.
+//     Anything that ever PUTs different bytes under an existing key must
+//     invalidate the footer cache entry too; equal size alone is not proof.
 //   - Only bytes the cache really holds are served. Bytes before the tail
 //     always come from the wrapped reader — never zero-filled or synthesised
 //     (a zero-filled bloom section once produced false negatives, #172). A

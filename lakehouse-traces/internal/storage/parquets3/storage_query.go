@@ -288,7 +288,15 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		return nil
 	}
 
-	prefetchFooters(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes())
+	// The prefetch is bounded by the footer-cache budget (it fetches no more
+	// footers than the cache holds, keeping the file workers' own footer Puts
+	// from evicting them before use); the rest read their own footer on demand
+	// (the trace_id narrowing below, then the worker's open).
+	workers := s.cfg.Query.FileWorkers
+	if workers <= 0 {
+		workers = 8
+	}
+	prefetchFootersOpts(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{reserve: min(workers, len(files))})
 
 	// Deterministic trace_id narrowing — runs after bloom because the
 	// footer cache is now warm. For any file with a `_trace_idx`
@@ -928,7 +936,7 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 					// metadata-free and beats whole-file at every size.
 					metrics.S3PlannedStrategy.Inc("plan-warm-footer")
 				}
-				if f, view, err := s.openProjectedParquet(ctx, fi, cached.File.Schema(), usePlanned); err == nil {
+				if f, view, err := s.openProjectedParquet(ctx, fi, cached.File.Schema(), cached, usePlanned); err == nil {
 					return f, view, nil
 				}
 				// Fall through to full download on error.
@@ -947,11 +955,12 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 			if fi.Size < s.wholeFileThresholdBytes() {
 				metrics.S3PlannedStrategy.Inc("whole-file-warmup")
 				// fall through to the full-download path below.
-			} else if f, err := s.fetchFooterFile(ctx, fi); err == nil {
+			} else if ce, err := s.fetchFooterEntry(ctx, fi); err == nil {
+				f := ce.File
 				metrics.S3PlannedStrategy.Inc("plan-cold-footer")
 				totalCols := len(f.Root().Columns())
 				if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-					if pf, view, rErr := s.openProjectedParquet(ctx, fi, f.Schema(), usePlanned); rErr == nil {
+					if pf, view, rErr := s.openProjectedParquet(ctx, fi, f.Schema(), ce, usePlanned); rErr == nil {
 						return pf, view, nil
 					}
 				}
@@ -978,12 +987,13 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 			// Reuse the cached footer's schema when available — wildcard
 			// opens still pay the footer parse otherwise.
 			var cachedSchema *parquet.Schema
+			var cachedEntry *CachedFooter
 			if s.footerCache != nil {
 				if cf, ok := s.footerCache.GetFor(fi.Key, fi.Size); ok && cf.File != nil {
-					cachedSchema = cf.File.Schema()
+					cachedSchema, cachedEntry = cf.File.Schema(), cf
 				}
 			}
-			f, err := s.openRangedParquet(ctx, fi, cachedSchema)
+			f, err := s.openRangedParquet(ctx, fi, cachedSchema, cachedEntry)
 			if err == nil {
 				metrics.S3RangeReadsTotal.Inc()
 				metrics.ParquetFilesOpened.Inc()
@@ -1010,11 +1020,11 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 	// readers keep per-read state. ParseFooterFromData still feeds the cache,
 	// so the whole-file download doubles as the footer warmup. Mirror of
 	// internal/storage/parquets3/storage_query.go.
-	cached, f, parseErr := ParseFooterFromData(fi.Key, data)
+	cached, f, fresh, parseErr := parseObjectFor(s.footerCache, fi.Key, data)
 	if parseErr != nil {
 		return nil, nil, parseErr
 	}
-	if s.footerCache != nil {
+	if fresh && s.footerCache != nil {
 		s.footerCache.Put(fi.Key, cached)
 	}
 	return f, nil, nil

@@ -1538,9 +1538,6 @@ func LoadWithMode(path string, mode Mode, role Role) (*Config, error) {
 // loadConfigBytes is LoadWithMode for an already-read config file: the
 // file's `lakehouse:` document is merged over the profile it selects.
 func loadConfigBytes(data []byte, mode Mode, role Role) (*Config, error) {
-	if err := rejectRemovedKeys(data); err != nil {
-		return nil, err
-	}
 	var wrapper struct {
 		Lakehouse Config `yaml:"lakehouse"`
 	}

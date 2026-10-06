@@ -128,12 +128,22 @@ func (s *Storage) rangedOpenOptions(fi manifest.FileInfo, cachedSchema *parquet.
 // between the row groups) reach S3. With no usable cache entry raw and opts
 // are returned unchanged. The key and the size must both match the cached
 // entry; the overlay never synthesises bytes outside the cached tail.
-func (s *Storage) withFooterOverlay(fi manifest.FileInfo, raw s3reader.ReaderAtSizer, opts []parquet.FileOption) (s3reader.ReaderAtSizer, []parquet.FileOption) {
+//
+// cached is the entry the caller already looked up (one lookup per open: a
+// second one counted a second cache hit and could miss an entry evicted in
+// between); nil makes withFooterOverlay look it up itself.
+func (s *Storage) withFooterOverlay(fi manifest.FileInfo, raw s3reader.ReaderAtSizer, opts []parquet.FileOption, cached *CachedFooter) (s3reader.ReaderAtSizer, []parquet.FileOption) {
 	if s.footerCache == nil {
 		return raw, opts
 	}
-	cached, ok := s.footerCache.Get(fi.Key)
-	if !ok || cached.FileSize != fi.Size {
+	if cached == nil {
+		var ok bool
+		if cached, ok = s.footerCache.Get(fi.Key); !ok {
+			metrics.FooterOverlayOpens.Inc("miss")
+			return raw, opts
+		}
+	}
+	if cached.FileSize != fi.Size {
 		metrics.FooterOverlayOpens.Inc("miss")
 		return raw, opts
 	}
@@ -160,10 +170,10 @@ func (s *Storage) withFooterOverlay(fi manifest.FileInfo, raw s3reader.ReaderAtS
 // the open or page phase (metrics.S3GetsByPhase) and the per-open GET count
 // lands in metrics.S3GetsPerOpen — the research-doc "serial 4-6 GET open"
 // baseline, now measurable per open.
-func (s *Storage) openRangedParquet(ctx context.Context, fi manifest.FileInfo, cachedSchema *parquet.Schema) (*parquet.File, error) {
+func (s *Storage) openRangedParquet(ctx context.Context, fi manifest.FileInfo, cachedSchema *parquet.Schema, cached *CachedFooter) (*parquet.File, error) {
 	raw := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
 	phased := s3reader.NewPhaseReaderAt(raw)
-	inner, opts := s.withFooterOverlay(fi, phased, s.rangedOpenOptions(fi, cachedSchema))
+	inner, opts := s.withFooterOverlay(fi, phased, s.rangedOpenOptions(fi, cachedSchema), cached)
 	readerAt := s.buildWindowReader(inner, fi.Size)
 
 	f, err := parquet.OpenFile(readerAt, fi.Size, opts...)
@@ -191,10 +201,10 @@ func (s *Storage) openRangedParquet(ctx context.Context, fi manifest.FileInfo, c
 //
 // The returned view MUST be Closed by the caller when the file's processing
 // completes (releases the fetched spans and their memory-budget charge).
-func (s *Storage) openPlannedParquet(ctx context.Context, fi manifest.FileInfo, cachedSchema *parquet.Schema) (*parquet.File, *s3reader.PlannedFetchReaderAt, error) {
+func (s *Storage) openPlannedParquet(ctx context.Context, fi manifest.FileInfo, cachedSchema *parquet.Schema, cached *CachedFooter) (*parquet.File, *s3reader.PlannedFetchReaderAt, error) {
 	raw := s.pool.NewReaderAt(ctx, fi.Key, fi.Size)
 	phased := s3reader.NewPhaseReaderAt(raw)
-	inner, opts := s.withFooterOverlay(fi, phased, s.rangedOpenOptions(fi, cachedSchema))
+	inner, opts := s.withFooterOverlay(fi, phased, s.rangedOpenOptions(fi, cachedSchema), cached)
 	effGap, _, _ := s.clampWindowKnobs(fi.Size)
 	view := s3reader.NewPlannedFetchReaderAt(inner, fi.Size, effGap, chargePlannedFetchBytes)
 	// v2 slice-1 levers (opt-in planned path only): span concurrency
@@ -219,9 +229,9 @@ func (s *Storage) openPlannedParquet(ctx context.Context, fi manifest.FileInfo, 
 // later by armProjectedPlan) or window (the adaptive-window stack, also
 // the rollback when the planned open itself fails — counted under
 // lakehouse_s3_projected_fetch_fallback_total{reason="error"}).
-func (s *Storage) openProjectedParquet(ctx context.Context, fi manifest.FileInfo, cachedSchema *parquet.Schema, usePlanned bool) (*parquet.File, *s3reader.PlannedFetchReaderAt, error) {
+func (s *Storage) openProjectedParquet(ctx context.Context, fi manifest.FileInfo, cachedSchema *parquet.Schema, cached *CachedFooter, usePlanned bool) (*parquet.File, *s3reader.PlannedFetchReaderAt, error) {
 	if usePlanned {
-		f, view, err := s.openPlannedParquet(ctx, fi, cachedSchema)
+		f, view, err := s.openPlannedParquet(ctx, fi, cachedSchema, cached)
 		if err == nil {
 			metrics.S3RangeReadsTotal.Inc()
 			return f, view, nil
@@ -230,7 +240,7 @@ func (s *Storage) openProjectedParquet(ctx context.Context, fi manifest.FileInfo
 		// Fall through to the window stack — same recovery the
 		// pre-planned code used for a failed ranged open.
 	}
-	f, err := s.openRangedParquet(ctx, fi, cachedSchema)
+	f, err := s.openRangedParquet(ctx, fi, cachedSchema, cached)
 	if err != nil {
 		return nil, nil, err
 	}

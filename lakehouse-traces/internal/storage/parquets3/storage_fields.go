@@ -29,9 +29,19 @@ var pageIndexLookBehind = int64(32 << 10)
 // where only the schema (column names) is needed, not column data. Avoids
 // downloading a full ~1 MB parquet file just to read its schema.
 func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*parquet.File, error) {
+	cached, err := s.fetchFooterEntry(ctx, fi)
+	if err != nil {
+		return nil, err
+	}
+	return cached.File, nil
+}
+
+// fetchFooterEntry is fetchFooterFile returning the cache entry, so a caller
+// can tell whether it holds the page index (CachedFooter.HasPageIndex).
+func (s *Storage) fetchFooterEntry(ctx context.Context, fi manifest.FileInfo) (*CachedFooter, error) {
 	if s.footerCache != nil {
 		if cached, ok := s.footerCache.GetFor(fi.Key, fi.Size); ok && cached.File != nil {
-			return cached.File, nil
+			return cached, nil
 		}
 	}
 	if s.pool == nil || fi.Size < minFileSizeForPrefetch {
@@ -39,17 +49,17 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 		if err != nil {
 			return nil, err
 		}
-		cached, f, err := ParseFooterFromData(fi.Key, data)
+		cached, _, fresh, err := parseObjectFor(s.footerCache, fi.Key, data)
 		if err != nil {
 			return nil, err
 		}
-		if s.footerCache != nil {
+		if fresh && s.footerCache != nil {
 			s.footerCache.Put(fi.Key, cached)
 		}
-		return f, nil
+		return cached, nil
 	}
-	_, f, err := s.fetchFooterTail(ctx, fi, s.pool.DownloadRangeDedup)
-	return f, err
+	cached, _, err := s.fetchFooterTail(ctx, fi, s.pool.DownloadRangeDedup)
+	return cached, err
 }
 
 // rangeDownloader is the ranged object read the footer fetch is built on:
@@ -109,7 +119,7 @@ func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl 
 	// cacheFooterFromTail keeps the page-index stripe with the footer (one
 	// extra range GET when the stripe lies before the fetched tail, as it does
 	// for a footer that did not fit the prefetch range).
-	cached, f, err := cacheFooterFromTail(ctx, s.pool, fi.Key, tail, tailOff, fi.Size)
+	cached, f, err := cacheFooterFromTail(ctx, dl, fi.Key, tail, tailOff, fi.Size)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -176,7 +186,6 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 		}
 		return result, nil
 	}
-
 	return nil, nil
 }
 

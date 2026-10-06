@@ -76,19 +76,23 @@ func parseFooterRegion(key string, tail []byte, tailOff, fileSize int64) (*pendi
 // 128 KB per entry.
 //
 // When the stripe starts before the fetched region (a footer large enough to
-// push it out of the range) one extra range GET fetches the missing bytes; if
-// that fails the entry still caches the footer alone and the page index is read
-// lazily as before.
-func (p *pendingFooter) own(ctx context.Context, pool *s3reader.ClientPool) (*CachedFooter, *parquet.File) {
+// push it out of the range) one extra range GET, through dl (the caller's own
+// ranged read: deduplicated for the shared prefetch, context-bound for the
+// bounds resolution), fetches the missing bytes; with dl nil, or if that fails,
+// the entry caches the footer alone. A footer-only entry never answers a
+// page-index read with made-up bytes: footerReaderAt fails it with
+// errOutsideCachedRange and the caller fetches the stripe or reports the value
+// unknown (accumulateFieldHits).
+func (p *pendingFooter) own(ctx context.Context, dl rangeDownloader) (*CachedFooter, *parquet.File) {
 	footerStart := p.fileSize - p.footerSize
 	keepFrom := footerStart
 	var front []byte
 	if ps := pageIndexStripeStart(p.file); ps > 0 && ps < footerStart {
 		if ps >= p.tailOff {
 			keepFrom = ps
-		} else if pool != nil {
+		} else if dl != nil {
 			metrics.S3GetsByPhase.Inc("footer")
-			if b, gerr := pool.DownloadRangeDedup(ctx, "footer", p.key, ps, p.tailOff-ps); gerr == nil && int64(len(b)) == p.tailOff-ps {
+			if b, gerr := dl(ctx, "footer", p.key, ps, p.tailOff-ps); gerr == nil && int64(len(b)) == p.tailOff-ps {
 				front, keepFrom = b, ps
 			}
 		}
@@ -108,12 +112,12 @@ func (p *pendingFooter) own(ctx context.Context, pool *s3reader.ClientPool) (*Ca
 // cacheFooterFromTail parses the footer out of tail — the object's bytes from
 // tailOff to EOF, as returned by a footer range read — and builds the cache
 // entry for it (see pendingFooter.own).
-func cacheFooterFromTail(ctx context.Context, pool *s3reader.ClientPool, key string, tail []byte, tailOff, fileSize int64) (*CachedFooter, *parquet.File, error) {
+func cacheFooterFromTail(ctx context.Context, dl rangeDownloader, key string, tail []byte, tailOff, fileSize int64) (*CachedFooter, *parquet.File, error) {
 	p, err := parseFooterRegion(key, tail, tailOff, fileSize)
 	if err != nil {
 		return nil, nil, err
 	}
-	cached, f := p.own(ctx, pool)
+	cached, f := p.own(ctx, dl)
 	return cached, f, nil
 }
 
@@ -226,18 +230,64 @@ func shouldSkipByFooter(
 	// At least one row group might match — cache the footer (with its
 	// page-index stripe) for queryFile to reuse.
 	if footerCache != nil {
-		cached, _ := pending.own(ctx, pool)
+		cached, _ := pending.own(ctx, dedupDownloader(pool))
 		footerCache.Put(fi.Key, cached)
 	}
 
 	return false, nil
 }
 
-// prefetchFooters fetches parquet footers for all given files in parallel
+// dedupDownloader is the pool's deduplicated ranged read (nil without a pool),
+// the form the shared footer prefetch uses.
+func dedupDownloader(pool *s3reader.ClientPool) rangeDownloader {
+	if pool == nil {
+		return nil
+	}
+	return pool.DownloadRangeDedup
+}
+
+// prefetchOpts tunes prefetchFootersOpts.
+type prefetchOpts struct {
+	// reserve is the number of cache entries to leave for opens that run
+	// concurrently with the consumers of the prefetched footers (the query's
+	// file workers): their own footer Puts evict from the LRU, so prefetching
+	// the whole budget would see its oldest entries evicted before they are
+	// used. The prefetch still caches at least one entry.
+	reserve int
+	// visit, when set, is handed every footer as soon as it is parsed,
+	// whether or not the cache keeps it, so a consumer that needs each footer
+	// once (the startup enrichment) never reads it back through the LRU.
+	visit func(fi manifest.FileInfo, cached *CachedFooter)
+	// fetchAll fetches every footer even past what the cache can hold; only
+	// what fits is kept (PutIfFits, no eviction). Without visit it has no use.
+	fetchAll bool
+}
+
+// estimatedEntryBytes is the charge assumed for a footer that has not been
+// measured yet: a deliberately high figure (the tail it would read, the decoded
+// metadata, the fixed overhead), so the first wave over a small budget is small
+// and the following waves are sized from measured weights.
+func estimatedEntryBytes(prefetchBytes int64) int64 {
+	return prefetchBytes + int64(retainedMetadataFactor*float64(prefetchBytes)) + cachedFooterOverhead
+}
+
+// prefetchFooters fetches parquet footers for the given files in parallel
 // using prefetchBytes-sized tail range reads (<= 0 = the per-signal default)
-// and populates the footer cache. This ensures subsequent file processing
-// can use range reads instead of full file downloads.
+// and populates the footer cache, so subsequent file processing can use range
+// reads instead of full file downloads. It fetches only as many footers as the
+// cache budget holds (see prefetchFootersOpts).
 func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []manifest.FileInfo, footerCache *FooterCache, concurrency int, prefetchBytes int64) int {
+	return prefetchFootersOpts(ctx, pool, files, footerCache, concurrency, prefetchBytes, prefetchOpts{})
+}
+
+// prefetchFootersOpts is prefetchFooters with options. Unless fetchAll is set
+// it is BUDGET-AWARE: a footer fetched beyond what the cache can hold would be
+// evicted before its file is opened and fetched a second time, so the batch
+// stops at the number of entries the byte budget holds (budget / measured mean
+// entry weight, minus the entries of this batch already cached and the
+// reserve, at least 1) and runs in waves so the mean is measured on the entries
+// just fetched. The files left out open (and cache) their own footer on demand.
+func prefetchFootersOpts(ctx context.Context, pool *s3reader.ClientPool, files []manifest.FileInfo, footerCache *FooterCache, concurrency int, prefetchBytes int64, o prefetchOpts) int {
 	if pool == nil || footerCache == nil || len(files) == 0 {
 		return 0
 	}
@@ -247,16 +297,19 @@ func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []man
 	if concurrency <= 0 {
 		concurrency = 16
 	}
-	if concurrency > len(files) {
-		concurrency = len(files)
-	}
 
 	var uncached []manifest.FileInfo
+	cachedInBatch := 0
 	for _, fi := range files {
 		if fi.Size < minFileSizeForPrefetch {
 			continue
 		}
-		if _, ok := footerCache.Get(fi.Key); !ok {
+		if cf, ok := footerCache.Get(fi.Key); ok {
+			cachedInBatch++
+			if o.visit != nil {
+				o.visit(fi, cf)
+			}
+		} else {
 			uncached = append(uncached, fi)
 		}
 	}
@@ -264,14 +317,63 @@ func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []man
 		return 0
 	}
 
-	taskCh := make(chan manifest.FileInfo, len(uncached))
-	for _, fi := range uncached {
+	var st prefetchStats
+	if o.fetchAll {
+		fetchFooterBatch(ctx, pool, uncached, footerCache, concurrency, prefetchBytes, o.visit, true, &st)
+	} else {
+		budget := footerCache.MaxBytes()
+		rest := uncached
+		for len(rest) > 0 && ctx.Err() == nil {
+			avg := estimatedEntryBytes(prefetchBytes)
+			if st.n > 0 {
+				avg = max64(1, st.weight/int64(st.n))
+			} else if a := footerCache.AvgEntryBytes(); a > 0 {
+				avg = a
+			}
+			limit := max64(1, budget/avg-int64(o.reserve)) - int64(cachedInBatch) - int64(st.n)
+			if limit <= 0 {
+				break
+			}
+			wave := min(int64(len(rest)), limit, int64(concurrency))
+			fetchFooterBatch(ctx, pool, rest[:wave], footerCache, concurrency, prefetchBytes, o.visit, false, &st)
+			rest = rest[wave:]
+		}
+		if len(rest) > 0 {
+			metrics.PrefetchTasksTotal.Add("footer_prefetch_skipped_budget", len(rest))
+		}
+	}
+
+	if st.dlErrors > 0 || st.parseErrors > 0 || st.tooBig > 0 {
+		logger.Infof("footer prefetch: errors: dl=%d parse=%d too_big=%d", st.dlErrors, st.parseErrors, st.tooBig)
+	}
+	if st.n > 0 {
+		metrics.PrefetchTasksTotal.Add("footer_prefetch", st.n)
+		logger.Infof("footer prefetch: cached %d/%d footers", st.n, len(uncached))
+	}
+	return st.n
+}
+
+// prefetchStats accumulates over the waves of one prefetch call.
+type prefetchStats struct {
+	n                             int   // footers fetched and parsed
+	weight                        int64 // their summed cache charge
+	dlErrors, parseErrors, tooBig int
+}
+
+// fetchFooterBatch fetches and parses the footers of batch with up to
+// concurrency workers, hands each to visit (called from the workers: it must be
+// safe for concurrent use), and caches it (Put, or PutIfFits for a bulk fetch
+// that must not evict).
+func fetchFooterBatch(ctx context.Context, pool *s3reader.ClientPool, batch []manifest.FileInfo, footerCache *FooterCache, concurrency int, prefetchBytes int64, visit func(manifest.FileInfo, *CachedFooter), ifFits bool, st *prefetchStats) {
+	if concurrency > len(batch) {
+		concurrency = len(batch)
+	}
+	taskCh := make(chan manifest.FileInfo, len(batch))
+	for _, fi := range batch {
 		taskCh <- fi
 	}
 	close(taskCh)
 
-	var fetched int
-	var dlErrors, parseErrors, tooBig int
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for i := 0; i < concurrency; i++ {
@@ -291,50 +393,48 @@ func prefetchFooters(ctx context.Context, pool *s3reader.ClientPool, files []man
 				tail, err := pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, length)
 				if err != nil || len(tail) < 8 {
 					mu.Lock()
-					dlErrors++
+					st.dlErrors++
 					mu.Unlock()
 					continue
 				}
 				footerLen, err := FooterLength(tail[len(tail)-8:])
 				if err != nil {
 					mu.Lock()
-					parseErrors++
+					st.parseErrors++
 					mu.Unlock()
 					continue
 				}
 				totalFooterBytes := footerLen + 8
 				if totalFooterBytes > len(tail) {
 					mu.Lock()
-					tooBig++
+					st.tooBig++
 					mu.Unlock()
 					continue
 				}
-				cached, _, err := cacheFooterFromTail(ctx, pool, fi.Key, tail, offset, fi.Size)
+				cached, _, err := cacheFooterFromTail(ctx, pool.DownloadRangeDedup, fi.Key, tail, offset, fi.Size)
 				if err != nil {
 					mu.Lock()
-					parseErrors++
-					if parseErrors == 1 {
+					st.parseErrors++
+					if st.parseErrors == 1 {
 						logger.Warnf("footer prefetch: first parse error: key=%s size=%d tail=%d err=%v", fi.Key, fi.Size, len(tail), err)
 					}
 					mu.Unlock()
 					continue
 				}
-				footerCache.Put(fi.Key, cached)
+				if visit != nil {
+					visit(fi, cached)
+				}
+				if ifFits {
+					footerCache.PutIfFits(fi.Key, cached)
+				} else {
+					footerCache.Put(fi.Key, cached)
+				}
 				mu.Lock()
-				fetched++
+				st.n++
+				st.weight += cached.Weight()
 				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
-
-	if dlErrors > 0 || parseErrors > 0 || tooBig > 0 {
-		logger.Infof("footer prefetch: errors: dl=%d parse=%d too_big=%d", dlErrors, parseErrors, tooBig)
-	}
-
-	if fetched > 0 {
-		metrics.PrefetchTasksTotal.Add("footer_prefetch", fetched)
-		logger.Infof("footer prefetch: cached %d/%d footers", fetched, len(uncached))
-	}
-	return fetched
 }

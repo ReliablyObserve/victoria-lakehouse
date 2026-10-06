@@ -292,8 +292,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// Prefetch footers for all files in parallel using 16KB range reads.
 	// This populates the footer cache so file workers can use range reads
 	// instead of full S3 downloads.
-	prefetchFooters(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes())
-
+	//
 	// Parallel file worker pool. Default mirrors lakehouse-traces (8) and VL's
 	// bounded worker pattern; previously 64 here, which on wildcard queries
 	// over many files fanned out S3 downloads + parquet decode buffers wide
@@ -305,6 +304,10 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if fileWorkers > len(files) {
 		fileWorkers = len(files)
 	}
+	// The prefetch is bounded by the footer-cache budget (it fetches no more
+	// footers than the cache holds, keeping the workers' own footer Puts from
+	// evicting them before use); the rest open their own footer on demand.
+	prefetchFootersOpts(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{reserve: fileWorkers})
 
 	queryID := fmt.Sprintf("q-%d", queryStart.UnixNano())
 
@@ -770,7 +773,7 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 					// metadata-free and beats whole-file at every size.
 					metrics.S3PlannedStrategy.Inc("plan-warm-footer")
 				}
-				if f, view, err := s.openProjectedParquet(ctx, fi, cached.File.Schema(), usePlanned); err == nil {
+				if f, view, err := s.openProjectedParquet(ctx, fi, cached.File.Schema(), cached, usePlanned); err == nil {
 					return f, view, nil
 				}
 			}
@@ -786,11 +789,12 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 			if fi.Size < s.wholeFileThresholdBytes() {
 				metrics.S3PlannedStrategy.Inc("whole-file-warmup")
 				// fall through to the full-download path below.
-			} else if f, err := s.fetchFooterFile(ctx, fi); err == nil {
+			} else if ce, err := s.fetchFooterEntry(ctx, fi); err == nil {
+				f := ce.File
 				metrics.S3PlannedStrategy.Inc("plan-cold-footer")
 				totalCols := len(f.Root().Columns())
 				if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-					if pf, view, rErr := s.openProjectedParquet(ctx, fi, f.Schema(), usePlanned); rErr == nil {
+					if pf, view, rErr := s.openProjectedParquet(ctx, fi, f.Schema(), ce, usePlanned); rErr == nil {
 						return pf, view, nil
 					}
 				}
@@ -816,11 +820,11 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 				if footerLen, fErr := FooterLength(tail[len(tail)-8:]); fErr == nil {
 					totalFooterBytes := footerLen + 8
 					if totalFooterBytes <= len(tail) {
-						if cachedF, _, pErr := cacheFooterFromTail(ctx, s.pool, fi.Key, tail, offset, fi.Size); pErr == nil {
+						if cachedF, _, pErr := cacheFooterFromTail(ctx, dedupDownloader(s.pool), fi.Key, tail, offset, fi.Size); pErr == nil {
 							s.footerCache.Put(fi.Key, cachedF)
 							totalCols := len(cachedF.File.Root().Columns())
 							if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-								if f, view, rErr := s.openProjectedParquet(ctx, fi, cachedF.File.Schema(), usePlanned); rErr == nil {
+								if f, view, rErr := s.openProjectedParquet(ctx, fi, cachedF.File.Schema(), cachedF, usePlanned); rErr == nil {
 									return f, view, nil
 								}
 							}
@@ -851,12 +855,13 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 			// Reuse the cached footer's schema when available — wildcard
 			// opens still pay the footer parse otherwise.
 			var cachedSchema *parquet.Schema
+			var cachedEntry *CachedFooter
 			if s.footerCache != nil {
 				if cf, ok := s.footerCache.GetFor(fi.Key, fi.Size); ok && cf.File != nil {
-					cachedSchema = cf.File.Schema()
+					cachedSchema, cachedEntry = cf.File.Schema(), cf
 				}
 			}
-			f, err := s.openRangedParquet(ctx, fi, cachedSchema)
+			f, err := s.openRangedParquet(ctx, fi, cachedSchema, cachedEntry)
 			if err == nil {
 				metrics.S3RangeReadsTotal.Inc()
 				metrics.ParquetFilesOpened.Inc()
@@ -883,11 +888,11 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 	// size) in the range-read path above. ParseFooterFromData feeds the footer
 	// cache so the whole-file download IS the warmup (S* ladder, slice 1d):
 	// the file's NEXT projected read takes the warm-footer plan route.
-	cached, f, parseErr := ParseFooterFromData(fi.Key, data)
+	cached, f, fresh, parseErr := parseObjectFor(s.footerCache, fi.Key, data)
 	if parseErr != nil {
 		return nil, nil, parseErr
 	}
-	if s.footerCache != nil {
+	if fresh && s.footerCache != nil {
 		s.footerCache.Put(fi.Key, cached)
 	}
 	return f, nil, nil

@@ -172,14 +172,14 @@ func testCachedFooterZeroGETs(t *testing.T, mode, readMode string) {
 			before := len(fx.mock.Requests())
 			var f *parquet.File
 			if mode == config.ProjectedFetchModePlanned {
-				pf, view, oerr := fx.s.openPlannedParquet(context.Background(), fi, nil)
+				pf, view, oerr := fx.s.openPlannedParquet(context.Background(), fi, nil, nil)
 				if oerr != nil {
 					t.Fatal(oerr)
 				}
 				defer func() { _ = view.Close() }()
 				f = pf
 			} else {
-				f, err = fx.s.openRangedParquet(context.Background(), fi, nil)
+				f, err = fx.s.openRangedParquet(context.Background(), fi, nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}

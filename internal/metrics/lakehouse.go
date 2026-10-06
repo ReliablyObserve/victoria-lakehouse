@@ -300,8 +300,10 @@ var (
 	FooterCacheBytes = NewGauge("lakehouse_footer_cache_bytes")
 	// FooterOverlayOpens counts Parquet opens by whether the cached footer +
 	// page-index tail could be served from memory: result="hit" opened with
-	// zero S3 round trips, "miss" fell back to the ranged open (no cache
-	// entry, no cached page index, or the cached size no longer matched).
+	// zero S3 round trips, "hit_footer_only" opened with the footer from memory
+	// but a page index that is read lazily (the entry was cached without the
+	// stripe), "miss" fell back to the ranged open (no cache entry or the
+	// cached size no longer matched).
 	FooterOverlayOpens = NewCounterVec("lakehouse_footer_overlay_opens_total", "result")
 	// FooterParseRejected counts ParseFooterFromBytes inputs rejected by
 	// its pre-parse validation (invalid/oversized footer length, bad

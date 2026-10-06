@@ -202,18 +202,15 @@ func TestCoverage_footerReaderAt_ReadAt(t *testing.T) {
 		}
 	})
 
-	t.Run("read gap region returns zeros", func(t *testing.T) {
-		buf := make([]byte, 5)
+	t.Run("read gap region fails, never zeros", func(t *testing.T) {
+		buf := []byte{1, 1, 1, 1, 1}
 		n, err := r.ReadAt(buf, 10) // offset 10 is in the gap (4..24)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if n != 5 {
-			t.Fatalf("expected 5 bytes, got %d", n)
+		if !errors.Is(err, errOutsideCachedRange) || n != 0 {
+			t.Fatalf("gap read = (%d, %v), want (0, errOutsideCachedRange)", n, err)
 		}
 		for i, b := range buf {
-			if b != 0 {
-				t.Fatalf("expected zero at index %d, got %d", i, b)
+			if b != 1 {
+				t.Fatalf("a failed read must leave the buffer alone; index %d is %d", i, b)
 			}
 		}
 	})
@@ -234,44 +231,18 @@ func TestCoverage_footerReaderAt_ReadAt(t *testing.T) {
 		}
 	})
 
-	t.Run("read crossing magic into gap", func(t *testing.T) {
+	t.Run("read crossing magic into gap fails", func(t *testing.T) {
 		buf := make([]byte, 8)
-		n, err := r.ReadAt(buf, 0) // 4 bytes magic + 4 bytes gap
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if n != 8 {
-			t.Fatalf("expected 8 bytes, got %d", n)
-		}
-		if string(buf[:4]) != "PAR1" {
-			t.Fatalf("first 4 bytes should be PAR1, got %q", string(buf[:4]))
-		}
-		for i := 4; i < 8; i++ {
-			if buf[i] != 0 {
-				t.Fatalf("expected zero at index %d, got %d", i, buf[i])
-			}
+		if n, err := r.ReadAt(buf, 0); !errors.Is(err, errOutsideCachedRange) || n != 0 { // 4 bytes magic + 4 bytes gap
+			t.Fatalf("read = (%d, %v), want (0, errOutsideCachedRange)", n, err)
 		}
 	})
 
-	t.Run("read crossing gap into footer", func(t *testing.T) {
+	t.Run("read crossing gap into footer fails", func(t *testing.T) {
 		footerStart := fileSize - int64(len(footer)) // 24
 		buf := make([]byte, 8)
-		n, err := r.ReadAt(buf, footerStart-4) // 4 bytes gap + 4 bytes footer
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if n != 8 {
-			t.Fatalf("expected 8 bytes, got %d", n)
-		}
-		// First 4 bytes should be zeros (gap)
-		for i := 0; i < 4; i++ {
-			if buf[i] != 0 {
-				t.Fatalf("expected zero at index %d, got %d", i, buf[i])
-			}
-		}
-		// Last 4 bytes should be start of footer
-		if string(buf[4:8]) != "FOOT" {
-			t.Fatalf("expected FOOT, got %q", string(buf[4:8]))
+		if n, err := r.ReadAt(buf, footerStart-4); !errors.Is(err, errOutsideCachedRange) || n != 0 { // 4 bytes gap + 4 bytes footer
+			t.Fatalf("read = (%d, %v), want (0, errOutsideCachedRange)", n, err)
 		}
 	})
 

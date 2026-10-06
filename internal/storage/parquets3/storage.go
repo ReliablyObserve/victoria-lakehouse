@@ -1419,37 +1419,38 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 		}
 	}
 
+	// Every footer is enriched from as it is parsed (visit), not read back from
+	// the footer cache: with a budget smaller than the file set the cache keeps
+	// only what fits, and a read-back would find the rest evicted and download
+	// each of those objects whole.
 	footerEnriched := 0
+	enriched := make(map[string]bool, len(needEnrich))
 	if len(needEnrich) > 0 && s.footerCache != nil {
-		fetched := prefetchFooters(ctx, s.pool, needEnrich, s.footerCache, 0, s.footerPrefetchBytes())
+		var mu sync.Mutex
+		fetched := prefetchFootersOpts(ctx, s.pool, needEnrich, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{
+			fetchAll: true,
+			visit: func(fi manifest.FileInfo, cached *CachedFooter) {
+				if s.enrichFromCachedFooter(fi, cached) {
+					mu.Lock()
+					footerEnriched++
+					enriched[fi.Key] = true
+					mu.Unlock()
+				}
+			},
+		})
 		logger.Infof("metadata warmup: prefetched %d footers for %d files", fetched, len(needEnrich))
-
-		for _, fi := range needEnrich {
-			cached, ok := s.footerCache.Get(fi.Key)
-			if !ok {
-				continue
-			}
-			enriched := s.enrichFromCachedFooter(fi, cached)
-			if enriched {
-				footerEnriched++
-			}
-		}
 	}
 
-	// Phase 3b: Small files that footer prefetch skipped (< 32KB).
-	// Download fully — they're tiny and cheaper than range reads.
+	// Phase 3b: files below the footer-prefetch size (128KB) that the prefetch
+	// skipped. Download fully: they're tiny and cheaper than two round trips.
+	// A larger file the prefetch could not read is left to the planned open at
+	// query time (its bounds resolve lazily), never downloaded whole here.
 	// Same nil guard as Phase 3: insert-only pods run without a footer cache.
 	smallEnriched := 0
 	if len(needEnrich) > 0 && s.footerCache != nil {
 		var stillMissing []manifest.FileInfo
-		enrichedKeys := make(map[string]bool, footerEnriched)
 		for _, fi := range needEnrich {
-			if _, ok := s.footerCache.Get(fi.Key); ok {
-				enrichedKeys[fi.Key] = true
-			}
-		}
-		for _, fi := range needEnrich {
-			if !enrichedKeys[fi.Key] {
+			if !enriched[fi.Key] && fi.Size < minFileSizeForPrefetch {
 				stillMissing = append(stillMissing, fi)
 			}
 		}
@@ -1477,10 +1478,12 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 }
 
 // enrichFromCachedFooter enriches from a footer cache entry. Time bounds come
-// from the page index, which a footer-only entry (the footer prefetch, or the
-// copy ParseFooterFromData caches) cannot read — such an entry contributes the
-// row count only. Callers holding a handle over the object's bytes should use
-// enrichFromParquetFile instead.
+// from the page index: every cache writer keeps the stripe with the footer
+// (own, ParseFooterFromData), so they are the exact bounds, never looser than
+// the partition-hour inference they replace and never excluding a row. An entry
+// that lacks the stripe (its stripe fetch failed) fails the page-index read with
+// errOutsideCachedRange and contributes the row count only. Callers holding a
+// handle over the object's bytes should use enrichFromParquetFile instead.
 func (s *Storage) enrichFromCachedFooter(fi manifest.FileInfo, cached *CachedFooter) bool {
 	return s.enrichFromParquetFile(fi, cached.File)
 }
@@ -1527,11 +1530,11 @@ func (s *Storage) enrichSmallFiles(ctx context.Context, files []manifest.FileInf
 				if err != nil || len(data) == 0 {
 					continue
 				}
-				cached, pf, err := ParseFooterFromData(fi.Key, data)
+				cached, pf, fresh, err := parseObjectFor(s.footerCache, fi.Key, data)
 				if err != nil {
 					continue
 				}
-				if s.footerCache != nil {
+				if fresh && s.footerCache != nil {
 					s.footerCache.Put(fi.Key, cached)
 				}
 				// pf, not the cache entry: the entry keeps only the footer, and

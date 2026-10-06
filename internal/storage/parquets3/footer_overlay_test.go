@@ -104,7 +104,7 @@ func TestCacheFooterFromTail_StripeOutsideRegionFetchedOnce(t *testing.T) {
 	// Region = footer only: the stripe lies before it.
 	ft := int64(footerTotal(data))
 	regionOff := size - ft
-	cf, _, err := cacheFooterFromTail(context.Background(), pool, "k", append([]byte(nil), data[regionOff:]...), regionOff, size)
+	cf, _, err := cacheFooterFromTail(context.Background(), pool.DownloadRangeDedup, "k", append([]byte(nil), data[regionOff:]...), regionOff, size)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestCacheFooterFromTail_FallsBackToFooterOnly(t *testing.T) {
 
 	mock := newCountS3() // object missing -> the stripe GET fails
 	defer mock.Close()
-	cf, _, err = cacheFooterFromTail(context.Background(), testPool(t, mock.URL()), "k", append([]byte(nil), data[regionOff:]...), regionOff, size)
+	cf, _, err = cacheFooterFromTail(context.Background(), testPool(t, mock.URL()).DownloadRangeDedup, "k", append([]byte(nil), data[regionOff:]...), regionOff, size)
 	check("failing stripe GET", cf, err)
 }
 
@@ -282,7 +282,7 @@ func TestWithFooterOverlay_RequiresKeyAndSizeMatch(t *testing.T) {
 
 	miss0 := metrics.FooterOverlayOpens.Get("miss")
 	hit0 := metrics.FooterOverlayOpens.Get("hit")
-	got, gotOpts := fx.s.withFooterOverlay(fi, raw, opts)
+	got, gotOpts := fx.s.withFooterOverlay(fi, raw, opts, nil)
 	if _, ok := got.(interface{ TailOffset() int64 }); !ok || len(gotOpts) != len(opts)+2 {
 		t.Fatalf("matching entry must overlay (%T, %d opts)", got, len(gotOpts))
 	}
@@ -292,20 +292,20 @@ func TestWithFooterOverlay_RequiresKeyAndSizeMatch(t *testing.T) {
 
 	stale := fi
 	stale.Size++ // same key, different object version
-	got, gotOpts = fx.s.withFooterOverlay(stale, raw, opts)
+	got, gotOpts = fx.s.withFooterOverlay(stale, raw, opts, nil)
 	if got != raw || len(gotOpts) != len(opts) {
 		t.Fatalf("size mismatch must not overlay (%T, %d opts)", got, len(gotOpts))
 	}
 	unknown := fi
 	unknown.Key = "logs/other.parquet"
-	if got, _ = fx.s.withFooterOverlay(unknown, raw, opts); got != raw {
+	if got, _ = fx.s.withFooterOverlay(unknown, raw, opts, nil); got != raw {
 		t.Fatal("uncached key must not overlay")
 	}
 	if metrics.FooterOverlayOpens.Get("miss") != miss0+2 {
 		t.Fatal("overlay misses not counted")
 	}
 	fx.s.footerCache = nil
-	if got, _ = fx.s.withFooterOverlay(fi, raw, opts); got != raw {
+	if got, _ = fx.s.withFooterOverlay(fi, raw, opts, nil); got != raw {
 		t.Fatal("no footer cache must not overlay")
 	}
 }
@@ -325,7 +325,7 @@ func TestCachedFooter_FooterOnlyEntryFallsBackToLazyPageIndex(t *testing.T) {
 		t.Fatal("footer-only entry claims a page index")
 	}
 	before := len(fx.mock.Requests())
-	f, err := fx.s.openRangedParquet(context.Background(), fi, nil)
+	f, err := fx.s.openRangedParquet(context.Background(), fi, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,13 +357,13 @@ func TestCachedFooter_ConcurrentOpensShareTail(t *testing.T) {
 			if g%2 == 0 {
 				var view interface{ Close() error }
 				var pf *parquet.File
-				pf, v, oerr := fx.s.openPlannedParquet(context.Background(), fi, nil)
+				pf, v, oerr := fx.s.openPlannedParquet(context.Background(), fi, nil, nil)
 				view, f, err = v, pf, oerr
 				if err == nil {
 					defer func() { _ = view.Close() }()
 				}
 			} else {
-				f, err = fx.s.openRangedParquet(context.Background(), fi, nil)
+				f, err = fx.s.openRangedParquet(context.Background(), fi, nil, nil)
 			}
 			if err != nil {
 				t.Errorf("open: %v", err)

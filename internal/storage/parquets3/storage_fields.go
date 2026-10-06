@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 
@@ -30,9 +31,19 @@ var pageIndexLookBehind = int64(32 << 10)
 // the footer, not the column data — avoiding the previous behaviour of
 // downloading every file in the manifest in full just to read the schema.
 func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*parquet.File, error) {
+	cached, err := s.fetchFooterEntry(ctx, fi)
+	if err != nil {
+		return nil, err
+	}
+	return cached.File, nil
+}
+
+// fetchFooterEntry is fetchFooterFile returning the cache entry, so a caller
+// can tell whether it holds the page index (CachedFooter.HasPageIndex).
+func (s *Storage) fetchFooterEntry(ctx context.Context, fi manifest.FileInfo) (*CachedFooter, error) {
 	if s.footerCache != nil {
 		if cached, ok := s.footerCache.GetFor(fi.Key, fi.Size); ok && cached.File != nil {
-			return cached.File, nil
+			return cached, nil
 		}
 	}
 	if s.pool == nil || fi.Size < minFileSizeForPrefetch {
@@ -40,17 +51,17 @@ func (s *Storage) fetchFooterFile(ctx context.Context, fi manifest.FileInfo) (*p
 		if err != nil {
 			return nil, err
 		}
-		cached, f, err := ParseFooterFromData(fi.Key, data)
+		cached, _, fresh, err := parseObjectFor(s.footerCache, fi.Key, data)
 		if err != nil {
 			return nil, err
 		}
-		if s.footerCache != nil {
+		if fresh && s.footerCache != nil {
 			s.footerCache.Put(fi.Key, cached)
 		}
-		return f, nil
+		return cached, nil
 	}
-	_, f, err := s.fetchFooterTail(ctx, fi, s.pool.DownloadRangeDedup)
-	return f, err
+	cached, _, err := s.fetchFooterTail(ctx, fi, s.pool.DownloadRangeDedup)
+	return cached, err
 }
 
 // rangeDownloader is the ranged object read the footer fetch is built on:
@@ -114,7 +125,7 @@ func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl 
 	// cacheFooterFromTail keeps the page-index stripe with the footer (one
 	// extra range GET when the stripe lies before the fetched tail, as it does
 	// for a footer that did not fit the prefetch range).
-	cached, f, err := cacheFooterFromTail(ctx, s.pool, fi.Key, tail, tailOff, fi.Size)
+	cached, f, err := cacheFooterFromTail(ctx, dl, fi.Key, tail, tailOff, fi.Size)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -178,6 +189,7 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 	if s.pool != nil && s.footerCache != nil {
 		prefetchFooters(ctx, s.pool, files, s.footerCache, 16, s.footerPrefetchBytes())
 	}
+	unknown := make(map[string]struct{})
 
 	// Walk all files; for each, accumulate hits per (internal) field name.
 	// fetchFooterFile uses the cache populated above; on a miss it falls
@@ -186,17 +198,37 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		f, err := s.fetchFooterFile(ctx, fi)
+		cached, err := s.fetchFooterEntry(ctx, fi)
 		if err != nil {
 			logger.Warnf("get footer for field names: %s; key=%s", err, fi.Key)
 			continue
 		}
+		// The null counts come from the page index. An entry cached without it
+		// (its stripe read failed, or an older writer) is upgraded by one more
+		// footer fetch; if that still leaves it out, accumulateFieldHits reports
+		// the columns of the file as "hits unknown" instead of crediting them in
+		// full. The answer therefore does not depend on what the cache held.
+		if cached.needsPageIndex() && s.pool != nil && s.footerCache != nil {
+			s.footerCache.Remove(fi.Key)
+			if up, uerr := s.fetchFooterEntry(ctx, fi); uerr == nil {
+				cached = up
+			}
+		}
+		f := cached.File
 		// Footer-only file: cannot safely scan data pages for distinct
 		// values (parquet-go falls back to truncated column-index min/max).
 		// Register names; defer value extraction to the query path which
 		// has the full file open.
 		s.updateLabelIndexNamesOnly(f)
-		s.accumulateFieldHits(f, hits)
+		s.accumulateFieldHits(f, hits, unknown)
+	}
+	// A column whose hit count could not be read from any file is still a field
+	// of the window: report its name with Hits=0, this function's "unknown
+	// count" signal, unless another file supplied a (lower-bound) count.
+	for name := range unknown {
+		if _, ok := hits[name]; !ok {
+			hits[name] = 0
+		}
 	}
 
 	// The Tier-2 spare-slot columns (ded_s01..ded_sNN) are internal: an UNMAPPED
@@ -270,11 +302,22 @@ func labelIndexNamesWithHits(names []string, hits map[string]uint64) []logstorag
 // top-level column in f and adds them into the hits map keyed by the
 // registry's internal field name.
 //
-// Uses the Parquet column index — for each row group and column we sum
-// (numRows - nullCount) across pages without reading data pages.
-// If the column index is unavailable we fall back to NumValues - 0
-// (assumes no nulls), which over-counts but never under-counts.
-func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64) {
+// Uses the Parquet column index: for each row group and column the count is
+// the chunk's values minus the nulls summed over the pages, without reading
+// data pages. A column whose chunks carry no usable index is handled by cause:
+//
+//   - the file has none (ErrMissingColumnIndex, an external writer that wrote
+//     no page index) or it lists no pages: the chunk is credited in full, a
+//     slight over-count rather than a silent drop (the writer gave no null
+//     information at all);
+//   - the index exists but is not readable here (a cache entry that holds the
+//     footer without the page-index stripe fails the read with
+//     errOutsideCachedRange; an S3 error): the count is UNKNOWN. The column is
+//     recorded in unknown (nil to ignore), never credited: zero-filled bytes
+//     used to decode as an empty index and credit every all-null column with
+//     its full row count, a different answer for the same file depending on the
+//     cache state.
+func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64, unknown map[string]struct{}) {
 	rgs := f.RowGroups()
 	if len(rgs) == 0 {
 		return
@@ -286,25 +329,23 @@ func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64) {
 			internal = m.InternalName
 		}
 		var nonNull int64
+		colUnknown := false
 		for _, rg := range rgs {
 			cols := rg.ColumnChunks()
 			if ci >= len(cols) {
 				continue
 			}
 			cidx, err := cols[ci].ColumnIndex()
-			if err != nil || cidx == nil {
-				// No column index — credit the entire chunk as non-null.
-				// Slight over-count is preferable to silent under-count.
-				nonNull += cols[ci].NumValues()
-				continue
+			if err != nil && !errors.Is(err, parquet.ErrMissingColumnIndex) {
+				colUnknown = true
+				break
 			}
-			pageCount := cidx.NumPages()
-			if pageCount == 0 {
+			if err != nil || cidx == nil || cidx.NumPages() == 0 {
 				nonNull += cols[ci].NumValues()
 				continue
 			}
 			var nulls int64
-			for p := 0; p < pageCount; p++ {
+			for p := 0; p < cidx.NumPages(); p++ {
 				nulls += cidx.NullCount(p)
 			}
 			n := cols[ci].NumValues() - nulls
@@ -312,6 +353,12 @@ func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64) {
 				n = 0
 			}
 			nonNull += n
+		}
+		if colUnknown {
+			if unknown != nil {
+				unknown[internal] = struct{}{}
+			}
+			continue
 		}
 		if nonNull > 0 {
 			hits[internal] += uint64(nonNull)

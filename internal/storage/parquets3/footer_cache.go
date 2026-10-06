@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"container/list"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -97,6 +98,14 @@ func (c *CachedFooter) HasPageIndex() bool {
 	}
 	start := pageIndexStripeStart(c.File)
 	return start < 0 || start >= c.tailOff
+}
+
+// needsPageIndex reports whether the entry reads its page index through a
+// cached tail that does not cover it: a ColumnIndex()/OffsetIndex() on its file
+// fails (errOutsideCachedRange). An entry holding the whole object, or a file
+// without a page index, does not.
+func (c *CachedFooter) needsPageIndex() bool {
+	return c != nil && c.File != nil && len(c.tail) > 0 && !c.HasPageIndex()
 }
 
 // pageIndexStripeStart returns the smallest ColumnIndex/OffsetIndex offset in
@@ -237,6 +246,29 @@ func (fc *FooterCache) Put(key string, footer *CachedFooter) {
 	fc.publishLocked()
 }
 
+// PutIfFits caches footer only when it fits the free budget without evicting
+// anything; it reports whether it did. For a bulk fetch whose entries are
+// consumed by the caller directly, so what the cache keeps is a bonus that must
+// not push out entries other work still needs.
+func (fc *FooterCache) PutIfFits(key string, footer *CachedFooter) bool {
+	w := footer.Weight()
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if entry, ok := fc.items[key]; ok {
+		fc.removeLocked(entry)
+	}
+	if fc.bytes+w > fc.maxBytes {
+		fc.publishLocked()
+		return false
+	}
+	entry := &footerEntry{key: key, footer: footer, weight: w}
+	entry.elem = fc.lru.PushFront(entry)
+	fc.items[key] = entry
+	fc.bytes += w
+	fc.publishLocked()
+	return true
+}
+
 func (fc *FooterCache) removeLocked(e *footerEntry) {
 	fc.lru.Remove(e.elem)
 	delete(fc.items, e.key)
@@ -323,8 +355,8 @@ func (fc *FooterCache) Remove(key string) {
 // stays in the footer cache, and the cache is bounded by item count, not bytes:
 // 10,000 entries of multi-MiB objects is gigabytes of retained heap. Callers
 // that need to read data must use the returned *parquet.File, never the
-// entry's — the entry's handle reads the column-data region as zeros, the same
-// as an entry built by the footer prefetch.
+// entry's — the entry's handle fails a read of the column-data region with
+// errOutsideCachedRange, the same as an entry built by the footer prefetch.
 func ParseFooterFromData(key string, data []byte) (*CachedFooter, *parquet.File, error) {
 	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -343,6 +375,29 @@ func ParseFooterFromData(key string, data []byte) (*CachedFooter, *parquet.File,
 		File:     f,
 		FileSize: int64(len(data)),
 	}, f, nil
+}
+
+// parseObjectFor is ParseFooterFromData for a caller that holds the object's
+// bytes and may already have its footer cached. A cached entry for exactly this
+// object (same key and size, immutable) that already holds the page index
+// needs no replacement, so the second footer parse, the tail copy and the Put
+// are skipped and fresh is false: the caller keeps the entry it has. That work
+// was ~220 us and 346 KB of allocations per file per query on the facets
+// whole-object path, on top of parquet.OpenFile's own parse of the same
+// footer. Without a usable entry it is exactly ParseFooterFromData and fresh
+// is true (the caller Puts the returned entry).
+func parseObjectFor(fc *FooterCache, key string, data []byte) (cached *CachedFooter, f *parquet.File, fresh bool, err error) {
+	if fc != nil {
+		if have, ok := fc.GetFor(key, int64(len(data))); ok && have.File != nil && (len(have.tail) == 0 || have.HasPageIndex()) {
+			f, err = parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+			if err != nil {
+				return nil, nil, false, fmt.Errorf("open parquet file %s: %w", key, err)
+			}
+			return have, f, false, nil
+		}
+	}
+	cached, f, err = ParseFooterFromData(key, data)
+	return cached, f, true, err
 }
 
 // footerTailOfObject returns a COPY of the object's metadata tail: the page
@@ -403,21 +458,15 @@ const maxParquetFooterBytes = 64 * 1024 * 1024
 // When that declared length exceeds what OpenFile already read
 // optimistically, it issues a *single* read for the whole declared
 // length (parquet-go's file.go) — and our own footerReaderAt.ReadAt
-// zero-fills whatever part of that request falls in the synthetic "gap"
-// region (the fictional column-data span between the magic bytes and the
-// real footer) byte-by-byte, a manual loop the compiler doesn't
-// vectorize. With a large fileSize, that gap can span most of the file,
-// so a declared length that outruns the actual footer buffer turns one
-// call into a multi-second, multi-GiB-touching loop — that's the
-// resource blow-up that hung FuzzParseFooterBytes, not the bare
-// allocation (a large make() alone is typically a cheap virtual-memory
-// reservation). Bounding the declared length against the buffer we
-// actually hold — before ever calling into parquet-go — is what prevents
-// it: every read parquet-go can then issue lands entirely inside the real
-// footer bytes (a cheap copy()), never the gap loop, regardless of how
-// large fileSize is. The additional maxParquetFooterBytes cap and the
-// fileSize comparison below are defense-in-depth policy limits, not this
-// hang guard.
+// used to zero-fill whatever part of that request fell in the synthetic
+// "gap" region (the fictional column-data span between the magic bytes and
+// the real footer) byte-by-byte; with a large fileSize that turned a declared
+// length outrunning the footer buffer into a multi-second, multi-GiB loop
+// (the resource blow-up that hung FuzzParseFooterBytes). The reader now fails
+// such a read with errOutsideCachedRange instead, so there is no gap loop; the
+// bound on the declared length against the buffer we actually hold is kept,
+// as is the maxParquetFooterBytes cap and the fileSize comparison below
+// (defense-in-depth policy limits).
 func ParseFooterFromBytes(key string, footerBytes []byte, fileSize int64) (cachedFooter *CachedFooter, file *parquet.File, err error) {
 	cachedFooter, file, _, err = parseFooterBytes(key, footerBytes, fileSize)
 	return cachedFooter, file, err
@@ -510,10 +559,19 @@ func parseFooterBytes(key string, footerBytes []byte, fileSize int64) (cachedFoo
 	}, f, r, nil
 }
 
+// errOutsideCachedRange is what footerReaderAt returns for a read that is not
+// wholly inside the bytes the cache entry holds (the head magic and the cached
+// tail). A caller that sees it knows the answer is not in memory; it must fetch
+// the bytes or treat the value as unknown, never read zeros as data. The
+// zero-filling reader this replaces decoded a page index it did not have as an
+// EMPTY one, and parquet-go memoized that on the shared cached file: every
+// later ColumnIndex() on it reported "no pages" until the entry was evicted.
+var errOutsideCachedRange = errors.New("read outside the cached footer ranges")
+
 // footerReaderAt serves a minimal virtual parquet file: "PAR1" magic at
-// offset 0 and the real footer bytes at the file tail. Requests for bytes
-// in the gap (column data region) return zeros — those offsets are never
-// read during metadata-only parsing.
+// offset 0 and the cached tail (footer, plus the page-index stripe when the
+// writer of the entry could see it) at the end of the file. A read that is not
+// wholly inside one of those two ranges fails with errOutsideCachedRange.
 type footerReaderAt struct {
 	footer   []byte
 	fileSize int64
@@ -523,44 +581,23 @@ func (r *footerReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 || off >= r.fileSize {
 		return 0, io.EOF
 	}
-
-	n := 0
-	for n < len(p) && off+int64(n) < r.fileSize {
-		pos := off + int64(n)
-		if pos < 4 {
-			magic := []byte("PAR1")
-			end := int64(4)
-			if end > r.fileSize {
-				end = r.fileSize
-			}
-			copied := copy(p[n:], magic[pos:end])
-			n += copied
-			continue
-		}
-
-		footerStart := r.fileSize - int64(len(r.footer))
-		if pos >= footerStart {
-			idx := pos - footerStart
-			copied := copy(p[n:], r.footer[idx:])
-			n += copied
-			continue
-		}
-
-		gapEnd := footerStart
-		if off+int64(len(p)) < gapEnd {
-			gapEnd = off + int64(len(p))
-		}
-		gapBytes := int(gapEnd - pos)
-		for i := 0; i < gapBytes && n < len(p); i++ {
-			p[n] = 0
-			n++
-		}
+	if len(p) == 0 {
+		return 0, nil
 	}
-
-	if n == 0 {
-		return 0, io.EOF
+	end := off + int64(len(p))
+	if end > r.fileSize {
+		end = r.fileSize
 	}
-	return n, nil
+	footerStart := r.fileSize - int64(len(r.footer))
+	switch {
+	case off >= footerStart:
+		// A read running past the end of the object is short with no error,
+		// as it always was; parquet-go sizes its reads to the file.
+		return copy(p, r.footer[off-footerStart:]), nil
+	case end <= 4:
+		return copy(p, "PAR1"[off:end]), nil
+	}
+	return 0, fmt.Errorf("%w: [%d,%d) of %d (cached tail starts at %d)", errOutsideCachedRange, off, end, r.fileSize, footerStart)
 }
 
 // FooterLength reads the parquet footer length from the last 8 bytes of a file.
