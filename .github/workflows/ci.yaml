@@ -273,6 +273,10 @@ jobs:
             python3 scripts/ci/gotest_report.py --budget-seconds 600 --title "logs: all packages except parquets3, compaction"
           # compaction ran at 501-517s of its 600s budget (it is not -short): 5 shards, same budget each (one test, TestMergePathsAgree, is ~half of it and cannot be split).
           SHARD_SHORT=0 scripts/ci/sharded_go_test.sh race ./internal/compaction/ 5 "logs: compaction" 600 test-logs-compaction
+          # The binary's own package tests (route auth, buffer-query mount, -internalselect.disable,
+          # -deleteAuthKey, peer-key wiring, ...). Previously only the config-surface golden ran.
+          go test ./cmd/... -race -count=1 -timeout=10m -json | tee test-logs-cmd.json |
+            python3 scripts/ci/gotest_report.py --budget-seconds 600 --title "logs: cmd"
           scripts/ci/sharded_go_test.sh race ./internal/storage/parquets3/ 3 "logs: parquets3" 480 test-logs-parquets3
 
       - name: Coverage check (logs)
@@ -334,6 +338,10 @@ jobs:
           # shellcheck disable=SC2086
           go test $others -race -count=1 -timeout=10m -json | tee test-traces-others.json |
             python3 ../scripts/ci/gotest_report.py --budget-seconds 600 --title "traces: all packages except parquets3"
+          # The binary's own root package (route auth, buffer-query mount, discovery against the real
+          # vtstorage, ...). Previously only the config-surface golden ran.
+          go test . -race -count=1 -timeout=10m -json | tee test-traces-main.json |
+            python3 ../scripts/ci/gotest_report.py --budget-seconds 600 --title "traces: main package"
           ../scripts/ci/sharded_go_test.sh race ./internal/storage/parquets3/ 3 "traces: parquets3" 480 test-traces-parquets3
 
       - name: Coverage check (traces)
