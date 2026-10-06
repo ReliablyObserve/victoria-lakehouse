@@ -195,7 +195,7 @@ lakehouseConfig:
     memory_limit: 1GB            # L1 memory LRU per pod
     eviction_watermark: 0.8      # L2 eviction at 80% disk usage
   peer:
-    auth_key: "shared-secret"    # peer cache authentication
+    auth_key: "shared-secret"    # peer key of the internal endpoints (buffer bridge, peer cache, sync); prefer peerAuth.existingSecret, see docs/security.md
     timeout: 5s
     max_connections: 32
 ```

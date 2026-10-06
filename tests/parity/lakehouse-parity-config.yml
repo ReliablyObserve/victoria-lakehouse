@@ -5,3 +5,10 @@
 lakehouse:
   insert:
     buffer_flush_interval: 5s
+
+  # The suite and the settle step read the insert buffers with all_tenants=true
+  # (/internal/buffer/query), which a pod serves only to a caller presenting
+  # the peer key (docs/security.md). LH_PEER_AUTH_KEY in docker-compose.yml and
+  # PARITY_PEER_AUTH_KEY in .github/workflows/parity.yaml carry the same value.
+  peer:
+    auth_key: parity-peer-key

@@ -315,6 +315,7 @@ The **Effect** column says what a flag does to the config key it writes:
 | `-lakehouse.logs.bloom-columns` | logs | `logs.bloom_columns` | set | ` ` | Comma-separated bloom filter columns for logs (default: service.name,trace_id) |
 | `-lakehouse.logs.delete-prefix` | logs | `logs.delete_prefix` | set | ` ` | Delete API prefix (default: /delete/logsql) |
 | `-lakehouse.manifest.refresh-interval` | both | `manifest.refresh_interval` | set | `0s` | Manifest refresh interval (e.g., 30s) |
+| `-lakehouse.peer.auth-key` | both | `peer.auth_key` | set | ` ` | The key the pods present to each other's internal endpoints and require on their own: /internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync. Overrides peer.auth_key from the config file; pass a Secret as -lakehouse.peer.auth-key=%{ENV_VAR}. Empty: those endpoints take no credential and /internal/buffer/query refuses all_tenants=true. See docs/security.md |
 | `-lakehouse.pmeta.always-sketch-fields` | both | `pmeta.always_sketch_fields` | set | ` ` | Comma-separated id columns to sketch instead of enumerate (e.g. trace_id,span_id) |
 | `-lakehouse.pmeta.cardinality-threshold` | both | `pmeta.cardinality_threshold` | set | `0` | Per-field distinct-value cap before a field is high-card (0 = default 50000) |
 | `-lakehouse.pmeta.enabled` | both | `pmeta.enabled` | authoritative | `true` | Unified partition-metadata layer (catalog + file-meta + bloom facets). Disabling is a degraded mode: no metadata for new files |
@@ -557,7 +558,7 @@ Controls the distributed peer cache.
 
 | Key | Type | Default | Config file | Flags | Profile overrides | Description |
 |---|---|---|---|---|---|---|
-| `peer.auth_key` | string | `""` | set |  |  | The bearer key protecting the peer cache HTTP endpoints. |
+| `peer.auth_key` | string | `""` | set | `-lakehouse.peer.auth-key` |  | The bearer key of the pods' internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync); empty serves them without a credential. |
 | `peer.az_aware` | bool | `true` | enable-only |  | dev: `false` | Prefers peers in the pod's own availability zone. |
 | `peer.az_env_var` | string | `LAKEHOUSE_AZ` | set |  |  | Names the environment variable that overrides the detected availability zone. |
 | `peer.az_min_peers_per_az` | int | `2` | set |  |  | The minimum number of same-zone peers strict mode requires. |

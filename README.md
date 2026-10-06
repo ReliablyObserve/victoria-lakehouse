@@ -808,7 +808,7 @@ See [Observability](docs/observability.md) and [Tenant Stats](docs/tenant-stats.
 - **Seccomp profile** (`RuntimeDefault`) — syscall filtering
 
 ### Authentication & Authorization
-- **Internal endpoint auth**: `/internal/cache/*`, `/internal/manifest/update`, `/internal/prefetch/hint` endpoints require Bearer token when configured (`peer.auth_key`, `partition_auth_key`)
+- **Internal endpoint auth**: `/internal/buffer/query` (the select pods' buffer bridge), `/internal/cache/*`, `/internal/manifest/update`, `/internal/stats/sync` and `/internal/tenant/sync` require the peer key when one is set (`peer.auth_key`, `-lakehouse.peer.auth-key`, or the chart's `peerAuth.existingSecret`); the bridge presents it. Without a key `/internal/buffer/query` answers single-tenant reads, as upstream's `/internal/select/*` does, and refuses `all_tenants=true`; upstream's `-internalselect.disable` turns it off. See [Security](docs/security.md#internal-endpoints-and-the-peer-key)
 - **Cross-signal auth**: optional `X-Cross-Signal-Key` header for securing cross-deployment prefetch hints between logs and traces instances
 - **S3 credential isolation**: each binary has its own S3 credentials via flags, environment variables, or IAM roles
 - **Multi-tenant isolation**: S3 prefix per tenant (`{AccountID}/{ProjectID}/`) with explicit default `0/0/`, single binary serving all tenants. Enterprise option for bucket-per-tenant with separate IAM policies. Optional global read mode for admin dashboards. See [Multi-Tenancy](docs/multi-tenancy.md)

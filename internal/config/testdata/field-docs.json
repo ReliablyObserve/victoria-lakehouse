@@ -310,7 +310,7 @@
     },
     "peer.auth_key": {
       "name": "AuthKey",
-      "doc": "AuthKey is the bearer key protecting the peer cache HTTP endpoints."
+      "doc": "AuthKey is the bearer key of the pods' internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync); empty serves them without a credential."
     },
     "peer.az_aware": {
       "name": "AZAware",

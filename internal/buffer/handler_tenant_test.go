@@ -137,14 +137,17 @@ func TestBufferQuery_Tenant_ParametersAreRequired(t *testing.T) {
 	}
 }
 
+// A cross-tenant read is served to a peer that presented the peer key (#384).
 func TestBufferQuery_Tenant_AllTenantsForAuthorisedCrossTenantRead(t *testing.T) {
 	base := time.Date(2026, 5, 3, 14, 0, 0, 0, time.UTC)
-	h := NewHandler(tenantBufferStore(base), "")
+	h := NewHandler(tenantBufferStore(base), "peer-key")
 
 	u := fmt.Sprintf("/internal/buffer/query?start=%d&end=%d&mode=logs&all_tenants=true&tenant_scope=%s",
 		base.Add(-time.Minute).UnixNano(), base.Add(time.Minute).UnixNano(), TenantScopeVersion)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u, nil))
+	req := httptest.NewRequest(http.MethodGet, u, nil)
+	req.Header.Set("Authorization", "Bearer peer-key")
+	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}

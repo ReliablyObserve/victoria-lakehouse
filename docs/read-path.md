@@ -281,6 +281,12 @@ The recent window is served from the segments through the **same** exported `Sto
 
 Discovered `host:port` addresses are requested over `http://`. A single node with no peers reads its own segments directly.
 
+**Authentication.** The bridge sends `Authorization: Bearer <peer.auth_key>` on every request. An insert pod with
+a key refuses a request without it (401); `all_tenants=true` (a global-read query) is served only with the key, and
+a pod without one refuses it (403). A refused request leaves that pod's unflushed rows out of the answer and counts
+`lakehouse_buffer_bridge_errors_total{reason="auth"}`. Upstream's `-internalselect.disable` turns the endpoint off on
+an insert pod. See [Security](security.md#internal-endpoints-and-the-peer-key).
+
 ```
 RunQuery:
   1. view = snapshot of live segments (local) or rows + nonces from the insert peers

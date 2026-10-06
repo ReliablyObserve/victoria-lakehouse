@@ -73,6 +73,9 @@ spec:
             - {{ . | quote }}
             {{- end }}
             {{- end }}
+            {{- if $.Values.peerAuth.existingSecret }}
+            - "-lakehouse.peer.auth-key=%{LAKEHOUSE_PEER_AUTH_KEY}"
+            {{- end }}
             {{- range $key, $val := $roleVals.extraArgs }}
             - "--{{ $key }}={{ $val }}"
             {{- end }}
@@ -111,6 +114,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            {{- with $.Values.peerAuth.existingSecret }}
+            - name: LAKEHOUSE_PEER_AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.peerAuth.secretKey }}
+            {{- end }}
             # NOTE (PR A): POD_NAMESPACE was consumed by the now-deleted
             # internal/election/k8s.go to scope the Lease object. With HRW
             # ownership there is no Lease, so POD_NAMESPACE is no longer

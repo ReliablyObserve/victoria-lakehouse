@@ -219,6 +219,7 @@ jobs:
           - internal/azdetect:FuzzDetectGCPMetadata_Response
           - internal/buffer:FuzzHandlerParams
           - internal/buffer:FuzzHandlerTenantParams
+          - internal/buffer:FuzzBufferQueryAuth
           - internal/traceindex:FuzzUnmarshalIndex
           - internal/traceindex:FuzzRoundTripIndex
           - internal/vlstorage:FuzzRepromoteLogRow

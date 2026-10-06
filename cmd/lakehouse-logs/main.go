@@ -1173,6 +1173,21 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 }
 
+// mountBufferQuery serves this insert pod's unflushed rows to the select pods'
+// buffer bridge at /internal/buffer/query: off with upstream's
+// -internalselect.disable (buffer.Gate), and behind peer.auth_key when one is
+// set (buffer.NewHandler; all_tenants=true needs it in any case).
+func mountBufferQuery(mux *http.ServeMux, src buffer.Source, authKey string) {
+	switch {
+	case buffer.InternalSelectDisabled():
+		logger.Infof("%s is off (-internalselect.disable): select pods do not see this pod's unflushed rows until they are in object storage", buffer.Path)
+	case authKey == "":
+		logger.Infof("%s answers single-tenant reads of the insert buffer without a credential and refuses all_tenants=true; "+
+			"set peer.auth_key (or -lakehouse.peer.auth-key) on every pod to require one (docs/security.md)", buffer.Path)
+	}
+	mux.Handle(buffer.Path, buffer.Gate(buffer.Path, buffer.InternalSelectDisabled, buffer.NewHandler(src, authKey)))
+}
+
 // mountInternalProtocol mounts VL's cluster protocol for /internal/select/* and
 // /internal/delete/*. /internal/delete/* goes to upstream's own
 // vlselect.RequestHandler, so the -internaldelete.enable gate (default off),
@@ -1181,10 +1196,15 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 // after upstream's flag. Both prefixes answer a bare 405 to anything but POST, as
 // VictoriaLogs master's internalselect.RequestHandler does
 // (internaldelete.POSTOnly; the v1.52.0 pin lacks the check).
+//
+// -internalselect.disable (upstream's flag, default off) turns /internal/select/*
+// off with upstream's own answer, checked first as upstream does; buffer.Gate
+// does the same for /internal/buffer/query on insert pods.
 func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
-	mux.HandleFunc("/internal/select/", internaldelete.POSTOnly(nil, func(w http.ResponseWriter, r *http.Request) {
-		internalselect.RequestHandler(r.Context(), w, r)
-	}))
+	mux.Handle("/internal/select/", buffer.Gate("/internal/select/*", buffer.InternalSelectDisabled,
+		internaldelete.POSTOnly(nil, func(w http.ResponseWriter, r *http.Request) {
+			internalselect.RequestHandler(r.Context(), w, r)
+		})))
 	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled,
 		internaldelete.POSTOnly(internaldelete.FlagEnabled, func(w http.ResponseWriter, r *http.Request) {
 			vlselect.RequestHandler(w, r)
@@ -1328,7 +1348,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mux.HandleFunc("/api/v1/validate", vlinsertHandler)
 		mux.HandleFunc("/services/collector/", vlinsertHandler)
 
-		mux.Handle("/internal/buffer/query", buffer.NewHandler(parquets3.BridgeSource{Segments: segs}, cfg.Peer.AuthKey))
+		mountBufferQuery(mux, parquets3.BridgeSource{Segments: segs}, cfg.Peer.AuthKey)
 	}
 
 	if cfg.Delete.Enabled && tombstoneStore != nil {
@@ -1726,6 +1746,20 @@ func applyFlags(cfg *config.Config) {
 	applyLogsFlags(&cfg.Logs)
 	applyTenantFlags(&cfg.Tenant)
 	applyPmetaFlags(&cfg.Pmeta)
+	applyPeerFlags(&cfg.Peer)
+}
+
+// peerAuthKey overrides peer.auth_key. Its value stays out of /flags and
+// /metrics (VictoriaMetrics' flagutil.IsSecretFlag hides every flag whose name
+// contains "key"), and upstream's envflag expands %{ENV_VAR} in it, so a
+// Kubernetes Secret reaches it through an environment variable.
+var peerAuthKey = flag.String("lakehouse.peer.auth-key", "", "The key the pods present to each other's internal endpoints and require on their own: /internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync. Overrides peer.auth_key from the config file; pass a Secret as -lakehouse.peer.auth-key=%{ENV_VAR}. Empty: those endpoints take no credential and /internal/buffer/query refuses all_tenants=true. See docs/security.md")
+
+// applyPeerFlags applies -lakehouse.peer.auth-key over peer.auth_key.
+func applyPeerFlags(c *config.PeerConfig) {
+	if k := *peerAuthKey; k != "" {
+		c.AuthKey = k
+	}
 }
 
 func applyPmetaFlags(c *config.PmetaConfig) {

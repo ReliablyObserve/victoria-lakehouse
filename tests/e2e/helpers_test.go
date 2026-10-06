@@ -27,7 +27,30 @@ var (
 	tracesBaseURL = envOrDefault("TRACES_BASE_URL", "http://localhost:20428")
 	lokiProxyURL  = envOrDefault("LOKI_PROXY_URL", "http://localhost:23100")
 	vlselectURL   = envOrDefault("VLSELECT_URL", "http://localhost:29471")
+	// peerAuthKey is the stack's peer.auth_key (the e2e stack sets one in
+	// deployment/docker/lakehouse-e2e-config.yml); the pods require it on
+	// their /internal/* peer endpoints.
+	peerAuthKey = envOrDefault("LH_PEER_AUTH_KEY", "")
 )
+
+// bearer is the Authorization value carrying the stack's peer key, or "".
+func bearer() string {
+	if peerAuthKey == "" {
+		return ""
+	}
+	return "Bearer " + peerAuthKey
+}
+
+// withPeerKey presents the peer key on requests to the endpoints peer.auth_key
+// guards: the pods' /internal/* endpoints (as the pods themselves do) and the
+// alias admin API (/lakehouse/api/v1/tenants/aliases, POST and DELETE).
+func withPeerKey(req *http.Request) *http.Request {
+	guarded := strings.HasPrefix(req.URL.Path, "/internal/") || strings.HasPrefix(req.URL.Path, "/lakehouse/api/v1/tenants/aliases")
+	if b := bearer(); b != "" && guarded && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", b)
+	}
+	return req
+}
 
 // e2eParams adds disable_latency_offset=true to a LogsQL request against the
 // traces binary. VictoriaTraces v0.12.0 hides the newest -search.latencyOffset
@@ -58,7 +81,11 @@ func httpGet(t *testing.T, baseURL, path string, params url.Values) *http.Respon
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(u)
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		t.Fatalf("GET %s: %v", u, err)
+	}
+	resp, err := client.Do(withPeerKey(req))
 	if err != nil {
 		t.Fatalf("GET %s failed: %v", u, err)
 	}
@@ -97,7 +124,11 @@ func httpGetAllowStatus(t *testing.T, baseURL, path string, params url.Values, a
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(u)
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		t.Fatalf("GET %s: %v", u, err)
+	}
+	resp, err := client.Do(withPeerKey(req))
 	if err != nil {
 		t.Fatalf("GET %s failed: %v", u, err)
 	}
@@ -118,7 +149,12 @@ func httpGetAllowStatus(t *testing.T, baseURL, path string, params url.Values, a
 func httpPost(t *testing.T, baseURL, path string, contentType string, body []byte) *http.Response {
 	t.Helper()
 	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Post(baseURL+path, contentType, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s%s: %v", baseURL, path, err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := client.Do(withPeerKey(req))
 	if err != nil {
 		t.Fatalf("POST %s%s failed: %v", baseURL, path, err)
 	}

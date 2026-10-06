@@ -237,6 +237,7 @@ services:
       LH_BASE_URL: http://lakehouse-logs:9428
       VT_BASE_URL: http://victoriatraces:10428
       LHT_BASE_URL: http://lakehouse-traces:10428
+      LH_PEER_AUTH_KEY: parity-peer-key
       GOWORK: "off"
       GOFLAGS: "-mod=mod"
     command: ["go", "test", "-tags=parity", "-v", "-count=1", "-timeout=10m", "./..."]

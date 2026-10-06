@@ -67,9 +67,12 @@ containerSecurityContext:
 
 `--lakehouse.discovery.partition-auth-key` authenticates requests to vlstorage/vtstorage `/internal/partition/list` endpoints (polled with `POST`, the only method VictoriaTraces v0.12.0 accepts there; the key stays in the URL query). Must match the `-partitionManageAuthKey` value on storage nodes.
 
-### Peer Cache Auth Key
+### Peer Key
 
-`--lakehouse.peer-auth-key` authenticates internal peer cache HTTP requests. Required when running multiple instances with peer cache enabled.
+`peer.auth_key` (or `-lakehouse.peer.auth-key`, which overrides it) is the key the pods present to each other's
+internal endpoints and require on their own: the buffer bridge (`/internal/buffer/query`), the peer cache, manifest
+push, stats and tenant sync. Set the same key on every pod of a deployment. See
+[Internal endpoints and the peer key](#internal-endpoints-and-the-peer-key).
 
 ## Network Boundaries
 
@@ -100,14 +103,91 @@ graph TD
 
 These endpoints should NOT be exposed externally:
 
-| Endpoint | Purpose |
-|---|---|
-| `/internal/select/*` | Cluster protocol (binary DataBlock) |
-| `/internal/cache/fetch` | Peer cache data transfer |
-| `/internal/cache/has` | Peer cache probe |
-| `/internal/cache/stats` | Peer cache metrics |
+| Endpoint | Served by | Purpose | Protection |
+|---|---|---|---|
+| `/internal/select/*` | select pods | VictoriaLogs' cluster protocol (binary DataBlock), for a `vlselect`/`vtselect` in front | upstream's: network, `-httpAuth.*`, `-internalselect.disable` |
+| `/internal/buffer/query` | insert pods | the select pods' buffer bridge: each tenant's not yet flushed rows | peer key, `-internalselect.disable` |
+| `/internal/cache/fetch`, `/internal/cache/has` | every pod | peer cache data transfer and probe | peer key (`X-Peer-Auth-Key`) |
+| `/internal/cache/stats`, `/internal/cache/clear` | every pod | peer cache metrics and reset | peer key |
+| `/internal/manifest/update`, `/internal/stats/sync`, `/internal/tenant/sync` | every pod | manifest push, stats and tenant gossip | peer key |
+| `POST`/`DELETE /lakehouse/api/v1/tenants/aliases` | every pod | alias admin API (not cluster-internal, but guarded by the same key) | peer key |
 
-Use Kubernetes NetworkPolicy to restrict `/internal/*` to cluster CIDR.
+Use Kubernetes NetworkPolicy to restrict `/internal/*` to the cluster CIDR, and put vmauth in front of the
+pods for clients (the chart's vmauth routes only `/insert/*` and `/internal/insert` to insert pods).
+
+### Internal endpoints and the peer key
+
+VictoriaLogs and VictoriaTraces protect their own internal endpoints (`/internal/select/*`, `/internal/insert`) by
+the network: the cluster components "must run in a protected internal network", with
+[vmauth](https://docs.victoriametrics.com/victoriametrics/vmauth/) in front for clients, `-httpAuth.*` for basic
+auth, and `-internalselect.disable` / `-internalinsert.disable` to turn the endpoints off. Without these the
+endpoints take no credential: anyone who can reach a `vlstorage` node can read any tenant through
+`/internal/select/*`. Lakehouse follows that model and adds the peer key, because its insert pods are also the
+ingest endpoint: clients that may only write reach the same port as `/internal/buffer/query`.
+
+`/internal/buffer/query` answers like this:
+
+| Pod's peer key | Request | Answer |
+|---|---|---|
+| set | no `Authorization: Bearer`, or another key | **401** `Expected to receive non-empty Authorization: Bearer <key> when peer.auth_key is set` / `The provided Bearer key doesn't match peer.auth_key` (upstream's status for a missing or wrong key) |
+| set | the key, one tenant (`account_id` + `project_id`) | 200, that tenant's unflushed rows only |
+| set | the key, `all_tenants=true` | 200, every tenant's unflushed rows (a select pod's global-read query) |
+| not set | one tenant | 200, that tenant's unflushed rows only, without a credential (as upstream's `/internal/select/*`) |
+| not set | `all_tenants=true` | **403** `all_tenants=true is served only to an authenticated peer; set the same peer.auth_key on every pod` |
+| any | `-internalselect.disable` on the insert pod | **400** `requests to /internal/buffer/query are disabled with -internalselect.disable command-line flag` (upstream's answer and status), before anything else is looked at |
+
+The select pods' bridge sends `Authorization: Bearer <peer.auth_key>` on every request. A peer that refuses it
+(401/403) is counted in `lakehouse_buffer_bridge_errors_total{reason="auth"}` and raises
+`LakehouseBufferBridgeAuthRefused`: the queries that hit it were answered without that pod's unflushed rows.
+
+**Risk without a key.** With no peer key (the default, as in upstream), anyone who can reach an insert pod's
+port can read any single tenant's unflushed rows by naming its `AccountID`/`ProjectID`: the rows of the active and
+sealed buffer segments plus the grace period after they are written (about 15 minutes at the defaults). Every
+tenant at once (`all_tenants=true`) is never served without a key. This is the exposure of upstream's
+`/internal/select/*` on `vlstorage`, on a port that ingest clients can reach. Keep the pods on a protected
+network, or set the key; global-read queries need the key to see unflushed rows at all.
+
+The peer key guards only the insert pods' direct `/internal/buffer/query` endpoint. A select pod's `/select/*` and
+`/internal/select/*` still serve whatever tenant the request names (upstream's model), including the unflushed rows
+it reads through the bridge, so setting the key does not close every buffer read: protect those routes with
+`-httpAuth.*`, vmauth or the network, as for upstream.
+
+**Setting the key.**
+
+- Config file: `peer: {auth_key: <key>}`, the same on every pod of both roles.
+- Flag: `-lakehouse.peer.auth-key=<key>`, which overrides the config file. VictoriaMetrics' flag handling
+  expands `%{ENV_VAR}` in it (`-lakehouse.peer.auth-key=%{LAKEHOUSE_PEER_AUTH_KEY}`) and hides flags named
+  `*key*` from `/flags` and `/metrics`.
+- Helm: create a Secret and set `peerAuth.existingSecret` (and `peerAuth.secretKey`, default `peer-auth-key`):
+
+  ```sh
+  kubectl create secret generic lakehouse-peer --from-literal=peer-auth-key="$(openssl rand -hex 32)"
+  helm upgrade --install lh charts/victoria-lakehouse --set peerAuth.existingSecret=lakehouse-peer
+  ```
+
+  Every Lakehouse pod gets the key as `LAKEHOUSE_PEER_AUTH_KEY` and passes it with the flag; it never enters the
+  ConfigMap. `lakehouseConfig.peer.auth_key` also works but renders the key into the ConfigMap; setting both is
+  refused. Rotate by updating the Secret and restarting every pod; pods holding different keys refuse each
+  other's bridge requests until all have restarted.
+
+**Turning it off.** Upstream's `-internalselect.disable` turns off `/internal/buffer/query` on insert pods and
+`/internal/select/*` on select pods. Select pods then see an insert pod's rows only once they are in object
+storage; set `select.buffer_query_enabled: false` on them so they do not ask. A select pod that does ask counts
+each "disabled" answer as `lakehouse_buffer_bridge_errors_total{reason="disabled"}` (alert
+`LakehouseBufferBridgeDisabled`) and still answers 200 without those rows. A `role=all` pod with
+`discovery.peer_headless_service` is its own peer: with the flag set it refuses its own bridge call, so its own
+unflushed rows are missing from the queries it serves (a warning is logged at startup). Run select pods apart from
+the pods that ingest, or leave the flag unset there.
+
+The peer key is trimmed of surrounding whitespace (a Secret file usually ends in a newline); a key with whitespace or
+a control character inside is refused at startup, and so is a key that is only whitespace (it would otherwise
+run the pod without a key).
+
+**`-httpAuth.*`.** VictoriaMetrics' HTTP server applies `-httpAuth.username`/`-httpAuth.password` to every path
+except `/health`, `/metrics`, `/flags` and a few others, including `/internal/*`. Lakehouse's peer clients (the
+buffer bridge, the peer cache, manifest, stats and tenant sync) do not send basic auth, so on a deployment that
+sets `-httpAuth.*` on its pods those channels are refused (tracked in #396). Use the peer key between pods and put
+basic auth or vmauth in front for clients.
 
 ### Public Endpoints
 

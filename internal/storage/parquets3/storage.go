@@ -246,10 +246,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		bw = NewBatchWriter(&cfg.Insert, pool, m, prefix, cfg.Mode)
 	}
 
-	var bb *BufferBridge
-	if cfg.SelectEnabled() && cfg.Select.BufferQueryEnabled {
-		bb = NewBufferBridge(&cfg.Select, cfg.Mode)
-	}
+	bb := newBufferBridgeFor(cfg)
 
 	var bc *bloomindex.BloomCache
 	if cfg.SelectEnabled() {

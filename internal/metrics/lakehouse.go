@@ -260,7 +260,14 @@ func init() {
 	// its first skip could be missing for a long time on a tenant-scoped
 	// read that never reaches that stage.
 	ParquetRowGroupsSkipped.Init(RowGroupSkipReasons...)
+	// Same for the bridge's error reasons: an alert on a reason that has
+	// never fired must see a series at zero, not an absent one.
+	BufferBridgeErrors.Init(BufferBridgeErrorReasons...)
 }
+
+// BufferBridgeErrorReasons is every reason BufferBridgeErrors is incremented
+// with.
+var BufferBridgeErrorReasons = []string{"request", "auth", "status", "scope", "decode", "disabled"}
 
 // Parquet engine metrics
 var (
@@ -521,9 +528,12 @@ var (
 	QueryPeerErrorsTotal      = NewCounterVec("lakehouse_query_peer_errors_total", "type")
 	BufferBridgeFallbackTotal = NewCounter("lakehouse_buffer_bridge_fallback_total")
 	// BufferBridgeErrors counts peer answers the buffer bridge dropped:
-	// request (unreachable, timed out), status (non-200), scope (the peer did
-	// not echo the tenant scope), decode (the row stream broke off). A dropped
-	// answer leaves that peer's unflushed rows out of the result.
+	// request (unreachable, timed out), auth (the peer refused this pod's
+	// peer key with 401/403: peer.auth_key differs between pods, or an
+	// all_tenants read reached a pod without one), status (any other non-200),
+	// scope (the peer did not echo the tenant scope), decode (the row stream
+	// broke off), disabled (the peer runs with -internalselect.disable). A dropped answer leaves that peer's unflushed rows out of
+	// the result.
 	BufferBridgeErrors = NewCounterVec("lakehouse_buffer_bridge_errors_total", "reason")
 )
 

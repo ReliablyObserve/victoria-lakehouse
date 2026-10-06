@@ -8,14 +8,28 @@
   tests:
     - internal/peercache/peercache_test.go#TestPeerCache_Fetch_AuthRejected
     - internal/buffer/handler_test.go#TestBufferQuery_AuthRequired
+    - internal/buffer/handler_auth_test.go
+    - internal/storage/parquets3/buffer_bridge_auth_test.go
+    - lakehouse-traces/internal/storage/parquets3/buffer_bridge_auth_test.go
+    - cmd/lakehouse-logs/buffer_query_mount_test.go
+    - lakehouse-traces/buffer_query_mount_test.go
     - internal/stats/sync_test.go#TestSyncHandlerRejectsBadAuth
     - internal/discovery/discovery_test.go#TestPollPartitionList_WithAuthKey
+  rows:
+    - lh.internal.buffer_query.all_tenants_needs_peer_key_logs
+    - lh.internal.buffer_query.all_tenants_needs_peer_key_traces
+    - lh.internal.buffer_query.peer_key_required_logs
+    - lh.internal.buffer_query.peer_key_required_traces
+    - lh.internal.buffer_query.single_tenant_scoped_logs
+    - lh.internal.buffer_query.single_tenant_scoped_traces
+    - lh.internal.buffer_query.internalselect_disable_logs
+    - lh.internal.buffer_query.internalselect_disable_traces
   docs:
     - docs/security.md
   changelog_bullets:
     - 'Internal endpoint auth'
   highlight: >-
-    **Internal endpoint auth**: the cluster-only surfaces — buffer query, peer cache, stats and tenant sync, partition list — require a shared key, so fleet-internal APIs are not open to anything that can reach the pod's network.
+    **Internal endpoint auth**: the cluster-only surfaces — buffer query, peer cache, stats and tenant sync, partition list — require a shared key when one is set, and the buffer bridge presents it; a cross-tenant read of the insert buffer is served only to a pod holding the key, and upstream's `-internalselect.disable` turns the buffer endpoint off.
   description: >-
     The internal endpoints exist to let pods trust each other, which is exactly why they need a
     credential: without one, network reachability alone would grant cross-tenant reads. Each

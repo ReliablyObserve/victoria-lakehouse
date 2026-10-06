@@ -48,6 +48,17 @@ logs.insert.persistence / traces.insert.persistence unless you mount a durable
 volume at /data/lakehouse through extraVolumes.
 {{- end }}
 
+{{- $peerKey := or .Values.peerAuth.existingSecret (dig "peer" "auth_key" "" .Values.lakehouseConfig) }}
+{{- if and (not $peerKey) (or (and .Values.logs.enabled .Values.logs.insert.enabled) (and .Values.traces.enabled .Values.traces.insert.enabled)) }}
+
+NOTE: no peer key is set (peerAuth.existingSecret / lakehouseConfig.peer.auth_key).
+Insert pods answer /internal/buffer/query - each tenant's not yet flushed rows - to
+any caller on their port that names a tenant, as VictoriaLogs' and VictoriaTraces'
+/internal/select/* do: keep the pods on a protected network (NetworkPolicy, vmauth
+in front), or set peerAuth.existingSecret so only the pods themselves can read it.
+Global-read queries miss the unflushed rows until a key is set. See docs/security.md.
+{{- end }}
+
 Deployment modes:
   All-in-one: logs.enabled=true, traces.enabled=true
   Logs only:  logs.enabled=true, traces.enabled=false (default)

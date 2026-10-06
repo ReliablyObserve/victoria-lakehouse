@@ -448,3 +448,153 @@
   refs: { doc: docs/read-path.md, tests: [lakehouse-traces/internal/storage/parquets3/buffer_bridge_discovery_test.go, lakehouse-traces/discovery_enabled_test.go, charts/victoria-lakehouse/test_templates.sh] }
   notes: "The traces binary's twin of the logs row: a traces select pod resolves select.insert_headless_service and returns the traces insert pods' unflushed spans (LogsQL, and the Jaeger and Tempo reads built on it) with the cold spans, each once. Covered by the twin tests in lakehouse-traces. SCHEMA LIMIT: as for the logs row. Stays pending."
 
+- id: lh.internal.buffer_query.all_tenants_needs_peer_key_logs
+  title: "LH insert pod serves /internal/buffer/query?all_tenants=true only to a caller presenting the peer key (logs)"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /internal/buffer/query, params: { start: "0", end: "9223372036854775807", mode: logs, tenant_scope: v1, all_tenants: "true" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/security.md, tests: [internal/buffer/handler_auth_test.go, internal/storage/parquets3/buffer_bridge_auth_test.go, cmd/lakehouse-logs/buffer_query_mount_test.go, tests/e2e/buffer_query_auth_test.go] }
+  notes: "Security (#384). A pod without peer.auth_key answers all_tenants=true with 403 and the body 'all_tenants=true is served only to an authenticated peer; set the same peer.auth_key on every pod', whatever Authorization the caller sends; a pod with a key answers 401 without it or with another key, and 200 with every tenant's unflushed rows (X-Lakehouse-Tenant-Scope: *) to Authorization: Bearer <key>. Before, every caller that reached the insert port got every tenant's rows. Covered by TestBufferQueryAuth_*, TestBridgeAuth_GlobalReadNeedsThePeerKey, TestMountBufferQuery_PeerKey and the e2e TestBufferQueryAuth_Credentials (with and without LH_PEER_AUTH_KEY). SCHEMA LIMIT: the runner sends no Authorization header and has no target for the unflushed layer or the stack's key, so the request expresses the no-credential case only. Stays pending."
+
+- id: lh.internal.buffer_query.peer_key_required_logs
+  title: "LH insert pod with peer.auth_key answers 401 to every /internal/buffer/query without that key (logs)"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /internal/buffer/query, params: { start: "0", end: "9223372036854775807", mode: logs, tenant_scope: v1, account_id: "0", project_id: "0" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/security.md, tests: [internal/buffer/handler_auth_test.go, internal/buffer/handler_test.go, tests/e2e/buffer_query_auth_test.go] }
+  notes: "With peer.auth_key (or -lakehouse.peer.auth-key) set, a request without Authorization: Bearer <key> gets 401 'Expected to receive non-empty Authorization: Bearer <key> when peer.auth_key is set', and another key gets 401 'The provided Bearer key doesn't match peer.auth_key' (upstream's status for a missing or wrong authKey), checked before any parameter; the right key gets 200. FuzzBufferQueryAuth: only exactly 'Bearer <key>' is served. SCHEMA LIMIT: as above, the runner's stack sets no key. Stays pending."
+
+- id: lh.internal.buffer_query.single_tenant_scoped_logs
+  title: "LH /internal/buffer/query answers a single-tenant request with that tenant's unflushed rows only, numeric and OrgID-alias tenants (logs)"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /internal/buffer/query, params: { start: "0", end: "9223372036854775807", mode: logs, tenant_scope: v1, account_id: "1", project_id: "1" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/buffer/handler_auth_test.go, internal/buffer/handler_tenant_test.go, internal/storage/parquets3/buffer_bridge_auth_test.go, tests/e2e/buffer_query_auth_test.go] }
+  notes: "With or without a key, account_id + project_id returns exactly that tenant's rows, echoed in X-Lakehouse-Tenant-Scope; rows ingested as a numeric AccountID/ProjectID and as a configured X-Scope-OrgID alias (acme-corp = 1001:0 in the e2e stack) are each read back complete from the buffer, without the other tenant's rows, and through the select path in full. Without a key this read takes no credential, as upstream's /internal/select/* does (docs/security.md states the risk). Covered by TestBufferQueryAuth_SingleTenantReturnsOnlyThatTenant, TestBridgeAuth_SingleTenantReadsStayInTheirTenant and the e2e TestBufferQueryAuth_TenantIsolationAndSelectSeesUnflushedRows. Stays pending (no unflushed-layer target in the runner)."
+
+- id: lh.internal.buffer_query.internalselect_disable_logs
+  title: "LH insert pod started with -internalselect.disable answers /internal/buffer/query with upstream's disabled error (logs)"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /internal/buffer/query, params: { start: "0", end: "9223372036854775807", mode: logs, tenant_scope: v1, all_tenants: "true" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/security.md, tests: [internal/buffer/handler_auth_test.go, cmd/lakehouse-logs/buffer_query_mount_test.go, internal/storage/parquets3/buffer_bridge_auth_test.go] }
+  notes: "Upstream's -internalselect.disable (default off) turns the endpoint off before method, credential or parameters are looked at: 400 'requests to /internal/buffer/query are disabled with -internalselect.disable command-line flag', upstream's status and wording for /internal/select/*. The same flag turns /internal/select/* off on select pods. Covered by TestGate_*, TestInternalSelectDisable_TurnsOffBothInternalReadRoutes and TestBridgeAuth_DisabledEndpointServesNothing. SCHEMA LIMIT: the runner cannot start a node with a flag of its own. Stays pending."
+
+- id: lh.select.split.insert_buffer_visible_with_peer_key_logs
+  title: "LH select pod with peer.auth_key sees every unflushed row of insert pods with the same key through the buffer bridge (logs)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/read-path.md, tests: [internal/storage/parquets3/buffer_bridge_auth_test.go, tests/e2e/buffer_query_auth_test.go] }
+  notes: "#383: the bridge sends Authorization: Bearer <peer.auth_key> on every request to every insert pod and per-tenant sub-request, so a select pod with auth on answers every unflushed row (5000 of 5000 in TestBridgeAuth_SelectPodSeesEveryUnflushedRowWithPeerKey; before: 0, with 200). A peer that refuses the key is counted as lakehouse_buffer_bridge_errors_total{reason=\"auth\"} (LakehouseBufferBridgeAuthRefused). Live: the split stack of the PR proof (two insert pods, one select pod, both signals, key on) and the e2e TestBufferQueryAuth_TenantIsolationAndSelectSeesUnflushedRows with LH_PEER_AUTH_KEY. SCHEMA LIMIT: the runner has one node per signal and no key, so this row can only express the cold-side request. Stays pending."
+
+- id: lh.internal.buffer_query.all_tenants_needs_peer_key_traces
+  title: "LH insert pod serves /internal/buffer/query?all_tenants=true only to a caller presenting the peer key (traces)"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /internal/buffer/query, params: { start: "0", end: "9223372036854775807", mode: traces, tenant_scope: v1, all_tenants: "true" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/security.md, tests: [internal/buffer/handler_auth_test.go, lakehouse-traces/internal/storage/parquets3/buffer_bridge_auth_test.go, lakehouse-traces/buffer_query_mount_test.go, tests/e2e/buffer_query_auth_test.go] }
+  notes: "The traces binary's twin of the logs row. Security (#384). A pod without peer.auth_key answers all_tenants=true with 403 and the body 'all_tenants=true is served only to an authenticated peer; set the same peer.auth_key on every pod', whatever Authorization the caller sends; a pod with a key answers 401 without it or with another key, and 200 with every tenant's unflushed rows (X-Lakehouse-Tenant-Scope: *) to Authorization: Bearer <key>. Before, every caller that reached the insert port got every tenant's rows. Covered by TestBufferQueryAuth_*, TestBridgeAuth_GlobalReadNeedsThePeerKey, TestMountBufferQuery_PeerKey and the e2e TestBufferQueryAuth_Credentials (with and without LH_PEER_AUTH_KEY). SCHEMA LIMIT: the runner sends no Authorization header and has no target for the unflushed layer or the stack's key, so the request expresses the no-credential case only. Stays pending."
+
+- id: lh.internal.buffer_query.peer_key_required_traces
+  title: "LH insert pod with peer.auth_key answers 401 to every /internal/buffer/query without that key (traces)"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /internal/buffer/query, params: { start: "0", end: "9223372036854775807", mode: traces, tenant_scope: v1, account_id: "0", project_id: "0" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/security.md, tests: [internal/buffer/handler_auth_test.go, internal/buffer/handler_test.go, tests/e2e/buffer_query_auth_test.go] }
+  notes: "The traces binary's twin of the logs row. With peer.auth_key (or -lakehouse.peer.auth-key) set, a request without Authorization: Bearer <key> gets 401 'Expected to receive non-empty Authorization: Bearer <key> when peer.auth_key is set', and another key gets 401 'The provided Bearer key doesn't match peer.auth_key' (upstream's status for a missing or wrong authKey), checked before any parameter; the right key gets 200. FuzzBufferQueryAuth: only exactly 'Bearer <key>' is served. SCHEMA LIMIT: as above, the runner's stack sets no key. Stays pending."
+
+- id: lh.internal.buffer_query.single_tenant_scoped_traces
+  title: "LH /internal/buffer/query answers a single-tenant request with that tenant's unflushed rows only, numeric and OrgID-alias tenants (traces)"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /internal/buffer/query, params: { start: "0", end: "9223372036854775807", mode: traces, tenant_scope: v1, account_id: "1", project_id: "1" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/buffer/handler_auth_test.go, internal/buffer/handler_tenant_test.go, lakehouse-traces/internal/storage/parquets3/buffer_bridge_auth_test.go, tests/e2e/buffer_query_auth_test.go] }
+  notes: "The traces binary's twin of the logs row. With or without a key, account_id + project_id returns exactly that tenant's rows, echoed in X-Lakehouse-Tenant-Scope; rows ingested as a numeric AccountID/ProjectID and as a configured X-Scope-OrgID alias (acme-corp = 1001:0 in the e2e stack) are each read back complete from the buffer, without the other tenant's rows, and through the select path in full. Without a key this read takes no credential, as upstream's /internal/select/* does (docs/security.md states the risk). Covered by TestBufferQueryAuth_SingleTenantReturnsOnlyThatTenant, TestBridgeAuth_SingleTenantReadsStayInTheirTenant and the e2e TestBufferQueryAuth_TenantIsolationAndSelectSeesUnflushedRows. Stays pending (no unflushed-layer target in the runner)."
+
+- id: lh.internal.buffer_query.internalselect_disable_traces
+  title: "LH insert pod started with -internalselect.disable answers /internal/buffer/query with upstream's disabled error (traces)"
+  surface: lh
+  kind: internal
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /internal/buffer/query, params: { start: "0", end: "9223372036854775807", mode: traces, tenant_scope: v1, all_tenants: "true" } }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/security.md, tests: [internal/buffer/handler_auth_test.go, lakehouse-traces/buffer_query_mount_test.go, lakehouse-traces/internal/storage/parquets3/buffer_bridge_auth_test.go] }
+  notes: "The traces binary's twin of the logs row. Upstream's -internalselect.disable (default off) turns the endpoint off before method, credential or parameters are looked at: 400 'requests to /internal/buffer/query are disabled with -internalselect.disable command-line flag', upstream's status and wording for /internal/select/*. The same flag turns /internal/select/* off on select pods. Covered by TestGate_*, TestInternalSelectDisable_TurnsOffBothInternalReadRoutes and TestBridgeAuth_DisabledEndpointServesNothing. SCHEMA LIMIT: the runner cannot start a node with a flag of its own. Stays pending."
+
+- id: lh.select.split.insert_buffer_visible_with_peer_key_traces
+  title: "LH select pod with peer.auth_key sees every unflushed row of insert pods with the same key through the buffer bridge (traces)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/read-path.md, tests: [lakehouse-traces/internal/storage/parquets3/buffer_bridge_auth_test.go, tests/e2e/buffer_query_auth_test.go] }
+  notes: "The traces binary's twin of the logs row. #383: the bridge sends Authorization: Bearer <peer.auth_key> on every request to every insert pod and per-tenant sub-request, so a select pod with auth on answers every unflushed row (5000 of 5000 in TestBridgeAuth_SelectPodSeesEveryUnflushedRowWithPeerKey; before: 0, with 200). A peer that refuses the key is counted as lakehouse_buffer_bridge_errors_total{reason=\"auth\"} (LakehouseBufferBridgeAuthRefused). Live: the split stack of the PR proof (two insert pods, one select pod, both signals, key on) and the e2e TestBufferQueryAuth_TenantIsolationAndSelectSeesUnflushedRows with LH_PEER_AUTH_KEY. SCHEMA LIMIT: the runner has one node per signal and no key, so this row can only express the cold-side request. Stays pending."
+

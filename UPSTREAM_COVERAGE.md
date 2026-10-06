@@ -301,7 +301,7 @@ traceql: 9/9 covered by at least one registry row.
 
 ## Upstream flag (179)
 
-flag: 32/179 covered by at least one registry row.
+flag: 34/179 covered by at least one registry row.
 
 | flag | Source | Rows | Status |
 |---|---|---|---|
@@ -337,8 +337,8 @@ flag: 32/179 covered by at least one registry row.
 | `internalinsert.disable` | `app/vtinsert/main.go` |  | ⚪ no row |
 | `internalinsert.maxRequestSize` | `app/vlinsert/internalinsert/internalinsert.go` |  | ⚪ no row |
 | `internalinsert.maxRequestSize` | `app/vtinsert/internalinsert/internalinsert.go` |  | ⚪ no row |
-| `internalselect.disable` | `app/vlselect/main.go` |  | ⚪ not linked into LH, no row |
-| `internalselect.disable` | `app/vtselect/main.go` |  | ⚪ not linked into LH, no row |
+| `internalselect.disable` | `app/vlselect/main.go` | vl.flag.internalselect_disable | 🟡 declared, not yet executed (package not linked into LH) |
+| `internalselect.disable` | `app/vtselect/main.go` | vt.flag.internalselect_disable | 🟡 declared, not yet executed (package not linked into LH) |
 | `internalselect.maxConcurrentRequests` | `app/vlselect/internalselect/internalselect.go` |  | ⚪ no row |
 | `internalselect.maxConcurrentRequests` | `app/vtselect/internalselect/internalselect.go` |  | ⚪ not linked into LH, no row |
 | `journald.ignoreFields` | `app/vlinsert/journald/journald.go` |  | ⚪ no row |
@@ -504,6 +504,14 @@ flag: 32/179 covered by at least one registry row.
 | `lh.flag.print_default_config` | LH print-default-config — every config key with its default and merge rule, every profile override and every flag, as JSON | flag | 🟡 declared, not yet executed |
 | `lh.health.status` | LH health — liveness probe | internal | 🟡 declared, not yet executed |
 | `lh.info.schema` | LH info — build/version/config summary | admin | 🟡 declared, not yet executed |
+| `lh.internal.buffer_query.all_tenants_needs_peer_key_logs` | LH insert pod serves /internal/buffer/query?all_tenants=true only to a caller presenting the peer key (logs) | internal | 🟡 declared, not yet executed |
+| `lh.internal.buffer_query.all_tenants_needs_peer_key_traces` | LH insert pod serves /internal/buffer/query?all_tenants=true only to a caller presenting the peer key (traces) | internal | 🟡 declared, not yet executed |
+| `lh.internal.buffer_query.internalselect_disable_logs` | LH insert pod started with -internalselect.disable answers /internal/buffer/query with upstream's disabled error (logs) | internal | 🟡 declared, not yet executed |
+| `lh.internal.buffer_query.internalselect_disable_traces` | LH insert pod started with -internalselect.disable answers /internal/buffer/query with upstream's disabled error (traces) | internal | 🟡 declared, not yet executed |
+| `lh.internal.buffer_query.peer_key_required_logs` | LH insert pod with peer.auth_key answers 401 to every /internal/buffer/query without that key (logs) | internal | 🟡 declared, not yet executed |
+| `lh.internal.buffer_query.peer_key_required_traces` | LH insert pod with peer.auth_key answers 401 to every /internal/buffer/query without that key (traces) | internal | 🟡 declared, not yet executed |
+| `lh.internal.buffer_query.single_tenant_scoped_logs` | LH /internal/buffer/query answers a single-tenant request with that tenant's unflushed rows only, numeric and OrgID-alias tenants (logs) | internal | 🟡 declared, not yet executed |
+| `lh.internal.buffer_query.single_tenant_scoped_traces` | LH /internal/buffer/query answers a single-tenant request with that tenant's unflushed rows only, numeric and OrgID-alias tenants (traces) | internal | 🟡 declared, not yet executed |
 | `lh.internal.cache_stats.schema` | LH internal cache stats — hot-cache hit rate and eviction counters | internal | 🟡 declared, not yet executed |
 | `lh.lifecycle.ring.schema` | LH lifecycle ring — hash-ring membership and shard ownership | admin | 🟡 declared, not yet executed |
 | `lh.manifest.partitions.schema` | LH manifest partitions — partition listing | admin | 🟡 declared, not yet executed |
@@ -513,6 +521,8 @@ flag: 32/179 covered by at least one registry row.
 | `lh.select.restart.same_hour_buffer_visible_traces` | LH cold read after a graceful restart — spans buffered in the same UTC hour as the shutdown flush are visible exactly once (traces) | select | 🟡 declared, not yet executed |
 | `lh.select.split.insert_buffer_visible_logs` | LH select pod answers with the insert pods' unflushed rows through the buffer bridge (logs) | select | 🟡 declared, not yet executed |
 | `lh.select.split.insert_buffer_visible_traces` | LH select pod answers with the insert pods' unflushed spans through the buffer bridge (traces) | select | 🟡 declared, not yet executed |
+| `lh.select.split.insert_buffer_visible_with_peer_key_logs` | LH select pod with peer.auth_key sees every unflushed row of insert pods with the same key through the buffer bridge (logs) | select | 🟡 declared, not yet executed |
+| `lh.select.split.insert_buffer_visible_with_peer_key_traces` | LH select pod with peer.auth_key sees every unflushed row of insert pods with the same key through the buffer bridge (traces) | select | 🟡 declared, not yet executed |
 | `lh.stats.compaction.schema` | LH stats compaction — recent compaction runs and efficiency hints | admin | 🟡 declared, not yet executed |
 | `lh.stats.fields.schema` | LH stats fields — per-field size/cardinality breakdown | admin | 🟡 declared, not yet executed |
 | `lh.stats.overview.schema` | LH stats overview — tier sizes, object counts, compaction backlog | admin | 🟡 declared, not yet executed |

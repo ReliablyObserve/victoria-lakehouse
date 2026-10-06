@@ -31,7 +31,7 @@ func TestStringTenant_AliasCreate(t *testing.T) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(withPeerKey(req))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestStringTenant_AliasDelete(t *testing.T) {
 	body, _ := json.Marshal(alias)
 	createReq, _ := http.NewRequest("POST", logsBaseURL+"/lakehouse/api/v1/tenants/aliases", bytes.NewReader(body))
 	createReq.Header.Set("Content-Type", "application/json")
-	createResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(createReq)
+	createResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(withPeerKey(createReq))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestStringTenant_AliasDelete(t *testing.T) {
 
 	// Delete it
 	deleteReq, _ := http.NewRequest("DELETE", logsBaseURL+"/lakehouse/api/v1/tenants/aliases/delete-me-test", nil)
-	deleteResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(deleteReq)
+	deleteResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(withPeerKey(deleteReq))
 	if err != nil {
 		t.Fatal(err)
 	}
