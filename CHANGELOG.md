@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.146.2] - 2026-10-06
+
 ### Fixed
 
 - **After a restart, rows of committed insert-buffer segments are no longer answered twice when the pod was down for longer than the compaction guard (#379).**
