@@ -65,11 +65,11 @@ func TestBufferedRows_LocalBufferPerSegment(t *testing.T) {
 	for _, g := range rep.Segments {
 		byNonce[g.Nonce] = g
 	}
-	if g := byNonce[sealed.Nonce()]; g.Rows != 9 || !g.Committed {
+	if g := byNonce[sealed.Nonce()]; g.Rows != 9 || !g.Committed || g.Dropped != 0 {
 		t.Errorf("sealed segment = %+v, want 9 rows, committed", g)
 	}
 	for n, g := range byNonce {
-		if n != sealed.Nonce() && (g.Rows != 2 || g.Committed) {
+		if n != sealed.Nonce() && (g.Rows != 2 || g.Committed || g.Dropped != 0) {
 			t.Errorf("active segment = %+v, want 2 rows, uncommitted", g)
 		}
 	}

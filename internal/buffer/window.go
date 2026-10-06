@@ -7,6 +7,10 @@ type SegmentRows struct {
 	Nonce     string
 	Committed bool
 	Rows      int64
+	// Dropped is how many of Rows the flush never writes to Parquet
+	// (VictoriaTraces' trace_id_idx rows). A query counts them from the buffer
+	// for as long as the segment is live; the objects never hold them.
+	Dropped int64
 }
 
 // WindowReport is what a node's insert buffer holds in a time window, for the

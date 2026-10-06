@@ -42,6 +42,16 @@ func TestBufferedRows_LocalBufferPerSegment(t *testing.T) {
 	now := time.Now().UnixNano()
 	addBufferedRows(segs, now, 0, 6)
 	addBufferedRows(segs, now, 1, 3)
+	// VictoriaTraces' trace_id_idx rows: in the buffer, never written by the flush.
+	lr := logstorage.GetLogRows([]string{"trace_id_idx_stream"}, nil, nil, nil, "")
+	for i := 0; i < 5; i++ {
+		lr.MustAdd(logstorage.TenantID{}, now+int64(i), []logstorage.Field{
+			{Name: "trace_id_idx_stream", Value: "7"},
+			{Name: "_msg", Value: "idx"},
+		}, 1)
+	}
+	segs.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
 	sealed, ok := segs.Seal()
 	if !ok {
 		t.Fatal("seal")
@@ -55,8 +65,8 @@ func TestBufferedRows_LocalBufferPerSegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Rows != 11 {
-		t.Fatalf("rows=%d, want 11 (three tenants, two segments)", rep.Rows)
+	if rep.Rows != 16 {
+		t.Fatalf("rows=%d, want 16 (three tenants, two segments, 5 index rows)", rep.Rows)
 	}
 	if len(rep.Nonces) != 2 || len(rep.Segments) != 2 {
 		t.Fatalf("nonces=%v segments=%v, want the two live segments", rep.Nonces, rep.Segments)
@@ -65,11 +75,11 @@ func TestBufferedRows_LocalBufferPerSegment(t *testing.T) {
 	for _, g := range rep.Segments {
 		byNonce[g.Nonce] = g
 	}
-	if g := byNonce[sealed.Nonce()]; g.Rows != 9 || !g.Committed {
-		t.Errorf("sealed segment = %+v, want 9 rows, committed", g)
+	if g := byNonce[sealed.Nonce()]; g.Rows != 14 || !g.Committed || g.Dropped != 5 {
+		t.Errorf("sealed segment = %+v, want 14 rows of which 5 dropped by the flush, committed", g)
 	}
 	for n, g := range byNonce {
-		if n != sealed.Nonce() && (g.Rows != 2 || g.Committed) {
+		if n != sealed.Nonce() && (g.Rows != 2 || g.Committed || g.Dropped != 0) {
 			t.Errorf("active segment = %+v, want 2 rows, uncommitted", g)
 		}
 	}

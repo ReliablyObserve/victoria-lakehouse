@@ -546,12 +546,17 @@ type SegmentRows struct {
 	Nonce     string
 	Committed bool
 	Rows      int64
+	// Dropped is how many of Rows the flush never writes to Parquet (the rows
+	// droppedFilter selects); 0 without a filter.
+	Dropped int64
 }
 
 // SegmentRowsInWindow counts, per live segment of the snapshot, the rows with
 // _time in [start, end] of every tenant, with the upstream engine (the same
-// rows a `* | stats count()` over the buffer reads).
-func (p *Snapshot) SegmentRowsInWindow(ctx context.Context, start, end int64) ([]SegmentRows, error) {
+// rows a `* | stats count()` over the buffer reads). droppedFilter, when not
+// empty, is a LogsQL filter selecting the rows the flush drops instead of
+// writing (VictoriaTraces' trace_id_idx rows): they are counted in Dropped too.
+func (p *Snapshot) SegmentRowsInWindow(ctx context.Context, start, end int64, droppedFilter string) ([]SegmentRows, error) {
 	committed := make(map[*Segment]bool, len(p.segs))
 	p.s.mu.Lock()
 	for _, g := range p.segs {
@@ -566,26 +571,43 @@ func (p *Snapshot) SegmentRowsInWindow(ctx context.Context, start, end int64) ([
 		}
 		sr := SegmentRows{Nonce: g.nonce, Committed: committed[g]}
 		for _, id := range ids {
-			q, err := logstorage.ParseQueryAtTimestamp("*", end)
+			n, err := g.countRows(ctx, id, "*", start, end)
 			if err != nil {
 				return nil, err
 			}
-			q = q.CloneWithTimeFilter(end, start, end)
-			var n atomic.Int64
-			qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, q, false, nil)
-			if err := g.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) { n.Add(int64(db.RowsCount())) }); err != nil {
-				return nil, err
+			sr.Rows += n
+			if droppedFilter != "" {
+				d, err := g.countRows(ctx, id, droppedFilter, start, end)
+				if err != nil {
+					return nil, err
+				}
+				sr.Dropped += d
 			}
-			sr.Rows += n.Load()
 		}
 		out = append(out, sr)
 	}
 	return out, nil
 }
 
+// countRows counts the rows of tenant id matching the LogsQL filter with _time
+// in [start, end].
+func (g *Segment) countRows(ctx context.Context, id logstorage.TenantID, filter string, start, end int64) (int64, error) {
+	q, err := logstorage.ParseQueryAtTimestamp(filter, end)
+	if err != nil {
+		return 0, err
+	}
+	q = q.CloneWithTimeFilter(end, start, end)
+	var n atomic.Int64
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, q, false, nil)
+	if err := g.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) { n.Add(int64(db.RowsCount())) }); err != nil {
+		return 0, err
+	}
+	return n.Load(), nil
+}
+
 // RowsInWindow is the sum of SegmentRowsInWindow.
 func (p *Snapshot) RowsInWindow(ctx context.Context, start, end int64) (int64, error) {
-	segs, err := p.SegmentRowsInWindow(ctx, start, end)
+	segs, err := p.SegmentRowsInWindow(ctx, start, end, "")
 	var total int64
 	for _, g := range segs {
 		total += g.Rows

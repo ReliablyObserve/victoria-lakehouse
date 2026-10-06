@@ -52,7 +52,7 @@ func TestSnapshot_RowsInWindow_EmptyBuffer(t *testing.T) {
 }
 
 // SegmentRowsInWindow splits the count per segment and carries each segment's
-// committed state: the parity check treats a committed segment's rows as
+// committed state and how many rows the flush drops (the filter): the parity check treats a committed segment's rows as
 // exactly its objects' rows, an uncommitted one's as possibly more.
 func TestSnapshot_SegmentRowsInWindow_PerSegmentWithCommittedState(t *testing.T) {
 	s := openSegs(t, t.TempDir())
@@ -71,7 +71,7 @@ func TestSnapshot_SegmentRowsInWindow_PerSegmentWithCommittedState(t *testing.T)
 	snap := s.Snapshot()
 	defer snap.Release()
 	now := time.Now().UnixNano()
-	got, err := snap.SegmentRowsInWindow(context.Background(), now-int64(time.Hour), now+int64(time.Hour))
+	got, err := snap.SegmentRowsInWindow(context.Background(), now-int64(time.Hour), now+int64(time.Hour), `_msg:~"^[ab]-"`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,17 +81,17 @@ func TestSnapshot_SegmentRowsInWindow_PerSegmentWithCommittedState(t *testing.T)
 	for _, g := range got {
 		switch g.Nonce {
 		case sealed.Nonce():
-			if g.Rows != 8 || !g.Committed {
-				t.Errorf("sealed = %+v, want 8 rows committed", g)
+			if g.Rows != 8 || !g.Committed || g.Dropped != 8 {
+				t.Errorf("sealed = %+v, want 8 rows (all 8 dropped by the filter) committed", g)
 			}
 		default:
-			if g.Rows != 4 || g.Committed {
-				t.Errorf("active = %+v, want 4 rows uncommitted", g)
+			if g.Rows != 4 || g.Committed || g.Dropped != 0 {
+				t.Errorf("active = %+v, want 4 rows, none dropped, uncommitted", g)
 			}
 		}
 	}
 	// A window with no rows counts none, per segment.
-	got, err = snap.SegmentRowsInWindow(context.Background(), now-3*int64(time.Hour), now-2*int64(time.Hour))
+	got, err = snap.SegmentRowsInWindow(context.Background(), now-3*int64(time.Hour), now-2*int64(time.Hour), "")
 	if err != nil || len(got) != 2 || got[0].Rows+got[1].Rows != 0 {
 		t.Fatalf("old window: %v err=%v", got, err)
 	}

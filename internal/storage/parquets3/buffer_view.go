@@ -236,11 +236,11 @@ func (s *Storage) BufferedRows(ctx context.Context, startNs, endNs int64) (buffe
 	if s.useLocalBuffer() {
 		snap := s.localBuffer.Snapshot()
 		defer snap.Release()
-		segs, err := snap.SegmentRowsInWindow(ctx, startNs, endNs)
+		segs, err := snap.SegmentRowsInWindow(ctx, startNs, endNs, "")
 		rep := buffer.WindowReport{Nonces: snap.Nonces(), Segments: make([]buffer.SegmentRows, 0, len(segs))}
 		for _, g := range segs {
 			rep.Rows += g.Rows
-			rep.Segments = append(rep.Segments, buffer.SegmentRows{Nonce: g.Nonce, Committed: g.Committed, Rows: g.Rows})
+			rep.Segments = append(rep.Segments, buffer.SegmentRows{Nonce: g.Nonce, Committed: g.Committed, Rows: g.Rows, Dropped: g.Dropped})
 		}
 		return rep, err
 	}

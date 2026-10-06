@@ -32,7 +32,7 @@ Response shape:
   "buffer_object_rows": <int>,
   "buffer_unflushed_rows": <rows of live uncommitted segments the manifest does not hold yet>,
   "buffer_attribution": "per_segment" | "aggregate" | "none",
-  "segment_mismatches": [{"nonce": "...", "committed": <bool>, "buffer_rows": <n>, "object_rows": <n>}],
+  "segment_mismatches": [{"nonce": "...", "committed": <bool>, "buffer_rows": <n>, "object_rows": <n>, "dropped_rows": <n>}],
   "buffer_error": "<only when a peer's buffer could not be read>",
   "vt_internal_dropped": {"trace_id_idx": <n>, "service_graph": <n>},
   "expected_drift": <buffer_unflushed_rows>,
@@ -47,8 +47,8 @@ Response shape:
 
 `buffer_rows` is what the live insert-buffer segments hold in the window (every tenant; with insert peers, every peer's, through the buffer bridge). A query counts those rows from the buffer and skips the objects the same segments already wrote, so the two terms are compared **per segment**:
 
-- a live segment that is **not committed** yet may hold more rows than it has written: `buffer_unflushed_rows` is the sum of that excess over the segments, and it is the expected drift. On traces it also contains the VT-internal index rows (`trace_id_idx`) the buffer holds and the flush drops. A segment with fewer buffered rows than object rows is not expected and is reported as a mismatch;
-- a live segment that **is committed** (every object stored and in the manifest) must serve exactly its objects' rows. Any difference is listed in `segment_mismatches` (`nonce`, `buffer_rows`, `object_rows`) and is NOT counted as expected drift: it stays in `verified_drift`. This is how a committed object the buffer no longer serves (rows the VL view lacks), or an object compaction merged away while its segment was still live (rows counted twice), shows up instead of being absorbed by the buffer term.
+- a live segment that is **not committed** yet may hold more rows than it has written: `buffer_unflushed_rows` is the sum of that excess over the segments, and it is the expected drift. On traces it also contains the VT-internal index rows (`trace_id_idx`) the buffer holds and the flush drops, for committed segments too. A segment with fewer buffered rows than object rows is not expected and is reported as a mismatch;
+- a live segment that **is committed** (every object stored and in the manifest) must serve exactly its objects' rows plus the rows the flush drops (traces: the VictoriaTraces `trace_id_idx` rows, which the buffer keeps, hot VictoriaTraces returns for unflushed data, and the flush never writes; they are counted per segment, and are expected drift). Any other difference is listed in `segment_mismatches` (`nonce`, `buffer_rows`, `object_rows`) and is NOT counted as expected drift: it stays in `verified_drift`. This is how a committed object the buffer no longer serves (rows the VL view lacks), or an object compaction merged away while its segment was still live (rows counted twice), shows up instead of being absorbed by the buffer term.
 
 `buffer_attribution` says how precisely the buffer is checked: `per_segment` when the segments are co-located (each one is checked on its own), `aggregate` when the rows come from insert peers through the buffer bridge (rows and nonces only: the peers' total is compared with the objects of their segments, and a total below the objects' rows is reported as a mismatch with nonce `*`; a committed segment that under-serves cannot be told apart from an unflushed one there), `none` when the node has no buffer. `buffer_error` is set when a peer's buffer could not be read: the buffer term is then partial and `verified_drift` must not be read as parity.
 

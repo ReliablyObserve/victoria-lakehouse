@@ -344,3 +344,22 @@ func TestNewLoopbackVLQuerier_UnixSocket(t *testing.T) {
 		t.Fatalf("auth over the socket = %v", auth.Load())
 	}
 }
+
+// Traces: a committed live segment's buffer holds its objects' rows plus the
+// trace_id_idx rows the flush drops (the CI shape: buffer 3411, objects 2690).
+// VL counts them, the manifest never does: expected drift, exactly that many.
+func TestParity_CommittedTracesSegmentExpectsItsDroppedIndexRows(t *testing.T) {
+	mf, _ := segFixture(2690, nil)
+	good := &modelBuffer{segs: []buffer.SegmentRows{{Nonce: segNonce, Committed: true, Rows: 3411, Dropped: 721}}}
+	r := getParity(t, NewAPI(APIConfig{Manifest: mf, Buffer: good}), &fixedVL{rows: 3411}, nil)
+	if r.VerifiedDrift != 0 || r.BufferUnflushedRows != 721 || len(r.SegmentMismatches) != 0 {
+		t.Fatalf("verified=%d unflushed=%d mismatches=%+v, want 0/721/none", r.VerifiedDrift, r.BufferUnflushedRows, r.SegmentMismatches)
+	}
+	// One row short of objects + dropped is a mismatch, and none of its gap is explained away.
+	bad := &modelBuffer{segs: []buffer.SegmentRows{{Nonce: segNonce, Committed: true, Rows: 3410, Dropped: 721}}}
+	r = getParity(t, NewAPI(APIConfig{Manifest: mf, Buffer: bad}), &fixedVL{rows: 3410}, nil)
+	want := SegmentMismatch{Nonce: segNonce, Committed: true, BufferRows: 3410, ObjectRows: 2690, DroppedRows: 721}
+	if len(r.SegmentMismatches) != 1 || r.SegmentMismatches[0] != want || r.VerifiedDrift != 720 {
+		t.Fatalf("mismatches=%+v verified=%d, want [%+v] / 720 (a mismatching segment contributes no expected drift)", r.SegmentMismatches, r.VerifiedDrift, want)
+	}
+}

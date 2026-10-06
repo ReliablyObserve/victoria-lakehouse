@@ -9,6 +9,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
@@ -236,11 +237,11 @@ func (s *Storage) BufferedRows(ctx context.Context, startNs, endNs int64) (buffe
 	if s.useLocalBuffer() {
 		snap := s.localBuffer.Snapshot()
 		defer snap.Release()
-		segs, err := snap.SegmentRowsInWindow(ctx, startNs, endNs)
+		segs, err := snap.SegmentRowsInWindow(ctx, startNs, endNs, flushDroppedFilter)
 		rep := buffer.WindowReport{Nonces: snap.Nonces(), Segments: make([]buffer.SegmentRows, 0, len(segs))}
 		for _, g := range segs {
 			rep.Rows += g.Rows
-			rep.Segments = append(rep.Segments, buffer.SegmentRows{Nonce: g.Nonce, Committed: g.Committed, Rows: g.Rows})
+			rep.Segments = append(rep.Segments, buffer.SegmentRows{Nonce: g.Nonce, Committed: g.Committed, Rows: g.Rows, Dropped: g.Dropped})
 		}
 		return rep, err
 	}
@@ -263,3 +264,9 @@ func (s *Storage) BufferedRows(ctx context.Context, startNs, endNs int64) (buffe
 	}
 	return rep, errors.Join(errs...)
 }
+
+// flushDroppedFilter selects the rows the flusher drops instead of writing:
+// VictoriaTraces' trace_id_idx rows (vlstorage.FlushRowKeeper). Hot VictoriaTraces
+// also returns them for unflushed data, so a live segment's buffered rows exceed
+// the rows of its committed objects by exactly these.
+var flushDroppedFilter = "{" + otelpb.TraceIDIndexStreamName + `=~".+"}`

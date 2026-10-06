@@ -30,8 +30,9 @@ import (
 //   - Buffer: rows of LIVE UNCOMMITTED insert-buffer segments that the manifest
 //     does not hold yet are reported as buffer_unflushed_rows and are the
 //     expected drift. A COMMITTED live segment is expected to hold exactly the
-//     rows of its own objects: any difference (segment_mismatches) is NOT
-//     expected drift, it stays in verified_drift.
+//     rows of its own objects plus the rows the flush drops (traces:
+//     trace_id_idx, expected drift too): any other difference
+//     (segment_mismatches) is NOT expected drift, it stays in verified_drift.
 type ParityResponse struct {
 	// Window the comparison covered. StartUnixNano is the aligned start
 	// (<= RequestedStartUnixNano): a file that straddled the requested start
@@ -67,11 +68,12 @@ type ParityResponse struct {
 	//
 	// BufferUnflushedRows is the expected drift: for each live UNCOMMITTED
 	// segment, its buffered rows minus the rows of the objects it has already
-	// written (never negative). A COMMITTED segment contributes nothing: its
-	// buffered rows must equal its objects' rows, and when they do not the
+	// written (never negative). A COMMITTED segment contributes only the rows
+	// the flush drops (traces: the VT-internal trace_id_idx rows the buffer
+	// still holds, which VL counts and the manifest never holds): its buffered
+	// rows must equal its objects' rows plus those, and when they do not the
 	// segment is listed in SegmentMismatches and the difference stays in
-	// VerifiedDrift. For traces the unflushed term includes the VT-internal
-	// index rows (trace_id_idx) the buffer still holds and the flush drops.
+	// VerifiedDrift.
 	BufferRows          int64 `json:"buffer_rows"`
 	BufferObjectRows    int64 `json:"buffer_object_rows"`
 	BufferUnflushedRows int64 `json:"buffer_unflushed_rows"`
@@ -129,6 +131,10 @@ type SegmentMismatch struct {
 	Committed  bool   `json:"committed"`
 	BufferRows int64  `json:"buffer_rows"`
 	ObjectRows int64  `json:"object_rows"`
+	// DroppedRows are the buffered rows the flush never writes (traces:
+	// trace_id_idx); a committed segment is expected to hold object_rows +
+	// dropped_rows.
+	DroppedRows int64 `json:"dropped_rows,omitempty"`
 }
 
 // VTInternalCounter is the read-only side of metrics.VTInternalRowsDropped.
@@ -313,9 +319,12 @@ func (resp *ParityResponse) fill(rep buffer.WindowReport, ws manifest.WindowSamp
 // objects, so per segment the VL view holds the buffered rows and the manifest
 // holds the object rows. For a segment that is not committed yet the buffer
 // is expected to hold at least what was already written: the difference is the
-// unflushed rows. For a committed segment both are expected to be equal, so a
-// difference is a divergence (an object lost or merged away while the segment is
-// still live, rows the buffer no longer serves), never expected drift.
+// unflushed rows. For a committed segment the buffer is expected to hold its
+// objects' rows plus the rows the flush drops (traces: trace_id_idx, counted by
+// the buffer read as Dropped; the VL view counts them, the manifest never holds
+// them), so those are expected drift and any other difference is a divergence
+// (an object lost or merged away while the segment is still live, rows the
+// buffer no longer serves), never expected drift.
 func bufferTerms(rep buffer.WindowReport, objRows map[string]int64) (bufRows, objRowsSum, unflushed int64, mism []SegmentMismatch, attribution string) {
 	if rep.Segments == nil {
 		// Peers (or no buffer): totals only.
@@ -335,10 +344,15 @@ func bufferTerms(rep buffer.WindowReport, objRows map[string]int64) (bufRows, ob
 		obj := objRows[g.Nonce]
 		bufRows += g.Rows
 		objRowsSum += obj
+		bad := SegmentMismatch{Nonce: g.Nonce, Committed: g.Committed, BufferRows: g.Rows, ObjectRows: obj, DroppedRows: g.Dropped}
 		switch {
-		case g.Committed && g.Rows != obj, !g.Committed && g.Rows < obj:
-			mism = append(mism, SegmentMismatch{Nonce: g.Nonce, Committed: g.Committed, BufferRows: g.Rows, ObjectRows: obj})
-		case !g.Committed:
+		case g.Committed && g.Rows != obj+g.Dropped, !g.Committed && g.Rows < obj:
+			mism = append(mism, bad)
+		case g.Committed:
+			// The rows the flush drops are counted by VL from the buffer and
+			// are not in the manifest: expected, and exactly this many.
+			unflushed += g.Dropped
+		default:
 			unflushed += g.Rows - obj
 		}
 	}
