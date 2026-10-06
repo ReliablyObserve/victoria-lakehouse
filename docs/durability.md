@@ -319,20 +319,74 @@ outcomes are counted in `lakehouse_manifest_refresh_incomplete_total{reason="par
 The manifest exposes the last refresh that was accepted and covered everything as
 `Manifest.LastCompleteRefresh()` (start time and generation).
 
-Nothing that reads "absent from the manifest" as "gone" acts on anything less than
-a complete refresh that began after the event it confirms: the orphan sweep
-(Tier B) needs a complete listing and, per object, one that began after the
-object's last-modified time; the delete scheduler completes a tombstone or marks
-an absent key reaped only after a complete listing that began after the tombstone
-was created; compaction retires a tombstone, and the rewriter finishes a hand-off,
-only on a listed manifest; and a manifest snapshot is not rewritten (warm-up and
-periodic persist) until a complete listing has been applied in the process.
+**Per-object evidence for destructive decisions (#404 round 4).** A complete
+listing can still be wrong about a single object (a LIST that succeeds, covers
+every prefix and silently drops a few keys is believed), so nothing deletes or
+un-hides data on "absent from the manifest" alone:
 
-Residual: a LIST that succeeds, covers every prefix and silently drops less than
-half of the objects is believed (S3 does not truncate a successful LIST; the
-sample cannot see this case). The HEAD sample can also miss a few live keys among
-many dead ones (a sample of 16 finds a live key with probability
-1-(1-p)^16 for a live share p of the dropped keys).
+- **The orphan sweep (Tier B)** deletes an object only if the manifest holds a
+  retirement record for it: a publish replaced it (a compaction or rewrite
+  source), an output was abandoned, or it was removed on another component's
+  behalf (a peer's manifest push, retention). The record must be at least
+  `OrphanTTL` old, the object at least `OrphanTTL` old (HEAD), the key not
+  named by an unfinished delete rewrite, not pending and not held, and the
+  manifest and the record are re-read right before the DELETE. An object that is
+  absent but has no record is never deleted: since every refresh adopts each
+  listed object that is not retired or pending, such an object is one a listing
+  missed. Skips are counted in
+  `lakehouse_compaction_orphans_skipped_total{reason="no_evidence|delete_landed|retired_too_recently|rewrite_unfinished|..."}`.
+  What Tier B adds over the compaction scheduler's own retry of owed deletes
+  (`ReclaimRetired`) is the records whose delete another component owed and
+  never completed.
+- **The delete scheduler** marks a key that is absent from the manifest reaped
+  only when the manifest retired it (its rows are in the replacement, which
+  discovery follows) or a HEAD finds no object. A HEAD that finds the object
+  keeps the key pending (`lakehouse_delete_rewrite_deferred_total{reason="absent_but_exists"}`)
+  until a listing adopts it again; a HEAD that fails, or a pool that cannot HEAD,
+  keeps it pending too (`reason="existence_unknown"`). Production wires the S3
+  HEAD of the client pool.
+- **Tombstone completion** (by the scheduler and by compaction alike) needs a
+  complete listing that began after the tombstone was created: a file a peer
+  published between the last complete listing and the tombstone is in no work
+  list until such a listing has run. The rewriter's hand-off of a published
+  rewrite keeps the weaker "a complete listing has run" condition: a replacement
+  that a listing missed still exists, so deleting the source loses nothing.
+- **Snapshots** are written at warm-up and periodically whatever the last
+  refresh's outcome: a partial state keeps the skipped tenant's entries and every
+  retired key, a rejected one is unchanged, and a loaded snapshot is never
+  treated as a listing (`Listed()` is false and `LastCompleteRefresh()` empty
+  until a complete refresh in this process). Not persisting a partial state lost
+  the keys retired since the last snapshot on a kill -9.
+- **Invariant: each key is tracked once.** A refresh and a snapshot load drop a
+  second entry for a key; a compaction group that names a source twice is
+  refused (`lakehouse_duplicate_file_keys_total{site="manifest_refresh|manifest_load|compaction_input"}`,
+  alert `LakehouseDuplicateFileKeys`). A partial listing used to track a file
+  flushed while it ran twice (rows served twice; a compaction would have merged
+  them twice and deleted the source).
+
+Refresh health is exported as `lakehouse_manifest_last_refresh_timestamp_seconds`
+(any applied refresh), `lakehouse_manifest_last_complete_refresh_timestamp_seconds`
+(start of the last complete one) and `lakehouse_manifest_refresh_interval_seconds`;
+`LakehouseManifestNoCompleteRefresh` fires when no complete listing has been
+applied for four refresh intervals (at least 15 minutes, `for: 15m`). While that
+lasts, tombstones are not completed, retired keys are not settled and restored
+buffer segments stay held.
+
+Residuals:
+
+- A LIST that succeeds, covers every prefix and silently drops fewer than half
+  of the objects is believed for serving (S3 does not truncate a successful
+  LIST; the sample only looks at large drops). A retired key it drops has its
+  record forgotten, so the next listing adopts the object again; an object it
+  drops before the delete scheduler has discovered it for a tombstone is not
+  covered by the scheduler's HEAD check (asserted by
+  `TestReview404R4_Residual_SilentDropBeforeDiscovery`).
+- The HEAD sample can miss a few live keys among many dead ones (a sample of 16
+  finds a live key with probability 1-(1-p)^16 for a live share p of the
+  dropped keys). Destructive decisions do not rely on it.
+- An object that is absent from the manifest with no record is never reclaimed
+  by Tier B; none is expected (each listing adopts what it sees), and every such
+  candidate is counted as `no_evidence`.
 
 On a select pod the same hold applies to the segments its bridge answers
 (`/internal/buffer/query`), with two cases to know:
@@ -497,10 +551,11 @@ publish replaced them, or an output was abandoned) and **pending** keys
 held until a listing that began after the retirement proves the object gone —
 not until the delete lands, because the listing already in flight was answered
 before it.
-Without that, every "unmanifested object is reclaimed by the orphan sweep" claim
-below was false within one refresh interval: the refresh re-adopted the object
-first — serving its rows twice, bringing deleted rows back once the tombstone
-retired, and hiding it from the sweep for good. See
+Without that, every "a retired object is reclaimed" claim below was false
+within one refresh interval: the refresh re-adopted the object first — serving
+its rows twice, bringing deleted rows back once the tombstone retired, and
+hiding it from the reclaim for good. (The orphan sweep reclaims only objects
+the manifest holds a retirement record for, see above.) See
 [Manifest System → What the refresh does not adopt](manifest-system.md#what-the-refresh-does-not-adopt).
 
 A crash is followed by a restart in one of three states — the manifest snapshot
