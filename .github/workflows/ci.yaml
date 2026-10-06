@@ -378,8 +378,9 @@ jobs:
   # every PR, with -race and their own budget. The test list is derived from the
   # source (short_gated_tests.sh), so a test that gains or loses a Short() gate
   # moves between the two jobs by itself; nothing is enumerated by hand.
-  # Measured on a 2-core runner: ~3-4 min. -timeout=10m is ~2.5x; the report
-  # warns at 70% and fails at 90% of it.
+  # Measured on a 2-core runner: ~3-4 min unsharded for logs, 571 s for traces
+  # before sharding. Run as 2 shards, each with a 600 s -timeout; the report warns
+  # at 70% and fails at 90% of it.
   test-parquets3-heavy:
     needs: deps
     runs-on: ubuntu-latest
@@ -416,8 +417,13 @@ jobs:
           set -euo pipefail
           heavy=$("$GITHUB_WORKSPACE/scripts/ci/short_gated_tests.sh" internal/storage/parquets3)
           echo "running: $heavy"
-          go test ./internal/storage/parquets3/ -run "$heavy" -race -count=1 -timeout=10m -json | tee heavy.json |
-            python3 "$GITHUB_WORKSPACE/scripts/ci/gotest_report.py" --budget-seconds 600 --title "${{ matrix.module }}: parquets3 heavy"
+          # Two shards of the gated tests (sharded_go_test.sh: each shard has its own
+          # 600 s -timeout and headroom gate, and the shard guard checks every gated
+          # test ran exactly once). The traces set took 571 s = 95% of one 600 s budget
+          # unsharded; the largest single test is ~25% of the set, so 2 shards leave
+          # the slower one at about half of it. Not -short: these are the tests it skips.
+          SHARD_SHORT=0 SHARD_RUN_FILTER="$heavy" "$GITHUB_WORKSPACE/scripts/ci/sharded_go_test.sh" \
+            race ./internal/storage/parquets3/ 2 "${{ matrix.module }}: parquets3 heavy" 600 heavy
 
   # Storage-health gate for compaction. internal/compaction is exercised by
   # test-logs, but that job runs hundreds of packages under -race against a

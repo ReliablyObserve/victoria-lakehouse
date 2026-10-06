@@ -15,15 +15,20 @@ package has hundreds of similar-sized tests (the slowest is ~7% of the total),
 so hashing balances the shards well; measured sizes are in the PR.
 
 Subcommands:
-  regex   --pkg DIR --shards N --index I [--go-flags "-race"]
+  regex   --pkg DIR --shards N --index I [--go-flags "-race"] [--run-filter RE]
             print the `go test -run` regexp for shard I. Lists the package's
             top-level Test/Fuzz/Example functions with `go test -list`, so a
             new test lands in exactly one shard with no manual step. Fails if
             the shards do not partition the list exactly or a shard is empty.
-  verify  --pkg DIR --shards N [--go-flags "-race"] JSON...
+  verify  --pkg DIR --shards N [--go-flags "-race"] [--run-filter RE] JSON...
             after the shards ran with `-json`: every listed test must have a
             result (pass/fail/skip) in exactly the shard it was assigned to.
             Fails on a test that ran in no shard, in two, or in the wrong one.
+
+--run-filter RE restricts both to the listed tests whose name matches RE (the
+heavy CI job shards only the testing.Short()-gated tests): the partition and
+the verify guard are computed over the filtered list, so a filtered-in test
+that fails to run is still caught.
   cover-merge OUT PROFILE...
             merge per-shard coverprofiles (union of covered blocks) into OUT
             and print `coverage: X% of statements`, the figure `go test
@@ -89,6 +94,19 @@ def list_tests(pkg, go_flags=()):
     if not names:
         raise SystemExit(f"no tests listed for {pkg}")
     return names
+
+
+def filter_tests(names, run_filter):
+    """names that match run_filter (a `go test -run`-style regexp, searched per
+    name); all of names when run_filter is empty. An empty result is an error:
+    a filter that selects nothing would shard (and verify) nothing."""
+    if not run_filter:
+        return names
+    rx = re.compile(run_filter)
+    kept = [n for n in names if rx.search(n)]
+    if not kept:
+        raise SystemExit(f"--run-filter {run_filter!r} matches none of the {len(names)} listed tests")
+    return kept
 
 
 def regex_for(tests):
@@ -185,10 +203,12 @@ def main(argv=None):
     r.add_argument("--shards", type=int, required=True)
     r.add_argument("--index", type=int, required=True)
     r.add_argument("--go-flags", default="", help="build-affecting flags of the real run, e.g. -race")
+    r.add_argument("--run-filter", default="", help="only shard the listed tests matching this regexp")
     v = sub.add_parser("verify")
     v.add_argument("--pkg", required=True)
     v.add_argument("--shards", type=int, required=True)
     v.add_argument("--go-flags", default="", help="build-affecting flags of the real run, e.g. -race")
+    v.add_argument("--run-filter", default="", help="only verify the listed tests matching this regexp")
     v.add_argument("files", nargs="+")
     c = sub.add_parser("cover-merge")
     c.add_argument("out")
@@ -198,7 +218,7 @@ def main(argv=None):
     if a.cmd == "regex":
         if not 0 <= a.index < a.shards:
             raise SystemExit("index out of range")
-        names = list_tests(a.pkg, shlex.split(a.go_flags))
+        names = filter_tests(list_tests(a.pkg, shlex.split(a.go_flags)), a.run_filter)
         shards = assign(names, a.shards)
         try:
             guard_partition(names, shards)
@@ -207,7 +227,7 @@ def main(argv=None):
         print(regex_for(shards[a.index]))
         sys.stderr.write(f"shard {a.index + 1}/{a.shards}: {len(shards[a.index])} of {len(names)} tests\n")
     elif a.cmd == "verify":
-        names = list_tests(a.pkg, shlex.split(a.go_flags))
+        names = filter_tests(list_tests(a.pkg, shlex.split(a.go_flags)), a.run_filter)
         problems = verify(names, a.shards, a.files)
         if problems:
             for p in problems[:50]:

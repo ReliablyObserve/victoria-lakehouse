@@ -55,7 +55,43 @@ func newColdFixture(t *testing.T, nFiles, rowsPerFile, rgSize int, mode string) 
 	s.labelIndex.Add("service.name", nil)
 
 	fx := &coldFixture{s: s, mock: mock, datas: map[string][]byte{}, anchor: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
-	rows := bigmarkRows(nFiles*rowsPerFile, fx.anchor)
+	for _, o := range coldObjects(t, nFiles, rowsPerFile, rgSize, fx.anchor) {
+		mock.Put("test-bucket", o.key, o.data)
+		fx.datas[o.key] = o.data
+		s.manifest.AddFile(o.partition, o.fi)
+		fx.files = append(fx.files, o.fi)
+	}
+	return fx
+}
+
+// coldObject is one generated fixture object: its key, bytes, manifest entry
+// and partition.
+type coldObject struct {
+	key, partition string
+	data           []byte
+	fi             manifest.FileInfo
+}
+
+var (
+	coldObjectsMu    sync.Mutex
+	coldObjectsCache = map[[3]int][]coldObject{}
+)
+
+// coldObjects writes the fixture objects once per (files, rows, row-group size)
+// per test process: the production writer (zstd, blooms, page index) dominates
+// the cost of the heavy fixtures under -race, and every test that asks for the
+// same shape reads the same immutable bytes (each gets its own mock S3 and
+// storage).
+func coldObjects(t *testing.T, nFiles, rowsPerFile, rgSize int, anchor time.Time) []coldObject {
+	t.Helper()
+	coldObjectsMu.Lock()
+	defer coldObjectsMu.Unlock()
+	k := [3]int{nFiles, rowsPerFile, rgSize}
+	if objs, ok := coldObjectsCache[k]; ok {
+		return objs
+	}
+	rows := bigmarkRows(nFiles*rowsPerFile, anchor)
+	var objs []coldObject
 	for i := 0; i < nFiles; i++ {
 		lo, hi := i*len(rows)/nFiles, (i+1)*len(rows)/nFiles
 		chunk := rows[lo:hi]
@@ -64,18 +100,15 @@ func newColdFixture(t *testing.T, nFiles, rowsPerFile, rgSize int, mode string) 
 			t.Fatal(err)
 		}
 		key := fmt.Sprintf("logs/dt=2026-06-01/hour=%02d/f%03d.parquet", 10+i%3, i)
-		mock.Put("test-bucket", key, res.Data)
-		fx.datas[key] = res.Data
 		minT, maxT := schema.LogRowTimeBounds(chunk)
-		fi := manifest.FileInfo{
+		objs = append(objs, coldObject{key: key, partition: partitionFromKey(key), data: res.Data, fi: manifest.FileInfo{
 			Key: key, Size: int64(len(res.Data)), RowCount: int64(len(chunk)), MinTimeNs: minT, MaxTimeNs: maxT,
 			RawBytes: res.RawBytes, Labels: extractLogLabels(chunk), LabelAggregates: schema.ExtractLogLabelAggregates(chunk),
 			ColumnBytes: res.ColumnBytes,
-		}
-		s.manifest.AddFile(partitionFromKey(key), fi)
-		fx.files = append(fx.files, fi)
+		}})
 	}
-	return fx
+	coldObjectsCache[k] = objs
+	return objs
 }
 
 func (fx *coldFixture) window() (int64, int64) {
