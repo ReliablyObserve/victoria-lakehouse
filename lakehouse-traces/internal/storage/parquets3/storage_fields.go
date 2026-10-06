@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -203,6 +204,7 @@ func (s *Storage) scanProjectedFieldValues(
 	ctx context.Context,
 	fi manifest.FileInfo,
 	targetParquetCol string,
+	subField string,
 	filter *logstorage.Filter,
 	tombstones []tombstone,
 	seen map[string]uint64,
@@ -211,7 +213,9 @@ func (s *Storage) scanProjectedFieldValues(
 	projectedCols := map[string]bool{targetParquetCol: true}
 	if filter != nil {
 		for internalName := range FilterReferencedFields(filter) {
-			if m := s.registry.ResolveToParquet(internalName); m != nil {
+			if col, ok := schema.CompositeColumnForField(internalName); ok {
+				projectedCols[col] = true
+			} else if m := s.registry.ResolveToParquet(internalName); m != nil {
 				projectedCols[m.ParquetColumn] = true
 			} else {
 				projectedCols[internalName] = true
@@ -247,18 +251,26 @@ func (s *Storage) scanProjectedFieldValues(
 		defer func() { _ = planned.Close() }()
 	}
 
-	fullColNames := columnNames(f.Root())
 	projectedIndices := make([]int, 0, len(projectedCols))
 	projectedNames := make([]string, 0, len(projectedCols))
 	targetInProjection := -1
-	for i, n := range fullColNames {
+	for i, c := range f.Root().Columns() {
+		n := bytesutil.InternString(c.Name())
 		if !projectedCols[n] {
 			continue
 		}
 		if n == targetParquetCol {
 			targetInProjection = len(projectedIndices)
 		}
-		projectedIndices = append(projectedIndices, i)
+		// The row group's column chunks are LEAF columns: a MAP column in front
+		// of this one is two leaves (key, value) but one top-level column, so a
+		// column after the maps (events, links, the service-graph columns) sits
+		// at a later chunk than its position among the top-level columns.
+		ci := i
+		if c.Leaf() {
+			ci = c.Index()
+		}
+		projectedIndices = append(projectedIndices, ci)
 		projectedNames = append(projectedNames, n)
 	}
 	if targetInProjection < 0 {
@@ -294,7 +306,7 @@ func (s *Storage) scanProjectedFieldValues(
 		for {
 			n, err := rows.ReadRows(buf)
 			if n > 0 {
-				collectFilteredValuesInWindow(buf[:n], projectedNames, targetInProjection, filter, tombstones, s, seen, winLo, winHi)
+				collectFilteredValuesInWindow(buf[:n], projectedNames, targetInProjection, subField, filter, tombstones, s, seen, winLo, winHi)
 			}
 			if err != nil {
 				break
@@ -341,6 +353,12 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	if mapping == nil {
 		mapping = s.registry.ResolveFromParquet(fieldName)
 	}
+	// A span event or link field is read out of its composite JSON column.
+	subField := ""
+	if col, ok := schema.CompositeColumnForField(fieldName); ok {
+		mapping = &schema.FieldMapping{ParquetColumn: col, InternalName: fieldName}
+		subField = fieldName
+	}
 	if mapping == nil {
 		return nil, nil
 	}
@@ -349,6 +367,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		view:       view,
 		op:         "field values",
 		column:     mapping.ParquetColumn,
+		subField:   subField,
 		field:      mapping.InternalName,
 		tenantIDs:  tenantIDs,
 		query:      q,
@@ -478,7 +497,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 // Uses VL's Filter.MatchRow() for full LogsQL evaluation.
 // When filter is nil, all rows contribute values (no filtering).
 func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, tombstones []tombstone, s *Storage, seen map[string]uint64) {
-	collectFilteredValuesInWindow(rows, colNames, targetColIdx, filter, tombstones, s, seen, math.MinInt64, math.MaxInt64)
+	collectFilteredValuesInWindow(rows, colNames, targetColIdx, "", filter, tombstones, s, seen, math.MinInt64, math.MaxInt64)
 }
 
 // collectFilteredValuesInWindow is collectFilteredValues restricted to rows
@@ -486,7 +505,7 @@ func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx i
 // filter). An unbounded window (MinInt64, MaxInt64) skips the per-row check;
 // a bounded one needs the timestamp column among colNames — a row whose
 // timestamp is not projected counts as outside a bounded window.
-func collectFilteredValuesInWindow(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, tombstones []tombstone, s *Storage, seen map[string]uint64, startNs, endNs int64) {
+func collectFilteredValuesInWindow(rows []parquet.Row, colNames []string, targetColIdx int, subField string, filter *logstorage.Filter, tombstones []tombstone, s *Storage, seen map[string]uint64, startNs, endNs int64) {
 	var targetMapping *schema.FieldMapping
 	if s != nil && targetColIdx >= 0 && targetColIdx < len(colNames) {
 		targetMapping = s.registry.ResolveFromParquet(colNames[targetColIdx])
@@ -496,6 +515,23 @@ func collectFilteredValuesInWindow(rows []parquet.Row, colNames []string, target
 			return targetMapping.Type.FormatValue(parquetValueToAny(v))
 		}
 		return valueToString(v)
+	}
+	// A span event/link field is one key of the JSON in a composite column: the
+	// value of a row is that key's value, when the span has it.
+	if subField != "" {
+		col := ""
+		if targetColIdx >= 0 && targetColIdx < len(colNames) {
+			col = colNames[targetColIdx]
+		}
+		formatTarget = func(v parquet.Value) string {
+			var out string
+			_ = schema.ForEachSpanSubField(col, compositeCell(v), func(name, value string) {
+				if name == subField {
+					out = value
+				}
+			})
+			return out
+		}
 	}
 
 	tsColIdx := -1
@@ -576,6 +612,13 @@ func parquetRowToFields(row parquet.Row, colNames []string, tsColIdx int, s *Sto
 		if i >= len(row) {
 			break
 		}
+		if schema.IsCompositeColumn(name) {
+			// Never a field itself: the VictoriaTraces event/link fields it encodes.
+			_ = schema.ForEachSpanSubField(name, compositeCell(row[i]), func(n, v string) {
+				fields = append(fields, logstorage.Field{Name: n, Value: v})
+			})
+			continue
+		}
 		internalName := name
 		var val string
 		if s != nil {
@@ -598,6 +641,16 @@ func parquetRowToFields(row parquet.Row, colNames []string, tsColIdx int, s *Sto
 		}
 	}
 	return fields
+}
+
+// compositeCell is the text of a composite (span events / links JSON) cell:
+// the raw UTF-8 bytes, never valueToString's hex fallback for text it does not
+// consider printable (the JSON carries any attribute value, non-ASCII included).
+func compositeCell(v parquet.Value) string {
+	if v.IsNull() {
+		return ""
+	}
+	return string(v.ByteArray())
 }
 
 // fileWithinWindow reports whether every row of a file lies inside

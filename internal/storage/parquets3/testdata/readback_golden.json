@@ -4340,6 +4340,48 @@
           ],
           "num_values": 20777,
           "null_count": 20777
+        },
+        {
+          "name": "span.events_json",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            2,
+            2,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 16621
+        },
+        {
+          "name": "span.links_json",
+          "type": "BYTE_ARRAY",
+          "encodings": [
+            "DELTA_LENGTH_BYTE_ARRAY",
+            "RLE"
+          ],
+          "codecs": [
+            "ZSTD"
+          ],
+          "has_bloom": false,
+          "has_column_index": true,
+          "has_offset_index": true,
+          "pages_per_row_group": [
+            1,
+            1,
+            1
+          ],
+          "num_values": 20777,
+          "null_count": 18888
         }
       ],
       "bloom_probes": [

@@ -170,4 +170,13 @@ type TraceRow struct {
 	ServiceGraphParent    string `json:"parent,omitempty" parquet:"parent,optional"`
 	ServiceGraphChild     string `json:"child,omitempty" parquet:"child,optional"`
 	ServiceGraphCallCount string `json:"callCount,omitempty" parquet:"callCount,optional"`
+
+	// Span events and span links, one JSON array per span (see
+	// traceextras.go for the exact shape). Plain UTF-8 strings, ZSTD only, no
+	// dictionary and no bloom: they are blobs read on trace-by-ID and never
+	// searched or pruned on, so every Parquet engine reads them as strings.
+	// NULL when the span has none (and in files written before these columns
+	// existed, which read back as NULL too).
+	EventsJSON string `json:"span.events_json,omitempty" parquet:"span.events_json,optional"`
+	LinksJSON  string `json:"span.links_json,omitempty" parquet:"span.links_json,optional"`
 }

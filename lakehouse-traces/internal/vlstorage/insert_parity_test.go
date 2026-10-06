@@ -405,34 +405,6 @@ func TestTraceMapFieldToRow_StoredOTELMetadata(t *testing.T) {
 	}
 }
 
-// TestTraceMapFieldToRow_TrulyIgnoredOTELFields ensures scope attrs, events,
-// and links are still fully dropped.
-func TestTraceMapFieldToRow_TrulyIgnoredOTELFields(t *testing.T) {
-	row := schema.TraceRow{}
-
-	ignoredFields := []struct {
-		name  string
-		value string
-	}{
-		{otelpb.InstrumentationScopeAttrPrefix + "lib.version", "2.0"},
-		{otelpb.EventPrefix + "0.name", "exception"},
-		{otelpb.LinkPrefix + "0.trace_id", "linked-trace"},
-	}
-	for _, f := range ignoredFields {
-		mapFieldToTraceRow(&row, f.name, f.value)
-	}
-
-	if len(row.SpanAttributes) != 0 {
-		t.Errorf("SpanAttributes should be empty for truly ignored fields, got %v", row.SpanAttributes)
-	}
-	if len(row.ResourceAttributes) != 0 {
-		t.Errorf("ResourceAttributes should be empty for truly ignored fields, got %v", row.ResourceAttributes)
-	}
-	if row.SpanName != "" {
-		t.Errorf("SpanName should be empty, got %q", row.SpanName)
-	}
-}
-
 // TestTraceMapFieldToRow_LegacyFlatNames verifies that legacy flat field names
 // (from jsonline insert path) still work correctly. This is the fallback path.
 func TestTraceMapFieldToRow_LegacyFlatNames(t *testing.T) {

@@ -147,6 +147,8 @@ var wantTraceColumnKinds = map[string]ColumnKind{
 	"resource.attributes":        ColumnUserVisible,
 	"span.attributes":            ColumnUserVisible,
 	"scope.attributes":           ColumnUserVisible,
+	"span.events_json":           ColumnComposite,
+	"span.links_json":            ColumnComposite,
 	"parent":                     ColumnUserVisible,
 	"child":                      ColumnUserVisible,
 	"callCount":                  ColumnUserVisible,

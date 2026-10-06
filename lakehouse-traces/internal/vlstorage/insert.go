@@ -291,10 +291,25 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 		return
 	}
 
-	// VT scope attributes, events, links — ignored
-	if strings.HasPrefix(name, otelpb.InstrumentationScopeAttrPrefix) ||
-		strings.HasPrefix(name, otelpb.EventPrefix) ||
-		strings.HasPrefix(name, otelpb.LinkPrefix) {
+	// VT instrumentation-scope attributes: the scope.attributes map column,
+	// which the cold read path already emits back as `scope_attr:<key>`.
+	if key, ok := strings.CutPrefix(name, otelpb.InstrumentationScopeAttrPrefix); ok {
+		if key == "" {
+			return
+		}
+		if row.ScopeAttributes == nil {
+			row.ScopeAttributes = make(map[string]string)
+		}
+		row.ScopeAttributes[strings.Clone(key)] = strings.Clone(value)
+		return
+	}
+
+	// VT span events and links carry one field per sub-field AND per index
+	// (`event:event_name:0`, ...). A field alone cannot be placed, so they are
+	// not mapped here: DataBlockToTraceRows hands them to a per-row
+	// schema.SpanSubFieldCollector, which writes the span.events_json and
+	// span.links_json columns. A caller that maps single fields drops them.
+	if strings.HasPrefix(name, otelpb.EventPrefix) || strings.HasPrefix(name, otelpb.LinkPrefix) {
 		return
 	}
 

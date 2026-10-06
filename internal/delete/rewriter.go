@@ -604,5 +604,13 @@ func traceRowToMap(row *schema.TraceRow) map[string]string {
 		k = schema.TraceMessageAttributeName("scope_attr:", k)
 		m[k] = v
 	}
+	// Span events and links, under the field names VictoriaTraces gives them,
+	// so a delete filter on `event:event_name:0` matches the same spans as hot.
+	for _, c := range [...]struct{ col, js string }{
+		{schema.ColSpanEventsJSON, row.EventsJSON},
+		{schema.ColSpanLinksJSON, row.LinksJSON},
+	} {
+		_ = schema.ForEachSpanSubField(c.col, c.js, func(name, value string) { m[name] = value })
+	}
 	return m
 }

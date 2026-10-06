@@ -44,6 +44,9 @@ func DataBlockToTraceRows(db *logstorage.DataBlock, tenant logstorage.TenantID) 
 			AccountID: tenant.AccountID,
 			ProjectID: tenant.ProjectID,
 		}
+		// The span's event and link fields are collected here and written as the
+		// two JSON columns once every field of the row has been seen.
+		var subFields schema.SpanSubFieldCollector
 		for _, c := range cols {
 			if i >= len(c.Values) {
 				continue
@@ -85,9 +88,13 @@ func DataBlockToTraceRows(db *logstorage.DataBlock, tenant logstorage.TenantID) 
 					// at ingest, so "" is an absent field, never a stored one.
 					continue
 				}
+				if subFields.Add(c.Name, v) {
+					continue
+				}
 				mapFieldToTraceRow(&row, c.Name, v)
 			}
 		}
+		subFields.Apply(&row)
 		rows = append(rows, row)
 	}
 	return rows

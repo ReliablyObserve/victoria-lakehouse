@@ -163,6 +163,12 @@ func addFieldColumns(reg *schema.Registry, name string, cols map[string]bool) {
 	if name == "" {
 		name = "_msg"
 	}
+	// A span event or link field lives in its composite JSON column: read that
+	// column and nothing else, and only for a query that names such a field.
+	if col, ok := schema.CompositeColumnForField(name); ok {
+		cols[col] = true
+		return
+	}
 	fm := reg.ResolveToParquet(name)
 	if fm == nil {
 		return
