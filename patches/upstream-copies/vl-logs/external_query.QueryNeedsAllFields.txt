@@ -1,6 +1,6 @@
 # upstream: pipes-implementing-updateNeededFields
 # tree: deps/VictoriaLogs
-# pin: v1.52.0
+# pin: v1.53.0
 
 pipeBlockStats
 pipeBlocksCount

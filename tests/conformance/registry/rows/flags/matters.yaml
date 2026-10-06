@@ -154,7 +154,7 @@
   kind: flag
   origin: native
   expect: differ
-  differ_note: "Present since the VL 1.51.0 bump (pinned VL is 1.52.0). Lakehouse registers no vmalert proxy route in its dispatcher, so the flag has no cold-tier effect; the paired route row is vl.select.vmalert.differ. See docs/parity-and-gaps.md."
+  differ_note: "Present since the VL 1.51.0 bump (pinned VL is 1.53.0). Lakehouse registers no vmalert proxy route in its dispatcher, so the flag has no cold-tier effect (VL v1.53.0 also makes /select/vmalert/*/config and /reload demand -httpAuth.* on hot VL; Lakehouse serves none of those paths); the paired route row is vl.select.vmalert.differ. See docs/parity-and-gaps.md."
   since: { vl: "1.51.0" }
   targets: [hot, cold]
   upstream: { flag: vmalert.proxyURL }
@@ -174,6 +174,21 @@
   compare: { type: status }
   layers: [api]
   pending: true
+
+- id: vl.flag.delete_auth_key
+  title: "-deleteAuthKey (VL 1.53.0+) — dedicated authKey for /delete/*, overrides -httpAuth.*"
+  surface: vl
+  kind: flag
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  since: { vl: "1.53.0" }
+  upstream: { flag: deleteAuthKey }
+  compare: { type: error, options: { hot_status: "401", cold_status: "401", body_prefix: "Expected to receive non-empty authKey when -deleteAuthKey is set" } }
+  request: { method: POST, path: /delete/run_task, params: { filter: "service.name:checkout" } }
+  layers: [api]
+  pending: true
+  notes: "Registered by upstream's vlselect and checked first on every /delete/* request, before the -delete.enable answer, exactly as upstream (VictoriaLogs #1749, #1764). The logs binary serves upstream's delete API through vlselect.RequestHandler and puts the same check (internaldelete.DeleteAuth) in front of the lakehouse's own /delete/logsql/* API, and registers upstream's IsAuthKeyProtectedPath with the HTTP server so the key replaces -httpAuth.* on /delete/*; with the flag unset /delete/* still needs -httpAuth.* credentials. Tests: cmd/lakehouse-logs/delete_auth_key_test.go. The traces binary does not have the flag: its VictoriaLogs revision (v1.52.0) and VictoriaTraces v0.12.0 predate it."
 
 - id: vt.flag.search_max_traces
   title: "-search.maxTraces (VT 0.9.4+) — result cap, not in pinned VT"

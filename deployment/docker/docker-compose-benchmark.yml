@@ -115,11 +115,11 @@ services:
       context: ../../
       dockerfile: deployment/docker/Dockerfile.upstream-probe
       args:
-        UPSTREAM: victoriametrics/victoria-logs:v1.52.0
+        UPSTREAM: victoriametrics/victoria-logs:v1.53.0
     # Upstream image + one static busybox so the healthcheck below has a probe
     # to run: the published image is distroless (no shell, no wget). See
     # deployment/docker/Dockerfile.upstream-probe.
-    image: vl-probed:v1.52.0
+    image: vl-probed:v1.53.0
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=30d"

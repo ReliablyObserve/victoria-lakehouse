@@ -1,4 +1,4 @@
-# VL /select/* endpoints (surface vl), pinned VL v1.52.0.
+# VL /select/* endpoints (surface vl), pinned VL v1.53.0.
 # Canonical requests use the seed vocabulary: services api-gateway, checkout,
 # payments, inventory, notifications; tenant {{tenant.account}}/{{tenant.project}};
 # window {{seed.start}}..{{seed.cold_end}}. See docs/parity-and-gaps.md for divergences.
@@ -61,7 +61,7 @@
 #                                               pins are deliberately allowed to differ (they
 #                                               did until VT v0.12.0: delete was v2 on the logs
 #                                               pin and v1 on the traces pin). Today both are
-#                                               VL v1.52.0: select v5, delete v2.
+#                                               VL v1.53.0: select v5, delete v2.
 #                                               The resolved pairs are recorded per module
 #                                               under `protocol:` in
 #                                               tests/conformance/inventory.generated.yaml,
@@ -344,7 +344,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "Live since the VL 1.51.0 bump (pinned VL is 1.52.0), but Lakehouse registers no vmalert proxy route in its dispatcher, so the route is served hot only. Paired flag row: vl.flag.vmalert_proxy_url (docs/parity-and-gaps.md)."
+  differ_note: "Live since the VL 1.51.0 bump (pinned VL is 1.53.0), but Lakehouse registers no vmalert proxy route in its dispatcher, so the route is served hot only (v1.53.0 makes hot VL demand -httpAuth.* on /select/vmalert/*/config and /reload; Lakehouse proxies none of it, so there is nothing to protect and nothing to match). Paired flag row: vl.flag.vmalert_proxy_url (docs/parity-and-gaps.md)."
   since: { vl: "1.51.0" }
   targets: [hot, cold]
   seed: [logs.base]
@@ -370,20 +370,20 @@
   notes: "Default (no -delete.enable) must answer exactly like a VictoriaLogs node started with its defaults: 400 with upstream's disabled message. LH serves /delete/* through upstream's own vlselect.RequestHandler (mountPublicDelete). With -delete.enable and delete.enabled the task becomes a tombstone scoped to the request's tenant (docs/deletion-strategy.md)."
 
 - id: vl.delete.run_task.non_post.differ
-  title: "/delete/run_task — anything but POST is refused with 405 (SSRF guard)"
+  title: "/delete/run_task — anything but POST is refused with 405 (SSRF guard, upstream since VL 1.53.0)"
   surface: vl
   kind: admin
   origin: native
-  expect: differ
-  differ_note: "Upstream VictoriaLogs master (app/vlselect/main.go processDeleteRunTaskRequest) refuses non-POST; the pinned VL v1.52.0 has no such check, so the logs binary enforces it in internaldelete.RunTaskPOSTOnly and answers 405 where the pinned upstream would accept the GET. Redundant once the pin includes the upstream check (drift test TestUpstreamRunTaskStillLacksMethodCheck fails then)."
+  expect: pass
   targets: [cold]
+  since: { vl: "1.53.0" }
   seed: [logs.base]
   upstream: { route: /delete/run_task }
   request: { method: GET, path: /delete/run_task, params: { filter: "service.name:checkout" } }
   compare: { type: error, options: { cold_status: "405", body_prefix: "Only POST method is allowed; got GET." } }
   layers: [api]
   pending: true
-  notes: "With -delete.enable and delete.enabled on, GET, HEAD, PUT and DELETE on /delete/run_task answer 405 'Only POST method is allowed; got <METHOD>.' after the enable check and before tenant or filter parsing, and no delete task is created; stop_task and active_tasks are unchanged. Guards against SSRF-forged GET deletes (VictoriaTraces issue #225). The Lakehouse tenant middleware runs before the 405, so an unknown X-Scope-OrgID gets its 400 first (Lakehouse-only, not a regression)."
+  notes: "Historical id: the row used to expect differ (the logs binary added the POST-only check itself on the v1.52.0 pin); it now expects pass because VictoriaLogs v1.53.0 refuses non-POST itself and the id is kept so history and links stay valid. Target is cold only: the parity hot VictoriaLogs (tests/parity/docker-compose.yml) runs without -delete.enable, where upstream answers its 400 'requests to /delete/* are disabled' before it looks at the method, so a hot 405 would be wrong for that stack; the hot behaviour is pinned by TestUpstreamRunTaskRefusesGET against the vendored upstream. Upstream's own processDeleteRunTaskRequest (VictoriaLogs v1.53.0, issue #1635) refuses non-POST and the logs binary serves it as is: no lakehouse wrapper; TestUpstreamRunTaskRefusesGET pins that. With -delete.enable and delete.enabled on, GET, HEAD, PUT and DELETE on /delete/run_task answer 405 'Only POST method is allowed; got <METHOD>.' after the enable check and before tenant or filter parsing, and no delete task is created; stop_task and active_tasks are unchanged. Guards against SSRF-forged GET deletes (VictoriaTraces issue #225). The Lakehouse tenant middleware runs before the 405, so an unknown X-Scope-OrgID gets its 400 first (Lakehouse-only, not a regression)."
 
 - id: vl.delete.stop_task.status
   title: "/delete/stop_task — upstream's delete API, gated by -delete.enable"

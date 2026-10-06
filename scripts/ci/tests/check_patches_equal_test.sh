@@ -161,6 +161,52 @@ run missing-declared
 check_rc "declaring a one-sided file does not excuse it" "$rc" 1
 check_contains "one-sided file still reported" "$out" "missing:"
 
+# The single exception: a row carrying the upstream-fixed-in-logs-pin marker
+# excuses a patch the logs side dropped because its pin already has the fix,
+# and the claim is proven mechanically: the patch must reverse-apply to the
+# logs-pin tree. A synthetic pin tree holds one file that already has the fix.
+PIN_OK="$TMP/pin-ok"; PIN_OLD="$TMP/pin-old"
+mkdir -p "$PIN_OK" "$PIN_OLD"
+printf 'a\nfixed\nb\n' > "$PIN_OK/f.txt"
+printf 'a\nbroken\nb\n' > "$PIN_OLD/f.txt"
+cat > "$TMP/fix.patch" <<'EOF'
+diff --git a/f.txt b/f.txt
+--- a/f.txt
++++ b/f.txt
+@@ -1,3 +1,3 @@
+ a
+-broken
++fixed
+ b
+EOF
+mk upstream-fixed
+cp "$TMP/fix.patch" "$TMP/upstream-fixed/vl-traces/f.patch"
+cat > "$TMP/upstream-fixed/vl-traces/DIVERGENCE.md" <<'EOF'
+- `f.patch` — upstream-fixed-in-logs-pin: logs pin includes the fix.
+EOF
+out="$(LOGS_PIN_TREE="$PIN_OK" "$GUARD" "$TMP/upstream-fixed/vl-logs" "$TMP/upstream-fixed/vl-traces" 2>&1)"; rc=$?
+check_rc "marked upstream-fixed patch passes against a pin tree that has the fix" "$rc" 0
+out="$(LOGS_PIN_TREE="$PIN_OLD" "$GUARD" "$TMP/upstream-fixed/vl-logs" "$TMP/upstream-fixed/vl-traces" 2>&1)"; rc=$?
+check_rc "marked upstream-fixed patch FAILS when the pin tree lacks the fix" "$rc" 1
+check_contains "the missing fix is named" "$out" "does not contain this fix"
+out="$(LOGS_PIN_TREE="$TMP/no-such-tree" "$GUARD" "$TMP/upstream-fixed/vl-logs" "$TMP/upstream-fixed/vl-traces" 2>&1)"; rc=$?
+check_rc "marked upstream-fixed patch FAILS when no pin tree exists" "$rc" 1
+mk upstream-fixed-manual
+printf 'comment differs\n' > "$TMP/upstream-fixed-manual/vl-traces/m.patch"
+cat > "$TMP/upstream-fixed-manual/vl-traces/DIVERGENCE.md" <<'EOF'
+- `m.patch` — upstream-fixed-in-logs-pin(manual): same change, comment text differs upstream.
+EOF
+out="$(LOGS_PIN_TREE="$PIN_OLD" "$GUARD" "$TMP/upstream-fixed-manual/vl-logs" "$TMP/upstream-fixed-manual/vl-traces" 2>&1)"; rc=$?
+check_rc "the (manual) marker skips the mechanical check" "$rc" 0
+# ... only when it is missing from the LOGS side; missing from traces never is.
+mk upstream-fixed-wrong-side
+printf 'only logs\n' > "$TMP/upstream-fixed-wrong-side/vl-logs/g.patch"
+cat > "$TMP/upstream-fixed-wrong-side/vl-traces/DIVERGENCE.md" <<'EOF'
+- `g.patch` — upstream-fixed-in-logs-pin: wrong side.
+EOF
+run upstream-fixed-wrong-side
+check_rc "marker does not excuse a patch missing from traces" "$rc" 1
+
 # --- 7. declaration naming a nonexistent file fails --------------------
 mk unknown
 cat > "$TMP/unknown/vl-traces/DIVERGENCE.md" <<'EOF'
@@ -193,7 +239,7 @@ out="$("$GUARD" "$TMP/does-not-exist" "$TMP/identical/vl-traces" 2>&1)"
 rc=$?
 check_rc "nonexistent directory exits 2" "$rc" 2
 
-# --- 11. the real repository patch directories pass -------------------
+# --- 11. the real repository patch directories pass (CI sets LOGS_PIN_TREE to a pristine clone of the logs pin) ---
 out="$("$GUARD" 2>&1)"
 rc=$?
 check_rc "repository patch directories pass with default arguments" "$rc" 0

@@ -33,7 +33,7 @@ permissions:
 
 env:
   GOWORK: "off"
-  VL_VERSION_LOGS: v1.52.0
+  VL_VERSION_LOGS: v1.53.0
 
 jobs:
   e2e:

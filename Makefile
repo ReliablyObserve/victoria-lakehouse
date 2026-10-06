@@ -29,12 +29,12 @@ export GOWORK=off
 #                      VT_VERSION. Read it with
 #                      `git show $(VT_VERSION):go.mod | grep VictoriaLogs`
 #                      (VT v0.12.0 → v1.121.1-0.20260716015338-c945d2949e98,
-#                      i.e. VL v1.52.0) and copy the commit part here.
+#                      i.e. VL v1.52.0, one release behind VL_VERSION_LOGS) and copy the commit part here.
 #                      It legitimately lags VL_VERSION_LOGS: the traces binary
 #                      links VT against the exact VL VT was built and tested
 #                      with. Lifting it to VL_VERSION_LOGS "because it
 #                      compiles" is not allowed.
-VL_VERSION_LOGS := v1.52.0
+VL_VERSION_LOGS := v1.53.0
 VL_COMMIT_TRACES := c945d2949e98
 VL_REPO := https://github.com/VictoriaMetrics/VictoriaLogs.git
 VL_DIR_LOGS := deps/VictoriaLogs
@@ -57,7 +57,6 @@ $(VL_DIR_LOGS)/go.mod:
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-export-severity.patch
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-export-streamtags-get.patch
 	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-const-timestamps-parse.patch
-	cd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/vl-partition-close-order.patch
 
 deps-traces: $(VL_DIR_TRACES)/go.mod
 
@@ -72,6 +71,9 @@ $(VL_DIR_TRACES)/go.mod:
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-export-streamtags-get.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-const-timestamps-parse.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-partition-close-order.patch
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-allow-duplicate-stream-tags.patch
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-math-keep-quoted-constants.patch
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-syslog-rfc5424-incomplete-sd.patch
 
 deps-vt: $(VT_DIR)/go.mod
 

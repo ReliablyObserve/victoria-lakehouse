@@ -303,6 +303,7 @@
   surfaces: [api, flag]
   rows:
     - vl.delete.run_task.status
+    - vl.flag.delete_auth_key
     - vl.delete.run_task.non_post.differ
     - vl.internal.delete.non_post.differ
     - vl.internal.select.non_post.differ
@@ -322,15 +323,23 @@
     - lakehouse-traces/public_delete_test.go#TestMountPublicDelete_GatedByDefault
     - lakehouse-traces/public_delete_test.go#TestMountPublicDelete_RunTaskIsTenantScoped
     - lakehouse-traces/public_delete_test.go#TestUpstreamPublicDelete_MatchesVendoredVTSelect
-    - internal/internaldelete/runtask_post_test.go#TestRunTaskPOSTOnly
+    - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_ProtectsBothDeleteAPIs
+    - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_OverridesHTTPAuthThroughTheServer
+    - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_ComesBeforeTheDisabledAnswers
+    - cmd/lakehouse-logs/delete_auth_key_test.go#TestRequestHandler_DeleteKeyOverridesHTTPAuthOnDeleteOnly
+    - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_StringOrgIDThroughTheResolver
+    - cmd/lakehouse-logs/httpauth_suffix_test.go#TestHTTPAuth_SuffixPathsStillNeedCredentials
+    - lakehouse-traces/httpauth_suffix_test.go#TestHTTPAuth_SuffixPathsStillNeedCredentials
+    - lakehouse-traces/httpauth_suffix_test.go#TestHTTPAuth_DeleteAPIsKeepBasicAuthThroughTheServer
+    - internal/internaldelete/delete_auth_test.go#TestDeleteAuth_FlagLookupFailureFailsClosedToBasicAuth
     - internal/internaldelete/post_only_test.go#TestPOSTOnly
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused
-    - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamInternalProtocolStillAcceptsGET
+    - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamInternalProtocolRefusesGET
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskCounterParity
     - lakehouse-traces/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused
     - lakehouse-traces/public_delete_post_only_test.go#TestVendoredVTEnforcesPOSTChecks
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly
-    - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamRunTaskStillLacksMethodCheck
+    - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamRunTaskRefusesGET
     - lakehouse-traces/public_delete_post_only_test.go#TestMountPublicDelete_RunTaskIsPOSTOnly
     - internal/delete/tasks_test.go#TestRunTask_RegistersATenantScopedTombstone
     - internal/delete/tasks_test.go#TestRunTask_EdgeCases

@@ -3,7 +3,7 @@ RUN apk add --no-cache git
 WORKDIR /app
 # Must equal the Makefile's VL_VERSION_LOGS (asserted by
 # TestDockerfilePinsMatchMakefile in tests/conformance).
-ARG VL_VERSION=v1.52.0
+ARG VL_VERSION=v1.53.0
 COPY go.mod go.sum ./
 RUN mkdir -p deps && \
     git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \

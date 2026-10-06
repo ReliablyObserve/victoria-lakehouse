@@ -42,7 +42,7 @@ get the same patch set; if you add a patch to one, mirror it to the
 other.
 
 The two trees are **two different VictoriaLogs checkouts**: the logs
-binary embeds `VL_VERSION_LOGS` (v1.52.0), the traces binary embeds
+binary embeds `VL_VERSION_LOGS` (v1.53.0), the traces binary embeds
 `VL_COMMIT_TRACES` (c945d2949e98 = v1.52.0 — the commit VictoriaTraces
 v0.12.0 pins in its own `go.mod`). The pins may legitimately differ, so the
 two patch files for the same upstream file may carry different *context*
@@ -54,7 +54,9 @@ listed in **`patches/vl-traces/DIVERGENCE.md`** with the upstream change
 that moved the context. The check also fails on a *stale* row — a listed
 file that is in fact byte-equal — so the list empties itself once both
 pins reach the same VictoriaLogs release. A patch that exists on only one
-side is always an error; `DIVERGENCE.md` never excuses that.
+side is an error, with one exception: a traces-only patch whose row in `DIVERGENCE.md`
+carries the marker `upstream-fixed-in-logs-pin` (the logs pin already includes the
+upstream fix, the traces pin does not yet). A logs-only patch is never excused.
 
 | Patch | Upstream file | Symbol exported / behavior |
 | --- | --- | --- |
@@ -63,8 +65,11 @@ side is always an error; `DIVERGENCE.md` never excuses that.
 | `vlstorage-dispatch.patch` | `app/vlstorage/main.go` | Routes VL's `RunQuery` / `GetFieldNames` / `GetFieldValues` / `GetStreamFieldNames` / `GetStreamFieldValues` / `GetStreams` / `GetStreamIDs` / `DeleteRunTask` / `DeleteStopTask` / `DeleteActiveTasks` / `GetTenantIDs` to `externalStorage` when LH has registered itself. |
 | `vl-export-severity.patch` | `app/vlinsert/opentelemetry/pb.go` | Adds `FormatSeverity(int32) string` as the public wrapper around the package-local `formatSeverity`. Consumed by `internal/schema/severity.go::DeriveSeverityText` so cold rows derive `level` from `severity_number` the same way VL hot does. |
 | `vl-const-timestamps-parse.patch` | `lib/logstorage/block_result.go` | Makes `tryParseTimestamps` parse a CONSTANT `_time` column once instead of once per row, using VL's own `areConstValues`. Pure optimization, no semantic change. The cold tier answers count-class queries from manifest metadata with a constant `_time` column (see `internal/storage/parquets3/manifest_fastpath.go`); without this, a metadata-only answer still cost O(rows) RFC3339 parsing. |
-| `vl-partition-close-order.patch` | `lib/logstorage/partition.go` | Closes a partition's datadb before its indexdb in `mustClosePartition`. Upstream closed the indexdb first and set `pt.idb = nil` while datadb's in-memory parts mergers, which read `ddb.pt.idb`, could still be running; `-race` reported it whenever a storage was closed during a merge (the Lakehouse insert buffer closes upstream storages at seal, reap and shutdown, #351). Order only, no other change; to be dropped once upstream closes in this order. |
+| `vl-partition-close-order.patch` | `lib/logstorage/partition.go` | Closes a partition's datadb before its indexdb in `mustClosePartition`. Upstream closed the indexdb first and set `pt.idb = nil` while datadb's in-memory parts mergers, which read `ddb.pt.idb`, could still be running; `-race` reported it whenever a storage was closed during a merge (the Lakehouse insert buffer closes upstream storages at seal, reap and shutdown, #351). Order only, no other change; to be dropped once upstream closes in this order. **Traces tree only since VictoriaLogs v1.53.0, which closes in this order itself (the logs tree no longer carries it).** |
 | `vl-export-streamtags-get.patch` | `lib/logstorage/stream_tags.go` | Adds `(*StreamTags).Get(name)` and `(*StreamTags).UnmarshalString(s)`. The cold insert path uses `Get` to lift the stream-label `level` onto `row.SeverityText` without re-parsing the canonical string; the compactor uses `UnmarshalString` to re-parse the human-readable Stream column when backfilling SeverityText on historical files. |
+| `vl-allow-duplicate-stream-tags.patch` | `lib/logstorage/stream_tags.go` | **Traces tree only** (VictoriaLogs v1.53.0 includes it, so the logs tree has no such patch). `checkCorrectness` accepts several stream tags with one name (`<` instead of `<=`), as VictoriaLogs #1603/#1604 do upstream: v1.52.0 rejected them and panicked when such a stream was registered (ingest) or read back. Two lines, same text as upstream's fix; to be dropped once VictoriaTraces pins a VictoriaLogs that has it. |
+| `vl-math-keep-quoted-constants.patch` | `lib/logstorage/pipe_math.go` | **Traces tree only** (VictoriaLogs v1.53.0, commit 901ca58e0, includes it). Keeps the quotes of a quoted numeric constant in the `math` pipe's string form; without it `Query.Clone` re-parses `math _time - "2026-10-01T00:00:00Z"` as a subtraction chain, fails and panics (the traces process exits). Upstream's exact change, to be dropped once VictoriaTraces pins a VictoriaLogs that has it. |
+| `vl-syslog-rfc5424-incomplete-sd.patch` | `lib/logstorage/syslog_parser.go` | **Traces tree only** (VictoriaLogs v1.53.0, commit 877a61959, #1786 includes it). Returns early when an RFC5424 structured-data parameter ends right after `=` instead of indexing past the line; fixes a panic in the syslog listener and in `unpack_syslog`. Upstream's exact change, same drop condition. |
 
 ### `vt-traces/`
 
@@ -202,8 +207,8 @@ Findings recorded here for future maintainers:
 - **vl-logs ↔ vl-traces mirror** — near-identical files in two
   directories. Could be a single source + Makefile copy, but that
   complicates Docker COPY semantics, and the two pins can drift apart
-  again (they are both v1.52.0 since VictoriaTraces v0.12.0; a context
-  difference is declared in `patches/vl-traces/DIVERGENCE.md`). Current
+  again (they were both v1.52.0 from VictoriaTraces v0.12.0 until the logs pin moved
+  to v1.53.0; the differences are declared in `patches/vl-traces/DIVERGENCE.md`). Current
   shape preferred, with the equality guard enforcing that every *other*
   file stays identical.
 - **`vlstorage-dispatch` and `external.go.src`** — split because

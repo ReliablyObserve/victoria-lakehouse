@@ -31,7 +31,7 @@ $ git -C lakehouse-traces/deps/VictoriaTraces show v0.12.0:go.mod | grep Victori
 ```
 
 The last component of that pseudo-version (`c945d2949e98`) is the pin. It can lag
-`VL_VERSION_LOGS` (it did until VictoriaTraces v0.12.0, when both became VictoriaLogs v1.52.0), and must not be lifted to it because a newer commit happens to compile —
+`VL_VERSION_LOGS` (it did until VictoriaTraces v0.12.0, when both became VictoriaLogs v1.52.0, and does again since the logs pin moved to v1.53.0), and must not be lifted to it because a newer commit happens to compile —
 the two-pin model is deliberate. `TestVLCommitTracesPinIsDerivedFromVT` holds the Makefile
 to the rule, and `TestVLSurface_LogsPinSupersetOfTracesPin` requires the logs pin to expose
 everything the traces pin does, so the extracted upstream inventory never under-reports

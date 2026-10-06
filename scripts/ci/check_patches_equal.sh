@@ -22,13 +22,21 @@
 #     (so the list shrinks back to nothing once the pins converge again);
 #   * a DIVERGENCE.md entry naming a file that does not exist.
 #
-# Usage: scripts/ci/check_patches_equal.sh [logs_dir traces_dir]
+#   * a traces-only patch marked upstream-fixed-in-logs-pin that does not
+#     reverse-apply to the logs-pin VictoriaLogs tree ($LOGS_PIN_TREE, default
+#     deps/VictoriaLogs): the claim "the logs pin already has this fix" is
+#     checked mechanically, except for rows marked
+#     upstream-fixed-in-logs-pin(manual).
+#
+# Usage: [LOGS_PIN_TREE=dir] scripts/ci/check_patches_equal.sh [logs_dir traces_dir]
 # Exit:  0 all good, 1 a violation was found, 2 bad invocation.
 set -uo pipefail
 
 LOGS_DIR="${1:-patches/vl-logs}"
 TRACES_DIR="${2:-patches/vl-traces}"
 DIVERGENCE_FILE="$TRACES_DIR/DIVERGENCE.md"
+# The logs-pin VictoriaLogs tree, used to prove upstream-fixed-in-logs-pin rows.
+PIN_TREE="${LOGS_PIN_TREE:-deps/VictoriaLogs}"
 
 if [[ ! -d "$LOGS_DIR" || ! -d "$TRACES_DIR" ]]; then
   printf 'check_patches_equal: not a directory: %s or %s\n' "$LOGS_DIR" "$TRACES_DIR" >&2
@@ -80,6 +88,27 @@ while IFS= read -r name; do
   a="$LOGS_DIR/$name"
   b="$TRACES_DIR/$name"
   if [[ ! -f "$a" ]]; then
+    # The one excusable one-sided file: the logs pin has caught up with an
+    # upstream fix the traces pin still lacks, so the logs side dropped the
+    # patch. The row must say so with the marker below; it goes away (with the
+    # traces patch) when VictoriaTraces moves to a VictoriaLogs that has the fix.
+    if is_declared "$name" && [[ -f "$b" ]] && grep -q "^[[:space:]]*[-*][[:space:]]*\`$name\`.*upstream-fixed-in-logs-pin" "$DIVERGENCE_FILE"; then
+      # Mechanical proof that the logs pin really contains the fix: the traces
+      # patch must REVERSE-apply to the logs-pin tree (the fix is already
+      # there). A row marked upstream-fixed-in-logs-pin(manual) is excused
+      # from this when upstream's change differs from ours in more than
+      # context (for example comment text); the row then documents the
+      # equivalence by hand.
+      if grep -q "^[[:space:]]*[-*][[:space:]]*\`$name\`.*upstream-fixed-in-logs-pin(manual)" "$DIVERGENCE_FILE"; then
+        continue
+      fi
+      if [[ ! -d "$PIN_TREE" ]]; then
+        note "pin-tree: $name is marked upstream-fixed-in-logs-pin but the logs-pin tree $PIN_TREE does not exist, so the claim cannot be checked (set LOGS_PIN_TREE, or mark the row upstream-fixed-in-logs-pin(manual) with the equivalence argument)"
+      elif ! (patch_abs="$(cd "$(dirname "$b")" && pwd)/$(basename "$b")" && cd "$PIN_TREE" && git apply --reverse --check "$patch_abs" 2>/dev/null); then
+        note "pin-tree: $name is marked upstream-fixed-in-logs-pin but does not reverse-apply to the logs-pin tree $PIN_TREE — the logs pin does not contain this fix"
+      fi
+      continue
+    fi
     note "missing: $a exists in $TRACES_DIR but not in $LOGS_DIR — the two VictoriaLogs copies must carry the same patch set"
     continue
   fi

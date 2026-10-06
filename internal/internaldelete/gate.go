@@ -19,12 +19,11 @@ package internaldelete
 
 import (
 	"flag"
-	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
-	"github.com/VictoriaMetrics/metrics"
 )
 
 // FlagName is upstream's flag for the protocol. The flag is registered by
@@ -93,45 +92,6 @@ func gate(flagOn func() bool, deleteEnabled bool, message string, upstream http.
 	}
 }
 
-// RunTaskPath is the public delete API path that starts a delete task.
-const RunTaskPath = "/delete/run_task"
-
-// RunTaskRequestsCounter is VictoriaLogs' request counter for RunTaskPath.
-const RunTaskRequestsCounter = `vl_http_requests_total{path="/delete/run_task"}`
-
-// RunTaskPOSTOnly wraps next, the handler owning /delete/* (upstream's
-// -delete.enable check followed by its delete handler), so that
-// /delete/run_task answers 405 unless the request is a POST. A GET, HEAD, PUT
-// or DELETE can then never start a delete task, for example one forged through
-// SSRF.
-//
-// VictoriaLogs master (app/vlselect/main.go processDeleteRunTaskRequest) and
-// VictoriaTraces v0.12.0 (issue #225) refuse non-POST requests there, with
-// exactly this answer, after the -delete.enable check and before parsing the
-// tenant or the filter. VictoriaLogs v1.52.0, the pin of the logs binary, has
-// no such check, so this wrapper adds it. Once the pin includes the upstream
-// check this becomes redundant but harmless
-// (TestUpstreamRunTaskStillLacksMethodCheck fails at that point so the
-// duplicate gets dropped).
-//
-// Only run_task is affected, as upstream: stop_task and active_tasks are
-// unchanged. flagOn reports upstream's -delete.enable: while it is off the
-// request goes to next untouched and gets upstream's own "disabled" answer,
-// whatever the method, so the observable order matches upstream.
-func RunTaskPOSTOnly(flagOn func() bool, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if flagOn() && strings.ReplaceAll(r.URL.Path, "//", "/") == RunTaskPath && r.Method != http.MethodPost {
-			// VictoriaLogs master counts the request before refusing it. The
-			// counter is upstream's own (same name in the default set;
-			// GetOrCreateCounter returns the instance vlselect registered).
-			metrics.GetOrCreateCounter(RunTaskRequestsCounter).Inc()
-			http.Error(w, fmt.Sprintf("Only POST method is allowed; got %s.", r.Method), http.StatusMethodNotAllowed)
-			return
-		}
-		next(w, r)
-	}
-}
-
 // POSTOnly wraps next, the handler owning a cluster-protocol prefix
 // (/internal/select/*, /internal/delete/*), so that any method but POST is
 // answered with a bare 405, no body, exactly as upstream does first thing in
@@ -146,9 +106,11 @@ func RunTaskPOSTOnly(flagOn func() bool, next http.HandlerFunc) http.HandlerFunc
 // whatever the method, so the observable order matches upstream. A nil gate is
 // always open (/internal/select/* has no enable flag).
 //
-// The v1.52.0 pin of VictoriaLogs, and the VictoriaLogs revision the traces
-// binary embeds, lack the check; once they include it this is redundant but
-// harmless (the drift guards fail at that point).
+// VictoriaLogs v1.53.0, the pin of the logs binary, does the check itself
+// (issue #1635), so the logs binary no longer uses this wrapper; the
+// VictoriaLogs revision the traces binary embeds (v1.52.0) lacks it, so the
+// traces binary still does. The traces drift guard fails when that revision
+// gains the check.
 func POSTOnly(gate func() bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && (gate == nil || gate()) {
@@ -157,4 +119,47 @@ func POSTOnly(gate func() bool, next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// DeleteAuthKeyFlagName is upstream's -deleteAuthKey flag (VictoriaLogs v1.53.0),
+// which protects every /delete/* request and overrides -httpAuth.* there. It is
+// registered by upstream's vlselect package, never here.
+const DeleteAuthKeyFlagName = "deleteAuthKey"
+
+// DeleteAuth guards every /delete/* request (upstream's public delete API and the
+// lakehouse's own /delete/logsql/* API) the way VictoriaLogs v1.53.0 does in
+// vlselect.RequestHandler: first thing, before any other check, the request
+// must carry the -deleteAuthKey as the authKey argument (401 with upstream's
+// answer otherwise), or, when the flag is unset, pass -httpAuth.*. Without it,
+// registering vlselect.IsAuthKeyProtectedPath with the HTTP server (which
+// exempts /delete/* from -httpAuth.* because the handler is expected to check
+// the key itself) would leave the lakehouse-only /delete/logsql/* routes open.
+//
+// Fail closed: when the flag cannot be found, or is not the *flagutil.Password
+// upstream registers (a build whose VictoriaLogs revision lacks the flag, or
+// one that changed its type), the request is treated as if the key were unset:
+// it must pass -httpAuth.* (httpserver.CheckBasicAuth), exactly what
+// httpserver.CheckAuthFlag does for an empty key. A lookup failure never opens
+// /delete/* to everyone.
+func DeleteAuth(next http.Handler) http.Handler {
+	return deleteAuth(next, flag.Lookup)
+}
+
+func deleteAuth(next http.Handler, lookup func(name string) *flag.Flag) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(strings.ReplaceAll(r.URL.Path, "//", "/"), "/delete/") {
+			var key *flagutil.Password
+			if f := lookup(DeleteAuthKeyFlagName); f != nil {
+				key, _ = f.Value.(*flagutil.Password)
+			}
+			if key == nil {
+				if !httpserver.CheckBasicAuth(w, r) {
+					return
+				}
+			} else if !httpserver.CheckAuthFlag(w, r, key) {
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

@@ -48,8 +48,8 @@ type Protocol struct {
 //	     so its protocol versions come from ITS VictoriaLogs copy, not from
 //	     VictoriaTraces and not from the logs pin.
 //
-// At VL v1.52.0 on both pins (VT v0.12.0's pin) the versions agree (select v5,
-// delete v2). They did not at VL v1.52.0 / VL v1.51.0 (VT v0.11.0's pin), where
+// At VL v1.53.0 (logs pin) and VL v1.52.0 (VT v0.12.0's pin) the versions
+// agree (select v5, delete v2). They did not at VL v1.52.0 / VL v1.51.0 (VT v0.11.0's pin), where
 // delete was v2 against v1 — exactly the kind of split
 // the registry's {{proto.internal_select}} / {{proto.internal_delete}}
 // placeholders exist to express, and the reason they resolve per module.
