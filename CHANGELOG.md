@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The e2e ingest matrix lists the fixture bucket once per poll, not once per cell, and finishes within its budget (closes #367).**
+  Every poll sampled each established cell and listed the whole bucket after each one, so a poll cost one full LIST
+  per cell and the Parquet phase grew with the square of the cell count. #345 made all 26 logs cells pass the buffer
+  phase (10 did before), which took the logs matrix past its 30-minute timeout with no cell failing; the product's
+  reads stayed in milliseconds. One listing now serves every cell of a poll, of a stability cycle and of the
+  cross-tenant check, taken after the reads, so a cell's cold-read gaps are still decided from S3 after its read. Each
+  cell logs a `TIMING` line with its wait, read, listing and download times and the buffer segment gauges. `TestTenantMapping_StringAndIntPaths` polls up to five minutes for the new tenants' totals instead of 45 seconds,
+  because rows reach Parquet only when their buffer segment is sealed (2 minutes in the e2e stack) and drained.
+
 - **The e2e compose stack publishes the select and Loki-proxy ports its tests use, and every e2e step fails the job on a test failure.**
   `vlselect`, `vtselect` and `loki-vl-proxy` now map `29471`, `20471` and `23100` to the host, and the e2e workflow runs each
   `go test` step with `set -o pipefail` and waits for these services before the tests start. The last step selects every test

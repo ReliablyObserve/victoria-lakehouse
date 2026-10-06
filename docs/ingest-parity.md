@@ -198,6 +198,12 @@ ports when the compose file, not the override, publishes them. The package needs
 VictoriaLogs tree (`make deps-logs`), because the native payloads are built with `logstorage.InsertRow`.
 The flush wait is one flush interval (120 s in the e2e stack), plus up to the buffer grace (90 s) before the Parquet comparison; the Logs and Traces matrices run in parallel.
 
+Each poll lists the fixture bucket once for every established cell together, never once per cell: a full-bucket
+LIST costs about 1 s in CI on RustFS (measured) and the matrix keeps sampling every established cell while later
+cells run. Every Parquet cell logs a `TIMING` line with the time spent in `waitParquetExact`, `waitLeftBuffer` and
+`waitSame`, the harness stages (reads, listings, object downloads) and the buffer segment gauges, so a slow phase
+says where the time went.
+
 ## Verification results
 
 With the pinned VictoriaLogs v1.52 and VictoriaTraces v0.12, the isolated protocol run completed

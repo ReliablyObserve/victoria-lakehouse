@@ -284,6 +284,76 @@ type matrixRun struct {
 	s3c *s3.Client
 	// lakehouse insert counters before the run
 	lostBefore, rejectedBefore float64
+	// stages accumulates wall time per harness stage, for the per-cell timing log.
+	stages map[string]*stageStat
+}
+
+// stageStat is the accumulated wall time and call count of one harness stage.
+type stageStat struct {
+	n   int
+	dur time.Duration
+}
+
+// timed runs fn and adds its wall time to the stage name.
+func (r *matrixRun) timed(name string, fn func()) {
+	start := time.Now()
+	fn()
+	r.addStage(name, time.Since(start))
+}
+
+// addStage adds d to the stage name.
+func (r *matrixRun) addStage(name string, d time.Duration) {
+	if r.stages == nil {
+		r.stages = map[string]*stageStat{}
+	}
+	st := r.stages[name]
+	if st == nil {
+		st = &stageStat{}
+		r.stages[name] = st
+	}
+	st.n++
+	st.dur += d
+}
+
+// segmentGauges reads Lakehouse's insert-buffer segment gauges.
+func (r *matrixRun) segmentGauges(t *testing.T) string {
+	t.Helper()
+	var parts []string
+	for _, state := range []string{"active", "pending", "committed"} {
+		v, _ := metricValue(t, r.lh.base, `lakehouse_buffer_segments{state="`+state+`"}`)
+		parts = append(parts, fmt.Sprintf("%s=%v", state, v))
+	}
+	return strings.Join(parts, " ")
+}
+
+// stageSnapshot copies the stage totals, so a cell can log what it added.
+func (r *matrixRun) stageSnapshot() map[string]stageStat {
+	out := map[string]stageStat{}
+	for k, v := range r.stages {
+		out[k] = *v
+	}
+	return out
+}
+
+// stageDelta formats the stage time added since before, largest first.
+func (r *matrixRun) stageDelta(before map[string]stageStat) string {
+	type row struct {
+		name string
+		st   stageStat
+	}
+	var rows []row
+	for k, v := range r.stages {
+		d := stageStat{n: v.n - before[k].n, dur: v.dur - before[k].dur}
+		if d.n > 0 {
+			rows = append(rows, row{k, d})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].st.dur > rows[j].st.dur })
+	var parts []string
+	for _, x := range rows {
+		parts = append(parts, fmt.Sprintf("%s=%s/%d", x.name, x.st.dur.Round(time.Millisecond), x.st.n))
+	}
+	return strings.Join(parts, " ")
 }
 
 type caseState struct {
@@ -384,8 +454,10 @@ func (r *matrixRun) waitSame(t *testing.T, s *caseState, want int, within time.D
 	var diffSince time.Time
 	for {
 		r.sampleEstablished(t)
-		hot, herr := r.readRows(t, r.hot, s)
-		lh, lerr := r.readRows(t, r.lh, s)
+		var hot, lh []string
+		var herr, lerr error
+		r.timed("same.hot_read", func() { hot, herr = r.readRows(t, r.hot, s) })
+		r.timed("same.lh_read", func() { lh, lerr = r.readRows(t, r.lh, s) })
 		if herr == nil && lerr == nil {
 			// Cold-read gaps apply from the moment the cell has rows in Parquet, which
 			// is decided from S3 after the read (a flush between the read and the check
@@ -439,17 +511,43 @@ func (r *matrixRun) waitSame(t *testing.T, s *caseState, want int, within time.D
 // the flush wait and the stability interval.
 func (r *matrixRun) sampleEstablished(t *testing.T) {
 	t.Helper()
+	r.timed("sample", func() { r.sampleEstablishedOnce(t) })
+}
+
+// sampleEstablishedOnce reads every established cell from both sides, then
+// lists the fixture bucket ONCE for all of them. The listing is a full-bucket
+// LIST (it must see foreign prefixes), so one per cell made every sample cost
+// O(cells) listings and the Parquet phase O(cells^2) (#367). A single listing
+// taken after all the reads keeps the rule that a cell's cold-read gaps are
+// decided from S3 after its read.
+func (r *matrixRun) sampleEstablishedOnce(t *testing.T) {
+	t.Helper()
+	type cellRead struct {
+		s       *caseState
+		hot, lh []string
+	}
+	var reads []cellRead
 	for _, s := range r.states {
 		if !s.visible {
 			continue
 		}
-		hot, herr := r.readRows(t, r.hot, s)
-		lh, lerr := r.readRows(t, r.lh, s)
+		var hot, lh []string
+		var herr, lerr error
+		r.timed("sample.hot_read", func() { hot, herr = r.readRows(t, r.hot, s) })
+		r.timed("sample.lh_read", func() { lh, lerr = r.readRows(t, r.lh, s) })
 		if herr != nil || lerr != nil {
 			t.Fatalf("handoff sample %s: hot %v lakehouse %v", s.name(), herr, lerr)
 		}
-		r.refreshParquet(t, s)
-		lh = r.applyKnownGaps(s, hot, lh)
+		reads = append(reads, cellRead{s: s, hot: hot, lh: lh})
+	}
+	if len(reads) == 0 {
+		return
+	}
+	r.timed("sample.refresh", func() { r.refreshObjects(t) })
+	for _, x := range reads {
+		s, hot := x.s, x.hot
+		r.noteFlushed(s)
+		lh := r.applyKnownGaps(s, hot, x.lh)
 		if err := im.CheckSample(hot, lh, s.c.Rows); err != nil {
 			t.Fatalf("handoff sample %s: %v", s.name(), err)
 		}
@@ -518,11 +616,25 @@ func (r *matrixRun) markers() map[string]bool {
 	return m
 }
 
-// refreshParquet scans the Parquet objects of the cell's tenant that were written
-// since the run started and have not been read yet, drops cache entries of objects
-// that are gone (compaction), and marks the cell flushed once any of its rows is
-// in Parquet.
+// refreshParquet refreshes the object cache (refreshObjects) and marks the cell
+// flushed once any of its rows is in Parquet.
 func (r *matrixRun) refreshParquet(t *testing.T, s *caseState) {
+	t.Helper()
+	r.refreshObjects(t)
+	r.noteFlushed(s)
+}
+
+// noteFlushed marks the cell flushed once the object cache holds any of its rows.
+func (r *matrixRun) noteFlushed(s *caseState) {
+	if rows, _, _ := r.pqCounts(s); rows > 0 {
+		s.flushed = true
+	}
+}
+
+// refreshObjects scans the Parquet objects of the fixture bucket that were
+// written since the run started and have not been read yet, and drops cache
+// entries of objects that are gone (compaction).
+func (r *matrixRun) refreshObjects(t *testing.T) {
 	t.Helper()
 	if r.s3c == nil {
 		r.s3c = newS3Client(t)
@@ -530,15 +642,16 @@ func (r *matrixRun) refreshParquet(t *testing.T, s *caseState) {
 	client := r.s3c
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	prefix := fmt.Sprintf("%d/%d/%s/", s.p.Tenant.Account, s.p.Tenant.Project, r.sig)
 	live := map[string]bool{}
 	// Scan all fresh objects in this isolated fixture bucket, including foreign
 	// tenant prefixes: querying the intended tenant alone cannot detect copying.
 	pg := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{Bucket: aws.String(s3Bucket)})
 	for pg.HasMorePages() {
-		page, err := pg.NextPage(ctx)
+		var page *s3.ListObjectsV2Output
+		var err error
+		r.timed("s3.list_page", func() { page, err = pg.NextPage(ctx) })
 		if err != nil {
-			t.Fatalf("list s3://%s/%s: %v", s3Bucket, prefix, err)
+			t.Fatalf("list s3://%s: %v", s3Bucket, err)
 		}
 		for _, o := range page.Contents {
 			key := aws.ToString(o.Key)
@@ -549,16 +662,19 @@ func (r *matrixRun) refreshParquet(t *testing.T, s *caseState) {
 			if _, done := r.pq[key]; done {
 				continue
 			}
-			obj, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s3Bucket), Key: aws.String(key)})
-			if err != nil {
-				t.Fatalf("get s3://%s/%s: %v", s3Bucket, key, err)
-			}
-			data, err := io.ReadAll(obj.Body)
-			_ = obj.Body.Close()
-			if err != nil {
-				t.Fatalf("read s3://%s/%s: %v", s3Bucket, key, err)
-			}
-			r.pq[key] = &pqObject{cells: scanParquetObject(t, key, data, r.markers())}
+			var data []byte
+			r.timed("s3.get", func() {
+				obj, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s3Bucket), Key: aws.String(key)})
+				if err != nil {
+					t.Fatalf("get s3://%s/%s: %v", s3Bucket, key, err)
+				}
+				data, err = io.ReadAll(obj.Body)
+				_ = obj.Body.Close()
+				if err != nil {
+					t.Fatalf("read s3://%s/%s: %v", s3Bucket, key, err)
+				}
+			})
+			r.timed("s3.scan", func() { r.pq[key] = &pqObject{cells: scanParquetObject(t, key, data, r.markers())} })
 			for _, state := range r.states {
 				if cell := r.pq[key].cells[state.p.Marker]; cell != nil && cell.rows > 0 {
 					wantPrefix := fmt.Sprintf("%d/%d/%s/", state.p.Tenant.Account, state.p.Tenant.Project, r.sig)
@@ -573,9 +689,6 @@ func (r *matrixRun) refreshParquet(t *testing.T, s *caseState) {
 		if !live[key] {
 			delete(r.pq, key)
 		}
-	}
-	if rows, _, _ := r.pqCounts(s); rows > 0 {
-		s.flushed = true
 	}
 }
 
@@ -676,6 +789,8 @@ func (r *matrixRun) bufferHeld(t *testing.T, s *caseState) int {
 		"project_id":   {strconv.FormatUint(uint64(s.p.Tenant.Project), 10)},
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
+	start := time.Now()
+	defer func() { r.addStage("buffer_held", time.Since(start)) }()
 	resp, err := client.Get(r.lh.base + "/internal/buffer/query?" + params.Encode())
 	if err != nil {
 		t.Fatalf("buffer query on %s: %v", r.lh.base, err)
@@ -887,6 +1002,7 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 	// writer on the same stack can only add to it).
 	for _, s := range r.states {
 		s := s
+		cellBefore, cellStart := r.stageSnapshot(), time.Now()
 		r.sampleEstablished(t)
 		t.Run("ingest/"+s.name(), func(t *testing.T) {
 			s.hotBefore = metricOrZero(t, r.hot.base, s.c.Counter)
@@ -969,6 +1085,7 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 			s.preflushDefaultMessageGap = s.gapHits["traces-default-msg-value"] > 0
 			t.Logf("preflush observed: %d exact hot/Lakehouse rows, all held by the insert buffer", s.c.Rows)
 		})
+		t.Logf("TIMING ingest+buffer %s: %s; stages: %s", s.name(), time.Since(cellStart).Round(time.Millisecond), r.stageDelta(cellBefore))
 	}
 
 	// 3. parquet: wait until the tenant's Parquet holds exactly the cell's rows
@@ -985,9 +1102,20 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 				r.waitSame(t, s, 0, 30*time.Second)
 				return
 			}
+			before := r.stageSnapshot()
+			heldAtStart := r.bufferHeld(t, s)
+			var tExact, tLeft, tSame time.Duration
+			st := time.Now()
 			r.waitParquetExact(t, s)
+			tExact = time.Since(st)
+			st = time.Now()
 			r.waitLeftBuffer(t, s)
+			tLeft = time.Since(st)
+			st = time.Now()
 			r.waitSame(t, s, s.c.Rows, 90*time.Second)
+			tSame = time.Since(st)
+			t.Logf("TIMING parquet %s: written %s ago, held at start %d; waitParquetExact=%s waitLeftBuffer=%s waitSame=%s; stages: %s; segments: %s",
+				s.name(), time.Since(r.ingestAt).Round(time.Second), heldAtStart, tExact.Round(time.Millisecond), tLeft.Round(time.Millisecond), tSame.Round(time.Millisecond), r.stageDelta(before), r.segmentGauges(t))
 		})
 	}
 
@@ -997,11 +1125,11 @@ func runIngestMatrix(t *testing.T, sig im.Signal) {
 		cycles := 0
 		for {
 			r.sampleEstablished(t)
+			r.refreshObjects(t) // once per cycle, for every cell
 			for _, s := range r.states {
 				if !s.visible || s.c.Rejected {
 					continue
 				}
-				r.refreshParquet(t, s)
 				if ok, what := r.parquetExact(s); !ok {
 					t.Fatalf("Parquet changed for %s: %s", s.name(), what)
 				}
@@ -1237,6 +1365,9 @@ func TestIngestMatrix_RouteGaps(t *testing.T) {
 }
 
 func (r *matrixRun) checkCrossTenantIsolation(t *testing.T) {
+	// One listing serves every (cell, tenant) pair below: the cache holds every
+	// fresh object of the bucket, under every prefix.
+	r.refreshObjects(t)
 	for _, s := range r.states {
 		for _, tenant := range tenantsOf(r.states) {
 			if tenant.Account == s.p.Tenant.Account && tenant.Project == s.p.Tenant.Project {
@@ -1262,7 +1393,6 @@ func (r *matrixRun) checkCrossTenantIsolation(t *testing.T) {
 			}
 			other := *s
 			other.p.Tenant = tenant
-			r.refreshParquet(t, &other)
 			if rows, _, _ := r.pqCounts(&other); rows != 0 {
 				t.Fatalf("marker %s stored %d rows in other tenant prefix %d:%d", s.p.Marker, rows, tenant.Account, tenant.Project)
 			}
