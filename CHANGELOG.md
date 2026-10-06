@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **The traces discovery test no longer ages out of VictoriaTraces' backfill window.** `TestDiscoveryAgainstRealVTStorage_POSTOnly` wrote a row with a fixed 2026-09-29 date, which VictoriaTraces drops beyond `-maxBackfillAge=168h`, so the test failed from 2026-10-06. It now uses a timestamp relative to now. Test-only; the CI test jobs now also run the `cmd/...` (logs) and root (traces) package tests that were never run before (#415).
-
 ## [0.145.5] - 2026-10-06
 
 ### Changed

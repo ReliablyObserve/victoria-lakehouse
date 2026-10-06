@@ -30,10 +30,7 @@ func TestDiscoveryAgainstRealVTStorage_POSTOnly(t *testing.T) {
 	t.Cleanup(vtstorage.Stop)
 
 	// One row so the storage has a day partition to list.
-	// Relative to now: VictoriaTraces rejects rows older than -maxBackfillAge
-	// (168h), so a fixed date ages out of the window and the row is dropped.
-	ts := time.Now().UTC().Add(-time.Hour)
-	day := ts.Format("20060102")
+	ts := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	lr := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	lr.MustAdd(logstorage.TenantID{}, ts.UnixNano(), []logstorage.Field{{Name: "_msg", Value: "x"}}, 0)
 	(&vtstorage.Storage{}).MustAddRows(lr)
@@ -70,8 +67,8 @@ func TestDiscoveryAgainstRealVTStorage_POSTOnly(t *testing.T) {
 		t.Fatalf("POST /internal/partition/list: got %d %q, want 200", code, body)
 	}
 	var dates []string
-	if err := json.Unmarshal([]byte(body), &dates); err != nil || len(dates) != 1 || dates[0] != day {
-		t.Fatalf("POST /internal/partition/list body = %q (err %v), want [%q]", body, err, day)
+	if err := json.Unmarshal([]byte(body), &dates); err != nil || len(dates) != 1 || dates[0] != "20260929" {
+		t.Fatalf("POST /internal/partition/list body = %q (err %v), want [\"20260929\"]", body, err)
 	}
 
 	// The production client, end to end.
@@ -86,8 +83,8 @@ func TestDiscoveryAgainstRealVTStorage_POSTOnly(t *testing.T) {
 	if boundary == nil {
 		t.Fatal("PollPartitionList found no hot boundary against the real v0.12.0 vtstorage: the client must POST")
 	}
-	if boundary.MinDate != day || boundary.MaxDate != day {
-		t.Errorf("boundary = %+v, want %s..%s", boundary, day, day)
+	if boundary.MinDate != "20260929" || boundary.MaxDate != "20260929" {
+		t.Errorf("boundary = %+v, want 20260929..20260929", boundary)
 	}
 }
 
