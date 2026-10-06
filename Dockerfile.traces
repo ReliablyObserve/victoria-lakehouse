@@ -46,7 +46,8 @@ RUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs
     cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch && \
     git apply /tmp/patches/vl-traces/vl-export-severity.patch && \
     git apply /tmp/patches/vl-traces/vl-export-streamtags-get.patch && \
-    git apply /tmp/patches/vl-traces/vl-partition-close-order.patch
+    git apply /tmp/patches/vl-traces/vl-partition-close-order.patch && \
+    git apply /tmp/patches/vl-traces/vl-allow-duplicate-stream-tags.patch
 RUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go && \
     cp /tmp/patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go && \
     cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \

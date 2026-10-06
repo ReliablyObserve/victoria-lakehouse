@@ -75,6 +75,7 @@ func TestRequiredPatchesExist(t *testing.T) {
 		"patches/vl-traces/vl-export-streamtags-get.patch",
 		"patches/vl-traces/vl-const-timestamps-parse.patch",
 		"patches/vl-traces/vl-partition-close-order.patch",
+		"patches/vl-traces/vl-allow-duplicate-stream-tags.patch",
 		// VT — applied to lakehouse-traces/deps/VictoriaTraces/
 		"patches/vt-traces/external.go.src",
 		"patches/vt-traces/flag_dedup.go.src",

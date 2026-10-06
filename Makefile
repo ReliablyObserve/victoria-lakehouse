@@ -71,6 +71,7 @@ $(VL_DIR_TRACES)/go.mod:
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-export-streamtags-get.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-const-timestamps-parse.patch
 	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-partition-close-order.patch
+	cd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/vl-allow-duplicate-stream-tags.patch
 
 deps-vt: $(VT_DIR)/go.mod
 
