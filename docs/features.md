@@ -2,14 +2,14 @@
 
 Every Lakehouse capability, where it is verified, and where it is documented. Source of truth: `tests/conformance/registry/features/`; the releases a feature shipped in are read from `CHANGELOG.md`, and one whose changelog entry is not released yet shows "the release after" the newest release. The same catalog generates the "Key Features" bullets in `README.md`; the conformance gate fails a PR whose new `### Added` changelog bullet, route, handler, flag or config key is not represented here — see `tests/conformance/README.md`.
 
-Legend: ✅ shipped and covered — the catalog links at least one regression test (the file and the test function are checked to exist; the catalog does not run them) or a registry row the conformance runner executes (none yet: every registry row the catalog cites is still `pending`, so today ✅ means "a linked test") · 🟡 shipped, declared only — every linked row is still `pending` and no test is linked · 🔧 in progress · 📝 planned (documented, not implemented)
+Legend: ✅ shipped and covered — the catalog links at least one regression test (the file and the test function are checked to exist; the catalog does not run them) or a registry row the conformance runner executes · 🟡 shipped, declared only — every linked row is still `pending` and no test is linked · 🔧 in progress · 📝 planned (documented, not implemented)
 
 ## Summary
 
 | Area | ✅ covered by a test | 🟡 declared only | 🔧 in progress | 📝 planned | Total |
 |---|---|---|---|---|---|
 | Ingest | 8 | 0 | 0 | 0 | 8 |
-| Storage | 30 | 0 | 2 | 2 | 34 |
+| Storage | 32 | 0 | 1 | 2 | 35 |
 | Query | 14 | 1 | 0 | 1 | 16 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 7 | 0 | 0 | 1 | 8 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 0 | 0 | 14 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **146** | **1** | **2** | **8** | **157** |
+| **Total** | **148** | **1** | **1** | **8** | **158** |
 
 ## Coverage gaps
 
@@ -127,7 +127,7 @@ Lakehouse mounts the upstream `vlinsert` handlers instead of re-implementing the
 - Docs: `docs/write-path.md`, `docs/getting-started.md`
 - Changelog: `0.8.0`
 
-## Storage (34)
+## Storage (35)
 
 ### 📝 Cold-open round-trip elimination
 
@@ -244,15 +244,15 @@ The storage format is the product's contract with its users: data written by Lak
 - Docs: `docs/open-parquet-format.md#s3-layout`, `docs/open-parquet-format.md#querying-with-external-tools`
 - Note: Readability by external engines is enforced by the multi-engine readback gate, which reads the files with pyarrow and DuckDB in the `parquet-readback` CI job.
 
-### 🔧 Plan-then-fetch exact column ranges
+### ✅ Plan-then-fetch exact column ranges
 
-`lh.feature.storage.plan_then_fetch` · status: in-progress · since: v0.87.0 · surfaces: storage, flag
+`lh.feature.storage.plan_then_fetch` · status: shipped · since: v0.87.0 · surfaces: storage, flag
 
-**Plan-then-fetch**: a projected read plans the exact column-chunk byte ranges it needs and fetches those, coalesced — no speculative window at all. Opt-in per signal while the benchmark gate decides whether it becomes the default.
+**Plan-then-fetch**: a projected read plans the exact column-chunk byte ranges it needs and fetches those, coalesced, in one wave per file — no speculative window at all. It is the default read mode; the window reader stays as a deprecated fallback for one release.
 
-With the footer in hand the reader knows precisely which byte ranges a projection touches, so it can ask for those and nothing else. It is opt-in until it beats the windowed path on every benchmark scenario at both latency profiles — the graduation rule for any performance default in this repo.
+With the footer and page index in hand the reader knows precisely which byte ranges a projection touches, so it asks for those and nothing else. It became the default once the footer cache served the footer and page index from memory (see zero-GET open): the lazy page-index round trips that made it lose to the window reader are gone, and on the cold-read harness it is faster on every measured shape at 20-100 ms of S3 latency in both modules. Trace-id point lookups (Jaeger and Tempo trace-by-ID, the log-to-trace click) use it too, with fewer requests and bytes than the window reader.
 
-- Verification: tests: `internal/storage/parquets3/projected_fetch_test.go#TestGetFieldValues_PlannedFetch_OnlyPlannedRangesRequested`, `internal/storage/parquets3/projected_fetch_test.go#TestPlanProjectedRanges_Derivation`, `internal/s3reader/planned_fetch_test.go#TestPlannedFetch_CoalescingCorrectness`, `lakehouse-traces/internal/storage/parquets3/projected_fetch_test.go#TestRunQuery_PlannedVsWindow_Equivalence_Traces`, `internal/config/s3_readpath_knobs_test.go#TestS3ProjectedFetchKnobs_DefaultsMergeValidate`
+- Verification: rows: `lh.flag.projected_fetch_mode` (pass, executes) · tests: `internal/storage/parquets3/projected_fetch_test.go#TestGetFieldValues_PlannedFetch_OnlyPlannedRangesRequested`, `internal/storage/parquets3/projected_fetch_test.go#TestPlanProjectedRanges_Derivation`, `internal/storage/parquets3/cold_read_getcount_test.go#TestColdQuery_CachedFooters_OnlyDataRangesReachS3`, `internal/storage/parquets3/cold_read_getcount_test.go#TestColdQuery_AnswersIdenticalAcrossOpenPaths`, `internal/storage/parquets3/footer_overlay_test.go#TestPlannedDefault_TraceIDLookupUsesPlannedReader`, `internal/s3reader/planned_fetch_test.go#TestPlannedFetch_CoalescingCorrectness`, `lakehouse-traces/internal/storage/parquets3/projected_fetch_test.go#TestRunQuery_PlannedVsWindow_Equivalence_Traces`, `lakehouse-traces/internal/storage/parquets3/cold_read_getcount_test.go#TestColdQuery_AnswersIdenticalAcrossOpenPaths`, `lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestPlannedDefault_TraceIDLookupUsesPlannedReader`, `internal/config/s3_readpath_knobs_test.go#TestS3ProjectedFetchKnobs_DefaultsMergeValidate`
 - Docs: `docs/architecture/metadata-and-s3-optimization.md`, `docs/read-path.md`
 - Changelog: `0.87.0`
 
@@ -513,6 +513,17 @@ Buffered full downloads made wildcard scans scale with worker count times file s
 
 - Verification: tests: `internal/storage/parquets3/range_reader_test.go#TestShouldUseWildcardRangeRead`, `lakehouse-traces/internal/storage/parquets3/range_reader_test.go#TestShouldUseWildcardRangeRead`, `internal/storage/parquets3/range_reader_test.go#TestShouldUseRangeRead`
 - Docs: `docs/read-path.md`, `docs/architecture/metadata-and-s3-optimization.md`
+
+### ✅ Zero-round-trip open of cached Parquet files
+
+`lh.feature.storage.zero_get_open` · status: shipped · surfaces: storage, flag
+
+**Zero-round-trip open**: a Parquet file whose footer is cached opens with no S3 request — the footer and the page index are served from memory — so only data ranges reach S3, and the footer cache is bounded by bytes rather than entries.
+
+Every footer-cache writer keeps the page-index stripe with the footer, and an overlay reader serves that tail from memory when a cached file is opened, with magic-byte skipping and no optimistic tail read. The overlay only serves bytes it holds for exactly the same key and object size; an entry cached for another size of the key is a miss. The cache charges each entry a modelled resident size (raw tail, decoded metadata, and a per-column-chunk term that covers the page-index state parquet-go memoizes after the entry was charged) against cache.footer_max_bytes. The model is calibrated against the measured heap with 1, 8 and 40 row groups, fresh and index-decoded, in both modules: it never charges less than the heap and at most 1.5x of it. Footers run 40-430 KB with token blooms on logs and 470-520 KB with the trace index on traces. With cache.footer_max_bytes = 0 the budget is 10% (logs) or 20% (traces) of the memory the process may use for caches, clamped to 32 MiB..1 GiB (logs) or 2 GiB (traces); an explicit value overrides it.
+
+- Verification: rows: `lh.flag.footer_max_bytes` (pass, executes) · tests: `internal/s3reader/overlay_reader_test.go#TestOverlay_SectionBoundaries`, `internal/s3reader/overlay_reader_test.go#TestOverlay_RandomRangesByteEqualToObject`, `internal/storage/parquets3/cold_read_getcount_test.go#TestCachedFooter_OpenAndPageIndexMakeZeroGETs`, `internal/storage/parquets3/footer_overlay_test.go#TestFooterWriters_AllKeepPageIndex`, `internal/storage/parquets3/footer_overlay_test.go#TestWithFooterOverlay_RequiresKeyAndSizeMatch`, `internal/storage/parquets3/footer_overlay_test.go#TestCachedFooter_FooterOnlyEntryFallsBackToLazyPageIndex`, `internal/storage/parquets3/footer_cache_test.go#TestFooterCache_ByteBoundNotEntryBound`, `internal/storage/parquets3/footer_overlay_test.go#TestCachedFooterWeightCalibration`, `internal/storage/parquets3/footer_overlay_test.go#TestOpenParquetFile_StaleSizeEntryIsAMiss`, `internal/storage/parquets3/footer_cache_test.go#TestAutoFooterMaxBytes_Table`, `internal/storage/parquets3/footer_cache_test.go#TestNewConfiguredFooterCache_AutoAndExplicit`, `internal/s3reader/overlay_reader_test.go#TestOverlay_StraddleOverShortInnerIsAnError`, `internal/config/config_test.go#TestLoad_RemovedFooterMaxItemsRejected`, `lakehouse-traces/internal/storage/parquets3/cold_read_getcount_test.go#TestCachedFooter_OpenAndPageIndexMakeZeroGETs`, `lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestFooterWriters_AllKeepPageIndex`, `lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestWithFooterOverlay_RequiresKeyAndSizeMatch`, `lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestCachedFooter_FooterOnlyEntryFallsBackToLazyPageIndex`, `lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestCachedFooterWeightCalibration`, `lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go#TestOpenParquetFile_StaleSizeEntryIsAMiss`, `lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestAutoFooterMaxBytes_Table`, `lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestNewConfiguredFooterCache_AutoAndExplicit`, `lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestFooterCache_ByteBoundNotEntryBound`
+- Docs: `docs/read-path.md`, `docs/performance.md`
 
 ### ✅ ZSTD compression tuning by age
 
