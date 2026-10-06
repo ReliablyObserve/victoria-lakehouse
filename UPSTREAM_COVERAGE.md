@@ -521,6 +521,8 @@ flag: 35/181 covered by at least one registry row.
 | `lh.manifest.partitions.schema` | LH manifest partitions — partition listing | admin | 🟡 declared, not yet executed |
 | `lh.manifest.range.schema` | LH manifest range — partition manifest lookup over a time window | admin | 🟡 declared, not yet executed |
 | `lh.ready.status` | LH ready — readiness probe | internal | 🟡 declared, not yet executed |
+| `lh.select.manifest.incomplete_listing_deletes_nothing_logs` | LH cold read after an incomplete manifest listing (a skipped tenant, a truncated LIST) — nothing is deleted, no deleted row returns, no retirement is forgotten (logs) | select | 🟡 declared, not yet executed |
+| `lh.select.manifest.incomplete_listing_deletes_nothing_traces` | LH cold read after an incomplete manifest listing (a skipped tenant, a truncated LIST) — nothing is deleted, no deleted row returns, no retirement is forgotten (traces) | select | 🟡 declared, not yet executed |
 | `lh.select.restart.downtime_beyond_guard_compaction_logs` | LH cold read after a restart that followed a downtime longer than the compaction guard, with compaction running — every row exactly once (logs) | select | 🟡 declared, not yet executed |
 | `lh.select.restart.downtime_beyond_guard_compaction_traces` | LH cold read after a restart that followed a downtime longer than the compaction guard, with compaction running — every span exactly once (traces) | select | 🟡 declared, not yet executed |
 | `lh.select.restart.same_hour_buffer_visible_logs` | LH cold read after a graceful restart — rows buffered in the same UTC hour as the shutdown flush are visible exactly once (logs) | select | 🟡 declared, not yet executed |

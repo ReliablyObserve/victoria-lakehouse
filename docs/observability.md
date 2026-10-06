@@ -121,6 +121,7 @@ graph LR
 | `lakehouse_buffer_oldest_pending_age_seconds` | Gauge | | Age of the oldest segment not yet fully written: how far object storage lags behind ingest |
 | `lakehouse_buffer_held_segments` | Gauge | | Committed segments restored at start and held until the first complete S3 manifest refresh (0 in steady state; alert `LakehouseBufferRestoredSegmentsHeld`) |
 | `lakehouse_buffer_oldest_held_age_seconds` | Gauge | | How long the longest-held restored segment has been held |
+| `lakehouse_manifest_refresh_incomplete_total` | Counter | `reason` | Refreshes that did not bring the manifest up to the bucket: `partial` (a tenant's project LIST failed, its entries were kept), `rejected` (the listing dropped most files and a HEAD sample found live objects), `head_unconfirmed` (the HEAD sample could not be taken). Nothing that infers "gone" acts on such a refresh (#418). All series are exported at zero |
 | `lakehouse_insert_flush_committed_segment` | Gauge | | Sequence number of the newest segment fully written (every older one is too) |
 | `lakehouse_buffer_view_excluded_objects_total` | Counter | | Objects a query skipped because the segment they were written from was served from the buffer in that query: each row is answered once |
 | `lakehouse_compaction_segment_guard_errors_total` | Counter | | Compaction scans that could not list the segment markers; the objects of unconfirmed segments were left alone |

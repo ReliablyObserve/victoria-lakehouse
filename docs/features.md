@@ -194,7 +194,7 @@ Partition metadata on S3 inherits the object store's latency floor. Where a depl
 
 The manifest is the index of what exists: which files cover which time range, for which tenant, with which labels and row counts. It answers "is there anything here at all" without an S3 GET, prunes files by label before any Parquet is opened, and exposes the partition and range APIs the select side and the hot-boundary discovery use.
 
-- Verification: rows: `lh.manifest.range.schema` (pass, pending), `lh.manifest.partitions.schema` (pass, pending) · tests: `internal/manifest/manifest_test.go`, `internal/manifest/api_test.go`, `internal/manifest/manifest_range_test.go`, `internal/manifest/refresh_tenantscoped_test.go`
+- Verification: rows: `lh.manifest.range.schema` (pass, pending), `lh.manifest.partitions.schema` (pass, pending), `lh.select.manifest.incomplete_listing_deletes_nothing_logs` (pass, pending), `lh.select.manifest.incomplete_listing_deletes_nothing_traces` (pass, pending) · tests: `internal/manifest/manifest_test.go`, `internal/manifest/api_test.go`, `internal/manifest/manifest_range_test.go`, `internal/manifest/refresh_tenantscoped_test.go`, `internal/manifest/refresh_head_confirm_test.go`, `internal/manifest/listing_property_test.go`
 - Docs: `docs/manifest-system.md#data-structures`, `docs/manifest-system.md#api-endpoints`
 - Changelog: `0.7.0`, `0.8.0`
 

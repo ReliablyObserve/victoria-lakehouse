@@ -282,9 +282,11 @@ lacks what compaction made of their objects while the pod was down. So it holds
 the segments it restored at start (and only those: a segment committed after the
 start follows the normal grace and is retired by it): none of them is retired
 until a **complete** S3 manifest refresh has been applied. A refresh that fails,
-that the cliff guard rejects (the first listing after loading a snapshot is not
-guarded: the snapshot is only a starting point) or that could not list one
-tenant's projects does not count. When a complete refresh has been applied, the
+that is rejected (it would drop more than half of the tracked files and a HEAD
+sample of the dropped keys finds live objects or cannot be taken, see below) or
+that could not list one tenant's projects does not count. This holds for the
+first listing after a snapshot load too: a sparse listing is not believed just
+because it is the first. When a complete refresh has been applied, the
 held segments whose grace has passed are retired in the same step, so their rows
 are served from the buffer until the manifest has them.
 
@@ -301,6 +303,36 @@ LIST errors or throttling, a dedicated tenant bucket whose listing fails, or a
 full LIST at very large object counts that does not finish inside the 5-minute
 warm-up / 2-minute periodic timeouts. A narrower release (LIST only the partitions
 the restored segments wrote to) is tracked in #411.
+
+**When a listing is believed (the HEAD-confirmation rule, #404 round 3, #418).**
+Every refresh that would leave fewer than half of the tracked files is checked
+before it is applied: up to 16 random dropped keys are sent a HEAD request. All
+404: the bucket really shrank (a peer's compaction or retention), the listing is
+applied at once. Any 200: the listing is incomplete, it is rejected
+(`ErrRefreshRejected`), the previous entries, the hold and `listed` are kept.
+A HEAD that fails (5xx, timeout) counts as unconfirmed and rejects too. The next
+refresh tries again, so a legitimate shrink never leaves the guard stuck. A
+listing that could not cover a tenant (its project LIST failed) is partial: the
+tenant's previous entries are kept, its retirements are not forgotten, the
+manifest does not count as listed, and `ErrRefreshPartial` is returned. All three
+outcomes are counted in `lakehouse_manifest_refresh_incomplete_total{reason="partial|rejected|head_unconfirmed"}`.
+The manifest exposes the last refresh that was accepted and covered everything as
+`Manifest.LastCompleteRefresh()` (start time and generation).
+
+Nothing that reads "absent from the manifest" as "gone" acts on anything less than
+a complete refresh that began after the event it confirms: the orphan sweep
+(Tier B) needs a complete listing and, per object, one that began after the
+object's last-modified time; the delete scheduler completes a tombstone or marks
+an absent key reaped only after a complete listing that began after the tombstone
+was created; compaction retires a tombstone, and the rewriter finishes a hand-off,
+only on a listed manifest; and a manifest snapshot is not rewritten (warm-up and
+periodic persist) until a complete listing has been applied in the process.
+
+Residual: a LIST that succeeds, covers every prefix and silently drops less than
+half of the objects is believed (S3 does not truncate a successful LIST; the
+sample cannot see this case). The HEAD sample can also miss a few live keys among
+many dead ones (a sample of 16 finds a live key with probability
+1-(1-p)^16 for a live share p of the dropped keys).
 
 On a select pod the same hold applies to the segments its bridge answers
 (`/internal/buffer/query`), with two cases to know:

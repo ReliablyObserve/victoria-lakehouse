@@ -247,7 +247,8 @@ flowchart TD
 - Uses AWS SDK v2 paginator (handles 1000-item pages)
 - Filters to `.parquet` files only
 - Keeps the full tracked entry (every enrichment field) for keys it already knows
-- Atomically replaces the entire manifest under write lock, unless the cliff guard rejects a listing that lost more than half the files
+- Atomically replaces the entire manifest under write lock. A listing that would lose more than half of the tracked files is applied only if a HEAD sample (16 random dropped keys) finds them all gone (404); a live key or a failing HEAD rejects it (`ErrRefreshRejected`). This applies to every refresh, the first after a snapshot load included
+- A listing that skipped an account (`ErrRefreshPartial`) keeps that account's previous entries and does not count as complete: `Listed()` and `LastCompleteRefresh()` only move on a refresh that covered every prefix, and the retirements of the skipped account are not forgotten
 - Recalculates `minTime`, `maxTime`, `totalFiles`, `totalBytes`
 - `ApplyListing(objects, listStart)` applies a listing from any other lister the same way
 
