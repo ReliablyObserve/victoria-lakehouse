@@ -1528,6 +1528,9 @@ func manifestSnapshotPath(cfg *config.Config) string {
 }
 
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string, statsAgg *stats.StatsAggregate) {
+	// Set before the first refresh: LakehouseManifestNoCompleteRefresh reads
+	// it during warm-up too (a 0 here would shrink its budget to 15 minutes).
+	metrics.ManifestRefreshIntervalSeconds.Set(cfg.Manifest.RefreshInterval.Seconds())
 	// Phase 1 (foreground): disk recovery + manifest-files gate.
 	// Disk recovery loads the most-recent snapshot; the lifecycle
 	// manager then checks MinManifestFiles before flipping
@@ -1685,7 +1688,6 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		WarmupDuration:    time.Since(warmupStart),
 	})
 
-	metrics.ManifestRefreshIntervalSeconds.Set(cfg.Manifest.RefreshInterval.Seconds())
 	refreshTicker := time.NewTicker(cfg.Manifest.RefreshInterval)
 	defer refreshTicker.Stop()
 	persistTicker := time.NewTicker(cfg.Manifest.PersistInterval)

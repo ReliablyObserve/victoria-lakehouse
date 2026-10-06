@@ -204,16 +204,25 @@ func TestReview404R4_RefreshTimestampGauges(t *testing.T) {
 		m.AddFile(part, enriched(key, 1))
 		objs = append(objs, ListedObject{Key: key, Size: 100})
 	}
-	start := time.Now().Add(-time.Second)
+	// The listing began a minute ago (a long LIST); it is applied now.
+	start := time.Now().Add(-time.Minute)
 	if !m.ApplyListing(objs, start) {
 		t.Fatal("fixture")
 	}
+	applied := time.Now()
 	near := func(got float64, want time.Time) bool {
 		d := got - float64(want.UnixNano())/1e9
-		return d > -0.01 && d < 0.01
+		return d > -0.05 && d < 0.05
 	}
-	if !near(metrics.ManifestLastCompleteRefreshTimestamp.Get(), start) {
-		t.Fatalf("complete timestamp %v, want the listing start %v", metrics.ManifestLastCompleteRefreshTimestamp.Get(), start)
+	// Round 5: the complete timestamp is when the listing was applied, not
+	// when it began; with the start, a LIST as long as the alert's budget made
+	// LakehouseManifestNoCompleteRefresh fire the moment it completed.
+	if !near(metrics.ManifestLastCompleteRefreshTimestamp.Get(), applied) {
+		t.Fatalf("complete timestamp %v, want the apply time %v (not the listing start %v)",
+			metrics.ManifestLastCompleteRefreshTimestamp.Get(), applied, start)
+	}
+	if !m.CompleteSince(start.Add(-time.Second)) || m.CompleteSince(start.Add(time.Second)) {
+		t.Fatal("CompleteSince must still compare against the listing start")
 	}
 	if !near(metrics.ManifestLastRefreshTimestamp.Get(), time.Now()) && metrics.ManifestLastRefreshTimestamp.Get() < float64(start.Unix()) {
 		t.Fatal("last refresh timestamp not set by a complete listing")

@@ -198,10 +198,12 @@ var (
 	// 0 until the first one. Read by the LakehouseManifestStale alert.
 	ManifestLastRefreshTimestamp = NewFloatGauge("lakehouse_manifest_last_refresh_timestamp_seconds")
 	// ManifestLastCompleteRefreshTimestamp is the Unix time at which the last
-	// COMPLETE listing the manifest applied began (every prefix listed, not
-	// rejected). Only such a listing lets the manifest say an object is gone,
+	// COMPLETE listing (every prefix listed, not rejected) was applied: its end,
+	// not its start, so a listing that takes long is not counted against the
+	// next one. Only such a listing lets the manifest say an object is gone,
 	// so while it does not move, tombstones are not completed and retired keys
-	// are not settled. 0 until the first one. Read by the
+	// are not settled. 0 until the first one (the alert then measures from
+	// process_start_time_seconds). Read by the
 	// LakehouseManifestNoCompleteRefresh alert.
 	ManifestLastCompleteRefreshTimestamp = NewFloatGauge("lakehouse_manifest_last_complete_refresh_timestamp_seconds")
 	// ManifestRefreshIntervalSeconds is the configured periodic refresh

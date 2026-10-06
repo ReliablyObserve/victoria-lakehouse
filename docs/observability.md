@@ -123,7 +123,7 @@ graph LR
 | `lakehouse_buffer_oldest_held_age_seconds` | Gauge | | How long the longest-held restored segment has been held |
 | `lakehouse_manifest_refresh_incomplete_total` | Counter | `reason` | Refreshes that did not bring the manifest up to the bucket: `partial` (a tenant's project LIST failed, its entries were kept), `rejected` (the listing dropped most files and a HEAD sample found live objects), `head_unconfirmed` (the HEAD sample could not be taken). Nothing that infers "gone" acts on such a refresh (#418). All series are exported at zero |
 | `lakehouse_manifest_last_refresh_timestamp_seconds` | Gauge | | Unix time of the last refresh the manifest applied (complete or partial; a rejected one does not count). 0 until the first. Alert `LakehouseManifestStale` |
-| `lakehouse_manifest_last_complete_refresh_timestamp_seconds` | Gauge | | Unix time at which the last complete listing the manifest applied began. Until it moves, tombstones are not completed, retired keys are not settled and restored buffer segments stay held. 0 until the first. Alert `LakehouseManifestNoCompleteRefresh` |
+| `lakehouse_manifest_last_complete_refresh_timestamp_seconds` | Gauge | | Unix time at which the last complete listing was applied (its end, not its start). Until it moves, tombstones are not completed, retired keys are not settled and restored buffer segments stay held. 0 until the first. Alert `LakehouseManifestNoCompleteRefresh` |
 | `lakehouse_manifest_refresh_interval_seconds` | Gauge | | The configured `manifest.refresh_interval`, for alerts expressed in refresh intervals |
 | `lakehouse_duplicate_file_keys_total` | Counter | `site` | File entries dropped or refused because their key was already tracked: `manifest_refresh`, `manifest_load` (dropped), `compaction_input` (merge group refused). Any increase is a defect: the entry would have served or merged its rows twice. Exported at zero. Alert `LakehouseDuplicateFileKeys` |
 | `lakehouse_compaction_orphans_skipped_total` | Counter | `reason` | Objects the orphan sweep's Tier B kept. `no_evidence`: absent from the manifest but with no retirement record (a listing missed it; never deleted); `delete_landed`, `retired_too_recently`, `rewrite_unfinished`: retired but not yet deletable; `too_young`, `in_manifest`, `manifest_drift_race`, `protected_prefix`, `not_parquet` |
@@ -307,13 +307,26 @@ Shipped in `alerts/alerts-lakehouse.yml`:
 | `LakehouseNotReady` | critical | Not ready for >5m |
 | `LakehouseSlowQueries` | warning | Sustained slow queries for 10m |
 | `LakehouseManifestStale` | warning | Refreshed at least once, but not in >2h, for 15m |
-| `LakehouseManifestNoCompleteRefresh` | warning | No complete bucket listing applied for more than 4 refresh intervals (at least 15 minutes), for 15m |
+| `LakehouseManifestNoCompleteRefresh` | warning | No complete bucket listing applied for more than 4 refresh intervals (at least 15 minutes), for 15m; before the first one, counted from process start (see below) |
 | `LakehouseDuplicateFileKeys` | warning | Any increase of `lakehouse_duplicate_file_keys_total` in 15m |
 | `LakehouseDiscoveryFailed` | critical | No storage nodes found for 10m |
 | `LakehouseS3ThrottleSustained` | warning | Sustained S3 throttling for 5m |
 | `LakehousePeerDown` | warning | High peer error rate for 5m |
 | `LakehouseTenantScopeViolation` | critical | Any `lakehouse_tenant_scope_violations_total` increase in 5m |
 | `LakehouseTenantBucketListFailing` | critical | A tenant's dedicated bucket failed to list for 10m (`lakehouse_manifest_tenant_bucket_list_errors_total`) |
+
+**`LakehouseManifestNoCompleteRefresh` and warm-up.** The alert measures the time since the last complete
+listing was *applied* (`lakehouse_manifest_last_complete_refresh_timestamp_seconds` is set when the listing
+lands, not when it began), so a listing's own duration is counted once, not against the next one. Until the
+first complete listing the gauge is 0; the alert then measures from `process_start_time_seconds` with the
+same budget, `max(4 × manifest.refresh_interval, 15m)` plus `for: 15m`. A pod whose first complete listing
+takes longer than that fires it: with the default 5-minute interval after 35 minutes, with the large profile's
+15-minute interval after 75 minutes. A complete listing slower than that budget in steady state fires it too,
+and that is meant: until such a listing lands, tombstones are not completed, retired keys are not settled and
+restored buffer segments stay held, so raise `manifest.refresh_interval` (or split the bucket) rather than
+silence it. `lakehouse_manifest_refresh_interval_seconds` is exported before the first refresh, so the budget
+is right during warm-up. `process_start_time_seconds` is the standard process metric the `/metrics` endpoint
+exports on Linux; where it is missing, only the warm-up term is lost.
 
 ## Structured Logging
 

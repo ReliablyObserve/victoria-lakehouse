@@ -1560,6 +1560,9 @@ func parseTenantPrefix(prefix string) (uint32, uint32, bool) {
 }
 
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string, statsAgg *stats.StatsAggregate) {
+	// Set before the first refresh: LakehouseManifestNoCompleteRefresh reads
+	// it during warm-up too (a 0 here would shrink its budget to 15 minutes).
+	metrics.ManifestRefreshIntervalSeconds.Set(cfg.Manifest.RefreshInterval.Seconds())
 	// Phase 1 (foreground): disk recovery + manifest-files gate.
 	// See lakehouse-traces/main.go runStartup for full semantics.
 	sm.SetPhase(startup.PhaseDiskRecovery)
@@ -1702,7 +1705,6 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		WarmupDuration:      time.Since(warmupStart),
 	})
 
-	metrics.ManifestRefreshIntervalSeconds.Set(cfg.Manifest.RefreshInterval.Seconds())
 	refreshTicker := time.NewTicker(cfg.Manifest.RefreshInterval)
 	defer refreshTicker.Stop()
 	persistTicker := time.NewTicker(cfg.Manifest.PersistInterval)

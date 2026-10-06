@@ -110,7 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   group naming a source twice is refused (`lakehouse_duplicate_file_keys_total{site}`, alert `LakehouseDuplicateFileKeys`).
   `lakehouse_manifest_last_refresh_timestamp_seconds` is now exported (the `LakehouseManifestStale` alert read it but nothing
   set it) along with `lakehouse_manifest_last_complete_refresh_timestamp_seconds` and the new alert
-  `LakehouseManifestNoCompleteRefresh` (no complete listing for four refresh intervals, at least 15 minutes). Both binaries
+  `LakehouseManifestNoCompleteRefresh` (no complete listing applied for four refresh intervals, at least 15 minutes, counted from
+  the end of the last one, or from process start until the first). Both binaries
   (the manifest, compaction and delete packages are shared). Residuals: a successful LIST that covers every prefix and
   silently drops fewer than half of the objects is believed for serving (a dropped retired key's record is then forgotten,
   and an object dropped before the delete scheduler discovered it is not protected by its HEAD check); objects with no

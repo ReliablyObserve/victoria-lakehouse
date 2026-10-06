@@ -73,9 +73,21 @@ groups:
           description: "Manifest may be stale. New S3 files won't be queryable. Check S3 ListObjects permissions."
 
       - alert: LakehouseManifestNoCompleteRefresh
+        # Measured from the end of the last complete listing; before the first
+        # one (the gauge is 0) from process start, with the same budget, so a
+        # long first listing at startup does not fire it on its own.
         expr: |
-          time() - lakehouse_manifest_last_complete_refresh_timestamp_seconds
-            > clamp_min(4 * lakehouse_manifest_refresh_interval_seconds, 900)
+          (
+            lakehouse_manifest_last_complete_refresh_timestamp_seconds > 0
+              and time() - lakehouse_manifest_last_complete_refresh_timestamp_seconds
+                > clamp_min(4 * lakehouse_manifest_refresh_interval_seconds, 900)
+          )
+          or
+          (
+            lakehouse_manifest_last_complete_refresh_timestamp_seconds == 0
+              and time() - process_start_time_seconds
+                > clamp_min(4 * lakehouse_manifest_refresh_interval_seconds, 900)
+          )
         for: 15m
         labels:
           severity: warning

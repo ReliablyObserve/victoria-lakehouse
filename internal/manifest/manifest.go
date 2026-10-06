@@ -1646,7 +1646,12 @@ func (m *Manifest) applyRefreshedFiles(ctx context.Context, files map[string][]F
 
 	metrics.ManifestLastRefreshTimestamp.Set(float64(lastRefresh.UnixNano()) / 1e9)
 	if complete {
-		metrics.ManifestLastCompleteRefreshTimestamp.Set(float64(listStart.UnixNano()) / 1e9)
+		// When the complete listing was APPLIED, not when it began: the alert
+		// measures the time since the manifest last knew the whole bucket, and
+		// a listing that takes as long as the interval must not look stale the
+		// moment it lands. (CompleteSince keeps the start: that is what a
+		// tombstone is compared against.)
+		metrics.ManifestLastCompleteRefreshTimestamp.Set(float64(lastRefresh.UnixNano()) / 1e9)
 	}
 	metrics.StorageFilesTotal.Set(int64(totalFiles))
 	metrics.StorageBytesTotal.Set(totalBytes)

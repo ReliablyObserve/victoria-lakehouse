@@ -97,4 +97,17 @@ func TestManifestAlerts_ReadExportedSeries(t *testing.T) {
 			t.Errorf("LakehouseManifestNoCompleteRefresh does not read %s: %q", want, nc.Expr)
 		}
 	}
+	// Warm-up (#404 round 5): the gauge is 0 until the first complete listing,
+	// so a bare time() - gauge fired 15 minutes into every start whose first
+	// LIST was slower than that. The steady-state term is guarded by > 0 and the
+	// warm-up term measures from process start with the same budget.
+	compact := strings.Join(strings.Fields(nc.Expr), " ")
+	for _, want := range []string{
+		"lakehouse_manifest_last_complete_refresh_timestamp_seconds > 0 and time() - lakehouse_manifest_last_complete_refresh_timestamp_seconds > clamp_min(4 * lakehouse_manifest_refresh_interval_seconds, 900)",
+		"lakehouse_manifest_last_complete_refresh_timestamp_seconds == 0 and time() - process_start_time_seconds > clamp_min(4 * lakehouse_manifest_refresh_interval_seconds, 900)",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Errorf("LakehouseManifestNoCompleteRefresh lacks the term %q: %q", want, compact)
+		}
+	}
 }

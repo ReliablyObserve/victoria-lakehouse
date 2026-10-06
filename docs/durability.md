@@ -366,9 +366,10 @@ un-hides data on "absent from the manifest" alone:
 
 Refresh health is exported as `lakehouse_manifest_last_refresh_timestamp_seconds`
 (any applied refresh), `lakehouse_manifest_last_complete_refresh_timestamp_seconds`
-(start of the last complete one) and `lakehouse_manifest_refresh_interval_seconds`;
+(when the last complete one was applied: its end) and `lakehouse_manifest_refresh_interval_seconds`;
 `LakehouseManifestNoCompleteRefresh` fires when no complete listing has been
-applied for four refresh intervals (at least 15 minutes, `for: 15m`). While that
+applied for four refresh intervals (at least 15 minutes, `for: 15m`), counted from
+process start until the first one lands (see `docs/observability.md`). While that
 lasts, tombstones are not completed, retired keys are not settled and restored
 buffer segments stay held.
 
@@ -550,7 +551,12 @@ publish replaced them, or an output was abandoned) and **pending** keys
 (uploaded, not yet published) and the refresh adopts neither. A retired key is
 held until a listing that began after the retirement proves the object gone —
 not until the delete lands, because the listing already in flight was answered
-before it.
+before it. Pending keys live in memory only. **Known gap
+([#423](https://github.com/ReliablyObserve/victoria-lakehouse/issues/423)):** a
+compaction output uploaded and not yet published when the process is killed has
+no record after the restart; the refresh adopts it next to its still-live
+sources and their rows are served twice. (A delete rewrite's replacement is
+covered by its durable `prepared` record, see the table below.)
 Without that, every "a retired object is reclaimed" claim below was false
 within one refresh interval: the refresh re-adopted the object first — serving
 its rows twice, bringing deleted rows back once the tombstone retired, and
