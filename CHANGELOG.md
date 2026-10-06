@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.145.3] - 2026-10-06
+
 ### Security
 
 - **`/internal/buffer/query` no longer serves every tenant's unflushed rows to any caller, and the buffer bridge presents the peer key (#384, #383).**
