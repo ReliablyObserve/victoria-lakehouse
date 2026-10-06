@@ -318,7 +318,7 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 		return nil, nil // declared id column: don't enumerate (matches VT), no scan
 	}
 
-	// The buffer view is taken before the object list (see GetQueryResult).
+	// The buffer view is taken before the object list (see RunQuery).
 	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
 	defer view.release()
 	runHookBetweenViewAndList()
@@ -383,7 +383,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	// The buffer view is taken before the object list (see GetQueryResult).
+	// The buffer view is taken before the object list (see RunQuery).
 	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
 	defer view.release()
 	runHookBetweenViewAndList()
@@ -431,7 +431,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 
 	startNs, endNs := q.GetFilterTimeRange()
 
-	// The buffer view is taken before the object list (see GetQueryResult).
+	// The buffer view is taken before the object list (see RunQuery).
 	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
 	defer view.release()
 	runHookBetweenViewAndList()

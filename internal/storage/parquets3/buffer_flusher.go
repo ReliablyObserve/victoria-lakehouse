@@ -273,7 +273,7 @@ func (f *BufferFlusher) restoreCommitted(st flushState, now time.Time) {
 		return t
 	})
 	if restored > 0 {
-		f.segs.HoldCommitted(time.Now())
+		f.segs.HoldCommitted(f.now())
 	}
 }
 
@@ -612,7 +612,7 @@ func (f *BufferFlusher) tick(ctx context.Context, now time.Time) {
 	}
 	f.segs.Reap(f.now(), f.grace)
 	f.writer.persistCatalog(ctx)
-	f.observe(time.Now())
+	f.observe(f.now())
 }
 
 func (f *BufferFlusher) failed(now time.Time, g *membuffer.Segment, err error) {

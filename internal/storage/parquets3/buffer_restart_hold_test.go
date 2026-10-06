@@ -176,7 +176,17 @@ func TestBufferRestartHold_GuardRejectionKeepsTheHold(t *testing.T) {
 	if !m.ApplyListing(e.bucketListing(), time.Now()) {
 		t.Fatal("fixture: the first listing must be accepted")
 	}
-	keys := e.phantoms(m, 8) // now the manifest has 10 files, the bucket 2: guarded
+	keys := e.phantoms(m, 8) // now the manifest has 10 files, the bucket lists 2
+	// The 8 are still in the bucket: the listing that omits them is incomplete,
+	// which the HEAD sample of the dropped keys finds out.
+	m.SetObjectProber(func(_ context.Context, _, key string) (bool, error) {
+		for _, k := range keys {
+			if k == key {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
 	before := metrics.ManifestRefreshCliffGuardRejections.Get()
 	for i := 0; i < 2; i++ {
 		e.refresh() // RefreshManifest answers nil: serving is unchanged
@@ -188,15 +198,41 @@ func TestBufferRestartHold_GuardRejectionKeepsTheHold(t *testing.T) {
 		}
 		e.check("rejected refresh: the segments still serve their rows")
 	}
-	// Accepted again: released, still exact.
-	for _, k := range keys {
-		m.RemoveFile("dt=2026-08-01/hour=00", k)
-	}
+	// The objects are gone for real now (HEAD answers 404): the shrink is
+	// confirmed, the refresh is applied and releases the hold, still exact.
+	m.SetObjectProber(nil)
 	e.refresh()
 	if got := e.held(); got != 0 {
 		t.Errorf("held after an accepted refresh = %d, want 0", got)
 	}
 	e.check("after an accepted refresh")
+}
+
+// A shrinking listing whose dropped keys cannot be HEAD-checked (the S3 HEAD
+// fails) is not believed: the hold stays, and the first refresh whose sample is
+// answered releases it.
+func TestBufferRestartHold_HeadErrorKeepsTheHold(t *testing.T) {
+	e, m := staleRestart(t, newMockS3Server(), 0)
+	if !m.ApplyListing(e.bucketListing(), time.Now()) {
+		t.Fatal("fixture: the first listing must be accepted")
+	}
+	e.phantoms(m, 8)
+	m.SetObjectProber(func(context.Context, string, string) (bool, error) { return false, fmt.Errorf("503 SlowDown") })
+	before := metrics.ManifestRefreshIncomplete.Get("head_unconfirmed")
+	e.refresh()
+	if got := metrics.ManifestRefreshIncomplete.Get("head_unconfirmed") - before; got != 1 {
+		t.Fatalf("head_unconfirmed ticked %d times, want 1", got)
+	}
+	if got := e.held(); got != 2 {
+		t.Fatalf("an unconfirmed shrink released the hold: held=%d, want 2", got)
+	}
+	e.check("unconfirmed shrink: the segments still serve their rows")
+	m.SetObjectProber(nil) // HEAD works again: 404 for the phantoms
+	e.refresh()
+	if got := e.held(); got != 0 {
+		t.Errorf("held after a confirmed shrink = %d, want 0", got)
+	}
+	e.check("after the confirmed shrink")
 }
 
 // A refresh that fails (LIST errors) keeps the hold, and the first one that
@@ -342,6 +378,17 @@ func TestBufferRestartHold_ViewIsTakenBeforeTheObjectList(t *testing.T) {
 			}
 			return n
 		}},
+		{"stream_ids", func(e *restartEnv) int {
+			got, err := e.s.GetStreamIDs(context.Background(), nil, e.window("*", from, to), 0)
+			if err != nil {
+				e.t.Fatal(err)
+			}
+			n := 0
+			for _, v := range got {
+				n += int(v.Hits)
+			}
+			return n
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _ := staleRestart(t, newMockS3Server(), 0)
@@ -360,7 +407,8 @@ func TestBufferRestartHold_ViewIsTakenBeforeTheObjectList(t *testing.T) {
 }
 
 // Stress: queries running while the first refresh publishes and releases the
-// restored segments never see fewer rows than were acknowledged.
+// restored segments always see exactly the rows that were acknowledged: none
+// lost, none doubled.
 func TestBufferRestartHold_ConcurrentQueriesNeverLoseRows(t *testing.T) {
 	e, _ := staleRestart(t, newMockS3Server(), 0)
 	want := e.total
@@ -393,9 +441,9 @@ func TestBufferRestartHold_ConcurrentQueriesNeverLoseRows(t *testing.T) {
 					t.Errorf("RunQuery: %v", err)
 					return
 				}
-				if total < want {
+				if total != want {
 					low.Add(1)
-					t.Errorf("a query concurrent with the refresh returned %d rows, fewer than the %d acknowledged", total, want)
+					t.Errorf("a query concurrent with the refresh returned %d rows, want exactly the %d acknowledged (fewer = lost, more = duplicated)", total, want)
 				}
 			}
 		}()
@@ -407,7 +455,7 @@ func TestBufferRestartHold_ConcurrentQueriesNeverLoseRows(t *testing.T) {
 	e.f.tick(context.Background(), time.Now())
 	wg.Wait()
 	if low.Load() > 0 {
-		t.Fatalf("%d queries returned fewer rows than acknowledged", low.Load())
+		t.Fatalf("%d queries returned a row count other than the acknowledged one", low.Load())
 	}
 	e.check("after the refresh")
 }
