@@ -225,10 +225,16 @@ Every query takes a `bufferView` **before** it uses its object list:
   is dropped.
 
 The scan then drops every object whose key carries one of those nonces
-(`lakehouse_buffer_view_excluded_objects_total`). A segment is removed only when
-it is committed, its grace has passed and no snapshot holds it; a peer keeps a
-committed segment readable for the grace so that a select node has listed its
-objects before the peer stops serving the rows. The rows are served with **no
+(`lakehouse_buffer_view_excluded_objects_total`). A peer keeps a committed
+segment readable for the grace so that a select node has listed its objects
+before the peer stops serving the rows. Once the grace has passed the segment is
+**retired**: queries that start from then on read its rows from Parquet, while
+the queries that already hold it finish on it. It is closed and its directory
+removed at the first flusher tick (1 s) after the last of those queries ends,
+so a steady stream of overlapping queries cannot keep it alive
+(`lakehouse_buffer_segments{state="retired"}`). A snapshot that holds a
+retired segment for 30 minutes is treated as leaked: the segment is closed
+anyway, and that query's late read of it fails with a logged warning. The rows are served with **no
 time watermark**: a late row, a backfilled row or a restarted pod needs no
 special case, and a trace-by-ID lookup is the same code path as any other query.
 
@@ -319,7 +325,11 @@ late and backfilled rows by `TestSegments_LateRowsReachParquet` and
 `TestSegments_BackfillIsKept`; ingest while a drain runs by
 `TestSegments_IngestDuringDrainLosesNothing`; the seal policy and the removal
 after the grace by `TestSegments_SealPolicy` and
-`TestSegments_ReapRespectsGraceAndSnapshots`; the moved-aside old directory by
+`TestSegments_ReapRespectsGraceAndSnapshots`; removal under queries that always
+overlap by `TestSegments_ReapUnderOverlappingSnapshots` and
+`TestSegments_ReapStress`, a long query that holds a retired segment by
+`TestBufferView_RetiredSegmentHeldByALongQuery`, and the leaked-snapshot bound by
+`TestSegments_RetiredHoldLimit`; the moved-aside old directory by
 `TestSegments_SingleStoreBufferIsMovedAside`. The end-to-end form, with the real
 containers, is `TestChaos_RestartRestoresTheBuffer` and
 `TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow` (`tests/e2e`, tags `e2e chaos`).

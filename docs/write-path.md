@@ -155,7 +155,7 @@ Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a spec
 |---|---|---|
 | `lakehouse_insert_rows_total` | Counter | Rows admitted into the buffer |
 | `lakehouse_buffer_pending_rows` | Gauge | Rows in segments not yet committed to Parquet |
-| `lakehouse_buffer_segments` | Gauge | Segments by state (`active`, `pending`, `committed`) |
+| `lakehouse_buffer_segments` | Gauge | Segments by state (`active`, `pending`, `committed`, `retired`) |
 | `lakehouse_insert_flush_total` | Counter | Segment drains completed |
 | `lakehouse_insert_flush_errors_total` | Counter | Failed flushes |
 | `lakehouse_insert_flush_duration_seconds` | Histogram | Flush latency |

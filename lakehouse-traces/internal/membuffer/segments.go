@@ -38,9 +38,16 @@ import (
 // Readers take a Snapshot: the live segments, held until Release, and their
 // nonces. Every object a segment produced carries its nonce in its key, so a
 // query reads a live segment's rows from the segment and excludes its objects
-// from the cold scan: each row is answered exactly once at every instant. A
-// segment is removed only after it is committed, its grace has passed and no
-// snapshot holds it.
+// from the cold scan: each row is answered exactly once at every instant.
+//
+// Once a segment is committed and its grace has passed, Reap retires it: it
+// leaves the live list, so a snapshot taken from then on neither reads its rows
+// nor excludes its objects (they are in Parquet and listed by then). The
+// snapshots that already hold it keep reading it; it is closed and its
+// directory removed at the first Reap after the last of them is released, so
+// queries that keep overlapping cannot keep it alive (#368). A snapshot that
+// holds a retired segment longer than RetiredHoldLimit is treated as leaked and
+// the segment is closed anyway.
 type Segments struct {
 	root string
 	cfg  Config
@@ -49,12 +56,21 @@ type Segments struct {
 	// a sealed segment never takes another row.
 	add sync.RWMutex
 
-	mu      sync.Mutex // guards everything below
-	active  *Segment
-	list    []*Segment // live segments in seq order, the active one last
+	mu     sync.Mutex // guards everything below
+	active *Segment
+	list   []*Segment // live segments in seq order, the active one last
+	// retired are committed segments past their grace that snapshots taken
+	// before the retirement still hold; no new snapshot sees them.
+	retired []*Segment
 	nextSeq uint64
 	closed  bool
 }
+
+// RetiredHoldLimit bounds how long a snapshot can keep a retired segment open.
+// A query holds its snapshot for as long as it runs, so a hold this long is a
+// leaked snapshot: the segment is closed and removed anyway, and a late read of
+// it fails with errSegmentClosed instead of the disk filling up.
+const RetiredHoldLimit = 30 * time.Minute
 
 // Segment is one ingest-time slice of the buffer.
 type Segment struct {
@@ -82,6 +98,7 @@ type Segment struct {
 	// guarded by Segments.mu
 	sealed    bool
 	committed time.Time // zero until committed
+	retiredAt time.Time // zero until Reap retires it
 	refs      int
 }
 
@@ -378,21 +395,38 @@ func (s *Segments) CommitThrough(seq uint64, at time.Time) {
 	}
 }
 
-// Reap removes the committed segments whose grace has passed and that no
-// snapshot holds: upstream MustClose, then the directory. It returns how many
-// it removed.
+// Reap retires the committed segments whose grace has passed, so no new
+// snapshot takes them, and removes every retired segment no snapshot holds any
+// more (or that a snapshot has held for RetiredHoldLimit): upstream MustClose,
+// then the directory. It returns how many it removed.
 func (s *Segments) Reap(now time.Time, grace time.Duration) int {
 	s.mu.Lock()
-	var gone []*Segment
 	keep := s.list[:0]
 	for _, g := range s.list {
-		if !g.committed.IsZero() && g.refs == 0 && now.Sub(g.committed) >= grace {
-			gone = append(gone, g)
+		if !g.committed.IsZero() && now.Sub(g.committed) >= grace {
+			g.retiredAt = now
+			s.retired = append(s.retired, g)
 			continue
 		}
 		keep = append(keep, g)
 	}
+	clear(s.list[len(keep):])
 	s.list = keep
+	var gone []*Segment
+	held := s.retired[:0]
+	for _, g := range s.retired {
+		switch {
+		case g.refs == 0:
+			gone = append(gone, g)
+		case now.Sub(g.retiredAt) >= RetiredHoldLimit:
+			logger.Warnf("membuffer: committed segment %s is still held by %d snapshot(s) %s after it was retired; closing it (a query still reading it fails)", g.nonce, g.refs, now.Sub(g.retiredAt).Round(time.Second))
+			gone = append(gone, g)
+		default:
+			held = append(held, g)
+		}
+	}
+	clear(s.retired[len(held):])
+	s.retired = held
 	s.mu.Unlock()
 	for _, g := range gone {
 		g.closeForGood()
@@ -422,8 +456,11 @@ func (s *Segments) DebugFlush() {
 // Stats is a point-in-time view of the segments for metrics.
 type Stats struct {
 	Active, Pending, Committed int
-	PendingRows                int64
-	OldestPendingAge           time.Duration
+	// Retired counts committed segments past their grace that only snapshots
+	// taken before their retirement still hold.
+	Retired          int
+	PendingRows      int64
+	OldestPendingAge time.Duration
 }
 
 // Stats counts the segments by state.
@@ -445,6 +482,7 @@ func (s *Segments) Stats(now time.Time) Stats {
 			st.Committed++
 		}
 	}
+	st.Retired = len(s.retired)
 	return st
 }
 
@@ -537,7 +575,7 @@ func (s *Segments) Close() {
 		return
 	}
 	s.closed = true
-	list := append([]*Segment(nil), s.list...)
+	list := append(append([]*Segment(nil), s.list...), s.retired...)
 	s.mu.Unlock()
 	s.add.Lock()
 	defer s.add.Unlock()

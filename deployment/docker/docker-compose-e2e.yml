@@ -397,18 +397,18 @@ services:
       # Enable VT's service-graph background task on the cold tier.
       # The task queries spans (via our adapter) and persists edge
       # rows back to S3, which the Jaeger /api/dependencies reader
-      # picks up unchanged. taskLookbehind covers the flush lag
-      # so newly-flushed spans contribute to the next aggregation.
-      #
-      # Timeout is bumped from the 30s upstream default to 5m: the
-      # task runs a join+aggregation over the entire lookbehind
-      # window's spans on cold storage. With 24h+ of accumulated
-      # data per partition this needs more time than the hot-tier
-      # default assumed.
+      # picks up unchanged. Same settings as the hot victoriatraces
+      # service above: each run aggregates [now truncated to the
+      # interval - lookbehind, now truncated to the interval], so a
+      # span is counted by the first run whose truncated time is at
+      # or after it (at most 2 intervals + the run time). Unflushed
+      # spans are answered from the insert buffer, so no flush lag
+      # needs covering. The timeout stays below the interval so a
+      # run never swallows the next tick.
       - "-servicegraph.enableTask=true"
-      - "-servicegraph.taskInterval=5m"
-      - "-servicegraph.taskLookbehind=10m"
-      - "-servicegraph.taskTimeout=4m"
+      - "-servicegraph.taskInterval=1m"
+      - "-servicegraph.taskLookbehind=2m"
+      - "-servicegraph.taskTimeout=50s"
       - "-lakehouse.config=/etc/lakehouse/policy.yml"
       - "-loggerLevel=INFO"
       # Opt-in OTLP gRPC listener (plaintext), same flags as the hot VT above.

@@ -683,6 +683,7 @@ func (f *BufferFlusher) observe(now time.Time) {
 	metrics.BufferSegments.Set("active", int64(st.Active))
 	metrics.BufferSegments.Set("pending", int64(st.Pending))
 	metrics.BufferSegments.Set("committed", int64(st.Committed))
+	metrics.BufferSegments.Set("retired", int64(st.Retired))
 	metrics.BufferPendingRows.Set(st.PendingRows)
 	metrics.BufferOldestPendingAge.Set(int64(st.OldestPendingAge.Seconds()))
 	metrics.InsertFlushCommittedSeq.Set(int64(f.state.CommittedThroughSeq))

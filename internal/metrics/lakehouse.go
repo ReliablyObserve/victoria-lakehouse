@@ -373,8 +373,9 @@ var (
 	BufferFlushErrors = NewCounterVec("lakehouse_buffer_flush_errors_total", "stage")
 	// BufferSegments is the number of insert-buffer segments by state: active
 	// (taking writes, always 1), pending (sealed and not yet fully written to
-	// object storage) and committed (written; kept readable for the grace
-	// period). A growing pending count means object storage is slower than
+	// object storage), committed (written; kept readable for the grace
+	// period) and retired (past the grace; held only by queries that started
+	// before, removed when the last of them ends). A growing pending count means object storage is slower than
 	// ingest or unreachable; the rows are safe on the local disk meanwhile.
 	BufferSegments = NewGaugeVec("lakehouse_buffer_segments", "state")
 	// BufferSegmentsSealed and BufferSegmentsCommitted count segments sealed and

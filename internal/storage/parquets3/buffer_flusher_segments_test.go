@@ -771,17 +771,21 @@ func TestSegments_ReapRespectsGraceAndSnapshots(t *testing.T) {
 			dir = filepath.Join(e.dir, "buffer", en.Name())
 		}
 	}
+	if n := e.segs.Reap(time.Now(), time.Hour); n != 0 {
+		t.Fatal("reaped inside the grace period")
+	}
 	snap := e.segs.Snapshot()
-	if n := e.segs.Reap(time.Now().Add(time.Hour), time.Minute); n != 0 {
+	// Past the grace: retired, but the snapshot taken before keeps it.
+	if n := e.segs.Reap(time.Now().Add(2*time.Hour), time.Hour); n != 0 {
 		t.Fatalf("reaped %d segments a snapshot holds", n)
 	}
 	if _, ok := snap.Nonces()[g.Nonce()]; !ok {
 		t.Fatal("the snapshot lost the segment")
 	}
-	snap.Release()
-	if n := e.segs.Reap(time.Now(), time.Hour); n != 0 {
-		t.Fatal("reaped inside the grace period")
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the held segment's directory is gone: %v", err)
 	}
+	snap.Release()
 	if n := e.segs.Reap(time.Now().Add(2*time.Hour), time.Hour); n != 1 {
 		t.Fatalf("reaped %d; want the committed segment", n)
 	}

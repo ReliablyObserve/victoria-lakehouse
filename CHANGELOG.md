@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The e2e service-graph check waits for the bound the task's schedule sets (closes #395).**
+  VictoriaTraces' service-graph task aggregates the window that ends at the current time truncated to its interval,
+  so a span is counted only by the first run whose truncated time is at or after it. With the e2e stack's 5-minute
+  interval that was up to about 10 minutes, and `TestServiceGraph_ColdTierGeneratesEdges` waited 5: it passed or failed
+  with the push's position on the wall clock (measured in CI: 2m30 or 7m30). lakehouse-traces in the e2e stack now runs
+  the task like the hot VictoriaTraces next to it (interval 1m, lookbehind 2m, timeout 50s) and the test polls for two
+  intervals plus the timeout. Test and e2e stack only; no product change.
+
+- **A committed insert-buffer segment is removed even while queries keep overlapping (both binaries, closes #368).**
+  A segment past its grace was removed only at a flusher tick that saw no query holding it, and every query took a hold
+  on every live segment, so a steady stream of overlapping queries could keep it, its directory and the exclusion of its
+  Parquet objects alive indefinitely (reproduced by `TestSegments_ReapUnderOverlappingSnapshots`: never removed in 5 s
+  under four overlapping readers). The grace now retires the segment: queries started afterwards read its rows from
+  Parquet, queries that already hold it finish on it, and it is removed at the first tick after the last of them ends.
+  A hold of 30 minutes is treated as a leaked snapshot and the segment is closed anyway. New gauge state
+  `lakehouse_buffer_segments{state="retired"}`.
+
 - **The e2e ingest matrix lists the fixture bucket once per poll, not once per cell, and finishes within its budget (closes #367).**
   Every poll sampled each established cell and listed the whole bucket after each one, so a poll cost one full LIST
   per cell and the Parquet phase grew with the square of the cell count. #345 made all 26 logs cells pass the buffer
