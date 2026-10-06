@@ -8,7 +8,7 @@ services:
     depends_on: {s3: {condition: service_healthy}}
     entrypoint: ["/bin/sh","-c","for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do mc alias set l http://s3:9000 minioadmin minioadmin && mc mb l/obs-archive --ignore-existing && exit 0; sleep 2; done; exit 1"]
   hot-vl:
-    image: victoriametrics/victoria-logs:v1.52.0
+    image: victoriametrics/victoria-logs:v1.53.0
     command: ["-storageDataPath=/data","-retentionPeriod=1d"]
     ports: ["127.0.0.1:${PORT_BASE}4:9428"]
   hot-vt:

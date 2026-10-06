@@ -161,6 +161,24 @@ run missing-declared
 check_rc "declaring a one-sided file does not excuse it" "$rc" 1
 check_contains "one-sided file still reported" "$out" "missing:"
 
+# The single exception: a row carrying the upstream-fixed-in-logs-pin marker
+# excuses a patch the logs side dropped because its pin already has the fix.
+mk upstream-fixed
+printf 'only traces\n' > "$TMP/upstream-fixed/vl-traces/f.patch"
+cat > "$TMP/upstream-fixed/vl-traces/DIVERGENCE.md" <<'EOF'
+- `f.patch` — upstream-fixed-in-logs-pin: logs pin includes the fix.
+EOF
+run upstream-fixed
+check_rc "marked upstream-fixed one-sided patch is excused" "$rc" 0
+# ... only when it is missing from the LOGS side; missing from traces never is.
+mk upstream-fixed-wrong-side
+printf 'only logs\n' > "$TMP/upstream-fixed-wrong-side/vl-logs/g.patch"
+cat > "$TMP/upstream-fixed-wrong-side/vl-traces/DIVERGENCE.md" <<'EOF'
+- `g.patch` — upstream-fixed-in-logs-pin: wrong side.
+EOF
+run upstream-fixed-wrong-side
+check_rc "marker does not excuse a patch missing from traces" "$rc" 1
+
 # --- 7. declaration naming a nonexistent file fails --------------------
 mk unknown
 cat > "$TMP/unknown/vl-traces/DIVERGENCE.md" <<'EOF'

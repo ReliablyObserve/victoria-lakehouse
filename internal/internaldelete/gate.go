@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 	"github.com/VictoriaMetrics/metrics"
 )
@@ -105,14 +106,14 @@ const RunTaskRequestsCounter = `vl_http_requests_total{path="/delete/run_task"}`
 // or DELETE can then never start a delete task, for example one forged through
 // SSRF.
 //
-// VictoriaLogs master (app/vlselect/main.go processDeleteRunTaskRequest) and
+// VictoriaLogs v1.53.0 (app/vlselect/main.go processDeleteRunTaskRequest) and
 // VictoriaTraces v0.12.0 (issue #225) refuse non-POST requests there, with
 // exactly this answer, after the -delete.enable check and before parsing the
-// tenant or the filter. VictoriaLogs v1.52.0, the pin of the logs binary, has
-// no such check, so this wrapper adds it. Once the pin includes the upstream
-// check this becomes redundant but harmless
-// (TestUpstreamRunTaskStillLacksMethodCheck fails at that point so the
-// duplicate gets dropped).
+// tenant or the filter. The logs binary (VictoriaLogs v1.53.0) therefore no
+// longer uses this wrapper; the traces binary, which embeds the VictoriaLogs
+// revision VictoriaTraces v0.12.0 pins (v1.52.0, no check), still does.
+// TestUpstreamRunTaskStillLacksMethodCheck (lakehouse-traces) fails when that
+// revision gains the check, so the duplicate gets dropped.
 //
 // Only run_task is affected, as upstream: stop_task and active_tasks are
 // unchanged. flagOn reports upstream's -delete.enable: while it is off the
@@ -146,9 +147,11 @@ func RunTaskPOSTOnly(flagOn func() bool, next http.HandlerFunc) http.HandlerFunc
 // whatever the method, so the observable order matches upstream. A nil gate is
 // always open (/internal/select/* has no enable flag).
 //
-// The v1.52.0 pin of VictoriaLogs, and the VictoriaLogs revision the traces
-// binary embeds, lack the check; once they include it this is redundant but
-// harmless (the drift guards fail at that point).
+// VictoriaLogs v1.53.0, the pin of the logs binary, does the check itself
+// (issue #1635), so the logs binary no longer uses this wrapper; the
+// VictoriaLogs revision the traces binary embeds (v1.52.0) lacks it, so the
+// traces binary still does. The traces drift guard fails when that revision
+// gains the check.
 func POSTOnly(gate func() bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && (gate == nil || gate()) {
@@ -157,4 +160,33 @@ func POSTOnly(gate func() bool, next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// DeleteAuthKeyFlagName is upstream's -deleteAuthKey flag (VictoriaLogs v1.53.0),
+// which protects every /delete/* request and overrides -httpAuth.* there. It is
+// registered by upstream's vlselect package, never here.
+const DeleteAuthKeyFlagName = "deleteAuthKey"
+
+// DeleteAuth guards every /delete/* request (upstream's public delete API and the
+// lakehouse's own /delete/logsql/* API) the way VictoriaLogs v1.53.0 does in
+// vlselect.RequestHandler: first thing, before any other check, the request
+// must carry the -deleteAuthKey as the authKey argument (401 with upstream's
+// answer otherwise), or, when the flag is unset, pass -httpAuth.*. Without it,
+// registering vlselect.IsAuthKeyProtectedPath with the HTTP server (which
+// exempts /delete/* from -httpAuth.* because the handler is expected to check
+// the key itself) would leave the lakehouse-only /delete/logsql/* routes open.
+//
+// A binary that has not registered the flag (the traces binary, whose
+// VictoriaLogs revision lacks it) passes everything through unchanged.
+func DeleteAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(strings.ReplaceAll(r.URL.Path, "//", "/"), "/delete/") {
+			if f := flag.Lookup(DeleteAuthKeyFlagName); f != nil {
+				if key, ok := f.Value.(*flagutil.Password); ok && !httpserver.CheckAuthFlag(w, r, key) {
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

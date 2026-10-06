@@ -80,6 +80,13 @@ while IFS= read -r name; do
   a="$LOGS_DIR/$name"
   b="$TRACES_DIR/$name"
   if [[ ! -f "$a" ]]; then
+    # The one excusable one-sided file: the logs pin has caught up with an
+    # upstream fix the traces pin still lacks, so the logs side dropped the
+    # patch. The row must say so with the marker below; it goes away (with the
+    # traces patch) when VictoriaTraces moves to a VictoriaLogs that has the fix.
+    if is_declared "$name" && [[ -f "$b" ]] && grep -q "^[[:space:]]*[-*][[:space:]]*\`$name\`.*upstream-fixed-in-logs-pin" "$DIVERGENCE_FILE"; then
+      continue
+    fi
     note "missing: $a exists in $TRACES_DIR but not in $LOGS_DIR — the two VictoriaLogs copies must carry the same patch set"
     continue
   fi

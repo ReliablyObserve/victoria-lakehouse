@@ -14,8 +14,8 @@
 # is still the real upstream release.
 #
 #   docker build -f deployment/docker/Dockerfile.upstream-probe \
-#     --build-arg UPSTREAM=victoriametrics/victoria-logs:v1.52.0 \
-#     -t vl-probed:v1.52.0 .
+#     --build-arg UPSTREAM=victoriametrics/victoria-logs:v1.53.0 \
+#     -t vl-probed:v1.53.0 .
 #
 # Probe with: ["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:<port>/health"]
 #

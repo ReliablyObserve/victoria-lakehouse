@@ -11,7 +11,7 @@ ARG VERSION=dev
 # against those exact trees and a mismatch fails the build with an unhelpful
 # "patch failed" hunk error. Asserted by TestDockerfilePinsMatchMakefile in
 # tests/conformance.
-ARG VL_VERSION=v1.52.0
+ARG VL_VERSION=v1.53.0
 # VictoriaLogs at commit c945d2949e98 (= VL v1.52.0), the commit
 # VictoriaTraces v0.12.0's own go.mod requires. Derived, never chosen.
 ARG VL_COMMIT=c945d2949e98
@@ -40,8 +40,7 @@ RUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/exte
     cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch && \
     git apply /tmp/patches/vl-logs/vl-export-severity.patch && \
-    git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch && \
-    git apply /tmp/patches/vl-logs/vl-partition-close-order.patch
+    git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch
 RUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \
     cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch && \

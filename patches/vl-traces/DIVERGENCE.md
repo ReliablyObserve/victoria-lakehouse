@@ -4,7 +4,7 @@ Both directories patch VictoriaLogs, but two different checkouts of it:
 
 | Directory | Applied to | Pin |
 | --- | --- | --- |
-| `patches/vl-logs/` | `deps/VictoriaLogs` | `VL_VERSION_LOGS` (v1.52.0) |
+| `patches/vl-logs/` | `deps/VictoriaLogs` | `VL_VERSION_LOGS` (v1.53.0) |
 | `patches/vl-traces/` | `lakehouse-traces/deps/VictoriaLogs` | `VL_COMMIT_TRACES` (c945d2949e98 = v1.52.0, the commit VictoriaTraces v0.12.0 pins) |
 
 The **content** of the two patch sets is the same — same hunks, same added
@@ -20,8 +20,9 @@ must be removed.
 
 Each row: `` `file` `` — which upstream change moved the context.
 
-There are currently no declared divergences: both pins are VictoriaLogs v1.52.0,
-so the two directories are byte-equal. Keep the two pins and the two
-directories separate anyway; a future VictoriaTraces release can pin a VL
-commit that lags `VL_VERSION_LOGS` again, and this file is where such a
-difference is declared.
+- `vlstorage-dispatch.patch` — v1.53.0 guarded the body of `RunQuery` with `if localStorage != nil {` (last-N optimisation moved behind it), so the logs patch inserts the `externalStorage` branch before that guard; the traces pin (c945d2949e98) still has the unguarded body. The added lines are identical.
+- `vl-partition-close-order.patch` — upstream-fixed-in-logs-pin: VictoriaLogs v1.53.0 closes datadb before indexdb in `mustClosePartition` itself, so `patches/vl-logs/` no longer carries the patch. The traces pin (c945d2949e98 = v1.52.0) still has the old order, so `patches/vl-traces/` keeps it until VictoriaTraces pins a VictoriaLogs that includes the fix.
+
+The two pins now differ (logs v1.53.0, traces c945d2949e98 = v1.52.0). Keep the two
+directories separate; this file is where each difference is declared, and rows
+are removed as the traces pin catches up.

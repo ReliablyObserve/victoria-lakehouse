@@ -62,7 +62,7 @@ import (
 // a running node speaks without reading go.mod. It must equal the version the
 // root go.mod requires; TestVLCompatMatchesGoMod fails the build otherwise,
 // because a stale value here misreports compatibility to every client that asks.
-const vlCompat = "1.52.0"
+const vlCompat = "1.53.0"
 
 var (
 	configPath      = flag.String("lakehouse.config", "", "Path to YAML config file")
@@ -585,6 +585,13 @@ func run(cfg *config.Config, addr string) {
 	if cfg.Telemetry.Enabled {
 		handler = otelhttp.NewHandler(handler, "lakehouse")
 	}
+
+	// -deleteAuthKey (VictoriaLogs v1.53.0) guards every /delete/* request first,
+	// and overrides -httpAuth.* there: the HTTP server skips Basic Auth for the
+	// paths upstream reports as checking an authKey flag themselves, and
+	// DeleteAuth is that check for both delete APIs.
+	handler = internaldelete.DeleteAuth(handler)
+	registerAuthKeyProtectedPaths()
 
 	requestHandler := func(w http.ResponseWriter, r *http.Request) bool {
 		handler.ServeHTTP(w, r)
@@ -1188,48 +1195,57 @@ func mountBufferQuery(mux *http.ServeMux, src buffer.Source, authKey string) {
 	mux.Handle(buffer.Path, buffer.Gate(buffer.Path, buffer.InternalSelectDisabled, buffer.NewHandler(src, authKey)))
 }
 
+// registerAuthKeyProtectedPaths tells the HTTP server which requests verify an
+// -*AuthKey flag themselves, so it does not demand -httpAuth.* credentials for
+// them first: that is how -deleteAuthKey overrides -httpAuth.* on /delete/*
+// (VictoriaLogs v1.53.0, issue #1764). It is upstream's own predicate; the
+// binary does not serve /internal/force_merge, /internal/force_flush,
+// /internal/log_new_streams or /internal/partition/*, the other paths upstream
+// protects this way. Must run once, before httpserver.Serve.
+func registerAuthKeyProtectedPaths() {
+	httpserver.RegisterAuthKeyProtectedPathsFunc(vlselect.IsAuthKeyProtectedPath)
+}
+
 // mountInternalProtocol mounts VL's cluster protocol for /internal/select/* and
 // /internal/delete/*. /internal/delete/* goes to upstream's own
 // vlselect.RequestHandler, so the -internaldelete.enable gate (default off),
 // its help text and its "disabled" answer are VictoriaLogs' code;
 // internaldelete.Handler only adds the lakehouse delete.enabled requirement
-// after upstream's flag. Both prefixes answer a bare 405 to anything but POST, as
-// VictoriaLogs master's internalselect.RequestHandler does
-// (internaldelete.POSTOnly; the v1.52.0 pin lacks the check).
+// after upstream's flag. Both prefixes answer a bare 405 to anything but POST
+// from upstream's own internalselect.RequestHandler (VictoriaLogs v1.53.0, issue
+// #1635), so no lakehouse wrapper is needed.
 //
 // -internalselect.disable (upstream's flag, default off) turns /internal/select/*
 // off with upstream's own answer, checked first as upstream does; buffer.Gate
 // does the same for /internal/buffer/query on insert pods.
 func mountInternalProtocol(mux *http.ServeMux, deleteEnabled bool) {
 	mux.Handle("/internal/select/", buffer.Gate("/internal/select/*", buffer.InternalSelectDisabled,
-		internaldelete.POSTOnly(nil, func(w http.ResponseWriter, r *http.Request) {
-			internalselect.RequestHandler(r.Context(), w, r)
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			internalselect.RequestHandler(r.Context(), w, r, strings.ReplaceAll(r.URL.Path, "//", "/"))
 		})))
 	mux.HandleFunc("/internal/delete/", internaldelete.Handler(internaldelete.FlagEnabled, deleteEnabled,
-		internaldelete.POSTOnly(internaldelete.FlagEnabled, func(w http.ResponseWriter, r *http.Request) {
+		func(w http.ResponseWriter, r *http.Request) {
 			vlselect.RequestHandler(w, r)
-		})))
+		}))
 }
 
 // mountPublicDelete serves upstream's public delete API (/delete/run_task,
 // /delete/stop_task, /delete/active_tasks) through upstream's own
-// vlselect.RequestHandler: the -delete.enable gate (default off), its help
-// text, its answers and its request handling are VictoriaLogs' code, and the
-// storage calls land in the lakehouse adapter, which registers each task as a
-// tombstone scoped to the request's tenant. internaldelete.PublicHandler only
-// adds the lakehouse delete.enabled requirement after upstream's flag, and
-// delete.ScopeTaskRequests the caller, so stop_task and active_tasks act only on
-// the caller's own tasks (globalRead: the operator view).
-// internaldelete.RunTaskPOSTOnly makes /delete/run_task POST-only, as on
-// VictoriaLogs master (the v1.52.0 pin lacks that check). Any other /delete/*
-// path the lakehouse does not serve itself gets upstream's answer too, as on a
-// VictoriaLogs node.
+// vlselect.RequestHandler: the -delete.enable gate (default off), the
+// -deleteAuthKey check, its help text, its answers (including the 405 that
+// makes /delete/run_task POST-only, VictoriaLogs v1.53.0) and its request
+// handling are VictoriaLogs' code, and the storage calls land in the lakehouse
+// adapter, which registers each task as a tombstone scoped to the request's
+// tenant. internaldelete.PublicHandler only adds the lakehouse delete.enabled
+// requirement after upstream's flag, and delete.ScopeTaskRequests the caller, so
+// stop_task and active_tasks act only on the caller's own tasks (globalRead: the
+// operator view). Any other /delete/* path the lakehouse does not serve itself
+// gets upstream's answer too, as on a VictoriaLogs node.
 func mountPublicDelete(mux *http.ServeMux, deleteEnabled bool, globalRead func(*http.Request) bool) {
 	mux.HandleFunc("/delete/", internaldelete.PublicHandler(internaldelete.PublicFlagEnabled, deleteEnabled,
-		internaldelete.RunTaskPOSTOnly(internaldelete.PublicFlagEnabled,
-			delete.ScopeTaskRequests(globalRead, func(w http.ResponseWriter, r *http.Request) {
-				vlselect.RequestHandler(w, r)
-			}))))
+		delete.ScopeTaskRequests(globalRead, func(w http.ResponseWriter, r *http.Request) {
+			vlselect.RequestHandler(w, r)
+		})))
 }
 
 // globalReadAuthorizer validates the operator credential that widens a delete
@@ -1300,7 +1316,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	}
 
 	if cfg.SelectEnabled() {
-		internalselect.Init()
+		internalselect.Init(0)
 		mountInternalProtocol(mux, cfg.Delete.Enabled)
 		mountPublicDelete(mux, cfg.Delete.Enabled, globalReadAuthorizer(cfg))
 

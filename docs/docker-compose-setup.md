@@ -200,8 +200,8 @@ victorialogs:
     context: ../../
     dockerfile: deployment/docker/Dockerfile.upstream-probe
     args:
-      UPSTREAM: victoriametrics/victoria-logs:v1.52.0
-  image: vl-probed:v1.52.0
+      UPSTREAM: victoriametrics/victoria-logs:v1.53.0
+  image: vl-probed:v1.53.0
   command:
     - "-storageDataPath=/data"
     - "-retentionPeriod=24h"
@@ -251,8 +251,8 @@ vlselect:
     context: ../../
     dockerfile: deployment/docker/Dockerfile.upstream-probe
     args:
-      UPSTREAM: victoriametrics/victoria-logs:v1.52.0
-  image: vl-probed:v1.52.0
+      UPSTREAM: victoriametrics/victoria-logs:v1.53.0
+  image: vl-probed:v1.53.0
   command:
     - "-storageNode=victorialogs:9428,lakehouse-logs:9428"
 ```

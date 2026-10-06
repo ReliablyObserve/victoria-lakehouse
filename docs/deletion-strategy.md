@@ -359,8 +359,10 @@ flag, so both cannot be linked into one binary.
   because the protocol writes into the lakehouse tombstone store.
 - **POST only**, like `/internal/select/*`: any other method answers a bare
   `405` (empty body) after the two gates above, as VictoriaTraces 0.12 and
-  VictoriaLogs master (unreleased, #1635) do, so a GET forged through SSRF cannot
-  run, stop or list tasks. Upstream's cluster client already sends POST.
+  VictoriaLogs v1.53.0 (#1635) do, so a GET forged through SSRF cannot run, stop
+  or list tasks. Upstream's cluster client already sends POST. The logs binary
+  gets the 405 from upstream's own handler; the traces binary adds the check
+  itself, because the VictoriaLogs revision it embeds (v1.52.0) lacks it.
 - **`run_task`** registers a tombstone with the task's id, scoped to exactly
   the task's `tenant_ids`, over every row not newer than the task's timestamp
   that matches its filter (upstream's semantics), with `delete.default_mode`.
@@ -383,14 +385,14 @@ flag, so both cannot be linked into one binary.
 Mounting `vlselect.RequestHandler` also registers VictoriaLogs' other select
 flags in the logs binary, so `-help` lists `-search.maxQueryDuration`,
 `-search.maxConcurrentRequests`, `-search.maxQueueDuration`, `-select.disable`,
-`-internalselect.disable`, `-delete.enable`, `-search.logSlowQueryDuration` and
-`-vmalert.proxyURL`. The lakehouse's own `/select/*` handling does not read the
+`-internalselect.disable`, `-delete.enable`, `-deleteAuthKey`,
+`-search.logSlowQueryDuration` and `-vmalert.proxyURL`. The lakehouse's own `/select/*` handling does not read the
 search and select ones yet — `query.timeout` and `query.max_concurrent` govern
 the lakehouse select path — so setting any of them makes lakehouse-logs refuse
 to start instead of silently ignoring it (as before vlselect was linked, when
 they were undefined). Moving `/select/*` onto upstream's handler, which will
-honour them, is tracked separately. `-delete.enable` is honoured: see the next
-section.
+honour them, is tracked separately. `-delete.enable` and `-deleteAuthKey` are honoured: see the
+next section.
 
 ### Upgrade note: mixed VictoriaTraces v0.11 / v0.12 clusters
 
@@ -422,12 +424,23 @@ whose storage calls go through the same dispatch as the cluster protocol.
   request headers) and answers upstream's `{"task_id":"…"}`; the task becomes a
   tombstone scoped to the request's tenant, exactly as a cluster `run_task` for
   that one tenant.
-  **`run_task` requires POST**, as VictoriaTraces 0.12 and VictoriaLogs master
-  (unreleased, #1635) do (VictoriaTraces issue #225): any other method answers `405 Only POST method
+  **`run_task` requires POST**, as VictoriaTraces 0.12 and VictoriaLogs v1.53.0
+  (#1635) do (VictoriaTraces issue #225): any other method answers `405 Only POST method
   is allowed; got <METHOD>.` after the `-delete.enable` and `delete.enabled`
   checks and before anything is parsed, and no task is created, so a GET forged
   through SSRF cannot start a delete. `stop_task` and `active_tasks` accept any
-  method, as upstream.
+  method, as upstream. The logs binary gets this from upstream's handler, the
+  traces binary adds the check itself (its embedded VictoriaLogs, v1.52.0, lacks it).
+- **`-deleteAuthKey`** (logs binary only; VictoriaLogs v1.53.0, #1749): when set,
+  every `/delete/*` request, the lakehouse's own `/delete/logsql/*` API included,
+  must carry it as the `authKey` argument, else `401` with upstream's text
+  (`Expected to receive non-empty authKey when -deleteAuthKey is set`, or `The
+  provided authKey doesn't match -deleteAuthKey`). The check comes first, before
+  the `-delete.enable` answer, and it replaces `-httpAuth.*` on `/delete/*`
+  (#1764): the key alone opens the path, and `-httpAuth.*` credentials alone no
+  longer do. With the flag unset, `/delete/*` still needs the `-httpAuth.*`
+  credentials, if any. The traces binary has no such flag (VictoriaTraces v0.12.0
+  and the VictoriaLogs revision it embeds predate it).
 - **`stop_task`** and **`active_tasks`** act for the request's tenant, resolved
   like every other delete request (see [Tenant Scope](#tenant-scope)):
   `active_tasks` lists only the tasks scoped exactly to that tenant, and

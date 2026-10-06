@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  VL_VERSION_LOGS: v1.52.0
+  VL_VERSION_LOGS: v1.53.0
   VL_COMMIT_TRACES: c945d2949e98
   VT_VERSION: v0.12.0
   GOWORK: "off"

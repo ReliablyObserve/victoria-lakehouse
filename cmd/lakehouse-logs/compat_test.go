@@ -10,7 +10,7 @@ import (
 
 // vlRequireRe matches the root module's VictoriaLogs requirement, e.g.
 //
-//	github.com/VictoriaMetrics/VictoriaLogs v1.52.0
+//	github.com/VictoriaMetrics/VictoriaLogs v1.53.0
 var vlRequireRe = regexp.MustCompile(`(?m)^\s*github\.com/VictoriaMetrics/VictoriaLogs\s+(v\S+)`)
 
 // TestVLCompatMatchesGoMod keeps the version this binary advertises equal to

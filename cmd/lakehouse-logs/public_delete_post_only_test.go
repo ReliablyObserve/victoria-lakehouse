@@ -24,10 +24,11 @@ import (
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
 
-// /delete/run_task, /internal/delete/* and /internal/select/* are POST-only, as
-// on VictoriaLogs master (the v1.52.0 pin lacks the checks;
-// internaldelete.RunTaskPOSTOnly and internaldelete.POSTOnly add them). Twin of
-// lakehouse-traces/public_delete_post_only_test.go.
+// /delete/run_task, /internal/delete/* and /internal/select/* are POST-only,
+// from VictoriaLogs v1.53.0's own handlers (issue #1635); the logs binary has no
+// lakehouse wrapper for it. The traces binary still does
+// (internaldelete.RunTaskPOSTOnly / POSTOnly: its VictoriaLogs revision, v1.52.0,
+// lacks the checks). Twin of lakehouse-traces/public_delete_post_only_test.go.
 
 // queryRequest is the SSRF shape of an attack: every argument in the URL query
 // and no body (Go's ParseForm ignores the body of a GET, HEAD or DELETE, so a
@@ -139,19 +140,18 @@ func TestMountPublicDelete_RunTaskCounterParity(t *testing.T) {
 	}
 }
 
-// The pinned VictoriaLogs v1.52.0 accepts a GET on /delete/run_task.
-// internaldelete.RunTaskPOSTOnly duplicates a check VictoriaLogs master has:
-// call the vendored upstream handler with the attack shape and fail the moment
-// it refuses the GET itself, so the duplicate gets dropped.
-func TestUpstreamRunTaskStillLacksMethodCheck(t *testing.T) {
+// Behavioural pin of the reuse: the vendored VictoriaLogs v1.53.0 answers the
+// 405 on /delete/run_task itself, so the lakehouse adds nothing. Fails (with the
+// attack shape: arguments in the query, no body) if a future pin stops doing so,
+// which would reopen GET-triggered deletes.
+func TestUpstreamRunTaskRefusesGET(t *testing.T) {
 	enablePublicDelete(t)
 	internalvlstorage.SetStorage(nopStorage{}, delete.NewTombstoneStore())
 	rec := httptest.NewRecorder()
 	vlselect.RequestHandler(rec, httptest.NewRequest(http.MethodGet, "/delete/run_task?filter=*", nil))
-	if rec.Code == http.StatusMethodNotAllowed {
-		t.Fatal("the vendored VictoriaLogs /delete/run_task now answers 405 to a GET itself: " +
-			"drop internaldelete.RunTaskPOSTOnly, its use in mountPublicDelete and its tests, and flip " +
-			"vl.delete.run_task.non_post.differ to pass")
+	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "Only POST method is allowed; got GET.\n" {
+		t.Fatalf("the vendored VictoriaLogs /delete/run_task answered %d %q to a GET, want 405 \"Only POST method is allowed; got GET.\": "+
+			"the pin lost the check the logs binary now relies on", rec.Code, rec.Body.String())
 	}
 }
 
@@ -169,7 +169,7 @@ func internalServer(t *testing.T, deleteEnabled bool) (*delete.TombstoneStore, h
 	t.Helper()
 	store := delete.NewTombstoneStore()
 	internalvlstorage.SetStorage(nopStorage{}, store)
-	internalselect.Init()
+	internalselect.Init(0)
 	t.Cleanup(internalselect.Stop)
 	mux := http.NewServeMux()
 	mountInternalProtocol(mux, deleteEnabled)
@@ -267,17 +267,14 @@ func TestMountInternalProtocol_GatesAnswerBeforeMethodCheck(t *testing.T) {
 	}
 }
 
-// Behavioural drift guards: the pinned VictoriaLogs answers a GET on its
-// cluster protocol; internaldelete.POSTOnly duplicates a check VictoriaLogs
-// master has. Fail the moment the vendored handlers refuse the GET themselves.
-func TestUpstreamInternalProtocolStillAcceptsGET(t *testing.T) {
+// Behavioural pin of the reuse: the vendored VictoriaLogs v1.53.0 refuses a GET
+// on its cluster protocol itself (a bare 405), so the lakehouse adds no wrapper.
+func TestUpstreamInternalProtocolRefusesGET(t *testing.T) {
 	enableInternalDelete(t)
 	internalvlstorage.SetStorage(nopStorage{}, delete.NewTombstoneStore())
-	internalselect.Init()
+	internalselect.Init(0)
 	t.Cleanup(internalselect.Stop)
-	const msg = "the vendored VictoriaLogs %s now answers 405 to a GET itself: drop internaldelete.POSTOnly " +
-		"(its use in mountInternalProtocol) and its tests, and flip vl.internal.delete.non_post.differ / " +
-		"vl.internal.select.non_post.differ to pass"
+	const msg = "the vendored VictoriaLogs %s no longer answers a bare 405 to a GET: the logs binary relies on it (issue #1635)"
 	newReq := func(path string) *http.Request {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		t.Cleanup(cancel)
@@ -285,12 +282,12 @@ func TestUpstreamInternalProtocolStillAcceptsGET(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	vlselect.RequestHandler(rec, newReq("/internal/delete/run_task"))
-	if rec.Code == http.StatusMethodNotAllowed {
+	if rec.Code != http.StatusMethodNotAllowed || rec.Body.Len() != 0 {
 		t.Fatalf(msg, "/internal/delete/*")
 	}
 	rec = httptest.NewRecorder()
-	internalselect.RequestHandler(context.Background(), rec, newReq("/internal/select/tenant_ids"))
-	if rec.Code == http.StatusMethodNotAllowed {
+	internalselect.RequestHandler(context.Background(), rec, newReq("/internal/select/tenant_ids"), "/internal/select/tenant_ids")
+	if rec.Code != http.StatusMethodNotAllowed || rec.Body.Len() != 0 {
 		t.Fatalf(msg, "/internal/select/*")
 	}
 }

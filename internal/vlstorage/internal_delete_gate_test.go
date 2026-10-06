@@ -25,7 +25,7 @@ import (
 // out to the cold tier.
 func internalDeleteServer(t *testing.T, ts *delete.TombstoneStore, flagOn, deleteEnabled bool) http.HandlerFunc {
 	t.Helper()
-	internalselect.Init()
+	internalselect.Init(0)
 	t.Cleanup(internalselect.Stop)
 	SetStorage(mockStore{}, ts)
 	if err := flag.Set(internaldelete.FlagName, map[bool]string{true: "true", false: "false"}[flagOn]); err != nil {
