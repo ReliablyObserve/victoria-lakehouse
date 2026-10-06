@@ -270,15 +270,38 @@ tombstone's query-time filter keeps the rows hidden meanwhile. Markers older tha
 
 The grace counts from the real commit, also across a restart. The flusher's state
 file (`buffer_flush_state.json`) records the commit time of every segment
-committed within the last two graces; a restarted pod gives each committed
-segment the remainder of its grace from that time, and removes at startup the
-ones whose grace passed while it was down. So the buffer never serves a
-segment's rows after the guard may have released its objects, however long the
-pod was down: a pod that had been down for longer than twice the grace used to
-give those segments a new full grace, while compaction had already merged their
-objects, and every row was answered twice for up to one grace (#379). A committed
-segment with no record (older than the records' retention) is treated as long
-committed.
+committed within the last two graces, and a restarted pod gives each committed
+segment the remainder of its grace from that time, not a new full grace (a pod
+that had been down for longer than twice the grace used to give those segments a
+new grace while compaction had already merged their objects, so every row was
+answered twice for up to one grace, #379).
+
+A restarted pod starts from the manifest snapshot on disk, which can be older than
+the segments (a kill -9 loses what was committed after the last snapshot) and
+lacks what compaction made of their objects while the pod was down. So it retires
+no restored segment until its first successful S3 manifest refresh has been
+applied; the refresh and the retirement of the segments whose grace has passed
+happen in the same step, so the rows are served from the buffer until the manifest
+has them and never twice for longer than that step. If the first refresh never
+succeeds (object store unreachable), the segments stay served: rows may be
+duplicated only if a peer compacted their objects meanwhile (bounded by the
+buffer's size), and they are never hidden.
+
+Limits of the guarantee:
+
+- A clock that jumps back by more than the grace: a commit time in the future is
+  taken as now, so the segment is served for up to one grace from the restart.
+- Upgrade: a state file written by a release before the commit records existed has
+  no `commits`. For that one start each committed segment gets its grace from the
+  restart (what that release did), also after a graceful shutdown, and the first
+  refresh rule above applies. The next commit writes the records.
+- A crash between the segment's marker PUT and the commit-state write, followed by
+  a downtime above twice the grace and a peer compacting the objects, can serve the
+  segment's rows twice for about one grace (#406).
+- A committed segment with no record next to other records is older than the
+  records' retention and is treated as long committed.
+- Readiness does not wait for the first refresh (serve-while-warming, unchanged);
+  until it succeeds the pod answers from its snapshot plus the buffer.
 
 Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheFreeOnes`,
 `TestSegmentGuard_ReleasedFilesCopiesOnlyWhenItDrops`,

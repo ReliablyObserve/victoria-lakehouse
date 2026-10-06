@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"context"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -16,6 +17,13 @@ import (
 // releases the segment's objects.
 
 const restoreGrace = time.Minute // segEnv flushers use this grace
+
+// releaseRestored is the pod's first successful S3 manifest refresh, at now: it
+// releases the committed segments the flusher restored at load.
+func releaseRestored(f *BufferFlusher, now time.Time) {
+	f.clock = func() time.Time { return now }
+	f.ManifestRefreshed(time.Now())
+}
 
 // committedLive is how many committed segments the buffer still serves.
 func committedLive(e *segEnv, now time.Time) int { return e.segs.Stats(now).Committed }
@@ -71,14 +79,28 @@ func TestBufferFlusher_CommitTimesPersistedAndRestored(t *testing.T) {
 		}
 	})
 
-	t.Run("expired at startup is reaped by the load", func(t *testing.T) {
+	t.Run("expired at startup is reaped by the first refresh, not the load", func(t *testing.T) {
 		e := newSegEnv(t)
 		commit := commitTwo(t, e, e.flusher(1000))
 		e.restart()
 		f2 := newBufferFlusher(e.bw, e.segs, filepath.Join(e.dir, "buffer"), e.keep, BufferFlusherConfig{TargetBytes: 1000 * estBytesPerTraceRow, MaxAge: time.Hour, Grace: restoreGrace})
-		if err := f2.load(commit.Add(restoreGrace + time.Second)); err != nil {
+		now := commit.Add(restoreGrace + time.Second)
+		if err := f2.load(now); err != nil {
 			t.Fatal(err)
 		}
+		if got := committedLive(e, commit); got != 2 {
+			t.Fatalf("%d committed segments live after load, want 2: nothing is retired before the first refresh", got)
+		}
+		f2.clock = func() time.Time { return now }
+		f2.tick(context.Background(), now)
+		if got := committedLive(e, commit); got < 2 {
+			t.Fatalf("%d committed segments live after a tick, want >= 2: the loop must not retire them before the first refresh", got)
+		}
+		f2.ManifestRefreshed(time.Now().Add(-time.Hour)) // began before this flusher: does not count
+		if got := committedLive(e, commit); got < 2 {
+			t.Fatalf("%d live after a refresh that began before the flusher, want >= 2", got)
+		}
+		releaseRestored(f2, now)
 		if got := committedLive(e, commit); got != 0 {
 			t.Fatalf("%d committed segments live after an expired restart, want 0", got)
 		}
@@ -99,14 +121,39 @@ func TestBufferFlusher_LoadUsesTheBackupsCommitTimes(t *testing.T) {
 	if err := f2.load(commit.Add(3 * restoreGrace)); err != nil {
 		t.Fatal(err)
 	}
+	releaseRestored(f2, commit.Add(3*restoreGrace))
 	if got := committedLive(e, commit); got != 0 {
 		t.Fatalf("%d committed segments live; the backup's commit times must expire them", got)
 	}
 }
 
-// A committed segment with no record is older than the records' retention, so
-// it is treated as long committed and removed.
+// A committed segment with no record, next to records, is older than the
+// records' retention, so it is treated as long committed and removed by the
+// first refresh.
 func TestBufferFlusher_CommittedWithoutRecordIsExpired(t *testing.T) {
+	e := newSegEnv(t)
+	f := e.flusher(1000)
+	commit := commitTwo(t, e, f)
+	st, _ := readFlushState(f.statePath)
+	st.Commits = st.Commits[1:] // seq 1 loses its record, seq 2 keeps it
+	if err := f.writeState(st); err != nil {
+		t.Fatal(err)
+	}
+	e.restart()
+	f2 := newBufferFlusher(e.bw, e.segs, filepath.Join(e.dir, "buffer"), e.keep, BufferFlusherConfig{TargetBytes: 1000 * estBytesPerTraceRow, MaxAge: time.Hour, Grace: restoreGrace})
+	if err := f2.load(commit); err != nil {
+		t.Fatal(err)
+	}
+	releaseRestored(f2, commit)
+	if got := committedLive(e, commit); got != 1 {
+		t.Fatalf("%d committed segments live, want 1 (the record-less one is gone, the recorded one is within grace)", got)
+	}
+}
+
+// A state written before the commit records existed has none: for that one
+// start each committed segment gets its grace from the restart, as that release
+// gave it, even after a long downtime (documented upgrade behaviour).
+func TestBufferFlusher_StateWithoutRecordsKeepsMainBehaviour(t *testing.T) {
 	e := newSegEnv(t)
 	f := e.flusher(1000)
 	commit := commitTwo(t, e, f)
@@ -117,11 +164,16 @@ func TestBufferFlusher_CommittedWithoutRecordIsExpired(t *testing.T) {
 	}
 	e.restart()
 	f2 := newBufferFlusher(e.bw, e.segs, filepath.Join(e.dir, "buffer"), e.keep, BufferFlusherConfig{TargetBytes: 1000 * estBytesPerTraceRow, MaxAge: time.Hour, Grace: restoreGrace})
-	if err := f2.load(commit); err != nil {
+	now := commit.Add(10 * restoreGrace)
+	if err := f2.load(now); err != nil {
 		t.Fatal(err)
 	}
-	if got := committedLive(e, commit); got != 0 {
-		t.Fatalf("%d record-less committed segments live, want 0", got)
+	releaseRestored(f2, now)
+	if got := committedLive(e, now); got != 2 {
+		t.Fatalf("%d live right after the upgrade restart, want 2", got)
+	}
+	if n := e.segs.Reap(now.Add(restoreGrace), restoreGrace); n != 2 {
+		t.Fatalf("Reap at restart+grace removed %d, want 2", n)
 	}
 }
 
@@ -143,6 +195,7 @@ func TestBufferFlusher_FutureCommitTimeIsClamped(t *testing.T) {
 	if err := f2.load(commit); err != nil {
 		t.Fatal(err)
 	}
+	releaseRestored(f2, commit)
 	if got := committedLive(e, commit); got != 2 {
 		t.Fatalf("%d live, want 2 (within grace of now)", got)
 	}
@@ -193,6 +246,10 @@ func TestBufferFlusher_Property_VisibleLifetimeBelowGuard(t *testing.T) {
 		if err := f2.load(now); err != nil {
 			t.Fatal(err)
 		}
+		if got := committedLive(e, now); got != 2 {
+			t.Fatalf("downtime %v: %d committed segments live before the first refresh, want 2", down, got)
+		}
+		releaseRestored(f2, now)
 		live := committedLive(e, now)
 		if want := down < restoreGrace; (live > 0) != want {
 			t.Fatalf("downtime %v: %d committed segments live, want live=%v", down, live, want)

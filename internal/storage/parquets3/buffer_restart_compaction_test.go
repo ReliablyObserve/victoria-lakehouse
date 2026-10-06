@@ -65,12 +65,10 @@ func TestBufferRestart_DowntimeBeyondGuardWithCompaction_CountsExact(t *testing.
 	for _, down := range []struct {
 		name string
 		by   time.Duration // downtime after the commit
-		// whether the segments are still within grace at the restart
-		live bool
 	}{
-		{"down 3 graces: past the guard", 3 * grace, false},
-		{"down just past the guard", 2*grace + time.Second, false},
-		{"down just past the grace, inside the guard", grace + time.Second, false},
+		{"down 3 graces: past the guard", 3 * grace},
+		{"down just past the guard", 2*grace + time.Second},
+		{"down just past the grace, inside the guard", grace + time.Second},
 	} {
 		t.Run(down.name, func(t *testing.T) {
 			e := newRestartEnv(t)

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -100,6 +101,14 @@ type BufferFlusher struct {
 	nextTry    time.Time                    // back-off after a failed drain
 	backoff    time.Duration
 
+	// holdReap is set at load when committed segments were restored: none is
+	// retired until this process has applied a successful S3 manifest refresh
+	// (ManifestRefreshed), because the manifest it started from is a snapshot
+	// that can lack the segment's objects, or what compaction made of them (#379).
+	holdReap  atomic.Bool
+	createdAt time.Time        // refreshes that started before this do not release the hold
+	clock     func() time.Time // nil: time.Now; tests simulate a restart after downtime
+
 	stopOnce sync.Once
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -172,6 +181,7 @@ func newBufferFlusher(writer *BatchWriter, segs flushSegments, stateDir string, 
 		maxAge:    c.MaxAge,
 		sealBytes: c.TargetBytes,
 		grace:     c.Grace,
+		createdAt: time.Now(),
 		retry:     map[string]*traceGroupUpload{},
 		done:      make(chan struct{}),
 	}
@@ -218,19 +228,30 @@ func (f *BufferFlusher) load(now time.Time) error {
 }
 
 // restoreCommitted tells the segments which of them are committed, each at its
-// recorded commit time, and reaps at once those whose grace has already passed
-// (a pod that was down for longer than the compaction guard must not serve
-// them: compaction may have merged their objects). A committed segment with no
-// record is older than the records' retention, so it is treated as long
-// committed. A commit time in the future (the clock went back) is taken as now.
+// recorded commit time, so the grace of each keeps counting from its real
+// commit and not from this restart. Nothing is retired here: a restored segment
+// stays served until ManifestRefreshed (see holdReap), because retiring it
+// earlier, from a manifest snapshot that predates its objects, would hide its
+// rows until the first S3 refresh.
+//
+// A committed segment with no record, next to records, is older than the
+// records' retention and is treated as long committed. A state with no records
+// at all was written by a release before the records existed: its segments
+// get their grace from now, as that release gave them, for this one start. A
+// commit time in the future (the clock went back) is taken as now.
 func (f *BufferFlusher) restoreCommitted(st flushState, now time.Time) {
 	at := make(map[uint64]time.Time, len(st.Commits))
 	for _, c := range st.Commits {
 		at[c.Seq] = time.Unix(0, c.AtUnixNano)
 	}
+	legacy := len(st.Commits) == 0
+	restored := 0
 	f.segs.CommitThroughAt(st.CommittedThroughSeq, func(seq uint64) time.Time {
+		restored++
 		t, ok := at[seq]
 		switch {
+		case legacy:
+			return now
 		case !ok:
 			return time.Unix(0, 1)
 		case t.After(now):
@@ -238,7 +259,32 @@ func (f *BufferFlusher) restoreCommitted(st flushState, now time.Time) {
 		}
 		return t
 	})
-	if n := f.segs.Reap(now, f.grace); n > 0 {
+	if restored > 0 {
+		f.holdReap.Store(true)
+	}
+}
+
+func (f *BufferFlusher) now() time.Time {
+	if f.clock != nil {
+		return f.clock()
+	}
+	return time.Now()
+}
+
+// ManifestRefreshed is called after every successful S3 manifest refresh has
+// been applied; started is when that refresh began. The first one that began
+// after this flusher was built releases the segments restored at load: the
+// manifest now holds what the bucket holds (their objects, and anything
+// compaction made of them while the process was down), so retiring them whose
+// grace has passed loses nothing. Until then, if the refresh never succeeds,
+// they stay served: duplicates are possible only if a peer compacted their
+// objects and are bounded by the buffer's size, while retiring them could hide
+// rows.
+func (f *BufferFlusher) ManifestRefreshed(started time.Time) {
+	if started.Before(f.createdAt) || !f.holdReap.CompareAndSwap(true, false) {
+		return
+	}
+	if n := f.segs.Reap(f.now(), f.grace); n > 0 {
 		logger.Infof("buffer flusher: removed %d committed segment(s) whose grace passed while the process was down", n)
 	}
 }
@@ -551,7 +597,9 @@ func (f *BufferFlusher) tick(ctx context.Context, now time.Time) {
 			f.maybeSeal(time.Now())
 		}
 	}
-	f.segs.Reap(time.Now(), f.grace)
+	if !f.holdReap.Load() {
+		f.segs.Reap(f.now(), f.grace)
+	}
 	f.writer.persistCatalog(ctx)
 	f.observe(time.Now())
 }

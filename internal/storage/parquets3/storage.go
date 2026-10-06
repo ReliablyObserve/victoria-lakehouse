@@ -1339,7 +1339,20 @@ func (s *Storage) fetchPeerAZ(ctx context.Context, peer string) string {
 }
 
 func (s *Storage) RefreshManifest(ctx context.Context) error {
-	return s.manifest.RefreshFromS3(ctx, s.pool.S3Client())
+	started := time.Now()
+	if err := s.manifest.RefreshFromS3(ctx, s.pool.S3Client()); err != nil {
+		return err
+	}
+	s.manifestRefreshed(started)
+	return nil
+}
+
+// manifestRefreshed tells the insert-buffer flusher that a refresh has been
+// applied, which releases the committed segments it restored at start (#379).
+func (s *Storage) manifestRefreshed(started time.Time) {
+	if s.bufferFlusher != nil {
+		s.bufferFlusher.ManifestRefreshed(started)
+	}
 }
 
 func (s *Storage) WarmLabelIndex(ctx context.Context) {
