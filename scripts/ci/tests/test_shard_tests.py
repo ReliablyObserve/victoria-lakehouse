@@ -1,10 +1,12 @@
+import contextlib
+import io
 import json
 import os
-import sys
 import shutil
+import sys
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import shard_tests as st  # noqa: E402
@@ -160,12 +162,12 @@ class CoverTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             a = self.prof(d, "a", ["f.go:1.1,2.2 1 1"])
             out = os.path.join(d, "all")
-            import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 self.assertEqual(st.main(["cover-merge", out, a]), 0)
             self.assertEqual(buf.getvalue().strip(), "coverage: 100.0% of statements")
-            self.assertTrue(open(out).read().startswith("mode: set\n"))
+            with open(out) as f:
+                self.assertTrue(f.read().startswith("mode: set\n"))
 
 
 @unittest.skipUnless(shutil.which("go"), "go toolchain not available")
@@ -188,7 +190,7 @@ class ListFlagsTest(unittest.TestCase):
         self.cwd = os.getcwd()
         os.chdir(self.d.name)
         self.addCleanup(os.chdir, self.cwd)
-        self.env = mock.patch.dict(os.environ, {"GOWORK": "off", "GOFLAGS": ""})
+        self.env = unittest.mock.patch.dict(os.environ, {"GOWORK": "off", "GOFLAGS": ""})
         self.env.start()
         self.addCleanup(self.env.stop)
 
