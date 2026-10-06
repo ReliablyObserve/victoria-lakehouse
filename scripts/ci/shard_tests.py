@@ -15,12 +15,12 @@ package has hundreds of similar-sized tests (the slowest is ~7% of the total),
 so hashing balances the shards well; measured sizes are in the PR.
 
 Subcommands:
-  regex   --pkg DIR --shards N --index I
+  regex   --pkg DIR --shards N --index I [--go-flags "-race"]
             print the `go test -run` regexp for shard I. Lists the package's
             top-level Test/Fuzz/Example functions with `go test -list`, so a
             new test lands in exactly one shard with no manual step. Fails if
             the shards do not partition the list exactly or a shard is empty.
-  verify  --pkg DIR --shards N JSON...
+  verify  --pkg DIR --shards N [--go-flags "-race"] JSON...
             after the shards ran with `-json`: every listed test must have a
             result (pass/fail/skip) in exactly the shard it was assigned to.
             Fails on a test that ran in no shard, in two, or in the wrong one.
@@ -33,6 +33,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import subprocess
 import sys
 
@@ -76,8 +77,11 @@ def guard_partition(names, shards):
         raise ValueError(f"shards differ from the test list: missing={sorted(missing)} extra={sorted(extra)}")
 
 
-def list_tests(pkg):
-    r = subprocess.run(["go", "test", "-list", ".", pkg], capture_output=True, text=True)
+def list_tests(pkg, go_flags=()):
+    # go_flags must carry every build-affecting flag of the real run (-race,
+    # -tags ...): a `//go:build !race` test is listed without -race but never
+    # runs with it, which would fail verify (or silently fall out of a shard).
+    r = subprocess.run(["go", "test", "-list", ".", *go_flags, pkg], capture_output=True, text=True)
     if r.returncode != 0:
         sys.stderr.write(r.stdout + r.stderr)
         raise SystemExit(f"go test -list failed for {pkg}")
@@ -180,9 +184,11 @@ def main(argv=None):
     r.add_argument("--pkg", required=True)
     r.add_argument("--shards", type=int, required=True)
     r.add_argument("--index", type=int, required=True)
+    r.add_argument("--go-flags", default="", help="build-affecting flags of the real run, e.g. -race")
     v = sub.add_parser("verify")
     v.add_argument("--pkg", required=True)
     v.add_argument("--shards", type=int, required=True)
+    v.add_argument("--go-flags", default="", help="build-affecting flags of the real run, e.g. -race")
     v.add_argument("files", nargs="+")
     c = sub.add_parser("cover-merge")
     c.add_argument("out")
@@ -192,7 +198,7 @@ def main(argv=None):
     if a.cmd == "regex":
         if not 0 <= a.index < a.shards:
             raise SystemExit("index out of range")
-        names = list_tests(a.pkg)
+        names = list_tests(a.pkg, shlex.split(a.go_flags))
         shards = assign(names, a.shards)
         try:
             guard_partition(names, shards)
@@ -201,7 +207,7 @@ def main(argv=None):
         print(regex_for(shards[a.index]))
         sys.stderr.write(f"shard {a.index + 1}/{a.shards}: {len(shards[a.index])} of {len(names)} tests\n")
     elif a.cmd == "verify":
-        names = list_tests(a.pkg)
+        names = list_tests(a.pkg, shlex.split(a.go_flags))
         problems = verify(names, a.shards, a.files)
         if problems:
             for p in problems[:50]:

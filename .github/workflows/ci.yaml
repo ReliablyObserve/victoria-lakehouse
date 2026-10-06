@@ -267,10 +267,12 @@ jobs:
       - name: Test logs module
         run: |
           set -euo pipefail
-          others=$(go list ./internal/... | grep -v '/internal/storage/parquets3$')
+          others=$(go list ./internal/... | grep -v -e '/internal/storage/parquets3$' -e '/internal/compaction$')
           # shellcheck disable=SC2086
           go test $others -race -count=1 -timeout=10m -json | tee test-logs-others.json |
-            python3 scripts/ci/gotest_report.py --budget-seconds 600 --title "logs: all packages except parquets3"
+            python3 scripts/ci/gotest_report.py --budget-seconds 600 --title "logs: all packages except parquets3, compaction"
+          # compaction ran at 501-517s of its 600s budget (it is not -short): 5 shards, same budget each (one test, TestMergePathsAgree, is ~half of it and cannot be split).
+          SHARD_SHORT=0 scripts/ci/sharded_go_test.sh race ./internal/compaction/ 5 "logs: compaction" 600 test-logs-compaction
           scripts/ci/sharded_go_test.sh race ./internal/storage/parquets3/ 3 "logs: parquets3" 480 test-logs-parquets3
 
       - name: Coverage check (logs)
@@ -288,7 +290,8 @@ jobs:
               echo "::error::Coverage for $pkg is ${pct}% (minimum: ${THRESHOLD}%)"
               FAILED=1
             fi
-          done < <({ go test $(go list ./internal/... | grep -v '/internal/storage/parquets3$') -cover -count=1 -timeout=10m
+          done < <({ go test $(go list ./internal/... | grep -v -e '/internal/storage/parquets3$' -e '/internal/compaction$') -cover -count=1 -timeout=10m
+                     SHARD_SHORT=0 scripts/ci/sharded_go_test.sh cover ./internal/compaction/ 5 600
                      scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | grep 'coverage:')
           [ "$FAILED" -eq 1 ] && exit 1 || echo "All packages above ${THRESHOLD}% coverage"
 

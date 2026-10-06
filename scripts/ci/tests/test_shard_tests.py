@@ -1,8 +1,10 @@
 import json
 import os
 import sys
+import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import shard_tests as st  # noqa: E402
@@ -164,6 +166,37 @@ class CoverTest(unittest.TestCase):
                 self.assertEqual(st.main(["cover-merge", out, a]), 0)
             self.assertEqual(buf.getvalue().strip(), "coverage: 100.0% of statements")
             self.assertTrue(open(out).read().startswith("mode: set\n"))
+
+
+@unittest.skipUnless(shutil.which("go"), "go toolchain not available")
+class ListFlagsTest(unittest.TestCase):
+    """The list must be built with the run's flags, or build-tagged tests drift."""
+
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        self.addCleanup(self.d.cleanup)
+        files = {
+            "go.mod": "module example.com/p\n\ngo 1.21\n",
+            "p.go": "package p\n",
+            "a_test.go": 'package p\n\nimport "testing"\n\nfunc TestEverywhere(t *testing.T) {}\n',
+            "on_test.go": '//go:build race\n\npackage p\n\nimport "testing"\n\nfunc TestOnlyRace(t *testing.T) {}\n',
+            "off_test.go": '//go:build !race\n\npackage p\n\nimport "testing"\n\nfunc TestNeverRace(t *testing.T) {}\n',
+        }
+        for n, b in files.items():
+            with open(os.path.join(self.d.name, n), "w") as f:
+                f.write(b)
+        self.cwd = os.getcwd()
+        os.chdir(self.d.name)
+        self.addCleanup(os.chdir, self.cwd)
+        self.env = mock.patch.dict(os.environ, {"GOWORK": "off", "GOFLAGS": ""})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_list_without_race_sees_the_not_race_test(self):
+        self.assertEqual(st.list_tests("./"), ["TestEverywhere", "TestNeverRace"])
+
+    def test_list_with_race_matches_what_a_race_run_executes(self):
+        self.assertEqual(st.list_tests("./", ["-race"]), ["TestEverywhere", "TestOnlyRace"])
 
 
 if __name__ == "__main__":
