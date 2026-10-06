@@ -21,8 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   traces binary registers it as VictoriaTraces does). New flag `-lakehouse.peer.auth-key` overrides `peer.auth_key`
   and accepts `%{ENV_VAR}`, so the Helm chart's new `peerAuth.existingSecret` passes the key from a Secret to every
   pod. Refusals show as `lakehouse_buffer_bridge_errors_total{reason="auth"}` with the alert
-  `LakehouseBufferBridgeAuthRefused`. Both binaries. Global-read queries see the unflushed rows only when every pod
-  has the key. See `docs/security.md`.
+  `LakehouseBufferBridgeAuthRefused`; a peer that answers with `-internalselect.disable` shows as `reason="disabled"`
+  (`LakehouseBufferBridgeDisabled`), and a `role=all` pod with peers logs a startup warning because its own unflushed
+  rows are then missing from its queries. The peer key is trimmed of surrounding whitespace and a key with
+  whitespace or a control character inside is refused at startup. Both binaries. Global-read queries see the
+  unflushed rows only when every pod has the key. See `docs/security.md`.
 
 ## [0.145.1] - 2026-10-06
 

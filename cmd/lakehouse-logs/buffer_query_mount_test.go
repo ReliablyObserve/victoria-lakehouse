@@ -153,3 +153,32 @@ func TestApplyPeerFlags(t *testing.T) {
 		t.Fatalf("-lakehouse.peer.auth-key did not override peer.auth_key: %q", c.AuthKey)
 	}
 }
+
+// A key from the flag (a Secret echoed into an env var) with a trailing
+// newline is the key without it; a key with a control character inside is
+// refused at startup, not at the first bridge request.
+func TestPeerAuthKeyFlag_TrimmedOrRefused(t *testing.T) {
+	t.Cleanup(func() { _ = flag.Set("lakehouse.peer.auth-key", "") })
+	cfg := config.Default()
+	cfg.Mode = config.ModeLogs
+	cfg.S3.Bucket = "b"
+
+	if err := flag.Set("lakehouse.peer.auth-key", "s3cr3t\n"); err != nil {
+		t.Fatal(err)
+	}
+	applyPeerFlags(&cfg.Peer)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a key with a trailing newline was refused: %v", err)
+	}
+	if cfg.Peer.AuthKey != "s3cr3t" {
+		t.Fatalf("peer key = %q, want s3cr3t", cfg.Peer.AuthKey)
+	}
+
+	if err := flag.Set("lakehouse.peer.auth-key", "s3\x01cr3t"); err != nil {
+		t.Fatal(err)
+	}
+	applyPeerFlags(&cfg.Peer)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("a key with a control character inside was accepted")
+	}
+}

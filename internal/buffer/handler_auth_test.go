@@ -229,15 +229,22 @@ func TestGate_EnabledPassesThrough(t *testing.T) {
 // The gate reads the flag the binary registered, by name, at request time.
 func TestInternalSelectDisabled_ReadsTheRegisteredFlag(t *testing.T) {
 	if InternalSelectDisabled() {
-		t.Fatal("reports disabled while no -internalselect.disable is registered")
+		t.Fatal("reports disabled while no -internalselect.disable is registered, or while it is at its default")
 	}
-	fs := flag.CommandLine
-	v := fs.Bool(InternalSelectDisableFlag, false, "test copy")
+	// flag.CommandLine cannot register a name twice, and -count=N runs this
+	// test N times in one process: register once, reuse afterwards.
+	f := flag.Lookup(InternalSelectDisableFlag)
+	if f == nil {
+		flag.CommandLine.Bool(InternalSelectDisableFlag, false, "test copy")
+		f = flag.Lookup(InternalSelectDisableFlag)
+	}
 	if InternalSelectDisabled() {
 		t.Fatal("reports disabled with the flag at its default")
 	}
-	*v = true
-	defer func() { *v = false }()
+	if err := f.Value.Set("true"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Value.Set("false") }()
 	if !InternalSelectDisabled() {
 		t.Fatal("does not report -internalselect.disable=true")
 	}

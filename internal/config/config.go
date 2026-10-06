@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"gopkg.in/yaml.v3"
@@ -1610,6 +1611,31 @@ func MergeConfigs(base, overlay *Config) *Config {
 	return mergeConfig(base, overlay)
 }
 
+// NormalizePeerAuthKey trims the whitespace around a peer key (a Secret
+// mounted from a file or echoed into an env var usually ends in a newline) and
+// refuses a key that still holds whitespace or a control character: net/http
+// rejects such a value in the Authorization header, so every buffer bridge
+// request would fail while looking like a network error.
+func NormalizePeerAuthKey(key string) (string, error) {
+	k := strings.TrimSpace(key)
+	for _, r := range k {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return "", fmt.Errorf("peer.auth_key (-lakehouse.peer.auth-key) contains a whitespace or control character (U+%04X) inside the key; "+
+				"surrounding whitespace is trimmed, but the key itself must be a single token", r)
+		}
+	}
+	return k, nil
+}
+
+func (c *Config) normalizePeerAuthKey() error {
+	k, err := NormalizePeerAuthKey(c.Peer.AuthKey)
+	if err != nil {
+		return err
+	}
+	c.Peer.AuthKey = k
+	return nil
+}
+
 func (c *Config) Validate() error {
 	if c.Profile != "" && !IsValidProfile(string(c.Profile)) {
 		return fmt.Errorf("--lakehouse.profile must be one of: %s; got %q", ValidProfileNames(), c.Profile)
@@ -1622,6 +1648,9 @@ func (c *Config) Validate() error {
 	}
 	if c.S3.Bucket == "" {
 		return fmt.Errorf("--lakehouse.s3.bucket is required")
+	}
+	if err := c.normalizePeerAuthKey(); err != nil {
+		return err
 	}
 
 	if err := c.validateS3Endpoint(); err != nil {

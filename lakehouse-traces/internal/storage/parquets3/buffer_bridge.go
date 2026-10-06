@@ -123,9 +123,25 @@ func newBufferBridgeFor(cfg *config.Config) *BufferBridge {
 	if !cfg.SelectEnabled() || !cfg.Select.BufferQueryEnabled {
 		return nil
 	}
+	if SelfBufferInvisible(cfg, buffer.InternalSelectDisabled()) {
+		logger.Warnf("-%s is set on a pod that serves selects with peers configured (discovery.peer_headless_service) and select.buffer_query_enabled: "+
+			"this pod answers its own buffer query with 400, so its own unflushed rows are invisible to the queries it serves "+
+			"(counted as lakehouse_buffer_bridge_errors_total{reason=\"disabled\"}); unset the flag, or run select pods apart from the pods that ingest",
+			buffer.InternalSelectDisableFlag)
+	}
 	b := NewBufferBridge(&cfg.Select, cfg.Mode)
 	b.SetAuthKey(cfg.Peer.AuthKey)
 	return b
+}
+
+// SelfBufferInvisible reports whether a pod built from cfg, with
+// -internalselect.disable reported by disabled, is its own bridge's peer and
+// refuses the call: it serves selects with the buffer bridge on, resolves the
+// peer ring (which lists the pod itself) and has switched its own
+// /internal/buffer/query off.
+func SelfBufferInvisible(cfg *config.Config, disabled bool) bool {
+	return disabled && cfg.SelectEnabled() && cfg.Select.BufferQueryEnabled &&
+		cfg.Discovery.PeerHeadlessService != "" && cfg.Select.InsertHeadlessService == ""
 }
 
 // SetAuthKey sets the peer key the bridge presents to the insert pods.
@@ -302,6 +318,14 @@ func fetchPeer[T any](b *BufferBridge, ctx context.Context, endpoint, authKey st
 		return nil, nil, fmt.Errorf("buffer query to %s refused this pod's peer key (%d %s): set the same peer.auth_key on every pod",
 			endpoint, resp.StatusCode, readErrorBody(resp))
 	default:
+		body := readErrorBody(resp)
+		if resp.StatusCode == http.StatusBadRequest && strings.Contains(body, buffer.DisabledMessage(buffer.Path)) {
+			// The peer runs with -internalselect.disable: it answers on
+			// purpose, and its unflushed rows are left out of the result.
+			// Counted apart from other bad statuses so it can be alerted on.
+			metrics.BufferBridgeErrors.Inc("disabled")
+			return nil, nil, fmt.Errorf("buffer query to %s is disabled there (-internalselect.disable): its unflushed rows are not in the result", endpoint)
+		}
 		metrics.BufferBridgeErrors.Inc("status")
 		return nil, nil, fmt.Errorf("buffer query returned %d", resp.StatusCode)
 	}

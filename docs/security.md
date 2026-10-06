@@ -147,6 +147,11 @@ tenant at once (`all_tenants=true`) is never served without a key. This is the e
 `/internal/select/*` on `vlstorage`, on a port that ingest clients can reach. Keep the pods on a protected
 network, or set the key; global-read queries need the key to see unflushed rows at all.
 
+The peer key guards only the insert pods' direct `/internal/buffer/query` endpoint. A select pod's `/select/*` and
+`/internal/select/*` still serve whatever tenant the request names (upstream's model), including the unflushed rows
+it reads through the bridge, so setting the key does not close every buffer read: protect those routes with
+`-httpAuth.*`, vmauth or the network, as for upstream.
+
 **Setting the key.**
 
 - Config file: `peer: {auth_key: <key>}`, the same on every pod of both roles.
@@ -167,7 +172,15 @@ network, or set the key; global-read queries need the key to see unflushed rows 
 
 **Turning it off.** Upstream's `-internalselect.disable` turns off `/internal/buffer/query` on insert pods and
 `/internal/select/*` on select pods. Select pods then see an insert pod's rows only once they are in object
-storage; set `select.buffer_query_enabled: false` on them so they do not ask.
+storage; set `select.buffer_query_enabled: false` on them so they do not ask. A select pod that does ask counts
+each "disabled" answer as `lakehouse_buffer_bridge_errors_total{reason="disabled"}` (alert
+`LakehouseBufferBridgeDisabled`) and still answers 200 without those rows. A `role=all` pod with
+`discovery.peer_headless_service` is its own peer: with the flag set it refuses its own bridge call, so its own
+unflushed rows are missing from the queries it serves (a warning is logged at startup). Run select pods apart from
+the pods that ingest, or leave the flag unset there.
+
+The peer key is trimmed of surrounding whitespace (a Secret file usually ends in a newline); a key with whitespace or
+a control character inside is refused at startup.
 
 **`-httpAuth.*`.** VictoriaMetrics' HTTP server applies `-httpAuth.username`/`-httpAuth.password` to every path
 except `/health`, `/metrics`, `/flags` and a few others, including `/internal/*`. Lakehouse's peer clients (the

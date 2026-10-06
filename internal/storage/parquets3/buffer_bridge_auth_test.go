@@ -237,13 +237,65 @@ func TestBridgeAuth_DisabledEndpointServesNothing(t *testing.T) {
 	e := newViewEnv(t)
 	ingestTenantRows(e, tenantA, "A", 25)
 	peer := authInsertPod(t, e, bridgeAuthKey, true)
-	before := metrics.BufferBridgeErrors.Get("status")
+	before := metrics.BufferBridgeErrors.Get("disabled")
+	statusBefore := metrics.BufferBridgeErrors.Get("status")
 	got := msgCounts(t, authSelectPod(t, e, bridgeAuthKey, peer.URL), []logstorage.TenantID{tenantA}, false)
 	if len(got) != 0 {
 		t.Fatalf("a disabled endpoint served %d rows", len(got))
 	}
-	if metrics.BufferBridgeErrors.Get("status") == before {
-		t.Error("the disabled answer was not counted")
+	if metrics.BufferBridgeErrors.Get("disabled") == before {
+		t.Error("the disabled answer was not counted as reason=disabled")
+	}
+	if metrics.BufferBridgeErrors.Get("status") != statusBefore {
+		t.Error("the disabled answer was also counted as reason=status")
+	}
+}
+
+// A key with a trailing newline (a mounted Secret) is the key without it.
+func TestBridgeAuth_TrailingNewlineKeyWorks(t *testing.T) {
+	k, err := config.NormalizePeerAuthKey(bridgeAuthKey + "\n")
+	if err != nil || k != bridgeAuthKey {
+		t.Fatalf("NormalizePeerAuthKey = %q, %v; want %q", k, err, bridgeAuthKey)
+	}
+	e := newViewEnv(t)
+	ingestTenantRows(e, tenantA, "A", 30)
+	peer := authInsertPod(t, e, bridgeAuthKey, false)
+	got := msgCounts(t, authSelectPod(t, e, k, peer.URL), []logstorage.TenantID{tenantA}, false)
+	if countPrefix(got, "A-") != 30 {
+		t.Fatalf("%d of 30 rows with the normalised key", countPrefix(got, "A-"))
+	}
+}
+
+func TestSelfBufferInvisible(t *testing.T) {
+	cfg := testConfig()
+	cfg.Role = config.RoleAll
+	cfg.Select.BufferQueryEnabled = true
+	cfg.Discovery.PeerHeadlessService = "lakehouse-peers"
+	if !SelfBufferInvisible(cfg, true) {
+		t.Fatal("no warning for role=all + peers + buffer query + -internalselect.disable")
+	}
+	if SelfBufferInvisible(cfg, false) {
+		t.Error("warning without -internalselect.disable")
+	}
+	c := *cfg
+	c.Discovery.PeerHeadlessService = ""
+	if SelfBufferInvisible(&c, true) {
+		t.Error("warning with no peers configured")
+	}
+	c = *cfg
+	c.Select.BufferQueryEnabled = false
+	if SelfBufferInvisible(&c, true) {
+		t.Error("warning with the buffer query off")
+	}
+	c = *cfg
+	c.Select.InsertHeadlessService = "lakehouse-insert"
+	if SelfBufferInvisible(&c, true) {
+		t.Error("warning when the bridge reads a separate insert service, not the peer ring")
+	}
+	c = *cfg
+	c.Role = config.RoleInsert
+	if SelfBufferInvisible(&c, true) {
+		t.Error("warning on an insert-only pod, which serves no selects")
 	}
 }
 
