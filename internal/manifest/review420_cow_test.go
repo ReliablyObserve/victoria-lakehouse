@@ -1,7 +1,10 @@
 package manifest
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -19,7 +22,7 @@ import (
 // it holds. The writers now copy a partition before modifying it when a
 // snapshot may hold it. Run with -race.
 
-const cowPartitions = 4
+const cowPartitions = 6
 
 func cowPartition(p int) string { return fmt.Sprintf("dt=2026-06-%02d/hour=00", 1+p) }
 
@@ -198,18 +201,19 @@ loop:
 func TestReview424_SnapshotIsTheStateAtCapture(t *testing.T) {
 	const perPart = 10
 	m := cowManifest(perPart, false)
-	p := 0
-	victim, enrichedKey := cowKey(p, 3), cowKey(p, 5)
-	lo, hi := cowBounds(p, 5)
-	lo9, hi9 := cowBounds(p, 9)
+	// One writer per partition, so each one is the first write to its
+	// partition after the capture (the one that has to copy).
+	victim := cowKey(0, 3)
+	lo1, hi1 := cowBounds(1, 5)
+	lo5, hi5 := cowBounds(5, 9)
 	path := filepath.Join(t.TempDir(), "m.snap")
 	saveCapturedTestHook = func() {
-		m.RemoveFile(cowPartition(p), victim)
-		m.EnrichFileMetadata(enrichedKey, 10, lo, hi)
-		m.SetFileBucket(cowKey(p, 6), "moved")
-		m.UpdateFileColumnStats(cowKey(p, 7), map[string]ColumnMinMax{"level": {Min: "a", Max: "z"}})
-		m.MarkTraceIDHex(cowKey(p, 8))
-		m.EnrichFromProvider(cowMetaProvider{key: cowKey(p, 9), lo: lo9, hi: hi9})
+		m.RemoveFile(cowPartition(0), victim)
+		m.EnrichFileMetadata(cowKey(1, 5), 10, lo1, hi1)
+		m.SetFileBucket(cowKey(2, 6), "moved")
+		m.UpdateFileColumnStats(cowKey(3, 7), map[string]ColumnMinMax{"level": {Min: "a", Max: "z"}})
+		m.MarkTraceIDHex(cowKey(4, 8))
+		m.EnrichFromProvider(cowMetaProvider{key: cowKey(5, 9), lo: lo5, hi: hi5})
 	}
 	defer func() { saveCapturedTestHook = nil }()
 	if err := m.SaveTo(path); err != nil {
@@ -224,9 +228,11 @@ func TestReview424_SnapshotIsTheStateAtCapture(t *testing.T) {
 	if err := re.LoadFrom(path); err != nil {
 		t.Fatal(err)
 	}
-	for _, fi := range re.FilesForPartition(cowPartition(p)) {
-		if fi.Bucket != "" || fi.ColumnStats != nil || fi.TraceIDHex || !fi.BoundsInferred || fi.RowCount != 0 {
-			t.Fatalf("snapshot entry %s shows a write made after the capture: %+v", fi.Key, fi)
+	for p := 0; p < cowPartitions; p++ {
+		for _, fi := range re.FilesForPartition(cowPartition(p)) {
+			if fi.Bucket != "" || fi.ColumnStats != nil || fi.TraceIDHex || !fi.BoundsInferred || fi.RowCount != 0 {
+				t.Fatalf("snapshot entry %s shows a write made after the capture: %+v", fi.Key, fi)
+			}
 		}
 	}
 
@@ -240,11 +246,11 @@ func TestReview424_SnapshotIsTheStateAtCapture(t *testing.T) {
 			t.Fatalf("live manifest lost the write to %s: %+v", key, fi)
 		}
 	}
-	check(enrichedKey, func(fi FileInfo) bool { return fi.MinTimeNs == lo && fi.MaxTimeNs == hi && !fi.BoundsInferred })
-	check(cowKey(p, 6), func(fi FileInfo) bool { return fi.Bucket == "moved" })
-	check(cowKey(p, 7), func(fi FileInfo) bool { return fi.ColumnStats["level"].Max == "z" })
-	check(cowKey(p, 8), func(fi FileInfo) bool { return fi.TraceIDHex })
-	check(cowKey(p, 9), func(fi FileInfo) bool { return fi.MinTimeNs == lo9 && fi.MaxTimeNs == hi9 && fi.RowCount == 10 })
+	check(cowKey(1, 5), func(fi FileInfo) bool { return fi.MinTimeNs == lo1 && fi.MaxTimeNs == hi1 && !fi.BoundsInferred })
+	check(cowKey(2, 6), func(fi FileInfo) bool { return fi.Bucket == "moved" })
+	check(cowKey(3, 7), func(fi FileInfo) bool { return fi.ColumnStats["level"].Max == "z" })
+	check(cowKey(4, 8), func(fi FileInfo) bool { return fi.TraceIDHex })
+	check(cowKey(5, 9), func(fi FileInfo) bool { return fi.MinTimeNs == lo5 && fi.MaxTimeNs == hi5 && fi.RowCount == 10 })
 
 	// The next snapshot has every mutation.
 	if err := m.SaveTo(path); err != nil {
@@ -300,5 +306,68 @@ func TestReview424_CopyOncePerPartitionPerSnapshot(t *testing.T) {
 	}
 	if untouched := arr(1); untouched == nil {
 		t.Fatal("fixture")
+	}
+}
+
+// The same for the sidecar loader, and for a second snapshot: the partitions a
+// writer copied after the first capture are captured by the second one and
+// must be copied again before the next write.
+func TestReview424_SidecarLoadAndSecondSnapshotKeepTheCapture(t *testing.T) {
+	const perPart = 10
+	m := cowManifest(perPart, false)
+	p := 0
+	lo, hi := cowBounds(p, 4)
+	data, err := MarshalFileMetaSidecar(&FileMetaSidecar{Files: map[string]FileMeta{
+		cowKey(p, 4): {RowCount: 10, MinTimeNs: lo, MaxTimeNs: hi},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(data)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client := coverageS3Client(t, srv.URL)
+	path := filepath.Join(t.TempDir(), "m.snap")
+	defer func() { saveCapturedTestHook = nil }()
+
+	// First snapshot, then a write that copies partition p.
+	if err := m.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	m.MarkTraceIDHex(cowKey(p, 1))
+
+	// Second snapshot: the copy is captured now; the sidecar load and a
+	// removal run before it is encoded.
+	saveCapturedTestHook = func() {
+		if n := m.LoadSidecarsForPartitions(context.Background(), client, 1, []string{cowPartition(p)}); n != 1 {
+			t.Errorf("fixture: sidecar enriched %d files, want 1", n)
+		}
+		m.RemoveFile(cowPartition(p), cowKey(p, 2))
+	}
+	if err := m.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	saveCapturedTestHook = nil
+	if n := checkCowSnapshot(t, path, true); n != cowPartitions*perPart {
+		t.Fatalf("snapshot holds %d files, want %d (the state at the second capture)", n, cowPartitions*perPart)
+	}
+	re := New("b", "")
+	if err := re.LoadFrom(path); err != nil {
+		t.Fatal(err)
+	}
+	if fi, ok := re.GetFileByKey(cowKey(p, 4)); !ok || fi.RowCount != 0 || !fi.BoundsInferred {
+		t.Fatalf("snapshot shows the sidecar enrichment made after the capture: %+v", fi)
+	}
+	if fi, ok := re.GetFileByKey(cowKey(p, 1)); !ok || !fi.TraceIDHex {
+		t.Fatalf("snapshot lost the write made before the capture: %+v", fi)
+	}
+	if fi, ok := m.GetFileByKey(cowKey(p, 4)); !ok || fi.MinTimeNs != lo || fi.RowCount != 10 {
+		t.Fatalf("live manifest lost the sidecar enrichment: %+v", fi)
 	}
 }
