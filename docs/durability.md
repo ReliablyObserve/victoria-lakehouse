@@ -278,14 +278,42 @@ answered twice for up to one grace, #379).
 
 A restarted pod starts from the manifest snapshot on disk, which can be older than
 the segments (a kill -9 loses what was committed after the last snapshot) and
-lacks what compaction made of their objects while the pod was down. So it retires
-no restored segment until its first successful S3 manifest refresh has been
-applied; the refresh and the retirement of the segments whose grace has passed
-happen in the same step, so the rows are served from the buffer until the manifest
-has them and never twice for longer than that step. If the first refresh never
-succeeds (object store unreachable), the segments stay served: rows may be
-duplicated only if a peer compacted their objects meanwhile (bounded by the
-buffer's size), and they are never hidden.
+lacks what compaction made of their objects while the pod was down. So it holds
+the segments it restored at start (and only those: a segment committed after the
+start follows the normal grace and is retired by it): none of them is retired
+until a **complete** S3 manifest refresh has been applied. A refresh that fails,
+that the cliff guard rejects (the first listing after loading a snapshot is not
+guarded: the snapshot is only a starting point) or that could not list one
+tenant's projects does not count. When a complete refresh has been applied, the
+held segments whose grace has passed are retired in the same step, so their rows
+are served from the buffer until the manifest has them.
+
+While the hold lasts, rows are never hidden, but they can be served twice if a
+peer compacted the segment's objects while the pod was down: the duplication is
+bounded in size (by the restored segments, at most about two graces of ingest)
+and **not in time**: it lasts as long as no complete refresh succeeds, not one
+step. The held segments also keep their disk. The hold is visible as
+`lakehouse_buffer_held_segments` and `lakehouse_buffer_oldest_held_age_seconds`
+(both 0 in steady state), a warning in the log once it has lasted longer than
+twice the refresh interval (at least 5 minutes) and the alert
+`LakehouseBufferRestoredSegmentsHeld` (warning, after 10 minutes). Common causes:
+LIST errors or throttling, a dedicated tenant bucket whose listing fails, or a
+full LIST at very large object counts that does not finish inside the 5-minute
+warm-up / 2-minute periodic timeouts. A narrower release (LIST only the partitions
+the restored segments wrote to) is tracked in #411.
+
+On a select pod the same hold applies to the segments its bridge answers
+(`/internal/buffer/query`), with two cases to know:
+
+- an insert pod that restarts after a downtime longer than twice the grace, with a
+  peer having compacted its segments' objects, answers the bridge with the held
+  segments for the whole hold, so the select pods' answers carry those rows twice
+  until the insert pod's first complete refresh;
+- a select pod that restarted too and serves while it warms (`/ready` answers 204
+  during the warm-up) can answer without rows an insert pod has already retired,
+  when that insert pod's refresh completed before the select pod's: those rows are
+  missing from that select pod's answers until its own refresh has applied the
+  objects.
 
 Limits of the guarantee:
 

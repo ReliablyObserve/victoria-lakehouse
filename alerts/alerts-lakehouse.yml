@@ -130,6 +130,15 @@ groups:
           summary: "An insert-buffer segment has waited more than 30 minutes to be written"
           description: "The oldest sealed segment on {{ $labels.instance }} has been waiting {{ $value | humanizeDuration }} (lakehouse_buffer_flush_errors_total by stage says why). Nothing is lost while it waits - it is on the pod's disk - but the buffer volume fills: size insert.buffer_dir for the outage (docs/sizing.md)."
 
+      - alert: LakehouseBufferRestoredSegmentsHeld
+        expr: lakehouse_buffer_oldest_held_age_seconds > 600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Insert-buffer segments restored at start are still held: no complete manifest refresh has finished"
+          description: "{{ $labels.instance }} has held committed segment(s) restored at start (lakehouse_buffer_held_segments) for {{ $value | humanizeDuration }}. They are released by the first complete S3 manifest refresh; until then they stay on disk and their rows are served from the buffer, possibly duplicated if a peer compacted their objects meanwhile. Check the refresh: lakehouse_manifest_refresh_cliff_guard_rejections_total, lakehouse_manifest_tenant_bucket_list_errors_total, the 'manifest S3 refresh failed' and 'tenant-scoped refresh failed' log lines, and whether the full LIST finishes inside its 5-minute warm-up / 2-minute periodic timeout (docs/durability.md)."
+
       - alert: LakehouseInsertRefusedDiskFloor
         expr: sum by (instance) (increase(lakehouse_insert_rejected_total{reason="read_only"}[5m])) > 0
         for: 2m
