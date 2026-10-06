@@ -298,12 +298,18 @@ the drain completed within `DrainTimeout`.
 ### 4.6 Hard pod death (SIGKILL)
 
 No preStop, no drain. The pod dies mid-compaction. An upload that never
-completed is not visible in S3. A completed output upload that was not
-published has no record (pending keys are in memory only), so the next
-refresh adopts it like any listed object; Tier B never deletes an object
-without a retirement record. An output whose abandonment was recorded and
+completed is not visible in S3. An output whose abandonment was recorded and
 persisted with the snapshot is deleted by the reclaim retry or by Tier B
 after `OrphanTTL`.
+
+**Known gap ([#423](https://github.com/ReliablyObserve/victoria-lakehouse/issues/423)):**
+a completed output upload that was not published before the kill has no
+record (pending keys are in memory only). The next refresh adopts it like any
+listed object, next to its sources, which are still live: their rows are then
+served twice until one side is retired. This is not a safe outcome, and nothing
+cleans it up today: Tier B never deletes an object without a retirement record
+(it counts it as `no_evidence`). The fix (a durable intent written before the
+upload and reconciled at start, with a crash-matrix test) is tracked in #423.
 
 **Diagnostic:** `lakehouse_compaction_orphan_files_deleted_total` ticks
 when Tier B deletes a retired object;

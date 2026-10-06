@@ -235,8 +235,13 @@ A single in-flight compaction is taking > `DrainTimeout` (default
 ### Fixes
 
 - **One-off:** wait for `terminationGracePeriodSeconds` to elapse;
-  K8s sends SIGKILL; a completed but unpublished output has no record and
-  is adopted by the next refresh (Tier B does not delete it, see §5).
+  K8s sends SIGKILL. **Known gap
+  ([#423](https://github.com/ReliablyObserve/victoria-lakehouse/issues/423)):**
+  a merge killed after uploading its output and before publishing it leaves
+  that output with no record; the next refresh adopts it next to its still-live
+  sources and their rows are served twice. Tier B does not delete it (no
+  record, see §5). Prefer letting the drain finish (raise the timeouts below)
+  over a SIGKILL while a merge is in flight.
 - **Recurring:** raise `compaction.drain_timeout` in values.yaml AND
   `terminationGracePeriodSeconds` to match. Both must be large enough
   for the slowest realistic merge. Test by triggering a deliberately
