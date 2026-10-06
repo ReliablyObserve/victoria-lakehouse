@@ -268,6 +268,18 @@ counted (`lakehouse_delete_rewrite_deferred_total{reason="segment_live"}`) and t
 tombstone's query-time filter keeps the rows hidden meanwhile. Markers older than
 8 days are deleted by the compaction scan.
 
+The grace counts from the real commit, also across a restart. The flusher's state
+file (`buffer_flush_state.json`) records the commit time of every segment
+committed within the last two graces; a restarted pod gives each committed
+segment the remainder of its grace from that time, and removes at startup the
+ones whose grace passed while it was down. So the buffer never serves a
+segment's rows after the guard may have released its objects, however long the
+pod was down: a pod that had been down for longer than twice the grace used to
+give those segments a new full grace, while compaction had already merged their
+objects, and every row was answered twice for up to one grace (#379). A committed
+segment with no record (older than the records' retention) is treated as long
+committed.
+
 Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheFreeOnes`,
 `TestSegmentGuard_ReleasedFilesCopiesOnlyWhenItDrops`,
 `TestSegmentNonceOfKey` (`internal/manifest`);

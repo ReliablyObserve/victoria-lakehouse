@@ -40,6 +40,9 @@ type restartEnv struct {
 	f        *BufferFlusher
 	written  map[string]uint64 // rows written per level
 	total    int
+	// loadNow, when set, is the clock the restarted flusher loads at (a pod
+	// that was down for a while); nil means time.Now.
+	loadNow func() time.Time
 }
 
 func newRestartEnv(t *testing.T) *restartEnv {
@@ -74,7 +77,11 @@ func (e *restartEnv) boot(m *manifest.Manifest) {
 	e.s, e.segs = s, segs
 	e.f = newBufferFlusher(e.bw, segs, filepath.Join(e.dir, "buffer"), nil, BufferFlusherConfig{
 		TargetBytes: 1000 * estBytesPerLogRow, MaxAge: time.Hour, Grace: time.Minute})
-	if err := e.f.load(time.Now()); err != nil {
+	now := time.Now()
+	if e.loadNow != nil {
+		now = e.loadNow()
+	}
+	if err := e.f.load(now); err != nil {
 		e.t.Fatal(err)
 	}
 }

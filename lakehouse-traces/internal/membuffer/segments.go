@@ -386,11 +386,19 @@ func (s *Segments) Commit(g *Segment, at time.Time) {
 // CommitThrough marks every sealed segment with seq <= seq as committed at at:
 // what a restart learns from the flusher's record.
 func (s *Segments) CommitThrough(seq uint64, at time.Time) {
+	s.CommitThroughAt(seq, func(uint64) time.Time { return at })
+}
+
+// CommitThroughAt marks every sealed segment with seq <= seq as committed, each
+// at the time at(its seq) returns: what a restart learns from the flusher's
+// record, with each segment's own commit time so its grace keeps counting from
+// the real commit and not from the restart (#379).
+func (s *Segments) CommitThroughAt(seq uint64, at func(seq uint64) time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, g := range s.list {
 		if g.sealed && g.seq <= seq && g.committed.IsZero() {
-			g.committed = at
+			g.committed = at(g.seq)
 		}
 	}
 }

@@ -418,6 +418,36 @@
   refs: { doc: docs/durability.md, tests: [lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go, lakehouse-traces/internal/storage/parquets3/inferred_bounds_test.go, lakehouse-traces/internal/storage/parquets3/bounds_resolve_test.go, lakehouse-traces/shutdown_snapshot_test.go] }
   notes: "The traces binary's twin of the logs row: spans ingested after a graceful restart, in the same UTC hour as the spans flushed at shutdown, are returned by the LogsQL query API (and the Jaeger and Tempo reads built on it) exactly once alongside the cold spans. trace_id lookups take the same segment handoff as every other query and are not the case under test. SCHEMA LIMIT: as for the logs row, the registry has no target or seed for the unflushed (buffer) layer and no window placeholder past {{seed.cold_end}}, so the request covers the cold-side half only; the post-restart spans are asserted by TestBufferRestart_*, TestResolveFaults_* and TestResolveBounds_* in lakehouse-traces/internal/storage/parquets3. Stays pending."
 
+- id: lh.select.restart.downtime_beyond_guard_compaction_logs
+  title: "LH cold read after a restart that followed a downtime longer than the compaction guard, with compaction running — every row exactly once (logs)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs: { doc: docs/durability.md, tests: [internal/storage/parquets3/buffer_restart_compaction_test.go, internal/storage/parquets3/buffer_flusher_restore_test.go, internal/membuffer/segments_test.go] }
+  notes: "Commit two insert-buffer segments, stop the pod (SIGTERM and kill -9), keep it down for longer than 2 x the buffer grace (the compaction guard), start it and let compaction merge the segments' objects into compacted-L1 objects while the pod runs: the count, field_values and stats must equal the acked total at every instant, never double (#379). The restarted flusher restores each segment's real commit time from its flush state, so a segment past its grace at startup is removed by the load and one inside it keeps only its remaining grace. SCHEMA LIMIT: as for the same-hour restart rows, the registry has no model of a downtime or of the buffer layer, so this request covers the cold-side half only; the invariant is asserted by TestBufferRestart_DowntimeBeyondGuardWithCompaction_CountsExact, TestBufferRestart_LoadRestoresCommitTime and TestBufferFlusher_Property_VisibleLifetimeBelowGuard. Stays pending."
+
+- id: lh.select.restart.downtime_beyond_guard_compaction_traces
+  title: "LH cold read after a restart that followed a downtime longer than the compaction guard, with compaction running — every span exactly once (traces)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs: { doc: docs/durability.md, tests: [lakehouse-traces/internal/storage/parquets3/buffer_restart_compaction_test.go, lakehouse-traces/internal/storage/parquets3/buffer_flusher_restore_test.go, lakehouse-traces/internal/membuffer/segments_test.go] }
+  notes: "Commit two insert-buffer segments, stop the pod (SIGTERM and kill -9), keep it down for longer than 2 x the buffer grace (the compaction guard), start it and let compaction merge the segments' objects into compacted-L1 objects while the pod runs: the count, trace-by-ID (Jaeger, Tempo and LogsQL trace_id), field_values and stats must equal the acked total at every instant, never double (#379). The restarted flusher restores each segment's real commit time from its flush state, so a segment past its grace at startup is removed by the load and one inside it keeps only its remaining grace. SCHEMA LIMIT: as for the same-hour restart rows, the registry has no model of a downtime or of the buffer layer, so this request covers the cold-side half only; the invariant is asserted by TestBufferRestart_DowntimeBeyondGuardWithCompaction_CountsExact, TestBufferRestart_LoadRestoresCommitTime and TestBufferFlusher_Property_VisibleLifetimeBelowGuard. Stays pending."
+
 - id: lh.select.split.insert_buffer_visible_logs
   title: "LH select pod answers with the insert pods' unflushed rows through the buffer bridge (logs)"
   surface: lh

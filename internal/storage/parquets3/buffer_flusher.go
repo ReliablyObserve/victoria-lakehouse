@@ -34,7 +34,7 @@ type flushSegments interface {
 	Seal() (*membuffer.Segment, bool)
 	Pending() []*membuffer.Segment
 	Commit(g *membuffer.Segment, at time.Time)
-	CommitThrough(seq uint64, at time.Time)
+	CommitThroughAt(seq uint64, at func(seq uint64) time.Time)
 	Reap(now time.Time, grace time.Duration) int
 	Stats(now time.Time) membuffer.Stats
 }
@@ -112,6 +112,16 @@ type flushState struct {
 	CommittedThroughSeq uint64 `json:"committed_through_seq"`
 	// DrainingSeq is the segment whose uploads have begun; 0 when none.
 	DrainingSeq uint64 `json:"draining_seq,omitempty"`
+	// Commits are the commit times of the segments committed within the last
+	// two graces (the compaction guard's age): a restart gives each segment
+	// the remaining grace of its real commit, not a fresh one (#379).
+	Commits []commitRecord `json:"commits,omitempty"`
+}
+
+// commitRecord is when one segment was committed (wall clock, Unix ns).
+type commitRecord struct {
+	Seq        uint64 `json:"seq"`
+	AtUnixNano int64  `json:"at_unix_nano"`
 }
 
 const flushStateVersion = 5
@@ -203,8 +213,46 @@ func (f *BufferFlusher) load(now time.Time) error {
 		}
 	}
 	f.state = st
-	f.segs.CommitThrough(st.CommittedThroughSeq, now)
+	f.restoreCommitted(st, now)
 	return nil
+}
+
+// restoreCommitted tells the segments which of them are committed, each at its
+// recorded commit time, and reaps at once those whose grace has already passed
+// (a pod that was down for longer than the compaction guard must not serve
+// them: compaction may have merged their objects). A committed segment with no
+// record is older than the records' retention, so it is treated as long
+// committed. A commit time in the future (the clock went back) is taken as now.
+func (f *BufferFlusher) restoreCommitted(st flushState, now time.Time) {
+	at := make(map[uint64]time.Time, len(st.Commits))
+	for _, c := range st.Commits {
+		at[c.Seq] = time.Unix(0, c.AtUnixNano)
+	}
+	f.segs.CommitThroughAt(st.CommittedThroughSeq, func(seq uint64) time.Time {
+		t, ok := at[seq]
+		switch {
+		case !ok:
+			return time.Unix(0, 1)
+		case t.After(now):
+			return now
+		}
+		return t
+	})
+	if n := f.segs.Reap(now, f.grace); n > 0 {
+		logger.Infof("buffer flusher: removed %d committed segment(s) whose grace passed while the process was down", n)
+	}
+}
+
+// commitRecordsWith returns the commit records to persist after committing seq
+// at now: the earlier ones younger than two graces, plus the new one.
+func (f *BufferFlusher) commitRecordsWith(seq uint64, now time.Time) []commitRecord {
+	out := make([]commitRecord, 0, len(f.state.Commits)+1)
+	for _, c := range f.state.Commits {
+		if now.Sub(time.Unix(0, c.AtUnixNano)) < 2*f.grace && c.Seq != seq {
+			out = append(out, c)
+		}
+	}
+	return append(out, commitRecord{Seq: seq, AtUnixNano: now.UnixNano()})
 }
 
 func readFlushState(path string) (flushState, error) {
@@ -612,7 +660,8 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 		metrics.BufferFlushErrors.Inc("marker")
 		return fmt.Errorf("write the commit marker of segment %d: %w", g.Seq(), err)
 	}
-	st := flushState{CommittedThroughSeq: g.Seq()}
+	commitAt := time.Now()
+	st := flushState{CommittedThroughSeq: g.Seq(), Commits: f.commitRecordsWith(g.Seq(), commitAt)}
 	if err := f.writeState(st); err != nil {
 		metrics.BufferFlushErrors.Inc("commit")
 		return fmt.Errorf("record segment %d as committed: %w", g.Seq(), err)
@@ -620,7 +669,7 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 	f.state = st
 	_ = os.Remove(f.storedPath())
 	f.marksFor, f.marks, f.head = "", nil, false
-	f.segs.Commit(g, time.Now())
+	f.segs.Commit(g, commitAt)
 	metrics.BufferSegmentsCommitted.Inc()
 	metrics.InsertFlushTotal.Inc()
 	metrics.InsertFlushDuration.Observe(time.Since(started).Seconds())
