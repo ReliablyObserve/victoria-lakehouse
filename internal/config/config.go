@@ -2035,6 +2035,11 @@ func (c *Config) CacheDiskBytes() int64 {
 	return n
 }
 
+// ListenAddr is the DEFAULT HTTP listen address of the mode (":9428" logs,
+// ":10428" traces), not the -httpListenAddr value the process was started with:
+// the config does not carry the flag. Use the flag's value to reach or name the
+// running server; this default is only a fallback (the peer-cache ring's
+// self address).
 func (c *Config) ListenAddr() string {
 	if c.Mode == ModeTraces {
 		return ":10428"

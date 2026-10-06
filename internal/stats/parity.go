@@ -3,10 +3,16 @@ package stats
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"reflect"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 )
 
@@ -21,8 +27,11 @@ import (
 //   - Window: the start is aligned so no file straddles it (see
 //     manifest.AlignedWindowStart); a file-level sum then equals the row-precise
 //     count over the same window.
-//   - Buffer: rows the insert buffer serves that the manifest does not hold yet
-//     are reported as buffer_unflushed_rows and are the expected drift.
+//   - Buffer: rows of LIVE UNCOMMITTED insert-buffer segments that the manifest
+//     does not hold yet are reported as buffer_unflushed_rows and are the
+//     expected drift. A COMMITTED live segment is expected to hold exactly the
+//     rows of its own objects: any difference (segment_mismatches) is NOT
+//     expected drift, it stays in verified_drift.
 type ParityResponse struct {
 	// Window the comparison covered. StartUnixNano is the aligned start
 	// (<= RequestedStartUnixNano): a file that straddled the requested start
@@ -53,15 +62,34 @@ type ParityResponse struct {
 
 	// BufferRows is what the live insert-buffer segments hold in the window
 	// (every tenant). BufferObjectRows is what the manifest holds for the
-	// committed objects of those same segments: a query counts those rows from
-	// the buffer and skips the objects, so they cancel.
-	// BufferUnflushedRows = BufferRows - BufferObjectRows is the rows the
-	// manifest does not hold yet. For traces it includes the VT-internal index
-	// rows (trace_id_idx) the buffer still holds and the flush drops.
-	BufferRows          int64  `json:"buffer_rows"`
-	BufferObjectRows    int64  `json:"buffer_object_rows"`
-	BufferUnflushedRows int64  `json:"buffer_unflushed_rows"`
-	BufferError         string `json:"buffer_error,omitempty"`
+	// objects of those same segments: a query counts those rows from the buffer
+	// and skips the objects, so they cancel.
+	//
+	// BufferUnflushedRows is the expected drift: for each live UNCOMMITTED
+	// segment, its buffered rows minus the rows of the objects it has already
+	// written (never negative). A COMMITTED segment contributes nothing: its
+	// buffered rows must equal its objects' rows, and when they do not the
+	// segment is listed in SegmentMismatches and the difference stays in
+	// VerifiedDrift. For traces the unflushed term includes the VT-internal
+	// index rows (trace_id_idx) the buffer still holds and the flush drops.
+	BufferRows          int64 `json:"buffer_rows"`
+	BufferObjectRows    int64 `json:"buffer_object_rows"`
+	BufferUnflushedRows int64 `json:"buffer_unflushed_rows"`
+	// BufferAttribution is "per_segment" when the segments are co-located (each
+	// one is checked on its own), "aggregate" when the rows come from insert
+	// peers through the buffer bridge (rows and nonces only: a committed segment
+	// the buffer under-serves cannot be told from an unflushed one unless the
+	// total goes negative), and "none" when the node has no buffer.
+	BufferAttribution string `json:"buffer_attribution"`
+	// SegmentMismatches lists every live segment whose buffered rows disagree
+	// with its objects where they must not: a committed segment whose buffered
+	// rows differ from its objects' rows, or any segment with more object rows
+	// than buffered rows. Nonce "*" is the aggregate of the peers' segments.
+	SegmentMismatches []SegmentMismatch `json:"segment_mismatches,omitempty"`
+	// BufferError is set when the buffer could not be read completely (an insert
+	// peer failed): the buffer term is then not trustworthy and verified_drift
+	// must not be read as parity.
+	BufferError string `json:"buffer_error,omitempty"`
 
 	// VTInternalDropped is the cumulative count of VT-internal stream rows
 	// (trace_id_idx, service_graph) the writer dropped at insert time, keyed
@@ -94,6 +122,15 @@ type ParityResponse struct {
 	PerTenantNote      string `json:"per_tenant_note,omitempty"`
 }
 
+// SegmentMismatch is one live insert-buffer segment (or "*" for the peers'
+// total) whose buffered rows disagree with the manifest rows of its objects.
+type SegmentMismatch struct {
+	Nonce      string `json:"nonce"`
+	Committed  bool   `json:"committed"`
+	BufferRows int64  `json:"buffer_rows"`
+	ObjectRows int64  `json:"object_rows"`
+}
+
 // VTInternalCounter is the read-only side of metrics.VTInternalRowsDropped.
 // Defined as an interface so the stats package can consume the
 // per-kind value without taking a dependency on the metrics package
@@ -111,14 +148,17 @@ type VLQuerier interface {
 }
 
 // BufferSource reports the insert buffer for the parity check: every tenant's
-// rows in [startNs, endNs] held by the live segments, and those segments'
-// nonces. parquets3.Storage implements it.
+// rows in [startNs, endNs] held by the live segments, per segment when they are
+// co-located. parquets3.Storage implements it. A non-nil error with a report
+// means the report is partial (an insert peer failed).
 type BufferSource interface {
-	BufferedRows(ctx context.Context, startNs, endNs int64) (int64, map[string]struct{}, error)
+	BufferedRows(ctx context.Context, startNs, endNs int64) (buffer.WindowReport, error)
 }
 
-// parityAuthKey carries the caller's (already validated) request headers to
-// the loopback VL query, so it presents the same global-read credential.
+// parityAuthKey carries the credential headers of the caller's (already
+// validated) request to the loopback VL query, so it presents the same
+// global-read credential. Only Authorization and the configured global-read
+// header are carried (parityForwardHeaders).
 type parityAuthKey struct{}
 
 // parityConfig is the per-handler config the parity endpoint
@@ -166,40 +206,29 @@ func (a *API) handleParity(w http.ResponseWriter, r *http.Request, vl VLQuerier,
 
 	// The loopback VL query must see every tenant like the manifest does: it
 	// presents the caller's credential, which the auth gate above validated.
-	ctx := context.WithValue(r.Context(), parityAuthKey{}, r.Header.Clone())
+	// Only the credential headers travel: no cookies, tenant headers, Host or
+	// Connection of the caller's request.
+	ctx := context.WithValue(r.Context(), parityAuthKey{}, parityForwardHeaders(r, a.cfg.ParityForwardHeader))
 
-	// The three reads (buffer, manifest, VL) are not one atomic snapshot. A
-	// flush or compaction commit between them moves rows from the buffer term
-	// to the manifest, so repeat the sample until the manifest is the same
-	// before and after the VL read (bounded).
+	// The reads (buffer, manifest, VL) are not one atomic snapshot. The buffer
+	// and the manifest are read before AND after the VL read; if either changed
+	// (a flush or compaction commit, a row ingested, a segment retired, a peer
+	// failing in only one of the two reads) the sample is repeated, bounded.
 	const maxAttempts = 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		resp.SampleAttempts = attempt
-		var before manifest.LiveAggregate
 		startNs := reqStartNs
 		if a.cfg.Manifest != nil {
-			startNs = a.cfg.Manifest.AlignedWindowStart(reqStartNs, endNs)
+			startNs = a.cfg.Manifest.AlignedWindowStart(reqStartNs)
 		}
 		resp.StartUnixNano = startNs
 
-		var nonces map[string]struct{}
-		if a.cfg.Buffer != nil {
-			n, ns, err := a.cfg.Buffer.BufferedRows(ctx, startNs, endNs)
-			if err != nil {
-				resp.BufferError = err.Error()
-			} else {
-				resp.BufferError = ""
-				resp.BufferRows, nonces = n, ns
-			}
-		}
+		rep1, berr1 := a.readBuffer(ctx, startNs, endNs)
+		var ws1 manifest.WindowSample
 		if a.cfg.Manifest != nil {
-			before = a.cfg.Manifest.LiveAggregateWindow(startNs, endNs)
-			resp.ManifestRows = before.Rows
-			resp.ManifestBytes = before.Bytes
-			resp.ManifestFiles = int64(before.Files)
-			resp.BufferObjectRows = a.cfg.Manifest.RowsOfSegments(nonces, startNs, endNs)
+			ws1 = a.cfg.Manifest.WindowSample(startNs, endNs, rep1.Nonces)
 		}
-		resp.BufferUnflushedRows = resp.BufferRows - resp.BufferObjectRows
+		resp.fill(rep1, ws1, berr1)
 
 		if vl == nil {
 			break
@@ -221,17 +250,19 @@ func (a *API) handleParity(w http.ResponseWriter, r *http.Request, vl VLQuerier,
 			return
 		}
 		resp.VLRows = vlRows
-		resp.UnstableSample = false
-		if a.cfg.Manifest != nil {
-			after := a.cfg.Manifest.LiveAggregateWindow(startNs, endNs)
-			if after.Rows != before.Rows || after.Files != before.Files {
-				resp.UnstableSample = true
-				continue
-			}
-		}
-		break
-	}
 
+		rep2, berr2 := a.readBuffer(ctx, startNs, endNs)
+		changed := !reflect.DeepEqual(rep1, rep2) || (berr1 == nil) != (berr2 == nil)
+		if a.cfg.Manifest != nil {
+			changed = changed ||
+				a.cfg.Manifest.AlignedWindowStart(reqStartNs) != startNs ||
+				!reflect.DeepEqual(ws1, a.cfg.Manifest.WindowSample(startNs, endNs, rep1.Nonces))
+		}
+		resp.UnstableSample = changed
+		if !changed {
+			break
+		}
+	}
 	if vl != nil {
 		resp.RowsDelta = resp.VLRows - resp.ManifestRows
 		if resp.ManifestRows > 0 {
@@ -256,6 +287,83 @@ func (a *API) handleParity(w http.ResponseWriter, r *http.Request, vl VLQuerier,
 	writeJSON(w, resp)
 }
 
+// readBuffer reads the insert buffer; a nil source is an empty report.
+func (a *API) readBuffer(ctx context.Context, startNs, endNs int64) (buffer.WindowReport, error) {
+	if a.cfg.Buffer == nil {
+		return buffer.WindowReport{}, nil
+	}
+	return a.cfg.Buffer.BufferedRows(ctx, startNs, endNs)
+}
+
+// fill sets the manifest and buffer terms from one sample.
+func (resp *ParityResponse) fill(rep buffer.WindowReport, ws manifest.WindowSample, berr error) {
+	resp.ManifestRows = ws.Agg.Rows
+	resp.ManifestBytes = ws.Agg.Bytes
+	resp.ManifestFiles = int64(ws.Agg.Files)
+	resp.BufferError = ""
+	if berr != nil {
+		resp.BufferError = berr.Error()
+	}
+	resp.BufferRows, resp.BufferObjectRows, resp.BufferUnflushedRows, resp.SegmentMismatches, resp.BufferAttribution = bufferTerms(rep, ws.SegmentRows)
+}
+
+// bufferTerms compares the buffer with the objects of its segments.
+//
+// A query counts a live segment's rows from the buffer and skips the segment's
+// objects, so per segment the VL view holds the buffered rows and the manifest
+// holds the object rows. For a segment that is not committed yet the buffer
+// is expected to hold at least what was already written: the difference is the
+// unflushed rows. For a committed segment both are expected to be equal, so a
+// difference is a divergence (an object lost or merged away while the segment is
+// still live, rows the buffer no longer serves), never expected drift.
+func bufferTerms(rep buffer.WindowReport, objRows map[string]int64) (bufRows, objRowsSum, unflushed int64, mism []SegmentMismatch, attribution string) {
+	if rep.Segments == nil {
+		// Peers (or no buffer): totals only.
+		for n := range rep.Nonces {
+			objRowsSum += objRows[n]
+		}
+		bufRows = rep.Rows
+		switch {
+		case len(rep.Nonces) == 0 && rep.Rows == 0:
+			return bufRows, objRowsSum, 0, nil, "none"
+		case bufRows >= objRowsSum:
+			return bufRows, objRowsSum, bufRows - objRowsSum, nil, "aggregate"
+		}
+		return bufRows, objRowsSum, 0, []SegmentMismatch{{Nonce: "*", BufferRows: bufRows, ObjectRows: objRowsSum}}, "aggregate"
+	}
+	for _, g := range rep.Segments {
+		obj := objRows[g.Nonce]
+		bufRows += g.Rows
+		objRowsSum += obj
+		switch {
+		case g.Committed && g.Rows != obj, !g.Committed && g.Rows < obj:
+			mism = append(mism, SegmentMismatch{Nonce: g.Nonce, Committed: g.Committed, BufferRows: g.Rows, ObjectRows: obj})
+		case !g.Committed:
+			unflushed += g.Rows - obj
+		}
+	}
+	sort.Slice(mism, func(i, j int) bool { return mism[i].Nonce < mism[j].Nonce })
+	return bufRows, objRowsSum, unflushed, mism, "per_segment"
+}
+
+// parityForwardHeaders is the part of the caller's request the loopback query
+// carries: its credential, and nothing else. Authorization (a bearer token) and
+// the configured global-read header are the two ways the select path accepts a
+// cross-tenant credential. Cookies, tenant headers (AccountID, ProjectID,
+// X-Scope-OrgID), Host, Connection and every other header stay behind.
+func parityForwardHeaders(r *http.Request, globalReadHeader string) http.Header {
+	h := http.Header{}
+	if v := r.Header.Values("Authorization"); len(v) > 0 {
+		h["Authorization"] = append([]string(nil), v...)
+	}
+	if name := strings.TrimSpace(globalReadHeader); name != "" {
+		if v := r.Header.Values(name); len(v) > 0 {
+			h[http.CanonicalHeaderKey(name)] = append([]string(nil), v...)
+		}
+	}
+	return h
+}
+
 // parityCtxKey scopes the handler config to the request context so
 // the existing handleParity signature doesn't need a third parameter.
 type parityCtxKey struct{}
@@ -277,6 +385,66 @@ func (a *API) RegisterParityWithInternal(mux *http.ServeMux, vl VLQuerier, auth 
 		ctx := context.WithValue(r.Context(), parityCtxKey{}, cfg)
 		a.handleParity(w, r.WithContext(ctx), vl, auth)
 	})
+}
+
+// LoopbackBaseURL turns the address the HTTP server actually listens on (the
+// -httpListenAddr value) into the URL a loopback request reaches that server
+// at. An unspecified host (":9428", "0.0.0.0:9428", "[::]:9428") is the
+// loopback interface; a specific host is used as is, so a server bound to one
+// address is asked there. A Unix domain socket ("unix:/path") returns the
+// socket path as well, and a base URL whose host is a placeholder.
+func LoopbackBaseURL(listenAddr string) (baseURL, unixSocket string, err error) {
+	addr := strings.TrimSpace(listenAddr)
+	if sock, ok := strings.CutPrefix(addr, "unix:"); ok {
+		if sock == "" {
+			return "", "", errors.New("empty unix socket path in the listen address")
+		}
+		return "http://unix", sock, nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", "", fmt.Errorf("cannot derive the loopback address from listen address %q: %w", listenAddr, err)
+	}
+	if port == "" || port == "0" {
+		return "", "", fmt.Errorf("listen address %q has no fixed port to reach the server at", listenAddr)
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port), "", nil
+}
+
+// failedVLQuerier answers every count with err.
+type failedVLQuerier struct{ err error }
+
+func (f failedVLQuerier) StatsCountAll(context.Context, int64, int64) (int64, error) {
+	return 0, f.err
+}
+
+// NewLoopbackVLQuerier returns a VLQuerier that reaches the server listening on
+// listenAddr (the -httpListenAddr value, not a default), over TCP or a Unix
+// socket. query is the LogsQL count query ("" for NewLocalVLQuerier's). An
+// address that cannot be reached by loopback gives a querier whose answer is
+// that error, so the parity endpoint says so (vl_error) rather than asking some
+// other server.
+func NewLoopbackVLQuerier(listenAddr, query string) VLQuerier {
+	base, sock, err := LoopbackBaseURL(listenAddr)
+	if err != nil {
+		return failedVLQuerier{err: err}
+	}
+	if query == "" {
+		query = "* | stats count() as n"
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	if sock != "" {
+		client.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", sock)
+			},
+		}
+	}
+	return &vlStatsCountAdapter{baseURL: base, query: query, client: client}
 }
 
 // vlStatsCountAdapter wraps the in-process VL select endpoint with
@@ -340,7 +508,7 @@ func (a *vlStatsCountAdapter) StatsCountAll(ctx context.Context, startNs, endNs 
 		endStr := time.Unix(0, endNs).UTC().Format(time.RFC3339Nano)
 		q = fmt.Sprintf("_time:[%s, %s] %s", startStr, endStr, q)
 	}
-	// #nosec G107,G704 -- baseURL is operator-configured (-stats.parity.vl-url flag); not user input.
+	// #nosec G107,G704 -- baseURL is derived from the process's own -httpListenAddr, not from request input.
 	req, _ := http.NewRequestWithContext(ctx, "GET", a.baseURL+"/select/logsql/stats_query", nil)
 	qs := req.URL.Query()
 	qs.Set("query", q)
@@ -353,13 +521,10 @@ func (a *vlStatsCountAdapter) StatsCountAll(ctx context.Context, startNs, endNs 
 	qs.Set("disable_latency_offset", "true")
 	req.URL.RawQuery = qs.Encode()
 	// Present the caller's validated credential (global-read header or bearer
-	// token) so the count covers every tenant, as the manifest side does.
+	// token) so the count covers every tenant, as the manifest side does. The
+	// handler has already reduced the request's headers to those two.
 	if h, ok := ctx.Value(parityAuthKey{}).(http.Header); ok {
 		for k, vs := range h {
-			switch http.CanonicalHeaderKey(k) {
-			case "Accept-Encoding", "Content-Length", "Host", "Connection":
-				continue
-			}
 			for _, v := range vs {
 				req.Header.Add(k, v)
 			}

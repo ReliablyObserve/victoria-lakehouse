@@ -1876,6 +1876,19 @@ type LiveAggregate struct {
 	MaxTimeNs int64
 }
 
+func (agg *LiveAggregate) add(fi FileInfo) {
+	agg.Files++
+	agg.Bytes += fi.Size
+	agg.Rows += fi.RowCount
+	agg.RawBytes += fi.RawBytes
+	if fi.MinTimeNs > 0 && (agg.MinTimeNs == 0 || fi.MinTimeNs < agg.MinTimeNs) {
+		agg.MinTimeNs = fi.MinTimeNs
+	}
+	if fi.MaxTimeNs > agg.MaxTimeNs {
+		agg.MaxTimeNs = fi.MaxTimeNs
+	}
+}
+
 // LiveAggregate iterates the in-memory file map under the read lock
 // and returns aggregate counts. O(n) over file count — acceptable
 // for the API surfaces that call it once per request.
@@ -1899,70 +1912,71 @@ func (m *Manifest) LiveAggregateWindow(startNs, endNs int64) LiveAggregate {
 			if endNs > 0 && fi.MinTimeNs > 0 && fi.MinTimeNs > endNs {
 				continue
 			}
-			agg.Files++
-			agg.Bytes += fi.Size
-			agg.Rows += fi.RowCount
-			agg.RawBytes += fi.RawBytes
-			if fi.MinTimeNs > 0 && (agg.MinTimeNs == 0 || fi.MinTimeNs < agg.MinTimeNs) {
-				agg.MinTimeNs = fi.MinTimeNs
-			}
-			if fi.MaxTimeNs > agg.MaxTimeNs {
-				agg.MaxTimeNs = fi.MaxTimeNs
-			}
+			agg.add(fi)
 		}
 	}
 	return agg
 }
 
 // AlignedWindowStart returns the earliest start s <= startNs such that no
-// file straddles it, i.e. no file has MinTimeNs < s <= MaxTimeNs, looking only
-// at files that start at or before endNs. A file-level aggregate over
-// [s, endNs] then counts exactly the rows a row-precise time filter over the
+// file straddles it, i.e. no file has MinTimeNs < s <= MaxTimeNs. A
+// file-level aggregate over [s, end] then counts exactly the rows a row-precise time filter over the
 // same window counts, whatever granularity the files have (hour partitions or
 // a coarser compaction tier): a file that straddles the requested start moves
 // the start back to the file's own first row instead of being counted whole
 // while the row filter counts part of it. Files with no recorded time range
 // (MinTimeNs == 0) never straddle. The result equals startNs when nothing
 // straddles; startNs <= 0 is returned unchanged.
-func (m *Manifest) AlignedWindowStart(startNs, endNs int64) int64 {
+func (m *Manifest) AlignedWindowStart(startNs int64) int64 {
 	if startNs <= 0 {
 		return startNs
 	}
+	// One scan under the lock collects the ranges that can ever straddle a
+	// start at or before startNs; the fixed point is then found in memory.
+	type span struct{ min, max int64 }
+	var cand []span
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	for _, files := range m.files {
+		for _, fi := range files {
+			if fi.MinTimeNs > 0 && fi.MinTimeNs < startNs {
+				cand = append(cand, span{fi.MinTimeNs, fi.MaxTimeNs})
+			}
+		}
+	}
+	m.mu.RUnlock()
 	s := startNs
-	for {
-		moved := false
-		for _, files := range m.files {
-			for _, fi := range files {
-				if fi.MinTimeNs <= 0 || fi.MinTimeNs >= s || fi.MaxTimeNs < s {
-					continue
-				}
-				if endNs > 0 && fi.MinTimeNs > endNs {
-					continue
-				}
-				s = fi.MinTimeNs
+	for moved := true; moved; {
+		moved = false
+		for _, c := range cand {
+			if c.min < s && c.max >= s {
+				s = c.min
 				moved = true
 			}
 		}
-		if !moved {
-			return s
-		}
 	}
+	return s
 }
 
-// RowsOfSegments sums RowCount of the files whose key carries one of the
-// given insert-buffer segment nonces (SegmentNonceOfKey) and whose time range
-// overlaps [startNs, endNs] (same overlap rule as LiveAggregateWindow). These
-// are the committed objects of segments the insert buffer still serves itself,
-// so a query counts their rows from the buffer, not from the objects.
-func (m *Manifest) RowsOfSegments(nonces map[string]struct{}, startNs, endNs int64) int64 {
-	if len(nonces) == 0 {
-		return 0
-	}
+// WindowSample is one read of the manifest for the admin parity check, taken
+// under one lock acquisition.
+type WindowSample struct {
+	// Agg is LiveAggregateWindow over the window.
+	Agg LiveAggregate
+	// SegmentRows is, per requested insert-buffer segment nonce, the RowCount
+	// sum of the objects whose key carries it (SegmentNonceOfKey) and whose
+	// time range overlaps the window (same rule as LiveAggregateWindow). A
+	// nonce with no object is absent. Those objects are the committed output of
+	// a segment the insert buffer still serves itself, so a query counts their
+	// rows from the buffer and skips the objects.
+	SegmentRows map[string]int64
+}
+
+// WindowSample aggregates the files overlapping [startNs, endNs] and the
+// objects of the given segment nonces, in one scan.
+func (m *Manifest) WindowSample(startNs, endNs int64, nonces map[string]struct{}) WindowSample {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var rows int64
+	var out WindowSample
 	for _, files := range m.files {
 		for _, fi := range files {
 			if startNs > 0 && fi.MaxTimeNs > 0 && fi.MaxTimeNs < startNs {
@@ -1971,14 +1985,21 @@ func (m *Manifest) RowsOfSegments(nonces map[string]struct{}, startNs, endNs int
 			if endNs > 0 && fi.MinTimeNs > 0 && fi.MinTimeNs > endNs {
 				continue
 			}
+			out.Agg.add(fi)
+			if len(nonces) == 0 {
+				continue
+			}
 			if n := SegmentNonceOfKey(fi.Key); n != "" {
 				if _, ok := nonces[n]; ok {
-					rows += fi.RowCount
+					if out.SegmentRows == nil {
+						out.SegmentRows = map[string]int64{}
+					}
+					out.SegmentRows[n] += fi.RowCount
 				}
 			}
 		}
 	}
-	return rows
+	return out
 }
 
 // findFileLocked returns the slice + index for the file identified by

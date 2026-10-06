@@ -241,20 +241,19 @@ func TestAlignedWindowStart(t *testing.T) {
 	m := New("b", "")
 	m.AddFile("p0", FileInfo{Key: "a.parquet", RowCount: 10, MinTimeNs: 10 * h, MaxTimeNs: 11*h - 1})
 	m.AddFile("p1", FileInfo{Key: "b.parquet", RowCount: 10, MinTimeNs: 11 * h, MaxTimeNs: 12*h - 1})
-	// A day-tier file covering 0..24h chained behind: straddles a start at 11h30.
+	m.AddFile("p9", FileInfo{Key: "norange.parquet", RowCount: 10}) // no time range: never straddles
 	cases := []struct {
-		name       string
-		start, end int64
-		want       int64
+		name  string
+		start int64
+		want  int64
 	}{
-		{"inside a file moves back to its first row", 10*h + h/2, 20 * h, 10 * h},
-		{"on a file boundary stays", 11 * h, 20 * h, 11 * h},
-		{"between files stays", 12*h + 5, 20 * h, 12*h + 5},
-		{"file starting after the end is ignored", 10*h + h/2, 10*h + 1, 10 * h},
-		{"zero start is unchanged", 0, 20 * h, 0},
+		{"inside a file moves back to its first row", 10*h + h/2, 10 * h},
+		{"on a file boundary stays", 11 * h, 11 * h},
+		{"between files stays", 12*h + 5, 12*h + 5},
+		{"zero start is unchanged", 0, 0},
 	}
 	for _, c := range cases {
-		if got := m.AlignedWindowStart(c.start, c.end); got != c.want {
+		if got := m.AlignedWindowStart(c.start); got != c.want {
 			t.Errorf("%s: got %d want %d", c.name, got, c.want)
 		}
 	}
@@ -262,26 +261,41 @@ func TestAlignedWindowStart(t *testing.T) {
 	// Chained straddles: moving back into the earlier file's range pulls in a
 	// coarser file that covers it.
 	m.AddFile("p2", FileInfo{Key: "day.parquet", RowCount: 100, MinTimeNs: 5 * h, MaxTimeNs: 10*h + 10})
-	if got := m.AlignedWindowStart(10*h+h/2, 20*h); got != 5*h {
+	if got := m.AlignedWindowStart(10*h + h/2); got != 5*h {
 		t.Errorf("chained: got %d want %d", got, 5*h)
 	}
 }
 
-func TestRowsOfSegments(t *testing.T) {
+func TestWindowSample(t *testing.T) {
 	m := New("b", "")
-	m.AddFile("p0", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-1.parquet", RowCount: 7, MinTimeNs: 100, MaxTimeNs: 200})
-	m.AddFile("p0", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-2.parquet", RowCount: 3, MinTimeNs: 100, MaxTimeNs: 200})
-	m.AddFile("p1", FileInfo{Key: "0/0/logs/bbbbbbbbbbbbbbbb-1.parquet", RowCount: 5, MinTimeNs: 100, MaxTimeNs: 200})
-	m.AddFile("p2", FileInfo{Key: "0/0/logs/plain.parquet", RowCount: 50, MinTimeNs: 100, MaxTimeNs: 200})
-	m.AddFile("p3", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-3.parquet", RowCount: 9, MinTimeNs: 1, MaxTimeNs: 2})
+	m.AddFile("p0", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-1.parquet", RowCount: 7, Size: 70, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p0", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-2.parquet", RowCount: 3, Size: 30, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p1", FileInfo{Key: "0/0/logs/bbbbbbbbbbbbbbbb-1.parquet", RowCount: 5, Size: 50, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p2", FileInfo{Key: "0/0/logs/plain.parquet", RowCount: 50, Size: 500, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p3", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-3.parquet", RowCount: 9, Size: 90, MinTimeNs: 1, MaxTimeNs: 2}) // before the window
 
-	if got := m.RowsOfSegments(map[string]struct{}{"aaaaaaaaaaaaaaaa": {}}, 50, 300); got != 10 {
-		t.Errorf("one nonce, in window: got %d want 10", got)
+	a, b := "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"
+	got := m.WindowSample(50, 300, map[string]struct{}{a: {}})
+	if got.SegmentRows[a] != 10 || len(got.SegmentRows) != 1 {
+		t.Errorf("one nonce, in window: %v want {a:10}", got.SegmentRows)
 	}
-	if got := m.RowsOfSegments(map[string]struct{}{"aaaaaaaaaaaaaaaa": {}, "bbbbbbbbbbbbbbbb": {}}, 50, 300); got != 15 {
-		t.Errorf("two nonces: got %d want 15", got)
+	// The aggregate is LiveAggregateWindow's over the same window, whatever the nonces.
+	if want := m.LiveAggregateWindow(50, 300); got.Agg != want {
+		t.Errorf("aggregate %+v want %+v", got.Agg, want)
 	}
-	if got := m.RowsOfSegments(nil, 0, 0); got != 0 {
-		t.Errorf("no nonces: got %d want 0", got)
+	if got.Agg.Rows != 65 || got.Agg.Files != 4 {
+		t.Errorf("aggregate rows/files %d/%d want 65/4", got.Agg.Rows, got.Agg.Files)
+	}
+	two := m.WindowSample(50, 300, map[string]struct{}{a: {}, b: {}})
+	if two.SegmentRows[a] != 10 || two.SegmentRows[b] != 5 {
+		t.Errorf("two nonces: %v", two.SegmentRows)
+	}
+	none := m.WindowSample(0, 0, nil)
+	if none.SegmentRows != nil || none.Agg.Rows != 74 {
+		t.Errorf("no nonces: %+v", none)
+	}
+	// A nonce with no object in the window is absent, not zero.
+	if got := m.WindowSample(50, 300, map[string]struct{}{"cccccccccccccccc": {}}); len(got.SegmentRows) != 0 {
+		t.Errorf("unknown nonce: %v", got.SegmentRows)
 	}
 }

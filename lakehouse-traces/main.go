@@ -1422,23 +1422,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	}
 
 	if cfg.Stats.Enabled {
-		parityAPI := stats.NewAPI(stats.APIConfig{Manifest: store.Manifest(), Buffer: store, Mode: "traces", Bucket: cfg.S3.Bucket})
-		listenAddrLocal := *listenAddrFlag
-		if cfg.ListenAddr() != "" {
-			listenAddrLocal = cfg.ListenAddr()
-		}
-		parityAPI.RegisterParityWithInternal(mux, stats.NewLocalVLQuerierWithQuery(
-			fmt.Sprintf("http://127.0.0.1%s", listenAddrLocal),
-			stats.TracesParityQuery,
-		), func(r *http.Request) bool {
-			// Same validator the select path uses to widen a query to
-			// every tenant — one credential, one implementation.
-			return tenant.NewGlobalReadAuth(
-				cfg.Tenant.GlobalReadHeader,
-				cfg.Tenant.GlobalReadValue,
-				cfg.Tenant.GlobalReadToken,
-			).Authorize(r)
-		}, vtInternalCounter{}, []string{"trace_id_idx", "service_graph"})
+		mountParity(mux, cfg, store.Manifest(), store, *listenAddrFlag)
 	}
 
 	// Stats API
@@ -2400,4 +2384,24 @@ func bufferGrace(cfg *config.Config) time.Duration {
 		refresh = 30 * time.Second
 	}
 	return 2*refresh + 30*time.Second
+}
+
+// mountParity registers GET /lakehouse/api/v1/admin/parity. Its loopback query
+// goes to listenAddr, the address this process serves HTTP on (-httpListenAddr),
+// not to the mode's default: another server (a hot VictoriaTraces on :10428)
+// may hold that, and the caller's global-read secret must not travel there.
+func mountParity(mux *http.ServeMux, cfg *config.Config, mf *manifest.Manifest, buf stats.BufferSource, listenAddr string) {
+	parityAPI := stats.NewAPI(stats.APIConfig{
+		Manifest: mf, Buffer: buf, Mode: "traces", Bucket: cfg.S3.Bucket,
+		ParityForwardHeader: cfg.Tenant.GlobalReadHeader,
+	})
+	parityAPI.RegisterParityWithInternal(mux, stats.NewLoopbackVLQuerier(listenAddr, stats.TracesParityQuery), func(r *http.Request) bool {
+		// Same validator the select path uses to widen a query to
+		// every tenant — one credential, one implementation.
+		return tenant.NewGlobalReadAuth(
+			cfg.Tenant.GlobalReadHeader,
+			cfg.Tenant.GlobalReadValue,
+			cfg.Tenant.GlobalReadToken,
+		).Authorize(r)
+	}, vtInternalCounter{}, []string{"trace_id_idx", "service_graph"})
 }

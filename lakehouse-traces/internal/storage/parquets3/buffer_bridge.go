@@ -250,19 +250,33 @@ func (b *BufferBridge) QueryTraces(ctx context.Context, startNs, endNs int64, sc
 }
 
 func queryPeers[T any](b *BufferBridge, ctx context.Context, startNs, endNs int64, scope tenantScope) ([]T, map[string]struct{}) {
+	rows, nonces, errs := queryPeersChecked[T](b, ctx, startNs, endNs, scope)
+	for _, err := range errs {
+		if ctx.Err() == nil {
+			logger.Warnf("buffer bridge: %s; the peer's unflushed rows are missing from this answer", err)
+		}
+	}
+	return rows, nonces
+}
+
+// queryPeersChecked is queryPeers that returns the peers' failures instead of
+// logging them, for a caller that must not treat a smaller answer as a whole
+// one (the admin parity check).
+func queryPeersChecked[T any](b *BufferBridge, ctx context.Context, startNs, endNs int64, scope tenantScope) ([]T, map[string]struct{}, []error) {
 	if !b.cfg.BufferQueryEnabled {
-		return nil, nil
+		return nil, nil, nil
 	}
 	b.mu.RLock()
 	eps := b.getQueryEndpoints()
 	authKey := b.authKey
 	b.mu.RUnlock()
 	if len(eps) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var mu sync.Mutex
 	var all []T
+	var errs []error
 	nonces := map[string]struct{}{}
 	var wg sync.WaitGroup
 	for _, ep := range eps {
@@ -271,25 +285,23 @@ func queryPeers[T any](b *BufferBridge, ctx context.Context, startNs, endNs int6
 			go func(endpoint string, sub tenantScope) {
 				defer wg.Done()
 				rows, segs, err := fetchPeer[T](b, ctx, endpoint, authKey, startNs, endNs, sub)
+				mu.Lock()
+				defer mu.Unlock()
 				if err != nil {
-					if ctx.Err() == nil {
-						logger.Warnf("buffer bridge: %s; the peer's unflushed rows are missing from this answer", err)
-					}
+					errs = append(errs, err)
 					return
 				}
-				mu.Lock()
 				all = append(all, rows...)
 				for _, n := range segs {
 					if n != "" {
 						nonces[n] = struct{}{}
 					}
 				}
-				mu.Unlock()
 			}(ep, sub)
 		}
 	}
 	wg.Wait()
-	return all, nonces
+	return all, nonces, errs
 }
 
 func fetchPeer[T any](b *BufferBridge, ctx context.Context, endpoint, authKey string, startNs, endNs int64, scope tenantScope) ([]T, []string, error) {

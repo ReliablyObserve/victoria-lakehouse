@@ -21,17 +21,20 @@ type APIConfig struct {
 	Manifest *manifest.Manifest
 	// Buffer reports the insert buffer's unflushed rows for the admin parity
 	// check (parquets3.Storage). Nil: the buffer term is reported as 0.
-	Buffer          BufferSource
-	CostCalc        *CostCalculator
-	ClassTracker    *StorageClassTracker
-	LabelIndex      *cache.LabelIndex
-	SchemaRegistry  *schema.Registry
-	Resolver        *tenant.TenantResolver
-	Policy          *tenant.PolicyRegistry
-	Mode            string // "logs" or "traces"
-	Bucket          string
-	BloomColumns    []string
-	BreakdownLabels []string
+	Buffer BufferSource
+	// ParityForwardHeader is the global-read header name (tenant.global_read_header)
+	// the parity loopback query forwards from the caller, next to Authorization.
+	ParityForwardHeader string
+	CostCalc            *CostCalculator
+	ClassTracker        *StorageClassTracker
+	LabelIndex          *cache.LabelIndex
+	SchemaRegistry      *schema.Registry
+	Resolver            *tenant.TenantResolver
+	Policy              *tenant.PolicyRegistry
+	Mode                string // "logs" or "traces"
+	Bucket              string
+	BloomColumns        []string
+	BreakdownLabels     []string
 	// CurrentSchemaFingerprint is the fingerprint files are written with now
 	// (parquets3.CurrentSchemaFingerprint(mode)); the compaction-hints endpoint flags
 	// files carrying any other fingerprint as stale (re-promotion targets). Empty

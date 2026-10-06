@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 )
 
@@ -49,13 +50,32 @@ func spread(tenant string, n int, min, max int64) []row {
 	return out
 }
 
+// modelBuffer is the insert buffer the handler reads: per-segment (segs) like
+// a node with co-located segments, or totals only (peers) like the bridge.
+// read, when set, answers instead (a buffer that changes between the reads).
 type modelBuffer struct {
-	rows   int64
-	nonces map[string]struct{}
+	segs  []buffer.SegmentRows
+	peers *buffer.WindowReport
+	err   error
+	read  func(call int) (buffer.WindowReport, error)
+	calls int
 }
 
-func (b *modelBuffer) BufferedRows(context.Context, int64, int64) (int64, map[string]struct{}, error) {
-	return b.rows, b.nonces, nil
+func (b *modelBuffer) BufferedRows(context.Context, int64, int64) (buffer.WindowReport, error) {
+	b.calls++
+	if b.read != nil {
+		return b.read(b.calls)
+	}
+	if b.peers != nil {
+		return *b.peers, b.err
+	}
+	rep := buffer.WindowReport{Nonces: map[string]struct{}{}, Segments: []buffer.SegmentRows{}}
+	for _, g := range b.segs {
+		rep.Rows += g.Rows
+		rep.Nonces[g.Nonce] = struct{}{}
+		rep.Segments = append(rep.Segments, g)
+	}
+	return rep, b.err
 }
 
 func getParity(t *testing.T, api *API, vl VLQuerier, internal VTInternalCounter) ParityResponse {
@@ -159,7 +179,11 @@ func TestParity_UnflushedBufferRowsAreTheExpectedDrift(t *testing.T) {
 	addFile(mf, "p0", "0/0/logs/aaaaaaaaaaaaaaaa-1.parquet", flushed)
 	const nonce = "bbbbbbbbbbbbbbbb"
 	addFile(mf, "p1", "0/0/logs/"+nonce+"-1.parquet", committed)
-	buf := &modelBuffer{rows: int64(len(committed) + len(unflushed)), nonces: map[string]struct{}{nonce: {}, "cccccccccccccccc": {}}}
+	// The committed segment holds the 200 rows; the uncommitted one 120.
+	buf := &modelBuffer{segs: []buffer.SegmentRows{
+		{Nonce: nonce, Committed: true, Rows: 200},
+		{Nonce: "cccccccccccccccc", Committed: false, Rows: 120},
+	}}
 
 	all := append(append(append([]row{}, flushed...), committed...), unflushed...)
 	r := getParity(t, NewAPI(APIConfig{Manifest: mf, Buffer: buf}), &modelVL{rows: all}, nil)
@@ -221,7 +245,9 @@ func TestParity_TracesBufferIndexRowsAreInTheBufferTerm(t *testing.T) {
 	mf := manifest.New("b", "")
 	const nonce = "dddddddddddddddd"
 	addFile(mf, "p0", "0/0/traces/"+nonce+"-1.parquet", spans) // idx rows dropped at flush
-	buf := &modelBuffer{rows: 380, nonces: map[string]struct{}{nonce: {}}}
+	// The segment is still uncommitted while its objects exist (the commit
+	// record comes after the last object): 380 buffered, 300 written.
+	buf := &modelBuffer{segs: []buffer.SegmentRows{{Nonce: nonce, Committed: false, Rows: 380}}}
 
 	r := getParity(t, NewAPI(APIConfig{Manifest: mf, Buffer: buf}), &modelVL{rows: append(append([]row{}, spans...), idx...)}, nil)
 	if r.BufferUnflushedRows != 80 || r.VerifiedDrift != 0 {

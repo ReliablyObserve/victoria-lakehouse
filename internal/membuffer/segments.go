@@ -540,29 +540,57 @@ func (p *Snapshot) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage
 	return nil
 }
 
-// RowsInWindow counts the rows with _time in [start, end] of every tenant in
-// every segment of the snapshot, with the upstream engine (the same rows a
-// `* | stats count()` over the buffer reads).
-func (p *Snapshot) RowsInWindow(ctx context.Context, start, end int64) (int64, error) {
-	ids, err := p.GetTenantIDs(ctx, start, end)
-	if err != nil {
-		return 0, err
+// SegmentRows is one live segment's row count in a window, and whether the
+// segment is committed (every object of it is stored and in the manifest).
+type SegmentRows struct {
+	Nonce     string
+	Committed bool
+	Rows      int64
+}
+
+// SegmentRowsInWindow counts, per live segment of the snapshot, the rows with
+// _time in [start, end] of every tenant, with the upstream engine (the same
+// rows a `* | stats count()` over the buffer reads).
+func (p *Snapshot) SegmentRowsInWindow(ctx context.Context, start, end int64) ([]SegmentRows, error) {
+	committed := make(map[*Segment]bool, len(p.segs))
+	p.s.mu.Lock()
+	for _, g := range p.segs {
+		committed[g] = !g.committed.IsZero()
 	}
-	var total int64
-	for _, id := range ids {
-		q, err := logstorage.ParseQueryAtTimestamp("*", end)
+	p.s.mu.Unlock()
+	out := make([]SegmentRows, 0, len(p.segs))
+	for _, g := range p.segs {
+		ids, err := g.GetTenantIDs(ctx, start, end)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
-		q = q.CloneWithTimeFilter(end, start, end)
-		var n atomic.Int64
-		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, q, false, nil)
-		if err := p.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) { n.Add(int64(db.RowsCount())) }); err != nil {
-			return 0, err
+		sr := SegmentRows{Nonce: g.nonce, Committed: committed[g]}
+		for _, id := range ids {
+			q, err := logstorage.ParseQueryAtTimestamp("*", end)
+			if err != nil {
+				return nil, err
+			}
+			q = q.CloneWithTimeFilter(end, start, end)
+			var n atomic.Int64
+			qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, q, false, nil)
+			if err := g.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) { n.Add(int64(db.RowsCount())) }); err != nil {
+				return nil, err
+			}
+			sr.Rows += n.Load()
 		}
-		total += n.Load()
+		out = append(out, sr)
 	}
-	return total, nil
+	return out, nil
+}
+
+// RowsInWindow is the sum of SegmentRowsInWindow.
+func (p *Snapshot) RowsInWindow(ctx context.Context, start, end int64) (int64, error) {
+	segs, err := p.SegmentRowsInWindow(ctx, start, end)
+	var total int64
+	for _, g := range segs {
+		total += g.Rows
+	}
+	return total, err
 }
 
 // GetTenantIDs returns the tenants with rows in [start, end] in any segment of

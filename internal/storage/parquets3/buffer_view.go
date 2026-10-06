@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -226,19 +227,39 @@ func (s *Storage) bufferTenantAccountIDs(seen map[uint32]struct{}) {
 // by the live segments (the co-located ones, or every insert peer's through the
 // buffer bridge), and the nonces of those segments. A query counts these rows
 // from the buffer and skips the objects of the same nonces, so the caller
-// subtracts the manifest rows of those objects to get the rows the manifest
-// does not hold. A node with no buffer returns 0 and no nonces.
-func (s *Storage) BufferedRows(ctx context.Context, startNs, endNs int64) (int64, map[string]struct{}, error) {
+// compares them with the manifest rows of those objects. Co-located segments
+// are reported one by one (with their committed state); peers' only as a total.
+// A peer that fails is an error, with the rows of the others in the report: a
+// smaller answer must not read as a whole one. A node with no buffer returns an
+// empty report.
+func (s *Storage) BufferedRows(ctx context.Context, startNs, endNs int64) (buffer.WindowReport, error) {
 	if s.useLocalBuffer() {
 		snap := s.localBuffer.Snapshot()
 		defer snap.Release()
-		n, err := snap.RowsInWindow(ctx, startNs, endNs)
-		return n, snap.Nonces(), err
+		segs, err := snap.SegmentRowsInWindow(ctx, startNs, endNs)
+		rep := buffer.WindowReport{Nonces: snap.Nonces(), Segments: make([]buffer.SegmentRows, 0, len(segs))}
+		for _, g := range segs {
+			rep.Rows += g.Rows
+			rep.Segments = append(rep.Segments, buffer.SegmentRows{Nonce: g.Nonce, Committed: g.Committed, Rows: g.Rows})
+		}
+		return rep, err
 	}
 	if s.bufferBridge == nil {
-		return 0, nil, nil
+		return buffer.WindowReport{}, nil
 	}
-	v := s.openBufferView(storage.WithGlobalRead(ctx), startNs, endNs, nil)
-	defer v.release()
-	return int64(len(v.logRows) + len(v.traceRows)), v.nonces, nil
+	ctx = storage.WithGlobalRead(ctx)
+	scope := scopeFor(ctx, nil)
+	var rep buffer.WindowReport
+	var errs []error
+	switch s.cfg.Mode {
+	case config.ModeLogs:
+		var rows []schema.LogRow
+		rows, rep.Nonces, errs = queryPeersChecked[schema.LogRow](s.bufferBridge, ctx, startNs, endNs, scope)
+		rep.Rows = int64(len(rows))
+	case config.ModeTraces:
+		var rows []schema.TraceRow
+		rows, rep.Nonces, errs = queryPeersChecked[schema.TraceRow](s.bufferBridge, ctx, startNs, endNs, scope)
+		rep.Rows = int64(len(rows))
+	}
+	return rep, errors.Join(errs...)
 }
