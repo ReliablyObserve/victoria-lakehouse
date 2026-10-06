@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -809,15 +810,23 @@ func listBucketPrefix(ctx context.Context, client *s3.Client, bucket, listPrefix
 // with controlled parallelism, so total S3 API load is bounded by the
 // concurrency knob and tracks tenant count rather than file count.
 func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (map[string][]FileInfo, int, int64, error) {
-	tenantPrefixes, err := m.discoverTenantPrefixes(ctx, client)
+	files, totalFiles, totalBytes, _, err := m.refreshTenantScopedPartial(ctx, client)
+	return files, totalFiles, totalBytes, err
+}
+
+// refreshTenantScopedPartial is refreshTenantScoped that also reports how many
+// accounts the discovery had to skip (their project listing failed): the file
+// map then lacks them, which the caller must not mistake for a full listing.
+func (m *Manifest) refreshTenantScopedPartial(ctx context.Context, client *s3.Client) (map[string][]FileInfo, int, int64, int, error) {
+	tenantPrefixes, skipped, err := m.discoverTenantPrefixes(ctx, client)
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("discover tenants: %w", err)
+		return nil, 0, 0, 0, fmt.Errorf("discover tenants: %w", err)
 	}
 	if len(tenantPrefixes) == 0 {
 		// Empty bucket OR no tenant directories yet — surface as
 		// success with no files, same as a full-bucket refresh of an
 		// empty bucket would.
-		return make(map[string][]FileInfo), 0, 0, nil
+		return make(map[string][]FileInfo), 0, 0, skipped, nil
 	}
 
 	// Per-tenant enumeration in parallel. Bound concurrency so we don't
@@ -892,9 +901,9 @@ func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (
 		totalBytes += r.byteCount
 	}
 	if firstErr != nil {
-		return nil, 0, 0, firstErr
+		return nil, 0, 0, 0, firstErr
 	}
-	return files, totalFiles, totalBytes, nil
+	return files, totalFiles, totalBytes, skipped, nil
 }
 
 // discoverTenantPrefixes returns the set of "{AccountID}/{ProjectID}/"
@@ -903,10 +912,14 @@ func (m *Manifest) refreshTenantScoped(ctx context.Context, client *s3.Client) (
 //
 // For an "{OrgID}/" template (single segment), returns just the
 // top-level OrgID prefixes.
-func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client) ([]string, error) {
+//
+// skipped counts the accounts whose project listing failed: they are left out
+// (the refresh still serves the rest) and the caller learns the listing is
+// partial.
+func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client) (prefixes []string, skipped int, err error) {
 	accounts, err := m.listCommonPrefixes(ctx, client, "")
 	if err != nil {
-		return nil, fmt.Errorf("list accounts: %w", err)
+		return nil, 0, fmt.Errorf("list accounts: %w", err)
 	}
 	// OrgID-only template: one segment is enough. Falls back to direct
 	// prefixTemplate parse for callers that bypass SetPrefixTemplate.
@@ -914,7 +927,7 @@ func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client
 		(m.templateSegments == 0 &&
 			strings.Contains(m.prefixTemplate, "{OrgID}") &&
 			!strings.Contains(m.prefixTemplate, "{ProjectID}")) {
-		return accounts, nil
+		return accounts, 0, nil
 	}
 
 	// Two-level template: walk into each account to find its projects.
@@ -924,11 +937,12 @@ func (m *Manifest) discoverTenantPrefixes(ctx context.Context, client *s3.Client
 		if err != nil {
 			// Skip accounts that fail; log so the operator can correlate.
 			logger.Warnf("list projects under %q failed: %s", acc, err)
+			skipped++
 			continue
 		}
 		out = append(out, projects...)
 	}
-	return out, nil
+	return out, skipped, nil
 }
 
 // listCommonPrefixes performs a single delimited LIST under prefix and
@@ -1056,12 +1070,30 @@ func (m *Manifest) SetTenantBuckets(buckets []TenantBucket) {
 	}
 }
 
+// ErrRefreshRejected is returned by RefreshFromS3 when the cliff guard kept the
+// previous file set instead of the listing: the manifest was not brought up to
+// what the bucket holds.
+var ErrRefreshRejected = errors.New("manifest refresh rejected by the cliff guard: the previous file set was kept")
+
+// ErrRefreshPartial is returned by RefreshFromS3 when the listing could not
+// cover every tenant (a project listing failed): what was listed was applied,
+// but the manifest may lack that tenant's objects.
+var ErrRefreshPartial = errors.New("manifest refresh is partial: some tenants could not be listed")
+
+// RefreshFromS3 re-lists the bucket and replaces the tracked file set. The
+// listing is applied unless the cliff guard rejects it (ErrRefreshRejected, the
+// old set is kept) and is applied but incomplete when a tenant could not be
+// listed (ErrRefreshPartial). A nil result means the manifest now holds what the
+// whole bucket holds; callers that only serve may treat both sentinels as
+// "best effort", callers that infer "the object is gone" (the insert buffer's
+// release of restored segments) must not.
 func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	// The listing's start time bounds what it can know: an object published
 	// or removed after this instant may or may not be in the pages that follow.
 	listStart := time.Now()
 
 	var files map[string][]FileInfo
+	partial := false
 
 	// When per-tenant prefix isolation is configured, the writer
 	// writes under "{AccountID}/{ProjectID}/<mode>/" — many distinct
@@ -1079,9 +1111,10 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	//   2. Full-bucket fallback: kept for the single-prefix template
 	//      and as a safety net if tenant discovery fails.
 	if strings.Contains(m.prefixTemplate, "{AccountID}") {
-		f, _, _, err := m.refreshTenantScoped(ctx, client)
+		f, _, _, skipped, err := m.refreshTenantScopedPartial(ctx, client)
 		if err == nil {
 			files = f
+			partial = skipped > 0
 		} else {
 			// Tenant discovery failed; fall back to the legacy full-bucket
 			// LIST so a transient list failure doesn't drop the manifest.
@@ -1106,7 +1139,12 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 	if _, _, err := m.listTenantBuckets(ctx, client, files); err != nil {
 		return err
 	}
-	m.applyRefreshedFiles(files, listStart)
+	if !m.applyRefreshedFiles(files, listStart) {
+		return ErrRefreshRejected
+	}
+	if partial {
+		return ErrRefreshPartial
+	}
 	return nil
 }
 
@@ -1175,7 +1213,14 @@ func (m *Manifest) applyRefreshedFiles(files map[string][]FileInfo, listStart ti
 	// > 0 before this run), we keep the OLD state and surface a
 	// warning. Genuinely-emptied buckets land on the next refresh
 	// when the count actually drops to zero.
-	if m.totalFiles > 0 && totalFiles < m.totalFiles/2 {
+	//
+	// The first listing after a snapshot load is not guarded: the snapshot is
+	// only a starting point, so a listing that is much smaller than it is most
+	// likely what a peer's compaction really left, and rejecting it would keep
+	// the stale set (and everything that waits for a fresh manifest, such as
+	// the restored insert-buffer segments) for as long as the bucket stays that
+	// small. A cold start has no previous set to guard either.
+	if m.listed && m.totalFiles > 0 && totalFiles < m.totalFiles/2 {
 		logger.Warnf("manifest refresh cliff-guard: rejecting refresh that lost %d/%d files; keeping previous state (likely transient S3 LIST hiccup)", m.totalFiles-totalFiles, m.totalFiles)
 		metrics.ManifestRefreshCliffGuardRejections.Inc()
 		m.mu.Unlock()

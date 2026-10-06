@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -36,6 +35,8 @@ type flushSegments interface {
 	Pending() []*membuffer.Segment
 	Commit(g *membuffer.Segment, at time.Time)
 	CommitThroughAt(seq uint64, at func(seq uint64) time.Time)
+	HoldCommitted(at time.Time) int
+	ReleaseHeld() int
 	Reap(now time.Time, grace time.Duration) int
 	Stats(now time.Time) membuffer.Stats
 }
@@ -101,13 +102,15 @@ type BufferFlusher struct {
 	nextTry    time.Time                  // back-off after a failed drain
 	backoff    time.Duration
 
-	// holdReap is set at load when committed segments were restored: none is
-	// retired until this process has applied a successful S3 manifest refresh
-	// (ManifestRefreshed), because the manifest it started from is a snapshot
-	// that can lack the segment's objects, or what compaction made of them (#379).
-	holdReap  atomic.Bool
-	createdAt time.Time        // refreshes that started before this do not release the hold
-	clock     func() time.Time // nil: time.Now; tests simulate a restart after downtime
+	// The committed segments restored at load are held (membuffer HoldCommitted):
+	// none of them is retired until this process has applied a complete S3
+	// manifest refresh (ManifestRefreshed), because the manifest it started from
+	// is a snapshot that can lack their objects, or what compaction made of them
+	// (#379). Segments committed after the start are not held.
+	createdAt     time.Time        // refreshes that started before this do not release the hold
+	clock         func() time.Time // nil: time.Now; tests simulate a restart after downtime
+	holdWarnAfter time.Duration    // WARN when a restored segment has been held this long
+	lastHoldWarn  time.Time
 
 	stopOnce sync.Once
 	cancel   context.CancelFunc
@@ -156,6 +159,10 @@ type BufferFlusherConfig struct {
 	TargetBytes int64         // object size target (insert.target_file_size)
 	MaxAge      time.Duration // insert.buffer_flush_interval
 	Grace       time.Duration // committed segments stay readable this long
+	// HoldWarnAfter is how long restored segments may stay held, waiting for a
+	// complete manifest refresh, before a warning is logged (every HoldWarnAfter
+	// after that). Zero: 10 minutes.
+	HoldWarnAfter time.Duration
 }
 
 func newBufferFlusher(writer *BatchWriter, segs flushSegments, stateDir string, keep FlushRowFilter, c BufferFlusherConfig) *BufferFlusher {
@@ -167,6 +174,9 @@ func newBufferFlusher(writer *BatchWriter, segs flushSegments, stateDir string, 
 	}
 	if c.Grace < 0 {
 		c.Grace = 0
+	}
+	if c.HoldWarnAfter <= 0 {
+		c.HoldWarnAfter = 10 * time.Minute
 	}
 	maxRows := c.TargetBytes / estBytesPerLogRow
 	if maxRows < 1 {
@@ -182,8 +192,10 @@ func newBufferFlusher(writer *BatchWriter, segs flushSegments, stateDir string, 
 		sealBytes: c.TargetBytes,
 		grace:     c.Grace,
 		createdAt: time.Now(),
-		retry:     map[string]*logGroupUpload{},
-		done:      make(chan struct{}),
+
+		holdWarnAfter: c.HoldWarnAfter,
+		retry:         map[string]*logGroupUpload{},
+		done:          make(chan struct{}),
 	}
 }
 
@@ -229,10 +241,11 @@ func (f *BufferFlusher) load(now time.Time) error {
 
 // restoreCommitted tells the segments which of them are committed, each at its
 // recorded commit time, so the grace of each keeps counting from its real
-// commit and not from this restart. Nothing is retired here: a restored segment
-// stays served until ManifestRefreshed (see holdReap), because retiring it
+// commit and not from this restart. Nothing is retired here: each restored
+// segment is held, and stays served until ManifestRefreshed, because retiring it
 // earlier, from a manifest snapshot that predates its objects, would hide its
-// rows until the first S3 refresh.
+// rows until the first complete S3 refresh. Only the restored segments are held;
+// the ones committed after this start follow the normal grace.
 //
 // A committed segment with no record, next to records, is older than the
 // records' retention and is treated as long committed. A state with no records
@@ -260,7 +273,7 @@ func (f *BufferFlusher) restoreCommitted(st flushState, now time.Time) {
 		return t
 	})
 	if restored > 0 {
-		f.holdReap.Store(true)
+		f.segs.HoldCommitted(time.Now())
 	}
 }
 
@@ -271,17 +284,17 @@ func (f *BufferFlusher) now() time.Time {
 	return time.Now()
 }
 
-// ManifestRefreshed is called after every successful S3 manifest refresh has
-// been applied; started is when that refresh began. The first one that began
-// after this flusher was built releases the segments restored at load: the
-// manifest now holds what the bucket holds (their objects, and anything
-// compaction made of them while the process was down), so retiring them whose
-// grace has passed loses nothing. Until then, if the refresh never succeeds,
-// they stay served: duplicates are possible only if a peer compacted their
-// objects and are bounded by the buffer's size, while retiring them could hide
-// rows.
+// ManifestRefreshed is called after every COMPLETE S3 manifest refresh has
+// been applied (not rejected by the cliff guard, not partial); started is when
+// that refresh began. The first one that began after this flusher was built
+// releases the segments restored at load: the manifest now holds what the
+// bucket holds (their objects, and anything compaction made of them while the
+// process was down), so retiring them whose grace has passed loses nothing.
+// Until then, if no such refresh succeeds, they stay served: duplicates are
+// possible only if a peer compacted their objects and are bounded by their
+// size (not in time), while retiring them could hide rows.
 func (f *BufferFlusher) ManifestRefreshed(started time.Time) {
-	if started.Before(f.createdAt) || !f.holdReap.CompareAndSwap(true, false) {
+	if started.Before(f.createdAt) || f.segs.ReleaseHeld() == 0 {
 		return
 	}
 	if n := f.segs.Reap(f.now(), f.grace); n > 0 {
@@ -597,9 +610,7 @@ func (f *BufferFlusher) tick(ctx context.Context, now time.Time) {
 			f.maybeSeal(time.Now())
 		}
 	}
-	if !f.holdReap.Load() {
-		f.segs.Reap(f.now(), f.grace)
-	}
+	f.segs.Reap(f.now(), f.grace)
 	f.writer.persistCatalog(ctx)
 	f.observe(time.Now())
 }
@@ -783,5 +794,11 @@ func (f *BufferFlusher) observe(now time.Time) {
 	metrics.BufferSegments.Set("retired", int64(st.Retired))
 	metrics.BufferPendingRows.Set(st.PendingRows)
 	metrics.BufferOldestPendingAge.Set(int64(st.OldestPendingAge.Seconds()))
+	metrics.BufferHeldSegments.Set(int64(st.Held))
+	metrics.BufferOldestHeldAge.Set(int64(st.OldestHeldAge.Seconds()))
+	if st.Held > 0 && st.OldestHeldAge >= f.holdWarnAfter && now.Sub(f.lastHoldWarn) >= f.holdWarnAfter {
+		f.lastHoldWarn = now
+		logger.Warnf("buffer flusher: %d committed segment(s) restored at start are still held after %s: no complete S3 manifest refresh has finished since (listing failing, rejected by the cliff guard, or slower than its timeout); they stay served, so their rows may be duplicated if a peer compacted their objects, and they keep their disk (lakehouse_buffer_held_segments)", st.Held, st.OldestHeldAge.Round(time.Second))
+	}
 	metrics.InsertFlushCommittedSeq.Set(int64(f.state.CommittedThroughSeq))
 }

@@ -1359,6 +1359,10 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 			TargetBytes: cfg.Insert.TargetFileSizeN(),
 			MaxAge:      cfg.Insert.BufferFlushInterval,
 			Grace:       bufferGrace(cfg),
+			// A restored segment waits for one complete manifest refresh: warn
+			// when that takes longer than two refresh intervals (5 minutes at
+			// least, the warm-up refresh's timeout).
+			HoldWarnAfter: max(2*cfg.Manifest.RefreshInterval, 5*time.Minute),
 		})
 		flusher.Start(time.Second)
 		store.SetBufferFlusher(flusher)

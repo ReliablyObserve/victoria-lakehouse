@@ -51,6 +51,11 @@ func (s *Storage) useLocalBuffer() bool {
 	return s.localBuffer != nil && (s.bufferBridge == nil || !s.bufferBridge.HasPeers())
 }
 
+// testHookBetweenViewAndList, when set by a test, runs after a read path has
+// taken its buffer view and before it lists the objects: the instant a refresh
+// and a reap could slip in (#379).
+var testHookBetweenViewAndList func()
+
 // openBufferView takes the query's view of the insert buffer. Call release
 // when the query is done with it.
 func (s *Storage) openBufferView(ctx context.Context, startNs, endNs int64, tenantIDs []logstorage.TenantID) *bufferView {

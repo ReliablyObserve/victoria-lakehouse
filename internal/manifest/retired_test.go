@@ -578,6 +578,11 @@ func TestApplyListing_ARejectedListingForgetsNothing(t *testing.T) {
 		m.AddFile(refreshPartition, enriched(k, 1))
 		keys = append(keys, ListedObject{Key: k, Size: 1})
 	}
+	// The guard does not apply to the first listing of a process (see
+	// applyRefreshedFiles): one full listing makes the next one guarded.
+	if !m.ApplyListing(keys, time.Now()) {
+		t.Fatal("fixture: the first full listing must be accepted")
+	}
 	retired := refreshKey("retired")
 	m.Retire(retired, "x", true)
 	time.Sleep(time.Millisecond)

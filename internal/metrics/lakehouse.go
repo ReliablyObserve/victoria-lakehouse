@@ -406,6 +406,13 @@ var (
 	// BufferOldestPendingAge is the age in seconds of the oldest segment not yet
 	// fully written: how far object storage lags behind ingest.
 	BufferOldestPendingAge = NewGauge("lakehouse_buffer_oldest_pending_age_seconds")
+	// BufferHeldSegments is the number of committed segments, restored at start,
+	// that are held past their grace until a complete S3 manifest refresh has
+	// finished (0 in steady state); BufferOldestHeldAge is how long the oldest
+	// has been held. A value that stays up means refreshes keep failing: the rows
+	// stay served (possibly duplicated) and the segments keep their disk.
+	BufferHeldSegments  = NewGauge("lakehouse_buffer_held_segments")
+	BufferOldestHeldAge = NewGauge("lakehouse_buffer_oldest_held_age_seconds")
 	// InsertFlushCommittedSeq is the sequence number of the newest segment fully
 	// written to object storage (every older one is too).
 	InsertFlushCommittedSeq = NewGauge("lakehouse_insert_flush_committed_segment")

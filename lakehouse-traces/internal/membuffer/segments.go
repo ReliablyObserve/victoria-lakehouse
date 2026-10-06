@@ -99,6 +99,7 @@ type Segment struct {
 	sealed    bool
 	committed time.Time // zero until committed
 	retiredAt time.Time // zero until Reap retires it
+	heldAt    time.Time // zero unless held: restored at start, not yet released (#379)
 	refs      int
 }
 
@@ -403,6 +404,39 @@ func (s *Segments) CommitThroughAt(seq uint64, at func(seq uint64) time.Time) {
 	}
 }
 
+// HoldCommitted marks every committed segment that is not held yet as held, at
+// at: Reap leaves a held segment alone until ReleaseHeld. The flusher holds the
+// segments it restores at start, so only they wait for the first S3 refresh;
+// segments committed later follow the normal grace. It returns how many it
+// newly held.
+func (s *Segments) HoldCommitted(at time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, g := range s.list {
+		if !g.committed.IsZero() && g.heldAt.IsZero() {
+			g.heldAt = at
+			n++
+		}
+	}
+	return n
+}
+
+// ReleaseHeld lets Reap retire the held segments again (once their grace has
+// passed). It returns how many it released.
+func (s *Segments) ReleaseHeld() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, g := range s.list {
+		if !g.heldAt.IsZero() {
+			g.heldAt = time.Time{}
+			n++
+		}
+	}
+	return n
+}
+
 // Reap retires the committed segments whose grace has passed, so no new
 // snapshot takes them, and removes every retired segment no snapshot holds any
 // more (or that a snapshot has held for RetiredHoldLimit): upstream MustClose,
@@ -411,7 +445,7 @@ func (s *Segments) Reap(now time.Time, grace time.Duration) int {
 	s.mu.Lock()
 	keep := s.list[:0]
 	for _, g := range s.list {
-		if !g.committed.IsZero() && now.Sub(g.committed) >= grace {
+		if !g.committed.IsZero() && g.heldAt.IsZero() && now.Sub(g.committed) >= grace {
 			g.retiredAt = now
 			s.retired = append(s.retired, g)
 			continue
@@ -469,6 +503,10 @@ type Stats struct {
 	Retired          int
 	PendingRows      int64
 	OldestPendingAge time.Duration
+	// Held counts the held committed segments (see HoldCommitted) and
+	// OldestHeldAge is how long the longest-held one has been held.
+	Held          int
+	OldestHeldAge time.Duration
 }
 
 // Stats counts the segments by state.
@@ -488,6 +526,12 @@ func (s *Segments) Stats(now time.Time) Stats {
 			}
 		default:
 			st.Committed++
+			if !g.heldAt.IsZero() {
+				st.Held++
+				if age := now.Sub(g.heldAt); age > st.OldestHeldAge {
+					st.OldestHeldAge = age
+				}
+			}
 		}
 	}
 	st.Retired = len(s.retired)

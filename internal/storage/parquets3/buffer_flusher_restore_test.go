@@ -74,6 +74,11 @@ func TestBufferFlusher_CommitTimesPersistedAndRestored(t *testing.T) {
 			t.Fatalf("%d committed segments live at restart within grace, want 2", got)
 		}
 		// Grace counts from the commit: gone at commit+grace, not restart+grace.
+		// (A held segment is not reaped; the first refresh releases it.)
+		if n := e.segs.Reap(commit.Add(restoreGrace+time.Second), restoreGrace); n != 0 {
+			t.Fatalf("Reap removed %d held segments", n)
+		}
+		e.segs.ReleaseHeld()
 		if n := e.segs.Reap(commit.Add(restoreGrace+time.Second), restoreGrace); n != 2 {
 			t.Fatalf("Reap at commit+grace removed %d, want 2", n)
 		}

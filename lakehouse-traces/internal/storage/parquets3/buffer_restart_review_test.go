@@ -58,11 +58,17 @@ func TestBufferRestartReview_StaleSnapshot_RowsServedUntilFirstRefresh(t *testin
 	}
 }
 
-// Residual (#406): crash after the marker PUT and before the commit state write. The
-// guard counts from the marker; the segment is still pending at restart and is
-// served from the buffer while compaction merges its objects.
+// Known gap (#406): a crash after the marker PUT and before the commit-state
+// write. The compaction guard counts from the marker; the restarted pod still
+// has the segment pending (its state is the PREVIOUS one, which keeps the
+// earlier segments' records) and serves it from the buffer while compaction
+// merges its objects: the segment's rows are served twice until it is drained
+// again. The earlier, committed segment is exact.
+//
+// This asserts what happens today so the gap stays visible and measured; it
+// fails the moment the gap is fixed, so the assertion is flipped to exact counts
+// then.
 func TestBufferRestartReview_CrashBetweenMarkerAndState_Duplicates(t *testing.T) {
-	t.Skip("known gap, tracked in #406: a crash between the marker PUT and the commit-state write can duplicate rows for about one grace")
 	const grace = time.Minute
 	e := newRestartEnv(t)
 	e.ingest("A", at(rwHour, 5*time.Minute), at(rwHour, 6*time.Minute))
@@ -71,12 +77,15 @@ func TestBufferRestartReview_CrashBetweenMarkerAndState_Duplicates(t *testing.T)
 	e.flush()
 	commit := time.Now()
 	markers := e.segmentMarkers(commit)
-	// Rewind the state to "draining, not committed" (crash between the marker
-	// PUT and the state write).
+	// Rewind the state to what a crash between B's marker PUT and B's state
+	// write leaves: B draining and not committed, A's record kept.
 	st, _ := readFlushState(e.f.statePath)
+	if len(st.Commits) != 2 {
+		t.Fatalf("fixture: %d commit records, want 2", len(st.Commits))
+	}
 	st.DrainingSeq = st.CommittedThroughSeq
 	st.CommittedThroughSeq--
-	st.Commits = nil
+	st.Commits = st.Commits[:1] // A's record
 	if err := e.f.writeState(st); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +95,22 @@ func TestBufferRestartReview_CrashBetweenMarkerAndState_Duplicates(t *testing.T)
 	if n := e.compactSegmentObjects(markers, 2*grace, restartAt); n == 0 {
 		t.Fatal("nothing merged")
 	}
-	e.check("pending segment after compaction, before re-drain")
+	from, to := rwWindow()
+	hits := e.levelHits(from, to)
+	if hits["A"] != 2 {
+		t.Errorf("committed segment A: %d rows, want exactly 2 (the record of A survives the crash)", hits["A"])
+	}
+	switch {
+	case hits["B"] == 2:
+		t.Fatal("#406 fixed: flip this assertion to exact counts (A=2, B=2, 4 rows) and drop this test's known-gap framing")
+	case hits["B"] != 4:
+		t.Errorf("segment B: %d rows, want the known duplicate (4 = 2 from the buffer + 2 from the compacted object)", hits["B"])
+	}
+	if got := e.run(context.Background(), "*", from, to); got != 6 {
+		t.Errorf("rows served = %d, want 6 (4 acknowledged + 2 duplicated, #406)", got)
+	}
+	// Once the segment is drained again the duplicate is gone.
 	e.flush()
-	e.check("after re-drain (served for a new grace)")
+	e.reap()
+	e.check("after the re-drain and the grace")
 }
