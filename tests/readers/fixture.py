@@ -159,7 +159,6 @@ def compaction_counters():
 
 
 def snapshot_archive(path):
-    import json
     fs = lib.s3fs_client()
     fs.invalidate_cache()
     lib.write_json(path, {"objects": sorted(parquet_keys(fs, "obs-archive")), "counters": compaction_counters()})
@@ -186,7 +185,6 @@ def storage_health(before_path, scans_logs, scans_traces, out_path):
     """#343 (fixed by #347): compaction counted the files of every tenant of a partition together, so
     a scan kept rewriting what it had just written. Once every group is compacted, later scans must
     do nothing: no scan that compacts, no run, no input or output file, the same Parquet objects."""
-    import json
     before = lib.read_json(before_path)
     fs = lib.s3fs_client()
     fs.invalidate_cache()
@@ -316,7 +314,6 @@ def make_prune_fixture(oracle_path):
     """A tenant prefix that holds one real day of the compacted layer plus a partition whose only
     object is garbage. A query that filters on dt and succeeds never opened the garbage object, so
     its engine pruned the partition; an unfiltered query on the same prefix must fail (the control)."""
-    import json
     fs = lib.s3fs_client()
     oracle = lib.read_json(oracle_path)
     for sig in lib.SIGNALS:

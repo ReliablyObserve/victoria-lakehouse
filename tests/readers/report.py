@@ -6,7 +6,6 @@
   report.py --check-doc [doc.md]      fail when the table in the doc is not the generated one
 """
 import glob
-import json
 import os
 import re
 import sys

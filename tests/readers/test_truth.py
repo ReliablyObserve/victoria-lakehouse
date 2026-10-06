@@ -8,7 +8,6 @@ parser reads the real thing, and every mutation of mutation-proof.sh still finds
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 from datetime import datetime, timezone
 

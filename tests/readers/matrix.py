@@ -4,14 +4,11 @@
   matrix.py --engines duckdb,pyarrow --oracle-raw o1.json --oracle-compacted o2.json --out result.json
 """
 import argparse
-import json
 import sys
-import traceback
 
 import engines
 import lib
 import gaps
-from gaps import known_gap
 
 
 # The layout of the dumped fixture ($OUT/fixture/<bucket>/...): written here literally and not taken from
@@ -216,11 +213,11 @@ def main():
                         got = {q: engines.QueryError(rec["error"]) for q in list(lib.QUERIES) + [lib.FILES_QUERY]}
                     extras = sorted(k for k in got if k not in lib.QUERIES and k != lib.FILES_QUERY)
                     for q in list(lib.QUERIES) + extras:
-                        gap = known_gap(eng, sig, layer, tenant, q, facts, cell.t["prefix"], params["dt"]) if q in lib.QUERIES else None
+                        gap = gaps.known_gap(eng, sig, layer, tenant, q, facts, cell.t["prefix"], params["dt"]) if q in lib.QUERIES else None
                         rec["queries"][q] = judge(got, q, want[lib.base_query(q)], gap, tenant)
                     if eng in REPORTS_FILES:
                         rec["queries"][lib.FILES_QUERY] = files_check(got, inventory(a.fixture, layer, cell.t["prefix"], sig),
-                                                                      known_gap(eng, sig, layer, tenant, "count", facts, cell.t["prefix"]), tenant)
+                                                                      gaps.known_gap(eng, sig, layer, tenant, "count", facts, cell.t["prefix"]), tenant)
                     else:
                         rec["queries"][lib.FILES_QUERY] = {"status": "n/a", "ok": True, "got": None, "want": None, "gap": None,
                                                            "note": "the engine cannot report which objects it read; the layer is checked structurally"}

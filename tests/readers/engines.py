@@ -7,9 +7,6 @@ example values replaced, see lib.materialise) and returns the normalised answers
 import ast
 import json
 import os
-import re
-import sys
-import time
 import urllib.parse
 import urllib.request
 

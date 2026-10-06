@@ -4,7 +4,6 @@ They pin the things the matrix's credibility rests on: every documented example 
 complete, the example values really get replaced, the answer shapes are compared exactly, a known
 gap cannot hide a pass, and the committed coverage table and engine versions are the ones CI runs.
 """
-import json
 import os
 import re
 

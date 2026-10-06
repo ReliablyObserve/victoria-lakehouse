@@ -7,7 +7,6 @@ Each mutation is a text patch that fails loudly when its anchor is not found, so
 code under test cannot silently turn a mutant into a no-op.
 """
 import pathlib
-import re
 import sys
 
 

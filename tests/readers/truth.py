@@ -18,7 +18,6 @@ cut to microseconds, rows filed under the wrong tenant) differs from the manifes
   truth.py assert-bloom <facts.json>    the bloom tenant writes 96-byte filters (writer side of the #341 expectation)
 """
 import glob
-import json
 import os
 import re
 import sys

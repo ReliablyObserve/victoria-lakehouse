@@ -5,7 +5,6 @@ when it is a known gap that still fails; a known gap that starts passing fails h
 is removed together with the fix. Run with `pytest -m results`.
 """
 import glob
-import json
 import os
 
 import pytest

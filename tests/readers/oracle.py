@@ -8,7 +8,6 @@ The query parameters (time window, trace id, day) come from the writer-side trut
 (truth.py build), so Lakehouse is asked exactly what the engines are asked; the answers
 are then compared with that truth (truth.py compare-oracle).
 """
-import json
 import sys
 from datetime import datetime, timedelta, timezone
 
