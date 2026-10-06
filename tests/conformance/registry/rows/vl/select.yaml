@@ -375,15 +375,15 @@
   kind: admin
   origin: native
   expect: pass
-  targets: [hot, cold]
+  targets: [cold]
   since: { vl: "1.53.0" }
   seed: [logs.base]
   upstream: { route: /delete/run_task }
   request: { method: GET, path: /delete/run_task, params: { filter: "service.name:checkout" } }
-  compare: { type: error, options: { hot_status: "405", cold_status: "405", body_prefix: "Only POST method is allowed; got GET." } }
+  compare: { type: error, options: { cold_status: "405", body_prefix: "Only POST method is allowed; got GET." } }
   layers: [api]
   pending: true
-  notes: "Upstream's own processDeleteRunTaskRequest (VictoriaLogs v1.53.0, issue #1635) refuses non-POST and the logs binary serves it as is: no lakehouse wrapper; TestUpstreamRunTaskRefusesGET pins that. With -delete.enable and delete.enabled on, GET, HEAD, PUT and DELETE on /delete/run_task answer 405 'Only POST method is allowed; got <METHOD>.' after the enable check and before tenant or filter parsing, and no delete task is created; stop_task and active_tasks are unchanged. Guards against SSRF-forged GET deletes (VictoriaTraces issue #225). The Lakehouse tenant middleware runs before the 405, so an unknown X-Scope-OrgID gets its 400 first (Lakehouse-only, not a regression)."
+  notes: "Historical id: the row used to expect differ (the logs binary added the POST-only check itself on the v1.52.0 pin); it now expects pass because VictoriaLogs v1.53.0 refuses non-POST itself and the id is kept so history and links stay valid. Target is cold only: the parity hot VictoriaLogs (tests/parity/docker-compose.yml) runs without -delete.enable, where upstream answers its 400 'requests to /delete/* are disabled' before it looks at the method, so a hot 405 would be wrong for that stack; the hot behaviour is pinned by TestUpstreamRunTaskRefusesGET against the vendored upstream. Upstream's own processDeleteRunTaskRequest (VictoriaLogs v1.53.0, issue #1635) refuses non-POST and the logs binary serves it as is: no lakehouse wrapper; TestUpstreamRunTaskRefusesGET pins that. With -delete.enable and delete.enabled on, GET, HEAD, PUT and DELETE on /delete/run_task answer 405 'Only POST method is allowed; got <METHOD>.' after the enable check and before tenant or filter parsing, and no delete task is created; stop_task and active_tasks are unchanged. Guards against SSRF-forged GET deletes (VictoriaTraces issue #225). The Lakehouse tenant middleware runs before the 405, so an unknown X-Scope-OrgID gets its 400 first (Lakehouse-only, not a regression)."
 
 - id: vl.delete.stop_task.status
   title: "/delete/stop_task — upstream's delete API, gated by -delete.enable"

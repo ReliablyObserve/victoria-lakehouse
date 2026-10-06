@@ -326,6 +326,12 @@
     - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_ProtectsBothDeleteAPIs
     - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_OverridesHTTPAuthThroughTheServer
     - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_ComesBeforeTheDisabledAnswers
+    - cmd/lakehouse-logs/delete_auth_key_test.go#TestRequestHandler_DeleteKeyOverridesHTTPAuthOnDeleteOnly
+    - cmd/lakehouse-logs/delete_auth_key_test.go#TestDeleteAuthKey_StringOrgIDThroughTheResolver
+    - cmd/lakehouse-logs/httpauth_suffix_test.go#TestHTTPAuth_SuffixPathsStillNeedCredentials
+    - lakehouse-traces/httpauth_suffix_test.go#TestHTTPAuth_SuffixPathsStillNeedCredentials
+    - lakehouse-traces/httpauth_suffix_test.go#TestHTTPAuth_DeleteAPIsKeepBasicAuthThroughTheServer
+    - internal/internaldelete/delete_auth_test.go#TestDeleteAuth_FlagLookupFailureFailsClosedToBasicAuth
     - internal/internaldelete/post_only_test.go#TestPOSTOnly
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestMountInternalProtocol_NonPOSTRefused
     - cmd/lakehouse-logs/public_delete_post_only_test.go#TestUpstreamInternalProtocolRefusesGET
