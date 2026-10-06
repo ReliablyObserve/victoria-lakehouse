@@ -195,7 +195,7 @@ func TestOverlayOpen_CountsOneFooterCacheHit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if view != nil {
-		defer view.Close()
+		defer func() { _ = view.Close() }()
 	}
 	if f == nil {
 		t.Fatal("nil file")
