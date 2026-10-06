@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.145.1] - 2026-10-06
+## [0.145.2] - 2026-10-06
 
 ### Fixed
 
@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Parquet, queries that already hold it finish on it, and it is removed at the first tick after the last of them ends.
   A hold of 30 minutes is treated as a leaked snapshot and the segment is closed anyway. New gauge state
   `lakehouse_buffer_segments{state="retired"}`.
+
+## [0.145.1] - 2026-10-06
+
+### Fixed
 
 - **The e2e ingest matrix lists the fixture bucket once per poll, not once per cell, and finishes within its budget (closes #367).**
   Every poll sampled each established cell and listed the whole bucket after each one, so a poll cost one full LIST
