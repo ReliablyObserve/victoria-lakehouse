@@ -17,11 +17,13 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// Property (#418): over random sequences of complete listings, partial
-// listings, sparse listings that miss live objects and scheduler passes, a
-// tombstone never completes while an object that still holds its rows is in the
-// bucket (the next full listing would show the deleted rows again), and no kept
-// row is lost.
+// Property (#418, #404 round 4): over random sequences of complete listings,
+// partial listings, sparse listings that miss live objects, complete-looking
+// listings that silently drop one live object, a peer publishing an object just
+// before a second tombstone is created (so no listing that began after the
+// tombstone has seen it yet), and scheduler passes, no tombstone set ever
+// completes while an object that still holds deleted rows is in the bucket (the
+// next full listing would show them again), and no kept row is lost.
 func TestProperty_SchedulerNeverCompletesOverUnlistedObjects(t *testing.T) {
 	seeds := 40
 	if testing.Short() {
@@ -49,6 +51,23 @@ func bodiesIn(t *testing.T, pool *mockRewriterPool) (drop, keep int) {
 		}
 	}
 	return drop, keep
+}
+
+// inEveryWorkList reports whether every active tombstone lists key.
+func inEveryWorkList(store *TombstoneStore, key string) bool {
+	for _, ts := range store.Active() {
+		found := false
+		for _, k := range ts.AffectedKeys {
+			if k == key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func runSchedulerListingProperty(t *testing.T, seed int64) {
@@ -87,6 +106,9 @@ func runSchedulerListingProperty(t *testing.T, seed int64) {
 		Detector: NewStorageClassDetector(nil), RewriteDelay: time.Hour,
 		AllowedClasses: []string{"STANDARD"}, Manifest: m,
 	})
+	// Tombstones are eligible as soon as they exist, so one created mid-run
+	// (ts-prop-2) is worked on while the listing that predates it is current.
+	sched.rewriteDelay = 0
 	listing := func(skipPrefix string) []manifest.ListedObject {
 		var out []manifest.ListedObject
 		for _, k := range pool.Keys() {
@@ -100,9 +122,44 @@ func runSchedulerListingProperty(t *testing.T, seed int64) {
 		return out
 	}
 
+	peerPublished := false
 	for step := 0; step < 12; step++ {
 		label := fmt.Sprintf("seed=%d step=%d", seed, step)
-		switch rnd.Intn(4) {
+		switch rnd.Intn(6) {
+		case 4: // a complete-looking listing silently drops one tracked object
+			// Only an object every active tombstone already has in its work
+			// list: one dropped before any pass discovered it is the residual
+			// TestReview404R4_Residual_SilentDropBeforeDiscovery documents.
+			all := listing("")
+			var tracked []int
+			for i, o := range all {
+				if m.HasKey(o.Key) && inEveryWorkList(store, o.Key) {
+					tracked = append(tracked, i)
+				}
+			}
+			if len(tracked) > 0 {
+				i := tracked[rnd.Intn(len(tracked))]
+				m.ApplyListing(append(all[:i:i], all[i+1:]...), time.Now())
+			}
+		case 5: // a peer publishes, then a new tombstone is created over what the manifest holds
+			if peerPublished {
+				continue
+			}
+			peerPublished = true
+			pk := "logs/dt=2026-03-01/hour=07/peer-0001.parquet"
+			pool.Put(pk, buildTestParquet(t, []schema.LogRow{
+				{TimestampUnixNano: 5000, Body: "keep-peer", SeverityText: "info", ServiceName: "web"},
+				{TimestampUnixNano: 5001, Body: "drop-peer", SeverityText: "error", ServiceName: "web"},
+			}))
+			var affected []string
+			for _, fi := range m.GetFilesForRange(0, 10000) {
+				affected = append(affected, fi.Key)
+			}
+			store.Add(Tombstone{
+				Tenants: []TenantRef{{}}, ID: "ts-prop-2", Query: `severity_text:="error"`,
+				StartNs: 0, EndNs: 1 << 62, AffectedKeys: affected,
+				CreatedAt: time.Now(), Mode: "permanent", Reaped: map[string]bool{},
+			})
 		case 0:
 			m.ApplyListing(listing(""), time.Now())
 		case 1:
@@ -130,7 +187,11 @@ func runSchedulerListingProperty(t *testing.T, seed int64) {
 		m.ApplyListing(listing(""), time.Now())
 		sched.RunOnce(context.Background())
 	}
-	if drop, keep := bodiesIn(t, pool); drop > 0 || keep != n {
-		t.Fatalf("seed=%d: after convergence deleted rows=%d (want 0), kept rows=%d (want %d); tombstones active=%d", seed, drop, keep, n, store.Count())
+	wantKeep := n
+	if peerPublished {
+		wantKeep++
+	}
+	if drop, keep := bodiesIn(t, pool); drop > 0 || keep != wantKeep {
+		t.Fatalf("seed=%d: after convergence deleted rows=%d (want 0), kept rows=%d (want %d); tombstones active=%d", seed, drop, keep, wantKeep, store.Count())
 	}
 }

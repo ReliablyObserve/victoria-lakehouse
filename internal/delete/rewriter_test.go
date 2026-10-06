@@ -809,3 +809,9 @@ func TestRewriteFile_Traces_BySpanName(t *testing.T) {
 		t.Fatalf("expected 1 DB span kept, got %d", result.RowsKept)
 	}
 }
+
+// Exists answers like an S3 HEAD, so a scheduler built over this pool confirms
+// an absent key's object is gone before reaping it (see objectExister).
+func (m *mockRewriterPool) Exists(_ context.Context, key string) (bool, error) {
+	return m.Has(key), nil
+}

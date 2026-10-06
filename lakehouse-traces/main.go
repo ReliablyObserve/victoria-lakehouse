@@ -456,6 +456,10 @@ func run(cfg *config.Config, addr string) {
 			// heard of; the scheduler refuses to rewrite at all when it is nil.
 			Manifest:    store.Manifest(),
 			OnPublished: rewritePublishHook(store, pusher),
+			// A key absent from the manifest is reaped only once a HEAD finds
+			// no object (or the manifest retired it): a listing can miss an
+			// object, and reaping it would bring deleted rows back (#418).
+			ObjectExists: store.Pool().Exists,
 		})
 		rewriteSched.SetSegmentGuard(store.Pool(), cfg.AutoPrefix(), 2*bufferGrace(cfg))
 		rewriteSched.Start(cfg.Delete.VerifyInterval)

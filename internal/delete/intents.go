@@ -224,6 +224,12 @@ func (s *RewriteScheduler) finishPublished(ctx context.Context, id, source strin
 	published, manifested := s.manifest.GetFileByKey(sup.NewKey)
 	if sup.NewKey != "" && !manifested {
 		_, retired := s.manifest.LookupRetired(sup.NewKey)
+		// Listed() (any complete listing) rather than CompleteSince is enough
+		// here: the decision only lets the hand-off go ahead without the
+		// replacement's entry. If a listing missed a replacement that still
+		// exists, deleting the source loses nothing — the replacement holds
+		// every kept row and the next listing adopts it — whereas a stricter
+		// gate would hold the superseded object (and its storage) for no gain.
 		if !retired && !s.manifest.Listed() {
 			metrics.DeleteRewriteDeferred.Inc("unlisted")
 			return
