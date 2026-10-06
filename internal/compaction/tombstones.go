@@ -7,6 +7,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -202,14 +203,15 @@ func eligibleTombstones(tss []delete.Tombstone, now time.Time, rewriteDelay time
 // rows that were never removed.
 //
 // Hide-mode tombstones have no reap lifecycle and are left alone. Keys under a
-// never-delete prefix are not compaction's and are skipped. canRetire is false
-// while the manifest has not listed the bucket in this process or the tombstone
-// store was not fully restored: the bookkeeping is still recorded, but nothing
-// is retired on a file set that may be incomplete.
+// never-delete prefix are not compaction's and are skipped. canRetire decides,
+// per tombstone, whether this merge may complete it (nil: never); when it says
+// no, the bookkeeping is still recorded (the transfer to the output and the
+// sources marked reaped) and the rewrite scheduler completes the tombstone
+// later under its own gate.
 //
 // A tombstone follows its rows only onto an output of a tenant it acts on;
 // parse attributes the output key to its tenant (nil: the default layout).
-func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outputKey string, neverDelete []string, applied map[string]bool, canRetire bool, parse delete.KeyTenantFunc) {
+func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outputKey string, neverDelete []string, applied map[string]bool, canRetire func(delete.Tombstone) bool, parse delete.KeyTenantFunc) {
 	if store == nil || len(inputKeys) == 0 {
 		return
 	}
@@ -233,7 +235,7 @@ func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outpu
 		// Update, not Get-modify-Add: the rewrite scheduler writes the same
 		// record concurrently, and a lost update here would drop the transfer
 		// of the tombstone to an output that still holds its rows.
-		_, changed := store.Update(snapshot.ID, func(ts *delete.Tombstone) bool {
+		updated, changed := store.Update(snapshot.ID, func(ts *delete.Tombstone) bool {
 			touched := false
 			for _, k := range eligible {
 				if !containsKey(ts.AffectedKeys, k) || ts.Reaped[k] {
@@ -261,9 +263,30 @@ func reconcileTombstones(store *delete.TombstoneStore, inputKeys []string, outpu
 			continue
 		}
 		metrics.DeleteCompactionKeysReaped.Add(reapedHere)
-		if canRetire {
+		if canRetire != nil && canRetire(updated) {
 			store.Complete(snapshot.ID)
 		}
+	}
+}
+
+// tombstoneRetireGate is the condition under which compaction may complete a
+// tombstone, which stops hiding its rows:
+//
+//   - the tombstone store was restored completely (a record still to be loaded
+//     may name files this merge does not know about), and
+//   - the manifest applied a COMPLETE listing that began after the tombstone was
+//     created. Its work list is what the manifest held; a file a peer published
+//     between the start of the last complete listing and the tombstone is not in
+//     it, still holds the tombstone's rows, and shows them again once adopted.
+//     Listed() alone (any complete listing, ever) does not exclude that window.
+//     This is the same condition the rewrite scheduler completes under
+//     (#404 round 4).
+func tombstoneRetireGate(m *manifest.Manifest, store *delete.TombstoneStore) func(delete.Tombstone) bool {
+	return func(ts delete.Tombstone) bool {
+		if store != nil && store.S3RestorePending() {
+			return false
+		}
+		return m != nil && m.CompleteSince(ts.CreatedAt)
 	}
 }
 

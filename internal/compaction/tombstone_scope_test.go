@@ -143,7 +143,7 @@ func TestReconcileTombstones_ScopedTombstoneNeverFollowsOntoAnotherTenantsOutput
 		Tenants: []delete.TenantRef{{AccountID: 1001}},
 	})
 	foreignOut := "2002/0/logs/dt=2026-07-09/hour=11/out.parquet"
-	reconcileTombstones(store, []string{src}, foreignOut, nil, nil, false, nil)
+	reconcileTombstones(store, []string{src}, foreignOut, nil, nil, nil, nil)
 	ts, ok := store.Get("t")
 	if !ok {
 		t.Fatal("tombstone vanished")

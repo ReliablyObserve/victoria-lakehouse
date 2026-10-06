@@ -9,10 +9,13 @@
 //
 //   - Tier B (S3 prefix sweep): hourly, each pod scans the date
 //     prefixes it owns (hash(prefix) % len(peers) == selfIdx) for
-//     .parquet files that are not in the manifest, older than
-//     OrphanTTL, and not in NeverDeletePrefixes. Three-step deletion
-//     safety: (a) NOT in manifest, (b) age + protected-prefix gate,
-//     (c) re-read manifest before DELETE.
+//     .parquet files that are not in the manifest, that the manifest
+//     holds a retirement record for (positive evidence that the object
+//     was let go of, see RunTierB), older than OrphanTTL, and not in
+//     NeverDeletePrefixes. Deletion safety: (a) NOT in manifest,
+//     (b) retired for at least OrphanTTL and not part of an unfinished
+//     rewrite, (c) age + protected-prefix gate, (d) re-read manifest
+//     and retirement before DELETE.
 //
 // See spec §2.4 and §3.7.
 package compaction
@@ -324,8 +327,16 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 }
 
 // RunTierB walks the prefix layout described in spec §1.1 and deletes
-// .parquet keys that pass the three-step safety gate. Returns the
-// number of deleted orphans.
+// .parquet keys that pass the safety gate. Returns the number of deleted
+// objects.
+//
+// It deletes only objects the manifest holds a retirement record for: a key
+// that is merely absent from the manifest is never deleted, however complete
+// the listings looked (#404 round 4). Since every refresh adopts each listed
+// object that is not retired or pending, an unrecorded absent object is one a
+// listing missed, not an orphan. What Tier B adds over the scheduler's
+// ReclaimRetired is the records whose delete another component owed (a peer's
+// push, retention) and that component never completed.
 //
 // Prefix layout assumption: top-level prefixes correspond to date
 // directories — when traversing under cfg.Prefix the lister returns
@@ -358,20 +369,14 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	// "Not in the manifest" means "an orphan" only when the manifest holds what
-	// the bucket holds. Until a refresh has listed the whole bucket in this
-	// process (a snapshot is only a starting point, a partial or sparse listing
-	// is not one), a live object can be missing from it, and deleting it loses
-	// data (#418).
-	if !o.cfg.Manifest.Listed() {
-		metrics.CompactionOrphansSkipped.Inc("manifest_incomplete")
-		return 0, nil
-	}
-
 	keys, err := o.cfg.Lister.List(ctx, o.cfg.Prefix)
 	if err != nil {
 		return 0, fmt.Errorf("tier_b list %s: %w", o.cfg.Prefix, err)
 	}
+	// Objects an unfinished delete rewrite still names (its source or its
+	// replacement): the rewrite may yet be undone, which makes a retired source
+	// live again, so neither may go before the rewrite settles.
+	inRewrite := o.unfinishedRewriteKeys()
 
 	// Bucket keys by date prefix so we can hash-assign each prefix to
 	// a single pod (avoids 3 pods all LIST+HEADing the same date).
@@ -418,7 +423,35 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 				continue
 			}
 
-			// Age gate: HEAD for LastModified.
+			// Step (b): positive evidence. Absence from the manifest is not
+			// proof that an object is unreferenced: every listing adopts each
+			// object it returns that is not retired or pending, so an object
+			// that is absent with no record is one a listing missed — a LIST
+			// that silently dropped it, a partial or stale view — and it holds
+			// live rows (#404 round 4). Only an explicit record that the object
+			// was let go of allows a delete: the manifest's retirement (a
+			// publish replaced it, an output was abandoned, a peer's push or
+			// retention removed it), old enough that whoever owed the delete
+			// had its chance, and not named by an unfinished rewrite.
+			rk, retired := o.cfg.Manifest.LookupRetired(key)
+			switch {
+			case !retired:
+				metrics.CompactionOrphansSkipped.Inc("no_evidence")
+				continue
+			case rk.Deleted:
+				// A delete of this key already returned success; a LIST
+				// still showing it is older than that delete.
+				metrics.CompactionOrphansSkipped.Inc("delete_landed")
+				continue
+			case time.Since(rk.At) < o.cfg.OrphanTTL:
+				metrics.CompactionOrphansSkipped.Inc("retired_too_recently")
+				continue
+			case inRewrite[key], o.cfg.Manifest.IsPending(key), o.cfg.Manifest.IsHeld(key):
+				metrics.CompactionOrphansSkipped.Inc("rewrite_unfinished")
+				continue
+			}
+
+			// Step (c): age gate. HEAD for LastModified.
 			_, mtime, err := o.cfg.Lister.HeadObject(ctx, key)
 			if err != nil {
 				// HEAD failure is best-effort; skip and retry next tick.
@@ -429,18 +462,14 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 				continue
 			}
 
-			// The manifest's last complete listing must have begun after the
-			// object existed: a listing that began earlier cannot know about it,
-			// so its absence says nothing (#418).
-			if !o.cfg.Manifest.CompleteSince(mtime) {
-				metrics.CompactionOrphansSkipped.Inc("listing_older_than_object")
+			// Step (d): re-read the manifest and the record at delete time.
+			// Guards against a peer publishing this key between our LIST and
+			// HEAD, and against the retirement having been undone meanwhile.
+			if o.keyInManifestAt(datePrefix, key) {
+				metrics.CompactionOrphansSkipped.Inc("manifest_drift_race")
 				continue
 			}
-
-			// Step (c): re-snapshot manifest at delete time. Guards
-			// against the race where a peer just published this key
-			// between our LIST and HEAD.
-			if o.keyInManifestAt(datePrefix, key) {
+			if cur, ok := o.cfg.Manifest.LookupRetired(key); !ok || !cur.At.Equal(rk.At) {
 				metrics.CompactionOrphansSkipped.Inc("manifest_drift_race")
 				continue
 			}
@@ -449,12 +478,35 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 				logger.Warnf("tier_b orphan delete failed; key=%s: %s", key, err)
 				continue
 			}
+			// The record stays until a listing proves the object gone; only
+			// the delete it owed is settled (see manifest.ConfirmDeleted).
+			o.cfg.Manifest.ConfirmDeleted(key)
 			metrics.CompactionOrphansDeleted.Inc()
 			deleted++
-			logger.Infof("tier_b: deleted orphan; key=%s age=%v", key, time.Since(mtime))
+			logger.Infof("tier_b: deleted retired object; key=%s age=%v retired_for=%v", key, time.Since(mtime), time.Since(rk.At))
 		}
 	}
 	return deleted, nil
+}
+
+// unfinishedRewriteKeys returns every source and replacement an unfinished
+// delete rewrite still names (nil without a tombstone store).
+func (o *OrphanSweep) unfinishedRewriteKeys() map[string]bool {
+	if o.cfg.Tombstones == nil {
+		return nil
+	}
+	recs := o.cfg.Tombstones.UnfinishedRewriteRecords()
+	if len(recs) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, 2*len(recs))
+	for _, r := range recs {
+		out[r.Source] = true
+		if r.Replacement != "" {
+			out[r.Replacement] = true
+		}
+	}
+	return out
 }
 
 // keyInManifestAt re-reads the manifest snapshot and reports whether

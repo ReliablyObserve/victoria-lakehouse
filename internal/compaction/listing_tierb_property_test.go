@@ -22,27 +22,36 @@ func spinNow() time.Time {
 	}
 }
 
-// Property (#418): over random sequences of complete listings, partial
-// listings, sparse listings that miss live objects, legitimate peer shrinks,
-// peer flushes, stray orphans and Tier B passes, Tier B never deletes a live
-// object. Only true orphans (objects nothing references) may go.
+// Property (#418, #404 round 4): over random sequences of complete listings,
+// partial listings, sparse listings that miss live objects, legitimate peer
+// shrinks, complete-looking listings that silently drop a live object, shrinks
+// whose HEAD sample can miss the live objects among the dropped ones, peer
+// flushes, peer pushes that retire an object (its node owes the delete), stray
+// unrecorded objects and Tier B passes, Tier B never deletes a live object, and
+// deletes only objects the manifest holds a retirement record for.
 func TestProperty_TierBNeverDeletesALiveObject(t *testing.T) {
 	seeds := 80
 	if testing.Short() {
 		seeds = 20
 	}
+	reclaimed := 0
 	for seed := 0; seed < seeds; seed++ {
-		runTierBProperty(t, int64(seed))
+		reclaimed += runTierBProperty(t, int64(seed))
+	}
+	// Liveness: retired objects do get reclaimed (the property is not vacuous).
+	if reclaimed == 0 {
+		t.Fatal("no Tier B pass deleted a retired object in any sequence")
 	}
 }
 
-func runTierBProperty(t *testing.T, seed int64) {
+func runTierBProperty(t *testing.T, seed int64) (reclaimed int) {
 	ctx := context.Background()
 	rnd := rand.New(rand.NewSource(seed))
 	pool := newListingPool()
 	const part = "dt=2026-01-01/hour=00"
 	live := map[string]bool{}    // objects the data lives in
 	orphans := map[string]bool{} // stray objects nothing references
+	retired := map[string]bool{} // retired by a peer's push: may be deleted
 	seq := 0
 	newKey := func(acct int) string {
 		seq++
@@ -100,7 +109,7 @@ func runTierBProperty(t *testing.T, seed int64) {
 
 	for step := 0; step < 30; step++ {
 		label := fmt.Sprintf("seed=%d step=%d", seed, step)
-		switch op := rnd.Intn(8); op {
+		switch op := rnd.Intn(11); op {
 		case 0:
 			m.ApplyListing(listing(""), spinNow())
 		case 1:
@@ -145,6 +154,60 @@ func runTierBProperty(t *testing.T, seed int64) {
 			add(newKey(1+rnd.Intn(2)), live)
 		case 5: // a stray orphan appears
 			add(newKey(1+rnd.Intn(2)), orphans)
+		case 6: // a complete-looking listing silently drops one live tracked object
+			all := listing("")
+			tr := tracked()
+			var drop []int
+			for i, o := range all {
+				if live[o.Key] && tr[o.Key] {
+					drop = append(drop, i)
+				}
+			}
+			if len(drop) == 0 {
+				continue
+			}
+			i := drop[rnd.Intn(len(drop))]
+			all = append(all[:i], all[i+1:]...)
+			m.ApplyListing(all, spinNow()) // < half dropped: no HEAD sample, believed
+		case 7: // a peer compacts: most objects go, and the listing also misses a live one
+			var ks []string
+			for k := range live {
+				if exists(k) {
+					ks = append(ks, k)
+				}
+			}
+			if len(ks) < 4 {
+				continue
+			}
+			sort.Strings(ks)
+			rnd.Shuffle(len(ks), func(i, j int) { ks[i], ks[j] = ks[j], ks[i] })
+			for _, k := range ks[:len(ks)*8/10] {
+				_ = pool.Delete(ctx, k)
+				delete(live, k)
+			}
+			missed := ks[len(ks)-1]
+			var objs []manifest.ListedObject
+			for _, o := range listing("") {
+				if o.Key != missed {
+					objs = append(objs, o)
+				}
+			}
+			m.ApplyListing(objs, spinNow()) // the sample may or may not find `missed`
+		case 8: // a peer's push retires a tracked live object (its node owes the delete)
+			var ks []string
+			for k := range tracked() {
+				if live[k] && exists(k) {
+					ks = append(ks, k)
+				}
+			}
+			if len(ks) == 0 {
+				continue
+			}
+			sort.Strings(ks)
+			k := ks[rnd.Intn(len(ks))]
+			m.RemoveFile(part, k)
+			delete(live, k)
+			retired[k] = true
 		default: // Tier B pass
 			before := map[string]bool{}
 			pool.mu.Lock()
@@ -162,8 +225,13 @@ func runTierBProperty(t *testing.T, seed int64) {
 				if live[k] {
 					t.Fatalf("%s: Tier B deleted the live object %s (manifest listed=%v, complete refresh=%+v)", label, k, m.Listed(), m.LastCompleteRefresh())
 				}
-				delete(orphans, k)
+				if !retired[k] {
+					t.Fatalf("%s: Tier B deleted %s, which no retirement record named", label, k)
+				}
+				delete(retired, k)
+				reclaimed++
 			}
 		}
 	}
+	return reclaimed
 }

@@ -306,6 +306,15 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		// the output, the only ones the output may be recorded clean for.
 		appliedTombstones map[string]bool
 	)
+	// Invariant: a merge reads each source once. A source named twice (a
+	// manifest that tracked a key twice) would be merged twice — its rows
+	// written twice into the output — and then deleted, which makes the
+	// duplication permanent. Refuse the group instead (#404 round 4).
+	if dup := firstDuplicateKey(g.Files); dup != "" {
+		metrics.DuplicateFileKeys.Inc("compaction_input")
+		logger.Errorf("compaction refused: source key tracked twice in one merge group; partition=%s, key=%s", partition, dup)
+		return nil, fmt.Errorf("compaction of %s refused: source %s is listed twice", partition, dup)
+	}
 	// One clock reading for the whole merge, so eligibility is judged once.
 	now := time.Now()
 	for _, f := range g.Files {
@@ -578,10 +587,9 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// tombstone can never complete while a file that still holds its rows
 	// exists (which would un-hide those rows the moment it retires).
 	// Retiring a tombstone means its rows stop being hidden, so it waits for a
-	// manifest that has listed the bucket (the file set it is judged against
-	// must be real) and for a tombstone store that was restored completely.
-	canRetire := c.manifest.Listed() && (c.tombstones == nil || !c.tombstones.S3RestorePending())
-	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, appliedTombstones, canRetire, c.keyScope(nil).parse)
+	// tombstone store that was restored completely and for a complete listing
+	// that began after the tombstone was created (see tombstoneRetireGate).
+	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, appliedTombstones, tombstoneRetireGate(c.manifest, c.tombstones), c.keyScope(nil).parse)
 
 	return &compactGroupResult{
 		InputKeys:    inputKeys,
@@ -946,4 +954,16 @@ func bloomFilters(cols []string) []parquet.BloomFilterColumn {
 		bf = append(bf, parquet.SplitBlockFilter(10, c))
 	}
 	return bf
+}
+
+// firstDuplicateKey returns the first key that appears twice in files, or "".
+func firstDuplicateKey(files []manifest.FileInfo) string {
+	seen := make(map[string]struct{}, len(files))
+	for i := range files {
+		if _, dup := seen[files[i].Key]; dup {
+			return files[i].Key
+		}
+		seen[files[i].Key] = struct{}{}
+	}
+	return ""
 }

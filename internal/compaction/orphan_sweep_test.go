@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	lhdelete "github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -398,20 +400,26 @@ func TestOrphanSweep_TierB_RespectsOrphanTTL(t *testing.T) {
 	}
 }
 
-// TestOrphanSweep_TierB_DeletesOldOrphan happy path.
-func TestOrphanSweep_TierB_DeletesOldOrphan(t *testing.T) {
+// TestOrphanSweep_TierB_DeletesOldRetiredObject happy path: an object the
+// manifest retired on another component's behalf (a peer's push, whose node
+// owed the delete and never did it) is deleted once the retirement and the
+// object are older than OrphanTTL, and the record's delete is settled.
+func TestOrphanSweep_TierB_DeletesOldRetiredObject(t *testing.T) {
 	pool := newListingPool()
 	m := manifest.New("bkt", "logs/")
 	ctx := context.Background()
-	key := "logs/dt=2026-01-01/hour=00/orphan.parquet"
+	const partition = "dt=2026-01-01/hour=00"
+	key := "logs/" + partition + "/orphan.parquet"
 	_ = pool.UploadWithMtime(ctx, key, []byte("x"), time.Now().Add(-10*time.Hour))
+	m.RemoveFile(partition, key) // a peer's push: retired, delete owed elsewhere
+	ttl := 30 * time.Millisecond
+	time.Sleep(2 * ttl)
 
 	r := NewOwnershipResolver("self", staticPeers("self"))
-	listCompletely(t, m)
 	sweep := NewOrphanSweep(OrphanSweepConfig{
 		Manifest: m, Pool: pool, Ownership: r, Policy: NewLevelPolicy(10, 20, 0),
 		Lister: pool, Prefix: "logs/", Mode: config.ModeLogs,
-		Interval: time.Minute, OrphanTTL: time.Hour,
+		Interval: time.Minute, OrphanTTL: ttl,
 	})
 	deleted, err := sweep.RunTierB(ctx)
 	if err != nil {
@@ -419,6 +427,97 @@ func TestOrphanSweep_TierB_DeletesOldOrphan(t *testing.T) {
 	}
 	if deleted != 1 {
 		t.Fatalf("deleted: got %d, want 1", deleted)
+	}
+	if rk, ok := m.LookupRetired(key); !ok || !rk.Deleted {
+		t.Fatalf("the record must stay, with its delete settled: %+v ok=%v", rk, ok)
+	}
+}
+
+// TestOrphanSweep_TierB_KeepsUnrecordedObjects: an old object that is absent
+// from the manifest but has no record of being let go of is kept, even right
+// after a complete listing. A refresh adopts every object it lists that is not
+// retired or pending, so such an object is one a listing missed (#404 round 4).
+func TestOrphanSweep_TierB_KeepsUnrecordedObjects(t *testing.T) {
+	pool := newListingPool()
+	m := manifest.New("bkt", "logs/")
+	ctx := context.Background()
+	key := "logs/dt=2026-01-01/hour=00/unrecorded.parquet"
+	_ = pool.UploadWithMtime(ctx, key, []byte("x"), time.Now().Add(-10*time.Hour))
+	listCompletely(t, m)
+
+	r := NewOwnershipResolver("self", staticPeers("self"))
+	sweep := NewOrphanSweep(OrphanSweepConfig{
+		Manifest: m, Pool: pool, Ownership: r, Policy: NewLevelPolicy(10, 20, 0),
+		Lister: pool, Prefix: "logs/", Mode: config.ModeLogs,
+		Interval: time.Minute, OrphanTTL: time.Nanosecond,
+	})
+	before := metrics.CompactionOrphansSkipped.Get("no_evidence")
+	deleted, err := sweep.RunTierB(ctx)
+	if err != nil {
+		t.Fatalf("RunTierB: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("an unrecorded object was deleted: %d", deleted)
+	}
+	if _, _, err := pool.HeadObject(ctx, key); err != nil {
+		t.Fatalf("object gone: %v", err)
+	}
+	if got := metrics.CompactionOrphansSkipped.Get("no_evidence") - before; got != 1 {
+		t.Fatalf("no_evidence skips = %d, want 1", got)
+	}
+}
+
+// TestOrphanSweep_TierB_RetiredRecordGates: each condition on the record keeps
+// the object: a retirement younger than OrphanTTL, a landed delete, a key an
+// unfinished rewrite still names, and a pending upload.
+func TestOrphanSweep_TierB_RetiredRecordGates(t *testing.T) {
+	ctx := context.Background()
+	const partition = "dt=2026-01-01/hour=00"
+	cases := []struct {
+		name   string
+		ttl    time.Duration
+		setup  func(m *manifest.Manifest, ts *lhdelete.TombstoneStore, key string)
+		reason string
+	}{
+		{"retired too recently", time.Hour, func(m *manifest.Manifest, _ *lhdelete.TombstoneStore, key string) {
+			m.RemoveFile(partition, key)
+		}, "retired_too_recently"},
+		{"delete landed", time.Nanosecond, func(m *manifest.Manifest, _ *lhdelete.TombstoneStore, key string) {
+			m.Retire(key, "", true)
+			m.ConfirmDeleted(key)
+		}, "delete_landed"},
+		{"named by an unfinished rewrite", time.Nanosecond, func(m *manifest.Manifest, ts *lhdelete.TombstoneStore, key string) {
+			m.Retire(key, "rewrite:x", true)
+			ts.Add(lhdelete.Tombstone{ID: "t1", Query: "*", Mode: "rewrite", EndNs: 1 << 62, CreatedAt: time.Now(),
+				Superseded: map[string]lhdelete.Supersession{key: {NewKey: "logs/" + partition + "/new.parquet", State: lhdelete.SupersessionPrepared, At: time.Now()}}})
+		}, "rewrite_unfinished"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := newListingPool()
+			m := manifest.New("bkt", "logs/")
+			store := lhdelete.NewTombstoneStore()
+			key := "logs/" + partition + "/k.parquet"
+			_ = pool.UploadWithMtime(ctx, key, []byte("x"), time.Now().Add(-10*time.Hour))
+			tc.setup(m, store, key)
+			time.Sleep(time.Millisecond)
+			sweep := NewOrphanSweep(OrphanSweepConfig{
+				Manifest: m, Pool: pool, Ownership: NewOwnershipResolver("self", staticPeers("self")),
+				Policy: NewLevelPolicy(10, 20, 0), Lister: pool, Prefix: "logs/", Mode: config.ModeLogs,
+				Interval: time.Minute, OrphanTTL: tc.ttl, Tombstones: store,
+			})
+			before := metrics.CompactionOrphansSkipped.Get(tc.reason)
+			deleted, err := sweep.RunTierB(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if deleted != 0 {
+				t.Fatalf("deleted %d, want 0", deleted)
+			}
+			if got := metrics.CompactionOrphansSkipped.Get(tc.reason) - before; got != 1 {
+				t.Fatalf("%s skips = %d, want 1", tc.reason, got)
+			}
+		})
 	}
 }
 
@@ -473,11 +572,14 @@ func TestOrphanSweep_TierB_PrefixHashOwnership(t *testing.T) {
 	m := manifest.New("bkt", "logs/")
 	ctx := context.Background()
 
-	// Upload 6 orphan files across 6 date prefixes.
+	// Upload 6 retired objects across 6 date prefixes.
 	for i := 0; i < 6; i++ {
-		key := fmt.Sprintf("logs/dt=2026-01-%02d/hour=00/orphan.parquet", i+1)
+		partition := fmt.Sprintf("dt=2026-01-%02d/hour=00", i+1)
+		key := "logs/" + partition + "/orphan.parquet"
 		_ = pool.UploadWithMtime(ctx, key, []byte("x"), time.Now().Add(-10*time.Hour))
+		m.RemoveFile(partition, key)
 	}
+	time.Sleep(5 * time.Millisecond)
 
 	peers := []string{"pod-A", "pod-B", "pod-C"}
 	totalDeleted := 0
@@ -486,11 +588,10 @@ func TestOrphanSweep_TierB_PrefixHashOwnership(t *testing.T) {
 		// uploaded keys; deletions roll back into the shared state
 		// so the next pod sees the reduced set.
 		r := NewOwnershipResolver(self, staticPeers(peers...))
-		listCompletely(t, m)
 		sweep := NewOrphanSweep(OrphanSweepConfig{
 			Manifest: m, Pool: pool, Ownership: r, Policy: NewLevelPolicy(10, 20, 0),
 			Lister: pool, Prefix: "logs/", Mode: config.ModeLogs,
-			Interval: time.Minute, OrphanTTL: time.Hour,
+			Interval: time.Minute, OrphanTTL: time.Millisecond,
 		})
 		d, _ := sweep.RunTierB(ctx)
 		totalDeleted += d
