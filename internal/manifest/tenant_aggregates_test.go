@@ -266,6 +266,22 @@ func TestAlignedWindowStart(t *testing.T) {
 	}
 }
 
+// A chain of ranges, each reaching the next one's first row, pulls the start
+// back through all of them whatever order the files are held in.
+func TestAlignedWindowStart_LongChainOfStraddles(t *testing.T) {
+	const h = int64(time.Hour)
+	for run := 0; run < 20; run++ { // the file map's iteration order is random
+		m := New("b", "")
+		for i := int64(0); i < 8; i++ {
+			// [ (8-i)h, (9-i)h ]: each ends exactly where the next-earlier one starts.
+			m.AddFile(fmt.Sprintf("p%d", i), FileInfo{Key: fmt.Sprintf("f%d.parquet", i), RowCount: 1, MinTimeNs: (8 - i) * h, MaxTimeNs: (9 - i) * h})
+		}
+		if got := m.AlignedWindowStart(8*h + h/2); got != h {
+			t.Fatalf("run %d: got %d want %d (the whole chain)", run, got, h)
+		}
+	}
+}
+
 func TestWindowSample(t *testing.T) {
 	m := New("b", "")
 	m.AddFile("p0", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-1.parquet", RowCount: 7, Size: 70, MinTimeNs: 100, MaxTimeNs: 200})

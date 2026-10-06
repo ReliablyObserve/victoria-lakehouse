@@ -1931,8 +1931,8 @@ func (m *Manifest) AlignedWindowStart(startNs int64) int64 {
 	if startNs <= 0 {
 		return startNs
 	}
-	// One scan under the lock collects the ranges that can ever straddle a
-	// start at or before startNs; the fixed point is then found in memory.
+	// One scan under the lock collects the ranges that can straddle a start
+	// at or before startNs; the fixed point is then found in memory.
 	type span struct{ min, max int64 }
 	var cand []span
 	m.mu.RLock()
@@ -1944,14 +1944,13 @@ func (m *Manifest) AlignedWindowStart(startNs int64) int64 {
 		}
 	}
 	m.mu.RUnlock()
+	// Visiting the ranges by descending first row, one pass is the fixed point:
+	// a range skipped because it ends before s starts at or after any later s.
+	sort.Slice(cand, func(i, j int) bool { return cand[i].min > cand[j].min })
 	s := startNs
-	for moved := true; moved; {
-		moved = false
-		for _, c := range cand {
-			if c.min < s && c.max >= s {
-				s = c.min
-				moved = true
-			}
+	for _, c := range cand {
+		if c.min < s && c.max >= s {
+			s = c.min
 		}
 	}
 	return s
