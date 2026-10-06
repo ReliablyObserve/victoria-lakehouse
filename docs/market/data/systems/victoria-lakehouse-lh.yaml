@@ -27,13 +27,19 @@ cells:
     checked: '2026-10-02'
   if_files_n:
     icon: ✅
-    text: 3 verified / 7 claimed
-    note: 'pyarrow + DuckDB: CI readback gate on every generated file. ClickHouse: read on every benchmark run,
-      answers must equal LogsQL. Spark, Trino: documented examples, not tested in CI. Athena, Polars: ''expected
-      to work; not tested''.'
-    source: github.com/ReliablyObserve/victoria-lakehouse README.md 'Readers' table; docs/open-parquet-format.md
+    text: 5 verified / 1 partial / 1 claimed
+    note: 'DuckDB, Spark and pyarrow run the documented example against real Lakehouse files in CI (parquet-readers
+      workflow: logs and traces, five tenants, raw and compacted files, partition pruning), compared with the truth
+      the fixture computed from the rows before it sent them. ClickHouse and Trino are verified the same way with
+      an open issue each: an equality filter on any bloom column fails on files whose bloom filter is not a
+      power-of-two size unless bloom push down is off (#341), and tenant IDs of 2^31 and above read back negative
+      in Trino (#342). Polars is NOT counted as verified: it refuses every traces file, every raw logs file and the
+      compacted logs files that carry a body token bloom because the footer metadata is not UTF-8 (#340), so only
+      some compacted logs files read (Apache DataFusion, which is outside the fixed list, behaves the same).
+      Athena is documented only (Trino dialect, not run).'
+    source: github.com/ReliablyObserve/victoria-lakehouse docs/open-parquet-format.md (reader coverage table); .github/workflows/parquet-readers.yaml
     label: repo
-    checked: '2026-10-02'
+    checked: '2026-10-05'
   sig_logs:
     icon: ✅
     text: VL API (lakehouse-logs)
@@ -99,7 +105,7 @@ cells:
   st_ext:
     icon: ✅
     text: in place, no export
-    note: CI-gated for pyarrow/DuckDB; ClickHouse benchmarked; others documented or untested (see Interfaces).
+    note: CI-gated with real data for DuckDB, Spark and pyarrow, and for ClickHouse and Trino with an open issue each; Polars and DataFusion read only some files (#340); Athena documented only (see Interfaces).
     source: github.com/ReliablyObserve/victoria-lakehouse
     label: repo
     checked: '2026-10-02'

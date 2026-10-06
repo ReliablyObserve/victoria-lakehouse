@@ -1,0 +1,13 @@
+# Insert buffer and compaction settings of the reader matrix. Compaction thresholds: compact as soon as a partition has two
+# files, so a handful of small flushes is enough to produce compacted objects, and
+# compact every partition of a scan in parallel so the wait stays short.
+lakehouse:
+  insert:
+    # Seal the insert buffer segment 15 s after its first row (default 5m): each ingest round lands in its own segment,
+    # hence in its own objects, and the fixture does not wait minutes for the flush. A config-file key only (no flag).
+    buffer_flush_interval: 15s
+  compaction:
+    min_files_l0: 2
+    min_files_l1: 2
+    min_age: 1m
+    max_concurrent: 64

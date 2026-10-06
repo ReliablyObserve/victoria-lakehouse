@@ -44,9 +44,13 @@ func TestStatsOverviewMetadata(t *testing.T) {
 }
 
 // TestCardinalityStorageBytes guards the Cardinality Explorer Storage column:
-// /cardinality/fields returns per-field storage_bytes scaled to real magnitude
-// (MB-scale, not the KB-scale undercount of the original bug). Asserts the top
-// indexed field reports at least 1 MB of storage. Both binaries.
+// /cardinality/fields returns per-field storage_bytes scaled to real magnitude,
+// not the KB-scale undercount of the original bug. Asserts the top indexed field
+// reports at least 256 KiB. The e2e data set measured 5.9-6.9 MB (logs,
+// container.id) and 1.05-1.26 MB (traces, span_id) over 14 CI runs on
+// 2026-10-06; the traces value shrinks as the suite gets faster (less loadgen
+// data before this test), so a 1 MiB floor failed at 1047937 bytes. 256 KiB is
+// still far above a KB-scale undercount. Both binaries.
 func TestCardinalityStorageBytes(t *testing.T) {
 	for _, tc := range statsTargets() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,9 +71,9 @@ func TestCardinalityStorageBytes(t *testing.T) {
 					maxStorage, topField = f.StorageBytes, f.Name
 				}
 			}
-			const oneMB = 1 << 20
-			if maxStorage < oneMB {
-				t.Errorf("max per-field storage_bytes = %d (%s), want >= 1MB (scaled to the real on-S3 total, not KB)", maxStorage, topField)
+			const floor = 256 << 10
+			if maxStorage < floor {
+				t.Errorf("max per-field storage_bytes = %d (%s), want >= 256 KiB (scaled to the real on-S3 total, not KB)", maxStorage, topField)
 			}
 			t.Logf("%s top storage field: %s = %d bytes", tc.name, topField, maxStorage)
 		})

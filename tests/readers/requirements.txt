@@ -1,0 +1,14 @@
+# Pinned Python environment of the external Parquet reader matrix (tests/readers).
+# Engines that run as servers (ClickHouse, Trino) and Spark are pinned in
+# docker-compose.yml / the engine runners; this file pins the in-process readers
+# and the harness client libraries.
+duckdb==1.5.6
+pyarrow==25.0.1
+pandas==2.3.3
+polars==1.44.2
+datafusion==54.0.0
+s3fs==2026.9.0
+trino==0.340.0
+parquet-tools==0.2.16
+pytest==8.4.2
+PyYAML>=6

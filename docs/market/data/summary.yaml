@@ -5,9 +5,10 @@ strengths:
   mounted unchanged. OpenObserve also has 8 write protocols but only SQL/PromQL on read; Parseable 5/1; Tempo 3/1;
   GreptimeDB 7/3.'
 - 'Reach (direct file reads): the stored files are the product. Plain Parquet + hive dt=/hour= paths on S3, readable
-  in place with no export: pyarrow and DuckDB proven by a CI readback gate on every file, ClickHouse on every benchmark
-  run with answers equal to LogsQL; Spark/Trino documented only; Athena/Polars expected, untested. 3 verified /
-  7 claimed vs 0 named for OpenObserve, Parseable, Tempo and GreptimeDB. Limits: no Iceberg/Delta catalog, LH-specific
+  in place with no export: DuckDB, pyarrow and Spark each run a documented example against real files in CI and are
+  compared with the truth the fixture computed from the rows it sent; ClickHouse and Trino likewise, each with an
+  open issue (#341, #342); Polars refuses every traces file and every raw logs file (#340) and is not counted as
+  verified; Athena documented only. 5 verified / 1 partial / 1 claimed vs 0 named for OpenObserve, Parseable, Tempo and GreptimeDB. Limits: no Iceberg/Delta catalog, LH-specific
   schema, pmeta and footer blooms help only LH.'
 - 'One S3 copy with the VictoriaLogs/VictoriaTraces query engine on top: compatible answers with hot VL/VT (parity
   suite, 428+ passing, ratchet), and the object-storage tier that upstream VictoriaLogs still lacks (issue #48 open,

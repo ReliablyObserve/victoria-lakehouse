@@ -76,7 +76,23 @@ func main() {
 	accountID := flag.String("account-id", "0", "tenant AccountID header")
 	projectID := flag.String("project-id", "0", "tenant ProjectID header")
 	orgID := flag.String("org-id", "", "string tenant ID via X-Scope-OrgID header (overrides account-id/project-id)")
+	seed := flag.Int64("seed", 0, "seed of the row generator and of the generated trace/span IDs (0 = random, the default)")
+	nowFlag := flag.String("now", "", "RFC3339 instant the generated timestamps are relative to (default: the current time)")
+	manifestPath := flag.String("manifest", "", "write the writer-side truth of this run (computed from the generated rows before they are sent) to this JSON file")
+	manifestName := flag.String("manifest-name", "", "tenant name recorded in the manifest")
 	flag.Parse()
+
+	if *seed != 0 {
+		idRng = mrand.New(mrand.NewSource(*seed ^ 0x5eed)) // #nosec G404 -- synthetic test data
+	}
+	if *nowFlag != "" {
+		t, err := time.Parse(time.RFC3339Nano, *nowFlag)
+		if err != nil {
+			log.Fatalf("--now: %v", err)
+		}
+		anchor = t.UTC()
+	}
+	runSeed, runManifest, runManifestName = *seed, *manifestPath, *manifestName
 
 	// At least one destination of EITHER signal. Requiring a logs endpoint
 	// specifically made a traces-only seed impossible, which is exactly what
@@ -237,9 +253,35 @@ func phraseFixtureSpans(now time.Time) []traceRow {
 	return rows
 }
 
+// spanProtocol derives the HTTP or database attributes a span name implies. It
+// draws from rng in the same order the inline code did, so a --seed run still
+// produces the same rows.
+func spanProtocol(rng *mrand.Rand, spanName, svc string) (httpMethod, httpCode, httpURL, dbSystem, dbStmt string) {
+	switch {
+	case len(spanName) > 4 && spanName[:4] == "HTTP":
+		httpMethod = httpMethods[rng.Intn(len(httpMethods))]
+		httpCode = httpCodes[rng.Intn(len(httpCodes))]
+		httpURL = fmt.Sprintf("http://%s:8080%s", svc, spanName[len("HTTP "+httpMethod):])
+	case len(spanName) > 2 && spanName[:2] == "DB":
+		dbSystem = dbSystems[0]
+		dbStmt = fmt.Sprintf("SELECT * FROM %s WHERE id = $1", spanName[3:])
+	case spanName == "Redis GET session":
+		dbSystem = "redis"
+		dbStmt = "GET session:user:" + randomHex(8)
+	}
+	return httpMethod, httpCode, httpURL, dbSystem, dbStmt
+}
+
 func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint, lhLogsEndpoint, lhTracesEndpoint, lokiEndpoint, tempoEndpoint, accountID, projectID, orgID string) {
 	now := time.Now().UTC()
-	rng := mrand.New(mrand.NewSource(now.UnixNano())) // #nosec G404 -- synthetic test data
+	if !anchor.IsZero() {
+		now = anchor
+	}
+	seed := now.UnixNano()
+	if runSeed != 0 {
+		seed = runSeed
+	}
+	rng := mrand.New(mrand.NewSource(seed)) // #nosec G404 -- synthetic test data
 
 	if orgID != "" {
 		log.Printf("Generating %d logs + %d trace spans over %dh (org_id=%s)...",
@@ -333,20 +375,7 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 			}
 
 			spanName := spanNames[rng.Intn(len(spanNames))]
-			httpMethod, httpCode, httpUrl := "", "", ""
-			dbSystem, dbStmt := "", ""
-
-			if len(spanName) > 4 && spanName[:4] == "HTTP" {
-				httpMethod = httpMethods[rng.Intn(len(httpMethods))]
-				httpCode = httpCodes[rng.Intn(len(httpCodes))]
-				httpUrl = fmt.Sprintf("http://%s:8080%s", svc, spanName[len("HTTP "+httpMethod):])
-			} else if len(spanName) > 2 && spanName[:2] == "DB" {
-				dbSystem = dbSystems[0]
-				dbStmt = fmt.Sprintf("SELECT * FROM %s WHERE id = $1", spanName[3:])
-			} else if spanName == "Redis GET session" {
-				dbSystem = "redis"
-				dbStmt = "GET session:user:" + randomHex(8)
-			}
+			httpMethod, httpCode, httpUrl, dbSystem, dbStmt := spanProtocol(rng, spanName, svc)
 
 			resAttrs := map[string]string{
 				"service.name":            svc,
@@ -602,10 +631,32 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 	}
 
 	log.Printf("Batch done: %d logs (%d correlated), %d trace spans", len(allLogs), correlatedCount, len(allTraces))
+	if runManifest != "" {
+		if err := writeManifest(runManifest, runManifestName, accountID, projectID, orgID, runSeed, allLogs, allTraces); err != nil {
+			log.Fatalf("manifest: %v", err)
+		}
+		log.Printf("  manifest written to %s", runManifest)
+	}
 }
+
+// idRng, when set by --seed, makes trace, span and request IDs reproducible.
+var idRng *mrand.Rand
+
+// anchor, when set by --now, replaces the current time as the reference of every generated timestamp.
+var anchor time.Time
+
+var (
+	runSeed         int64
+	runManifest     string
+	runManifestName string
+)
 
 func randomHex(length int) string {
 	b := make([]byte, length/2)
+	if idRng != nil {
+		_, _ = idRng.Read(b)
+		return fmt.Sprintf("%x", b)
+	}
 	if _, err := rand.Read(b); err != nil {
 		n, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
 		return fmt.Sprintf("%0*x", length, n)
