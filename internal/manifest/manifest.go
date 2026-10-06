@@ -3,12 +3,13 @@ package manifest
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/binary"
 	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"path"
@@ -1104,6 +1105,20 @@ type ObjectProber func(ctx context.Context, bucket, key string) (exists bool, er
 // against with HEAD before it is believed.
 const cliffProbeSample = 16
 
+// sampleIntn returns a uniform random int in [0, n) for the HEAD sample of a
+// shrinking listing. It draws from crypto/rand: the sample decides which keys
+// are probed, and a predictable choice would let a pattern of dropped keys hide
+// the live ones from it. Tests replace it to make the sample deterministic.
+var sampleIntn = func(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	var b [8]byte
+	_, _ = crand.Read(b[:]) // never fails since Go 1.24
+	// The modulo bias is below n/2^64: irrelevant for a 16-key sample.
+	return int(binary.LittleEndian.Uint64(b[:]) % uint64(n))
+}
+
 // cliffProbeTimeout bounds the whole HEAD sample of one refresh.
 const cliffProbeTimeout = 30 * time.Second
 
@@ -1364,7 +1379,7 @@ func (m *Manifest) probeShrink(ctx context.Context, files map[string][]FileInfo,
 		// Reservoir sampling: a uniform sample without materialising the set.
 		if len(sample) < cliffProbeSample {
 			sample = append(sample, cand{key: key, partition: partition})
-		} else if j := rand.IntN(dropped); j < cliffProbeSample {
+		} else if j := sampleIntn(dropped); j < cliffProbeSample {
 			sample[j] = cand{key: key, partition: partition}
 		}
 	}
@@ -1418,15 +1433,71 @@ func (m *Manifest) probeShrink(ctx context.Context, files map[string][]FileInfo,
 
 // carrySkippedLocked keeps the previous entries of the prefixes a partial
 // listing could not cover, so what the listing says nothing about is not
-// dropped. Caller holds m.mu.
+// dropped. An entry already in files is not carried again: the merge before it
+// has kept the files published while the listing ran (published_during_listing),
+// and those live under the skipped prefixes too. Carrying them a second time
+// tracks the key twice, so every read serves its rows twice and a compaction
+// merging the partition writes them twice and deletes the source (#404 round 4).
+// Caller holds m.mu.
 func (m *Manifest) carrySkippedLocked(files map[string][]FileInfo, skipped []string) {
-	for partition, old := range m.files {
-		for _, fi := range old {
-			if underSkipped(fi.Key, skipped) {
-				files[partition] = append(files[partition], fi)
+	have := make(map[string]struct{})
+	for _, pf := range files {
+		for i := range pf {
+			if underSkipped(pf[i].Key, skipped) {
+				have[pf[i].Key] = struct{}{}
 			}
 		}
 	}
+	for partition, old := range m.files {
+		for _, fi := range old {
+			if !underSkipped(fi.Key, skipped) {
+				continue
+			}
+			if _, ok := have[fi.Key]; ok {
+				continue
+			}
+			have[fi.Key] = struct{}{}
+			files[partition] = append(files[partition], fi)
+		}
+	}
+}
+
+// dedupeRefreshedFiles enforces the manifest's "each key is tracked at most
+// once" invariant on a file map about to replace the tracked set: a second
+// entry for a key (in the same or another partition) is dropped, logged and
+// counted. Every path that builds the map is meant to produce unique keys, so
+// a non-zero count is a defect to investigate; dropping the extra entry keeps
+// it from serving rows twice meanwhile.
+func dedupeRefreshedFiles(files map[string][]FileInfo, site string) int {
+	seen := make(map[string]struct{})
+	dropped := 0
+	partitions := make([]string, 0, len(files))
+	for p := range files {
+		partitions = append(partitions, p)
+	}
+	sort.Strings(partitions) // deterministic: the first partition keeps the key
+	for _, p := range partitions {
+		pf := files[p]
+		kept := pf[:0]
+		for _, fi := range pf {
+			if _, dup := seen[fi.Key]; dup {
+				dropped++
+				logger.Errorf("manifest invariant: key tracked twice; dropping the second entry; site=%s, key=%s, partition=%s", site, fi.Key, p)
+				continue
+			}
+			seen[fi.Key] = struct{}{}
+			kept = append(kept, fi)
+		}
+		if len(kept) == 0 {
+			delete(files, p)
+		} else {
+			files[p] = kept
+		}
+	}
+	if dropped > 0 {
+		metrics.DuplicateFileKeys.Add(site, dropped)
+	}
+	return dropped
 }
 
 // applyRefreshedFiles replaces the tracked file set with a listing (merged per
@@ -1449,6 +1520,7 @@ func (m *Manifest) applyRefreshedFiles(ctx context.Context, files map[string][]F
 		}
 		confirmedGone = kept
 	}
+	dedupeRefreshedFiles(files, "manifest_refresh")
 
 	var (
 		totalFiles int
@@ -1528,18 +1600,19 @@ func (m *Manifest) applyRefreshedFiles(ctx context.Context, files map[string][]F
 	m.totalFiles = totalFiles
 	m.totalBytes = totalBytes
 	m.lastRefresh = time.Now()
-	if len(skipped) == 0 {
+	complete := len(skipped) == 0
+	if complete {
 		// Only a listing that covered every prefix says what the bucket holds.
 		m.listed = true
 		m.lastComplete = CompleteRefresh{Start: listStart, Generation: m.lastComplete.Generation + 1}
 	}
 	m.afterAcceptedRefreshLocked(confirmedGone, listStart, skipped)
-	m.mu.Unlock()
 
-	metrics.StorageFilesTotal.Set(int64(totalFiles))
-	metrics.StorageBytesTotal.Set(totalBytes)
-	metrics.StoragePartitionsTotal.Set(int64(len(files)))
-
+	// Everything below reads the file set, which is m.files from here on: it is
+	// computed before the lock is released, because AddFile writes that map as
+	// soon as it is (iterating it unlocked is a concurrent map read and write,
+	// a fatal runtime error, #420).
+	partitions := len(files)
 	var totalRows int64
 	var totalRawBytes int64
 	tenants := make(map[string]bool)
@@ -1553,6 +1626,16 @@ func (m *Manifest) applyRefreshedFiles(ctx context.Context, files map[string][]F
 			}
 		}
 	}
+	lastRefresh := m.lastRefresh
+	m.mu.Unlock()
+
+	metrics.ManifestLastRefreshTimestamp.Set(float64(lastRefresh.UnixNano()) / 1e9)
+	if complete {
+		metrics.ManifestLastCompleteRefreshTimestamp.Set(float64(listStart.UnixNano()) / 1e9)
+	}
+	metrics.StorageFilesTotal.Set(int64(totalFiles))
+	metrics.StorageBytesTotal.Set(totalBytes)
+	metrics.StoragePartitionsTotal.Set(int64(partitions))
 	metrics.StorageTenantsTotal.Set(int64(len(tenants)))
 	metrics.StorageRowsTotal.Set(totalRows)
 	metrics.StorageRawBytesTotal.Set(totalRawBytes)
@@ -1563,7 +1646,7 @@ func (m *Manifest) applyRefreshedFiles(ctx context.Context, files map[string][]F
 		metrics.StorageCompressionRatio.Set(float64(totalRawBytes) / float64(totalBytes))
 	}
 
-	logger.Infof("manifest refreshed; partitions=%d, files=%d, bytes=%d, min_time=%v, max_time=%v", len(files), totalFiles, totalBytes, minT, maxT)
+	logger.Infof("manifest refreshed; partitions=%d, files=%d, bytes=%d, min_time=%v, max_time=%v", partitions, totalFiles, totalBytes, minT, maxT)
 	return true
 }
 
@@ -2787,18 +2870,6 @@ type persistedManifest struct {
 // captured and encoded and before it is written (to make a save slow).
 var saveTestHook func()
 
-// SaveCompleteTo is SaveTo for the periodic and post-warmup snapshots: it writes
-// only once this process has applied a complete listing (Listed). Before that
-// the manifest is a loaded snapshot, possibly with a partial listing folded in,
-// and re-persisting it would present an unverified state as the next start's
-// ground truth. Reports whether it wrote.
-func (m *Manifest) SaveCompleteTo(path string) (bool, error) {
-	if !m.Listed() {
-		return false, nil
-	}
-	return true, m.SaveTo(path)
-}
-
 func (m *Manifest) SaveTo(path string) error {
 	m.saveMu.Lock()
 	defer m.saveMu.Unlock()
@@ -2807,8 +2878,16 @@ func (m *Manifest) SaveTo(path string) error {
 	m.pruneRetiredLocked(now)
 	m.mu.Unlock()
 	m.mu.RLock()
+	// The partition map is copied (its slice headers, not the files): the
+	// encoder below runs after the lock is released, and iterating m.files
+	// itself there races with AddFile inserting a partition — a concurrent
+	// map iteration and write, a fatal runtime error (#420).
+	files := make(map[string][]FileInfo, len(m.files))
+	for p, pf := range m.files {
+		files[p] = pf[:len(pf):len(pf)]
+	}
 	snap := persistedManifest{
-		Files:       m.files,
+		Files:       files,
 		MinTimeNs:   m.minTime.UnixNano(),
 		MaxTimeNs:   m.maxTime.UnixNano(),
 		TotalFiles_: m.totalFiles,
@@ -2948,6 +3027,17 @@ func (m *Manifest) LoadFrom(path string) error {
 	// Entries written before bounds were marked carry the inferred partition
 	// hour as if it were exact; they are inferred, whatever the snapshot says.
 	markHourShapedInferred(snap.Files)
+	// The same "each key at most once" invariant as a refresh: a snapshot that
+	// holds a key twice would serve its rows twice until the first refresh.
+	if dedupeRefreshedFiles(snap.Files, "manifest_load") > 0 {
+		snap.TotalFiles_, snap.TotalBytes_ = 0, 0
+		for _, pf := range snap.Files {
+			snap.TotalFiles_ += len(pf)
+			for i := range pf {
+				snap.TotalBytes_ += pf[i].Size
+			}
+		}
+	}
 
 	m.mu.Lock()
 	m.files = snap.Files

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -22,7 +23,12 @@ import (
 //   - the "absent => gone" predicate the destructive consumers use
 //     (Listed && CompleteSince(object's mtime) && !HasKey) is never true for a
 //     live object, so nothing that gates on it can delete one;
-//   - a legitimate shrink is always accepted (the guard never sticks).
+//   - a legitimate shrink is always accepted (the guard never sticks);
+//   - each key is tracked at most once, including a file published while a
+//     partial or complete listing runs (#404 round 4);
+//   - a kill and restart from the persisted snapshot (whatever the last
+//     refresh's outcome) keeps every owed retirement and is not trusted as a
+//     listing (Listed false, no complete generation).
 
 type propObj struct {
 	account int
@@ -103,6 +109,19 @@ func (w *propWorld) check(op string, before propState, accepted, complete bool) 
 	t.Helper()
 	after := w.state()
 	cur := w.keys()
+	// I6: each key is tracked at most once.
+	seen := map[string]int{}
+	for _, files := range w.m.AllFiles() {
+		for _, fi := range files {
+			seen[fi.Key]++
+			if seen[fi.Key] > 1 {
+				t.Fatalf("%s: key %s is tracked %d times", op, fi.Key, seen[fi.Key])
+			}
+		}
+	}
+	if n := w.m.TotalFiles(); n != len(seen) {
+		t.Fatalf("%s: TotalFiles=%d, distinct keys=%d", op, n, len(seen))
+	}
 	// I1/I5: owed retirements stay owed and out of the manifest.
 	for k := range w.owed {
 		if cur[k] {
@@ -187,7 +206,7 @@ func runListingProperty(t *testing.T, seed int64) {
 
 	for step := 0; step < 40; step++ {
 		before = w.state()
-		op := w.rnd.Intn(9)
+		op := w.rnd.Intn(12)
 		label := fmt.Sprintf("seed=%d step=%d op=%d", seed, step, op)
 		switch op {
 		case 0, 1: // complete listing
@@ -295,6 +314,10 @@ func runListingProperty(t *testing.T, seed int64) {
 			k := w.newKey(acct)
 			w.bucket[k] = propObj{acct, spin()}
 			w.check(label+" flush", before, true, false)
+		case 9, 10: // this node publishes while a partial (9) or complete (10) listing runs
+			w.publishDuringListing(label, op == 9)
+		case 11: // kill -9 and restart from the persisted snapshot
+			w.restartFromSnapshot(label, before)
 		case 8: // HEAD outage on/off
 			w.headErr = !w.headErr
 			if w.headErr {
@@ -314,4 +337,58 @@ func runListingProperty(t *testing.T, seed int64) {
 			}
 		}
 	}
+}
+
+// publishDuringListing: this node flushes a file while a listing runs. The
+// listing was read before the upload, so it cannot contain it; the file must
+// stay tracked, once (#404 round 4).
+func (w *propWorld) publishDuringListing(label string, partial bool) {
+	t := w.t
+	t.Helper()
+	skip := 0
+	if partial {
+		skip = 2
+	}
+	listStart := spin()
+	objs := w.listing(skip)
+	acct := 1 + w.rnd.Intn(2)
+	k := w.newKey(acct)
+	w.bucket[k] = propObj{acct, spin()}
+	w.m.AddFile(refreshPartition, enriched(k, 1))
+	before := w.state() // the publish is not the listing's doing
+	var ok bool
+	if partial {
+		ok = w.m.ApplyPartialListing(objs, listStart, []string{"2/"})
+	} else {
+		ok = w.m.ApplyListing(objs, listStart)
+	}
+	if ok && !w.keys()[k] {
+		t.Fatalf("%s: the file published during the listing was dropped", label)
+	}
+	w.check(label+" publish during listing", before, ok, !partial)
+}
+
+// restartFromSnapshot: kill -9 and restart from the persisted snapshot,
+// whatever the last refresh's outcome. Owed retirements survive (I1 in check),
+// the tracked keys are restored, and the loaded state is not a listing.
+func (w *propWorld) restartFromSnapshot(label string, before propState) {
+	t := w.t
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "m.snap")
+	if err := w.m.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	re := New("b", "")
+	if err := re.LoadFrom(path); err != nil {
+		t.Fatal(err)
+	}
+	re.SetObjectProber(w.m.prober)
+	w.m = re
+	if w.m.Listed() || w.m.LastCompleteRefresh().Generation != 0 {
+		t.Fatalf("%s: a loaded snapshot is trusted as a listing", label)
+	}
+	if !sameKeys(before.keys, w.keys()) {
+		t.Fatalf("%s: the snapshot did not restore the tracked keys", label)
+	}
+	w.check(label+" restart", w.state(), true, false)
 }

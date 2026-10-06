@@ -1640,12 +1640,13 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			}
 		}
 
-		// Only a state that came from a complete listing is persisted: after a
-		// partial or rejected refresh the previous snapshot stays (#418).
-		if saved, err := store.Manifest().SaveCompleteTo(mpath); err != nil {
+		// Persisted whatever the refresh's outcome: a partial state carries the
+		// skipped tenants' previous entries and a rejected one is unchanged, so
+		// neither is sparse, and a loaded snapshot is never trusted as a listing
+		// (Listed is false after a load). Skipping the write would lose the keys
+		// retired since the last one (#418, #404).
+		if err := store.Manifest().SaveTo(mpath); err != nil {
 			logger.Errorf("manifest snapshot after S3 refresh failed: %s", err)
-		} else if !saved {
-			logger.Warnf("manifest snapshot not rewritten: no complete bucket listing has been applied in this process yet")
 		}
 
 		sm.SetWarmupComplete()
@@ -1680,6 +1681,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 		WarmupDuration:    time.Since(warmupStart),
 	})
 
+	metrics.ManifestRefreshIntervalSeconds.Set(cfg.Manifest.RefreshInterval.Seconds())
 	refreshTicker := time.NewTicker(cfg.Manifest.RefreshInterval)
 	defer refreshTicker.Stop()
 	persistTicker := time.NewTicker(cfg.Manifest.PersistInterval)
@@ -1732,7 +1734,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			}
 			rcancel()
 		case <-persistTicker.C:
-			if _, err := store.Manifest().SaveCompleteTo(mpath); err != nil {
+			if err := store.Manifest().SaveTo(mpath); err != nil {
 				logger.Errorf("periodic manifest persist failed: %s", err)
 			}
 			updateSnapshotAge()

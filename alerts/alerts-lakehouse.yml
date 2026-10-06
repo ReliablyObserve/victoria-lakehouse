@@ -63,13 +63,33 @@ groups:
 
       - alert: LakehouseManifestStale
         expr: |
-          time() - lakehouse_manifest_last_refresh_timestamp_seconds > 7200
+          lakehouse_manifest_last_refresh_timestamp_seconds > 0
+            and time() - lakehouse_manifest_last_refresh_timestamp_seconds > 7200
         for: 15m
         labels:
           severity: warning
         annotations:
           summary: "Lakehouse manifest not refreshed in over 2 hours"
           description: "Manifest may be stale. New S3 files won't be queryable. Check S3 ListObjects permissions."
+
+      - alert: LakehouseManifestNoCompleteRefresh
+        expr: |
+          time() - lakehouse_manifest_last_complete_refresh_timestamp_seconds
+            > clamp_min(4 * lakehouse_manifest_refresh_interval_seconds, 900)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lakehouse manifest has not applied a complete bucket listing for over 4 refresh intervals"
+          description: "Refreshes fail, are partial (a tenant's LIST fails) or are rejected (lakehouse_manifest_refresh_incomplete_total by reason). Until one completes, deletes are not completed (tombstones stay active), retired keys are not settled and restored insert-buffer segments stay held. Check S3 LIST errors and throttling for the tenants concerned."
+
+      - alert: LakehouseDuplicateFileKeys
+        expr: increase(lakehouse_duplicate_file_keys_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A file key was found tracked twice ({{ $labels.site }})"
+          description: "An invariant check dropped or refused a duplicate file entry; without it the file's rows would have been served or merged twice. This is a defect: collect the log line 'key tracked twice' and report it."
 
       - alert: LakehouseDiscoveryFailed
         expr: lakehouse_peer_ring_members == 0
