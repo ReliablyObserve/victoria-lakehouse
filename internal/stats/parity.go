@@ -40,6 +40,9 @@ type ParityResponse struct {
 	StartUnixNano          int64 `json:"start_unix_nano"`
 	EndUnixNano            int64 `json:"end_unix_nano"`
 	RequestedStartUnixNano int64 `json:"requested_start_unix_nano"`
+	// EndUnixNano is the aligned end (>= RequestedEndUnixNano): a file with rows
+	// dated after now moves it forward to the file's last row.
+	RequestedEndUnixNano int64 `json:"requested_end_unix_nano"`
 
 	// Scope is the tenant scope both views cover: every tenant.
 	Scope string `json:"scope"`
@@ -200,11 +203,11 @@ func (a *API) handleParity(w http.ResponseWriter, r *http.Request, vl VLQuerier,
 	}
 	now := time.Now()
 	reqStartNs := now.Add(-window).UnixNano()
-	endNs := now.UnixNano()
+	reqEndNs := now.UnixNano()
 
 	resp := ParityResponse{
 		RequestedStartUnixNano: reqStartNs,
-		EndUnixNano:            endNs,
+		RequestedEndUnixNano:   reqEndNs,
 		Scope:                  "all_tenants",
 		PerTenantSupported:     false,
 		PerTenantNote:          "the comparison covers every tenant (the loopback query carries the caller's global-read credential); per-tenant rows are not reported",
@@ -228,6 +231,14 @@ func (a *API) handleParity(w http.ResponseWriter, r *http.Request, vl VLQuerier,
 			startNs = a.cfg.Manifest.AlignedWindowStart(reqStartNs)
 		}
 		resp.StartUnixNano = startNs
+		// The end moves forward the same way: a file holding rows dated after
+		// now (clock skew, -futureRetention) overlaps the window and the manifest
+		// counts it whole, so the window must reach its last row.
+		endNs := reqEndNs
+		if a.cfg.Manifest != nil {
+			endNs = a.cfg.Manifest.AlignedWindowEnd(reqEndNs)
+		}
+		resp.EndUnixNano = endNs
 
 		rep1, berr1 := a.readBuffer(ctx, startNs, endNs)
 		var ws1 manifest.WindowSample
@@ -262,6 +273,7 @@ func (a *API) handleParity(w http.ResponseWriter, r *http.Request, vl VLQuerier,
 		if a.cfg.Manifest != nil {
 			changed = changed ||
 				a.cfg.Manifest.AlignedWindowStart(reqStartNs) != startNs ||
+				a.cfg.Manifest.AlignedWindowEnd(reqEndNs) != endNs ||
 				!reflect.DeepEqual(ws1, a.cfg.Manifest.WindowSample(startNs, endNs, rep1.Nonces))
 		}
 		resp.UnstableSample = changed

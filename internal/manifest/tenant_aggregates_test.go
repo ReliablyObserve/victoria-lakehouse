@@ -315,3 +315,25 @@ func TestWindowSample(t *testing.T) {
 		t.Errorf("unknown nonce: %v", got.SegmentRows)
 	}
 }
+
+func TestAlignedWindowEnd(t *testing.T) {
+	const h = int64(time.Hour)
+	for run := 0; run < 20; run++ {
+		m := New("b", "")
+		m.AddFile("p0", FileInfo{Key: "a.parquet", RowCount: 1, MinTimeNs: 1 * h, MaxTimeNs: 5 * h})
+		// chain reaching forward: each starts inside the previous one's range
+		m.AddFile("p1", FileInfo{Key: "b.parquet", RowCount: 1, MinTimeNs: 5*h - 1, MaxTimeNs: 7 * h})
+		m.AddFile("p2", FileInfo{Key: "c.parquet", RowCount: 1, MinTimeNs: 7*h - 1, MaxTimeNs: 9 * h})
+		m.AddFile("p3", FileInfo{Key: "far.parquet", RowCount: 1, MinTimeNs: 20 * h, MaxTimeNs: 21 * h}) // wholly after: untouched
+		m.AddFile("p4", FileInfo{Key: "norange.parquet", RowCount: 1})
+		if got := m.AlignedWindowEnd(4 * h); got != 9*h {
+			t.Fatalf("chain: got %d want %d", got, 9*h)
+		}
+		if got := m.AlignedWindowEnd(10 * h); got != 10*h {
+			t.Fatalf("nothing straddles: got %d want %d", got, 10*h)
+		}
+		if got := m.AlignedWindowEnd(0); got != 0 {
+			t.Fatalf("zero: got %d", got)
+		}
+	}
+}

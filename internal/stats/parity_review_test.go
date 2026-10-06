@@ -363,3 +363,21 @@ func TestParity_CommittedTracesSegmentExpectsItsDroppedIndexRows(t *testing.T) {
 		t.Fatalf("mismatches=%+v verified=%d, want [%+v] / 720 (a mismatching segment contributes no expected drift)", r.SegmentMismatches, r.VerifiedDrift, want)
 	}
 }
+
+// A file holding rows dated after now overlaps the window and the manifest
+// counts it whole; the window end moves forward to its last row so the
+// row-precise VL count agrees (no residual from future-dated rows).
+func TestParity_FutureDatedRowsMoveTheWindowEnd(t *testing.T) {
+	now := time.Now().UnixNano()
+	h := int64(time.Hour)
+	rows := spread("0:0", 500, now-h, now+10*int64(time.Minute))
+	mf := manifest.New("b", "")
+	addFile(mf, "p0", "0/0/logs/a.parquet", rows)
+	r := getParity(t, NewAPI(APIConfig{Manifest: mf}), &modelVL{rows: rows}, nil)
+	if r.EndUnixNano != rows[len(rows)-1].ts || r.RequestedEndUnixNano >= r.EndUnixNano {
+		t.Fatalf("end=%d requested=%d, want the file's last row %d", r.EndUnixNano, r.RequestedEndUnixNano, rows[len(rows)-1].ts)
+	}
+	if r.VLRows != 500 || r.ManifestRows != 500 || r.VerifiedDrift != 0 {
+		t.Fatalf("vl=%d manifest=%d verified=%d, want 500/500/0", r.VLRows, r.ManifestRows, r.VerifiedDrift)
+	}
+}

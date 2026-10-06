@@ -1956,6 +1956,38 @@ func (m *Manifest) AlignedWindowStart(startNs int64) int64 {
 	return s
 }
 
+// AlignedWindowEnd is AlignedWindowStart's mirror: the smallest e >= endNs such
+// that no file straddles it (no file has MinTimeNs <= e < MaxTimeNs). A file
+// holding rows dated after endNs (clock skew, future-dated rows) overlaps the
+// window and a file-level aggregate counts it whole, so the window must reach
+// its last row for the row-precise count to agree. endNs <= 0 is returned
+// unchanged.
+func (m *Manifest) AlignedWindowEnd(endNs int64) int64 {
+	if endNs <= 0 {
+		return endNs
+	}
+	type span struct{ min, max int64 }
+	var cand []span
+	m.mu.RLock()
+	for _, files := range m.files {
+		for _, fi := range files {
+			if fi.MinTimeNs > 0 && fi.MaxTimeNs > endNs {
+				cand = append(cand, span{fi.MinTimeNs, fi.MaxTimeNs})
+			}
+		}
+	}
+	m.mu.RUnlock()
+	// By ascending first row one pass is the fixed point.
+	sort.Slice(cand, func(i, j int) bool { return cand[i].min < cand[j].min })
+	e := endNs
+	for _, c := range cand {
+		if c.min <= e && c.max > e {
+			e = c.max
+		}
+	}
+	return e
+}
+
 // WindowSample is one read of the manifest for the admin parity check, taken
 // under one lock acquisition.
 type WindowSample struct {

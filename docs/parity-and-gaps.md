@@ -12,7 +12,7 @@ Track what the cold tier (Lakehouse-stored Parquet) does, doesn't, and only-appr
 - the **VL view**: `* | stats count() as n` with an embedded `_time:[start, end]` filter, run through the process's own select path. The request carries the caller's global-read credential, so the count covers every tenant and includes rows only the insert buffer holds;
 - the **manifest view**: `LiveAggregateWindow` over the same window, the per-file row counts of every tenant's files.
 
-The window start is **aligned**: if a file straddles the requested start (hour partitions, or a coarser compaction tier), the start moves back to that file's first row, so the file-level sum equals the row-precise count. The reported `start_unix_nano` is the aligned start; `requested_start_unix_nano` is what was asked for.
+The window start is **aligned**: if a file straddles the requested start (hour partitions, or a coarser compaction tier), the start moves back to that file's first row, so the file-level sum equals the row-precise count. The window end is aligned the same way (a file holding rows dated after now moves it forward to its last row). The reported `start_unix_nano`/`end_unix_nano` are the aligned bounds; `requested_start_unix_nano`/`requested_end_unix_nano` are what was asked for.
 
 Response shape:
 
@@ -21,6 +21,7 @@ Response shape:
   "start_unix_nano": ...,
   "end_unix_nano": ...,
   "requested_start_unix_nano": ...,
+  "requested_end_unix_nano": ...,
   "scope": "all_tenants",
   "vl_rows": <int>,
   "manifest_rows": <int>,
@@ -72,7 +73,7 @@ If `verified_drift` is not zero or `segment_mismatches` is not empty, investigat
 - manifest's RefreshFromS3 missed a prefix (tenant-isolation routing bug)
 - compaction wrote outputs to a different prefix than its inputs
 - the loopback query was refused (`vl_error`)
-- a window edge: files holding rows newer than the window end (future-dated rows) or files without a time range are counted whole by the manifest, and a pending tombstone hides rows VL no longer counts (tracked as known limits of this comparison)
+- a window edge: files without a time range are counted whole by the manifest, and a pending tombstone hides rows VL no longer counts (known limits of this comparison, #416)
 
 ## Intentional differences
 
