@@ -301,7 +301,7 @@ traceql: 9/9 covered by at least one registry row.
 
 ## Upstream flag (181)
 
-flag: 33/181 covered by at least one registry row.
+flag: 35/181 covered by at least one registry row.
 
 | flag | Source | Rows | Status |
 |---|---|---|---|
