@@ -50,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/compaction` run as deterministic test shards, each with its own timeout and headroom gate, guarded so every
   test runs exactly once; they had drifted to 72-100% of their timeouts and failed CI at random. Tests and CI only.
 
+- **Logs `field_names` no longer lists columns that are null on every row, and its answer no longer depends on what the
+  footer cache holds (#280).** The hit counts come from the page index's per-page null counts. A cache entry that held
+  the footer without the page-index stripe answered those reads with zeros, which parquet-go decoded as an empty index
+  and memoized, so every all-null column (`resource.attributes`, `log.attributes`, `exception.*`, the unmapped `ded_sNN`
+  slots) was credited with its whole row count. A footer-only entry now fails the read instead; the stripe is fetched
+  once more, and if it cannot be read the hits are reported as unknown (`Hits=0`), never invented. Hot VictoriaLogs lists
+  none of those fields. The count of a field is still taken from whole-file column indexes, so a file that straddles the
+  query window counts its edge rows (3,040 against 2,936 hits for `exception.*` in the benchmark dataset); the traces
+  answer never read the page index and is unchanged.
+
 ## [0.145.5] - 2026-10-06
 
 ### Changed

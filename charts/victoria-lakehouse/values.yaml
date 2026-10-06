@@ -176,8 +176,8 @@ lakehouseConfig:
     # min(k, spans) in flight. The planned-v1 live verdict measured 13-15
     # spans/file drained 4-at-a-time into ~4 serial RTT waves; k=16 fetches a
     # typical per-file plan in one wave while 8 file workers x 16 stays at
-    # the HTTP/1.1 connection-pool ceiling. Only the opt-in planned mode
-    # reads this; window mode is untouched.
+    # the HTTP/1.1 connection-pool ceiling. Only the planned mode (the
+    # default) reads this; the deprecated window mode does not.
     planned_fetch_max_inflight: 16
     # -- Per-SPAN byte cap on the PLANNED projected-read path (16 MiB) —
     # ClickHouse's bytes_per_read_task scope: a coalesced span above the cap

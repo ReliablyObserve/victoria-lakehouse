@@ -18,7 +18,7 @@ blackout on a simultaneous restart".
 | Phase | What scales with | Mitigations applied |
 | --- | --- | --- |
 | Disk recovery (snapshot load) | manifest file count × ~100 bytes/entry on gob | binary gob format; streaming decode (planned) |
-| Footer cache snapshot load | `FooterMaxItems` × ~50 KB each | async load off /ready path (planned) |
+| Footer cache snapshot load | footer entries bounded by `cache.footer_max_bytes` (resident bytes, auto: a share of cache memory), each charged its tail + decoded metadata (tens of KB to a few hundred KB) | async load off /ready path (planned) |
 | S3 manifest refresh | manifest delta since snapshot | snapshot persisted every 5 min; only deltas LISTed |
 | Cache warmup | `WarmupPartitions × WarmupMaxFiles` × 50 ms S3 fetch | priority warmup (planned), backoff+jitter (planned) |
 | Buffer restore | buffer segments restored on open | gated on /ready via lifecycle manager |

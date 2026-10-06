@@ -17,9 +17,10 @@ for fn in sorted(glob.glob(os.path.join(out, '*.jsonl'))):
     if not m:
         continue
     sig, build, files, layout, lat = m.group(1), m.group(2), m.group(3), m.group(4), int(m.group(5))
-    for line in open(fn):
-        r = json.loads(line)
-        rows[(sig, files, layout, r['Shape'])][(build, lat)] = r
+    with open(fn, encoding='utf-8') as fh:
+        for line in fh:
+            r = json.loads(line)
+            rows[(sig, files, layout, r['Shape'])][(build, lat)] = r
 
 def fmt(v):
     return f"{v:,.0f}" if v >= 10 else f"{v:.1f}"

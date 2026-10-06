@@ -437,6 +437,29 @@
     - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestAutoFooterMaxBytes_Table
     - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestNewConfiguredFooterCache_AutoAndExplicit
     - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestFooterCache_ByteBoundNotEntryBound
+    - internal/storage/parquets3/footer_budget_test.go#TestQuery_FooterPrefetchRespectsBudget_SameGETsAsLargeBudget
+    - internal/storage/parquets3/footer_budget_test.go#TestPrefetchFooters_StopsAtTheBudget
+    - internal/storage/parquets3/footer_budget_test.go#TestWarmMetadata_SmallFooterBudget_NoWholeObjectDownloads
+    - internal/storage/parquets3/footer_budget_test.go#TestEnrichSmallFiles_OnlyBelowTheFooterPrefetchFloor
+    - internal/storage/parquets3/footer_budget_test.go#TestFieldNames_AllNullColumnsAnswerDoesNotDependOnCacheState
+    - internal/storage/parquets3/footer_budget_test.go#TestFieldNames_PageIndexUnavailable_ReportsUnknownNotInventedHits
+    - internal/storage/parquets3/footer_review_test.go#TestFooterOnlyEntry_PageIndexReadFailsAndIsNotMemoized
+    - internal/storage/parquets3/footer_review_test.go#TestFooterCache_PutIfFits_NeverEvicts
+    - internal/storage/parquets3/footer_review_test.go#TestParseObjectFor
+    - internal/storage/parquets3/footer_review_test.go#TestOwn_StripeFetchUsesTheCallersDownloader
+    - internal/storage/parquets3/footer_review_test.go#TestOverlayOpen_CountsOneFooterCacheHit
+    - internal/storage/parquets3/footer_review_test.go#TestEnrichFromCachedFooter_RealPageIndexBounds
+    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestQuery_FooterPrefetchRespectsBudget_SameGETsAsLargeBudget
+    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestPrefetchFooters_StopsAtTheBudget
+    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestWarmMetadata_SmallFooterBudget_NoWholeObjectDownloads
+    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestEnrichSmallFiles_OnlyBelowTheFooterPrefetchFloor
+    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestFieldNames_TracesAnswerUnaffectedByFooterCacheState
+    - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestFooterOnlyEntry_PageIndexReadFailsAndIsNotMemoized
+    - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestFooterCache_PutIfFits_NeverEvicts
+    - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestParseObjectFor
+    - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestOwn_StripeFetchUsesTheCallersDownloader
+    - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestOverlayOpen_CountsOneFooterCacheHit
+    - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestEnrichFromCachedFooter_RealPageIndexBounds
   docs:
     - docs/read-path.md
     - docs/performance.md
@@ -453,7 +476,12 @@
     heap and at most 1.5x of it. Footers run 40-430 KB with token blooms on logs and 470-520 KB with the
     trace index on traces. With cache.footer_max_bytes = 0 the budget is 10% (logs) or 20% (traces) of the
     memory the process may use for caches, clamped to 32 MiB..1 GiB (logs) or 2 GiB (traces); an explicit
-    value overrides it.
+    value overrides it. The bulk footer prefetches respect that budget: a query or snapshot prefetch fetches
+    no more footers than the cache holds (budget over the measured mean entry weight, minus the file
+    workers' share), and the startup enrichment takes each footer as it is parsed instead of reading it back
+    through the cache, so a small budget costs no wasted or whole-object GETs. A footer-only entry never
+    answers a page-index read with zeros: the read fails, and the logs field_names hit counts are the same
+    whatever the cache holds (an unreadable page index reports the hits as unknown, never invented).
 
 - id: lh.feature.storage.planned_fetch_v2
   title: Planned-fetch v2 levers (footer prefetch, span concurrency, gap discipline)
@@ -476,8 +504,9 @@
   description: >-
     The v2 levers attack the measured causes of cold-open latency: two serial round trips per
     file, a per-plan cap that punished the very coalescing that removes GETs, and too little
-    concurrency across the spans of one file. Every lever is confined to the opt-in planned path
-    so the default read path is unchanged until the numbers say otherwise.
+    concurrency across the spans of one file. Every lever lives on the planned path, which is the
+    default read mode (s3.projected_fetch_mode: planned); the window reader is the deprecated
+    fallback and does not use them.
 
 - id: lh.feature.storage.wildcard_range_read
   title: Lazy range reads for wildcard queries
