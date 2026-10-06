@@ -14,18 +14,16 @@ type fakeCounter struct{ values map[string]uint64 }
 
 func (f *fakeCounter) Get(kind string) uint64 { return f.values[kind] }
 
-func TestParity_VTInternalDropped_AccountedInExpectedDrift(t *testing.T) {
+// The lifetime counter is reported but is not the expected drift: VL counting
+// more rows than the manifest is explained by the buffer term only.
+func TestParity_VTInternalDropped_ReportedNotSubtracted(t *testing.T) {
 	mf := manifest.New("b", "")
-	// Manifest holds 1M real spans.
 	mf.AddFile("dt=2026-06-04/hour=10", manifest.FileInfo{
 		Key: "1/1/traces/dt=2026-06-04/hour=10/a.parquet", RowCount: 1_000_000, Size: 1,
 	})
 
 	api := NewAPI(APIConfig{Manifest: mf})
 	mux := http.NewServeMux()
-	// VL sees 1.9M rows total (1M real + 800K trace_id_idx + 100K service_graph).
-	// The writer dropped exactly those 900K internal rows before they
-	// reached the manifest — counter records the drop.
 	api.RegisterParityWithInternal(mux,
 		&fakeVL{rows: 1_900_000},
 		nil, // open
@@ -49,13 +47,13 @@ func TestParity_VTInternalDropped_AccountedInExpectedDrift(t *testing.T) {
 	}
 
 	if r.RowsDelta != 900_000 {
-		t.Errorf("rows_delta=%d, want 900000 (VL − manifest)", r.RowsDelta)
+		t.Errorf("rows_delta=%d, want 900000 (VL - manifest)", r.RowsDelta)
 	}
-	if r.ExpectedDrift != 900_000 {
-		t.Errorf("expected_drift=%d, want 900000 (sum of dropped kinds)", r.ExpectedDrift)
+	if r.ExpectedDrift != 0 {
+		t.Errorf("expected_drift=%d, want 0: only the buffer term is expected, never the lifetime counter", r.ExpectedDrift)
 	}
-	if r.VerifiedDrift != 0 {
-		t.Errorf("verified_drift=%d, want 0 — dropped counter fully explains the gap", r.VerifiedDrift)
+	if r.VerifiedDrift != 900_000 {
+		t.Errorf("verified_drift=%d, want 900000 (nothing explains the gap)", r.VerifiedDrift)
 	}
 	if got := r.VTInternalDropped["trace_id_idx"]; got != 800_000 {
 		t.Errorf("trace_id_idx counter = %d, want 800000", got)

@@ -235,3 +235,53 @@ func TestTenantAggregates_RaceConcurrentMutation(t *testing.T) {
 		}
 	}
 }
+
+func TestAlignedWindowStart(t *testing.T) {
+	const h = int64(time.Hour)
+	m := New("b", "")
+	m.AddFile("p0", FileInfo{Key: "a.parquet", RowCount: 10, MinTimeNs: 10 * h, MaxTimeNs: 11*h - 1})
+	m.AddFile("p1", FileInfo{Key: "b.parquet", RowCount: 10, MinTimeNs: 11 * h, MaxTimeNs: 12*h - 1})
+	// A day-tier file covering 0..24h chained behind: straddles a start at 11h30.
+	cases := []struct {
+		name       string
+		start, end int64
+		want       int64
+	}{
+		{"inside a file moves back to its first row", 10*h + h/2, 20 * h, 10 * h},
+		{"on a file boundary stays", 11 * h, 20 * h, 11 * h},
+		{"between files stays", 12*h + 5, 20 * h, 12*h + 5},
+		{"file starting after the end is ignored", 10*h + h/2, 10*h + 1, 10 * h},
+		{"zero start is unchanged", 0, 20 * h, 0},
+	}
+	for _, c := range cases {
+		if got := m.AlignedWindowStart(c.start, c.end); got != c.want {
+			t.Errorf("%s: got %d want %d", c.name, got, c.want)
+		}
+	}
+
+	// Chained straddles: moving back into the earlier file's range pulls in a
+	// coarser file that covers it.
+	m.AddFile("p2", FileInfo{Key: "day.parquet", RowCount: 100, MinTimeNs: 5 * h, MaxTimeNs: 10*h + 10})
+	if got := m.AlignedWindowStart(10*h+h/2, 20*h); got != 5*h {
+		t.Errorf("chained: got %d want %d", got, 5*h)
+	}
+}
+
+func TestRowsOfSegments(t *testing.T) {
+	m := New("b", "")
+	m.AddFile("p0", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-1.parquet", RowCount: 7, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p0", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-2.parquet", RowCount: 3, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p1", FileInfo{Key: "0/0/logs/bbbbbbbbbbbbbbbb-1.parquet", RowCount: 5, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p2", FileInfo{Key: "0/0/logs/plain.parquet", RowCount: 50, MinTimeNs: 100, MaxTimeNs: 200})
+	m.AddFile("p3", FileInfo{Key: "0/0/logs/aaaaaaaaaaaaaaaa-3.parquet", RowCount: 9, MinTimeNs: 1, MaxTimeNs: 2})
+
+	if got := m.RowsOfSegments(map[string]struct{}{"aaaaaaaaaaaaaaaa": {}}, 50, 300); got != 10 {
+		t.Errorf("one nonce, in window: got %d want 10", got)
+	}
+	if got := m.RowsOfSegments(map[string]struct{}{"aaaaaaaaaaaaaaaa": {}, "bbbbbbbbbbbbbbbb": {}}, 50, 300); got != 15 {
+		t.Errorf("two nonces: got %d want 15", got)
+	}
+	if got := m.RowsOfSegments(nil, 0, 0); got != 0 {
+		t.Errorf("no nonces: got %d want 0", got)
+	}
+}

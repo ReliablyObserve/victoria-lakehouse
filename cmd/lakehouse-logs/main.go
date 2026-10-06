@@ -1452,7 +1452,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	// LiveAggregate. Both queries answer the same question from
 	// different code paths so any drift is operationally meaningful.
 	if cfg.Stats.Enabled {
-		parityAPI := stats.NewAPI(stats.APIConfig{Manifest: store.Manifest(), Mode: "logs", Bucket: cfg.S3.Bucket})
+		parityAPI := stats.NewAPI(stats.APIConfig{Manifest: store.Manifest(), Buffer: store, Mode: "logs", Bucket: cfg.S3.Bucket})
 		// Use the configured listen address for the in-process VL loopback.
 		listenAddr := *listenAddrFlag
 		if cfg.ListenAddr() != "" {

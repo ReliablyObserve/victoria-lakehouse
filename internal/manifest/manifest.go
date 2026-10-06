@@ -1914,6 +1914,73 @@ func (m *Manifest) LiveAggregateWindow(startNs, endNs int64) LiveAggregate {
 	return agg
 }
 
+// AlignedWindowStart returns the earliest start s <= startNs such that no
+// file straddles it, i.e. no file has MinTimeNs < s <= MaxTimeNs, looking only
+// at files that start at or before endNs. A file-level aggregate over
+// [s, endNs] then counts exactly the rows a row-precise time filter over the
+// same window counts, whatever granularity the files have (hour partitions or
+// a coarser compaction tier): a file that straddles the requested start moves
+// the start back to the file's own first row instead of being counted whole
+// while the row filter counts part of it. Files with no recorded time range
+// (MinTimeNs == 0) never straddle. The result equals startNs when nothing
+// straddles; startNs <= 0 is returned unchanged.
+func (m *Manifest) AlignedWindowStart(startNs, endNs int64) int64 {
+	if startNs <= 0 {
+		return startNs
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s := startNs
+	for {
+		moved := false
+		for _, files := range m.files {
+			for _, fi := range files {
+				if fi.MinTimeNs <= 0 || fi.MinTimeNs >= s || fi.MaxTimeNs < s {
+					continue
+				}
+				if endNs > 0 && fi.MinTimeNs > endNs {
+					continue
+				}
+				s = fi.MinTimeNs
+				moved = true
+			}
+		}
+		if !moved {
+			return s
+		}
+	}
+}
+
+// RowsOfSegments sums RowCount of the files whose key carries one of the
+// given insert-buffer segment nonces (SegmentNonceOfKey) and whose time range
+// overlaps [startNs, endNs] (same overlap rule as LiveAggregateWindow). These
+// are the committed objects of segments the insert buffer still serves itself,
+// so a query counts their rows from the buffer, not from the objects.
+func (m *Manifest) RowsOfSegments(nonces map[string]struct{}, startNs, endNs int64) int64 {
+	if len(nonces) == 0 {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var rows int64
+	for _, files := range m.files {
+		for _, fi := range files {
+			if startNs > 0 && fi.MaxTimeNs > 0 && fi.MaxTimeNs < startNs {
+				continue
+			}
+			if endNs > 0 && fi.MinTimeNs > 0 && fi.MinTimeNs > endNs {
+				continue
+			}
+			if n := SegmentNonceOfKey(fi.Key); n != "" {
+				if _, ok := nonces[n]; ok {
+					rows += fi.RowCount
+				}
+			}
+		}
+	}
+	return rows
+}
+
 // findFileLocked returns the slice + index for the file identified by
 // key, using the per-key partition index built alongside m.files. Returns
 // (nil, -1) when key is unknown.

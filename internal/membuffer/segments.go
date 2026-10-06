@@ -540,6 +540,31 @@ func (p *Snapshot) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage
 	return nil
 }
 
+// RowsInWindow counts the rows with _time in [start, end] of every tenant in
+// every segment of the snapshot, with the upstream engine (the same rows a
+// `* | stats count()` over the buffer reads).
+func (p *Snapshot) RowsInWindow(ctx context.Context, start, end int64) (int64, error) {
+	ids, err := p.GetTenantIDs(ctx, start, end)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, id := range ids {
+		q, err := logstorage.ParseQueryAtTimestamp("*", end)
+		if err != nil {
+			return 0, err
+		}
+		q = q.CloneWithTimeFilter(end, start, end)
+		var n atomic.Int64
+		qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, q, false, nil)
+		if err := p.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) { n.Add(int64(db.RowsCount())) }); err != nil {
+			return 0, err
+		}
+		total += n.Load()
+	}
+	return total, nil
+}
+
 // GetTenantIDs returns the tenants with rows in [start, end] in any segment of
 // the snapshot, sorted.
 func (p *Snapshot) GetTenantIDs(ctx context.Context, start, end int64) ([]logstorage.TenantID, error) {

@@ -17,8 +17,11 @@ import (
 
 // APIConfig holds all dependencies for the stats API.
 type APIConfig struct {
-	Registry        *TenantRegistry
-	Manifest        *manifest.Manifest
+	Registry *TenantRegistry
+	Manifest *manifest.Manifest
+	// Buffer reports the insert buffer's unflushed rows for the admin parity
+	// check (parquets3.Storage). Nil: the buffer term is reported as 0.
+	Buffer          BufferSource
 	CostCalc        *CostCalculator
 	ClassTracker    *StorageClassTracker
 	LabelIndex      *cache.LabelIndex

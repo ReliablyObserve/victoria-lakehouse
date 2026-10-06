@@ -1217,7 +1217,7 @@ Replacing VT's internal high-cardinality index rows with a footer index keeps co
 
 VT's ingest pipeline emits internal rows alongside spans. Storing them as cold spans would create degenerate rows with empty `trace_id`; dropping them silently would make row counts disagree with hot VT for unexplained reasons. They are classified, counted per kind, and subtracted from expected parity drift.
 
-- Verification: tests: `lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_DropsTraceIDIndexRow`, `lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_KeepsServiceGraphRow`, `internal/stats/parity_internal_test.go#TestParity_VTInternalDropped_AccountedInExpectedDrift`, `internal/storage/parquets3/drop_trace_shaped_rows_test.go#TestDropTraceShapedRows_DropsTraceStreams`, `internal/storage/streamshape_test.go#TestIsTraceShapedStream`
+- Verification: tests: `lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_DropsTraceIDIndexRow`, `lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_KeepsServiceGraphRow`, `internal/stats/parity_internal_test.go#TestParity_VTInternalDropped_ReportedNotSubtracted`, `internal/stats/parity_scope_test.go#TestParity_TracesBufferIndexRowsAreInTheBufferTerm`, `internal/storage/parquets3/drop_trace_shaped_rows_test.go#TestDropTraceShapedRows_DropsTraceStreams`, `internal/storage/streamshape_test.go#TestIsTraceShapedStream`
 - Docs: `docs/parity-and-gaps.md`
 
 ### ✅ VictoriaTraces trace explorer UI (VTUI)

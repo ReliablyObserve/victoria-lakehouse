@@ -167,7 +167,8 @@
   tests:
     - lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_DropsTraceIDIndexRow
     - lakehouse-traces/internal/vlstorage/insert_test.go#TestVTInsertAdapter_KeepsServiceGraphRow
-    - internal/stats/parity_internal_test.go#TestParity_VTInternalDropped_AccountedInExpectedDrift
+    - internal/stats/parity_internal_test.go#TestParity_VTInternalDropped_ReportedNotSubtracted
+    - internal/stats/parity_scope_test.go#TestParity_TracesBufferIndexRowsAreInTheBufferTerm
     - internal/storage/parquets3/drop_trace_shaped_rows_test.go#TestDropTraceShapedRows_DropsTraceStreams
     - internal/storage/streamshape_test.go#TestIsTraceShapedStream
   docs:

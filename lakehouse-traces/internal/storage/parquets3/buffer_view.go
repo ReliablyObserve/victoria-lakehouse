@@ -14,6 +14,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
@@ -218,4 +219,26 @@ func (s *Storage) bufferTenantAccountIDs(seen map[uint32]struct{}) {
 	for _, t := range ids {
 		seen[t.AccountID] = struct{}{}
 	}
+}
+
+// BufferedRows reports the insert buffer as the select path sees it for the
+// admin parity check: every tenant's rows with _time in [startNs, endNs] held
+// by the live segments (the co-located ones, or every insert peer's through the
+// buffer bridge), and the nonces of those segments. A query counts these rows
+// from the buffer and skips the objects of the same nonces, so the caller
+// subtracts the manifest rows of those objects to get the rows the manifest
+// does not hold. A node with no buffer returns 0 and no nonces.
+func (s *Storage) BufferedRows(ctx context.Context, startNs, endNs int64) (int64, map[string]struct{}, error) {
+	if s.useLocalBuffer() {
+		snap := s.localBuffer.Snapshot()
+		defer snap.Release()
+		n, err := snap.RowsInWindow(ctx, startNs, endNs)
+		return n, snap.Nonces(), err
+	}
+	if s.bufferBridge == nil {
+		return 0, nil, nil
+	}
+	v := s.openBufferView(storage.WithGlobalRead(ctx), startNs, endNs, nil)
+	defer v.release()
+	return int64(len(v.logRows) + len(v.traceRows)), v.nonces, nil
 }

@@ -7,7 +7,12 @@ Track what the cold tier (Lakehouse-stored Parquet) does, doesn't, and only-appr
 
 ## Parity endpoint
 
-`GET /lakehouse/api/v1/admin/parity[?window=24h]` runs the embedded VL stats path (`* | stats count() as n` with an embedded `_time:[start, end]` filter) and the manifest's `LiveAggregateWindow` for the same window. Both are answering "how many rows do we hold over this window?" from different code paths.
+`GET /lakehouse/api/v1/admin/parity[?window=24h]` compares two views of "how many rows do we hold over this window?", for **every tenant** and for the same window:
+
+- the **VL view**: `* | stats count() as n` with an embedded `_time:[start, end]` filter, run through the process's own select path. The request carries the caller's global-read credential, so the count covers every tenant and includes rows only the insert buffer holds;
+- the **manifest view**: `LiveAggregateWindow` over the same window, the per-file row counts of every tenant's files.
+
+The window start is **aligned**: if a file straddles the requested start (hour partitions, or a coarser compaction tier), the start moves back to that file's first row, so the file-level sum equals the row-precise count. The reported `start_unix_nano` is the aligned start; `requested_start_unix_nano` is what was asked for.
 
 Response shape:
 
@@ -15,36 +20,46 @@ Response shape:
 {
   "start_unix_nano": ...,
   "end_unix_nano": ...,
+  "requested_start_unix_nano": ...,
+  "scope": "all_tenants",
   "vl_rows": <int>,
   "manifest_rows": <int>,
   "manifest_bytes": <int>,
   "manifest_files": <int>,
   "rows_delta": <vl - manifest>,
   "rows_delta_pct": <%>,
+  "buffer_rows": <int>,
+  "buffer_object_rows": <int>,
+  "buffer_unflushed_rows": <buffer_rows - buffer_object_rows>,
   "vt_internal_dropped": {"trace_id_idx": <n>, "service_graph": <n>},
-  "expected_drift": <int>,
+  "expected_drift": <buffer_unflushed_rows>,
   "verified_drift": <rows_delta - expected_drift>,
   "verified_drift_pct": <%>,
+  "sample_attempts": <1..3>,
+  "unstable_sample": <bool, only when true>,
   "per_tenant_supported": false,
   "per_tenant_note": "..."
 }
 ```
 
-`verified_drift` is the drift after accounting for VT-internal index rows the writer drops at insert time (`metrics.VTInternalRowsDropped`). Trace-mode drift is dominated by these dropped rows; subtracting them gives the operationally meaningful residual.
+`buffer_rows` is what the live insert-buffer segments hold in the window (every tenant; with insert peers, every peer's, through the buffer bridge). A query counts those rows from the buffer and skips the objects the same segments already committed, so `buffer_object_rows` (the manifest rows of those committed objects) cancels out and `buffer_unflushed_rows` is the rows the manifest does not hold yet. On traces it also contains the VT-internal index rows (`trace_id_idx`) the buffer holds and the flush drops. `verified_drift` is what remains: rows ingested or flushed between the endpoint's reads, or a real divergence. `vt_internal_dropped` is the process-lifetime drop counter (all tenants, all time), reported for information only; it is not window-correct and is not part of the expected drift. The three reads are repeated (up to 3 times) when the manifest changes while they run, as a flush or compaction commit moves rows from the buffer term to the manifest.
 
-Auth-gated by `X-Lakehouse-Global-Read` (same surface as `/admin/tenant/migrate`).
+Auth-gated by `X-Lakehouse-Global-Read` (same surface as `/admin/tenant/migrate`). Per-tenant rows are not reported: the comparison is the total over every tenant.
 
 ### Expected drift behavior
 
-| Signal | Typical `rows_delta_pct` | Typical `verified_drift_pct` | What dominates the residual |
-|---|---|---|---|
-| Logs | 0–2% | 0–2% | Manifest-window includes whole files that straddle the boundary; VL filters precisely. |
-| Traces | 90–300% (raw) | 5–30% (after subtracting dropped) | Spans cluster within a trace duration; trace files span wider [Min, Max] than the window. |
+`verified_drift` should be near zero on both signals. The e2e gate (`TestParity_VLViewVsManifest`) asserts `|vl_rows - manifest_rows - buffer_unflushed_rows|` is within 0.5% of `vl_rows` (50 rows minimum) for logs and traces alike; one lost file is far above it.
 
-If `verified_drift_pct` jumps significantly above these bands, investigate — most likely:
-- writer stopped dropping VT-internal rows (regression)
+| Signal | `rows_delta` | `verified_drift` | What explains the rest |
+|---|---|---|---|
+| Logs | the unflushed buffer rows | ~0 | rows ingested between the reads |
+| Traces | the unflushed buffer rows, including buffered `trace_id_idx` rows | ~0 | rows ingested between the reads |
+
+If `verified_drift` is not near zero, investigate — most likely:
+- a file in the manifest that VL cannot read (negative drift), or an object missing from the manifest (positive)
 - manifest's RefreshFromS3 missed a prefix (tenant-isolation routing bug)
 - compaction wrote outputs to a different prefix than its inputs
+- the loopback query was refused (`vl_error`) or the global-read credential is not configured, so VL counted tenant 0:0 only
 
 ## Intentional differences
 
@@ -89,7 +104,7 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 | Feature | Status | Severity | Notes |
 |---|---|---|---|
 | **`pipe top`, `pipe unique`, `pipe unroll`** | Untested at scale | Risk-only | The vlselect dispatch overlay forwards these to our cold-tier reader; correctness assumed but not exhaustively tested. |
-| **Sub-second `_time` precision on aggregations** | Hour-bucket precision in cold | Metric-only | Cold partitions are hour-granular; `_time:[<sec1>, <sec2>]` falls back to hour-bucket overlap so sub-hour windowed counts include some adjacent-hour rows. Drives the small parity residual on logs (~2%). |
+| **Sub-second `_time` precision on aggregations** | Hour-bucket precision in cold | Metric-only | Cold partitions are hour-granular; `_time:[<sec1>, <sec2>]` falls back to hour-bucket overlap so sub-hour windowed counts include some adjacent-hour rows. Hot-vs-cold window counts can differ at the window edges. The admin parity endpoint is not affected: it aligns its window to the files. |
 
 ### Cross-cutting
 

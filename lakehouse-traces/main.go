@@ -1422,7 +1422,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	}
 
 	if cfg.Stats.Enabled {
-		parityAPI := stats.NewAPI(stats.APIConfig{Manifest: store.Manifest(), Mode: "traces", Bucket: cfg.S3.Bucket})
+		parityAPI := stats.NewAPI(stats.APIConfig{Manifest: store.Manifest(), Buffer: store, Mode: "traces", Bucket: cfg.S3.Bucket})
 		listenAddrLocal := *listenAddrFlag
 		if cfg.ListenAddr() != "" {
 			listenAddrLocal = cfg.ListenAddr()

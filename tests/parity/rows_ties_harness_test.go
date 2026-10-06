@@ -85,7 +85,11 @@ func TestHarness_TieGroupQuery(t *testing.T) {
 		{`service.name:in(* | limit 5 | fields service.name) | limit 3`, `service.name:in(* | limit 5 | fields service.name)`, true},
 		// A sort key other than _time, or an ordering this file cannot undo:
 		// the tie rule does not apply.
-		{`* | sort by(level, _time) | limit 10`, ``, false},
+		{`* | sort by(level, _time) | limit 10`, `* | sort by(level, _time)`, true},
+		{`* | sort by(level desc, _time desc) desc | limit 10`, `* | sort by(level desc, _time desc) desc`, true},
+		{`* | sort by(level) | limit 10`, ``, false},
+		{`* | sort by(level, _time) | sort by(_time) | limit 10`, ``, false},
+		{`* | sort by(level, len(_msg), _time) | limit 10`, ``, false},
 		{`* | sort by(_time) desc limit 5`, ``, false},
 		{`* | sort`, ``, false},
 		{`* | top 5 by(service.name)`, ``, false},
@@ -96,7 +100,7 @@ func TestHarness_TieGroupQuery(t *testing.T) {
 		{`* | filter (a or b`, ``, false},
 	}
 	for _, tc := range cases {
-		got, ok := tieGroupQuery(tc.in)
+		got, _, ok := tieGroupQuery(tc.in)
 		if ok != tc.ok || got != tc.want {
 			t.Errorf("tieGroupQuery(%q) = %q, %v; want %q, %v", tc.in, got, ok, tc.want, tc.ok)
 		}
@@ -136,8 +140,8 @@ func TestHarness_TieGroupFetcher(t *testing.T) {
 	if params.Get("limit") != "5" || params.Get("start") != "1" {
 		t.Errorf("fetcher modified the caller's params: %v", params)
 	}
-	if newTieGroupFetcher(srv, srv, "/select/logsql/query", url.Values{"query": {`* | sort by(level, _time) | limit 3`}}) != nil {
-		t.Error("a fetcher was built for a case with a secondary sort key")
+	if newTieGroupFetcher(srv, srv, "/select/logsql/query", url.Values{"query": {`* | sort by(level) | limit 3`}}) != nil {
+		t.Error("a fetcher was built for a case whose sort has no _time key")
 	}
 }
 
@@ -258,7 +262,7 @@ func TestHarness_TruncatedTieGroup(t *testing.T) {
 			if tc.ties != nil {
 				ties = tc.ties.fetch
 			}
-			problems, note := judgeRows(t, parseNDJSON(tc.ref.Body), parseNDJSON(tc.sut.Body), nil, ties)
+			problems, note := judgeRows(t, parseNDJSON(tc.ref.Body), parseNDJSON(tc.sut.Body), nil, ties, nil)
 			if accepted := len(problems) == 0; accepted != tc.accept {
 				t.Fatalf("accepted = %v (%s; %v), want %v", accepted, note, problems, tc.accept)
 			}
@@ -338,4 +342,95 @@ func TestHarness_TieNeedsEqualDifferences(t *testing.T) {
 	} else if !strings.Contains(why, "equal number") {
 		t.Errorf("reason = %q", why)
 	}
+}
+
+// sortTieRow renders a row with a chosen level, for multi-key sort cases.
+func sortTieRow(ts, msg, level string) string {
+	return fmt.Sprintf(`{"_time":%q,"_msg":%q,"level":%q,"service.name":"svc"}`, ts, msg, level)
+}
+
+// TestHarness_MultiKeySortTie is run 37450718189: `* | sort by(level, _time) |
+// limit 10` cut a tie on the FULL key (level=DEBUG, one _time) and each tier
+// kept a different member. The tie rule must accept that and nothing else.
+func TestHarness_MultiKeySortTie(t *testing.T) {
+	const tie = "2026-10-05T10:42:03.943305412Z"
+	fields := []string{"level", "_time"}
+	top := []string{
+		sortTieRow("2026-10-05T10:00:00Z", "d1", "DEBUG"),
+		sortTieRow("2026-10-05T10:10:00Z", "d2", "DEBUG"),
+	}
+	tiedX := sortTieRow(tie, "x", "DEBUG")
+	tiedY := sortTieRow(tie, "y", "DEBUG")
+	tiedZ := sortTieRow(tie, "z", "DEBUG")
+	// Same _time, other level: a different tie group, never an excuse.
+	otherLevel := sortTieRow(tie, "x", "ERROR")
+	ans := func(last ...string) fetchResult { return body(append(append([]string(nil), top...), last...)...) }
+	group := body(tiedX, tiedY, tiedZ)
+
+	cases := []struct {
+		name     string
+		ref, sut fetchResult
+		ties     *fixedTies
+		accept   bool
+		why      string
+	}{
+		{name: "tie on the full key cut by the limit", ref: ans(tiedX), sut: ans(tiedY),
+			ties: &fixedTies{ref: group, sut: group}, accept: true},
+		{name: "same _time but another level is not a tie", ref: ans(tiedX), sut: ans(otherLevel),
+			ties: &fixedTies{ref: group, sut: group}, why: "share one value on every sort key"},
+		{name: "the group differs between tiers", ref: ans(tiedX), sut: ans(tiedY),
+			ties: &fixedTies{ref: group, sut: body(tiedX, tiedY)}, why: "full group differs"},
+		{name: "the group fits in the answers: nothing was cut", ref: ans(tiedX), sut: ans(tiedY),
+			ties: &fixedTies{ref: body(tiedX), sut: body(tiedX)}, why: "no limit cut it"},
+		{name: "re-read failed", ref: ans(tiedX), sut: ans(tiedY),
+			ties: &fixedTies{ref: fetchResult{StatusCode: 500}, sut: group}, why: "status ref=500"},
+		{name: "a row ordered wrongly on the first key", ref: ans(tiedX), sut: ans(sortTieRow("2026-10-05T10:20:00Z", "w", "DEBUG")),
+			ties: &fixedTies{ref: group, sut: group}, why: "share one value on every sort key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			problems, note := judgeRows(t, parseNDJSON(tc.ref.Body), parseNDJSON(tc.sut.Body), nil, tc.ties.fetch, fields)
+			if accepted := len(problems) == 0; accepted != tc.accept {
+				t.Fatalf("accepted = %v (%s; %v), want %v", accepted, note, problems, tc.accept)
+			}
+			if !tc.accept && !strings.Contains(note, tc.why) {
+				t.Errorf("note = %q, want one containing %q", note, tc.why)
+			}
+		})
+	}
+
+	// Without the query's sort keys the same answers stay a mismatch under the
+	// _time-only rule when levels differ at the edge.
+	if problems, _ := judgeRows(t, parseNDJSON(ans(tiedX).Body), parseNDJSON(ans(otherLevel).Body), nil, (&fixedTies{ref: group, sut: group}).fetch, nil); len(problems) == 0 {
+		t.Error("rows that differ on level were accepted as a _time tie")
+	}
+	if got := tieSortFields(`* | sort by(level, _time) | limit 10`); !reflect.DeepEqual(got, fields) {
+		t.Errorf("tieSortFields = %v, want %v", got, fields)
+	}
+	if got := tieSortFields(`* | sort by(level) | limit 10`); got != nil {
+		t.Errorf("tieSortFields without _time = %v, want nil", got)
+	}
+}
+
+// TestHarness_RunParityAcceptsAMultiKeyTieCutByTheLimit drives the real path
+// for the multiple_sort_keys case: RunParity derives the sort keys from the
+// query, re-reads the group over HTTP and accepts the tie on the full key.
+func TestHarness_RunParityAcceptsAMultiKeyTieCutByTheLimit(t *testing.T) {
+	const tie = "2026-10-05T10:42:03.943305412Z"
+	first := sortTieRow("2026-10-05T10:00:00Z", "d1", "DEBUG")
+	x, y := sortTieRow(tie, "x", "DEBUG"), sortTieRow(tie, "y", "DEBUG")
+	serve := func(kept string) string {
+		return newRecordingServer(t, func(q url.Values) string {
+			if strings.Contains(q.Get("query"), "limit 10") {
+				return string(body(first, kept).Body)
+			}
+			return string(body(x, y).Body)
+		})
+	}
+	RunParity(t, serve(x), serve(y), []ParityCase{{
+		Name:     "multiple_sort_keys",
+		Endpoint: "/select/logsql/query",
+		Params:   map[string]string{"query": `* | sort by(level, _time) | limit 10`, "limit": "10"},
+		Compare:  RowsMatch,
+	}})
 }
