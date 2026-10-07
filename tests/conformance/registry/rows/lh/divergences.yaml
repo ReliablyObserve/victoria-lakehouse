@@ -319,9 +319,11 @@
   refs:
     tests:
       - tests/parity/traces_events_links_test.go#TestParity_Traces_EventsLinksScopeAttrs
+      - tests/parity/traces_events_links_layers_test.go#TestParity_Traces_EventsLinksLayers
       - lakehouse-traces/internal/storage/parquets3/flush_events_links_e2e_test.go#TestFlush_SpanEventsLinksScopeAttrs_SurviveToCold
       - lakehouse-traces/internal/storage/parquets3/flush_events_links_e2e_test.go#TestBridge_SpanEventsLinksScopeAttrs_SelectPodMatchesInsertPod
       - lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go#TestCold_EventsLinksScopeAttrs_RowsEqualHot
+      - lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go#TestCold_EventsLinks_ColumnsAreOrderedLikeUpstream
       - internal/compaction/events_links_test.go#TestCompactor_KeepsEventsLinksAndMergesWithOldFiles
       - internal/delete/events_links_test.go#TestRewriteFile_Traces_KeepsEventsLinksAndMatchesEventFields
   notes: >-
@@ -348,6 +350,7 @@
   refs:
     tests:
       - tests/parity/traces_events_links_test.go#TestParity_Traces_EventsLinksScopeAttrs
+      - tests/parity/traces_events_links_layers_test.go#TestParity_Traces_EventsLinksLayers
       - lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go#TestCold_EventsLinksScopeAttrs_RowsEqualHot
   notes: >-
     Tempo v1 (/select/tempo/api/traces/{traceID}) and v2 are compared by the same parity case: spans'
@@ -369,6 +372,7 @@
   refs:
     tests:
       - tests/parity/traces_events_links_test.go#TestParity_Traces_EventsLinksScopeAttrs
+      - tests/parity/traces_events_links_layers_test.go#TestParity_Traces_EventsLinksLayers
       - lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go#TestCold_EventsLinks_ProjectedQueries
       - lakehouse-traces/internal/vlstorage/events_links_test.go#TestDataBlockToTraceRows_KeepsEventsLinksAndScopeAttributes
   notes: >-
@@ -392,6 +396,7 @@
   refs:
     tests:
       - tests/parity/traces_events_links_test.go#TestParity_Traces_EventsLinksScopeAttrs
+      - tests/parity/traces_events_links_layers_test.go#TestParity_Traces_EventsLinksLayers
       - lakehouse-traces/internal/vlstorage/events_links_test.go#TestDataBlockToTraceRows_KeepsEventsLinksAndScopeAttributes
   notes: >-
     The scope name stays the scope_name field and the scope version the bare scope_version field (as
@@ -436,11 +441,13 @@
       - tests/parity/traces_events_links_test.go#TestParity_Traces_EventsLinksScopeAttrs
       - lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go#TestCold_EventsLinks_FieldValues
   notes: >-
-    Known difference that is not new: hot also lists the empty value (the spans without the field) with its
-    hits; the cold tier omits that bucket for every optional field. field_names for event, link and scope
-    names follows B2 (docs/parity-and-gaps.md): the cold tier lists the names found in a sample of one row
-    group per file, not every name hot lists. Values of a map attribute (span_attr:*, scope_attr:*) are not
-    enumerable on cold at all today.
+    Event and link fields answer like hot. Known differences that are not new: hot also lists the empty
+    value (the spans without the field) with its hits and the cold tier omits that bucket for every optional
+    field (#435); field_values over a MAP attribute (span_attr:*, resource_attr:*, scope_attr:*) currently
+    returns wrong values on cold in both binaries (another map's values or keys; filters on map attributes
+    return no rows), so this row does not cover it (#433, probably the same bug as #280). field_names for
+    event, link and scope names follows B2 (docs/parity-and-gaps.md): the cold tier lists the names found in
+    a sample of one row group per file, not every name hot lists.
 
 - id: lh.cold.instrumentation_scope_search_matches_hot_traces
   title: "TraceQL instrumentation.* filters find the same traces on cold as on hot"
@@ -461,3 +468,212 @@
   notes: >-
     VictoriaTraces v0.12 never matches `event.` / `link.` TraceQL filters (the storage appends the index to
     the field name), on hot as on cold, so only the instrumentation scope has a search row.
+
+- id: lh.compaction.fence_skips_unknown_columns_logs
+  title: "LH compaction leaves a logs object with a column it does not model alone — its rows stay readable, the column is not dropped"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs:
+    tests:
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_SkipsUnknownColumnObjects
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_NothingToMergeLeavesEverything
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_KnownSchemaMergesAsBefore
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_PropertyNoUnknownInputIsRewritten
+      - internal/schema/column_fence_test.go#TestUnknownColumns
+      - internal/schema/column_fence_test.go#TestUnknownColumns_RetiredColumnsAreAllowed
+      - internal/schema/column_fence_test.go#TestFenceLog
+
+  notes: >-
+    Forward fence (#409 review): before merging an input, compaction compares its top-level Parquet columns with the
+    columns schema.LogRow models (plus schema.RetiredColumns, empty today). An object with an unknown column is
+    skipped: the other inputs are merged, the object stays in place and in the manifest, and
+    lakehouse_compaction_skipped_unknown_columns_total{signal="logs",op="compact"} counts it (logged once per
+    object). Protects every future column addition; it cannot protect the #430 transition itself, because older
+    pods have no fence (docs/operations.md, Upgrading to the span events and links columns). The conformance
+    runner does not execute the row yet (pending).
+
+
+- id: lh.compaction.fence_skips_unknown_columns_traces
+  title: "LH compaction leaves a traces object with a column it does not model alone — its spans stay readable, the column is not dropped"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs:
+    tests:
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_SkipsUnknownColumnObjects
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_NothingToMergeLeavesEverything
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_KnownSchemaMergesAsBefore
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_PropertyNoUnknownInputIsRewritten
+      - internal/schema/column_fence_test.go#TestUnknownColumns
+      - internal/schema/column_fence_test.go#TestUnknownColumns_RetiredColumnsAreAllowed
+      - internal/schema/column_fence_test.go#TestFenceLog
+
+  notes: >-
+    Forward fence (#409 review): before merging an input, compaction compares its top-level Parquet columns with the
+    columns schema.TraceRow models (plus schema.RetiredColumns, empty today). An object with an unknown column is
+    skipped: the other inputs are merged, the object stays in place and in the manifest, and
+    lakehouse_compaction_skipped_unknown_columns_total{signal="traces",op="compact"} counts it (logged once per
+    object). Protects every future column addition; it cannot protect the #430 transition itself, because older
+    pods have no fence (docs/operations.md, Upgrading to the span events and links columns). The conformance
+    runner does not execute the row yet (pending).
+
+
+- id: lh.delete.fence_unknown_columns_logs
+  title: "LH delete rewrite refuses a logs object with a column it does not model — the object and the pending tombstone stay, nothing is dropped"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs:
+    tests:
+      - internal/delete/column_fence_test.go#TestRewriter_Fence_UnknownColumnsAreNotRewritten
+      - internal/delete/column_fence_test.go#TestRewriter_Fence_KnownSchemaRewritesAsBefore
+      - internal/delete/column_fence_test.go#TestRewriter_Fence_PropertyNoUnknownInputIsRewritten
+
+  notes: >-
+    Forward fence (#409 review): Rewriter.Prepare fails with delete.ErrUnknownColumns for an object whose top-level
+    columns schema.LogRow does not model, so no replacement is written, the source is untouched and the rewrite
+    scheduler keeps the tombstone pending (its rows stay hidden by the tombstone). Counted in
+    lakehouse_compaction_skipped_unknown_columns_total{signal="logs",op="delete_rewrite"}. The conformance runner
+    does not execute the row yet (pending).
+
+
+- id: lh.delete.fence_unknown_columns_traces
+  title: "LH delete rewrite refuses a traces object with a column it does not model — the object and the pending tombstone stay, nothing is dropped"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs:
+    tests:
+      - internal/delete/column_fence_test.go#TestRewriter_Fence_UnknownColumnsAreNotRewritten
+      - internal/delete/column_fence_test.go#TestRewriter_Fence_KnownSchemaRewritesAsBefore
+      - internal/delete/column_fence_test.go#TestRewriter_Fence_PropertyNoUnknownInputIsRewritten
+
+  notes: >-
+    Forward fence (#409 review): Rewriter.Prepare fails with delete.ErrUnknownColumns for an object whose top-level
+    columns schema.TraceRow does not model, so no replacement is written, the source is untouched and the rewrite
+    scheduler keeps the tombstone pending (its rows stay hidden by the tombstone). Counted in
+    lakehouse_compaction_skipped_unknown_columns_total{signal="traces",op="delete_rewrite"}. The conformance runner
+    does not execute the row yet (pending).
+
+
+- id: lh.cold.trace_events_layers_match_hot_traces
+  title: "Span events, links and scope attributes of spans written by the test match hot on every layer and tenant form — LogsQL, Jaeger, Tempo v1/v2"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  request: { method: GET, path: "/select/jaeger/api/traces/{{seed.trace_id}}" }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/parity/traces_events_links_layers_test.go#TestParity_Traces_EventsLinksLayers
+  notes: >-
+    Lock for #409. The case writes its own spans to hot VictoriaTraces and to Lakehouse for two numeric
+    tenants (AccountID only, AccountID with a ProjectID): events and links with every OTLP attribute type,
+    empty and unicode values, a 64 KiB value, 40 events on one span, duplicate event names, links with trace
+    state, flags and attributes, scope attributes. Exact comparison of the event/link/scope fields of the
+    LogsQL rows, Jaeger logs/references/scope tags and Tempo events/links/scopes, on three layers: buffer,
+    Parquet only (after the buffer flushed) and compacted (POST /lakehouse/compaction/recompact over two
+    files per tenant). No restart layer (the parity stack has no restart step; the restart read is pinned
+    by the traces flush end-to-end test) and no string tenant aliases (opt-in, not configured there).
+
+- id: lh.cold.span_events_links_roundtrip_property
+  title: "Span events and links survive the JSON column, Parquet and decoding for random inputs"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "span_id:*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - internal/schema/traceextras_test.go#FuzzSpanSubFields
+      - internal/schema/traceextras_test.go#TestSpanSubFields_PropertyRoundTripThroughParquet
+  notes: >-
+    Lock for #409: random event and link sub-fields (indexed groups with gaps and non-numeric suffixes,
+    attribute keys with colons and a leading "$", unicode, values up to 128 KiB, up to 300 fields) collect,
+    encode, write to Parquet, read back and decode to exactly the input; the stored bytes do not depend on
+    the order the fields arrive in (the property found that non-numeric group suffixes were ordered by
+    arrival; now by suffix text); a span without extras has both columns NULL. Invalid UTF-8 is the one
+    known difference (#434).
+
+- id: lh.cold.logs_scalar_after_map_field_values
+  title: "LH cold field_values and field_names read a scalar column that follows MAP columns from its own chunk (logs)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "level", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - internal/storage/parquets3/leaf_index_test.go#TestScanProjectedFieldValues_ScalarAfterMapsIsIndexedByLeaf
+      - internal/storage/parquets3/leaf_index_test.go#TestAccumulateFieldHits_ScalarAfterMapsIsIndexedByLeaf
+  notes: >-
+    A MAP column is one top-level column but two leaf chunks, so a scalar column after a map sits at a later
+    chunk than its position among the top-level columns. The logs schema keeps its maps last today, so this
+    guards the schema against a column added after them; the fixture puts the maps first. The traces
+    binary already had the fix (#409). field_values over the map attributes themselves is #433.
+
+- id: lh.cold.jaeger_refs_follow_span_links
+  title: "Jaeger trace detail: at most one CHILD_OF reference per span, and FOLLOWS_FROM references equal the span's link fields"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/traces/ }
+  request: { method: GET, path: "/select/jaeger/api/traces/{{seed.trace_id}}" }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/e2e/traces_jaeger_test.go#TestJaeger_TraceDetail_ParentRefs
+  notes: >-
+    Hot VictoriaTraces v0.12 maps the parent to CHILD_OF and every span link to FOLLOWS_FROM
+    (app/vtselect/traces/jaeger/model.go). The e2e case checks the shape (32-hex trace and 16-hex span IDs, no
+    other reference type) and that the FOLLOWS_FROM set equals the link:link_trace_id:N / link:link_span_id:N
+    pairs of the span's LogsQL row.
