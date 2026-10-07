@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must be an exact-equivalent row naming a `tests/parity` function the PR added or modified, the parity
   allowlist cannot be moved or deleted, and the exempt label must post-date the last push. CI runs the gate
   from the merge base, so a PR cannot weaken the gate that judges it.
+- **A release-metadata PR may carry the regenerated feature catalog.** A feature that still has an
+  `[Unreleased]` bullet is named "the release after vX" in `docs/features.md`, so cutting a release renames
+  it. The changelog gate and the registry gate now accept `docs/features.md` in a release-metadata PR when
+  its diff is version naming only (`since:` / `Changelog:` lines), the new version heading may sit below
+  Unreleased bullets merged in from main, bullets may move between Unreleased and the newest version
+  sections, and the auto-release workflow regenerates the file.
+- **`[skip release]` in a squash-merged PR title is honoured.** GitHub's default squash subject for a one-commit PR
+  is the commit subject, so the marker in the title alone was lost (it cut v0.146.4). The auto-release workflow now
+  also reads the merged PR's title and, if it cannot (API error), does not release and asks for a manual run
+  (`workflow_dispatch`, new). The loki-vl-proxy bump's probe commit carries the marker itself.
 
 ## [0.146.5] - 2026-10-07
 
