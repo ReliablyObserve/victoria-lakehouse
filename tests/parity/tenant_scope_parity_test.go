@@ -215,14 +215,14 @@ type tenantSummary struct {
 
 // requireSeededTenants returns the tenants the cold traces manifest lists and
 // fails when there are fewer than two, minus the tenants that tests own for the
-// data they write themselves (latencyProbeAccount): those are not seeded, and
+// data they write themselves (latencyProbeAccount, parityTracesAccount): those are not seeded, and
 // the tests that iterate the list compare against a reference the seed built.
 func requireSeededTenants(t *testing.T) []tenantSummary {
 	t.Helper()
 	all := requireAllTenants(t)
 	seeded := make([]tenantSummary, 0, len(all))
 	for _, te := range all {
-		if te.AccountID == latencyProbeAccount || isEventsLinksTenant(te.AccountID) {
+		if te.AccountID == latencyProbeAccount || te.AccountID == parityTracesAccount || isEventsLinksTenant(te.AccountID) {
 			continue
 		}
 		seeded = append(seeded, te)

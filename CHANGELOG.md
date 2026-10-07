@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Putting a cold block's columns in upstream's order allocates less.** The ordering step used a heap-allocated
+  sorter (512 B and one allocation per block, even for a block already in order); it now sorts 8-byte index pairs on the
+  stack and permutes the columns in place. Measured (Apple M5 Pro, `-count=10`, old and new binaries interleaved, one
+  8192-row block): blocks of up to 64 columns go from 560 B and 2 allocations (512 B and 1 when already ordered) to 0 B
+  and 0; at 100 columns 1456 B and 3 allocations to 896 B and 1 (1408 B and 2 to 896 B and 1 when ordered); at 300
+  columns 3.17 KiB to 2.63 KiB. Time is unchanged within noise from 30 columns up (dominated by scanning the values); a
+  5-column block takes about 80% less time. Both binaries.
+
 ## [0.146.6] - 2026-10-07
 
 ### Changed
