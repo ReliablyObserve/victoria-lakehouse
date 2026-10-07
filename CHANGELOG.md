@@ -32,26 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loki-vl-proxy bump's probe commit carries the marker itself; a product follow-up commit pushed on that sync PR would
   not release either, so such a PR needs its own title without the marker.
 
-## [0.146.5] - 2026-10-07
-
-### Added
-
-- **API data-proof metrics library.** Tooling only, no runtime change (`scripts/proof/`): pure functions that score a captured answer against hot VictoriaLogs/VictoriaTraces in percent per quality facet (row sets, fields, values, series, spans, order, truth), a verdict per request, a CLI table, and offline fixtures recorded from hot VL v1.53.0 and VT v0.12.0. The tie rule for a row limit that cuts a group of equal sort keys is checked against the Go implementation with shared vectors.
-
-## [0.146.4] - 2026-10-07
-
-### Changed
-
-- **Every product change and every new test must be covered in the conformance registry.** CI now
-  fails a PR that changes product code without a real content change under
-  `tests/conformance/registry/`, adds a `Test`/`Fuzz` function no registry row or feature references, or
-  leaves a reference to a removed test. Only the owner can exempt a PR (`registry-exempt` label plus a
-  `Registry: none — <reason>` body line); the gate verifies that an approver listed in
-  `.github/registry-exempt-approvers` applied the label. The Parity Tests job now runs on every pull
-  request and skips quickly when nothing parity-relevant changed. A parity-fix PR (allowlist entry removed, divergence resolved,
-  known-gap row flipped to pass) must ship a changed `tests/parity` test and an exact-json registry row
-  that references it, and no PR may add an allowlist entry or weaken an exact row.
-
 ### Fixed
 
 - **Span events, span links and instrumentation-scope attributes are no longer lost when spans reach Parquet (#409).**
@@ -85,6 +65,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid UTF-8 are stored reversibly (as a `{"$bytes":"<base64>"}` object) instead of being rewritten to U+FFFD, like hot
   VictoriaTraces keeps them (#434). `field_values` over a map attribute (`span_attr:*`, `scope_attr:*`) is not changed
   by this fix: it still returns wrong values on cold, as before (#433).
+
+## [0.146.5] - 2026-10-07
+
+### Added
+
+- **API data-proof metrics library.** Tooling only, no runtime change (`scripts/proof/`): pure functions that score a captured answer against hot VictoriaLogs/VictoriaTraces in percent per quality facet (row sets, fields, values, series, spans, order, truth), a verdict per request, a CLI table, and offline fixtures recorded from hot VL v1.53.0 and VT v0.12.0. The tie rule for a row limit that cuts a group of equal sort keys is checked against the Go implementation with shared vectors.
+
+## [0.146.4] - 2026-10-07
+
+### Changed
+
+- **Every product change and every new test must be covered in the conformance registry.** CI now
+  fails a PR that changes product code without a real content change under
+  `tests/conformance/registry/`, adds a `Test`/`Fuzz` function no registry row or feature references, or
+  leaves a reference to a removed test. Only the owner can exempt a PR (`registry-exempt` label plus a
+  `Registry: none — <reason>` body line); the gate verifies that an approver listed in
+  `.github/registry-exempt-approvers` applied the label. The Parity Tests job now runs on every pull
+  request and skips quickly when nothing parity-relevant changed. A parity-fix PR (allowlist entry removed, divergence resolved,
+  known-gap row flipped to pass) must ship a changed `tests/parity` test and an exact-json registry row
+  that references it, and no PR may add an allowlist entry or weaken an exact row.
 
 ## [0.146.3] - 2026-10-07
 
