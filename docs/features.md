@@ -1594,7 +1594,7 @@ Cold-query latency is a sum of many small object-store operations, which aggrega
 
 ### 🔧 API data-proof metrics
 
-`lh.feature.ops.api_data_proof` · status: in-progress · since: the release after v0.146.3 · surfaces: cli
+`lh.feature.ops.api_data_proof` · status: in-progress · since: the release after v0.146.4 · surfaces: cli
 
 **API data-proof metrics**: every compared API answer is scored in percent per quality facet against hot VictoriaLogs/VictoriaTraces — row sets, fields, values, series, spans, order, truth — with a verdict per request, so a fix or a regression shows as a number that cannot round up to 100.
 
@@ -1602,7 +1602,7 @@ A difference that rounds to 100% is not a result. The metrics library scores a r
 
 - Verification: tests: `scripts/proof/tests/test_common_rows.py`, `scripts/proof/tests/test_series_values_traces.py`, `scripts/proof/tests/test_generic_verdict.py`, `scripts/proof/tests/test_cases_cli.py`, `scripts/proof/tests/test_review_round2.py`, `scripts/proof/tests/test_adversarial.py`, `scripts/proof/tests/test_ties.py`, `scripts/proof/tests/test_tiecut_golden.py`, `tests/parity/rows_ties_golden_test.go#TestTieCutGoldenQueries`, `tests/parity/rows_ties_golden_test.go#TestTieCutGoldenDecisions`
 - Docs: `scripts/proof/README.md`
-- Changelog: the release after `0.146.3`
+- Changelog: the release after `0.146.4`
 - Note: The metrics library scores recorded answers; nothing calls it from CI against a live stack yet. The Python tests run in the Proof metrics workflow (`.github/workflows/proof-metrics.yaml`); the Go golden test shares `tests/parity/testdata/tiecut_golden.json` with the Python tie-cut tests, so the two implementations of the tie rule cannot drift apart, and runs in the Parity Tests workflow with the rest of the parity package. The fixtures are labelled recorded, derived-from-recorded or synthetic in each case's `meta.json`; no Lakehouse answer is recorded yet.
 
 ### ✅ Validated benchmark harness
