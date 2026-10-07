@@ -114,19 +114,12 @@ func TestLoadDir_UnknownKeyRejected(t *testing.T) {
 }
 
 func TestLoadDir_MultiDocumentYAML(t *testing.T) {
-	reg, err := LoadDir("testdata/multidoc")
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
-	if len(reg.Rows) != 2 {
-		t.Fatalf("expected 2 rows from multi-document file, got %d", len(reg.Rows))
-	}
-	// First document should be native, second should be lh-addition
-	if reg.Rows[0].Origin != OriginNative {
-		t.Fatalf("rows[0]: expected native origin, got %s", reg.Rows[0].Origin)
-	}
-	if reg.Rows[1].Origin != OriginLHAddition {
-		t.Fatalf("rows[1]: expected lh-addition origin, got %s", reg.Rows[1].Origin)
+	// A second YAML document is read by this loader but was invisible to a gate that
+	// parsed only the first one (a differ row flipped to pass could hide there), so
+	// a registry file is one list and a second document is refused.
+	_, err := LoadDir("testdata/multidoc")
+	if err == nil || !strings.Contains(err.Error(), "more than one YAML document") {
+		t.Fatalf("LoadDir must refuse a multi-document file, got %v", err)
 	}
 }
 
