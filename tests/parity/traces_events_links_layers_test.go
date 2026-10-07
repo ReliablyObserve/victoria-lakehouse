@@ -274,17 +274,20 @@ func tenantFiles(t *testing.T, account, project string) int64 {
 }
 
 // recompactPartition merges the tenant files of the partition holding at with
-// POST /lakehouse/compaction/recompact and requires the 200 answer: the
-// partition is in the open hour with two files per tenant, below the level
-// thresholds and inside min_age, so the compaction schedule never merges it and
-// only this call does. It retries while the answer is 400 (the segment guard
-// has not released the objects yet) and fails if it never succeeds.
+// POST /lakehouse/compaction/recompact until every tenant of this case has one
+// object, and requires at least one 200 answer on the way. The partition is in
+// the open hour with two files per tenant, below the level thresholds and inside
+// min_age, so the compaction schedule never merges it and only this call does.
+// The call merges whatever the segment guard has released (other tenants' files
+// of the hour may go first, and it answers 400 when nothing is released yet), so
+// it is repeated; it fails if the tenants never end with one object each.
 func recompactPartition(t *testing.T, at time.Time) {
 	t.Helper()
 	partition := at.UTC().Format("dt=2006-01-02/hour=15")
 	body, _ := json.Marshal(map[string]any{"partition": partition})
-	deadline := time.Now().Add(180 * time.Second)
+	deadline := time.Now().Add(240 * time.Second)
 	var last string
+	ok200 := false
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(http.MethodPost, lhtBaseURL+"/lakehouse/compaction/recompact", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -292,21 +295,28 @@ func recompactPartition(t *testing.T, at time.Time) {
 		if err == nil {
 			b := readAllOrEmpty(resp)
 			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				for _, tn := range extrasTenants {
-					if n := tenantFiles(t, tn.account, tn.project); n != 1 {
-						t.Fatalf("after the recompact of %s tenant %s:%s has %d objects, want 1 (%s)", partition, tn.account, tn.project, n, b)
-					}
-				}
-				return
-			}
+			ok200 = ok200 || resp.StatusCode == http.StatusOK
 			last = fmt.Sprintf("%d %s", resp.StatusCode, b)
 		} else {
 			last = err.Error()
 		}
-		time.Sleep(3 * time.Second)
+		done := true
+		for _, tn := range extrasTenants {
+			if tenantFiles(t, tn.account, tn.project) != 1 {
+				done = false
+			}
+		}
+		if done {
+			if !ok200 {
+				t.Fatalf("the tenants have one object each but the recompact never answered 200 (last: %s): something else merged them", last)
+			}
+			return
+		}
+		time.Sleep(4 * time.Second)
 	}
-	t.Fatalf("recompact of %s never answered 200: %s", partition, last)
+	t.Fatalf("after the recompact of %s tenant %s has %d objects and tenant %s has %d, want 1 each (last answer: %s)", partition,
+		extrasTenants[0].account, tenantFiles(t, extrasTenants[0].account, extrasTenants[0].project),
+		extrasTenants[1].account, tenantFiles(t, extrasTenants[1].account, extrasTenants[1].project), last)
 }
 
 // openHourSpanTime returns the current time, which puts the spans in the open
