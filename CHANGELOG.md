@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **API data-proof metrics library.** Tooling only, no runtime change (`scripts/proof/`): pure functions that score a captured answer against hot VictoriaLogs/VictoriaTraces in percent per quality facet (row sets, fields, values, series, spans, order, truth), a verdict per request, a CLI table, and offline fixtures recorded from hot VL v1.53.0 and VT v0.12.0. The tie rule for a row limit that cuts a group of equal sort keys is checked against the Go implementation with shared vectors.
-
-## [0.146.4] - 2026-10-07
-
 ### Changed
 
 - **The registry gate is hardened against the bypasses found in review.** Product code now includes embedded
@@ -23,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must be an exact-equivalent row naming a `tests/parity` function the PR added or modified, the parity
   allowlist cannot be moved or deleted, and the exempt label must post-date the last push. CI runs the gate
   from the merge base, so a PR cannot weaken the gate that judges it.
+
+## [0.146.5] - 2026-10-07
+
+### Added
+
+- **API data-proof metrics library.** Tooling only, no runtime change (`scripts/proof/`): pure functions that score a captured answer against hot VictoriaLogs/VictoriaTraces in percent per quality facet (row sets, fields, values, series, spans, order, truth), a verdict per request, a CLI table, and offline fixtures recorded from hot VL v1.53.0 and VT v0.12.0. The tie rule for a row limit that cuts a group of equal sort keys is checked against the Go implementation with shared vectors.
+
+## [0.146.4] - 2026-10-07
+
+### Changed
+
 - **Every product change and every new test must be covered in the conformance registry.** CI now
   fails a PR that changes product code without a real content change under
   `tests/conformance/registry/`, adds a `Test`/`Fuzz` function no registry row or feature references, or
