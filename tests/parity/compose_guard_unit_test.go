@@ -66,6 +66,7 @@ func TestComposeGuard_AllowsTheOwnLakehouseService(t *testing.T) {
 	if len(f.restarts) != 1 || f.restarts[0] != "lh1" {
 		t.Fatalf("restarts %v, want [lh1]", f.restarts)
 	}
+	reportLockCells(t, 1)
 }
 
 func TestComposeGuard_Refuses(t *testing.T) {
@@ -92,6 +93,7 @@ func TestComposeGuard_Refuses(t *testing.T) {
 			if len(f.restarts) != 0 {
 				t.Fatalf("a refused target was restarted: %v", f.restarts)
 			}
+			reportLockCells(t, 1)
 		})
 	}
 }
@@ -111,6 +113,7 @@ func TestComposeGuard_OnlyAllowlistedCalls(t *testing.T) {
 		if _, err := g.do(c.method, c.path); err == nil {
 			t.Errorf("%s %s was allowed", c.method, c.path)
 		}
+		reportLockCells(t, 1)
 	}
 	if len(f.restarts) != 0 {
 		t.Fatalf("something was restarted: %v", f.restarts)
@@ -136,4 +139,5 @@ func TestComposeGuard_InspectsOnlyOwnAndListedContainers(t *testing.T) {
 	if _, err := g.inspect("lh2"); err != nil {
 		t.Fatalf("a listed container may be inspected: %v", err)
 	}
+	reportLockCells(t, 4)
 }

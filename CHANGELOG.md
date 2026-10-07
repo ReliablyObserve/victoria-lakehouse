@@ -18,6 +18,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once; the cell waits for the object the restarted pod flushes from its recovered segment, and repeats with a new batch
   (at most three attempts, each logged) if the periodic flush still wrote it before the restart.
 
+- **The registry gate no longer runs PR code, and its locks are whole-row.** The gate is its own job on a fresh
+  runner (`registry-gate`), takes its code from the merge base, disables git hooks and runs with an allow-listed
+  environment; a second copy, `registry-gate-base`, runs from the base branch's own workflow file
+  (`pull_request_target`) and only reads the PR. The gate no longer runs `confgen`. Every `expect: pass` registry
+  row is protected as a whole (targets, seed, layers, upstream, pending ...), a lock's test file may not gain a build
+  constraint edit or a `t.Skip`, a lock must name the top-level test of each removed allowlist entry and must not be
+  pending, and the parity ratchet requires the locks' tests to pass. The `registry-exempt` label is honoured only in
+  the run its own `labeled` event triggers, applied by an approver; a registry change for a product change must be
+  more than prose; new tests need a `file#Test` reference (a bare file reference no longer links them) and
+  `tests/s3compat` is in scope; a bump of a storage-critical module is never dependency-only. A release-metadata
+  CHANGELOG may only use the Keep-a-Changelog subheadings. The release skip reads only the PR merged as the pushed
+  commit and fails loudly when `(#N)` cannot be resolved.
+
+- **Registry locks are held at runtime.** Static checks cannot catch every way to disable a test (an early return, an
+  aliased `Skip`, a `TestMain` that exits 0, a file renamed so it is not built), so each lock test reports the cells it
+  compared and `tests/parity/lock_cells.txt` holds the minimum per test; the parity ratchet (`python -I`) fails a
+  lock that is missing, skipped, failed or short, and the floor may only grow. Pending rows can be locks. The gate also
+  reads registry YAML exactly like the loader (one document, `true`/`false` only), reads the PR as git blobs (symlinks
+  are rejected, no PR file is checked out for the `pull_request_target` copy), diffs without textconv or external
+  drivers, treats `.gitattributes`, every file under `scripts/ci/` and upstream pin bumps as gate or product changes,
+  never lets codec and protobuf module bumps count as dependency-only, and pins its actions by SHA.
+
 ## [0.146.7] - 2026-10-07
 
 ### Fixed

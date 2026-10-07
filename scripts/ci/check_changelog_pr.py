@@ -370,6 +370,28 @@ def _zone(sections: list[tuple[str, list[str]]]) -> Counter:
     )
 
 
+KEEP_A_CHANGELOG = {"### " + n for n in ("Added", "Changed", "Deprecated", "Removed", "Fixed", "Security")}
+
+
+def _subheadings(sections: list[tuple[str, list[str]]]) -> Counter:
+    return Counter(l.rstrip() for _, body in sections for l in body if l.startswith("### "))
+
+
+def _subheadings_ok(base: list, head: list, new_section) -> bool:
+    """Subheadings are structure, and structure is release notes too.
+
+    Only the Keep-a-Changelog set may appear; none may be lost; and the only new
+    ones are copies of a heading the base already has, each at most once, in the
+    new section (a release splits the bullets of one section across two).
+    """
+    b, h = _subheadings(base), _subheadings(head)
+    if not set(h) <= KEEP_A_CHANGELOG or (b - h):
+        return False
+    extra = h - b
+    new_subs = _subheadings([new_section])
+    return all(n == 1 and k in b and k in new_subs for k, n in extra.items())
+
+
 def changelog_release_shape(base_text: str, head_text: str) -> tuple[str, str] | None:
     """(old, new) version when head is base plus exactly one new release, else None.
 
@@ -404,10 +426,12 @@ def changelog_release_shape(base_text: str, head_text: str) -> tuple[str, str] |
             return None
     if _zone(movable_base) != _zone(movable_head):
         return None
+    if not _subheadings_ok(movable_base, movable_head, h[2]):
+        return None
     return old, new
 
 
-_PLACEHOLDER = "@@"
+_PLACEHOLDER = "\x00VER\x00"
 
 
 def generated_docs_version_naming_only(base_text: str, head_text: str, old: str, new: str) -> bool:
@@ -423,12 +447,13 @@ def generated_docs_version_naming_only(base_text: str, head_text: str, old: str,
     bl, hl = base_text.split("\n"), head_text.split("\n")
     if len(bl) != len(hl) or not old or not new or old == new:
         return False
-    after_old = re.compile(r"the release after v?`?" + re.escape(old) + r"`?")
+    end = r"(?!\.?\d)"  # v1.2.3 is not v1.2.30
+    after_old = re.compile(r"the release after v?`?" + re.escape(old) + r"`?" + end)
     head_forms = [
-        re.compile(r"`" + re.escape(new) + r"`, the release after `" + re.escape(new) + r"`"),
-        re.compile(r"the release after v?`?" + re.escape(new) + r"`?"),
-        re.compile(r"v" + re.escape(new) + r"(?![\d.])"),
-        re.compile(r"`" + re.escape(new) + r"`"),
+        re.compile(r"`" + re.escape(new) + r"`, the release after `" + re.escape(new) + r"`" + end),
+        re.compile(r"the release after v?`?" + re.escape(new) + r"`?" + end),
+        re.compile(r"v" + re.escape(new) + end),
+        re.compile(r"`" + re.escape(new) + r"`" + end),
     ]
     for x, y in zip(bl, hl):
         if x == y:
@@ -439,7 +464,7 @@ def generated_docs_version_naming_only(base_text: str, head_text: str, old: str,
         ny = y
         for pat in head_forms:
             ny = pat.sub(_PLACEHOLDER, ny)
-        if nx != ny or _PLACEHOLDER not in nx:
+        if nx != ny:
             return False
     return True
 

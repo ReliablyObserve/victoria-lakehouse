@@ -11,6 +11,10 @@ from scripts.ci.parity_ratchet import (
     Verdict,
     count_by_action,
     evaluate,
+    exact_equivalent,
+    lock_failures,
+    lock_tests,
+    parse_lock_cells,
     main,
     parse_allowlist,
     parse_go_test_json,
@@ -525,6 +529,199 @@ class MainTests(unittest.TestCase):
     def test_invalid_allowlist_raises(self):
         with self.assertRaises(ValueError):
             self.run_main(events(("TestA", "pass")), "# min-pass: 1\n# min-pass: 2\n")
+
+
+ROWS = """
+- {id: lh.lock.exact, title: a, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/a_test.go#TestLockA, tests/parity/a_test.go]}}
+- {id: lh.lock.vwh, title: b, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0"}}, refs: {tests: ["tests/parity/b_test.go#TestLockB/sub", "internal/x/x_test.go#TestUnit"]}}
+- {id: lh.lock.pending, title: c, expect: pass, pending: true, compare: {type: exact-json}, refs: {tests: [tests/parity/a_test.go#TestPending]}}
+- {id: lh.not.differ, title: d, expect: differ, compare: {type: exact-json}, refs: {tests: [tests/parity/a_test.go#TestDiffer]}}
+- {id: lh.not.exact, title: e, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0.5"}}, refs: {tests: [tests/parity/a_test.go#TestLoose]}}
+- {id: lh.second, title: f, expect: pass, compare: {type: count}, refs: {tests: [tests/parity/a_test.go#TestLockA]}}
+- {id: lh.bare, title: g, expect: pass, compare: {type: trace}, refs: {tests: [tests/parity/bare_test.go, tests/parity/sub/deep_test.go, "tests/parity/sub/deep_test.go#TestDeep"]}}
+"""
+
+
+def cell_event(test, n, package=PKG, text=None):
+    out = text if text is not None else f"    lock_cells_test.go:27: lock-cells {test.split('/')[0]} {n}\n"
+    return json.dumps({"Action": "output", "Package": package, "Test": test, "Output": out})
+
+
+class RegistryLockTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.root = self.dir.name
+        rows = os.path.join(self.root, "tests", "conformance", "registry", "rows", "lh")
+        os.makedirs(rows)
+        self.rows = os.path.join(self.root, "tests", "conformance", "registry", "rows")
+        with open(os.path.join(rows, "rows.yaml"), "w", encoding="utf-8") as fh:
+            fh.write(ROWS)
+        with open(os.path.join(rows, "ignored.txt"), "w", encoding="utf-8") as fh:
+            fh.write("- {id: x, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/z_test.go#TestIgnored]}}")
+        os.makedirs(os.path.join(self.root, "tests", "parity"))
+        with open(os.path.join(self.root, "tests", "parity", "bare_test.go"), "w", encoding="utf-8") as fh:
+            fh.write("package parity\n\nfunc TestBareOne(t *testing.T) {}\nfunc TestBareTwo(t *testing.T) {}\nfunc helper() {}\nfunc Testify() {}\n")
+
+    def test_every_exact_pass_row_with_a_parity_test_is_a_lock_pending_included(self):
+        got = lock_tests(self.rows, self.root)
+        self.assertEqual({k: sorted(v) for k, v in got.items()},
+                         {"TestLockA": ["lh.lock.exact", "lh.second"], "TestPending": ["lh.lock.pending"],
+                          "TestBareOne": ["lh.bare"], "TestBareTwo": ["lh.bare"]})
+
+    def test_a_bare_file_reference_needs_the_repo_root(self):
+        self.assertNotIn("TestBareOne", lock_tests(self.rows))
+
+    def test_exact_equivalent_compares(self):
+        for c, want in (({"type": "exact-json"}, True), ({"type": "count"}, True), ({"type": "trace"}, True),
+                        ({"type": "ndjson-multiset"}, True), ({"type": "status"}, False), ({"type": "schema"}, False),
+                        ({"type": "values-with-hits", "options": {"hits_tolerance": "0"}}, True),
+                        ({"type": "values-with-hits", "options": {"hits_tolerance": "0.0"}}, True),
+                        ({"type": "values-with-hits", "options": {"hits_tolerance": "0.1"}}, False),
+                        ({"type": "values-with-hits", "options": {"hits_tolerance": "x"}}, False),
+                        ({"type": "values-with-hits"}, False),
+                        ({"type": "series", "options": {"rel_tolerance": "0"}}, True),
+                        ({"type": "series", "options": {"rel_tolerance": "0.02"}}, False), ({"type": "series"}, False),
+                        ("exact-json", False), (None, False)):
+            self.assertEqual(exact_equivalent(c), want, c)
+
+    def test_registry_files_must_be_one_document_with_real_booleans(self):
+        rows = os.path.join(self.rows, "lh", "rows.yaml")
+        with open(rows, "a", encoding="utf-8") as fh:
+            fh.write("---\n- {id: second, expect: pass}\n")
+        with self.assertRaises(ValueError):
+            lock_tests(self.rows, self.root)
+        with open(rows, "w", encoding="utf-8") as fh:
+            fh.write("- {id: yes-row, expect: pass, pending: yes, compare: {type: exact-json}, refs: {tests: [tests/parity/a_test.go#T]}}\n")
+        with self.assertRaises(ValueError):
+            lock_tests(self.rows, self.root)
+
+    def test_lock_failures(self):
+        locks = {"TestLockA": ["lh.lock.exact"], "TestLockC": ["lh.c"]}
+        floors = {"TestLockA": 10, "TestLockC": 1, "TestOnlyFloor": 3}
+
+        def run(results, cells):
+            r = GoTestRun(results=results)
+            r.cells = cells
+            return r
+
+        ok = run({(PKG, "TestLockA"): "pass", (PKG, "TestLockC"): "pass", (PKG, "TestOnlyFloor"): "pass"},
+                 {(PKG, "TestLockA"): 10, (PKG, "TestLockC"): 4, (PKG, "TestOnlyFloor"): 3})
+        self.assertEqual(lock_failures(ok, locks, floors), [])
+        # X3: an early return passes with no cells
+        early = run({(PKG, "TestLockA"): "pass", (PKG, "TestLockC"): "pass", (PKG, "TestOnlyFloor"): "pass"},
+                    {(PKG, "TestLockC"): 4, (PKG, "TestOnlyFloor"): 3})
+        self.assertIn("compared 0 cells, the floor in lock_cells.txt is 10", lock_failures(early, locks, floors)[0])
+        # one cell short
+        short = run(ok.results, {(PKG, "TestLockA"): 9, (PKG, "TestLockC"): 1, (PKG, "TestOnlyFloor"): 3})
+        self.assertIn("compared 9 cells", lock_failures(short, locks, floors)[0])
+        # X4: skipped, failed, missing (TestMain os.Exit(0), renamed file, windows suffix)
+        skipped = run({**ok.results, (PKG, "TestLockA"): "skip"}, ok.cells)
+        self.assertIn("was skipped", lock_failures(skipped, locks, floors)[0])
+        failed = run({**ok.results, (PKG, "TestLockA"): "fail"}, ok.cells)
+        self.assertIn("failed", lock_failures(failed, locks, floors)[0])
+        gone = run({(PKG, "TestLockC"): "pass", (PKG, "TestOnlyFloor"): "pass"}, ok.cells)
+        self.assertIn("did not report a result", lock_failures(gone, locks, floors)[0])
+        # a test that is only in the baseline is held too
+        self.assertIn("TestOnlyFloor did not report", lock_failures(run({(PKG, "TestLockA"): "pass", (PKG, "TestLockC"): "pass"}, ok.cells), locks, floors)[0])
+        # a subtest result is not the top-level test
+        sub = run({(PKG, "TestLockA/sub"): "pass", (PKG, "TestLockC"): "pass", (PKG, "TestOnlyFloor"): "pass"}, ok.cells)
+        self.assertIn("TestLockA did not report", lock_failures(sub, locks, floors)[0])
+        # a name in two packages: one failing result is enough
+        both = run({("a", "TestLockA"): "pass", ("b", "TestLockA"): "fail", (PKG, "TestLockC"): "pass", (PKG, "TestOnlyFloor"): "pass"}, ok.cells)
+        self.assertIn("failed", lock_failures(both, locks, floors)[0])
+        # no floor for a registry lock: nothing to compare against (the ratchet's main refuses it for named refs)
+        self.assertEqual(lock_failures(run({(PKG, "TestLockA"): "pass"}, {}), {"TestLockA": ["r"]}, {}), [])
+
+    def test_cells_are_summed_and_only_the_helpers_line_counts(self):
+        stream = [
+            json.dumps({"Action": "run", "Package": PKG, "Test": "TestLockA"}),
+            cell_event("TestLockA", 3),
+            json.dumps({"Action": "run", "Package": PKG, "Test": "TestLockA/sub"}),
+            cell_event("TestLockA/sub", 4),
+            json.dumps({"Action": "pass", "Package": PKG, "Test": "TestLockA/sub"}),
+            json.dumps({"Action": "pass", "Package": PKG, "Test": "TestLockA"}),
+            # forged: printed by the test file itself
+            cell_event("TestLockA", 0, text="    sort_all_columns_parity_test.go:60: lock-cells TestLockA 999\n"),
+            # forged: bare text
+            cell_event("TestLockA", 0, text="lock-cells TestLockA 999\n"),
+            # forged: reported for another test
+            cell_event("TestOther", 0, text="    lock_cells_test.go:27: lock-cells TestLockA 999\n"),
+            # forged: a different file whose name merely ends the same way
+            cell_event("TestLockA", 0, text="    zz_lock_cells_test.go:27: lock-cells TestLockA 999\n"),
+        ]
+        run = parse_go_test_json(stream)
+        self.assertEqual(run.cells, {(PKG, "TestLockA"): 7})
+
+    def test_parse_lock_cells(self):
+        self.assertEqual(parse_lock_cells("# c\nTestA  12  # why\n\nTestB 3\n"), {"TestA": 12, "TestB": 3})
+        for bad in ("TestA\n", "TestA 0\n", "TestA x\n", "notatest 3\n", "TestA 3\nTestA 4\n", "TestA 3 4\n"):
+            with self.assertRaises(ValueError, msg=bad):
+                parse_lock_cells(bad)
+
+    def test_evaluate_fails_the_run_and_the_summary_names_the_lock(self):
+        run = GoTestRun(results={(PKG, "TestLockA"): "skip", (PKG, "TestOther"): "pass"})
+        verdict = evaluate(run, Allowlist(), {"TestLockA": ["lh.lock.exact"]}, {"TestLockA": 5})
+        self.assertTrue(verdict.failed)
+        out = render_summary(run, Allowlist(), verdict)
+        self.assertIn("Registry locks that did not pass", out)
+        self.assertIn("TestLockA was skipped (lock for lh.lock.exact)", out)
+        self.assertFalse(evaluate(run, Allowlist()).failed, "without a registry or floors the check is off")
+
+    def test_the_summary_tabulates_observed_cells_against_the_floors(self):
+        run = GoTestRun(results={(PKG, "TestLockA"): "pass"})
+        run.cells = {(PKG, "TestLockA"): 12}
+        out = render_summary(run, Allowlist(), evaluate(run, Allowlist()), {"TestLockA": 10, "TestGone": 3})
+        self.assertIn("| TestLockA | 12 | 10 |", out)
+        self.assertIn("| TestGone | 0 | 3 |", out)
+        self.assertNotIn("Lock cells", render_summary(run, Allowlist(), evaluate(run, Allowlist())))
+
+    def write(self, name, text):
+        path = os.path.join(self.root, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def run_main(self, events_lines, floors, extra=()):
+        results = self.write("r.json", "\n".join(events_lines) + "\n")
+        allow = self.write("a.txt", "# min-pass: 1\n")
+        args = ["--results", results, "--allowlist", allow, *extra]
+        if floors is not None:
+            args += ["--lock-cells", self.write("lock_cells.txt", floors)]
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = main(args)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_main_with_floors_and_registry(self):
+        good = [
+            json.dumps({"Action": "run", "Package": PKG, "Test": "TestLockA"}), cell_event("TestLockA", 12),
+            json.dumps({"Action": "pass", "Package": PKG, "Test": "TestLockA"}),
+            json.dumps({"Action": "run", "Package": PKG, "Test": "TestPending"}), cell_event("TestPending", 2),
+            json.dumps({"Action": "pass", "Package": PKG, "Test": "TestPending"}),
+        ]
+        for t in ("TestBareOne", "TestBareTwo"):
+            good += [json.dumps({"Action": "run", "Package": PKG, "Test": t}), json.dumps({"Action": "pass", "Package": PKG, "Test": t})]
+        floors = "TestLockA 10\nTestPending 2\n"
+        code, out, err = self.run_main(good, floors, ["--registry", self.rows])
+        self.assertEqual((code, err), (0, ""), out)
+        # the early return: no cells
+        early = [l for l in good if "lock-cells TestLockA" not in l]
+        code, out, _ = self.run_main(early, floors, ["--registry", self.rows])
+        self.assertEqual(code, 1)
+        self.assertIn("compared 0 cells", out)
+        # a named registry lock without a floor is refused outright
+        code, _, err = self.run_main(good, "TestLockA 10\n", ["--registry", self.rows])
+        self.assertEqual(code, 1)
+        self.assertIn("without a floor in lock_cells.txt: TestPending", err)
+        # a bare file reference holds the tests to passing, not to a count
+        no_bare = [l for l in good if "TestBareTwo" not in l]
+        code, out, _ = self.run_main(no_bare, floors, ["--registry", self.rows])
+        self.assertEqual(code, 1)
+        self.assertIn("TestBareTwo did not report a result", out)
+        # the registry option is optional
+        self.assertEqual(self.run_main(early, floors)[0], 1, "floors alone still hold TestLockA")
+        self.assertEqual(self.run_main(early, None)[0], 0)
 
 
 if __name__ == "__main__":

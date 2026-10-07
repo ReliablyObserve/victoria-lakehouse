@@ -1,0 +1,14 @@
+# Minimum number of cells each lock test must report in a parity run (see lock_cells_test.go).
+# The floor only grows: raising it or adding a test is free, lowering or removing needs the owner.
+# One entry per named tests/parity lock in the registry, and per lock test you want held.
+# Each number is the count a green parity run reported (the "Lock cells" table of the job summary).
+TestComposeGuard_AllowsTheOwnLakehouseService     1  # offline: one cell per case
+TestComposeGuard_InspectsOnlyOwnAndListedContainers  4
+TestComposeGuard_OnlyAllowlistedCalls             8
+TestComposeGuard_Refuses                          6
+TestParity_AllColumnSortTieOrder                312  # B8 sort tie order
+TestParity_PhrasePruning_Logs                    26
+TestParity_PhrasePruning_Traces                  19
+TestParity_Traces_EventsLinksInvalidUTF8         12
+TestParity_Traces_EventsLinksLayers            2270
+TestParity_Traces_EventsLinksScopeAttrs       85  # traces selected x 4 comparisons + 5 count cases

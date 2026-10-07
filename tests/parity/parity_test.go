@@ -141,6 +141,8 @@ func compareParityWithTies(t *testing.T, pc ParityCase, ref, sut fetchResult, ti
 	default:
 		t.Fatalf("unknown compare mode: %s", pc.Compare)
 	}
+	// One compared case: the lock tests' floors in lock_cells.txt count these.
+	reportLockCells(t, 1)
 }
 
 func compareCountEqual(t *testing.T, pc ParityCase, ref, sut fetchResult, tolerance float64) {

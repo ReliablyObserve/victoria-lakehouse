@@ -296,6 +296,10 @@ func LoadFeatures(dir, repoRoot string) (*FeatureSet, error) {
 			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
 			return nil
 		}
+		if err := CheckCanonical(data); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+			return nil
+		}
 		dec := yaml.NewDecoder(bytes.NewReader(data))
 		dec.KnownFields(true)
 		for {

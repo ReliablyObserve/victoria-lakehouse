@@ -56,6 +56,7 @@ func TestTenantParity_TenantCountsSumToTotal(t *testing.T) {
 		t.Errorf("byte count drift: sum(per-tenant)=%d, overview.total_bytes=%d",
 			sumBytes, overview.TotalBytes)
 	}
+	reportLockCells(t, 2) // the file total and the byte total
 }
 
 // TestTenantParity_UnknownTenantReturnsEmpty pins that a read for a tenant
@@ -79,6 +80,7 @@ func TestTenantParity_UnknownTenantReturnsEmpty(t *testing.T) {
 				t.Errorf("tenant 99999:99999 read %d spans, want 0 — a tenant with no data "+
 					"must not fall through to another tenant's (tenant 0:0 holds %d)", got, seeded)
 			}
+			reportLockCells(t, 2) // the control read and the unknown tenant's read
 		})
 	}
 }
@@ -142,6 +144,7 @@ func TestTenantParity_DependenciesAPI_RespectsScope(t *testing.T) {
 			}
 			t.Logf("snapshot %s, account %s: hot %d edges / %d calls, cold %d edges / %d calls",
 				tick.UTC().Format(time.RFC3339), te.AccountID, len(hot), sumCalls(hot), len(cold), sumCalls(cold))
+			reportLockCells(t, 1) // one tenant's graph compared
 		})
 	}
 }
@@ -199,6 +202,7 @@ func TestTenantParity_TraceQLPerTenant(t *testing.T) {
 				}
 			}
 			t.Logf("account %s: hot %d traces, cold %d", te.AccountID, len(want), len(got))
+			reportLockCells(t, 1) // one tenant's search compared
 		})
 	}
 }

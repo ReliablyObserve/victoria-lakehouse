@@ -1,7 +1,10 @@
 package registry
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"regexp"
 	"sort"
@@ -74,6 +77,17 @@ type ParitySnapshot struct {
 	Allowlist map[string]bool    // known_failures.txt entries
 	Resolved  map[string]bool    // divergences marked resolved in docs/parity-and-gaps.md
 	Rows      map[string]RowLite // registry rows by id
+	// Floors is tests/parity/lock_cells.txt: the minimum number of cells each
+	// lock test must report in a parity run (see parity_ratchet.py).
+	Floors map[string]int
+	// FileTests lists the top-level tests of a test file at this revision (the
+	// merge base's snapshot supplies it): a bare file reference converted to named
+	// ones must name them all.
+	FileTests func(path string) []string
+	// RefExists reports whether a "file#Test" reference still resolves in this
+	// tree; nil means every reference does. It lets a test rename or move that
+	// replaces a lock's reference pass, while dropping a reference does not.
+	RefExists func(ref string) bool
 }
 
 // ParseAllowlist returns the test paths listed in the parity allowlist:
@@ -127,18 +141,28 @@ func ParseResolved(src []byte) map[string]bool {
 	return out
 }
 
-// ParseEntries decodes a registry YAML file leniently into id -> entry.
+// ParseEntries decodes a registry YAML file into id -> entry. It reads every
+// document the way the loader does and rejects what the loader and the gate
+// could read differently (see CheckCanonical).
 func ParseEntries(src []byte, dst map[string]map[string]any) error {
-	var docs []map[string]any
-	if err := yaml.Unmarshal(src, &docs); err != nil {
+	if err := CheckCanonical(src); err != nil {
 		return err
 	}
-	for _, d := range docs {
-		if id, _ := d["id"].(string); id != "" {
-			dst[id] = d
+	dec := yaml.NewDecoder(bytes.NewReader(src))
+	for {
+		var docs []map[string]any
+		if err := dec.Decode(&docs); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		for _, d := range docs {
+			if id, _ := d["id"].(string); id != "" {
+				dst[id] = d
+			}
 		}
 	}
-	return nil
 }
 
 // ParseRowsLenient decodes registry row files leniently, adding the rows to dst.
@@ -191,6 +215,131 @@ func ChangedEntries(base, head map[string]map[string]any) (added, changed, remov
 	return
 }
 
+// proseKeys are the row fields that describe a row without changing what it
+// checks; editing them never weakens a pass row.
+var proseKeys = map[string]bool{"title": true, "notes": true, "description": true, "highlight": true, "differ_note": true}
+
+// normalizedRow returns a row's fields minus prose, minus refs.doc, minus a
+// false `pending`, and with refs.tests as a sorted set, so two rows compare
+// equal exactly when they check the same thing.
+func normalizedRow(whole map[string]any) (fields map[string]any, tests map[string]bool, pending bool) {
+	fields = map[string]any{}
+	tests = map[string]bool{}
+	for k, v := range whole {
+		switch {
+		case proseKeys[k]:
+		case k == "pending":
+			pending, _ = v.(bool)
+		case k == "refs":
+			refs, _ := v.(map[string]any)
+			rest := map[string]any{}
+			for rk, rv := range refs {
+				switch rk {
+				case "doc":
+				case "tests":
+					if list, ok := rv.([]any); ok {
+						for _, t := range list {
+							if ts, ok := t.(string); ok {
+								tests[ts] = true
+							}
+						}
+					}
+				default:
+					rest[rk] = rv
+				}
+			}
+			if len(rest) > 0 {
+				fields[k] = rest
+			}
+		default:
+			fields[k] = v
+		}
+	}
+	return fields, tests, pending
+}
+
+// passRowChanges lists what a PR changed on an expect=pass row that could make
+// it check less. Allowed: prose, refs.doc, more refs.tests, and `pending`
+// going from true to false (the row starts executing). Everything else,
+// including targets, seed, layers, upstream, compare and request, is a
+// weakening. A test reference may be replaced only by a rename of a tests/parity
+// lock whose cell floor the new name keeps (renamed returns the old names).
+func passRowChanges(b, h RowLite, baseFloors, headFloors map[string]int, headExists func(string) bool, baseFileTests func(string) []string) (out []string, renamed map[string]bool) {
+	renamed = map[string]bool{}
+	bf, bt, bp := normalizedRow(b.Whole)
+	hf, ht, hp := normalizedRow(h.Whole)
+	var keys []string
+	for k := range bf {
+		keys = append(keys, k)
+	}
+	for k := range hf {
+		if _, ok := bf[k]; !ok {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if reflect.DeepEqual(bf[k], hf[k]) {
+			continue
+		}
+		switch k {
+		case "compare":
+			out = append(out, fmt.Sprintf("pass row's compare (type, options or project) changed: %s", b.ID))
+		default:
+			out = append(out, fmt.Sprintf("pass row's %s changed: %s", k, b.ID))
+		}
+	}
+	var lost, added []string
+	for t := range bt {
+		if !ht[t] {
+			lost = append(lost, t)
+		}
+	}
+	for t := range ht {
+		if !bt[t] {
+			added = append(added, t)
+		}
+	}
+	sort.Strings(lost)
+	sort.Strings(added)
+	used := map[string]bool{}
+	for _, t := range lost {
+		path, name := splitRef(t)
+		if name == "" && strings.HasSuffix(path, "_test.go") && baseFileTests != nil {
+			// A bare file reference may become the named references of every test in it.
+			all := baseFileTests(path)
+			ok := len(all) > 0
+			for _, n := range all {
+				if !ht[path+"#"+n] {
+					ok = false
+				}
+			}
+			if ok {
+				continue
+			}
+		}
+		floor := baseFloors[name]
+		ok := false
+		if IsParityTestFile(path) && name != "" && floor > 0 && headExists != nil && !headExists(t) {
+			for _, a := range added {
+				apath, aname := splitRef(a)
+				if !used[a] && IsParityTestFile(apath) && aname != "" && headFloors[aname] >= floor {
+					used[a], ok = true, true
+					renamed[name] = true
+					break
+				}
+			}
+		}
+		if !ok {
+			out = append(out, fmt.Sprintf("pass row lost its test reference %s: %s (a reference may only be replaced by a rename of a tests/parity lock whose cell floor the new name keeps)", t, b.ID))
+		}
+	}
+	if hp && !bp {
+		out = append(out, fmt.Sprintf("pass row set to pending (it stops executing): %s", b.ID))
+	}
+	return out, renamed
+}
+
 // ParityVerdict is the outcome of ParityCheck.
 type ParityVerdict struct {
 	Fix        bool
@@ -225,6 +374,7 @@ func ParityCheck(base, head ParitySnapshot, modified map[string]bool) ParityVerd
 		}
 	}
 	var flipped []string
+	renamed := map[string]bool{}
 	for _, id := range sortedRowKeys(base.Rows) {
 		b := base.Rows[id]
 		h, ok := head.Rows[id]
@@ -240,10 +390,32 @@ func ParityCheck(base, head ParitySnapshot, modified map[string]bool) ParityVerd
 			v.Weakenings = append(v.Weakenings, "pass row deleted: "+id)
 		case h.Expect != "pass":
 			v.Weakenings = append(v.Weakenings, fmt.Sprintf("pass row weakened to expect=%s: %s", h.Expect, id))
-		case !reflect.DeepEqual(b.CompareMap, h.CompareMap):
-			v.Weakenings = append(v.Weakenings, fmt.Sprintf("pass row's compare (type, options or project) changed: %s", id))
-		case !reflect.DeepEqual(b.Request, h.Request):
-			v.Weakenings = append(v.Weakenings, fmt.Sprintf("pass row's request changed: %s", id))
+		default:
+			w, r := passRowChanges(b, h, base.Floors, head.Floors, head.RefExists, base.FileTests)
+			v.Weakenings = append(v.Weakenings, w...)
+			for name := range r {
+				renamed[name] = true
+			}
+		}
+	}
+	// A lock row this PR adds or changes names its tests, never a whole test file.
+	for _, id := range sortedRowKeys(head.Rows) {
+		h := head.Rows[id]
+		if !h.Exact() {
+			continue
+		}
+		if b, ok := base.Rows[id]; ok && reflect.DeepEqual(b.Whole, h.Whole) {
+			continue
+		}
+		for _, t := range h.Tests {
+			if path, name := splitRef(t); name == "" && strings.HasSuffix(path, "_test.go") {
+				v.Weakenings = append(v.Weakenings, fmt.Sprintf("lock row %s names the test file %s, not a test: reference every lock test as file#TestName", id, path))
+			}
+		}
+	}
+	for _, name := range sortedFloorKeys(base.Floors) {
+		if head.Floors[name] < base.Floors[name] && !renamed[name] {
+			v.Weakenings = append(v.Weakenings, fmt.Sprintf("lock cell floor of %s removed or lowered (%d -> %d) in tests/parity/lock_cells.txt", name, base.Floors[name], head.Floors[name]))
 		}
 	}
 	v.Fix = len(v.Triggers) > 0
@@ -253,36 +425,75 @@ func ParityCheck(base, head ParitySnapshot, modified map[string]bool) ParityVerd
 	if len(modified) == 0 {
 		v.Problems = append(v.Problems, "no test function under tests/parity/ was added or modified: a parity fix needs a differential test against hot VL/VT (all layers, both signals, both tenant forms)")
 	}
+	// A lock may be a pending row (declared, executed by the parity job rather than
+	// the row runner), but its test must have a cell floor: the ratchet then holds
+	// the test to "ran, passed, compared at least that many cells".
+	lockRef := func(t string) (string, bool) {
+		_, name := splitRef(t)
+		return name, name != "" && modified[t] && head.Floors[name] > 0
+	}
 	isLock := func(r RowLite) bool {
 		if !r.Exact() {
 			return false
 		}
 		for _, t := range r.Tests {
-			if _, name := splitRef(t); name != "" && modified[t] {
+			if _, ok := lockRef(t); ok {
 				return true
 			}
 		}
 		return false
 	}
-	if len(flipped) > 0 {
-		for _, id := range flipped {
-			if !isLock(head.Rows[id]) {
-				v.Problems = append(v.Problems, fmt.Sprintf("the flipped row %s must itself be a lock: expect pass, an exact-equivalent compare (exact-json, count, trace, ndjson-multiset, values-with-hits with hits_tolerance 0, series with rel_tolerance 0) and refs.tests naming, as file#Test, a tests/parity test this PR added or modified", id))
-			}
-		}
-		return v
-	}
+	// lockNames: the tests a changed or new lock row names (as a modified file#Test).
+	lockNames := map[string]bool{}
 	for _, id := range sortedRowKeys(head.Rows) {
 		h := head.Rows[id]
 		if b, ok := base.Rows[id]; ok && reflect.DeepEqual(b.Whole, h.Whole) {
 			continue // unchanged: not this PR's lock
 		}
 		if isLock(h) {
-			return v
+			for _, t := range h.Tests {
+				if name, ok := lockRef(t); ok {
+					lockNames[name] = true
+				}
+			}
 		}
 	}
-	v.Problems = append(v.Problems, "no new or changed registry row is a lock: expect pass, an exact-equivalent compare (exact-json, count, trace, ndjson-multiset, values-with-hits with hits_tolerance 0, series with rel_tolerance 0) and refs.tests naming, as file#Test, a tests/parity test this PR added or modified")
+	if len(flipped) > 0 {
+		for _, id := range flipped {
+			if !isLock(head.Rows[id]) {
+				v.Problems = append(v.Problems, fmt.Sprintf("the flipped row %s must itself be a lock: expect pass, an exact-equivalent compare (exact-json, count, trace, ndjson-multiset, values-with-hits with hits_tolerance 0, series with rel_tolerance 0) and refs.tests naming, as file#Test, a tests/parity test this PR added or modified that has a cell floor in tests/parity/lock_cells.txt", id))
+			}
+		}
+	} else if len(lockNames) == 0 {
+		v.Problems = append(v.Problems, "no new or changed registry row is a lock: expect pass, an exact-equivalent compare (exact-json, count, trace, ndjson-multiset, values-with-hits with hits_tolerance 0, series with rel_tolerance 0) and refs.tests naming, as file#Test, a tests/parity test this PR added or modified that has a cell floor in tests/parity/lock_cells.txt")
+	}
+	// A removed allowlist entry is only locked by a row that names ITS test.
+	for _, t := range sortedKeys(removedTop) {
+		if !lockNames[t] {
+			v.Problems = append(v.Problems, fmt.Sprintf("no lock row names %s, the test of a removed allowlist entry: the lock must reference file#%s", t, t))
+		}
+	}
 	return v
+}
+
+// ModifiedParityTests returns the "path#Test" keys of the tests/parity test
+// functions the PR added or modified, from the changed files and their sources
+// at both revisions. Test files outside tests/parity never count.
+func ModifiedParityTests(changed []string, baseSrc, headSrc func(string) []byte) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, c := range changed {
+		if !IsParityTestFile(c) {
+			continue
+		}
+		names, err := ModifiedTests(baseSrc(c), headSrc(c))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", c, err)
+		}
+		for _, n := range names {
+			out[c+"#"+n] = true
+		}
+	}
+	return out, nil
 }
 
 var parityTestFileRe = regexp.MustCompile(`^tests/parity/[^/]+_test\.go$`)
@@ -315,4 +526,103 @@ func topLevelTest(path string) string {
 		return path[:i]
 	}
 	return path
+}
+
+// SubstantiveChanges returns the ids of registry entries a PR adds, removes or
+// changes in a way that is more than prose: an entry whose only differences are
+// title, notes, description, highlight, differ_note or refs.doc claims nothing
+// new about behaviour.
+func SubstantiveChanges(base, head map[string]map[string]any) []string {
+	added, changed, removed := ChangedEntries(base, head)
+	out := append(append([]string{}, added...), removed...)
+	for _, id := range changed {
+		bf, bt, bp := normalizedRow(base[id])
+		hf, ht, hp := normalizedRow(head[id])
+		if !reflect.DeepEqual(bf, hf) || !reflect.DeepEqual(bt, ht) || bp != hp {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ChangeSet is the added, changed and removed entry ids of one registry kind.
+type ChangeSet struct {
+	Kind                    string // "rows" or "features"
+	Added, Changed, Removed []string
+}
+
+// maxInlineIDs is how many ids a summary line lists before collapsing the rest
+// into a details block.
+const maxInlineIDs = 8
+
+// SummarizeChanges renders the registry changes as Markdown for the job
+// summary: counts and the first few ids per line, the full list in a details
+// block when longer.
+func SummarizeChanges(sets []ChangeSet) string {
+	var sb strings.Builder
+	sb.WriteString("### Registry changes in this PR\n\n")
+	listed := false
+	for _, cs := range sets {
+		for _, g := range []struct {
+			label string
+			ids   []string
+		}{{"added", cs.Added}, {"changed", cs.Changed}, {"removed", cs.Removed}} {
+			if len(g.ids) == 0 {
+				continue
+			}
+			listed = true
+			if len(g.ids) <= maxInlineIDs {
+				fmt.Fprintf(&sb, "- %s %s (%d): %s\n", cs.Kind, g.label, len(g.ids), strings.Join(g.ids, ", "))
+				continue
+			}
+			fmt.Fprintf(&sb, "- %s %s (%d): %s, … and %d more\n", cs.Kind, g.label, len(g.ids),
+				strings.Join(g.ids[:maxInlineIDs], ", "), len(g.ids)-maxInlineIDs)
+			fmt.Fprintf(&sb, "  <details><summary>all %d %s %s</summary>\n\n", len(g.ids), cs.Kind, g.label)
+			for _, id := range g.ids {
+				fmt.Fprintf(&sb, "  - %s\n", id)
+			}
+			sb.WriteString("\n  </details>\n")
+		}
+	}
+	if !listed {
+		sb.WriteString("none\n")
+	}
+	return sb.String()
+}
+
+func sortedFloorKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+var lockCellsNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
+
+// ParseLockCells reads tests/parity/lock_cells.txt: one `TestName  N  # why` per
+// line, N the minimum number of cells the test must report.
+func ParseLockCells(src []byte) (map[string]int, error) {
+	out := map[string]int{}
+	for i, raw := range strings.Split(string(src), "\n") {
+		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+		if line == "" {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) != 2 || !lockCellsNameRe.MatchString(f[0]) {
+			return nil, fmt.Errorf("line %d: want `TestName  minCells`, got %q", i+1, raw)
+		}
+		n, err := strconv.Atoi(f[1])
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("line %d: %s: the cell floor must be a positive integer, got %q", i+1, f[0], f[1])
+		}
+		if _, dup := out[f[0]]; dup {
+			return nil, fmt.Errorf("line %d: duplicate entry %s", i+1, f[0])
+		}
+		out[f[0]] = n
+	}
+	return out, nil
 }

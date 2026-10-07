@@ -38,6 +38,24 @@ PRODUCT_DOC_NAMES = ("README.md", "RUNBOOK.md")
 SHIPPED_BUILD_FILES = ("Dockerfile", "Dockerfile.logs", "Dockerfile.traces")
 ROOT_MODULE_FILES = ("go.mod", "go.sum")
 DEP_COMMIT_PREFIXES = ("build(deps", "chore(deps")
+# Modules whose bump changes what the product stores or answers: never
+# dependency-only, they need registry coverage or the owner's exemption.
+CRITICAL_MODULE_PREFIXES = (
+    "github.com/VictoriaMetrics/",
+    "github.com/parquet-go/",
+    "github.com/aws/",
+    # codecs and wire formats: they decide what bytes mean
+    "github.com/klauspost/",
+    "github.com/golang/snappy",
+    "github.com/pierrec/",
+    "github.com/andybalholm/brotli",
+    "github.com/valyala/gozstd",
+    "github.com/DataDog/zstd",
+    "github.com/gogo/protobuf",
+    "github.com/apache/arrow",
+    "go.opentelemetry.io/proto/",
+    "google.golang.org/",
+)
 RELEASE_BOT = "github-actions[bot]"
 SEMVER = re.compile(r"\d+\.\d+\.\d+")
 REQUIRE_ENTRY = re.compile(r"^(?:require\s+)?(\S+)\s+(v\S+?)(?:\s*//.*)?$")
@@ -95,7 +113,7 @@ def parse_go_mod(text: str) -> tuple[dict[str, str], list[str]]:
                 continue
             m = REQUIRE_ENTRY.match(line)
             if m:
-                requires[m.group(1)] = m.group(2)
+                requires[m.group(1).strip('"`')] = m.group(2)
             else:
                 others.append(line)
             continue
@@ -105,20 +123,28 @@ def parse_go_mod(text: str) -> tuple[dict[str, str], list[str]]:
         if line.startswith("require "):
             m = REQUIRE_ENTRY.match(line)
             if m:
-                requires[m.group(1)] = m.group(2)
+                requires[m.group(1).strip('"`')] = m.group(2)
                 continue
         others.append(line)
     return requires, others
 
 
+PIN_RE = re.compile(r"^(VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION)\s*:?=\s*(\S*)", re.M)
+
+
+def makefile_pins(text: str) -> dict[str, str]:
+    """The upstream pins a Makefile sets: changing one changes what the product embeds."""
+    return {m.group(1): m.group(2) for m in PIN_RE.finditer(text)}
+
+
 def go_mod_dependency_only(base: str, head: str) -> bool:
-    """Only `require` version lines changed, none of them VictoriaMetrics/*."""
+    """Only `require` version lines changed, none of them a storage-critical module."""
     b_req, b_other = parse_go_mod(base)
     h_req, h_other = parse_go_mod(head)
     if b_other != h_other:  # replace / go / toolchain / module / exclude / retract edits
         return False
     for mod in set(b_req) | set(h_req):
-        if b_req.get(mod) != h_req.get(mod) and mod.startswith("github.com/VictoriaMetrics/"):
+        if b_req.get(mod) != h_req.get(mod) and mod.startswith(CRITICAL_MODULE_PREFIXES):
             return False
     return True
 
@@ -242,6 +268,9 @@ def main() -> int:
             r = product_reason(f)
             if r:
                 reason = r
+                break
+            if f == "Makefile" and makefile_pins(show(a.base, f)) != makefile_pins(show(a.head, f)):
+                reason = "upstream pin changed: " + f
                 break
     print(f"exempt={exempt}")
     print(f"product={1 if reason else 0}")

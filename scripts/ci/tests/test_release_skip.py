@@ -15,10 +15,10 @@ SHA = "a" * 40
 
 
 def titles(*ts):
-    return lambda: list(ts)
+    return lambda number=None: list(ts)
 
 
-def boom():
+def boom(number=None):
     raise OSError("network down")
 
 
@@ -38,6 +38,12 @@ class Decide(unittest.TestCase):
 
     def test_no_marker_releases(self):
         self.assertFalse(r.decide("fix(read): x (#429)", titles("fix(read): x")).skip)
+
+    def test_the_pr_number_from_the_subject_is_passed_to_the_lookup(self):
+        seen = []
+        r.decide("fix: x (#77)", lambda n: seen.append(n) or [])
+        r.decide("fix: direct", lambda n: seen.append(n) or [])
+        self.assertEqual(seen, ["77", None])
 
     def test_direct_push_without_a_pr_releases(self):
         d = r.decide("fix: direct", titles())
@@ -89,37 +95,56 @@ class FakeResponse:
 
 
 class GithubTitles(unittest.TestCase):
-    def fetch(self, payload, repo="o/r", token="tok", sha=SHA, sleep=lambda s: None, urlopen=None):
-        seen = {}
+    def fetch(self, pages, number=None, repo="o/r", token="tok", sha=SHA, sleep=lambda s: None, urlopen=None):
+        """pages: {url suffix: payload}; returns (titles, [(url, auth, timeout)])."""
+        seen = []
 
         def fake(req, timeout=None):
-            seen["url"] = req.full_url
-            seen["auth"] = req.get_header("Authorization")
-            seen["timeout"] = timeout
-            return FakeResponse(payload)
+            seen.append((req.full_url, req.get_header("Authorization"), timeout))
+            for suffix, payload in pages.items():
+                if req.full_url.endswith(suffix):
+                    return FakeResponse(payload)
+            raise OSError("404 " + req.full_url)
 
         with unittest.mock.patch.object(r.urllib.request, "urlopen", urlopen or fake):
-            out = r.github_titles(repo, token, sha, sleep)()
+            out = r.github_titles(repo, token, sha, sleep)(number)
         return out, seen
 
     def test_request_shape_and_the_title_key(self):
-        out, seen = self.fetch([{"title": "T", "body": "B", "merge_commit_sha": SHA}])
+        out, seen = self.fetch({f"/commits/{SHA}/pulls": [{"title": "T", "body": "B", "merge_commit_sha": SHA}]})
         self.assertEqual(out, ["T"])
-        self.assertEqual(seen["url"], f"https://api.github.com/repos/o/r/commits/{SHA}/pulls")
-        self.assertEqual(seen["auth"], "Bearer tok")
-        self.assertEqual(seen["timeout"], 30)
+        self.assertEqual(seen, [(f"https://api.github.com/repos/o/r/commits/{SHA}/pulls", "Bearer tok", 30)])
 
-    def test_prefers_the_pr_whose_merge_commit_is_the_pushed_sha(self):
-        out, _ = self.fetch([{"title": "other", "merge_commit_sha": "b" * 40}, {"title": "mine", "merge_commit_sha": SHA}])
+    def test_only_the_pr_merged_as_the_pushed_sha_counts(self):
+        # Low 3: an unrelated PR associated with the commit must never decide it
+        out, _ = self.fetch({f"/commits/{SHA}/pulls": [{"title": "other", "merge_commit_sha": "b" * 40}, {"title": "mine", "merge_commit_sha": SHA}]})
         self.assertEqual(out, ["mine"])
-        out, _ = self.fetch([{"title": "x", "merge_commit_sha": "c" * 40}])
-        self.assertEqual(out, ["x"], "no exact match falls back to every associated PR")
+        out, _ = self.fetch({f"/commits/{SHA}/pulls": [{"title": "unrelated open PR [skip release]", "merge_commit_sha": "c" * 40}]})
+        self.assertEqual(out, [], "no match is a direct push")
+
+    def test_empty_lookup_with_a_pr_number_reads_that_pr(self):
+        # Low 2: the subject says (#5) but the commit is not listed: ask PR 5 itself
+        pages = {f"/commits/{SHA}/pulls": [], "/pulls/5": {"title": "fix: x [skip release]", "merge_commit_sha": SHA}}
+        out, seen = self.fetch(pages, number="5")
+        self.assertEqual(out, ["fix: x [skip release]"])
+        self.assertEqual([u.rsplit("/", 2)[-2:] for u, _, _ in seen], [[SHA, "pulls"], ["pulls", "5"]])
+
+    def test_pr_number_merged_as_another_commit_fails_closed(self):
+        pages = {f"/commits/{SHA}/pulls": [], "/pulls/5": {"title": "t", "merge_commit_sha": "d" * 40}}
+        with self.assertRaises(RuntimeError):
+            self.fetch(pages, number="5")
+        d = r.decide("fix: x (#5)", lambda n: (_ for _ in ()).throw(RuntimeError("PR #5 was not merged as this commit")))
+        self.assertTrue(d.skip and d.failed)
+
+    def test_no_pr_and_no_number_is_a_direct_push(self):
+        out, _ = self.fetch({f"/commits/{SHA}/pulls": []})
+        self.assertEqual(out, [])
 
     def test_missing_repo_token_or_sha_fails_without_calling_the_api(self):
         for kw in ({"repo": ""}, {"token": ""}, {"sha": ""}):
             called = []
             with self.assertRaises(RuntimeError):
-                self.fetch([], urlopen=lambda *a, **k: called.append(1), sleep=lambda s: None, **kw)
+                self.fetch({}, urlopen=lambda *a, **k: called.append(1), **kw)
             self.assertEqual(called, [], kw)
 
     def test_retries_with_backoff_then_succeeds(self):
@@ -131,7 +156,7 @@ class GithubTitles(unittest.TestCase):
                 raise OSError("503")
             return FakeResponse([{"title": "ok", "merge_commit_sha": SHA}])
 
-        out, _ = self.fetch(None, urlopen=flaky, sleep=sleeps.append)
+        out, _ = self.fetch({}, urlopen=flaky, sleep=sleeps.append)
         self.assertEqual(out, ["ok"])
         self.assertEqual(len(calls), 3)
         self.assertEqual(sleeps, [1, 2])
@@ -144,7 +169,7 @@ class GithubTitles(unittest.TestCase):
             raise OSError("down")
 
         with self.assertRaises(OSError):
-            self.fetch(None, urlopen=down)
+            self.fetch({}, urlopen=down)
         self.assertEqual(len(calls), 3)
 
 

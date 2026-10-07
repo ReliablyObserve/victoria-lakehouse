@@ -2,15 +2,18 @@ package registry
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/format"
 	"go/parser"
 	"go/scanner"
 	"go/token"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -29,7 +32,7 @@ import (
 // packages carry behaviour; the tests/ suites are the cross-cutting proofs.
 var linkedTestPrefixes = []string{
 	"internal/", "cmd/", "lakehouse-traces/",
-	"tests/parity/", "tests/e2e/", "tests/conformance/", "tests/ingestmatrix/",
+	"tests/parity/", "tests/e2e/", "tests/conformance/", "tests/ingestmatrix/", "tests/s3compat/",
 }
 
 // IsLinkedTestFile reports whether path is a Go test file whose Test and Fuzz
@@ -161,15 +164,9 @@ type TestRef struct {
 }
 
 // CollectTestRefs reads every row's `refs.tests` and every feature's `tests`
-// under the registry directories. Decoding is deliberately lenient (unknown
-// keys ignored): the strict schema checks belong to LoadDir and LoadFeatures,
-// and this gate must keep working while a PR is changing the schema.
+// under the registry directories on disk (calibration and tests; the gate reads
+// the same files from git blobs, see TestRefsFromYAML).
 func CollectTestRefs(dirs ...string) ([]TestRef, error) {
-	type doc struct {
-		ID    string   `yaml:"id"`
-		Tests []string `yaml:"tests"`
-		Refs  *Refs    `yaml:"refs"`
-	}
 	var out []TestRef
 	for _, dir := range dirs {
 		err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
@@ -183,20 +180,11 @@ func CollectTestRefs(dirs ...string) ([]TestRef, error) {
 			if err != nil {
 				return err
 			}
-			var docs []doc
-			if err := yaml.Unmarshal(data, &docs); err != nil {
+			refs, err := TestRefsFromYAML(data)
+			if err != nil {
 				return fmt.Errorf("%s: %w", p, err)
 			}
-			for _, e := range docs {
-				refs := append([]string(nil), e.Tests...)
-				if e.Refs != nil {
-					refs = append(refs, e.Refs.Tests...)
-				}
-				for _, r := range refs {
-					path, name := splitRef(r)
-					out = append(out, TestRef{Owner: e.ID, Ref: r, Path: path, Name: name})
-				}
-			}
+			out = append(out, refs...)
 			return nil
 		})
 		if err != nil {
@@ -204,6 +192,42 @@ func CollectTestRefs(dirs ...string) ([]TestRef, error) {
 		}
 	}
 	return out, nil
+}
+
+// TestRefsFromYAML reads the test references of one registry file, every
+// document of it (CheckCanonical rejects a second one). Decoding is lenient
+// (unknown keys ignored): the strict schema checks belong to LoadDir and
+// LoadFeatures, and this gate must keep working while a PR changes the schema.
+func TestRefsFromYAML(data []byte) ([]TestRef, error) {
+	type doc struct {
+		ID    string   `yaml:"id"`
+		Tests []string `yaml:"tests"`
+		Refs  *Refs    `yaml:"refs"`
+	}
+	if err := CheckCanonical(data); err != nil {
+		return nil, err
+	}
+	var out []TestRef
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	for {
+		var docs []doc
+		if err := dec.Decode(&docs); err != nil {
+			if errors.Is(err, io.EOF) {
+				return out, nil
+			}
+			return nil, err
+		}
+		for _, e := range docs {
+			refs := append([]string(nil), e.Tests...)
+			if e.Refs != nil {
+				refs = append(refs, e.Refs.Tests...)
+			}
+			for _, r := range refs {
+				path, name := splitRef(r)
+				out = append(out, TestRef{Owner: e.ID, Ref: r, Path: path, Name: name})
+			}
+		}
+	}
 }
 
 // AddedTest is a Test or Fuzz function a PR introduced to a package.
@@ -258,11 +282,12 @@ func DiffAddedTests(changed []string, baseSrc, headSrc func(path string) []byte)
 	return out, nil
 }
 
-// Linked reports whether some reference names the test: `file#Name`, or the
-// bare `file` (a file-level link covers every test in that file).
+// Linked reports whether some reference names the test as `file#Name`. A bare
+// file reference does not link a NEW test: it was written before the test
+// existed and says nothing about it.
 func Linked(t AddedTest, refs []TestRef) bool {
 	for _, r := range refs {
-		if r.Path == t.File && (r.Name == "" || r.Name == t.Name) {
+		if r.Path == t.File && r.Name == t.Name {
 			return true
 		}
 	}
@@ -333,4 +358,172 @@ func UnlinkedTests(repoRoot string, refs []TestRef) (total int, unlinked []Added
 		return nil
 	})
 	return total, unlinked, err
+}
+
+var skipCallRe = regexp.MustCompile(`\.(?:Skip|SkipNow|Skipf)\(`)
+
+// testFileHeader is everything before the package clause: build constraints and
+// the comments around them. Any edit of it, comments included, counts as
+// changing a constraint.
+func testFileHeader(src []byte) string {
+	if m := packageClauseRe.FindIndex(src); m != nil {
+		return string(src[:m[0]])
+	}
+	return string(src)
+}
+
+var packageClauseRe = regexp.MustCompile(`(?m)^package\s`)
+
+// LockFileWeakenings reports, for each test file a lock row references, a
+// changed build constraint (header before the package clause) or a newly added
+// Skip, SkipNow or Skipf call: either stops a lock from running without
+// touching the registry.
+func LockFileWeakenings(files []string, baseSrc, headSrc func(string) []byte) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range files {
+		if seen[f] || !strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		seen[f] = true
+		b, h := baseSrc(f), headSrc(f)
+		if b == nil {
+			// A file new to the tree has no base to compare, but its NAME may keep go
+			// from building it: a leading _ or ., or a GOOS/GOARCH suffix.
+			if h != nil && filenameConstrained(f) {
+				out = append(out, fmt.Sprintf("%s: a lock's test file whose name keeps the go tool from building it everywhere (leading _ or ., or a GOOS/GOARCH suffix)", f))
+			}
+			continue
+		}
+		if h == nil {
+			continue // a deleted file is the stale-reference check's business
+		}
+		if testFileHeader(b) != testFileHeader(h) {
+			out = append(out, fmt.Sprintf("%s: the build constraint header changed in a file a lock references", f))
+		}
+		if len(skipCallRe.FindAll(h, -1)) > len(skipCallRe.FindAll(b, -1)) {
+			out = append(out, fmt.Sprintf("%s: a Skip call was added to a file a lock references", f))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RefResolves reports whether a `file#Test` reference still names a Go test
+// function in the file's source (read through src, a blob reader). A bare file
+// reference resolves when the file exists.
+func RefResolves(src func(string) []byte, ref string) bool {
+	path, name := splitRef(ref)
+	data := src(path)
+	if data == nil {
+		return false
+	}
+	if name == "" || !strings.HasSuffix(path, ".go") {
+		return true
+	}
+	names, err := TestFuncs(data)
+	if err != nil {
+		return false
+	}
+	for _, n := range names {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// StaleRefsBlob is StaleRefs reading the head revision's blobs instead of the
+// working tree, so the gate never follows a symlink or smudges an LFS file of
+// the PR it judges.
+func StaleRefsBlob(headSrc func(string) []byte, refs []TestRef, changed []string) []string {
+	touched := map[string]bool{}
+	for _, c := range changed {
+		touched[c] = true
+	}
+	var out []string
+	for _, r := range refs {
+		if !strings.HasSuffix(r.Path, "_test.go") || !touched[r.Path] {
+			continue
+		}
+		if !RefResolves(headSrc, r.Ref) {
+			out = append(out, fmt.Sprintf("%s: %q: no such test any more in %s", r.Owner, r.Ref, r.Path))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// testMainDecl returns the printed TestMain of a Go test file, if it has one.
+func testMainDecl(src []byte) (string, bool, error) {
+	if len(bytes.TrimSpace(src)) == 0 {
+		return "", false, nil
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", src, parser.SkipObjectResolution)
+	if err != nil {
+		return "", false, err
+	}
+	for _, d := range f.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "TestMain" {
+			var buf bytes.Buffer
+			if err := format.Node(&buf, fset, fn); err != nil {
+				return "", false, err
+			}
+			return tokenText(buf.Bytes()), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// TestMainChanges lists the test files of a lock's package whose TestMain was
+// added, removed or edited. A TestMain that returns early or exits 0 turns every
+// test of its package into a silent pass, so it is the owner's to change.
+func TestMainChanges(files []string, baseSrc, headSrc func(string) []byte) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range files {
+		if seen[f] || !strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		seen[f] = true
+		b, bok, berr := testMainDecl(baseSrc(f))
+		h, hok, herr := testMainDecl(headSrc(f))
+		if berr != nil || herr != nil || bok != hok || b != h {
+			out = append(out, fmt.Sprintf("%s: TestMain of a package that holds a lock changed", f))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+var goosList = strings.Fields("aix android darwin dragonfly freebsd hurd illumos ios js linux nacl netbsd openbsd plan9 solaris wasip1 windows")
+var goarchList = strings.Fields("386 amd64 amd64p32 arm armbe arm64 arm64be loong64 mips mipsle mips64 mips64le mips64p32 mips64p32le ppc ppc64 ppc64le riscv riscv64 s390 s390x sparc sparc64 wasm")
+
+// filenameConstrained reports whether the go tool ignores or constrains a test
+// file by its name alone: a leading underscore or dot, or a _GOOS, _GOARCH or
+// _GOOS_GOARCH suffix before _test.go.
+func filenameConstrained(path string) bool {
+	base := filepath.Base(path)
+	if strings.HasPrefix(base, "_") || strings.HasPrefix(base, ".") {
+		return true
+	}
+	stem := strings.TrimSuffix(strings.TrimSuffix(base, ".go"), "_test")
+	parts := strings.Split(stem, "_")
+	if len(parts) < 2 {
+		return false
+	}
+	last := parts[len(parts)-1]
+	in := func(list []string, v string) bool {
+		for _, x := range list {
+			if x == v {
+				return true
+			}
+		}
+		return false
+	}
+	if in(goosList, last) || in(goarchList, last) {
+		return true
+	}
+	return false
 }

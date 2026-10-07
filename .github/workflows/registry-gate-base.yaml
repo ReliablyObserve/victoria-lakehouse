@@ -1,0 +1,76 @@
+name: Registry Gate (base workflow)
+
+# Defence in depth for the registry gate. `pull_request_target` runs THIS file as
+# it is on the base branch, so a pull request cannot edit, disable or rename the
+# workflow that judges it (it can with `registry-gate.yaml`, which `pull_request`
+# takes from the PR). The PR is fetched as git data and read, never built, run
+# or sourced, and not even checked out: the gate code, the bootstrap and the approvers
+# file all come from the base checkout, and the PR is read as git blobs.
+#
+# Required check: `registry-gate-base`. Pin it to this file with a ruleset
+# ("Require workflows to pass before merging" -> this path on `main`, or "Require
+# status checks" with the GitHub Actions app as the source), so the check cannot
+# be satisfied by anything else. No job-level `if:` (a skipped required job
+# counts as passed).
+#
+# Safety rules for editing this file (it holds secrets-level trust): never check
+# out or `run` the PR head, never use `${{ github.event.* }}` text inside `run:`
+# (pass it through `env:`), keep `permissions` read-only.
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: registry-gate-base-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  registry-gate-base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The default checkout of pull_request_target is the BASE branch: trusted.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # No cache: nothing a PR can write into a cache is ever read by the gate.
+          cache: false
+
+      # The PR head as a commit object only: fetched, never checked out. The gate reads
+      # blobs of it with git (show, diff, ls-tree), so a symlink or LFS file of the PR is
+      # never followed or smudged, and no PR file exists on this runner's disk.
+      - name: Fetch the pull request commits (no checkout)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA" || { echo "::error::the PR head moved since the event; re-run"; exit 1; }
+
+      - name: Product changes and new tests are covered in the registry
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          GATE_DIR: ${{ github.workspace }}
+          HEAD_REV: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          SENDER: ${{ github.event.sender.login }}
+        run: bash "$GATE_DIR/scripts/ci/gate_bootstrap.sh" run
