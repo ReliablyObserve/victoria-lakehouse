@@ -2,19 +2,9 @@ name: Parity Tests
 
 on:
   pull_request:
+    # No paths filter: the job always runs (so it can be a required check) and
+    # the 'Detect parity-relevant changes' step skips the work when nothing relevant changed.
     branches: [main]
-    paths:
-      - 'internal/**'
-      - 'cmd/**'
-      - 'lakehouse-traces/**'
-      - 'patches/**'
-      - 'tests/parity/**'
-      - 'scripts/ci/parity_ratchet.py'
-      - 'scripts/ci/tests/test_parity_ratchet.py'
-      - 'Dockerfile.*'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/parity.yaml'
   push:
     branches: [main]
     paths:
@@ -49,26 +39,55 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Pull requests: run the suite only when a parity-relevant path changed;
+      # push, schedule and manual runs always run it.
+      - name: Detect parity-relevant changes
+        id: detect
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          relevant=true
+          if [ "$EVENT" = pull_request ]; then
+            files=$(git diff --name-only "$(git merge-base "$BASE_SHA" HEAD)" HEAD)
+            if echo "$files" | grep -Eq '^(internal/.*|cmd/.*|lakehouse\-traces/.*|patches/.*|tests/parity/.*|scripts/ci/parity_ratchet\.py|scripts/ci/tests/test_parity_ratchet\.py|Dockerfile\.[^/]*|go\.mod|go\.sum|\.github/workflows/parity\.yaml)$'; then
+              echo "parity-relevant changes found"
+            else
+              relevant=false
+              echo "### Parity Tests" >> "$GITHUB_STEP_SUMMARY"
+              echo "no parity-relevant changes in this PR; the suite was not run." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
 
       - uses: actions/setup-python@v7
+        if: steps.detect.outputs.relevant == 'true'
         with:
           python-version: "3.12"
 
       # The ratchet decides whether this job passes, so its own tests run
       # first — a broken gate must not silently wave a broken suite through.
       - name: Test the parity ratchet
+        if: steps.detect.outputs.relevant == 'true'
         run: python -m unittest scripts.ci.tests.test_parity_ratchet -v
 
       - name: Build parity stack
+        if: steps.detect.outputs.relevant == 'true'
         run: docker compose -f tests/parity/docker-compose.yml build
 
       - name: Start parity stack (waits for datagen via parity-tests depends_on)
+        if: steps.detect.outputs.relevant == 'true'
         run: docker compose -f tests/parity/docker-compose.yml up -d
 
       # Every wait below fails the job when it runs out of attempts. Falling
       # out of a poll loop and carrying on would run the suite against a
       # stack that never came up, and every comparison would be noise.
       - name: Wait for all services healthy
+        if: steps.detect.outputs.relevant == 'true'
         run: |
           for svc in victorialogs lakehouse-logs victoriatraces lakehouse-traces; do
             status=""
@@ -89,6 +108,7 @@ jobs:
           done
 
       - name: Wait for datagen to complete
+        if: steps.detect.outputs.relevant == 'true'
         run: |
           for svc in datagen-seed datagen-seed-tenant2; do
             state=""
@@ -133,6 +153,7 @@ jobs:
       # four checks in a row: 15s, three -lakehouse.manifest.refresh-interval
       # periods of the parity compose.
       - name: Wait for LH to flush and settle
+        if: steps.detect.outputs.relevant == 'true'
         run: |
           # Probes run from inside the network (the stack publishes no host
           # ports). The published VictoriaLogs image is DISTROLESS from v1.51.0
@@ -265,6 +286,7 @@ jobs:
       # running them a second time — which doubled the corpus and wrote the
       # second copy after the settle step had declared the cold tier caught up.
       - name: Run parity tests in-network
+        if: steps.detect.outputs.relevant == 'true'
         run: |
           set +e
           docker compose -f tests/parity/docker-compose.yml --profile test run --rm --no-deps -T parity-tests \
@@ -273,6 +295,7 @@ jobs:
           wc -l parity-results.json
 
       - name: Parity ratchet (known-failure allowlist)
+        if: steps.detect.outputs.relevant == 'true'
         run: |
           python scripts/ci/parity_ratchet.py \
             --results parity-results.json \
@@ -280,14 +303,14 @@ jobs:
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Upload parity results
-        if: always()
+        if: always() && steps.detect.outputs.relevant == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: parity-results
           path: parity-results.json
 
       - name: Show docker logs on failure
-        if: failure()
+        if: failure() && steps.detect.outputs.relevant == 'true'
         run: |
           echo "=== victorialogs ==="
           docker compose -f tests/parity/docker-compose.yml logs victorialogs --tail=50
@@ -303,5 +326,5 @@ jobs:
           docker compose -f tests/parity/docker-compose.yml logs datagen-seed-tenant2 --tail=50
 
       - name: Stop parity stack
-        if: always()
+        if: always() && steps.detect.outputs.relevant == 'true'
         run: docker compose -f tests/parity/docker-compose.yml down -v
