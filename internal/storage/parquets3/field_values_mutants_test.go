@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,5 +197,43 @@ func TestFieldValuesEmpty_MapReadExpandsOnlyTheRequestedKey(t *testing.T) {
 	allocs := testing.AllocsPerRun(5, func() { _, _ = s.GetFieldValues(context.Background(), nil, q, "lk", 0) })
 	if limit := float64(n * 8); allocs > limit {
 		t.Errorf("field_values(lk) over %d rows x %d keys made %.0f allocations, want at most %.0f (one key expanded)", n, width, allocs, limit)
+	}
+}
+
+// One attribute key present in both the resource and the log attributes with
+// different values is one field whose value is the first occurrence — the
+// resource attribute, as on hot and in the buffer — on every read: the answer
+// must not depend on Go's map order.
+func TestFieldValuesEmpty_SameKeyTwoMapsIsResourceFirstOnEveryRead(t *testing.T) {
+	mock := newMockS3Server()
+	t.Cleanup(mock.close)
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Mode = fvPropMode()
+	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	rows := make([]fvPropRow, 4)
+	for i := range rows {
+		rows[i] = fvPropRow{ts: base.Add(time.Duration(i) * time.Second).UnixNano(), level: "INFO", svc: "a",
+			maps: map[string]map[string]string{
+				"resource.attributes": {"k": "res", "a1": "x", "a2": "y", "a3": "z"},
+				"log.attributes":      {"k": "log", "b1": "x", "b2": "y"},
+			},
+			hasMap: map[string]bool{"resource.attributes": true, "log.attributes": true}}
+	}
+	data := fvPropFile(t, []string{"timestamp_unix_nano", "severity_text", "service.name", "resource.attributes", "log.attributes"}, rows, 0)
+	fvMutantFile(t, s, mock, "twok", data, base, 4, nil)
+	lo, hi := base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano()
+	seen := map[string]int{}
+	for i := 0; i < 60; i++ {
+		for _, q := range []string{"*", "level:=INFO"} {
+			seen[q+" -> "+fmt.Sprint(fvEmptyValues(t, s, q, lo, hi, "k", false))]++
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("answers differ between reads: %v", seen)
+	}
+	for a := range seen {
+		if !strings.HasSuffix(a, "map[res:4]") {
+			t.Errorf("answer %q: the resource attribute must win", a)
+		}
 	}
 }

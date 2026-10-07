@@ -439,7 +439,6 @@
     - lakehouse-traces/internal/vtstorage_adapter/values_filter_limit_test.go#TestValuesFilteredThenLimited
     - tests/parity/field_values_map_attrs_test.go#TestParity_FieldValues_MapAttributes
     - tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket
-    - tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket
   docs:
     - docs/parity-and-gaps.md
   highlight: >-

@@ -38,3 +38,18 @@ func TestValuesFilteredThenLimited(t *testing.T) {
 		t.Errorf("limit passed to the store = %d, want 7", seen)
 	}
 }
+
+// Upstream GetStreamFieldValues with a substring filter: filter, sort by hits
+// desc then value, truncate to limit, zero the hits. The higher-hit value is kept.
+func TestValuesFilteredThenLimited_KeepsTopHitsThenZeroes(t *testing.T) {
+	// what the store's GetStreamFieldValues(limit=0) returns: sorted by hits.
+	all := []logstorage.ValueWithHits{{Value: "vy", Hits: 30}, {Value: "vx", Hits: 2}, {Value: "a", Hits: 1}}
+	fetch := func(limit uint64) ([]logstorage.ValueWithHits, error) { return all, nil }
+	got, err := valuesFilteredThenLimited("v", 1, fetch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []logstorage.ValueWithHits{{Value: "vy", Hits: 0}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("stream_field_values filter=v limit=1 = %v, upstream keeps %v (top by hits, then zeroed)", got, want)
+	}
+}

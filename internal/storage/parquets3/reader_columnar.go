@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"io"
+	"sort"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
@@ -129,7 +130,8 @@ func readRowGroupColumnarKeys(
 		}
 	}
 
-	for name, li := range leafMap {
+	for _, name := range orderedLeafNames(leafMap) {
+		li := leafMap[name]
 		if len(li.indices) == 1 {
 			// Scalar column. queryFieldName is the shared rule with the
 			// row-oriented path (projectedFieldsToDataBlock): it drops
@@ -477,4 +479,29 @@ func mergeDuplicateColumns(cols []logstorage.BlockColumn) []logstorage.BlockColu
 		out[i].Values = merged
 	}
 	return out
+}
+
+// orderedLeafNames lists the projected top-level columns in a fixed order: the
+// attribute MAP columns resource, log, span, scope first (the order OTLP and hot
+// VictoriaLogs/VictoriaTraces see them in), then everything else by name. Where
+// one attribute key is in two MAP columns the first occurrence wins
+// (mergeDuplicateColumns), so the answer must not depend on Go's map order.
+func orderedLeafNames[V any](m map[string]V) []string {
+	rank := map[string]int{"resource.attributes": 0, "log.attributes": 1, "span.attributes": 2, "scope.attributes": 3}
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(a, b int) bool {
+		ra, oka := rank[names[a]]
+		rb, okb := rank[names[b]]
+		switch {
+		case oka && okb:
+			return ra < rb
+		case oka != okb:
+			return !oka // plain columns first, as before; maps keep their relative order
+		}
+		return names[a] < names[b]
+	})
+	return names
 }

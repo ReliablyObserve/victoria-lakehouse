@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -336,6 +337,93 @@ func TestFieldValuesEmpty_EventFieldsOverSpansWithoutEventsOrColumn(t *testing.T
 			if want := map[string]uint64{"": 6}; fmt.Sprint(got) != fmt.Sprint(want) {
 				t.Errorf("field_values(%s) q=%s over an object without the events column = %v, want %v", field, q, got, want)
 			}
+		}
+	}
+}
+
+// An event field combined with a MAP attribute filter or tombstone: the
+// attribute columns are read next to the composite column, so the filter and the
+// tombstone see the span's attribute and the event name is still the target.
+func TestFieldValuesEmpty_EventTargetWithMapAttributeFilterAndTombstone(t *testing.T) {
+	mock := newMockS3Server()
+	t.Cleanup(mock.close)
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Mode = config.ModeTraces
+	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	mk := func(i int, event, attr string) schema.TraceRow {
+		var c schema.SpanSubFieldCollector
+		if event != "" {
+			c.Add("event:event_name:0", event)
+		}
+		r := schema.TraceRow{
+			TimestampUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(), StartTimeUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(),
+			TraceID: fmt.Sprintf("t%d", i), SpanID: fmt.Sprintf("%016x", i+1), SpanName: "op", ServiceName: "svc",
+			Stream: `{resource_attr:service.name="svc"}`,
+		}
+		if attr != "" {
+			r.SpanAttributes = map[string]string{"k": attr}
+		}
+		c.Apply(&r)
+		return r
+	}
+	rows := []schema.TraceRow{
+		mk(0, "exception", "x"), mk(1, "log", "x"), mk(2, "", "x"),
+		mk(3, "exception", "y"), mk(4, "retry", "y"), mk(5, "", ""),
+	}
+	res, err := writeTracesParquet(rows, 4, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerFileInMockS3(t, s, mock, fmt.Sprintf("traces/dt=%s/hour=%02d/ev.parquet", base.Format("2006-01-02"), base.Hour()), res.Data, base)
+	lo, hi := base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano()
+	const field = "event:event_name:0"
+
+	got := fvEmptyValues(t, s, "`span_attr:k`:=x", lo, hi, field, false)
+	if want := map[string]uint64{"exception": 1, "log": 1, "": 1}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("filter span_attr:k=x: %v, want %v", got, want)
+	}
+	f := &traceFieldsTombstoneFixture{storage: s, startNs: lo, endNs: hi}
+	store := delete.NewTombstoneStore()
+	store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "ts-ev", Query: "`span_attr:k`:=x", StartNs: lo, EndNs: hi, Mode: "hide"})
+	f.storage.SetTombstoneStore(store)
+	got = fvEmptyValues(t, s, "*", lo, hi, field, false)
+	if want := map[string]uint64{"exception": 1, "retry": 1, "": 1}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("tombstone span_attr:k=x: %v, want %v", got, want)
+	}
+}
+
+// One top-level span attribute key (emitted without a prefix) in two MAP
+// columns with different values: the first occurrence (span, then scope) wins on
+// every read, whatever Go's map order.
+func TestFieldValuesEmpty_SameKeyTwoMapsIsResourceFirstOnEveryRead(t *testing.T) {
+	mock := newMockS3Server()
+	t.Cleanup(mock.close)
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Mode = fvPropMode()
+	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	rows := make([]fvPropRow, 4)
+	for i := range rows {
+		rows[i] = fvPropRow{ts: base.Add(time.Duration(i) * time.Second).UnixNano(), level: "op", svc: "a",
+			maps: map[string]map[string]string{
+				"resource.attributes": {"a1": "x"},
+				"span.attributes":     {"flags": "span", "b1": "x"},
+				"scope.attributes":    {"flags": "scope", "c1": "x"},
+			},
+			hasMap: map[string]bool{"resource.attributes": true, "span.attributes": true, "scope.attributes": true}}
+	}
+	data := fvPropFile(t, []string{"timestamp_unix_nano", "span.name", "service.name", "scope.attributes", "span.attributes", "resource.attributes"}, rows, 0)
+	fvMutantFile(t, s, mock, "twok", data, base, 4, nil)
+	lo, hi := base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano()
+	seen := map[string]int{}
+	for i := 0; i < 60; i++ {
+		seen[fmt.Sprint(fvEmptyValues(t, s, "*", lo, hi, "flags", false))]++
+	}
+	if len(seen) != 1 {
+		t.Fatalf("answers differ between reads: %v", seen)
+	}
+	for a := range seen {
+		if a != "map[span:4]" {
+			t.Errorf("answer %s: the span attribute comes first and must win", a)
 		}
 	}
 }

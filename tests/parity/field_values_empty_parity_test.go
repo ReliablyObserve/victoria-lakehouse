@@ -93,6 +93,9 @@ func runFvEmptyCases(t *testing.T, hot, cold string, f tenantForm, from, to time
 			if c.pastLimit {
 				want := fieldValueHits(t, c.name+" reference", ref)
 				got := fieldValueHits(t, c.name+" SUT", sut)
+				if len(want) == 0 || len(got) == 0 {
+					t.Fatalf("%s: a past-limit case needs values on both sides (hot %v, cold %v)", c.name, want, got)
+				}
 				if len(want) != len(got) {
 					t.Errorf("%s: hot lists %d values, cold %d (%v vs %v)", c.name, len(want), len(got), want, got)
 				}
@@ -126,17 +129,18 @@ type fvEmptyLayer struct {
 // fvEmptyCase2 is one signal's fixture; every tenant form writes and reads its
 // own tenant, so the cells are layer x tenant form x signal.
 type fvEmptyCase2 struct {
-	hot, cold string
-	mode      string
-	forms     []tenantForm
-	at        time.Time
-	from, to  time.Time
-	filter    string
-	cases     []fvEmptyCase
-	write     func(t *testing.T, c *fvEmptyCase2, batch int)
-	restart   []string
-	startedAt time.Time
-	rowsPer   int // rows one batch writes per tenant form
+	hot, cold      string
+	mode           string
+	forms          []tenantForm
+	at             time.Time
+	from, to       time.Time
+	filter         string
+	cases          []fvEmptyCase
+	write          func(t *testing.T, c *fvEmptyCase2, batch int)
+	restart        []string
+	startedAt      time.Time
+	rowsPer        int // rows one batch writes per tenant form
+	restartBatches int // batches the restart layer wrote (retries add one each)
 }
 
 func runFvEmptyLayers(t *testing.T, c *fvEmptyCase2) {
@@ -174,19 +178,43 @@ func runFvEmptyLayers(t *testing.T, c *fvEmptyCase2) {
 				requireCompactedOnce(t, c.mode, f.account, c.at)
 			}},
 		// The compacted layer ended with the buffer empty, right after a flush.
-		// The third batch is written and the service restarted at once, so the
-		// regular 5 s flush cannot write the segment before the restart: the new
-		// L0 is then the recovered segment's, written after the new StartedAt.
+		// A third batch is written and the service restarted at once, so the
+		// regular 5 s flush should not write the segment before the restart: the
+		// new L0 is then the recovered segment's, written after the new
+		// StartedAt. The index worker and the service-graph task can open a
+		// segment first (traces), and then the 5 s seal can win; the attempt is
+		// repeated with another batch, at most fvRestartAttempts times in all.
+		// waitFlushIdle / the attempt counting below duplicate what the layer
+		// controls of #459 do (waitFlushIdle, waitL0Objects, restartAttempts):
+		// remove this copy once #459 is on main.
 		{"restart",
 			func(t *testing.T, c *fvEmptyCase2) int {
-				c.write(t, c, 2)
-				c.startedAt = restartComposeServices(t, c.cold, c.mode, c.restart)
-				leftBuffer(t)
-				return 3 * c.rowsPer
+				for attempt := 0; attempt < fvRestartAttempts; attempt++ {
+					for _, f := range c.forms {
+						waitLeftBuffer(t, c.cold, c.mode, f.account, c.from, c.to)
+					}
+					c.write(t, c, 2+attempt)
+					c.restartBatches = attempt + 1
+					c.startedAt = restartComposeServices(t, c.cold, c.mode, c.restart)
+					leftBuffer(t)
+					recovered := true
+					for _, f := range c.forms {
+						if fvL0WrittenAfter(t, c.mode, f.account, c.at, c.startedAt) < 1 {
+							recovered = false
+						}
+					}
+					if recovered {
+						break
+					}
+					t.Logf("restart attempt %d: the periodic flush wrote the batch before the restart; retrying", attempt+1)
+				}
+				return (2 + c.restartBatches) * c.rowsPer
 			},
 			func(t *testing.T, c *fvEmptyCase2, f tenantForm) {
 				requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, 0)
-				requireRecoveredSegmentFlushed(t, c.mode, f.account, c.at, c.startedAt)
+				if n := fvL0WrittenAfter(t, c.mode, f.account, c.at, c.startedAt); n < 1 {
+					t.Fatalf("layer proof: tenant %s has no L0 object written after the restart started (%s): the batch was flushed before the restart in every attempt, not recovered from its segment", f.account, c.startedAt.UTC().Format(time.RFC3339Nano))
+				}
 			}},
 	}
 	for _, l := range layers {
@@ -220,10 +248,10 @@ func TestParity_FieldValues_EmptyBucket(t *testing.T) {
 			restart: []string{"lakehouse-logs"}}
 		c.write = func(t *testing.T, c *fvEmptyCase2, batch int) {
 			rows := []map[string]string{
-				{"app": "x", "ns": "n1", "lk": "v1"},
-				{"app": "x", "ns": "n1"},
-				{"app": "y"},
-				{"app": "y", "lk": ""},
+				{"app": "ax", "ns": "n1", "lk": "v1"},
+				{"app": "ax", "ns": "n1"},
+				{"app": "ay"},
+				{"app": "ay", "lk": ""},
 			}
 			var body bytes.Buffer
 			for i, r := range rows {
@@ -242,7 +270,7 @@ func TestParity_FieldValues_EmptyBucket(t *testing.T) {
 			{name: "field_values_ns", endpoint: "field_values", query: q, field: "ns"},
 			{name: "stream_field_values_ns_has_no_empty", endpoint: "stream_field_values", query: q, field: "ns"},
 			{name: "field_values_absent_everywhere", endpoint: "field_values", query: q, field: "nosuch"},
-			{name: "field_values_lk_filtered_query", endpoint: "field_values", query: q + " app:=y", field: "lk"},
+			{name: "field_values_lk_filtered_query", endpoint: "field_values", query: q + " app:=ay", field: "lk"},
 			{name: "field_values_lk_limit1", endpoint: "field_values", query: q, field: "lk", extra: map[string]string{"limit": "1"}, pastLimit: true},
 			{name: "field_values_lk_limit2", endpoint: "field_values", query: q, field: "lk", extra: map[string]string{"limit": "2"}},
 			{name: "field_values_lk_substring_filter", endpoint: "field_values", query: q, field: "lk", extra: map[string]string{"filter": "v"}},
@@ -254,6 +282,8 @@ func TestParity_FieldValues_EmptyBucket(t *testing.T) {
 			// Upstream sorts by hits then value and truncates (no uniq pipe), so
 			// the kept value is deterministic: exact, not shape-only.
 			{name: "stream_field_values_limit1_exact", endpoint: "stream_field_values", query: q, field: "app", extra: map[string]string{"limit": "1"}},
+			// Filter, then sort by hits, truncate, zero: exact on this path.
+			{name: "stream_field_values_filter_limit_exact", endpoint: "stream_field_values", query: q, field: "app", extra: map[string]string{"filter": "a", "limit": "1"}},
 		}
 		runFvEmptyLayers(t, c)
 	})
@@ -301,6 +331,7 @@ func TestParity_FieldValues_EmptyBucket(t *testing.T) {
 			{name: "stream_field_values_service", endpoint: "stream_field_values", query: q, field: "resource_attr:service.name"},
 			{name: "stream_field_values_non_stream_field", endpoint: "stream_field_values", query: q, field: "span_attr:sa", allowEmpty: true},
 			{name: "stream_field_values_limit1_exact", endpoint: "stream_field_values", query: q, field: "name", extra: map[string]string{"limit": "1"}},
+			{name: "stream_field_values_filter_limit_exact", endpoint: "stream_field_values", query: q, field: "name", extra: map[string]string{"filter": "op", "limit": "1"}},
 			{name: "field_values_star_query", endpoint: "field_values", query: "*", field: "span_attr:sa", ignoreEmpty: true},
 		}
 		runFvEmptyLayers(t, c)
@@ -350,4 +381,24 @@ func withoutEmptyBucket(t *testing.T, r fetchResult) fetchResult {
 	obj["values"] = kept
 	b, _ := json.Marshal(obj)
 	return fetchResult{StatusCode: r.StatusCode, Body: b}
+}
+
+// fvRestartAttempts bounds how often the restart layer is retried.
+const fvRestartAttempts = 3
+
+// fvL0WrittenAfter counts the tenant's L0 objects in the partition written at or
+// after startedAt (S3 LastModified has second granularity, so both are
+// truncated to the second): the flush of the segment a restarted pod recovered.
+func fvL0WrittenAfter(t *testing.T, mode, account string, at, startedAt time.Time) int {
+	t.Helper()
+	n := 0
+	for _, o := range partitionObjectInfo(t, mode, account, at) {
+		if strings.HasPrefix(o.name, "compacted-L") {
+			continue
+		}
+		if !o.modified.Truncate(time.Second).Before(startedAt.Truncate(time.Second)) {
+			n++
+		}
+	}
+	return n
 }

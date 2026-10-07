@@ -230,12 +230,12 @@ func (s *Storage) scanProjectedFieldValues(
 	// A target or filter field that can live in a MAP attribute column is read
 	// through the query path's columnar reader (see mapScanColumns); the
 	// positional scan below only addresses plain top-level leaf columns.
-	// A composite event/link field is read out of its JSON column by the
-	// positional scan, never through the attribute maps.
-	var mapCols map[string]bool
-	if subField == "" {
-		mapCols = s.mapScanColumns(targetField, filter, tombstones)
-	}
+	// nil unless an attribute MAP column is involved (the target, a filter field
+	// or a tombstone field). An event/link target on its own stays on the
+	// positional scan, which reads its JSON column; combined with a MAP
+	// attribute filter or tombstone the columnar reader serves both: it expands
+	// the composite column as well.
+	mapCols := s.mapScanColumns(targetField, filter, tombstones)
 	if mapCols != nil {
 		projectedCols = mapCols
 	}

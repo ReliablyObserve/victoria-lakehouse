@@ -30,7 +30,7 @@ func mapsThenScalarsFile(t *testing.T) []byte {
 	t.Helper()
 	rows := []mapsThenScalars{
 		{1000, "a", map[string]string{"rk": "rv1"}, map[string]string{"lk": "lv1"}, "INFO", "svc-a"},
-		{2000, "b", map[string]string{"rk": "rv2"}, nil, "ERROR", "svc-a"},
+		{2000, "b", map[string]string{"rk": "rv2"}, map[string]string{"lk": "lv2"}, "ERROR", "svc-a"},
 		{3000, "c", nil, map[string]string{"lk": "lv3"}, "INFO", "svc-b"},
 	}
 	var buf bytes.Buffer
@@ -84,6 +84,14 @@ func TestAccumulateFieldHits_ScalarAfterMapsIsIndexedByLeaf(t *testing.T) {
 	s.accumulateFieldHits(f, hits, nil)
 	// Every scalar column has 3 non-null values. Read through the wrong chunk
 	// (a map's key or value leaf) the counts are the map entries, 2 and 2.
+	// The MAP columns are reported too, by the chunk of their own key leaf: two
+	// rows carry a resource attribute, all three a log attribute. A map read
+	// through the wrong chunk (another map's value leaf) gives another number.
+	for col, want := range map[string]uint64{"resource.attributes": 2, "log.attributes": 3} {
+		if hits[col] != want {
+			t.Errorf("%s: %d hits, want %d (all: %v)", col, hits[col], want, hits)
+		}
+	}
 	for _, c := range []string{"body", "severity_text", "service.name"} {
 		name := c
 		if m := s.registry.ResolveFromParquet(c); m != nil {

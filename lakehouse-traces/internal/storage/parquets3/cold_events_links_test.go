@@ -428,8 +428,8 @@ func TestCold_EventsLinks_FieldValues(t *testing.T) {
 		{"event name 1", "event:event_name:1", "*", all},
 		{"event attr", "event:event_attr:exception.type:0", "*", all},
 		{"link span id", "link:link_span_id:0", "*", all},
-		// Values of a MAP attribute (span_attr:*, scope_attr:*) are not
-		// enumerable on cold at all today; that is not specific to scope attributes.
+		// Values of a MAP attribute (span_attr:*, scope_attr:*) are covered by
+		// field_values_map_test.go and field_values_map_property_test.go.
 		{"event name filtered by event", "event:event_name:0", `"event:event_name:1":="log"`, func(w map[string]string) bool { return w["event:event_name:1"] == "log" }},
 		{"event name filtered by a link", "event:event_name:0", `"link:link_span_id:0":*`, func(w map[string]string) bool { _, ok := w["link:link_span_id:0"]; return ok }},
 	} {

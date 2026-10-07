@@ -180,7 +180,17 @@ func valuesFilteredThenLimited(filter string, limit uint64, fetch func(limit uin
 	if len(filtered) == 0 {
 		return filtered, nil
 	}
-	return logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{filtered}, limit, true), nil
+	// Upstream (GetStreamFieldValues): sort by hits then value, truncate, and only
+	// then zero the hits. MergeValuesWithHits(..., true) would zero them first
+	// and keep the first values by name instead of the most frequent ones.
+	exceeded := limit > 0 && uint64(len(filtered)) > limit
+	out := logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{filtered}, limit, false)
+	if exceeded {
+		for i := range out {
+			out[i].Hits = 0
+		}
+	}
+	return out, nil
 }
 
 func filterValuesBySubstring(results []logstorage.ValueWithHits, filter string) []logstorage.ValueWithHits {
