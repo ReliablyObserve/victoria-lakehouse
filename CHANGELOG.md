@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Compose Jaeger UI proxy answered 500 on every `/api` call.** `deployment/docker/jaeger-ui-proxy.conf.template` set the upstream variable after `rewrite ... break`, which ends the rewrite phase, so `proxy_pass` had an empty upstream. The `set` now comes first (dev compose stacks only, not a shipped image; closes #462).
 
+- **`field_values` over MAP-stored attributes returns the attribute's own values on cold data, rows without the field count as the empty value like hot, and `stream_field_values` never lists it (both binaries; fixes #433, part of #280).**
+  User-visible symptom: on cold data `field_values` of a custom log attribute returned another attribute's values, and on
+  traces `span_attr:x` returned resource values, `resource_attr:x` a key and `scope_attr:x` another map's key; a
+  `field_values` request filtered on a map attribute returned nothing. The scan addressed column chunks by top-level
+  column position while a MAP column owns two leaf chunks. MAP attributes are now read through the query path's reader
+  (only the requested keys) and every other column is addressed by its leaf index. A row without the field is now one hit
+  of the empty value, as on hot; `stream_field_values` lists stream-tag values only and never the empty value, and the
+  substring `filter` applies before `limit`. The Jaeger services/operations lookups still try their fallback field when
+  the answer is only the empty value, and the buffer bridge names map attributes by their bare key like cold and hot. `stream_field_values` now answers like upstream from the streams' tags (buffer, peer buffers and cold), so a field that is no stream tag answers nothing instead of listing the column's values (fixes #445). Known gap on traces (#458): hot VictoriaTraces counts the `trace_id_idx` rows it writes per trace (20-40 s after ingestion) in every query that matches them (`*`, negated filters, `stats count()`), which Lakehouse drops at flush; non-empty values and `span_id:*` match.
+
 ## [0.146.7] - 2026-10-07
 
 ### Fixed
