@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
 from typing import Callable
 
 MARKER = "[skip release]"
+SQUASH_SUFFIX = re.compile(r"\(#(\d+)\)\s*$")
 MAIN_REF = "refs/heads/main"
 ATTEMPTS = 3
 
@@ -42,7 +44,7 @@ class Decision:
         return iter((self.skip, self.reason))
 
 
-def decide(message: str, fetch_titles: Callable[[], list[str]], event: str = "push", ref: str = MAIN_REF) -> Decision:
+def decide(message: str, fetch_titles: Callable[[str | None], list[str]], event: str = "push", ref: str = MAIN_REF) -> Decision:
     if ref != MAIN_REF:
         return Decision(True, f"refusing to release from {ref or 'an unknown ref'}: releases are cut from main only", failed=True)
     if event == "workflow_dispatch":
@@ -50,8 +52,9 @@ def decide(message: str, fetch_titles: Callable[[], list[str]], event: str = "pu
     first = message.splitlines()[0] if message.strip() else ""
     if MARKER in first:
         return Decision(True, "commit subject contains [skip release]")
+    m = SQUASH_SUFFIX.search(first)
     try:
-        titles = fetch_titles()
+        titles = fetch_titles(m.group(1) if m else None)
     except Exception as exc:  # fail closed
         return Decision(True, (
             f"cannot read the pull request title for the pushed commit ({type(exc).__name__}: {exc}); not releasing. "
@@ -64,28 +67,41 @@ def decide(message: str, fetch_titles: Callable[[], list[str]], event: str = "pu
     return Decision(False, "no pull request is associated with the pushed commit (a direct push): the commit subject is the whole signal")
 
 
-def github_titles(repo: str, token: str, sha: str, sleep: Callable[[float], None] = time.sleep) -> Callable[[], list[str]]:
-    """Titles of the PRs for the pushed commit, with retries and backoff."""
+def github_titles(repo: str, token: str, sha: str, sleep: Callable[[float], None] = time.sleep) -> Callable[[str | None], list[str]]:
+    """Titles of the PR that produced the pushed commit, with retries and backoff.
 
-    def once() -> list[str]:
+    Only a PR whose merge_commit_sha is the pushed SHA counts: an unrelated open
+    PR must never decide a direct push. When the commit has no associated PR but
+    its subject ends in "(#N)", PR N is read and must have been merged as this
+    very commit, otherwise the lookup fails (closed) instead of releasing blindly.
+    """
+
+    def get(path: str):
         req = urllib.request.Request(
-            f"https://api.github.com/repos/{repo}/commits/{sha}/pulls",
+            f"https://api.github.com/repos/{repo}/{path}",
             headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
                      "X-GitHub-Api-Version": "2022-11-28"},
         )
         with urllib.request.urlopen(req, timeout=30) as r:
-            prs = json.load(r)
-        # The PR that produced this commit; fall back to every associated PR.
-        merged = [p for p in prs if p.get("merge_commit_sha") == sha]
-        return [p["title"] for p in (merged or prs)]
+            return json.load(r)
 
-    def fetch() -> list[str]:
+    def once(number: str | None) -> list[str]:
+        prs = get(f"commits/{sha}/pulls")
+        matched = [p["title"] for p in prs if p.get("merge_commit_sha") == sha]
+        if matched or not number:
+            return matched
+        pr = get(f"pulls/{number}")
+        if pr.get("merge_commit_sha") != sha:
+            raise RuntimeError(f"PR #{number} was not merged as commit {sha[:12]}")
+        return [pr["title"]]
+
+    def fetch(number: str | None) -> list[str]:
         if not (repo and token and sha):  # a missing setting is not transient: no retries
             raise RuntimeError("no GITHUB_REPOSITORY/GITHUB_TOKEN/GITHUB_SHA")
         last: Exception | None = None
         for attempt in range(ATTEMPTS):
             try:
-                return once()
+                return once(number)
             except Exception as exc:
                 last = exc
                 if attempt < ATTEMPTS - 1:

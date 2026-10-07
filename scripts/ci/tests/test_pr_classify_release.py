@@ -165,6 +165,15 @@ class ReleaseMetadataShape(unittest.TestCase):
     def test_chart_required(self):
         self.assertFalse(self.verdict({"CHANGELOG.md": CL_HEAD, "docs/features.md": FEATURES_HEAD}))
 
+    def test_chart_version_must_equal_the_heading_even_when_appversion_does(self):
+        # M38
+        self.assertFalse(self.verdict({**self.GOOD, "charts/victoria-lakehouse/Chart.yaml": CHART_HEAD.replace("version: 0.146.5", "version: 0.146.9")}))
+
+    def test_chart_duplicate_top_level_keys(self):
+        # M37
+        self.assertFalse(self.verdict({**self.GOOD, "charts/victoria-lakehouse/Chart.yaml": CHART_HEAD + "version: 0.146.5\n"}))
+        self.assertFalse(self.verdict({**self.GOOD, "charts/victoria-lakehouse/Chart.yaml": CHART_HEAD + 'appVersion: "0.146.5"\n'}))
+
     # ---- README ----
     def test_readme_line_rewritten_keeping_a_semver(self):
         base_readme = "badge appVersion-0.146.4\nhelm install lh oci://ghcr.io/x/charts/victoria-lakehouse --version 0.146.4\n"

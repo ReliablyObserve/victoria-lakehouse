@@ -416,9 +416,13 @@ class CheckChangelogPRTests(unittest.TestCase):
         # nothing new: head equal to base is not a release
         self.assertIsNone(changelog_release_shape(base, base))
         # subheadings are structural: moving G out of a section that keeps its "### Changed" is fine
-        head = ("# C\n\n## [Unreleased]\n\n### Changed\n\n- G\n\n## [0.3.0] - 2026-01-03\n\n- A\n\n"
-                "## [0.2.0] - 2026-01-02\n\n### Changed\n\n- K\n")
+        head = ("# C\n\n## [Unreleased]\n\n### Changed\n\n- G\n- K\n\n## [0.3.0] - 2026-01-03\n\n- A\n\n"
+                "## [0.2.0] - 2026-01-02\n\n")
         self.assertEqual(changelog_release_shape(base, head), ("0.2.0", "0.3.0"))
+        # splitting one section's bullets across Unreleased and the old section needs a second
+        # subheading outside the new section: that is for the owner
+        split = head.replace("- G\n- K\n", "- G\n").replace("## [0.2.0] - 2026-01-02\n\n", "## [0.2.0] - 2026-01-02\n\n### Changed\n\n- K\n")
+        self.assertIsNone(changelog_release_shape(base, split))
         # the previously newest heading may not change (its date included)
         self.assertIsNone(changelog_release_shape(base, head.replace("## [0.2.0] - 2026-01-02", "## [0.2.0] - 2026-01-09")))
         # a base or head without [Unreleased] first
@@ -431,6 +435,86 @@ class CheckChangelogPRTests(unittest.TestCase):
         first_head = "# C\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n- A\n"
         self.assertEqual(changelog_release_shape(first_base, first_head), ("", "0.1.0"))
         self.assertIsNone(changelog_release_shape(first_base, first_head + "\n## [0.0.1] - 2025-12-31\n"))
+
+    def test_subheadings_are_counted_and_limited(self):
+        base = (
+            "# C\n\n## [Unreleased]\n\n### Added\n\n- **A.** t\n\n"
+            "## [0.2.0] - 2026-01-02\n\n### Changed\n\n- **G.** t\n"
+        )
+        good = (
+            "# C\n\n## [Unreleased]\n\n## [0.3.0] - 2026-01-03\n\n### Added\n\n- **A.** t\n\n"
+            "## [0.2.0] - 2026-01-02\n\n### Changed\n\n- **G.** t\n"
+        )
+        self.assertEqual(changelog_release_shape(base, good), ("0.2.0", "0.3.0"))
+        # a heading is release notes too: free text cannot ride in as a subheading
+        injected = good.replace("### Added\n\n- **A.** t", "### Breaking: the /select/logsql/tail API was removed\n\n### Added\n\n- **A.** t")
+        self.assertIsNone(changelog_release_shape(base, injected))
+        # only the Keep-a-Changelog names, even when the base already had the odd one
+        odd = base.replace("### Added", "### Breaking")
+        self.assertIsNone(changelog_release_shape(odd, good.replace("### Added", "### Breaking")))
+        # a subheading lost
+        self.assertIsNone(changelog_release_shape(base, good.replace("### Added\n\n", "")))
+        # a base subheading may appear once more, in the new section only
+        both = base.replace("- **A.** t\n", "- **A.** t\n- **B.** t\n")
+        split = (
+            "# C\n\n## [Unreleased]\n\n### Added\n\n- **B.** t\n\n## [0.3.0] - 2026-01-03\n\n### Added\n\n- **A.** t\n\n"
+            "## [0.2.0] - 2026-01-02\n\n### Changed\n\n- **G.** t\n"
+        )
+        self.assertEqual(changelog_release_shape(both, split), ("0.2.0", "0.3.0"))
+        twice = split.replace("- **B.** t\n\n## [0.3.0]", "- **B.** t\n\n### Added\n\n## [0.3.0]")
+        self.assertIsNone(changelog_release_shape(both, twice))
+        in_old = split.replace("### Changed\n\n- **G.** t", "### Changed\n\n### Changed\n\n- **G.** t")
+        self.assertIsNone(changelog_release_shape(both, in_old))
+        # a repeated subheading that the base never had, in the new section
+        new_name = good.replace("## [0.3.0] - 2026-01-03\n\n### Added", "## [0.3.0] - 2026-01-03\n\n### Fixed\n\n### Added")
+        self.assertIsNone(changelog_release_shape(base, new_name))
+
+    def test_naming_versions_are_whole_versions(self):
+        # M30: v1.2.3 must not match inside v1.2.30
+        b = "- `a` · since: the release after v1.2.30 · x\n"
+        self.assertFalse(generated_docs_version_naming_only(b, "- `a` · since: v1.2.4 · x\n", "1.2.3", "1.2.4"))
+        b2 = "- `a` · since: the release after v1.2.3 · x\n"
+        self.assertFalse(generated_docs_version_naming_only(b2, "- `a` · since: v1.2.40 · x\n", "1.2.3", "1.2.4"))
+        self.assertTrue(generated_docs_version_naming_only(b2, "- `a` · since: v1.2.4 · x\n", "1.2.3", "1.2.4"))
+        self.assertTrue(generated_docs_version_naming_only(b2, "- `a` · since: v1.2.4.\n".replace("v1.2.4.", "v1.2.4 · x"), "1.2.3", "1.2.4"))
+
+    def test_naming_a_released_since_is_never_renamed(self):
+        # M31: an already released "since: v0.146.4" stays whatever the new release is
+        b = "- `a` · since: v0.146.4 · s\n"
+        self.assertFalse(generated_docs_version_naming_only(b, b.replace("v0.146.4", "v0.146.5"), "0.146.4", "0.146.5"))
+        self.assertFalse(generated_docs_version_naming_only(b, b.replace("v0.146.4", "the release after v0.146.5"), "0.146.4", "0.146.5"))
+
+    def test_main_rejects_a_bad_changelog_shape_even_with_clean_naming(self):
+        # M35: the naming check is only trusted when the CHANGELOG shape is a release
+        def build(head_cl):
+            with tempfile.TemporaryDirectory() as d:
+                def run(*a):
+                    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@e", "-c", "commit.gpgsign=false", *a],
+                                   cwd=d, check=True, capture_output=True)
+                run("init", "-q", "-b", "main")
+                os.makedirs(os.path.join(d, "docs"))
+                base_cl = "# C\n\n## [Unreleased]\n\n- **A.** t\n\n## [0.1.0] - 2026-01-01\n\n- **O.** t\n"
+                for name, text in (("CHANGELOG.md", base_cl), ("docs/features.md", "- `a` · since: the release after v0.1.0 · x\n")):
+                    with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                        fh.write(text)
+                run("add", "-A")
+                run("commit", "-q", "-m", "base")
+                run("branch", "base")
+                for name, text in (("CHANGELOG.md", head_cl), ("docs/features.md", "- `a` · since: v0.2.0 · x\n")):
+                    with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                        fh.write(text)
+                run("add", "-A")
+                run("commit", "-q", "-m", "chore: release metadata for v0.2.0 [skip release]")
+                out = io.StringIO()
+                with unittest.mock.patch("scripts.ci.check_changelog_pr.ROOT", pathlib.Path(d)), \
+                        unittest.mock.patch.object(sys, "argv", ["x", "--base", "base", "--head", "HEAD"]), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    changelog_main()
+                return "release metadata sync" in out.getvalue()
+
+        good = "# C\n\n## [Unreleased]\n\n## [0.2.0] - 2026-01-02\n\n- **A.** t\n\n## [0.1.0] - 2026-01-01\n\n- **O.** t\n"
+        self.assertTrue(build(good))
+        self.assertFalse(build(good.replace("- **A.** t", "- **A.** t\n- **Smuggled.** t")))
 
     def test_naming_not_applied_to_other_paths(self):
         for path in ("docs/archive/features.md", "docs/features.md.bak", "xdocs/features.md"):

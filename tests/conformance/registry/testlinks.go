@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -29,7 +30,7 @@ import (
 // packages carry behaviour; the tests/ suites are the cross-cutting proofs.
 var linkedTestPrefixes = []string{
 	"internal/", "cmd/", "lakehouse-traces/",
-	"tests/parity/", "tests/e2e/", "tests/conformance/", "tests/ingestmatrix/",
+	"tests/parity/", "tests/e2e/", "tests/conformance/", "tests/ingestmatrix/", "tests/s3compat/",
 }
 
 // IsLinkedTestFile reports whether path is a Go test file whose Test and Fuzz
@@ -258,11 +259,12 @@ func DiffAddedTests(changed []string, baseSrc, headSrc func(path string) []byte)
 	return out, nil
 }
 
-// Linked reports whether some reference names the test: `file#Name`, or the
-// bare `file` (a file-level link covers every test in that file).
+// Linked reports whether some reference names the test as `file#Name`. A bare
+// file reference does not link a NEW test: it was written before the test
+// existed and says nothing about it.
 func Linked(t AddedTest, refs []TestRef) bool {
 	for _, r := range refs {
-		if r.Path == t.File && (r.Name == "" || r.Name == t.Name) {
+		if r.Path == t.File && r.Name == t.Name {
 			return true
 		}
 	}
@@ -333,4 +335,48 @@ func UnlinkedTests(repoRoot string, refs []TestRef) (total int, unlinked []Added
 		return nil
 	})
 	return total, unlinked, err
+}
+
+var skipCallRe = regexp.MustCompile(`\.(?:Skip|SkipNow|Skipf)\(`)
+
+// testFileHeader is everything before the package clause: build constraints and
+// the comments around them. Any edit of it, comments included, counts as
+// changing a constraint.
+func testFileHeader(src []byte) string {
+	if m := packageClauseRe.FindIndex(src); m != nil {
+		return string(src[:m[0]])
+	}
+	return string(src)
+}
+
+var packageClauseRe = regexp.MustCompile(`(?m)^package\s`)
+
+// LockFileWeakenings reports, for each test file a lock row references, a
+// changed build constraint (header before the package clause) or a newly added
+// Skip, SkipNow or Skipf call: either stops a lock from running without
+// touching the registry.
+func LockFileWeakenings(files []string, baseSrc, headSrc func(string) []byte) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range files {
+		if seen[f] || !strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		seen[f] = true
+		b, h := baseSrc(f), headSrc(f)
+		if b == nil {
+			continue // a new file has nothing to weaken
+		}
+		if h == nil {
+			continue // a deleted file is the stale-reference check's business
+		}
+		if testFileHeader(b) != testFileHeader(h) {
+			out = append(out, fmt.Sprintf("%s: the build constraint header changed in a file a lock references", f))
+		}
+		if len(skipCallRe.FindAll(h, -1)) > len(skipCallRe.FindAll(b, -1)) {
+			out = append(out, fmt.Sprintf("%s: a Skip call was added to a file a lock references", f))
+		}
+	}
+	sort.Strings(out)
+	return out
 }

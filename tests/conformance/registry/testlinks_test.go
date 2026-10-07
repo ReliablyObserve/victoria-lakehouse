@@ -61,7 +61,8 @@ func TestIsLinkedTestFile(t *testing.T) {
 		"internal/x/a.go":                       false,
 		"internal/x/testdata/a_test.go":         false,
 		"lakehouse-traces/deps/V/a_test.go":     false,
-		"tests/s3compat/a_test.go":              false,
+		"tests/s3compat/a_test.go":              true,
+		"tests/playwright/a_test.go":            false,
 		"scripts/x/a_test.go":                   false,
 	}
 	for p, want := range cases {
@@ -133,8 +134,11 @@ func TestCollectTestRefs_LinkedAndStale(t *testing.T) {
 	if !Linked(AddedTest{File: "internal/x/a_test.go", Name: "TestA"}, refs) {
 		t.Error("TestA is linked by name")
 	}
-	if !Linked(AddedTest{File: "internal/x/b_test.go", Name: "TestAnything"}, refs) {
-		t.Error("a file-level reference links every test in the file")
+	if Linked(AddedTest{File: "internal/x/b_test.go", Name: "TestAnything"}, refs) {
+		t.Error("a file-level reference must not link a NEW test: it must be named file#Test")
+	}
+	if !Linked(AddedTest{File: "internal/x/a_test.go", Name: "TestA"}, refs) {
+		t.Error("a named reference links its test")
 	}
 	stale := StaleRefs(root, refs, []string{"internal/x/a_test.go"})
 	if len(stale) != 1 || !strings.Contains(stale[0], "TestGone") {
@@ -144,7 +148,62 @@ func TestCollectTestRefs_LinkedAndStale(t *testing.T) {
 		t.Errorf("references into untouched files must not be examined, got %v", got)
 	}
 	total, un, err := UnlinkedTests(root, refs)
-	if err != nil || total != 3 || len(un) != 1 || un[0].Name != "TestNew" {
+	if err != nil || total != 3 || len(un) != 2 {
 		t.Errorf("UnlinkedTests = %d %v %v", total, un, err)
+	}
+}
+
+func TestLockFileWeakenings(t *testing.T) {
+	base := map[string]string{
+		"tests/parity/a_test.go": "//go:build parity\n\npackage parity\n\nfunc TestA(t *testing.T) { t.Skip(\"known\") }\n",
+		"tests/parity/b_test.go": "// +build parity\n\npackage parity\n\nfunc TestB(t *testing.T) {}\n",
+		"tests/parity/c_test.go": "package parity\n\nfunc TestC(t *testing.T) {}\n",
+	}
+	src := func(m map[string]string) func(string) []byte {
+		return func(p string) []byte {
+			if s, ok := m[p]; ok {
+				return []byte(s)
+			}
+			return nil
+		}
+	}
+	files := []string{"tests/parity/a_test.go", "tests/parity/b_test.go", "tests/parity/c_test.go", "tests/parity/new_test.go", "tests/parity/gone_test.go", "tests/parity/x.go", "tests/parity/c_test.go"}
+	cases := map[string]struct {
+		head map[string]string
+		want []string
+	}{
+		"nothing changed": {base, nil},
+		"build tag replaced (N4)": {map[string]string{
+			"tests/parity/a_test.go": "//go:build parity && ignore\n\npackage parity\n\nfunc TestA(t *testing.T) { t.Skip(\"known\") }\n",
+			"tests/parity/b_test.go": base["tests/parity/b_test.go"], "tests/parity/c_test.go": base["tests/parity/c_test.go"]},
+			[]string{"tests/parity/a_test.go: the build constraint header changed in a file a lock references"}},
+		"comment-only header edit counts": {map[string]string{
+			"tests/parity/a_test.go": base["tests/parity/a_test.go"], "tests/parity/c_test.go": base["tests/parity/c_test.go"],
+			"tests/parity/b_test.go": "// +build parity\n// harmless comment\n\npackage parity\n\nfunc TestB(t *testing.T) {}\n"},
+			[]string{"tests/parity/b_test.go: the build constraint header changed in a file a lock references"}},
+		"a build tag added to a file with none": {map[string]string{
+			"tests/parity/a_test.go": base["tests/parity/a_test.go"], "tests/parity/b_test.go": base["tests/parity/b_test.go"],
+			"tests/parity/c_test.go": "//go:build never\n\npackage parity\n\nfunc TestC(t *testing.T) {}\n"},
+			[]string{"tests/parity/c_test.go: the build constraint header changed in a file a lock references"}},
+		"t.Skip added (N5)": {map[string]string{
+			"tests/parity/a_test.go": base["tests/parity/a_test.go"], "tests/parity/b_test.go": base["tests/parity/b_test.go"],
+			"tests/parity/c_test.go": "package parity\n\nfunc TestC(t *testing.T) { t.Skip(\"flaky\") }\n"},
+			[]string{"tests/parity/c_test.go: a Skip call was added to a file a lock references"}},
+		"SkipNow and Skipf count": {map[string]string{
+			"tests/parity/a_test.go": base["tests/parity/a_test.go"], "tests/parity/b_test.go": "// +build parity\n\npackage parity\n\nfunc TestB(t *testing.T) { t.Skipf(\"x\") }\n",
+			"tests/parity/c_test.go": "package parity\n\nfunc TestC(t *testing.T) { t.SkipNow() }\n"},
+			[]string{"tests/parity/b_test.go: a Skip call was added to a file a lock references", "tests/parity/c_test.go: a Skip call was added to a file a lock references"}},
+		"an existing Skip kept or removed is fine": {map[string]string{
+			"tests/parity/a_test.go": "//go:build parity\n\npackage parity\n\nfunc TestA(t *testing.T) {}\n",
+			"tests/parity/b_test.go": base["tests/parity/b_test.go"], "tests/parity/c_test.go": base["tests/parity/c_test.go"]}, nil},
+		"a new file and a deleted file are not weakenings": {map[string]string{
+			"tests/parity/a_test.go": base["tests/parity/a_test.go"], "tests/parity/b_test.go": base["tests/parity/b_test.go"],
+			"tests/parity/c_test.go": base["tests/parity/c_test.go"], "tests/parity/new_test.go": "package parity\nfunc TestN(t *testing.T) { t.Skip() }\n"}, nil},
+	}
+	for name, c := range cases {
+		got := LockFileWeakenings(files, src(base), src(c.head))
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v", name, got, c.want)
+		}
 	}
 }
