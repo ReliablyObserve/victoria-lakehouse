@@ -439,6 +439,12 @@
     - lakehouse-traces/internal/vtstorage_adapter/values_filter_limit_test.go#TestValuesFilteredThenLimited
     - tests/parity/field_values_map_attrs_test.go#TestParity_FieldValues_MapAttributes
     - tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket
+    - internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_SameKeyTwoMapsIsResourceFirstOnEveryRead
+    - internal/vlstorage/values_filter_limit_test.go#TestValuesFilteredThenLimited_KeepsTopHitsThenZeroes
+    - lakehouse-traces/internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_EventTargetWithMapAttributeFilterAndTombstone
+    - lakehouse-traces/internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_SameKeyTwoMapsIsResourceFirstOnEveryRead
+    - lakehouse-traces/internal/vlstorage/values_filter_limit_test.go#TestValuesFilteredThenLimited_KeepsTopHitsThenZeroes
+    - lakehouse-traces/internal/vtstorage_adapter/values_filter_limit_test.go#TestValuesFilteredThenLimited_KeepsTopHitsThenZeroes
   docs:
     - docs/parity-and-gaps.md
   highlight: >-
