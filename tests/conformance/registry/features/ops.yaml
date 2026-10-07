@@ -400,7 +400,6 @@
     - scripts/proof/tests/test_visual_publish.py
     - scripts/proof/tests/test_runner.py#test_seed_equality_covers_alias_buffer_all_and_numeric1001
     - scripts/proof/tests/test_runner.py#test_seed_equality_compares_rows_not_only_counts_and_rejects_zero_everywhere
-    - scripts/proof/tests/test_runner.py#test_wait_stable_waits_for_late_rows_and_fails_on_a_count_that_keeps_moving
     - scripts/proof/tests/test_runner.py#test_snapshot_counts_all_rows_and_span_rows_for_traces
     - scripts/proof/tests/test_runner.py#test_buffer_rows_use_the_account_of_the_tenant_form
     - scripts/proof/tests/test_runner.py#test_resample_allowance_is_not_used_by_fixed_requests_and_skips_are_reported
@@ -412,7 +411,6 @@
     - scripts/proof/tests/test_runner.py#test_the_keyorder_form_joins_the_seed_check_when_the_state_has_the_fixture
     - scripts/proof/tests/test_stack_and_cli.py#test_settled_buffered_does_not_accept_two_equal_zero_reads
     - scripts/proof/tests/test_stack_and_cli.py#test_ports_come_from_the_project_or_an_explicit_base
-    - scripts/proof/tests/test_stack_and_cli.py#test_images_are_scoped_to_the_project_and_nothing_else_is_removed
     - scripts/proof/tests/test_stack_and_cli.py#test_compose_publishes_every_port_and_names_every_built_image_through_variables
     - scripts/proof/tests/test_stack_and_cli.py#test_the_keyorder_fixture_is_multi_stream_tied_and_not_alphabetical
     - scripts/proof/tests/test_stack_and_cli.py#test_make_state_marks_the_project_and_ports

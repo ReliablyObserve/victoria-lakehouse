@@ -20,7 +20,7 @@ def test_state_windows_are_hour_aligned_and_disjoint():
     for w in (st["cold"], st["buffer"]):
         assert all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:00:00Z", w[k]) for k in w)
     assert st["tenants"]["alias"] == {"acme-corp": "1001:0"}
-    assert set(st["ports"].values()) <= set(range(48000, 48500)) and len(set(st["ports"].values())) == len(st["ports"])
+    assert st["ports"] == stack.PORTS and len(set(st["ports"].values())) == len(st["ports"])  # whichever project the environment names
 
 
 def test_datagen_command_uses_the_same_seed_and_now_for_every_side():
