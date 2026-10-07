@@ -11,4 +11,4 @@ TestParity_PhrasePruning_Logs                    26
 TestParity_PhrasePruning_Traces                  19
 TestParity_Traces_EventsLinksInvalidUTF8         12
 TestParity_Traces_EventsLinksLayers            2270
-TestParity_Traces_EventsLinksScopeAttrs        1  # to be set from the observed count
+TestParity_Traces_EventsLinksScopeAttrs       85  # traces selected x 4 comparisons + 5 count cases
