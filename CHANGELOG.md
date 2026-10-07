@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.146.3] - 2026-10-07
+
 ### Fixed
 
 - **A sort over all columns now orders rows that share a `_time` like upstream, on every read, on cold data (closes #427, #324).**
