@@ -123,6 +123,10 @@ func TestParity_Traces_EventsLinksScopeAttrs(t *testing.T) {
 	for _, version := range []string{"v1", "v2"} {
 		t.Run("tempo_trace_by_id_"+version, func(t *testing.T) { parityExtrasTempoByID(t, ids, version) })
 	}
+	// The cells of the four per-trace comparisons above are the traces selected (at most 12 with
+	// events and 8 with links, fixed by the corpus), not the fields they happen to carry: the field
+	// count depends on which other tests' traces are in the window, so it would not be a stable floor.
+	reportLockCells(t, 4*(len(withEvents)+len(withLinks)))
 	// Filters and enumerations over the three field families agree with hot.
 	counts := []struct{ name, filter string }{
 		{"event_name", `"event:event_name:0":="exception"`},
@@ -193,7 +197,6 @@ func parityExtrasLogsQueryRows(t *testing.T, ids []string) {
 	if events == 0 || links == 0 || scope == 0 {
 		t.Fatalf("vacuous: compared %d event fields, %d link fields, %d scope fields", events, links, scope)
 	}
-	reportLockCells(t, events+links+scope)
 	t.Logf("compared %d traces: %d event, %d link, %d scope fields", len(ids), events, links, scope)
 }
 
