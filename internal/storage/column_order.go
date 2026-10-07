@@ -1,7 +1,8 @@
 package storage
 
 import (
-	"sort"
+	"slices"
+	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
@@ -43,26 +44,52 @@ func OrderColumnsLikeUpstream(db *logstorage.DataBlock) {
 	if len(cols) < 2 {
 		return
 	}
-	var buf [64]columnRank
-	ranks := buf[:0]
+	// Sort 8-byte (index, group) pairs and permute the columns afterwards, so a
+	// block of any width sorts without copying its 40-byte columns.
+	var buf [64]rankedIdx
+	ranked := buf[:0]
 	if len(cols) > len(buf) {
-		ranks = make([]columnRank, 0, len(cols))
+		ranked = make([]rankedIdx, 0, len(cols))
 	}
 	sorted := true
 	for i := range cols {
-		r := columnRank{group: specialColumnRank(cols[i].Name)}
-		if r.group == groupOther && isConstColumn(cols[i].Values) {
-			r.group = groupConst
+		g := specialColumnRank(cols[i].Name)
+		if g == groupOther && isConstColumn(cols[i].Values) {
+			g = groupConst
 		}
-		ranks = append(ranks, r)
-		if i > 0 && rankLess(cols[i], ranks[i], cols[i-1], ranks[i-1]) {
+		ranked = append(ranked, rankedIdx{idx: int32(i), group: int32(g)})
+		if i > 0 && columnLess(cols, ranked[i], ranked[i-1]) {
 			sorted = false
 		}
 	}
 	if sorted {
 		return
 	}
-	sort.Sort(&columnSorter{cols: cols, ranks: ranks})
+	slices.SortFunc(ranked, func(a, b rankedIdx) int {
+		if a.group != b.group {
+			return int(a.group - b.group)
+		}
+		return strings.Compare(cols[a.idx].Name, cols[b.idx].Name)
+	})
+	// ranked[i].idx is the column that belongs at position i: apply the
+	// permutation in place, one cycle at a time.
+	for i := range ranked {
+		if int(ranked[i].idx) == i {
+			continue
+		}
+		tmp := cols[i]
+		j := i
+		for {
+			src := int(ranked[j].idx)
+			ranked[j].idx = int32(j)
+			if src == i {
+				cols[j] = tmp
+				break
+			}
+			cols[j] = cols[src]
+			j = src
+		}
+	}
 	db.SetColumns(cols)
 }
 
@@ -75,7 +102,8 @@ const (
 	groupOther
 )
 
-type columnRank struct{ group int }
+// rankedIdx names a column by its index with its group, 8 bytes.
+type rankedIdx struct{ idx, group int32 }
 
 func specialColumnRank(name string) int {
 	switch name {
@@ -108,23 +136,9 @@ func isConstColumn(values []string) bool {
 	return true
 }
 
-func rankLess(a logstorage.BlockColumn, ra columnRank, b logstorage.BlockColumn, rb columnRank) bool {
-	if ra.group != rb.group {
-		return ra.group < rb.group
+func columnLess(cols []logstorage.BlockColumn, a, b rankedIdx) bool {
+	if a.group != b.group {
+		return a.group < b.group
 	}
-	return a.Name < b.Name
-}
-
-type columnSorter struct {
-	cols  []logstorage.BlockColumn
-	ranks []columnRank
-}
-
-func (s *columnSorter) Len() int { return len(s.cols) }
-func (s *columnSorter) Less(i, j int) bool {
-	return rankLess(s.cols[i], s.ranks[i], s.cols[j], s.ranks[j])
-}
-func (s *columnSorter) Swap(i, j int) {
-	s.cols[i], s.cols[j] = s.cols[j], s.cols[i]
-	s.ranks[i], s.ranks[j] = s.ranks[j], s.ranks[i]
+	return cols[a.idx].Name < cols[b.idx].Name
 }

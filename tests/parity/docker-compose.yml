@@ -80,6 +80,9 @@ services:
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=5s"
       - "-lakehouse.compaction.interval=15s"
+      # One static string alias per binary for the alias tenant form of the layer
+      # cases (tests/parity/layer_controls_test.go); hot has no aliases.
+      - "-lakehouse.tenant.alias=parity-logs-orgid:7312:0"
       - "-lakehouse.query.file-workers=64"
       - "-lakehouse.cache.memory-mb=256"
       - "-lakehouse.config=/etc/lakehouse/policy.yml"
@@ -150,6 +153,7 @@ services:
       - "-lakehouse.s3.force-path-style=true"
       - "-lakehouse.manifest.refresh-interval=5s"
       - "-lakehouse.compaction.interval=15s"
+      - "-lakehouse.tenant.alias=parity-traces-orgid:7302:0"
       - "-lakehouse.query.file-workers=64"
       - "-lakehouse.cache.memory-mb=256"
       # Same task as hot VT (see victoriatraces above). The cold tier runs
@@ -235,6 +239,9 @@ services:
     volumes:
       - ../../:/app
       - go-cache:/go
+      # The layer controls of the suite restart a Lakehouse service of this stack
+      # (tests/parity/layer_controls_test.go).
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       VL_BASE_URL: http://victorialogs:9428
       LH_BASE_URL: http://lakehouse-logs:9428

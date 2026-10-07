@@ -23,7 +23,6 @@ package parity
 // test.
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -45,37 +44,10 @@ const (
 // the probe tenant.
 func pushOTLPSpan(t *testing.T, base, traceID, spanID, service string, endAt time.Time) {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"resourceSpans": []map[string]any{{
-		"resource": map[string]any{"attributes": []map[string]any{
-			{"key": "service.name", "value": map[string]any{"stringValue": service}},
-		}},
-		"scopeSpans": []map[string]any{{
-			"scope": map[string]any{"name": "latency-offset-parity"},
-			"spans": []map[string]any{{
-				"traceId":           traceID,
-				"spanId":            spanID,
-				"name":              "latency-offset-probe",
-				"kind":              2,
-				"startTimeUnixNano": fmt.Sprintf("%d", endAt.Add(-time.Second).UnixNano()),
-				"endTimeUnixNano":   fmt.Sprintf("%d", endAt.UnixNano()),
-			}},
-		}},
-	}}})
-	req, err := http.NewRequest(http.MethodPost, base+"/insert/opentelemetry/v1/traces", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("AccountID", latencyProbeAccount)
-	req.Header.Set("ProjectID", latencyProbeProject)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("push span to %s: %v", base, err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		t.Fatalf("push span to %s: status %d", base, resp.StatusCode)
-	}
+	h := http.Header{}
+	h.Set("AccountID", latencyProbeAccount)
+	h.Set("ProjectID", latencyProbeProject)
+	pushSpanAs(t, base, h, traceID, spanID, service, endAt)
 }
 
 // probeTraceIDs returns the sorted trace_ids the tier's LogsQL query API

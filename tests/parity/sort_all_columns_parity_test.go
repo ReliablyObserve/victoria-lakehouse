@@ -16,7 +16,7 @@ package parity
 // which made TestParity_PipesExtended/first_pipe and last_pipe fail now and
 // then. This case writes six rows that share one _time on separate streams,
 // so the divergence shows on every run, for both binaries. Each write goes to
-// a tenant no other test reads (logs: allColumnSortAccount; traces: the
+// a tenant no other test reads (logs: allColumnSortLogsAccount; traces: the
 // latency probe's tenant, which requireSeededTenants already leaves out), and
 // the case returns only once the cold tier has flushed what it wrote.
 //
@@ -39,124 +39,240 @@ import (
 	"time"
 )
 
-// allColumnSortAccount is the logs tenant this case owns.
-const allColumnSortAccount = "7311"
+// The case tenants: numeric AccountIDs and, for the alias form, the account its
+// OrgID maps to (layer_controls_test.go). No other test reads them.
+const (
+	allColumnSortLogsAccount      = "7311"
+	allColumnSortLogsAliasAccount = "7312"
+)
 
 // allColumnSortQueries are the sorts over all columns compared row for row.
-var allColumnSortQueries = []string{"first 2", "last 2", "sort | limit 2"}
+// The last two return every row, so the whole answer (rows, their order, the
+// order of their columns and JSON keys) is compared.
+var allColumnSortQueries = []string{"first 2", "last 2", "sort | limit 2", "sort desc | limit 3", "sort | limit 100"}
+
+// allColumnSortLayer is one data layer the same rows are compared in.
+type allColumnSortLayer struct {
+	name string
+	// prepare brings the stack into the layer; it may write more rows (to hot
+	// and to cold alike) and returns how many rows each tenant then holds.
+	prepare func(t *testing.T, c *allColumnSortCase) int
+	// prove checks, for one tenant form, that the stack really is in the layer
+	// the cell claims. It runs immediately before and after the compares.
+	prove func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int)
+}
+
+// allColumnSortCase is one signal's fixture. Every tenant form writes and reads
+// its own tenant, so the cells are layer x tenant form x signal.
+type allColumnSortCase struct {
+	hot, cold string // base URLs
+	forms     []tenantForm
+	filter    string // selects exactly the rows this case wrote
+	mode      string // logs | traces
+	at        time.Time
+	from, to  time.Time                                              // the window around at
+	write     func(t *testing.T, c *allColumnSortCase, first, n int) // n rows, numbered from first, to hot and cold, for every form
+	restart   []string                                               // compose services to restart for the restart layer
+	startedAt time.Time                                              // the restarted container's new StartedAt
+}
 
 func TestParity_AllColumnSortTieOrder(t *testing.T) {
 	stamp := time.Now().UnixNano()
-	at := time.Now().Add(-97 * time.Minute)
+	// An hour in which none of the case tenants holds an object: the compacted
+	// layer then merges exactly this case's objects, on a rerun too.
+	at := pickQuietHour(t, map[string][]string{
+		"logs": {allColumnSortLogsAccount, allColumnSortLogsAliasAccount}, "traces": {latencyProbeAccount, parityTracesAccount}})
+	from, to := at.Add(-time.Minute), at.Add(time.Minute)
 
-	t.Run("logs", func(t *testing.T) {
-		token := fmt.Sprintf("acs%d", stamp)
-		var rows bytes.Buffer
-		for i := 1; i <= 6; i++ {
-			fmt.Fprintf(&rows, `{"_time":%q,"_msg":"%s zz%d","svc":"svc-%d"}`+"\n",
-				at.Format(time.RFC3339Nano), token, 7-i, i)
-		}
-		for _, base := range []string{vlBaseURL, lhBaseURL} {
-			postTenant(t, base+"/insert/jsonline?_stream_fields=svc", "application/stream+json", rows.Bytes(), allColumnSortAccount)
-		}
-		t.Run("buffer", func(t *testing.T) {
-			compareAllColumnSorts(t, vlBaseURL, lhBaseURL, token, allColumnSortAccount, "_msg")
-		})
-		waitLeftBuffer(t, lhBaseURL, "logs", allColumnSortAccount, at.Add(-time.Minute), at.Add(time.Minute))
-		t.Run("parquet", func(t *testing.T) {
-			compareAllColumnSorts(t, vlBaseURL, lhBaseURL, token, allColumnSortAccount, "_msg")
-		})
-		waitTenantRows(t, lhBaseURL, allColumnSortAccount, 6)
-	})
-
-	t.Run("traces", func(t *testing.T) {
-		var ids []string
-		for i := 1; i <= 6; i++ {
-			ids = append(ids, fmt.Sprintf("%016x%016x", stamp, 0xac50+i))
-		}
-		before := tenantRows(t, lhtBaseURL, latencyProbeAccount)
-		for _, base := range []string{vtBaseURL, lhtBaseURL} {
-			for i, id := range ids {
-				pushOTLPSpan(t, base, id, fmt.Sprintf("%016x", i+1), fmt.Sprintf("acs-svc-%d", i+1), at)
+	for _, sig := range []string{"logs", "traces"} {
+		t.Run(sig, func(t *testing.T) {
+			t.Parallel() // the two signals use disjoint services and tenants
+			c := &allColumnSortCase{at: at, from: from, to: to, mode: sig}
+			var written []string
+			if sig == "logs" {
+				token := fmt.Sprintf("acs%d", stamp)
+				c.hot, c.cold, c.filter = vlBaseURL, lhBaseURL, token
+				c.forms = []tenantForm{numericTenant(allColumnSortLogsAccount), aliasTenant(allColumnSortLogsAliasAccount, parityLogsOrgID)}
+				c.restart = []string{"lakehouse-logs"}
+				c.write = func(t *testing.T, c *allColumnSortCase, first, n int) {
+					var rows bytes.Buffer
+					for i := first; i < first+n; i++ {
+						fmt.Fprintf(&rows, `{"_time":%q,"_msg":"%s zz%d","svc":"svc-%d"}`+"\n",
+							at.Format(time.RFC3339Nano), token, 99-i, i)
+					}
+					for _, f := range c.forms {
+						post(t, c.hot+"/insert/jsonline?_stream_fields=svc", "application/stream+json", rows.Bytes(), f.header(false))
+						post(t, c.cold+"/insert/jsonline?_stream_fields=svc", "application/stream+json", rows.Bytes(), f.header(true))
+					}
+				}
+			} else {
+				c.hot, c.cold = vtBaseURL, lhtBaseURL
+				c.forms = []tenantForm{numericTenant(latencyProbeAccount), aliasTenant(parityTracesAccount, parityTracesOrgID)}
+				c.restart = []string{"lakehouse-traces"}
+				c.write = func(t *testing.T, c *allColumnSortCase, first, n int) {
+					for i := first; i < first+n; i++ {
+						id := fmt.Sprintf("%016x%016x", stamp, 0xac50+i)
+						written = append(written, id)
+						for _, f := range c.forms {
+							pushSpanAs(t, c.hot, f.header(false), id, fmt.Sprintf("%016x", i+1), fmt.Sprintf("acs-svc-%d", i+1), at)
+							pushSpanAs(t, c.cold, f.header(true), id, fmt.Sprintf("%016x", i+1), fmt.Sprintf("acs-svc-%d", i+1), at)
+						}
+					}
+					c.filter = "trace_id:in(" + strings.Join(written, ",") + ")"
+				}
 			}
-		}
-		filter := "trace_id:in(" + strings.Join(ids, ",") + ")"
-		t.Run("buffer", func(t *testing.T) {
-			compareAllColumnSorts(t, vtBaseURL, lhtBaseURL, filter, latencyProbeAccount, "trace_id")
+			before := make([]int64, len(c.forms))
+			for i, f := range c.forms {
+				before[i] = tenantRows(t, c.cold, f.account)
+			}
+			// buffered waits for the batch just written to show in every form's
+			// buffer (so the wait for it to leave cannot pass before it is in).
+			buffered := func(t *testing.T, c *allColumnSortCase, rows int) {
+				for _, f := range c.forms {
+					waitBuffered(t, c.cold, c.mode, f.account, c.from, c.to, rows)
+				}
+			}
+			leftBuffer := func(t *testing.T, c *allColumnSortCase) {
+				for _, f := range c.forms {
+					waitLeftBuffer(t, c.cold, c.mode, f.account, c.from, c.to)
+				}
+			}
+
+			layers := []allColumnSortLayer{
+				// The rows are still in Lakehouse's insert buffer: upstream's own
+				// engine answers, and it must agree with hot.
+				{"buffer",
+					func(t *testing.T, c *allColumnSortCase) int { c.write(t, c, 1, 6); buffered(t, c, 6); return 6 },
+					func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {
+						requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, rows)
+					}},
+				// They have left the buffer: Parquet only. B8 lived here.
+				{"parquet",
+					func(t *testing.T, c *allColumnSortCase) int { leftBuffer(t, c); return 6 },
+					func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {
+						requireFlushedOnly(t, c.cold, c.mode, f.account, c.at, c.from, c.to)
+					}},
+				// A second batch of tied rows on new streams is flushed to a second
+				// object, then the two are merged by the manual recompaction trigger.
+				{"compacted",
+					func(t *testing.T, c *allColumnSortCase) int {
+						c.write(t, c, 7, 6)
+						buffered(t, c, 6)
+						leftBuffer(t, c)
+						recompactHourPartition(t, c.cold, c.at, 2*len(c.forms))
+						return 12
+					},
+					func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {
+						requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, 0)
+						requireCompactedOnce(t, c.mode, f.account, c.at)
+					}},
+				// After restart: recovered segment flushed, read from S3. A third
+				// batch is written just before the restart; the restarted pod
+				// recovers its segment, flushes it (proved by the new L0 being
+				// written after the new StartedAt, so not by a shutdown drain)
+				// and answers from S3 with a fresh manifest.
+				{"restart",
+					func(t *testing.T, c *allColumnSortCase) int {
+						c.write(t, c, 13, 6)
+						buffered(t, c, 6)
+						c.startedAt = restartComposeServices(t, c.cold, c.mode, c.restart)
+						leftBuffer(t, c)
+						return 18
+					},
+					func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {
+						requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, 0)
+						requireRecoveredSegmentFlushed(t, c.mode, f.account, c.at, c.startedAt)
+					}},
+			}
+			for _, l := range layers {
+				t.Run(l.name, func(t *testing.T) {
+					rows := l.prepare(t, c)
+					for _, f := range c.forms {
+						t.Run(f.name, func(t *testing.T) {
+							l.prove(t, c, f, rows)
+							compareAllColumnSorts(t, c, f, rows)
+							l.prove(t, c, f, rows)
+						})
+					}
+				})
+			}
+			for i, f := range c.forms {
+				waitTenantRows(t, c.cold, f.account, before[i]+18)
+			}
 		})
-		waitLeftBuffer(t, lhtBaseURL, "traces", latencyProbeAccount, at.Add(-time.Minute), at.Add(time.Minute))
-		t.Run("parquet", func(t *testing.T) {
-			compareAllColumnSorts(t, vtBaseURL, lhtBaseURL, filter, latencyProbeAccount, "trace_id")
-		})
-		waitTenantRows(t, lhtBaseURL, latencyProbeAccount, before+int64(len(ids)))
-	})
+	}
 }
 
-// compareAllColumnSorts waits until both tiers return all six rows of filter,
-// then runs each sort over all columns and requires the cold tier to return
-// the same rows in the same order as the hot tier. VictoriaLogs' order here is
-// deterministic: _time, then _stream_id, then _stream, then _msg.
-func compareAllColumnSorts(t *testing.T, hotBase, coldBase, filter, account, field string) {
+// compareAllColumnSorts waits until both tiers return all rows of the case for
+// the tenant form, then runs each sort over all columns and requires the cold
+// tier to return the same answer as the hot tier, byte for byte per row: the
+// same rows in the same order, with the same fields in the same JSON key order
+// (the order of the columns of the block they came from). VictoriaLogs' order
+// is deterministic: _time, then _stream_id, then _stream, then _msg. Hot has
+// no aliases, so it is asked with the numeric IDs the alias maps to.
+func compareAllColumnSorts(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for {
-		hot := allColumnSortRows(t, hotBase, filter, account, field)
-		cold := allColumnSortRows(t, coldBase, filter, account, field)
-		if len(hot) == 6 && len(cold) == 6 {
+		hot := allColumnSortRaw(t, c, c.hot, c.filter+" | sort | limit 100", f.header(false))
+		cold := allColumnSortRaw(t, c, c.cold, c.filter+" | sort | limit 100", f.header(true))
+		if len(hot) == rows && len(cold) == rows {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the six written rows never became visible: hot=%v cold=%v", hot, cold)
+			t.Fatalf("the %d written rows never became visible: hot has %d, cold has %d", rows, len(hot), len(cold))
 		}
 		time.Sleep(time.Second)
 	}
 	for _, q := range allColumnSortQueries {
-		hot := allColumnSortRows(t, hotBase, filter+" | "+q, account, field)
-		cold := allColumnSortRows(t, coldBase, filter+" | "+q, account, field)
-		if len(hot) != 2 {
-			t.Fatalf("hot answered %q with %d rows, want 2: %v", q, len(hot), hot)
+		hot := allColumnSortRaw(t, c, c.hot, c.filter+" | "+q, f.header(false))
+		cold := dropKnownColdOnlyFields(allColumnSortRaw(t, c, c.cold, c.filter+" | "+q, f.header(true)))
+		if len(hot) == 0 {
+			t.Fatalf("hot answered %q with no rows", q)
 		}
-		if strings.Join(hot, ",") != strings.Join(cold, ",") {
-			t.Errorf("%s | %s: hot=%v cold=%v (B8: rows sharing a _time are ordered by _stream_id on hot, by another column on cold)", filter, q, hot, cold)
+		if len(hot) != len(cold) {
+			t.Errorf("%s | %s: hot returned %d rows, cold %d", c.filter, q, len(hot), len(cold))
+			continue
+		}
+		for i := range hot {
+			if hot[i] != cold[i] {
+				t.Errorf("%s | %s row %d (B8: rows sharing a _time are ordered by _stream_id on hot; field order follows the block's column order):\n hot:  %s\n cold: %s",
+					c.filter, q, i, hot[i], cold[i])
+				break
+			}
 		}
 	}
 }
 
-// allColumnSortRows returns field of every row a tier answers query with, in
-// answer order.
-func allColumnSortRows(t *testing.T, base, query, account, field string) []string {
-	t.Helper()
-	params := url.Values{"query": {query}, "disable_latency_offset": {"true"}}
-	r := tenantFetch(t, base, "/select/logsql/query", params, account, "0")
-	if r.StatusCode != http.StatusOK {
-		t.Fatalf("%s %q returned %d: %s", base, query, r.StatusCode, r.Body)
-	}
-	var out []string
-	for _, row := range parseNDJSON(r.Body) {
-		v, _ := row[field].(string)
-		out = append(out, v)
+// dropKnownColdOnlyFields removes the one field the cold logs path adds to
+// every row and hot VictoriaLogs does not return: "severity_number":"0", open
+// issue #274. Nothing else is dropped, so any other difference in fields or in
+// their order still fails.
+func dropKnownColdOnlyFields(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = strings.Replace(l, `,"severity_number":"0"`, "", 1)
 	}
 	return out
 }
 
-// postTenant POSTs body to u as tenant account:0 and requires a 2xx answer.
-func postTenant(t *testing.T, u, contentType string, body []byte, account string) {
+// allColumnSortRaw returns the raw NDJSON lines a tier answers query with, in
+// answer order, so key order is part of the comparison.
+func allColumnSortRaw(t *testing.T, c *allColumnSortCase, base, query string, hdr http.Header) []string {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
+	params := url.Values{"query": {query}, "disable_latency_offset": {"true"},
+		"start": {c.from.UTC().Format(time.RFC3339Nano)}, "end": {c.to.UTC().Format(time.RFC3339Nano)}}
+	r := getWith(t, base, "/select/logsql/query", params, hdr)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("%s %q returned %d: %s", base, query, r.StatusCode, r.Body)
 	}
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("AccountID", account)
-	req.Header.Set("ProjectID", "0")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST %s: %v", u, err)
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(string(r.Body)), "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		t.Fatalf("POST %s: status %d", u, resp.StatusCode)
-	}
+	return out
 }
 
 // tenantRows returns the row total the cold manifest records for account:0.
