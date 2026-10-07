@@ -168,7 +168,7 @@
     - UPSTREAM_COVERAGE.md
   changelog_bullets:
     - 'Conformance registry + upstream inventory (verification machine, first slice).'
-    - 'Registry gate: lock code is owner-gated, locks are `file#Test`, run nonce.'
+    - 'Registry gate: lock packages are owner-gated, locks are `file#Test`, run nonce.'
   highlight: >-
     **Conformance registry**: one row per upstream endpoint, pipe, filter, stats function and TraceQL function, extracted from the vendored VL/VT sources and gated in CI — an upstream surface without a row fails the build.
   description: >-

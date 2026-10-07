@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Registry gate: lock packages are owner-gated, locks are `file#Test`, run nonce.** CI tooling only, no runtime change: a PR that edits or deletes an existing file of a package that holds a lock test (or the lock suites' runtime config), or adds a file there that declares a package-level var, init() or TestMain, fails with "lock code changed — owner review"; the six file-level parity locks are named `file#Test` and have floors; the lock-cells nonce only guards against stale lines and is not a security control.
+
 ## [0.146.8] - 2026-10-07
 
 ### Added
 
-- **Registry gate: lock code is owner-gated, locks are `file#Test`, run nonce.** CI tooling only, no runtime change: a PR that edits a lock test file, a helper a lock compares through or adds an `init()` or non-test file to a lock package fails with "lock code changed — owner review"; the six file-level parity locks are named `file#Test` and have floors; lock-cells lines carry a per-run random nonce and are accepted only from the helper's file and line.
 - **Proof stack, API runner and visual capture.** Tooling only, no runtime change (`scripts/proof/`, `deployment/docker/docker-compose-proof.yml`, `tests/playwright/proof/`): an isolated compose stack (hot VictoriaLogs/VictoriaTraces, Lakehouse from main and from a PR, Grafana, the Jaeger UI), a runner that sends rows to the three targets in both tenant forms and in the cold and buffer layers and scores the answers in percent, a Playwright capture of Grafana Explore, Logs Drilldown, VMUI, VTUI and the Jaeger UI on the same three sides with the backend traffic compared per question, and a PR comment generator.
 
 ### Changed
