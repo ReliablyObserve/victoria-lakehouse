@@ -386,7 +386,7 @@ new_unit_test_unreferenced() {
 }
 new_test_helper_not_a_test() {
   registry_row_change
-  printf 'package x\n\nimport "testing"\n\nfunc TestMain(m *testing.M) {}\nfunc helper(t *testing.T) {}\nfunc Testify(t *testing.T) {}\n' > internal/x/new_test.go
+  printf 'package x\n\nimport "testing"\n\nfunc TestMain(m *testing.M) {}\nfunc helper(t *testing.T) {}\nfunc Testify(t *testing.T) {}\n' > internal/y/new_test.go
 }
 rename_referenced_test() {
   registry_row_change
