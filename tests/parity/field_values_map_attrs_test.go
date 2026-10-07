@@ -74,6 +74,7 @@ func compareFieldValues(t *testing.T, name string, ref, sut fetchResult, allowEm
 	for _, d := range diffs {
 		t.Errorf("%s: %s", name, d)
 	}
+	reportLockCells(t, 1) // one cell per compared field_values/stream_field_values answer (floor in lock_cells.txt)
 }
 
 // TestParity_FieldValues_MapAttributes pins field_values over attributes the

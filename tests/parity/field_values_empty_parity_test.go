@@ -106,6 +106,7 @@ func runFvEmptyCases(t *testing.T, hot, cold string, f tenantForm, from, to time
 						}
 					}
 				}
+				reportLockCells(t, 1) // one cell per compared answer (floor in lock_cells.txt)
 				return
 			}
 			if c.ignoreEmpty {
@@ -177,43 +178,46 @@ func runFvEmptyLayers(t *testing.T, c *fvEmptyCase2) {
 				requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, 0)
 				requireCompactedOnce(t, c.mode, f.account, c.at)
 			}},
-		// The compacted layer ended with the buffer empty, right after a flush.
-		// A third batch is written and the service restarted at once, so the
-		// regular 5 s flush should not write the segment before the restart: the
-		// new L0 is then the recovered segment's, written after the new
-		// StartedAt. The index worker and the service-graph task can open a
-		// segment first (traces), and then the 5 s seal can win; the attempt is
-		// repeated with another batch, at most fvRestartAttempts times in all.
-		// waitFlushIdle / the attempt counting below duplicate what the layer
-		// controls of #459 do (waitFlushIdle, waitL0Objects, restartAttempts):
-		// remove this copy once #459 is on main.
+		// A third batch is written into a fresh segment (right after a flush has
+		// completed, so the periodic flush is a full interval away) and the
+		// service is restarted at once; the restarted pod recovers the segment and
+		// flushes it, which the proof sees as the one L0 object written after the
+		// new StartedAt. If the periodic flush still won the race the attempt is
+		// repeated with another batch, at most restartAttempts times in all (the
+		// same helpers and bounds as TestParity_AllColumnSortTieOrder).
 		{"restart",
 			func(t *testing.T, c *fvEmptyCase2) int {
-				for attempt := 0; attempt < fvRestartAttempts; attempt++ {
+				for attempt := 1; attempt <= restartAttempts; attempt++ {
 					for _, f := range c.forms {
-						waitLeftBuffer(t, c.cold, c.mode, f.account, c.from, c.to)
+						waitFlushIdle(t, c.cold, c.mode, f.account, c.from, c.to)
 					}
-					c.write(t, c, 2+attempt)
-					c.restartBatches = attempt + 1
-					c.startedAt = restartComposeServices(t, c.cold, c.mode, c.restart)
-					leftBuffer(t)
-					recovered := true
+					c.write(t, c, 1+attempt)
+					c.restartBatches = attempt
+					c.startedAt = restartComposeServices(t, c.cold, c.mode, c.restart, restartStopTimeout)
 					for _, f := range c.forms {
-						if fvL0WrittenAfter(t, c.mode, f.account, c.at, c.startedAt) < 1 {
-							recovered = false
+						if n := waitL0Objects(t, c.mode, f.account, c.at, attempt, 90*time.Second); n < attempt {
+							t.Fatalf("tenant %s has %d L0 objects 90s after the restart, want %d: the acknowledged batch was not recovered", f.account, n, attempt)
 						}
 					}
-					if recovered {
-						break
+					leftBuffer(t)
+					lost := ""
+					for _, f := range c.forms {
+						if why := recoveredSegmentFlushed(t, c.mode, f.account, c.at, c.startedAt, attempt); why != "" {
+							lost = why
+						}
 					}
-					t.Logf("restart attempt %d: the periodic flush wrote the batch before the restart; retrying", attempt+1)
+					if lost == "" {
+						return (2 + attempt) * c.rowsPer
+					}
+					t.Logf("restart attempt %d of %d: the periodic flush won the race (%s); retrying with a new batch", attempt, restartAttempts, lost)
 				}
-				return (2 + c.restartBatches) * c.rowsPer
+				t.Fatalf("the periodic flush won the race in all %d restart attempts", restartAttempts)
+				return 0
 			},
 			func(t *testing.T, c *fvEmptyCase2, f tenantForm) {
 				requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, 0)
-				if n := fvL0WrittenAfter(t, c.mode, f.account, c.at, c.startedAt); n < 1 {
-					t.Fatalf("layer proof: tenant %s has no L0 object written after the restart started (%s): the batch was flushed before the restart in every attempt, not recovered from its segment", f.account, c.startedAt.UTC().Format(time.RFC3339Nano))
+				if why := recoveredSegmentFlushed(t, c.mode, f.account, c.at, c.startedAt, c.restartBatches); why != "" {
+					t.Fatalf("layer proof: %s", why)
 				}
 			}},
 	}
@@ -381,24 +385,4 @@ func withoutEmptyBucket(t *testing.T, r fetchResult) fetchResult {
 	obj["values"] = kept
 	b, _ := json.Marshal(obj)
 	return fetchResult{StatusCode: r.StatusCode, Body: b}
-}
-
-// fvRestartAttempts bounds how often the restart layer is retried.
-const fvRestartAttempts = 3
-
-// fvL0WrittenAfter counts the tenant's L0 objects in the partition written at or
-// after startedAt (S3 LastModified has second granularity, so both are
-// truncated to the second): the flush of the segment a restarted pod recovered.
-func fvL0WrittenAfter(t *testing.T, mode, account string, at, startedAt time.Time) int {
-	t.Helper()
-	n := 0
-	for _, o := range partitionObjectInfo(t, mode, account, at) {
-		if strings.HasPrefix(o.name, "compacted-L") {
-			continue
-		}
-		if !o.modified.Truncate(time.Second).Before(startedAt.Truncate(time.Second)) {
-			n++
-		}
-	}
-	return n
 }
