@@ -20,3 +20,9 @@ TestTenantParity_TenantCountsSumToTotal           1  # PROVISIONAL
 TestTenantParity_UnknownTenantReturnsEmpty        1  # PROVISIONAL
 TestTenantParity_DependenciesAPI_RespectsScope    1  # PROVISIONAL
 TestTenantParity_TraceQLPerTenant                 1  # PROVISIONAL
+TestParity_ColdRowFields                          50  # limit=50 rows, exactly the query limit; observed in parity run 37674171609
+TestParity_Traces_ColdSpanFields                  50  # limit=50 spans; observed in parity run 37674171609
+TestTenantParity_TenantCountsSumToTotal           2  # file total and byte total; observed in parity run 37674171609
+TestTenantParity_UnknownTenantReturnsEmpty        4  # two subtests x 2 cells; observed in parity run 37674171609
+TestTenantParity_DependenciesAPI_RespectsScope    2  # one cell per tenant graph; observed in parity run 37674171609
+TestTenantParity_TraceQLPerTenant                 2  # one cell per tenant search; observed in parity run 37674171609
