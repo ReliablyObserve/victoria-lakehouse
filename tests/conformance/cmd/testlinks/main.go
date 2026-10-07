@@ -115,6 +115,24 @@ func packageFiles(repo, rev string) registry.PackageFiles {
 	}
 }
 
+// treeFiles lists every regular file under prefix (a directory or one file) at rev.
+func treeFiles(repo, rev string) registry.TreeFiles {
+	return func(prefix string) []string {
+		raw, err := git(repo, "ls-tree", "-r", "-z", rev, "--", prefix)
+		if err != nil {
+			return nil
+		}
+		var out []string
+		for _, rec := range strings.Split(string(raw), "\x00") {
+			meta, path, ok := strings.Cut(rec, "\t")
+			if ok && strings.HasPrefix(meta, "100") {
+				out = append(out, path)
+			}
+		}
+		return out
+	}
+}
+
 // registryChanges loads the rows and features at both revisions, prints the
 // summary (stdout and the job summary), and returns the ids of the entries the
 // PR changed in a way that is more than prose.
@@ -358,17 +376,17 @@ func run() int {
 			fmt.Println("  " + w)
 		}
 	}
-	// Lock code: the files of the lock tests and of the helpers they compare through, in
-	// any directory. Edits need the owner; runtime floors cover only tests/parity.
+	// Lock code: every existing file of a package that holds a lock test, the lock suites'
+	// runtime config, and new files there that declare vars, init or TestMain.
 	lc, lerr := registry.LockCodeChanges(registry.LockTestRefs(bs.Rows), registry.LockTestRefs(hs.Rows),
-		show(*base), show(*head), packageFiles(*repo, *base), packageFiles(*repo, *head))
+		show(*base), show(*head), packageFiles(*repo, *base), packageFiles(*repo, *head), treeFiles(*repo, *base), treeFiles(*repo, *head))
 	if lerr != nil {
 		fmt.Fprintln(os.Stderr, "testlinks: lock code:", lerr)
 		return 2
 	}
 	if len(lc) > 0 {
 		failed = true
-		fmt.Println("::error::lock code changed — owner review: this PR edits a file that holds a registry lock or a helper a lock compares through (only the owner can allow that)")
+		fmt.Println("::error::lock code changed — owner review: this PR edits a file of a package that holds a registry lock, or the runtime config of the lock suites (only the owner can allow that)")
 		for _, w := range lc {
 			fmt.Println("  " + w)
 		}

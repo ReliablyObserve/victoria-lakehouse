@@ -186,38 +186,82 @@ func LockCodeFiles(refs map[string]map[string]bool, src func(string) []byte, lis
 	return out, nil
 }
 
-// hasInit reports whether a Go source declares func init().
-func hasInit(src []byte) bool {
-	pf := parseGo("", src)
-	for _, fn := range pf.funcs {
-		if fn.Recv == nil && fn.Name.Name == "init" {
-			return true
-		}
-	}
-	return false
+// TreeFiles lists every regular file under a path prefix (a directory or one
+// file) at a revision, recursively.
+type TreeFiles func(prefix string) []string
+
+// lockRuntimeConfig is the runtime configuration the lock suites run against: the
+// parity stack and its seed data, the e2e stack, and the data generator that
+// seeds them. Editing or deleting an existing file there changes what every lock
+// compares, so it is lock code like the tests themselves. lock_cells.txt and
+// known_failures.txt are excluded: they have their own ratchets (a floor may only
+// grow, the allowlist may only shrink), and README.md is prose.
+var lockRuntimeConfig = []string{
+	"tests/parity/",
+	"deployment/docker/docker-compose-e2e.yml",
+	"deployment/docker/lakehouse-e2e-config.yml",
+	"cmd/datagen/",
 }
 
-// LockCodeChanges lists the lock code a PR changed: a file that is lock code at
-// the merge base or at head and differs between them (edited, or deleted), and
-// in the package of every lock a NEW file that declares init() or TestMain, and,
-// in a package under tests/ (never in product code), a NEW non-test file. New test functions in new _test.go files are free.
-func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles) ([]string, error) {
-	b, err := LockCodeFiles(baseRefs, baseSrc, baseList)
+var lockRuntimeExempt = map[string]bool{
+	"tests/parity/lock_cells.txt":     true,
+	"tests/parity/known_failures.txt": true,
+	"tests/parity/README.md":          true,
+}
+
+// declaresOnlyTests reports whether a new Go file in a lock package declares
+// nothing but funcs (tests, fuzz targets, benchmarks, helpers), consts, types
+// and imports. A package-level var (whose initializer runs at load and can
+// repoint shared state), init() and TestMain are not allowed: the returned
+// string names the first offender, "" if there is none.
+func declaresOnlyTests(path string, src []byte) (string, error) {
+	f, err := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
+	if err != nil {
+		return "", err
+	}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil && (d.Name.Name == "init" || d.Name.Name == "TestMain") {
+				return "func " + d.Name.Name, nil
+			}
+		case *ast.GenDecl:
+			if d.Tok == token.VAR {
+				return "a package-level var", nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// LockCodeChanges lists the lock code a PR changed, judged against the locks that
+// exist at the merge base (a lock the PR adds itself is not protected yet).
+//
+//  1. A lock package is a directory that holds a lock-referenced test file. An
+//     existing .go file of it (test or plain, any helper) that the PR edits or
+//     deletes is lock code: a package shares state, so any file of it can make a
+//     lock compare something else.
+//  2. A NEW .go file in a lock package is free when it declares only funcs, consts
+//     and types. A package-level var, init() or TestMain, or a file that does not
+//     parse, is lock code.
+//  3. Existing files of the lock suites' runtime configuration (lockRuntimeConfig)
+//     that the PR edits or deletes.
+//  4. The call-graph helper search (LockCodeFiles) names the reason for the files it
+//     reaches; it stays inside the lock test's package, so rule 1 covers everything
+//     it finds. Residual risk: a lock that compares through a func value, through
+//     another package, or deeper than lockCallDepth is only covered by rule 1 for
+//     its own package.
+func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles, baseTree, headTree TreeFiles) ([]string, error) {
+	why, err := LockCodeFiles(baseRefs, baseSrc, baseList)
 	if err != nil {
 		return nil, fmt.Errorf("at the merge base: %w", err)
 	}
-	// Only locks that already exist at the merge base are protected: a lock a PR adds is
-	// judged by the lock rules (named test, floor, owner review of the row itself), and
-	// editing the test it names is how a parity fix is written.
 	var out []string
-	reasons := b
-	for f, why := range reasons {
-		bs, hs := baseSrc(f), headSrc(f)
-		if bs == nil {
-			continue // a file new to the tree is judged below
-		}
-		if hs == nil || !bytes.Equal(bs, hs) {
-			out = append(out, fmt.Sprintf("%s: lock code changed — owner review (%s)", f, why))
+	flagged := map[string]bool{}
+	flag := func(f, reason string) {
+		if !flagged[f] {
+			flagged[f] = true
+			out = append(out, fmt.Sprintf("%s: lock code changed — owner review (%s)", f, reason))
 		}
 	}
 	dirs := map[string]bool{}
@@ -228,20 +272,35 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 		inBase := map[string]bool{}
 		for _, p := range baseList(d) {
 			inBase[p] = true
+			bs, hs := baseSrc(p), headSrc(p)
+			if hs == nil || !bytes.Equal(bs, hs) {
+				reason := "an existing file of a package that holds a lock test"
+				if r, ok := why[p]; ok {
+					reason = r + "; any file of that package can change what it compares"
+				}
+				flag(p, reason)
+			}
 		}
 		for _, p := range headList(d) {
 			if inBase[p] {
 				continue
 			}
-			data := headSrc(p)
+			bad, perr := declaresOnlyTests(p, headSrc(p))
 			switch {
-			case !strings.HasSuffix(p, "_test.go"):
-				if !strings.HasPrefix(d+"/", "tests/") {
-					continue // product code: a new product file is a product change, judged by rule 1
-				}
-				out = append(out, fmt.Sprintf("%s: lock code changed — owner review (a new non-test file in the package of a lock)", p))
-			case hasInit(data):
-				out = append(out, fmt.Sprintf("%s: lock code changed — owner review (a new file with init() in the package of a lock)", p))
+			case perr != nil:
+				flag(p, "a new file in the package of a lock that does not parse")
+			case bad != "":
+				flag(p, "a new file in the package of a lock declares "+bad)
+			}
+		}
+	}
+	for _, prefix := range lockRuntimeConfig {
+		for _, p := range baseTree(prefix) {
+			if lockRuntimeExempt[p] {
+				continue
+			}
+			if hs := headSrc(p); hs == nil || !bytes.Equal(baseSrc(p), hs) {
+				flag(p, "runtime configuration of the lock suites")
 			}
 		}
 	}
