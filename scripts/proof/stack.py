@@ -21,7 +21,10 @@ import os
 import subprocess
 import time
 import urllib.request
-from .jsonio import dump_json, load_json
+try:
+    from .jsonio import dump_json, load_json
+except ImportError:  # run as a script: python3 scripts/proof/stack.py
+    from jsonio import dump_json, load_json  # type: ignore[no-redef]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMPOSE = os.path.join(HERE, "..", "..", "deployment", "docker", "docker-compose-proof.yml")

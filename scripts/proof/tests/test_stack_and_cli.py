@@ -125,3 +125,11 @@ def test_read_buffered_covers_both_variants_signals_and_tenants(monkeypatch):
     monkeypatch.setattr(stack, "buffered_rows", lambda *a, **k: 7)
     got = stack.read_buffered(STATE)
     assert len(got) == 8 and set(got.values()) == {7} and "pr-traces-1001" in got
+
+
+def test_stack_runs_as_a_script_and_as_a_module():
+    import subprocess
+    import sys
+    path = os.path.join(os.path.dirname(stack.__file__), "stack.py")
+    out = subprocess.run([sys.executable, path, "--help"], capture_output=True, text=True, check=True).stdout
+    assert "seed" in out and "hold" in out and "down" in out
