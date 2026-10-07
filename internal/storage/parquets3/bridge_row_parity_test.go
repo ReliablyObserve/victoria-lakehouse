@@ -61,13 +61,9 @@ func TestBridgeLogRows_CarryEveryFieldTheFilePathEmits(t *testing.T) {
 }
 
 // bridgeNamingGap names the fields the two conversions still spell differently
-// — map attributes (bare on the file path, resource_attr:/log_attr: on the
-// bridge) and the Tier-2 ded_sNN slots (not emitted by the bridge). Which
+// — the Tier-2 ded_sNN slots (not emitted by the bridge). Which
 // spelling is right is decided against hot VictoriaLogs; until then they are
 // listed here, not silently skipped (docs/parity-and-gaps.md).
 func bridgeNamingGap(name string) bool {
-	if len(name) == 7 && name[:5] == "ded_s" {
-		return true
-	}
-	return len(name) > 2 && name[:2] == "k-" // fillRow's map keys
+	return len(name) == 7 && name[:5] == "ded_s"
 }

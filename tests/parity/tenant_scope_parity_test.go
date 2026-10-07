@@ -226,7 +226,7 @@ func requireSeededTenants(t *testing.T) []tenantSummary {
 	all := requireAllTenants(t)
 	seeded := make([]tenantSummary, 0, len(all))
 	for _, te := range all {
-		if te.AccountID == latencyProbeAccount || te.AccountID == parityTracesAccount || isEventsLinksTenant(te.AccountID) {
+		if te.AccountID == latencyProbeAccount || te.AccountID == parityTracesAccount || isEventsLinksTenant(te.AccountID) || te.AccountID == fvEmptyTracesAccount {
 			continue
 		}
 		seeded = append(seeded, te)

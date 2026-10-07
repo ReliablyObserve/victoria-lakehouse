@@ -441,11 +441,9 @@
       - tests/parity/traces_events_links_test.go#TestParity_Traces_EventsLinksScopeAttrs
       - lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go#TestCold_EventsLinks_FieldValues
   notes: >-
-    Event and link fields answer like hot. Known differences that are not new: hot also lists the empty
-    value (the spans without the field) with its hits and the cold tier omits that bucket for every optional
-    field (#435); field_values over a MAP attribute (span_attr:*, resource_attr:*, scope_attr:*) currently
-    returns wrong values on cold in both binaries (another map's values or keys; filters on map attributes
-    return no rows), so this row does not cover it (#433, probably the same bug as #280). field_names for
+    Event and link fields answer like hot, including the empty value (the spans without the field, with
+    their hits: #435, fixed with #433 in the vl./vt.select.*field_values rows). field_values over a MAP
+    attribute is covered by vt.select.logsql_field_values.map_attr. field_names for
     event, link and scope names follows B2 (docs/parity-and-gaps.md): the cold tier lists the names found in
     a sample of one row group per file, not every name hot lists.
 
@@ -691,11 +689,14 @@
     tests:
       - internal/storage/parquets3/leaf_index_test.go#TestScanProjectedFieldValues_ScalarAfterMapsIsIndexedByLeaf
       - internal/storage/parquets3/leaf_index_test.go#TestAccumulateFieldHits_ScalarAfterMapsIsIndexedByLeaf
+      - internal/storage/parquets3/field_values_map_property_test.go#TestFieldValues_MapAttributes_Property
+      - internal/storage/parquets3/field_values_map_test.go#TestFieldValuesMapAttributes_Logs
   notes: >-
     A MAP column is one top-level column but two leaf chunks, so a scalar column after a map sits at a later
     chunk than its position among the top-level columns. The logs schema keeps its maps last today, so this
     guards the schema against a column added after them; the fixture puts the maps first. The traces
-    binary already had the fix (#409). field_values over the map attributes themselves is #433.
+    binary already had the fix (#409). field_values over the map attributes themselves is fixed (#433): see
+    vl.select.field_values.map_attr.
 
 - id: lh.cold.jaeger_refs_follow_span_links
   title: "Jaeger trace detail: at most one CHILD_OF reference per span, and FOLLOWS_FROM references equal the span's link fields"

@@ -403,15 +403,19 @@ func TestLabelIndex_EventsLinksFieldNames(t *testing.T) {
 }
 
 // field_values over an event or link field counts, per value, the spans that
-// carry it, as hot VictoriaTraces does; a filter narrows the spans counted.
+// carry it, and the spans that do not under the empty value, as hot
+// VictoriaTraces does; a filter narrows the spans counted.
 func TestCold_EventsLinks_FieldValues(t *testing.T) {
 	_, want, s, start, end := extrasFixtureStorage(t, false)
 	expect := func(field string, keep func(map[string]string) bool) map[string]uint64 {
 		out := map[string]uint64{}
 		for _, w := range want {
-			if v, ok := w[field]; ok && keep(w) {
-				out[v]++
+			if !keep(w) {
+				continue
 			}
+			// A span without the field is one hit of the empty value, as upstream's
+			// uniq counts it.
+			out[w[field]]++
 		}
 		return out
 	}

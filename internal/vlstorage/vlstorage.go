@@ -73,11 +73,9 @@ func (a *adapter) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([
 }
 
 func (a *adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	results, err := a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
-	if err != nil {
-		return nil, err
-	}
-	return filterValuesBySubstring(results, filter), nil
+	return valuesFilteredThenLimited(filter, limit, func(limit uint64) ([]logstorage.ValueWithHits, error) {
+		return a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+	})
 }
 
 func (a *adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
@@ -90,11 +88,9 @@ func (a *adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter stri
 }
 
 func (a *adapter) GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	results, err := a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
-	if err != nil {
-		return nil, err
-	}
-	return filterValuesBySubstring(results, filter), nil
+	return valuesFilteredThenLimited(filter, limit, func(limit uint64) ([]logstorage.ValueWithHits, error) {
+		return a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+	})
 }
 
 func (a *adapter) GetStreams(qctx *logstorage.QueryContext, limit uint64) ([]logstorage.ValueWithHits, error) {
@@ -168,6 +164,25 @@ func (a *adapter) DeleteActiveTasks(ctx context.Context) ([]*logstorage.DeleteTa
 
 // filterValuesBySubstring filters results to only include values containing the substring.
 // Returns the original slice if filter is empty.
+// valuesFilteredThenLimited answers a values request the way upstream does:
+// the substring filter applies to every value first and the limit to what
+// remains. Limiting first, then filtering, drops matching values behind
+// non-matching ones (and the empty value now takes a slot).
+func valuesFilteredThenLimited(filter string, limit uint64, fetch func(limit uint64) ([]logstorage.ValueWithHits, error)) ([]logstorage.ValueWithHits, error) {
+	if filter == "" {
+		return fetch(limit)
+	}
+	all, err := fetch(0)
+	if err != nil {
+		return nil, err
+	}
+	filtered := filterValuesBySubstring(all, filter)
+	if len(filtered) == 0 {
+		return filtered, nil
+	}
+	return logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{filtered}, limit, true), nil
+}
+
 func filterValuesBySubstring(results []logstorage.ValueWithHits, filter string) []logstorage.ValueWithHits {
 	if filter == "" {
 		return results

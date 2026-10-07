@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -258,9 +259,10 @@ func TestGetFieldValues_UnknownField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Should return empty since the column doesn't exist in the parquet file
-	if len(vals) != 0 {
-		t.Errorf("expected 0 values for unknown field, got %d", len(vals))
+	// No row carries the field: like hot VictoriaLogs, every row is one hit of
+	// the empty value and nothing else is listed.
+	if len(vals) != 1 || vals[0].Value != "" || vals[0].Hits != 1 {
+		t.Errorf("unknown field = %v, want one empty-value bucket with 1 hit", vals)
 	}
 }
 
@@ -408,25 +410,37 @@ func TestGetStreamFieldNames_Traces_ReturnsRegistryFields(t *testing.T) {
 
 // --- GetStreamFieldValues tests ---
 
-func TestGetStreamFieldValues_DelegatesToGetFieldValues(t *testing.T) {
+// stream_field_values lists the tags of the matching streams (forEachStreamField):
+// hits are the rows of each stream, a field that is no tag answers nothing, and
+// the empty value is never listed.
+func TestGetStreamFieldValues_ListsStreamTags(t *testing.T) {
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
 	rows := []fullLogRow{
-		{TimestampUnixNano: now.UnixNano(), Body: "msg1", SeverityText: "INFO", ServiceName: "api"},
-		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "msg2", SeverityText: "WARN", ServiceName: "web"},
+		{TimestampUnixNano: now.UnixNano(), Body: "msg1", SeverityText: "INFO", ServiceName: "api", Stream: `{service.name="api"}`},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "msg2", SeverityText: "WARN", ServiceName: "web", Stream: `{service.name="web"}`},
+		{TimestampUnixNano: now.Add(2 * time.Second).UnixNano(), Body: "msg3", SeverityText: "WARN", ServiceName: "web", Stream: `{service.name="web"}`},
+		{TimestampUnixNano: now.Add(3 * time.Second).UnixNano(), Body: "msg4", SeverityText: "INFO", Stream: `{}`},
 	}
 	s, _ := testFieldStorage(t, rows)
-
 	q := mustParseQueryWithTime(t, "*",
 		time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC).UnixNano(),
 		time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano(),
 	)
-
 	vals, err := s.GetStreamFieldValues(context.Background(), nil, q, "service.name", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(vals) != 2 {
-		t.Errorf("expected 2 values, got %d", len(vals))
+	if want := []logstorage.ValueWithHits{{Value: "web", Hits: 2}, {Value: "api", Hits: 1}}; !reflect.DeepEqual(vals, want) {
+		t.Errorf("stream_field_values(service.name) = %v, want %v", vals, want)
+	}
+	// level is a column but no stream tag: nothing, as on hot.
+	if vals, _ = s.GetStreamFieldValues(context.Background(), nil, q, "level", 10); len(vals) != 0 {
+		t.Errorf("stream_field_values(level) = %v, want none (not a stream tag)", vals)
+	}
+	// Past the limit the first values are kept with zeroed hits.
+	vals, _ = s.GetStreamFieldValues(context.Background(), nil, q, "service.name", 1)
+	if want := []logstorage.ValueWithHits{{Value: "web", Hits: 0}}; !reflect.DeepEqual(vals, want) {
+		t.Errorf("limit 1 = %v, want %v", vals, want)
 	}
 }
 
@@ -1073,7 +1087,7 @@ func TestGetFieldValues_FieldNotInLabelIndex(t *testing.T) {
 
 // --- Edge cases ported from traces ---
 
-func TestCollectFilteredValues_EmptyValues_NotIncluded(t *testing.T) {
+func TestGetFieldValues_EmptyValueIsABucket(t *testing.T) {
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
 	rows := []fullLogRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "msg1", SeverityText: "INFO", ServiceName: "alpha",
@@ -1092,10 +1106,15 @@ func TestCollectFilteredValues_EmptyValues_NotIncluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A row with an empty value is one hit of "", as on hot VictoriaLogs/VictoriaTraces.
+	var empty uint64
 	for _, v := range vals {
 		if v.Value == "" {
-			t.Error("empty string values should not be included in results")
+			empty = v.Hits
 		}
+	}
+	if empty != 1 {
+		t.Errorf("empty-value bucket hits = %d, want 1 (values %v)", empty, vals)
 	}
 }
 

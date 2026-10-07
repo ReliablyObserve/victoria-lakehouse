@@ -428,3 +428,131 @@
   compare: { type: error, options: { hot_status: "400", cold_status: "400" } }
   layers: [api]
   pending: true
+
+- id: vl.select.field_values.map_attr
+  title: "/select/logsql/field_values — an attribute stored in a MAP column answers with its own values and hits, unfiltered and filtered"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "os.type:=linux", field: "host.arch", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/parquets3/field_values_map_test.go#TestFieldValuesMapAttributes_Logs, internal/storage/parquets3/field_values_map_property_test.go#TestFieldValues_MapAttributes_Property, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_StreamFieldValues_NoEmptyBucket, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_EmptyBucket_AggregateEqualsScan, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_SameKeyInTwoMaps_NoPhantomEmpty, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_ListColumnBeforeScalars, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MissingColumnFile_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_TombstoneApplied, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_BufferEqualsCold_EmptyBucket, internal/storage/parquets3/storage_fields_test.go#TestGetFieldValues_EmptyValueIsABucket, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithoutRowCountIsScanned, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithRowCountEqualsScan, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnInsideWindow, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnStraddlingWindowWithRowCount, internal/storage/parquets3/field_values_mutants_test.go#TestMapScanKeys_OnlyTheRequestedKeys, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MapReadExpandsOnlyTheRequestedKey, tests/parity/field_values_map_attrs_test.go#TestParity_FieldValues_MapAttributes] }
+  notes: "Cold read of a custom log attribute (resource.attributes / log.attributes). The scan addressed column chunks by top-level position and read the wrong leaf of a MAP column; MAP attributes now come through the query path reader, only the requested key is expanded. Exact compare of values and hits. Unit/property locks in both layers of the unit tests; parity cell TestParity_FieldValues_MapAttributes (numeric tenants)."
+
+- id: vl.select.field_values.empty_absent_everywhere
+  title: "/select/logsql/field_values — a field no row carries answers one empty-value bucket with hits = the rows"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [ingest.matrix]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "no.such.field", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/parquets3/field_values_map_test.go#TestFieldValuesMapAttributes_Logs, internal/storage/parquets3/field_values_map_property_test.go#TestFieldValues_MapAttributes_Property, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_StreamFieldValues_NoEmptyBucket, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_EmptyBucket_AggregateEqualsScan, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_SameKeyInTwoMaps_NoPhantomEmpty, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_ListColumnBeforeScalars, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MissingColumnFile_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_TombstoneApplied, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_BufferEqualsCold_EmptyBucket, internal/storage/parquets3/storage_fields_test.go#TestGetFieldValues_EmptyValueIsABucket, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithoutRowCountIsScanned, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithRowCountEqualsScan, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnInsideWindow, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnStraddlingWindowWithRowCount, internal/storage/parquets3/field_values_mutants_test.go#TestMapScanKeys_OnlyTheRequestedKeys, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MapReadExpandsOnlyTheRequestedKey, tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+  notes: "Hot VictoriaLogs v1.53 answers [{value:\"\", hits:N}] (uniq over a missing column). Cold counted nothing. Parity case field_values_absent_everywhere runs in the insert buffer and in Parquet."
+
+- id: vl.select.field_values.empty_absent_in_some_rows
+  title: "/select/logsql/field_values — rows without the field are one hit of the empty value next to the real values"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [ingest.matrix]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "ns", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/parquets3/field_values_map_test.go#TestFieldValuesMapAttributes_Logs, internal/storage/parquets3/field_values_map_property_test.go#TestFieldValues_MapAttributes_Property, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_StreamFieldValues_NoEmptyBucket, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_EmptyBucket_AggregateEqualsScan, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_SameKeyInTwoMaps_NoPhantomEmpty, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_ListColumnBeforeScalars, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MissingColumnFile_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_TombstoneApplied, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_BufferEqualsCold_EmptyBucket, internal/storage/parquets3/storage_fields_test.go#TestGetFieldValues_EmptyValueIsABucket, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithoutRowCountIsScanned, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithRowCountEqualsScan, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnInsideWindow, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnStraddlingWindowWithRowCount, internal/storage/parquets3/field_values_mutants_test.go#TestMapScanKeys_OnlyTheRequestedKeys, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MapReadExpandsOnlyTheRequestedKey, tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+  notes: "Parity case field_values_ns (buffer and Parquet); aggregate and scan paths of the cold tier agree (TestFieldValuesEmpty_AggregateEqualsScan, _AggregateWithRowCountEqualsScan)."
+
+- id: vl.select.field_values.empty_filtered_query
+  title: "/select/logsql/field_values — a filtered query counts the empty value over the matching rows only"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [ingest.matrix]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "app:=y", field: "lk", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/parquets3/field_values_map_test.go#TestFieldValuesMapAttributes_Logs, internal/storage/parquets3/field_values_map_property_test.go#TestFieldValues_MapAttributes_Property, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_StreamFieldValues_NoEmptyBucket, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_EmptyBucket_AggregateEqualsScan, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_SameKeyInTwoMaps_NoPhantomEmpty, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_ListColumnBeforeScalars, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MissingColumnFile_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_TombstoneApplied, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_BufferEqualsCold_EmptyBucket, internal/storage/parquets3/storage_fields_test.go#TestGetFieldValues_EmptyValueIsABucket, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithoutRowCountIsScanned, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithRowCountEqualsScan, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnInsideWindow, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnStraddlingWindowWithRowCount, internal/storage/parquets3/field_values_mutants_test.go#TestMapScanKeys_OnlyTheRequestedKeys, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MapReadExpandsOnlyTheRequestedKey, tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+  notes: "Parity case field_values_lk_filtered_query: hot answers [{\"\",2}] for the two app=y rows."
+
+- id: vl.select.field_values.limit_with_empty
+  title: "/select/logsql/field_values — limit counts the empty value like any other: past the limit hits are zeroed and the first values kept"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [ingest.matrix]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "lk", limit: "2", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/parquets3/field_values_map_test.go#TestFieldValuesMapAttributes_Logs, internal/storage/parquets3/field_values_map_property_test.go#TestFieldValues_MapAttributes_Property, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_StreamFieldValues_NoEmptyBucket, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_EmptyBucket_AggregateEqualsScan, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_SameKeyInTwoMaps_NoPhantomEmpty, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_ListColumnBeforeScalars, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MissingColumnFile_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_TombstoneApplied, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_BufferEqualsCold_EmptyBucket, internal/storage/parquets3/storage_fields_test.go#TestGetFieldValues_EmptyValueIsABucket, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithoutRowCountIsScanned, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithRowCountEqualsScan, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnInsideWindow, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnStraddlingWindowWithRowCount, internal/storage/parquets3/field_values_mutants_test.go#TestMapScanKeys_OnlyTheRequestedKeys, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MapReadExpandsOnlyTheRequestedKey, tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+  notes: "Parity cases field_values_lk_limit1 / _limit2 (hot: limit=1 -> [{\"\",0}], limit=2 -> [{\"\",3},{v1,1}])."
+
+- id: vl.select.field_values.substring_filter_before_limit
+  title: "/select/logsql/field_values — the substring filter applies before the limit, and never matches the empty value"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [ingest.matrix]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "lk", filter: "v", limit: "1", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/vlstorage/values_filter_limit_test.go#TestValuesFilteredThenLimited, internal/selectapi/jaeger_fallback_test.go#TestOnlyEmptyValue, tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+  notes: "The adapters limited first and filtered after, so matching values behind non-matching ones (now also the empty bucket) were dropped. Parity cases field_values_lk_substring_filter and field_values_lk_filter_then_limit."
+
+- id: vl.select.stream_field_values.no_empty
+  title: "/select/logsql/stream_field_values — never lists the empty value; a field no stream carries answers nothing"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [ingest.matrix]
+  upstream: { route: /select/logsql/stream_field_values }
+  request: { method: GET, path: /select/logsql/stream_field_values, params: { query: "*", field: "ns", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/parquets3/field_values_map_test.go#TestFieldValuesMapAttributes_Logs, internal/storage/parquets3/field_values_map_property_test.go#TestFieldValues_MapAttributes_Property, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_StreamFieldValues_NoEmptyBucket, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_EmptyBucket_AggregateEqualsScan, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_SameKeyInTwoMaps_NoPhantomEmpty, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_ListColumnBeforeScalars, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MissingColumnFile_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_StraddlingWindow, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_MapAttr_TombstoneApplied, internal/storage/parquets3/field_values_empty_test.go#TestFieldValuesEmpty_BufferEqualsCold_EmptyBucket, internal/storage/parquets3/storage_fields_test.go#TestGetFieldValues_EmptyValueIsABucket, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithoutRowCountIsScanned, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_AggregateWithRowCountEqualsScan, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnInsideWindow, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MissingColumnStraddlingWindowWithRowCount, internal/storage/parquets3/field_values_mutants_test.go#TestMapScanKeys_OnlyTheRequestedKeys, internal/storage/parquets3/field_values_mutants_test.go#TestFieldValuesEmpty_MapReadExpandsOnlyTheRequestedKey, tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+  notes: "Built from the stream tags of the matching streams (forEachStreamField), so a stream without the tag contributes nothing. Parity cases stream_field_values_ns_has_no_empty, stream_field_values_nosuch. loki-vl-proxy label values and detected_level read this endpoint."
+
+- id: vl.select.stream_field_values.non_stream_field
+  title: "/select/logsql/stream_field_values — a field that is not a stream tag answers nothing; hits and order follow the streams, past the limit hits are zeroed"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [ingest.matrix]
+  upstream: { route: /select/logsql/stream_field_values }
+  request: { method: GET, path: /select/logsql/stream_field_values, params: { query: "*", field: "lk", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket, internal/storage/parquets3/stream_field_values_layers_test.go#TestStreamFieldValues_ColdBufferAndBridgeAgree] }
+  notes: "Upstream GetStreamFieldValues = field_values of _stream, then forEachStreamField: only the tags of the matching streams are listed, hits are the rows of each stream, sorted by hits then value, truncated at the limit with zeroed hits. Cold now does the same from the _stream column over the buffer, the peer bridge and the objects (schema.ParseStreamFields mirrors upstream parseStreamFields). Fixes #445."

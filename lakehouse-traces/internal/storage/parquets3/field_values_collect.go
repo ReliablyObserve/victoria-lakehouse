@@ -24,11 +24,16 @@ type fieldValuesRequest struct {
 	tenantIDs  []logstorage.TenantID
 	query      *logstorage.Query
 	aggregates bool // the column may be answered from per-file label aggregates
-	filter     *logstorage.Filter
-	tombstones []tombstone // every tombstone overlapping the files' rows
-	parse      keyTenantFunc
-	startNs    int64
-	endNs      int64
+	// emptyBucket counts the rows that carry no value for the field under the
+	// empty value, as VictoriaLogs/VictoriaTraces field_values do (a row
+	// without the field, or with an empty one, is one hit of ""). Streams and
+	// stream ids never carry it.
+	emptyBucket bool
+	filter      *logstorage.Filter
+	tombstones  []tombstone // every tombstone overlapping the files' rows
+	parse       keyTenantFunc
+	startNs     int64
+	endNs       int64
 }
 
 // collectFieldValues answers a field enumeration exactly: every value in the
@@ -59,10 +64,15 @@ func (s *Storage) collectFieldValues(ctx context.Context, files []manifest.FileI
 	fromMeta := 0
 	for _, fi := range files {
 		if counts, ok := s.fileAggregate(fi, r); ok {
+			var sum int64
 			for v, c := range counts {
 				if v != "" && c > 0 {
 					seen[v] += uint64(c)
+					sum += c
 				}
+			}
+			if r.emptyBucket && fi.RowCount > sum {
+				seen[""] += uint64(fi.RowCount - sum)
 			}
 			fromMeta++
 			continue
@@ -94,7 +104,7 @@ func (s *Storage) collectBufferedValues(ctx context.Context, view *bufferView, r
 	}
 	var mu sync.Mutex
 	count := func(tss []tombstone) logstorage.WriteDataBlockFunc {
-		return newFieldValueCounter(r.field, r.filter, tss, &mu, seen)
+		return newFieldValueCounterOpts(r.field, r.filter, tss, &mu, seen, r.emptyBucket)
 	}
 	scope := scopeFor(ctx, r.tenantIDs)
 	sink := newTombstoneSink(scope, r.tombstones, r.parse, s.AccountOnlyTenantKeys(), count)
@@ -114,6 +124,13 @@ func (s *Storage) collectBufferedValues(ctx context.Context, view *bufferView, r
 // with the one assigned, so "seen[v]++" with a borrowed v would put the
 // block's memory back into seen.
 func newFieldValueCounter(field string, filter *logstorage.Filter, tss []tombstone, mu *sync.Mutex, seen map[string]uint64) logstorage.WriteDataBlockFunc {
+	return newFieldValueCounterOpts(field, filter, tss, mu, seen, false)
+}
+
+// newFieldValueCounterOpts is newFieldValueCounter that, with countEmpty, also
+// counts the rows without a value for field under "" (see
+// fieldValuesRequest.emptyBucket).
+func newFieldValueCounterOpts(field string, filter *logstorage.Filter, tss []tombstone, mu *sync.Mutex, seen map[string]uint64, countEmpty bool) logstorage.WriteDataBlockFunc {
 	return func(_ uint, db *logstorage.DataBlock) {
 		if db = filterDataBlock(db, filter); db == nil || db.RowsCount() == 0 {
 			return
@@ -123,22 +140,30 @@ func newFieldValueCounter(field string, filter *logstorage.Filter, tss []tombsto
 				return
 			}
 		}
+		local := make(map[string]uint64, 8)
+		found := false
 		for _, c := range db.GetColumns(false) {
 			if c.Name != field {
 				continue
 			}
-			local := make(map[string]uint64, 8)
+			found = true
 			for _, v := range c.Values {
-				if v != "" {
+				if v != "" || countEmpty {
 					local[v]++
 				}
 			}
-			mu.Lock()
-			for v, n := range local {
-				seen[strings.Clone(v)] += n
-			}
-			mu.Unlock()
 		}
+		if !found && countEmpty {
+			local[""] += uint64(db.RowsCount())
+		}
+		if len(local) == 0 {
+			return
+		}
+		mu.Lock()
+		for v, n := range local {
+			seen[strings.Clone(v)] += n
+		}
+		mu.Unlock()
 	}
 }
 
@@ -146,6 +171,11 @@ func newFieldValueCounter(field string, filter *logstorage.Filter, tss []tombsto
 // column when the file can be answered from metadata (see collectFieldValues).
 func (s *Storage) fileAggregate(fi manifest.FileInfo, r fieldValuesRequest) (map[string]int64, bool) {
 	if !r.aggregates || r.filter != nil || !fileWithinWindow(fi, r.startNs, r.endNs) {
+		return nil, false
+	}
+	// The empty bucket is the file's rows minus the counted values: unknown
+	// without a row count.
+	if r.emptyBucket && fi.RowCount <= 0 {
 		return nil, false
 	}
 	// Counts predate any delete: a tombstone of the file's tenant whose time
@@ -189,7 +219,7 @@ func (s *Storage) scanFieldValuesParallel(ctx context.Context, files []manifest.
 				// Column-projected read: only the target (+ filter and
 				// timestamp) chunks are fetched, never the whole object body.
 				local := make(map[string]uint64)
-				if err := s.scanProjectedFieldValues(ctx, fi, r.column, r.subField, r.filter, tombstonesForKey(r.tombstones, r.parse, fi.Key), local, r.startNs, r.endNs); err != nil {
+				if err := s.scanProjectedFieldValues(ctx, fi, r.column, r.subField, r.field, r.emptyBucket, r.filter, tombstonesForKey(r.tombstones, r.parse, fi.Key), local, r.startNs, r.endNs); err != nil {
 					if ctx.Err() == nil {
 						// The object is left out of the answer, as the query
 						// path does with an unreadable object; counted there too.

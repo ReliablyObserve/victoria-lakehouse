@@ -48,7 +48,7 @@ func (h *Handler) handleJaegerServices(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	results, err := h.store.GetFieldValues(ctx, tenantIDs, q, "service.name", 1000)
-	if err == nil && len(results) == 0 {
+	if err == nil && onlyEmptyValue(results) {
 		results, err = h.store.GetFieldValues(ctx, tenantIDs, q, "resource_attr:service.name", 1000)
 	}
 	if err != nil {
@@ -97,7 +97,7 @@ func (h *Handler) handleJaegerOperations(w http.ResponseWriter, r *http.Request)
 		defer cancel()
 
 		results, err := h.store.GetFieldValues(ctx, tenantIDs, q, "span.name", 1000)
-		if err == nil && len(results) == 0 {
+		if err == nil && onlyEmptyValue(results) {
 			results, err = h.store.GetFieldValues(ctx, tenantIDs, q, "name", 1000)
 		}
 		if err != nil {
@@ -597,4 +597,16 @@ func spanKindName(code string) string {
 	default:
 		return code
 	}
+}
+
+// onlyEmptyValue reports whether a field_values answer holds no value but the
+// empty bucket (rows without the field), which is no answer for a lookup that
+// has a fallback field to try.
+func onlyEmptyValue(results []logstorage.ValueWithHits) bool {
+	for _, v := range results {
+		if v.Value != "" {
+			return false
+		}
+	}
+	return true
 }

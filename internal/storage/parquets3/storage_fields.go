@@ -7,7 +7,6 @@ import (
 	"math"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
@@ -323,15 +322,13 @@ func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64, u
 	if len(rgs) == 0 {
 		return
 	}
-	for pos, col := range f.Root().Columns() {
-		parquetName := bytesutil.InternString(col.Name())
-		// The row group's column chunks are LEAF columns: a MAP column in
-		// front of this one is two leaves (key, value) but one top-level
-		// column, so a column after a map sits at a later chunk than its
-		// position among the top-level columns.
-		ci := pos
-		if col.Leaf() {
-			ci = col.Index()
+	// Chunks are addressed by leaf column index, not top-level position: a MAP
+	// column owns two leaves, so every column after one is shifted.
+	for _, col := range f.Root().Columns() {
+		parquetName := col.Name()
+		ci := firstLeafIndex(col)
+		if ci < 0 {
+			continue
 		}
 		internal := parquetName
 		if m := s.registry.ResolveFromParquet(parquetName); m != nil {
@@ -360,6 +357,11 @@ func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64, u
 			n := cols[ci].NumValues() - nulls
 			if n < 0 {
 				n = 0
+			}
+			// A MAP column's chunk counts entries, not rows: a row cannot carry
+			// the column more than once.
+			if !col.Leaf() && n > rg.NumRows() {
+				n = rg.NumRows()
 			}
 			nonNull += n
 		}
@@ -395,6 +397,8 @@ func (s *Storage) scanProjectedFieldValues(
 	ctx context.Context,
 	fi manifest.FileInfo,
 	targetParquetCol string,
+	targetField string,
+	countEmpty bool,
 	filter *logstorage.Filter,
 	tombstones []tombstone,
 	seen map[string]uint64,
@@ -413,6 +417,14 @@ func (s *Storage) scanProjectedFieldValues(
 	// A tombstone predicate can only be evaluated against columns that are in
 	// the projection — including the timestamp it is bounded by.
 	s.addTombstoneProjection(tombstones, projectedCols)
+
+	// A target or filter field that can live in a MAP attribute column is read
+	// through the query path's columnar reader (see mapScanColumns); the
+	// positional scan below only addresses plain top-level leaf columns.
+	mapCols := s.mapScanColumns(targetField, filter, tombstones)
+	if mapCols != nil {
+		projectedCols = mapCols
+	}
 
 	// The scan reads whole row groups, and a file can straddle the query
 	// window: a row outside the window must contribute neither a value nor a
@@ -438,25 +450,38 @@ func (s *Storage) scanProjectedFieldValues(
 		defer func() { _ = planned.Close() }()
 	}
 
+	if mapCols != nil {
+		return s.scanMapAwareFieldValues(ctx, f, planned, mapCols, targetField, filter, tombstones, seen, countEmpty, winLo, winHi)
+	}
+
+	// Chunks are addressed by LEAF column index: a MAP or other nested column
+	// before a scalar one owns several leaves, so the top-level position of a
+	// column is not the index of its chunk.
 	projectedIndices := make([]int, 0, len(projectedCols))
 	projectedNames := make([]string, 0, len(projectedCols))
 	targetInProjection := -1
-	for i, c := range f.Root().Columns() {
-		n := bytesutil.InternString(c.Name())
-		if !projectedCols[n] {
+	for _, c := range f.Root().Columns() {
+		n := c.Name()
+		if !projectedCols[n] || !c.Leaf() {
 			continue
 		}
 		if n == targetParquetCol {
 			targetInProjection = len(projectedIndices)
 		}
-		// Chunks are LEAF columns; see accumulateFieldHits. A map before this
-		// column is two leaves, so the top-level position is not the chunk.
-		ci := i
-		if c.Leaf() {
-			ci = c.Index()
-		}
-		projectedIndices = append(projectedIndices, ci)
+		projectedIndices = append(projectedIndices, c.Index())
 		projectedNames = append(projectedNames, n)
+	}
+	if targetInProjection < 0 && countEmpty {
+		// The object lacks the column: every row in the window is one hit of
+		// the empty value, which only a row-level read can count.
+		// Nothing narrows the rows and the file lies inside the window:
+		// every row of it is one hit of "", with no data page read.
+		if filter == nil && len(tombstones) == 0 && fi.RowCount > 0 && fileWithinWindow(fi, startNs, endNs) {
+			seen[""] += uint64(fi.RowCount)
+			return nil
+		}
+		cols := s.fieldScanColumns(targetField, filter, tombstones)
+		return s.scanMapAwareFieldValues(ctx, f, planned, cols, targetField, filter, tombstones, seen, countEmpty, winLo, winHi)
 	}
 	if targetInProjection < 0 {
 		// Target column not present in this file — nothing to collect.
@@ -492,7 +517,7 @@ func (s *Storage) scanProjectedFieldValues(
 		for {
 			n, err := rows.ReadRows(buf)
 			if n > 0 {
-				collectFilteredValuesInWindow(buf[:n], projectedNames, targetInProjection, filter, tombstones, s, seen, winLo, winHi)
+				collectFilteredValuesInWindow(buf[:n], projectedNames, targetInProjection, filter, tombstones, s, seen, winLo, winHi, countEmpty)
 			}
 			if err != nil {
 				break
@@ -503,6 +528,9 @@ func (s *Storage) scanProjectedFieldValues(
 	return nil
 }
 
+// GetFieldValues answers field_values: a uniq over the rows, where a row
+// without the field counts under the empty value (stream_field_values is a
+// different question, see GetStreamFieldValues).
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
 	filter := parseFilterFromQuery(q)
 	scope := scopeFor(ctx, tenantIDs)
@@ -559,18 +587,19 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	}
 
 	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
-		view:       view,
-		op:         "field values",
-		column:     mapping.ParquetColumn,
-		field:      mapping.InternalName,
-		tenantIDs:  tenantIDs,
-		query:      q,
-		aggregates: true,
-		filter:     filter,
-		tombstones: tombstones,
-		parse:      s.keyTenantParser(),
-		startNs:    startNs,
-		endNs:      endNs,
+		view:        view,
+		op:          "field values",
+		column:      mapping.ParquetColumn,
+		field:       mapping.InternalName,
+		emptyBucket: true,
+		tenantIDs:   tenantIDs,
+		query:       q,
+		aggregates:  true,
+		filter:      filter,
+		tombstones:  tombstones,
+		parse:       s.keyTenantParser(),
+		startNs:     startNs,
+		endNs:       endNs,
 	})
 	if err != nil {
 		return nil, err
@@ -587,11 +616,71 @@ func (s *Storage) GetStreamFieldNames(ctx context.Context, tenantIDs []logstorag
 	return result, nil
 }
 
+// GetStreamFieldValues lists the values of a stream tag over the streams the
+// query matches, as VictoriaLogs/VictoriaTraces do: upstream takes the streams
+// (field_values of _stream, so every layer: buffer, bridge and cold) and walks
+// their tags (forEachStreamField), summing each stream's hits into the value of
+// the tag it carries. A field that is not a tag of any matching stream answers
+// nothing, and a stream without the tag contributes nothing, so the empty value
+// is never listed. The adapters apply the substring filter to the values before the
+// limit; the answer is sorted by hits then value, and past the limit the first values
+// are kept with zeroed hits.
 func (s *Storage) GetStreamFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	return s.GetFieldValues(ctx, tenantIDs, q, fieldName, limit)
+	streams, err := s.streamsWithHits(ctx, tenantIDs, q, "stream_field_values")
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]uint64)
+	var tags []schema.StreamField
+	for stream, hits := range streams {
+		tags, err = schema.ParseStreamFields(tags[:0], stream)
+		if err != nil {
+			continue // upstream skips a stream it cannot parse
+		}
+		for _, t := range tags {
+			if t.Name != fieldName {
+				continue
+			}
+			values[t.Value] += hits
+		}
+	}
+	return streamTagValuesWithHits(values, limit), nil
+}
+
+// streamTagValuesWithHits orders the values the way upstream's
+// GetStreamFieldValues does: by hits (descending), then by value in natural
+// order; past the limit the first limit values are kept with zeroed hits. This
+// differs from field_values' limit (valuesWithHits), whose hits are zeroed
+// before the order is taken.
+func streamTagValuesWithHits(values map[string]uint64, limit uint64) []logstorage.ValueWithHits {
+	if len(values) == 0 {
+		return nil
+	}
+	vhs := make([]logstorage.ValueWithHits, 0, len(values))
+	for v, h := range values {
+		vhs = append(vhs, logstorage.ValueWithHits{Value: v, Hits: h})
+	}
+	exceeded := limit > 0 && uint64(len(vhs)) > limit
+	vhs = logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{vhs}, limit, false)
+	if exceeded {
+		for i := range vhs {
+			vhs[i].Hits = 0
+		}
+	}
+	return vhs
 }
 
 func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
+	seen, err := s.streamsWithHits(ctx, tenantIDs, q, "streams")
+	if err != nil {
+		return nil, err
+	}
+	return valuesWithHits(seen, limit), nil
+}
+
+// streamsWithHits counts the rows of every stream the query matches, over the
+// buffer, the peers' buffers and the cold objects alike.
+func (s *Storage) streamsWithHits(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, op string) (map[string]uint64, error) {
 	filter := parseFilterFromQuery(q)
 
 	startNs, endNs := q.GetFilterTimeRange()
@@ -600,7 +689,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 	view := s.openBufferView(ctx, startNs, endNs, tenantIDs)
 	defer view.release()
 	runHookBetweenViewAndList()
-	files := s.filesForTenants(ctx, "streams", startNs, endNs, tenantIDs)
+	files := s.filesForTenants(ctx, op, startNs, endNs, tenantIDs)
 	scope := scopeFor(ctx, tenantIDs)
 	// No early return on an empty object list: a window nothing has been
 	// flushed for yet is answered from the unflushed rows alone.
@@ -612,7 +701,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 	// Each object gets only the tombstones of its own tenant.
 	parse := s.keyTenantParser()
 	if len(tombstones) > 0 {
-		noteFieldsScanFallback("streams")
+		noteFieldsScanFallback(op)
 	}
 
 	streamColName := "_stream"
@@ -622,7 +711,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 
 	seen, err := s.collectFieldValues(ctx, files, fieldValuesRequest{
 		view:       view,
-		op:         "streams",
+		op:         op,
 		column:     streamColName,
 		field:      "_stream",
 		tenantIDs:  tenantIDs,
@@ -636,7 +725,7 @@ func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantI
 	if err != nil {
 		return nil, err
 	}
-	return valuesWithHits(seen, limit), nil
+	return seen, nil
 }
 
 func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
@@ -691,7 +780,7 @@ func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.Tenan
 // Uses VL's Filter.MatchRow() for full LogsQL evaluation.
 // When filter is nil, all rows contribute values (no filtering).
 func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, tombstones []tombstone, s *Storage, seen map[string]uint64) {
-	collectFilteredValuesInWindow(rows, colNames, targetColIdx, filter, tombstones, s, seen, math.MinInt64, math.MaxInt64)
+	collectFilteredValuesInWindow(rows, colNames, targetColIdx, filter, tombstones, s, seen, math.MinInt64, math.MaxInt64, false)
 }
 
 // collectFilteredValuesInWindow is collectFilteredValues restricted to rows
@@ -699,7 +788,7 @@ func collectFilteredValues(rows []parquet.Row, colNames []string, targetColIdx i
 // filter). An unbounded window (MinInt64, MaxInt64) skips the per-row check;
 // a bounded one needs the timestamp column among colNames — a row whose
 // timestamp is not projected counts as outside a bounded window.
-func collectFilteredValuesInWindow(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, tombstones []tombstone, s *Storage, seen map[string]uint64, startNs, endNs int64) {
+func collectFilteredValuesInWindow(rows []parquet.Row, colNames []string, targetColIdx int, filter *logstorage.Filter, tombstones []tombstone, s *Storage, seen map[string]uint64, startNs, endNs int64, countEmpty bool) {
 	var targetMapping *schema.FieldMapping
 	if s != nil && targetColIdx >= 0 && targetColIdx < len(colNames) {
 		targetMapping = s.registry.ResolveFromParquet(colNames[targetColIdx])
@@ -732,7 +821,7 @@ func collectFilteredValuesInWindow(rows []parquet.Row, colNames []string, target
 			}
 			if targetColIdx < len(row) {
 				val := formatTarget(row[targetColIdx])
-				if val != "" {
+				if val != "" || countEmpty {
 					seen[val]++
 				}
 			}
@@ -754,7 +843,7 @@ func collectFilteredValuesInWindow(rows []parquet.Row, colNames []string, target
 		}
 		if targetColIdx < len(row) {
 			val := formatTarget(row[targetColIdx])
-			if val != "" {
+			if val != "" || countEmpty {
 				seen[val]++
 			}
 		}
@@ -843,4 +932,17 @@ func windowRowGroups(f *parquet.File, lo, hi int64) []int {
 		all = append(all, i)
 	}
 	return all
+}
+
+// firstLeafIndex returns the leaf column index of col, or of its first leaf
+// when col is a group (a MAP column's key leaf); -1 when it has none.
+func firstLeafIndex(col *parquet.Column) int {
+	for !col.Leaf() {
+		cs := col.Columns()
+		if len(cs) == 0 {
+			return -1
+		}
+		col = cs[0]
+	}
+	return col.Index()
 }

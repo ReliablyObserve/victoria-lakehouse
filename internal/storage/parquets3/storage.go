@@ -1084,10 +1084,10 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 	}
 
 	// Arbitrary resource/log attributes carried in the maps, surfaced under
-	// the same prefixed names the file-scan path uses (resource_attr:K,
-	// log_attr:K). Without these, a recent-log query filtering on a map
-	// attribute (e.g. `log_attr:http.status="500"`) matches flushed files
-	// but NOT still-buffered rows — the logs-side twin of the traces
+	// the same names the file-scan path and hot VictoriaLogs use: the bare key
+	// (logRowToFields, mapColumnToAttrPrefix). Without these, a recent-log
+	// query filtering on a map attribute (e.g. `http.status="500"`) matches
+	// flushed files but NOT still-buffered rows — the logs-side twin of the traces
 	// _stream/attribute buffer gap. Built lazily so a column is only
 	// materialised when at least one buffered row carries that key.
 	attrCols := make(map[string][]string)
@@ -1102,7 +1102,11 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 			attrCols[name] = col
 			attrOrder = append(attrOrder, name)
 		}
-		col[i] = val
+		// The same key in both maps is one field: the first non-empty value
+		// wins, as the file reader merges them (mergeDuplicateColumns).
+		if col[i] == "" {
+			col[i] = val
+		}
 	}
 	for i, row := range rows {
 		// Dedicated columns (Tier 1) surface under their bare OTel name — same
@@ -1124,10 +1128,10 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 		putAttr("process.runtime.name", i, row.ProcessRuntimeName)
 		putAttr("process.runtime.version", i, row.ProcessRuntimeVer)
 		for k, v := range row.ResourceAttributes {
-			putAttr("resource_attr:"+k, i, v)
+			putAttr(k, i, v)
 		}
 		for k, v := range row.LogAttributes {
-			putAttr("log_attr:"+k, i, v)
+			putAttr(k, i, v)
 		}
 	}
 	for _, name := range attrOrder {

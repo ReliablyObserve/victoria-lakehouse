@@ -55,7 +55,7 @@ func TestScanProjectedFieldValues_ScalarAfterMapsIsIndexedByLeaf(t *testing.T) {
 
 	for _, col := range []string{"severity_text", "service.name"} {
 		seen := map[string]uint64{}
-		if err := s.scanProjectedFieldValues(context.Background(), fi, col, nil, nil, seen, math.MinInt64, math.MaxInt64); err != nil {
+		if err := s.scanProjectedFieldValues(context.Background(), fi, col, col, false, nil, nil, seen, math.MinInt64, math.MaxInt64); err != nil {
 			t.Fatal(err)
 		}
 		want := map[string]uint64{"INFO": 2, "ERROR": 1}

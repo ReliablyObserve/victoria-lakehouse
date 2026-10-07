@@ -1216,6 +1216,13 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 }
 
 func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+	return s.readRowGroupWithProjectionKeys(f, rg, startNs, endNs, cols, pdf, writeBlock, traceIDs, nil)
+}
+
+// readRowGroupWithProjectionKeys is readRowGroupWithProjection that, with
+// onlyKeys not nil, expands only those attribute keys of the MAP columns on the
+// columnar path (see readRowGroupColumnarKeys).
+func (s *Storage) readRowGroupWithProjectionKeys(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, onlyKeys map[string]struct{}) error {
 	// Bound concurrent row-group decoders process-wide. Each decode buffers
 	// a full row group's projected columns (~30-50 MiB at production scale
 	// per the near-OOM heap-diff: readMapColumnToBlockCols=154 MiB flat,
@@ -1268,7 +1275,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 
 	// Fast path: columnar reading when no constant columns need merging.
 	if len(constants) == 0 && len(readCols) > 0 {
-		db := readRowGroupColumnar(f, rg, readCols, s.registry, startNs, endNs, bitmap, slots)
+		db := readRowGroupColumnarKeys(f, rg, readCols, s.registry, startNs, endNs, bitmap, slots, onlyKeys)
 		emit(db)
 		return nil
 	}
