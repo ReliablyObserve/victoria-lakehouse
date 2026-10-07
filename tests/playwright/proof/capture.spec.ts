@@ -14,7 +14,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 type PageSpec = {
-  id: string; kind: string; query?: string; field?: string; family?: string; trace?: boolean;
+  id: string; kind: string; tab?: string; query?: string; field?: string; family?: string; trace?: boolean;
   path?: string; service?: boolean; ranges?: string[]; clip?: { x: number; y: number; width: number; height: number };
 };
 const spec = JSON.parse(fs.readFileSync(process.env.VP_SPEC || path.join(__dirname, "spec.json"), "utf8"));
@@ -69,7 +69,8 @@ function pageUrl(p: PageSpec, side: string, r: string): string {
       const fam = p.family === "traces" ? "traces" : "logs";
       const base = `http://127.0.0.1:${port(`${side}-${fam}`)}/select/vmui/`;
       const w = state[r];
-      const q = new URLSearchParams({ "g0.expr": p.query || "*", "g0.range_input": "1h", "g0.end_input": w.end.replace("Z", ""), "g0.relative_time": "none", "g0.tab": "0" });
+      const q = new URLSearchParams({ query: p.query || "*", limit: "50", tab: "0", "g0.range_input": "1h", "g0.end_input": w.end.replace("Z", ""), "g0.relative_time": "none" });
+      if (p.tab === "json") q.set("view", "json");  // VMUI's own parameter for the JSON view
       return `${base}#/?${q}`;
     }
     case "jaeger-ui": {
@@ -161,6 +162,8 @@ async function interact(page: Page, p: PageSpec) {
     const box = await item.boundingBox().catch(() => null);
     if (box) { await page.mouse.move(box.x + 20, box.y + box.height / 2); await pause(500); await page.mouse.click(box.x + 20, box.y + box.height / 2); }
     await pause(3500);
+  } else if (p.kind === "vmui" && p.tab === "json") {
+    await pause(1500);  // the JSON view (view=json in the URL) prints every row as the API wrote it, member by member
   } else if (p.kind === "jaeger-ui" && p.trace) {
     // Expand the first span with details: its logs (events), references (links) and tags (scope) are what #430 is about.
     await page.locator(".span-row, [class*=SpanBarRow]").first().click({ timeout: 15_000 }).catch(() => {});

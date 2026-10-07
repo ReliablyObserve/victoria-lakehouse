@@ -303,3 +303,16 @@ def test_montage_makes_a_zoom_montage_from_clip_images(tmp_path):
     scores = montage.make(str(tmp_path))
     assert scores == {"pg-cold": 0.0, "pg-cold-zoom": 1.0}
     assert (tmp_path / "montage" / "pg-cold-zoom.png").exists()
+
+
+def test_vmui_query_rows_are_scored_with_key_order(tmp_path):
+    def body(keys):
+        return "\n".join(json.dumps({k: "v" if k != "_time" else "t1" for k in keys}) for _ in range(1))
+
+    def cap_q(keys):
+        r = rec(body(keys), url="/select/logsql/query?query=%2A", request=None)
+        return cap([r])
+    write_page(str(tmp_path), "sort", "cold", {"base": cap_q(["_time", "a", "b"]), "pr": cap_q(["_time", "b", "a"]), "ref": cap_q(["_time", "a", "b"])})
+    r = compare.compare_out(str(tmp_path))["sort/cold"]
+    assert r["base_score"] == 100.0 and r["pr_score"] == 0.0 and r["verdict"] == "regression"
+    assert frames.resource_meta("/select/logsql/query?x=1") == {"key_order": True} and frames.resource_meta("/select/logsql/hits") == {}

@@ -84,6 +84,11 @@ def answer_of_result(res: dict) -> tuple[str, str, dict]:
     return "rows", "\n".join(json.dumps(r, sort_keys=True) for r in rows), {"identity": ident, "order": None}
 
 
+def resource_meta(url: str) -> dict:
+    """Options for the answer of a call: the rows of a VMUI/VTUI query are scored with the order of their JSON members."""
+    return {"key_order": True} if url.split("?")[0].endswith("/select/logsql/query") else {}
+
+
 def resource_kind(url: str) -> str | None:
     path = url.split("?")[0]
     ep = path.rsplit("/", 1)[-1]
@@ -91,6 +96,8 @@ def resource_kind(url: str) -> str | None:
         return "values"
     if ep == "hits":
         return "series_hits"
+    if path.endswith("/select/logsql/query"):
+        return "rows"
     if re.search(r"/api/traces/[0-9a-f]+$", path):
         return "trace_jaeger"
     return None
@@ -126,5 +133,5 @@ def answers_of(records: list[dict]) -> dict[str, dict]:
         body = resp if isinstance(resp, str) else json.dumps(resp)
         ep = url.split("?")[0].rsplit("/", 1)[-1]
         field = (r.get("request") or {}).get("field") if isinstance(r.get("request"), dict) else None
-        out[key] = {"kind": kind, "body": body, "meta": {}, "status": status, "label": f"{ep}({field})" if field else ep}
+        out[key] = {"kind": kind, "body": body, "meta": resource_meta(url), "status": status, "label": f"{ep}({field})" if field else ep}
     return out
