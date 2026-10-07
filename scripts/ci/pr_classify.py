@@ -6,8 +6,8 @@ two gates never disagree about what a release-impacting change is.
 
 Prints `key=value` lines:
   exempt=release-metadata|dependency-only|none
-  product=1|0
-  reason=<first path or rule that made it product-changing>
+  product=1|0   (non-test, non-generated Go under internal/ cmd/ lakehouse-traces/, patches/, charts/)
+  reason=<first path that made it product-changing>
 """
 from __future__ import annotations
 
@@ -86,14 +86,15 @@ def main() -> int:
                            if not c.startswith("Merge ")):
         exempt = "dependency-only"
 
+    # Rule 1 fires on product code only (owner, 2026-10-07): the changelog
+    # gate's release-impacting flag also covers tests/, Makefile and scripts,
+    # so it is used for the exemptions above and not as the trigger.
     reason = ""
     if exempt == "none":
-        if cc.should_require_changelog(commits, files):
-            reason = "release-impacting per the changelog gate"
         for f in files:
             r = product_reason(f, a.head)
             if r:
-                reason = r if not reason else f"{reason}; {r}"
+                reason = r
                 break
     print(f"exempt={exempt}")
     print(f"product={1 if reason else 0}")

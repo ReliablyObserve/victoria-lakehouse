@@ -23,6 +23,12 @@ env:
 jobs:
   conformance-inventory:
     runs-on: ubuntu-latest
+    # issues/pull-requests: read lets the registry gate read who applied the
+    # `registry-exempt` label (the PR's issue events).
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -43,11 +49,15 @@ jobs:
       - name: Conformance drift and generated files check
         run: make conformance-check
       - name: Registry-touch checker tests
-        run: bash scripts/ci/tests/test_check_registry_touch.sh
+        run: |
+          bash scripts/ci/tests/test_check_registry_touch.sh
+          python3 -m unittest scripts/ci/tests/test_registry_exempt.py
       - name: Product changes and new tests are covered in the registry
         if: github.event_name == 'pull_request'
         env:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/ci/check_registry_touch.sh origin/${{ github.base_ref }}

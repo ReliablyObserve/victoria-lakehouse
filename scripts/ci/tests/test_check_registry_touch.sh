@@ -31,6 +31,14 @@ if ! (cd "$REPO_ROOT" && GOWORK=off go build -o "$TESTLINKS_BIN" ./tests/conform
 fi
 export TESTLINKS_BIN
 
+# Issue-event fixtures for the registry-exempt label: who applied it decides.
+EVDIR="$(mktemp -d)"
+printf '[{"event":"labeled","actor":{"login":"szibis"},"label":{"name":"registry-exempt"}}]' > "$EVDIR/owner.json"
+printf '[{"event":"labeled","actor":{"login":"mallory"},"label":{"name":"registry-exempt"}}]' > "$EVDIR/other.json"
+printf '[{"event":"labeled","actor":{"login":"szibis"},"label":{"name":"registry-exempt"}},{"event":"unlabeled","actor":{"login":"szibis"},"label":{"name":"registry-exempt"}},{"event":"labeled","actor":{"login":"mallory"},"label":{"name":"registry-exempt"}}]' > "$EVDIR/relabeled.json"
+printf 'not json' > "$EVDIR/broken.json"
+OWNER_EV="$EVDIR/owner.json"
+
 # new_repo creates a repo with an initial commit and echoes its path. The base
 # changelog has an [Unreleased] section with `### Added` and `### Fixed`
 # bullets above a released version, so a case can exercise the section
@@ -92,6 +100,7 @@ FIXTURE
     mkdir -p tests/parity docs .github/workflows scripts/ci
     printf 'package parity\n\nimport "testing"\n\nfunc TestOldParity(t *testing.T) {}\n' > tests/parity/parity_test.go
     printf 'module x\n' > go.mod
+    printf '# approvers\nszibis\n' > .github/registry-exempt-approvers
     printf '# allowlist\nTestParity_A  # B1: x\nTestParity_B  # B2: y\n' > tests/parity/known_failures.txt
     printf '| Id | Divergence |\n|---|---|\n| **B1** | open one |\n| **B2** | open two |\n| **Old thing (B0)** | **Resolved** | done |\n' > docs/parity-and-gaps.md
     cat >> tests/conformance/registry/rows/lh/endpoints.yaml <<'ROWS'
@@ -308,7 +317,7 @@ PRECONDITION='grep -q "^## \[9\.9\.9\] - " CHANGELOG.md' \
 echo
 echo "== registrations and config keys are compared as sets =="
 PRECONDITION='git diff base...HEAD -- internal/x/routes.go | grep -q "^+.*HandleFunc"' \
-  PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor only, no behaviour change' \
+  REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor only, no behaviour change' \
   run_case "a registration moved within its file is neither a route change nor a feature signal" ok "registry-touch check OK" \
   move_route_within_file
 run_case "a registration added to a non-entrypoint file still needs registry rows" fail \
@@ -322,7 +331,7 @@ run_case "a new YAML config key without the catalog fails" fail \
 run_case "an existing key name added to another config struct is a new key" fail \
   "a new YAML config key: S3Config.flush_interval" add_existing_key_name_to_other_struct
 PRECONDITION='git diff base...HEAD -- internal/config/config.go | grep -q "^+.*yaml:"' \
-  PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor only, no behaviour change' \
+  REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor only, no behaviour change' \
   run_case "a config field moved within its struct is not a feature signal" ok "registry-touch check OK" \
   move_config_field
 run_case "a YAML key declared in a config test file is not a feature signal" ok "registry-touch check OK" \
@@ -413,7 +422,7 @@ echo
 echo "== exemptions =="
 run_case "a release-metadata PR passes" ok "skipped (release-metadata PR)" materialize_release 9.9.9
 COMMIT_MSG='build(deps): bump y' run_case "a dependency-only PR passes" ok "skipped (dependency-only PR)" dependency_bump
-run_case "a go.mod change under a non-dependency commit is a product change" fail "release-impacting" dependency_bump
+run_case "a go.mod change is not product code, whatever its commit subject" ok "registry-touch check OK" dependency_bump
 run_case "a docs-only PR passes" ok "registry-touch check OK" docs_only
 run_case "a CI-only PR passes" ok "registry-touch check OK" ci_only
 PR_LABELS='bug,registry-exempt' run_case "the exempt label without the body section fails" fail \
@@ -422,11 +431,45 @@ PR_LABELS='registry-exempt' PR_BODY='Registry: none —' run_case "the exempt la
   "no 'Registry: none" product_change
 PR_BODY='Registry: none — pure refactor, no behaviour change' run_case "the body section without the label does not exempt" fail \
   "makes no real content change" product_change
-PR_LABELS='bug,registry-exempt' PR_BODY=$'## Summary\nx\n\nRegistry: none — pure refactor, no behaviour change' \
+REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS='bug,registry-exempt' PR_BODY=$'## Summary\nx\n\nRegistry: none — pure refactor, no behaviour change' \
   run_case "the exempt label with the body section passes" ok "registry-exempt label" product_change
-PR_LABELS='registry-exempt' PR_BODY='Registry: none — tests only' run_case "the exemption also covers unlinked new tests" ok "skipped" new_test_unreferenced
+REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS='registry-exempt' PR_BODY='Registry: none — tests only' run_case "the exemption also covers unlinked new tests" ok "skipped" new_test_unreferenced
 
 
+
+echo
+echo "== rule 1 fires on product code only =="
+tests_only_change() { mkdir -p tests/e2e; printf 'helper\n' > tests/e2e/data.txt; printf 'x==1\n' > tests/requirements.txt; }
+infra_only_change() { printf 'all:\n' > Makefile; printf '#!/bin/sh\n' > scripts/tool.sh; }
+test_file_edit_only() { printf '// edit\n' >> tests/parity/parity_test.go; }
+chart_change() { mkdir -p charts/c; printf 'a: 1\n' > charts/c/values.yaml; }
+patch_change() { mkdir -p patches; printf 'diff\n' > patches/x.patch; }
+generated_go_change() { printf '// Code generated by x. DO NOT EDIT.\n\npackage x\n' > internal/x/z.go; }
+run_case "tests-only data and requirements changes pass rule 1" ok "registry-touch check OK" tests_only_change
+run_case "Makefile and scripts changes pass rule 1" ok "registry-touch check OK" infra_only_change
+run_case "a _test.go edit that adds no test passes" ok "registry-touch check OK" test_file_edit_only
+run_case "a chart change is product code" fail "makes no real content change" chart_change
+run_case "a patches/ change is product code" fail "but not tests/conformance/registry/rows/" patch_change
+run_case "generated Go is not product code" ok "registry-touch check OK" generated_go_change
+run_case "a feat: commit that touches only docs does not trigger rule 1" ok "registry-touch check OK" docs_only
+COMMIT_MSG='feat: only tests' run_case "a feat: subject alone does not trigger rule 1" ok "registry-touch check OK" tests_only_change
+run_case "new tests in a tests-only PR still need links (rule 2)" fail "tests/parity/parity_test.go#TestNewParity" add_parity_test
+
+echo
+echo "== the exempt label is honoured only when an approver applied it =="
+PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor' REGISTRY_EXEMPT_EVENTS_FILE="$EVDIR/other.json" \
+  run_case "label applied by a non-owner fails" fail "not an approver" product_change
+PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor' REGISTRY_EXEMPT_EVENTS_FILE="$EVDIR/relabeled.json" \
+  run_case "label removed and re-added by a non-owner fails" fail "mallory" product_change
+PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor' REGISTRY_EXEMPT_EVENTS_FILE="$EVDIR/broken.json" \
+  run_case "an unreadable event list fails closed" fail "cannot verify" product_change
+PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor' \
+  run_case "no token and no events fails closed locally" fail "only works in CI" product_change
+PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor' REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV \
+  run_case "label applied by the owner passes" ok "approver 'szibis'" product_change
+PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor' REGISTRY_EXEMPT_EVENTS_FILE="$EVDIR/other.json" \
+  run_case "a PR cannot approve itself by editing the approvers file" fail "not an approver" \
+  bash -c "printf 'szibis\nmallory\n' > .github/registry-exempt-approvers; $(declare -f product_change); product_change" 
 echo
 echo "== parity fixes ship locks; locks are never weakened =="
 drop_allowlist_entry() { sed -i.bak '/TestParity_A/d' tests/parity/known_failures.txt && rm -f tests/parity/known_failures.txt.bak; }
@@ -460,8 +503,10 @@ run_case "flipping a known-gap row to pass is a parity fix" fail "row flipped fr
 run_case "a docs-resolved parity fix with its locks passes" ok "parity-fix PR: true" \
   bash -c "$(declare -f mark_resolved touch_parity_test add_exact_row_for_parity_test); mark_resolved; touch_parity_test; add_exact_row_for_parity_test"
 run_case "a PR that leaves the allowlist and docs alone is not a parity fix" ok "parity-fix PR: false" product_and_row
+rename_allowlist_entry() { sed -i.bak 's#^TestParity_A #TestParity_A/sub #' tests/parity/known_failures.txt && rm -f tests/parity/known_failures.txt.bak; registry_row_change; }
+run_case "renaming an allowlist entry is a weakening with a rename hint" fail "looks like a rename" rename_allowlist_entry
 run_case "adding an allowlist entry fails as a weakening" fail "allowlist entry added: TestParity_C" add_allowlist_entry
-PR_LABELS=registry-exempt PR_BODY='Registry: none — owner accepted a new known failure' run_case "the owner exemption allows an allowlist entry" ok "skipped" add_allowlist_entry
+REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY='Registry: none — owner accepted a new known failure' run_case "the owner exemption allows an allowlist entry" ok "skipped" add_allowlist_entry
 run_case "flipping an exact pass row to differ fails as a weakening" fail "row weakened from exact pass to expect=differ" \
   bash -c "$(declare -f weaken_lock_to_differ registry_row_change); weaken_lock_to_differ; registry_row_change"
 run_case "loosening an exact row's compare fails as a weakening" fail "compare=ndjson-multiset: lh.row.lock" \

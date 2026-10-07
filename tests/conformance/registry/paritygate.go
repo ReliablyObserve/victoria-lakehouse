@@ -131,9 +131,19 @@ func ParityCheck(base, head ParitySnapshot, changedParityTests []string) ParityV
 			v.Triggers = append(v.Triggers, "allowlist entry removed: "+e)
 		}
 	}
+	removedTop := map[string]bool{}
+	for _, e := range sortedKeys(base.Allowlist) {
+		if !head.Allowlist[e] {
+			removedTop[topLevelTest(e)] = true
+		}
+	}
 	for _, e := range sortedKeys(head.Allowlist) {
 		if !base.Allowlist[e] {
-			v.Weakenings = append(v.Weakenings, "allowlist entry added: "+e)
+			msg := "allowlist entry added: " + e
+			if removedTop[topLevelTest(e)] {
+				msg += " (looks like a rename of a removed entry of the same test — needs owner review (registry-exempt) or keep the old entry name)"
+			}
+			v.Weakenings = append(v.Weakenings, msg)
 		}
 	}
 	for _, id := range sortedKeys(head.Resolved) {
@@ -207,4 +217,13 @@ func sortedRowKeys(m map[string]RowLite) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// topLevelTest is the top-level test of an allowlist path: the part before the
+// first subtest separator.
+func topLevelTest(path string) string {
+	if i := strings.Index(path, "/"); i >= 0 {
+		return path[:i]
+	}
+	return path
 }

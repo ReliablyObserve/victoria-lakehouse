@@ -1,0 +1,3 @@
+# Logins whose application of the `registry-exempt` label the registry gate honours.
+# Read from the merge base, so a PR cannot add itself. Owner only.
+szibis

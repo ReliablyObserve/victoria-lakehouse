@@ -66,6 +66,15 @@ func TestParityCheck(t *testing.T) {
 			t.Errorf("%s: %+v", name, v)
 		}
 	}
+	// rename of an allowlist entry: still a weakening, with a pointed message
+	v = ParityCheck(snapshot([]string{"TestP/logs"}, nil), snapshot([]string{"TestP/logs/parquet"}, nil), nil)
+	if len(v.Weakenings) != 1 || !strings.Contains(v.Weakenings[0], "looks like a rename") {
+		t.Errorf("rename message: %+v", v)
+	}
+	v = ParityCheck(snapshot(nil, nil), snapshot([]string{"TestQ"}, nil), nil)
+	if len(v.Weakenings) != 1 || strings.Contains(v.Weakenings[0], "rename") {
+		t.Errorf("plain add must not claim rename: %+v", v)
+	}
 	// docs flip + unchanged exact row is not a lock
 	v = ParityCheck(snapshot(nil, nil, lock), snapshot(nil, []string{"B1"}, lock), []string{"tests/parity/p_test.go"})
 	if !v.Fix || len(v.Problems) != 1 || !strings.Contains(v.Problems[0], "exact-json") {

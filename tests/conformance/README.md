@@ -258,16 +258,19 @@ registry changes. `scripts/ci/check_registry_touch.sh` (workflow `conformance.ya
 "Route/handler changes carry registry changes") enforces it, on top of the route/pin and
 feature-catalog rules above.
 
-**Rule 1 — product change needs a registry change.** A PR is product-changing when the changelog
-gate (`scripts/ci/check_changelog_pr.py`, reused through `scripts/ci/pr_classify.py`) calls it
-release-impacting, or it changes non-test, non-generated Go under `internal/`, `cmd/` or
-`lakehouse-traces/`, or files under `patches/` or `charts/`. It must make a real content change
-under `registry/rows/` or `registry/features/`: comment-only, blank-line and whitespace edits do
-not count (the check compares both revisions with comments, blank lines and indentation removed).
-Add or update the row that describes the changed behaviour; for a Lakehouse capability also the
-feature.
+**Rule 1 — product change needs a registry change.** A PR is product-changing when it changes
+non-test, non-generated Go under `internal/`, `cmd/` or `lakehouse-traces/`, or any file under
+`patches/` or `charts/`. That includes the config defaults: `internal/config/config.go` (`Default()`),
+`internal/config/profile.go`, the flag defaults in `cmd/*/main.go` and `charts/victoria-lakehouse/values*.yaml`.
+PRs that touch only `tests/**`, `*_test.go`, `Makefile`, `scripts/`, `.github/`, docs or test
+dependency manifests (`requirements*.txt`, `package.json` under `tests/`) are not product-changing
+(the changelog gate's release-impacting flag is deliberately not the trigger: it also covers tests
+and infra). A product-changing PR must make a real content change under `registry/rows/` or
+`registry/features/`: comment-only, blank-line and whitespace edits do not count (the check compares
+both revisions with comments, blank lines and indentation removed). Add or update the row that
+describes the changed behaviour; for a Lakehouse capability also the feature.
 
-**Rule 2 — tests are linked (Linking tests).** Every top-level `func Test…` / `func Fuzz…` the PR
+**Rule 2 — tests are linked (Linking tests).** Applies to every PR, including test-only ones. Every top-level `func Test…` / `func Fuzz…` the PR
 adds in `internal/**`, `cmd/**`, `lakehouse-traces/**`, `tests/parity`, `tests/e2e`,
 `tests/conformance` or `tests/ingestmatrix` must be named by a row (`refs.tests`) or a feature
 (`tests:`), as `path/to/file_test.go#TestName`; a bare `path/to/file_test.go` links every test in
@@ -285,10 +288,14 @@ them). `TestMain` and helpers without the `Test` prefix are not tests. The engin
 
 **Exemption by the owner.** A PR with genuinely nothing to cover (a pure refactor, say) is
 exempted by the label `registry-exempt` plus a line starting `Registry: none — <reason>` in the
-PR body. Both are required: the label alone fails the check. **Only the owner applies the label;
-agents and contributors never do.** The workflow re-runs on `labeled`, `unlabeled` and `edited`,
-so applying the label or editing the body re-evaluates the gate. The exemption skips Rules 1 and
-2, not the route/pin and feature-catalog rules.
+PR body. Both are required: the label alone fails. **Only the owner applies the label, and the gate
+enforces it:** it reads the PR's issue events with the Actions token and honours the label only when
+its latest "labeled" event was made by a login listed in `.github/registry-exempt-approvers` (read
+from the merge base, so a PR cannot add itself). It fails closed: an API error, an unknown actor, a
+missing approvers file, or a label last (re-)applied by anyone else denies the exemption, and without
+a token (a local run) the label path fails with a message. The workflow re-runs on `labeled`,
+`unlabeled` and `edited`, so applying the label or editing the body re-evaluates the gate. The
+exemption skips Rules 1-4, not the route/pin and feature-catalog rules.
 
 ### Parity fixes ship locks
 
@@ -312,6 +319,8 @@ the parity test and the exact lock exist, so reviewers check the breadth.
 
 **Locks are never weakened.** Any PR that adds a `known_failures.txt` entry, flips an exact pass
 row to `differ`, loosens its compare type, or deletes an exact row fails, parity fix or not. Only the
-owner's `registry-exempt` exemption (above) lets one through.
+owner's `registry-exempt` exemption (above) lets one through. Renaming an entry (removing one and
+adding another of the same top-level test) is still a weakening; the message says so. Keep the old
+entry name, or ask the owner for the exemption.
 
 Self-test: `bash scripts/ci/tests/test_check_registry_touch.sh`.

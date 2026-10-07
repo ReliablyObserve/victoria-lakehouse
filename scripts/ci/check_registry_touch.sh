@@ -234,9 +234,9 @@ fi
 # Owner rule (2026-10-07): no PR may merge unless its behaviour changes are
 # covered by registry changes.
 #
-#   Rule 1  A product-changing PR (release-impacting per the changelog gate, or
-#           non-test Go under internal/, cmd/, lakehouse-traces/, patches/,
-#           charts/) must change tests/conformance/registry/rows/ or
+#   Rule 1  A product-changing PR (non-test, non-generated Go under internal/,
+#           cmd/, lakehouse-traces/, or anything under patches/, charts/; tests,
+#           Makefile, scripts, .github and docs never trigger it) must change tests/conformance/registry/rows/ or
 #           tests/conformance/registry/features/ with a REAL content change:
 #           comments, blank lines and indentation do not count.
 #   Rule 2  Every Test*/Fuzz* function the PR adds in a product package or in
@@ -248,7 +248,9 @@ fi
 # files, build(deps) commits), and PRs the owner labelled `registry-exempt`
 # whose body has a "Registry: none — <reason>" line. Docs-only and CI-only PRs
 # are not product-changing, so Rule 1 passes them by classification.
-# Env: PR_LABELS (comma separated), PR_BODY, PR_TITLE (all optional).
+# Env: PR_LABELS (comma separated), PR_BODY, PR_TITLE (all optional); for the
+# label also GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER (who applied it is read
+# from the PR's issue events; see registry_exempt.py).
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CLASSIFY=$(python3 "$HERE/pr_classify.py" --base "$MERGE_BASE" --head HEAD --title "${PR_TITLE:-}")
 class_field() { sed -n "s/^$1=//p" <<< "$CLASSIFY" | head -1; }
@@ -272,7 +274,21 @@ fi
 if [[ "$exempt_kind" != none ]]; then
   echo "registry coverage gate: skipped ($exempt_kind PR)"
 elif [[ -n "$has_exempt_label" && -n "$has_exempt_body" ]]; then
-  echo "registry coverage gate: skipped (registry-exempt label + 'Registry: none —' reason in the PR body)"
+  # The label bypasses the gate, so it counts only when an approver applied it
+  # (latest "labeled" event, approvers read from the merge base). Fails closed.
+  approvers_file=$(mktemp)
+  git show "$MERGE_BASE:.github/registry-exempt-approvers" > "$approvers_file" 2>/dev/null || : > "$approvers_file"
+  events_args=()
+  [[ -n "${REGISTRY_EXEMPT_EVENTS_FILE:-}" ]] && events_args=(--events-file "$REGISTRY_EXEMPT_EVENTS_FILE")
+  if verdict=$(python3 "$HERE/registry_exempt.py" --approvers "$approvers_file" ${events_args[@]+"${events_args[@]}"}); then
+    rm -f "$approvers_file"
+    echo "registry coverage gate: skipped (registry-exempt label + 'Registry: none —' reason in the PR body; $verdict)"
+  else
+    rm -f "$approvers_file"
+    echo "::error::the registry-exempt label is not honoured: $verdict"
+    echo "  only an approver listed in .github/registry-exempt-approvers (at the merge base) can apply it; this check fails closed."
+    exit 1
+  fi
 else
   # normalized_yaml <rev> <path>: the file without comment-only lines, blank
   # lines or leading/trailing whitespace, so a whitespace or comment edit is
