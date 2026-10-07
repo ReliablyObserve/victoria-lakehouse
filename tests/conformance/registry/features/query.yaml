@@ -391,6 +391,7 @@
     - vt.select.logsql_field_values.empty_absent_in_some_spans
     - vt.select.logsql_field_values.empty_filtered_query
     - vt.select.logsql_field_values.limit_and_substring_filter
+    - vt.select.logsql_field_values.index_rows_empty_bucket
     - vt.select.logsql_stream_field_values.no_empty
     - vt.select.logsql_stream_field_values.non_stream_field
   tests:

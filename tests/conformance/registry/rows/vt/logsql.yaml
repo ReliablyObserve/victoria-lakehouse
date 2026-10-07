@@ -168,3 +168,19 @@
   pending: true
   refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket, lakehouse-traces/internal/storage/parquets3/stream_field_values_layers_test.go#TestStreamFieldValues_ColdBufferAndBridgeAgree] }
   notes: "Upstream GetStreamFieldValues = field_values of _stream, then forEachStreamField: only the tags of the matching streams are listed, hits are the rows of each stream, sorted by hits then value, truncated at the limit with zeroed hits. Cold now does the same from the _stream column over the buffer, the peer bridge and the objects (schema.ParseStreamFields mirrors upstream parseStreamFields). Fixes #445."
+
+- id: vt.select.logsql_field_values.index_rows_empty_bucket
+  title: "/select/logsql/field_values — under * the empty bucket of a compacted or restarted tier counts hot's trace index rows (known gap)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Hot VictoriaTraces counts one index row per trace (no span attributes) in the empty bucket under *; Lakehouse drops them at flush. Every non-empty value and span_id:* match. Tracked in issue 458."
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "span_attr:http.method", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md }

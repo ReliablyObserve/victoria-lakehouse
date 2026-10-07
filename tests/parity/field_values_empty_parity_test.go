@@ -45,6 +45,11 @@ type fvEmptyCase struct {
 	// answer as many values, all with zero hits. stream_field_values does not go
 	// through that pipe (it sorts and truncates), so its limit cases are exact.
 	pastLimit bool
+	// ignoreEmpty drops the empty-value bucket from both answers before the
+	// comparison: hot VictoriaTraces counts its trace index rows (one per trace,
+	// no span attributes) under `*`, which Lakehouse drops at flush (issue 458).
+	// Every other value and its hits are compared exactly.
+	ignoreEmpty bool
 }
 
 // waitRowsVisible returns once base answers query for the tenant form with
@@ -99,6 +104,9 @@ func runFvEmptyCases(t *testing.T, hot, cold string, f tenantForm, from, to time
 					}
 				}
 				return
+			}
+			if c.ignoreEmpty {
+				ref, sut = withoutEmptyBucket(t, ref), withoutEmptyBucket(t, sut)
 			}
 			compareFieldValues(t, c.name, ref, sut, c.allowEmpty)
 		})
@@ -293,7 +301,7 @@ func TestParity_FieldValues_EmptyBucket(t *testing.T) {
 			{name: "stream_field_values_service", endpoint: "stream_field_values", query: q, field: "resource_attr:service.name"},
 			{name: "stream_field_values_non_stream_field", endpoint: "stream_field_values", query: q, field: "span_attr:sa", allowEmpty: true},
 			{name: "stream_field_values_limit1_exact", endpoint: "stream_field_values", query: q, field: "name", extra: map[string]string{"limit": "1"}},
-			{name: "field_values_star_query", endpoint: "field_values", query: "*", field: "span_attr:sa"},
+			{name: "field_values_star_query", endpoint: "field_values", query: "*", field: "span_attr:sa", ignoreEmpty: true},
 		}
 		runFvEmptyLayers(t, c)
 	})
@@ -323,4 +331,23 @@ func pushOTLPSpanAttrsAs(t *testing.T, base string, hdr http.Header, traceID, sp
 		}},
 	}}})
 	post(t, base+"/insert/opentelemetry/v1/traces", "application/json", body, hdr)
+}
+
+// withoutEmptyBucket returns a field_values answer without its empty-value entry.
+func withoutEmptyBucket(t *testing.T, r fetchResult) fetchResult {
+	t.Helper()
+	obj, err := parseJSON(r.Body)
+	if err != nil || r.StatusCode != http.StatusOK {
+		return r
+	}
+	var kept []any
+	for _, e := range asSlice(obj["values"]) {
+		if m, _ := e.(map[string]any); m != nil && m["value"] == "" {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	obj["values"] = kept
+	b, _ := json.Marshal(obj)
+	return fetchResult{StatusCode: r.StatusCode, Body: b}
 }
