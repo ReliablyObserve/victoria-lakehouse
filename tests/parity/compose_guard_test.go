@@ -147,8 +147,8 @@ func (g *composeGuard) target(self containerInfo, service string) (containerInfo
 }
 
 // restart restarts a verified target and returns once its StartedAt changed.
-func (g *composeGuard) restart(c containerInfo) (time.Time, error) {
-	if _, err := g.do("POST", "/containers/"+c.ID+"/restart?t=20"); err != nil {
+func (g *composeGuard) restart(c containerInfo, stopTimeoutSeconds int) (time.Time, error) {
+	if _, err := g.do("POST", fmt.Sprintf("/containers/%s/restart?t=%d", c.ID, stopTimeoutSeconds)); err != nil {
 		return time.Time{}, err
 	}
 	deadline := time.Now().Add(2 * time.Minute)
@@ -170,7 +170,7 @@ func (g *composeGuard) restart(c containerInfo) (time.Time, error) {
 // answers on the endpoint select pods read it with (/internal/buffer/query,
 // mode logs or traces), and returns the container's new StartedAt. Rows still
 // in the buffer at the restart come back from the buffer's own segments.
-func restartComposeServices(t *testing.T, base, mode string, services []string) (startedAt time.Time) {
+func restartComposeServices(t *testing.T, base, mode string, services []string, stopTimeoutSeconds int) (startedAt time.Time) {
 	t.Helper()
 	g := &composeGuard{call: dockerSocketCall()}
 	host, _ := os.Hostname()
@@ -184,7 +184,7 @@ func restartComposeServices(t *testing.T, base, mode string, services []string) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		at, err := g.restart(c)
+		at, err := g.restart(c, stopTimeoutSeconds)
 		if err != nil {
 			t.Fatal(err)
 		}

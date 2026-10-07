@@ -46,6 +46,13 @@ const (
 	allColumnSortLogsAliasAccount = "7312"
 )
 
+// restartAttempts bounds how often the restart layer is retried when the
+// periodic flush wrote the batch before the restart.
+const restartAttempts = 3
+
+// restartStopTimeout is the seconds Docker waits for a graceful stop.
+const restartStopTimeout = 20
+
 // allColumnSortQueries are the sorts over all columns compared row for row.
 // The last two return every row, so the whole answer (rows, their order, the
 // order of their columns and JSON keys) is compared.
@@ -65,15 +72,16 @@ type allColumnSortLayer struct {
 // allColumnSortCase is one signal's fixture. Every tenant form writes and reads
 // its own tenant, so the cells are layer x tenant form x signal.
 type allColumnSortCase struct {
-	hot, cold string // base URLs
-	forms     []tenantForm
-	filter    string // selects exactly the rows this case wrote
-	mode      string // logs | traces
-	at        time.Time
-	from, to  time.Time                                              // the window around at
-	write     func(t *testing.T, c *allColumnSortCase, first, n int) // n rows, numbered from first, to hot and cold, for every form
-	restart   []string                                               // compose services to restart for the restart layer
-	startedAt time.Time                                              // the restarted container's new StartedAt
+	hot, cold      string // base URLs
+	forms          []tenantForm
+	filter         string // selects exactly the rows this case wrote
+	mode           string // logs | traces
+	at             time.Time
+	from, to       time.Time                                              // the window around at
+	write          func(t *testing.T, c *allColumnSortCase, first, n int) // n rows, numbered from first, to hot and cold, for every form
+	restart        []string                                               // compose services to restart for the restart layer
+	startedAt      time.Time                                              // the restarted container's new StartedAt
+	restartAttempt int                                                    // the restart attempt that proved the recovered segment
 }
 
 func TestParity_AllColumnSortTieOrder(t *testing.T) {
@@ -167,24 +175,53 @@ func TestParity_AllColumnSortTieOrder(t *testing.T) {
 						requireCompactedOnce(t, c.mode, f.account, c.at)
 					}},
 				// After restart: recovered segment flushed, read from S3. A third
-				// batch is written just before the restart; the restarted pod
-				// recovers its segment, flushes it (proved by the new L0 being
-				// written after the new StartedAt, so not by a shutdown drain)
-				// and answers from S3 with a fresh manifest.
+				// batch is written into a fresh segment (right after a flush has
+				// completed, so the periodic flush is a full interval away) and the
+				// pod is restarted at once (graceful, stop timeout 20 s; a kill with
+				// timeout 0 loses the just-acknowledged batch, see the PR); the restarted pod
+				// recovers the segment and flushes it, which the proof sees as an
+				// L0 object written after the new StartedAt. If the periodic flush
+				// still won the race the attempt is repeated with a new batch, at
+				// most restartAttempts times in all.
 				{"restart",
 					func(t *testing.T, c *allColumnSortCase) int {
-						// No wait for the rows to show in the buffer first: the writes
-						// are acknowledged, and the buffer flushes a segment 5 s after
-						// it opened, so the restart must follow the write at once or
-						// the regular flush could write it before the restart.
-						c.write(t, c, 13, 6)
-						c.startedAt = restartComposeServices(t, c.cold, c.mode, c.restart)
-						leftBuffer(t, c)
-						return 18
+						rows := 12
+						for attempt := 1; attempt <= restartAttempts; attempt++ {
+							for _, f := range c.forms {
+								waitFlushIdle(t, c.cold, c.mode, f.account, c.from, c.to)
+							}
+							c.write(t, c, rows+1, 6)
+							rows += 6
+							c.startedAt = restartComposeServices(t, c.cold, c.mode, c.restart, restartStopTimeout)
+							// The restarted pod flushes the segment it recovered some
+							// moments after it is healthy: wait for that object. If it
+							// never comes the acknowledged rows were lost by the kill.
+							for _, f := range c.forms {
+								if n := waitL0Objects(t, c.mode, f.account, c.at, attempt, 90*time.Second); n < attempt {
+									t.Fatalf("tenant %s has %d L0 objects 90s after the restart, want %d: the acknowledged batch was not recovered", f.account, n, attempt)
+								}
+							}
+							leftBuffer(t, c)
+							c.restartAttempt = attempt
+							lost := ""
+							for _, f := range c.forms {
+								if why := recoveredSegmentFlushed(t, c.mode, f.account, c.at, c.startedAt, attempt); why != "" {
+									lost = why
+								}
+							}
+							if lost == "" {
+								return rows
+							}
+							t.Logf("restart attempt %d of %d: the periodic flush won the race (%s); retrying with a new batch", attempt, restartAttempts, lost)
+						}
+						t.Fatalf("the periodic flush won the race in all %d restart attempts", restartAttempts)
+						return rows
 					},
 					func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {
 						requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, 0)
-						requireRecoveredSegmentFlushed(t, c.mode, f.account, c.at, c.startedAt)
+						if why := recoveredSegmentFlushed(t, c.mode, f.account, c.at, c.startedAt, c.restartAttempt); why != "" {
+							t.Fatalf("layer proof: %s", why)
+						}
 					}},
 			}
 			for _, l := range layers {
@@ -200,7 +237,7 @@ func TestParity_AllColumnSortTieOrder(t *testing.T) {
 				})
 			}
 			for i, f := range c.forms {
-				waitTenantRows(t, c.cold, f.account, before[i]+18)
+				waitTenantRows(t, c.cold, f.account, before[i]+int64(12+6*c.restartAttempt))
 			}
 		})
 	}

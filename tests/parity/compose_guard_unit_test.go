@@ -60,7 +60,7 @@ func TestComposeGuard_AllowsTheOwnLakehouseService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.restart(c); err != nil {
+	if _, err := g.restart(c, 0); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.restarts) != 1 || f.restarts[0] != "lh1" {

@@ -308,28 +308,63 @@ func pickQuietHour(t *testing.T, accounts map[string][]string) time.Time {
 	return time.Time{}
 }
 
-// requireRecoveredSegmentFlushed is the restart layer proof: the tenant holds
-// the compacted L1 object plus exactly one new L0 object, and that L0 was
-// written after the container's new StartedAt (S3 LastModified has second
-// granularity, so both are compared truncated to the second). A flush during
-// the shutdown would have been written before the restart: this object comes
-// from the segment the restarted pod recovered.
-func requireRecoveredSegmentFlushed(t *testing.T, mode, account string, at, startedAt time.Time) {
+// recoveredSegmentFlushed is the restart layer proof: the tenant holds the
+// compacted L1 object plus wantL0 L0 objects (one per restart attempt so far),
+// and exactly one of them, the newest attempt's, was written after the
+// container's new StartedAt (S3 LastModified has second granularity, so both
+// are compared truncated to the second). A flush before the restart (the
+// periodic flush winning the race, or a drain on shutdown) writes its object
+// earlier: only an object written after the start comes from the segment the
+// restarted pod recovered. It returns the reason the proof does not hold, or "".
+func recoveredSegmentFlushed(t *testing.T, mode, account string, at, startedAt time.Time, wantL0 int) string {
 	t.Helper()
-	var l0 []objectInfo
-	l1 := 0
+	l0, after, l1 := 0, 0, 0
 	for _, o := range partitionObjectInfo(t, mode, account, at) {
-		if strings.HasPrefix(o.name, "compacted-L1-") {
+		switch {
+		case strings.HasPrefix(o.name, "compacted-L1-"):
 			l1++
-		} else if !strings.HasPrefix(o.name, "compacted-L") {
-			l0 = append(l0, o)
+		case strings.HasPrefix(o.name, "compacted-L"):
+		default:
+			l0++
+			if !o.modified.Truncate(time.Second).Before(startedAt.Truncate(time.Second)) {
+				after++
+			}
 		}
 	}
-	if l1 != 1 || len(l0) != 1 {
-		t.Fatalf("layer proof: tenant %s has %d L1 and %d L0 objects after the restart, want 1 and 1", account, l1, len(l0))
+	if l1 != 1 || l0 != wantL0 {
+		return fmt.Sprintf("tenant %s has %d L1 and %d L0 objects after the restart, want 1 and %d", account, l1, l0, wantL0)
 	}
-	if l0[0].modified.Truncate(time.Second).Before(startedAt.Truncate(time.Second)) {
-		t.Fatalf("layer proof: tenant %s's new L0 %s was written at %s, before the restart finished starting (%s): it was drained on shutdown, not flushed from the recovered segment",
-			account, l0[0].name, l0[0].modified.UTC().Format(time.RFC3339), startedAt.UTC().Format(time.RFC3339Nano))
+	if after != 1 {
+		return fmt.Sprintf("tenant %s has %d L0 objects written after the restart started (%s), want 1: the flush wrote the batch before the restart", account, after, startedAt.UTC().Format(time.RFC3339Nano))
+	}
+	return ""
+}
+
+// waitFlushIdle returns once a flush has completed for the tenant: nothing of
+// it is left in the insert buffer, so the next write opens a fresh segment and
+// its periodic flush is a full flush interval away.
+func waitFlushIdle(t *testing.T, base, mode, account string, from, to time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(150 * time.Second)
+	for bufferedNow(t, base, mode, account, from, to) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("tenant %s still has rows in the insert buffer of %s after 150s", account, base)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// waitL0Objects waits up to timeout for the tenant's partition to hold at least
+// want L0 objects (a restarted pod flushes the segment it recovered some
+// moments after it is healthy) and returns the count it last saw.
+func waitL0Objects(t *testing.T, mode, account string, at time.Time, want int, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		l0, _ := objectLevels(partitionObjects(t, mode, account, at))
+		if l0 >= want || time.Now().After(deadline) {
+			return l0
+		}
+		time.Sleep(time.Second)
 	}
 }
