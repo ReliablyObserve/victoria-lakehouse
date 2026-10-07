@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The registry gate is hardened against the bypasses found in review.** Product code now includes embedded
+  UI assets and every non-test file under `internal/`, `cmd/`, `lakehouse-traces/`, plus shipped Dockerfiles
+  and the root `go.mod`/`go.sum`; a `Code generated` marker no longer exempts a file; a dependency-only PR must
+  change only `require` version lines outside `VictoriaMetrics/*`; the release-metadata exemption checks the
+  exact shape and author. Every `expect: pass` registry row is protected from weakening, a parity-fix lock
+  must be an exact-equivalent row naming a `tests/parity` function the PR added or modified, the parity
+  allowlist cannot be moved or deleted, and the exempt label must post-date the last push. CI runs the gate
+  from the merge base, so a PR cannot weaken the gate that judges it.
 - **Every product change and every new test must be covered in the conformance registry.** CI now
   fails a PR that changes product code without a real content change under
   `tests/conformance/registry/`, adds a `Test`/`Fuzz` function no registry row or feature references, or

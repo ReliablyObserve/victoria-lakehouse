@@ -232,27 +232,39 @@ fi
 
 # --- every product change and every new test is covered in the registry -----
 # Owner rule (2026-10-07): no PR may merge unless its behaviour changes are
-# covered by registry changes.
+# covered by registry changes. This section runs from the MERGE BASE in CI (the
+# workflow checks out the base's gate code), so a PR cannot weaken the gate that
+# judges it; its changes to the gate take effect after merge.
 #
-#   Rule 1  A product-changing PR (non-test, non-generated Go under internal/,
-#           cmd/, lakehouse-traces/, or anything under patches/, charts/; tests,
-#           Makefile, scripts, .github and docs never trigger it) must change tests/conformance/registry/rows/ or
-#           tests/conformance/registry/features/ with a REAL content change:
-#           comments, blank lines and indentation do not count.
+#   Rule 1  A product-changing PR (anything under internal/, cmd/,
+#           lakehouse-traces/ that is not a test or README/RUNBOOK, anything under
+#           patches/, charts/, and shipped build files: Dockerfile, Dockerfile.logs,
+#           Dockerfile.traces, root go.mod/go.sum) must change
+#           tests/conformance/registry/rows/ or tests/conformance/registry/features/
+#           with a REAL content change: comments, blank lines and indentation do
+#           not count. See pr_classify.py.
 #   Rule 2  Every Test*/Fuzz* function the PR adds in a product package or in
 #           tests/{parity,e2e,conformance,ingestmatrix} must be referenced by a
 #           row (refs.tests) or a feature (tests:), and references to removed
 #           or renamed tests must not be left behind (tests/conformance/cmd/testlinks).
+#   Rule 3  Parity fixes ship locks; locks are never weakened (testlinks).
+#   Rule 4  A PR that changes the gate itself needs the owner's exemption.
 #
-# Exempt: release-metadata PRs, dependency-only PRs (go.mod/go.sum/requirements
-# files, build(deps) commits), and PRs the owner labelled `registry-exempt`
-# whose body has a "Registry: none — <reason>" line. Docs-only and CI-only PRs
-# are not product-changing, so Rule 1 passes them by classification.
-# Env: PR_LABELS (comma separated), PR_BODY, PR_TITLE (all optional); for the
-# label also GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER (who applied it is read
-# from the PR's issue events; see registry_exempt.py).
+# Exempt, decided first: release-metadata PRs (exact shape, by the release bot or
+# an approver), dependency-only PRs (go.mod `require` version lines outside
+# VictoriaMetrics/*, go.sum, requirements*.txt; build(deps) commits), and PRs the
+# owner labelled `registry-exempt` whose body has a "Registry: none — <reason>"
+# line, verified by registry_exempt.py. Docs-only and CI-only PRs are not
+# product-changing, so Rule 1 passes them by classification.
+# Env: PR_LABELS (comma separated), PR_BODY, PR_TITLE, PR_AUTHOR (all optional);
+# for the label also GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, EVENT_ACTION.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-CLASSIFY=$(python3 "$HERE/pr_classify.py" --base "$MERGE_BASE" --head HEAD --title "${PR_TITLE:-}")
+# The approvers come from the merge base, so a PR cannot approve itself.
+approvers_file=$(mktemp)
+trap 'rm -f "$approvers_file"' EXIT
+git show "$MERGE_BASE:.github/registry-exempt-approvers" > "$approvers_file" 2>/dev/null || : > "$approvers_file"
+CLASSIFY=$(python3 "$HERE/pr_classify.py" --base "$MERGE_BASE" --head HEAD --title "${PR_TITLE:-}" \
+  --author "${PR_AUTHOR:-}" --approvers "$approvers_file") || { echo "::error::pr_classify.py failed"; exit 1; }
 class_field() { sed -n "s/^$1=//p" <<< "$CLASSIFY" | head -1; }
 exempt_kind=$(class_field exempt)
 is_product=$(class_field product)
@@ -266,30 +278,34 @@ if grep -qE '^[[:space:]]*Registry:[[:space:]]*none[[:space:]]*(—|–|--?)[[:s
   has_exempt_body=1
 fi
 
-if [[ -n "$has_exempt_label" && -z "$has_exempt_body" ]]; then
-  echo "::error::the registry-exempt label is set but the PR body has no 'Registry: none — <reason>' line; add the line (with a reason) or remove the label"
-  exit 1
-fi
+# The files that make up the gate: a PR touching them needs the owner.
+GATE_FILES_RE='^(scripts/ci/(check_registry_touch\.sh|pr_classify\.py|registry_exempt\.py|check_changelog_pr\.py)|tests/conformance/cmd/testlinks/|tests/conformance/registry/(testlinks|paritygate)\.go|\.github/workflows/conformance\.yaml|\.github/registry-exempt-approvers)'
+gate_touched=$(echo "$changed" | grep -E "$GATE_FILES_RE" || true)
 
 if [[ "$exempt_kind" != none ]]; then
   echo "registry coverage gate: skipped ($exempt_kind PR)"
+elif [[ -n "$has_exempt_label" && -z "$has_exempt_body" ]]; then
+  echo "::error::the registry-exempt label is set but the PR body has no 'Registry: none — <reason>' line; add the line (with a reason) or remove the label"
+  exit 1
 elif [[ -n "$has_exempt_label" && -n "$has_exempt_body" ]]; then
   # The label bypasses the gate, so it counts only when an approver applied it
-  # (latest "labeled" event, approvers read from the merge base). Fails closed.
-  approvers_file=$(mktemp)
-  git show "$MERGE_BASE:.github/registry-exempt-approvers" > "$approvers_file" 2>/dev/null || : > "$approvers_file"
+  # after the last push (see registry_exempt.py). Fails closed.
   events_args=()
   [[ -n "${REGISTRY_EXEMPT_EVENTS_FILE:-}" ]] && events_args=(--events-file "$REGISTRY_EXEMPT_EVENTS_FILE")
   if verdict=$(python3 "$HERE/registry_exempt.py" --approvers "$approvers_file" ${events_args[@]+"${events_args[@]}"}); then
-    rm -f "$approvers_file"
     echo "registry coverage gate: skipped (registry-exempt label + 'Registry: none —' reason in the PR body; $verdict)"
   else
-    rm -f "$approvers_file"
     echo "::error::the registry-exempt label is not honoured: $verdict"
     echo "  only an approver listed in .github/registry-exempt-approvers (at the merge base) can apply it; this check fails closed."
     exit 1
   fi
 else
+  if [[ -n "$gate_touched" ]]; then
+    echo "::error::this PR changes the registry gate itself; only the owner may allow that (label 'registry-exempt' applied by an approver, plus a 'Registry: none — <reason>' line in the PR body)"
+    echo "$gate_touched" | sed 's/^/  /'
+    exit 1
+  fi
+
   # normalized_yaml <rev> <path>: the file without comment-only lines, blank
   # lines or leading/trailing whitespace, so a whitespace or comment edit is
   # not a registry change.
@@ -316,8 +332,11 @@ else
   tl_bin=${TESTLINKS_BIN:-}
   if [[ -n "$tl_bin" ]]; then
     "$tl_bin" -repo . -base "$MERGE_BASE" || exit 1
-  elif command -v go >/dev/null 2>&1 && [[ -d tests/conformance/cmd/testlinks ]]; then
-    GOWORK=off go run ./tests/conformance/cmd/testlinks -repo . -base "$MERGE_BASE" || exit 1
+  elif command -v go >/dev/null 2>&1 && [[ -d "$HERE/../../tests/conformance/cmd/testlinks" ]]; then
+    (cd "$HERE/../.." && GOWORK=off go build -o "${TMPDIR:-/tmp}/testlinks.$$" ./tests/conformance/cmd/testlinks) || exit 1
+    "${TMPDIR:-/tmp}/testlinks.$$" -repo . -base "$MERGE_BASE"; rc=$?
+    rm -f "${TMPDIR:-/tmp}/testlinks.$$"
+    [[ $rc -eq 0 ]] || exit 1
   else
     echo "::error::cannot run tests/conformance/cmd/testlinks (no Go toolchain)"
     exit 1

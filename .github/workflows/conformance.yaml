@@ -14,6 +14,11 @@ on:
 permissions:
   contents: read
 
+# One run per PR: a label or body edit (or a push) supersedes the run in flight.
+concurrency:
+  group: conformance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   GOWORK: "off"
   VL_VERSION_LOGS: v1.53.0
@@ -52,12 +57,23 @@ jobs:
         run: |
           bash scripts/ci/tests/test_check_registry_touch.sh
           python3 -m unittest scripts/ci/tests/test_registry_exempt.py
+      # The gate judges the PR, so it must not be the PR's own copy: its code is
+      # taken from the merge base (a PR that changes the gate is held to the
+      # owner exemption, and its change takes effect once merged).
       - name: Product changes and new tests are covered in the registry
         if: github.event_name == 'pull_request'
         env:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTION: ${{ github.event.action }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/ci/check_registry_touch.sh origin/${{ github.base_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          gate="$RUNNER_TEMP/gate-base"
+          git worktree add --detach "$gate" "$(git merge-base "origin/$BASE_REF" HEAD)"
+          (cd "$gate" && GOWORK=off go build -o "$RUNNER_TEMP/testlinks" ./tests/conformance/cmd/testlinks)
+          TESTLINKS_BIN="$RUNNER_TEMP/testlinks" "$gate/scripts/ci/check_registry_touch.sh" "origin/$BASE_REF"

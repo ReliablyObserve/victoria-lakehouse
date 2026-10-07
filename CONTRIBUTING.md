@@ -220,8 +220,11 @@ internal/
    performance (benchmarks). Registry rows are declared expectations until the row runner executes them; the
    parity suite is the executable oracle today. A change that turns a passing native parity test into a failure
    does not merge. Tests extend coverage with every PR. **Registry gate:** a PR that changes product
-   code (Go under `internal/`, `cmd/`, `lakehouse-traces/`, `patches/`, `charts/`) must change registry rows or features (a real content change), every new `Test`/`Fuzz` function
-   must be linked from a row or feature, and references to removed tests must go. Only the owner exempts a PR
+   code (any non-test file under `internal/`, `cmd/`, `lakehouse-traces/`, `patches/`, `charts/`, and
+   the shipped `Dockerfile`, `Dockerfile.logs`, `Dockerfile.traces`, root `go.mod`/`go.sum`) must change
+   registry rows or features (a real content change), every new `Test`/`Fuzz` function must be linked
+   from a row or feature, references to removed tests must go, a parity fix must ship a lock, and locks
+   are never weakened. Only the owner exempts a PR
    (`registry-exempt` label plus a `Registry: none — <reason>` line in the PR body); see
    [`tests/conformance/README.md`](tests/conformance/README.md#registry-gate-on-every-pr).
 3. **Performance is measured, never claimed.** Benchmarks validate every timed response (status, parse, exact

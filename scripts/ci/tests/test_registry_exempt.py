@@ -9,64 +9,123 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import registry_exempt as r  # noqa: E402
 
 
-def ev(kind, actor, label="registry-exempt"):
-    return {"event": kind, "actor": {"login": actor} if actor else None, "label": {"name": label}}
+def lab(kind, actor, at, i=0, label="registry-exempt"):
+    return {"kind": kind, "actor": actor, "at": at, "id": i}
+
+
+def commit(at, i=0):
+    return {"kind": "commit", "actor": "", "at": at, "id": i}
+
+
+def push(at, i=0):
+    return {"kind": "force_push", "actor": "", "at": at, "id": i}
 
 
 OWNERS = {"szibis"}
+T1, T2, T3 = "2026-10-07T10:00:00Z", "2026-10-07T11:00:00Z", "2026-10-07T12:00:00Z"
 
 
 class Decide(unittest.TestCase):
-    def test_owner_applied(self):
-        ok, _ = r.decide([ev("labeled", "SZIBIS")], OWNERS)
+    def test_owner_applied_after_commits(self):
+        ok, _ = r.decide([commit(T1), lab("labeled", "SZIBIS", T2)], OWNERS)
         self.assertTrue(ok)
 
     def test_non_owner_applied(self):
-        ok, msg = r.decide([ev("labeled", "mallory")], OWNERS)
+        ok, msg = r.decide([lab("labeled", "mallory", T1)], OWNERS)
         self.assertFalse(ok)
         self.assertIn("not an approver", msg)
 
     def test_relabeled_by_non_owner(self):
-        ok, msg = r.decide([ev("labeled", "szibis"), ev("unlabeled", "szibis"), ev("labeled", "mallory")], OWNERS)
+        ok, msg = r.decide([lab("labeled", "szibis", T1), lab("unlabeled", "szibis", T2), lab("labeled", "mallory", T3)], OWNERS)
         self.assertFalse(ok)
         self.assertIn("mallory", msg)
 
     def test_owner_relabels_after_non_owner(self):
-        ok, _ = r.decide([ev("labeled", "mallory"), ev("unlabeled", "mallory"), ev("labeled", "szibis")], OWNERS)
+        ok, _ = r.decide([lab("labeled", "mallory", T1), lab("unlabeled", "mallory", T2), lab("labeled", "szibis", T3)], OWNERS)
         self.assertTrue(ok)
 
     def test_removed(self):
-        ok, _ = r.decide([ev("labeled", "szibis"), ev("unlabeled", "szibis")], OWNERS)
+        ok, _ = r.decide([lab("labeled", "szibis", T1), lab("unlabeled", "szibis", T2)], OWNERS)
         self.assertFalse(ok)
 
-    def test_other_labels_ignored(self):
-        ok, _ = r.decide([ev("labeled", "szibis", "bug")], OWNERS)
-        self.assertFalse(ok)
+    def test_no_label_event(self):
+        self.assertFalse(r.decide([commit(T1)], OWNERS)[0])
 
     def test_unknown_actor_and_no_approvers(self):
-        self.assertFalse(r.decide([ev("labeled", None)], OWNERS)[0])
-        self.assertFalse(r.decide([ev("labeled", "szibis")], set())[0])
+        self.assertFalse(r.decide([lab("labeled", "", T1)], OWNERS)[0])
+        self.assertFalse(r.decide([lab("labeled", "szibis", T1)], set())[0])
+
+    def test_commit_after_label_denies(self):
+        ok, msg = r.decide([lab("labeled", "szibis", T1), commit(T2)], OWNERS)
+        self.assertFalse(ok)
+        self.assertIn("later than", msg)
+
+    def test_force_push_after_label_denies(self):
+        self.assertFalse(r.decide([lab("labeled", "szibis", T2), push(T3)], OWNERS)[0])
+
+    def test_commit_dated_before_label_allows_and_equal_time_allows(self):
+        self.assertTrue(r.decide([commit(T2), lab("labeled", "szibis", T2, 1)], OWNERS)[0])
+
+    def test_sorted_by_time_not_input_order(self):
+        # API order is not trusted: the later "labeled" by the owner wins even when listed first.
+        ok, _ = r.decide([lab("labeled", "szibis", T3), lab("labeled", "mallory", T1)], OWNERS)
+        self.assertTrue(ok)
+        ok, _ = r.decide([lab("labeled", "mallory", T3), lab("labeled", "szibis", T1)], OWNERS)
+        self.assertFalse(ok)
+
+    def test_same_time_ties_break_by_id(self):
+        ok, _ = r.decide([lab("labeled", "szibis", T1, 2), lab("labeled", "mallory", T1, 1)], OWNERS)
+        self.assertTrue(ok)
+        ok, _ = r.decide([lab("labeled", "szibis", T1, 1), lab("labeled", "mallory", T1, 2)], OWNERS)
+        self.assertFalse(ok)
+
+    def test_push_triggered_run_denies(self):
+        for action in ("synchronize", "opened", "reopened"):
+            self.assertFalse(r.decide([lab("labeled", "szibis", T1)], OWNERS, action)[0], action)
+        self.assertTrue(r.decide([lab("labeled", "szibis", T1)], OWNERS, "labeled")[0])
+        self.assertTrue(r.decide([lab("labeled", "szibis", T1)], OWNERS, "edited")[0])
+
+    def test_malformed_events_deny(self):
+        self.assertFalse(r.decide([{"kind": "labeled"}], OWNERS)[0])
+        self.assertFalse(r.decide([lab("labeled", "szibis", "not a date")], OWNERS)[0])
 
     def test_parse_approvers(self):
         self.assertEqual(r.parse_approvers("# c\nSzibis  # owner\n\n"), {"szibis"})
 
 
+class Normalise(unittest.TestCase):
+    def test_graphql_nodes(self):
+        nodes = [
+            {"__typename": "LabeledEvent", "createdAt": T2, "actor": {"login": "szibis"}, "label": {"name": "registry-exempt"}},
+            {"__typename": "LabeledEvent", "createdAt": T2, "actor": {"login": "x"}, "label": {"name": "bug"}},
+            {"__typename": "PullRequestCommit", "commit": {"committedDate": T1, "authoredDate": T3}},
+            {"__typename": "HeadRefForcePushedEvent", "createdAt": T3},
+            {"__typename": "UnlabeledEvent", "createdAt": T3, "actor": None, "label": {"name": "registry-exempt"}},
+        ]
+        ev = r.normalise(nodes)
+        self.assertEqual([e["kind"] for e in ev], ["labeled", "commit", "force_push", "unlabeled"])
+        self.assertEqual(ev[1]["at"], T3)  # the later of authored/committed
+
+
 class Cli(unittest.TestCase):
-    def run_cli(self, events, approvers="szibis\n", env=None):
+    def run_cli(self, events, approvers="szibis\n", env=None, extra=()):
         with tempfile.TemporaryDirectory() as d:
             ap = os.path.join(d, "approvers")
             open(ap, "w").write(approvers)
-            args = [sys.executable, os.path.join(os.path.dirname(__file__), "..", "registry_exempt.py"), "--approvers", ap]
+            args = [sys.executable, os.path.join(os.path.dirname(__file__), "..", "registry_exempt.py"), "--approvers", ap, *extra]
             if events is not None:
                 ef = os.path.join(d, "e.json")
                 json.dump(events, open(ef, "w"))
                 args += ["--events-file", ef]
-            e = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GITHUB_REPOSITORY", "PR_NUMBER")}
+            e = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GITHUB_REPOSITORY", "PR_NUMBER", "EVENT_ACTION")}
             e.update(env or {})
             return subprocess.run(args, capture_output=True, text=True, env=e)
 
     def test_owner_ok(self):
-        self.assertEqual(self.run_cli([ev("labeled", "szibis")]).returncode, 0)
+        self.assertEqual(self.run_cli([lab("labeled", "szibis", T1)]).returncode, 0)
+
+    def test_push_action_via_env_denies(self):
+        self.assertEqual(self.run_cli([lab("labeled", "szibis", T1)], env={"EVENT_ACTION": "synchronize"}).returncode, 1)
 
     def test_no_token_fails_closed(self):
         p = self.run_cli(None)
@@ -80,6 +139,14 @@ class Cli(unittest.TestCase):
 
     def test_bad_events_file_fails_closed(self):
         self.assertEqual(self.run_cli({"not": "a list"}).returncode, 1)
+
+    def test_missing_approvers_file_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            ef = os.path.join(d, "e.json")
+            json.dump([lab("labeled", "szibis", T1)], open(ef, "w"))
+            p = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "registry_exempt.py"),
+                                "--approvers", os.path.join(d, "nope"), "--events-file", ef], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 1)
 
 
 if __name__ == "__main__":
