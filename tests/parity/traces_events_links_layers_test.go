@@ -409,6 +409,19 @@ func TestParity_Traces_EventsLinksLayers(t *testing.T) {
 		}
 	}
 	pushedBatches = 2
+	// The second batch sits in the active segment, which the buffer endpoint does
+	// not list until it is sealed, so "left the buffer" proves nothing yet: wait
+	// until the manifest holds its object (two per tenant), then for the sealed
+	// segment's grace period to pass.
+	for _, p := range all {
+		deadline := time.Now().Add(120 * time.Second)
+		for tenantFiles(t, p.tn.account, p.tn.project) < 2 {
+			if time.Now().After(deadline) {
+				t.Fatalf("tenant %s:%s: the second batch never reached Parquet (%d objects)", p.tn.account, p.tn.project, tenantFiles(t, p.tn.account, p.tn.project))
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}
 	flushed(t)
 	t.Run("parquet", func(t *testing.T) {
 		// Two objects per tenant, none buffered: the read is Parquet only and
