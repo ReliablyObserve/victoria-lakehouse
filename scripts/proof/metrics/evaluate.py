@@ -21,7 +21,7 @@ from .generic import (
     evaluate_truth,
     is_error,
 )
-from .rows import LOG_IDENTITY, SPAN_IDENTITY, evaluate_count_vector, evaluate_rows, parse_ndjson
+from .rows import LOG_IDENTITY, SPAN_IDENTITY, evaluate_count_vector, evaluate_rows, key_order_agreement, parse_ndjson
 from .series import evaluate_series
 from .trace import decode_jaeger, decode_otlp, decode_tempo_search, evaluate_traces
 from .values import evaluate_values
@@ -120,6 +120,8 @@ def evaluate_body(meta: dict, ref: dict, ans: dict) -> FacetResult:
         fetch = _tie_fetch(meta) if (meta.get("query") is None or tq) else None
         body = evaluate_rows(parse_ndjson(rb), parse_ndjson(ab), identity=ident, skip=skip, order=meta.get("order"),
                              tie_fetch=fetch, tie_sort_fields=tie_fields, tie_decision=ans.get("tie_cut"))
+        if meta.get("key_order"):
+            body = merge(body, key_order_agreement(parse_ndjson(rb), parse_ndjson(ab), ident))
     elif kind in ("series_prom", "count") and (_is_streams(rb) or _is_streams(ab)):
         # Loki log queries: per-stream labels and lines, scored as rows
         body = evaluate_rows(loki_streams_rows(rb) if rb else [], loki_streams_rows(ab) if ab else [],

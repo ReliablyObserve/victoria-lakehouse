@@ -1,0 +1,7 @@
+# Lakehouse settings of the proof stack, phase 2 (buffer layer): a segment stays open for up to
+# an hour, so rows ingested after the restart stay in the insert buffer while the proof reads them.
+lakehouse:
+  insert:
+    buffer_flush_interval: 1h
+  peer:
+    auth_key: proof-peer-key

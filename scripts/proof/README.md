@@ -16,7 +16,7 @@ Pure functions that score a captured answer against a reference, as percentages 
 | M7 | `series_set`, `ts_alignment`, `points_within_tol`, `totals`, `nan_agreement`; point error p50/p95/max in details |
 | M8 | `value_set` (Jaccard, recall, precision) and `hits_equality` (a lost `hits` scores 0) |
 | M9 | `trace_set`, `span_set`, `span_fields` (name, service, start, duration, status, status message, kind, attributes, scope, scope version, scope attributes, resource, events, links), `parent_links`, `span_count` |
-| M10 | `order`: Kendall agreement; pairs inside a group tying on the full sort key are not comparable |
+| M10 | `order`: Kendall agreement; pairs inside a group tying on the full sort key are not comparable. `key_order` (opt in with `meta.key_order`): share of paired rows whose JSON members come in the reference's relative order |
 | M11 | `json_leaves`: equal leaf paths over the union |
 | M12 | `schema_keys`, `schema_types`, `schema_contract` |
 | M13 | `truth`: a Lakehouse number against the same calculation over hot VL/VT (shapes `scalar`, `scalar_sum`, `per_key`, `tenant_set`); unflushed rows are reported next to the score, never subtracted |
@@ -111,3 +111,101 @@ What the runner (a later change) must provide so these functions can score its a
     so `per_key` takes `key_field` and `value_field`; the counts are HLL, so a `rel_tol` applies; skip
     `indexed: false` (`where`); `limit=100` by default; the tenant is `?tenant=`. Truth is a stats
     `count_uniq` with `key_label` `__name__`.
+
+## The proof stack, the API runner and the visual capture
+
+The metrics library scores answers; the pieces below produce them on a real stack. Nothing here runs in CI
+yet; they are run by hand (and the sticky comment and gate come later).
+
+### Stack (`stack.py`, `deployment/docker/docker-compose-proof.yml`)
+
+An isolated compose project `lhproof`, loopback ports 48xxx only: hot VictoriaLogs and VictoriaTraces (the
+reference), Lakehouse built from main (`base`) and from the PR (`pr`) for both signals, one RustFS, Grafana
+with a datasource per side (VictoriaLogs, Jaeger, Loki through loki-vl-proxy), the Jaeger UI per side and
+loki-vl-proxy per side.
+
+```
+python3 scripts/proof/stack.py build --main <main checkout> --pr <PR checkout>   # lhproof-<signal>:base / :pr
+python3 scripts/proof/stack.py up
+python3 scripts/proof/stack.py seed --out OUT     # cold layer: the same datagen seed and --now to hot + base, then to the PR
+python3 scripts/proof/stack.py hold --out OUT     # buffer layer: restart with a 1 h flush and ingest the buffer batch
+python3 scripts/proof/stack.py down               # compose down -v and the images, by exact tag
+```
+
+The windows are absolute and hour aligned (`OUT/state.json`): cold `[H-4h, H)`, buffer `[H, H+1h)`. Tenants:
+`0:0` and `1001:0`, the latter also reached as the alias `acme-corp` (sent to Lakehouse as `X-Scope-OrgID`
+and to hot as `AccountID: 1001`, because upstream has no aliases). `hold` records the unflushed rows of the
+buffer window per Lakehouse (`buffered`) and a trace of tenant 0:0 whose spans carry events and links
+(`trace_id`).
+
+### API runner (`runner/`)
+
+```
+python3 -m scripts.proof.runner.run --state OUT/state.json --out OUT/api --tier core [--tier field-values] [--only REGEXP]
+```
+
+Rows are JSON (`runner/rows/*.json`): surface, kind (the metrics kinds), path, params, window, layers
+(`cold`, `buffer`, `all`) and tenant forms (`numeric`, `numeric1001`, `alias`). For every concrete request
+the three targets are called in the order ref, base, PR, and the answers are written as case directories
+(`cases/<surface>/<row>.<form>.<layer>/`: `meta.json`, `ref.json`, `base.json`, `pr.json`, `resample-N/`)
+with the envelope fields of the contract above: status, raw body, latency, transport error kind, tenant
+form, layer and, for the buffer layer, `buffer_unflushed_rows`. The metrics library scores them. Before any
+comparison the row count of every tenant form and layer must be equal on ref, base and PR; otherwise the run
+exits 2 (it did not complete). A request that is neither `exact` nor `same` is sampled twice more; a verdict
+that flips is `nondeterministic`. `report.md` (request, base %, PR %, worst facet, verdict), `report.json`
+(facets and notes) and `bodies.jsonl.gz` (every answer) are written next to the cases.
+
+Exit codes: 0 done, 1 a failing verdict (`regressed`, `nondeterministic`, `harness-error`), 2 incomplete.
+
+### Visual capture (`tests/playwright/proof`, `visual/`)
+
+```
+cd tests/playwright/proof && npm ci
+VP_STATE=OUT/state.json VP_OUT=OUT/visual GRAFANA_URL=http://127.0.0.1:48300 npx playwright test
+python3 -m scripts.proof.visual.compare OUT/visual     # compare.md / compare.json
+python3 -m scripts.proof.visual.montage OUT/visual     # montage/<page>-<range>.png: base | PR | reference
+```
+
+`spec.json` lists the pages: Explore with the VictoriaLogs datasource (logs and volume; the query builder's
+value list of a map attribute; the stream-filter value list of a stream field), VMUI and VTUI, Explore with
+the Jaeger datasource and the Jaeger UI (service and operation lists, the trace view with span events,
+links and scope), and, in the focused tier, Explore with Loki and Logs Drilldown through loki-vl-proxy.
+Each page is captured on base, PR and the reference: a screenshot, every backend request and response of
+the page load (Grafana `/api/ds/query` frames, datasource resource calls, the own API calls of the UIs),
+console errors and settle time.
+
+`compare.py` matches the questions of the three sides by request key and scores each matched answer with
+the metrics above (values, rows, series, traces), so a page reads base % and PR % against the reference. The
+panel state of every side (data, empty, error, unsettled) is decided from the responses and from the DOM
+(`states.py`), and a state change decides the verdict by itself where the table says so: a base that showed
+a query error and a PR that answers nothing, as the reference does, is `fixed`, never a new empty panel.
+
+Not covered: the Lakehouse UI (no upstream reference), Tempo pages, tenant forms other than the default
+tenant 0:0 in Grafana (the datasources carry no tenant header), and any answer that depends on wall-clock time.
+
+### PR comment (`comment.py`)
+
+```
+python3 -m scripts.proof.comment --api OUT/api --visual OUT/visual --label "PR 438" --image-base <url> --explain why.json --out comment.md
+```
+
+The verdict line first; the table lists the requests that changed or still differ (matching ones are
+counted), with base %, PR % and the worst facet of each; then every remaining difference with the reason
+from `why.json` (a map from a request-id prefix to the explanation). A difference without a reason is
+printed as `unexplained` and the command exits 1. Row sets: `runner/rows/core.json` (native-first core),
+`field-values.json` (field values over map attributes, the empty-value bucket, stream fields) and
+`audit.json` (span events, links and scope; column and key order of sort rows; field names).
+
+### Image hosting
+
+`visual/publish.py` is the loki-vl-proxy script unchanged: montages (PNG files of at most 300 KB, at most 80)
+go to the orphan branch `pr-visuals` under `pr-<number>/`, one parentless commit per change, and a PR comment
+embeds `https://raw.githubusercontent.com/<owner>/<repo>/pr-visuals/pr-<number>/<file>.png`. The branch is
+created by the first publish with a token that may push to it (`PUBLISH_TOKEN`, `contents: write` for the
+workflow token).
+
+### Ported files
+
+`visual/vio.py`, `visual/publish.py` and `tests/test_visual_publish.py` are copied from loki-vl-proxy
+`bench/visual` (`429f15b9`); `visual/montage.py` and `visual/compare.py` and `tests/playwright/proof/capture.spec.ts`
+are adapted from it. Each file names its source in its header.

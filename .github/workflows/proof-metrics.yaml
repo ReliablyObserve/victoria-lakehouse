@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "scripts/proof/**"
+      - "deployment/docker/docker-compose-proof.yml"
+      - "deployment/docker/proof/**"
       - "tests/parity/testdata/tiecut_golden.json"
       - ".github/workflows/proof-metrics.yaml"
   push:
@@ -37,7 +39,11 @@ jobs:
       - name: Unit tests with coverage floor
         run: |
           python -m pytest scripts/proof/tests -q \
-            --cov=scripts.proof.metrics --cov-report=term-missing --cov-fail-under=90
+            --cov=scripts.proof.metrics --cov=scripts.proof.runner --cov=scripts.proof.visual --cov=scripts.proof.stack --cov=scripts.proof.comment \
+            --cov-report=term-missing --cov-fail-under=90
+
+      - name: Proof stack compose file is valid
+        run: docker compose -p lhproof -f deployment/docker/docker-compose-proof.yml config -q
 
       - name: Fixtures match their recorded expectations
         run: python -m scripts.proof.metrics scripts/proof/fixtures/cases --check

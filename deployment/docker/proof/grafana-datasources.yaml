@@ -1,0 +1,60 @@
+apiVersion: 1
+
+# One VictoriaLogs and one Jaeger datasource per side of the proof: ref (hot VictoriaLogs /
+# VictoriaTraces), base (Lakehouse built from main) and pr (Lakehouse built from the pull request).
+datasources:
+  - name: "VL ref"
+    type: victoriametrics-logs-datasource
+    uid: vl-ref
+    access: proxy
+    url: http://vl-ref:9428
+    isDefault: true
+    jsonData: {maxLines: 1000}
+  - name: "VL base"
+    type: victoriametrics-logs-datasource
+    uid: vl-base
+    access: proxy
+    url: http://lh-logs-base:9428
+    jsonData: {maxLines: 1000}
+  - name: "VL pr"
+    type: victoriametrics-logs-datasource
+    uid: vl-pr
+    access: proxy
+    url: http://lh-logs-pr:9428
+    jsonData: {maxLines: 1000}
+  - name: "Jaeger ref"
+    type: jaeger
+    uid: jaeger-ref
+    access: proxy
+    url: http://vt-ref:10428/select/jaeger
+    jsonData: {nodeGraph: {enabled: true}}
+  - name: "Jaeger base"
+    type: jaeger
+    uid: jaeger-base
+    access: proxy
+    url: http://lh-traces-base:10428/select/jaeger
+    jsonData: {nodeGraph: {enabled: true}}
+  - name: "Jaeger pr"
+    type: jaeger
+    uid: jaeger-pr
+    access: proxy
+    url: http://lh-traces-pr:10428/select/jaeger
+    jsonData: {nodeGraph: {enabled: true}}
+  - name: "Loki ref"
+    type: loki
+    uid: loki-ref
+    access: proxy
+    url: http://lvp-ref:3100
+    jsonData: {maxLines: 1000}
+  - name: "Loki base"
+    type: loki
+    uid: loki-base
+    access: proxy
+    url: http://lvp-base:3100
+    jsonData: {maxLines: 1000}
+  - name: "Loki pr"
+    type: loki
+    uid: loki-pr
+    access: proxy
+    url: http://lvp-pr:3100
+    jsonData: {maxLines: 1000}

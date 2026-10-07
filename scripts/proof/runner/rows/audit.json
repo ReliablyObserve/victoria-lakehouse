@@ -1,0 +1,185 @@
+{
+ "registry_check": false,
+ "note": "audit of recently merged user-visible changes: #430 (span events, links and scope), #429 / #432 (column and key order of sort/limit rows), #310 and the field_names noise (B2)",
+ "rows": [
+  {
+   "id": "vl.query.sort_all.full",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | sort"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "meta": {
+    "key_order": true
+   }
+  },
+  {
+   "id": "vl.query.sort_all.limit50",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | sort | limit 50"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "meta": {
+    "key_order": true
+   }
+  },
+  {
+   "id": "vl.query.sort_by_time.limit50",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | sort by (_time, _stream_id, _msg) | limit 50"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "meta": {
+    "key_order": true
+   }
+  },
+  {
+   "id": "vl.query.first20",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | first 20 by (_time, _stream_id, _msg)"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "meta": {
+    "key_order": true
+   }
+  },
+  {
+   "id": "vl.query.filtered.sort_all.limit20",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "level:=ERROR | sort | limit 20"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "meta": {
+    "key_order": true
+   }
+  },
+  {
+   "id": "vt.query.sort_all.full",
+   "surface": "vt-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "span_id:* | sort"
+   },
+   "row": "vt.select.logsql_query.wildcard",
+   "meta": {
+    "key_order": true
+   }
+  },
+  {
+   "id": "vt.query.sort_all.limit50",
+   "surface": "vt-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "span_id:* | sort | limit 50"
+   },
+   "row": "vt.select.logsql_query.wildcard",
+   "meta": {
+    "key_order": true
+   }
+  },
+  {
+   "id": "vt.query.trace.events_links",
+   "surface": "vt-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "trace_id:=\"{tid}\" | sort by (span_id)"
+   },
+   "row": "vt.select.logsql_query.wildcard",
+   "pick": {
+    "tid": {
+     "query": "\"event:event_name:0\":* \"link:link_span_id:0\":* | sort by (trace_id) | fields trace_id | limit 1",
+     "field": "trace_id",
+     "signal": "traces"
+    }
+   },
+   "meta": {
+    "key_order": true
+   },
+   "window": "none"
+  },
+  {
+   "id": "vt.query.trace.events_links.fields",
+   "surface": "vt-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "trace_id:=\"{tid}\" | sort by (span_id) | fields trace_id, span_id, \"event:event_name:0\", \"event:event_name:1\", \"link:link_trace_id:0\", \"link:link_span_id:0\", scope_name, scope_version, \"scope_attr:otel.scope.name\""
+   },
+   "row": "vt.select.logsql_query.wildcard",
+   "pick": {
+    "tid": {
+     "query": "\"event:event_name:0\":* \"link:link_span_id:0\":* | sort by (trace_id) | fields trace_id | limit 1",
+     "field": "trace_id",
+     "signal": "traces"
+    }
+   },
+   "meta": {
+    "key_order": true
+   },
+   "window": "none"
+  },
+  {
+   "id": "jaeger.trace.events_links_scope",
+   "surface": "jaeger",
+   "kind": "trace_jaeger",
+   "path": "/select/jaeger/api/traces/{tid}",
+   "params": {},
+   "row": "vt.jaeger.traces_by_id.basic",
+   "pick": {
+    "tid": {
+     "query": "\"event:event_name:0\":* \"link:link_span_id:0\":* | sort by (trace_id) | fields trace_id | limit 1",
+     "field": "trace_id",
+     "signal": "traces"
+    }
+   },
+   "window": "none"
+  },
+  {
+   "id": "vl.field_names",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "*"
+   },
+   "row": "vl.select.field_names.basic"
+  },
+  {
+   "id": "vt.field_names",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "*"
+   },
+   "row": "vt.select.logsql_field_names.basic"
+  },
+  {
+   "id": "vt.field_names.spans_only",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "span_id:*"
+   },
+   "row": "vt.select.logsql_field_names.basic"
+  }
+ ]
+}

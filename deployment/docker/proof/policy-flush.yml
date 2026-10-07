@@ -1,0 +1,7 @@
+# Lakehouse settings of the proof stack, phase 1 (cold layer): a buffer segment is written to
+# Parquet, whole, at the latest 5 s after it opened, so seeded data reaches the cold tier quickly.
+lakehouse:
+  insert:
+    buffer_flush_interval: 5s
+  peer:
+    auth_key: proof-peer-key
