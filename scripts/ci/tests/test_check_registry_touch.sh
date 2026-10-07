@@ -766,6 +766,23 @@ for mod in github.com/klauspost/compress github.com/golang/snappy google.golang.
 done
 lock_helper_touch() { printf '// x\n' >> tests/parity/lock_cells_test.go; }
 run_case "the lock-cells helper is a gate file" fail "changes the registry gate itself" lock_helper_touch
+x_submodule_registry_entry() { registry_row_change; git update-index --add --cacheinfo 160000,0123456789012345678901234567890123456789,tests/conformance/registry/rows/lh/zz_sub; git commit -q -m "add a gitlink"; }
+run_case "S: a submodule entry in the registry is rejected like a symlink" fail "symlink or submodule" x_submodule_registry_entry
+
+head_rev_case() {
+  local dir out rc1 rc2
+  dir="$(new_repo)"
+  ( cd "$dir" && product_change && git add -A && git commit -q -m change && git branch -q pr && git checkout -q base ) >/dev/null 2>&1
+  out="$(cd "$dir" && HEAD_REV=pr bash "$CHECKER" base 2>&1)"; rc1=$?
+  (cd "$dir" && bash "$CHECKER" base) >/dev/null 2>&1; rc2=$?
+  if [[ $rc1 -ne 0 && $rc2 -eq 0 ]] && grep -q "makes no real content change" <<<"$out"; then
+    echo "ok   - HEAD_REV judges that revision, not the checked-out one (the pull_request_target gate has no PR checkout)"; pass=$((pass + 1))
+  else
+    echo "FAIL - HEAD_REV (rc with=$rc1, without=$rc2)"; echo "$out" | sed 's/^/       /'; fail=$((fail + 1))
+  fi
+  rm -rf "$dir"
+}
+head_rev_case
 run_case "X10: a new file under scripts/ci that could shadow an import is a gate file" fail "changes the registry gate itself" x10_shadow_module
 run_case "a tests/ Makefile-free infra change is still not product" ok "registry-touch check OK" infra_only_change
 echo
