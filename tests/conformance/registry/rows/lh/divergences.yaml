@@ -614,7 +614,7 @@
   targets: [hot, cold]
   seed: [traces.base]
   request: { method: GET, path: "/select/jaeger/api/traces/{{seed.trace_id}}" }
-  compare: { type: exact-json }
+  compare: { type: trace }
   layers: [api]
   pending: true
   refs:
