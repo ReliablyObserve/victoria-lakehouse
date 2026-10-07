@@ -627,7 +627,7 @@ func (s *Scheduler) runMerge(ctx context.Context, partition string, selected []m
 	}
 
 	metrics.CompactionRunsTotal.Inc()
-	metrics.CompactionFilesInputTotal.Add(len(selected))
+	metrics.CompactionFilesInputTotal.Add(len(result.InputFiles))
 	metrics.CompactionFilesOutputTotal.Add(len(result.OutputFiles))
 	metrics.CompactionBytesReadTotal.Add(int(result.BytesRead))
 	metrics.CompactionBytesWrittenTotal.Add(int(result.BytesWritten))
@@ -639,7 +639,7 @@ func (s *Scheduler) runMerge(ctx context.Context, partition string, selected []m
 	}
 
 	logger.Infof("%s; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
-		logMsg, partition, level, len(selected), result.OutputFile, result.RowsMerged)
+		logMsg, partition, level, len(result.InputFiles), result.OutputFile, result.RowsMerged)
 	return result, nil
 }
 

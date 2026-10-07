@@ -26,6 +26,7 @@ change ships behind this gate.
 Usage: python3 scripts/ci/parquet-readback/verify.py /tmp/parquet-readback
 """
 
+import base64
 import json
 import os
 import sys
@@ -168,6 +169,7 @@ def verify_span_extras(con, path: str, truth: dict) -> None:
     ev_rows = tbl.column("span.events_json").to_pylist()
     ln_rows = tbl.column("span.links_json").to_pylist()
     spans_ev = events = exc = stack = 0
+    b_vals = b_len = b_names = b_name_len = b64_keys = malformed = 0
     first = -1
     for i, v in enumerate(ev_rows):
         if v is None:
@@ -176,7 +178,21 @@ def verify_span_extras(con, path: str, truth: dict) -> None:
         spans_ev += 1
         events += len(arr)
         exc += sum(1 for e in arr if e.get("event_name") == "exception")
-        stack += sum(len(e.get("event_attr:exception.stacktrace", "")) for e in arr)
+        stack += sum(len(e.get("event_attr:exception.stacktrace", "")) for e in arr
+                     if isinstance(e.get("event_attr:exception.stacktrace", ""), str))
+        for e in arr:
+            for k, val in e.items():
+                if k.startswith("$b64:"):
+                    b64_keys += 1
+                if isinstance(val, dict):
+                    if set(val) != {"$bytes"}:
+                        malformed += 1
+                    raw = base64.b64decode(val["$bytes"])
+                    b_vals += 1
+                    b_len += len(raw)
+                    if k == "event_name":
+                        b_names += 1
+                        b_name_len += len(raw)
         if first < 0:
             first = i
     spans_ln = links = flags = 0
@@ -196,10 +212,31 @@ def verify_span_extras(con, path: str, truth: dict) -> None:
         ("spans with links", spans_ln, want["spans_with_links"]),
         ("links", links, want["links"]),
         ("link_flags sum", flags, want["link_flags_sum"]),
+        ("$bytes values", b_vals, want["bytes_values"]),
+        ("$bytes decoded length", b_len, want["bytes_value_len"]),
+        ("$bytes event names", b_names, want["bytes_event_names"]),
+        ("$bytes event name length", b_name_len, want["bytes_event_name_len"]),
+        ("$b64: keys", b64_keys, want["b64_keys"]),
+        ("malformed value objects", malformed, 0),
     ):
         check(got == w, f"pyarrow {label} == {w}", f"got {got}")
 
     # 3. duckdb + JSON functions
+    (dn, dl) = con.execute(
+        """SELECT count(*), coalesce(sum(octet_length(from_base64(json_extract_string(e, '$.event_name."$bytes"')))), 0)
+           FROM (SELECT unnest(from_json("span.events_json", '["JSON"]')) AS e
+                 FROM read_parquet(?) WHERE "span.events_json" IS NOT NULL)
+           WHERE json_extract_string(e, '$.event_name."$bytes"') IS NOT NULL""",
+        [path]).fetchone()
+    check(int(dn) == want["bytes_event_names"] and int(dl) == want["bytes_event_name_len"],
+          f"duckdb decodes {want['bytes_event_names']} $bytes event names, {want['bytes_event_name_len']} bytes",
+          f"got {dn}, {dl}")
+    (dk,) = con.execute(
+        """SELECT coalesce(sum(len(list_filter(json_keys(e), k -> starts_with(k, '$b64:')))), 0)
+           FROM (SELECT unnest(from_json("span.events_json", '["JSON"]')) AS e
+                 FROM read_parquet(?) WHERE "span.events_json" IS NOT NULL)""",
+        [path]).fetchone()
+    check(int(dk) == want["b64_keys"], f"duckdb sees {want['b64_keys']} $b64: keys", f"got {dk}")
     ev, = con.execute(
         'SELECT count(*) FROM read_parquet(?) WHERE "span.events_json" IS NOT NULL',
         [path]).fetchone()

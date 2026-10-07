@@ -247,3 +247,95 @@ func TestFence_KeyedByBucketAndKey(t *testing.T) {
 		t.Fatal("fenceKey must tell buckets apart")
 	}
 }
+
+// A scan whose only plan is all fenced merges nothing: Scan reports 0 merges
+// (the fenced plan is not a success), and counts no input files.
+func TestFence_ScanReportsNoMergeForAnAllFencedPlan(t *testing.T) {
+	freshFence(t)
+	bothModes(t, func(t *testing.T, mode config.Mode) {
+		w := newPlanWorld(t, mode)
+		p := partitionAt(time.Now().Add(-3 * time.Hour))
+		w.makeFuture(w.add("1001/0", p, 0, 12, 2, nil))
+		inputsBefore := metrics.CompactionFilesInputTotal.Get()
+		compacted, err := w.shippedScheduler().Scan(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if compacted != 0 {
+			t.Errorf("Scan reported %d merges for a plan whose inputs are all fenced", compacted)
+		}
+		if got := metrics.CompactionFilesInputTotal.Get() - inputsBefore; got != 0 {
+			t.Errorf("CompactionFilesInputTotal grew by %d for a merge that merged nothing", got)
+		}
+	})
+}
+
+// The compactor itself does not fetch an object it already refused (the planner
+// filter is a second line; this is the first). Mutation: dropping the Has check
+// in compactGroup fails this.
+func TestFence_CompactorDoesNotRefetchARefusedObject(t *testing.T) {
+	freshFence(t)
+	bothModes(t, func(t *testing.T, mode config.Mode) {
+		w := newPlanWorld(t, mode)
+		p := partitionAt(time.Now().Add(-3 * time.Hour))
+		keys := w.add("1001/0", p, 0, 3, 2, nil)
+		w.makeFuture(keys)
+		pool := &downloadCounter{mockPool: w.pool}
+		c := NewCompactor(CompactorConfig{Pool: pool, Manifest: w.m, Prefix: string(w.mode) + "/", Mode: w.mode, RowGroupSize: 1000, CompressionLevel: 1})
+		files := w.m.FilesForPartition(p)
+		for i := 0; i < 3; i++ {
+			if _, err := c.Compact(context.Background(), p, files, 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, k := range keys {
+			if n := pool.count(k); n > 1 {
+				t.Errorf("%s downloaded %d times over 3 Compact calls, want 1", k, n)
+			}
+		}
+	})
+}
+
+// Repeated forced recompactions of a fenced partition fetch the fenced objects
+// at most once (the first call discovers the fence; the later ones do not plan
+// them). Mutation: dropping the fence filter in withoutHeld fails this.
+func TestFence_RepeatedForceCompactDoesNotRefetch(t *testing.T) {
+	freshFence(t)
+	bothModes(t, func(t *testing.T, mode config.Mode) {
+		w := newPlanWorld(t, mode)
+		p := partitionAt(time.Now().Add(-3 * time.Hour))
+		keys := w.add("1001/0", p, 0, 4, 2, nil)
+		w.makeFuture(keys)
+		pool := &downloadCounter{mockPool: w.pool}
+		sched := w.schedulerOn(pool)
+		for i := 0; i < 4; i++ {
+			if _, err := sched.ForceCompactPartition(context.Background(), p, 0); err == nil {
+				t.Fatal("a forced merge of only fenced objects must report nothing merged")
+			}
+		}
+		for _, k := range keys {
+			if n := pool.count(k); n > 1 {
+				t.Errorf("%s downloaded %d times over 4 forced recompactions, want at most 1", k, n)
+			}
+		}
+	})
+}
+
+// withoutHeld drops the objects the fence refused.
+func TestFence_WithoutHeldDropsRefusedObjects(t *testing.T) {
+	freshFence(t)
+	w := newPlanWorld(t, config.ModeLogs)
+	p := partitionAt(time.Now().Add(-3 * time.Hour))
+	w.add("1001/0", p, 0, 3, 2, nil)
+	files := w.m.FilesForPartition(p)
+	fenceLog.Mark(fenceKey(files[0]))
+	got := withoutHeld(w.m, files)
+	if len(got) != 2 {
+		t.Fatalf("withoutHeld kept %d of 3 files, want 2", len(got))
+	}
+	for _, f := range got {
+		if f.Key == files[0].Key {
+			t.Fatal("the refused object is still planned")
+		}
+	}
+}

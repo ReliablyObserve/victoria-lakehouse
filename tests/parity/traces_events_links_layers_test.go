@@ -20,11 +20,11 @@ package parity
 //   - compacted: after two flushed files of the partition were merged
 //     (POST /lakehouse/compaction/recompact).
 //
-// A restart layer is not part of this case: the parity stack has no restart
-// step. The Parquet files carry everything the read needs and the manifest is
-// rebuilt from them at start, which the traces module's flush end-to-end test
-// pins (flush_events_links_e2e_test.go). String tenant aliases are opt-in and
-// not configured in the parity stack.
+// Two layers are NOT covered, and are gaps: after a process restart (the parity
+// stack has no restart step; the traces flush end-to-end test reads through a
+// fresh S3-backed storage over the same objects, which is not a restarted
+// process), and string tenant aliases (opt-in, not configured in the parity
+// stack).
 
 import (
 	"bytes"
@@ -564,9 +564,29 @@ func TestParity_Traces_EventsLinksInvalidUTF8(t *testing.T) {
 			}
 		}
 	}
-	t.Run("buffer", compare)
+	t.Run("buffer", func(t *testing.T) {
+		deadline := time.Now().Add(30 * time.Second)
+		for bufferedRowsOf(t, tn, at) == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("nothing in the insert buffer 30s after the push: the buffer layer cannot be compared")
+			}
+			time.Sleep(time.Second)
+		}
+		compare(t)
+		if bufferedRowsOf(t, tn, at) == 0 {
+			t.Fatal("the buffer drained during the buffer-layer compare; part of it read Parquet")
+		}
+	})
 	waitLeftBufferTenant(t, lhtBaseURL, "traces", tn.account, tn.project, at.Add(-time.Minute), at.Add(time.Minute))
-	t.Run("parquet", compare)
+	t.Run("parquet", func(t *testing.T) {
+		if n := tenantFiles(t, tn.account, tn.project); n < 1 {
+			t.Fatalf("tenant %s:%s has %d objects before the parquet-layer compare, want at least 1", tn.account, tn.project, n)
+		}
+		if n := bufferedRowsOf(t, tn, at); n != 0 {
+			t.Fatalf("%d rows are still in the insert buffer", n)
+		}
+		compare(t)
+	})
 }
 
 // The forward fence's counter is 0 on this single-version stack, on both

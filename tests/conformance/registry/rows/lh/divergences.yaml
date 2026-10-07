@@ -510,6 +510,10 @@
     counter stays 0 on a single-version fleet. Protects every future column addition; it cannot protect the #430
     transition itself, because older pods have no fence (docs/operations.md). The conformance runner does not execute
     the row yet (pending).
+    Executed lock: the Go tests listed above. The runner request is a smoke: on a single-version stack there is no fenced
+    object, so a forced recompact must answer without error and the counter must stay 0; a fenced partition needs an object
+    written by a newer version, which only the unit tests construct.
+
 - id: lh.compaction.fence_skips_unknown_columns_traces
   title: "LH compaction leaves a traces object with a column it does not model alone: the object stays, the rest merges"
   surface: lh
@@ -551,6 +555,10 @@
     counter stays 0 on a single-version fleet. Protects every future column addition; it cannot protect the #430
     transition itself, because older pods have no fence (docs/operations.md). The conformance runner does not execute
     the row yet (pending).
+    Executed lock: the Go tests listed above. The runner request is a smoke: on a single-version stack there is no fenced
+    object, so a forced recompact must answer without error and the counter must stay 0; a fenced partition needs an object
+    written by a newer version, which only the unit tests construct.
+
 - id: lh.delete.fence_unknown_columns_logs
   title: "LH delete rewrite defers a logs object with a column it does not model: the object and the tombstone stay"
   surface: lh
@@ -578,6 +586,9 @@
     its rows stay hidden by the tombstone and the metadata-only fast paths stay off for that tenant in its range.
     Counted once per object in lakehouse_compaction_skipped_unknown_columns_total{signal="logs",op="delete_rewrite"}.
     The conformance runner does not execute the row yet (pending).
+    Executed lock: the Go tests listed above. The runner request is a smoke (the tombstone list answers); a fenced
+    object needs a column from a newer version, which only the unit tests construct.
+
 - id: lh.delete.fence_unknown_columns_traces
   title: "LH delete rewrite defers a traces object with a column it does not model: the object and the tombstone stay"
   surface: lh
@@ -605,16 +616,20 @@
     its rows stay hidden by the tombstone and the metadata-only fast paths stay off for that tenant in its range.
     Counted once per object in lakehouse_compaction_skipped_unknown_columns_total{signal="traces",op="delete_rewrite"}.
     The conformance runner does not execute the row yet (pending).
+    Executed lock: the Go tests listed above. The runner request is a smoke (the tombstone list answers); a fenced
+    object needs a column from a newer version, which only the unit tests construct.
+
 - id: lh.cold.trace_events_layers_match_hot_traces
   title: "Span events, links and scope attributes of spans written by the test match hot on every layer and tenant form — LogsQL, Jaeger, Tempo v1/v2"
   surface: lh
   kind: select
-  origin: lh-addition
+  origin: lh-shim
   expect: pass
   targets: [hot, cold]
-  seed: [traces.base]
-  request: { method: GET, path: "/select/jaeger/api/traces/{{seed.trace_id}}" }
-  compare: { type: trace }
+  seed: [ingest.matrix]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: '"event:event_name:0":*', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: ndjson-multiset }
   layers: [api]
   pending: true
   refs:
@@ -627,8 +642,12 @@
     state, flags and attributes, scope attributes. Exact comparison of the event/link/scope fields of the
     LogsQL rows, Jaeger logs/references/scope tags and Tempo events/links/scopes, on three layers: buffer,
     Parquet only (after the buffer flushed) and compacted (POST /lakehouse/compaction/recompact over two
-    files per tenant). No restart layer (the parity stack has no restart step; the restart read is pinned
-    by the traces flush end-to-end test) and no string tenant aliases (opt-in, not configured there).
+    files per tenant). Gaps, not covered: the after-restart layer (the parity stack has no restart step; the traces
+    flush end-to-end test reads through a fresh S3-backed storage, which is not a restarted process) and string
+    tenant aliases (opt-in, not configured there).
+    Executed lock: the Go parity case TestParity_Traces_EventsLinksLayers writes its own spans (seed ingest.matrix: no
+    pre-seeded dataset) and compares LogsQL, Jaeger and Tempo; the request above is the LogsQL slice of it that the
+    runner can issue against any seeded traces stack.
 
 - id: lh.cold.span_events_links_roundtrip_property
   title: "Span events and links survive the JSON column, Parquet and decoding for random inputs"
@@ -638,7 +657,7 @@
   expect: pass
   targets: [cold]
   seed: [traces.base]
-  request: { method: GET, path: /select/logsql/query, params: { query: "span_id:*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  request: { method: GET, path: /select/logsql/query, params: { query: '"event:event_name:0":*', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
   compare: { type: count }
   layers: [api]
   pending: true
@@ -653,6 +672,8 @@
     the order the fields arrive in (the property found that non-numeric group suffixes were ordered by
     arrival; now by suffix text); a span without extras has both columns NULL. Invalid UTF-8 is the one
     known difference (#434).
+    Executed lock: the Go property and fuzz tests (no endpoint carries random inputs); the request is the smoke read of the
+    event fields the property protects.
 
 - id: lh.cold.logs_scalar_after_map_field_values
   title: "LH cold field_values and field_names read a scalar column that follows MAP columns from its own chunk (logs)"
@@ -705,9 +726,9 @@
   origin: lh-shim
   expect: pass
   targets: [hot, cold]
-  seed: [traces.base]
+  seed: [ingest.matrix]
   upstream: { route: /select/logsql/query }
-  request: { method: GET, path: /select/logsql/query, params: { query: "span_id:*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  request: { method: GET, path: /select/logsql/query, params: { query: '"event:event_name:0":*', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
   compare: { type: ndjson-multiset }
   layers: [api]
   pending: true
@@ -726,3 +747,6 @@
     collide with a value. The parity case sends the strings in OTLP protobuf (JSON cannot carry them) to hot and cold
     and compares the LogsQL fields in the buffer and from Parquet. The conformance runner does not execute the row yet
     (pending).
+    Executed lock: TestParity_Traces_EventsLinksInvalidUTF8 writes the span itself (OTLP protobuf; no seed holds invalid
+    UTF-8, hence ingest.matrix), so the runner request is the same LogsQL slice.
+

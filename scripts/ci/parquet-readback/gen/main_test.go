@@ -217,7 +217,7 @@ func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
 	for _, r := range rows {
 		if r.EventsJSON != "" {
 			spansEv++
-			var evs []map[string]string
+			var evs []map[string]any
 			if err := json.Unmarshal([]byte(r.EventsJSON), &evs); err != nil {
 				t.Fatalf("events_json does not decode: %v", err)
 			}
@@ -231,6 +231,9 @@ func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
 	ex := truth.SpanExtras
 	if ex.SpansWithEvents != spansEv || ex.Events != events || ex.SpansWithLinks != spansLn || ex.Links != links {
 		t.Errorf("span_extras truth %+v does not match the file (%d spans/%d events, %d spans/%d links)", *ex, spansEv, events, spansLn, links)
+	}
+	if ex.BytesValues == 0 || ex.BytesEventNames == 0 || ex.B64Keys == 0 {
+		t.Errorf("the gate file must carry reversibly stored non-UTF-8 text: %+v", *ex)
 	}
 	if spansEv == 0 || spansEv == int64(len(rows)) || spansLn == 0 || spansLn == int64(len(rows)) {
 		t.Errorf("events/links must be set on some spans and NULL on others: %d and %d of %d", spansEv, spansLn, len(rows))
