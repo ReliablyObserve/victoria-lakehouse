@@ -72,6 +72,17 @@ rm -rf "$TMP/repo/deployment/docker/Dockerfile.loki-vl-proxy"
 printf 'FROM alpine\n' > "$TMP/repo/deployment/docker/Dockerfile.loki-vl-proxy"
 check "6 no pin" "$(run --latest 2.4.0)" 1
 
+# 8 end to end: the bot's commit must pass the changelog gate on its own.
+mkrepo 2.3.0
+check "8 rc" "$(run --latest 9.9.9 --no-pr)" 0
+files="$(g -C "$TMP/work/repo" diff --name-only HEAD~1 HEAD)"
+subject="$(g -C "$TMP/work/repo" log -1 --format=%s)"
+check "8 gate says no changelog needed" "$(FILES="$files" SUBJECT="$subject" python3 -c '
+import os
+from scripts.ci.check_changelog_pr import should_require_changelog
+f=os.environ["FILES"].split(); c=[os.environ["SUBJECT"]]
+print(should_require_changelog(c,f))')" "False"
+
 check "7 bad use" "$("$BUMP" --bogus >/dev/null 2>&1; echo $?)" 2
 
 printf 'loki_vl_proxy_bump_test: %d passed, %d failed\n' "$pass" "$fail"

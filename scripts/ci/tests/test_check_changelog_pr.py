@@ -76,6 +76,18 @@ class CheckChangelogPRTests(unittest.TestCase):
             )
         )
 
+    def test_loki_vl_proxy_dockerfile_only_does_not_require_changelog(self):
+        bot = ["deps: probe upstream sync loki-vl-proxy v2.4.0"]
+        files = ["deployment/docker/Dockerfile.loki-vl-proxy"]
+        self.assertFalse(should_require_changelog(bot, files))
+
+    def test_loki_vl_proxy_dockerfile_with_shipped_paths_still_requires_changelog(self):
+        bot = ["deps: probe upstream sync loki-vl-proxy v2.4.0"]
+        proxy = "deployment/docker/Dockerfile.loki-vl-proxy"
+        for shipped in ("deployment/docker/Dockerfile", "cmd/lakehouse-logs/main.go"):
+            self.assertTrue(should_require_changelog(bot, [proxy, shipped]), shipped)
+        self.assertTrue(should_require_changelog(bot, ["deployment/docker/Dockerfile"]))
+
     def test_should_skip_for_docs_only(self):
         self.assertFalse(should_require_changelog(["docs: update guide"], ["docs/getting-started.md"]))
 
