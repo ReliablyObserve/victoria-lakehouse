@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import release_skip as r  # noqa: E402
@@ -98,7 +98,7 @@ class GithubTitles(unittest.TestCase):
             seen["timeout"] = timeout
             return FakeResponse(payload)
 
-        with mock.patch.object(r.urllib.request, "urlopen", urlopen or fake):
+        with unittest.mock.patch.object(r.urllib.request, "urlopen", urlopen or fake):
             out = r.github_titles(repo, token, sha, sleep)()
         return out, seen
 
@@ -193,7 +193,7 @@ class Cli(unittest.TestCase):
         self.assertEqual((p.returncode, out), (1, "skip=true\n"))
 
     def test_main_in_process(self):
-        with mock.patch.dict(os.environ, {"COMMIT_MSG": "chore: [skip release]"}, clear=False), contextlib.redirect_stdout(io.StringIO()):
+        with unittest.mock.patch.dict(os.environ, {"COMMIT_MSG": "chore: [skip release]"}, clear=False), contextlib.redirect_stdout(io.StringIO()):
             os.environ.pop("GITHUB_OUTPUT", None)
             os.environ.pop("GITHUB_STEP_SUMMARY", None)
             os.environ.pop("GITHUB_EVENT_NAME", None)

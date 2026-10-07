@@ -2,8 +2,10 @@ import json
 import os
 import subprocess
 import sys
+import io
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import registry_exempt as r  # noqa: E402
@@ -115,9 +117,6 @@ class GraphqlPath(unittest.TestCase):
             "pageInfo": {"hasNextPage": more, "endCursor": cursor}, "nodes": nodes}}}}}
 
     def run_fetch(self, pages):
-        import io
-        import json
-        from unittest import mock
         seen = []
 
         class Resp:
@@ -134,7 +133,7 @@ class GraphqlPath(unittest.TestCase):
             seen.append((req.full_url, req.get_header("Authorization"), json.loads(req.data)))
             return Resp(pages[len(seen) - 1])
 
-        with mock.patch.object(r.urllib.request, "urlopen", fake):
+        with unittest.mock.patch.object(r.urllib.request, "urlopen", fake):
             return r.fetch_events("o/r", "451", "tok"), seen
 
     def test_two_pages_normalised_and_decided(self):

@@ -4,9 +4,12 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import os
 import unittest
+import unittest.mock
 
 from scripts.ci.check_changelog_pr import (
+    main as changelog_main,
     comparison_base,
     run_git,
     extract_unreleased_section,
@@ -359,10 +362,6 @@ class CheckChangelogPRTests(unittest.TestCase):
 
     def test_main_enforces_the_naming_check(self):
         # The changelog gate must not call a release PR with an arbitrary features.md a metadata sync.
-        import os
-        import unittest.mock as mock
-        import scripts.ci.check_changelog_pr as cc
-
         def build(features_head, features_base="- `a` · since: the release after v0.1.0 · x\n"):
             with tempfile.TemporaryDirectory() as d:
                 def run(*a):
@@ -389,9 +388,10 @@ class CheckChangelogPRTests(unittest.TestCase):
                 run("add", "-A")
                 run("commit", "-q", "-m", "chore: release metadata for v0.2.0 [skip release]")
                 out = io.StringIO()
-                with mock.patch.object(cc, "ROOT", pathlib.Path(d)), mock.patch.object(sys, "argv", ["x", "--base", "base", "--head", "HEAD"]), \
+                with unittest.mock.patch("scripts.ci.check_changelog_pr.ROOT", pathlib.Path(d)), \
+                        unittest.mock.patch.object(sys, "argv", ["x", "--base", "base", "--head", "HEAD"]), \
                         contextlib.redirect_stdout(out):
-                    cc.main()
+                    changelog_main()
                 return "release metadata sync" in out.getvalue()
 
         self.assertTrue(build("- `a` · since: v0.2.0 · x\n"))
