@@ -382,10 +382,17 @@ func TestParity_Traces_EventsLinksLayers(t *testing.T) {
 	t.Run("buffer", func(t *testing.T) {
 		// The layer is only proven if the rows are in the buffer when read.
 		for _, p := range all {
-			if n := bufferedRowsOf(t, p.tn, at); n == 0 {
-				all, _ := bufferedRows(lhtBaseURL, "traces", url.Values{"all_tenants": {"true"}}, time.Unix(0, 0), time.Now().Add(time.Hour))
-				t.Fatalf("tenant %s:%s: nothing in the insert buffer before the buffer-layer compare; the rows were read from Parquet (span time %s, all-tenant buffered spans %d, tenants listed: %s)",
-					p.tn.account, p.tn.project, at.Format(time.RFC3339), all, fetch(t, lhtBaseURL, "/lakehouse/api/v1/tenants", nil).Body)
+			// The buffer endpoint lists a segment once it is sealed (at most
+			// buffer_flush_interval, 5 s, after its first row) and keeps listing it
+			// through its grace period; wait for that, then compare inside it.
+			deadline := time.Now().Add(30 * time.Second)
+			for bufferedRowsOf(t, p.tn, at) == 0 {
+				if time.Now().After(deadline) {
+					all, _ := bufferedRows(lhtBaseURL, "traces", url.Values{"all_tenants": {"true"}}, time.Unix(0, 0), time.Now().Add(time.Hour))
+					t.Fatalf("tenant %s:%s: nothing in the insert buffer 30s after the push (span time %s, all-tenant buffered spans %d, tenants listed: %s)",
+						p.tn.account, p.tn.project, at.Format(time.RFC3339), all, fetch(t, lhtBaseURL, "/lakehouse/api/v1/tenants", nil).Body)
+				}
+				time.Sleep(time.Second)
 			}
 		}
 		compareAll(t, false)
