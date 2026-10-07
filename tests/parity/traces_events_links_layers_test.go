@@ -377,7 +377,9 @@ func TestParity_Traces_EventsLinksLayers(t *testing.T) {
 		// The layer is only proven if the rows are in the buffer when read.
 		for _, p := range all {
 			if n := bufferedRowsOf(t, p.tn, at); n == 0 {
-				t.Fatalf("tenant %s:%s: nothing in the insert buffer before the buffer-layer compare; the rows were read from Parquet", p.tn.account, p.tn.project)
+				all, _ := bufferedRows(lhtBaseURL, "traces", url.Values{"all_tenants": {"true"}}, time.Unix(0, 0), time.Now().Add(time.Hour))
+				t.Fatalf("tenant %s:%s: nothing in the insert buffer before the buffer-layer compare; the rows were read from Parquet (span time %s, all-tenant buffered spans %d, tenants listed: %s)",
+					p.tn.account, p.tn.project, at.Format(time.RFC3339), all, fetch(t, lhtBaseURL, "/lakehouse/api/v1/tenants", nil).Body)
 			}
 		}
 		compareAll(t, false)
