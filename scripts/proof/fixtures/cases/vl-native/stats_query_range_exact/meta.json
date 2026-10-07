@@ -1,0 +1,14 @@
+{
+ "endpoint": "/select/logsql/stats_query_range",
+ "expect": {
+  "verdict": "exact"
+ },
+ "id": "vl-native/stats_query_range_exact",
+ "kind": "series_prom",
+ "provenance": "recorded",
+ "recorded_from": [
+  "vl_stats_query_range"
+ ],
+ "row": "vl.select.stats_query_range",
+ "surface": "vl-native"
+}

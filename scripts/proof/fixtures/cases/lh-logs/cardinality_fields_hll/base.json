@@ -1,0 +1,6 @@
+{
+ "body": "{\"fields\":[{\"cardinality\":4,\"has_bloom\":true,\"indexed\":true,\"name\":\"level\",\"storage_bytes\":100,\"type\":\"string\"},{\"cardinality\":8,\"has_bloom\":false,\"indexed\":true,\"name\":\"http.method\",\"storage_bytes\":50,\"type\":\"string\"},{\"cardinality\":99999,\"has_bloom\":false,\"indexed\":false,\"name\":\"not_indexed\",\"storage_bytes\":0,\"type\":\"string\"}]}",
+ "content_type": "application/json",
+ "latency_ms": 10.0,
+ "status": 200
+}

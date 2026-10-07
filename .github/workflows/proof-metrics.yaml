@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "scripts/proof/**"
+      - "tests/parity/testdata/tiecut_golden.json"
       - ".github/workflows/proof-metrics.yaml"
   push:
     branches: [main]
@@ -41,7 +42,8 @@ jobs:
       - name: Fixtures match their recorded expectations
         run: python -m scripts.proof.metrics scripts/proof/fixtures/cases --check
 
-      - name: Fixture generator is deterministic
+      - name: Fixture generator output is committed
         run: |
           python scripts/proof/fixtures/_gen.py
-          git diff --exit-code -- scripts/proof/fixtures/cases
+          # git diff would miss untracked files: a case the generator creates but nobody committed
+          test -z "$(git status --porcelain -- scripts/proof/fixtures/cases)"

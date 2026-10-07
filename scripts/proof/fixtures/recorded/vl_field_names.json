@@ -1,0 +1,15 @@
+{
+ "body": "{\"values\":[{\"value\":\"_msg\",\"hits\":300},{\"value\":\"_stream\",\"hits\":300},{\"value\":\"_stream_id\",\"hits\":300},{\"value\":\"_time\",\"hits\":300},{\"value\":\"cloud.account.id\",\"hits\":300},{\"value\":\"cloud.provider\",\"hits\":300},{\"value\":\"cloud.region\",\"hits\":300},{\"value\":\"container.id\",\"hits\":300},{\"value\":\"deployment.environment\",\"hits\":300},{\"value\":\"host.arch\",\"hits\":300},{\"value\":\"host.name\",\"hits\":300},{\"value\":\"k8s.cluster.name\",\"hits\":300},{\"value\":\"k8s.deployment.name\",\"hits\":300},{\"value\":\"k8s.namespace.name\",\"hits\":300},{\"value\":\"k8s.node.name\",\"hits\":300},{\"value\":\"k8s.pod.name\",\"hits\":300},{\"value\":\"level\",\"hits\":300},{\"value\":\"os.type\",\"hits\":300},{\"value\":\"process.runtime.name\",\"hits\":300},{\"value\":\"process.runtime.version\",\"hits\":300},{\"value\":\"scope.name\",\"hits\":300},{\"value\":\"service.instance.id\",\"hits\":300},{\"value\":\"service.name\",\"hits\":300},{\"value\":\"service.version\",\"hits\":300},{\"value\":\"severity_number\",\"hits\":300},{\"value\":\"span_id\",\"hits\":300},{\"value\":\"telemetry.sdk.language\",\"hits\":300},{\"value\":\"telemetry.sdk.name\",\"hits\":300},{\"value\":\"telemetry.sdk.version\",\"hits\":300},{\"value\":\"trace_id\",\"hits\":300},{\"value\":\"format\",\"hits\":235},{\"value\":\"exception.message\",\"hits\":67},{\"value\":\"exception.type\",\"hits\":67},{\"value\":\"component\",\"hits\":65},{\"value\":\"http.method\",\"hits\":65},{\"value\":\"http.status_code\",\"hits\":65},{\"value\":\"http.target\",\"hits\":65},{\"value\":\"request_id\",\"hits\":65},{\"value\":\"instrumentation.lib\",\"hits\":58},{\"value\":\"otel.span_id\",\"hits\":58},{\"value\":\"otel.trace_id\",\"hits\":58},{\"value\":\"client_ip\",\"hits\":45}]}",
+ "content_type": "application/json",
+ "latency_ms": 0.84,
+ "request": {
+  "method": "POST",
+  "params": {
+   "end": "2026-10-07T08:00:00Z",
+   "query": "*",
+   "start": "2026-10-07T06:00:00Z"
+  },
+  "path": "/select/logsql/field_names"
+ },
+ "status": 200
+}

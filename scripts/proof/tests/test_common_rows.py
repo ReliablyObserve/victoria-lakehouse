@@ -3,6 +3,7 @@ import math
 import pytest
 
 from scripts.proof.metrics.common import (
+    UnknownShape,
     FacetResult, cap_inexact, canon, delta_score, display_pct, dumps, multiset_scores,
     numbers_equal, percentile, rel_err, set_scores, to_number,
 )
@@ -88,11 +89,14 @@ def test_facet_result_worst():
 
 
 # ---- rows: parsing
-def test_parse_ndjson_tolerant():
+def test_parse_ndjson_is_strict_about_shapes():
     assert parse_ndjson(None) == []
-    assert parse_ndjson('{"a":1}\n\nnot json\n[1]\n{"b":2}') == [{"a": 1}, {"b": 2}]
-    assert parse_ndjson([{"a": 1}, 3]) == [{"a": 1}]
+    assert parse_ndjson('{"a":1}\n\n{"b":2}\n') == [{"a": 1}, {"b": 2}]
+    assert parse_ndjson([{"a": 1}]) == [{"a": 1}]
     assert parse_ndjson({"a": 1}) == [{"a": 1}]
+    for bad in ('{"a":1}\nnot json', '{"a":1}\n[1]', [{"a": 1}, 3], 42):
+        with pytest.raises(UnknownShape):
+            parse_ndjson(bad)
 
 
 # ---- M3 M4 M5 M6

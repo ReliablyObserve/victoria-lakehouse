@@ -16,6 +16,7 @@ lakehouse-traces/lakehouse-traces
 *.test
 *.prof
 coverage.out
+.coverage
 coverage.html
 
 # Python

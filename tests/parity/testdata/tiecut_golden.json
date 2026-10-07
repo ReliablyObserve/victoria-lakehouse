@@ -1,0 +1,1369 @@
+{
+ "_comment": "Shared golden vectors for the tie-cut rule: consumed by tests/parity/rows_ties_golden_test.go (Go) and scripts/proof/tests/test_tiecut_golden.py (Python). A change to the rule in one implementation that the other does not follow fails CI.",
+ "query_cases": [
+  {
+   "query": "*",
+   "applies": true,
+   "reread_query": "*",
+   "sort_fields": [
+    "_time"
+   ]
+  },
+  {
+   "query": "* | limit 10",
+   "applies": true,
+   "reread_query": "*",
+   "sort_fields": [
+    "_time"
+   ]
+  },
+  {
+   "query": "error | sort by (_time) desc | limit 5",
+   "applies": true,
+   "reread_query": "error | sort by (_time) desc",
+   "sort_fields": [
+    "_time"
+   ]
+  },
+  {
+   "query": "* | first 3 by (_time desc)",
+   "applies": true,
+   "reread_query": "*",
+   "sort_fields": [
+    "_time"
+   ]
+  },
+  {
+   "query": "* | sort by (level, _time) | head 4",
+   "applies": true,
+   "reread_query": "* | sort by (level, _time)",
+   "sort_fields": [
+    "level",
+    "_time"
+   ]
+  },
+  {
+   "query": "* | stats count()",
+   "applies": false,
+   "reread_query": "",
+   "sort_fields": []
+  },
+  {
+   "query": "* | sort by (level)",
+   "applies": false,
+   "reread_query": "",
+   "sort_fields": []
+  },
+  {
+   "query": "* | sort by (_time) | sort by (_time)",
+   "applies": false,
+   "reread_query": "",
+   "sort_fields": []
+  },
+  {
+   "query": "* | uniq by (a)",
+   "applies": false,
+   "reread_query": "",
+   "sort_fields": []
+  },
+  {
+   "query": "\"unbalanced",
+   "applies": false,
+   "reread_query": "",
+   "sort_fields": []
+  },
+  {
+   "query": "\"a|b\" | limit 3",
+   "applies": true,
+   "reread_query": "\"a|b\"",
+   "sort_fields": [
+    "_time"
+   ]
+  },
+  {
+   "query": "x:in(a|b) | offset 2",
+   "applies": true,
+   "reread_query": "x:in(a|b)",
+   "sort_fields": [
+    "_time"
+   ]
+  }
+ ],
+ "tie_cases": [
+  {
+   "name": "limit_cuts_group_identical_on_both_sides",
+   "note": "each side kept a different member of a 3-row group at the oldest edge",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": true
+  },
+  {
+   "name": "other_times_in_reread_window_ignored",
+   "note": "",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916950216Z",
+     "_stream_id": "s1",
+     "_msg": "near"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": true
+  },
+  {
+   "name": "ascending_answer_tie_at_oldest_edge",
+   "note": "first _time of both answers",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T19:00:00Z",
+     "_stream_id": "s1",
+     "_msg": "old"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T19:00:00Z",
+     "_stream_id": "s1",
+     "_msg": "old"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": true
+  },
+  {
+   "name": "group_not_larger_than_kept",
+   "note": "the re-read group has 1 row and each answer kept 1, so no limit cut it",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": false
+  },
+  {
+   "name": "full_group_differs_between_tiers",
+   "note": "",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": false
+  },
+  {
+   "name": "tie_at_oldest_edge_with_a_newer_row",
+   "note": "A and B are the oldest rows of both answers",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": true
+  },
+  {
+   "name": "tie_inside_the_answers_not_at_an_edge",
+   "note": "the differing _time is neither the first nor the last of the answers",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T19:00:00Z",
+     "_stream_id": "s1",
+     "_msg": "old"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T19:00:00Z",
+     "_stream_id": "s1",
+     "_msg": "old"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": false
+  },
+  {
+   "name": "reread_status_not_200",
+   "note": "",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "ref_status": 500,
+   "sut_status": 200,
+   "explained": false
+  },
+  {
+   "name": "unequal_row_counts",
+   "note": "",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": false
+  },
+  {
+   "name": "differing_rows_at_two_times",
+   "note": "",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.9Z",
+     "_stream_id": "s1",
+     "_msg": "other"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": false
+  },
+  {
+   "name": "kept_row_not_member_of_group",
+   "note": "Q has the tie _time but is absent from the re-read group",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "Q"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": false
+  },
+  {
+   "name": "multi_key_tie_group_cut",
+   "note": "",
+   "sort_fields": [
+    "level",
+    "_time"
+   ],
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:00Z",
+     "_stream_id": "s1",
+     "_msg": "h1",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:39:00Z",
+     "_stream_id": "s1",
+     "_msg": "h2",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "level": "warn"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:00Z",
+     "_stream_id": "s1",
+     "_msg": "h1",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:39:00Z",
+     "_stream_id": "s1",
+     "_msg": "h2",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "level": "warn"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "level": "warn"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "level": "warn"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": true
+  },
+  {
+   "name": "multi_key_differing_rows_differ_on_a_sort_key",
+   "note": "",
+   "sort_fields": [
+    "level",
+    "_time"
+   ],
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:00Z",
+     "_stream_id": "s1",
+     "_msg": "h1",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:39:00Z",
+     "_stream_id": "s1",
+     "_msg": "h2",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "level": "warn"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:00Z",
+     "_stream_id": "s1",
+     "_msg": "h1",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:39:00Z",
+     "_stream_id": "s1",
+     "_msg": "h2",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "level": "info"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "level": "warn"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "level": "warn"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": false
+  },
+  {
+   "name": "skip_field_present_in_reread_rows",
+   "note": "the skipped field differs in the re-read rows",
+   "sort_fields": null,
+   "skip_fields": [
+    "req_id"
+   ],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1",
+     "req_id": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2",
+     "req_id": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3",
+     "req_id": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "req_id": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "req_id": "B"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1",
+     "req_id": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2",
+     "req_id": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3",
+     "req_id": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "req_id": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "req_id": "C"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "req_id": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "req_id": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "req_id": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "req_id": "z"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "req_id": "z"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "req_id": "z"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": true
+  }
+ ]
+}

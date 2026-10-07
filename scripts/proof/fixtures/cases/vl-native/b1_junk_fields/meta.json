@@ -1,10 +1,11 @@
 {
  "claimed_gap": "B1",
+ "derivation": "base adds the fields <null>, account_id and ded_s0x to every recorded row",
  "endpoint": "/select/logsql/query",
  "expect": {
   "base": {
    "count": 100.0,
-   "field_coverage": 66.6,
+   "field_coverage": 92.86,
    "row_set": 0.0
   },
   "details": {
@@ -22,10 +23,10 @@
  },
  "id": "vl-native/b1_junk_fields",
  "kind": "rows",
- "order": [
-  "_time"
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_query"
  ],
- "query": "* | limit 100",
  "row": "vl.select.query.cold",
  "surface": "vl-native"
 }

@@ -1,0 +1,19 @@
+{
+ "claimed_gap": "tags",
+ "derivation": "base lacks the last two recorded tag values",
+ "endpoint": "/api/v2/search/tag/{tag}/values",
+ "expect": {
+  "base": {
+   "value_set": 66.66666666666667
+  },
+  "verdict": "fixed"
+ },
+ "id": "tempo/tag_values_missing",
+ "kind": "values",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "tempo_tag_values"
+ ],
+ "row": "tempo.tag_values.missing",
+ "surface": "tempo"
+}

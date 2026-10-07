@@ -1,0 +1,26 @@
+{
+ "derivation": "base answers 500; PR answers all but the last recorded row",
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "base": {
+   "count": 0.0,
+   "row_set": 0.0,
+   "status": 0.0,
+   "value_equality": 0.0
+  },
+  "pr": {
+   "field_coverage": 100.0,
+   "status": 100.0,
+   "value_equality": 100.0
+  },
+  "verdict": "improved"
+ },
+ "id": "vl-native/base_error_pr_partial",
+ "kind": "rows",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_query"
+ ],
+ "row": "vl.select.query.one_side_error",
+ "surface": "vl-native"
+}

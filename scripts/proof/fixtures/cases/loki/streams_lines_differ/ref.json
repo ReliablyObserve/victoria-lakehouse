@@ -1,0 +1,6 @@
+{
+ "body": "{\"data\":{\"result\":[{\"stream\":{\"app\":\"a\"},\"values\":[[\"1791357600000000000\",\"line one\"]]}],\"resultType\":\"streams\"},\"status\":\"success\"}",
+ "content_type": "application/json",
+ "latency_ms": 10.0,
+ "status": 200
+}

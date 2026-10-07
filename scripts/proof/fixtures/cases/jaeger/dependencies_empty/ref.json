@@ -1,0 +1,6 @@
+{
+ "body": "{\"data\":[],\"errors\": null,\"limit\": 0,\"offset\": 0,\"total\":0}",
+ "content_type": "application/json",
+ "latency_ms": 0.78,
+ "status": 200
+}

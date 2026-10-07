@@ -1,0 +1,15 @@
+{
+ "derivation": "all three answers are empty on a core row",
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "verdict": "harness-error"
+ },
+ "id": "vl-native/empty_core_row_harness_error",
+ "kind": "rows",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_query"
+ ],
+ "row": "vl.select.query.empty_core",
+ "surface": "vl-native"
+}

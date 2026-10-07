@@ -1,4 +1,5 @@
 {
+ "derivation": "PR answers a different error text for the recorded bad query",
  "endpoint": "/select/logsql/query",
  "expect": {
   "base": {
@@ -11,6 +12,10 @@
  },
  "id": "vl-native/error_text_changed",
  "kind": "rows",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_bad_query"
+ ],
  "row": "vl.select.query.badsyntax2",
  "surface": "vl-native"
 }

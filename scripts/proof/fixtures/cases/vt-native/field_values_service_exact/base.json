@@ -1,0 +1,6 @@
+{
+ "body": "{\"values\":[{\"value\":\"api-gateway\",\"hits\":31},{\"value\":\"notification-service\",\"hits\":31},{\"value\":\"user-service\",\"hits\":29},{\"value\":\"order-service\",\"hits\":23},{\"value\":\"\",\"hits\":21},{\"value\":\"payment-service\",\"hits\":20},{\"value\":\"proof-cart\",\"hits\":4}]}",
+ "content_type": "application/json",
+ "latency_ms": 0.69,
+ "status": 200
+}

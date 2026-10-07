@@ -1,5 +1,6 @@
 {
  "claimed_gap": "cold-count",
+ "derivation": "base reports 97% of the recorded count",
  "endpoint": "/select/logsql/stats_query",
  "expect": {
   "base": {
@@ -12,6 +13,10 @@
  },
  "id": "vl-native/stats_count_fixed",
  "kind": "count",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_stats_query"
+ ],
  "row": "vl.select.stats_query.count",
  "surface": "vl-native"
 }

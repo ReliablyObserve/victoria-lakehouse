@@ -3,11 +3,13 @@ M6 count delta, M10 order agreement."""
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter, defaultdict
 from typing import Any
 
 from .common import (
     FacetResult,
+    UnknownShape,
     cap_inexact,
     delta_score,
     dumps,
@@ -22,24 +24,33 @@ MAX_LISTED = 20
 
 
 def parse_ndjson(body: Any) -> list[dict]:
-    """Rows from an NDJSON string, a list of rows, or a single row. Bad lines are skipped."""
+    """Rows from an NDJSON string, a list of rows, or a single row.
+
+    A line that is not a JSON object is an unknown shape (an HTML error page served as 200,
+    a truncated body): it raises instead of being skipped, so it can never look like fewer rows.
+    """
     if body is None:
         return []
     if isinstance(body, list):
-        return [r for r in body if isinstance(r, dict)]
+        if not all(isinstance(r, dict) for r in body):
+            raise UnknownShape("rows: a list with a non-object element")
+        return list(body)
     if isinstance(body, dict):
         return [body]
+    if not isinstance(body, str):
+        raise UnknownShape(f"rows: unexpected {type(body).__name__} body")
     rows = []
-    for line in str(body).splitlines():
+    for line in body.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             v = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(v, dict):
-            rows.append(v)
+        except ValueError as e:
+            raise UnknownShape(f"rows: line is not JSON: {line[:60]!r}") from e
+        if not isinstance(v, dict):
+            raise UnknownShape(f"rows: line is not a JSON object: {line[:60]!r}")
+        rows.append(v)
     return rows
 
 
@@ -50,7 +61,15 @@ def _drop(rows: list[dict], skip) -> list[dict]:
 
 
 def _identity(row: dict, ident: tuple[str, ...]) -> str:
-    return dumps([row.get(k) for k in ident])
+    """Identity of a row for pairing. A row that carries none of the identity fields (a service-graph
+    or trace-index row has no span_id) falls back to its stream id, else to its whole canonical row,
+    so such rows never all collapse into one identity."""
+    vals = [row.get(k) for k in ident]
+    if any(v is not None for v in vals):
+        return dumps(vals)
+    if row.get("_stream_id") is not None:
+        return dumps(["_stream_id", row["_stream_id"]])
+    return "row:" + row_key(row)
 
 
 def kendall_order(
@@ -149,12 +168,15 @@ def evaluate_rows(
     order: list[str] | None = None,
     tie_fetch: TieFetcher | None = None,
     tie_sort_fields: list[str] | None = None,
+    tie_decision: dict | None = None,
 ) -> FacetResult:
     """Score row answers against a reference.
 
     order: sort keys when the query defines an order, else None (M10 is skipped).
     tie_fetch: re-reads a tie group; when the difference is fully explained by a
     limit cutting that group, the row facets count as matching (reported in notes).
+    tie_decision: the same decision recorded by the runner ({"explained": bool, "why": str}),
+    consumed instead of re-deriving it; tie_fetch is then not needed.
     """
     skip = set(skip)
     ref_rows, ans_rows = _drop(ref_rows, skip), _drop(ans_rows, skip)
@@ -166,8 +188,11 @@ def evaluate_rows(
     ms = multiset_scores(ref_c, ans_c)
     exact_set = ms["jaccard"] >= 100.0 and ref_c == ans_c
     tie_cut = False
-    if not exact_set and tie_fetch is not None and len(ref_rows) == len(ans_rows):
-        ok, why = explained_by_truncated_tie(tie_fetch, ref_rows, ans_rows, tie_sort_fields)
+    if not exact_set and (tie_decision is not None or tie_fetch is not None):
+        if tie_decision is not None:
+            ok, why = bool(tie_decision.get("explained")), str(tie_decision.get("why", ""))
+        else:
+            ok, why = explained_by_truncated_tie(tie_fetch, ref_rows, ans_rows, tie_sort_fields, skip)
         if ok:
             tie_cut = True
             res.notes.append("tie-cut accepted: a limit cut one tie group")
@@ -208,6 +233,8 @@ def evaluate_rows(
     min_field = min(veq, key=lambda f: (veq[f], f)) if veq else ""
     min_score = veq[min_field] if veq else 100.0
     all_eq = all(per_field_eq[f] == per_field_n[f] for f in per_field_n)
+    if not veq and (ref_rows or ans_rows):
+        min_score, all_eq = 0.0, False  # rows on a side but none paired: nothing matches
     res.facets["value_equality"] = cap_inexact(min_score, all_eq)
     res.details["value_equality"] = {
         "paired_rows": paired,
@@ -268,6 +295,29 @@ def _pair_value_equality(ref_rows, ans_rows, identity):
                 if f in rr and f in ar and _same_value(rr[f], ar[f]):
                     eq[f] += 1
     return eq, n, paired
+
+
+def evaluate_count_vector(ref: dict[str, float], ans: dict[str, float]) -> FacetResult:
+    """M6 for a stats answer keyed by its group labels (`stats count()` has one key,
+    `stats by (level) count()` one per group). The score is the worst group; a group
+    missing on one side scores 0."""
+    res = FacetResult()
+    scores: dict[str, float] = {}
+    for k in ref.keys() | ans.keys():
+        if k in ref and k in ans:
+            d, _, sc = delta_score(ans[k], ref[k])
+            scores[k] = 100.0 if d == 0 or (math.isnan(ans[k]) and math.isnan(ref[k])) else sc
+        else:
+            scores[k] = 0.0
+    exact = all(v >= 100.0 for v in scores.values())
+    res.facets["count"] = cap_inexact(min(scores.values()) if scores else 100.0, exact)
+    differing = sorted(k for k, v in scores.items() if v < 100.0)
+    res.details["count"] = {"groups": len(scores), "differing": differing[:MAX_LISTED]}
+    if len(scores) == 1 and next(iter(scores)) in ref and next(iter(scores)) in ans:
+        k = next(iter(scores))
+        d, frac, _ = delta_score(ans[k], ref[k])
+        res.details["count"].update({"delta": d, "delta_pct": 100.0 * frac, "ref": ref[k], "ans": ans[k]})
+    return res
 
 
 def evaluate_count(ref_value: float | None, ans_value: float | None) -> FacetResult:

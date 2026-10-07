@@ -1,0 +1,14 @@
+{
+ "endpoint": "/select/jaeger/api/traces",
+ "expect": {
+  "verdict": "exact"
+ },
+ "id": "jaeger/search_exact",
+ "kind": "trace_jaeger",
+ "provenance": "recorded",
+ "recorded_from": [
+  "jaeger_search"
+ ],
+ "row": "jaeger.search_exact",
+ "surface": "jaeger"
+}

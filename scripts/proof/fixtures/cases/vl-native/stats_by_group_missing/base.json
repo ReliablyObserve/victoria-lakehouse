@@ -1,0 +1,6 @@
+{
+ "body": "{\"data\":{\"result\":[{\"metric\":{\"__name__\":\"c\",\"level\":\"DEBUG\"},\"value\":[1791360000,\"67\"]},{\"metric\":{\"__name__\":\"c\",\"level\":\"ERROR\"},\"value\":[1791360000,\"75\"]},{\"metric\":{\"__name__\":\"c\",\"level\":\"INFO\"},\"value\":[1791360000,\"87\"]}],\"resultType\":\"vector\"},\"status\":\"success\"}",
+ "content_type": "application/json",
+ "latency_ms": 10.0,
+ "status": 200
+}

@@ -1,16 +1,6 @@
 {
- "body": {
-  "values": [
-   {
-    "hits": 10,
-    "value": "{app=\"api\",pod=\"p0\"}"
-   },
-   {
-    "hits": 10,
-    "value": "{app=\"api\",pod=\"p1\"}"
-   }
-  ]
- },
- "latency_ms": 10.0,
+ "body": "{\"values\":[{\"value\":\"{cloud.region=\\\"eu-west-1\\\",deployment.environment=\\\"canary\\\",host.name=\\\"ip-10-1-1-55\\\",k8s.deployment.name=\\\"payment-service\\\",k8s.namespace.name=\\\"production\\\",k8s.node.name=\\\"node-pool-b-2\\\",k8s.pod.name=\\\"payment-service-3ae63786\\\",level=\\\"INFO\\\",service.name=\\\"payment-service\\\"}\",\"hits\":0},{\"value\":\"{cloud.region=\\\"eu-west-1\\\",deployment.environment=\\\"canary\\\",host.name=\\\"ip-10-1-1-55\\\",k8s.deployment.name=\\\"payment-service\\\",k8s.namespace.name=\\\"production\\\",k8s.node.name=\\\"node-pool-b-2\\\",k8s.pod.name=\\\"payment-service-9a1f760f\\\",level=\\\"DEBUG\\\",service.name=\\\"payment-service\\\"}\",\"hits\":0},{\"value\":\"{cloud.region=\\\"eu-west-1\\\",deployment.environment=\\\"production\\\",host.name=\\\"ip-10-0-1-42\\\",k8s.deployment.name=\\\"user-service\\\",k8s.namespace.name=\\\"production\\\",k8s.node.name=\\\"node-pool-a-1\\\",k8s.pod.name=\\\"user-service-1e1987c0\\\",level=\\\"WARN\\\",service.name=\\\"user-service\\\"}\",\"hits\":0},{\"value\":\"{cloud.region=\\\"eu-west-1\\\",deployment.environment=\\\"production\\\",host.name=\\\"ip-10-0-2-17\\\",k8s.deployment.name=\\\"api-gateway\\\",k8s.namespace.name=\\\"production\\\",k8s.node.name=\\\"node-pool-b-1\\\",k8s.pod.name=\\\"api-gateway-695dbd23\\\",level=\\\"DEBUG\\\",service.name=\\\"api-gateway\\\"}\",\"hits\":0},{\"value\":\"{cloud.region=\\\"eu-west-1\\\",deployment.environment=\\\"production\\\",host.name=\\\"ip-10-0-3-88\\\",k8s.deployment.name=\\\"order-service\\\",k8s.namespace.name=\\\"production\\\",k8s.node.name=\\\"node-pool-a-1\\\",k8s.pod.name=\\\"order-service-d32ca46e\\\",level=\\\"INFO\\\",service.name=\\\"order-service\\\"}\",\"hits\":0}]}",
+ "content_type": "application/json",
+ "latency_ms": 0.71,
  "status": 200
 }

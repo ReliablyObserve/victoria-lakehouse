@@ -1,0 +1,16 @@
+{
+ "body": "{\"hits\":[{\"fields\":{},\"timestamps\":[\"2026-10-07T06:00:00Z\",\"2026-10-07T06:30:00Z\",\"2026-10-07T07:00:00Z\",\"2026-10-07T07:30:00Z\"],\"values\":[0,40,183,77],\"total\":300}]}",
+ "content_type": "application/json",
+ "latency_ms": 1.07,
+ "request": {
+  "method": "POST",
+  "params": {
+   "end": "2026-10-07T08:00:00Z",
+   "query": "*",
+   "start": "2026-10-07T06:00:00Z",
+   "step": "30m"
+  },
+  "path": "/select/logsql/hits"
+ },
+ "status": 200
+}

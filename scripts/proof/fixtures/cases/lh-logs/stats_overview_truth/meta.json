@@ -1,0 +1,30 @@
+{
+ "derivation": "Lakehouse /stats/overview body with its documented keys (not recorded); the truth answer is the recorded stats by (level) vector, summed",
+ "endpoint": "/lakehouse/api/v1/stats/overview",
+ "expect": {
+  "base": {
+   "truth": 96.66666666666667
+  },
+  "details": {
+   "base.truth.delta": -10,
+   "base.truth.unflushed_rows": 10
+  },
+  "pr": {
+   "truth": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "lh-logs/stats_overview_truth",
+ "kind": "schema",
+ "provenance": "synthetic",
+ "recorded_from": [
+  "vl_stats_query_by"
+ ],
+ "row": "lh.stats.overview.truth",
+ "surface": "lh-logs",
+ "truth": {
+  "lh_path": "total_rows",
+  "shape": "scalar_sum",
+  "unflushed_rows": 10
+ }
+}

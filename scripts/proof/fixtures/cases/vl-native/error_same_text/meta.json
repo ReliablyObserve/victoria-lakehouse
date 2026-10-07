@@ -1,4 +1,5 @@
 {
+ "derivation": "base and PR answer the recorded error with quotes changed and whitespace doubled",
  "endpoint": "/select/logsql/query",
  "expect": {
   "base": {
@@ -12,6 +13,10 @@
  },
  "id": "vl-native/error_same_text",
  "kind": "rows",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_bad_query"
+ ],
  "row": "vl.select.query.badsyntax",
  "surface": "vl-native"
 }

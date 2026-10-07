@@ -1,0 +1,16 @@
+{
+ "body": "{\"values\":[{\"value\":\"INFO\",\"hits\":87},{\"value\":\"ERROR\",\"hits\":75},{\"value\":\"WARN\",\"hits\":71},{\"value\":\"DEBUG\",\"hits\":67}]}",
+ "content_type": "application/json",
+ "latency_ms": 0.75,
+ "request": {
+  "method": "POST",
+  "params": {
+   "end": "2026-10-07T08:00:00Z",
+   "field": "level",
+   "query": "*",
+   "start": "2026-10-07T06:00:00Z"
+  },
+  "path": "/select/logsql/field_values"
+ },
+ "status": 200
+}

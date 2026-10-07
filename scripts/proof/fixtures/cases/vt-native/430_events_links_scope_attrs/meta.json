@@ -1,0 +1,25 @@
+{
+ "claimed_gap": "430",
+ "derivation": "base lacks every event:*, link:* and scope_attr:* field (scope_name and scope_version are kept)",
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "base": {
+   "field_coverage": 69.44444444444444,
+   "row_set": 0.0,
+   "value_equality": 0.0
+  },
+  "pr": {
+   "row_set": 100.0,
+   "value_equality": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "vt-native/430_events_links_scope_attrs",
+ "kind": "rows",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vt_query_trace_rows"
+ ],
+ "row": "vt.select.query.span_fields",
+ "surface": "vt-native"
+}

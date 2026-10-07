@@ -1,0 +1,18 @@
+{
+ "derivation": "Loki streams bodies in the documented format; not recorded",
+ "endpoint": "/loki/api/v1/query_range",
+ "expect": {
+  "base": {
+   "row_set": 100.0
+  },
+  "pr": {
+   "row_set": 0.0
+  },
+  "verdict": "regressed"
+ },
+ "id": "loki/streams_lines_differ",
+ "kind": "series_prom",
+ "provenance": "synthetic",
+ "row": "loki.query_range.streams",
+ "surface": "loki"
+}

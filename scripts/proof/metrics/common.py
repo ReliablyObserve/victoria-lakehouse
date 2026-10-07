@@ -9,15 +9,25 @@ from typing import Any, Iterable
 
 # Surfaces a request belongs to. The core tier is native-only (vl-native,
 # vt-native, jaeger); loki and tempo belong to the focused and daily tiers.
-SURFACES = ("vl-native", "vt-native", "jaeger", "loki", "tempo")
-CORE_SURFACES = ("vl-native", "vt-native", "jaeger")
+# lh-logs and lh-traces are Lakehouse-only APIs (/lakehouse/api/v1/*, /lakehouse/info):
+# they have no upstream reference, so PR is scored against base and a derived truth.
+SURFACES = ("vl-native", "vt-native", "jaeger", "lh-logs", "lh-traces", "loki", "tempo")
+UPSTREAM_CORE_SURFACES = ("vl-native", "vt-native", "jaeger")
+LH_SURFACES = ("lh-logs", "lh-traces")
+CORE_SURFACES = UPSTREAM_CORE_SURFACES + LH_SURFACES
 SURFACE_SIGNAL = {
     "vl-native": "logs",
+    "lh-logs": "logs",
     "loki": "logs",
     "vt-native": "traces",
     "jaeger": "traces",
+    "lh-traces": "traces",
     "tempo": "traces",
 }
+
+
+class UnknownShape(ValueError):
+    """A body no decoder recognises: the harness's problem, never a pass."""
 
 DEFAULT_REL_TOL = 1e-9
 
@@ -83,13 +93,16 @@ def canon(v: Any) -> Any:
     """Canonical, hashable-by-dumps form: numbers compare as numbers (1 == 1.0)."""
     if isinstance(v, bool) or v is None:
         return v
-    if isinstance(v, (int, float)):
-        f = float(v)
-        if math.isnan(f):
+    if isinstance(v, int):
+        return v  # ints stay ints: no float rounding for huge counters
+    if isinstance(v, float):
+        if math.isnan(v):
             return "NaN"
-        if f == int(f) and abs(f) < 1e15:
-            return int(f)
-        return f
+        if math.isinf(v):
+            return "+Inf" if v > 0 else "-Inf"
+        if v == int(v) and abs(v) < 1e15:
+            return int(v)  # 1 == 1.0
+        return v
     if isinstance(v, dict):
         return {str(k): canon(x) for k, x in sorted(v.items(), key=lambda kv: str(kv[0]))}
     if isinstance(v, (list, tuple)):
@@ -172,6 +185,8 @@ def display_pct(score: float) -> str:
     100 is shown only for a score of exactly 100, so a difference never
     rounds up to it.
     """
+    if math.isnan(score):
+        return "NaN"
     if score >= 100.0:
         return "100"
     if score >= 99.0:

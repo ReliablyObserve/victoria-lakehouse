@@ -1,0 +1,14 @@
+{
+ "endpoint": "/select/logsql/stats_query",
+ "expect": {
+  "verdict": "exact"
+ },
+ "id": "vl-native/stats_query_by_exact",
+ "kind": "count",
+ "provenance": "recorded",
+ "recorded_from": [
+  "vl_stats_query_by"
+ ],
+ "row": "vl.select.stats_query.by",
+ "surface": "vl-native"
+}

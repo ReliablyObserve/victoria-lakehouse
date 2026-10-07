@@ -1,0 +1,15 @@
+{
+ "body": "cannot parse `query` arg [* | nosuchpipe]: unexpected pipe name \"nosuchpipe\"; probably, 'filter' is missing in front of \"nosuchpipe\"; see https://docs.victoriametrics.com/victorialogs/logsql/#filter-pipe; context: [* | nosuchpipe]\n",
+ "content_type": "text/plain; charset=utf-8",
+ "latency_ms": 0.7,
+ "request": {
+  "method": "POST",
+  "params": {
+   "end": "2026-10-07T08:00:00Z",
+   "query": "* | nosuchpipe",
+   "start": "2026-10-07T06:00:00Z"
+  },
+  "path": "/select/logsql/query"
+ },
+ "status": 400
+}

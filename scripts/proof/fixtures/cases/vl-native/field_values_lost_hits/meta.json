@@ -1,0 +1,22 @@
+{
+ "derivation": "PR answers the same values without their hits",
+ "endpoint": "/select/logsql/field_values",
+ "expect": {
+  "base": {
+   "hits_equality": 100.0
+  },
+  "pr": {
+   "hits_equality": 0.0,
+   "value_set": 100.0
+  },
+  "verdict": "regressed"
+ },
+ "id": "vl-native/field_values_lost_hits",
+ "kind": "values",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_field_values"
+ ],
+ "row": "vl.select.field_values.lost_hits",
+ "surface": "vl-native"
+}

@@ -145,6 +145,10 @@ def row_key(row: dict, skip: frozenset[str] | set[str] = frozenset()) -> str:
     return dumps({k: v for k, v in row.items() if k not in skip})
 
 
+# The Go rule never looks at the stream fields when it keys rows (extractRowKeys).
+_TIE_SKIP = frozenset({"_stream", "_stream_id"})
+
+
 def row_time(row: dict) -> int | None:
     return parse_time_ns(row.get("_time"))
 
@@ -187,7 +191,10 @@ def explained_by_truncated_tie(
     """
     if fetch is None:
         return False, "the case does not order rows by a re-readable key"
+    if len(ref_rows) != len(sut_rows):
+        return False, f"row counts differ: ref={len(ref_rows)} sut={len(sut_rows)}"
     fields = sort_fields or ["_time"]
+    skip = set(skip) | _TIE_SKIP
     ref_keys = [row_key(r, skip) for r in ref_rows]
     sut_keys = [row_key(r, skip) for r in sut_rows]
     ref_only, sut_only = _multiset_diff(ref_keys, sut_keys)
