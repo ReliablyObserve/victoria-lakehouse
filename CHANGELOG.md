@@ -52,6 +52,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   known-gap row flipped to pass) must ship a changed `tests/parity` test and an exact-json registry row
   that references it, and no PR may add an allowlist entry or weaken an exact row.
 
+### Fixed
+
+- **Span events, span links and instrumentation-scope attributes are no longer lost when spans reach Parquet (#409).**
+  The traces binary dropped every span event (exception events with their stack traces, log events), every span link and
+  the attributes of the instrumentation scope when it wrote spans to Parquet, and the buffer bridge dropped them again, so
+  a trace read from cold storage differed from the same trace on hot VictoriaTraces: trace-by-ID (Jaeger, Tempo v1 and
+  v2) lost its exception events and links, and the `event:*`, `link:*` and `scope_attr:*` fields and their filters,
+  `field_values` over an event or link field, and TraceQL `instrumentation.*` filters answered with fewer results once the data was cold. Events and
+  links are now stored in two optional string columns, `span.events_json` and `span.links_json` (one JSON array per span,
+  ZSTD, no dictionary, NULL when the span has none), and the scope attributes in the existing `scope.attributes` column.
+  The cold read, the buffer bridge, `field_values` and the delete filters decode them back into the exact VictoriaTraces
+  fields; a query that names no event or link field does not read the two columns, so search and metrics keep their
+  projection. Compaction and delete rewrites carry the columns and merge objects with and without them. The columns are
+  plain Parquet, read by DuckDB and pyarrow in CI (`scripts/ci/parquet-readback`); the format is in
+  `docs/open-parquet-format.md`. No setting. Measured on generated spans (17% with events, 3% with links, scope
+  attributes on every span): +7.8% object size, +2.6% when one in ten of those spans has events; Jaeger and Tempo
+  trace-by-ID answer like hot VictoriaTraces for 30 of 30 sampled traces, where main matched none. Objects already
+  flushed by an earlier version stay without events and links. Upgrade and rollback: a pod older than this change
+  that compacts or delete-rewrites an object written by it permanently drops the two columns, and an older select pod
+  shows them as plain fields. Turn compaction off on the OLD pods first, as its own rollout: set `profile:
+  max-cost-savings` (or `dev`) in the CONFIG FILE without `compaction.enabled: true` (under Helm
+  `lakehouseConfig.profile` plus `lakehouseConfig.compaction.enabled=false`); `compaction.enabled: false` alone and the
+  `-lakehouse.profile` flag leave it on, `compaction.min_age` is measured from the partition hour (it does not protect
+  late or back-filled spans unless it exceeds the oldest ingested timestamp) and `/lakehouse/compaction/recompact`
+  ignores it. Drain the pending tombstones first and create no delete until every pod runs this version. Rolling back
+  below it with compaction on loses the events and links of every object the old version compacts (docs/operations.md).
+  The schema fingerprint is unchanged on purpose. From this version on, compaction and the delete rewriter leave an
+  object alone that holds a column their row struct does not model, so a later column addition cannot be dropped the
+  same way (`lakehouse_compaction_skipped_unknown_columns_total{signal,op}`, alert
+  `LakehouseCompactionSkippedUnknownColumns`); that cannot protect this transition. Event and link strings that are not
+  valid UTF-8 are stored reversibly (as a `{"$bytes":"<base64>"}` object) instead of being rewritten to U+FFFD, like hot
+  VictoriaTraces keeps them (#434). `field_values` over a map attribute (`span_attr:*`, `scope_attr:*`) is not changed
+  by this fix: it still returns wrong values on cold, as before (#433).
+
 ## [0.146.3] - 2026-10-07
 
 ### Fixed

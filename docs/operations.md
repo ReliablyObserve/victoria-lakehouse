@@ -222,15 +222,22 @@ The traces binary stores span events and links in the optional columns `span.eve
 - an older pod that **compacts** or **delete-rewrites** an object written by the newer version drops the two columns from the output permanently, and the events and links of those spans are gone;
 - an older **select** pod shows the two columns as plain fields of the span.
 
-During the rollout keep compaction from running and issue no deletes, then restore both once every pod runs the new version:
+Nothing in the older version can be told to leave such objects alone, so the only safe order is: stop the old pods from rewriting, then let the new version write.
 
-- `compaction.enabled: false` in the config file does **not** turn compaction off (see [Compaction on or off](configuration.md#compaction-on-or-off)). Select the `max-cost-savings` or `dev` profile without `compaction.enabled: true`, or set a `compaction.min_age` longer than the rollout (for example `min_age: 24h`) and put it back afterwards.
-- Do not create delete tombstones until the rollout is done: the rewrite that applies them is the second path that drops the columns.
-- Roll back below this version only with compaction and deletes disabled; otherwise the events and links of objects the older pods compacted are lost.
+1. **Turn compaction off on the OLD pods first, as a separate rollout, and wait until it is in effect everywhere.** Compaction can only be turned off through the profile, and the config file is the way to set it:
+   - set `profile: max-cost-savings` or `profile: dev` **in the config file** (`lakehouse.profile`), and do not set `compaction.enabled: true`. `compaction.enabled: false` does nothing (the key is enable-only), and `-lakehouse.profile=max-cost-savings` or `=dev` on the command line leaves compaction on (a profile flag gap). See [Compaction on or off](configuration.md#compaction-on-or-off);
+   - under Helm set `lakehouseConfig.profile` to one of them **and** `lakehouseConfig.compaction.enabled: false` (the chart writes `enabled: true` by default, which wins);
+   - both profiles change other defaults too (flush interval, cache sizes, durability knobs; see the [profile table](configuration.md#configuration-profiles)). Read it before choosing, and put the old values back afterwards.
+   - A long `compaction.min_age` is a weaker alternative and only works if it is **longer than the age of the oldest span ingested during the rollout**: `min_age` is measured from the partition's hour, not from the file's age, so a late or back-filled span in an old partition is merged at once. And `POST /lakehouse/compaction/recompact` ignores `min_age` altogether: make no manual recompaction during the rollout.
+2. **Settle the deletes.** A delete rewrite is the second path that drops the columns. Before rolling out, drain the pending tombstones or confirm there are none: `GET /delete/logsql/tombstones` (`/delete/tracessql/tombstones` on the traces binary) and, with `--delete.enable`, `/delete/active_tasks`. Create no new delete until every pod runs the new version.
+3. **Roll out the new version.** Only now do pods write the new columns.
+4. **Turn compaction back on** once every pod runs the new version: restore the profile or `lakehouseConfig.compaction.enabled`.
+
+Rolling back below this version is the same hazard in reverse: do it only with compaction and deletes still off. As soon as compaction resumes on the old version, it merges objects that carry the columns, and the events and links of every object it merges are lost.
 
 The schema fingerprint is unchanged on purpose: a deployed pod treats any other fingerprint as stale and merges it, which would make older pods seek the newer objects.
 
-From this version on compaction and the delete rewriter leave an object alone when it holds a top-level column their row struct does not model (a column a later version adds): the compactor merges the other inputs and keeps the object, and a delete rewrite of it fails, so its tombstone stays pending and its rows stay hidden. Each skip is counted in `lakehouse_compaction_skipped_unknown_columns_total{signal,op}` and logged once per object. This protects every later column addition. It cannot protect the transition above, because the older pods have no such check.
+From this version on compaction and the delete rewriter leave an object alone when it holds a top-level column their row struct does not model (a column a later version adds). The compactor merges the other inputs and keeps the object, and does not plan it again; a delete rewrite of it is deferred, not failed: its tombstone stays pending (it stays in the list above and in `/delete/active_tasks`), its rows stay hidden by the tombstone, and the metadata-only fast paths (manifest counts, label aggregates) stay off for the requests of that tenant in the tombstone's range, until a pod of the newer version rewrites the object. Each such object is counted once in `lakehouse_compaction_skipped_unknown_columns_total{signal,op}`, logged once, and raises the alert `LakehouseCompactionSkippedUnknownColumns`; the delete deferrals are in `lakehouse_delete_rewrite_deferred_total{reason="unknown_columns"}`, which is not a rewrite error. This protects every later column addition. It cannot protect the transition above, because the older pods have no such check.
 
 ### How a scan plans merges
 
@@ -552,7 +559,7 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_delete_tombstone_persist_total{target="disk"|"s3"}` / `..._errors_total` — durability writes
 - `lakehouse_delete_tombstone_persist_pending` — records whose S3 copy is behind; steady state 0
 - `lakehouse_delete_tombstone_not_durable_total` — steps that could not proceed because the change authorising them was not durable yet; the objects are kept and the next pass retries
-- `lakehouse_delete_rewrite_deferred_total{reason="not_durable"|"unlisted"|"awaiting_listing"|"restore_pending"|"absent_but_exists"|"existence_unknown"}` — rewrite work postponed rather than done, by why
+- `lakehouse_delete_rewrite_deferred_total{reason="not_durable"|"unlisted"|"awaiting_listing"|"restore_pending"|"absent_but_exists"|"existence_unknown"|"unknown_columns"}` — rewrite work postponed rather than done, by why
 - `lakehouse_delete_rewrites_unfinished` — rewrite records whose objects are not settled yet; **drain to 0 before rolling back** (see *Rolling back*)
 - `lakehouse_delete_tombstone_restore_pending` / `lakehouse_delete_tombstone_restore_attempts_total{result="failed"|"recovered"}` — whether this node has read the S3 copy of the store, and the retries
 - `lakehouse_delete_rewrite_key_collisions_total`, `lakehouse_manifest_key_claim_rejected_total{reason}` — object keys that were already in use and had to be redrawn; a sustained rate means something other than chance is generating them
