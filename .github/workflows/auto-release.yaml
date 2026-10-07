@@ -3,6 +3,8 @@ name: Auto Release
 on:
   push:
     branches: [main]
+  # Manual release: the escape when the skip check cannot read a PR title.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -31,18 +33,20 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # `[skip release]` counts in the commit subject OR in the title of the
+      # squash-merged PR (GitHub's default squash subject for a one-commit PR is
+      # the commit subject, so a marker in the PR title alone is lost). If the PR
+      # title cannot be read the push is not released; start this workflow by hand.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/ci
+
       - name: Check skip release
         id: skip_release
-        run: |
-          TITLE=$(echo "$COMMIT_MSG" | head -1)
-          if echo "$TITLE" | grep -q '\[skip release\]'; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "Skipping: title contains [skip release]"
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
+        run: python3 scripts/ci/release_skip.py
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/checkout@v7
         if: steps.skip_release.outputs.skip != 'true'
