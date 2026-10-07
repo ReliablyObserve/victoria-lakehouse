@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.146.6] - 2026-10-07
+
 ### Changed
 
 - **API data-proof metrics library: tests close the gaps a mutation run found.** Tooling only, no runtime change (`scripts/proof/`, `tests/parity/testdata/tiecut_golden.json`): a re-read tie group with an extra row, per-field hits series, duplicate rows, equal trace counts with different ids, a nondeterministic verdict failing the gate, a blocked reference 500 and a tight `--check` tolerance each have a test, and the feature text says what the library does today.
