@@ -57,6 +57,7 @@ func TestParity_ColdRowFields(t *testing.T) {
 		t.Errorf("cold rows carry %d field(s) hot never returns: %s",
 			len(extra), strings.Join(sortedStrings(extra), ", "))
 	}
+	reportLockCells(t, len(sutRows)) // one cell per cold row whose fields were compared
 }
 
 // TestParity_Traces_ColdSpanFields is the traces twin: a cold span must carry
@@ -108,4 +109,5 @@ func TestParity_Traces_ColdSpanFields(t *testing.T) {
 		t.Errorf("cold spans carry %d field(s) hot VT never returns: %s",
 			len(extra), strings.Join(sortedStrings(extra), ", "))
 	}
+	reportLockCells(t, len(sutRows)) // one cell per cold span whose fields were compared
 }

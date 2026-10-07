@@ -80,6 +80,10 @@ type ParitySnapshot struct {
 	// Floors is tests/parity/lock_cells.txt: the minimum number of cells each
 	// lock test must report in a parity run (see parity_ratchet.py).
 	Floors map[string]int
+	// FileTests lists the top-level tests of a test file at this revision (the
+	// merge base's snapshot supplies it): a bare file reference converted to named
+	// ones must name them all.
+	FileTests func(path string) []string
 	// RefExists reports whether a "file#Test" reference still resolves in this
 	// tree; nil means every reference does. It lets a test rename or move that
 	// replaces a lock's reference pass, while dropping a reference does not.
@@ -260,7 +264,7 @@ func normalizedRow(whole map[string]any) (fields map[string]any, tests map[strin
 // including targets, seed, layers, upstream, compare and request, is a
 // weakening. A test reference may be replaced only by a rename of a tests/parity
 // lock whose cell floor the new name keeps (renamed returns the old names).
-func passRowChanges(b, h RowLite, baseFloors, headFloors map[string]int, headExists func(string) bool) (out []string, renamed map[string]bool) {
+func passRowChanges(b, h RowLite, baseFloors, headFloors map[string]int, headExists func(string) bool, baseFileTests func(string) []string) (out []string, renamed map[string]bool) {
 	renamed = map[string]bool{}
 	bf, bt, bp := normalizedRow(b.Whole)
 	hf, ht, hp := normalizedRow(h.Whole)
@@ -301,6 +305,19 @@ func passRowChanges(b, h RowLite, baseFloors, headFloors map[string]int, headExi
 	used := map[string]bool{}
 	for _, t := range lost {
 		path, name := splitRef(t)
+		if name == "" && strings.HasSuffix(path, "_test.go") && baseFileTests != nil {
+			// A bare file reference may become the named references of every test in it.
+			all := baseFileTests(path)
+			ok := len(all) > 0
+			for _, n := range all {
+				if !ht[path+"#"+n] {
+					ok = false
+				}
+			}
+			if ok {
+				continue
+			}
+		}
 		floor := baseFloors[name]
 		ok := false
 		if IsParityTestFile(path) && name != "" && floor > 0 && headExists != nil && !headExists(t) {
@@ -374,10 +391,25 @@ func ParityCheck(base, head ParitySnapshot, modified map[string]bool) ParityVerd
 		case h.Expect != "pass":
 			v.Weakenings = append(v.Weakenings, fmt.Sprintf("pass row weakened to expect=%s: %s", h.Expect, id))
 		default:
-			w, r := passRowChanges(b, h, base.Floors, head.Floors, head.RefExists)
+			w, r := passRowChanges(b, h, base.Floors, head.Floors, head.RefExists, base.FileTests)
 			v.Weakenings = append(v.Weakenings, w...)
 			for name := range r {
 				renamed[name] = true
+			}
+		}
+	}
+	// A lock row this PR adds or changes names its tests, never a whole test file.
+	for _, id := range sortedRowKeys(head.Rows) {
+		h := head.Rows[id]
+		if !h.Exact() {
+			continue
+		}
+		if b, ok := base.Rows[id]; ok && reflect.DeepEqual(b.Whole, h.Whole) {
+			continue
+		}
+		for _, t := range h.Tests {
+			if path, name := splitRef(t); name == "" && strings.HasSuffix(path, "_test.go") {
+				v.Weakenings = append(v.Weakenings, fmt.Sprintf("lock row %s names the test file %s, not a test: reference every lock test as file#TestName", id, path))
 			}
 		}
 	}

@@ -277,7 +277,7 @@ const passRow = `- id: lh.r
 `
 
 func changesOf(b, h RowLite) []string {
-	out, _ := passRowChanges(b, h, nil, nil, nil)
+	out, _ := passRowChanges(b, h, nil, nil, nil, nil)
 	return out
 }
 
@@ -326,43 +326,43 @@ func TestPassRowChanges_WholeRow(t *testing.T) {
 		return map[string]int{"TestP": old}, map[string]int{"TestRenamed": renamedFloor}
 	}
 	bf, hf := floors(5, 5)
-	if got, r := passRowChanges(base, renamed, bf, hf, gone); len(got) != 0 || !r["TestP"] {
+	if got, r := passRowChanges(base, renamed, bf, hf, gone, nil); len(got) != 0 || !r["TestP"] {
 		t.Errorf("a rename that keeps the floor is fine, got %v %v", got, r)
 	}
 	bf, hf = floors(5, 9)
-	if got, _ := passRowChanges(base, renamed, bf, hf, gone); len(got) != 0 {
+	if got, _ := passRowChanges(base, renamed, bf, hf, gone, nil); len(got) != 0 {
 		t.Errorf("a rename that raises the floor is fine, got %v", got)
 	}
 	bf, hf = floors(5, 4)
-	if got, _ := passRowChanges(base, renamed, bf, hf, gone); len(got) != 1 {
+	if got, _ := passRowChanges(base, renamed, bf, hf, gone, nil); len(got) != 1 {
 		t.Errorf("a rename that lowers the floor is a loss, got %v", got)
 	}
 	bf, hf = floors(5, 0)
-	if got, _ := passRowChanges(base, renamed, bf, hf, gone); len(got) != 1 {
+	if got, _ := passRowChanges(base, renamed, bf, hf, gone, nil); len(got) != 1 {
 		t.Errorf("a rename to a test with no floor is a loss, got %v", got)
 	}
 	bf, hf = floors(0, 5)
-	if got, _ := passRowChanges(base, renamed, bf, hf, gone); len(got) != 1 {
+	if got, _ := passRowChanges(base, renamed, bf, hf, gone, nil); len(got) != 1 {
 		t.Errorf("the old test had no floor: nothing proves the new one is the same lock, got %v", got)
 	}
 	bf, hf = floors(5, 5)
-	if got, _ := passRowChanges(base, renamed, bf, hf, nil); len(got) != 1 {
+	if got, _ := passRowChanges(base, renamed, bf, hf, nil, nil); len(got) != 1 {
 		t.Errorf("without proof the old test is gone the replacement is a loss, got %v", got)
 	}
 	still := func(string) bool { return true }
-	if got, _ := passRowChanges(base, renamed, bf, hf, still); len(got) != 1 {
+	if got, _ := passRowChanges(base, renamed, bf, hf, still, nil); len(got) != 1 {
 		t.Errorf("a reference swapped while its test still exists is a loss, got %v", got)
 	}
 	// a non-parity reference can never be swapped (X1: an empty test with every reference re-pointed)
 	unit := wholeRow(t, strings.Replace(passRow, "tests/parity/p_test.go#TestP", "tests/e2e/m_test.go#TestM", 1))
 	unit2 := wholeRow(t, strings.Replace(passRow, "tests/parity/p_test.go#TestP", "tests/e2e/m_test.go#TestM2", 1))
 	goneAll := func(string) bool { return false }
-	if got, _ := passRowChanges(unit, unit2, map[string]int{"TestM": 5}, map[string]int{"TestM2": 5}, goneAll); len(got) != 1 {
+	if got, _ := passRowChanges(unit, unit2, map[string]int{"TestM": 5}, map[string]int{"TestM2": 5}, goneAll, nil); len(got) != 1 {
 		t.Errorf("an e2e lock reference swap needs the owner, got %v", got)
 	}
 	// deleting the lock's test and dropping its reference is a weakening
 	dropped := wholeRow(t, strings.Replace(passRow, "tests: [tests/parity/p_test.go#TestP]", "tests: []", 1))
-	if got, _ := passRowChanges(base, dropped, bf, hf, gone); len(got) != 1 {
+	if got, _ := passRowChanges(base, dropped, bf, hf, gone, nil); len(got) != 1 {
 		t.Errorf("a dropped reference is a weakening even when its test is gone, got %v", got)
 	}
 	// differ rows are not protected
@@ -604,7 +604,7 @@ func TestRenameNeedsOneNewReferencePerOldOne(t *testing.T) {
 	bf := map[string]int{"TestA": 5, "TestB": 5}
 	hf := map[string]int{"TestC": 9}
 	gone := func(string) bool { return false }
-	got, renamed := passRowChanges(two, one, bf, hf, gone)
+	got, renamed := passRowChanges(two, one, bf, hf, gone, nil)
 	if len(got) != 1 || len(renamed) != 1 {
 		t.Fatalf("two lost references cannot both be 'renamed' to one new one: %v %v", got, renamed)
 	}
@@ -619,5 +619,46 @@ func TestRefResolves_AnchorOnANonGoFile(t *testing.T) {
 	}
 	if !RefResolves(src, "docs/x.md#hi") || !RefResolves(src, "docs/x.md") || RefResolves(src, "docs/y.md#hi") {
 		t.Error("a name on a non-Go file is an anchor: it resolves when the file exists")
+	}
+}
+
+func TestBareFileReferenceBecomesNamedReferences(t *testing.T) {
+	bare := wholeRow(t, strings.Replace(passRow, "tests: [tests/parity/p_test.go#TestP]", "tests: [tests/parity/f_test.go]", 1))
+	tests := func(path string) []string {
+		if path == "tests/parity/f_test.go" {
+			return []string{"TestOne", "TestTwo"}
+		}
+		return nil
+	}
+	named := wholeRow(t, strings.Replace(passRow, "tests: [tests/parity/p_test.go#TestP]", "tests: [tests/parity/f_test.go#TestOne, tests/parity/f_test.go#TestTwo]", 1))
+	if got, _ := passRowChanges(bare, named, nil, nil, nil, tests); len(got) != 0 {
+		t.Errorf("naming every test of the file keeps the lock whole: %v", got)
+	}
+	partial := wholeRow(t, strings.Replace(passRow, "tests: [tests/parity/p_test.go#TestP]", "tests: [tests/parity/f_test.go#TestOne]", 1))
+	if got, _ := passRowChanges(bare, partial, nil, nil, nil, tests); len(got) != 1 {
+		t.Errorf("naming only some tests of the file drops the others: %v", got)
+	}
+	if got, _ := passRowChanges(bare, named, nil, nil, nil, nil); len(got) != 1 {
+		t.Errorf("without the file's test list nothing proves the conversion: %v", got)
+	}
+	empty := func(string) []string { return nil }
+	if got, _ := passRowChanges(bare, named, nil, nil, nil, empty); len(got) != 1 {
+		t.Errorf("a file with no tests cannot be converted to nothing: %v", got)
+	}
+	// a changed lock row may not keep a bare test file reference
+	base := snapshot(nil, nil)
+	head := snapshot(nil, nil, RowLite{ID: "lockrow", Expect: "pass", Compare: "exact-json", Tests: []string{"internal/x/y_test.go", "internal/x/z_test.go#TestZ", "docs/a.md"}})
+	v := ParityCheck(base, head, nil)
+	if len(v.Weakenings) != 1 || !strings.Contains(v.Weakenings[0], "names the test file internal/x/y_test.go") {
+		t.Errorf("a new lock row must name its tests: %+v", v)
+	}
+	// an unchanged one is left alone, a non-lock row too
+	same := snapshot(nil, nil, RowLite{ID: "lockrow", Expect: "pass", Compare: "exact-json", Tests: []string{"internal/x/y_test.go"}})
+	if v := ParityCheck(same, same, nil); len(v.Weakenings) != 0 {
+		t.Errorf("%+v", v)
+	}
+	loose := snapshot(nil, nil, RowLite{ID: "loose", Expect: "pass", Compare: "status", Tests: []string{"internal/x/y_test.go"}})
+	if v := ParityCheck(base, loose, nil); len(v.Weakenings) != 0 {
+		t.Errorf("%+v", v)
 	}
 }
