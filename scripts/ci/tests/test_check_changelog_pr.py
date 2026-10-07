@@ -12,6 +12,7 @@ from scripts.ci.check_changelog_pr import (
     has_new_versioned_entries,
     is_dependency_only_pr,
     is_release_commit,
+    generated_docs_version_naming_only,
     is_release_metadata_sync,
     should_require_changelog,
     adds_version_section,
@@ -264,6 +265,37 @@ class CheckChangelogPRTests(unittest.TestCase):
         )
         self.assertFalse(is_release_metadata_sync(["README.md"]))
         self.assertFalse(is_release_metadata_sync(["CHANGELOG.md", "internal/delete/handler.go"]))
+
+    def test_release_metadata_sync_regenerated_catalog_needs_the_naming_check(self):
+        files = ["CHANGELOG.md", "charts/victoria-lakehouse/Chart.yaml", "docs/features.md"]
+        # Without the version-naming check passing, the catalog is not metadata.
+        self.assertFalse(is_release_metadata_sync(files))
+        self.assertTrue(is_release_metadata_sync(files, generated_ok=True))
+        # Exact path only: no sibling doc, no prefix, no product file, no catalog alone.
+        for extra in ("docs/other.md", "docs/features.md.bak", "docs/features/x.md", "UPSTREAM_COVERAGE.md",
+                      "internal/delete/handler.go"):
+            self.assertFalse(is_release_metadata_sync(["CHANGELOG.md", extra], generated_ok=True), extra)
+        self.assertFalse(is_release_metadata_sync(["docs/features.md"], generated_ok=True))
+
+    def test_generated_docs_version_naming_only(self):
+        base = (
+            "intro\n"
+            "- `lh.feature.a` · status: shipped · since: the release after v0.146.3 · surfaces: cli\n"
+            "- Changelog: the release after `0.146.3`\n"
+            "- `lh.feature.b` · status: shipped · since: v0.140.0 · surfaces: cli\n"
+        )
+        renamed = base.replace("v0.146.3", "v0.146.4").replace("`0.146.3`", "`0.146.4`")
+        released = base.replace("the release after v0.146.3", "v0.146.4").replace("the release after `0.146.3`", "`0.146.4`")
+        self.assertTrue(generated_docs_version_naming_only(base, base))
+        self.assertTrue(generated_docs_version_naming_only(base, renamed))
+        self.assertTrue(generated_docs_version_naming_only(base, released))
+        # Anything beyond version naming is not release metadata.
+        self.assertFalse(generated_docs_version_naming_only(base, renamed + "an invented line\n"))
+        self.assertFalse(generated_docs_version_naming_only(base, renamed.replace("status: shipped", "status: planned", 1)))
+        self.assertFalse(generated_docs_version_naming_only(base, renamed.replace("surfaces: cli", "surfaces: api", 1)))
+        self.assertFalse(generated_docs_version_naming_only(base, renamed.replace("intro", "intro v0.146.4")))
+        # A since: line whose non-version text changed too.
+        self.assertFalse(generated_docs_version_naming_only(base, renamed.replace("shipped · since", "shipped · early · since", 1)))
 
     def test_version_headings_excludes_unreleased(self):
         text = "## [Unreleased]\n\n## [0.122.0] - 2026-09-14\n\n- a\n\n## [0.121.0] - 2026-09-13\n"

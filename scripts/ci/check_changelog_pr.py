@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import pathlib
 import re
 import subprocess
@@ -330,11 +331,49 @@ def is_dependency_only_pr(commits: Iterable[str], files: Iterable[str]) -> bool:
     )
 
 
-def is_release_metadata_sync(files: Iterable[str]) -> bool:
+# Generated files whose only release-time change is the NAME of the version a
+# feature shipped in (`since: the release after v0.146.3` becomes
+# `since: v0.146.4` or `the release after v0.146.4`). A release that leaves a
+# feature with an [Unreleased] bullet renames it, so the regenerated file belongs
+# in the release-metadata PR. Exact paths; README.md and UPSTREAM_COVERAGE.md
+# carry no version naming and are not listed.
+RELEASE_METADATA_GENERATED_FILES = {
+    "docs/features.md",
+}
+
+_VERSION_NAME = re.compile(r"(?:the release after )?v?`?\d+\.\d+\.\d+`?")
+
+
+def generated_docs_version_naming_only(base_text: str, head_text: str) -> bool:
+    """True when the only differences are version naming on since:/Changelog: lines."""
+    base = Counter(l.strip() for l in base_text.splitlines() if l.strip())
+    head = Counter(l.strip() for l in head_text.splitlines() if l.strip())
+    removed = list((base - head).elements())
+    added = list((head - base).elements())
+    if not all("since:" in l or "Changelog:" in l for l in removed + added):
+        return False
+    norm = lambda lines: sorted(_VERSION_NAME.sub("VER", l) for l in lines)  # noqa: E731
+    return norm(removed) == norm(added)
+
+
+def is_release_metadata_sync(files: Iterable[str], generated_ok: bool = False) -> bool:
+    """CHANGELOG plus release-metadata files only. Generated files count when
+    ``generated_ok`` (their diff was checked to be version naming only)."""
     file_list = [f for f in files if f.strip()]
     if not file_list or "CHANGELOG.md" not in file_list:
         return False
-    return all(path in RELEASE_METADATA_FILES for path in file_list)
+    return all(
+        path in RELEASE_METADATA_FILES
+        or (generated_ok and path in RELEASE_METADATA_GENERATED_FILES)
+        for path in file_list
+    )
+
+
+def _show(rev: str, path: str) -> str:
+    try:
+        return run_git("show", f"{rev}:{path}")
+    except subprocess.CalledProcessError:
+        return ""
 
 
 def main() -> int:
@@ -356,7 +395,14 @@ def main() -> int:
         print("changelog gate: skipped (dependency-only update)")
         return 0
 
-    if is_release_metadata_sync(files):
+    generated_ok = all(
+        generated_docs_version_naming_only(
+            _show(base, f), _show(args.head, f)
+        )
+        for f in files
+        if f in RELEASE_METADATA_GENERATED_FILES
+    )
+    if is_release_metadata_sync(files, generated_ok=generated_ok):
         if head_unreleased.strip() == base_unreleased.strip() and not adds_version_section(head_text, base_text):
             print(
                 "changelog gate: release metadata sync must materialize Unreleased into a version section",

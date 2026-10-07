@@ -23,6 +23,7 @@ trees hold no generated files, and a marker comment must not switch the gate off
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import fnmatch
 import os
 import re
@@ -145,14 +146,18 @@ def dependency_only(files: list[str], commits: list[str], base: str, head: str) 
 
 def changed_lines(base_text: str, head_text: str) -> tuple[list[str], list[str]]:
     """(removed lines, added lines) by multiset difference of stripped lines."""
-    from collections import Counter
     b = Counter(l.strip() for l in base_text.splitlines() if l.strip())
     h = Counter(l.strip() for l in head_text.splitlines() if l.strip())
     return list((b - h).elements()), list((h - b).elements())
 
 
 def release_metadata(files: list[str], base: str, head: str, author: str, approvers: set[str]) -> bool:
-    if not cc.is_release_metadata_sync(files):
+    generated_ok = all(
+        cc.generated_docs_version_naming_only(show(base, f), show(head, f))
+        for f in files
+        if f in cc.RELEASE_METADATA_GENERATED_FILES
+    )
+    if not cc.is_release_metadata_sync(files, generated_ok=generated_ok):
         return False
     if not author or author.lower() not in approvers | {RELEASE_BOT}:
         return False

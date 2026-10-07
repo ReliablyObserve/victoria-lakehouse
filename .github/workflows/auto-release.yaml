@@ -393,6 +393,17 @@ jobs:
           bash scripts/ci/materialize_unreleased.sh "${VERSION#v}"
           git add CHANGELOG.md
 
+          # 2b. Regenerate docs/features.md. A feature that still has an
+          # [Unreleased] bullet is named "the release after vX" there, so cutting
+          # a release renames it; the VL/VT trees confgen reads were prepared by
+          # the `make deps-*` steps above. A failure only warns: the PR is still
+          # opened and the stale-docs check names what to regenerate by hand.
+          if GOWORK=off go run ./tests/conformance/cmd/confgen -write; then
+            git add docs/features.md
+          else
+            echo "::warning::confgen failed; regenerate docs/features.md with 'make conformance-gen' on the metadata PR"
+          fi
+
           # 3. Update appVersion in README badge if present
           sed -i "s/appVersion-[0-9]*\.[0-9]*\.[0-9]*/appVersion-${VERSION#v}/" README.md 2>/dev/null || true
           git add README.md 2>/dev/null || true
@@ -414,6 +425,7 @@ jobs:
           - Chart.yaml version and appVersion → ${VERSION#v}
           - CHANGELOG.md: \`[Unreleased]\` materialized as \`[${VERSION#v}]\`
           - README.md: version badge updated
+          - docs/features.md: regenerated (feature "since" naming only)
 
           ### Images
           - \`ghcr.io/${REPO}/lakehouse-logs:${VERSION}\`

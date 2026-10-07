@@ -865,5 +865,118 @@ FIXTURE
 run_materialization_case
 
 echo
+echo "== a release whose feature still has an Unreleased bullet carries the regenerated catalog =="
+
+# PR #440 merged after a release commit, so its bullet stayed under
+# [Unreleased] while the new version heading appeared: the feature's "since:
+# the release after vX" wording changed and `confgen -check` reported
+# docs/features.md stale. The release-metadata PR then must carry the
+# regenerated docs/features.md and still pass BOTH gates (changelog gate and
+# registry gate). Negatives: the same PR plus a product file, and plus a
+# non-generated doc, is no longer a release-metadata sync.
+run_unreleased_bullet_case() {
+  local name="a release-metadata PR with a feature still unreleased passes both gates with the regenerated features.md; extra product or non-generated files do not"
+  local tmp
+  tmp="$(clone_repo "$name")" || return 0
+  local log="$tmp/log" ok=1 why=""
+  : > "$log"
+  check_step() {
+    local what="$1"
+    shift
+    if ! (cd "$tmp/repo" && "$@") >>"$log" 2>&1; then
+      ok=0
+      why="$why
+       - $what"
+    fi
+  }
+  # expect_fail <description> <command...>: the command must exit non-zero.
+  expect_fail() {
+    local what="$1"
+    shift
+    if (cd "$tmp/repo" && "$@") >>"$log" 2>&1; then
+      ok=0
+      why="$why
+       - $what"
+    fi
+  }
+  local bullet='{ print } /^## \[Unreleased\]$/ { print ""; print "### Added"; print ""; print "- **Touch-check release fixture.** Added by scripts/ci/tests/test_check_registry_touch.sh." }'
+
+  (
+    cd "$tmp/repo" || exit 1
+    rewrite CHANGELOG.md "$bullet"
+    cat >> tests/conformance/registry/features/ops.yaml <<'FIXTURE'
+
+- id: lh.feature.ops.touch_check_release_fixture
+  title: Touch-check release fixture
+  status: shipped
+  area: ops
+  surfaces: [cli]
+  tests:
+    - scripts/ci/tests/test_check_registry_touch.sh
+  highlight: "**Release fixture**: added by scripts/ci/tests/test_check_registry_touch.sh."
+  description: >-
+    A shipped fixture feature whose changelog entry is unreleased, appended to a throwaway clone
+    to replay a release. It never exists in the repository itself.
+  changelog_bullets:
+    - 'Touch-check release fixture.'
+FIXTURE
+    GOWORK=off go run ./tests/conformance/cmd/confgen -write
+    git add -A
+    git commit -q -m "feature merged"
+    git branch -q base
+    # The release commit materializes the heading; the fixture bullet then
+    # lands again under [Unreleased] (a PR merged after the release commit).
+    materialize_release 99.0.0
+    rewrite CHANGELOG.md "$bullet"
+    git add CHANGELOG.md
+    git commit -q -m "chore: release metadata for v99.0.0 [skip release]"
+  ) >>"$log" 2>&1
+
+  expect_fail "confgen -check reports docs/features.md stale on the metadata commit" \
+    env GOWORK=off go run ./tests/conformance/cmd/confgen -check
+  check_step "regeneration succeeds" env GOWORK=off go run ./tests/conformance/cmd/confgen -write
+  check_step "regeneration changes docs/features.md" bash -c '! git diff --quiet -- docs/features.md'
+  check_step "the regenerated file is committed" bash -c 'git add docs/features.md UPSTREAM_COVERAGE.md README.md && git commit -q -m "regenerate"'
+  check_step "only CHANGELOG.md and generated documents differ from base" \
+    bash -c '! git diff --name-only base HEAD | grep -vxE "CHANGELOG.md|docs/features.md|UPSTREAM_COVERAGE.md|README.md"'
+  check_step "the registry gate passes" env SKIP_CONFGEN_CHECK= PR_AUTHOR=szibis bash "$CHECKER" base
+  check_step "the registry gate reports a release-metadata PR" \
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=release-metadata"'
+  check_step "the changelog gate passes" \
+    python3 scripts/ci/check_changelog_pr.py --base base --head HEAD
+
+  # Negatives, each one commit on top.
+  check_step "a product file is added" bash -c 'echo "package server" > internal/zz_relmeta_fixture.go && git add -A && git commit -q -m "product"'
+  check_step "the product PR is no longer a release-metadata PR" \
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
+  check_step "the product PR is classified as product" \
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "product=1"'
+  expect_fail "the registry gate fails a metadata-looking PR that also changes a product file" \
+    env SKIP_CONFGEN_CHECK= PR_AUTHOR=szibis bash "$CHECKER" base
+  check_step "the product file is dropped and a non-generated doc added" \
+    bash -c 'git rm -q internal/zz_relmeta_fixture.go && echo x > docs/zz-relmeta-fixture.md && git add -A && git commit -q -m "doc"'
+  check_step "a non-generated doc is not a release-metadata PR" \
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
+  check_step "the non-generated doc is dropped and docs/features.md gets a change beyond version naming" \
+    bash -c 'git rm -q docs/zz-relmeta-fixture.md && echo "an invented line" >> docs/features.md && git add -A && git commit -q -m "features edit"'
+  check_step "a features.md change beyond version naming is not a release-metadata PR" \
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
+  check_step "the changelog gate rejects it too" \
+    bash -c '! python3 scripts/ci/check_changelog_pr.py --base base --head HEAD'
+
+  if [[ $ok -eq 1 ]]; then
+    echo "ok   - $name"
+    pass=$((pass + 1))
+  else
+    echo "FAIL - $name:$why"
+    sed 's/^/       log: /' "$log"
+    fail=$((fail + 1))
+  fi
+  rm -rf "$tmp"
+}
+
+run_unreleased_bullet_case
+
+echo
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]
