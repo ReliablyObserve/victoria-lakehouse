@@ -5,6 +5,7 @@ import os
 import pytest
 from PIL import Image
 
+from scripts.proof.jsonio import dump_json, read_text
 from scripts.proof.visual import compare, frames, montage, states
 from scripts.proof.visual.states import DATA, EMPTY, ERROR, UNSETTLED
 
@@ -136,7 +137,7 @@ def write_page(out, name, rng, sides):
     d = os.path.join(out, "data", name, rng)
     os.makedirs(d, exist_ok=True)
     for s, c in sides.items():
-        json.dump(c, open(os.path.join(d, s + ".json"), "w"))
+        dump_json(os.path.join(d, s + ".json"), c)
 
 
 FULL = [("POST", 4), ("GET", 3)]
@@ -205,11 +206,14 @@ def test_kind_mismatch_and_undecodable_answers_are_scored_zero():
 def test_markdown_and_main_exit_code(tmp_path, capsys):
     ok = page(FULL)
     write_page(str(tmp_path), "m", "1h", {"base": ok, "pr": ok, "ref": ok})
-    assert compare.main([str(tmp_path)]) == 0
+    rc_ok = compare.main([str(tmp_path)])
+    assert rc_ok == 0
     assert os.path.exists(os.path.join(str(tmp_path), "compare.json"))
-    assert "| `m/1h` | 100 | 100 |" in open(os.path.join(str(tmp_path), "compare.md")).read()
+    md = read_text(os.path.join(str(tmp_path), "compare.md"))
+    assert "| `m/1h` | 100 | 100 |" in md
     write_page(str(tmp_path), "z", "1h", {"base": ok, "pr": page(FULL, {"banners": ["Bad Gateway"]}), "ref": ok})
-    assert compare.main([str(tmp_path)]) == 1
+    rc_bad = compare.main([str(tmp_path)])
+    assert rc_bad == 1
     capsys.readouterr()
 
 
@@ -260,9 +264,9 @@ def test_comment_lists_changes_remaining_differences_and_explanations(tmp_path):
     ])
     api = tmp_path / "api"
     api.mkdir()
-    json.dump(rep, open(api / "report.json", "w"))
+    dump_json(str(api / "report.json"), rep)
     exp = tmp_path / "e.json"
-    json.dump({"c.": "known B1: injected schema fields"}, open(exp, "w"))
+    dump_json(str(exp), {"c.": "known B1: injected schema fields"})
     out = tmp_path / "c.md"
     rc = comment.main(["--api", str(api), "--label", "PR 438", "--explain", str(exp), "--out", str(out)])
     text = out.read_text()
@@ -277,14 +281,15 @@ def test_comment_with_visual_embeds_changed_pages_only(tmp_path, capsys):
     from scripts.proof import comment
     api = tmp_path / "api"
     api.mkdir()
-    json.dump(_report([_res("a", "exact", 100.0, 100.0)]), open(api / "report.json", "w"))
+    dump_json(str(api / "report.json"), _report([_res("a", "exact", 100.0, 100.0)]))
     vis = tmp_path / "vis"
     vis.mkdir()
     cmp = {"p1/cold": {"verdict": "fixed", "states": {"base": {"state": "error"}, "pr": {"state": "data"}, "ref": {"state": "data"}}, "base_score": 0.0, "pr_score": 100.0},
            "p2/cold": {"verdict": "match", "states": {}, "base_score": 100.0, "pr_score": 100.0}}
-    json.dump(cmp, open(vis / "compare.json", "w"))
-    assert comment.main(["--api", str(api), "--visual", str(vis), "--image-base", "https://x/pr-visuals/pr-1/"]) == 0
+    dump_json(str(vis / "compare.json"), cmp)
+    rc = comment.main(["--api", str(api), "--visual", str(vis), "--image-base", "https://x/pr-visuals/pr-1/"])
     text = capsys.readouterr().out
+    assert rc == 0
     assert "![p1 cold](https://x/pr-visuals/pr-1/p1-cold.png)" in text and "p2-cold.png" not in text
     assert "None." in text and "1 page captures match" in text and "`p2/cold`" not in text
 

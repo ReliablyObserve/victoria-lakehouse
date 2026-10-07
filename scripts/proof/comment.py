@@ -12,12 +12,12 @@ listed as unexplained. All percentages come from scripts/proof/metrics; nothing 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
 
 from .metrics.common import display_pct
+from .jsonio import load_json, write_text
 
 ICON = {"exact": "match", "same": "same", "fixed": "FIXED", "improved": "IMPROVED", "regressed": "REGRESSED",
         "not-reproduced-on-base": "not reproduced on base", "vacuous": "vacuous", "blocked": "blocked",
@@ -122,14 +122,14 @@ def main(argv=None) -> int:
     ap.add_argument("--explain")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
-    explain = json.load(open(a.explain)) if a.explain else {}
-    rep = json.load(open(os.path.join(a.api, "report.json")))
+    explain = load_json(a.explain) if a.explain else {}
+    rep = load_json(os.path.join(a.api, "report.json"))
     lines, info = api_section(rep, a.label, explain)
     if a.visual:
-        lines += visual_section(json.load(open(os.path.join(a.visual, "compare.json"))), a.label, a.image_base, explain)
+        lines += visual_section(load_json(os.path.join(a.visual, "compare.json")), a.label, a.image_base, explain)
     text = "\n".join(lines) + "\n"
     if a.out:
-        open(a.out, "w", encoding="utf-8").write(text)
+        write_text(a.out, text)
     else:
         sys.stdout.write(text)
     return 1 if info["unexplained"] else 0

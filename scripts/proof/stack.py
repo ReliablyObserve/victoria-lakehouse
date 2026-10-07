@@ -21,6 +21,7 @@ import os
 import subprocess
 import time
 import urllib.request
+from .jsonio import dump_json, load_json
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMPOSE = os.path.join(HERE, "..", "..", "deployment", "docker", "docker-compose-proof.yml")
@@ -153,14 +154,13 @@ def cmd_seed(a):  # pragma: no cover - drives docker compose
         sh(datagen_cmd(state["H"], 4, t, hot=True, lh="base"))
         sh(datagen_cmd(state["H"], 4, t, hot=False, lh="pr"))
     wait_drained(state)
-    with open(os.path.join(a.out, "state.json"), "w") as f:
-        json.dump(state, f, indent=1)
+    dump_json(os.path.join(a.out, "state.json"), state, indent=1)
     print(json.dumps(state))
 
 
 def cmd_hold(a):  # pragma: no cover - drives docker compose
     path = os.path.join(a.out, "state.json")
-    state = json.load(open(path))
+    state = load_json(path)
     compose("up", "-d", "--wait", "--wait-timeout", "240", env={"LH_POLICY": "./proof/policy-hold.yml"})
     h = dt.datetime.strptime(state["H"], "%Y-%m-%dT%H:%M:%SZ")
     now = (h + dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -169,7 +169,7 @@ def cmd_hold(a):  # pragma: no cover - drives docker compose
         sh(datagen_cmd(now, 1, t, hot=False, lh="pr"))
     state["buffered"] = settled_buffered(state)
     state["trace_id"] = pick_trace(state)
-    json.dump(state, open(path, "w"), indent=1)
+    dump_json(path, state, indent=1)
     print(json.dumps(state["buffered"]))
 
 

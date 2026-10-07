@@ -29,6 +29,7 @@ from ..metrics.verdict import FAILING
 from . import client
 from .report import write_reports
 from .rows import expand, load_tier, tenant_headers
+from ..jsonio import dump_json, load_json, read_text
 
 TARGETS = ("ref", "base", "pr")
 RESAMPLES = 2
@@ -136,14 +137,14 @@ def meta_of(req: dict) -> dict:
 def write_case(root: str, meta: dict, ans: dict, resamples: list[dict]) -> None:
     d = os.path.join(root, "cases", meta["id"])
     os.makedirs(d, exist_ok=True)
-    json.dump(meta, open(os.path.join(d, "meta.json"), "w"), indent=1, sort_keys=True)
+    dump_json(os.path.join(d, "meta.json"), meta, indent=1, sort_keys=True)
     for n, e in ans.items():
-        json.dump(e, open(os.path.join(d, n + ".json"), "w"), indent=1)
+        dump_json(os.path.join(d, n + ".json"), e, indent=1)
     for i, rs in enumerate(resamples, 1):
         sub = os.path.join(d, f"resample-{i}")
         os.makedirs(sub, exist_ok=True)
         for n, e in rs.items():
-            json.dump(e, open(os.path.join(sub, n + ".json"), "w"), indent=1)
+            dump_json(os.path.join(sub, n + ".json"), e, indent=1)
 
 
 def run(state: dict, rows: list[dict], out: str, allowance: int | None = None) -> list:
@@ -182,7 +183,7 @@ def main(argv=None) -> int:
     ap.add_argument("--no-seed-check", action="store_true")
     ap.add_argument("--pr-label", default="PR")
     a = ap.parse_args(argv)
-    state = json.load(open(a.state))
+    state = load_json(a.state)
     os.makedirs(a.out, exist_ok=True)
     rows = load_tier(a.tier)
     if a.only:
@@ -192,7 +193,7 @@ def main(argv=None) -> int:
     run(state, rows, a.out)
     items = run_dir(os.path.join(a.out, "cases"))
     write_reports(a.out, items, state, seed, label=a.pr_label, seconds=time.time() - t0)
-    print(open(os.path.join(a.out, "report.txt")).read())
+    print(read_text(os.path.join(a.out, "report.txt")))
     return 1 if any(r.verdict in FAILING for _, r in items) else 0
 
 

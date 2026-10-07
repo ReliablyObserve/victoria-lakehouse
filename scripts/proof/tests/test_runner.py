@@ -1,5 +1,6 @@
 """API row runner: row validation, windows and tenant forms, the HTTP client and an end-to-end run against stub targets."""
 import glob
+import gzip
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import pytest
 
 from scripts.proof.runner import client, rows as R, run as runner
 from scripts.proof.runner.report import markdown, write_reports
+from scripts.proof.jsonio import load_json, read_text
 from scripts.proof.metrics.cases import run_dir
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -30,7 +32,7 @@ def test_shipped_rows_are_valid_and_core_rows_exist_in_the_registry():
     ids = registry_ids()
     for name in ("core", "field-values", "audit"):
         path = os.path.join(R.ROWS_DIR, name + ".json")
-        doc = json.load(open(path))
+        doc = load_json(path)
         rows = R.load_rows(path)
         assert rows
         if doc["registry_check"]:
@@ -232,14 +234,15 @@ def test_end_to_end_exact_fixed_and_regressed(tmp_path, monkeypatch):
     (meta, res), = items
     assert res.verdict == "fixed" and meta["form"] == "numeric" and meta["layer"] == "cold"
     d = os.path.join(str(tmp_path), "cases", "vl-native", "fv.numeric.cold")
-    assert json.load(open(os.path.join(d, "pr.json")))["status"] == 200
+    assert load_json(os.path.join(d, "pr.json"))["status"] == 200
     assert os.path.isdir(os.path.join(d, "resample-2"))  # a request that is not exact is sampled twice more
-    lines = [json.loads(x) for x in __import__("gzip").open(os.path.join(str(tmp_path), "bodies.jsonl.gz"), "rt")]
+    with gzip.open(os.path.join(str(tmp_path), "bodies.jsonl.gz"), "rt") as gz:
+        lines = [json.loads(x) for x in gz]
     assert {x["target"] for x in lines} == {"ref", "base", "pr"} and {x["round"] for x in lines} == {0, 1, 2}
     write_reports(str(tmp_path), items, st, {"x": 1}, seconds=1.0)
-    md = open(os.path.join(str(tmp_path), "report.md")).read()
+    md = read_text(os.path.join(str(tmp_path), "report.md"))
     assert "fixed" in md.lower() or "FIXED" in md
-    rep = json.load(open(os.path.join(str(tmp_path), "report.json")))
+    rep = load_json(os.path.join(str(tmp_path), "report.json"))
     assert rep["results"][0]["verdict"] == "fixed" and rep["results"][0]["base_score"] < 100 and rep["results"][0]["pr_score"] == 100
 
 
@@ -293,8 +296,9 @@ def test_pick_takes_a_value_from_the_reference_and_fails_loudly_when_absent():
     st = state_for({"ref": srv})
     try:
         row = {"id": "p", "surface": "jaeger", "kind": "values", "path": "/t/{tid}", "pick": {"tid": {"query": "q", "field": "trace_id", "signal": "traces"}}}
-        assert runner.resolve_picks(row, st) == {"tid": "abc"}
-        assert runner.resolve_picks(row, st, "buffer", "alias") == {"tid": "abc"}
+        picked = runner.resolve_picks(row, st)
+        picked_buffer_alias = runner.resolve_picks(row, st, "buffer", "alias")
+        assert picked == {"tid": "abc"} and picked_buffer_alias == {"tid": "abc"}
         assert any(c[3].startswith("query=q") and "start=2026-10-07T15" in c[3] and c[2].get("Accountid") == "1001" for c in Stub.calls)
         srv.routes = {"/select/logsql/query": (200, "")}
         with pytest.raises(SystemExit) as e:

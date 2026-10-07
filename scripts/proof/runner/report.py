@@ -1,12 +1,12 @@
 """Markdown and JSON reports of a runner output: the table is row, form and layer, base %, PR %, verdict."""
 from __future__ import annotations
 
-import json
 import os
 
 from ..metrics.common import SURFACES, display_pct
 from ..metrics.report import ICON, render_table
 from ..metrics.verdict import pct_text
+from ..jsonio import dump_json, write_text
 
 FIRST_DIFF = 12
 
@@ -42,8 +42,8 @@ def markdown(items, state: dict, seed: dict, label: str = "PR", seconds: float =
 
 def write_reports(out: str, items, state: dict, seed: dict, label: str = "PR", seconds: float = 0.0) -> None:
     results = [r for _, r in items]
-    open(os.path.join(out, "report.txt"), "w").write(render_table(results) + "\n")
-    open(os.path.join(out, "report.md"), "w").write(markdown(items, state, seed, label, seconds) + "\n")
+    write_text(os.path.join(out, "report.txt"), render_table(results) + "\n")
+    write_text(os.path.join(out, "report.md"), markdown(items, state, seed, label, seconds) + "\n")
     rows = []
     for meta, r in items:
         rows.append({"id": r.id, "row": r.row, "surface": r.surface, "signal": r.signal, "form": meta.get("form"),
@@ -54,5 +54,5 @@ def write_reports(out: str, items, state: dict, seed: dict, label: str = "PR", s
                      "pr_notes": [] if r.pr is None else r.pr.notes[:FIRST_DIFF],
                      "base_details": {} if r.base is None else r.base.details, "pr_details": {} if r.pr is None else r.pr.details,
                      "latency": r.latency})
-    json.dump({"state": state, "seed_equality": seed, "seconds": round(seconds, 1), "results": rows},
-              open(os.path.join(out, "report.json"), "w"), indent=1, default=str)
+    dump_json(os.path.join(out, "report.json"), {"state": state, "seed_equality": seed, "seconds": round(seconds, 1), "results": rows},
+              indent=1, default=str)
