@@ -1,0 +1,16 @@
+{
+ "endpoint": "/select/logsql/hits",
+ "expect": {
+  "base": {
+   "points_within_tol": 100.0
+  },
+  "pr": {
+   "points_within_tol": 100.0
+  },
+  "verdict": "exact"
+ },
+ "id": "vl-native/hits_exact",
+ "kind": "series_hits",
+ "row": "vl.select.hits",
+ "surface": "vl-native"
+}

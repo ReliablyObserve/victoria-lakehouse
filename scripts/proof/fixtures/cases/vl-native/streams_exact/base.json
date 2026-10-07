@@ -1,0 +1,16 @@
+{
+ "body": {
+  "values": [
+   {
+    "hits": 10,
+    "value": "{app=\"api\",pod=\"p0\"}"
+   },
+   {
+    "hits": 10,
+    "value": "{app=\"api\",pod=\"p1\"}"
+   }
+  ]
+ },
+ "latency_ms": 10.0,
+ "status": 200
+}

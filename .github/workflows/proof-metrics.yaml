@@ -1,0 +1,47 @@
+name: Proof metrics
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/proof/**"
+      - ".github/workflows/proof-metrics.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/proof/**"
+      - ".github/workflows/proof-metrics.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r scripts/proof/requirements.txt
+
+      - name: Lint
+        run: python -m pyflakes scripts/proof
+
+      - name: Unit tests with coverage floor
+        run: |
+          python -m pytest scripts/proof/tests -q \
+            --cov=scripts.proof.metrics --cov-report=term-missing --cov-fail-under=90
+
+      - name: Fixtures match their recorded expectations
+        run: python -m scripts.proof.metrics scripts/proof/fixtures/cases --check
+
+      - name: Fixture generator is deterministic
+        run: |
+          python scripts/proof/fixtures/_gen.py
+          git diff --exit-code -- scripts/proof/fixtures/cases

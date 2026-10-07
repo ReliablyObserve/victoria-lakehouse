@@ -1,0 +1,16 @@
+{
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "base": {
+   "error": 100.0
+  },
+  "pr": {
+   "error": 0.0
+  },
+  "verdict": "regressed"
+ },
+ "id": "vl-native/error_text_changed",
+ "kind": "rows",
+ "row": "vl.select.query.badsyntax2",
+ "surface": "vl-native"
+}

@@ -1,0 +1,16 @@
+{
+ "body": {
+  "bytes": 123456,
+  "extra_counter": 3,
+  "oldest": "2026-09-01T00:00:00Z",
+  "rows": 10000,
+  "tenants": [
+   {
+    "account_id": 0,
+    "project_id": 0
+   }
+  ]
+ },
+ "latency_ms": 10.0,
+ "status": 200
+}

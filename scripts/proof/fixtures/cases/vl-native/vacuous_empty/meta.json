@@ -1,0 +1,10 @@
+{
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "verdict": "vacuous"
+ },
+ "id": "vl-native/vacuous_empty",
+ "kind": "rows",
+ "row": "vl.select.query.empty",
+ "surface": "vl-native"
+}

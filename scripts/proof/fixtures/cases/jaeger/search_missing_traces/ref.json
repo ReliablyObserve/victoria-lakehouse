@@ -1,0 +1,1262 @@
+{
+ "body": {
+  "data": [
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "0000000000000011",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000001"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000011",
+        "traceID": "00000000000000000000000000000001"
+       }
+      ],
+      "spanID": "0000000000000012",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000001"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000012",
+        "traceID": "00000000000000000000000000000001"
+       }
+      ],
+      "spanID": "0000000000000013",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000001"
+     }
+    ],
+    "traceID": "00000000000000000000000000000001"
+   },
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "0000000000000021",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000002"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000021",
+        "traceID": "00000000000000000000000000000002"
+       }
+      ],
+      "spanID": "0000000000000022",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000002"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000022",
+        "traceID": "00000000000000000000000000000002"
+       }
+      ],
+      "spanID": "0000000000000023",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000002"
+     }
+    ],
+    "traceID": "00000000000000000000000000000002"
+   },
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "0000000000000031",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000003"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000031",
+        "traceID": "00000000000000000000000000000003"
+       }
+      ],
+      "spanID": "0000000000000032",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000003"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000032",
+        "traceID": "00000000000000000000000000000003"
+       }
+      ],
+      "spanID": "0000000000000033",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000003"
+     }
+    ],
+    "traceID": "00000000000000000000000000000003"
+   },
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "0000000000000041",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000004"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000041",
+        "traceID": "00000000000000000000000000000004"
+       }
+      ],
+      "spanID": "0000000000000042",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000004"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000042",
+        "traceID": "00000000000000000000000000000004"
+       }
+      ],
+      "spanID": "0000000000000043",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000004"
+     }
+    ],
+    "traceID": "00000000000000000000000000000004"
+   },
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "0000000000000051",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000005"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000051",
+        "traceID": "00000000000000000000000000000005"
+       }
+      ],
+      "spanID": "0000000000000052",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000005"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000052",
+        "traceID": "00000000000000000000000000000005"
+       }
+      ],
+      "spanID": "0000000000000053",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000005"
+     }
+    ],
+    "traceID": "00000000000000000000000000000005"
+   },
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "0000000000000061",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000006"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000061",
+        "traceID": "00000000000000000000000000000006"
+       }
+      ],
+      "spanID": "0000000000000062",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000006"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000062",
+        "traceID": "00000000000000000000000000000006"
+       }
+      ],
+      "spanID": "0000000000000063",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000006"
+     }
+    ],
+    "traceID": "00000000000000000000000000000006"
+   },
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "0000000000000071",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000007"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000071",
+        "traceID": "00000000000000000000000000000007"
+       }
+      ],
+      "spanID": "0000000000000072",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000007"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000072",
+        "traceID": "00000000000000000000000000000007"
+       }
+      ],
+      "spanID": "0000000000000073",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000007"
+     }
+    ],
+    "traceID": "00000000000000000000000000000007"
+   },
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "0000000000000081",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000008"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000081",
+        "traceID": "00000000000000000000000000000008"
+       }
+      ],
+      "spanID": "0000000000000082",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000008"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000082",
+        "traceID": "00000000000000000000000000000008"
+       }
+      ],
+      "spanID": "0000000000000083",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000008"
+     }
+    ],
+    "traceID": "00000000000000000000000000000008"
+   },
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "0000000000000091",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000009"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000091",
+        "traceID": "00000000000000000000000000000009"
+       }
+      ],
+      "spanID": "0000000000000092",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000009"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "0000000000000092",
+        "traceID": "00000000000000000000000000000009"
+       }
+      ],
+      "spanID": "0000000000000093",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "00000000000000000000000000000009"
+     }
+    ],
+    "traceID": "00000000000000000000000000000009"
+   },
+   {
+    "processes": {
+     "p1": {
+      "serviceName": "frontend",
+      "tags": []
+     },
+     "p2": {
+      "serviceName": "cart",
+      "tags": []
+     }
+    },
+    "spans": [
+     {
+      "duration": 500,
+      "logs": [
+       {
+        "fields": [
+         {
+          "key": "event",
+          "type": "string",
+          "value": "exception"
+         }
+        ],
+        "timestamp": 1790000000000100
+       }
+      ],
+      "operationName": "op0",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "FOLLOWS_FROM",
+        "spanID": "0000000000000009",
+        "traceID": "000000000000000000000000000000ff"
+       }
+      ],
+      "spanID": "00000000000000a1",
+      "startTime": 1790000000000000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "0000000000000000000000000000000a"
+     },
+     {
+      "duration": 510,
+      "logs": [],
+      "operationName": "op1",
+      "processID": "p2",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "00000000000000a1",
+        "traceID": "0000000000000000000000000000000a"
+       }
+      ],
+      "spanID": "00000000000000a2",
+      "startTime": 1790000000001000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "0000000000000000000000000000000a"
+     },
+     {
+      "duration": 520,
+      "logs": [],
+      "operationName": "op2",
+      "processID": "p1",
+      "references": [
+       {
+        "refType": "CHILD_OF",
+        "spanID": "00000000000000a2",
+        "traceID": "0000000000000000000000000000000a"
+       }
+      ],
+      "spanID": "00000000000000a3",
+      "startTime": 1790000000002000,
+      "tags": [
+       {
+        "key": "span.kind",
+        "type": "string",
+        "value": "server"
+       },
+       {
+        "key": "http.status_code",
+        "type": "int64",
+        "value": 200
+       },
+       {
+        "key": "otel.scope.name",
+        "type": "string",
+        "value": "cart-instrumentation"
+       }
+      ],
+      "traceID": "0000000000000000000000000000000a"
+     }
+    ],
+    "traceID": "0000000000000000000000000000000a"
+   }
+  ],
+  "errors": null,
+  "limit": 0,
+  "offset": 0,
+  "total": 0
+ },
+ "latency_ms": 10.0,
+ "status": 200
+}

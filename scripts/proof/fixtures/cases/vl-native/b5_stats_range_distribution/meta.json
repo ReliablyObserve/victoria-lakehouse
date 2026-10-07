@@ -1,0 +1,22 @@
+{
+ "claimed_gap": "B5",
+ "endpoint": "/select/logsql/stats_query_range",
+ "expect": {
+  "base": {
+   "points_within_tol": 50.0,
+   "series_set": 100.0,
+   "totals": 100.0
+  },
+  "details": {
+   "base.totals.delta": 0.0
+  },
+  "pr": {
+   "points_within_tol": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "vl-native/b5_stats_range_distribution",
+ "kind": "series_prom",
+ "row": "vl.select.stats_query_range.cold",
+ "surface": "vl-native"
+}

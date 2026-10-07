@@ -1,0 +1,17 @@
+{
+ "claimed_gap": "B2",
+ "endpoint": "/select/logsql/field_names",
+ "expect": {
+  "base": {
+   "value_set": 34.9
+  },
+  "pr": {
+   "value_set": 63.5
+  },
+  "verdict": "improved"
+ },
+ "id": "vt-native/b2_field_names_partial_fix",
+ "kind": "values",
+ "row": "vt.select.field_names.cold2",
+ "surface": "vt-native"
+}

@@ -1,0 +1,5 @@
+{
+ "body": "bad request",
+ "latency_ms": 10.0,
+ "status": 400
+}

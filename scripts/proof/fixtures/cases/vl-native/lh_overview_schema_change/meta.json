@@ -1,0 +1,28 @@
+{
+ "contract": {
+  "bytes": "number",
+  "oldest": "string",
+  "rows": "number"
+ },
+ "endpoint": "/lakehouse/api/v1/stats/overview",
+ "expect": {
+  "base": {
+   "schema_keys": 100.0,
+   "truth": 100.0
+  },
+  "pr": {
+   "schema_keys": 83.3,
+   "truth": 100.0
+  },
+  "verdict": "regressed"
+ },
+ "id": "vl-native/lh_overview_schema_change",
+ "kind": "schema",
+ "lh_only": true,
+ "row": "lh.stats.overview",
+ "surface": "vl-native",
+ "truth": {
+  "lh_path": "rows",
+  "shape": "scalar"
+ }
+}

@@ -1,0 +1,48 @@
+{
+ "body": {
+  "values": [
+   {
+    "hits": 100,
+    "value": "v0"
+   },
+   {
+    "hits": 97,
+    "value": "v1"
+   },
+   {
+    "hits": 95,
+    "value": "v2"
+   },
+   {
+    "hits": 91,
+    "value": "v3"
+   },
+   {
+    "hits": 88,
+    "value": "v4"
+   },
+   {
+    "hits": 85,
+    "value": "v5"
+   },
+   {
+    "hits": 82,
+    "value": "v6"
+   },
+   {
+    "hits": 79,
+    "value": "v7"
+   },
+   {
+    "hits": 76,
+    "value": "v8"
+   },
+   {
+    "hits": 73,
+    "value": "v9"
+   }
+  ]
+ },
+ "latency_ms": 10.0,
+ "status": 200
+}

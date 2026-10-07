@@ -1,0 +1,17 @@
+{
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "base": {
+   "error": 100.0,
+   "status": 100.0
+  },
+  "pr": {
+   "error": 100.0
+  },
+  "verdict": "exact"
+ },
+ "id": "vl-native/error_same_text",
+ "kind": "rows",
+ "row": "vl.select.query.badsyntax",
+ "surface": "vl-native"
+}

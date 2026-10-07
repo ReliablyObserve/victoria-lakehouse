@@ -1,0 +1,24 @@
+{
+ "body": {
+  "values": [
+   {
+    "hits": 40,
+    "value": "_msg"
+   },
+   {
+    "hits": 40,
+    "value": "_time"
+   },
+   {
+    "hits": 40,
+    "value": "level"
+   },
+   {
+    "hits": 40,
+    "value": "service"
+   }
+  ]
+ },
+ "latency_ms": 10.0,
+ "status": 200
+}

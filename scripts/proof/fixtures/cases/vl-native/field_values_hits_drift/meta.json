@@ -1,0 +1,18 @@
+{
+ "endpoint": "/select/logsql/field_values",
+ "expect": {
+  "base": {
+   "hits_equality": 100.0,
+   "value_set": 100.0
+  },
+  "pr": {
+   "hits_equality": 90.0,
+   "value_set": 100.0
+  },
+  "verdict": "regressed"
+ },
+ "id": "vl-native/field_values_hits_drift",
+ "kind": "values",
+ "row": "vl.select.field_values.hits",
+ "surface": "vl-native"
+}

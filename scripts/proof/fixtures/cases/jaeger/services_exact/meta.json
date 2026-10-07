@@ -1,0 +1,17 @@
+{
+ "endpoint": "/select/jaeger/api/services",
+ "expect": {
+  "base": {
+   "value_set": 100.0
+  },
+  "pr": {
+   "value_set": 100.0
+  },
+  "verdict": "exact"
+ },
+ "id": "jaeger/services_exact",
+ "kind": "values",
+ "row": "jaeger.services",
+ "signal": "traces",
+ "surface": "jaeger"
+}

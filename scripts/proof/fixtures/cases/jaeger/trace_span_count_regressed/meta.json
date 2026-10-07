@@ -1,0 +1,18 @@
+{
+ "endpoint": "/select/jaeger/api/traces/{id}",
+ "expect": {
+  "base": {
+   "span_set": 100.0
+  },
+  "pr": {
+   "span_count": 83.3,
+   "span_set": 83.3
+  },
+  "verdict": "regressed"
+ },
+ "id": "jaeger/trace_span_count_regressed",
+ "kind": "trace_jaeger",
+ "row": "jaeger.trace.spans",
+ "signal": "traces",
+ "surface": "jaeger"
+}

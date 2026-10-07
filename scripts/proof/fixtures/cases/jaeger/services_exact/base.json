@@ -1,0 +1,15 @@
+{
+ "body": {
+  "data": [
+   "cart",
+   "frontend",
+   "pay"
+  ],
+  "errors": null,
+  "limit": 0,
+  "offset": 0,
+  "total": 3
+ },
+ "latency_ms": 10.0,
+ "status": 200
+}

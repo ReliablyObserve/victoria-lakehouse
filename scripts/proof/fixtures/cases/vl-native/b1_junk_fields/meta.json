@@ -1,0 +1,31 @@
+{
+ "claimed_gap": "B1",
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "base": {
+   "count": 100.0,
+   "field_coverage": 66.6,
+   "row_set": 0.0
+  },
+  "details": {
+   "base.field_coverage.extra": [
+    "<null>",
+    "account_id",
+    "ded_s0x"
+   ]
+  },
+  "pr": {
+   "field_coverage": 100.0,
+   "row_set": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "vl-native/b1_junk_fields",
+ "kind": "rows",
+ "order": [
+  "_time"
+ ],
+ "query": "* | limit 100",
+ "row": "vl.select.query.cold",
+ "surface": "vl-native"
+}
