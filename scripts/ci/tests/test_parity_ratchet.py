@@ -668,6 +668,14 @@ class RegistryLockTests(unittest.TestCase):
         self.assertIn("TestLockA was skipped (lock for lh.lock.exact)", out)
         self.assertFalse(evaluate(run, Allowlist()).failed, "without a registry or floors the check is off")
 
+    def test_the_summary_tabulates_observed_cells_against_the_floors(self):
+        run = GoTestRun(results={(PKG, "TestLockA"): "pass"})
+        run.cells = {(PKG, "TestLockA"): 12}
+        out = render_summary(run, Allowlist(), evaluate(run, Allowlist()), {"TestLockA": 10, "TestGone": 3})
+        self.assertIn("| TestLockA | 12 | 10 |", out)
+        self.assertIn("| TestGone | 0 | 3 |", out)
+        self.assertNotIn("Lock cells", render_summary(run, Allowlist(), evaluate(run, Allowlist())))
+
     def write(self, name, text):
         path = os.path.join(self.root, name)
         with open(path, "w", encoding="utf-8") as fh:

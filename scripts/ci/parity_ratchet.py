@@ -488,7 +488,7 @@ def _label(key: ResultKey, qualify: bool) -> str:
     return f"{package}: {name}" if qualify and package else name
 
 
-def render_summary(run: GoTestRun, allowlist: Allowlist, verdict: Verdict) -> str:
+def render_summary(run: GoTestRun, allowlist: Allowlist, verdict: Verdict, floors: dict[str, int] | None = None) -> str:
     qualify = len(run.packages()) > 1
     counts = count_by_action(run.results)
     lines = ["## Parity Test Results", ""]
@@ -555,6 +555,16 @@ def render_summary(run: GoTestRun, allowlist: Allowlist, verdict: Verdict) -> st
         lines.append("### Pass-count regression")
         lines.append("")
         lines.append(verdict.pass_regression)
+        lines.append("")
+
+    if floors:
+        lines.append("### Lock cells (observed against the floor in lock_cells.txt)")
+        lines.append("")
+        lines.append("| Lock test | Observed | Floor |")
+        lines.append("| --- | --- | --- |")
+        for name in sorted(floors):
+            observed = sum(n for (_, t), n in run.cells.items() if t == name)
+            lines.append(f"| {name} | {observed} | {floors[name]} |")
         lines.append("")
 
     if verdict.lock_failures:
@@ -641,7 +651,7 @@ def main(argv: list[str] | None = None) -> int:
             print("parity_ratchet: registry locks without a floor in lock_cells.txt: " + ", ".join(missing), file=sys.stderr)
             return 1
     verdict = evaluate(run, allowlist, locks, floors)
-    summary = render_summary(run, allowlist, verdict)
+    summary = render_summary(run, allowlist, verdict, floors)
     print(summary)
     if args.summary_file:
         with open(args.summary_file, "a", encoding="utf-8") as fh:

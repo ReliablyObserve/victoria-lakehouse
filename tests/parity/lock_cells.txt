@@ -7,3 +7,7 @@ TestParity_PhrasePruning_Traces   1  # provisional until measured
 TestParity_Traces_EventsLinksLayers  1  # provisional until measured
 TestParity_Traces_EventsLinksInvalidUTF8  1  # provisional until measured
 TestParity_Traces_EventsLinksScopeAttrs  1  # provisional until measured
+TestComposeGuard_AllowsTheOwnLakehouseService  1  # offline unit test: one cell per assertion set
+TestComposeGuard_Refuses  6  # six refusal cases
+TestComposeGuard_OnlyAllowlistedCalls  8  # eight refused calls
+TestComposeGuard_InspectsOnlyOwnAndListedContainers  4  # four inspections
