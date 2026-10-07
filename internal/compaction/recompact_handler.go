@@ -64,6 +64,7 @@ func RecompactHandler(sched *Scheduler) http.HandlerFunc {
 			"output_files":  len(result.OutputFiles),
 			"rows_merged":   result.RowsMerged,
 			"bytes_written": result.BytesWritten,
+			"fenced_files":  len(result.FencedFiles), // left alone: columns this version does not know
 		})
 		logger.Infof("recompact API: partition=%s level=%d → output_level=%d rows=%d",
 			req.Partition, req.Level, result.OutputLevel, result.RowsMerged)

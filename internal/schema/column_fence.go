@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/parquet-go/parquet-go"
 )
@@ -80,7 +81,14 @@ func UnknownColumns(data []byte, signal string) []string {
 // FenceLog remembers the objects a fence skipped. The same immutable object is
 // re-offered on every tick and the running code does not change its verdict, so
 // a remembered key is skipped without downloading it again and is logged once.
-type FenceLog struct{ seen sync.Map }
+type FenceLog struct {
+	seen sync.Map
+	n    atomic.Int64
+}
+
+// Len is the number of objects remembered: a cheap guard for hot loops that
+// call Has per object.
+func (l *FenceLog) Len() int64 { return l.n.Load() }
 
 // Has reports whether key was skipped before.
 func (l *FenceLog) Has(key string) bool {
@@ -91,5 +99,8 @@ func (l *FenceLog) Has(key string) bool {
 // Mark remembers key and reports whether it was new.
 func (l *FenceLog) Mark(key string) bool {
 	_, loaded := l.seen.LoadOrStore(key, struct{}{})
+	if !loaded {
+		l.n.Add(1)
+	}
 	return !loaded
 }

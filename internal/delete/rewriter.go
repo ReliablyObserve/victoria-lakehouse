@@ -81,7 +81,7 @@ type RewriteResult struct {
 var ErrUnknownColumns = errors.New("object has columns this version does not know")
 
 // fenceLog makes the fence log each skipped object once.
-var fenceLog schema.FenceLog
+var fenceLog = &schema.FenceLog{}
 
 // Rewriter reads Parquet files from S3, removes tombstoned rows, and writes
 // the filtered result back.
@@ -188,6 +188,16 @@ func (r *Rewriter) RewriteFile(ctx context.Context, key string, tombstones []Tom
 func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombstone) (*RewriteResult, error) {
 	start := time.Now()
 
+	signal := "logs"
+	if r.mode == "traces" {
+		signal = "traces"
+	}
+	// An object the fence already refused stays refused for this process (it
+	// is immutable and the code does not change): no download per tick.
+	if fenceLog.Has(key) {
+		return nil, fmt.Errorf("%w: %s", ErrUnknownColumns, key)
+	}
+
 	data, err := r.pool.Download(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", key, err)
@@ -201,13 +211,9 @@ func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombsto
 	// Forward fence: an object with a column this code does not model would
 	// lose it in the rewrite. Fail the rewrite instead: the tombstone stays
 	// pending (its rows stay hidden by it) and the object is left untouched.
-	signal := "logs"
-	if r.mode == "traces" {
-		signal = "traces"
-	}
 	if unknown := schema.UnknownColumns(data, signal); len(unknown) > 0 {
-		metrics.SkippedUnknownColumns(signal, "delete_rewrite").Inc()
 		if fenceLog.Mark(key) {
+			metrics.SkippedUnknownColumns(signal, "delete_rewrite").Inc()
 			logger.Warnf("delete rewrite skips an object with columns this version does not know, so a rewrite would drop them; key=%s, columns=%v", key, unknown)
 		}
 		return nil, fmt.Errorf("%w: %s has %v", ErrUnknownColumns, key, unknown)

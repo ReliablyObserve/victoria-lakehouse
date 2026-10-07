@@ -10,6 +10,7 @@ package compaction
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -329,11 +330,14 @@ const maxReclaimPerScan = 1000
 // withoutHeld drops the files a rewrite has swapped in but not yet recorded
 // durably. Merging one would carry its rows into an output that the undo of
 // that rewrite — still possible until its record lands — knows nothing about,
-// and the publish would be refused anyway.
+// and the publish would be refused anyway. It also drops the objects the
+// forward fence already found to hold a column this version does not model
+// (fenceLog): they are never merged, so a plan made of them must not form and
+// take the tenant's merge slot on every scan.
 func withoutHeld(m *manifest.Manifest, files []manifest.FileInfo) []manifest.FileInfo {
 	out := files[:0:0]
 	for _, fi := range files {
-		if m.IsHeld(fi.Key) {
+		if m.IsHeld(fi.Key) || fenceLog.Has(fenceKey(fi)) {
 			continue
 		}
 		out = append(out, fi)
@@ -524,10 +528,14 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		if len(selected) < 2 {
 			continue
 		}
-		if _, err := s.runMerge(ctx, c.partition, selected, c.level, "compacted partition"); err != nil {
+		r, err := s.runMerge(ctx, c.partition, selected, c.level, "compacted partition")
+		if err != nil {
 			s.backoff.failed(c, now, s.interval)
 			logger.Errorf("compaction failed: %s; partition=%s, tenant=%s", err, c.partition, c.tenant)
 			continue
+		}
+		if len(r.OutputFiles) == 0 {
+			continue // all inputs fenced; they are out of the next plan
 		}
 		s.backoff.succeeded(c)
 		compacted++
@@ -612,6 +620,12 @@ func (s *Scheduler) runMerge(ctx context.Context, partition string, selected []m
 		return nil, err
 	}
 
+	if len(result.OutputFiles) == 0 {
+		// Every input was fenced off (compactGroup): nothing was merged, so
+		// this is not a run, and the fenced objects leave the next plan.
+		return result, nil
+	}
+
 	metrics.CompactionRunsTotal.Inc()
 	metrics.CompactionFilesInputTotal.Add(len(selected))
 	metrics.CompactionFilesOutputTotal.Add(len(result.OutputFiles))
@@ -620,7 +634,7 @@ func (s *Scheduler) runMerge(ctx context.Context, partition string, selected []m
 	metrics.CompactionRowsMergedTotal.Add(int(result.RowsMerged))
 	metrics.CompactionDuration.Observe(time.Since(compStart).Seconds())
 
-	if s.onCompacted != nil && len(result.OutputFiles) > 0 {
+	if s.onCompacted != nil {
 		s.onCompacted(outputsOf(s.manifest, partition, result), result.InputFiles, result.OutputBlooms)
 	}
 
@@ -703,6 +717,10 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 			}
 			continue
 		}
+		result.FencedFiles = append(result.FencedFiles, r.FencedFiles...)
+		if len(r.OutputFiles) == 0 {
+			continue
+		}
 		merged++
 		result.InputFiles = append(result.InputFiles, r.InputFiles...)
 		result.OutputFiles = append(result.OutputFiles, r.OutputFiles...)
@@ -721,6 +739,10 @@ func (s *Scheduler) ForceCompactPartition(ctx context.Context, partition string,
 	if merged == 0 {
 		if firstErr != nil {
 			return nil, fmt.Errorf("forced compaction of %s: %w", partition, firstErr)
+		}
+		if len(result.FencedFiles) > 0 {
+			return nil, fmt.Errorf("partition %s: nothing was merged; %d object(s) hold columns this version does not know and were left alone (%s)",
+				partition, len(result.FencedFiles), strings.Join(result.FencedFiles, ", "))
 		}
 		return nil, fmt.Errorf("partition %s has fewer than 2 compactable files at level %d in any tenant", partition, level)
 	}

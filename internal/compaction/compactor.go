@@ -103,6 +103,10 @@ type CompactResult struct {
 	// union across all inputs). Fed into the pmeta bloom facet via PmetaOnCompacted
 	// so the compacted file stays file-level bloom-prunable. nil when pmeta is off.
 	OutputBlooms map[string]map[string][]string
+	// FencedFiles lists the objects the forward fence (schema.UnknownColumns)
+	// left alone: they hold a column this version does not model. They are in
+	// neither InputFiles nor the output, and stay in the manifest.
+	FencedFiles []string
 }
 
 // Compactor merges small Parquet files into larger ones.
@@ -179,7 +183,8 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 		if err != nil {
 			return nil, err
 		}
-		if groupResult == nil {
+		result.FencedFiles = append(result.FencedFiles, groupResult.Fenced...)
+		if groupResult.OutputKey == "" {
 			continue
 		}
 		result.InputFiles = append(result.InputFiles, groupResult.InputKeys...)
@@ -206,6 +211,10 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 	}
 
 	result.Duration = time.Since(start)
+
+	if len(result.OutputFiles) == 0 {
+		return &result, nil // everything was fenced: nothing was compacted
+	}
 
 	logger.Infof("compaction complete; partition=%s, tenant_groups=%d, input_files=%d, rows_merged=%d, bytes_read=%d, bytes_written=%d, output_level=%d, duration=%v",
 		partition, len(groups), len(files), result.RowsMerged, result.BytesRead, result.BytesWritten, result.OutputLevel, result.Duration)
@@ -298,14 +307,22 @@ type compactGroupResult struct {
 	// BloomValues: the combined pmeta bloom (column -> distinct values) extracted
 	// from this group's merged rows — the union of all inputs' bloomed values.
 	BloomValues map[string][]string
+	// Fenced lists the inputs the forward fence left alone. A group with fewer
+	// than two inputs left after the fence returns only this (no OutputKey).
+	Fenced []string
 }
 
 // fenceLog remembers the objects the forward fence (schema.UnknownColumns)
 // skipped, across the short-lived Compactors the scheduler creates per merge.
-var fenceLog schema.FenceLog
+var fenceLog = &schema.FenceLog{}
 
-// compactGroup merges one tenant's files. It returns (nil, nil) when the
-// forward fence left fewer than two files to merge: nothing was changed.
+// fenceKey identifies an object for the fence: the same key can exist in two
+// buckets.
+func fenceKey(f manifest.FileInfo) string { return f.Bucket + "\x00" + f.Key }
+
+// compactGroup merges one tenant's files. When the forward fence left fewer
+// than two files to merge it returns a result with no OutputKey: nothing was
+// changed.
 func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenantFileGroup, fp string, outputLevel int) (*compactGroupResult, error) {
 	var (
 		allData   [][]byte
@@ -327,9 +344,10 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// One clock reading for the whole merge, so eligibility is judged once.
 	now := time.Now()
 	var keptFiles []manifest.FileInfo
+	var fenced []string
 	for _, f := range g.Files {
-		if fenceLog.Has(f.Key) {
-			metrics.SkippedUnknownColumns(string(c.mode), "compact").Inc()
+		if fenceLog.Has(fenceKey(f)) {
+			fenced = append(fenced, f.Key)
 			continue
 		}
 		data, err := c.pool.Download(ctx, f.Key)
@@ -342,10 +360,11 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		// Forward fence: an object with a column this code does not model
 		// would lose it in the merge. Leave it where it is.
 		if unknown := schema.UnknownColumns(data, string(c.mode)); len(unknown) > 0 {
-			metrics.SkippedUnknownColumns(string(c.mode), "compact").Inc()
-			if fenceLog.Mark(f.Key) {
+			if fenceLog.Mark(fenceKey(f)) {
+				metrics.SkippedUnknownColumns(string(c.mode), "compact").Inc()
 				logger.Warnf("compaction skips an object with columns this version does not know, so a merge would drop them; key=%s, columns=%v", f.Key, unknown)
 			}
+			fenced = append(fenced, f.Key)
 			continue
 		}
 		keptFiles = append(keptFiles, f)
@@ -353,11 +372,11 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		bytesRead += int64(len(data))
 		inputKeys = append(inputKeys, f.Key)
 	}
-	if len(keptFiles) < len(g.Files) {
+	if len(fenced) > 0 {
 		// Some inputs were fenced off. Merge the rest if two or more remain;
 		// a lone file is never rewritten.
 		if len(keptFiles) < 2 {
-			return nil, nil
+			return &compactGroupResult{Fenced: fenced}, nil
 		}
 		g.Files = keptFiles
 	}
@@ -630,6 +649,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		BytesRead:    bytesRead,
 		BytesWritten: int64(len(outputData)),
 		BloomValues:  bloomValues,
+		Fenced:       fenced,
 	}, nil
 }
 

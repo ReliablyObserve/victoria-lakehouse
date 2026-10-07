@@ -114,6 +114,7 @@ func rowCount(t *testing.T, signal string, data []byte) int {
 }
 
 func TestCompactor_Fence_SkipsUnknownColumnObjects(t *testing.T) {
+	freshFence(t)
 	for _, signal := range []string{"logs", "traces"} {
 		t.Run(signal, func(t *testing.T) {
 			s, known := fencedSetup(t, signal)
@@ -152,6 +153,7 @@ func TestCompactor_Fence_SkipsUnknownColumnObjects(t *testing.T) {
 
 // With fewer than two mergeable objects left, nothing is rewritten at all.
 func TestCompactor_Fence_NothingToMergeLeavesEverything(t *testing.T) {
+	freshFence(t)
 	for _, signal := range []string{"logs", "traces"} {
 		t.Run(signal, func(t *testing.T) {
 			s, known := fencedSetup(t, signal)
@@ -175,6 +177,7 @@ func TestCompactor_Fence_NothingToMergeLeavesEverything(t *testing.T) {
 
 // A schema-known set is merged exactly as before the fence existed.
 func TestCompactor_Fence_KnownSchemaMergesAsBefore(t *testing.T) {
+	freshFence(t)
 	for _, signal := range []string{"logs", "traces"} {
 		t.Run(signal, func(t *testing.T) {
 			s, known := fencedSetup(t, signal)
@@ -194,6 +197,7 @@ func TestCompactor_Fence_KnownSchemaMergesAsBefore(t *testing.T) {
 // unknown-column object is ever merged, rewritten or removed, and every row of
 // the known ones is in the output.
 func TestCompactor_Fence_PropertyNoUnknownInputIsRewritten(t *testing.T) {
+	freshFence(t)
 	r := rand.New(rand.NewSource(7))
 	for iter := 0; iter < 30; iter++ {
 		signal := []string{"logs", "traces"}[r.Intn(2)]
@@ -233,4 +237,14 @@ func TestCompactor_Fence_PropertyNoUnknownInputIsRewritten(t *testing.T) {
 			}
 		}
 	}
+}
+
+// freshFence gives the test its own fence memory and restores the process-wide
+// one afterwards: object keys repeat between tests, and a key fenced by one
+// test must not be skipped by another.
+func freshFence(t *testing.T) {
+	t.Helper()
+	old := fenceLog
+	fenceLog = &schema.FenceLog{}
+	t.Cleanup(func() { fenceLog = old })
 }

@@ -1016,7 +1016,9 @@ var (
 	// tombstone store is incomplete (restore_pending), a record is not
 	// durable (not_durable), a key absent from the manifest still exists and
 	// is not retired (absent_but_exists: a listing missed it), or whether it
-	// exists could not be checked (existence_unknown).
+	// exists could not be checked (existence_unknown), or the object holds a
+	// column this version does not model so it is not rewritten
+	// (unknown_columns).
 	DeleteRewriteDeferred = NewCounterVec("lakehouse_delete_rewrite_deferred_total", "reason")
 	// DeleteRewriteKeyCollisions counts replacement keys that could not be
 	// claimed because the key was already in use.

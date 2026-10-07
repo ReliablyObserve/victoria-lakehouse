@@ -542,6 +542,16 @@ func (s *RewriteScheduler) crashed(step string) bool {
 func (s *RewriteScheduler) rewriteOne(ctx context.Context, id, key string, ts Tombstone) (*RewriteResult, rewriteOutcome) {
 	// Step 1 — prepare: read the source and build the replacement in memory.
 	result, err := s.rewriter.Prepare(ctx, key, []Tombstone{ts})
+	if errors.Is(err, ErrUnknownColumns) {
+		// Not a failure: the object holds a column this version does not know,
+		// so rewriting it would drop that column. The tombstone stays pending
+		// (visible in /delete/active_tasks, its rows stay hidden) until a
+		// version that knows the column rewrites it. Counted as deferred, not
+		// as a rewrite error, so the rewrite-error alert stays quiet; the
+		// fence's own counter and alert report it.
+		metrics.DeleteRewriteDeferred.Inc("unknown_columns")
+		return nil, rewriteFailed
+	}
 	if err != nil {
 		metrics.DeleteRewriteErrors.Inc()
 		logger.Errorf("rewrite failed: %s; key=%s", err, key)
