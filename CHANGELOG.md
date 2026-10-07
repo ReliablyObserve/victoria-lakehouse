@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **API data-proof metrics library: tests close the gaps a mutation run found.** Tooling only, no runtime change (`scripts/proof/`, `tests/parity/testdata/tiecut_golden.json`): a re-read tie group with an extra row, per-field hits series, duplicate rows, equal trace counts with different ids, a nondeterministic verdict failing the gate, a blocked reference 500 and a tight `--check` tolerance each have a test, and the feature text says what the library does today.
 - **The registry gate is hardened against the bypasses found in review.** Product code now includes embedded
   UI assets and every non-test file under `internal/`, `cmd/`, `lakehouse-traces/`, plus shipped Dockerfiles
   and the root `go.mod`/`go.sum`; a `Code generated` marker no longer exempts a file; a dependency-only PR must
@@ -22,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **API data-proof metrics library.** Tooling only, no runtime change (`scripts/proof/`): pure functions that score a captured answer against hot VictoriaLogs/VictoriaTraces in percent per quality facet (row sets, fields, values, series, spans, order, truth), a verdict per request, a CLI table, and offline fixtures recorded from hot VL v1.53.0 and VT v0.12.0. The tie rule for a row limit that cuts a group of equal sort keys is checked against the Go implementation with shared vectors. The library's tests are checked by mutation: every surviving mutant found so far has a test.
+- **API data-proof metrics library.** Tooling only, no runtime change (`scripts/proof/`): pure functions that score a captured answer against hot VictoriaLogs/VictoriaTraces in percent per quality facet (row sets, fields, values, series, spans, order, truth), a verdict per request, a CLI table, and offline fixtures recorded from hot VL v1.53.0 and VT v0.12.0. The tie rule for a row limit that cuts a group of equal sort keys is checked against the Go implementation with shared vectors.
 
 ## [0.146.4] - 2026-10-07
 
