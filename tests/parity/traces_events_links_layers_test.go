@@ -142,6 +142,21 @@ func compareExtrasTrace(t *testing.T, tn extrasTenant, id string) {
 	get := func(base, path string, params url.Values) fetchResult {
 		return tenantFetch(t, base, path, params, tn.account, tn.project)
 	}
+	// Trace-by-ID reads the trace index, which hot VictoriaTraces keeps behind
+	// its latency offset: a just-written trace answers 404 for a while, on hot
+	// only. Wait for hot to answer before comparing; the cold side is read once
+	// hot has answered, so any difference is real.
+	byID := func(path string) (fetchResult, fetchResult) {
+		t.Helper()
+		dl := time.Now().Add(90 * time.Second)
+		for {
+			h := get(vtBaseURL, path, nil)
+			if h.StatusCode != http.StatusNotFound || time.Now().After(dl) {
+				return h, get(lhtBaseURL, path, nil)
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}
 	params := tracesWindow()
 	params.Set("query", fmt.Sprintf(`trace_id:=%q`, id))
 	params.Set("limit", "1000")
@@ -186,7 +201,7 @@ func compareExtrasTrace(t *testing.T, tn extrasTenant, id string) {
 		t.Fatalf("vacuous: only %d event/link/scope fields on the reference side", compared)
 	}
 
-	jr, js := get(vtBaseURL, "/select/jaeger/api/traces/"+id, nil), get(lhtBaseURL, "/select/jaeger/api/traces/"+id, nil)
+	jr, js := byID("/select/jaeger/api/traces/" + id)
 	if jr.StatusCode != 200 || js.StatusCode != 200 {
 		t.Fatalf("jaeger status hot=%d cold=%d", jr.StatusCode, js.StatusCode)
 	}
@@ -206,7 +221,7 @@ func compareExtrasTrace(t *testing.T, tn extrasTenant, id string) {
 	}
 
 	for _, path := range []string{"/select/tempo/api/traces/" + id, "/select/tempo/api/v2/traces/" + id} {
-		tr, ts := get(vtBaseURL, path, nil), get(lhtBaseURL, path, nil)
+		tr, ts := byID(path)
 		if tr.StatusCode != 200 || ts.StatusCode != 200 {
 			t.Fatalf("%s status hot=%d cold=%d", path, tr.StatusCode, ts.StatusCode)
 		}
@@ -228,31 +243,61 @@ func compareExtrasTrace(t *testing.T, tn extrasTenant, id string) {
 	}
 }
 
-// recompactPartition merges the tenant files of the partition holding at. The
-// answer is 400 until the partition has two compactable files, so it retries.
+// tenantFiles returns how many objects the cold manifest holds for account:project.
+func tenantFiles(t *testing.T, account, project string) int64 {
+	t.Helper()
+	r := fetch(t, lhtBaseURL, "/lakehouse/api/v1/tenants", nil)
+	var d struct {
+		Tenants []tenantSummary `json:"tenants"`
+	}
+	if r.StatusCode != http.StatusOK || json.Unmarshal(r.Body, &d) != nil {
+		return -1
+	}
+	for _, te := range d.Tenants {
+		if te.AccountID == account && te.ProjectID == project {
+			return te.TotalFiles
+		}
+	}
+	return -1
+}
+
+// recompactPartition merges the tenant files of the partition holding at, and
+// returns once every tenant of this case has a single object there: through
+// POST /lakehouse/compaction/recompact, or because the compaction schedule
+// (15 s in the parity stack) merged them first, in which case the recompact
+// answers 400 (fewer than two files left to merge).
 func recompactPartition(t *testing.T, at time.Time) {
 	t.Helper()
 	partition := at.UTC().Format("dt=2006-01-02/hour=15")
 	body, _ := json.Marshal(map[string]any{"partition": partition})
-	deadline := time.Now().Add(60 * time.Second)
+	merged := func() bool {
+		for _, tn := range extrasTenants {
+			if tenantFiles(t, tn.account, tn.project) != 1 {
+				return false
+			}
+		}
+		return true
+	}
+	deadline := time.Now().Add(120 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
+		if merged() {
+			return
+		}
 		req, _ := http.NewRequest(http.MethodPost, lhtBaseURL+"/lakehouse/compaction/recompact", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := httpClient.Do(req)
 		if err == nil {
 			b := readAllOrEmpty(resp)
 			_ = resp.Body.Close()
-			if resp.StatusCode == 200 {
-				return
-			}
 			last = fmt.Sprintf("%d %s", resp.StatusCode, b)
 		} else {
 			last = err.Error()
 		}
 		time.Sleep(3 * time.Second)
 	}
-	t.Fatalf("recompact of %s never succeeded: %s", partition, last)
+	t.Fatalf("the tenants of this case never ended with one object each in %s (last recompact answer: %s; files: %d, %d)",
+		partition, last, tenantFiles(t, extrasTenants[0].account, extrasTenants[0].project), tenantFiles(t, extrasTenants[1].account, extrasTenants[1].project))
 }
 
 func TestParity_Traces_EventsLinksLayers(t *testing.T) {
@@ -271,9 +316,10 @@ func TestParity_Traces_EventsLinksLayers(t *testing.T) {
 		}
 		all = append(all, p)
 	}
+	pushedBatches := 1
 	compareAll := func(t *testing.T) {
 		for _, p := range all {
-			for _, id := range p.ids {
+			for _, id := range p.ids[:pushedBatches] {
 				t.Run(fmt.Sprintf("tenant_%s_%s/trace_%s", p.tn.account, p.tn.project, id[16:]), func(t *testing.T) {
 					compareExtrasTrace(t, p.tn, id)
 				})
@@ -300,6 +346,7 @@ func TestParity_Traces_EventsLinksLayers(t *testing.T) {
 			pushExtrasTrace(t, base, p.tn, p.ids[1], at.Add(time.Second))
 		}
 	}
+	pushedBatches = 2
 	flushed(t)
 	t.Run("parquet", compareAll)
 	recompactPartition(t, at)
