@@ -15,7 +15,6 @@ decides the verdict by itself when the table of states says so. Writes OUT/compa
 from __future__ import annotations
 
 import glob
-import json
 import os
 import sys
 
@@ -34,6 +33,21 @@ def _load(d: str, side: str) -> dict | None:
     return load_json(p) if os.path.exists(p) else None
 
 
+def questions(ref_answers: dict, fr: FacetResult) -> dict[str, list]:
+    """Per question: [score, worst facet], so a page row can name the request a difference sits in."""
+    out: dict[str, list] = {}
+    for key, a in ref_answers.items():
+        tag = key[:60] + "|"
+        facets = {k[len(tag):]: v for k, v in fr.facets.items() if k.startswith(tag)}
+        if facets:
+            n = min(facets, key=lambda x: (facets[x], x))
+            out[a.get("label", key)] = [facets[n], n]
+    for k, v in fr.facets.items():
+        if k.endswith("|extra"):
+            out[f"extra: {k[:-6][:50]}"] = [v, "extra"]
+    return out
+
+
 def score_side(ref_answers: dict, side_answers: dict) -> tuple[FacetResult, list[str]]:
     """Facets of one side against the reference, one set per matched question plus request_match facets."""
     res = FacetResult()
@@ -46,6 +60,7 @@ def score_side(ref_answers: dict, side_answers: dict) -> tuple[FacetResult, list
             notes.append(f"not asked: {key[:100]}")
             continue
         meta = {"kind": ra["kind"] if ra["kind"] not in ("error",) else "json", **ra["meta"], **{k: v for k, v in sa["meta"].items() if k not in ra["meta"]}}
+        meta["surface"] = "vt-native" if "spanID" in (meta.get("identity") or []) else "vl-native"  # picks the default row identity
         if ra["kind"] != sa["kind"]:
             res.facets[f"{tag}|kind"] = 0.0
             notes.append(f"answer kind {sa['kind']} vs reference {ra['kind']}: {key[:80]}")
@@ -66,18 +81,25 @@ def score_side(ref_answers: dict, side_answers: dict) -> tuple[FacetResult, list
     return res, notes
 
 
-def page_verdict(states: dict, base_fr: FacetResult, pr_fr: FacetResult, claimed: bool, digests: dict | None = None) -> str:
+def page_verdict(states: dict, base_fr: FacetResult, pr_fr: FacetResult, claimed: bool, differ: bool = False) -> str:
     t = transition(states["base"]["state"], states["pr"]["state"], states.get("ref", {}).get("state"))
     if t in ("regression", "unsettled", "fixed"):
         return t
     v = classify(base_fr, pr_fr, claimed=claimed)
     if v == "regressed":
         return "regression"
-    if v == "same" and digests and digests["base"] != digests["pr"]:
+    if v == "same" and differ:
         return "unexpected-change"
     if t == "same-as-reference" and v in ("same", "exact"):
         return "same-as-reference"
     return {"exact": "match", "same": "same"}.get(v, v)
+
+
+def _short(w: tuple[str, float]) -> list:
+    """The worst facet with the question it belongs to: 'field_names hits_equality'."""
+    key, facet = (w[0].rsplit("|", 1) + [""])[:2] if "|" in w[0] else ("", w[0])
+    m = key.split("/")[-1].split(":")[0] if key.startswith("r:") else key.split(":")[1] if key.startswith("q:") else key
+    return [f"{m} {facet}".strip(), w[1]]
 
 
 def compare_page(d: str, claimed: bool = False) -> dict | None:
@@ -92,14 +114,16 @@ def compare_page(d: str, claimed: bool = False) -> dict | None:
     else:
         base_fr = pr_fr = FacetResult()
         base_notes = pr_notes = ["no reference captured"]
-    dig = {s: json.dumps({k: v["body"] for k, v in sorted(ans[s].items())}, sort_keys=True) for s in ("base", "pr")}
-    verdict = page_verdict(states, base_fr, pr_fr, claimed, dig) if caps["ref"] else "undecided"
+    # base and PR answering differently while neither matches the reference is an unexpected change
+    diff = score_side(ans["base"], ans["pr"])[0] if caps["ref"] else FacetResult()
+    verdict = page_verdict(states, base_fr, pr_fr, claimed, not diff.exact) if caps["ref"] else "undecided"
     return {
         "verdict": verdict, "states": states,
         "base_score": base_fr.score, "pr_score": pr_fr.score,
-        "base_worst": base_fr.worst, "pr_worst": pr_fr.worst,
+        "base_worst": _short(base_fr.worst), "pr_worst": _short(pr_fr.worst),
         "base_notes": base_notes[:8], "pr_notes": pr_notes[:8],
         "requests": {s: len(ans[s]) for s in SIDES},
+        "questions": {"base": questions(ans["ref"], base_fr), "pr": questions(ans["ref"], pr_fr)} if caps["ref"] else {},
         "ui": {s: (caps[s] or {}).get("ui") for s in SIDES},
         "console_errors": {s: len((caps[s] or {}).get("errors") or []) for s in SIDES},
         "settle_ms": {s: (caps[s] or {}).get("settle_ms") for s in SIDES},
@@ -125,7 +149,7 @@ def markdown(results: dict, label: str = "PR") -> str:
     for k, r in sorted(results.items()):
         st = r["states"]
         s = " / ".join(st.get(x, {}).get("state", "-") for x in SIDES)
-        lines.append(f"| `{k}` | {pct(r['base_score'])} | {pct(r['pr_score'])} | {s} | {r['verdict']} | {r['pr_worst'][0].split('|')[-1] if r['pr_score'] < 100 else '-'} |")
+        lines.append(f"| `{k}` | {pct(r['base_score'])} | {pct(r['pr_score'])} | {s} | {r['verdict']} | {r['pr_worst'][0] if r['pr_score'] < 100 else '-'} |")
     return "\n".join(lines)
 
 

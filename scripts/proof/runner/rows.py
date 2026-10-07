@@ -58,12 +58,17 @@ def validate_row(r: dict) -> None:
 
 
 def load_tier(names: list[str]) -> list[dict]:
-    rows = []
+    """Rows of one or more row sets. The same row in two sets runs once; two different rows with one id are an error."""
+    rows: list[dict] = []
+    seen: dict[str, dict] = {}
     for n in names:
-        rows += load_rows(n if os.path.exists(n) else os.path.join(ROWS_DIR, n + ".json"))
-    ids = [r["id"] for r in rows]
-    if len(ids) != len(set(ids)):
-        raise RowError("duplicate row ids across tiers")
+        for r in load_rows(n if os.path.exists(n) else os.path.join(ROWS_DIR, n + ".json")):
+            if r["id"] in seen:
+                if seen[r["id"]] != r:
+                    raise RowError(f"row id {r['id']!r} is defined twice with different content")
+                continue
+            seen[r["id"]] = r
+            rows.append(r)
     return rows
 
 
@@ -81,15 +86,17 @@ def window_params(row: dict, layer: str, state: dict) -> dict:
     return {"start": win["start"], "end": win["end"]}
 
 
-def expand(row: dict, state: dict, picks: dict | None = None) -> list[dict]:
-    """The concrete requests of a row: one per (form, layer)."""
+def expand(row: dict, state: dict, picks=None) -> list[dict]:
+    """The concrete requests of a row: one per (form, layer). `picks` is a dict of values for the {name}
+    placeholders of the path and params, or a function (form, layer) -> dict (a value taken from the reference
+    per tenant form and layer)."""
     out = []
-    picks = picks or {}
     signal = SURFACE_SIGNAL[row["surface"]]
     for form in row.get("forms", ["numeric", "alias"]):
         for layer in row.get("layers", ["cold", "buffer"]):
             win = {"end": state["buffer"]["end"]} if layer == "all" else state[layer]
-            fmt = {**picks, "END": win["end"]}
+            got = picks(form, layer) if callable(picks) else (picks or {})
+            fmt = {**got, "END": win["end"]}
             params = {k: str(v).format(**fmt) if isinstance(v, str) else v for k, v in row.get("params", {}).items()}
             params.update(window_params(row, layer, state))
             path = row["path"].format(**fmt)

@@ -113,6 +113,25 @@ def wait_drained(state: dict, timeout: float = 240) -> None:
         time.sleep(5)
 
 
+def read_buffered(state: dict) -> dict:
+    return {f"{v}-{sig}-{a_}": buffered_rows(PORTS[f"{v}-{sig}"], sig, state["buffer"]["start"], state["buffer"]["end"], a_, p_)
+            for v in ("base", "pr") for sig in ("logs", "traces") for _, a_, p_, *_ in BUFFER_TENANTS}
+
+
+def settled_buffered(state: dict, timeout: float = 60, step: float = 3) -> dict:
+    """Unflushed rows per Lakehouse and tenant once ingest has become visible: two equal consecutive reads, all nonzero."""
+    deadline = time.time() + timeout
+    last = None
+    while True:
+        cur = read_buffered(state)
+        if cur == last and all(cur.values()):
+            return cur
+        if time.time() > deadline:
+            raise SystemExit(f"buffer counts did not settle: {cur}")
+        last = cur
+        time.sleep(step)
+
+
 def cmd_build(a):  # pragma: no cover - drives docker compose
     for d, tag in ((a.main, "base"), (a.pr, "pr")):
         if not d:
@@ -148,8 +167,7 @@ def cmd_hold(a):  # pragma: no cover - drives docker compose
     for t in BUFFER_TENANTS:
         sh(datagen_cmd(now, 1, t, hot=True, lh="base"))
         sh(datagen_cmd(now, 1, t, hot=False, lh="pr"))
-    state["buffered"] = {f"{v}-{sig}-{a_}": buffered_rows(PORTS[f"{v}-{sig}"], sig, state["buffer"]["start"], state["buffer"]["end"], a_, p_)
-                         for v in ("base", "pr") for sig in ("logs", "traces") for _, a_, p_, *_ in BUFFER_TENANTS}
+    state["buffered"] = settled_buffered(state)
     state["trace_id"] = pick_trace(state)
     json.dump(state, open(path, "w"), indent=1)
     print(json.dumps(state["buffered"]))

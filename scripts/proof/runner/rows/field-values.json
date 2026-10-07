@@ -168,6 +168,19 @@
    "kind": "values",
    "path": "/select/logsql/field_values",
    "params": {
+    "query": "span_id:*",
+    "field": "span_attr:http.method",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vt.field_values.span_attr:http.method.star",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
     "query": "*",
     "field": "span_attr:http.method",
     "limit": "1000"
@@ -181,7 +194,7 @@
    "kind": "values",
    "path": "/select/logsql/field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "span_attr:db.system",
     "limit": "1000"
    },
@@ -194,7 +207,7 @@
    "kind": "values",
    "path": "/select/logsql/field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "resource_attr:deployment.environment",
     "limit": "1000"
    },
@@ -207,7 +220,7 @@
    "kind": "values",
    "path": "/select/logsql/field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "resource_attr:k8s.namespace.name",
     "limit": "1000"
    },
@@ -220,7 +233,7 @@
    "kind": "values",
    "path": "/select/logsql/field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "scope_attr:otel.scope.name",
     "limit": "1000"
    },
@@ -228,7 +241,7 @@
    "claimed_gap": "438-map"
   },
   {
-   "id": "vt.field_values.name",
+   "id": "vt.field_values.name.star",
    "surface": "vt-native",
    "kind": "values",
    "path": "/select/logsql/field_values",
@@ -246,7 +259,7 @@
    "kind": "values",
    "path": "/select/logsql/field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "kind",
     "limit": "1000"
    },
@@ -259,7 +272,7 @@
    "kind": "values",
    "path": "/select/logsql/field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "status_code",
     "limit": "1000"
    },
@@ -268,6 +281,19 @@
   },
   {
    "id": "vt.field_values.absent",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "span_id:*",
+    "field": "span_attr:nosuchfield",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.empty_absent_everywhere",
+   "may_be_empty": true
+  },
+  {
+   "id": "vt.field_values.absent.star",
    "surface": "vt-native",
    "kind": "values",
    "path": "/select/logsql/field_values",
@@ -297,7 +323,7 @@
    "kind": "values",
    "path": "/select/logsql/stream_field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "resource_attr:service.name",
     "limit": "1000"
    },
@@ -309,7 +335,7 @@
    "kind": "values",
    "path": "/select/logsql/stream_field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "name",
     "limit": "1000"
    },
@@ -321,7 +347,7 @@
    "kind": "values",
    "path": "/select/logsql/stream_field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "span_attr:http.method",
     "limit": "1000"
    },
@@ -334,7 +360,7 @@
    "kind": "values",
    "path": "/select/logsql/stream_field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "resource_attr:service.name",
     "limit": "2"
    },
@@ -356,7 +382,7 @@
    "kind": "series_hits",
    "path": "/select/logsql/hits",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "step": "1h"
    },
    "row": "vt.select.logsql_hits.basic"
@@ -419,6 +445,17 @@
    "layers": [
     "all"
    ]
+  },
+  {
+   "id": "vt.hits.star",
+   "surface": "vt-native",
+   "kind": "series_hits",
+   "path": "/select/logsql/hits",
+   "params": {
+    "query": "*",
+    "step": "1h"
+   },
+   "row": "vt.select.logsql_hits.basic"
   }
  ]
 }

@@ -39,7 +39,7 @@ jobs:
       - name: Unit tests with coverage floor
         run: |
           python -m pytest scripts/proof/tests -q \
-            --cov=scripts.proof.metrics --cov=scripts.proof.runner --cov=scripts.proof.visual --cov=scripts.proof.stack \
+            --cov=scripts.proof.metrics --cov=scripts.proof.runner --cov=scripts.proof.visual --cov=scripts.proof.stack --cov=scripts.proof.comment \
             --cov-report=term-missing --cov-fail-under=90
 
       - name: Proof stack compose file is valid

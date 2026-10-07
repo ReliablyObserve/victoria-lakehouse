@@ -109,7 +109,7 @@ async function uiState(page: Page) {
 
 const QUIET = parseInt(process.env.VP_QUIET_MS || "3000");
 
-async function settle(page: Page, pending: { n: number; last: number; seen: number }, max = parseInt(process.env.VP_SETTLE_MS || "60000")) {
+async function settle(page: Page, pending: { n: number; last: number; seen: number }, max = parseInt(process.env.VP_SETTLE_MS || "45000")) {
   const t0 = Date.now();
   await page.waitForTimeout(3000);
   while (Date.now() - t0 < max) {
@@ -160,7 +160,7 @@ for (const p of spec.pages as PageSpec[]) {
     if (rangesOnly && !rangesOnly.has(r)) continue;
     test(`${p.id} ${r}`, async ({ browser }) => {
       for (const side of sides) {
-        for (let attempt = 0; attempt < 3; attempt++) {
+        for (let attempt = 0; attempt < 2; attempt++) {
           const ctx = await browser.newContext();
           const page = await ctx.newPage();
           const pending = { n: 0, last: Date.now(), seen: 0 };
@@ -182,17 +182,23 @@ for (const p of spec.pages as PageSpec[]) {
           });
           const t0 = Date.now();
           await page.goto(pageUrl(p, side, r), { waitUntil: "commit" });
+          const dbg = (m: string) => { if (process.env.VP_DEBUG) console.log(`${p.id} ${r} ${side} ${m} +${Date.now() - t0}ms pending=${pending.n}`); };
+          dbg("goto done");
           let ok = await settle(page, pending);
+          dbg("settled");
           await interact(page, p);
+          dbg("interacted");
           ok = (await settle(page, pending, 20_000)) || ok;
           const unavailable = records.some((x) => x.status === 500 && /plugin\.(unavailable|connectionUnavailable)/.test(JSON.stringify(x.response)));
           const empty = !ok && !records.some((x) => x.status === 200);
-          if ((unavailable || empty) && attempt < 2) { await ctx.close(); await new Promise((res) => setTimeout(res, 5000)); continue; }
+          if ((unavailable || empty) && attempt < 1) { await ctx.close(); await new Promise((res) => setTimeout(res, 5000)); continue; }
           const dir = path.join(OUT, "shots", p.id, r);
           const ddir = path.join(OUT, "data", p.id, r);
           fs.mkdirSync(dir, { recursive: true });
           fs.mkdirSync(ddir, { recursive: true });
+          dbg("before screenshot");
           await page.screenshot({ path: path.join(dir, `${side}.png`), fullPage: false });
+          dbg("screenshot");
           const ui = await uiState(page);
           fs.writeFileSync(path.join(ddir, `${side}.json`), JSON.stringify({ settled: ok, settle_ms: pending.last - t0, attempts: attempt + 1, kind: p.kind, records, ui, errors }));
           await ctx.close();

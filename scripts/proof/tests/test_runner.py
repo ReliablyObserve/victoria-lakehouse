@@ -28,7 +28,7 @@ def registry_ids():
 
 def test_shipped_rows_are_valid_and_core_rows_exist_in_the_registry():
     ids = registry_ids()
-    for name in ("core", "field-values"):
+    for name in ("core", "field-values", "audit"):
         path = os.path.join(R.ROWS_DIR, name + ".json")
         doc = json.load(open(path))
         rows = R.load_rows(path)
@@ -66,12 +66,14 @@ def test_duplicate_ids_are_rejected(tmp_path):
         R.load_tier([str(p)])
 
 
-def test_tier_rejects_duplicates_across_files(tmp_path):
+def test_tier_runs_the_same_row_once_and_rejects_conflicting_definitions(tmp_path):
     row = {"id": "a", "surface": "vl-native", "kind": "values", "path": "/a"}
     for n in ("1", "2"):
         (tmp_path / f"{n}.json").write_text(json.dumps({"rows": [row]}))
+    assert [r["id"] for r in R.load_tier([str(tmp_path / "1.json"), str(tmp_path / "2.json")])] == ["a"]
+    (tmp_path / "3.json").write_text(json.dumps({"rows": [{**row, "path": "/b"}]}))
     with pytest.raises(R.RowError):
-        R.load_tier([str(tmp_path / "1.json"), str(tmp_path / "2.json")])
+        R.load_tier([str(tmp_path / "1.json"), str(tmp_path / "3.json")])
 
 
 def test_expand_windows_forms_layers_and_methods():
@@ -280,12 +282,20 @@ def test_unreachable_target_fails_seed_equality(monkeypatch):
     assert e.value.code == 2
 
 
+def test_expand_with_a_pick_function_resolves_per_form_and_layer():
+    row = {"id": "t", "surface": "jaeger", "kind": "trace_jaeger", "path": "/select/jaeger/api/traces/{tid}", "window": "none"}
+    reqs = R.expand(row, STATE, lambda form, layer: {"tid": f"{form}-{layer}"})
+    assert {r["path"].rsplit("/", 1)[1] for r in reqs} == {"numeric-cold", "numeric-buffer", "alias-cold", "alias-buffer"}
+
+
 def test_pick_takes_a_value_from_the_reference_and_fails_loudly_when_absent():
     srv = serve({"/select/logsql/query": (200, '{"trace_id":"abc"}\n')})
     st = state_for({"ref": srv})
     try:
         row = {"id": "p", "surface": "jaeger", "kind": "values", "path": "/t/{tid}", "pick": {"tid": {"query": "q", "field": "trace_id", "signal": "traces"}}}
         assert runner.resolve_picks(row, st) == {"tid": "abc"}
+        assert runner.resolve_picks(row, st, "buffer", "alias") == {"tid": "abc"}
+        assert any(c[3].startswith("query=q") and "start=2026-10-07T15" in c[3] and c[2].get("Accountid") == "1001" for c in Stub.calls)
         srv.routes = {"/select/logsql/query": (200, "")}
         with pytest.raises(SystemExit) as e:
             runner.resolve_picks(row, st)

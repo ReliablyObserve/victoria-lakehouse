@@ -86,14 +86,16 @@ def buffered_rows(state: dict, target: str, signal: str, form: str, layer: str) 
         return None
 
 
-def resolve_picks(row: dict, state: dict) -> dict:
-    """A value taken once from the reference (first row of a sorted query), used on every target."""
+def resolve_picks(row: dict, state: dict, layer: str = "cold", form: str = "numeric") -> dict:
+    """A value taken once from the reference (first row of a sorted query in the request's window and tenant
+    form), used on every target of that request."""
     out = {}
+    win = state["cold" if layer == "all" else layer]
     for name, spec in (row.get("pick") or {}).items():
         sig = "traces" if spec.get("signal") == "traces" else "logs"
         env = client.send("POST", target_url(state, "ref", sig) + "/select/logsql/query",
-                          {"query": spec["query"], "start": state["cold"]["start"], "end": state["cold"]["end"], "limit": "1"},
-                          tenant_headers("numeric", "ref"))
+                          {"query": spec["query"], "start": win["start"], "end": win["end"], "limit": "1"},
+                          tenant_headers(form, "ref"))
         try:
             out[name] = json.loads(env["body"].strip().splitlines()[0])[spec["field"]]
         except (ValueError, KeyError, IndexError):
@@ -147,7 +149,7 @@ def write_case(root: str, meta: dict, ans: dict, resamples: list[dict]) -> None:
 def run(state: dict, rows: list[dict], out: str, allowance: int | None = None) -> list:
     reqs = []
     for row in rows:
-        reqs += expand(row, state, resolve_picks(row, state))
+        reqs += expand(row, state, lambda form, layer, row=row: resolve_picks(row, state, layer, form))
     allowance = allowance if allowance is not None else max(60, len(reqs) // 10)
     spent = 0
     log = gzip.open(os.path.join(out, "bodies.jsonl.gz"), "wt", encoding="utf-8")

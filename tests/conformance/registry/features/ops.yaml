@@ -368,6 +368,7 @@
     - scripts/proof/tests/test_adversarial.py
     - scripts/proof/tests/test_ties.py
     - scripts/proof/tests/test_tiecut_golden.py
+    - scripts/proof/tests/test_key_order.py
     - scripts/proof/tests/test_runner.py
     - scripts/proof/tests/test_stack_and_cli.py
     - scripts/proof/tests/test_visual.py

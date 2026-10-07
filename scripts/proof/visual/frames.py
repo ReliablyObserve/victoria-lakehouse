@@ -31,6 +31,16 @@ def digest(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:10]
 
 
+def canon(v: Any) -> Any:
+    """Nested lists (tags, logs, references) compared as content: sorted by their canonical JSON, so the order a
+    producer happens to emit a set of tags in is not a difference of the row."""
+    if isinstance(v, dict):
+        return {k: canon(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return sorted((canon(x) for x in v), key=lambda x: json.dumps(x, sort_keys=True, default=str))
+    return v
+
+
 def _frame_rows(fr: dict) -> list[dict]:
     fields = fr["schema"]["fields"]
     values = fr["data"]["values"]
@@ -40,7 +50,7 @@ def _frame_rows(fr: dict) -> list[dict]:
         row = {}
         for f, col in zip(fields, values):
             v = col[i] if i < len(col) else None
-            row[f["name"]] = json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v
+            row[f["name"]] = json.dumps(canon(v), sort_keys=True) if isinstance(v, (dict, list)) else v
         rows.append(row)
     return rows
 
@@ -100,12 +110,13 @@ def answers_of(records: list[dict]) -> dict[str, dict]:
         if "/api/ds/query" in url:
             for q in (r.get("request") or {}).get("queries", []):
                 key = f"q:{q.get('refId')}:{q.get('queryType')}:{digest(strip(q))}"
+                label = f"{q.get('refId')} {q.get('queryType') or ''} {str(q.get('expr') or q.get('query') or '')[:50]}".strip()
                 if status != 200:
-                    out[key] = {"kind": "error", "body": json.dumps({"status": status}), "meta": {}, "status": status}
+                    out[key] = {"kind": "error", "body": json.dumps({"status": status}), "meta": {}, "status": status, "label": label}
                     continue
                 res = ((resp or {}).get("results") or {}).get(q.get("refId")) or {}
                 kind, body, meta = answer_of_result(res)
-                out[key] = {"kind": kind, "body": body, "meta": meta, "status": 500 if kind == "error" else 200}
+                out[key] = {"kind": kind, "body": body, "meta": meta, "status": 500 if kind == "error" else 200, "label": label}
             continue
         kind = resource_kind(url)
         if kind is None:
@@ -113,5 +124,7 @@ def answers_of(records: list[dict]) -> dict[str, dict]:
         req = strip(r.get("request")) if r.get("request") else None
         key = f"r:{_norm_url(url)}:{digest(req)}"
         body = resp if isinstance(resp, str) else json.dumps(resp)
-        out[key] = {"kind": kind, "body": body, "meta": {}, "status": status}
+        ep = url.split("?")[0].rsplit("/", 1)[-1]
+        field = (r.get("request") or {}).get("field") if isinstance(r.get("request"), dict) else None
+        out[key] = {"kind": kind, "body": body, "meta": {}, "status": status, "label": f"{ep}({field})" if field else ep}
     return out

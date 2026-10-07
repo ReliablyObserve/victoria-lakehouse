@@ -109,3 +109,19 @@ def test_cli_exit_codes_and_reports(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "fv.numeric.cold" in out and "other" not in out
     assert os.path.exists(tmp_path / "o" / "report.md") and os.path.exists(tmp_path / "o" / "bodies.jsonl.gz")
+
+
+def test_settled_buffered_waits_for_two_equal_nonzero_reads(monkeypatch):
+    reads = iter([{"a": 0}, {"a": 5}, {"a": 8}, {"a": 8}])
+    monkeypatch.setattr(stack, "read_buffered", lambda state: next(reads))
+    monkeypatch.setattr(stack.time, "sleep", lambda s: None)
+    assert stack.settled_buffered(STATE) == {"a": 8}
+    monkeypatch.setattr(stack, "read_buffered", lambda state: {"a": 0})
+    with pytest.raises(SystemExit):
+        stack.settled_buffered(STATE, timeout=-1)
+
+
+def test_read_buffered_covers_both_variants_signals_and_tenants(monkeypatch):
+    monkeypatch.setattr(stack, "buffered_rows", lambda *a, **k: 7)
+    got = stack.read_buffered(STATE)
+    assert len(got) == 8 and set(got.values()) == {7} and "pr-traces-1001" in got

@@ -36,6 +36,16 @@
    "row": "vl.select.field_names.basic"
   },
   {
+   "id": "vl.stream_field_names",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_names",
+   "params": {
+    "query": "*"
+   },
+   "row": "vl.select.stream_field_names.basic"
+  },
+  {
    "id": "vl.field_values.level",
    "surface": "vl-native",
    "kind": "values",
@@ -66,7 +76,7 @@
    "path": "/select/logsql/streams",
    "params": {
     "query": "*",
-    "limit": "1000"
+    "limit": "100000"
    },
    "row": "vl.select.streams.basic"
   },
@@ -101,7 +111,7 @@
    "kind": "values",
    "path": "/select/logsql/field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "name",
     "limit": "1000"
    },
@@ -113,11 +123,21 @@
    "kind": "values",
    "path": "/select/logsql/field_values",
    "params": {
-    "query": "*",
+    "query": "span_id:*",
     "field": "resource_attr:service.name",
     "limit": "1000"
    },
    "row": "vt.select.logsql_field_values.basic"
+  },
+  {
+   "id": "vt.stream_field_names",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_names",
+   "params": {
+    "query": "*"
+   },
+   "row": "vt.select.logsql_stream_field_names.basic"
   },
   {
    "id": "jaeger.services",

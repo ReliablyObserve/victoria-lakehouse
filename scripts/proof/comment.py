@@ -85,6 +85,16 @@ def visual_section(cmp: dict, label: str, image_base: str | None, explain: dict)
         st = r["states"]
         s = " / ".join(st.get(x, {}).get("state", "-") for x in ("base", "pr", "ref"))
         lines.append(f"| `{k}` | {pct(r['base_score'])} | {pct(r['pr_score'])} | {s} | {r['verdict']} |")
+    detail = [(k, r) for k, r in sorted(cmp.items()) if r["verdict"] not in ("match", "same-as-reference") and r.get("questions")]
+    if detail:
+        lines += ["", f"Questions the pages asked that differ from the reference (worst facet of each answer, base % -> {label} %):", ""]
+        lines += [f"| page / range | question | base % | {label} % | facet |", "|---|---|--:|--:|---|"]
+        for k, r in detail:
+            qb, qp = r["questions"]["base"], r["questions"]["pr"]
+            for q in sorted(set(qb) | set(qp)):
+                b, p = qb.get(q), qp.get(q)
+                if (b and b[0] < 100) or (p and p[0] < 100):
+                    lines.append(f"| `{k}` | `{q}` | {pct(b[0]) if b else '-'} | {pct(p[0]) if p else '-'} | {(p or b)[1]} |")
     if image_base:
         lines.append("")
         for k in sorted(cmp):

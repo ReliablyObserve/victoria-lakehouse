@@ -16,7 +16,7 @@ Pure functions that score a captured answer against a reference, as percentages 
 | M7 | `series_set`, `ts_alignment`, `points_within_tol`, `totals`, `nan_agreement`; point error p50/p95/max in details |
 | M8 | `value_set` (Jaccard, recall, precision) and `hits_equality` (a lost `hits` scores 0) |
 | M9 | `trace_set`, `span_set`, `span_fields` (name, service, start, duration, status, status message, kind, attributes, scope, scope version, scope attributes, resource, events, links), `parent_links`, `span_count` |
-| M10 | `order`: Kendall agreement; pairs inside a group tying on the full sort key are not comparable |
+| M10 | `order`: Kendall agreement; pairs inside a group tying on the full sort key are not comparable. `key_order` (opt in with `meta.key_order`): share of paired rows whose JSON members come in the reference's relative order |
 | M11 | `json_leaves`: equal leaf paths over the union |
 | M12 | `schema_keys`, `schema_types`, `schema_contract` |
 | M13 | `truth`: a Lakehouse number against the same calculation over hot VL/VT (shapes `scalar`, `scalar_sum`, `per_key`, `tenant_set`); unflushed rows are reported next to the score, never subtracted |
@@ -182,6 +182,19 @@ a query error and a PR that answers nothing, as the reference does, is `fixed`, 
 
 Not covered: the Lakehouse UI (no upstream reference), Tempo pages, tenant forms other than the default
 tenant 0:0 in Grafana (the datasources carry no tenant header), and any answer that depends on wall-clock time.
+
+### PR comment (`comment.py`)
+
+```
+python3 -m scripts.proof.comment --api OUT/api --visual OUT/visual --label "PR 438" --image-base <url> --explain why.json --out comment.md
+```
+
+The verdict line first; the table lists the requests that changed or still differ (matching ones are
+counted), with base %, PR % and the worst facet of each; then every remaining difference with the reason
+from `why.json` (a map from a request-id prefix to the explanation). A difference without a reason is
+printed as `unexplained` and the command exits 1. Row sets: `runner/rows/core.json` (native-first core),
+`field-values.json` (field values over map attributes, the empty-value bucket, stream fields) and
+`audit.json` (span events, links and scope; column and key order of sort rows; field names).
 
 ### Image hosting
 

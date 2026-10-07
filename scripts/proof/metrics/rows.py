@@ -331,3 +331,41 @@ def evaluate_count(ref_value: float | None, ans_value: float | None) -> FacetRes
     res.facets["count"] = cap_inexact(s, d == 0)
     res.details["count"] = {"delta": d, "delta_pct": 100.0 * frac, "ref": ref_value, "ans": ans_value}
     return res
+
+
+def key_order_agreement(ref_rows: list[dict], ans_rows: list[dict], identity: tuple[str, ...]) -> FacetResult:
+    """Order of the keys inside each row (the order of the JSON members as the API writes them).
+
+    Rows are paired by identity (a second row with the same identity pairs with the second one); for each pair the
+    keys both rows carry must come in the same relative order. Score: share of paired rows whose key order equals
+    the reference's. Rows without a partner are the row-set facet's business, not this one's. 100 only when exact.
+    """
+    ref_by: dict[tuple[str, int], dict] = {}
+    seen: Counter = Counter()
+    for r in ref_rows:
+        k = _identity(r, identity)
+        ref_by[(k, seen[k])] = r
+        seen[k] += 1
+    seen = Counter()
+    paired = equal = 0
+    first = ""
+    for r in ans_rows:
+        k = _identity(r, identity)
+        ref = ref_by.get((k, seen[k]))
+        seen[k] += 1
+        if ref is None:
+            continue
+        common = set(ref) & set(r)
+        a = [x for x in ref if x in common]
+        b = [x for x in r if x in common]
+        paired += 1
+        if a == b:
+            equal += 1
+        elif not first:
+            first = f"key order differs for {k[:60]}: reference {a[:6]} answer {b[:6]}"
+    res = FacetResult()
+    res.facets["key_order"] = 100.0 if paired == equal else 100.0 * equal / paired
+    res.details["key_order"] = {"paired_rows": paired, "equal_rows": equal}
+    if first:
+        res.notes.append(first)
+    return res
