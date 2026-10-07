@@ -1,0 +1,17 @@
+{
+ "body": {
+  "data": [
+   {
+    "name": "op0",
+    "spanKind": "server"
+   },
+   {
+    "name": "op1",
+    "spanKind": "server"
+   }
+  ],
+  "total": 2
+ },
+ "latency_ms": 10.0,
+ "status": 200
+}

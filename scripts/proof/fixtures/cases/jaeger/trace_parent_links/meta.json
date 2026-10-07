@@ -1,0 +1,18 @@
+{
+ "endpoint": "/select/jaeger/api/traces/{id}",
+ "expect": {
+  "base": {
+   "parent_links": 66.6,
+   "span_fields": 100.0
+  },
+  "pr": {
+   "parent_links": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "jaeger/trace_parent_links",
+ "kind": "trace_jaeger",
+ "row": "jaeger.trace.parents",
+ "signal": "traces",
+ "surface": "jaeger"
+}

@@ -1,0 +1,19 @@
+{
+ "claimed_gap": "430",
+ "endpoint": "/api/v2/traces/{id}",
+ "expect": {
+  "base": {
+   "span_fields": 0.0,
+   "span_set": 100.0
+  },
+  "pr": {
+   "span_fields": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "tempo/430_trace_events_links_scope",
+ "kind": "trace_otlp",
+ "row": "tempo.trace.by_id",
+ "signal": "traces",
+ "surface": "tempo"
+}

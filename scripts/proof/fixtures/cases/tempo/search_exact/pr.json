@@ -1,0 +1,38 @@
+{
+ "body": {
+  "traces": [
+   {
+    "durationMs": 5,
+    "rootServiceName": "cart",
+    "rootTraceName": "op0",
+    "traceID": "00000000000000000000000000000000"
+   },
+   {
+    "durationMs": 5,
+    "rootServiceName": "cart",
+    "rootTraceName": "op0",
+    "traceID": "00000000000000000000000000000001"
+   },
+   {
+    "durationMs": 5,
+    "rootServiceName": "cart",
+    "rootTraceName": "op0",
+    "traceID": "00000000000000000000000000000002"
+   },
+   {
+    "durationMs": 5,
+    "rootServiceName": "cart",
+    "rootTraceName": "op0",
+    "traceID": "00000000000000000000000000000003"
+   },
+   {
+    "durationMs": 5,
+    "rootServiceName": "cart",
+    "rootTraceName": "op0",
+    "traceID": "00000000000000000000000000000004"
+   }
+  ]
+ },
+ "latency_ms": 10.0,
+ "status": 200
+}

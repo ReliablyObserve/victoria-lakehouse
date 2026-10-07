@@ -1,0 +1,5 @@
+{
+ "body": "cannot parse query:  unexpected token \"foo\"",
+ "latency_ms": 10.0,
+ "status": 400
+}

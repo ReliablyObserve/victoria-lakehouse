@@ -1,0 +1,16 @@
+{
+ "endpoint": "/select/logsql/streams",
+ "expect": {
+  "base": {
+   "value_set": 100.0
+  },
+  "pr": {
+   "value_set": 100.0
+  },
+  "verdict": "exact"
+ },
+ "id": "vl-native/streams_exact",
+ "kind": "values",
+ "row": "vl.select.streams",
+ "surface": "vl-native"
+}

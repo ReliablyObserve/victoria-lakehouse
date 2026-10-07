@@ -1,0 +1,18 @@
+{
+ "endpoint": "/api/metrics/query_range",
+ "expect": {
+  "base": {
+   "series_set": 50.0
+  },
+  "pr": {
+   "points_within_tol": 87.5,
+   "series_set": 100.0
+  },
+  "verdict": "improved"
+ },
+ "id": "tempo/metrics_missing_series",
+ "kind": "series_tempo",
+ "row": "tempo.metrics.rate",
+ "signal": "traces",
+ "surface": "tempo"
+}

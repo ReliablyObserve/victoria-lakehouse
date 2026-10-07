@@ -1,0 +1,17 @@
+{
+ "claimed_gap": "cold-count",
+ "endpoint": "/select/logsql/stats_query",
+ "expect": {
+  "base": {
+   "count": 97.0
+  },
+  "pr": {
+   "count": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "vl-native/stats_count_fixed",
+ "kind": "count",
+ "row": "vl.select.stats_query.count",
+ "surface": "vl-native"
+}

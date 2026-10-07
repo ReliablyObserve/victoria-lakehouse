@@ -1,0 +1,20 @@
+{
+ "endpoint": "/select/jaeger/api/traces",
+ "expect": {
+  "base": {
+   "trace_set": 80.0
+  },
+  "details": {
+   "base.trace_set.recall": 80.0
+  },
+  "pr": {
+   "trace_set": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "jaeger/search_missing_traces",
+ "kind": "trace_jaeger",
+ "row": "jaeger.search",
+ "signal": "traces",
+ "surface": "jaeger"
+}

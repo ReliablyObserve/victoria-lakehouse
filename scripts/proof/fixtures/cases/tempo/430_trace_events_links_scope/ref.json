@@ -1,0 +1,137 @@
+{
+ "body": {
+  "trace": {
+   "resourceSpans": [
+    {
+     "resource": {
+      "attributes": [
+       {
+        "key": "service.name",
+        "value": {
+         "stringValue": "cart"
+        }
+       }
+      ]
+     },
+     "scopeSpans": [
+      {
+       "scope": {
+        "name": "cart-instrumentation"
+       },
+       "spans": [
+        {
+         "attributes": [
+          {
+           "key": "http.method",
+           "value": {
+            "stringValue": "GET"
+           }
+          }
+         ],
+         "endTimeUnixNano": "1790000000000000500",
+         "events": [
+          {
+           "attributes": [],
+           "name": "exception",
+           "timeUnixNano": "1790000000000000100"
+          }
+         ],
+         "kind": "SPAN_KIND_SERVER",
+         "links": [
+          {
+           "spanId": "0000000000000003",
+           "traceId": "00000000000000000000000000000009"
+          }
+         ],
+         "name": "op0",
+         "parentSpanId": "",
+         "spanId": "0000000000000001",
+         "startTimeUnixNano": "1790000000000000000",
+         "status": {
+          "code": "STATUS_CODE_OK"
+         },
+         "traceId": "00000000000000000000000000000007"
+        },
+        {
+         "attributes": [
+          {
+           "key": "http.method",
+           "value": {
+            "stringValue": "GET"
+           }
+          }
+         ],
+         "endTimeUnixNano": "1790000000000001500",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "op1",
+         "parentSpanId": "0000000000000001",
+         "spanId": "0000000000000002",
+         "startTimeUnixNano": "1790000000000001000",
+         "status": {
+          "code": "STATUS_CODE_OK"
+         },
+         "traceId": "00000000000000000000000000000007"
+        },
+        {
+         "attributes": [
+          {
+           "key": "http.method",
+           "value": {
+            "stringValue": "GET"
+           }
+          }
+         ],
+         "endTimeUnixNano": "1790000000000002500",
+         "events": [
+          {
+           "attributes": [],
+           "name": "exception",
+           "timeUnixNano": "1790000000000000102"
+          }
+         ],
+         "kind": "SPAN_KIND_SERVER",
+         "name": "op2",
+         "parentSpanId": "0000000000000002",
+         "spanId": "0000000000000003",
+         "startTimeUnixNano": "1790000000000002000",
+         "status": {
+          "code": "STATUS_CODE_OK"
+         },
+         "traceId": "00000000000000000000000000000007"
+        },
+        {
+         "attributes": [
+          {
+           "key": "http.method",
+           "value": {
+            "stringValue": "GET"
+           }
+          }
+         ],
+         "endTimeUnixNano": "1790000000000003500",
+         "kind": "SPAN_KIND_SERVER",
+         "links": [
+          {
+           "spanId": "0000000000000003",
+           "traceId": "00000000000000000000000000000009"
+          }
+         ],
+         "name": "op3",
+         "parentSpanId": "0000000000000003",
+         "spanId": "0000000000000004",
+         "startTimeUnixNano": "1790000000000003000",
+         "status": {
+          "code": "STATUS_CODE_OK"
+         },
+         "traceId": "00000000000000000000000000000007"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "latency_ms": 10.0,
+ "status": 200
+}

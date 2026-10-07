@@ -1,0 +1,10 @@
+{
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "verdict": "blocked"
+ },
+ "id": "vl-native/blocked_ref_503",
+ "kind": "rows",
+ "row": "vl.select.query.blocked",
+ "surface": "vl-native"
+}
