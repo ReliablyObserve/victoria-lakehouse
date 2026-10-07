@@ -13,7 +13,7 @@ from scripts.proof.metrics.common import (
     LH_SURFACES, SURFACE_SIGNAL, UnknownShape, canon, display_pct, numbers_equal,
 )
 from scripts.proof.metrics.decode import (
-    decode_values, loki_streams_rows, stats_vector,
+    decode_hits, decode_values, loki_streams_rows, stats_vector,
 )
 from scripts.proof.metrics.evaluate import answer_empty, evaluate_body, evaluate_request
 from scripts.proof.metrics.generic import evaluate_truth, latency_ratio
@@ -425,3 +425,81 @@ def test_truth_tenant_set_real_shapes():
     lh = {"tenants": [{"account_id": "0", "project_id": "0"}], "total_tenants": 1}
     assert evaluate_truth("tenant_set", lh, hot, lh_path="tenants").exact
     assert evaluate_truth("tenant_set", ["0:0"], [0]).exact  # a bare number is an account with project 0
+
+
+# ---- round 3: test-depth gaps found by mutation
+def test_hits_by_field_series_are_kept_apart():
+    def hits(a_values):
+        return {"hits": [
+            {"fields": {"level": "a"}, "timestamps": ["2026-01-01T00:00:00Z", "2026-01-01T00:30:00Z"], "values": a_values},
+            {"fields": {"level": "b"}, "timestamps": ["2026-01-01T00:00:00Z", "2026-01-01T00:30:00Z"], "values": [3, 4]}]}
+    meta = {**META, "kind": "series_hits"}
+    _, p = evaluate_request(meta, {"ref": A(hits([1, 2])), "base": A(hits([1, 2])), "pr": A(hits([9, 9]))})
+    assert p.facets["points_within_tol"] == 50.0 and not p.exact  # series a differs, series b is the same
+    assert len(decode_hits(hits([1, 2]))) == 2
+
+
+def test_duplicate_rows_are_not_an_exact_row_set():
+    r = evaluate_rows(ROWS[:1] * 2, ROWS[:1])
+    assert r.facets["row_set"] < 100 and not r.exact and r.facets["count"] < 100
+    assert evaluate_rows(ROWS[:1] * 2, ROWS[:1] * 2).exact
+
+
+def test_same_trace_count_with_different_ids_is_not_exact():
+    r = evaluate_traces({"t1": {}, "t2": {}}, {"t1": {}, "t3": {}})
+    assert r.facets["trace_set"] < 100
+    assert r.details["trace_set"]["missing"] == 1 and r.details["trace_set"]["extra"] == 1
+
+
+def test_extra_fields_in_the_answer_lower_value_equality():
+    ref = [{"_time": "2026-01-01T00:00:00Z", "_stream_id": "s", "_msg": "m", "a": 1}]
+    ans = [dict(ref[0], extra="x")]
+    r = evaluate_rows(ref, ans)
+    assert r.facets["value_equality"] == 0.0 and r.details["value_equality"]["min_field"] == "extra"
+
+
+def test_a_reference_500_is_blocked_exactly_at_the_threshold():
+    for status in (500, 503):
+        case = evaluate_case(META, {"ref": A("down", status), "base": A(nd(ROWS)), "pr": A(nd(ROWS))})
+        assert case.verdict == "blocked", status
+    assert evaluate_case(META, {"ref": A("nope", 404), "base": A("nope", 404), "pr": A("nope", 404)}).verdict == "exact"
+
+
+def test_fail_on_regression_fails_on_a_nondeterministic_verdict(tmp_path):
+    import shutil
+    shutil.copytree(os.path.join(FIX, "vl-native", "flaky_answer"), tmp_path / "flaky_answer")
+    assert main([str(tmp_path)]) == 0
+    assert main([str(tmp_path), "--fail-on-regression"]) == 1
+
+
+def test_check_expectations_tolerance_is_tight():
+    from scripts.proof.metrics.cases import check_expectations, load_case
+    meta, res = load_case(os.path.join(FIX, "vl-native", "stats_count_fixed"))
+    real = res.base.facets["count"]
+    assert check_expectations(meta, res) == []
+    for drift, fails in ((0.005, False), (0.05, True), (0.5, True), (1.0, True)):
+        m = {**meta, "expect": {**meta["expect"], "base": {"count": real + drift}}}
+        assert bool(check_expectations(m, res)) == fails, drift
+
+
+def test_a_facet_missing_on_one_side_counts_as_100_there():
+    # base carries an error facet at 0, the PR has none: the PR is better on it
+    assert classify(FacetResult({"a": 50.0, "error": 0.0}), FacetResult({"a": 50.0})) == "improved"
+    # and the other way round is a regression
+    assert classify(FacetResult({"a": 50.0}), FacetResult({"a": 50.0, "error": 0.0})) == "regressed"
+
+
+def test_stats_scalar_needs_exactly_one_point():
+    from scripts.proof.metrics.decode import stats_scalar
+    two = {"data": {"resultType": "vector", "result": [
+        {"metric": {"g": "a"}, "value": [1, "5"]}, {"metric": {"g": "b"}, "value": [1, "7"]}]}}
+    assert stats_scalar(two) is None
+    assert evaluate_truth("scalar", {"n": 5}, two, lh_path="n").details["truth"]["error"] == "value not found"
+
+
+def test_check_expectations_require_exactly_100_when_100_is_expected():
+    from scripts.proof.metrics.cases import _close
+    assert _close(100.0, 100.0, 0.01)
+    assert not _close(99.995, 100.0, 0.01)  # within the tolerance of 100, still not 100
+    assert not _close(99.99999, 100.0, 5.0)
+    assert _close(97.004, 97.0, 0.01) and not _close(97.05, 97.0, 0.01)

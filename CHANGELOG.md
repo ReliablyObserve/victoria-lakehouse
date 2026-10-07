@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **API data-proof metrics library: tests close the gaps a mutation run found.** Tooling only, no runtime change (`scripts/proof/`, `tests/parity/testdata/tiecut_golden.json`): a re-read tie group with an extra row, per-field hits series, duplicate rows, equal trace counts with different ids, a nondeterministic verdict failing the gate, a blocked reference 500 and a tight `--check` tolerance each have a test, and the feature text says what the library does today.
 - **The registry gate is hardened against the bypasses found in review.** Product code now includes embedded
   UI assets and every non-test file under `internal/`, `cmd/`, `lakehouse-traces/`, plus shipped Dockerfiles
   and the root `go.mod`/`go.sum`; a `Code generated` marker no longer exempts a file; a dependency-only PR must

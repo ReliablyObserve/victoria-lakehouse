@@ -378,11 +378,11 @@
     The metrics library scores recorded answers; nothing calls it from CI against a live stack yet.
     The Python tests run in the Proof metrics workflow (`.github/workflows/proof-metrics.yaml`); the
     Go golden test shares `tests/parity/testdata/tiecut_golden.json` with the Python tie-cut tests,
-    so the two implementations of the tie rule cannot drift apart, and runs in the Parity Tests
+    so the Python port of the tie rule is checked against shared vectors, and runs in the Parity Tests
     workflow with the rest of the parity package. The fixtures are labelled recorded,
     derived-from-recorded or synthetic in each case's `meta.json`; no Lakehouse answer is recorded yet.
   highlight: >-
-    **API data-proof metrics**: every compared API answer is scored in percent per quality facet against hot VictoriaLogs/VictoriaTraces — row sets, fields, values, series, spans, order, truth — with a verdict per request, so a fix or a regression shows as a number that cannot round up to 100.
+    **API data-proof metrics**: scores each compared answer in percent per quality facet against hot VictoriaLogs/VictoriaTraces — row sets, fields, values, series, spans, order, truth — and gives each request a verdict, so a fix or a regression shows as a number that cannot round up to 100.
   description: >-
     A difference that rounds to 100% is not a result. The metrics library scores a reference, a
     base and a PR answer on the whole facet set (status, error text, row set, field coverage, value

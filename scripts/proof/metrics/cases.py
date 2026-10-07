@@ -133,7 +133,14 @@ def run_dir(root: str) -> list[tuple[dict, CaseResult]]:
     return out
 
 
-def check_expectations(meta: dict, res: CaseResult, tol: float = 0.1) -> list[str]:
+def _close(got: float, want: float, tol: float) -> bool:
+    """Within tol, except that an expected 100 means exactly 100: an inexact 99.99x is not a pass."""
+    if want >= 100.0:
+        return got >= 100.0
+    return abs(got - want) <= tol
+
+
+def check_expectations(meta: dict, res: CaseResult, tol: float = 0.01) -> list[str]:
     """Differences between a case's recorded expectation and what was computed."""
     exp = meta.get("expect")
     if not exp:
@@ -144,7 +151,7 @@ def check_expectations(meta: dict, res: CaseResult, tol: float = 0.1) -> list[st
     for side, fr in (("base", res.base), ("pr", res.pr)):
         for facet, want in (exp.get(side) or {}).items():
             got = fr.facets.get(facet) if fr else None
-            if got is None or abs(got - want) > tol:
+            if got is None or not _close(got, want, tol):
                 errs.append(f"{side}.{facet} = {got} != expected {want}")
     for path, want in (exp.get("details") or {}).items():
         side, _, rest = path.partition(".")
@@ -153,7 +160,7 @@ def check_expectations(meta: dict, res: CaseResult, tol: float = 0.1) -> list[st
         for part in rest.split("."):
             cur = cur.get(part) if isinstance(cur, dict) else None
         if isinstance(want, (int, float)) and isinstance(cur, (int, float)):
-            if abs(cur - want) > tol:
+            if not _close(cur, want, tol):
                 errs.append(f"{path} = {cur} != expected {want}")
         elif cur != want:
             errs.append(f"{path} = {cur!r} != expected {want!r}")
