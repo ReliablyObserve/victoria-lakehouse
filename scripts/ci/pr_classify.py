@@ -186,10 +186,11 @@ def main() -> int:
         commits.append(a.title)
     approvers = set()
     if a.approvers and os.path.exists(a.approvers):
-        for line in open(a.approvers).read().splitlines():
-            line = line.split("#", 1)[0].strip().lower()
-            if line:
-                approvers.add(line)
+        with open(a.approvers, encoding="utf-8") as fh:
+            for line in fh.read().splitlines():
+                line = line.split("#", 1)[0].strip().lower()
+                if line:
+                    approvers.add(line)
 
     exempt = "none"
     if release_metadata(files, a.base, a.head, a.author, approvers):

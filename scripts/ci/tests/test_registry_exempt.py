@@ -111,11 +111,13 @@ class Cli(unittest.TestCase):
     def run_cli(self, events, approvers="szibis\n", env=None, extra=()):
         with tempfile.TemporaryDirectory() as d:
             ap = os.path.join(d, "approvers")
-            open(ap, "w").write(approvers)
+            with open(ap, "w", encoding="utf-8") as fh:
+                fh.write(approvers)
             args = [sys.executable, os.path.join(os.path.dirname(__file__), "..", "registry_exempt.py"), "--approvers", ap, *extra]
             if events is not None:
                 ef = os.path.join(d, "e.json")
-                json.dump(events, open(ef, "w"))
+                with open(ef, "w", encoding="utf-8") as fh:
+                    json.dump(events, fh)
                 args += ["--events-file", ef]
             e = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GITHUB_REPOSITORY", "PR_NUMBER", "EVENT_ACTION")}
             e.update(env or {})
@@ -143,7 +145,8 @@ class Cli(unittest.TestCase):
     def test_missing_approvers_file_fails_closed(self):
         with tempfile.TemporaryDirectory() as d:
             ef = os.path.join(d, "e.json")
-            json.dump([lab("labeled", "szibis", T1)], open(ef, "w"))
+            with open(ef, "w", encoding="utf-8") as fh:
+                json.dump([lab("labeled", "szibis", T1)], fh)
             p = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "registry_exempt.py"),
                                 "--approvers", os.path.join(d, "nope"), "--events-file", ef], capture_output=True, text=True)
             self.assertEqual(p.returncode, 1)

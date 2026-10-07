@@ -131,9 +131,13 @@ def main() -> int:
     ap.add_argument("--action", default=os.environ.get("EVENT_ACTION", ""))
     a = ap.parse_args()
     try:
-        approvers = parse_approvers(open(a.approvers).read()) if os.path.exists(a.approvers) else set()
+        approvers = set()
+        if os.path.exists(a.approvers):
+            with open(a.approvers, encoding="utf-8") as fh:
+                approvers = parse_approvers(fh.read())
         if a.events_file:
-            events = json.load(open(a.events_file))
+            with open(a.events_file, encoding="utf-8") as fh:
+                events = json.load(fh)
         else:
             token, repo, pr = (os.environ.get(k, "") for k in ("GITHUB_TOKEN", "GITHUB_REPOSITORY", "PR_NUMBER"))
             if not (token and repo and pr):
