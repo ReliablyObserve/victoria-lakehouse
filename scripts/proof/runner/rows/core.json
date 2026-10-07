@@ -1,0 +1,162 @@
+{
+ "registry_check": true,
+ "note": "core: the native-first core tier; every row names a registry row that exists",
+ "rows": [
+  {
+   "id": "vl.hits.basic",
+   "surface": "vl-native",
+   "kind": "series_hits",
+   "path": "/select/logsql/hits",
+   "params": {
+    "query": "*",
+    "step": "1h"
+   },
+   "row": "vl.select.hits.basic"
+  },
+  {
+   "id": "vl.hits.by_level",
+   "surface": "vl-native",
+   "kind": "series_hits",
+   "path": "/select/logsql/hits",
+   "params": {
+    "query": "*",
+    "step": "1h",
+    "field": "level"
+   },
+   "row": "vl.select.hits.basic"
+  },
+  {
+   "id": "vl.field_names",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "*"
+   },
+   "row": "vl.select.field_names.basic"
+  },
+  {
+   "id": "vl.field_values.level",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "level",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.nolimit"
+  },
+  {
+   "id": "vl.stream_field_values.service",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_values",
+   "params": {
+    "query": "*",
+    "field": "service.name",
+    "limit": "1000"
+   },
+   "row": "vl.select.stream_field_values.basic"
+  },
+  {
+   "id": "vl.streams",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/streams",
+   "params": {
+    "query": "*",
+    "limit": "1000"
+   },
+   "row": "vl.select.streams.basic"
+  },
+  {
+   "id": "vl.stats_count",
+   "surface": "vl-native",
+   "kind": "count",
+   "path": "/select/logsql/stats_query",
+   "params": {
+    "query": "* | stats count() c",
+    "time": "{END}"
+   },
+   "row": "vl.select.stats_query.basic",
+   "window": "none",
+   "layers": [
+    "cold"
+   ]
+  },
+  {
+   "id": "vt.field_names",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "*"
+   },
+   "row": "vt.select.logsql_field_names.basic"
+  },
+  {
+   "id": "vt.field_values.name",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "name",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.basic"
+  },
+  {
+   "id": "vt.field_values.service",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "resource_attr:service.name",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.basic"
+  },
+  {
+   "id": "jaeger.services",
+   "surface": "jaeger",
+   "kind": "values",
+   "path": "/select/jaeger/api/services",
+   "params": {},
+   "row": "vt.jaeger.services.basic",
+   "window": "none",
+   "layers": [
+    "all"
+   ]
+  },
+  {
+   "id": "jaeger.operations",
+   "surface": "jaeger",
+   "kind": "values",
+   "path": "/select/jaeger/api/services/api-gateway/operations",
+   "params": {},
+   "row": "vt.jaeger.operations.basic",
+   "window": "none",
+   "layers": [
+    "all"
+   ]
+  },
+  {
+   "id": "jaeger.search",
+   "surface": "jaeger",
+   "kind": "trace_jaeger",
+   "path": "/select/jaeger/api/traces",
+   "params": {
+    "service": "payment-service",
+    "limit": "20"
+   },
+   "row": "vt.jaeger.traces_search.by_service",
+   "window": "jaeger",
+   "meta": {
+    "search_order": "undefined"
+   }
+  }
+ ]
+}

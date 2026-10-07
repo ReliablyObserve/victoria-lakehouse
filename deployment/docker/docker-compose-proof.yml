@@ -1,0 +1,357 @@
+# Proof stack: hot VictoriaLogs / VictoriaTraces (the reference), Lakehouse built from main (base) and
+# from a pull request (pr), Grafana and the Jaeger UI, for scripts/proof (API data proof) and
+# tests/playwright/proof (visual proof). Its own compose project and ports (48xxx), loopback only.
+#
+#   docker compose -p lhproof -f deployment/docker/docker-compose-proof.yml up -d
+#
+# The Lakehouse images are built by scripts/proof/stack.py (tags lhproof-<signal>:<variant>).
+# LH_POLICY selects the buffer behaviour: proof/policy-flush.yml (5 s flush, the cold layer) or
+# proof/policy-hold.yml (1 h, so new rows stay in the insert buffer, the buffer layer).
+name: lhproof
+
+networks:
+  proof-net:
+    driver: bridge
+
+services:
+  s3:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    networks: [proof-net]
+    environment:
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  s3-init:
+    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      s3:
+        condition: service_healthy
+    networks: [proof-net]
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://s3:9000 minioadmin minioadmin &&
+      mc mb local/proof-base --ignore-existing &&
+      mc mb local/proof-pr --ignore-existing &&
+      echo 'S3 buckets ready'
+      "
+
+  vl-ref:
+    image: vl-probed:v1.53.0
+    command:
+      - "-storageDataPath=/data"
+      - "-retentionPeriod=48h"
+      - "-loggerLevel=INFO"
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48428:9428"
+    healthcheck:
+      test: ["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  vt-ref:
+    image: vt-probed:v0.12.0
+    command:
+      - "-storageDataPath=/data"
+      - "-retentionPeriod=48h"
+      - "-loggerLevel=INFO"
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48429:10428"
+    healthcheck:
+      test: ["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  lh-logs-base:
+    image: ${LH_LOGS_BASE_IMAGE:-lhproof-logs:base}
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48430:9428"
+    command:
+      - "-lakehouse.s3.bucket=proof-base"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=5s"
+      - "-lakehouse.compaction.interval=2m"
+      - "-lakehouse.query.file-workers=16"
+      - "-lakehouse.cache.memory-mb=256"
+      - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
+      - "-lakehouse.tenant.alias=acme-corp:1001:0"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
+      - "-loggerLevel=INFO"
+    volumes:
+      - ${LH_POLICY:-./proof/policy-flush.yml}:/etc/lakehouse/policy.yml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/lakehouse-logs", "healthcheck", "http://localhost:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  lh-traces-base:
+    image: ${LH_TRACES_BASE_IMAGE:-lhproof-traces:base}
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48431:10428"
+    command:
+      - "-lakehouse.s3.bucket=proof-base"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=5s"
+      - "-lakehouse.compaction.interval=2m"
+      - "-lakehouse.query.file-workers=16"
+      - "-lakehouse.cache.memory-mb=256"
+      - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
+      - "-lakehouse.tenant.alias=acme-corp:1001:0"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
+      - "-loggerLevel=INFO"
+      - "-search.latencyOffset=2m"
+    volumes:
+      - ${LH_POLICY:-./proof/policy-flush.yml}:/etc/lakehouse/policy.yml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/lakehouse-traces", "healthcheck", "http://localhost:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  lh-logs-pr:
+    image: ${LH_LOGS_PR_IMAGE:-lhproof-logs:pr}
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48432:9428"
+    command:
+      - "-lakehouse.s3.bucket=proof-pr"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=5s"
+      - "-lakehouse.compaction.interval=2m"
+      - "-lakehouse.query.file-workers=16"
+      - "-lakehouse.cache.memory-mb=256"
+      - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
+      - "-lakehouse.tenant.alias=acme-corp:1001:0"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
+      - "-loggerLevel=INFO"
+    volumes:
+      - ${LH_POLICY:-./proof/policy-flush.yml}:/etc/lakehouse/policy.yml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/lakehouse-logs", "healthcheck", "http://localhost:9428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  lh-traces-pr:
+    image: ${LH_TRACES_PR_IMAGE:-lhproof-traces:pr}
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48433:10428"
+    command:
+      - "-lakehouse.s3.bucket=proof-pr"
+      - "-lakehouse.s3.endpoint=http://s3:9000"
+      - "-lakehouse.s3.access-key=minioadmin"
+      - "-lakehouse.s3.secret-key=minioadmin"
+      - "-lakehouse.s3.force-path-style=true"
+      - "-lakehouse.manifest.refresh-interval=5s"
+      - "-lakehouse.compaction.interval=2m"
+      - "-lakehouse.query.file-workers=16"
+      - "-lakehouse.cache.memory-mb=256"
+      - "-lakehouse.tenant.orgid-header=X-Scope-OrgID"
+      - "-lakehouse.tenant.alias=acme-corp:1001:0"
+      - "-lakehouse.config=/etc/lakehouse/policy.yml"
+      - "-loggerLevel=INFO"
+      - "-search.latencyOffset=2m"
+    volumes:
+      - ${LH_POLICY:-./proof/policy-flush.yml}:/etc/lakehouse/policy.yml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/lakehouse-traces", "healthcheck", "http://localhost:10428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  jaeger-ui-ref:
+    image: nginx:1.27-alpine
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48440:80"
+    environment:
+      BACKEND_HOST: vt-ref
+      BACKEND_PORT: "10428"
+      UI_HOST: jaeger-query
+      UI_PORT: "16686"
+    volumes:
+      - ./proof/jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      jaeger-query:
+        condition: service_started
+
+  jaeger-ui-base:
+    image: nginx:1.27-alpine
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48441:80"
+    environment:
+      BACKEND_HOST: lh-traces-base
+      BACKEND_PORT: "10428"
+      UI_HOST: jaeger-query
+      UI_PORT: "16686"
+    volumes:
+      - ./proof/jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      jaeger-query:
+        condition: service_started
+
+  jaeger-ui-pr:
+    image: nginx:1.27-alpine
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48442:80"
+    environment:
+      BACKEND_HOST: lh-traces-pr
+      BACKEND_PORT: "10428"
+      UI_HOST: jaeger-query
+      UI_PORT: "16686"
+    volumes:
+      - ./proof/jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      jaeger-query:
+        condition: service_started
+
+  lvp-ref:
+    image: ${VLPROXY_IMAGE:-lhproof-vlproxy:2.5.1}
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48450:3100"
+    environment:
+      VL_BACKEND_URL: "http://vl-ref:9428"
+    command:
+      - "-label-style=underscores"
+      - "-metadata-field-mode=translated"
+      - "-emit-structured-metadata=true"
+      - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
+      - "-extra-label-fields=level,cloud_region"
+      - "-patterns-autodetect-from-queries=true"
+      - "-label-values-indexed-cache=true"
+      - "-server.admin-auth-token=dev-token"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  lvp-base:
+    image: ${VLPROXY_IMAGE:-lhproof-vlproxy:2.5.1}
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48451:3100"
+    environment:
+      VL_BACKEND_URL: "http://lh-logs-base:9428"
+    command:
+      - "-label-style=underscores"
+      - "-metadata-field-mode=translated"
+      - "-emit-structured-metadata=true"
+      - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
+      - "-extra-label-fields=level,cloud_region"
+      - "-patterns-autodetect-from-queries=true"
+      - "-label-values-indexed-cache=true"
+      - "-server.admin-auth-token=dev-token"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  lvp-pr:
+    image: ${VLPROXY_IMAGE:-lhproof-vlproxy:2.5.1}
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48452:3100"
+    environment:
+      VL_BACKEND_URL: "http://lh-logs-pr:9428"
+    command:
+      - "-label-style=underscores"
+      - "-metadata-field-mode=translated"
+      - "-emit-structured-metadata=true"
+      - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
+      - "-extra-label-fields=level,cloud_region"
+      - "-patterns-autodetect-from-queries=true"
+      - "-label-values-indexed-cache=true"
+      - "-server.admin-auth-token=dev-token"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  jaeger-query:
+    image: jaegertracing/jaeger-query:1.62.0
+    networks: [proof-net]
+    environment:
+      SPAN_STORAGE_TYPE: memory
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-lhproof-grafana:1}
+    networks: [proof-net]
+    ports:
+      - "127.0.0.1:48300:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource"
+    volumes:
+      - ./proof/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    depends_on:
+      vl-ref:
+        condition: service_healthy
+      vt-ref:
+        condition: service_healthy
+      lvp-ref:
+        condition: service_healthy

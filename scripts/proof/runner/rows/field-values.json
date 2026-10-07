@@ -1,0 +1,424 @@
+{
+ "registry_check": false,
+ "note": "field_values / stream_field_values / field_names / Jaeger lists over map attributes, the empty-value bucket and stream fields; row names a registry row where one exists, else it is a label",
+ "rows": [
+  {
+   "id": "vl.field_values.map.http.method",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "http.method",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vl.field_values.map.component",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "component",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vl.field_values.map.format",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "format",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vl.field_values.map.exception.type",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "exception.type",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vl.field_values.map.http.method.filtered",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "level:=ERROR",
+    "field": "http.method",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.map_attr"
+  },
+  {
+   "id": "vl.field_values.absent",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "nosuchfield",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.empty_absent_everywhere",
+   "may_be_empty": true
+  },
+  {
+   "id": "vl.field_values.absent_filtered",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "level:=ERROR",
+    "field": "nosuchfield",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.empty_filtered_query",
+   "may_be_empty": true
+  },
+  {
+   "id": "vl.field_values.level.filtered",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "service.name:=api-gateway",
+    "field": "level",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.basic"
+  },
+  {
+   "id": "vl.stream_field_values.stream_field",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_values",
+   "params": {
+    "query": "*",
+    "field": "service.name",
+    "limit": "1000"
+   },
+   "row": "vl.select.stream_field_values.basic"
+  },
+  {
+   "id": "vl.stream_field_values.non_stream_field",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_values",
+   "params": {
+    "query": "*",
+    "field": "http.method",
+    "limit": "1000"
+   },
+   "row": "vl.select.stream_field_values.non_stream_field",
+   "may_be_empty": true
+  },
+  {
+   "id": "vl.stream_field_values.limit2",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_values",
+   "params": {
+    "query": "*",
+    "field": "service.name",
+    "limit": "2"
+   },
+   "row": "vl.select.stream_field_values.basic"
+  },
+  {
+   "id": "vl.field_names",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "*"
+   },
+   "row": "vl.select.field_names.basic"
+  },
+  {
+   "id": "vl.hits",
+   "surface": "vl-native",
+   "kind": "series_hits",
+   "path": "/select/logsql/hits",
+   "params": {
+    "query": "*",
+    "step": "1h"
+   },
+   "row": "vl.select.hits.basic"
+  },
+  {
+   "id": "vt.field_values.span_attr:http.method",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "span_attr:http.method",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vt.field_values.span_attr:db.system",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "span_attr:db.system",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vt.field_values.resource_attr:deployment.environment",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "resource_attr:deployment.environment",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vt.field_values.resource_attr:k8s.namespace.name",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "resource_attr:k8s.namespace.name",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vt.field_values.scope_attr:otel.scope.name",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "scope_attr:otel.scope.name",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vt.field_values.name",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "name",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vt.field_values.kind",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "kind",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vt.field_values.status_code",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "status_code",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.map_attr",
+   "claimed_gap": "438-map"
+  },
+  {
+   "id": "vt.field_values.absent",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "span_attr:nosuchfield",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.empty_absent_everywhere",
+   "may_be_empty": true
+  },
+  {
+   "id": "vt.field_values.filtered",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "\"resource_attr:service.name\":=\"api-gateway\"",
+    "field": "span_attr:http.method",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_field_values.empty_filtered_query"
+  },
+  {
+   "id": "vt.stream_field_values.stream_field",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_values",
+   "params": {
+    "query": "*",
+    "field": "resource_attr:service.name",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_stream_field_values.basic"
+  },
+  {
+   "id": "vt.stream_field_values.name",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_values",
+   "params": {
+    "query": "*",
+    "field": "name",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_stream_field_values.basic"
+  },
+  {
+   "id": "vt.stream_field_values.non_stream_field",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_values",
+   "params": {
+    "query": "*",
+    "field": "span_attr:http.method",
+    "limit": "1000"
+   },
+   "row": "vt.select.logsql_stream_field_values.non_stream_field",
+   "may_be_empty": true
+  },
+  {
+   "id": "vt.stream_field_values.limit2",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_values",
+   "params": {
+    "query": "*",
+    "field": "resource_attr:service.name",
+    "limit": "2"
+   },
+   "row": "vt.select.logsql_stream_field_values.basic"
+  },
+  {
+   "id": "vt.field_names",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "*"
+   },
+   "row": "vt.select.logsql_field_names.basic"
+  },
+  {
+   "id": "vt.hits",
+   "surface": "vt-native",
+   "kind": "series_hits",
+   "path": "/select/logsql/hits",
+   "params": {
+    "query": "*",
+    "step": "1h"
+   },
+   "row": "vt.select.logsql_hits.basic"
+  },
+  {
+   "id": "vt.hits.spans_only",
+   "surface": "vt-native",
+   "kind": "series_hits",
+   "path": "/select/logsql/hits",
+   "params": {
+    "query": "span_id:*",
+    "step": "1h"
+   },
+   "row": "vt.select.logsql_hits.basic"
+  },
+  {
+   "id": "jaeger.services",
+   "surface": "jaeger",
+   "kind": "values",
+   "path": "/select/jaeger/api/services",
+   "params": {},
+   "row": "vt.jaeger.services.basic",
+   "window": "none",
+   "layers": [
+    "all"
+   ]
+  },
+  {
+   "id": "jaeger.operations.api-gateway",
+   "surface": "jaeger",
+   "kind": "values",
+   "path": "/select/jaeger/api/services/api-gateway/operations",
+   "params": {},
+   "row": "vt.jaeger.operations.basic",
+   "window": "none",
+   "layers": [
+    "all"
+   ]
+  },
+  {
+   "id": "jaeger.operations.order-service",
+   "surface": "jaeger",
+   "kind": "values",
+   "path": "/select/jaeger/api/services/order-service/operations",
+   "params": {},
+   "row": "vt.jaeger.operations.basic",
+   "window": "none",
+   "layers": [
+    "all"
+   ]
+  },
+  {
+   "id": "jaeger.operations.payment-service",
+   "surface": "jaeger",
+   "kind": "values",
+   "path": "/select/jaeger/api/services/payment-service/operations",
+   "params": {},
+   "row": "vt.jaeger.operations.basic",
+   "window": "none",
+   "layers": [
+    "all"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,25 @@
+{
+  "sides": ["base", "pr", "ref"],
+  "uids": {"vl": "vl-{side}", "loki": "loki-{side}", "jaeger": "jaeger-{side}"},
+  "ranges": ["cold", "buffer"],
+  "tier": {"core": ["vl-explore-logs", "vl-builder-map-attr", "vl-stream-values", "vmui-logs", "jaeger-ui-services", "jaeger-ui-trace"]},
+  "pages": [
+    {"id": "vl-explore-logs", "kind": "vl-explore", "title": "Explore, VictoriaLogs datasource: logs and volume", "query": "*", "covers": ["vl.select.hits.basic"]},
+    {"id": "vl-builder-map-attr", "kind": "vl-builder", "title": "Explore query builder: values of a map attribute", "query": "*", "field": "http.method", "covers": ["vl.select.field_values.map_attr"], "fixes": ["438-map"]},
+    {"id": "vl-builder-absent", "kind": "vl-builder", "title": "Explore query builder: values of a field no row carries", "query": "*", "field": "component", "covers": ["vl.select.field_values.empty_absent_everywhere"]},
+    {"id": "vl-stream-values", "kind": "vl-stream", "title": "Explore stream filters: values of a stream field", "query": "*", "field": "service.name", "covers": ["vl.select.stream_field_values.basic"]},
+    {"id": "vl-stream-level", "kind": "vl-stream", "title": "Explore stream filters: values of level", "query": "*", "field": "level", "covers": ["vl.select.stream_field_values.basic"]},
+    {"id": "vmui-logs", "kind": "vmui", "family": "logs", "title": "VMUI query", "query": "*", "covers": ["vl.select.hits.basic"]},
+    {"id": "vtui-traces", "kind": "vmui", "family": "traces", "title": "VTUI query", "query": "*", "covers": ["vt.select.logsql_hits.basic"]},
+    {"id": "jaeger-explore-search", "kind": "jaeger-explore", "title": "Explore, Jaeger datasource: service and operation lists", "covers": ["vt.jaeger.services.basic", "vt.jaeger.operations.basic"]},
+    {"id": "jaeger-explore-trace", "kind": "jaeger-explore", "trace": true, "title": "Explore, Jaeger datasource: trace view", "covers": ["vt.jaeger.traces_by_id.basic"], "fixes": ["430-events-links"]},
+    {"id": "jaeger-ui-services", "kind": "jaeger-ui", "title": "Jaeger UI search: services and operations", "covers": ["vt.jaeger.services.basic", "vt.jaeger.operations.basic"]},
+    {"id": "jaeger-ui-trace", "kind": "jaeger-ui", "trace": true, "title": "Jaeger UI trace view", "covers": ["vt.jaeger.traces_by_id.basic"], "fixes": ["430-events-links"]},
+    {"id": "loki-explore", "kind": "loki-explore", "title": "Explore, Loki via loki-vl-proxy", "query": "{service_name=~\".+\"}", "tier": "focused"},
+    {"id": "dd-labels", "kind": "drilldown", "title": "Logs Drilldown: labels", "path": "", "tier": "focused"},
+    {"id": "dd-label-values", "kind": "drilldown", "title": "Logs Drilldown: values of a label", "path": "service/{service}/labels/{label}", "service": true, "tier": "focused"},
+    {"id": "dd-fields", "kind": "drilldown", "title": "Logs Drilldown: fields", "path": "service/{service}/fields", "service": true, "tier": "focused"},
+    {"id": "dd-field-values", "kind": "drilldown", "title": "Logs Drilldown: values of a field", "path": "service/{service}/fields/{field}", "service": true, "tier": "focused"}
+  ],
+  "vars": {"service": "api-gateway", "label": "k8s_namespace_name", "field": "http_method"}
+}
