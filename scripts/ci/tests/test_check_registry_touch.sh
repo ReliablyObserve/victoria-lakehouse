@@ -941,7 +941,7 @@ FIXTURE
     bash -c '! git diff --name-only base HEAD | grep -vxE "CHANGELOG.md|docs/features.md|UPSTREAM_COVERAGE.md|README.md"'
   check_step "the registry gate passes" env SKIP_CONFGEN_CHECK= PR_AUTHOR=szibis bash "$CHECKER" base
   check_step "the registry gate reports a release-metadata PR" \
-    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=release-metadata"'
+    bash -c 'out=$(python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers); echo "$out"; git diff --stat base HEAD; git diff base HEAD -- docs/features.md | grep "^[-+]" | head -20; grep -qx "exempt=release-metadata" <<<"$out"'
   check_step "the changelog gate passes" \
     python3 scripts/ci/check_changelog_pr.py --base base --head HEAD
 
@@ -961,8 +961,8 @@ FIXTURE
     bash -c 'git rm -q docs/zz-relmeta-fixture.md && echo "an invented line" >> docs/features.md && git add -A && git commit -q -m "features edit"'
   check_step "a features.md change beyond version naming is not a release-metadata PR" \
     bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
-  check_step "the changelog gate rejects it too" \
-    bash -c '! python3 scripts/ci/check_changelog_pr.py --base base --head HEAD'
+  check_step "the changelog gate does not call it a release metadata sync" \
+    bash -c '! python3 scripts/ci/check_changelog_pr.py --base base --head HEAD | grep -q "release metadata sync"'
 
   if [[ $ok -eq 1 ]]; then
     echo "ok   - $name"

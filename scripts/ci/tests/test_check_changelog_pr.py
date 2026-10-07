@@ -289,6 +289,9 @@ class CheckChangelogPRTests(unittest.TestCase):
         self.assertTrue(generated_docs_version_naming_only(base, base))
         self.assertTrue(generated_docs_version_naming_only(base, renamed))
         self.assertTrue(generated_docs_version_naming_only(base, released))
+        # A feature with a released and a still-unreleased bullet lists both versions.
+        both = base.replace("the release after `0.146.3`", "`0.146.4`, the release after `0.146.4`")
+        self.assertTrue(generated_docs_version_naming_only(base, both))
         # Anything beyond version naming is not release metadata.
         self.assertFalse(generated_docs_version_naming_only(base, renamed + "an invented line\n"))
         self.assertFalse(generated_docs_version_naming_only(base, renamed.replace("status: shipped", "status: planned", 1)))

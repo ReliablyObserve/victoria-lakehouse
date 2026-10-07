@@ -341,6 +341,7 @@ RELEASE_METADATA_GENERATED_FILES = {
     "docs/features.md",
 }
 
+_VERSION_LIST = re.compile(r"VER(?:, VER)+")
 _VERSION_NAME = re.compile(r"(?:the release after )?v?`?\d+\.\d+\.\d+`?")
 
 
@@ -352,7 +353,11 @@ def generated_docs_version_naming_only(base_text: str, head_text: str) -> bool:
     added = list((head - base).elements())
     if not all("since:" in l or "Changelog:" in l for l in removed + added):
         return False
-    norm = lambda lines: sorted(_VERSION_NAME.sub("VER", l) for l in lines)  # noqa: E731
+    # A feature with a released and a still-unreleased bullet lists both:
+    # "`0.1.0`, the release after `0.1.0`" is version naming too.
+    norm = lambda lines: sorted(  # noqa: E731
+        _VERSION_LIST.sub("VER", _VERSION_NAME.sub("VER", l)) for l in lines
+    )
     return norm(removed) == norm(added)
 
 
