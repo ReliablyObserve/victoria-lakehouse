@@ -728,7 +728,7 @@ class RegistryLockTests(unittest.TestCase):
         with open(os.path.join(self.root, "tests", "parity", "helpers_test.go"), "w", encoding="utf-8") as fh:
             fh.write("package parity\n\nfunc helper() {}\n")
         bare = []
-        lock_tests_ = lock_tests(self.rows, self.root, bare)
+        lock_tests(self.rows, self.root, bare)
         with open(os.path.join(self.rows, "lh", "rows.yaml"), "a", encoding="utf-8") as fh:
             fh.write("- {id: lh.helpers, title: h, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/helpers_test.go]}}\n")
         bare2 = []
