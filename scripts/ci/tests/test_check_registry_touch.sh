@@ -92,6 +92,12 @@ FIXTURE
     mkdir -p tests/parity docs .github/workflows scripts/ci
     printf 'package parity\n\nimport "testing"\n\nfunc TestOldParity(t *testing.T) {}\n' > tests/parity/parity_test.go
     printf 'module x\n' > go.mod
+    printf '# allowlist\nTestParity_A  # B1: x\nTestParity_B  # B2: y\n' > tests/parity/known_failures.txt
+    printf '| Id | Divergence |\n|---|---|\n| **B1** | open one |\n| **B2** | open two |\n| **Old thing (B0)** | **Resolved** | done |\n' > docs/parity-and-gaps.md
+    cat >> tests/conformance/registry/rows/lh/endpoints.yaml <<'ROWS'
+- {id: lh.row.gap, title: gap, expect: differ, compare: {type: ndjson-multiset}}
+- {id: lh.row.lock, title: lock, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}
+ROWS
     printf -- '- id: lh.feature.storage.existing\n  title: existing\n' > tests/conformance/registry/features/storage.yaml
     git add -A
     git commit -q -m base
@@ -153,7 +159,7 @@ touch_features() {
   printf -- '- id: lh.feature.storage.new\n  title: new\n' >> tests/conformance/registry/features/storage.yaml
 }
 touch_rows() {
-  printf -- '  notes: touched\n' >> tests/conformance/registry/rows/lh/endpoints.yaml
+  printf -- '- {id: lh.row.touched, title: t}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml
 }
 touch_unrelated() {
   printf 'doc\n' >> README.md
@@ -264,9 +270,9 @@ run_case "changelog Added bullet without catalog fails" fail \
 run_case "changelog Added bullet with catalog passes" ok "" \
   bash -c 'printf -- "- **A brand new feature.** text.\n" >> CHANGELOG.md; printf -- "- id: lh.feature.storage.new\n  title: new\n" >> tests/conformance/registry/features/storage.yaml'
 run_case "new route without catalog fails" fail \
-  "a route, handler or lakehouse.* flag" bash -c 'printf "package main\n\nfunc main() { mux.HandleFunc(\"/lakehouse/api/v1/new\", nil) }\n" > cmd/lakehouse-logs/main.go; printf -- "  notes: touched\n" >> tests/conformance/registry/rows/lh/endpoints.yaml'
+  "a route, handler or lakehouse.* flag" bash -c 'printf "package main\n\nfunc main() { mux.HandleFunc(\"/lakehouse/api/v1/new\", nil) }\n" > cmd/lakehouse-logs/main.go; printf -- "- {id: lh.row.touched, title: t}\n" >> tests/conformance/registry/rows/lh/endpoints.yaml'
 run_case "new lakehouse flag without catalog fails" fail \
-  "a route, handler or lakehouse.* flag" bash -c 'printf "package main\n\nvar f = flag.String(\"lakehouse.new.knob\", \"\", \"doc\")\n" > cmd/lakehouse-logs/flags.go; printf -- "  notes: touched\n" >> tests/conformance/registry/rows/lh/endpoints.yaml'
+  "a route, handler or lakehouse.* flag" bash -c 'printf "package main\n\nvar f = flag.String(\"lakehouse.new.knob\", \"\", \"doc\")\n" > cmd/lakehouse-logs/flags.go; printf -- "- {id: lh.row.touched, title: t}\n" >> tests/conformance/registry/rows/lh/endpoints.yaml'
 run_case "new lh registry row without catalog fails" fail \
   "a new Lakehouse registry row" add_lh_row
 run_case "failure message lists the steps" fail \
@@ -327,13 +333,13 @@ echo "== the pre-existing row rule still holds =="
 run_case "route change without rows fails" fail \
   "but not tests/conformance/registry/rows/" add_route
 run_case "route change with rows and catalog passes" ok "" \
-  bash -c 'printf "package main\n\nfunc main() { mux.HandleFunc(\"/x\", nil) }\n" > cmd/lakehouse-logs/main.go; printf -- "  notes: touched\n" >> tests/conformance/registry/rows/lh/endpoints.yaml; printf -- "- id: lh.feature.storage.new\n  title: new\n" >> tests/conformance/registry/features/storage.yaml'
+  bash -c 'printf "package main\n\nfunc main() { mux.HandleFunc(\"/x\", nil) }\n" > cmd/lakehouse-logs/main.go; printf -- "- {id: lh.row.touched, title: t}\n" >> tests/conformance/registry/rows/lh/endpoints.yaml; printf -- "- id: lh.feature.storage.new\n  title: new\n" >> tests/conformance/registry/features/storage.yaml'
 
 
 echo
 echo "== every product change and every new test is covered in the registry =="
 product_change() { printf 'package x\n\nfunc F() { println("changed") }\n' > internal/x/x.go; }
-registry_row_change() { printf -- '  notes: real change\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
+registry_row_change() { printf -- '- {id: lh.row.touched, title: t}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
 product_and_row() { product_change; registry_row_change; }
 product_and_feature() { product_change; printf -- '- id: lh.feature.storage.new\n  title: new\n' >> tests/conformance/registry/features/storage.yaml; }
 product_and_whitespace_registry() {
@@ -390,7 +396,7 @@ run_case "a new parity test nobody references fails" fail \
   "tests/parity/parity_test.go#TestNewParity" new_test_unreferenced
 run_case "a new unit test in a product package nobody references fails" fail \
   "internal/x/new_test.go#TestNewUnit" new_unit_test_unreferenced
-run_case "a new parity test referenced by a feature passes" ok "testlinks OK (1 tests added, all linked)" new_test_referenced
+run_case "a new parity test referenced by a feature passes" ok "testlinks OK (1 tests added, all linked" new_test_referenced
 run_case "a new test in a file-level linked file passes" ok "testlinks OK" new_test_in_linked_file
 run_case "TestMain, helpers and Test-prefixed non-tests need no link" ok "testlinks OK (0 tests added" new_test_helper_not_a_test
 run_case "a renamed test whose old name is still referenced fails" fail \
@@ -420,6 +426,48 @@ PR_LABELS='bug,registry-exempt' PR_BODY=$'## Summary\nx\n\nRegistry: none — pu
   run_case "the exempt label with the body section passes" ok "registry-exempt label" product_change
 PR_LABELS='registry-exempt' PR_BODY='Registry: none — tests only' run_case "the exemption also covers unlinked new tests" ok "skipped" new_test_unreferenced
 
+
+echo
+echo "== parity fixes ship locks; locks are never weakened =="
+drop_allowlist_entry() { sed -i.bak '/TestParity_A/d' tests/parity/known_failures.txt && rm -f tests/parity/known_failures.txt.bak; }
+touch_parity_test() { printf 'package parity\n\nimport "testing"\n\nfunc TestOldParity(t *testing.T) { _ = 1 }\n' > tests/parity/parity_test.go; }
+add_exact_row_for_parity_test() { printf -- '- {id: lh.row.new_lock, title: new lock, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
+add_loose_row_for_parity_test() { printf -- '- {id: lh.row.loose, title: loose, expect: pass, compare: {type: ndjson-multiset}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
+add_exact_row_other_tests() { printf -- '- {id: lh.row.elsewhere, title: e, expect: pass, compare: {type: exact-json}, refs: {tests: [internal/x/x_test.go]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
+full_parity_fix() { drop_allowlist_entry; touch_parity_test; add_exact_row_for_parity_test; }
+mark_resolved() { sed -i.bak 's/| \*\*B1\*\* | open one |/| **B1** | **Resolved** | fixed |/' docs/parity-and-gaps.md && rm -f docs/parity-and-gaps.md.bak; }
+flip_gap_to_pass() { sed -i.bak 's/id: lh.row.gap, title: gap, expect: differ/id: lh.row.gap, title: gap, expect: pass/' tests/conformance/registry/rows/lh/endpoints.yaml && rm -f tests/conformance/registry/rows/lh/endpoints.yaml.bak; }
+add_allowlist_entry() { printf 'TestParity_C  # B3: new\n' >> tests/parity/known_failures.txt; registry_row_change; }
+weaken_lock_to_differ() { sed -i.bak 's/id: lh.row.lock, title: lock, expect: pass/id: lh.row.lock, title: lock, expect: differ/' tests/conformance/registry/rows/lh/endpoints.yaml && rm -f tests/conformance/registry/rows/lh/endpoints.yaml.bak; }
+loosen_lock_compare() { sed -i.bak '/lh.row.lock/s/exact-json/ndjson-multiset/' tests/conformance/registry/rows/lh/endpoints.yaml && rm -f tests/conformance/registry/rows/lh/endpoints.yaml.bak; }
+delete_lock_row() { sed -i.bak '/lh.row.lock/d' tests/conformance/registry/rows/lh/endpoints.yaml && rm -f tests/conformance/registry/rows/lh/endpoints.yaml.bak; }
+
+run_case "removing an allowlist entry with no tests or rows fails" fail "does not ship its locks" \
+  bash -c "$(declare -f drop_allowlist_entry registry_row_change); drop_allowlist_entry; registry_row_change"
+run_case "the failure names the missing parity test" fail "no test under tests/parity/" \
+  bash -c "$(declare -f drop_allowlist_entry registry_row_change); drop_allowlist_entry; registry_row_change"
+run_case "a parity fix with a parity test and a new exact row that references it passes" ok "parity-fix PR: true" full_parity_fix
+run_case "a parity fix whose parity test is changed but no exact row references it fails" fail \
+  "no new or updated registry row with compare type exact-json" \
+  bash -c "$(declare -f drop_allowlist_entry touch_parity_test add_loose_row_for_parity_test); drop_allowlist_entry; touch_parity_test; add_loose_row_for_parity_test"
+run_case "a parity fix whose exact row references other tests fails" fail "no new or updated registry row" \
+  bash -c "$(declare -f drop_allowlist_entry touch_parity_test add_exact_row_other_tests); drop_allowlist_entry; touch_parity_test; add_exact_row_other_tests"
+run_case "an UNCHANGED exact row that already references the test is not this PR's lock" fail "no new or updated registry row" \
+  bash -c "$(declare -f drop_allowlist_entry touch_parity_test registry_row_change); drop_allowlist_entry; touch_parity_test; registry_row_change"
+run_case "marking a divergence resolved in the docs is a parity fix" fail "divergence marked resolved in docs/parity-and-gaps.md: B1" \
+  bash -c "$(declare -f mark_resolved registry_row_change); mark_resolved; registry_row_change"
+run_case "flipping a known-gap row to pass is a parity fix" fail "row flipped from known gap (differ) to pass: lh.row.gap" flip_gap_to_pass
+run_case "a docs-resolved parity fix with its locks passes" ok "parity-fix PR: true" \
+  bash -c "$(declare -f mark_resolved touch_parity_test add_exact_row_for_parity_test); mark_resolved; touch_parity_test; add_exact_row_for_parity_test"
+run_case "a PR that leaves the allowlist and docs alone is not a parity fix" ok "parity-fix PR: false" product_and_row
+run_case "adding an allowlist entry fails as a weakening" fail "allowlist entry added: TestParity_C" add_allowlist_entry
+PR_LABELS=registry-exempt PR_BODY='Registry: none — owner accepted a new known failure' run_case "the owner exemption allows an allowlist entry" ok "skipped" add_allowlist_entry
+run_case "flipping an exact pass row to differ fails as a weakening" fail "row weakened from exact pass to expect=differ" \
+  bash -c "$(declare -f weaken_lock_to_differ registry_row_change); weaken_lock_to_differ; registry_row_change"
+run_case "loosening an exact row's compare fails as a weakening" fail "compare=ndjson-multiset: lh.row.lock" \
+  bash -c "$(declare -f loosen_lock_compare registry_row_change); loosen_lock_compare; registry_row_change"
+run_case "deleting an exact row fails as a weakening" fail "exact row deleted: lh.row.lock" \
+  bash -c "$(declare -f delete_lock_row registry_row_change); delete_lock_row; registry_row_change"
 echo
 echo "== the generated documents must be current on a feature PR =="
 

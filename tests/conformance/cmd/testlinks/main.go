@@ -92,6 +92,56 @@ func run() int {
 		fmt.Println("add each to `refs.tests` of the row it proves (tests/conformance/registry/rows/) or to `tests:` of its feature")
 		fmt.Println("(tests/conformance/registry/features/), as `path/to/file_test.go#TestName`; see tests/conformance/README.md, 'Linking tests'")
 	}
+	// Parity locks: a parity fix ships differential tests and an exact row; a
+	// weakening (allowlist entry added, exact row loosened) always fails.
+	snap := func(rev string) (registry.ParitySnapshot, error) {
+		sn := registry.ParitySnapshot{Rows: map[string]registry.RowLite{}}
+		sn.Allowlist = registry.ParseAllowlist(show(rev)("tests/parity/known_failures.txt"))
+		sn.Resolved = registry.ParseResolved(show(rev)("docs/parity-and-gaps.md"))
+		files, err := git(*repo, "ls-tree", "-r", "--name-only", rev, "--", "tests/conformance/registry/rows")
+		if err != nil {
+			return sn, err
+		}
+		for _, f := range strings.Fields(string(files)) {
+			if strings.HasSuffix(f, ".yaml") {
+				if err := registry.ParseRowsLenient(show(rev)(f), sn.Rows); err != nil {
+					return sn, fmt.Errorf("%s at %s: %w", f, rev, err)
+				}
+			}
+		}
+		return sn, nil
+	}
+	bs, err1 := snap(*base)
+	hs, err2 := snap(*head)
+	if err1 != nil || err2 != nil {
+		fmt.Fprintln(os.Stderr, "testlinks: parity snapshot:", err1, err2)
+		return 2
+	}
+	var parityTests []string
+	for _, c := range changed {
+		if registry.IsParityTestFile(c) {
+			parityTests = append(parityTests, c)
+		}
+	}
+	pv := registry.ParityCheck(bs, hs, parityTests)
+	if len(pv.Weakenings) > 0 {
+		failed = true
+		fmt.Println("::error::this PR weakens a parity lock (only the owner can allow that: label registry-exempt + 'Registry: none — <reason>' in the PR body)")
+		for _, w := range pv.Weakenings {
+			fmt.Println("  " + w)
+		}
+	}
+	if len(pv.Problems) > 0 {
+		failed = true
+		fmt.Println("::error::this is a parity-fix PR but it does not ship its locks")
+		for _, t := range pv.Triggers {
+			fmt.Println("  parity fix because: " + t)
+		}
+		for _, p := range pv.Problems {
+			fmt.Println("  missing: " + p)
+		}
+		fmt.Println("see tests/conformance/README.md, 'Parity fixes ship locks'")
+	}
 	// The stale check reads the files on disk, so it needs HEAD checked out.
 	if stale := registry.StaleRefs(*repo, refs, changed); len(stale) > 0 {
 		failed = true
@@ -104,6 +154,6 @@ func run() int {
 	if failed {
 		return 1
 	}
-	fmt.Printf("testlinks OK (%d tests added, all linked)\n", len(added))
+	fmt.Printf("testlinks OK (%d tests added, all linked; parity-fix PR: %v)\n", len(added), pv.Fix)
 	return 0
 }

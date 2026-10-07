@@ -290,4 +290,28 @@ agents and contributors never do.** The workflow re-runs on `labeled`, `unlabele
 so applying the label or editing the body re-evaluates the gate. The exemption skips Rules 1 and
 2, not the route/pin and feature-catalog rules.
 
+### Parity fixes ship locks
+
+Owner rule (2026-10-07): every parity we fix needs hardening and detailed tests, so a later
+performance change cannot break the compatibility pattern. `cmd/testlinks` (engine:
+`registry/paritygate.go`) detects a **parity-fix PR** when, against the merge base, the PR
+
+- removes an entry from `tests/parity/known_failures.txt`, or
+- marks a divergence **Resolved** in `docs/parity-and-gaps.md` (a table row whose cell is
+  `Resolved` that was not resolved before, including a new row born resolved), or
+- flips a registry row from `expect: differ` (a known gap) to `expect: pass`.
+
+(A fourth signal, "closes #N" on an issue labelled `parity`, is not implemented: the gate does not
+call the GitHub API. Reviewers check it.)
+
+Such a PR must also change a `tests/parity/*_test.go` file (the differential suite against hot
+VL/VT, which runs on every PR) **and** add or update a registry row with `expect: pass`,
+`compare: {type: exact-json}` whose `refs.tests` names a changed parity test. The skill asks for
+more (every layer, both signals, both tenant forms, property/fuzz coverage); CI can only check that
+the parity test and the exact lock exist, so reviewers check the breadth.
+
+**Locks are never weakened.** Any PR that adds a `known_failures.txt` entry, flips an exact pass
+row to `differ`, loosens its compare type, or deletes an exact row fails, parity fix or not. Only the
+owner's `registry-exempt` exemption (above) lets one through.
+
 Self-test: `bash scripts/ci/tests/test_check_registry_touch.sh`.

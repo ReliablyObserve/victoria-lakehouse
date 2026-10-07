@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails a PR that changes product code without a real content change under
   `tests/conformance/registry/`, adds a `Test`/`Fuzz` function no registry row or feature references, or
   leaves a reference to a removed test. Only the owner can exempt a PR (`registry-exempt` label plus a
-  `Registry: none — <reason>` body line).
+  `Registry: none — <reason>` body line). A parity-fix PR (allowlist entry removed, divergence resolved,
+  known-gap row flipped to pass) must ship a changed `tests/parity` test and an exact-json registry row
+  that references it, and no PR may add an allowlist entry or weaken an exact row.
 
 ## [0.146.3] - 2026-10-07
 

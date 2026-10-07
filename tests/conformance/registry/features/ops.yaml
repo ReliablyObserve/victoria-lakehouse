@@ -128,6 +128,8 @@
     - tests/conformance/registry/testlinks_test.go#TestIsLinkedTestFile
     - tests/conformance/registry/testlinks_test.go#TestDiffAddedTests_MovesAreNotAdds
     - tests/conformance/registry/testlinks_test.go#TestCollectTestRefs_LinkedAndStale
+    - tests/conformance/registry/paritygate_test.go#TestParityParsers
+    - tests/conformance/registry/paritygate_test.go#TestParityCheck
     - scripts/ci/tests/test_check_registry_touch.sh
   docs:
     - tests/conformance/README.md
