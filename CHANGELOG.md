@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.146.4] - 2026-10-07
+
 ### Changed
 
 - **Every product change and every new test must be covered in the conformance registry.** CI now
