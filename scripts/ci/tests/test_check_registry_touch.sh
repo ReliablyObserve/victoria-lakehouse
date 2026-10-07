@@ -21,6 +21,16 @@ fail=0
 # deliberately have no tests/conformance tree; skip that part of the check.
 export SKIP_CONFGEN_CHECK=1
 
+# The test-link gate is a Go program (tests/conformance/cmd/testlinks); the
+# fixture repos have no Go module, so build it once from this checkout.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+TESTLINKS_BIN="$(mktemp -d)/testlinks"
+if ! (cd "$REPO_ROOT" && GOWORK=off go build -o "$TESTLINKS_BIN" ./tests/conformance/cmd/testlinks); then
+  echo "cannot build testlinks" >&2
+  exit 2
+fi
+export TESTLINKS_BIN
+
 # new_repo creates a repo with an initial commit and echoes its path. The base
 # changelog has an [Unreleased] section with `### Added` and `### Fixed`
 # bullets above a released version, so a case can exercise the section
@@ -78,7 +88,10 @@ type S3Config struct {
 	Hidden string `yaml:"-"`
 }
 FIXTURE
-    printf -- '- id: lh.existing.row\n  title: existing\n' > tests/conformance/registry/rows/lh/endpoints.yaml
+    printf -- '- id: lh.existing.row\n  title: existing\n  refs:\n    tests:\n      - tests/parity/parity_test.go#TestOldParity\n' > tests/conformance/registry/rows/lh/endpoints.yaml
+    mkdir -p tests/parity docs .github/workflows scripts/ci
+    printf 'package parity\n\nimport "testing"\n\nfunc TestOldParity(t *testing.T) {}\n' > tests/parity/parity_test.go
+    printf 'module x\n' > go.mod
     printf -- '- id: lh.feature.storage.existing\n  title: existing\n' > tests/conformance/registry/features/storage.yaml
     git add -A
     git commit -q -m base
@@ -102,7 +115,7 @@ run_case() {
     cd "$dir" || exit 1
     "$@"
     git add -A
-    git commit -q -m change
+    git commit -q -m "${COMMIT_MSG:-change}"
   ) >/dev/null 2>&1
   if [[ -n "${PRECONDITION:-}" ]] && ! (cd "$dir" && eval "$PRECONDITION") >/dev/null 2>&1; then
     pre_ok=0
@@ -147,7 +160,7 @@ touch_unrelated() {
 }
 add_test_only_handler() {
   mkdir -p internal/x
-  printf 'package x\n\nfunc TestF() { mux.HandleFunc("/x", nil) }\n' > internal/x/x_test.go
+  printf 'package x\n\nfunc registerForTest() { mux.HandleFunc("/x", nil) }\n' > internal/x/x_test.go
 }
 
 # rewrite <file> <awk program>: rewrites a fixture file in place with awk
@@ -289,6 +302,7 @@ PRECONDITION='grep -q "^## \[9\.9\.9\] - " CHANGELOG.md' \
 echo
 echo "== registrations and config keys are compared as sets =="
 PRECONDITION='git diff base...HEAD -- internal/x/routes.go | grep -q "^+.*HandleFunc"' \
+  PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor only, no behaviour change' \
   run_case "a registration moved within its file is neither a route change nor a feature signal" ok "registry-touch check OK" \
   move_route_within_file
 run_case "a registration added to a non-entrypoint file still needs registry rows" fail \
@@ -302,6 +316,7 @@ run_case "a new YAML config key without the catalog fails" fail \
 run_case "an existing key name added to another config struct is a new key" fail \
   "a new YAML config key: S3Config.flush_interval" add_existing_key_name_to_other_struct
 PRECONDITION='git diff base...HEAD -- internal/config/config.go | grep -q "^+.*yaml:"' \
+  PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor only, no behaviour change' \
   run_case "a config field moved within its struct is not a feature signal" ok "registry-touch check OK" \
   move_config_field
 run_case "a YAML key declared in a config test file is not a feature signal" ok "registry-touch check OK" \
@@ -313,6 +328,97 @@ run_case "route change without rows fails" fail \
   "but not tests/conformance/registry/rows/" add_route
 run_case "route change with rows and catalog passes" ok "" \
   bash -c 'printf "package main\n\nfunc main() { mux.HandleFunc(\"/x\", nil) }\n" > cmd/lakehouse-logs/main.go; printf -- "  notes: touched\n" >> tests/conformance/registry/rows/lh/endpoints.yaml; printf -- "- id: lh.feature.storage.new\n  title: new\n" >> tests/conformance/registry/features/storage.yaml'
+
+
+echo
+echo "== every product change and every new test is covered in the registry =="
+product_change() { printf 'package x\n\nfunc F() { println("changed") }\n' > internal/x/x.go; }
+registry_row_change() { printf -- '  notes: real change\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
+product_and_row() { product_change; registry_row_change; }
+product_and_feature() { product_change; printf -- '- id: lh.feature.storage.new\n  title: new\n' >> tests/conformance/registry/features/storage.yaml; }
+product_and_whitespace_registry() {
+  product_change
+  printf '\n# only a comment\n\n' >> tests/conformance/registry/rows/lh/endpoints.yaml
+  printf -- '- id: lh.feature.storage.existing\n    title: existing\n' > tests/conformance/registry/features/storage.yaml
+}
+add_parity_test() {
+  printf '\nfunc TestNewParity(t *testing.T) {}\n' >> tests/parity/parity_test.go
+}
+new_test_unreferenced() { registry_row_change; add_parity_test; }
+new_test_referenced() {
+  add_parity_test
+  printf -- '  refs:\n    tests:\n      - tests/parity/parity_test.go#TestNewParity\n' >> tests/conformance/registry/features/storage.yaml
+}
+new_test_in_linked_file() {
+  add_parity_test
+  printf -- '- id: lh.feature.storage.f\n  title: f\n  tests:\n    - tests/parity/parity_test.go\n' >> tests/conformance/registry/features/storage.yaml
+}
+new_unit_test_unreferenced() {
+  registry_row_change
+  printf 'package x\n\nimport "testing"\n\nfunc TestNewUnit(t *testing.T) {}\n' > internal/x/new_test.go
+}
+new_test_helper_not_a_test() {
+  registry_row_change
+  printf 'package x\n\nimport "testing"\n\nfunc TestMain(m *testing.M) {}\nfunc helper(t *testing.T) {}\nfunc Testify(t *testing.T) {}\n' > internal/x/new_test.go
+}
+rename_referenced_test() {
+  registry_row_change
+  sed -i.bak 's/TestOldParity/TestRenamedParity/' tests/parity/parity_test.go && rm -f tests/parity/parity_test.go.bak
+}
+rename_and_relink_test() {
+  rename_referenced_test
+  sed -i.bak 's/TestOldParity/TestRenamedParity/' tests/conformance/registry/rows/lh/endpoints.yaml && rm -f tests/conformance/registry/rows/lh/endpoints.yaml.bak
+}
+delete_referenced_test_file() { registry_row_change; git rm -q tests/parity/parity_test.go; }
+move_test_to_other_file() {
+  registry_row_change
+  git mv tests/parity/parity_test.go tests/parity/moved_test.go
+  sed -i.bak 's/parity_test.go/moved_test.go/' tests/conformance/registry/rows/lh/endpoints.yaml && rm -f tests/conformance/registry/rows/lh/endpoints.yaml.bak
+}
+dependency_bump() { printf 'module x\n\nrequire y v1.2.3\n' > go.mod; printf 'a==1\n' > requirements.txt; }
+docs_only() { printf '# doc\n' > docs/x.md; }
+ci_only() { printf 'name: x\n' > .github/workflows/x.yaml; printf '#!/bin/sh\n' > scripts/ci/foo.sh; }
+
+run_case "a product change without a registry change fails" fail \
+  "makes no real content change under tests/conformance/registry/rows/" product_change
+run_case "the failure points at the README" fail "tests/conformance/README.md" product_change
+run_case "a product change with a real rows change passes" ok "registry-touch check OK" product_and_row
+run_case "a product change with a features change passes" ok "registry-touch check OK" product_and_feature
+run_case "a whitespace/comment-only registry change does not count" fail \
+  "makes no real content change" product_and_whitespace_registry
+run_case "a new parity test nobody references fails" fail \
+  "tests/parity/parity_test.go#TestNewParity" new_test_unreferenced
+run_case "a new unit test in a product package nobody references fails" fail \
+  "internal/x/new_test.go#TestNewUnit" new_unit_test_unreferenced
+run_case "a new parity test referenced by a feature passes" ok "testlinks OK (1 tests added, all linked)" new_test_referenced
+run_case "a new test in a file-level linked file passes" ok "testlinks OK" new_test_in_linked_file
+run_case "TestMain, helpers and Test-prefixed non-tests need no link" ok "testlinks OK (0 tests added" new_test_helper_not_a_test
+run_case "a renamed test whose old name is still referenced fails" fail \
+  "no \`func TestOldParity(\` in tests/parity/parity_test.go" rename_referenced_test
+run_case "a renamed test is reported as added and unlinked too" fail \
+  "tests/parity/parity_test.go#TestRenamedParity" rename_referenced_test
+run_case "a renamed test with the reference updated passes" ok "testlinks OK" rename_and_relink_test
+run_case "a deleted test file whose reference remains fails" fail \
+  "registry references point at tests this PR removed" delete_referenced_test_file
+run_case "a test moved to another file of its package with the reference updated passes" ok "testlinks OK (0 tests added" \
+  move_test_to_other_file
+
+echo
+echo "== exemptions =="
+run_case "a release-metadata PR passes" ok "skipped (release-metadata PR)" materialize_release 9.9.9
+COMMIT_MSG='build(deps): bump y' run_case "a dependency-only PR passes" ok "skipped (dependency-only PR)" dependency_bump
+run_case "a go.mod change under a non-dependency commit is a product change" fail "release-impacting" dependency_bump
+run_case "a docs-only PR passes" ok "registry-touch check OK" docs_only
+run_case "a CI-only PR passes" ok "registry-touch check OK" ci_only
+PR_LABELS='bug,registry-exempt' run_case "the exempt label without the body section fails" fail \
+  "no 'Registry: none" product_change
+PR_LABELS='registry-exempt' PR_BODY='Registry: none —' run_case "the exempt label with an empty reason fails" fail \
+  "no 'Registry: none" product_change
+PR_BODY='Registry: none — pure refactor, no behaviour change' run_case "the body section without the label does not exempt" fail \
+  "makes no real content change" product_change
+PR_LABELS='bug,registry-exempt' PR_BODY=$'## Summary\nx\n\nRegistry: none — pure refactor, no behaviour change' \
+  run_case "the exempt label with the body section passes" ok "registry-exempt label" product_change
+PR_LABELS='registry-exempt' PR_BODY='Registry: none — tests only' run_case "the exemption also covers unlinked new tests" ok "skipped" new_test_unreferenced
 
 echo
 echo "== the generated documents must be current on a feature PR =="

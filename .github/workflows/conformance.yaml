@@ -3,6 +3,10 @@ name: Conformance
 on:
   pull_request:
     branches: [main]
+    # labeled/unlabeled/edited re-evaluate the registry gate when the owner
+    # applies (or removes) `registry-exempt` or edits the PR body's
+    # "Registry: none — <reason>" line.
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
   push:
     branches: [main]
   workflow_dispatch:
@@ -40,6 +44,10 @@ jobs:
         run: make conformance-check
       - name: Registry-touch checker tests
         run: bash scripts/ci/tests/test_check_registry_touch.sh
-      - name: Route/handler changes carry registry changes
+      - name: Product changes and new tests are covered in the registry
         if: github.event_name == 'pull_request'
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: scripts/ci/check_registry_touch.sh origin/${{ github.base_ref }}

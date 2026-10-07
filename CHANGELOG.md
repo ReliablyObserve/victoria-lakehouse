@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Every product change and every new test must be covered in the conformance registry.** CI now
+  fails a PR that changes product code without a real content change under
+  `tests/conformance/registry/`, adds a `Test`/`Fuzz` function no registry row or feature references, or
+  leaves a reference to a removed test. Only the owner can exempt a PR (`registry-exempt` label plus a
+  `Registry: none — <reason>` body line).
+
 ## [0.146.3] - 2026-10-07
 
 ### Fixed

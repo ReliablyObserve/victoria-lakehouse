@@ -18,7 +18,7 @@ on top.
 - Statuses: `expect: pass | differ (with differ_note) | absent | unsupported`; `pending: true`
   marks rows declared but not yet executed by the runner.
 - Adding an endpoint or changing a handler? Add or update its row in the same PR
-  (`scripts/ci/check_registry_touch.sh` enforces it).
+  (`scripts/ci/check_registry_touch.sh` enforces it; see "Registry gate on every PR" below).
 - `UPSTREAM_COVERAGE.md` is generated from the inventory + registry — never edit it by hand.
 - All rows are declared expectations until the runner executes them (future work).
 - Request params/paths use a small placeholder vocabulary instead of literal values:
@@ -250,3 +250,44 @@ Checklist:
 
 `docs/features.md` and the README block between `<!-- features:begin -->` and
 `<!-- features:end -->` are generated — never edit them by hand.
+
+## Registry gate on every PR
+
+Owner rule (2026-10-07): no PR merges unless its behaviour changes and its tests are covered by
+registry changes. `scripts/ci/check_registry_touch.sh` (workflow `conformance.yaml`, step
+"Route/handler changes carry registry changes") enforces it, on top of the route/pin and
+feature-catalog rules above.
+
+**Rule 1 — product change needs a registry change.** A PR is product-changing when the changelog
+gate (`scripts/ci/check_changelog_pr.py`, reused through `scripts/ci/pr_classify.py`) calls it
+release-impacting, or it changes non-test, non-generated Go under `internal/`, `cmd/` or
+`lakehouse-traces/`, or files under `patches/` or `charts/`. It must make a real content change
+under `registry/rows/` or `registry/features/`: comment-only, blank-line and whitespace edits do
+not count (the check compares both revisions with comments, blank lines and indentation removed).
+Add or update the row that describes the changed behaviour; for a Lakehouse capability also the
+feature.
+
+**Rule 2 — tests are linked (Linking tests).** Every top-level `func Test…` / `func Fuzz…` the PR
+adds in `internal/**`, `cmd/**`, `lakehouse-traces/**`, `tests/parity`, `tests/e2e`,
+`tests/conformance` or `tests/ingestmatrix` must be named by a row (`refs.tests`) or a feature
+(`tests:`), as `path/to/file_test.go#TestName`; a bare `path/to/file_test.go` links every test in
+that file. "Added" is a per-package set comparison against the merge base, so a test moved
+between files of its package is not added, a renamed test is a removal plus an addition, and a
+test moved to another package is an addition. A reference into a test file the PR touched must
+still resolve: removing or renaming a test while leaving its reference fails. Existing unlinked
+tests need no backfill (`go run ./tests/conformance/cmd/testlinks -report-unlinked` counts
+them). `TestMain` and helpers without the `Test` prefix are not tests. The engine is
+`registry/testlinks.go`; the command is `cmd/testlinks`.
+
+**Exempt without ceremony:** release-metadata PRs, dependency-only PRs (only `go.mod`, `go.sum`,
+`requirements*.txt`, every commit `build(deps…)` or `chore(deps…)`), docs-only and CI-only PRs
+(not product-changing). Upstream pin and patch changes keep the stricter route rule above.
+
+**Exemption by the owner.** A PR with genuinely nothing to cover (a pure refactor, say) is
+exempted by the label `registry-exempt` plus a line starting `Registry: none — <reason>` in the
+PR body. Both are required: the label alone fails the check. **Only the owner applies the label;
+agents and contributors never do.** The workflow re-runs on `labeled`, `unlabeled` and `edited`,
+so applying the label or editing the body re-evaluates the gate. The exemption skips Rules 1 and
+2, not the route/pin and feature-catalog rules.
+
+Self-test: `bash scripts/ci/tests/test_check_registry_touch.sh`.

@@ -124,6 +124,10 @@
     - tests/conformance/drift_test.go#TestDrift_RealRegistry
     - tests/conformance/registry/rows_test.go#TestRows_LoadAndCounts
     - tests/conformance/inventory/inventory_test.go#TestExtract_RealDeps
+    - tests/conformance/registry/testlinks_test.go#TestTestFuncs_OnlyRealTests
+    - tests/conformance/registry/testlinks_test.go#TestIsLinkedTestFile
+    - tests/conformance/registry/testlinks_test.go#TestDiffAddedTests_MovesAreNotAdds
+    - tests/conformance/registry/testlinks_test.go#TestCollectTestRefs_LinkedAndStale
     - scripts/ci/tests/test_check_registry_touch.sh
   docs:
     - tests/conformance/README.md
