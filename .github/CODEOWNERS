@@ -1,8 +1,12 @@
-# Default owners for everything
-* @slawomirskowron
+# Default owner for everything
+* @szibis
 
-# Critical paths require explicit review
-internal/protocol/    @slawomirskowron
-internal/storage/     @slawomirskowron
-charts/               @slawomirskowron
-.github/workflows/    @slawomirskowron
+# Critical paths
+internal/protocol/    @szibis
+internal/storage/     @szibis
+charts/               @szibis
+
+# The CI gates and the conformance registry that judges every PR
+.github/              @szibis
+scripts/ci/           @szibis
+tests/conformance/    @szibis

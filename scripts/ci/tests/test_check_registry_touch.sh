@@ -31,11 +31,16 @@ if ! (cd "$REPO_ROOT" && GOWORK=off go build -o "$TESTLINKS_BIN" ./tests/conform
 fi
 export TESTLINKS_BIN
 
-# Issue-event fixtures for the registry-exempt label: who applied it decides.
+# Normalised timeline fixtures for the registry-exempt label: who applied it,
+# and whether anything was pushed after it, decide.
 EVDIR="$(mktemp -d)"
-printf '[{"event":"labeled","actor":{"login":"szibis"},"label":{"name":"registry-exempt"}}]' > "$EVDIR/owner.json"
-printf '[{"event":"labeled","actor":{"login":"mallory"},"label":{"name":"registry-exempt"}}]' > "$EVDIR/other.json"
-printf '[{"event":"labeled","actor":{"login":"szibis"},"label":{"name":"registry-exempt"}},{"event":"unlabeled","actor":{"login":"szibis"},"label":{"name":"registry-exempt"}},{"event":"labeled","actor":{"login":"mallory"},"label":{"name":"registry-exempt"}}]' > "$EVDIR/relabeled.json"
+ev() { printf '{"kind":"%s","actor":"%s","at":"%s","id":%s}' "$1" "$2" "$3" "$4"; }
+T1=2026-10-07T10:00:00Z; T2=2026-10-07T11:00:00Z; T3=2026-10-07T12:00:00Z
+printf '[%s,%s]' "$(ev commit '' $T1 0)" "$(ev labeled szibis $T2 1)" > "$EVDIR/owner.json"
+printf '[%s,%s]' "$(ev commit '' $T1 0)" "$(ev labeled mallory $T2 1)" > "$EVDIR/other.json"
+printf '[%s,%s,%s]' "$(ev labeled szibis $T1 0)" "$(ev unlabeled szibis $T2 1)" "$(ev labeled mallory $T3 2)" > "$EVDIR/relabeled.json"
+printf '[%s,%s]' "$(ev labeled szibis $T1 0)" "$(ev commit '' $T2 1)" > "$EVDIR/push_after.json"
+printf '[%s,%s]' "$(ev labeled szibis $T1 0)" "$(ev force_push '' $T3 1)" > "$EVDIR/forcepush_after.json"
 printf 'not json' > "$EVDIR/broken.json"
 OWNER_EV="$EVDIR/owner.json"
 
@@ -99,13 +104,24 @@ FIXTURE
     printf -- '- id: lh.existing.row\n  title: existing\n  refs:\n    tests:\n      - tests/parity/parity_test.go#TestOldParity\n' > tests/conformance/registry/rows/lh/endpoints.yaml
     mkdir -p tests/parity docs .github/workflows scripts/ci
     printf 'package parity\n\nimport "testing"\n\nfunc TestOldParity(t *testing.T) {}\n' > tests/parity/parity_test.go
-    printf 'module x\n' > go.mod
     printf '# approvers\nszibis\n' > .github/registry-exempt-approvers
+    printf 'jobs:\n  parity:\n    steps:\n      - run: |\n          python scripts/ci/parity_ratchet.py \\\n            --allowlist tests/parity/known_failures.txt \\\n            --summary-file x\n' > .github/workflows/parity.yaml
+    mkdir -p internal/ui/static charts/victoria-lakehouse/templates
+    printf 'window.x = 0;\n' > internal/ui/static/lakehouse-ui.js
+    printf 'ARG VL_VERSION=v1.0.0\n' > Dockerfile.logs
+    printf 'ARG X=1\n' > Dockerfile.loki-vl-proxy
+    printf 'apiVersion: v2\nname: c\ndescription: d\nversion: 1.0.0\nappVersion: "1.0.0"\n' > charts/victoria-lakehouse/Chart.yaml
+    printf '# chart\n' > charts/victoria-lakehouse/README.md
+    printf '#!/bin/sh\n' > charts/victoria-lakehouse/test_templates.sh
+    printf '# x\nversion 1.0.0 here\n' > README.md
+    printf 'module x\n\ngo 1.22\n\nrequire (\n\tgithub.com/a/b v1.0.0\n\tgithub.com/VictoriaMetrics/c v1.0.0\n)\n' > go.mod
+    printf 'x\n' > go.sum
     printf '# allowlist\nTestParity_A  # B1: x\nTestParity_B  # B2: y\n' > tests/parity/known_failures.txt
     printf '| Id | Divergence |\n|---|---|\n| **B1** | open one |\n| **B2** | open two |\n| **Old thing (B0)** | **Resolved** | done |\n' > docs/parity-and-gaps.md
     cat >> tests/conformance/registry/rows/lh/endpoints.yaml <<'ROWS'
 - {id: lh.row.gap, title: gap, expect: differ, compare: {type: ndjson-multiset}}
-- {id: lh.row.lock, title: lock, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}
+- {id: lh.row.lock, title: lock, expect: pass, compare: {type: exact-json}, request: {method: GET, path: /a}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}
+- {id: lh.row.vwh, title: vwh, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0"}}, request: {method: GET, path: /b}}
 ROWS
     printf -- '- id: lh.feature.storage.existing\n  title: existing\n' > tests/conformance/registry/features/storage.yaml
     git add -A
@@ -390,7 +406,7 @@ move_test_to_other_file() {
   git mv tests/parity/parity_test.go tests/parity/moved_test.go
   sed -i.bak 's/parity_test.go/moved_test.go/' tests/conformance/registry/rows/lh/endpoints.yaml && rm -f tests/conformance/registry/rows/lh/endpoints.yaml.bak
 }
-dependency_bump() { printf 'module x\n\nrequire y v1.2.3\n' > go.mod; printf 'a==1\n' > requirements.txt; }
+dependency_bump() { sed -i.bak 's#github.com/a/b v1.0.0#github.com/a/b v1.2.3#' go.mod && rm -f go.mod.bak; printf 'a==1\n' > requirements.txt; printf 'y\n' >> go.sum; }
 docs_only() { printf '# doc\n' > docs/x.md; }
 ci_only() { printf 'name: x\n' > .github/workflows/x.yaml; printf '#!/bin/sh\n' > scripts/ci/foo.sh; }
 
@@ -420,9 +436,9 @@ run_case "a test moved to another file of its package with the reference updated
 
 echo
 echo "== exemptions =="
-run_case "a release-metadata PR passes" ok "skipped (release-metadata PR)" materialize_release 9.9.9
+PR_AUTHOR=szibis run_case "a release-metadata PR by an approver passes" ok "skipped (release-metadata PR)" materialize_release 9.9.9
 COMMIT_MSG='build(deps): bump y' run_case "a dependency-only PR passes" ok "skipped (dependency-only PR)" dependency_bump
-run_case "a go.mod change is not product code, whatever its commit subject" ok "registry-touch check OK" dependency_bump
+run_case "a go.mod bump under a non-dependency commit subject is product (kills the commit-subject mutant)" fail "shipped build file: go.mod" dependency_bump
 run_case "a docs-only PR passes" ok "registry-touch check OK" docs_only
 run_case "a CI-only PR passes" ok "registry-touch check OK" ci_only
 PR_LABELS='bug,registry-exempt' run_case "the exempt label without the body section fails" fail \
@@ -450,7 +466,7 @@ run_case "Makefile and scripts changes pass rule 1" ok "registry-touch check OK"
 run_case "a _test.go edit that adds no test passes" ok "registry-touch check OK" test_file_edit_only
 run_case "a chart change is product code" fail "makes no real content change" chart_change
 run_case "a patches/ change is product code" fail "but not tests/conformance/registry/rows/" patch_change
-run_case "generated Go is not product code" ok "registry-touch check OK" generated_go_change
+run_case "a Code-generated marker does not exempt product Go (H3)" fail "product code: internal/x/z.go" generated_go_change
 run_case "a feat: commit that touches only docs does not trigger rule 1" ok "registry-touch check OK" docs_only
 COMMIT_MSG='feat: only tests' run_case "a feat: subject alone does not trigger rule 1" ok "registry-touch check OK" tests_only_change
 run_case "new tests in a tests-only PR still need links (rule 2)" fail "tests/parity/parity_test.go#TestNewParity" add_parity_test
@@ -475,7 +491,7 @@ echo "== parity fixes ship locks; locks are never weakened =="
 drop_allowlist_entry() { sed -i.bak '/TestParity_A/d' tests/parity/known_failures.txt && rm -f tests/parity/known_failures.txt.bak; }
 touch_parity_test() { printf 'package parity\n\nimport "testing"\n\nfunc TestOldParity(t *testing.T) { _ = 1 }\n' > tests/parity/parity_test.go; }
 add_exact_row_for_parity_test() { printf -- '- {id: lh.row.new_lock, title: new lock, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
-add_loose_row_for_parity_test() { printf -- '- {id: lh.row.loose, title: loose, expect: pass, compare: {type: ndjson-multiset}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
+add_loose_row_for_parity_test() { printf -- '- {id: lh.row.loose, title: loose, expect: pass, compare: {type: status}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
 add_exact_row_other_tests() { printf -- '- {id: lh.row.elsewhere, title: e, expect: pass, compare: {type: exact-json}, refs: {tests: [internal/x/x_test.go]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
 full_parity_fix() { drop_allowlist_entry; touch_parity_test; add_exact_row_for_parity_test; }
 mark_resolved() { sed -i.bak 's/| \*\*B1\*\* | open one |/| **B1** | **Resolved** | fixed |/' docs/parity-and-gaps.md && rm -f docs/parity-and-gaps.md.bak; }
@@ -487,15 +503,15 @@ delete_lock_row() { sed -i.bak '/lh.row.lock/d' tests/conformance/registry/rows/
 
 run_case "removing an allowlist entry with no tests or rows fails" fail "does not ship its locks" \
   bash -c "$(declare -f drop_allowlist_entry registry_row_change); drop_allowlist_entry; registry_row_change"
-run_case "the failure names the missing parity test" fail "no test under tests/parity/" \
+run_case "the failure names the missing parity test" fail "no test function under tests/parity/" \
   bash -c "$(declare -f drop_allowlist_entry registry_row_change); drop_allowlist_entry; registry_row_change"
 run_case "a parity fix with a parity test and a new exact row that references it passes" ok "parity-fix PR: true" full_parity_fix
 run_case "a parity fix whose parity test is changed but no exact row references it fails" fail \
-  "no new or updated registry row with compare type exact-json" \
+  "no new or changed registry row is a lock" \
   bash -c "$(declare -f drop_allowlist_entry touch_parity_test add_loose_row_for_parity_test); drop_allowlist_entry; touch_parity_test; add_loose_row_for_parity_test"
-run_case "a parity fix whose exact row references other tests fails" fail "no new or updated registry row" \
+run_case "a parity fix whose exact row references other tests fails" fail "no new or changed registry row is a lock" \
   bash -c "$(declare -f drop_allowlist_entry touch_parity_test add_exact_row_other_tests); drop_allowlist_entry; touch_parity_test; add_exact_row_other_tests"
-run_case "an UNCHANGED exact row that already references the test is not this PR's lock" fail "no new or updated registry row" \
+run_case "an UNCHANGED exact row that already references the test is not this PR's lock" fail "no new or changed registry row is a lock" \
   bash -c "$(declare -f drop_allowlist_entry touch_parity_test registry_row_change); drop_allowlist_entry; touch_parity_test; registry_row_change"
 run_case "marking a divergence resolved in the docs is a parity fix" fail "divergence marked resolved in docs/parity-and-gaps.md: B1" \
   bash -c "$(declare -f mark_resolved registry_row_change); mark_resolved; registry_row_change"
@@ -507,12 +523,135 @@ rename_allowlist_entry() { sed -i.bak 's#^TestParity_A #TestParity_A/sub #' test
 run_case "renaming an allowlist entry is a weakening with a rename hint" fail "looks like a rename" rename_allowlist_entry
 run_case "adding an allowlist entry fails as a weakening" fail "allowlist entry added: TestParity_C" add_allowlist_entry
 REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY='Registry: none — owner accepted a new known failure' run_case "the owner exemption allows an allowlist entry" ok "skipped" add_allowlist_entry
-run_case "flipping an exact pass row to differ fails as a weakening" fail "row weakened from exact pass to expect=differ" \
+run_case "flipping an exact pass row to differ fails as a weakening" fail "pass row weakened to expect=differ" \
   bash -c "$(declare -f weaken_lock_to_differ registry_row_change); weaken_lock_to_differ; registry_row_change"
-run_case "loosening an exact row's compare fails as a weakening" fail "compare=ndjson-multiset: lh.row.lock" \
+run_case "loosening an exact row's compare fails as a weakening" fail "compare (type, options or project) changed: lh.row.lock" \
   bash -c "$(declare -f loosen_lock_compare registry_row_change); loosen_lock_compare; registry_row_change"
-run_case "deleting an exact row fails as a weakening" fail "exact row deleted: lh.row.lock" \
+run_case "deleting an exact row fails as a weakening" fail "pass row deleted: lh.row.lock" \
   bash -c "$(declare -f delete_lock_row registry_row_change); delete_lock_row; registry_row_change"
+
+echo
+echo "== hardening: every reviewer bypass is a failing case =="
+ROWS=tests/conformance/registry/rows/lh/endpoints.yaml
+sedi() { sed -i.bak "$1" "$2" && rm -f "$2.bak"; }
+b1_ui_asset() { echo '/* behaviour */' >> internal/ui/static/lakehouse-ui.js; }
+b2_test_prefixed_go() { printf 'package x\n\nvar hook = 1\n' > internal/x/test_hooks.go; }
+doc_and_testdata_only() { mkdir -p internal/x/testdata; printf 'd\n' > internal/x/testdata/in.json; printf '# r\n' >> internal/x/README.md; printf '# rb\n' > internal/x/RUNBOOK.md; printf '#!/bin/sh\n' > internal/x/test_helper.sh; }
+b3_generated_marker() { printf '// Code generated by hand. DO NOT EDIT.\n\npackage x\n\nfunc F() { println("behaviour") }\n' > internal/x/x.go; }
+b4_replace_directive() { printf '\nreplace github.com/a/b => github.com/evil/b v0.0.1\n' >> go.mod; }
+dep_vm_module() { sedi 's#VictoriaMetrics/c v1.0.0#VictoriaMetrics/c v1.9.9#' go.mod; }
+dep_go_directive() { sedi 's#^go 1.22#go 1.23#' go.mod; }
+dep_new_require() { sedi 's#^)#\tgithub.com/d/e v1.0.0\n)#' go.mod; }
+b5_dockerfile() { sedi 's#^ARG VL_VERSION=.*#ARG VL_VERSION=v1.99.0#' Dockerfile.logs; }
+other_dockerfile() { sedi 's#^ARG X=1#ARG X=2#' Dockerfile.loki-vl-proxy; }
+traces_go_mod() { mkdir -p lakehouse-traces; printf 'module t\n' > lakehouse-traces/go.mod; }
+b6_pass_to_differ() { product_change; sedi '/lh.row.lock/s/expect: pass/expect: differ, differ_note: x/' $ROWS; }
+b7_tolerance_raised() { product_change; sedi 's/hits_tolerance: "0"/hits_tolerance: "0.5"/' $ROWS; }
+b8_request_repointed() { product_change; sedi '/lh.row.lock/s#path: /a#path: /health#' $ROWS; }
+project_changed() { product_change; sedi '/lh.row.vwh/s#compare: {type: values-with-hits#compare: {project: [x], type: values-with-hits#' $ROWS; }
+b9_allowlist_renamed() {
+  git mv tests/parity/known_failures.txt tests/parity/known_failures_v2.txt
+  echo 'TestParity_New  # new gap' >> tests/parity/known_failures_v2.txt
+  sedi 's#tests/parity/known_failures.txt#tests/parity/known_failures_v2.txt#' .github/workflows/parity.yaml
+  touch_parity_test; add_exact_row_for_parity_test
+}
+b9_allowlist_deleted() { git rm -q tests/parity/known_failures.txt; registry_row_change; }
+b9_workflow_arg_changed() { sedi 's#tests/parity/known_failures.txt#tests/parity/other.txt#' .github/workflows/parity.yaml; : > tests/parity/other.txt; registry_row_change; }
+b10_comment_only_parity_touch() {
+  drop_allowlist_entry
+  printf '\n// touch\n' >> tests/parity/parity_test.go
+  sedi 's/title: lock/title: lock (edited)/' $ROWS
+}
+fix_with_vwh_lock() {
+  drop_allowlist_entry; touch_parity_test
+  printf -- '- {id: lh.row.vwh2, title: v, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0"}}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> $ROWS
+}
+fix_with_loose_vwh() {
+  drop_allowlist_entry; touch_parity_test
+  printf -- '- {id: lh.row.vwh2, title: v, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0.5"}}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> $ROWS
+}
+flip_gap_exact_with_ref() { flip_gap_to_pass; sedi '/lh.row.gap/s#compare: {type: ndjson-multiset}#compare: {type: exact-json}, refs: {tests: [tests/parity/parity_test.go\#TestOldParity]}#' $ROWS; touch_parity_test; }
+flip_gap_only_other_lock() { flip_gap_to_pass; touch_parity_test; add_exact_row_for_parity_test; }
+b11_unicode_test() { registry_row_change; printf 'package x\n\nimport "testing"\n\nfunc TestÄé(t *testing.T) {}\n' > internal/x/uni_test.go; }
+l1_syntax_error_test() { registry_row_change; printf 'package x\n\nfunc TestBroken( {\n' > internal/x/broken_test.go; }
+gate_file_change() { printf '#!/usr/bin/env python3\n' > scripts/ci/pr_classify.py; }
+chart_version_bump_with_changelog() { materialize_release 9.9.9; sedi 's/^version: 1.0.0/version: 9.9.9/; s/^appVersion: "1.0.0"/appVersion: "9.9.9"/' charts/victoria-lakehouse/Chart.yaml; }
+chart_description_edit_with_changelog() { chart_version_bump_with_changelog; sedi 's/^description: d/description: evil/' charts/victoria-lakehouse/Chart.yaml; }
+changelog_new_bullet_with_chart() { chart_version_bump_with_changelog; printf -- '- hand written behaviour, not a lead-in\n' >> CHANGELOG.md; }
+chart_templates_md() { printf '# n\n' >> charts/victoria-lakehouse/README.md; }
+chart_test_script() { printf '# edit\n' >> charts/victoria-lakehouse/test_templates.sh; }
+chart_template_file() { printf 'a: 1\n' > charts/victoria-lakehouse/templates/NOTES.txt; }
+
+run_case "B1: an embedded UI asset under internal/ is product code" fail "product code: internal/ui/static/lakehouse-ui.js" b1_ui_asset
+run_case "B2: a non-test Go file named test_*.go is product code" fail "product code: internal/x/test_hooks.go" b2_test_prefixed_go
+run_case "internal testdata, README, RUNBOOK and test_*.sh scripts are not product" ok "registry-touch check OK" doc_and_testdata_only
+run_case "B3: a Code-generated marker on a product file does not exempt it" fail "product code: internal/x/x.go" b3_generated_marker
+COMMIT_MSG='chore(deps): bump parquet-go' run_case "B4: a go.mod replace directive is never dependency-only" fail "shipped build file: go.mod" b4_replace_directive
+COMMIT_MSG='chore(deps): bump c' run_case "a VictoriaMetrics/* module bump is never dependency-only" fail "shipped build file: go.mod" dep_vm_module
+COMMIT_MSG='chore(deps): bump go' run_case "a go directive change is never dependency-only" fail "shipped build file: go.mod" dep_go_directive
+COMMIT_MSG='build(deps): add e' run_case "a new require line is dependency-only" ok "skipped (dependency-only PR)" dep_new_require
+COMMIT_MSG='build(deps): bump y' run_case "go.sum and requirements.txt alone are dependency-only" ok "skipped (dependency-only PR)" \
+  bash -c "printf 'y\n' >> go.sum; printf 'a==1\n' > requirements.txt"
+run_case "B5: a shipped Dockerfile change is product" fail "shipped build file: Dockerfile.logs" b5_dockerfile
+run_case "the loki-vl-proxy Dockerfile is not shipped product" ok "registry-touch check OK" other_dockerfile
+run_case "lakehouse-traces/go.mod is product" fail "product code: lakehouse-traces/go.mod" traces_go_mod
+run_case "B6: flipping a pass row to differ is a weakening" fail "pass row weakened to expect=differ: lh.row.lock" b6_pass_to_differ
+run_case "B7: raising a hits_tolerance on a pass row is a weakening" fail "compare (type, options or project) changed: lh.row.vwh" b7_tolerance_raised
+run_case "changing a pass row's project is a weakening" fail "compare (type, options or project) changed: lh.row.vwh" project_changed
+run_case "B8: re-pointing a pass row's request is a weakening" fail "pass row's request changed: lh.row.lock" b8_request_repointed
+run_case "B9: renaming the allowlist file (and the workflow argument) fails" fail "--allowlist changed from tests/parity/known_failures.txt to tests/parity/known_failures_v2.txt" b9_allowlist_renamed
+run_case "B9: deleting the allowlist file fails" fail "is missing at head" b9_allowlist_deleted
+run_case "B9: pointing the workflow at another allowlist fails" fail "--allowlist changed" b9_workflow_arg_changed
+run_case "B10: a comment in a parity test file and a title edit do not lock a parity fix" fail "no test function under tests/parity/" b10_comment_only_parity_touch
+run_case "a parity fix with a values-with-hits tolerance-0 lock referencing a modified test passes" ok "parity-fix PR: true" fix_with_vwh_lock
+run_case "a parity fix whose values-with-hits lock has a tolerance fails" fail "no new or changed registry row is a lock" fix_with_loose_vwh
+run_case "a differ-to-pass flip whose row is itself an exact lock with the ref passes" ok "parity-fix PR: true" flip_gap_exact_with_ref
+run_case "a differ-to-pass flip is not excused by another lock row" fail "the flipped row lh.row.gap must itself be a lock" flip_gap_only_other_lock
+run_case "B11: a unicode-named new test is found and must be linked" fail "internal/x/uni_test.go#TestÄé" b11_unicode_test
+run_case "a test file that does not parse is a tool error, not zero tests" fail "expected" l1_syntax_error_test
+run_case "a change to the gate itself needs the owner" fail "changes the registry gate itself" gate_file_change
+REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY='Registry: none — gate hardening' \
+  run_case "a gate change with the owner's verified label passes" ok "skipped" gate_file_change
+PR_AUTHOR=szibis run_case "M2: a version-only chart bump with the changelog materialization, by the owner, is release metadata" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
+PR_AUTHOR=github-actions[bot] run_case "M2: the same by the release bot is release metadata" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
+PR_AUTHOR=mallory run_case "M2: the same by anyone else is not" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_version_bump_with_changelog
+run_case "M2: the same with no author known is not" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_version_bump_with_changelog
+PR_AUTHOR=szibis run_case "M2: a chart description edit hidden in a release PR is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_description_edit_with_changelog
+PR_AUTHOR=szibis run_case "M2: a hand-written changelog bullet in a release PR is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" changelog_new_bullet_with_chart
+PR_AUTHOR=szibis PR_LABELS=registry-exempt run_case "L3: an exempt PR needs no body line for a stray label" ok "skipped (release-metadata PR)" materialize_release 9.9.9
+run_case "S3: a chart README is documentation" ok "registry-touch check OK" chart_templates_md
+run_case "S2: a chart test_*.sh script is a test" ok "registry-touch check OK" chart_test_script
+run_case "S3: a chart template file is product even when it is .txt" fail "packaged/patched: charts/victoria-lakehouse/templates/NOTES.txt" chart_template_file
+for body in 'Registry: none —' 'Registry: none —    ' 'Registry: none -' 'Registry: none —  .'; do
+  REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY="$body" run_case "S9: an empty reason ('$body') is rejected" fail "no 'Registry: none" product_change
+done
+
+echo
+echo "== the exempt label must post-date the head =="
+REGISTRY_EXEMPT_EVENTS_FILE="$EVDIR/push_after.json" PR_LABELS=registry-exempt PR_BODY='Registry: none — r' \
+  run_case "H7: a commit after the label denies it" fail "later than" product_change
+REGISTRY_EXEMPT_EVENTS_FILE="$EVDIR/forcepush_after.json" PR_LABELS=registry-exempt PR_BODY='Registry: none — r' \
+  run_case "H7: a force push after the label denies it" fail "later than" product_change
+EVENT_ACTION=synchronize REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY='Registry: none — r' \
+  run_case "H7: a push-triggered run denies the label" fail "triggered by a push" product_change
+EVENT_ACTION=labeled REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY='Registry: none — r' \
+  run_case "H7: a labeled-triggered run honours the owner's label" ok "approver 'szibis'" product_change
+
+echo
+echo "== the job summary lists the registry changes =="
+summary_case() {
+  local dir out sum
+  dir="$(new_repo)"; sum="$(mktemp)"
+  ( cd "$dir" && registry_row_change && printf -- '- id: lh.feature.storage.added\n  title: n\n' >> tests/conformance/registry/features/storage.yaml && git add -A && git commit -q -m change ) >/dev/null 2>&1
+  out="$(cd "$dir" && GITHUB_STEP_SUMMARY="$sum" bash "$CHECKER" base 2>&1)"
+  if grep -q 'rows added (1): lh.row.touched' "$sum" && grep -q 'features added (1): lh.feature.storage.added' "$sum" && grep -q 'rows added' <<<"$out"; then
+    echo "ok   - M3: added rows and features are printed and written to the job summary"; pass=$((pass + 1))
+  else
+    echo "FAIL - M3: job summary"; cat "$sum"; echo "$out" | sed 's/^/       /'; fail=$((fail + 1))
+  fi
+  rm -rf "$dir" "$sum"
+}
+summary_case
 echo
 echo "== the generated documents must be current on a feature PR =="
 

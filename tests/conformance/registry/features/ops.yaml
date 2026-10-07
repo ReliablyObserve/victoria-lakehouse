@@ -128,8 +128,15 @@
     - tests/conformance/registry/testlinks_test.go#TestIsLinkedTestFile
     - tests/conformance/registry/testlinks_test.go#TestDiffAddedTests_MovesAreNotAdds
     - tests/conformance/registry/testlinks_test.go#TestCollectTestRefs_LinkedAndStale
+    - tests/conformance/registry/testlinks_test.go#TestTestFuncs_NonASCIIAndSyntax
+    - tests/conformance/registry/testlinks_test.go#TestModifiedTests_IgnoresComments
     - tests/conformance/registry/paritygate_test.go#TestParityParsers
-    - tests/conformance/registry/paritygate_test.go#TestParityCheck
+    - tests/conformance/registry/paritygate_test.go#TestExactEquivalent
+    - tests/conformance/registry/paritygate_test.go#TestParityCheck_FixNeedsLocks
+    - tests/conformance/registry/paritygate_test.go#TestParityCheck_FlipIsTheOnlyTrigger
+    - tests/conformance/registry/paritygate_test.go#TestParityCheck_NonFixPRsReportNoLockProblems
+    - tests/conformance/registry/paritygate_test.go#TestParityCheck_Weakenings
+    - tests/conformance/registry/paritygate_test.go#TestChangedEntries
     - scripts/ci/tests/test_registry_exempt.py
     - scripts/ci/tests/test_check_registry_touch.sh
   docs:

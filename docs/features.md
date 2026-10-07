@@ -1594,7 +1594,7 @@ Cold-query latency is a sum of many small object-store operations, which aggrega
 
 ### 🔧 API data-proof metrics
 
-`lh.feature.ops.api_data_proof` · status: in-progress · since: the release after v0.146.3 · surfaces: cli
+`lh.feature.ops.api_data_proof` · status: in-progress · since: v0.146.5 · surfaces: cli
 
 **API data-proof metrics**: every compared API answer is scored in percent per quality facet against hot VictoriaLogs/VictoriaTraces — row sets, fields, values, series, spans, order, truth — with a verdict per request, so a fix or a regression shows as a number that cannot round up to 100.
 
@@ -1602,7 +1602,7 @@ A difference that rounds to 100% is not a result. The metrics library scores a r
 
 - Verification: tests: `scripts/proof/tests/test_common_rows.py`, `scripts/proof/tests/test_series_values_traces.py`, `scripts/proof/tests/test_generic_verdict.py`, `scripts/proof/tests/test_cases_cli.py`, `scripts/proof/tests/test_review_round2.py`, `scripts/proof/tests/test_adversarial.py`, `scripts/proof/tests/test_ties.py`, `scripts/proof/tests/test_tiecut_golden.py`, `tests/parity/rows_ties_golden_test.go#TestTieCutGoldenQueries`, `tests/parity/rows_ties_golden_test.go#TestTieCutGoldenDecisions`
 - Docs: `scripts/proof/README.md`
-- Changelog: the release after `0.146.3`
+- Changelog: `0.146.5`
 - Note: The metrics library scores recorded answers; nothing calls it from CI against a live stack yet. The Python tests run in the Proof metrics workflow (`.github/workflows/proof-metrics.yaml`); the Go golden test shares `tests/parity/testdata/tiecut_golden.json` with the Python tie-cut tests, so the two implementations of the tie rule cannot drift apart, and runs in the Parity Tests workflow with the rest of the parity package. The fixtures are labelled recorded, derived-from-recorded or synthetic in each case's `meta.json`; no Lakehouse answer is recorded yet.
 
 ### ✅ Validated benchmark harness
@@ -1650,7 +1650,7 @@ Most deployments want one of a few postures, not forty individual decisions. A p
 
 The registry is the answer to "what does upstream have that we might have missed". The inventory is extracted from the vendored sources rather than maintained by hand, the drift check is a hard gate on unmapped items and on rows citing something upstream no longer has, and `UPSTREAM_COVERAGE.md` is generated from both.
 
-- Verification: tests: `tests/conformance/drift_test.go#TestDrift_RealRegistry`, `tests/conformance/registry/rows_test.go#TestRows_LoadAndCounts`, `tests/conformance/inventory/inventory_test.go#TestExtract_RealDeps`, `tests/conformance/registry/testlinks_test.go#TestTestFuncs_OnlyRealTests`, `tests/conformance/registry/testlinks_test.go#TestIsLinkedTestFile`, `tests/conformance/registry/testlinks_test.go#TestDiffAddedTests_MovesAreNotAdds`, `tests/conformance/registry/testlinks_test.go#TestCollectTestRefs_LinkedAndStale`, `tests/conformance/registry/paritygate_test.go#TestParityParsers`, `tests/conformance/registry/paritygate_test.go#TestParityCheck`, `scripts/ci/tests/test_registry_exempt.py`, `scripts/ci/tests/test_check_registry_touch.sh`
+- Verification: tests: `tests/conformance/drift_test.go#TestDrift_RealRegistry`, `tests/conformance/registry/rows_test.go#TestRows_LoadAndCounts`, `tests/conformance/inventory/inventory_test.go#TestExtract_RealDeps`, `tests/conformance/registry/testlinks_test.go#TestTestFuncs_OnlyRealTests`, `tests/conformance/registry/testlinks_test.go#TestIsLinkedTestFile`, `tests/conformance/registry/testlinks_test.go#TestDiffAddedTests_MovesAreNotAdds`, `tests/conformance/registry/testlinks_test.go#TestCollectTestRefs_LinkedAndStale`, `tests/conformance/registry/testlinks_test.go#TestTestFuncs_NonASCIIAndSyntax`, `tests/conformance/registry/testlinks_test.go#TestModifiedTests_IgnoresComments`, `tests/conformance/registry/paritygate_test.go#TestParityParsers`, `tests/conformance/registry/paritygate_test.go#TestExactEquivalent`, `tests/conformance/registry/paritygate_test.go#TestParityCheck_FixNeedsLocks`, `tests/conformance/registry/paritygate_test.go#TestParityCheck_FlipIsTheOnlyTrigger`, `tests/conformance/registry/paritygate_test.go#TestParityCheck_NonFixPRsReportNoLockProblems`, `tests/conformance/registry/paritygate_test.go#TestParityCheck_Weakenings`, `tests/conformance/registry/paritygate_test.go#TestChangedEntries`, `scripts/ci/tests/test_registry_exempt.py`, `scripts/ci/tests/test_check_registry_touch.sh`
 - Docs: `tests/conformance/README.md`, `UPSTREAM_COVERAGE.md`
 - Changelog: `0.111.0`
 
