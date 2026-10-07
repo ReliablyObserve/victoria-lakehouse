@@ -2,10 +2,13 @@ package schema
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Span events and span links on cold storage.
@@ -37,7 +40,14 @@ import (
 // reserved key "$idx" holding the original suffix text, colon included
 // (":3", ":x", or "" for a field with no suffix at all). A sub-field name that
 // itself starts with "$" is written with one more "$" in front, so it can never
-// collide with the reserved key. Elements and keys are written in a
+// collide with the reserved key. Bytes that are not valid UTF-8 (JSON cannot
+// carry them; encoding/json would replace them with U+FFFD) are written
+// reversibly: a value becomes the object {"$bytes":"<base64>"} in place of the
+// string, a sub-field name becomes "$b64:<base64>"; both forms stay valid JSON,
+// and cannot collide with a legitimate string value (an attribute value is
+// always a string, never an object) or name (a name that starts with "$" is
+// written with one more "$" in front). Valid UTF-8 is written exactly as
+// before. Elements and keys are written in a
 // deterministic order, so the same span produces the same bytes on every write
 // path.
 
@@ -114,7 +124,56 @@ func (c *SpanSubFieldCollector) Apply(row *TraceRow) {
 type subGroup struct {
 	idx      string
 	noSuffix bool
-	fields   map[string]string
+	fields   map[string]jsonStr
+}
+
+// jsonStr is a field value as the column stores it: a JSON string, or for a
+// value that is not valid UTF-8 the object {"$bytes":"<base64>"}.
+type jsonStr string
+
+const bytesKey = "$bytes"
+
+// b64Prefix starts a sub-field name that is not valid UTF-8 (base64 of the raw
+// name follows). A valid name that starts with "$" is stored as "$$..." so it
+// can never look like this.
+const b64Prefix = "$b64:"
+
+func (v jsonStr) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	var err error
+	if utf8.ValidString(string(v)) {
+		err = enc.Encode(string(v))
+	} else {
+		err = enc.Encode(map[string]string{bytesKey: base64.StdEncoding.EncodeToString([]byte(v))})
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), err
+}
+
+func (v *jsonStr) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '{' {
+		var o map[string]string
+		if err := json.Unmarshal(b, &o); err != nil {
+			return err
+		}
+		enc, ok := o[bytesKey]
+		if !ok || len(o) != 1 {
+			return fmt.Errorf("span events/links column: unexpected value object %s", b)
+		}
+		raw, err := base64.StdEncoding.DecodeString(enc)
+		if err != nil {
+			return err
+		}
+		*v = jsonStr(raw)
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(b, &str); err != nil {
+		return err
+	}
+	*v = jsonStr(str)
+	return nil
 }
 
 type subGroups struct {
@@ -136,13 +195,16 @@ func (g *subGroups) add(rest, value string) {
 		if g.byKey == nil {
 			g.byKey = make(map[string]*subGroup, 2)
 		}
-		grp = &subGroup{idx: strings.Clone(idx), noSuffix: noSuffix, fields: make(map[string]string, 6)}
+		grp = &subGroup{idx: strings.Clone(idx), noSuffix: noSuffix, fields: make(map[string]jsonStr, 6)}
 		g.byKey[key] = grp
 	}
-	if strings.HasPrefix(sub, "$") {
+	switch {
+	case !utf8.ValidString(sub):
+		sub = b64Prefix + base64.StdEncoding.EncodeToString([]byte(sub))
+	case strings.HasPrefix(sub, "$"):
 		sub = "$" + sub // escape: keys starting with "$" are reserved
 	}
-	grp.fields[strings.Clone(sub)] = strings.Clone(value)
+	grp.fields[strings.Clone(sub)] = jsonStr(strings.Clone(value))
 }
 
 // marshal returns the JSON array of the groups, or "" when there are none.
@@ -181,12 +243,12 @@ func (g *subGroups) marshal() string {
 		}
 		return groups[i].idx < groups[j].idx
 	})
-	elems := make([]map[string]string, len(groups))
+	elems := make([]map[string]jsonStr, len(groups))
 	for pos, grp := range groups {
 		if grp.noSuffix {
-			grp.fields[idxKey] = ""
+			grp.fields[idxKey] = jsonStr("")
 		} else if grp.idx != strconv.Itoa(pos) {
-			grp.fields[idxKey] = ":" + grp.idx
+			grp.fields[idxKey] = jsonStr(":" + grp.idx)
 		}
 		elems[pos] = grp.fields
 	}
@@ -207,7 +269,7 @@ func ForEachSpanSubField(col, jsonValue string, emit func(name, value string)) e
 	if jsonValue == "" {
 		return nil
 	}
-	var elems []map[string]string
+	var elems []map[string]jsonStr
 	if err := json.Unmarshal([]byte(jsonValue), &elems); err != nil {
 		return err
 	}
@@ -216,7 +278,7 @@ func ForEachSpanSubField(col, jsonValue string, emit func(name, value string)) e
 	for pos, el := range elems {
 		suffix := ":" + strconv.Itoa(pos)
 		if explicit, ok := el[idxKey]; ok {
-			suffix = explicit
+			suffix = string(explicit)
 		}
 		keys = keys[:0]
 		for k := range el {
@@ -226,7 +288,15 @@ func ForEachSpanSubField(col, jsonValue string, emit func(name, value string)) e
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			emit(prefix+strings.TrimPrefix(k, "$")+suffix, el[k])
+			name := strings.TrimPrefix(k, "$")
+			if strings.HasPrefix(k, b64Prefix) {
+				raw, err := base64.StdEncoding.DecodeString(k[len(b64Prefix):])
+				if err != nil {
+					return err
+				}
+				name = string(raw)
+			}
+			emit(prefix+name+suffix, string(el[k]))
 		}
 	}
 	return nil

@@ -2,6 +2,7 @@ package schema
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -205,15 +206,18 @@ func TestEstimateRawBytesTraces_CountsEventsAndLinks(t *testing.T) {
 	}
 }
 
-// FuzzSpanSubFields: any set of field names under the two prefixes survives
-// collect -> JSON -> decode unchanged, except that empty values are absent
-// (VictoriaLogs treats an empty value as no field).
+// FuzzSpanSubFields: any set of field names and values under the two prefixes,
+// invalid UTF-8 included, survives collect -> JSON -> decode unchanged, except
+// that empty values are absent (VictoriaLogs treats an empty value as no field).
 func FuzzSpanSubFields(f *testing.F) {
 	f.Add("event:event_name:0", "x", "link:link_span_id:1", "y")
 	f.Add("event:event_attr:a:b:3", "-", "event:event_attr:a:b:3x", "z")
 	f.Add("event:", "v", "link:", "w")
 	f.Add("event:a", "1", "event:a:", "2")
 	f.Add("event:$idx:0", "1", "event:$$x:0", "2")
+	f.Add("event:event_name:0", "\xff\xfe", "event:event_attr:\xff:0", "\x80")
+	f.Add("link:link_attr:$b64:AA:0", "v", "link:x:\xffsuffix", "\xc3")
+	f.Add("event:$\xff:0", "{\"$bytes\":\"AA==\"}", "event:$b64:zz:0", "x")
 	f.Fuzz(func(t *testing.T, n1, v1, n2, v2 string) {
 		in := map[string]string{}
 		var c SpanSubFieldCollector
@@ -227,28 +231,20 @@ func FuzzSpanSubFields(f *testing.F) {
 		got := map[string]string{}
 		for _, cc := range []struct{ col, js string }{{ColSpanEventsJSON, row.EventsJSON}, {ColSpanLinksJSON, row.LinksJSON}} {
 			if err := ForEachSpanSubField(cc.col, cc.js, func(n, v string) { got[n] = v }); err != nil {
-				// Only invalid UTF-8 may fail: JSON cannot carry it, and OTLP
-				// strings are UTF-8 by definition.
-				for _, s := range []string{n1, v1, n2, v2} {
-					if !validUTF8(s) {
-						return
-					}
-				}
-				t.Fatalf("decode failed for valid input: %v (%s)", err, cc.js)
-			}
-		}
-		for _, s := range []string{n1, v1, n2, v2} {
-			if !validUTF8(s) {
-				return
+				t.Fatalf("decode failed: %v (%s)", err, cc.js)
 			}
 		}
 		if !reflect.DeepEqual(got, in) {
 			t.Fatalf("round trip lost data:\n got %q\nwant %q", got, in)
 		}
+		// The column is valid JSON for external readers whatever the bytes were.
+		for _, js := range []string{row.EventsJSON, row.LinksJSON} {
+			if js != "" && !json.Valid([]byte(js)) {
+				t.Fatalf("stored column is not valid JSON: %q", js)
+			}
+		}
 	})
 }
-
-func validUTF8(s string) bool { return strings.ToValidUTF8(s, "") == s }
 
 // The logs signal is unaffected: no log row has an event, link or composite
 // column, so a logs Parquet file keeps exactly the columns it had before the
@@ -290,7 +286,7 @@ func rowParquetColumnsOf(t *testing.T, typ reflect.Type) []string {
 // colons, dots, a leading "$", unicode, empty-after-trim names, and values from
 // empty through 128 KiB.
 func randomSpanSubFields(r *rand.Rand, n int) map[string]string {
-	keys := []string{"a", "exception.type", "k:with:colons", "$idx", "$x", "žółć", "☃", "dropped", "a.b.c", ""}
+	keys := []string{"a", "exception.type", "k:with:colons", "$idx", "$x", "žółć", "☃", "dropped", "a.b.c", "", "bad\xff\xfekey", "$b64:AAAA", "$bytes", "\xc3"}
 	vals := []func() string{
 		func() string { return "" },
 		func() string { return "-" },
@@ -298,6 +294,8 @@ func randomSpanSubFields(r *rand.Rand, n int) map[string]string {
 		func() string { return "line\nbreak \"q\" \\ \t   \x00ctl" },
 		func() string { return strings.Repeat("é", r.Intn(70000)) },
 		func() string { return strconv.FormatInt(r.Int63()-r.Int63(), 10) },
+		func() string { return "raw\xff\xfe\x00bytes\x80" },
+		func() string { return `{"$bytes":"AAAA"}` },
 	}
 	fixed := []string{"event_name", "event_time_unix_nano", "event_dropped_attributes_count",
 		"link_trace_id", "link_span_id", "link_trace_state", "link_flags", "link_dropped_attributes_count"}
@@ -397,6 +395,67 @@ func TestSpanSubFields_PropertyRoundTripThroughParquet(t *testing.T) {
 		}
 		if len(in) == 0 && (back[0].EventsJSON != "" || back[0].LinksJSON != "") {
 			t.Fatalf("iter %d: a span without extras has columns set", iter)
+		}
+	}
+}
+
+// #434: bytes that are not valid UTF-8 in an event name, an event attribute
+// value, a link attribute value and an attribute name come back exactly; the
+// column stays valid JSON; valid text is stored as it always was.
+func TestSpanSubFields_InvalidUTF8IsReversible(t *testing.T) {
+	in := map[string]string{
+		"event:event_name:0":                "\xff\xfe",
+		"event:event_attr:bin:0":            "a\x80b",
+		"event:event_attr:k\xffey:0":        "v",
+		"link:link_attr:bin:0":              "\xc3(",
+		"link:link_span_id:0":               "00000000000000aa",
+		"event:event_attr:lookalike:1":      `{"$bytes":"AAAA"}`,
+		"event:event_attr:$bytes:1":         "plain",
+		"event:event_attr:$b64:AAAA:1":      "legit name that looks like the marker",
+		"event:event_attr:html:1":           "<a href=\"x\">&</a>",
+		"event:event_attr:name_\xff_suffix": "no group suffix at all",
+	}
+	var c SpanSubFieldCollector
+	for k, v := range in {
+		if !c.Add(k, v) {
+			t.Fatalf("%q not taken", k)
+		}
+	}
+	var row TraceRow
+	c.Apply(&row)
+	for _, js := range []string{row.EventsJSON, row.LinksJSON} {
+		if !json.Valid([]byte(js)) {
+			t.Fatalf("column is not valid JSON: %q", js)
+		}
+		if strings.Contains(js, "�") {
+			t.Fatalf("column holds U+FFFD: %q", js)
+		}
+	}
+	got := map[string]string{}
+	for _, cc := range []struct{ col, js string }{{ColSpanEventsJSON, row.EventsJSON}, {ColSpanLinksJSON, row.LinksJSON}} {
+		if err := ForEachSpanSubField(cc.col, cc.js, func(n, v string) { got[n] = v }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(got, in) {
+		t.Fatalf("not reversible:\n got %q\nwant %q", got, in)
+	}
+	// Valid text is stored byte for byte as before: a plain JSON string, HTML
+	// characters unescaped.
+	if !strings.Contains(row.EventsJSON, `"event_attr:html":"<a href=\"x\">&</a>"`) {
+		t.Errorf("valid text changed form: %s", row.EventsJSON)
+	}
+	if !strings.Contains(row.EventsJSON, `"event_attr:bin":{"$bytes":"YYBi"}`) {
+		t.Errorf("invalid value is not stored as a $bytes object: %s", row.EventsJSON)
+	}
+}
+
+// A $bytes object that is not the one form the encoder writes is an error, not
+// silently another value.
+func TestForEachSpanSubField_RejectsMalformedBytesObject(t *testing.T) {
+	for _, js := range []string{`[{"a":{"$bytes":"!!!"}}]`, `[{"a":{"other":"AA=="}}]`, `[{"a":{"$bytes":"AA==","x":"y"}}]`} {
+		if err := ForEachSpanSubField(ColSpanEventsJSON, js, func(string, string) {}); err == nil {
+			t.Errorf("%s accepted", js)
 		}
 	}
 }

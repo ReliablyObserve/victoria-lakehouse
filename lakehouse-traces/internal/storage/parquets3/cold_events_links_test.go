@@ -517,3 +517,57 @@ func TestCold_EventsLinks_ColumnsAreOrderedLikeUpstream(t *testing.T) {
 		})
 	}
 }
+
+// #434: event and link strings that are not valid UTF-8 (an event name, an
+// event attribute, a link attribute, an attribute name) are read back from
+// Parquet byte for byte, as hot VictoriaTraces returns them, not rewritten to
+// U+FFFD.
+func TestCold_EventsLinks_InvalidUTF8ComesBackExact(t *testing.T) {
+	mock := newMockS3Server()
+	t.Cleanup(mock.close)
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Mode = config.ModeTraces
+	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	want := map[string]string{
+		"event:event_name:0":                "\xff\xfe",
+		"event:event_attr:bin:0":            "a\x80b",
+		"event:event_attr:k\xffey:0":        "v",
+		"link:link_span_id:0":               "00000000000000aa",
+		"link:link_attr:raw:0":              "\xc3(",
+		"event:event_time_unix_nano:0":      fmt.Sprint(base.UnixNano()),
+		"event:event_attr:valid.text:0":     "żółć <tag> & \"q\"",
+		"event:event_attr:looks.like.obj:0": `{"$bytes":"AAAA"}`,
+	}
+	var c schema.SpanSubFieldCollector
+	for k, v := range want {
+		c.Add(k, v)
+	}
+	row := schema.TraceRow{
+		TimestampUnixNano: base.UnixNano(), StartTimeUnixNano: base.UnixNano(),
+		TraceID: "trace-bad", SpanID: fmt.Sprintf("%016x", 1), SpanName: "op", ServiceName: "checkout",
+		Stream: `{resource_attr:service.name="checkout"}`, StreamID: fmt.Sprintf("%048x", 7),
+	}
+	c.Apply(&row)
+	res, err := writeTracesParquet([]schema.TraceRow{row}, 10, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerFileInMockS3(t, s, mock, fmt.Sprintf("traces/dt=%s/hour=%02d/rows.parquet", base.Format("2006-01-02"), base.Hour()), res.Data, base)
+	run := coldSelectRunner(t, s, base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
+	rows := run(`*`)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	for k, v := range want {
+		if rows[0][k] != v {
+			t.Errorf("%q = %q, want %q", k, rows[0][k], v)
+		}
+	}
+	for k, v := range rows[0] {
+		if isExtraField(k) {
+			if _, ok := want[k]; !ok {
+				t.Errorf("unexpected field %q = %q", k, v)
+			}
+		}
+	}
+}
