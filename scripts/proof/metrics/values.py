@@ -43,3 +43,16 @@ def evaluate_values(ref: dict, ans: dict, *, rel_tol: float = 0.0) -> FacetResul
             "rel_err_p95": percentile(finite, 0.95),
         }
     return res
+
+
+def evaluate_limited(ref: dict, ans: dict, universe: list[str]) -> FacetResult:
+    """A list cut at `limit` by an upstream that keeps arbitrary entries past the limit (a map iteration in a `uniq`
+    pipe): which values survive is not defined, so only the answer's size and its membership in the full reference
+    answer are scored. `universe` is the reference answer of the same request without the limit."""
+    res = FacetResult()
+    known = set(universe)
+    res.facets["cardinality"] = 100.0 if len(ans) == len(ref) else 100.0 * min(len(ans), len(ref)) / max(len(ans), len(ref), 1)
+    outside = sorted(v for v in ans if v not in known)
+    res.facets["membership"] = 100.0 if not outside else 100.0 * (len(ans) - len(outside)) / len(ans)
+    res.details["limited"] = {"ref_n": len(ref), "ans_n": len(ans), "universe_n": len(known), "outside": outside[:20]}
+    return res

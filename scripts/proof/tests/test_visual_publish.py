@@ -27,7 +27,7 @@ class PublishTest(unittest.TestCase):
         d = tempfile.mkdtemp(dir=self.tmp.name)
         for name, size in files.items():
             with open(os.path.join(d, name + ".png"), "wb") as f:
-                f.write(b"x" * size)
+                f.write((publish.PNG_SIGNATURE + b"x" * size)[:max(size, 8)])
         return d
 
     def tree(self):

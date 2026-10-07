@@ -316,3 +316,140 @@ def test_vmui_query_rows_are_scored_with_key_order(tmp_path):
     r = compare.compare_out(str(tmp_path))["sort/cold"]
     assert r["base_score"] == 100.0 and r["pr_score"] == 0.0 and r["verdict"] == "regression"
     assert frames.resource_meta("/select/logsql/query?x=1") == {"key_order": True} and frames.resource_meta("/select/logsql/hits") == {}
+
+
+# ---- publish: what is accepted, and where the token goes ----
+
+def test_publish_accepts_png_files_only_by_their_signature(tmp_path):
+    from scripts.proof.visual import publish
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "page-cold.png").write_bytes(publish.PNG_SIGNATURE + b"data")
+    assert publish.montages(str(good)) == ["page-cold.png"]
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "page-cold.png").write_bytes(b"<html>not an image</html>")
+    with pytest.raises(SystemExit) as e:
+        publish.montages(str(bad))
+    assert "not a PNG" in str(e.value)
+    (bad / "page-cold.png").write_bytes(publish.PNG_SIGNATURE[:4])  # a truncated signature is not one either
+    with pytest.raises(SystemExit):
+        publish.montages(str(bad))
+
+
+def test_publish_token_goes_through_the_environment_never_the_command_line(monkeypatch, tmp_path):
+    from scripts.proof.visual import publish
+    seen = {}
+
+    def fake_run(cmd, check, capture_output, text, env):
+        seen["cmd"], seen["env"] = cmd, env
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    monkeypatch.setattr(publish.subprocess, "run", fake_run)
+    publish.git(str(tmp_path), "fetch", auth="c2VjcmV0")
+    assert "c2VjcmV0" not in " ".join(seen["cmd"]) and "extraheader" not in " ".join(seen["cmd"])
+    assert seen["env"]["GIT_CONFIG_COUNT"] == "1" and seen["env"]["GIT_CONFIG_KEY_0"] == "http.extraheader"
+    assert seen["env"]["GIT_CONFIG_VALUE_0"] == "AUTHORIZATION: basic c2VjcmV0"
+    publish.git(str(tmp_path), "fetch")
+    assert seen["env"] is None
+
+
+# ---- behaviours a mutation run showed unpinned ----
+
+def test_montage_tiles_are_base_then_pr_then_reference(tmp_path):
+    d = tmp_path / "shots" / "pg" / "cold"
+    d.mkdir(parents=True)
+    colours = {"base": (220, 20, 20), "pr": (20, 200, 20), "ref": (20, 20, 220)}
+    for n, c in colours.items():
+        Image.new("RGB", (800, 600), c).save(d / f"{n}.png")
+    montage.make(str(tmp_path))
+    m = Image.open(tmp_path / "montage" / "pg-cold.png").convert("RGB")
+    third = m.width // 3
+    centres = [m.getpixel((third * i + third // 2, m.height // 2)) for i in range(3)]
+    assert centres[0][0] > 150 and centres[1][1] > 150 and centres[2][2] > 150
+    assert [montage.TITLES[i][0] for i in range(3)] == ["base", "pr", "ref"]
+
+
+def test_a_page_where_every_side_is_empty_is_vacuous_and_never_a_match(tmp_path):
+    empty = cap([rec(EMPTY_FRAMES, request={"queries": [{"refId": "A", "queryType": "range", "expr": "x"}]})])
+    write_page(str(tmp_path), "e", "cold", {"base": empty, "pr": empty, "ref": empty})
+    r = compare.compare_out(str(tmp_path))["e/cold"]
+    assert r["verdict"] == "vacuous" and any("every side is empty" in w for w in r["warnings"])
+    # no request at all is no proof of data either
+    none = cap([])
+    write_page(str(tmp_path), "n", "cold", {"base": none, "pr": none, "ref": none})
+    r = compare.compare_out(str(tmp_path))["n/cold"]
+    assert r["states"]["ref"]["state"] == EMPTY and r["verdict"] == "vacuous"
+    assert "no backend request" in r["states"]["ref"]["warning"]
+
+
+def test_a_target_panel_that_says_no_data_on_every_side_is_vacuous(tmp_path):
+    ui = {"noData": 1, "noDataPanels": ["http_method"], "banners": [], "panelErrors": 0, "jaegerErrors": 0}
+    other = {**ui, "noData": 0, "noDataPanels": []}
+    for s_, u in (("base", ui), ("pr", ui), ("ref", ui)):
+        pass
+    write_page(str(tmp_path), "f", "cold", {s_: page(FULL, ui) for s_ in ("base", "pr", "ref")})
+    plain = compare.compare_out(str(tmp_path))["f/cold"]
+    assert plain["verdict"] == "match" and any("No data" in w for w in plain["warnings"])
+    targeted = compare.compare_out(str(tmp_path), targets={"f": ["http_method"]})["f/cold"]
+    assert targeted["verdict"] == "vacuous" and any("http_method" in w for w in targeted["warnings"])
+    # a panel that shows data on one side is not vacuous
+    write_page(str(tmp_path), "g", "cold", {"base": page(FULL, ui), "pr": page(FULL, ui), "ref": page(FULL, other)})
+    assert compare.compare_out(str(tmp_path), targets={"g": ["http_method"]})["g/cold"]["verdict"] != "vacuous"
+
+
+def test_vacuous_pages_are_listed_in_the_comment_and_warnings_are_shown(tmp_path):
+    from scripts.proof import comment
+    cmp_ = {"v/cold": {"verdict": "vacuous", "states": {"base": {"state": "empty"}, "pr": {"state": "empty"}, "ref": {"state": "empty"}},
+                       "base_score": 100.0, "pr_score": 100.0, "warnings": ["every side is empty: x"]},
+            "m/cold": {"verdict": "match", "states": {}, "base_score": 100.0, "pr_score": 100.0, "warnings": ["pr: the DOM shows 'No data'"]}}
+    text = "\n".join(comment.visual_section(cmp_, "PR", None, {}))
+    assert "`v/cold`" in text and "vacuous" in text and "every side is empty: x" in text
+    assert "`m/cold` |" not in text and "1 of them have a warning" in text
+
+
+def test_exact_count_of_the_comment_needs_both_sides_exact(tmp_path):
+    from scripts.proof import comment
+    rep = _report([_res("a", "exact", 100.0, 100.0), _res("b", "exact", 50.0, 100.0, {"x": 50.0}, {"x": 100.0})])
+    lines, _ = comment.api_section(rep, "PR", {})
+    assert any(l.startswith("1 requests match the reference exactly on both sides") for l in lines)
+
+
+def test_the_seed_sentence_of_the_comment_comes_from_the_report():
+    from scripts.proof import comment
+    assert "skipped" in comment.seed_text({"seed_equality": {}})
+    rep = {"seed_equality": {"logs/numeric/cold": {"counts": {"ref": 5, "base": 5, "pr": 5}}, "logs/alias/cold": {"counts": {"ref": 9, "base": 9, "pr": 9}}}}
+    t = comment.seed_text(rep)
+    assert "2 signal/tenant-form/layer cells" in t and "5 to 9 rows" in t and "same hash" in t
+
+
+def test_base_and_pr_that_differ_while_neither_matches_the_reference_is_an_unexpected_change(tmp_path):
+    a = page([("POST", 5), ("GET", 3)])   # POST hits wrong, GET right
+    b = page([("POST", 4), ("GET", 5)])   # POST right, GET hits wrong: the same score against the reference
+    write_page(str(tmp_path), "x", "1h", {"base": a, "pr": b, "ref": page(FULL)})
+    r = compare.compare_out(str(tmp_path))["x/1h"]
+    assert r["base_score"] == r["pr_score"] and r["verdict"] == "unexpected-change"
+    same = {"base": a, "pr": a, "ref": page(FULL)}
+    write_page(str(tmp_path), "y", "1h", same)
+    assert compare.compare_out(str(tmp_path))["y/1h"]["verdict"] == "same"
+
+
+def test_two_queries_with_one_refid_are_two_questions_and_tag_order_is_not_a_difference():
+    q1 = {"refId": "A", "queryType": "range", "expr": "one"}
+    q2 = {"refId": "A", "queryType": "range", "expr": "two"}
+    keys = frames.answers_of([rec(OK_FRAMES, request={"queries": [q1]}), rec(OK_FRAMES, request={"queries": [q2]})])
+    assert len(keys) == 2
+    tags1 = [{"key": "a", "value": "1"}, {"key": "b", "value": "2"}]
+    assert frames.canon(tags1) == frames.canon(list(reversed(tags1)))
+    assert frames.canon({"x": [3, 1, 2]}) == {"x": [1, 2, 3]}
+
+
+def test_every_non_200_status_is_an_error_state_and_known_issues_do_not_decide_a_page():
+    assert states.data_state([rec({"message": "nope"}, status=404)])["state"] == ERROR
+    assert states.data_state([rec({}, status=401)])["kind"] == "request"
+    known = states.data_state([rec("not found", status=404, url="/select/buildinfo"), rec(OK_FRAMES)])
+    assert known["state"] == DATA and known["known"] == ["/select/buildinfo: HTTP 404 (#463)"]
+    # ... but the same failure on any other path still decides
+    assert states.data_state([rec("not found", status=404, url="/select/other"), rec(OK_FRAMES)])["state"] == ERROR
+    cap_ = cap([rec("not found", status=404, url="/select/buildinfo"), rec(OK_FRAMES)])
+    st = states.panel_state(cap_)
+    assert st["state"] == DATA and st["known"]

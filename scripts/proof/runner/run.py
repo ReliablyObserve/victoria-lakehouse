@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -28,7 +29,7 @@ from ..metrics.cases import evaluate_case, run_dir
 from ..metrics.verdict import FAILING
 from . import client
 from .report import write_reports
-from .rows import expand, load_tier, tenant_headers
+from .rows import expand, load_tier, tenant_headers, window_of
 from ..jsonio import dump_json, load_json, read_text
 
 TARGETS = ("ref", "base", "pr")
@@ -37,23 +38,46 @@ STABLE = ("exact", "same")
 
 
 class Incomplete(SystemExit):
+    """The run did not complete (exit 2). The reason goes to stderr: a SystemExit with an integer code prints nothing."""
+
     def __init__(self, msg: str):
-        super().__init__(f"incomplete run: {msg}")
-        self.code = 2
+        super().__init__(2)
+        self.reason = f"incomplete run: {msg}"
+        sys.stderr.write(self.reason + "\n")
+
+    def __str__(self) -> str:
+        return self.reason
 
 
 def target_url(state: dict, target: str, signal: str) -> str:
     return f"http://127.0.0.1:{state['ports'][f'{target}-{signal}']}"
 
 
-def count_query(signal: str) -> str:
-    return "* | stats count() c" if signal == "logs" else "span_id:* | stats count() c"
+SEED_FORMS = ("numeric", "numeric1001", "alias")
+SEED_LAYERS = ("cold", "buffer", "all")
+COUNT_ALL = "* | stats count() c"
+COUNT_SPANS = "span_id:* | stats count() c"
+# Identity of a row for the content hash: what one row is, not what a Lakehouse adds to it.
+IDENTITY_QUERY = {"logs": "* | fields _time, _msg, trace_id, span_id | sort by (_time, _msg, span_id)",
+                  "traces": "span_id:* | fields trace_id, span_id, name | sort by (trace_id, span_id)"}
 
 
-def count_rows(state: dict, target: str, signal: str, form: str, layer: str) -> int | None:
-    env = client.send("POST", target_url(state, target, signal) + "/select/logsql/query",
-                      {"query": count_query(signal), "start": state[layer]["start"], "end": state[layer]["end"]},
-                      tenant_headers(form, target))
+# the key-order fixture is logs only
+FORM_SIGNALS = {"keyorder": ("logs",)}
+
+
+def signals_of(form: str) -> tuple:
+    return FORM_SIGNALS.get(form, ("logs", "traces"))
+
+
+def _query(state: dict, target: str, signal: str, form: str, layer: str, query: str) -> dict:
+    win = window_of(state, layer)
+    return client.send("POST", target_url(state, target, signal) + "/select/logsql/query",
+                       {"query": query, "start": win["start"], "end": win["end"]}, tenant_headers(form, target))
+
+
+def count_rows(state: dict, target: str, signal: str, form: str, layer: str, query: str = "") -> int | None:
+    env = _query(state, target, signal, form, layer, query or (COUNT_ALL if signal == "logs" else COUNT_SPANS))
     if env["status"] != 200:
         return None
     try:
@@ -62,16 +86,67 @@ def count_rows(state: dict, target: str, signal: str, form: str, layer: str) -> 
         return None
 
 
-def seed_equality(state: dict, forms=("numeric", "alias"), layers=("cold", "buffer")) -> dict:
-    """The same row count on ref, base and PR for every tenant form, layer and signal, before any comparison."""
-    seen = {}
-    for signal in ("logs", "traces"):
-        for form in forms:
+def content_hash(state: dict, target: str, signal: str, form: str, layer: str) -> str | None:
+    """sha256 of the canonical identity rows of the window: equal counts with different rows are not equal data."""
+    env = _query(state, target, signal, form, layer, IDENTITY_QUERY[signal])
+    if env["status"] != 200:
+        return None
+    try:
+        rows = sorted(json.dumps(json.loads(x), sort_keys=True) for x in env["body"].splitlines() if x.strip())
+    except ValueError:
+        return None
+    return hashlib.sha256("\n".join(rows).encode()).hexdigest()[:16]
+
+
+def snapshot(state: dict, forms, layers) -> dict:
+    """Counts of `*` (and of span rows for traces) per signal, form, layer and target."""
+    out = {}
+    for form in forms:
+        for signal in signals_of(form):
             for layer in layers:
+                for t in TARGETS:
+                    out[f"{signal}/{form}/{layer}/{t}/all"] = count_rows(state, t, signal, form, layer, COUNT_ALL)
+                    if signal == "traces":
+                        out[f"{signal}/{form}/{layer}/{t}/spans"] = count_rows(state, t, signal, form, layer, COUNT_SPANS)
+    return out
+
+
+def wait_stable(state: dict, forms=SEED_FORMS, layers=SEED_LAYERS, timeout: float = 120, step: float = 3) -> None:
+    """Rows reach Lakehouse's insert buffer late (trace-index rows included): wait until the count of `*` is the same
+    on two consecutive reads for every signal, form, layer and target. A count that keeps moving fails the run."""
+    deadline = time.time() + timeout
+    last = None
+    while True:
+        cur = snapshot(state, forms, layers)
+        if cur == last and None not in cur.values():
+            return
+        if time.time() > deadline:
+            moving = sorted(k for k in cur if last is None or cur[k] != last.get(k))
+            raise Incomplete(f"counts still moving after {timeout:.0f}s: {moving[:6]}")
+        last = cur
+        time.sleep(step)
+
+
+def seed_equality(state: dict, forms=SEED_FORMS, layers=SEED_LAYERS) -> dict:
+    """The same data on ref, base and PR for every tenant form, layer and signal, before any comparison:
+    the same count of span rows (logs: of all rows) and the same hash of the row identities. Zero rows on all three
+    is an error: every tenant, window and layer is seeded. Trace counts of `*` differ by design (hot's trace-index
+    rows, #458), so for traces `*` is only reported, and has to be stable (wait_stable)."""
+    seen = {}
+    for form in forms:
+        for signal in signals_of(form):
+            for layer in layers:
+                key = f"{signal}/{form}/{layer}"
                 counts = {t: count_rows(state, t, signal, form, layer) for t in TARGETS}
-                seen[f"{signal}/{form}/{layer}"] = counts
+                hashes = {t: content_hash(state, t, signal, form, layer) for t in TARGETS}
+                seen[key] = {"counts": counts, "hashes": hashes,
+                             "all": {t: count_rows(state, t, signal, form, layer, COUNT_ALL) for t in TARGETS}}
                 if None in counts.values() or len(set(counts.values())) != 1:
-                    raise Incomplete(f"seed equality failed for {signal}/{form}/{layer}: {counts}")
+                    raise Incomplete(f"seed equality failed for {key}: {counts}")
+                if set(counts.values()) == {0}:
+                    raise Incomplete(f"seed equality: no rows at all for {key} (every tenant and window is seeded)")
+                if None in hashes.values() or len(set(hashes.values())) != 1:
+                    raise Incomplete(f"seed equality: same counts, different rows for {key}: {hashes}")
     return seen
 
 
@@ -80,7 +155,7 @@ def buffered_rows(state: dict, target: str, signal: str, form: str, layer: str) 
     if target == "ref" or layer != "buffer":
         return None
     from ..stack import buffered_rows as br
-    acct = "1001" if form in ("alias", "numeric1001") else "0"
+    acct = {"alias": "1001", "numeric1001": "1001", "keyorder": "7"}.get(form, "0")
     try:
         return br(state["ports"][f"{target}-{signal}"], signal, state[layer]["start"], state[layer]["end"], acct, "0")
     except Exception:  # noqa: BLE001 - informational only
@@ -91,7 +166,7 @@ def resolve_picks(row: dict, state: dict, layer: str = "cold", form: str = "nume
     """A value taken once from the reference (first row of a sorted query in the request's window and tenant
     form), used on every target of that request."""
     out = {}
-    win = state["cold" if layer == "all" else layer]
+    win = window_of(state, "cold" if layer == "all" else layer)
     for name, spec in (row.get("pick") or {}).items():
         sig = "traces" if spec.get("signal") == "traces" else "logs"
         env = client.send("POST", target_url(state, "ref", sig) + "/select/logsql/query",
@@ -130,6 +205,10 @@ def meta_of(req: dict) -> dict:
         m["claimed_gap"] = r["claimed_gap"]
     if r.get("may_be_empty"):
         m["may_be_empty"] = True
+    if r.get("expect_error"):
+        m["expect_error"] = True
+    if r.get("limit_arbitrary"):
+        m["limit_arbitrary"] = True
     m.update(r.get("meta", {}))
     return m
 
@@ -147,6 +226,16 @@ def write_case(root: str, meta: dict, ans: dict, resamples: list[dict]) -> None:
             dump_json(os.path.join(sub, n + ".json"), e, indent=1)
 
 
+def universe_of(req: dict, state: dict) -> list[str]:
+    """The reference answer of a limited request without its limit: the values a cut list may keep."""
+    params = {**req["params"], "limit": "1000000"}
+    env = client.send(req["method"], target_url(state, "ref", req["signal"]) + req["path"], params, tenant_headers(req["form"], "ref"))
+    try:
+        return [x["value"] for x in json.loads(env["body"])["values"]]
+    except (ValueError, KeyError, TypeError):
+        raise Incomplete(f"the unlimited reference answer of {case_id(req)} is unusable: {env['status']} {env['body'][:100]}")
+
+
 def run(state: dict, rows: list[dict], out: str, allowance: int | None = None) -> list:
     reqs = []
     for row in rows:
@@ -157,13 +246,19 @@ def run(state: dict, rows: list[dict], out: str, allowance: int | None = None) -
     try:
         for req in reqs:
             meta = meta_of(req)
+            if meta.get("limit_arbitrary"):
+                meta["universe"] = universe_of(req, state)
             ans = sample(req, state)
             res = evaluate_case(meta, ans)
             more = []
-            if res.verdict not in STABLE and spent < allowance:
-                if res.verdict not in ("fixed", "improved"):
-                    spent += 1
-                more = [sample(req, state) for _ in range(RESAMPLES)]
+            if res.verdict not in STABLE:
+                # a request already classed fixed or improved is re-sampled for free: it never uses the allowance
+                free = res.verdict in ("fixed", "improved")
+                if free or spent < allowance:
+                    spent += 0 if free else 1
+                    more = [sample(req, state) for _ in range(RESAMPLES)]
+                else:
+                    meta["resample_skipped"] = True  # reported: a verdict nobody confirmed
             write_case(out, meta, ans, more)
             for rnd, a in enumerate([ans] + more):
                 for t, e in a.items():
@@ -189,7 +284,10 @@ def main(argv=None) -> int:
     if a.only:
         rows = [r for r in rows if re.search(a.only, r["id"])]
     t0 = time.time()
-    seed = {} if a.no_seed_check else seed_equality(state)
+    forms = SEED_FORMS + (("keyorder",) if state.get("keyorder") else ())
+    if not a.no_seed_check:
+        wait_stable(state, forms=forms)
+    seed = {} if a.no_seed_check else seed_equality(state, forms=forms)
     run(state, rows, a.out)
     items = run_dir(os.path.join(a.out, "cases"))
     write_reports(a.out, items, state, seed, label=a.pr_label, seconds=time.time() - t0)

@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import sys
 
 from ..metrics.common import FacetResult, display_pct
 from ..metrics.evaluate import evaluate_body
 from ..metrics.verdict import classify
 from .frames import answers_of
-from .states import panel_state, transition
+from .states import EMPTY, panel_state, transition
 from .vio import dump_json, load_json, write_text
 
 SIDES = ("base", "pr", "ref")
@@ -88,9 +89,29 @@ def score_side(ref_answers: dict, side_answers: dict) -> tuple[FacetResult, list
     return res, notes
 
 
-def page_verdict(states: dict, base_fr: FacetResult, pr_fr: FacetResult, claimed: bool, differ: bool = False) -> str:
+def vacuous_reason(states: dict, targets: list[str] | None = None) -> str:
+    """Why a page proves nothing, or "". A page where every side is empty, or where the panel the page is about says
+    "No data" on every side, cannot show a fix or a regression: it must never read `match`."""
+    sides = [states[s] for s in SIDES if s in states]
+    if sides and all(x["state"] == EMPTY for x in sides):
+        return "every side is empty: " + "; ".join(sorted({x.get("warning") or x.get("kind") or "no rows" for x in sides}))
+    if len(sides) == len(SIDES) and targets:
+        common = set.intersection(*[set(x.get("no_data_panels") or []) for x in sides])
+        for t in targets:
+            hit = next((p for p in common if t.lower() in p.lower()), None)
+            if hit:
+                return f"the panel {hit!r} shows No data on every side"
+    return ""
+
+
+def page_verdict(states: dict, base_fr: FacetResult, pr_fr: FacetResult, claimed: bool, differ: bool = False,
+                 vacuous: str = "") -> str:
     t = transition(states["base"]["state"], states["pr"]["state"], states.get("ref", {}).get("state"))
-    if t in ("regression", "unsettled", "fixed"):
+    if t in ("regression", "unsettled"):
+        return t
+    if vacuous:
+        return "vacuous"
+    if t == "fixed":
         return t
     v = classify(base_fr, pr_fr, claimed=claimed)
     if v == "regressed":
@@ -109,7 +130,7 @@ def _short(w: tuple[str, float]) -> list:
     return [f"{m} {facet}".strip(), w[1]]
 
 
-def compare_page(d: str, claimed: bool = False) -> dict | None:
+def compare_page(d: str, claimed: bool = False, targets: list[str] | None = None) -> dict | None:
     caps = {s: _load(d, s) for s in SIDES}
     if not caps["base"] or not caps["pr"]:
         return None
@@ -123,9 +144,14 @@ def compare_page(d: str, claimed: bool = False) -> dict | None:
         base_notes = pr_notes = ["no reference captured"]
     # base and PR answering differently while neither matches the reference is an unexpected change
     diff = score_side(ans["base"], ans["pr"])[0] if caps["ref"] else FacetResult()
-    verdict = page_verdict(states, base_fr, pr_fr, claimed, not diff.exact) if caps["ref"] else "undecided"
+    vacuous = vacuous_reason(states, targets) if caps["ref"] else ""
+    verdict = page_verdict(states, base_fr, pr_fr, claimed, not diff.exact, vacuous) if caps["ref"] else "undecided"
+    warnings = [f"{s}: {st['warning']}" for s, st in states.items() if st.get("warning")]
+    warnings += [f"{s}: known issue, not counted: {k}" for s, st in states.items() for k in st.get("known") or []]
+    if vacuous:
+        warnings.append(vacuous)
     return {
-        "verdict": verdict, "states": states,
+        "verdict": verdict, "states": states, "warnings": warnings,
         "base_score": base_fr.score, "pr_score": pr_fr.score,
         "base_worst": _short(base_fr.worst), "pr_worst": _short(pr_fr.worst),
         "base_notes": base_notes[:8], "pr_notes": pr_notes[:8],
@@ -137,14 +163,19 @@ def compare_page(d: str, claimed: bool = False) -> dict | None:
     }
 
 
-def compare_out(out: str, fixes: dict[str, list[str]] | None = None) -> dict:
+def compare_out(out: str, fixes: dict[str, list[str]] | None = None, targets: dict[str, list[str]] | None = None) -> dict:
     results = {}
     for d in sorted(glob.glob(os.path.join(out, "data", "*", "*"))):
         page, rng = d.split(os.sep)[-2:]
-        r = compare_page(d, claimed=bool((fixes or {}).get(page)))
+        r = compare_page(d, claimed=bool((fixes or {}).get(page)), targets=(targets or {}).get(page))
         if r:
             results[f"{page}/{rng}"] = r
     return results
+
+
+def expand_target(t: str, spec: dict) -> str:
+    """{var} placeholders of a spec target_panel, from the spec's vars."""
+    return re.sub(r"\{(\w+)\}", lambda m: spec.get("vars", {}).get(m.group(1), m.group(0)), t)
 
 
 def pct(v: float | None) -> str:
@@ -161,8 +192,14 @@ def markdown(results: dict, label: str = "PR") -> str:
 
 
 def main(argv=None) -> int:
-    out = (argv or sys.argv[1:])[0]
-    results = compare_out(out)
+    args = argv or sys.argv[1:]
+    out = args[0]
+    spec_path = args[1] if len(args) > 1 else os.path.join(os.path.dirname(__file__), "..", "..", "..", "tests", "playwright", "proof", "spec.json")
+    targets = {}
+    if os.path.exists(spec_path):
+        spec = load_json(spec_path)
+        targets = {p["id"]: [expand_target(p["target_panel"], spec)] for p in spec["pages"] if p.get("target_panel")}
+    results = compare_out(out, targets=targets)
     dump_json(os.path.join(out, "compare.json"), results)
     write_text(os.path.join(out, "compare.md"), markdown(results) + "\n")
     print(markdown(results))

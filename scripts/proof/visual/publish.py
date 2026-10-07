@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# ported-from loki-vl-proxy/bench/visual/publish.py@429f15b9 (unchanged; the montage branch is pr-visuals)
+# ported-from loki-vl-proxy/bench/visual/publish.py@429f15b9 (changed: the token goes to git through GIT_CONFIG_COUNT/KEY/VALUE
+# environment variables instead of the command line, and only files that start with the PNG signature are accepted)
 """Maintain the orphan pr-visuals branch: montages under pr-<number>/.
 
   publish.py publish --montage DIR --pr 123 --remote URL [--branch pr-visuals]
@@ -15,10 +16,12 @@ github-actions identity (CI cannot sign).
 
 The montage directory is untrusted (a pull request built it): it is accepted only
 when every entry is a regular file (no symlink, no directory) named like
-`page-range.png`, within 300 KB, and there are at most 80 of them.
+`page-range.png` that starts with the PNG signature, within 300 KB, and there are at most
+80 of them.
 
-The token, when PUBLISH_TOKEN is set, goes to git as an Authorization header,
-never into the command line, the remote URL or the output. The repository's
+The token, when PUBLISH_TOKEN is set, goes to git as an Authorization header through
+GIT_CONFIG_COUNT/GIT_CONFIG_KEY_0/GIT_CONFIG_VALUE_0 in git's environment, never into
+the command line (visible in `ps`), the remote URL or the output. The repository's
 push-triggered workflows run for main only, and a push made with the workflow
 token starts none.
 
@@ -43,11 +46,20 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def git(repo, *args, check=True, auth=None):
-    cmd = ["git", "-C", repo]
-    if auth:
-        cmd += ["-c", f"http.extraheader=AUTHORIZATION: basic {auth}"]
-    cmd += ["-c", f"user.name={BOT[0]}", "-c", f"user.email={BOT[1]}", "-c", "commit.gpgsign=false", *args]
-    return subprocess.run(cmd, check=check, capture_output=True, text=True)
+    cmd = ["git", "-C", repo, "-c", f"user.name={BOT[0]}", "-c", f"user.email={BOT[1]}", "-c", "commit.gpgsign=false", *args]
+    env = None
+    if auth:  # not `-c http.extraheader=...`: arguments are readable by every process of the host
+        env = dict(os.environ, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraheader",
+                   GIT_CONFIG_VALUE_0=f"AUTHORIZATION: basic {auth}")
+    return subprocess.run(cmd, check=check, capture_output=True, text=True, env=env)
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def is_png(path):
+    with open(path, "rb") as f:
+        return f.read(len(PNG_SIGNATURE)) == PNG_SIGNATURE
 
 
 def montages(src):
@@ -56,10 +68,10 @@ def montages(src):
     bad = []
     for n in names:
         p = os.path.join(src, n)
-        if not (NAME.match(n) and os.path.isfile(p) and not os.path.islink(p) and os.path.getsize(p) <= MAX_BYTES):
+        if not (NAME.match(n) and os.path.isfile(p) and not os.path.islink(p) and os.path.getsize(p) <= MAX_BYTES and is_png(p)):
             bad.append(n)
     if bad:
-        raise SystemExit(f"refusing to publish (name, type or size): {bad[:5]}")
+        raise SystemExit(f"refusing to publish (name, type, size or not a PNG): {bad[:5]}")
     if len(names) > MAX_FILES:
         raise SystemExit(f"refusing to publish {len(names)} files (limit {MAX_FILES})")
     return names
