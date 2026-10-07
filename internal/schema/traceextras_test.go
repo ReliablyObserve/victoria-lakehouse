@@ -1,11 +1,18 @@
 package schema
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"math/rand"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/parquet-go/parquet-go"
 )
 
 // vtFields builds the fields VictoriaTraces writes for n events and m links,
@@ -276,4 +283,120 @@ func rowParquetColumnsOf(t *testing.T, typ reflect.Type) []string {
 		cols = append(cols, strings.Split(tag, ",")[0])
 	}
 	return cols
+}
+
+// randomSpanSubFields builds up to n random event and link sub-fields the way
+// VictoriaTraces names them: indexed groups (gaps allowed), attribute keys with
+// colons, dots, a leading "$", unicode, empty-after-trim names, and values from
+// empty through 128 KiB.
+func randomSpanSubFields(r *rand.Rand, n int) map[string]string {
+	keys := []string{"a", "exception.type", "k:with:colons", "$idx", "$x", "žółć", "☃", "dropped", "a.b.c", ""}
+	vals := []func() string{
+		func() string { return "" },
+		func() string { return "-" },
+		func() string { return "v" + strconv.Itoa(r.Intn(1000)) },
+		func() string { return "line\nbreak \"q\" \\ \t   \x00ctl" },
+		func() string { return strings.Repeat("é", r.Intn(70000)) },
+		func() string { return strconv.FormatInt(r.Int63()-r.Int63(), 10) },
+	}
+	fixed := []string{"event_name", "event_time_unix_nano", "event_dropped_attributes_count",
+		"link_trace_id", "link_span_id", "link_trace_state", "link_flags", "link_dropped_attributes_count"}
+	out := map[string]string{}
+	for i := 0; i < n; i++ {
+		prefix, kind := EventFieldPrefix, "event_attr"
+		if r.Intn(2) == 0 {
+			prefix, kind = LinkFieldPrefix, "link_attr"
+		}
+		idx := strconv.Itoa(r.Intn(60))
+		if r.Intn(20) == 0 {
+			idx = []string{"x", "", "-1", "007"}[r.Intn(4)]
+		}
+		var name string
+		if r.Intn(3) == 0 {
+			name = prefix + fixed[r.Intn(len(fixed))]
+		} else {
+			name = prefix + kind + ":" + keys[r.Intn(len(keys))]
+		}
+		if idx != "" {
+			name += ":" + idx
+		}
+		out[name] = vals[r.Intn(len(vals))]()
+	}
+	return out
+}
+
+// Property: for any random set of event and link sub-fields, collecting them
+// into a row, writing the row to Parquet and reading it back, and decoding the
+// two columns, returns exactly the non-empty input fields; the bytes do not
+// depend on the order the fields arrive in; and a span with no event or link
+// field has both columns NULL.
+func TestSpanSubFields_PropertyRoundTripThroughParquet(t *testing.T) {
+	r := rand.New(rand.NewSource(409))
+	for iter := 0; iter < 200; iter++ {
+		in := randomSpanSubFields(r, r.Intn(300))
+		names := make([]string, 0, len(in))
+		for k := range in {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		collect := func(order []string) TraceRow {
+			var c SpanSubFieldCollector
+			for _, k := range order {
+				c.Add(k, in[k])
+			}
+			var row TraceRow
+			c.Apply(&row)
+			return row
+		}
+		row := collect(names)
+		shuffled := append([]string(nil), names...)
+		r.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		if other := collect(shuffled); other.EventsJSON != row.EventsJSON || other.LinksJSON != row.LinksJSON {
+			t.Fatalf("iter %d: the stored bytes depend on field order", iter)
+		}
+
+		var buf bytes.Buffer
+		w := parquet.NewGenericWriter[TraceRow](&buf)
+		if _, err := w.Write([]TraceRow{row}); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		rd := parquet.NewGenericReader[TraceRow](bytes.NewReader(buf.Bytes()))
+		back := make([]TraceRow, 1)
+		if _, err := rd.Read(back); err != nil && !errors.Is(err, io.EOF) {
+			t.Fatal(err)
+		}
+		_ = rd.Close()
+
+		if back[0].EventsJSON != row.EventsJSON || back[0].LinksJSON != row.LinksJSON {
+			t.Fatalf("iter %d: Parquet changed the column bytes (events %d -> %d, links %d -> %d)", iter,
+				len(row.EventsJSON), len(back[0].EventsJSON), len(row.LinksJSON), len(back[0].LinksJSON))
+		}
+		got := map[string]string{}
+		for _, cc := range []struct{ col, js string }{{ColSpanEventsJSON, back[0].EventsJSON}, {ColSpanLinksJSON, back[0].LinksJSON}} {
+			if err := ForEachSpanSubField(cc.col, cc.js, func(n, v string) { got[n] = v }); err != nil {
+				t.Fatalf("iter %d: decode %s: %v", iter, cc.col, err)
+			}
+		}
+		// VictoriaLogs treats an empty value as no field: compare without them.
+		want := map[string]string{}
+		for k, v := range in {
+			if v != "" {
+				want[k] = v
+			}
+		}
+		for k, v := range got {
+			if v == "" {
+				delete(got, k)
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("iter %d: round trip through Parquet changed the fields (%d in, %d out)", iter, len(want), len(got))
+		}
+		if len(in) == 0 && (back[0].EventsJSON != "" || back[0].LinksJSON != "") {
+			t.Fatalf("iter %d: a span without extras has columns set", iter)
+		}
+	}
 }

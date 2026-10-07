@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -446,6 +448,70 @@ func TestCold_EventsLinks_FieldValues(t *testing.T) {
 			for v, n := range exp {
 				if gotM[v] != n {
 					t.Errorf("value %q: %d hits, want %d (got %v)", v, gotM[v], n, gotM)
+				}
+			}
+		})
+	}
+}
+
+// #429 interplay: the event, link and scope columns of a cold block take part
+// in the upstream column order like every other column. Every read lists the
+// columns the same way, in the order orderColumnsLikeUpstream gives them.
+func TestCold_EventsLinks_ColumnsAreOrderedLikeUpstream(t *testing.T) {
+	for _, constKind := range []bool{false, true} {
+		t.Run(fmt.Sprintf("constantColumn=%v", constKind), func(t *testing.T) {
+			_, _, s, start, end := extrasFixtureStorage(t, constKind)
+			var first []string
+			for read := 0; read < 20; read++ {
+				q, err := logstorage.ParseQueryAtTimestamp(`*`, end)
+				if err != nil {
+					t.Fatal(err)
+				}
+				q.AddTimeFilter(start, end)
+				var mu sync.Mutex
+				var blocks [][]string
+				extras := 0
+				wb := func(_ uint, db *logstorage.DataBlock) {
+					mu.Lock()
+					defer mu.Unlock()
+					cols := db.GetColumns(false)
+					names := make([]string, len(cols))
+					clone := &logstorage.DataBlock{}
+					cc := make([]logstorage.BlockColumn, len(cols))
+					for i, c := range cols {
+						names[i] = c.Name
+						cc[i] = logstorage.BlockColumn{Name: c.Name, Values: c.Values}
+						if isExtraField(c.Name) {
+							extras++
+						}
+					}
+					clone.SetColumns(cc)
+					orderColumnsLikeUpstream(clone)
+					for i, c := range clone.GetColumns(false) {
+						if c.Name != names[i] {
+							t.Errorf("block columns are not in upstream order at %d: %v", i, names)
+							break
+						}
+					}
+					blocks = append(blocks, names)
+				}
+				ids := []logstorage.TenantID{{}}
+				if err := s.RunQuery(context.Background(), ids, q, wb); err != nil {
+					t.Fatal(err)
+				}
+				if extras == 0 {
+					t.Fatal("vacuous: no event, link or scope column in any block")
+				}
+				var flat []string
+				for _, b := range blocks {
+					flat = append(flat, strings.Join(b, ","))
+				}
+				sort.Strings(flat)
+				joined := flat
+				if read == 0 {
+					first = joined
+				} else if !reflect.DeepEqual(first, joined) {
+					t.Fatalf("read %d lists columns differently:\n first %v\n now   %v", read, first, joined)
 				}
 			}
 		})

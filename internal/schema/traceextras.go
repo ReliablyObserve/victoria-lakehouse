@@ -114,7 +114,6 @@ func (c *SpanSubFieldCollector) Apply(row *TraceRow) {
 type subGroup struct {
 	idx      string
 	noSuffix bool
-	seq      int
 	fields   map[string]string
 }
 
@@ -137,7 +136,7 @@ func (g *subGroups) add(rest, value string) {
 		if g.byKey == nil {
 			g.byKey = make(map[string]*subGroup, 2)
 		}
-		grp = &subGroup{idx: strings.Clone(idx), noSuffix: noSuffix, seq: len(g.byKey), fields: make(map[string]string, 6)}
+		grp = &subGroup{idx: strings.Clone(idx), noSuffix: noSuffix, fields: make(map[string]string, 6)}
 		g.byKey[key] = grp
 	}
 	if strings.HasPrefix(sub, "$") {
@@ -174,7 +173,13 @@ func (g *subGroups) marshal() string {
 		case ni != nj:
 			return ni
 		}
-		return groups[i].seq < groups[j].seq
+		// Neither group has a numeric index: order by suffix text (a group
+		// with no suffix first), never by arrival, so the bytes do not depend
+		// on the order the fields were sent in.
+		if groups[i].noSuffix != groups[j].noSuffix {
+			return groups[i].noSuffix
+		}
+		return groups[i].idx < groups[j].idx
 	})
 	elems := make([]map[string]string, len(groups))
 	for pos, grp := range groups {

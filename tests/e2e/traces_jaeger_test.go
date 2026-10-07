@@ -297,8 +297,23 @@ func TestJaeger_TraceDetail_SpanAttributes(t *testing.T) {
 	}
 }
 
+// TestJaeger_TraceDetail_ParentRefs pins the references of a span in a trace
+// detail. VictoriaTraces maps a span's parent to a CHILD_OF reference and each
+// of its span links to a FOLLOWS_FROM reference (app/vtselect/traces/jaeger,
+// model.go), so a trace with links must show both kinds, and the FOLLOWS_FROM
+// references must be the span's link fields (`link:link_trace_id:N` /
+// `link:link_span_id:N`) read through LogsQL. Any other reference type is a
+// defect.
 func TestJaeger_TraceDetail_ParentRefs(t *testing.T) {
-	traceID := getAnyTraceID(t)
+	// Prefer a trace whose spans carry links, so the FOLLOWS_FROM half of the
+	// contract is exercised; fall back to any trace.
+	traceID := ""
+	if rows := queryTraces(t, `"link:link_span_id:0":*`, 1); len(rows) > 0 {
+		traceID, _ = rows[0]["trace_id"].(string)
+	}
+	if traceID == "" {
+		traceID = getAnyTraceID(t)
+	}
 	if traceID == "" {
 		t.Skip("no traces available")
 	}
@@ -309,40 +324,88 @@ func TestJaeger_TraceDetail_ParentRefs(t *testing.T) {
 	trace := detailData[0].(map[string]any)
 	spans := trace["spans"].([]any)
 
-	if len(spans) < 2 {
-		t.Skip("trace has fewer than 2 spans, cannot test parent references")
+	isHex := func(s string, n int) bool {
+		if len(s) != n {
+			return false
+		}
+		for _, c := range s {
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+				return false
+			}
+		}
+		return true
 	}
 
-	// Non-root spans should have references
-	foundReference := false
+	var childOf, followsFrom, spansWithLinks int
 	for _, spanRaw := range spans {
 		span := spanRaw.(map[string]any)
-		refs, ok := span["references"].([]any)
-		if !ok || len(refs) == 0 {
-			continue
-		}
-		foundReference = true
+		spanID, _ := span["spanID"].(string)
+		refs, _ := span["references"].([]any)
 
+		parents := 0
+		gotLinks := map[string]bool{}
 		for _, refRaw := range refs {
 			ref := refRaw.(map[string]any)
 			refType, _ := ref["refType"].(string)
-			if refType != "CHILD_OF" {
-				t.Errorf("unexpected reference type: %s", refType)
-			}
 			refTraceID, _ := ref["traceID"].(string)
-			if refTraceID != traceID {
-				t.Errorf("reference traceID %s != span traceID %s", refTraceID, traceID)
-			}
 			refSpanID, _ := ref["spanID"].(string)
-			if refSpanID == "" {
-				t.Error("reference has empty spanID")
+			switch refType {
+			case "CHILD_OF":
+				parents++
+				childOf++
+				if refTraceID != traceID {
+					t.Errorf("span %s: CHILD_OF traceID %s != trace %s", spanID, refTraceID, traceID)
+				}
+				if refSpanID == "" {
+					t.Errorf("span %s: CHILD_OF reference has an empty spanID", spanID)
+				}
+			case "FOLLOWS_FROM":
+				followsFrom++
+				if !isHex(refTraceID, 32) || !isHex(refSpanID, 16) {
+					t.Errorf("span %s: FOLLOWS_FROM reference %q/%q is not a 32-hex trace and 16-hex span ID", spanID, refTraceID, refSpanID)
+				}
+				gotLinks[refTraceID+"/"+refSpanID] = true
+			default:
+				t.Errorf("span %s: unexpected reference type %q", spanID, refType)
+			}
+		}
+		if parents > 1 {
+			t.Errorf("span %s has %d CHILD_OF references, want at most 1", spanID, parents)
+		}
+
+		// The span's links, read from its LogsQL row.
+		rows := queryTraces(t, `trace_id:="`+traceID+`" span_id:="`+spanID+`" | fields link:*`, 5)
+		wantLinks := map[string]bool{}
+		for _, row := range rows {
+			for k, v := range row {
+				const pre = "link:link_trace_id:"
+				if len(k) > len(pre) && k[:len(pre)] == pre {
+					idx := k[len(pre):]
+					lt, _ := v.(string)
+					ls, _ := row["link:link_span_id:"+idx].(string)
+					wantLinks[lt+"/"+ls] = true
+				}
+			}
+		}
+		if len(wantLinks) > 0 {
+			spansWithLinks++
+		}
+		for k := range wantLinks {
+			if !gotLinks[k] {
+				t.Errorf("span %s: link %s from LogsQL is not a FOLLOWS_FROM reference (got %v)", spanID, k, gotLinks)
+			}
+		}
+		for k := range gotLinks {
+			if !wantLinks[k] {
+				t.Errorf("span %s: FOLLOWS_FROM reference %s is not one of the span's link fields (want %v)", spanID, k, wantLinks)
 			}
 		}
 	}
 
-	if !foundReference {
-		t.Error("no spans have parent references in a multi-span trace")
+	if len(spans) >= 2 && childOf == 0 {
+		t.Error("no span has a CHILD_OF reference in a multi-span trace")
 	}
+	t.Logf("trace %s: %d spans, %d CHILD_OF, %d FOLLOWS_FROM, %d spans with links", traceID, len(spans), childOf, followsFrom, spansWithLinks)
 }
 
 // TestJaeger_ColdRecentTrace_NotSilentlyEmpty pins the cold-Jaeger regression
