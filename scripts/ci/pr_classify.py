@@ -171,9 +171,13 @@ def release_metadata(files: list[str], base: str, head: str, author: str, approv
         if not all(SEMVER.search(l) for l in removed + added):
             return False
     # CHANGELOG: a release only moves existing text under a new version heading.
+    # Text may move between [Unreleased] and the newest version sections (a merge of
+    # main into the metadata branch), so every line must still exist and none may
+    # be lost: nothing removed, and every added line is a version heading or text
+    # the base already had.
     base_lines = {l.strip() for l in show(base, "CHANGELOG.md").splitlines()}
-    _, added = changed_lines(show(base, "CHANGELOG.md"), show(head, "CHANGELOG.md"))
-    return all(VERSION_HEADING.match(l) or l in base_lines for l in added)
+    removed, added = changed_lines(show(base, "CHANGELOG.md"), show(head, "CHANGELOG.md"))
+    return not removed and all(VERSION_HEADING.match(l) or l in base_lines for l in added)
 
 
 def main() -> int:
