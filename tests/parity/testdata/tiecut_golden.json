@@ -1364,6 +1364,108 @@
    "ref_status": 200,
    "sut_status": 200,
    "explained": true
+  },
+  {
+   "name": "reread_group_has_an_extra_row_on_the_system_under_test",
+   "note": "the re-read group differs between the tiers by a row only the system under test holds",
+   "sort_fields": null,
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n1"
+    },
+    {
+     "_time": "2026-10-01T20:30:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n2"
+    },
+    {
+     "_time": "2026-10-01T20:20:01.5Z",
+     "_stream_id": "s1",
+     "_msg": "n3"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "D"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": false
   }
  ]
 }

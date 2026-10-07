@@ -133,7 +133,7 @@ def run_dir(root: str) -> list[tuple[dict, CaseResult]]:
     return out
 
 
-def check_expectations(meta: dict, res: CaseResult, tol: float = 0.1) -> list[str]:
+def check_expectations(meta: dict, res: CaseResult, tol: float = 0.01) -> list[str]:
     """Differences between a case's recorded expectation and what was computed."""
     exp = meta.get("expect")
     if not exp:
