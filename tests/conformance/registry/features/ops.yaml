@@ -379,6 +379,7 @@
     - scripts/proof/README.md
   changelog_bullets:
     - 'API data-proof metrics library.'
+    - 'Proof stack, API runner and visual capture.'
   notes: >-
     The metrics library scores recorded answers. `scripts/proof/runner` sends a set of rows to hot
     VictoriaLogs/VictoriaTraces, Lakehouse built from main and Lakehouse built from a PR on the proof

@@ -130,6 +130,19 @@
    "may_be_empty": true
   },
   {
+   "id": "vl.stream_field_values.non_stream_field.trace_id",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_values",
+   "params": {
+    "query": "*",
+    "field": "trace_id",
+    "limit": "1000"
+   },
+   "row": "vl.select.stream_field_values.non_stream_field",
+   "may_be_empty": true
+  },
+  {
    "id": "vl.stream_field_values.limit2",
    "surface": "vl-native",
    "kind": "values",
