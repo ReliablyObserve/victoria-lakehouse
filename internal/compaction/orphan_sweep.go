@@ -299,7 +299,7 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 				metrics.CompactionErrorsTotal.Inc()
 				continue
 			}
-			removed = append(removed, fileKeys(selected)...)
+			removed = append(removed, result.InputFiles...)
 			outputs = append(outputs, result.OutputFiles...)
 			for k, v := range result.OutputBlooms {
 				if blooms == nil {

@@ -620,8 +620,8 @@ func (s *Scheduler) runMerge(ctx context.Context, partition string, selected []m
 	metrics.CompactionRowsMergedTotal.Add(int(result.RowsMerged))
 	metrics.CompactionDuration.Observe(time.Since(compStart).Seconds())
 
-	if s.onCompacted != nil {
-		s.onCompacted(outputsOf(s.manifest, partition, result), fileKeys(selected), result.OutputBlooms)
+	if s.onCompacted != nil && len(result.OutputFiles) > 0 {
+		s.onCompacted(outputsOf(s.manifest, partition, result), result.InputFiles, result.OutputBlooms)
 	}
 
 	logger.Infof("%s; partition=%s, level=%d, input_files=%d, output=%s, rows=%d",
@@ -644,14 +644,6 @@ func outputsOf(m *manifest.Manifest, partition string, result *CompactResult) []
 		}
 	}
 	return out
-}
-
-func fileKeys(files []manifest.FileInfo) []string {
-	keys := make([]string, 0, len(files))
-	for _, f := range files {
-		keys = append(keys, f.Key)
-	}
-	return keys
 }
 
 // ForceCompactPartition compacts a partition NOW, bypassing the level-policy

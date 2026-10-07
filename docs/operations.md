@@ -215,6 +215,23 @@ selects the `max-cost-savings` or `dev` profile does. See
 
 Compaction is only meaningful where inserts are active.
 
+### Upgrading to the span events and links columns
+
+The traces binary stores span events and links in the optional columns `span.events_json` and `span.links_json` ([format](open-parquet-format.md#span-events-links-and-scope-attributes)). A pod running an older version reads an object through its own row struct, so:
+
+- an older pod that **compacts** or **delete-rewrites** an object written by the newer version drops the two columns from the output permanently, and the events and links of those spans are gone;
+- an older **select** pod shows the two columns as plain fields of the span.
+
+During the rollout keep compaction from running and issue no deletes, then restore both once every pod runs the new version:
+
+- `compaction.enabled: false` in the config file does **not** turn compaction off (see [Compaction on or off](configuration.md#compaction-on-or-off)). Select the `max-cost-savings` or `dev` profile without `compaction.enabled: true`, or set a `compaction.min_age` longer than the rollout (for example `min_age: 24h`) and put it back afterwards.
+- Do not create delete tombstones until the rollout is done: the rewrite that applies them is the second path that drops the columns.
+- Roll back below this version only with compaction and deletes disabled; otherwise the events and links of objects the older pods compacted are lost.
+
+The schema fingerprint is unchanged on purpose: a deployed pod treats any other fingerprint as stale and merges it, which would make older pods seek the newer objects.
+
+From this version on compaction and the delete rewriter leave an object alone when it holds a top-level column their row struct does not model (a column a later version adds): the compactor merges the other inputs and keeps the object, and a delete rewrite of it fails, so its tombstone stays pending and its rows stay hidden. Each skip is counted in `lakehouse_compaction_skipped_unknown_columns_total{signal,op}` and logged once per object. This protects every later column addition. It cannot protect the transition above, because the older pods have no such check.
+
 ### How a scan plans merges
 
 Compaction plans per **tenant and partition**, the unit it actually merges: it writes one output

@@ -179,6 +179,9 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 		if err != nil {
 			return nil, err
 		}
+		if groupResult == nil {
+			continue
+		}
 		result.InputFiles = append(result.InputFiles, groupResult.InputKeys...)
 		result.OutputFiles = append(result.OutputFiles, groupResult.OutputKey)
 		result.BytesRead += groupResult.BytesRead
@@ -297,6 +300,12 @@ type compactGroupResult struct {
 	BloomValues map[string][]string
 }
 
+// fenceLog remembers the objects the forward fence (schema.UnknownColumns)
+// skipped, across the short-lived Compactors the scheduler creates per merge.
+var fenceLog schema.FenceLog
+
+// compactGroup merges one tenant's files. It returns (nil, nil) when the
+// forward fence left fewer than two files to merge: nothing was changed.
 func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenantFileGroup, fp string, outputLevel int) (*compactGroupResult, error) {
 	var (
 		allData   [][]byte
@@ -317,7 +326,12 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	}
 	// One clock reading for the whole merge, so eligibility is judged once.
 	now := time.Now()
+	var keptFiles []manifest.FileInfo
 	for _, f := range g.Files {
+		if fenceLog.Has(f.Key) {
+			metrics.SkippedUnknownColumns(string(c.mode), "compact").Inc()
+			continue
+		}
 		data, err := c.pool.Download(ctx, f.Key)
 		if err != nil {
 			return nil, fmt.Errorf("download %s: %w", f.Key, err)
@@ -325,9 +339,27 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		if data == nil {
 			return nil, fmt.Errorf("download %s: file not found", f.Key)
 		}
+		// Forward fence: an object with a column this code does not model
+		// would lose it in the merge. Leave it where it is.
+		if unknown := schema.UnknownColumns(data, string(c.mode)); len(unknown) > 0 {
+			metrics.SkippedUnknownColumns(string(c.mode), "compact").Inc()
+			if fenceLog.Mark(f.Key) {
+				logger.Warnf("compaction skips an object with columns this version does not know, so a merge would drop them; key=%s, columns=%v", f.Key, unknown)
+			}
+			continue
+		}
+		keptFiles = append(keptFiles, f)
 		allData = append(allData, data)
 		bytesRead += int64(len(data))
 		inputKeys = append(inputKeys, f.Key)
+	}
+	if len(keptFiles) < len(g.Files) {
+		// Some inputs were fenced off. Merge the rest if two or more remain;
+		// a lone file is never rewritten.
+		if len(keptFiles) < 2 {
+			return nil, nil
+		}
+		g.Files = keptFiles
 	}
 
 	var outputData []byte
