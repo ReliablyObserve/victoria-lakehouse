@@ -294,10 +294,17 @@ reference fails. Existing unlinked tests need no backfill (`go run ./tests/confo
 `Test` prefix are not tests. The engine is `registry/testlinks.go`; the command is `cmd/testlinks`.
 
 **Exempt without ceremony** (decided before any label is read):
-- release-metadata PRs: only `CHANGELOG.md`, `README.md` and `charts/victoria-lakehouse/Chart.yaml`;
+- release-metadata PRs: only `CHANGELOG.md`, `README.md`, `charts/victoria-lakehouse/Chart.yaml` and the
+  regenerated `docs/features.md`;
   the Chart.yaml diff is limited to `version` and `appVersion`, a README diff to version numbers, and
-  the CHANGELOG diff may only move existing text under a new `## [x.y.z] - date` heading; the PR
-  author is the release bot (`github-actions[bot]`) or an approver;
+  the CHANGELOG diff may only move existing text under a new `## [x.y.z] - date` heading (new
+  Unreleased bullets from a merge of main may sit above it); the `docs/features.md` diff may only
+  rename versions on its `since:` / `Changelog:` lines (a feature that still has an Unreleased
+  bullet is named "the release after vX", so every release renames it; the auto-release workflow
+  regenerates it with `confgen -write`, and `make conformance-gen` does the same by hand;
+  `README.md` and `UPSTREAM_COVERAGE.md` carry no version naming and may not change); the PR
+  author is the release bot (`github-actions[bot]`) or an approver. The changelog gate and the
+  registry gate share this shape (`check_changelog_pr.py`, used by `pr_classify.py`);
 - dependency-only PRs: only `go.mod`, `go.sum` and `requirements*.txt`, every commit `build(deps…)`
   or `chore(deps…)`, and in `go.mod` only `require` version lines change (no `replace`, `go`,
   `toolchain` or other directive, and no `github.com/VictoriaMetrics/*` module);
