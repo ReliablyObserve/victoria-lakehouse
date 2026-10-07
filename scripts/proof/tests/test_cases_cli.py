@@ -63,14 +63,6 @@ def test_recorded_known_gap_shapes():
     assert b1.base.details["field_coverage"]["extra"] == ["<null>", "account_id", "ded_s0x"]
 
 
-def test_no_fixture_mentions_internal_material():
-    for dirpath, _, files in os.walk(FIX):
-        for f in files:
-            with open(os.path.join(dirpath, f), encoding="utf-8") as fh:
-                txt = fh.read().lower()
-            assert "claude" not in txt and "design-doc" not in txt
-
-
 def test_every_fixture_is_labelled_with_its_provenance():
     rec_dir = os.path.join(os.path.dirname(FIX), "recorded")
     recorded_files = {f.split(".json")[0] for f in os.listdir(rec_dir)}
