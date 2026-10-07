@@ -1,0 +1,27 @@
+{
+ "claimed_gap": "430",
+ "derivation": "base lacks scope attributes, span events and span links",
+ "endpoint": "/api/v2/traces/{id}",
+ "expect": {
+  "base": {
+   "span_fields": 0.0,
+   "span_set": 100.0
+  },
+  "details": {
+   "base.span_fields.min_field": "scope_attributes",
+   "base.span_fields.per_field.events": 25.0
+  },
+  "pr": {
+   "span_fields": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "tempo/430_trace_events_links_scope_attrs",
+ "kind": "trace_otlp",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "tempo_trace_v2"
+ ],
+ "row": "tempo.trace.by_id",
+ "surface": "tempo"
+}

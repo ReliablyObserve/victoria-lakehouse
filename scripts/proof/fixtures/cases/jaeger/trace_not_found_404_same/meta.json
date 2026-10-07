@@ -1,0 +1,14 @@
+{
+ "endpoint": "/select/jaeger/api/traces/{id}",
+ "expect": {
+  "verdict": "exact"
+ },
+ "id": "jaeger/trace_not_found_404_same",
+ "kind": "trace_jaeger",
+ "provenance": "recorded",
+ "recorded_from": [
+  "jaeger_trace_missing"
+ ],
+ "row": "jaeger.trace_not_found_404_same",
+ "surface": "jaeger"
+}

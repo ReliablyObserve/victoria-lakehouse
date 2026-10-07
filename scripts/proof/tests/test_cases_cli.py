@@ -1,10 +1,11 @@
 import json
 import os
+import re
 import time
 
 import pytest
 
-from scripts.proof.metrics import CORE_SURFACES, SURFACES
+from scripts.proof.metrics import CORE_SURFACES, SURFACES, VERDICTS
 from scripts.proof.metrics.__main__ import main
 from scripts.proof.metrics.cases import (
     case_dirs, check_expectations, evaluate_case, load_case, run_dir,
@@ -31,9 +32,7 @@ def test_every_fixture_meets_its_recorded_expectation():
 
 def test_fixtures_cover_every_verdict_and_every_surface():
     cases = [r for _, r in run_dir(FIX)]
-    assert {r.verdict for r in cases} == {
-        "exact", "same", "fixed", "improved", "regressed", "not-reproduced-on-base", "vacuous", "blocked",
-        "nondeterministic"}
+    assert {r.verdict for r in cases} == set(VERDICTS)
     assert {r.surface for r in cases} == set(SURFACES)
 
 
@@ -47,17 +46,19 @@ def test_fixtures_are_native_first_and_core_is_most_complete():
     assert counts["vl-native"] > counts["loki"] and counts["jaeger"] > counts["tempo"]
 
 
-def test_known_gap_numbers_from_the_spec():
+def test_recorded_known_gap_shapes():
     got = {r.id: (m, r) for m, r in run_dir(FIX)}
     _, b2 = got["vt-native/b2_field_names_recall"]
-    assert b2.base.details["value_set"]["recall"] == pytest.approx(34.92, abs=0.01)  # 22 of 63
+    assert b2.base.details["value_set"]["recall"] == pytest.approx(100 * 13 / 36)  # 13 of the 36 recorded names
     _, b5 = got["vl-native/b5_stats_range_distribution"]
     assert b5.base.details["totals"]["delta"] == 0 and b5.base.facets["points_within_tol"] < 100
     _, b8 = got["vl-native/b8_429_sort_order"]
     assert b8.base.facets["row_set"] == 100 and b8.base.facets["order"] < 100 and b8.pr.facets["order"] == 100
-    _, c430 = got["jaeger/430_trace_events_links_scope"]
+    _, c430 = got["jaeger/430_trace_events_links_scope_attrs"]
     assert c430.base.details["span_fields"]["per_field"]["events"] < 100
     assert c430.pr.details["span_fields"]["per_field"]["events"] == 100
+    assert c430.base.details["span_fields"]["per_field"]["scope"] == 100  # the scope name was kept
+    assert c430.base.details["span_fields"]["per_field"]["scope_attributes"] == 0  # the scope attributes were lost
     _, b1 = got["vl-native/b1_junk_fields"]
     assert b1.base.details["field_coverage"]["extra"] == ["<null>", "account_id", "ded_s0x"]
 
@@ -67,6 +68,21 @@ def test_no_fixture_mentions_internal_material():
         for f in files:
             txt = open(os.path.join(dirpath, f)).read().lower()
             assert "claude" not in txt and "design-doc" not in txt
+
+
+def test_every_fixture_is_labelled_with_its_provenance():
+    rec_dir = os.path.join(os.path.dirname(FIX), "recorded")
+    recorded_files = {f.split(".json")[0] for f in os.listdir(rec_dir)}
+    seen = set()
+    for meta, _ in run_dir(FIX):
+        seen.add(meta["provenance"])
+        assert meta["provenance"] in ("recorded", "derived-from-recorded", "synthetic"), meta["id"]
+        if meta["provenance"] == "derived-from-recorded":
+            assert meta.get("derivation"), meta["id"]
+        if meta["provenance"] != "synthetic":
+            assert meta["recorded_from"], meta["id"]
+        assert set(meta.get("recorded_from", [])) <= recorded_files, meta["id"]
+    assert seen == {"recorded", "derived-from-recorded", "synthetic"}
 
 
 def test_case_dirs_skip_resample_subdirs():
@@ -106,10 +122,14 @@ def test_blocked_variants_and_lh_only_blocked_by_base():
     assert evaluate_case(meta, {"base": A({"a": 1}, status=503), "pr": A({"a": 1})}).verdict == "blocked"
 
 
-def test_vacuous_needs_all_sides_empty_200():
-    assert evaluate_case(META, {"ref": A(""), "base": A(""), "pr": A("")}).verdict == "vacuous"
+def test_vacuous_needs_all_sides_empty_200_and_is_a_harness_error_on_a_seeded_core_row():
+    empty_ok = {**META, "may_be_empty": True}
+    assert evaluate_case(empty_ok, {"ref": A(""), "base": A(""), "pr": A("")}).verdict == "vacuous"
+    # a core row runs on seeded data: nothing in any answer means the harness is broken
+    assert evaluate_case(META, {"ref": A(""), "base": A(""), "pr": A("")}).verdict == "harness-error"
+    assert evaluate_case({**META, "surface": "loki"}, {"ref": A(""), "base": A(""), "pr": A("")}).verdict == "vacuous"
     rows = '{"_time":"2026-01-01T00:00:00Z","_msg":"a"}'
-    assert evaluate_case(META, {"ref": A(""), "base": A(rows), "pr": A("")}).verdict != "vacuous"
+    assert evaluate_case(empty_ok, {"ref": A(""), "base": A(rows), "pr": A("")}).verdict != "vacuous"
     # a shared error answer is not an empty 200
     err = A("bad", status=400)
     assert evaluate_case(META, {"ref": err, "base": err, "pr": err}).verdict == "exact"
@@ -138,13 +158,13 @@ def test_error_answers_are_scored_on_status_and_error_only():
 
 @pytest.mark.parametrize("kind,empty,full", [
     ("rows", "", '{"a":1}'),
-    ("series_prom", {"data": {"result": []}}, {"data": {"result": [{"metric": {}, "value": [1, "1"]}]}}),
+    ("series_prom", {"data": {"resultType": "matrix", "result": []}}, {"data": {"resultType": "vector", "result": [{"metric": {}, "value": [1, "1"]}]}}),
     ("series_hits", {"hits": []}, {"hits": [{"fields": {}, "timestamps": ["2026-01-01T00:00:00Z"], "values": [1]}]}),
     ("series_tempo", {"series": []}, {"series": [{"labels": [], "samples": [{"timestampMs": "1", "value": 1}]}]}),
     ("values", {"values": []}, {"values": [{"value": "a", "hits": 1}]}),
-    ("count", {"data": {"result": []}}, {"data": {"result": [{"metric": {}, "value": [1, "3"]}]}}),
+    ("count", {"data": {"resultType": "vector", "result": []}}, {"data": {"resultType": "vector", "result": [{"metric": {}, "value": [1, "3"]}]}}),
     ("trace_jaeger", {"data": []}, {"data": [{"traceID": "t", "spans": []}]}),
-    ("trace_otlp", {}, {"trace": {"resourceSpans": [{"scopeSpans": [{"spans": [{"traceId": "t", "spanId": "s"}]}]}]}}),
+    ("trace_otlp", {"trace": {"resourceSpans": []}}, {"trace": {"resourceSpans": [{"scopeSpans": [{"spans": [{"traceId": "t", "spanId": "s"}]}]}]}}),
     ("tempo_search", {"traces": []}, {"traces": [{"traceID": "t"}]}),
     ("json", {}, {"a": 1}),
 ])
@@ -154,15 +174,15 @@ def test_answer_empty_per_kind(kind, empty, full):
 
 
 def test_every_kind_evaluates():
-    bodies = {"series_prom": {"data": {"result": []}}, "series_hits": {"hits": []}, "series_tempo": {"series": []},
-              "values": {"values": []}, "count": {"data": {"result": []}}, "trace_jaeger": {"data": []},
-              "trace_otlp": {}, "tempo_search": {"traces": []}, "json": {"a": 1}, "schema": {"a": 1}, "rows": ""}
+    bodies = {"series_prom": {"data": {"resultType": "matrix", "result": []}}, "series_hits": {"hits": []}, "series_tempo": {"series": []},
+              "values": {"values": []}, "count": {"data": {"resultType": "vector", "result": []}}, "trace_jaeger": {"data": []},
+              "trace_otlp": {"trace": {"resourceSpans": []}}, "tempo_search": {"traces": []}, "json": {"a": 1}, "schema": {"a": 1}, "rows": ""}
     for kind, b in bodies.items():
         assert evaluate_body({**META, "kind": kind}, A(b), A(b)).exact, kind
 
 
 def test_traces_rows_default_to_span_identity():
-    meta = {**META, "signal": "traces"}
+    meta = {**META, "surface": "vt-native"}
     a = '{"trace_id":"t","span_id":"1","name":"a"}'
     b = '{"trace_id":"t","span_id":"1","name":"b"}'
     r = evaluate_body(meta, A(a), A(b))
@@ -171,7 +191,7 @@ def test_traces_rows_default_to_span_identity():
 
 def test_skip_fields_and_tolerance_from_meta():
     meta = {**META, "kind": "series_prom", "rel_tol": 0.1}
-    mk = lambda v: {"data": {"result": [{"metric": {}, "value": [1, str(v)]}]}}  # noqa: E731
+    mk = lambda v: {"data": {"resultType": "vector", "result": [{"metric": {}, "value": [1, str(v)]}]}}  # noqa: E731
     assert evaluate_body(meta, A(mk(100)), A(mk(105))).exact
     assert not evaluate_body({**meta, "rel_tol": 1e-9}, A(mk(100)), A(mk(105))).exact
     rows_meta = {**META, "skip_fields": ["took"]}
@@ -204,7 +224,8 @@ def test_cli_core_filter_and_exit_codes(capsys, tmp_path):
     assert main([FIX, "--surface", "tempo"]) == 0
     assert "tempo/search_exact" in capsys.readouterr().out
     assert main([FIX, "--fail-on-regression"]) == 1
-    assert main([FIX, "--surface", "loki", "--fail-on-regression"]) == 0
+    assert main([FIX, "--surface", "tempo", "--fail-on-regression"]) == 0
+    assert main([FIX, "--surface", "loki", "--fail-on-regression"]) == 1  # the streams case regresses
     capsys.readouterr()
     assert main([str(tmp_path)]) == 2  # no cases under that directory
 
@@ -222,7 +243,7 @@ def test_cli_check_fails_on_a_wrong_expectation(tmp_path, capsys):
 
 def test_render_table_shows_base_to_pr_worst_facet():
     out = render_table([r for _, r in run_dir(FIX)])
-    assert "points_within_tol 50 -> exact" in out
+    assert re.search(r"points_within_tol \d+ -> exact", out)
     assert "failing:" in out
 
 

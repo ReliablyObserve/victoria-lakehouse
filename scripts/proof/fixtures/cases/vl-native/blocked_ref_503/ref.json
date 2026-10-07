@@ -1,5 +1,6 @@
 {
  "body": "service unavailable",
+ "content_type": "text/plain",
  "latency_ms": 10.0,
  "status": 503
 }

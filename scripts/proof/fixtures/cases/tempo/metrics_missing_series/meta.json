@@ -1,4 +1,5 @@
 {
+ "derivation": "TraceQL metrics query_range body in the documented format; not recorded",
  "endpoint": "/api/metrics/query_range",
  "expect": {
   "base": {
@@ -12,7 +13,7 @@
  },
  "id": "tempo/metrics_missing_series",
  "kind": "series_tempo",
+ "provenance": "synthetic",
  "row": "tempo.metrics.rate",
- "signal": "traces",
  "surface": "tempo"
 }

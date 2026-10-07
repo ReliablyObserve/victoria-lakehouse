@@ -1,0 +1,14 @@
+{
+ "endpoint": "/select/logsql/facets",
+ "expect": {
+  "verdict": "exact"
+ },
+ "id": "vl-native/facets_exact",
+ "kind": "values",
+ "provenance": "recorded",
+ "recorded_from": [
+  "vl_facets"
+ ],
+ "row": "vl.select.facets",
+ "surface": "vl-native"
+}

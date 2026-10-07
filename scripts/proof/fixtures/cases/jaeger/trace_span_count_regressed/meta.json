@@ -1,18 +1,22 @@
 {
+ "derivation": "PR drops the last span of the recorded trace",
  "endpoint": "/select/jaeger/api/traces/{id}",
  "expect": {
   "base": {
    "span_set": 100.0
   },
   "pr": {
-   "span_count": 83.3,
-   "span_set": 83.3
+   "span_count": 75.0,
+   "span_set": 75.0
   },
   "verdict": "regressed"
  },
  "id": "jaeger/trace_span_count_regressed",
  "kind": "trace_jaeger",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "jaeger_trace"
+ ],
  "row": "jaeger.trace.spans",
- "signal": "traces",
  "surface": "jaeger"
 }

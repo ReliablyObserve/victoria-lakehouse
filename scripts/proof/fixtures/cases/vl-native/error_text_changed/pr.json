@@ -1,5 +1,6 @@
 {
  "body": "bad request",
+ "content_type": "text/plain",
  "latency_ms": 10.0,
  "status": 400
 }

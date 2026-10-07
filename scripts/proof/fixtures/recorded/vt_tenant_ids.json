@@ -1,0 +1,14 @@
+{
+ "body": "[{\"account_id\":0,\"project_id\":0}]",
+ "content_type": "application/json",
+ "latency_ms": 0.66,
+ "request": {
+  "method": "POST",
+  "params": {
+   "end": "2026-10-07T08:00:00Z",
+   "start": "2026-10-07T06:00:00Z"
+  },
+  "path": "/select/tenant_ids"
+ },
+ "status": 200
+}

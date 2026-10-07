@@ -1,11 +1,13 @@
 {
+ "claimed_gap": "search",
+ "derivation": "base lacks the last two traces of the recorded search",
  "endpoint": "/select/jaeger/api/traces",
  "expect": {
   "base": {
-   "trace_set": 80.0
+   "trace_set": 60.0
   },
   "details": {
-   "base.trace_set.recall": 80.0
+   "base.trace_set.recall": 60.0
   },
   "pr": {
    "trace_set": 100.0
@@ -14,7 +16,10 @@
  },
  "id": "jaeger/search_missing_traces",
  "kind": "trace_jaeger",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "jaeger_search_order"
+ ],
  "row": "jaeger.search",
- "signal": "traces",
  "surface": "jaeger"
 }

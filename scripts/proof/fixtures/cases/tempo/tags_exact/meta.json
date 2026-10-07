@@ -1,0 +1,14 @@
+{
+ "endpoint": "/api/v2/search/tags",
+ "expect": {
+  "verdict": "exact"
+ },
+ "id": "tempo/tags_exact",
+ "kind": "values",
+ "provenance": "recorded",
+ "recorded_from": [
+  "tempo_tags"
+ ],
+ "row": "tempo.tags_exact",
+ "surface": "tempo"
+}

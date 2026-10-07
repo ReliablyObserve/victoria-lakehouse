@@ -1,0 +1,15 @@
+{
+ "body": "{\"values\":[{\"value\":\"_msg\",\"hits\":4},{\"value\":\"_stream\",\"hits\":4},{\"value\":\"_stream_id\",\"hits\":4},{\"value\":\"_time\",\"hits\":4},{\"value\":\"dropped_attributes_count\",\"hits\":4},{\"value\":\"dropped_events_count\",\"hits\":4},{\"value\":\"dropped_links_count\",\"hits\":4},{\"value\":\"duration\",\"hits\":4},{\"value\":\"end_time_unix_nano\",\"hits\":4},{\"value\":\"flags\",\"hits\":4},{\"value\":\"kind\",\"hits\":4},{\"value\":\"name\",\"hits\":4},{\"value\":\"resource_attr:deployment.environment\",\"hits\":4},{\"value\":\"resource_attr:host.name\",\"hits\":4},{\"value\":\"resource_attr:service.name\",\"hits\":4},{\"value\":\"scope_attr:scope.team\",\"hits\":4},{\"value\":\"scope_name\",\"hits\":4},{\"value\":\"scope_version\",\"hits\":4},{\"value\":\"span_attr:http.method\",\"hits\":4},{\"value\":\"span_attr:http.status_code\",\"hits\":4},{\"value\":\"span_id\",\"hits\":4},{\"value\":\"start_time_unix_nano\",\"hits\":4},{\"value\":\"status_code\",\"hits\":4},{\"value\":\"trace_id\",\"hits\":4},{\"value\":\"event:event_attr:exception.message:0\",\"hits\":3},{\"value\":\"event:event_dropped_attributes_count:0\",\"hits\":3},{\"value\":\"event:event_name:0\",\"hits\":3},{\"value\":\"event:event_time_unix_nano:0\",\"hits\":3},{\"value\":\"parent_span_id\",\"hits\":3},{\"value\":\"link:link_attr:link.reason:0\",\"hits\":2},{\"value\":\"link:link_dropped_attributes_count:0\",\"hits\":2},{\"value\":\"link:link_flags:0\",\"hits\":2},{\"value\":\"link:link_span_id:0\",\"hits\":2},{\"value\":\"link:link_trace_id:0\",\"hits\":2},{\"value\":\"link:link_trace_state:0\",\"hits\":2},{\"value\":\"status_message\",\"hits\":1}]}",
+ "content_type": "application/json",
+ "latency_ms": 0.95,
+ "request": {
+  "method": "POST",
+  "params": {
+   "end": "2026-10-07T08:00:00Z",
+   "query": "trace_id:0af7651916cd43dd8448eb211c80319c",
+   "start": "2026-10-07T06:00:00Z"
+  },
+  "path": "/select/logsql/field_names"
+ },
+ "status": 200
+}

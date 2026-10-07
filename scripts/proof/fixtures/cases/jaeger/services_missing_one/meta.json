@@ -1,0 +1,18 @@
+{
+ "derivation": "PR lacks the last recorded service",
+ "endpoint": "/select/jaeger/api/services",
+ "expect": {
+  "pr": {
+   "value_set": 83.33333333333333
+  },
+  "verdict": "regressed"
+ },
+ "id": "jaeger/services_missing_one",
+ "kind": "values",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "jaeger_services"
+ ],
+ "row": "jaeger.services.missing",
+ "surface": "jaeger"
+}

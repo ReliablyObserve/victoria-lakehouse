@@ -18,10 +18,10 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
-| Ops | 14 | 0 | 0 | 0 | 14 |
+| Ops | 14 | 0 | 1 | 0 | 15 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **148** | **1** | **1** | **8** | **158** |
+| **Total** | **148** | **1** | **2** | **8** | **159** |
 
 ## Coverage gaps
 
@@ -1590,7 +1590,20 @@ Cold-query latency is a sum of many small object-store operations, which aggrega
 - Verification: tests: `internal/telemetry/telemetry_test.go`, `internal/telemetry/traced_storage_test.go`, `internal/telemetry/traced_writer_test.go`, `internal/config/telemetry_test.go`
 - Docs: `docs/telemetry.md`
 
-## Ops (14)
+## Ops (15)
+
+### 🔧 API data-proof metrics
+
+`lh.feature.ops.api_data_proof` · status: in-progress · since: the release after v0.146.3 · surfaces: cli
+
+**API data-proof metrics**: every compared API answer is scored in percent per quality facet against hot VictoriaLogs/VictoriaTraces — row sets, fields, values, series, spans, order, truth — with a verdict per request, so a fix or a regression shows as a number that cannot round up to 100.
+
+A difference that rounds to 100% is not a result. The metrics library scores a reference, a base and a PR answer on the whole facet set (status, error text, row set, field coverage, value equality, count, series, value sets, traces, order, JSON leaves, schema, truth, latency) and classifies each request as exact, same, fixed, improved, regressed, not reproduced on base, vacuous, blocked, nondeterministic or a harness error. An error answer scores zero on every body facet, an unknown body shape is a harness error, and the tie rule that accepts a row limit cutting a group of equal sort keys is checked against the Go implementation with shared vectors.
+
+- Verification: tests: `scripts/proof/tests/test_common_rows.py`, `scripts/proof/tests/test_series_values_traces.py`, `scripts/proof/tests/test_generic_verdict.py`, `scripts/proof/tests/test_cases_cli.py`, `scripts/proof/tests/test_review_round2.py`, `scripts/proof/tests/test_adversarial.py`, `scripts/proof/tests/test_ties.py`, `scripts/proof/tests/test_tiecut_golden.py`, `tests/parity/rows_ties_golden_test.go#TestTieCutGoldenQueries`, `tests/parity/rows_ties_golden_test.go#TestTieCutGoldenDecisions`
+- Docs: `scripts/proof/README.md`
+- Changelog: the release after `0.146.3`
+- Note: The metrics library scores recorded answers; nothing calls it from CI against a live stack yet. The Python tests run in the Proof metrics workflow (`.github/workflows/proof-metrics.yaml`); the Go golden test shares `tests/parity/testdata/tiecut_golden.json` with the Python tie-cut tests, so the two implementations of the tie rule cannot drift apart, and runs in the Parity Tests workflow with the rest of the parity package. The fixtures are labelled recorded, derived-from-recorded or synthetic in each case's `meta.json`; no Lakehouse answer is recorded yet.
 
 ### ✅ Validated benchmark harness
 

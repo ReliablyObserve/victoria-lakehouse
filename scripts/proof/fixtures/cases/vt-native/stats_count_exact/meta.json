@@ -1,17 +1,14 @@
 {
  "endpoint": "/select/logsql/stats_query",
  "expect": {
-  "base": {
-   "count": 100.0
-  },
-  "pr": {
-   "count": 100.0
-  },
   "verdict": "exact"
  },
  "id": "vt-native/stats_count_exact",
  "kind": "count",
- "row": "vt.select.stats_query.count",
- "signal": "traces",
+ "provenance": "recorded",
+ "recorded_from": [
+  "vt_stats_query"
+ ],
+ "row": "vt.select.stats_count_exact",
  "surface": "vt-native"
 }

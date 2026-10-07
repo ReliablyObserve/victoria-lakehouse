@@ -121,6 +121,14 @@ class CheckChangelogPRTests(unittest.TestCase):
             )
         )
 
+    def test_proof_tooling_does_not_exempt_a_product_change_in_the_same_pr(self):
+        self.assertTrue(
+            should_require_changelog(
+                ["feat(storage): read path change"],
+                ["scripts/proof/metrics/rows.py", "internal/storage/parquets3/reader.go"],
+            )
+        )
+
     def test_is_release_commit_ignores_ci_scope(self):
         self.assertFalse(is_release_commit("feat(ci): consolidate post-release updates"))
         self.assertFalse(is_release_commit("fix(ci): exempt paths from changelog"))

@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+from scripts.proof.metrics.common import UnknownShape
 from scripts.proof.metrics.decode import (
     decode_hits, decode_prom, decode_tempo_metrics, decode_values, load_body, stats_scalar,
 )
@@ -77,21 +78,30 @@ def test_huge_values_relative():
 
 
 def test_decoders_prom_hits_tempo():
-    prom = {"data": {"result": [{"metric": {"l": "x"}, "values": [[1, "2"], [2, "NaN"]]}]}}
+    prom = {"data": {"resultType": "matrix", "result": [{"metric": {"l": "x"}, "values": [[1, "2"], [2, "NaN"]]}]}}
     s = decode_prom(prom)
     (k, pts), = s.items()
     assert pts[1_000_000_000] == 2.0 and math.isnan(pts[2_000_000_000])
-    vec = {"data": {"result": [{"metric": {}, "value": [5, "7"]}]}}
+    vec = {"data": {"resultType": "vector", "result": [{"metric": {}, "value": [5, "7"]}]}}
     assert stats_scalar(vec) == 7.0
-    assert stats_scalar({"data": {"result": []}}) is None
+    assert stats_scalar({"data": {"resultType": "vector", "result": []}}) is None
     assert stats_scalar(None) is None
-    hits = {"hits": [{"fields": {"a": "b"}, "timestamps": ["2026-01-01T00:00:00Z", "bad"], "values": [3, 4]}]}
+    hits = {"hits": [{"fields": {"a": "b"}, "timestamps": ["2026-01-01T00:00:00Z"], "values": [3]}]}
     h = decode_hits(hits)
     assert list(next(iter(h.values())).values()) == [3.0]
+    with pytest.raises(UnknownShape):
+        decode_hits({"hits": [{"timestamps": ["bad"], "values": [1]}]})
     t = decode_tempo_metrics({"series": [{"labels": [{"key": "s", "value": {"stringValue": "a"}}],
-                                          "samples": [{"timestampMs": "1000", "value": 2}, {"timestampMs": None}]}]})
+                                          "samples": [{"timestampMs": "1000", "value": 2}]}]})
     assert next(iter(t.values())) == {1_000_000_000: 2.0}
-    assert decode_prom("not a dict") == {} and decode_hits(None) == {}
+    assert decode_prom(None) == {} and decode_hits(None) == {}
+    for bad in ("not a dict", {"data": {"resultType": "scalar"}}, {"status": "success"}):
+        with pytest.raises(UnknownShape):
+            decode_prom(bad)
+    with pytest.raises(UnknownShape):
+        decode_hits({"nothits": 1})
+    with pytest.raises(UnknownShape):
+        decode_tempo_metrics({"nope": 1})
 
 
 def test_load_body():

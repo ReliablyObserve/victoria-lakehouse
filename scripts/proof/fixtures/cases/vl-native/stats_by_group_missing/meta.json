@@ -1,0 +1,22 @@
+{
+ "claimed_gap": "cold-count",
+ "derivation": "base lacks the WARN group of the recorded `stats by (level)` vector",
+ "endpoint": "/select/logsql/stats_query",
+ "expect": {
+  "base": {
+   "count": 0.0
+  },
+  "pr": {
+   "count": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "vl-native/stats_by_group_missing",
+ "kind": "count",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_stats_query_by"
+ ],
+ "row": "vl.select.stats_query.by_missing",
+ "surface": "vl-native"
+}

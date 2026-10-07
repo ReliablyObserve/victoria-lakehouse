@@ -1,0 +1,27 @@
+{
+ "claimed_gap": "field-values",
+ "derivation": "base keeps the first half of the recorded values, PR keeps all but the last",
+ "endpoint": "/select/logsql/field_values",
+ "expect": {
+  "base": {
+   "hits_equality": 100.0,
+   "value_set": 50.0
+  },
+  "details": {
+   "base.value_set.recall": 50.0
+  },
+  "pr": {
+   "hits_equality": 100.0,
+   "value_set": 75.0
+  },
+  "verdict": "improved"
+ },
+ "id": "vl-native/field_values_partial_fix",
+ "kind": "values",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_field_values"
+ ],
+ "row": "vl.select.field_values.partial",
+ "surface": "vl-native"
+}

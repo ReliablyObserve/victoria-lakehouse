@@ -1,9 +1,10 @@
 {
  "claimed_gap": "B5",
+ "derivation": "base swaps the values of the first two buckets of every series (same total, different distribution)",
  "endpoint": "/select/logsql/stats_query_range",
  "expect": {
   "base": {
-   "points_within_tol": 50.0,
+   "points_within_tol": 33.33,
    "series_set": 100.0,
    "totals": 100.0
   },
@@ -17,6 +18,10 @@
  },
  "id": "vl-native/b5_stats_range_distribution",
  "kind": "series_prom",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_stats_query_range"
+ ],
  "row": "vl.select.stats_query_range.cold",
  "surface": "vl-native"
 }

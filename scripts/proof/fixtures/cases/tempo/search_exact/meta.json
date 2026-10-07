@@ -1,17 +1,14 @@
 {
  "endpoint": "/api/search",
  "expect": {
-  "base": {
-   "trace_set": 100.0
-  },
-  "pr": {
-   "trace_set": 100.0
-  },
   "verdict": "exact"
  },
  "id": "tempo/search_exact",
  "kind": "tempo_search",
- "row": "tempo.search",
- "signal": "traces",
+ "provenance": "recorded",
+ "recorded_from": [
+  "tempo_search"
+ ],
+ "row": "tempo.search_exact",
  "surface": "tempo"
 }

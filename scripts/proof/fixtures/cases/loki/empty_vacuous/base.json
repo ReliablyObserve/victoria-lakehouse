@@ -1,0 +1,6 @@
+{
+ "body": "{\"data\":{\"result\":[],\"resultType\":\"matrix\"},\"status\":\"success\"}",
+ "content_type": "application/json",
+ "latency_ms": 10.0,
+ "status": 200
+}

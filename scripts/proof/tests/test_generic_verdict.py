@@ -21,7 +21,9 @@ def test_status_and_error_agreement():
     assert r.facets["status"] == 0.0 and "error" in r.facets
     r = evaluate_status(A(400, "bad  'x'"), A(400, 'bad "x"'))
     assert r.exact and r.facets["error"] == 100.0
-    assert evaluate_status(A(400, {"status": "error", "error": "Boom"}), A(400, {"error": "boom"})).exact
+    assert evaluate_status(A(400, {"status": "error", "error": "Boom"}), A(400, {"error": "Boom"})).exact
+    # case is part of the message: only whitespace and quoting are normalised
+    assert not evaluate_status(A(400, {"error": "Boom"}), A(400, {"error": "boom"})).exact
     assert evaluate_status(A(400, "a"), A(400, "b")).facets["error"] == 0.0
     assert "error" not in evaluate_status(A(200), A(200)).facets
 
@@ -59,19 +61,19 @@ def test_schema_agreement_and_contract():
 
 # ---- M13
 def test_truth_scalar_reports_unflushed_without_absorbing():
-    t = {"data": {"result": [{"metric": {}, "value": [1, "10120"]}]}}
+    t = {"data": {"resultType": "vector", "result": [{"metric": {}, "value": [1, "10120"]}]}}
     r = evaluate_truth("scalar", {"rows": 10000}, t, lh_path="rows", unflushed_rows=120)
     assert r.facets["truth"] == pytest.approx(100 * (1 - 120 / 10120)) and r.facets["truth"] < 100
     assert r.details["unflushed_rows"] == 120 and r.details["truth"]["delta"] == -120
     assert evaluate_truth("scalar", {"rows": 10120}, t, lh_path="rows").exact
     r = evaluate_truth("scalar", {"x": 1}, t, lh_path="rows")
     assert r.facets["truth"] == 0.0 and "error" in r.details["truth"]
-    assert evaluate_truth("scalar", {"a": {"b": [5]}}, {"data": {"result": [{"metric": {}, "value": [1, "5"]}]}},
+    assert evaluate_truth("scalar", {"a": {"b": [5]}}, {"data": {"resultType": "vector", "result": [{"metric": {}, "value": [1, "5"]}]}},
                           lh_path="a.b.0").exact
 
 
 def test_truth_per_key_uniq():
-    t = {"data": {"result": [{"metric": {"f": "a"}, "value": [1, "5"]}, {"metric": {"f": "b"}, "value": [1, "7"]}]}}
+    t = {"data": {"resultType": "vector", "result": [{"metric": {"f": "a"}, "value": [1, "5"]}, {"metric": {"f": "b"}, "value": [1, "7"]}]}}
     ok = evaluate_truth("per_key", {"c": {"a": 5, "b": 7}}, t, lh_path="c", key_label="f")
     assert ok.exact
     r = evaluate_truth("per_key", {"c": {"a": 5, "b": 6, "z": 1}}, t, lh_path="c", key_label="f")

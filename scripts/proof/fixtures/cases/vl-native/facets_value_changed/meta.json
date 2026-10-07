@@ -1,0 +1,15 @@
+{
+ "derivation": "PR answers a different value for the first facet value",
+ "endpoint": "/select/logsql/facets",
+ "expect": {
+  "verdict": "regressed"
+ },
+ "id": "vl-native/facets_value_changed",
+ "kind": "values",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_facets"
+ ],
+ "row": "vl.select.facets.value",
+ "surface": "vl-native"
+}

@@ -15,10 +15,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("root", help="directory of case directories (meta.json, ref.json, base.json, pr.json)")
     ap.add_argument("--check", action="store_true", help="fail when a case differs from its recorded expectation")
     ap.add_argument("--json", action="store_true", help="print machine-readable results")
-    ap.add_argument("--surface", action="append", help="only these surfaces (vl-native, vt-native, jaeger, loki, tempo)")
-    ap.add_argument("--core", action="store_true", help="only the native core surfaces (vl-native, vt-native, jaeger)")
+    ap.add_argument("--surface", action="append", help="only these surfaces (vl-native, vt-native, jaeger, lh-logs, lh-traces, loki, tempo)")
+    ap.add_argument("--core", action="store_true", help="only the core surfaces: native VL/VT/Jaeger plus the Lakehouse-only lh-logs and lh-traces")
     ap.add_argument("--fail-on-regression", action="store_true", help="exit 1 on regressed, nondeterministic or harness-error")
     a = ap.parse_args(argv)
+    if a.core and a.surface:
+        ap.error("--core and --surface cannot be combined")
 
     from .common import CORE_SURFACES
     want = set(a.surface or (CORE_SURFACES if a.core else ()))
@@ -31,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps([{
             "id": r.id, "surface": r.surface, "signal": r.signal, "verdict": r.verdict,
             "base": r.base.facets if r.base else None, "pr": r.pr.facets if r.pr else None,
-            "samples": r.samples, "latency": r.latency,
+            "samples": r.samples, "excluded_samples": r.excluded_samples, "latency": r.latency,
         } for r in results], indent=1, default=str))
     else:
         print(render_table(results))

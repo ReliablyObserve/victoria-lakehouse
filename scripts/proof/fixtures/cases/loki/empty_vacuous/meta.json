@@ -1,0 +1,13 @@
+{
+ "derivation": "three empty matrices",
+ "endpoint": "/loki/api/v1/query_range",
+ "expect": {
+  "verdict": "vacuous"
+ },
+ "id": "loki/empty_vacuous",
+ "kind": "series_prom",
+ "may_be_empty": true,
+ "provenance": "synthetic",
+ "row": "loki.query_range.empty",
+ "surface": "loki"
+}

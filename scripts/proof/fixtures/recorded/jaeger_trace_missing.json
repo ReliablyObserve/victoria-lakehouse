@@ -1,0 +1,11 @@
+{
+ "body": "{\"data\":[],\"errors\":[{\"code\":404,\"msg\":\"trace not found\"}],\"limit\": 0,\"offset\": 0,\"total\":0}",
+ "content_type": "application/json",
+ "latency_ms": 1938.63,
+ "request": {
+  "method": "GET",
+  "params": {},
+  "path": "/select/jaeger/api/traces/00000000000000000000000000000001"
+ },
+ "status": 404
+}

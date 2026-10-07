@@ -1,0 +1,31 @@
+{
+ "claimed_gap": "430",
+ "derivation": "base lacks span logs (events), FOLLOWS_FROM references (links) and scope_attr:* tags; the scope name tag is kept",
+ "endpoint": "/select/jaeger/api/traces/{id}",
+ "expect": {
+  "base": {
+   "parent_links": 100.0,
+   "span_fields": 0.0,
+   "span_set": 100.0
+  },
+  "details": {
+   "base.span_fields.min_field": "scope_attributes",
+   "base.span_fields.per_field.events": 25.0,
+   "base.span_fields.per_field.links": 50.0,
+   "base.span_fields.per_field.scope": 100.0
+  },
+  "pr": {
+   "span_count": 100.0,
+   "span_fields": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "jaeger/430_trace_events_links_scope_attrs",
+ "kind": "trace_jaeger",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "jaeger_trace"
+ ],
+ "row": "jaeger.trace.by_id",
+ "surface": "jaeger"
+}

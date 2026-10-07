@@ -1,0 +1,16 @@
+{
+ "body": "{\"traces\": [{\"traceID\":\"0af7651916cd43dd8448eb211c80319c\",\"rootServiceName\":\"proof-cart\",\"rootTraceName\":\"op0\",\"startTimeUnixNano\":\"1791357600000000000\",\"durationMs\":3,\"spanSets\":[{\"spans\":[{\"spanID\":\"b7ad6b7169203300\",\"startTimeUnixNano\":\"1791357600000000000\",\"durationNanos\":500000,\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"proof-cart\"}},{\"key\":\"name\",\"value\":{\"stringValue\":\"op0\"}},{\"key\":\"nestedSetParent\",\"value\":{\"intValue\":\"-1\"}}]},{\"spanID\":\"b7ad6b7169203301\",\"startTimeUnixNano\":\"1791357600001000000\",\"durationNanos\":501000,\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"proof-cart\"}},{\"key\":\"name\",\"value\":{\"stringValue\":\"op1\"}},{\"key\":\"nestedSetParent\",\"value\":{\"intValue\":\"0\"}}]},{\"spanID\":\"b7ad6b7169203302\",\"startTimeUnixNano\":\"1791357600002000000\",\"durationNanos\":502000,\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"proof-cart\"}},{\"key\":\"name\",\"value\":{\"stringValue\":\"op2\"}},{\"key\":\"nestedSetParent\",\"value\":{\"intValue\":\"0\"}}]}],\"matched\":3}]}]}",
+ "content_type": "application/json",
+ "latency_ms": 1.07,
+ "request": {
+  "method": "GET",
+  "params": {
+   "end": "1791360000",
+   "limit": "5",
+   "q": "{ resource.service.name = \"proof-cart\" }",
+   "start": "1791352800"
+  },
+  "path": "/select/tempo/api/search"
+ },
+ "status": 200
+}

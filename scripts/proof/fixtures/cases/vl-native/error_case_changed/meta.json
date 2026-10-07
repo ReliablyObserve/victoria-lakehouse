@@ -1,0 +1,18 @@
+{
+ "derivation": "PR answers the recorded error text in upper case: case is part of the message",
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "pr": {
+   "error": 0.0
+  },
+  "verdict": "regressed"
+ },
+ "id": "vl-native/error_case_changed",
+ "kind": "rows",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_bad_query"
+ ],
+ "row": "vl.select.query.badsyntax3",
+ "surface": "vl-native"
+}

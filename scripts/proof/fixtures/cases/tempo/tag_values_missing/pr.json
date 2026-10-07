@@ -1,0 +1,6 @@
+{
+ "body": "{\"tagValues\":[{\"type\": \"string\",\"value\":\"api-gateway\"},{\"type\": \"string\",\"value\":\"notification-service\"},{\"type\": \"string\",\"value\":\"order-service\"},{\"type\": \"string\",\"value\":\"payment-service\"},{\"type\": \"string\",\"value\":\"proof-cart\"},{\"type\": \"string\",\"value\":\"user-service\"}],\"metrics\": {\"inspectedBytes\": \"0\"}}",
+ "content_type": "application/json",
+ "latency_ms": 1.05,
+ "status": 200
+}

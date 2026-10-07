@@ -1,5 +1,6 @@
 {
- "body": "cannot  parse query: unexpected token `foo`",
+ "body": "cannot parse `query` arg [* | nosuchpipe]:  unexpected pipe name 'nosuchpipe'; probably, 'filter' is missing in front of 'nosuchpipe'; see https://docs.victoriametrics.com/victorialogs/logsql/#filter-pipe; context:  [* | nosuchpipe]\n",
+ "content_type": "text/plain",
  "latency_ms": 10.0,
  "status": 400
 }

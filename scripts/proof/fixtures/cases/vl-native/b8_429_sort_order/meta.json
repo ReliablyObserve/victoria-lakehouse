@@ -1,13 +1,15 @@
 {
  "claimed_gap": "B8",
+ "derivation": "base reverses rows 40-59; PR swaps the two rows that tie on _time",
  "endpoint": "/select/logsql/query",
  "expect": {
   "base": {
-   "order": 96.5,
+   "order": 97.34,
    "row_set": 100.0,
    "value_equality": 100.0
   },
   "details": {
+   "pr.order.comparable_pairs": 7139,
    "pr.order.tie_groups": 1
   },
   "pr": {
@@ -20,7 +22,11 @@
  "order": [
   "_time"
  ],
- "query": "* | sort by (_time) desc",
+ "provenance": "derived-from-recorded",
+ "query": "* | sort by (_time) desc | limit 120",
+ "recorded_from": [
+  "vl_query_sorted"
+ ],
  "row": "vl.pipes.sort_time",
  "surface": "vl-native"
 }

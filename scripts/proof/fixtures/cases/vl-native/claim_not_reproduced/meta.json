@@ -2,16 +2,14 @@
  "claimed_gap": "B9",
  "endpoint": "/select/logsql/query",
  "expect": {
-  "base": {
-   "row_set": 100.0
-  },
-  "pr": {
-   "row_set": 100.0
-  },
   "verdict": "not-reproduced-on-base"
  },
  "id": "vl-native/claim_not_reproduced",
  "kind": "rows",
+ "provenance": "recorded",
+ "recorded_from": [
+  "vl_query"
+ ],
  "row": "vl.select.query.claimed",
  "surface": "vl-native"
 }

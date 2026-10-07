@@ -53,8 +53,9 @@ def evaluate_series(
                 errs.append(0.0)
             else:
                 errs.append(rel_err(av, rv))
-    align = 100.0 if ts_union == 0 else 100.0 * ts_common / ts_union
-    res.facets["ts_alignment"] = cap_inexact(align, ts_common == ts_union)
+    # With points on either side but none in common, nothing is aligned.
+    align = 100.0 if total_points == 0 else (100.0 * ts_common / ts_union if ts_union else 0.0)
+    res.facets["ts_alignment"] = cap_inexact(align, total_points == 0 or (ts_union > 0 and ts_common == ts_union))
     within_pct = 100.0 if total_points == 0 else 100.0 * within / total_points
     res.facets["points_within_tol"] = cap_inexact(within_pct, within == total_points)
 
@@ -64,8 +65,8 @@ def evaluate_series(
     tfrac = tdelta / max(abs(ref_total), 1.0)
     tol_ok = numbers_equal(ans_total, ref_total, rel_tol, abs_tol)
     res.facets["totals"] = cap_inexact(100.0 * (1.0 - min(1.0, abs(tfrac))), tol_ok)
-    nan_pct = 100.0 if nan_total == 0 else 100.0 * nan_agree / nan_total
-    res.facets["nan_agreement"] = cap_inexact(nan_pct, nan_agree == nan_total)
+    nan_pct = (100.0 if total_points == 0 else 0.0) if nan_total == 0 else 100.0 * nan_agree / nan_total
+    res.facets["nan_agreement"] = cap_inexact(nan_pct, nan_pct >= 100.0)
     finite = [e for e in errs if not math.isinf(e)]
     res.details.update(
         {

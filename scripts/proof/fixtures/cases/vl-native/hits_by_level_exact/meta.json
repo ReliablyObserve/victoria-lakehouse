@@ -1,0 +1,14 @@
+{
+ "endpoint": "/select/logsql/hits",
+ "expect": {
+  "verdict": "exact"
+ },
+ "id": "vl-native/hits_by_level_exact",
+ "kind": "series_hits",
+ "provenance": "recorded",
+ "recorded_from": [
+  "vl_hits_by_level"
+ ],
+ "row": "vl.select.hits.by_level",
+ "surface": "vl-native"
+}

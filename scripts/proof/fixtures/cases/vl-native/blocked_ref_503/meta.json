@@ -1,10 +1,15 @@
 {
+ "derivation": "the reference answered 503 (a recorded answer with its status replaced)",
  "endpoint": "/select/logsql/query",
  "expect": {
   "verdict": "blocked"
  },
  "id": "vl-native/blocked_ref_503",
  "kind": "rows",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_query"
+ ],
  "row": "vl.select.query.blocked",
  "surface": "vl-native"
 }

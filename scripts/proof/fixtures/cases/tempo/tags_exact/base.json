@@ -1,0 +1,6 @@
+{
+ "body": "{\"scopes\":[{\"name\": \"intrinsic\",\"tags\": [\"name\",\"kind\",\"status\",\"duration\"]},{\"name\": \"resource\",\"tags\": [\"cloud.account.id\",\"cloud.provider\",\"cloud.region\",\"container.id\",\"deployment.environment\",\"host.arch\",\"host.name\",\"k8s.cluster.name\",\"k8s.deployment.name\",\"k8s.namespace.name\",\"k8s.node.name\",\"k8s.pod.name\",\"os.type\",\"process.runtime.name\",\"process.runtime.version\",\"service.instance.id\",\"service.name\",\"service.version\",\"telemetry.sdk.language\",\"telemetry.sdk.name\",\"telemetry.sdk.version\"]},{\"name\": \"span\",\"tags\": [\"code.function\",\"db.connection_string\",\"db.name\",\"db.operation\",\"db.statement\",\"db.system\",\"http.method\",\"http.request.method\",\"http.response.status_code\",\"http.route\",\"http.scheme\",\"http.status_code\",\"http.url\",\"network.protocol.version\",\"rpc.grpc.status_code\",\"rpc.method\",\"rpc.service\",\"rpc.system\",\"server.address\",\"server.port\",\"thread.id\",\"url.full\",\"url.scheme\",\"user_agent.original\"]},{\"name\": \"event\",\"tags\": []},{\"name\": \"link\",\"tags\": []},{\"name\": \"instrumentation\",\"tags\": [\"scope.team\"]}],\"metrics\": {\"inspectedBytes\": \"0\"}}",
+ "content_type": "application/json",
+ "latency_ms": 0.76,
+ "status": 200
+}

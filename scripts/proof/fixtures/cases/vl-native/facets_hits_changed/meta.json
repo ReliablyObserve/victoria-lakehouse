@@ -1,0 +1,18 @@
+{
+ "derivation": "PR adds 1 to the hits of the first value of the first facet",
+ "endpoint": "/select/logsql/facets",
+ "expect": {
+  "pr": {
+   "value_set": 100.0
+  },
+  "verdict": "regressed"
+ },
+ "id": "vl-native/facets_hits_changed",
+ "kind": "values",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_facets"
+ ],
+ "row": "vl.select.facets.hits",
+ "surface": "vl-native"
+}

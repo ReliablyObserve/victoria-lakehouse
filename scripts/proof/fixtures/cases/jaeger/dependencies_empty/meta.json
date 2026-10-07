@@ -1,0 +1,15 @@
+{
+ "endpoint": "/select/jaeger/api/dependencies",
+ "expect": {
+  "verdict": "vacuous"
+ },
+ "id": "jaeger/dependencies_empty",
+ "kind": "values",
+ "may_be_empty": true,
+ "provenance": "recorded",
+ "recorded_from": [
+  "jaeger_dependencies"
+ ],
+ "row": "jaeger.dependencies",
+ "surface": "jaeger"
+}

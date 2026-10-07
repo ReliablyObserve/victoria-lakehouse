@@ -1,0 +1,11 @@
+{
+ "body": "{\"data\":[\"api-gateway\",\"notification-service\",\"order-service\",\"payment-service\",\"proof-cart\",\"user-service\"],\"errors\": null,\"limit\": 0,\"offset\": 0,\"total\":6}",
+ "content_type": "application/json",
+ "latency_ms": 0.81,
+ "request": {
+  "method": "GET",
+  "params": {},
+  "path": "/select/jaeger/api/services"
+ },
+ "status": 200
+}

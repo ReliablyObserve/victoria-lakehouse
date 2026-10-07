@@ -1,16 +1,23 @@
 {
+ "derivation": "PR drops the field http.target from every row and the last row",
  "endpoint": "/select/logsql/query",
  "expect": {
   "base": {
    "row_set": 100.0
   },
   "pr": {
-   "field_coverage": 83.3
+   "field_coverage": 97.43589743589743,
+   "row_set": 53.333333333333336,
+   "value_equality": 0.0
   },
   "verdict": "regressed"
  },
  "id": "vl-native/rows_regressed",
  "kind": "rows",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_query"
+ ],
  "row": "vl.select.query.regress",
  "surface": "vl-native"
 }
