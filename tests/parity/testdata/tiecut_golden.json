@@ -1466,6 +1466,116 @@
    "ref_status": 200,
    "sut_status": 200,
    "explained": false
+  },
+  {
+   "name": "multi_key_reread_group_has_an_extra_row_on_the_system_under_test",
+   "note": "the sort by (level, _time) twin of the _time-only vector: only the system under test holds an extra row of the group",
+   "sort_fields": [
+    "level",
+    "_time"
+   ],
+   "skip_fields": [],
+   "ref": [
+    {
+     "_time": "2026-10-01T20:40:00Z",
+     "_stream_id": "s1",
+     "_msg": "h1",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:39:00Z",
+     "_stream_id": "s1",
+     "_msg": "h2",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "level": "warn"
+    }
+   ],
+   "sut": [
+    {
+     "_time": "2026-10-01T20:40:00Z",
+     "_stream_id": "s1",
+     "_msg": "h1",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:39:00Z",
+     "_stream_id": "s1",
+     "_msg": "h2",
+     "level": "error"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "level": "warn"
+    }
+   ],
+   "group_ref": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "level": "warn"
+    }
+   ],
+   "group_sut": [
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "A",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "B",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "C",
+     "level": "warn"
+    },
+    {
+     "_time": "2026-10-01T20:11:36.916949216Z",
+     "_stream_id": "s1",
+     "_msg": "D",
+     "level": "warn"
+    }
+   ],
+   "ref_status": 200,
+   "sut_status": 200,
+   "explained": false
   }
  ]
 }

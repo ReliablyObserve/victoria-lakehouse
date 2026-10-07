@@ -477,7 +477,7 @@ def test_check_expectations_tolerance_is_tight():
     meta, res = load_case(os.path.join(FIX, "vl-native", "stats_count_fixed"))
     real = res.base.facets["count"]
     assert check_expectations(meta, res) == []
-    for drift, fails in ((0.005, False), (0.5, True), (1.0, True)):
+    for drift, fails in ((0.005, False), (0.05, True), (0.5, True), (1.0, True)):
         m = {**meta, "expect": {**meta["expect"], "base": {"count": real + drift}}}
         assert bool(check_expectations(m, res)) == fails, drift
 
@@ -495,3 +495,11 @@ def test_stats_scalar_needs_exactly_one_point():
         {"metric": {"g": "a"}, "value": [1, "5"]}, {"metric": {"g": "b"}, "value": [1, "7"]}]}}
     assert stats_scalar(two) is None
     assert evaluate_truth("scalar", {"n": 5}, two, lh_path="n").details["truth"]["error"] == "value not found"
+
+
+def test_check_expectations_require_exactly_100_when_100_is_expected():
+    from scripts.proof.metrics.cases import _close
+    assert _close(100.0, 100.0, 0.01)
+    assert not _close(99.995, 100.0, 0.01)  # within the tolerance of 100, still not 100
+    assert not _close(99.99999, 100.0, 5.0)
+    assert _close(97.004, 97.0, 0.01) and not _close(97.05, 97.0, 0.01)
