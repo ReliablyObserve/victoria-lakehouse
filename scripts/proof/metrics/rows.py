@@ -275,6 +275,25 @@ def _without(rows: list[dict], drop: Counter) -> list[dict]:
     return out
 
 
+def _pair_group(rrows: list[dict], arows: list[dict]) -> list[tuple[dict, dict]]:
+    """Pairs of rows sharing one identity. Rows that are exactly equal pair first; only the remainder pairs in
+    response order. Pairing everything in order would cross rows that share an identity because they carry little
+    (a histogram row that has only `_time`), and score a reordering as a difference in every value."""
+    by_key: dict[str, list[dict]] = defaultdict(list)
+    for a in arows:
+        by_key[row_key(a)].append(a)
+    pairs: list[tuple[dict, dict]] = []
+    rest_r: list[dict] = []
+    for r in rrows:
+        bucket = by_key.get(row_key(r))
+        if bucket:
+            pairs.append((r, bucket.pop()))
+        else:
+            rest_r.append(r)
+    rest_a = [a for a in arows if any(a is x for xs in by_key.values() for x in xs)]
+    return pairs + list(zip(rest_r, rest_a))
+
+
 def _pair_value_equality(ref_rows, ans_rows, identity):
     """Pair rows by identity (duplicates in occurrence order); count equal values per field."""
     ref_by: dict[str, list[dict]] = defaultdict(list)
@@ -288,7 +307,7 @@ def _pair_value_equality(ref_rows, ans_rows, identity):
     paired = 0
     for ident, rrows in ref_by.items():
         arows = ans_by.get(ident, [])
-        for rr, ar in zip(rrows, arows):
+        for rr, ar in _pair_group(rrows, arows):
             paired += 1
             for f in set(rr) | set(ar):
                 n[f] += 1

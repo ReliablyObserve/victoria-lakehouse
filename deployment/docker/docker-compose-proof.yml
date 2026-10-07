@@ -278,7 +278,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.loki-vl-proxy
-    image: ${PROOF_PREFIX:-lhproof}-vlproxy:latest
+    image: ${PROOF_PREFIX:-lhproof}-vlproxy:${LVP_VERSION:-pinned}
     networks: [proof-net]
     ports:
       - "127.0.0.1:${PORT_LOKI_REF:-48450}:3100"
@@ -289,7 +289,11 @@ services:
       - "-metadata-field-mode=translated"
       - "-emit-structured-metadata=true"
       - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
-      - "-extra-label-fields=level,cloud_region"
+      # Custom attributes with a dot in their VictoriaLogs name (the fixtures write http.method and so on): the proxy maps
+      # underscore names back to dotted fields only for its built-in OTel names and for -field-mapping entries;
+      # -extra-label-fields alone only lists them on the label APIs.
+      - "-extra-label-fields=level,cloud_region,http.method,http.status_code,http.target,exception.type,exception.message,instrumentation.lib,otel.span_id,otel.trace_id,scope.name"
+      - '-field-mapping=[{"vl_field":"http.method","loki_label":"http_method"},{"vl_field":"http.status_code","loki_label":"http_status_code"},{"vl_field":"http.target","loki_label":"http_target"},{"vl_field":"exception.type","loki_label":"exception_type"},{"vl_field":"exception.message","loki_label":"exception_message"},{"vl_field":"instrumentation.lib","loki_label":"instrumentation_lib"},{"vl_field":"otel.span_id","loki_label":"otel_span_id"},{"vl_field":"otel.trace_id","loki_label":"otel_trace_id"},{"vl_field":"scope.name","loki_label":"scope_name"}]'
       - "-patterns-autodetect-from-queries=true"
       - "-label-values-indexed-cache=true"
       - "-server.admin-auth-token=dev-token"
@@ -301,7 +305,7 @@ services:
       start_period: 5s
 
   lvp-base:
-    image: ${PROOF_PREFIX:-lhproof}-vlproxy:latest
+    image: ${PROOF_PREFIX:-lhproof}-vlproxy:${LVP_VERSION:-pinned}
     networks: [proof-net]
     ports:
       - "127.0.0.1:${PORT_LOKI_BASE:-48451}:3100"
@@ -312,7 +316,11 @@ services:
       - "-metadata-field-mode=translated"
       - "-emit-structured-metadata=true"
       - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
-      - "-extra-label-fields=level,cloud_region"
+      # Custom attributes with a dot in their VictoriaLogs name (the fixtures write http.method and so on): the proxy maps
+      # underscore names back to dotted fields only for its built-in OTel names and for -field-mapping entries;
+      # -extra-label-fields alone only lists them on the label APIs.
+      - "-extra-label-fields=level,cloud_region,http.method,http.status_code,http.target,exception.type,exception.message,instrumentation.lib,otel.span_id,otel.trace_id,scope.name"
+      - '-field-mapping=[{"vl_field":"http.method","loki_label":"http_method"},{"vl_field":"http.status_code","loki_label":"http_status_code"},{"vl_field":"http.target","loki_label":"http_target"},{"vl_field":"exception.type","loki_label":"exception_type"},{"vl_field":"exception.message","loki_label":"exception_message"},{"vl_field":"instrumentation.lib","loki_label":"instrumentation_lib"},{"vl_field":"otel.span_id","loki_label":"otel_span_id"},{"vl_field":"otel.trace_id","loki_label":"otel_trace_id"},{"vl_field":"scope.name","loki_label":"scope_name"}]'
       - "-patterns-autodetect-from-queries=true"
       - "-label-values-indexed-cache=true"
       - "-server.admin-auth-token=dev-token"
@@ -324,7 +332,7 @@ services:
       start_period: 5s
 
   lvp-pr:
-    image: ${PROOF_PREFIX:-lhproof}-vlproxy:latest
+    image: ${PROOF_PREFIX:-lhproof}-vlproxy:${LVP_VERSION:-pinned}
     networks: [proof-net]
     ports:
       - "127.0.0.1:${PORT_LOKI_PR:-48452}:3100"
@@ -335,7 +343,11 @@ services:
       - "-metadata-field-mode=translated"
       - "-emit-structured-metadata=true"
       - "-stream-fields=service_name,k8s_namespace_name,k8s_pod_name,k8s_deployment_name,deployment_environment"
-      - "-extra-label-fields=level,cloud_region"
+      # Custom attributes with a dot in their VictoriaLogs name (the fixtures write http.method and so on): the proxy maps
+      # underscore names back to dotted fields only for its built-in OTel names and for -field-mapping entries;
+      # -extra-label-fields alone only lists them on the label APIs.
+      - "-extra-label-fields=level,cloud_region,http.method,http.status_code,http.target,exception.type,exception.message,instrumentation.lib,otel.span_id,otel.trace_id,scope.name"
+      - '-field-mapping=[{"vl_field":"http.method","loki_label":"http_method"},{"vl_field":"http.status_code","loki_label":"http_status_code"},{"vl_field":"http.target","loki_label":"http_target"},{"vl_field":"exception.type","loki_label":"exception_type"},{"vl_field":"exception.message","loki_label":"exception_message"},{"vl_field":"instrumentation.lib","loki_label":"instrumentation_lib"},{"vl_field":"otel.span_id","loki_label":"otel_span_id"},{"vl_field":"otel.trace_id","loki_label":"otel_trace_id"},{"vl_field":"scope.name","loki_label":"scope_name"}]'
       - "-patterns-autodetect-from-queries=true"
       - "-label-values-indexed-cache=true"
       - "-server.admin-auth-token=dev-token"

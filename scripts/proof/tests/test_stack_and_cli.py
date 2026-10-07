@@ -147,19 +147,37 @@ def test_ports_come_from_the_project_or_an_explicit_base():
     default = stack.make_ports("lhproof", {})
     assert default["ref-logs"] == 48428 and default["grafana"] == 48300
     other = stack.make_ports("lhproofb", {})
-    assert set(other.values()).isdisjoint(default.values()) and all(20000 <= p < 60500 for p in other.values())
+    assert set(other.values()).isdisjoint(default.values()) and all(24000 <= p < stack.EPHEMERAL_FLOOR for p in other.values())
     assert other == stack.make_ports("lhproofb", {})  # derived, so the same on every run
     assert stack.make_ports("lhproofc", {}) != other and stack.make_ports("another", {}) != other  # and different per project
     assert stack.make_ports("whatever", {"PROOF_PORT_BASE": "30000"})["ref-logs"] == 30428
     assert len(set(default.values())) == len(default)
 
 
-def test_images_are_scoped_to_the_project_and_nothing_else_is_removed():
+def test_images_are_derived_from_the_compose_file_and_scoped_to_the_project():
     tags = stack.image_tags("lhproofb")
     assert tags and all(t.startswith("lhproofb-") for t in tags)
     assert set(tags).isdisjoint(stack.image_tags("lhproof"))
     for shared in ("grafana/grafana", "rustfs", "jaegertracing", "nginx", "ghcr.io", "victoriametrics"):
         assert not any(shared in t for t in tags)
+    # every image the compose file names with the project prefix, none invented, the proxy by its pinned release
+    v = stack.lvp_version()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", v)
+    assert {t.split(":")[0].split("-", 1)[1] + ":" + t.split(":")[1] for t in tags} == {
+        "logs:base", "logs:pr", "traces:base", "traces:pr", "grafana:1", "vl:v1.53.0", "vt:v0.12.0", "datagen:1", f"vlproxy:{v}"}
+    assert not any(t.endswith(":latest") for t in tags)
+    assert stack.compose_env()["LVP_VERSION"] == v
+
+
+def test_the_proxy_pin_is_stated_once():
+    text = read_text(stack.COMPOSE)
+    assert "2." not in re.sub(r"\$\{[^}]*\}", "", "".join(re.findall(r"-vlproxy:\S+", text)))  # no version literal in the compose file
+    import glob
+    here = os.path.dirname(stack.COMPOSE)
+    pins = [f for f in glob.glob(os.path.join(here, "*")) + glob.glob(os.path.join(os.path.dirname(stack.__file__), "*.py"))
+            if os.path.isfile(f) and re.search(r"loki-vl-proxy[^\n]*\bv?2\.\d+\.\d+", read_text(f)) and not f.endswith("Dockerfile.loki-vl-proxy")
+            and "compose-e2e" not in f and "benchmark" not in f]
+    assert pins == [], pins
 
 
 def test_compose_publishes_every_port_and_names_every_built_image_through_variables():
@@ -201,3 +219,32 @@ def test_the_keyorder_post_carries_the_content_type_that_makes_victorialogs_inge
     h = {k.lower(): v for k, v in req.header_items()}
     assert h["content-type"] == "application/stream+json" and h["accountid"] == "7" and req.get_method() == "POST"
     assert "_stream_fields=app,env" in req.full_url and req.data.count(b"\n") == 120
+
+
+def test_derived_port_blocks_avoid_every_reserved_port_and_the_ephemeral_range():
+    bases = stack.allowed_bases()
+    assert bases and len(bases) > 100
+    span = max(stack.PORT_OFFSETS.values())
+    for b in bases:
+        ports = range(b, b + span + 1)
+        assert max(ports) < stack.EPHEMERAL_FLOOR == 49152
+        for owned in (29428, 29000, 33002, 34100, 39580, 47000, 47500, 48000, 48452, 20428, 23100):
+            assert owned not in ports, (b, owned)
+    # 5000 project names: none lands on a reserved port or at / above 49152
+    for i in range(5000):
+        ports = stack.make_ports(f"proof-{i}", {}).values()
+        assert max(ports) < 49152 and not any(lo <= p <= hi for p in ports for lo, hi in stack.RESERVED_PORTS)
+    assert stack.make_ports("lhproof", {})["ref-logs"] == 48428  # the default project keeps its own block
+
+
+def test_busy_ports_finds_a_listening_port_and_nothing_else():
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+    taken = s.getsockname()[1]
+    try:
+        assert stack.busy_ports([taken]) == [taken]
+    finally:
+        s.close()
+    assert stack.busy_ports([taken]) == []

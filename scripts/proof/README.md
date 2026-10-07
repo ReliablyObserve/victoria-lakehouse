@@ -123,9 +123,10 @@ An isolated compose project (`PROOF_PROJECT`, default `lhproof`), loopback ports
 VictoriaTraces (the reference), Lakehouse built from main (`base`) and from the PR (`pr`) for both signals, one RustFS,
 Grafana with a datasource per side (VictoriaLogs, Jaeger, Loki through loki-vl-proxy), the Jaeger UI per side and
 loki-vl-proxy per side. Nothing is shared between two stacks: every image carries the project name
-(`<project>-logs:base`, `<project>-grafana:1`, ...) and `down` removes exactly those tags and no others; every published
+(`<project>-logs:base`, `<project>-grafana:1`, `<project>-vlproxy:<pinned release>`, ...; read from the compose file) and `down` removes exactly those tags and no others; every published
 port is a `PORT_*` variable computed from the project (`lhproof` uses 48000..48452, any other project a block derived
-from its name, or `PROOF_PORT_BASE`). Hot VictoriaLogs/VictoriaTraces, loki-vl-proxy (the release pinned in
+from its name that stays clear of the ports other stacks of this host use and below 49152, or `PROOF_PORT_BASE`; `up` refuses ports that
+are already taken). Hot VictoriaLogs/VictoriaTraces, loki-vl-proxy (the release pinned in
 `Dockerfile.loki-vl-proxy`, bumped by the daily loki-vl-proxy workflow) and Grafana carry a build recipe in the compose
 file, so a machine with none of the images builds them: `stack.py build` is all it takes.
 
@@ -139,10 +140,12 @@ python3 scripts/proof/stack.py down               # compose down -v and this pro
 
 The windows are absolute and hour aligned (`OUT/state.json`): cold `[H-4h, H)`, buffer `[H, H+1h)`. Tenants: `0:0` and
 `1001:0`, the latter also reached as the alias `acme-corp` (sent to Lakehouse as `X-Scope-OrgID` and to hot as
-`AccountID: 1001`, because upstream has no aliases), and tenant `7:0`, a logs-only fixture for the order of the JSON
-members of a row (#429, #432, #452): three streams in one window, rows of different streams sharing a second, one
-column that is the same in a whole stream, one that varies, one that is sparse, and input names that are not in
-alphabetical order. `hold` records the unflushed rows of the buffer window per Lakehouse (`buffered`, once two reads in a
+`AccountID: 1001`, because upstream has no aliases), and tenant `7:0`, a logs-only fixture for ties and for several streams in one window
+(#429 / #432): three streams, rows of different streams sharing a second, one column that is the same in a whole stream,
+one that varies, one that is sparse, and input names that are not in alphabetical order. Over HTTP both hot and Lakehouse
+write the JSON members of a row alphabetically, so the order of a block's columns (#452) is not visible in `/select/logsql/query`
+and the `key_order` facet is exact on main; the fixture exercises the row sets and the tie cuts, and the `ko.pack_json`
+rows read the one surface that exposes column order (`pack_json` packs a row in block order). `hold` records the unflushed rows of the buffer window per Lakehouse (`buffered`, once two reads in a
 row agree) and a trace of tenant 0:0 whose spans carry events and links (`trace_id`).
 
 ### API runner (`runner/`)
@@ -158,8 +161,7 @@ the three targets are called in the order ref, base, PR, and the answers are wri
 with the envelope fields of the contract above: status, raw body, latency, transport error kind, tenant
 form, layer and, for the buffer layer, `buffer_unflushed_rows`. The metrics library scores them. Before any
 comparison the row count of every tenant form and layer must be equal on ref, base and PR; otherwise the run
-exits 2 (it did not complete). "Equal" means: counts that stay put (rows reach Lakehouse's buffer late, trace-index rows
-included: the run first waits until every count of `*` is the same on two reads), the same count of span rows (logs: of
+exits 2 (it did not complete). "Equal" means: counts that stay put (rows reach the stores late, hot VictoriaTraces' trace-index rows 20-40 s after ingest: the run first waits until every count of `*` has not moved for 45 s), the same count of span rows (logs: of
 all rows), the same hash of the row identities, for every tenant form (numeric, numeric1001, alias, and the key-order
 tenant) and every layer (cold, buffer, all); zero rows on all three is an error, because every window is seeded. A request
 that is neither `exact` nor `same` is sampled twice more (requests already `fixed` or `improved` are re-sampled for free);
@@ -230,3 +232,11 @@ workflow token).
 `visual/vio.py` and `tests/test_visual_publish.py` are copied from loki-vl-proxy `bench/visual` (`429f15b9`);
 `visual/publish.py` too, with two changes (the token reaches git through `GIT_CONFIG_*` environment variables, and only PNG files are accepted); `visual/montage.py` and `visual/compare.py` and `tests/playwright/proof/capture.spec.ts`
 are adapted from it. Each file names its source in its header.
+
+### Dotted custom fields through loki-vl-proxy
+
+The proxy maps an underscore name back to a dotted VictoriaLogs field only for its built-in OTel names and for `-field-mapping`
+entries; `-extra-label-fields` alone only lists the field on the label APIs. The proof proxies therefore carry a `-field-mapping`
+entry for each dotted attribute the fixtures write (`http.method`, `http.status_code`, `http.target`, `exception.type`,
+`exception.message`, `instrumentation.lib`, `otel.span_id`, `otel.trace_id`, `scope.name`). A new fixture field with a dot needs one too, or a Loki
+page (Logs Drilldown) answers nothing for it on every side, the reference included.

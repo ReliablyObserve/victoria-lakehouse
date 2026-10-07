@@ -18,14 +18,16 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
+import socket
 import subprocess
 import time
 import urllib.request
 import zlib
 try:
-    from .jsonio import dump_json, load_json
+    from .jsonio import dump_json, load_json, read_text
 except ImportError:  # run as a script: python3 scripts/proof/stack.py
-    from jsonio import dump_json, load_json  # type: ignore[no-redef]
+    from jsonio import dump_json, load_json, read_text  # type: ignore[no-redef]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMPOSE = os.path.join(HERE, "..", "..", "deployment", "docker", "docker-compose-proof.yml")
@@ -37,10 +39,20 @@ DATAGEN = f"{PROJECT}-datagen:1"
 BUILT_BY_COMPOSE = ("vl-ref", "vt-ref", "lvp-ref", "grafana")
 
 
+def lvp_version() -> str:
+    """The loki-vl-proxy release pinned in Dockerfile.loki-vl-proxy (the one pin; the daily bump workflow edits it)."""
+    text = read_text(os.path.join(os.path.dirname(COMPOSE), "Dockerfile.loki-vl-proxy"))
+    return re.search(r"^ARG VERSION=(\S+)", text, re.M).group(1)
+
+
 def image_tags(project: str = PROJECT) -> list[str]:
-    """The images this stack builds, by exact tag: the only ones `down` removes."""
-    return [f"{project}-{n}" for n in ("logs:base", "traces:base", "logs:pr", "traces:pr", "datagen:1", "grafana:1",
-                                       "vlproxy:latest", "vl:v1.53.0", "vt:v0.12.0")]
+    """The images this stack builds, by exact tag: the only ones `down` removes. Read from the compose file (every image
+    named `${PROOF_PREFIX:-lhproof}-<name>:<tag>`), plus the datagen image stack.py builds itself; the proxy's tag is the
+    release the Dockerfile pins, so a run records which proxy produced it."""
+    text = read_text(COMPOSE).replace("${LVP_VERSION:-pinned}", lvp_version())
+    tags = {f"{project}-{n}:{t}" for n, t in re.findall(r"\$\{PROOF_PREFIX:-lhproof\}-([a-z-]+):([^\s}]+)", text)}
+    tags.add(f"{project}-datagen:1")
+    return sorted(tags)
 
 
 IMAGES = image_tags()
@@ -51,14 +63,43 @@ PORT_OFFSETS = {"ref-logs": 428, "ref-traces": 429, "base-logs": 430, "base-trac
                 "loki-ref": 450, "loki-base": 451, "loki-pr": 452}
 
 
+# Ports other stacks of this host use (the owner's e2e and review stacks 29xxx, e2e Lakehouse/proxy 20xxx-23xxx, loki-vl-proxy's
+# 33xxx/34xxx, the shared benchmark and `lhmain` stacks 39xxx/47xxx, the default proof stack 48xxx). Derived bases stay out of
+# them and below 49152, where the operating system hands out ephemeral ports.
+RESERVED_PORTS = ((20000, 23999), (29000, 29999), (33000, 34999), (39000, 39999), (47000, 48999))
+EPHEMERAL_FLOOR = 49152
+DEFAULT_PROJECT_BASE = 48000
+
+
+def allowed_bases(reserved=RESERVED_PORTS, floor=EPHEMERAL_FLOOR) -> list[int]:
+    """Port bases (multiples of 100) whose whole block [base, base + largest offset] is free of reserved ranges and ephemeral ports."""
+    span = max(PORT_OFFSETS.values())
+    return [b for b in range(24000, floor, 100)
+            if b + span < floor and not any(b <= hi and b + span >= lo for lo, hi in reserved)]
+
+
 def port_base(project: str = PROJECT, env=None) -> int:
-    """PROOF_PORT_BASE, else 48000 for the default project and a project-derived block (20000-59900) for any other."""
+    """PROOF_PORT_BASE, else 48000 for the default project and a base derived from the project name for any other."""
     env = os.environ if env is None else env
     if env.get("PROOF_PORT_BASE"):
         return int(env["PROOF_PORT_BASE"])
     if project == "lhproof":
-        return 48000
-    return 20000 + (zlib.crc32(project.encode()) % 400) * 100
+        return DEFAULT_PROJECT_BASE
+    bases = allowed_bases()
+    return bases[zlib.crc32(project.encode()) % len(bases)]
+
+
+def busy_ports(ports, host: str = "127.0.0.1") -> list[int]:
+    """The ports of `ports` something already listens on (or that cannot be bound)."""
+    busy = []
+    for p in sorted(ports):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, p))
+            except OSError:
+                busy.append(p)
+    return busy
 
 
 def make_ports(project: str = PROJECT, env=None) -> dict:
@@ -71,7 +112,7 @@ PORTS = make_ports()
 
 def compose_env() -> dict:
     """Variables the compose file reads: the image prefix and one host port per published service."""
-    env = {"PROOF_PREFIX": PROJECT}
+    env = {"PROOF_PREFIX": PROJECT, "LVP_VERSION": lvp_version()}
     for k, v in PORTS.items():
         env["PORT_" + k.upper().replace("-", "_")] = str(v)
     return env
@@ -229,6 +270,11 @@ def cmd_build(a):  # pragma: no cover - drives docker compose
 
 
 def cmd_up(_a):  # pragma: no cover - drives docker compose
+    running = subprocess.run(["docker", "compose", "-p", PROJECT, "-f", COMPOSE, "ps", "-q"], capture_output=True, text=True,
+                             env=dict(os.environ, **compose_env())).stdout.strip()
+    busy = [] if running else busy_ports(PORTS.values())  # a stack of this project that is already up owns its ports
+    if busy:
+        raise SystemExit(f"ports already in use on 127.0.0.1: {busy}; set PROOF_PORT_BASE or another PROOF_PROJECT")
     compose("up", "-d", "--wait", "--wait-timeout", "240")
 
 

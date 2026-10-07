@@ -431,6 +431,23 @@
     - scripts/proof/tests/test_key_order.py#test_limited_lists_compare_size_and_membership_not_which_values
     - scripts/proof/tests/test_key_order.py#test_evaluate_body_scores_limit_arbitrary_rows_with_the_universe
     - scripts/proof/tests/test_key_order.py#test_rows_with_one_identity_pair_by_occurrence_with_their_own_key_order
+    - scripts/proof/tests/test_runner.py#test_wait_stable_outlasts_the_trace_index_delay_and_fails_on_a_count_that_keeps_moving
+    - scripts/proof/tests/test_runner.py#test_an_incomplete_run_says_why_on_stderr
+    - scripts/proof/tests/test_runner.py#test_the_keyorder_tenant_is_account_7_on_every_target
+    - scripts/proof/tests/test_runner.py#test_a_4xx_on_only_some_targets_is_a_real_difference_not_a_harness_error
+    - scripts/proof/tests/test_runner.py#test_a_target_whose_rows_cannot_be_hashed_fails_the_seed_check
+    - scripts/proof/tests/test_runner.py#test_the_row_hash_ignores_response_order_and_key_order
+    - scripts/proof/tests/test_runner.py#test_the_resample_skip_is_reported_in_the_json_report_and_the_comment_and_splits_rows
+    - scripts/proof/tests/test_runner.py#test_rows_that_cannot_be_read_on_any_target_fail_the_seed_check
+    - scripts/proof/tests/test_runner.py#test_two_forms_of_one_row_stay_two_table_rows_when_only_one_was_left_unconfirmed
+    - scripts/proof/tests/test_stack_and_cli.py#test_images_are_derived_from_the_compose_file_and_scoped_to_the_project
+    - scripts/proof/tests/test_stack_and_cli.py#test_the_proxy_pin_is_stated_once
+    - scripts/proof/tests/test_stack_and_cli.py#test_derived_port_blocks_avoid_every_reserved_port_and_the_ephemeral_range
+    - scripts/proof/tests/test_stack_and_cli.py#test_busy_ports_finds_a_listening_port_and_nothing_else
+    - scripts/proof/tests/test_visual.py#test_a_known_issue_that_answered_200_is_a_request_like_any_other
+    - scripts/proof/tests/test_visual.py#test_the_dom_warning_names_the_panels_and_does_not_blame_the_dom
+    - scripts/proof/tests/test_key_order.py#test_rows_sharing_an_identity_pair_equal_rows_first_so_a_reordering_is_not_a_value_difference
+    - scripts/proof/tests/test_key_order.py#test_limited_lists_past_the_limit_must_carry_zeroed_hits_like_the_reference
     - tests/parity/rows_ties_golden_test.go#TestTieCutGoldenQueries
     - tests/parity/rows_ties_golden_test.go#TestTieCutGoldenDecisions
   docs:

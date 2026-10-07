@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Proof tooling follow-ups: steadier seeds, safer ports, the proxy pinned once.** Tooling only, no runtime change (`scripts/proof/`, `deployment/docker/docker-compose-proof.yml`, `deployment/docker/Dockerfile.loki-vl-proxy`): the runner waits 45 s for steady counts (hot VictoriaTraces writes its trace-index rows 20-40 s after ingest), rows that share an identity pair equal rows first, a list cut at a limit must carry zeroed hits like the reference, derived port blocks keep clear of the ports other stacks use and below 49152 and are checked free before `up`, image tags are read from the compose file with the proxy tagged by its pinned release (loki-vl-proxy v2.6.0), and the proof proxies map the fixtures' dotted fields (`http.method`, `exception.type`, ...) with `-field-mapping`.
+
 - **The parity restart cell no longer races the periodic flush.** Tooling only, no runtime change. The third batch of the
   all-column sort case is now written into a fresh segment right after a flush has completed and the pod is restarted at
   once; the cell waits for the object the restarted pod flushes from its recovered segment, and repeats with a new batch

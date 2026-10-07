@@ -386,19 +386,43 @@ def test_seed_equality_compares_rows_not_only_counts_and_rejects_zero_everywhere
     assert "no rows at all" in str(e.value)
 
 
-def test_wait_stable_waits_for_late_rows_and_fails_on_a_count_that_keeps_moving(monkeypatch):
-    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
-    reads = iter([{"a": 189}, {"a": 242}, {"a": 242}])
-    monkeypatch.setattr(runner, "snapshot", lambda *a, **k: next(reads))
+class Clock:
+    """A fake clock: sleep advances it, so a 45 s steadiness window takes no time."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def time(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def test_wait_stable_outlasts_the_trace_index_delay_and_fails_on_a_count_that_keeps_moving(monkeypatch):
+    clk = Clock()
+    monkeypatch.setattr(runner.time, "sleep", clk.sleep)
+    monkeypatch.setattr(runner.time, "time", clk.time)
+    # steady for 9 s, then the index rows land (+20): a 3 s / two-reads check would have returned at 134
+    def snap(*a, **k):
+        return {"a": 134 if clk.t - 1000 < 12 else 154}
+    monkeypatch.setattr(runner, "snapshot", snap)
     runner.wait_stable({})
-    n = iter(range(100))
+    assert clk.t - 1000 >= 12 + 45  # the clock ran past the jump by the whole steadiness window
+    clk.t = 1000.0
+    n = iter(range(1000))
     monkeypatch.setattr(runner, "snapshot", lambda *a, **k: {"a": next(n)})
     with pytest.raises(SystemExit) as e:
-        runner.wait_stable({}, timeout=-1)
-    assert e.value.code == 2 and "still moving" in str(e.value)
+        runner.wait_stable({}, timeout=30)
+    assert e.value.code == 2 and "not steady" in str(e.value)
+    clk.t = 1000.0
     monkeypatch.setattr(runner, "snapshot", lambda *a, **k: {"a": None})
     with pytest.raises(SystemExit):
-        runner.wait_stable({}, timeout=-1)
+        runner.wait_stable({}, timeout=30)  # an unreadable count is never steady
+    clk.t = 1000.0
+    monkeypatch.setattr(runner, "snapshot", lambda *a, **k: {"a": 5})
+    runner.wait_stable({}, stable_for=6, step=3)
+    assert clk.t - 1000 == 6  # the first read starts the window; it returns at the first read 6 s later
 
 
 def test_snapshot_counts_all_rows_and_span_rows_for_traces():
@@ -550,3 +574,97 @@ def test_the_keyorder_form_joins_the_seed_check_when_the_state_has_the_fixture(t
     finally:
         stop(srvs)
     assert seen == [runner.SEED_FORMS + ("keyorder",)]
+
+
+# ---- behaviours a second mutation run showed unpinned ----
+
+def test_an_incomplete_run_says_why_on_stderr(capsys):
+    with pytest.raises(SystemExit) as e:
+        raise runner.Incomplete("seed equality failed for x")
+    assert e.value.code == 2 and "seed equality failed for x" in capsys.readouterr().err
+
+
+def test_the_keyorder_tenant_is_account_7_on_every_target():
+    for target in ("ref", "base", "pr"):
+        assert R.tenant_headers("keyorder", target) == {"AccountID": "7", "ProjectID": "0"}
+
+
+def test_a_4xx_on_only_some_targets_is_a_real_difference_not_a_harness_error():
+    from scripts.proof.metrics.cases import evaluate_case
+    meta = {"id": "x", "row": "x", "surface": "vl-native", "kind": "values", "may_be_empty": True}
+    ok = {"status": 200, "body": json.dumps({"values": [{"value": "a", "hits": 1}]}), "latency_ms": 1}
+    bad = {"status": 400, "body": "bad", "latency_ms": 1}
+    for answers in ({"ref": ok, "base": bad, "pr": ok}, {"ref": ok, "base": ok, "pr": bad}, {"ref": bad, "base": ok, "pr": ok}):
+        assert evaluate_case(meta, answers).verdict != "harness-error"
+
+
+def test_a_target_whose_rows_cannot_be_hashed_fails_the_seed_check():
+    srvs = three(lambda key: 3)
+    srvs["pr"].shutdown()
+    srvs["pr"].server_close()
+    srvs["pr"] = serve({"/select/logsql/query": (200, lambda body, h: '{"c":"3"}' if "stats" in body else "not json at all")})
+    try:
+        with pytest.raises(SystemExit) as e:
+            runner.seed_equality(state_for(srvs), forms=("numeric",), layers=("cold",))
+    finally:
+        stop(srvs)
+    assert "different rows" in str(e.value)
+
+
+def test_the_row_hash_ignores_response_order_and_key_order():
+    def rows_server(lines):
+        return serve({"/select/logsql/query": (200, lambda body, h: '{"c":"2"}' if "stats" in body else "\n".join(lines))})
+    a = rows_server(['{"_time":"t1","_msg":"a"}', '{"_time":"t2","_msg":"b"}'])
+    b = rows_server(['{"_msg":"b","_time":"t2"}', '{"_msg":"a","_time":"t1"}'])  # the same rows: reordered, keys reordered
+    c = rows_server(['{"_time":"t1","_msg":"a"}', '{"_time":"t2","_msg":"c"}'])
+    try:
+        st = state_for({"ref": a, "base": b, "pr": c})
+        h = {t: runner.content_hash(st, t, "logs", "numeric", "cold") for t in ("ref", "base", "pr")}
+    finally:
+        stop({"a": a, "b": b, "c": c})
+    assert h["ref"] == h["base"] and h["ref"] != h["pr"]
+
+
+def test_the_resample_skip_is_reported_in_the_json_report_and_the_comment_and_splits_rows():
+    from scripts.proof import comment
+    srvs = targets(base_values=VALUES["values"], pr_values=[{"value": "GET", "hits": 5}])
+    rows = [{**FV_ROW, "id": "r1"}, {**FV_ROW, "id": "r2"}]
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            runner.run(state_for(srvs), rows, d, allowance=1)  # the second regressed request finds the allowance used up
+        finally:
+            stop(srvs)
+        items = run_dir(os.path.join(d, "cases"))
+        write_reports(d, items, STATE, {"x": {"counts": {"ref": 1}}})
+        rep = load_json(os.path.join(d, "report.json"))
+    assert sorted(r["resample_skipped"] for r in rep["results"]) == [False, True]
+    lines, _ = comment.api_section(rep, "PR", {"r": "x"})
+    text = "\n".join(lines)
+    assert text.count("unconfirmed: re-sample allowance used up") == 1
+    # two rows that differ only in that flag are two table rows, not one merged row
+    first_table = lines[:lines.index("#### Remaining differences from the reference")]
+    assert len([l for l in first_table if l.startswith("| `r1`") or l.startswith("| `r2`")]) == 2
+
+
+def test_rows_that_cannot_be_read_on_any_target_fail_the_seed_check():
+    broken = lambda: serve({"/select/logsql/query": (200, lambda body, h: '{"c":"3"}' if "stats" in body else "not json")})  # noqa: E731
+    srvs = {"ref": broken(), "base": broken(), "pr": broken()}
+    try:
+        with pytest.raises(SystemExit) as e:
+            runner.seed_equality(state_for(srvs), forms=("numeric",), layers=("cold",))
+    finally:
+        stop(srvs)
+    assert "different rows" in str(e.value)  # three unreadable answers are not three equal ones
+
+
+def test_two_forms_of_one_row_stay_two_table_rows_when_only_one_was_left_unconfirmed():
+    from scripts.proof import comment
+    def res(form, skipped):
+        return {"id": f"vl-native/same.row.{form}.cold", "row": "same.row", "surface": "vl-native", "signal": "logs", "form": form, "layer": "cold",
+                "verdict": "regressed", "base_score": 100.0, "pr_score": 50.0, "base_facets": {"x": 100.0}, "pr_facets": {"x": 50.0},
+                "pr_notes": [], "resample_skipped": skipped}
+    lines, _ = comment.api_section({"results": [res("numeric", False), res("alias", True)], "seed_equality": {}}, "PR", {"same.row": "r"})
+    table = lines[: lines.index("#### Remaining differences from the reference")]
+    rows = [l for l in table if l.startswith("| `same.row`")]
+    assert len(rows) == 2 and sum("unconfirmed" in l for l in rows) == 1

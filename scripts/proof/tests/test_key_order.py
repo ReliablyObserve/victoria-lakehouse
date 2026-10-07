@@ -79,3 +79,37 @@ def test_rows_with_one_identity_pair_by_occurrence_with_their_own_key_order():
     assert both.facets["key_order"] == 100.0 and both.details["key_order"]["paired_rows"] == 2
     crossed = key_order_agreement([r1, r2], [dict(r2), dict(r1)], ident)
     assert crossed.facets["key_order"] == 0.0
+
+
+# ---- rows that share an identity are paired by content first ----
+
+def test_rows_sharing_an_identity_pair_equal_rows_first_so_a_reordering_is_not_a_value_difference():
+    from scripts.proof.metrics.rows import _pair_group, _pair_value_equality, evaluate_rows
+    ident = ("_time",)
+    a = {"_time": "t", "hits": "1"}
+    b = {"_time": "t", "hits": "9"}
+    ref, ans = [a, b], [dict(b), dict(a)]  # the same two rows, in the other order
+    pairs = _pair_group(ref, ans)
+    assert len(pairs) == 2 and all(x == y for x, y in pairs)
+    eq, n, paired = _pair_value_equality(ref, ans, ident)
+    assert paired == 2 and eq["hits"] == n["hits"] == 2
+    res = evaluate_rows(ref, ans, identity=ident)
+    assert res.facets["value_equality"] == 100.0
+    # a row that really differs still pairs with its counterpart and is counted
+    ref2, ans2 = [a, b], [dict(b), {"_time": "t", "hits": "5"}]
+    eq2, n2, _ = _pair_value_equality(ref2, ans2, ident)
+    assert n2["hits"] == 2 and eq2["hits"] == 1
+    # extra rows on one side stay unpaired
+    assert len(_pair_group([a], [dict(a), dict(b)])) == 1
+
+
+def test_limited_lists_past_the_limit_must_carry_zeroed_hits_like_the_reference():
+    from scripts.proof.metrics.values import evaluate_limited
+    universe = ["a", "b", "c", "d"]
+    zeroed = evaluate_limited({"a": 0, "b": 0}, {"c": 0, "d": 0}, universe)
+    assert zeroed.exact and zeroed.facets["hits_zeroed"] == 100.0
+    counted = evaluate_limited({"a": 0, "b": 0}, {"c": 7, "d": 0}, universe)
+    assert counted.facets["hits_zeroed"] == 50.0 and counted.details["hits_zeroed"]["not_zero"] == ["c"]
+    # not cut, or a reference that carries counts: no such contract
+    assert "hits_zeroed" not in evaluate_limited({"a": 3, "b": 4}, {"c": 1, "d": 2}, universe).facets
+    assert "hits_zeroed" not in evaluate_limited({"a": 0, "b": 0}, {"a": 5, "b": 6}, ["a", "b"]).facets

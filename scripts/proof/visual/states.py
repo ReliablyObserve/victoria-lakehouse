@@ -113,7 +113,8 @@ def panel_state(capture: dict) -> dict:
     if m["state"] == ERROR:
         return {"state": ERROR, "kind": m["kind"], "warning": "", "errors": m.get("detail", []), "known": d["known"]}
     if d["state"] == DATA and m["state"] == EMPTY:
-        warning = "the DOM shows 'No data' where responses carry rows"
+        titles = ", ".join(sorted(set(m.get("detail") or []))[:4]) or "a panel"
+        warning = f"{titles} show(s) No data while other responses of the page carry rows"
     return {"state": d["state"], "kind": "", "warning": warning, "errors": [], "known": d["known"],
             "no_data_panels": m.get("detail", []) if m["state"] == EMPTY else []}
 
