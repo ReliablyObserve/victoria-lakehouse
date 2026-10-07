@@ -112,7 +112,30 @@ func readRowGroupColumnar(
 		}
 	}
 
+	// Composite columns (span events and links, one JSON array per span) expand
+	// into the VictoriaTraces fields they encode, instead of surfacing as a
+	// field of their own.
+	var composite *compositeColumns
+
 	for name, li := range leafMap {
+		if schema.IsCompositeColumn(name) {
+			if len(li.indices) != 1 {
+				continue
+			}
+			jsonVals := readScalarColumnFormatted(chunks[li.indices[0]], numRows, rowMask, passCount, name, reg)
+			if jsonVals == nil {
+				continue
+			}
+			if composite == nil {
+				composite = newCompositeColumns(passCount)
+			}
+			for i, v := range jsonVals {
+				if v != "" {
+					composite.add(name, i, v)
+				}
+			}
+			continue
+		}
 		if len(li.indices) == 1 {
 			// Scalar column. queryFieldName is the shared rule with the
 			// row-oriented path (projectedFieldsToDataBlock): it drops
@@ -164,6 +187,10 @@ func readRowGroupColumnar(
 				blockCols = append(blockCols, mapCols...)
 			}
 		}
+	}
+
+	if composite != nil {
+		blockCols = append(blockCols, composite.blockColumns()...)
 	}
 
 	if len(blockCols) == 0 {

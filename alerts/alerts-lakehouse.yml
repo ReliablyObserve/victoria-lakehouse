@@ -103,6 +103,14 @@ groups:
           summary: "A file key was found tracked twice ({{ $labels.site }})"
           description: "An invariant check dropped or refused a duplicate file entry; without it the file's rows would have been served or merged twice. This is a defect: collect the log line 'key tracked twice' and report it."
 
+      - alert: LakehouseCompactionSkippedUnknownColumns
+        expr: increase(lakehouse_compaction_skipped_unknown_columns_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Compaction or the delete rewriter left objects alone because they hold columns this version does not know ({{ $labels.signal }}, {{ $labels.op }})"
+          description: "A pod is running an older version than the one that wrote these objects, so it refuses to merge or rewrite them (a rewrite would drop the unknown columns). They stay readable, but they are never compacted and a delete that matches them stays pending (visible in /delete/active_tasks) until a pod of the newer version handles them. Finish the version rollout; this should be 0 on a single-version fleet."
+
       - alert: LakehouseDiscoveryFailed
         expr: lakehouse_peer_ring_members == 0
         for: 10m

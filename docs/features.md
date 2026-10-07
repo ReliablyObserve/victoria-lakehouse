@@ -14,14 +14,14 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 7 | 0 | 0 | 1 | 8 |
 | Deletion | 11 | 0 | 0 | 0 | 11 |
-| Traces | 10 | 0 | 0 | 3 | 13 |
+| Traces | 11 | 0 | 0 | 3 | 14 |
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
 | Ops | 14 | 0 | 1 | 0 | 15 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **148** | **1** | **2** | **8** | **159** |
+| **Total** | **149** | **1** | **2** | **8** | **160** |
 
 ## Coverage gaps
 
@@ -1085,7 +1085,7 @@ Compliance needs proof, not a promise. Normal verification re-runs the predicate
 - Verification: rows: `lh.delete.verify.status` (pass, pending) · tests: `internal/delete/handler_test.go#TestHandler_handleVerify_WithMatchingTombstone`, `internal/delete/handler_test.go#TestHandler_handleVerify_PartialCoverage`, `internal/delete/scheduler_test.go#TestSchedulerVerify`, `tests/e2e/delete_test.go#TestDelete_Verify`
 - Docs: `docs/deletion-strategy.md`
 
-## Traces (13)
+## Traces (14)
 
 ### 📝 Pre-aggregated trace dependencies
 
@@ -1141,6 +1141,17 @@ The Jaeger Dependencies view already works from cold storage; the Tempo plugin's
 
 - Verification: none linked yet
 - Docs: `docs/parity-and-gaps.md`
+
+### ✅ Span events, links and scope attributes on cold storage
+
+`lh.feature.traces.span_events_links` · status: shipped · surfaces: api, storage
+
+**Span events, links and scope attributes survive the flush**: exception events with their stack traces, span links and instrumentation-scope attributes are stored with the span and returned from Parquet exactly as hot VictoriaTraces returns them, by Jaeger, Tempo and LogsQL.
+
+VictoriaTraces keeps a span's events, links and instrumentation-scope attributes and serves them from trace-by-ID and from the `event:*`, `link:*` and `scope_attr:*` fields. The Parquet row stores events and links as two optional JSON string columns (`span.events_json`, `span.links_json`, ZSTD, no dictionary) and the scope attributes in the `scope.attributes` map, so any engine reads them: DuckDB and pyarrow are checked in CI. The cold tier decodes them back into the VictoriaTraces fields for trace-by-ID, filters, `field_values` and the select-pod buffer bridge, and reads the two columns only for queries that name an event or link field.
+
+- Verification: rows: `lh.cold.trace_events_preserved_traces` (pass, pending), `lh.cold.trace_events_preserved_tempo_traces` (pass, pending), `lh.cold.trace_links_preserved_traces` (pass, pending), `lh.cold.scope_attrs_preserved_traces` (pass, pending), `lh.cold.trace_events_filter_matches_hot_traces` (pass, pending), `lh.cold.trace_events_field_values_match_hot_traces` (pass, pending), `lh.cold.instrumentation_scope_search_matches_hot_traces` (pass, pending), `lh.cold.trace_events_layers_match_hot_traces` (pass, pending), `lh.cold.span_events_links_roundtrip_property` (pass, pending), `lh.cold.jaeger_refs_follow_span_links` (pass, pending), `lh.cold.logs_scalar_after_map_field_values` (pass, pending), `lh.cold.trace_events_invalid_utf8_matches_hot_traces` (pass, pending), `lh.compaction.fence_skips_unknown_columns_logs` (pass, pending), `lh.compaction.fence_skips_unknown_columns_traces` (pass, pending), `lh.delete.fence_unknown_columns_logs` (pass, pending), `lh.delete.fence_unknown_columns_traces` (pass, pending) · tests: `internal/schema/traceextras_test.go`, `lakehouse-traces/internal/vlstorage/events_links_test.go`, `lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go`, `lakehouse-traces/internal/storage/parquets3/flush_events_links_e2e_test.go`, `internal/compaction/events_links_test.go`, `internal/delete/events_links_test.go`, `tests/parity/traces_events_links_test.go#TestParity_Traces_EventsLinksScopeAttrs`, `tests/parity/traces_events_links_layers_test.go#TestParity_Traces_EventsLinksLayers`, `tests/e2e/traces_jaeger_test.go#TestJaeger_TraceDetail_ParentRefs`, `internal/schema/traceextras_test.go#FuzzSpanSubFields`, `internal/schema/traceextras_test.go#TestSpanSubFields_PropertyRoundTripThroughParquet`, `internal/schema/column_fence_test.go`, `internal/compaction/column_fence_test.go`, `internal/delete/column_fence_test.go`, `internal/compaction/column_fence_callers_test.go`, `internal/metrics/fence_visibility_test.go`, `tests/parity/traces_events_links_layers_test.go#TestParity_Traces_EventsLinksInvalidUTF8`, `tests/parity/traces_events_links_layers_test.go#TestParity_ForwardFenceCounterStaysZero`, `internal/storage/parquets3/leaf_index_test.go`, `scripts/ci/parquet-readback/gen/main_test.go#TestGenTraces_TruthMatchesTheFileWritten`
+- Docs: `docs/open-parquet-format.md#span-events-links-and-scope-attributes`
 
 ### 📝 Derived span (RED) metrics
 

@@ -141,7 +141,13 @@ func waitSeedInParquet(budget time.Duration) error {
 // account:0 between from and to; the rows are then read from Parquet only.
 func waitLeftBuffer(t *testing.T, base, mode, account string, from, to time.Time) {
 	t.Helper()
-	sel := url.Values{"account_id": {account}, "project_id": {"0"}}
+	waitLeftBufferTenant(t, base, mode, account, "0", from, to)
+}
+
+// waitLeftBufferTenant is waitLeftBuffer for the tenant account:project.
+func waitLeftBufferTenant(t *testing.T, base, mode, account, project string, from, to time.Time) {
+	t.Helper()
+	sel := url.Values{"account_id": {account}, "project_id": {project}}
 	deadline := time.Now().Add(150 * time.Second)
 	for {
 		n, err := bufferedRows(base, mode, sel, from, to)
@@ -152,7 +158,7 @@ func waitLeftBuffer(t *testing.T, base, mode, account string, from, to time.Time
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d rows of tenant %s:0 still in the insert buffer of %s after 150s", n, account, base)
+			t.Fatalf("%d rows of tenant %s:%s still in the insert buffer of %s after 150s", n, account, project, base)
 		}
 		time.Sleep(2 * time.Second)
 	}

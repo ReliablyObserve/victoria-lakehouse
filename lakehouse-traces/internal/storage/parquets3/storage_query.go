@@ -1483,6 +1483,30 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 				continue
 			}
 
+			// A composite column (span events / links JSON) expands into the
+			// VictoriaTraces fields it encodes; it is never a field itself.
+			if schema.IsCompositeColumn(fld.name) {
+				jsonVal, _ := fld.value.(string)
+				_ = schema.ForEachSpanSubField(fld.name, jsonVal, func(name, value string) {
+					if value == "" || !emittableFieldName(name) {
+						return
+					}
+					idx := getCol(name)
+					for idx >= len(seenBitmap) {
+						seenBitmap = append(seenBitmap, false)
+					}
+					if seenBitmap[idx] {
+						return
+					}
+					seenBitmap[idx] = true
+					for len(cols[idx].values) < rowNum {
+						cols[idx].values = append(cols[idx].values, "")
+					}
+					cols[idx].values = append(cols[idx].values, value)
+				})
+				continue
+			}
+
 			// Shared naming/suppression rule with the columnar fast path
 			// (readRowGroupColumnar): bookkeeping columns and unmapped
 			// slots never surface, slots are named from the file's footer
@@ -1688,6 +1712,20 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		name := schema.TraceMessageAttributeName("scope_attr:", k)
 		buf = append(buf, field{name, v})
 	}
+	// Span events and links: the VictoriaTraces fields encoded in the two JSON
+	// columns (event:event_name:0, link:link_span_id:0, ...).
+	buf = appendSpanSubFields(buf, schema.ColSpanEventsJSON, r.EventsJSON)
+	buf = appendSpanSubFields(buf, schema.ColSpanLinksJSON, r.LinksJSON)
+	return buf
+}
+
+// appendSpanSubFields appends the fields a composite column encodes.
+func appendSpanSubFields(buf []field, col, jsonValue string) []field {
+	_ = schema.ForEachSpanSubField(col, jsonValue, func(name, value string) {
+		if value != "" {
+			buf = append(buf, field{name, value})
+		}
+	})
 	return buf
 }
 
@@ -1842,7 +1880,9 @@ func (s *Storage) projectColumns(allCols []string, requested []string) []int {
 	want := make(map[string]bool, len(requested))
 	for _, name := range requested {
 		want[name] = true
-		if m := s.registry.ResolveToParquet(name); m != nil {
+		if col, ok := schema.CompositeColumnForField(name); ok {
+			want[col] = true
+		} else if m := s.registry.ResolveToParquet(name); m != nil {
 			want[m.ParquetColumn] = true
 		}
 	}

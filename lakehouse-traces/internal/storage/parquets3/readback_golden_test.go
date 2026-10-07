@@ -445,6 +445,21 @@ func goldenTraceRows(n int) []schema.TraceRow {
 				"lib.version": fmt.Sprintf("1.2.%d", i%4),
 			},
 		}
+		// Span events on every 5th span and a link on every 11th, so the golden
+		// records how the two JSON blob columns are encoded when populated.
+		var sub schema.SpanSubFieldCollector
+		if i%5 == 0 {
+			for e := 0; e < 2; e++ {
+				sub.Add(fmt.Sprintf("event:event_time_unix_nano:%d", e), fmt.Sprintf("%d", base+int64(i)*1_000_000+int64(e)))
+				sub.Add(fmt.Sprintf("event:event_name:%d", e), "exception")
+				sub.Add(fmt.Sprintf("event:event_attr:exception.type:%d", e), "IOError")
+			}
+		}
+		if i%11 == 0 {
+			sub.Add("link:link_trace_id:0", fmt.Sprintf("%032x", i))
+			sub.Add("link:link_span_id:0", fmt.Sprintf("%016x", i))
+		}
+		sub.Apply(&rows[i])
 	}
 	return rows
 }

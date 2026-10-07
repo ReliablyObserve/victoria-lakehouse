@@ -75,7 +75,10 @@ type planner struct {
 	currentFP string
 	now       time.Time
 	held      map[string]bool
-	freeze    *freezeView
+	// fenced: some object was refused by the forward fence in this process, so
+	// the planner checks each file against it (see fenceLog).
+	fenced bool
+	freeze *freezeView
 	// seen, when set, is told how many files were kept out and why.
 	seen    func(reason string, n int)
 	counts  map[groupKey]int
@@ -84,7 +87,7 @@ type planner struct {
 
 func newPlanner(policy *LevelPolicy, currentFP string, now time.Time, held map[string]bool, freeze *LifecycleFreeze, seen func(string, int)) *planner {
 	return &planner{
-		policy: policy, currentFP: currentFP, now: now, held: held, freeze: freeze.view(), seen: seen,
+		policy: policy, currentFP: currentFP, now: now, held: held, fenced: fenceLog.Len() > 0, freeze: freeze.view(), seen: seen,
 		counts: make(map[groupKey]int), members: make(map[groupKey][]int),
 	}
 }
@@ -96,9 +99,13 @@ func (pl *planner) saw(reason string, n int) {
 }
 
 // skip reports whether a file stays out before grouping: held (a delete
-// rewrite swapped it in but has not recorded it) or in a non-rewritable class.
+// rewrite swapped it in but has not recorded it), refused by the forward fence,
+// or in a non-rewritable class.
 func (pl *planner) skip(f *manifest.FileInfo) bool {
 	if len(pl.held) > 0 && pl.held[f.Key] {
+		return true
+	}
+	if pl.fenced && fenceLog.Has(fenceKey(*f)) {
 		return true
 	}
 	return pl.freeze.classFrozen(f)
@@ -116,6 +123,9 @@ func (pl *planner) partition(partition string, files []manifest.FileInfo, pt tim
 		f := &files[i]
 		if len(pl.held) > 0 && pl.held[f.Key] {
 			continue
+		}
+		if pl.fenced && fenceLog.Has(fenceKey(*f)) {
+			continue // refused by the forward fence: never planned again
 		}
 		if pl.freeze.classFrozen(f) {
 			classFrozenN++

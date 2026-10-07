@@ -184,6 +184,7 @@ jobs:
           - internal/schema:FuzzFormatValue_Int64
           - internal/schema:FuzzFormatValue_Float64
           - internal/schema:FuzzFormatValue_TimestampNano
+          - internal/schema:FuzzSpanSubFields
           - internal/cache:FuzzLRUPutGet
           - internal/cache:FuzzLabelIndexAddGet
           - internal/cache:FuzzPersisterRoundTrip

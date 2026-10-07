@@ -591,10 +591,19 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
-          args: --build-tags e2e ./tests/ingestmatrix/... ./tests/e2e/... ./tests/conformance/...
+          args: --build-tags e2e,chaos ./tests/ingestmatrix/... ./tests/e2e/... ./tests/conformance/...
           skip-cache: true
           # tests/ has older findings (errcheck on Sscanf, gocyclo on Row.Validate); only
           # what a PR adds is held to the linters until they are cleaned up.
+          only-new-issues: true
+
+      # The parity suite and the chaos cases are behind build tags the plain run
+      # above never compiles; lint them too, with the same only-new-issues rule.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --build-tags parity,chaos ./tests/parity/...
+          skip-cache: true
           only-new-issues: true
 
   lint-traces:
@@ -626,6 +635,16 @@ jobs:
           # code (different files flagged on each run of the same tree).
           # A cold, deterministic run is worth the extra ~1min.
           skip-cache: true
+
+      # Test files behind build tags (none in this module today): linted from
+      # the day one is added, only for what a PR adds.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          working-directory: lakehouse-traces
+          args: --build-tags parity,chaos,e2e ./...
+          skip-cache: true
+          only-new-issues: true
 
   build-logs:
     needs: deps

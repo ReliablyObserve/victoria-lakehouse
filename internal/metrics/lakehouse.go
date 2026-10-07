@@ -1,5 +1,11 @@
 package metrics
 
+import (
+	"fmt"
+
+	vmmetrics "github.com/VictoriaMetrics/metrics"
+)
+
 // HTTP / RED metrics
 var (
 	HTTPRequestsTotal    = NewCounterVec("lakehouse_http_requests_total", "path")
@@ -1010,7 +1016,9 @@ var (
 	// tombstone store is incomplete (restore_pending), a record is not
 	// durable (not_durable), a key absent from the manifest still exists and
 	// is not retired (absent_but_exists: a listing missed it), or whether it
-	// exists could not be checked (existence_unknown).
+	// exists could not be checked (existence_unknown), or the object holds a
+	// column this version does not model so it is not rewritten
+	// (unknown_columns).
 	DeleteRewriteDeferred = NewCounterVec("lakehouse_delete_rewrite_deferred_total", "reason")
 	// DeleteRewriteKeyCollisions counts replacement keys that could not be
 	// claimed because the key was already in use.
@@ -1096,3 +1104,23 @@ var (
 	ResourceBoundQueryMaxRowsRequest          = NewGauge("lakehouse_resourcebound_query_max_rows_request")
 	ResourceBoundQueryMaxRowsLimit            = NewGauge("lakehouse_resourcebound_query_max_rows_limit")
 )
+
+// Forward fence (see schema.UnknownColumns): objects a rewriter left alone
+// because they hold a column the running code does not model, so a rewrite
+// would have dropped it for good.
+const skippedUnknownColumnsName = "lakehouse_compaction_skipped_unknown_columns_total"
+
+// SkippedUnknownColumns returns the counter of objects the compactor
+// (op="compact") or the delete rewriter (op="delete_rewrite") skipped for the
+// signal ("logs" or "traces"). Every series is exported at zero.
+func SkippedUnknownColumns(signal, op string) *Counter {
+	return &Counter{c: vmmetrics.GetOrCreateCounter(fmt.Sprintf(`%s{signal=%q,op=%q}`, skippedUnknownColumnsName, signal, op))}
+}
+
+func init() {
+	for _, s := range []string{"logs", "traces"} {
+		for _, o := range []string{"compact", "delete_rewrite"} {
+			SkippedUnknownColumns(s, o)
+		}
+	}
+}

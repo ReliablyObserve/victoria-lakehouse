@@ -904,6 +904,28 @@
           "legendFormat": "segments waiting"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 118 },
+      "id": 90,
+      "title": "Compaction Forward Fence",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 119 },
+      "id": 91,
+      "title": "Objects Left Alone Because They Hold Unknown Columns",
+      "description": "Objects that compaction (op=compact) or the delete rewriter (op=delete_rewrite) refused to rewrite because they hold a column this version does not know: a rewrite would drop that column. Counted once per object per process. Near 0 on a single-version fleet; an increase means a newer version is writing objects this one cannot rewrite, so finish the rollout. The alert is LakehouseCompactionSkippedUnknownColumns.",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (signal, op) (increase(lakehouse_compaction_skipped_unknown_columns_total{instance=~\"$instance\"}[1h]))",
+          "legendFormat": "objects skipped (1h) {{signal}} {{op}}"
+        }
+      ]
     }
   ],
   "schemaVersion": 39,

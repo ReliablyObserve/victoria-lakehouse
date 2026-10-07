@@ -3,6 +3,7 @@ package delete
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -73,6 +75,13 @@ type RewriteResult struct {
 	// data holds a prepared replacement's bytes until Upload writes them.
 	data []byte
 }
+
+// ErrUnknownColumns is returned by Prepare for an object that holds a column
+// the running code does not model (see schema.UnknownColumns).
+var ErrUnknownColumns = errors.New("object has columns this version does not know")
+
+// fenceLog makes the fence log each skipped object once.
+var fenceLog = &schema.FenceLog{}
 
 // Rewriter reads Parquet files from S3, removes tombstoned rows, and writes
 // the filtered result back.
@@ -179,6 +188,16 @@ func (r *Rewriter) RewriteFile(ctx context.Context, key string, tombstones []Tom
 func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombstone) (*RewriteResult, error) {
 	start := time.Now()
 
+	signal := "logs"
+	if r.mode == "traces" {
+		signal = "traces"
+	}
+	// An object the fence already refused stays refused for this process (it
+	// is immutable and the code does not change): no download per tick.
+	if fenceLog.Has(key) {
+		return nil, fmt.Errorf("%w: %s", ErrUnknownColumns, key)
+	}
+
 	data, err := r.pool.Download(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", key, err)
@@ -187,6 +206,17 @@ func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombsto
 	result := &RewriteResult{
 		OldKey:      key,
 		BytesBefore: int64(len(data)),
+	}
+
+	// Forward fence: an object with a column this code does not model would
+	// lose it in the rewrite. Fail the rewrite instead: the tombstone stays
+	// pending (its rows stay hidden by it) and the object is left untouched.
+	if unknown := schema.UnknownColumns(data, signal); len(unknown) > 0 {
+		if fenceLog.Mark(key) {
+			metrics.SkippedUnknownColumns(signal, "delete_rewrite").Inc()
+			logger.Warnf("delete rewrite skips an object with columns this version does not know, so a rewrite would drop them; key=%s, columns=%v", key, unknown)
+		}
+		return nil, fmt.Errorf("%w: %s has %v", ErrUnknownColumns, key, unknown)
 	}
 
 	var newData []byte
@@ -603,6 +633,14 @@ func traceRowToMap(row *schema.TraceRow) map[string]string {
 	for k, v := range row.ScopeAttributes {
 		k = schema.TraceMessageAttributeName("scope_attr:", k)
 		m[k] = v
+	}
+	// Span events and links, under the field names VictoriaTraces gives them,
+	// so a delete filter on `event:event_name:0` matches the same spans as hot.
+	for _, c := range [...]struct{ col, js string }{
+		{schema.ColSpanEventsJSON, row.EventsJSON},
+		{schema.ColSpanLinksJSON, row.LinksJSON},
+	} {
+		_ = schema.ForEachSpanSubField(c.col, c.js, func(name, value string) { m[name] = value })
 	}
 	return m
 }

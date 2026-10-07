@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
@@ -322,8 +323,16 @@ func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64, u
 	if len(rgs) == 0 {
 		return
 	}
-	names := columnNames(f.Root())
-	for ci, parquetName := range names {
+	for pos, col := range f.Root().Columns() {
+		parquetName := bytesutil.InternString(col.Name())
+		// The row group's column chunks are LEAF columns: a MAP column in
+		// front of this one is two leaves (key, value) but one top-level
+		// column, so a column after a map sits at a later chunk than its
+		// position among the top-level columns.
+		ci := pos
+		if col.Leaf() {
+			ci = col.Index()
+		}
 		internal := parquetName
 		if m := s.registry.ResolveFromParquet(parquetName); m != nil {
 			internal = m.InternalName
@@ -429,18 +438,24 @@ func (s *Storage) scanProjectedFieldValues(
 		defer func() { _ = planned.Close() }()
 	}
 
-	fullColNames := columnNames(f.Root())
 	projectedIndices := make([]int, 0, len(projectedCols))
 	projectedNames := make([]string, 0, len(projectedCols))
 	targetInProjection := -1
-	for i, n := range fullColNames {
+	for i, c := range f.Root().Columns() {
+		n := bytesutil.InternString(c.Name())
 		if !projectedCols[n] {
 			continue
 		}
 		if n == targetParquetCol {
 			targetInProjection = len(projectedIndices)
 		}
-		projectedIndices = append(projectedIndices, i)
+		// Chunks are LEAF columns; see accumulateFieldHits. A map before this
+		// column is two leaves, so the top-level position is not the chunk.
+		ci := i
+		if c.Leaf() {
+			ci = c.Index()
+		}
+		projectedIndices = append(projectedIndices, ci)
 		projectedNames = append(projectedNames, n)
 	}
 	if targetInProjection < 0 {

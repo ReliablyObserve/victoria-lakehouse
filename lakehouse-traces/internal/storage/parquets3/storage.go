@@ -475,6 +475,15 @@ func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 			}
 			continue
 		}
+		// A composite column (span events / links JSON) is never a field name
+		// itself: it names the VictoriaTraces event/link fields its rows encode.
+		// Sampled from the first row group, like the MAP keys below.
+		if schema.IsCompositeColumn(name) {
+			for _, n := range extractCompositeFieldNames(f, name) {
+				s.labelIndex.Add(n, nil)
+			}
+			continue
+		}
 		if mapColumns[name] {
 			prefix := mapColumnToAttrPrefix(name)
 			for _, k := range extractMapDistinctKeys(f, name) {
@@ -515,6 +524,58 @@ func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 	// _msg is VL's body field — always present but not stored in parquet MAPs.
 	// VT always reports it in field_names; add it for parity.
 	s.labelIndex.Add("_msg", nil)
+}
+
+// maxCompositeSampleRows bounds how many rows of the first row group the label
+// index decodes to learn the event/link field names of a file.
+const maxCompositeSampleRows = 512
+
+// extractCompositeFieldNames returns the distinct VictoriaTraces field names
+// (`event:event_name:0`, ...) encoded in the first row group of a composite
+// column. A footer-only file, or one without the column, yields none.
+func extractCompositeFieldNames(f *parquet.File, col string) []string {
+	idx := findColumnIndex(f.Root(), col)
+	rgs := f.RowGroups()
+	if idx < 0 || len(rgs) == 0 {
+		return nil
+	}
+	chunks := rgs[0].ColumnChunks()
+	if idx >= len(chunks) {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	pages := chunks[idx].Pages()
+	defer func() { _ = pages.Close() }()
+	buf := make([]parquet.Value, 128)
+	decoded := 0
+	for decoded < maxCompositeSampleRows {
+		page, err := pages.ReadPage()
+		if err != nil {
+			break
+		}
+		vr := page.Values()
+		for decoded < maxCompositeSampleRows {
+			n, readErr := vr.ReadValues(buf)
+			for i := 0; i < n && decoded < maxCompositeSampleRows; i++ {
+				if buf[i].IsNull() {
+					continue
+				}
+				decoded++
+				_ = schema.ForEachSpanSubField(col, string(buf[i].ByteArray()), func(name, _ string) {
+					seen[name] = struct{}{}
+				})
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func extractMapDistinctKeys(f *parquet.File, mapColName string) []string {
@@ -1056,9 +1117,19 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 			}
 		}
 		for k, v := range row.ScopeAttributes {
-			if name := schema.TraceMessageAttributeName("scope_attr:", k); name != k {
-				set(name, i, v)
+			if k != "" {
+				set("scope_attr:"+k, i, v)
 			}
+		}
+		// Span events and links: the VictoriaTraces fields encoded in the two
+		// JSON columns, as hot VictoriaTraces returns them.
+		for _, sub := range [...]struct{ col, json string }{
+			{schema.ColSpanEventsJSON, row.EventsJSON},
+			{schema.ColSpanLinksJSON, row.LinksJSON},
+		} {
+			_ = schema.ForEachSpanSubField(sub.col, sub.json, func(name, value string) {
+				set(name, i, value)
+			})
 		}
 	}
 

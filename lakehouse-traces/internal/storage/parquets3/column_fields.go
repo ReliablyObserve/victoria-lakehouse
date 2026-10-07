@@ -1,6 +1,9 @@
 package parquets3
 
 import (
+	"sort"
+
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -139,4 +142,53 @@ func queryParquetNameAliases(queryStr string, reg *schema.Registry, pipeFields [
 		}
 	}
 	return aliases
+}
+
+// compositeColumns accumulates the fields a span's composite columns (the
+// event and link JSON of schema.ColSpanEventsJSON / ColSpanLinksJSON) encode:
+// one value list per field name, filled row by row. rows is the number of rows
+// of the block being built.
+type compositeColumns struct {
+	rows  int
+	names []string
+	cols  map[string][]string
+}
+
+func newCompositeColumns(rows int) *compositeColumns {
+	return &compositeColumns{rows: rows}
+}
+
+// add decodes the JSON of one composite column for row i and files every field
+// it encodes. Content that does not decode contributes nothing: the span is
+// still served, without those fields.
+func (c *compositeColumns) add(col string, i int, jsonValue string) {
+	_ = schema.ForEachSpanSubField(col, jsonValue, func(name, value string) {
+		if value == "" || !emittableFieldName(name) {
+			return
+		}
+		vals, ok := c.cols[name]
+		if !ok {
+			if c.cols == nil {
+				c.cols = make(map[string][]string)
+			}
+			vals = make([]string, c.rows)
+			c.cols[name] = vals
+			c.names = append(c.names, name)
+		}
+		vals[i] = value
+	})
+}
+
+// blockColumns returns the accumulated fields as block columns, in field-name
+// order so a block is the same whichever row group order produced it.
+func (c *compositeColumns) blockColumns() []logstorage.BlockColumn {
+	if len(c.names) == 0 {
+		return nil
+	}
+	sort.Strings(c.names)
+	out := make([]logstorage.BlockColumn, 0, len(c.names))
+	for _, n := range c.names {
+		out = append(out, logstorage.BlockColumn{Name: n, Values: c.cols[n]})
+	}
+	return out
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"math/big"
@@ -206,6 +207,37 @@ func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
 	}
 	assertTruth(t, truth, len(rows), sums, distinct)
 	assertWriterOptions(t, f, truth)
+
+	// The span events / links blob columns: the truth must equal what the file
+	// holds, with both NULLs and values present.
+	if truth.SpanExtras == nil {
+		t.Fatal("the traces truth has no span_extras")
+	}
+	var spansEv, events, spansLn, links int64
+	for _, r := range rows {
+		if r.EventsJSON != "" {
+			spansEv++
+			var evs []map[string]any
+			if err := json.Unmarshal([]byte(r.EventsJSON), &evs); err != nil {
+				t.Fatalf("events_json does not decode: %v", err)
+			}
+			events += int64(len(evs))
+		}
+		if r.LinksJSON != "" {
+			spansLn++
+			links++
+		}
+	}
+	ex := truth.SpanExtras
+	if ex.SpansWithEvents != spansEv || ex.Events != events || ex.SpansWithLinks != spansLn || ex.Links != links {
+		t.Errorf("span_extras truth %+v does not match the file (%d spans/%d events, %d spans/%d links)", *ex, spansEv, events, spansLn, links)
+	}
+	if ex.BytesValues == 0 || ex.BytesEventNames == 0 || ex.B64Keys == 0 {
+		t.Errorf("the gate file must carry reversibly stored non-UTF-8 text: %+v", *ex)
+	}
+	if spansEv == 0 || spansEv == int64(len(rows)) || spansLn == 0 || spansLn == int64(len(rows)) {
+		t.Errorf("events/links must be set on some spans and NULL on others: %d and %d of %d", spansEv, spansLn, len(rows))
+	}
 
 	if graphEdges == 0 || graphEdges == len(rows) {
 		t.Errorf("service-graph columns must carry both values and empties, got %d of %d rows set", graphEdges, len(rows))

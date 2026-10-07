@@ -19,6 +19,7 @@ type fieldValuesRequest struct {
 	view       *bufferView // taken by the caller before it listed the objects
 	op         string      // endpoint label for logs and metrics
 	column     string      // Parquet column whose values are enumerated
+	subField   string      // for a composite column: the span event/link field read out of its JSON
 	field      string      // the same field's name in rows (VictoriaLogs naming)
 	tenantIDs  []logstorage.TenantID
 	query      *logstorage.Query
@@ -188,7 +189,7 @@ func (s *Storage) scanFieldValuesParallel(ctx context.Context, files []manifest.
 				// Column-projected read: only the target (+ filter and
 				// timestamp) chunks are fetched, never the whole object body.
 				local := make(map[string]uint64)
-				if err := s.scanProjectedFieldValues(ctx, fi, r.column, r.filter, tombstonesForKey(r.tombstones, r.parse, fi.Key), local, r.startNs, r.endNs); err != nil {
+				if err := s.scanProjectedFieldValues(ctx, fi, r.column, r.subField, r.filter, tombstonesForKey(r.tombstones, r.parse, fi.Key), local, r.startNs, r.endNs); err != nil {
 					if ctx.Err() == nil {
 						// The object is left out of the answer, as the query
 						// path does with an unreadable object; counted there too.

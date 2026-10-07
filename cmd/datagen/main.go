@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"math/big"
@@ -61,8 +62,14 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 // --phrase-fixture.
 var phraseFixture bool
 
+// spanExtras adds span events, span links and scope attributes to the
+// generated spans (--span-extras, on by default): every span exception is an
+// event, so a corpus without them cannot show what a cold tier does with them.
+var spanExtras = true
+
 func main() {
 	logsCount := flag.Int("logs", 5000, "number of log rows per batch")
+	flag.BoolVar(&spanExtras, "span-extras", true, "give generated spans realistic events (exception events on error spans, occasional log events), links and instrumentation-scope attributes")
 	flag.BoolVar(&phraseFixture, "phrase-fixture", false, "append fixed log rows and OTLP/JSON spans with UUID/hyphenated trace_id values (hot-vs-cold phrase-filter parity)")
 	tracesCount := flag.Int("traces", 1000, "number of trace spans per batch")
 	hoursBack := flag.Int("hours-back", 48, "generate historical data for this many hours back")
@@ -165,6 +172,26 @@ type traceRow struct {
 	ResourceAttrs     map[string]string
 	SpanAttrs         map[string]string
 	ScopeAttrs        map[string]string
+	ScopeVersion      string
+	Events            []traceEvent
+	Links             []traceLink
+}
+
+// traceEvent is an OTLP span event.
+type traceEvent struct {
+	TimeUnixNano int64
+	Name         string
+	Attrs        map[string]string
+	Dropped      uint32
+}
+
+// traceLink is an OTLP span link.
+type traceLink struct {
+	TraceID    string
+	SpanID     string
+	TraceState string
+	Attrs      map[string]string
+	Flags      uint32
 }
 
 type logRow struct {
@@ -474,6 +501,10 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 					"otel.scope.name":    "github.com/reliablyobserve/instrumentation",
 					"otel.scope.version": "0.5.0",
 				},
+				ScopeVersion: "0.5.0",
+			}
+			if spanExtras {
+				row.Events, row.Links = generateSpanExtras(spanID, statusCode, startTime, dur)
 			}
 			allTraces = append(allTraces, row)
 			parentSpanID = spanID
@@ -774,6 +805,58 @@ func pushNDJSONBatch(endpoint string, rows []logRow, accountID, projectID, orgID
 	return nil
 }
 
+// generateSpanExtras returns the events and links of one span. It draws from a
+// generator seeded by the span ID alone, so adding them never moves the main
+// generator (a seeded run still produces the same spans), and the same span gets
+// the same extras on every endpoint.
+//
+// Rates are meant to look like instrumented services: every error span records
+// its exception as an event with a stack trace (what OpenTelemetry SDKs do),
+// about 8% of the other spans record one or two log events, about 3% of spans
+// link to another trace (messaging, retries, batch jobs).
+func generateSpanExtras(spanID string, statusCode int32, start time.Time, dur time.Duration) ([]traceEvent, []traceLink) {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(spanID))
+	r := mrand.New(mrand.NewSource(int64(h.Sum64()))) // #nosec G404 G115 -- synthetic test data, the seed only needs to be a stable function of the span ID
+
+	at := func() int64 { return start.Add(time.Duration(r.Int63n(int64(dur) + 1))).UnixNano() }
+	var events []traceEvent
+	if statusCode == 2 {
+		errType := []string{"java.io.IOException", "context.DeadlineExceeded", "sql.ErrConnDone", "grpc.StatusUnavailable"}[r.Intn(4)]
+		events = append(events, traceEvent{
+			TimeUnixNano: at(),
+			Name:         "exception",
+			Attrs: map[string]string{
+				"exception.type":       errType,
+				"exception.message":    "operation failed: upstream returned an error",
+				"exception.stacktrace": fmt.Sprintf("%s: operation failed\n\tat com.reliablyobserve.service.Handler.handle(Handler.java:%d)\n\tat com.reliablyobserve.service.Dispatcher.dispatch(Dispatcher.java:%d)\n\tat com.reliablyobserve.rpc.Server.serve(Server.java:%d)\n\tat java.base/java.lang.Thread.run(Thread.java:%d)", errType, 40+r.Intn(200), 20+r.Intn(100), 100+r.Intn(400), 1500+r.Intn(100)),
+				"exception.escaped":    "false",
+			},
+		})
+	}
+	if r.Float64() < 0.08 {
+		names := []string{"cache.miss", "retry.attempt", "message.sent", "db.rows"}
+		for n := 1 + r.Intn(2); n > 0; n-- {
+			events = append(events, traceEvent{
+				TimeUnixNano: at(),
+				Name:         names[r.Intn(len(names))],
+				Attrs:        map[string]string{"attempt": fmt.Sprintf("%d", 1+r.Intn(3)), "key": fmt.Sprintf("k-%d", r.Intn(1000))},
+			})
+		}
+	}
+	var links []traceLink
+	if r.Float64() < 0.03 {
+		links = append(links, traceLink{
+			TraceID:    fmt.Sprintf("%016x%016x", r.Uint64(), r.Uint64()),
+			SpanID:     fmt.Sprintf("%016x", r.Uint64()),
+			TraceState: []string{"", "vendor=x"}[r.Intn(2)],
+			Attrs:      map[string]string{"messaging.operation": "process"},
+			Flags:      uint32(r.Intn(2)) * 0x100, // #nosec G115 -- 0 or 1
+		})
+	}
+	return events, links
+}
+
 func pushOTLPTraces(endpoint string, rows []traceRow, accountID, projectID, orgID string) error {
 	return pushOTLPTracesToURL(endpoint+"/insert/opentelemetry/v1/traces", rows, accountID, projectID, orgID)
 }
@@ -803,23 +886,40 @@ func pushOTLPTracesBatchToURL(url string, rows []traceRow, accountID, projectID,
 		Key   string      `json:"key"`
 		Value interface{} `json:"value"`
 	}
+	type otlpEvent struct {
+		TimeUnixNano string   `json:"timeUnixNano"`
+		Name         string   `json:"name"`
+		Attributes   []otlpKV `json:"attributes,omitempty"`
+	}
+	type otlpLink struct {
+		TraceID    string   `json:"traceId"`
+		SpanID     string   `json:"spanId"`
+		TraceState string   `json:"traceState,omitempty"`
+		Attributes []otlpKV `json:"attributes,omitempty"`
+		Flags      uint32   `json:"flags,omitempty"`
+	}
 	type otlpSpan struct {
-		TraceID           string   `json:"traceId"`
-		SpanID            string   `json:"spanId"`
-		ParentSpanID      string   `json:"parentSpanId,omitempty"`
-		Name              string   `json:"name"`
-		Kind              int32    `json:"kind"`
-		StartTimeUnixNano string   `json:"startTimeUnixNano"`
-		EndTimeUnixNano   string   `json:"endTimeUnixNano"`
-		Attributes        []otlpKV `json:"attributes"`
+		TraceID           string      `json:"traceId"`
+		SpanID            string      `json:"spanId"`
+		ParentSpanID      string      `json:"parentSpanId,omitempty"`
+		Name              string      `json:"name"`
+		Kind              int32       `json:"kind"`
+		StartTimeUnixNano string      `json:"startTimeUnixNano"`
+		EndTimeUnixNano   string      `json:"endTimeUnixNano"`
+		Attributes        []otlpKV    `json:"attributes"`
+		Events            []otlpEvent `json:"events,omitempty"`
+		Links             []otlpLink  `json:"links,omitempty"`
 		Status            *struct {
 			Code int32 `json:"code"`
 		} `json:"status,omitempty"`
 	}
+	type otlpScope struct {
+		Name       string   `json:"name"`
+		Version    string   `json:"version,omitempty"`
+		Attributes []otlpKV `json:"attributes,omitempty"`
+	}
 	type otlpScopeSpans struct {
-		Scope struct {
-			Name string `json:"name"`
-		} `json:"scope"`
+		Scope otlpScope  `json:"scope"`
 		Spans []otlpSpan `json:"spans"`
 	}
 	type otlpResourceSpans struct {
@@ -876,17 +976,40 @@ func pushOTLPTracesBatchToURL(url string, rows []traceRow, accountID, projectID,
 					Code int32 `json:"code"`
 				}{Code: 2}
 			}
+			kvs := func(m map[string]string) []otlpKV {
+				keys := make([]string, 0, len(m))
+				for k := range m {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				out := make([]otlpKV, 0, len(keys))
+				for _, k := range keys {
+					out = append(out, otlpKV{k, strVal(m[k])})
+				}
+				return out
+			}
+			for _, e := range r.Events {
+				span.Events = append(span.Events, otlpEvent{TimeUnixNano: fmt.Sprintf("%d", e.TimeUnixNano), Name: e.Name, Attributes: kvs(e.Attrs)})
+			}
+			for _, l := range r.Links {
+				span.Links = append(span.Links, otlpLink{TraceID: l.TraceID, SpanID: l.SpanID, TraceState: l.TraceState, Attributes: kvs(l.Attrs), Flags: l.Flags})
+			}
 			spans = append(spans, span)
 		}
 
 		rs := otlpResourceSpans{}
 		rs.Resource.Attributes = resAttrs
-		rs.ScopeSpans = []otlpScopeSpans{{
-			Scope: struct {
-				Name string `json:"name"`
-			}{Name: "github.com/reliablyobserve/instrumentation"},
-			Spans: spans,
-		}}
+		scope := otlpScope{Name: "github.com/reliablyobserve/instrumentation"}
+		if spanExtras {
+			// Scope version and attributes ride along (they are what the
+			// instrumentation scope carries on every span of the batch).
+			scope.Version = r0.ScopeVersion
+			scope.Attributes = []otlpKV{
+				{"otel.scope.name", strVal(scope.Name)},
+				{"otel.scope.version", strVal(r0.ScopeVersion)},
+			}
+		}
+		rs.ScopeSpans = []otlpScopeSpans{{Scope: scope, Spans: spans}}
 		resourceSpans = append(resourceSpans, rs)
 	}
 

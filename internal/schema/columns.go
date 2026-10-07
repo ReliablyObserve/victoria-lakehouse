@@ -27,6 +27,12 @@ const (
 	// surfaces under the attribute name the file's footer KV binds it to; an
 	// unmapped slot is an empty placeholder and surfaces not at all.
 	ColumnSlot
+
+	// ColumnComposite marks a column that is a container for several query
+	// fields (the span events and links JSON columns). The column name is
+	// never a field; the read paths expand its content into the VictoriaTraces
+	// fields it encodes (`event:event_name:0`, `link:link_span_id:1`, ...).
+	ColumnComposite
 )
 
 // InternalColumns lists the top-level Parquet columns that are storage
@@ -71,6 +77,8 @@ func ClassifyColumn(parquetColumn string) ColumnKind {
 		return ColumnInternal
 	case IsDedicatedSlotColumn(parquetColumn):
 		return ColumnSlot
+	case IsCompositeColumn(parquetColumn):
+		return ColumnComposite
 	default:
 		return ColumnUserVisible
 	}

@@ -112,6 +112,8 @@ The trace Parquet schema is defined as the `TraceRow` struct. It includes span-s
 | `duration_ns` | `int64` | INT64 | No | Span duration (nanoseconds) |
 | `service.name` | `string` | BYTE_ARRAY (DICT) | Yes | Service that produced the span |
 | `scope.name` | `string` | BYTE_ARRAY | No | Instrumentation library name |
+| `span.events_json` | `string` | BYTE_ARRAY (OPTIONAL, UTF-8) | No | The span's events as a JSON array; NULL when the span has none. See [Span events, links and scope attributes](#span-events-links-and-scope-attributes) |
+| `span.links_json` | `string` | BYTE_ARRAY (OPTIONAL, UTF-8) | No | The span's links as a JSON array; NULL when the span has none |
 
 Legacy objects without `body` retain an absent native message through reads and compaction; unavailable historical values are not fabricated. A customer span attribute named `_msg` remains a distinct `span_attr:_msg` map key. An ambiguous legacy map `_msg` is kept as that attribute rather than reclassified as a native message.
 
@@ -121,7 +123,77 @@ Legacy objects without `body` retain an absent native message through reads and 
 |---|---|
 | `resource.attributes` | Resource-level attributes (environment, region, host, K8s metadata) |
 | `span.attributes` | Span-level attributes (HTTP method, status code, URL, DB system, DB statement) |
-| `scope.attributes` | Instrumentation scope attributes |
+| `scope.attributes` | Instrumentation scope attributes (the OpenTelemetry `InstrumentationScope.attributes`; the scope name is `scope.name`, the scope version is the `scope_version` entry of `span.attributes`) |
+
+### Span events, links and scope attributes
+
+A span's events (`exception` events with their stack trace, log events), its links and the attributes of its instrumentation scope are stored with the span, exactly as VictoriaTraces stores them, and read back as the fields VictoriaTraces returns (`event:event_name:0`, `link:link_span_id:0`, `scope_attr:<key>`). Scope attributes live in the `scope.attributes` MAP column. Events and links are two optional string columns, `span.events_json` and `span.links_json`, each holding one JSON array per span:
+
+```json
+[
+  {"event_name": "exception",
+   "event_time_unix_nano": "1760000000123456789",
+   "event_dropped_attributes_count": "0",
+   "event_attr:exception.type": "java.io.IOException",
+   "event_attr:exception.stacktrace": "java.io.IOException: boom\n\tat a.B.c(B.java:7)"},
+  {"event_name": "retry", "event_time_unix_nano": "1760000000123456999", "event_attr:attempt": "2"}
+]
+```
+
+- Element `i` of the array is event (or link) `i`. Its keys are the VictoriaTraces field names without the `event:` / `link:` prefix and the `:<i>` suffix: `event_time_unix_nano`, `event_name`, `event_dropped_attributes_count` and `event_attr:<attribute key>` for events; `link_trace_id`, `link_span_id`, `link_trace_state`, `link_flags`, `link_dropped_attributes_count` and `link_attr:<attribute key>` for links.
+- Every value is a string, as VictoriaTraces stores it (timestamps and counts are decimal text; an empty attribute value is `"-"`). A field the span did not carry is absent from the element, not `null`.
+- Text that is not valid UTF-8 (JSON cannot carry it; a producer that sends it is outside OTLP, which defines strings as UTF-8) is stored reversibly instead of being rewritten to U+FFFD: such a value is the object `{"$bytes": "<standard base64 of the raw bytes>"}` in place of the string, and such a field name is the key `"$b64:<base64 of the name>"`. The reserved `$idx` suffix value is a value like any other, so a suffix that is not valid UTF-8 is also a `{"$bytes": ...}` object. Both are valid JSON. A reader that does not know them sees an object or an odd key for that one value and nothing else; every valid-UTF-8 value is the plain string it always was. An attribute value is always a string, never an object, so the object form cannot be confused with a real value.
+- A span without events has `NULL` in `span.events_json`; there is no empty array. The same holds for links.
+- Elements are in event order and keys are written in sorted order, so the same span always produces the same bytes. An element whose index is not its position in the array (a gap, or fields that arrived without the `:<i>` suffix through the jsonline path) carries the reserved key `"$idx"` with the original suffix; a field name that itself starts with `$` is written with one more `$`.
+- The two columns are plain `BYTE_ARRAY` (UTF-8) with ZSTD and no dictionary, no bloom filter and no Lakehouse-specific framing: every engine reads them as strings, and any JSON function decodes them. Files written before the columns existed do not have them at all; engines that union such files with newer ones (DuckDB `union_by_name = true`, Spark `mergeSchema`) read `NULL`.
+- Compaction and delete rewrites carry both columns through unchanged.
+
+The two columns are only read for queries that name an event or link field (trace-by-ID, `event:*` / `link:*` filters, `field_values`, a wildcard read); searches, metrics and service/operation listings never touch them.
+
+DuckDB, the spans that recorded an `exception` event with its type and stack trace (the CI gate `scripts/ci/parquet-readback` runs this kind of query under DuckDB and pyarrow and compares it with the counts the writer recorded):
+
+```sql
+SELECT trace_id, span_id,
+       json_extract_string(e, '$."event_attr:exception.type"')       AS exception_type,
+       json_extract_string(e, '$."event_attr:exception.stacktrace"') AS stacktrace
+FROM (
+  SELECT trace_id, span_id, unnest(from_json("span.events_json", '["JSON"]')) AS e
+  FROM read_parquet('s3://obs-archive/4401/1/traces/dt=*/hour=*/*.parquet', hive_partitioning = true)
+  WHERE "span.events_json" IS NOT NULL
+)
+WHERE json_extract_string(e, '$.event_name') = 'exception';
+```
+
+Links, and the scope attributes, the same way:
+
+```sql
+SELECT trace_id, span_id,
+       json_extract_string(l, '$.link_trace_id') AS linked_trace_id,
+       json_extract_string(l, '$.link_span_id')  AS linked_span_id
+FROM (
+  SELECT trace_id, span_id, unnest(from_json("span.links_json", '["JSON"]')) AS l
+  FROM read_parquet('s3://obs-archive/4401/1/traces/dt=*/hour=*/*.parquet', hive_partitioning = true)
+  WHERE "span.links_json" IS NOT NULL
+);
+
+SELECT "scope.attributes"['otel.scope.name'] AS scope, count(*) FROM spans GROUP BY 1;
+```
+
+pyarrow:
+
+```python
+import json
+import pyarrow.dataset as ds
+
+spans = ds.dataset("obs-archive/4401/1/traces", filesystem=s3, format="parquet", partitioning="hive")
+table = spans.to_table(columns=["trace_id", "span_id", "span.events_json"])
+for trace_id, span_id, events in zip(*(table.column(c).to_pylist() for c in table.column_names)):
+    for event in json.loads(events) if events else []:
+        if event["event_name"] == "exception":
+            print(trace_id, span_id, event.get("event_attr:exception.type"))
+```
+
+Any engine with JSON functions decodes the same strings. The CI gate runs DuckDB and pyarrow; the ClickHouse, Trino and Spark examples of this page do not read these two columns yet.
 
 ## Row Groups and Column Statistics
 

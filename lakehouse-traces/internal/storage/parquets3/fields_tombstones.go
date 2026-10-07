@@ -8,6 +8,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 // timestampColumn is the Parquet column holding the row timestamp. A tombstone
@@ -79,7 +80,9 @@ func (s *Storage) addTombstoneProjection(tss []tombstone, projected map[string]b
 			continue
 		}
 		for internalName := range FilterReferencedFields(f) {
-			if m := s.registry.ResolveToParquet(internalName); m != nil {
+			if col, ok := schema.CompositeColumnForField(internalName); ok {
+				projected[col] = true
+			} else if m := s.registry.ResolveToParquet(internalName); m != nil {
 				projected[m.ParquetColumn] = true
 			} else {
 				projected[internalName] = true

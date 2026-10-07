@@ -90,6 +90,7 @@ func EstimateRawBytesTraces(rows []TraceRow) int64 {
 		for k, v := range r.ScopeAttributes {
 			total += int64(len(k) + len(v))
 		}
+		total += int64(len(r.EventsJSON) + len(r.LinksJSON))
 	}
 	return total
 }
