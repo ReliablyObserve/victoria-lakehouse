@@ -188,7 +188,8 @@ def test_unasked_and_extra_requests_are_differences(tmp_path):
     side = cap([rec(values_resp(FULL), url="/api/datasources/uid/a/resources/select/logsql/field_values", request={"field": "f1"}),
                 rec(values_resp(FULL), url="/api/datasources/uid/a/resources/select/logsql/field_values", request={"field": "f3"})])
     fr, notes = compare.score_side(frames.answers_of(ref["records"]), frames.answers_of(side["records"]))
-    assert any("not asked" in n for n in notes) and any("extra request" in n for n in notes) and fr.score == 0
+    assert any("not asked" in n for n in notes) and any("extra request" in n for n in notes)
+    assert fr.facets["requests|asked"] == 50.0 and fr.facets["requests|extra"] == 100.0 * 2 / 3
 
 
 def test_kind_mismatch_and_undecodable_answers_are_scored_zero():
@@ -285,4 +286,15 @@ def test_comment_with_visual_embeds_changed_pages_only(tmp_path, capsys):
     assert comment.main(["--api", str(api), "--visual", str(vis), "--image-base", "https://x/pr-visuals/pr-1/"]) == 0
     text = capsys.readouterr().out
     assert "![p1 cold](https://x/pr-visuals/pr-1/p1-cold.png)" in text and "p2-cold.png" not in text
-    assert "None." in text
+    assert "None." in text and "1 page captures match" in text and "`p2/cold`" not in text
+
+
+def test_montage_makes_a_zoom_montage_from_clip_images(tmp_path):
+    d = tmp_path / "shots" / "pg" / "cold"
+    d.mkdir(parents=True)
+    for n in ("base", "pr", "ref"):
+        Image.new("RGB", (800, 600), (255, 255, 255)).save(d / f"{n}.png")
+        Image.new("RGB", (780, 480), (255, 255, 255) if n != "pr" else (0, 0, 0)).save(d / f"{n}-clip.png")
+    scores = montage.make(str(tmp_path))
+    assert scores == {"pg-cold": 0.0, "pg-cold-zoom": 1.0}
+    assert (tmp_path / "montage" / "pg-cold-zoom.png").exists()

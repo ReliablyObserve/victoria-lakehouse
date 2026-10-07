@@ -43,6 +43,17 @@ def explanation(rid: str, explain: dict) -> str | None:
     return best[1] if best else None
 
 
+def _group(rs: list[dict]) -> list[dict]:
+    """Merge requests that differ only in the tenant form (identical numbers and verdict) into one row."""
+    out: dict[tuple, dict] = {}
+    for r in rs:
+        rid = re.sub(rf"\.{r['form']}\.{r['layer']}$", "", r["id"].split("/", 1)[1])
+        key = (r["surface"], rid, r["layer"], r["verdict"], pct(r["base_score"]), pct(r["pr_score"]), _worst(r["base_facets"]), _worst(r["pr_facets"]))
+        g = out.setdefault(key, {**r, "rid": rid, "forms": []})
+        g["forms"].append(r["form"])
+    return sorted(out.values(), key=lambda g: (g["surface"], g["rid"], g["layer"]))
+
+
 def api_section(rep: dict, label: str, explain: dict) -> tuple[list[str], dict]:
     rs = rep["results"]
     counts: dict[str, int] = {}
@@ -54,12 +65,8 @@ def api_section(rep: dict, label: str, explain: dict) -> tuple[list[str], dict]:
                  "Seed equality (rows per tenant form and layer) held on ref, base and PR before any comparison. "
                  "Percentages are the worst quality facet of each answer against the reference (measured; 100 only when exact).")
     lines += ["", f"| request | form | layer | base % | {label} % | worst facet base -> {label} | verdict |", "|---|---|---|--:|--:|---|---|"]
-    for r in sorted(rs, key=lambda r: (r["surface"], r["id"])):
-        if r["verdict"] in ("exact",) and (r["base_score"] or 0) >= 100:
-            continue
-        rid = r["id"].split("/", 1)[1]
-        rid = re.sub(rf"\.{r['form']}\.{r['layer']}$", "", rid)
-        lines.append(f"| `{rid}` | {r['form']} | {r['layer']} | {pct(r['base_score'])} | {pct(r['pr_score'])} | "
+    for r in _group([r for r in rs if not (r["verdict"] == "exact" and (r["base_score"] or 0) >= 100)]):
+        lines.append(f"| `{r['rid']}` | {' + '.join(r['forms'])} | {r['layer']} | {pct(r['base_score'])} | {pct(r['pr_score'])} | "
                      f"{_worst(r['base_facets'])} -> {_worst(r['pr_facets'])} | {ICON[r['verdict']]} |")
     exact = sum(1 for r in rs if r["verdict"] == "exact" and (r["base_score"] or 0) >= 100)
     lines += ["", f"{exact} requests match the reference exactly on both sides (not listed)."]
@@ -68,11 +75,10 @@ def api_section(rep: dict, label: str, explain: dict) -> tuple[list[str], dict]:
         lines.append("None.")
     else:
         lines += ["| request | form / layer | base % | PR % | what differs | why |", "|---|---|--:|--:|---|---|"]
-        for r in sorted(remaining, key=lambda r: (r["surface"], r["id"])):
-            rid = re.sub(rf"\.{r['form']}\.{r['layer']}$", "", r["id"].split("/", 1)[1])
+        for r in _group(remaining):
             notes = (r.get("pr_notes") or [])[:1]
             why = explanation(r["id"].split("/", 1)[1], explain) or "**unexplained**"
-            lines.append(f"| `{rid}` | {r['form']} / {r['layer']} | {pct(r['base_score'])} | {pct(r['pr_score'])} | "
+            lines.append(f"| `{r['rid']}` | {' + '.join(r['forms'])} / {r['layer']} | {pct(r['base_score'])} | {pct(r['pr_score'])} | "
                          f"{_worst(r['pr_facets'])}{(': ' + notes[0][:90]) if notes else ''} | {why} |")
     return lines, {"counts": counts, "remaining": len(remaining),
                    "unexplained": sum(1 for r in remaining if not explanation(r['id'].split('/', 1)[1], explain))}
@@ -81,10 +87,12 @@ def api_section(rep: dict, label: str, explain: dict) -> tuple[list[str], dict]:
 def visual_section(cmp: dict, label: str, image_base: str | None, explain: dict) -> list[str]:
     lines = ["", f"### Visual proof: Grafana, VMUI, VTUI and the Jaeger UI, base | {label} | reference", ""]
     lines += [f"| page / range | base % | {label} % | panel state base / {label} / reference | verdict |", "|---|--:|--:|---|---|"]
-    for k, r in sorted(cmp.items()):
+    shown = {k: r for k, r in cmp.items() if not (r["verdict"] == "match" and (r["pr_score"] or 0) >= 100)}
+    for k, r in sorted(shown.items()):
         st = r["states"]
         s = " / ".join(st.get(x, {}).get("state", "-") for x in ("base", "pr", "ref"))
         lines.append(f"| `{k}` | {pct(r['base_score'])} | {pct(r['pr_score'])} | {s} | {r['verdict']} |")
+    lines += ["", f"{len(cmp) - len(shown)} page captures match the reference on every question on both sides (not listed)."]
     detail = [(k, r) for k, r in sorted(cmp.items()) if r["verdict"] not in ("match", "same-as-reference") and r.get("questions")]
     if detail:
         lines += ["", f"Questions the pages asked that differ from the reference (worst facet of each answer, base % -> {label} %):", ""]

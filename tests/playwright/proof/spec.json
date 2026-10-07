@@ -44,7 +44,13 @@
       ],
       "fixes": [
         "438-map"
-      ]
+      ],
+      "clip": {
+        "x": 520,
+        "y": 110,
+        "width": 780,
+        "height": 480
+      }
     },
     {
       "id": "vl-builder-absent",
@@ -54,7 +60,13 @@
       "field": "component",
       "covers": [
         "vl.select.field_values.empty_absent_everywhere"
-      ]
+      ],
+      "clip": {
+        "x": 520,
+        "y": 110,
+        "width": 780,
+        "height": 480
+      }
     },
     {
       "id": "vl-stream-values",
@@ -64,7 +76,13 @@
       "field": "service.name",
       "covers": [
         "vl.select.stream_field_values.basic"
-      ]
+      ],
+      "clip": {
+        "x": 520,
+        "y": 110,
+        "width": 780,
+        "height": 480
+      }
     },
     {
       "id": "vl-stream-level",
@@ -74,7 +92,13 @@
       "field": "level",
       "covers": [
         "vl.select.stream_field_values.basic"
-      ]
+      ],
+      "clip": {
+        "x": 520,
+        "y": 110,
+        "width": 780,
+        "height": 480
+      }
     },
     {
       "id": "vmui-logs",

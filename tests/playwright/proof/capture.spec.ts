@@ -15,7 +15,7 @@ import * as path from "path";
 
 type PageSpec = {
   id: string; kind: string; query?: string; field?: string; family?: string; trace?: boolean;
-  path?: string; service?: boolean; ranges?: string[];
+  path?: string; service?: boolean; ranges?: string[]; clip?: { x: number; y: number; width: number; height: number };
 };
 const spec = JSON.parse(fs.readFileSync(process.env.VP_SPEC || path.join(__dirname, "spec.json"), "utf8"));
 const state = JSON.parse(fs.readFileSync(process.env.VP_STATE || "state.json", "utf8"));
@@ -119,6 +119,25 @@ async function settle(page: Page, pending: { n: number; last: number; seen: numb
   return false;
 }
 
+// Logs Drilldown crashes a breakdown page ("Plugin failed to load") when a breakdown query is answered before the
+// page's first time-series panel module has loaded; a fast answer loses that race on any datasource. The data queries
+// of a Drilldown page wait for the module (at most MODULE_WAIT_MS each); only their timing changes, not the requests
+// or the answers. Ported from loki-vl-proxy/bench/visual/capture.spec.ts@429f15b9.
+const PANEL_MODULE = /\/public\/build\/timeseriesPanel\.[^/]*\.js/;
+const MODULE_WAIT_MS = 3000;
+
+async function queriesAfterPanelModule(page: Page) {
+  let loaded: () => void = () => {};
+  const ready = new Promise<void>((res) => { loaded = res; });
+  const done = (rq: any) => { if (PANEL_MODULE.test(rq.url())) loaded(); };
+  page.on("requestfinished", done);
+  page.on("requestfailed", done);
+  await page.route(/\/api\/ds\/query/, async (route) => {
+    await Promise.race([ready, new Promise((res) => setTimeout(res, MODULE_WAIT_MS))]);
+    await route.fallback();
+  });
+}
+
 // The interaction that makes a page show the value lists the fix is about.
 async function interact(page: Page, p: PageSpec) {
   const pause = (n = 2500) => page.waitForTimeout(n);
@@ -166,6 +185,7 @@ for (const p of spec.pages as PageSpec[]) {
           const pending = { n: 0, last: Date.now(), seen: 0 };
           const records: any[] = [];
           const errors: string[] = [];
+          if (p.kind === "drilldown") await queriesAfterPanelModule(page);
           const own = p.kind === "vmui" || p.kind === "jaeger-ui";
           const wanted = (u: string) => (own ? OWN_API.test(new URL(u).pathname) && !/\.(js|css|svg|png|woff2?)$/.test(u) : BACKEND.test(u));
           page.on("console", (m) => { if (m.type() === "error" && errors.length < 20) errors.push(m.text().slice(0, 1500)); });
@@ -191,7 +211,8 @@ for (const p of spec.pages as PageSpec[]) {
           ok = (await settle(page, pending, 20_000)) || ok;
           const unavailable = records.some((x) => x.status === 500 && /plugin\.(unavailable|connectionUnavailable)/.test(JSON.stringify(x.response)));
           const empty = !ok && !records.some((x) => x.status === 200);
-          if ((unavailable || empty) && attempt < 1) { await ctx.close(); await new Promise((res) => setTimeout(res, 5000)); continue; }
+          const pluginLoad = (await uiState(page)).banners.some((b: string) => /^Plugin (failed|unavailable|not found)/.test(b));
+          if ((unavailable || empty || pluginLoad) && attempt < 1) { await ctx.close(); await new Promise((res) => setTimeout(res, 5000)); continue; }
           const dir = path.join(OUT, "shots", p.id, r);
           const ddir = path.join(OUT, "data", p.id, r);
           fs.mkdirSync(dir, { recursive: true });
@@ -199,6 +220,7 @@ for (const p of spec.pages as PageSpec[]) {
           dbg("before screenshot");
           await page.screenshot({ path: path.join(dir, `${side}.png`), fullPage: false });
           dbg("screenshot");
+          if (p.clip) await page.screenshot({ path: path.join(dir, `${side}-clip.png`), clip: p.clip });  // the region the page is about, legible in a montage
           const ui = await uiState(page);
           fs.writeFileSync(path.join(ddir, `${side}.json`), JSON.stringify({ settled: ok, settle_ms: pending.last - t0, attempts: attempt + 1, kind: p.kind, records, ui, errors }));
           await ctx.close();

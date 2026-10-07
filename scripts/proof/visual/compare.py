@@ -42,9 +42,9 @@ def questions(ref_answers: dict, fr: FacetResult) -> dict[str, list]:
         if facets:
             n = min(facets, key=lambda x: (facets[x], x))
             out[a.get("label", key)] = [facets[n], n]
-    for k, v in fr.facets.items():
-        if k.endswith("|extra"):
-            out[f"extra: {k[:-6][:50]}"] = [v, "extra"]
+    for k in ("requests|asked", "requests|extra"):
+        if k in fr.facets:
+            out[f"requests ({k.split('|')[1]})"] = [fr.facets[k], k.split("|")[1]]
     return out
 
 
@@ -52,11 +52,12 @@ def score_side(ref_answers: dict, side_answers: dict) -> tuple[FacetResult, list
     """Facets of one side against the reference, one set per matched question plus request_match facets."""
     res = FacetResult()
     notes: list[str] = []
+    missing = 0
     for key, ra in sorted(ref_answers.items()):
         sa = side_answers.get(key)
         tag = key[:60]
         if sa is None:
-            res.facets[f"{tag}|asked"] = 0.0
+            missing += 1
             notes.append(f"not asked: {key[:100]}")
             continue
         meta = {"kind": ra["kind"] if ra["kind"] not in ("error",) else "json", **ra["meta"], **{k: v for k, v in sa["meta"].items() if k not in ra["meta"]}}
@@ -74,9 +75,15 @@ def score_side(ref_answers: dict, side_answers: dict) -> tuple[FacetResult, list
         for f, v in fr.facets.items():
             res.facets[f"{tag}|{f}"] = v
         res.notes += [f"{tag}: {n}" for n in fr.notes[:4]]
-    for key in sorted(set(side_answers) - set(ref_answers)):
-        res.facets[f"{key[:60]}|extra"] = 0.0
+    extra = sorted(set(side_answers) - set(ref_answers))
+    for key in extra:
         notes.append(f"extra request, reference did not ask: {key[:100]}")
+    # Which fields a breakdown page asks about next depends on what it was answered, so the requests are scored as two
+    # shares (reference questions the side asked, own questions the reference also asked), not one facet per request.
+    if missing:
+        res.facets["requests|asked"] = 100.0 * (len(ref_answers) - missing) / len(ref_answers)
+    if extra:
+        res.facets["requests|extra"] = 100.0 * len(ref_answers) / (len(ref_answers) + len(extra)) if ref_answers else 0.0
     res.notes += notes
     return res, notes
 

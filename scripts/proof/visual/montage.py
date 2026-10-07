@@ -58,21 +58,27 @@ def make(out):
     scores = {}
     for d in sorted(glob.glob(os.path.join(out, "shots", "*", "*"))):
         page, rng = d.split(os.sep)[-2:]
-        imgs = {n: load_image(os.path.join(d, f"{n}.png")) for n, _ in TITLES if os.path.exists(os.path.join(d, f"{n}.png"))}
-        if "base" not in imgs or "pr" not in imgs:
-            continue
-        if "ref" not in imgs:
-            imgs["ref"] = Image.new("RGB", imgs["base"].size, (245, 245, 245))
-            ImageDraw.Draw(imgs["ref"]).text((20, 20), "reference: not captured for this page", fill=(60, 60, 60))
-        scores[f"{page}-{rng}"] = score(imgs["base"], imgs["pr"])
-        h = int(imgs["base"].height * W / imgs["base"].width)
-        tiles = [label(imgs[n].resize((W, h), Image.LANCZOS), t) for n, t in TITLES]
-        m = Image.new("RGB", (W * 3 + 8, tiles[0].height), (255, 255, 255))
-        for i, t in enumerate(tiles):
-            m.paste(t, (i * (W + 4), 0))
-        save_small(m, os.path.join(out, "montage", f"{page}-{rng}.png"))
+        # a page can also save a clip of the region it is about (<side>-clip.png): its own montage, <page>-<range>-zoom.png
+        for suffix, name in (("", f"{page}-{rng}"), ("-clip", f"{page}-{rng}-zoom")):
+            one(d, suffix, name, out, scores)
     dump_json(os.path.join(out, "pixeldiff.json"), scores)
     return scores
+
+
+def one(d, suffix, name, out, scores):
+    imgs = {n: load_image(os.path.join(d, f"{n}{suffix}.png")) for n, _ in TITLES if os.path.exists(os.path.join(d, f"{n}{suffix}.png"))}
+    if "base" not in imgs or "pr" not in imgs:
+        return
+    if "ref" not in imgs:
+        imgs["ref"] = Image.new("RGB", imgs["base"].size, (245, 245, 245))
+        ImageDraw.Draw(imgs["ref"]).text((20, 20), "reference: not captured for this page", fill=(60, 60, 60))
+    scores[name] = score(imgs["base"], imgs["pr"])
+    h = int(imgs["base"].height * W / imgs["base"].width)
+    tiles = [label(imgs[n].resize((W, h), Image.LANCZOS), t) for n, t in TITLES]
+    m = Image.new("RGB", (W * 3 + 8, tiles[0].height), (255, 255, 255))
+    for i, t in enumerate(tiles):
+        m.paste(t, (i * (W + 4), 0))
+    save_small(m, os.path.join(out, "montage", f"{name}.png"))
 
 
 def main():
