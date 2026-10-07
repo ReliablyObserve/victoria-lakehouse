@@ -83,7 +83,8 @@ RELEASE_METADATA_FILES = {
 }
 
 
-def run_git(*args: str, cwd: pathlib.Path = ROOT) -> str:
+def run_git(*args: str, cwd: pathlib.Path | None = None) -> str:
+    cwd = cwd or ROOT
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
@@ -94,7 +95,7 @@ def run_git(*args: str, cwd: pathlib.Path = ROOT) -> str:
     return result.stdout.strip()
 
 
-def comparison_base(base: str, head: str, cwd: pathlib.Path = ROOT) -> str:
+def comparison_base(base: str, head: str, cwd: pathlib.Path | None = None) -> str:
     """The commit the PR's own changes start from: merge-base(base, head).
 
     ``pull_request.base.sha`` is the base branch tip, which moves on after the
@@ -341,24 +342,106 @@ RELEASE_METADATA_GENERATED_FILES = {
     "docs/features.md",
 }
 
-_VERSION_LIST = re.compile(r"VER(?:, VER)+")
-_VERSION_NAME = re.compile(r"(?:the release after )?v?`?\d+\.\d+\.\d+`?")
+SEMVER_RE = r"\d+\.\d+\.\d+"
+_SECTION = re.compile(r"^## \[([^\]]+)\]")
+_VERSION_SECTION = re.compile(r"^## \[(" + SEMVER_RE + r")\] - \d{4}-\d{2}-\d{2}$")
+_OLD_SECTION = re.compile(r"^## \[(" + SEMVER_RE + r")\]")
 
 
-def generated_docs_version_naming_only(base_text: str, head_text: str) -> bool:
-    """True when the only differences are version naming on since:/Changelog: lines."""
-    base = Counter(l.strip() for l in base_text.splitlines() if l.strip())
-    head = Counter(l.strip() for l in head_text.splitlines() if l.strip())
-    removed = list((base - head).elements())
-    added = list((head - base).elements())
-    if not all("since:" in l or "Changelog:" in l for l in removed + added):
-        return False
-    # A feature with a released and a still-unreleased bullet lists both:
-    # "`0.1.0`, the release after `0.1.0`" is version naming too.
-    norm = lambda lines: sorted(  # noqa: E731
-        _VERSION_LIST.sub("VER", _VERSION_NAME.sub("VER", l)) for l in lines
+def _semver(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in v.split("."))
+
+
+def parse_changelog(text: str) -> list[tuple[str, list[str]]]:
+    """Sections as (heading line, body lines); the first is the preamble ("")."""
+    sections: list[tuple[str, list[str]]] = [("", [])]
+    for line in text.split("\n"):
+        if _SECTION.match(line):
+            sections.append((line, []))
+        else:
+            sections[-1][1].append(line)
+    return sections
+
+
+def _zone(sections: list[tuple[str, list[str]]]) -> Counter:
+    """Non-blank, non-subheading lines (unstripped) of the given sections."""
+    return Counter(
+        l for _, body in sections for l in body if l.strip() and not l.startswith("### ")
     )
-    return norm(removed) == norm(added)
+
+
+def changelog_release_shape(base_text: str, head_text: str) -> tuple[str, str] | None:
+    """(old, new) version when head is base plus exactly one new release, else None.
+
+    The only change allowed is the one a release makes: a new version section
+    directly below [Unreleased], greater than the newest one, and text moving
+    between [Unreleased], the new section and the previously newest section (a
+    merge of main into the metadata branch moves bullets between them). Older
+    sections must be byte-identical; no line may be lost, added or duplicated.
+    """
+    b, h = parse_changelog(base_text), parse_changelog(head_text)
+    if len(b) < 2 or len(h) != len(b) + 1 or b[1][0] != "## [Unreleased]" or h[1][0] != "## [Unreleased]":
+        return None
+    if b[0] != h[0]:
+        return None
+    new_m = _VERSION_SECTION.match(h[2][0])
+    if not new_m:
+        return None
+    new = new_m.group(1)
+    old = ""
+    movable_base = [b[1]]
+    movable_head = [h[1], h[2]]
+    if len(b) > 2:
+        old_m = _OLD_SECTION.match(b[2][0])
+        if not old_m or h[3][0] != b[2][0]:
+            return None
+        old = old_m.group(1)
+        if _semver(new) <= _semver(old):
+            return None
+        movable_base.append(b[2])
+        movable_head.append(h[3])
+        if h[4:] != b[3:]:
+            return None
+    if _zone(movable_base) != _zone(movable_head):
+        return None
+    return old, new
+
+
+_PLACEHOLDER = "@@"
+
+
+def generated_docs_version_naming_only(base_text: str, head_text: str, old: str, new: str) -> bool:
+    r"""True when the only differences are the renaming of version ``old`` to ``new``.
+
+    Compared line by line, in order. A differing line must be a ``since:`` or
+    ``Changelog:`` line of the same feature (same leading text up to ``since:``),
+    and may only turn the reference to the previous newest release
+    (``the release after vOLD``) into the release that shipped (``vNEW``,
+    ``\`NEW\``) or into the release after it. Every other version, in particular
+    a ``since:`` swapped between features, must stay byte-identical.
+    """
+    bl, hl = base_text.split("\n"), head_text.split("\n")
+    if len(bl) != len(hl) or not old or not new or old == new:
+        return False
+    after_old = re.compile(r"the release after v?`?" + re.escape(old) + r"`?")
+    head_forms = [
+        re.compile(r"`" + re.escape(new) + r"`, the release after `" + re.escape(new) + r"`"),
+        re.compile(r"the release after v?`?" + re.escape(new) + r"`?"),
+        re.compile(r"v" + re.escape(new) + r"(?![\d.])"),
+        re.compile(r"`" + re.escape(new) + r"`"),
+    ]
+    for x, y in zip(bl, hl):
+        if x == y:
+            continue
+        if not ("since:" in x or "Changelog:" in x) or not ("since:" in y or "Changelog:" in y):
+            return False
+        nx = after_old.sub(_PLACEHOLDER, x)
+        ny = y
+        for pat in head_forms:
+            ny = pat.sub(_PLACEHOLDER, ny)
+        if nx != ny or _PLACEHOLDER not in nx:
+            return False
+    return True
 
 
 def is_release_metadata_sync(files: Iterable[str], generated_ok: bool = False) -> bool:
@@ -400,9 +483,10 @@ def main() -> int:
         print("changelog gate: skipped (dependency-only update)")
         return 0
 
-    generated_ok = all(
+    shape = changelog_release_shape(base_text, head_text)
+    generated_ok = shape is not None and all(
         generated_docs_version_naming_only(
-            _show(base, f), _show(args.head, f)
+            _show(base, f), _show(args.head, f), shape[0], shape[1]
         )
         for f in files
         if f in RELEASE_METADATA_GENERATED_FILES

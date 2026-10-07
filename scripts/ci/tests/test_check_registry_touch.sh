@@ -436,7 +436,6 @@ run_case "a test moved to another file of its package with the reference updated
 
 echo
 echo "== exemptions =="
-PR_AUTHOR=szibis run_case "a release-metadata PR by an approver passes" ok "skipped (release-metadata PR)" materialize_release 9.9.9
 COMMIT_MSG='build(deps): bump y' run_case "a dependency-only PR passes" ok "skipped (dependency-only PR)" dependency_bump
 run_case "a go.mod bump under a non-dependency commit subject is product (kills the commit-subject mutant)" fail "shipped build file: go.mod" dependency_bump
 run_case "a docs-only PR passes" ok "registry-touch check OK" docs_only
@@ -616,12 +615,20 @@ PR_AUTHOR=szibis run_case "M2: a version-only chart bump with the changelog mate
 PR_AUTHOR=github-actions[bot] run_case "M2: the same by the release bot is release metadata" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
 PR_AUTHOR=mallory run_case "M2: the same by anyone else is not" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_version_bump_with_changelog
 run_case "M2: the same with no author known is not" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_version_bump_with_changelog
+chart_appversion_downgrade() { chart_version_bump_with_changelog; sedi 's/^appVersion: "9.9.9"/appVersion: "0.120.0"/' charts/victoria-lakehouse/Chart.yaml; }
+PR_AUTHOR=szibis run_case "N13: an appVersion downgrade hidden in a release PR is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_appversion_downgrade
+chart_reindent() { chart_version_bump_with_changelog; sedi 's/^name: c/ name: c/' charts/victoria-lakehouse/Chart.yaml; }
+PR_AUTHOR=szibis run_case "N9: a whitespace change in Chart.yaml is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_reindent
 PR_AUTHOR=szibis run_case "M2: a chart description edit hidden in a release PR is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_description_edit_with_changelog
 PR_AUTHOR=szibis run_case "M2: a hand-written changelog bullet in a release PR is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" changelog_new_bullet_with_chart
-PR_AUTHOR=szibis PR_LABELS=registry-exempt run_case "L3: an exempt PR needs no body line for a stray label" ok "skipped (release-metadata PR)" materialize_release 9.9.9
+PR_AUTHOR=szibis PR_LABELS=registry-exempt run_case "L3: an exempt PR needs no body line for a stray label" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
 run_case "S3: a chart README is documentation" ok "registry-touch check OK" chart_templates_md
 run_case "S2: a chart test_*.sh script is a test" ok "registry-touch check OK" chart_test_script
 run_case "S3: a chart template file is product even when it is .txt" fail "packaged/patched: charts/victoria-lakehouse/templates/NOTES.txt" chart_template_file
+REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY=$'## Summary\n\n> Registry: none — a quoted reason' \
+  run_case "M3: the body line may sit in a Markdown blockquote" ok "approver 'szibis'" product_change
+REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY=$'text Registry: none — not at the line start' \
+  run_case "M3: the body line must start its line" fail "no 'Registry: none" product_change
 for body in 'Registry: none —' 'Registry: none —    ' 'Registry: none -' 'Registry: none —  .'; do
   REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY="$body" run_case "S9: an empty reason ('$body') is rejected" fail "no 'Registry: none" product_change
 done
@@ -926,10 +933,13 @@ FIXTURE
     git branch -q base
     # The release commit materializes the heading; the fixture bullet then
     # lands again under [Unreleased] (a PR merged after the release commit).
-    materialize_release 99.0.0
-    rewrite CHANGELOG.md "$bullet"
-    git add CHANGELOG.md
+    # The release cut the heading; the fixture bullet (merged after the release
+    # commit) stays under [Unreleased]: only the heading is inserted.
+    rewrite CHANGELOG.md '/^## \[[0-9]/ && !done { print "## [99.0.0] - 2026-01-01"; print ""; done = 1 } { print }'
+    sed -i.bak -E 's/^version: .*/version: 99.0.0/; s/^appVersion: .*/appVersion: "99.0.0"/' charts/victoria-lakehouse/Chart.yaml && rm -f charts/victoria-lakehouse/Chart.yaml.bak
+    git add CHANGELOG.md charts/victoria-lakehouse/Chart.yaml
     git commit -q -m "chore: release metadata for v99.0.0 [skip release]"
+    git -c tag.gpgsign=false tag v99.0.0
   ) >>"$log" 2>&1
 
   expect_fail "confgen -check reports docs/features.md stale on the metadata commit" \
@@ -937,8 +947,8 @@ FIXTURE
   check_step "regeneration succeeds" env GOWORK=off go run ./tests/conformance/cmd/confgen -write
   check_step "regeneration changes docs/features.md" bash -c '! git diff --quiet -- docs/features.md'
   check_step "the regenerated file is committed" bash -c 'git add docs/features.md UPSTREAM_COVERAGE.md README.md && git commit -q -m "regenerate"'
-  check_step "only CHANGELOG.md and generated documents differ from base" \
-    bash -c '! git diff --name-only base HEAD | grep -vxE "CHANGELOG.md|docs/features.md|UPSTREAM_COVERAGE.md|README.md"'
+  check_step "only CHANGELOG.md, Chart.yaml and generated documents differ from base" \
+    bash -c '! git diff --name-only base HEAD | grep -vxE "CHANGELOG.md|charts/victoria-lakehouse/Chart.yaml|docs/features.md|UPSTREAM_COVERAGE.md|README.md"'
   check_step "the registry gate passes" env SKIP_CONFGEN_CHECK= PR_AUTHOR=szibis bash "$CHECKER" base
   check_step "the registry gate reports a release-metadata PR" \
     bash -c 'out=$(python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers); echo "$out"; git diff --stat base HEAD; git diff base HEAD -- docs/features.md | grep "^[-+]" | head -20; grep -qx "exempt=release-metadata" <<<"$out"'

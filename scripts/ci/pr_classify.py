@@ -23,7 +23,6 @@ trees hold no generated files, and a marker comment must not switch the gate off
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 import fnmatch
 import os
 import re
@@ -41,7 +40,6 @@ ROOT_MODULE_FILES = ("go.mod", "go.sum")
 DEP_COMMIT_PREFIXES = ("build(deps", "chore(deps")
 RELEASE_BOT = "github-actions[bot]"
 SEMVER = re.compile(r"\d+\.\d+\.\d+")
-VERSION_HEADING = re.compile(r"^## \[\d+\.\d+\.\d+\] - \d{4}-\d{2}-\d{2}")
 REQUIRE_ENTRY = re.compile(r"^(?:require\s+)?(\S+)\s+(v\S+?)(?:\s*//.*)?$")
 
 
@@ -144,16 +142,58 @@ def dependency_only(files: list[str], commits: list[str], base: str, head: str) 
 
 # ------------------------------------------------------ release metadata --
 
-def changed_lines(base_text: str, head_text: str) -> tuple[list[str], list[str]]:
-    """(removed lines, added lines) by multiset difference of stripped lines."""
-    b = Counter(l.strip() for l in base_text.splitlines() if l.strip())
-    h = Counter(l.strip() for l in head_text.splitlines() if l.strip())
-    return list((b - h).elements()), list((h - b).elements())
+CHART_PATH = "charts/victoria-lakehouse/Chart.yaml"
+_CHART_VERSION = re.compile(r"^version: (\d+\.\d+\.\d+)$")
+_CHART_APPVERSION = re.compile(r'^appVersion: "?(\d+\.\d+\.\d+)"?$')
+
+
+def chart_versions(text: str) -> tuple[str, str, list[str]] | None:
+    """(version, appVersion, every other line) from the TOP-LEVEL lines, unstripped.
+
+    None when either key is missing or repeated. A nested `version:` (indented)
+    is not a chart version and stays in the rest.
+    """
+    version, app, rest = [], [], []
+    for line in text.split("\n"):
+        mv, ma = _CHART_VERSION.match(line), _CHART_APPVERSION.match(line)
+        if mv:
+            version.append(mv.group(1))
+        elif ma:
+            app.append(ma.group(1))
+        else:
+            rest.append(line)
+    if len(version) != 1 or len(app) != 1:
+        return None
+    return version[0], app[0], rest
+
+
+def chart_ok(base_text: str, head_text: str, new: str) -> bool:
+    """Chart.yaml changes only `version` and `appVersion`, both to the released version."""
+    b, h = chart_versions(base_text), chart_versions(head_text)
+    if b is None or h is None:
+        return False
+    if h[0] != new or h[1] != new or b[2] != h[2]:
+        return False
+    return tuple(map(int, new.split("."))) > tuple(map(int, b[0].split(".")))
 
 
 def release_metadata(files: list[str], base: str, head: str, author: str, approvers: set[str]) -> bool:
+    """The shape of a release-metadata PR, exactly.
+
+    CHANGELOG moves text only between [Unreleased], the new section and the newest
+    section (cc.changelog_release_shape); Chart.yaml changes only version and
+    appVersion, both to the new release; README only its version numbers; the
+    regenerated docs/features.md only the naming of that release; the author is
+    the release bot or an approver; and when the repository has tags, the release
+    has its tag.
+    """
+    shape = cc.changelog_release_shape(show(base, "CHANGELOG.md"), show(head, "CHANGELOG.md"))
+    if shape is None:
+        return False
+    old, new = shape
+    # (a release without a Chart.yaml change fails chart_ok: the version is not newer)
     generated_ok = all(
-        cc.generated_docs_version_naming_only(show(base, f), show(head, f))
+        cc.generated_docs_version_naming_only(show(base, f), show(head, f), old, new)
         for f in files
         if f in cc.RELEASE_METADATA_GENERATED_FILES
     )
@@ -161,23 +201,12 @@ def release_metadata(files: list[str], base: str, head: str, author: str, approv
         return False
     if not author or author.lower() not in approvers | {RELEASE_BOT}:
         return False
-    chart = "charts/victoria-lakehouse/Chart.yaml"
-    if chart in files:
-        removed, added = changed_lines(show(base, chart), show(head, chart))
-        if not all(re.match(r"^(version|appVersion):", l) for l in removed + added):
-            return False
-    if "README.md" in files:
-        removed, added = changed_lines(show(base, "README.md"), show(head, "README.md"))
-        if not all(SEMVER.search(l) for l in removed + added):
-            return False
-    # CHANGELOG: a release only moves existing text under a new version heading.
-    # Text may move between [Unreleased] and the newest version sections (a merge of
-    # main into the metadata branch), so every line must still exist and none may
-    # be lost: nothing removed, and every added line is a version heading or text
-    # the base already had.
-    base_lines = {l.strip() for l in show(base, "CHANGELOG.md").splitlines()}
-    removed, added = changed_lines(show(base, "CHANGELOG.md"), show(head, "CHANGELOG.md"))
-    return not removed and all(VERSION_HEADING.match(l) or l in base_lines for l in added)
+    if not chart_ok(show(base, CHART_PATH), show(head, CHART_PATH), new):
+        return False
+    if "README.md" in files and SEMVER.sub("VER", show(base, "README.md")) != SEMVER.sub("VER", show(head, "README.md")):
+        return False
+    tags = git("tag", "-l", "v*").split()
+    return not tags or f"v{new}" in tags
 
 
 def main() -> int:

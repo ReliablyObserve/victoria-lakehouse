@@ -1,5 +1,8 @@
+import contextlib
+import io
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -12,6 +15,7 @@ from scripts.ci.check_changelog_pr import (
     has_new_versioned_entries,
     is_dependency_only_pr,
     is_release_commit,
+    changelog_release_shape,
     generated_docs_version_naming_only,
     is_release_metadata_sync,
     should_require_changelog,
@@ -277,28 +281,160 @@ class CheckChangelogPRTests(unittest.TestCase):
             self.assertFalse(is_release_metadata_sync(["CHANGELOG.md", extra], generated_ok=True), extra)
         self.assertFalse(is_release_metadata_sync(["docs/features.md"], generated_ok=True))
 
-    def test_generated_docs_version_naming_only(self):
+    FEATURES_BASE = (
+        "intro\n"
+        "- `lh.feature.a` · status: shipped · since: the release after v0.146.3 · surfaces: cli\n"
+        "- Changelog: the release after `0.146.3`\n"
+        "- `lh.feature.b` · status: shipped · since: v0.140.0 · surfaces: cli\n"
+        "- `lh.feature.c` · status: shipped · since: v0.8.0 · requires v1.53.0\n"
+    )
+
+    def naming(self, head, base=None):
+        return generated_docs_version_naming_only(base or self.FEATURES_BASE, head, "0.146.3", "0.146.4")
+
+    def released(self):
+        return self.FEATURES_BASE.replace("the release after v0.146.3", "v0.146.4").replace("the release after `0.146.3`", "`0.146.4`")
+
+    def test_naming_accepts_the_release_renaming(self):
+        b = self.FEATURES_BASE
+        self.assertTrue(self.naming(b))
+        self.assertTrue(self.naming(b.replace("the release after v0.146.3", "the release after v0.146.4").replace("the release after `0.146.3`", "the release after `0.146.4`")))
+        self.assertTrue(self.naming(self.released()))
+        self.assertTrue(self.naming(b.replace("the release after `0.146.3`", "`0.146.4`, the release after `0.146.4`")))
+
+    def test_naming_rejects_beyond_naming(self):
+        released = self.released()
+        self.assertFalse(self.naming(released + "an invented line\n"))
+        self.assertFalse(self.naming(released.replace("status: shipped", "status: planned", 1)))
+        self.assertFalse(self.naming(released.replace("surfaces: cli", "surfaces: api", 1)))
+        self.assertFalse(self.naming(released.replace("intro", "intro v0.146.4")))
+        self.assertFalse(self.naming(released.replace("shipped · since: v0.146.4", "shipped · early · since: v0.146.4", 1)))
+        self.assertFalse(self.naming(released.replace("requires v1.53.0", "requires v1.54.0")))
+        self.assertFalse(self.naming(released.replace("lh.feature.a", "lh.feature.z")))
+        self.assertFalse(self.naming(released.replace("- `lh.feature.b` · status: shipped · since: v0.140.0 · surfaces: cli\n", "")))
+
+    def test_naming_rejects_swaps_and_reorders(self):
+        released = self.released()
+        self.assertFalse(self.naming(released.replace("v0.140.0", "X").replace("v0.8.0", "v0.140.0").replace("X", "v0.8.0")))
+        self.assertFalse(self.naming(released.replace("since: v0.140.0", "since: the release after v0.146.4")))
+        self.assertFalse(self.naming(released.replace("since: v0.140.0", "since: v0.146.4")))
+        lines = released.split("\n")
+        self.assertFalse(self.naming("\n".join([lines[0], lines[2], lines[1]] + lines[3:])))
+
+    def test_naming_needs_two_distinct_versions_and_content(self):
+        released = self.released()
+        self.assertFalse(generated_docs_version_naming_only(self.FEATURES_BASE, released, "0.146.4", "0.146.4"))
+        self.assertFalse(generated_docs_version_naming_only(self.FEATURES_BASE, released, "", "0.146.4"))
+        self.assertFalse(generated_docs_version_naming_only("", "x\n", "0.146.3", "0.146.4"))
+
+    def test_release_shape_accepts_453_and_rejects_smuggling(self):
         base = (
-            "intro\n"
-            "- `lh.feature.a` · status: shipped · since: the release after v0.146.3 · surfaces: cli\n"
-            "- Changelog: the release after `0.146.3`\n"
-            "- `lh.feature.b` · status: shipped · since: v0.140.0 · surfaces: cli\n"
+            "# C\n\n## [Unreleased]\n\n### Added\n\n- **A.** t\n\n"
+            "## [0.2.0] - 2026-01-02\n\n### Changed\n\n- **G.** t\n\n"
+            "## [0.1.0] - 2026-01-01\n\n### Fixed\n\n- **O.** t\n"
         )
-        renamed = base.replace("v0.146.3", "v0.146.4").replace("`0.146.3`", "`0.146.4`")
-        released = base.replace("the release after v0.146.3", "v0.146.4").replace("the release after `0.146.3`", "`0.146.4`")
-        self.assertTrue(generated_docs_version_naming_only(base, base))
-        self.assertTrue(generated_docs_version_naming_only(base, renamed))
-        self.assertTrue(generated_docs_version_naming_only(base, released))
-        # A feature with a released and a still-unreleased bullet lists both versions.
-        both = base.replace("the release after `0.146.3`", "`0.146.4`, the release after `0.146.4`")
-        self.assertTrue(generated_docs_version_naming_only(base, both))
-        # Anything beyond version naming is not release metadata.
-        self.assertFalse(generated_docs_version_naming_only(base, renamed + "an invented line\n"))
-        self.assertFalse(generated_docs_version_naming_only(base, renamed.replace("status: shipped", "status: planned", 1)))
-        self.assertFalse(generated_docs_version_naming_only(base, renamed.replace("surfaces: cli", "surfaces: api", 1)))
-        self.assertFalse(generated_docs_version_naming_only(base, renamed.replace("intro", "intro v0.146.4")))
-        # A since: line whose non-version text changed too.
-        self.assertFalse(generated_docs_version_naming_only(base, renamed.replace("shipped · since", "shipped · early · since", 1)))
+        good = (
+            "# C\n\n## [Unreleased]\n\n### Changed\n\n- **G.** t\n\n"
+            "## [0.3.0] - 2026-01-03\n\n### Added\n\n- **A.** t\n\n"
+            "## [0.2.0] - 2026-01-02\n\n"
+            "## [0.1.0] - 2026-01-01\n\n### Fixed\n\n- **O.** t\n"
+        )
+        self.assertEqual(changelog_release_shape(base, good), ("0.2.0", "0.3.0"))
+        smuggle = {
+            "old bullet re-attributed": good.replace("### Fixed\n\n- **O.** t\n", "").replace("- **A.** t\n\n## [0.2.0]", "- **A.** t\n- **O.** t\n\n## [0.2.0]"),
+            "unreleased hidden in an old section": good.replace("- **O.** t", "- **O.** t\n- **A.** t").replace("### Added\n\n- **A.** t\n\n## [0.2.0]", "## [0.2.0]"),
+            "bullet duplicated": good.replace("- **G.** t\n\n## [0.3.0]", "- **G.** t\n- **G.** t\n\n## [0.3.0]"),
+            "bullet lost": good.replace("- **G.** t\n\n## [0.3.0]", "\n## [0.3.0]"),
+            "bullet added": good.replace("- **A.** t\n\n## [0.2.0]", "- **A.** t\n- **N.** t\n\n## [0.2.0]"),
+            "bullet edited": good.replace("- **A.** t", "- **A.** u"),
+            "older section edited": good.replace("- **O.** t", "- **O.** u"),
+            "version not newer": good.replace("[0.3.0]", "[0.2.0]"),
+            "version older": good.replace("[0.3.0]", "[0.0.9]"),
+            "malformed heading": good.replace("## [0.3.0] - 2026-01-03", "## [0.3.0] 2026-01-03"),
+            "preamble edited": good.replace("# C", "# D"),
+        }
+        for name, head in smuggle.items():
+            self.assertIsNone(changelog_release_shape(base, head), name)
+        self.assertIsNone(changelog_release_shape("# C\n", good))
+
+    def test_main_enforces_the_naming_check(self):
+        # The changelog gate must not call a release PR with an arbitrary features.md a metadata sync.
+        import os
+        import unittest.mock as mock
+        import scripts.ci.check_changelog_pr as cc
+
+        def build(features_head, features_base="- `a` · since: the release after v0.1.0 · x\n"):
+            with tempfile.TemporaryDirectory() as d:
+                def run(*a):
+                    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@e", "-c", "commit.gpgsign=false", *a],
+                                   cwd=d, check=True, capture_output=True)
+                run("init", "-q", "-b", "main")
+                os.makedirs(os.path.join(d, "docs"))
+                base_cl = "# C\n\n## [Unreleased]\n\n- **A.** t\n\n## [0.1.0] - 2026-01-01\n\n- **O.** t\n"
+                head_cl = "# C\n\n## [Unreleased]\n\n## [0.2.0] - 2026-01-02\n\n- **A.** t\n\n## [0.1.0] - 2026-01-01\n\n- **O.** t\n"
+                for name, text in (("CHANGELOG.md", base_cl), ("docs/features.md", features_base)):
+                    if text is None:
+                        continue
+                    with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                        fh.write(text)
+                run("add", "-A")
+                run("commit", "-q", "-m", "base")
+                run("branch", "base")
+                for name, text in (("CHANGELOG.md", head_cl), ("docs/features.md", features_head)):
+                    if text is None:
+                        os.remove(os.path.join(d, name))
+                        continue
+                    with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                        fh.write(text)
+                run("add", "-A")
+                run("commit", "-q", "-m", "chore: release metadata for v0.2.0 [skip release]")
+                out = io.StringIO()
+                with mock.patch.object(cc, "ROOT", pathlib.Path(d)), mock.patch.object(sys, "argv", ["x", "--base", "base", "--head", "HEAD"]), \
+                        contextlib.redirect_stdout(out):
+                    cc.main()
+                return "release metadata sync" in out.getvalue()
+
+        self.assertTrue(build("- `a` · since: v0.2.0 · x\n"))
+        self.assertFalse(build("- `a` · since: v0.2.0 · x\n- an invented line\n"))
+        self.assertFalse(build("- `b` · since: v0.2.0 · x\n"))
+        # docs/features.md created or deleted by the release PR is never version naming
+        self.assertFalse(build("x\n", features_base=None))
+        self.assertFalse(build(None))
+
+    def test_naming_guards(self):
+        # a prose line (no since:/Changelog:) that names the release must not be renamed
+        base = "- lands in the release after v0.146.3 · x\n"
+        self.assertFalse(generated_docs_version_naming_only(base, base.replace("the release after v0.146.3", "v0.146.4"), "0.146.3", "0.146.4"))
+        # old == new, and an empty old, never pass
+        b2 = "- `a` · since: the release after v1.0.0 · x\n"
+        self.assertFalse(generated_docs_version_naming_only(b2, "- `a` · since: v1.0.0 · x\n", "1.0.0", "1.0.0"))
+        b3 = "- `a` · since: the release after \n"
+        self.assertFalse(generated_docs_version_naming_only(b3, "- `a` · since: v0.2.0\n", "", "0.2.0"))
+
+    def test_release_shape_edges(self):
+        base = "# C\n\n## [Unreleased]\n\n- A\n\n## [0.2.0] - 2026-01-02\n\n### Changed\n\n- G\n- K\n"
+        # nothing new: head equal to base is not a release
+        self.assertIsNone(changelog_release_shape(base, base))
+        # subheadings are structural: moving G out of a section that keeps its "### Changed" is fine
+        head = ("# C\n\n## [Unreleased]\n\n### Changed\n\n- G\n\n## [0.3.0] - 2026-01-03\n\n- A\n\n"
+                "## [0.2.0] - 2026-01-02\n\n### Changed\n\n- K\n")
+        self.assertEqual(changelog_release_shape(base, head), ("0.2.0", "0.3.0"))
+        # the previously newest heading may not change (its date included)
+        self.assertIsNone(changelog_release_shape(base, head.replace("## [0.2.0] - 2026-01-02", "## [0.2.0] - 2026-01-09")))
+        # a base or head without [Unreleased] first
+        self.assertIsNone(changelog_release_shape(base.replace("## [Unreleased]", "## [Next]"), head))
+        self.assertIsNone(changelog_release_shape(base, head.replace("## [Unreleased]", "## [Next]")))
+        # versions compare numerically
+        self.assertEqual(changelog_release_shape(base.replace("0.2.0", "0.9.0"), head.replace("0.2.0", "0.9.0").replace("0.3.0", "0.10.0")), ("0.9.0", "0.10.0"))
+        # the very first release: no previous section
+        first_base = "# C\n\n## [Unreleased]\n\n- A\n"
+        first_head = "# C\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n- A\n"
+        self.assertEqual(changelog_release_shape(first_base, first_head), ("", "0.1.0"))
+        self.assertIsNone(changelog_release_shape(first_base, first_head + "\n## [0.0.1] - 2025-12-31\n"))
+
+    def test_naming_not_applied_to_other_paths(self):
+        for path in ("docs/archive/features.md", "docs/features.md.bak", "xdocs/features.md"):
+            self.assertFalse(is_release_metadata_sync(["CHANGELOG.md", path], generated_ok=True), path)
 
     def test_version_headings_excludes_unreleased(self):
         text = "## [Unreleased]\n\n## [0.122.0] - 2026-09-14\n\n- a\n\n## [0.121.0] - 2026-09-13\n"

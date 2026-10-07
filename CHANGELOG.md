@@ -26,8 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sections, and the auto-release workflow regenerates the file.
 - **`[skip release]` in a squash-merged PR title is honoured.** GitHub's default squash subject for a one-commit PR
   is the commit subject, so the marker in the title alone was lost (it cut v0.146.4). The auto-release workflow now
-  also reads the merged PR's title and, if it cannot (API error), does not release and asks for a manual run
-  (`workflow_dispatch`, new). The loki-vl-proxy bump's probe commit carries the marker itself.
+  also finds the merged PR from the pushed commit (any merge method) and reads its title; if it cannot after three
+  tries it does not release, says so in the run summary and turns the run red, and a manual run
+  (`workflow_dispatch`, new, main only, never skipped, optional `pr` input for labels and size) releases. The
+  loki-vl-proxy bump's probe commit carries the marker itself; a product follow-up commit pushed on that sync PR would
+  not release either, so such a PR needs its own title without the marker.
 
 ## [0.146.5] - 2026-10-07
 

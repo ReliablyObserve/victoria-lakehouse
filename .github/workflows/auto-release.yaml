@@ -4,7 +4,14 @@ on:
   push:
     branches: [main]
   # Manual release: the escape when the skip check cannot read a PR title.
+  # Never skipped (not by [skip release], not by the docs-only check) and only on
+  # main. `pr` is the merged pull request whose labels and size pick the bump.
   workflow_dispatch:
+    inputs:
+      pr:
+        description: "Merged pull request number (labels and size choose the bump); empty for a patch"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -31,12 +38,17 @@ env:
 
 jobs:
   release:
+    # A manual run may be started from any branch in the UI; only main releases.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      # `[skip release]` counts in the commit subject OR in the title of the
-      # squash-merged PR (GitHub's default squash subject for a one-commit PR is
-      # the commit subject, so a marker in the PR title alone is lost). If the PR
-      # title cannot be read the push is not released; start this workflow by hand.
+      # `[skip release]` counts in the commit subject OR in the title of the PR
+      # that produced the pushed commit (GitHub's default squash subject for a
+      # one-commit PR is the commit subject, so a marker in the PR title alone is
+      # lost). The PR is found from the pushed SHA, so every merge method works;
+      # a job re-run re-reads the title, so editing it and re-running is the fix.
+      # If the title cannot be read after three tries the push is not released
+      # and the run turns red: start this workflow by hand (workflow_dispatch).
       - uses: actions/checkout@v7
         with:
           sparse-checkout: scripts/ci
@@ -47,6 +59,7 @@ jobs:
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
 
       - uses: actions/checkout@v7
         if: steps.skip_release.outputs.skip != 'true'
@@ -78,8 +91,15 @@ jobs:
           LATEST_TAG=${LATEST_TAG:-v0.0.0}
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
-          # Parse PR number from the merge commit subject.
-          PR_NUM=$(echo "$COMMIT_MSG" | head -1 | grep -oP '#\K[0-9]+' | head -1 || true)
+          # A manual run has no push event: the PR comes from its input and the
+          # subject from the checked-out commit.
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            PR_NUM="$PR_INPUT"
+            COMMIT_MSG=$(git log -1 --format=%B)
+          else
+            # Parse PR number from the merge commit subject.
+            PR_NUM=$(echo "$COMMIT_MSG" | head -1 | grep -oP '#\K[0-9]+' | head -1 || true)
+          fi
 
           # Pull PR size signals so big PRs auto-promote to a
           # bigger version bump even when the operator forgets the
@@ -175,6 +195,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_INPUT: ${{ inputs.pr }}
 
       - name: Check for skip conditions
         if: steps.skip_release.outputs.skip != 'true'
@@ -182,12 +204,14 @@ jobs:
         run: |
           # Skip if only non-code files changed (docs, CI, website, release metadata)
           CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
-          if echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md|CONTRIBUTING\.md|SECURITY\.md|CODE_OF_CONDUCT\.md|LICENSE|website/|scripts/ci/|charts/victoria-lakehouse/Chart\.yaml|tests/verification/)"; then
+          if [ "$EVENT_NAME" = workflow_dispatch ] || echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md|CONTRIBUTING\.md|SECURITY\.md|CODE_OF_CONDUCT\.md|LICENSE|website/|scripts/ci/|charts/victoria-lakehouse/Chart\.yaml|tests/verification/)"; then
             echo "skip=false" >> $GITHUB_OUTPUT
           else
             echo "skip=true" >> $GITHUB_OUTPUT
             echo "Skipping release: only docs/CI/metadata changes"
           fi
+        env:
+          EVENT_NAME: ${{ github.event_name }}
 
       # Delegate to the Makefile — single source of truth for the
       # patch list. See ci.yaml deps job for the drift-prevention
@@ -400,12 +424,17 @@ jobs:
           # 2b. Regenerate docs/features.md. A feature that still has an
           # [Unreleased] bullet is named "the release after vX" there, so cutting
           # a release renames it; the VL/VT trees confgen reads were prepared by
-          # the `make deps-*` steps above. A failure only warns: the PR is still
-          # opened and the stale-docs check names what to regenerate by hand.
+          # the `make deps-*` steps above. Only docs/features.md belongs in a
+          # release-metadata PR (its diff is version naming), so every other file
+          # confgen writes is reverted. A failure does not stop the PR: it is
+          # opened with a loud note and this step fails after it exists.
+          REGEN_NOTE=""
           if GOWORK=off go run ./tests/conformance/cmd/confgen -write; then
+            git checkout -- README.md UPSTREAM_COVERAGE.md tests/conformance/inventory.generated.yaml
             git add docs/features.md
           else
-            echo "::warning::confgen failed; regenerate docs/features.md with 'make conformance-gen' on the metadata PR"
+            REGEN_NOTE="**docs/features.md NOT regenerated — run \`make conformance-gen\` on this branch and push, or the registry checks will fail.**"
+            echo "::error::confgen failed: docs/features.md NOT regenerated"
           fi
 
           # 3. Update appVersion in README badge if present
@@ -431,6 +460,8 @@ jobs:
           - README.md: version badge updated
           - docs/features.md: regenerated (feature "since" naming only)
 
+          ${REGEN_NOTE}
+
           ### Images
           - \`ghcr.io/${REPO}/lakehouse-logs:${VERSION}\`
           - \`ghcr.io/${REPO}/lakehouse-traces:${VERSION}\`
@@ -455,5 +486,9 @@ jobs:
           done
 
           echo "Release metadata PR created: $PR_URL"
+          if [ -n "$REGEN_NOTE" ]; then
+            echo "::error::docs/features.md was NOT regenerated; fix the metadata PR $PR_URL by hand"
+            exit 1
+          fi
         env:
           GH_TOKEN: ${{ secrets.TOKEN_GITHUB || secrets.GITHUB_TOKEN }}

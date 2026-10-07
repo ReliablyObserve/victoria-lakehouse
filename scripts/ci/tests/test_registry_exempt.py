@@ -107,6 +107,55 @@ class Normalise(unittest.TestCase):
         self.assertEqual(ev[1]["at"], T3)  # the later of authored/committed
 
 
+class GraphqlPath(unittest.TestCase):
+    """fetch_events against fixture GraphQL pages: the query, the headers, pagination and the decision."""
+
+    def page(self, nodes, more, cursor=None):
+        return {"data": {"repository": {"pullRequest": {"timelineItems": {
+            "pageInfo": {"hasNextPage": more, "endCursor": cursor}, "nodes": nodes}}}}}
+
+    def run_fetch(self, pages):
+        import io
+        import json
+        from unittest import mock
+        seen = []
+
+        class Resp:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return io.BytesIO(json.dumps(self.payload).encode())
+
+            def __exit__(self, *a):
+                return False
+
+        def fake(req, timeout=None):
+            seen.append((req.full_url, req.get_header("Authorization"), json.loads(req.data)))
+            return Resp(pages[len(seen) - 1])
+
+        with mock.patch.object(r.urllib.request, "urlopen", fake):
+            return r.fetch_events("o/r", "451", "tok"), seen
+
+    def test_two_pages_normalised_and_decided(self):
+        nodes1 = [{"__typename": "PullRequestCommit", "commit": {"committedDate": T1, "authoredDate": T1}}]
+        nodes2 = [{"__typename": "LabeledEvent", "createdAt": T2, "actor": {"login": "szibis"}, "label": {"name": "registry-exempt"}}]
+        events, seen = self.run_fetch([self.page(nodes1, True, "CUR1"), self.page(nodes2, False)])
+        self.assertEqual([e["kind"] for e in events], ["commit", "labeled"])
+        self.assertTrue(r.decide(events, {"szibis"}, "labeled")[0])
+        self.assertEqual(len(seen), 2)
+        url, auth, body = seen[0]
+        self.assertEqual((url, auth), ("https://api.github.com/graphql", "Bearer tok"))
+        self.assertEqual(body["variables"], {"owner": "o", "name": "r", "pr": 451, "after": None})
+        self.assertEqual(seen[1][2]["variables"]["after"], "CUR1")
+        for item in ("LABELED_EVENT", "UNLABELED_EVENT", "PULL_REQUEST_COMMIT", "HEAD_REF_FORCE_PUSHED_EVENT"):
+            self.assertIn(item, body["query"])
+
+    def test_graphql_errors_fail_closed(self):
+        with self.assertRaises(RuntimeError):
+            self.run_fetch([{"errors": [{"message": "boom"}]}])
+
+
 class Cli(unittest.TestCase):
     def run_cli(self, events, approvers="szibis\n", env=None, extra=()):
         with tempfile.TemporaryDirectory() as d:
