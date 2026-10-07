@@ -579,9 +579,9 @@ def test_the_keyorder_form_joins_the_seed_check_when_the_state_has_the_fixture(t
 # ---- behaviours a second mutation run showed unpinned ----
 
 def test_an_incomplete_run_says_why_on_stderr(capsys):
-    with pytest.raises(SystemExit) as e:
-        raise runner.Incomplete("seed equality failed for x")
-    assert e.value.code == 2 and "seed equality failed for x" in capsys.readouterr().err
+    exc = runner.Incomplete("seed equality failed for x")  # the reason is written when the exception is made
+    assert isinstance(exc, SystemExit) and exc.code == 2 and "seed equality failed for x" in capsys.readouterr().err
+    assert str(exc) == "incomplete run: seed equality failed for x"
 
 
 def test_the_keyorder_tenant_is_account_7_on_every_target():
