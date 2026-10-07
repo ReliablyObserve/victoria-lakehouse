@@ -208,6 +208,7 @@ func compareExtrasTrace(t *testing.T, tn extrasTenant, id string, withTraceAPIs 
 	if compared < 60 {
 		t.Fatalf("vacuous: only %d event/link/scope fields on the reference side", compared)
 	}
+	reportLockCells(t, compared)
 
 	if !withTraceAPIs {
 		return
@@ -558,6 +559,7 @@ func TestParity_Traces_EventsLinksInvalidUTF8(t *testing.T) {
 				t.Errorf("%s: cold %q, hot %q", k, cold[k], v)
 			}
 		}
+		reportLockCells(t, len(hot))
 		for k := range cold {
 			if _, ok := hot[k]; !ok {
 				t.Errorf("cold has %s, hot does not", k)

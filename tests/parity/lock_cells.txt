@@ -4,3 +4,6 @@
 TestParity_AllColumnSortTieOrder  1  # B8 sort tie order: provisional until measured
 TestParity_PhrasePruning_Logs     1  # provisional until measured
 TestParity_PhrasePruning_Traces   1  # provisional until measured
+TestParity_Traces_EventsLinksLayers  1  # provisional until measured
+TestParity_Traces_EventsLinksInvalidUTF8  1  # provisional until measured
+TestParity_Traces_EventsLinksScopeAttrs  1  # provisional until measured

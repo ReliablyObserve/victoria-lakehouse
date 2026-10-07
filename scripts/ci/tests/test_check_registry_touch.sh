@@ -766,7 +766,12 @@ for mod in github.com/klauspost/compress github.com/golang/snappy google.golang.
 done
 lock_helper_touch() { printf '// x\n' >> tests/parity/lock_cells_test.go; }
 run_case "the lock-cells helper is a gate file" fail "changes the registry gate itself" lock_helper_touch
-x_submodule_registry_entry() { registry_row_change; git update-index --add --cacheinfo 160000,0123456789012345678901234567890123456789,tests/conformance/registry/rows/lh/zz_sub; git commit -q -m "add a gitlink"; }
+x_submodule_registry_entry() {
+  registry_row_change
+  # a nested repository is recorded by `git add -A` as a gitlink (mode 160000)
+  local sub=tests/conformance/registry/rows/lh/zz_sub
+  git init -q "$sub" && git -C "$sub" -c user.name=t -c user.email=t@e commit -q --allow-empty -m x
+}
 run_case "S: a submodule entry in the registry is rejected like a symlink" fail "symlink or submodule" x_submodule_registry_entry
 
 head_rev_case() {

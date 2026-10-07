@@ -193,6 +193,7 @@ func parityExtrasLogsQueryRows(t *testing.T, ids []string) {
 	if events == 0 || links == 0 || scope == 0 {
 		t.Fatalf("vacuous: compared %d event fields, %d link fields, %d scope fields", events, links, scope)
 	}
+	reportLockCells(t, events+links+scope)
 	t.Logf("compared %d traces: %d event, %d link, %d scope fields", len(ids), events, links, scope)
 }
 
