@@ -68,6 +68,10 @@ NON_RELEASE_FILES = {
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
+    # Test-stack only: the loki-vl-proxy image used by the e2e/proof/benchmark
+    # compose files, never shipped. Exact file, not a prefix, so the shipped
+    # Dockerfiles under deployment/ stay release-impacting.
+    "deployment/docker/Dockerfile.loki-vl-proxy",
 }
 
 RELEASE_METADATA_FILES = {
@@ -261,7 +265,7 @@ def is_release_commit(subject: str) -> bool:
 
 
 def is_release_path(path: str) -> bool:
-    if is_unit_test_only_path(path):
+    if is_unit_test_only_path(path) or path in NON_RELEASE_FILES:
         return False
     if path in IMPACTFUL_FILES:
         return True

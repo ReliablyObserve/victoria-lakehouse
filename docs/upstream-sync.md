@@ -327,3 +327,14 @@ branch protected, so the token's reach is the `upstream-sync/*` branches it is m
 The publish step applies the `dependencies` and `upstream-sync` labels but never creates
 them, so create `upstream-sync` once with `gh label create upstream-sync`. A missing label is
 noted in the run summary and never blocks the pull request.
+
+## loki-vl-proxy tracks the latest release
+
+The Loki-facing test stack (e2e, proof and benchmark compose files) uses the newest
+loki-vl-proxy release. `.github/workflows/loki-vl-proxy-bump.yaml` runs daily, compares the
+newest release with `ARG VERSION` in `deployment/docker/Dockerfile.loki-vl-proxy`, and when
+newer opens or updates one pull request titled `deps: loki-vl-proxy vX.Y.Z for the e2e/proof
+stack [skip release]` (the proxy is not shipped). It reuses `scripts/ci/upstream_sync_publish.sh`
+and the same token (`UPSTREAM_SYNC_TOKEN`, falling back to `TOKEN_GITHUB`), and never merges.
+`scripts/ci/loki_vl_proxy_bump.sh` is self-tested by `scripts/ci/tests/loki_vl_proxy_bump_test.sh`.
+Before merging a bump, read the release notes and check that the compose flags still exist.

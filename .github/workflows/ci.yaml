@@ -565,6 +565,10 @@ jobs:
       - name: Upstream sync publish self-test
         run: scripts/ci/tests/upstream_sync_publish_test.sh
 
+      # The daily loki-vl-proxy bump: pin comparison and the one-line bump commit.
+      - name: loki-vl-proxy bump self-test
+        run: scripts/ci/tests/loki_vl_proxy_bump_test.sh
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

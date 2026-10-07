@@ -1,0 +1,78 @@
+# Daily loki-vl-proxy bump. The e2e / proof / benchmark compose stacks track the
+# latest loki-vl-proxy release (owner rule: "use latest loki-vl-proxy always").
+# This job compares the newest release with the pin in
+# deployment/docker/Dockerfile.loki-vl-proxy and, when newer, opens (or updates)
+# ONE pull request, "deps: loki-vl-proxy vX.Y.Z ... [skip release]", through the
+# same publish script and token the upstream sync probe uses. The proxy is not
+# shipped, hence [skip release]. It never merges anything.
+#
+# Token: UPSTREAM_SYNC_TOKEN, falling back to TOKEN_GITHUB, never GITHUB_TOKEN
+# (see upstream-check.yaml and docs/upstream-sync.md).
+name: loki-vl-proxy bump
+
+on:
+  schedule:
+    - cron: '30 8 * * *'
+  workflow_dispatch:
+    inputs:
+      latest:
+        description: 'Version to bump to (default: the newest release), X.Y.Z'
+        required: false
+        type: string
+      dry_run:
+        description: 'Report only: do not open or update the pull request'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loki-vl-proxy-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Check the newest loki-vl-proxy release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Probe
+        id: probe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST_INPUT: ${{ inputs.latest }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MATRIX: ${{ runner.temp }}/lvp-bump.md
+          FACTS: ${{ runner.temp }}/lvp-bump.env
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_WORKSPACE" --workdir "$RUNNER_TEMP/lvp-bump" --out "$MATRIX" --env-out "$FACTS")
+          if [ -n "${LATEST_INPUT:-}" ]; then args+=(--latest "$LATEST_INPUT"); fi
+          if [ "${DRY_RUN:-false}" = "true" ]; then args+=(--no-pr); fi
+          scripts/ci/loki_vl_proxy_bump.sh "${args[@]}"
+          cat "$FACTS" >> "$GITHUB_OUTPUT"
+          cat "$MATRIX" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the bump pull request
+        if: steps.probe.outputs.open_pr == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.TOKEN_GITHUB }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.probe.outputs.branch }}
+          TITLE: ${{ steps.probe.outputs.title }}
+          MATRIX: ${{ runner.temp }}/lvp-bump.md
+        run: |
+          scripts/ci/upstream_sync_publish.sh \
+            --clone "$RUNNER_TEMP/lvp-bump/repo" \
+            --branch "$BRANCH" \
+            --base "$GITHUB_REF_NAME" \
+            --matrix "$MATRIX" \
+            --title "$TITLE" \
+            --summary "$GITHUB_STEP_SUMMARY"
