@@ -89,7 +89,7 @@ ResultKey = tuple[str, str]
 
 # The line tests/parity/lock_cells_test.go prints: no t.Helper there, so go test
 # prefixes the helper's own file and line, which a test cannot forge from its file.
-LOCK_CELLS_LINE = re.compile(r"^\s*lock_cells_test\.go:\d+: lock-cells (Test\w+) (\d+)\s*$")
+LOCK_CELLS_LINE = re.compile(r"^\s*lock_cells_test\.go:(\d+): lock-cells (\S+) (Test\w+) (\d+)\s*$")
 
 
 @dataclass
@@ -182,7 +182,15 @@ class GoTestRun:
         return {pkg for pkg, _ in self.started | self.results.keys()}
 
 
-def parse_go_test_json(lines: Iterable[str]) -> GoTestRun:
+def helper_line(helper_source: str) -> int | None:
+    """The line of the t.Logf in tests/parity/lock_cells_test.go that prints the cells."""
+    for number, line in enumerate(helper_source.splitlines(), start=1):
+        if 't.Logf("lock-cells' in line:
+            return number
+    return None
+
+
+def parse_go_test_json(lines: Iterable[str], nonce: str | None = None, expect_line: int | None = None) -> GoTestRun:
     """Collect test results, started tests, package failures and panics.
 
     Lines that are not JSON (a `docker compose` banner, a truncated line) are
@@ -207,10 +215,16 @@ def parse_go_test_json(lines: Iterable[str]) -> GoTestRun:
             if output.startswith(PANIC_PREFIX) and package not in run.panics:
                 run.panics[package] = (test, output.strip())
             m = LOCK_CELLS_LINE.match(output)
-            # Only the shared helper's own line counts, and only for the test that printed it.
-            if m and (test == m.group(1) or test.startswith(m.group(1) + "/")):
-                key = (package, m.group(1))
-                run.cells[key] = run.cells.get(key, 0) + int(m.group(2))
+            # Only the shared helper's own file:line counts, with the run's nonce, for the
+            # test test2json attributes the output to.
+            if (
+                m
+                and (test == m.group(3) or test.startswith(m.group(3) + "/"))
+                and (nonce is None or m.group(2) == nonce)
+                and (expect_line is None or int(m.group(1)) == expect_line)
+            ):
+                key = (package, m.group(3))
+                run.cells[key] = run.cells.get(key, 0) + int(m.group(4))
             continue
         if not test:
             if action == "fail" and package:
@@ -360,13 +374,15 @@ def parse_lock_cells(text: str) -> dict[str, int]:
     return out
 
 
-def lock_tests(rows_dir: str, repo_root: str | None = None) -> dict[str, list[str]]:
+def lock_tests(rows_dir: str, repo_root: str | None = None, bare: list[str] | None = None) -> dict[str, list[str]]:
     """Top-level parity tests that registry locks reference: {test: [row ids]}.
 
     A lock is a row with ``expect: pass`` and an exact-equivalent compare (a
     ``pending`` row counts: the parity job, not the row runner, executes its test).
-    ``tests/parity/<file>_test.go#TestName`` names the test; a bare
-    ``tests/parity/<file>_test.go`` names every top-level test of that file.
+    ``tests/parity/<file>_test.go#TestName`` names the test. A bare
+    ``tests/parity/<file>_test.go`` is refused when the file holds tests (the
+    reference is appended to ``bare``): a lock names its tests. A bare reference to a
+    file without tests (shared helpers) is ignored.
     """
     import yaml  # PyYAML: the parity job installs it for this check
 
@@ -393,14 +409,14 @@ def lock_tests(rows_dir: str, repo_root: str | None = None) -> dict[str, list[st
                         continue
                     if test and "/" not in test:
                         found.setdefault(test, []).append(row.get("id", "?"))
-                    elif not test and repo_root:
+                    elif not test and repo_root and bare is not None:
                         try:
                             with open(os.path.join(repo_root, path), encoding="utf-8") as fh:
                                 text = fh.read()
                         except OSError:
                             continue
-                        for t in re.findall(r"^func (Test(?:[A-Z0-9_]\w*)?)\(", text, re.M):
-                            found.setdefault(t, []).append(row.get("id", "?"))
+                        if re.search(r"^func Test(?:[A-Z0-9_]\w*)?\(", text, re.M):
+                            bare.append(f"{row.get('id', '?')} -> {path}")
     return found
 
 
@@ -620,11 +636,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    nonce = None
+    expect_line = None
+    if args.lock_cells:
+        # The cells lines must come from the helper's own file:line and carry the nonce the
+        # workflow step generated for this run: a test cannot print a believable line without both.
+        nonce = os.environ.get("PARITY_LOCK_NONCE", "")
+        if not nonce:
+            print("parity_ratchet: PARITY_LOCK_NONCE is not set: the parity job must export a fresh "
+                  "random value before it runs the suite and the ratchet", file=sys.stderr)
+            return 1
+        helper = os.path.join(os.path.dirname(os.path.abspath(args.lock_cells)), "lock_cells_test.go")
+        with open(helper, encoding="utf-8") as fh:
+            expect_line = helper_line(fh.read())
+        if expect_line is None:
+            print(f"parity_ratchet: no t.Logf(\"lock-cells ...\") line in {helper}", file=sys.stderr)
+            return 1
     if args.results == "-":
-        run = parse_go_test_json(sys.stdin)
+        run = parse_go_test_json(sys.stdin, nonce, expect_line)
     else:
         with open(args.results, encoding="utf-8", errors="replace") as fh:
-            run = parse_go_test_json(fh)
+            run = parse_go_test_json(fh, nonce, expect_line)
 
     with open(args.allowlist, encoding="utf-8") as fh:
         allowlist = parse_allowlist(fh.read())
@@ -644,7 +676,12 @@ def main(argv: list[str] | None = None) -> int:
             floors = parse_lock_cells(fh.read())
     if args.registry:
         repo_root = os.path.abspath(os.path.join(args.registry, "..", "..", "..", ".."))
-        locks = lock_tests(args.registry, repo_root)
+        bare: list[str] = []
+        locks = lock_tests(args.registry, repo_root, bare)
+        if bare:
+            print("parity_ratchet: lock rows that name a whole tests/parity test file instead of its tests "
+                  "(use file#TestName): " + ", ".join(sorted(bare)), file=sys.stderr)
+            return 1
         # A registry lock that names a test must give it a cell floor.
         missing = sorted(t for t in locks if floors is not None and t not in floors and _named(args.registry, t))
         if missing:

@@ -27,9 +27,9 @@ const lockCallDepth = 4
 // PackageFiles lists the .go files of one package directory at a revision.
 type PackageFiles func(dir string) []string
 
-// lockTestRefs groups the lock rows' test references by file: the named tests
+// LockTestRefs groups the lock rows' test references by file: the named tests
 // of each file, or nil for a bare file reference (every test of the file).
-func lockTestRefs(rows ...map[string]RowLite) map[string]map[string]bool {
+func LockTestRefs(rows ...map[string]RowLite) map[string]map[string]bool {
 	out := map[string]map[string]bool{}
 	for _, rs := range rows {
 		for _, r := range rs {
@@ -199,27 +199,18 @@ func hasInit(src []byte) bool {
 
 // LockCodeChanges lists the lock code a PR changed: a file that is lock code at
 // the merge base or at head and differs between them (edited, or deleted), and
-// in the package of every lock a NEW file that is not a _test.go file or that
-// declares init() or TestMain. New test functions in new _test.go files are free.
+// in the package of every lock a NEW file that declares init() or TestMain, and,
+// in a package under tests/ (never in product code), a NEW non-test file. New test functions in new _test.go files are free.
 func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles) ([]string, error) {
 	b, err := LockCodeFiles(baseRefs, baseSrc, baseList)
 	if err != nil {
 		return nil, fmt.Errorf("at the merge base: %w", err)
 	}
-	h, err := LockCodeFiles(headRefs, headSrc, headList)
-	if err != nil {
-		return nil, fmt.Errorf("at head: %w", err)
-	}
+	// Only locks that already exist at the merge base are protected: a lock a PR adds is
+	// judged by the lock rules (named test, floor, owner review of the row itself), and
+	// editing the test it names is how a parity fix is written.
 	var out []string
-	reasons := map[string]string{}
-	for f, why := range b {
-		reasons[f] = why
-	}
-	for f, why := range h {
-		if _, ok := reasons[f]; !ok {
-			reasons[f] = why
-		}
-	}
+	reasons := b
 	for f, why := range reasons {
 		bs, hs := baseSrc(f), headSrc(f)
 		if bs == nil {
@@ -231,9 +222,6 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 	}
 	dirs := map[string]bool{}
 	for f := range baseRefs {
-		dirs[filepath.ToSlash(filepath.Dir(f))] = true
-	}
-	for f := range headRefs {
 		dirs[filepath.ToSlash(filepath.Dir(f))] = true
 	}
 	for d := range dirs {
@@ -248,6 +236,9 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 			data := headSrc(p)
 			switch {
 			case !strings.HasSuffix(p, "_test.go"):
+				if !strings.HasPrefix(d+"/", "tests/") {
+					continue // product code: a new product file is a product change, judged by rule 1
+				}
 				out = append(out, fmt.Sprintf("%s: lock code changed — owner review (a new non-test file in the package of a lock)", p))
 			case hasInit(data):
 				out = append(out, fmt.Sprintf("%s: lock code changed — owner review (a new file with init() in the package of a lock)", p))

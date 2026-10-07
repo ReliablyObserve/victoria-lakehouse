@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 
 from scripts.ci.parity_ratchet import (
@@ -542,8 +543,16 @@ ROWS = """
 """
 
 
+NONCE = "n0nce-abc123"
+HELPER_LINE = 27
+
+
+def cell_text(test, n, nonce=NONCE, line=HELPER_LINE):
+    return f"    lock_cells_test.go:{line}: lock-cells {nonce} {test.split('/')[0]} {n}\n"
+
+
 def cell_event(test, n, package=PKG, text=None):
-    out = text if text is not None else f"    lock_cells_test.go:27: lock-cells {test.split('/')[0]} {n}\n"
+    out = text if text is not None else cell_text(test, n)
     return json.dumps({"Action": "output", "Package": package, "Test": test, "Output": out})
 
 
@@ -566,8 +575,11 @@ class RegistryLockTests(unittest.TestCase):
     def test_every_exact_pass_row_with_a_parity_test_is_a_lock_pending_included(self):
         got = lock_tests(self.rows, self.root)
         self.assertEqual({k: sorted(v) for k, v in got.items()},
-                         {"TestLockA": ["lh.lock.exact", "lh.second"], "TestPending": ["lh.lock.pending"],
-                          "TestBareOne": ["lh.bare"], "TestBareTwo": ["lh.bare"]})
+                         {"TestLockA": ["lh.lock.exact", "lh.second"], "TestPending": ["lh.lock.pending"]})
+        # a bare reference names no test: it is reported instead, once per row and file
+        bare = []
+        lock_tests(self.rows, self.root, bare)
+        self.assertEqual(bare, ["lh.bare -> tests/parity/bare_test.go"])
 
     def test_a_bare_file_reference_needs_the_repo_root(self):
         self.assertNotIn("TestBareOne", lock_tests(self.rows))
@@ -646,11 +658,17 @@ class RegistryLockTests(unittest.TestCase):
             # forged: bare text
             cell_event("TestLockA", 0, text="lock-cells TestLockA 999\n"),
             # forged: reported for another test
-            cell_event("TestOther", 0, text="    lock_cells_test.go:27: lock-cells TestLockA 999\n"),
+            cell_event("TestOther", 0, text=cell_text("TestLockA", 999)),
             # forged: a different file whose name merely ends the same way
-            cell_event("TestLockA", 0, text="    zz_lock_cells_test.go:27: lock-cells TestLockA 999\n"),
+            cell_event("TestLockA", 0, text="    zz_lock_cells_test.go:27: lock-cells " + NONCE + " TestLockA 999\n"),
+            # forged: the right file with the wrong line (the helper's t.Logf is on line 27)
+            cell_event("TestLockA", 0, text=cell_text("TestLockA", 999, line=28)),
+            # forged: the right line with a guessed, default or missing nonce
+            cell_event("TestLockA", 0, text=cell_text("TestLockA", 999, nonce="guess")),
+            cell_event("TestLockA", 0, text=cell_text("TestLockA", 999, nonce="-")),
+            cell_event("TestLockA", 0, text="    lock_cells_test.go:27: lock-cells TestLockA 999\n"),
         ]
-        run = parse_go_test_json(stream)
+        run = parse_go_test_json(stream, NONCE, HELPER_LINE)
         self.assertEqual(run.cells, {(PKG, "TestLockA"): 7})
 
     def test_parse_lock_cells(self):
@@ -682,18 +700,51 @@ class RegistryLockTests(unittest.TestCase):
             fh.write(text)
         return path
 
-    def run_main(self, events_lines, floors, extra=()):
+    HELPER = "package parity\n" + "\n" * (HELPER_LINE - 2) + '\tt.Logf("lock-cells %s %s %d", nonce, root, n)\n'
+
+    def run_main(self, events_lines, floors, extra=(), nonce=NONCE, helper=None):
         results = self.write("r.json", "\n".join(events_lines) + "\n")
         allow = self.write("a.txt", "# min-pass: 1\n")
         args = ["--results", results, "--allowlist", allow, *extra]
         if floors is not None:
             args += ["--lock-cells", self.write("lock_cells.txt", floors)]
+            self.write("lock_cells_test.go", self.HELPER if helper is None else helper)
         out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
+        env = {"PARITY_LOCK_NONCE": nonce} if nonce is not None else {}
+        with unittest.mock.patch.dict(os.environ, env, clear=False), redirect_stdout(out), redirect_stderr(err):
+            if nonce is None:
+                os.environ.pop("PARITY_LOCK_NONCE", None)
             code = main(args)
         return code, out.getvalue(), err.getvalue()
 
+    def test_a_lock_row_naming_a_test_file_is_refused_by_main(self):
+        good = [json.dumps({"Action": "pass", "Package": PKG, "Test": "TestLockA"})]
+        code, _, err = self.run_main(good, "TestLockA 1\n", ["--registry", self.rows])
+        self.assertEqual(code, 1)
+        self.assertIn("name a whole tests/parity test file instead of its tests", err)
+        self.assertIn("lh.bare -> tests/parity/bare_test.go", err)
+
+    def test_a_bare_reference_to_a_helper_file_is_ignored(self):
+        with open(os.path.join(self.root, "tests", "parity", "helpers_test.go"), "w", encoding="utf-8") as fh:
+            fh.write("package parity\n\nfunc helper() {}\n")
+        bare = []
+        lock_tests_ = lock_tests(self.rows, self.root, bare)
+        with open(os.path.join(self.rows, "lh", "rows.yaml"), "a", encoding="utf-8") as fh:
+            fh.write("- {id: lh.helpers, title: h, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/helpers_test.go]}}\n")
+        bare2 = []
+        lock_tests(self.rows, self.root, bare2)
+        self.assertEqual(sorted(bare2), sorted(bare), "a file without tests names no test")
+
+    def use_named_rows(self):
+        rows = os.path.join(self.rows, "lh", "rows.yaml")
+        with open(rows, encoding="utf-8") as fh:
+            text = fh.read()
+        text = text.replace("tests/parity/bare_test.go, tests/parity/sub/deep_test.go", "tests/parity/bare_test.go#TestBareOne, tests/parity/bare_test.go#TestBareTwo")
+        with open(rows, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
     def test_main_with_floors_and_registry(self):
+        self.use_named_rows()
         good = [
             json.dumps({"Action": "run", "Package": PKG, "Test": "TestLockA"}), cell_event("TestLockA", 12),
             json.dumps({"Action": "pass", "Package": PKG, "Test": "TestLockA"}),
@@ -702,23 +753,35 @@ class RegistryLockTests(unittest.TestCase):
         ]
         for t in ("TestBareOne", "TestBareTwo"):
             good += [json.dumps({"Action": "run", "Package": PKG, "Test": t}), json.dumps({"Action": "pass", "Package": PKG, "Test": t})]
-        floors = "TestLockA 10\nTestPending 2\n"
+        floors = "TestLockA 10\nTestPending 2\nTestBareOne 2\nTestBareTwo 2\n"
+        good = good + [cell_event("TestBareOne", 2), cell_event("TestBareTwo", 2)]
         code, out, err = self.run_main(good, floors, ["--registry", self.rows])
         self.assertEqual((code, err), (0, ""), out)
         # the early return: no cells
-        early = [l for l in good if "lock-cells TestLockA" not in l]
+        early = [l for l in good if f"lock-cells {NONCE} TestLockA" not in l]
         code, out, _ = self.run_main(early, floors, ["--registry", self.rows])
         self.assertEqual(code, 1)
         self.assertIn("compared 0 cells", out)
         # a named registry lock without a floor is refused outright
-        code, _, err = self.run_main(good, "TestLockA 10\n", ["--registry", self.rows])
+        code, _, err = self.run_main(good, "TestLockA 10\nTestBareOne 2\nTestBareTwo 2\n", ["--registry", self.rows])
         self.assertEqual(code, 1)
         self.assertIn("without a floor in lock_cells.txt: TestPending", err)
-        # a bare file reference holds the tests to passing, not to a count
-        no_bare = [l for l in good if "TestBareTwo" not in l]
+        # a named lock that did not run
+        no_bare = [l for l in good if "TestBareTwo" not in l and "TestBareTwo" not in l]
         code, out, _ = self.run_main(no_bare, floors, ["--registry", self.rows])
         self.assertEqual(code, 1)
         self.assertIn("TestBareTwo did not report a result", out)
+        # the run's nonce is mandatory when floors are, and the helper must hold its Logf
+        code, _, err = self.run_main(good, floors, ["--registry", self.rows], nonce=None)
+        self.assertEqual(code, 1)
+        self.assertIn("PARITY_LOCK_NONCE is not set", err)
+        code, _, err = self.run_main(good, floors, ["--registry", self.rows], helper="package parity\n")
+        self.assertEqual(code, 1)
+        self.assertIn("no t.Logf", err)
+        # a line printed with another nonce counts for nothing
+        code, out, _ = self.run_main(good, floors, ["--registry", self.rows], nonce="a-different-run")
+        self.assertEqual(code, 1)
+        self.assertIn("compared 0 cells", out)
         # the registry option is optional
         self.assertEqual(self.run_main(early, floors)[0], 1, "floors alone still hold TestLockA")
         self.assertEqual(self.run_main(early, None)[0], 0)

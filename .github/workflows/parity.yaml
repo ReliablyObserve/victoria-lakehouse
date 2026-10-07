@@ -296,6 +296,13 @@ jobs:
         if: steps.detect.outputs.relevant == 'true'
         run: |
           set +e
+          # A fresh random nonce for this run: the lock helper prints it with every cell count
+          # and the ratchet accepts only lines that carry it. It is exported to the next step
+          # (the ratchet) through GITHUB_ENV and into the test container through the compose
+          # file, so nothing in the repository can know it in advance.
+          PARITY_LOCK_NONCE=$(openssl rand -hex 16)
+          export PARITY_LOCK_NONCE
+          echo "PARITY_LOCK_NONCE=$PARITY_LOCK_NONCE" >> "$GITHUB_ENV"
           docker compose -f tests/parity/docker-compose.yml --profile test run --rm --no-deps -T parity-tests \
             go test -tags=parity -json -count=1 -timeout=15m ./... > parity-results.json
           echo "go test exit code: $?"

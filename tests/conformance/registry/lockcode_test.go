@@ -54,7 +54,7 @@ func parityTree() tree {
 
 func TestLockCodeFiles_CallGraph(t *testing.T) {
 	tr := parityTree()
-	refs := lockTestRefs(lockRows("tests/parity/lock_test.go#TestLock"))
+	refs := LockTestRefs(lockRows("tests/parity/lock_test.go#TestLock"))
 	got, err := LockCodeFiles(refs, tr.src, tr.list)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestLockCodeFiles_CallGraph(t *testing.T) {
 		t.Error("judge.go is reached through RunParity")
 	}
 	// a bare file reference makes every test of the file a lock
-	bare, _ := LockCodeFiles(lockTestRefs(lockRows("tests/parity/lock_test.go")), tr.src, tr.list)
+	bare, _ := LockCodeFiles(LockTestRefs(lockRows("tests/parity/lock_test.go")), tr.src, tr.list)
 	if _, ok := bare["tests/parity/judge.go"]; !ok {
 		t.Error("a bare reference holds the helpers too")
 	}
@@ -86,7 +86,7 @@ func TestLockCodeFiles_ProductPackagesKeepProductCodeOut(t *testing.T) {
 		"internal/x/product.go":     "package x\n\nfunc Product() {}\n",
 		"internal/x/helper_test.go": "package x\n\nfunc helper() {}\n",
 	}
-	got, err := LockCodeFiles(lockTestRefs(lockRows("internal/x/lock_test.go#TestLock")), tr.src, tr.list)
+	got, err := LockCodeFiles(LockTestRefs(lockRows("internal/x/lock_test.go#TestLock")), tr.src, tr.list)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,14 +100,14 @@ func TestLockCodeFiles_ProductPackagesKeepProductCodeOut(t *testing.T) {
 
 func TestLockCodeFiles_ParseError(t *testing.T) {
 	tr := tree{"tests/parity/lock_test.go": "package parity\nfunc ("}
-	if _, err := LockCodeFiles(lockTestRefs(lockRows("tests/parity/lock_test.go#TestLock")), tr.src, tr.list); err == nil {
+	if _, err := LockCodeFiles(LockTestRefs(lockRows("tests/parity/lock_test.go#TestLock")), tr.src, tr.list); err == nil {
 		t.Error("a package the gate cannot read is an error")
 	}
 }
 
 func TestLockCodeChanges(t *testing.T) {
 	base := parityTree()
-	refs := lockTestRefs(lockRows("tests/parity/lock_test.go#TestLock"))
+	refs := LockTestRefs(lockRows("tests/parity/lock_test.go#TestLock"))
 	edit := func(f func(tree)) tree {
 		h := tree{}
 		for k, v := range base {
@@ -146,11 +146,11 @@ func TestLockCodeChanges(t *testing.T) {
 		h["tests/parity/zz_test.go"] = "package parity\n\nfunc init() { go func() {}() }\n"
 	}), 1, "a new file with init()")
 	check("a new test file without init() is free", edit(func(h tree) { h["tests/parity/zz_test.go"] = "package parity\n\nfunc helperOnly() {}\n" }), 0, "")
-	// a file that is lock code at head only (a row newly referencing it) is judged by its change too
-	headRefs := lockTestRefs(lockRows("tests/parity/lock_test.go#TestLock", "tests/parity/other_test.go#TestNotALock"))
+	// a lock added by this PR is not protected yet: editing the test it names is how a parity fix is written
+	headRefs := LockTestRefs(lockRows("tests/parity/lock_test.go#TestLock", "tests/parity/other_test.go#TestNotALock"))
 	got, err := LockCodeChanges(refs, headRefs, base.src, edit(func(h tree) { h["tests/parity/other_test.go"] += "// x\n" }).src, base.list, base.list)
-	if err != nil || len(got) != 1 || !strings.Contains(got[0], "other_test.go") {
-		t.Errorf("a newly referenced file edited in the same PR: %v %v", got, err)
+	if err != nil || len(got) != 0 {
+		t.Errorf("a newly referenced file edited in the same PR is free: %v %v", got, err)
 	}
 }
 
@@ -160,8 +160,23 @@ func TestLockTestRefs_OnlyExactRowsAndTestFiles(t *testing.T) {
 		"b": {ID: "b", Expect: "pass", Compare: "status", CompareMap: map[string]any{"type": "status"}, Tests: []string{"x/c_test.go#TestC"}},
 		"c": {ID: "c", Expect: "differ", Compare: "exact-json", CompareMap: map[string]any{"type": "exact-json"}, Tests: []string{"x/d_test.go#TestD"}},
 	}
-	got := lockTestRefs(rows)
+	got := LockTestRefs(rows)
 	if len(got) != 2 || !got["x/a_test.go"]["TestA"] || !got["x/b_test.go"][""] {
 		t.Errorf("%v", got)
+	}
+}
+
+func TestLockCodeChanges_ProductPackageNewFileIsFree(t *testing.T) {
+	base := tree{"internal/p/p_test.go": "package p\n\nimport \"testing\"\n\nfunc TestLock(t *testing.T) {}\n"}
+	head := tree{"internal/p/p_test.go": base["internal/p/p_test.go"], "internal/p/new.go": "package p\n\nfunc init() {}\n"}
+	refs := LockTestRefs(lockRows("internal/p/p_test.go#TestLock"))
+	got, err := LockCodeChanges(refs, refs, base.src, head.src, base.list, head.list)
+	if err != nil || len(got) != 0 {
+		t.Errorf("a new product file is a product change, not lock code: %v %v", got, err)
+	}
+	head["internal/p/new_test.go"] = "package p\n\nfunc init() {}\n"
+	got, _ = LockCodeChanges(refs, refs, base.src, head.src, base.list, head.list)
+	if len(got) != 1 || !strings.Contains(got[0], "new_test.go") {
+		t.Errorf("a new test file with init() in a product lock package still counts: %v", got)
 	}
 }

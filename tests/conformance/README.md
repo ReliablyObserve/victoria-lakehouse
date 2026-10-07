@@ -427,10 +427,19 @@ fewer cells than its floor, and refuses a registry lock that names a `file#Test`
 floor may only grow: adding a test or raising a number is free (a parity fix that adds cells passes
 without the owner), lowering or removing one is a weakening. A lock test renamed or moved keeps its
 row only if the new name has at least the old floor. The helper file and the ratchet are gate files, the
-helper prints its line without `t.Helper` so go test prefixes it with its own file name (the ratchet
-accepts only that prefix, for the test that printed it), and a change to the `TestMain` of any package
-that holds a lock needs the owner. A bare `tests/parity/<file>_test.go` reference holds every top-level
-test of that file to passing (no count).
+helper prints its line without `t.Helper` so go test prefixes it with its own file name and line (the ratchet
+accepts only that file:line, for the test test2json attributes it to) and carries a per-run random nonce
+(`PARITY_LOCK_NONCE`, generated in the workflow step, passed to the test container, unknown to the PR). Residual
+risk, stated plainly: code running inside the test process can read that variable, so a lock file that prints a
+forged line is blocked by owner-gating of lock code (below), not by the nonce alone.
+**Lock code is owner-gated.** The gate builds the call graph (depth 4, test files and files under `tests/`
+only) of every lock test that exists at the merge base (a lock the PR itself adds is not protected yet, so a parity fix may edit the test it locks) and fails with "lock code changed — owner review" naming the files when a PR edits a
+lock test file, a helper a lock calls (the judge/compare in `parity_test.go`, `lock_cells_test.go`,
+`rows_ties.go`, ...), or adds an `init()`/`TestMain` file to a package that holds a lock, or a non-test file to such a package under `tests/`. A new test
+function in a new file is free. Every lock names `file#TestName`; a bare file reference is refused for new
+or changed lock rows, and every `tests/parity` lock has a floor in `lock_cells.txt`. The runtime floor applies
+only to `tests/parity` locks (the job that runs them reports cells); locks in other directories are covered
+by the owner-gating of their files.
 Design scored against "any code change to a lock test needs the owner" (assumed, not measured):
 code about 60 lines Go + 90 lines Python, one baseline file; ongoing burden near zero for a parity fix
 that only adds cells, against one owner review per edit of a lock test under the alternative; failure

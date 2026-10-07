@@ -248,6 +248,8 @@ services:
       VT_BASE_URL: http://victoriatraces:10428
       LHT_BASE_URL: http://lakehouse-traces:10428
       LH_PEER_AUTH_KEY: parity-peer-key
+      # The per-run nonce the lock helper prints with its cell counts (parity.yaml).
+      PARITY_LOCK_NONCE: ${PARITY_LOCK_NONCE:-}
       GOWORK: "off"
       GOFLAGS: "-mod=mod"
     command: ["go", "test", "-tags=parity", "-v", "-count=1", "-timeout=10m", "./..."]

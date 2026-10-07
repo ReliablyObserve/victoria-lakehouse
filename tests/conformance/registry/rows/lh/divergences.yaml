@@ -124,7 +124,7 @@
     tests/parity TestParity_ColdRowFields and TestParity_Response/jsonl_structure.
   refs:
     tests:
-      - tests/parity/cold_row_fields_test.go
+      - tests/parity/cold_row_fields_test.go#TestParity_ColdRowFields, tests/parity/cold_row_fields_test.go#TestParity_Traces_ColdSpanFields
       - internal/storage/parquets3/cold_row_fields_test.go
 
 - id: lh.rows.field_set_traces
@@ -148,7 +148,7 @@
     plain spans. Covered by tests/parity TestParity_Traces_ColdSpanFields.
   refs:
     tests:
-      - tests/parity/cold_row_fields_test.go
+      - tests/parity/cold_row_fields_test.go#TestParity_ColdRowFields, tests/parity/cold_row_fields_test.go#TestParity_Traces_ColdSpanFields
       - lakehouse-traces/internal/storage/parquets3/cold_row_fields_test.go
 
 - id: lh.cold.stats_hide_tombstoned_rows
