@@ -296,7 +296,7 @@ func TestParity_FieldValues_EmptyBucket(t *testing.T) {
 			{name: "field_values_absent_everywhere", endpoint: "field_values", query: q, field: "span_attr:nosuch"},
 			{name: "field_values_filtered_query", endpoint: "field_values", query: q + " name:=op2", field: "span_attr:sa"},
 			{name: "field_values_limit1", endpoint: "field_values", query: q, field: "span_attr:sa", extra: map[string]string{"limit": "1"}, pastLimit: true},
-			{name: "field_values_substring_filter_then_limit", endpoint: "field_values", query: q, field: "name", extra: map[string]string{"filter": "op", "limit": "1"}},
+			{name: "field_values_substring_filter_then_limit", endpoint: "field_values", query: q, field: "name", extra: map[string]string{"filter": "op", "limit": "1"}, pastLimit: true},
 			{name: "stream_field_values_name_has_no_empty", endpoint: "stream_field_values", query: q, field: "name"},
 			{name: "stream_field_values_service", endpoint: "stream_field_values", query: q, field: "resource_attr:service.name"},
 			{name: "stream_field_values_non_stream_field", endpoint: "stream_field_values", query: q, field: "span_attr:sa", allowEmpty: true},
