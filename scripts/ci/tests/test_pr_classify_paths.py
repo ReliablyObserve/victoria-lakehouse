@@ -71,6 +71,12 @@ class GoMod(unittest.TestCase):
             old = [l for l in GO_MOD.splitlines() if mod in l][0]
             self.assertFalse(self.only(base.replace(old, old.rsplit(" ", 1)[0] + " v9.9.9")), mod)
 
+    def test_quoted_module_path_on_both_sides_is_still_the_module(self):
+        quoted = GO_MOD.replace("github.com/VictoriaMetrics/c v1.0.0", '"github.com/VictoriaMetrics/c" v1.0.0')
+        self.assertFalse(pc.go_mod_dependency_only(quoted, quoted.replace('c" v1.0.0', 'c" v1.5.0')))
+        self.assertEqual(pc.parse_go_mod(quoted)[0]["github.com/VictoriaMetrics/c"], "v1.0.0")
+        self.assertEqual(pc.parse_go_mod("module x\n\nrequire `github.com/a/b` v1.0.0\n")[0], {"github.com/a/b": "v1.0.0"})
+
     def test_quoted_module_path_is_still_the_module(self):
         head = GO_MOD.replace("github.com/VictoriaMetrics/c v1.0.0", '"github.com/VictoriaMetrics/c" v1.5.0')
         self.assertFalse(self.only(head))

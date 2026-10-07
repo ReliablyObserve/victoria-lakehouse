@@ -53,7 +53,7 @@ run_gate() {
   mkdir -p "$runner"
   (
     cd "$d" || exit 1
-    export RUNNER_TEMP="$runner" BASE_REF=main PR_LABELS= PR_BODY= PR_TITLE="fix: x" PR_AUTHOR=mallory PR_NUMBER=1 EVENT_ACTION=synchronize LABEL_NAME= SENDER=mallory
+    export RUNNER_TEMP="$runner" BASE_REF=main PR_LABELS="" PR_BODY="" PR_TITLE="fix: x" PR_AUTHOR=mallory PR_NUMBER=1 EVENT_ACTION=synchronize LABEL_NAME="" SENDER=mallory
     if [[ "$flavour" == target ]]; then
       # pull_request_target: GATE_DIR is a checkout of the base, the PR is a separate worktree.
       local pr="$runner/pr" base_checkout="$runner/base"
@@ -75,7 +75,7 @@ run_gate() {
 rejected() { [[ $1 -ne 0 ]] && grep -q '^::error::' <<<"$2" && ! grep -q 'go: ' <<<"$2"; }
 
 check() { # check <name> <ok:0|1> [detail]
-  if [[ "$2" == 0 ]]; then echo "ok   - $1"; pass=$((pass + 1)); else echo "FAIL - $1 ${3:-}"; fail=$((fail + 1)); fail_detail=1; fi
+  if [[ "$2" == 0 ]]; then echo "ok   - $1"; pass=$((pass + 1)); else echo "FAIL - $1 ${3:-}"; fail=$((fail + 1)); fi
 }
 
 R="$T/repo"

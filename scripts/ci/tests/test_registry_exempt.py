@@ -34,11 +34,17 @@ class Decide(unittest.TestCase):
         self.assertFalse(r.decide("labeled", "", "szibis", OWNERS)[0])
 
     def test_unknown_actor_denies(self):
-        self.assertFalse(r.decide("labeled", "registry-exempt", "", OWNERS)[0])
-        self.assertFalse(r.decide("labeled", "registry-exempt", None, OWNERS)[0])
+        for who in ("", None):
+            ok, msg = r.decide("labeled", "registry-exempt", who, OWNERS)
+            self.assertFalse(ok)
+            self.assertIn("unknown", msg)
+        # even a blank entry in the approvers file cannot approve an unknown actor
+        self.assertFalse(r.decide("labeled", "registry-exempt", "", {""})[0])
 
     def test_no_approvers_denies(self):
-        self.assertFalse(r.decide("labeled", "registry-exempt", "szibis", set())[0])
+        ok, msg = r.decide("labeled", "registry-exempt", "szibis", set())
+        self.assertFalse(ok)
+        self.assertIn("no approvers are configured", msg)
 
     def test_parse_approvers(self):
         self.assertEqual(r.parse_approvers("# c\nSzibis  # owner\n\n"), {"szibis"})

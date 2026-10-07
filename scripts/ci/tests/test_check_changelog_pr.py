@@ -478,6 +478,13 @@ class CheckChangelogPRTests(unittest.TestCase):
         self.assertTrue(generated_docs_version_naming_only(b2, "- `a` · since: v1.2.4 · x\n", "1.2.3", "1.2.4"))
         self.assertTrue(generated_docs_version_naming_only(b2, "- `a` · since: v1.2.4.\n".replace("v1.2.4.", "v1.2.4 · x"), "1.2.3", "1.2.4"))
 
+    def test_naming_boundary_on_both_versions(self):
+        # v1.2.30 -> v1.2.40 is not the renaming 1.2.3 -> 1.2.4 (the prefixes match, the versions do not)
+        b = "- `a` · since: the release after v1.2.30 · x\n"
+        self.assertFalse(generated_docs_version_naming_only(b, "- `a` · since: v1.2.40 · x\n", "1.2.3", "1.2.4"))
+        self.assertFalse(generated_docs_version_naming_only(b, "- `a` · since: the release after v1.2.40 · x\n", "1.2.3", "1.2.4"))
+        self.assertFalse(generated_docs_version_naming_only(b, "- `a` · since: `1.2.40` · x\n", "1.2.3", "1.2.4"))
+
     def test_naming_a_released_since_is_never_renamed(self):
         # M31: an already released "since: v0.146.4" stays whatever the new release is
         b = "- `a` · since: v0.146.4 · s\n"
