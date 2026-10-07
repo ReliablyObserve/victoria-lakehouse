@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"io"
+	"sort"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
@@ -17,6 +18,8 @@ import (
 // Parquet footer KV); aliasCols holds the promoted Parquet column names the
 // query spelled directly. Together they decide how each column is named and
 // which columns surface at all — see queryFieldName / emitParquetNameAlias.
+// readRowGroupColumnar reads every attribute of the MAP columns it expands; see
+// readRowGroupColumnarKeys to read only some.
 func readRowGroupColumnar(
 	f *parquet.File,
 	rg parquet.RowGroup,
@@ -26,6 +29,24 @@ func readRowGroupColumnar(
 	bitmap []bool,
 	slots schema.SlotMapping,
 	aliasCols map[string]bool,
+) *logstorage.DataBlock {
+	return readRowGroupColumnarKeys(f, rg, wantCols, reg, startNs, endNs, bitmap, slots, aliasCols, nil)
+}
+
+// readRowGroupColumnarKeys is readRowGroupColumnar that, when onlyKeys is not
+// nil, expands from each MAP column only the attributes whose raw key is in
+// the set (a request for one attribute then does not stringify every key and
+// value of the map). Scalar columns are unaffected.
+func readRowGroupColumnarKeys(
+	f *parquet.File,
+	rg parquet.RowGroup,
+	wantCols map[string]bool,
+	reg *schema.Registry,
+	startNs, endNs int64,
+	bitmap []bool,
+	slots schema.SlotMapping,
+	aliasCols map[string]bool,
+	onlyKeys map[string]struct{},
 ) *logstorage.DataBlock {
 	if len(wantCols) == 0 {
 		return nil
@@ -117,7 +138,8 @@ func readRowGroupColumnar(
 	// field of their own.
 	var composite *compositeColumns
 
-	for name, li := range leafMap {
+	for _, name := range orderedLeafNames(leafMap) {
+		li := leafMap[name]
 		if schema.IsCompositeColumn(name) {
 			if len(li.indices) != 1 {
 				continue
@@ -144,6 +166,14 @@ func readRowGroupColumnar(
 			// included), so the two paths cannot drift.
 			internalName, ok := queryFieldName(name, reg, slots)
 			if !ok {
+				continue
+			}
+			// A restricted read (onlyKeys) that does not name _time needs the
+			// timestamps for the row mask only, read above: formatting every
+			// one of them to a string is two allocations per row for nothing.
+			// The column stays, empty, so the block still counts its rows.
+			if _, want := onlyKeys["_time"]; onlyKeys != nil && !want && internalName == "_time" {
+				blockCols = append(blockCols, logstorage.BlockColumn{Name: internalName, Values: make([]string, passCount)})
 				continue
 			}
 
@@ -183,7 +213,7 @@ func readRowGroupColumnar(
 				}
 			}
 			if keyIdx >= 0 && valIdx >= 0 {
-				mapCols := readMapColumnToBlockCols(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name, scalarNames, reg.TopLevelMapKeys())
+				mapCols := readMapColumnToBlockColsKeys(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name, scalarNames, onlyKeys, reg.TopLevelMapKeys())
 				blockCols = append(blockCols, mapCols...)
 			}
 		}
@@ -196,6 +226,7 @@ func readRowGroupColumnar(
 	if len(blockCols) == 0 {
 		return nil
 	}
+	blockCols = mergeDuplicateColumns(blockCols)
 
 	db := &logstorage.DataBlock{}
 	db.SetColumns(blockCols)
@@ -303,6 +334,22 @@ func readMapColumnToBlockCols(
 	promotedKeys map[string]bool,
 	topLevelKeys map[string]bool,
 ) []logstorage.BlockColumn {
+	return readMapColumnToBlockColsKeys(keyChunk, valChunk, numRows, rowMask, passCount, mapColName, promotedKeys, nil, topLevelKeys)
+}
+
+// readMapColumnToBlockColsKeys is readMapColumnToBlockCols that, with onlyKeys
+// not nil, keeps only the entries whose raw key is in the set: the other keys
+// and their values are never turned into strings.
+func readMapColumnToBlockColsKeys(
+	keyChunk, valChunk parquet.ColumnChunk,
+	numRows int,
+	rowMask []bool,
+	passCount int,
+	mapColName string,
+	promotedKeys map[string]bool,
+	onlyKeys map[string]struct{},
+	topLevelKeys map[string]bool,
+) []logstorage.BlockColumn {
 	// Resolved once per column; mapAttrFieldNameWithPrefix applies the shared
 	// naming rule per attribute.
 	prefix := mapColumnToAttrPrefix(mapColName)
@@ -312,6 +359,7 @@ func readMapColumnToBlockCols(
 	type kvEntry struct {
 		key string
 		row int
+		pos int // index of the entry among all entries of the column chunk
 	}
 
 	keyPages := keyChunk.Pages()
@@ -323,9 +371,11 @@ func readMapColumnToBlockCols(
 	keyBuf := make([]parquet.Value, 256)
 	valBuf := make([]parquet.Value, 256)
 
-	// Read all keys with row tracking via repetition levels.
+	// Read the keys with row tracking via repetition levels. With onlyKeys
+	// set, an entry whose key is not in the set is counted (rows and positions
+	// still advance) but neither kept nor turned into a string.
 	var keys []kvEntry
-	rowIdx := 0
+	rowIdx, pos := 0, 0
 	for {
 		page, err := keyPages.ReadPage()
 		if err != nil {
@@ -335,13 +385,25 @@ func readMapColumnToBlockCols(
 		for {
 			n, readErr := vr.ReadValues(keyBuf[:])
 			for i := 0; i < n; i++ {
-				if keyBuf[i].RepetitionLevel() == 0 && len(keys) > 0 {
+				if keyBuf[i].RepetitionLevel() == 0 && pos > 0 {
 					rowIdx++
+				}
+				if onlyKeys != nil {
+					if keyBuf[i].IsNull() {
+						pos++
+						continue
+					}
+					if _, ok := onlyKeys[string(keyBuf[i].ByteArray())]; !ok {
+						pos++
+						continue
+					}
 				}
 				keys = append(keys, kvEntry{
 					key: parquetValueToString(keyBuf[i]),
 					row: rowIdx,
+					pos: pos,
 				})
+				pos++
 			}
 			if readErr != nil {
 				break
@@ -349,9 +411,10 @@ func readMapColumnToBlockCols(
 		}
 	}
 
-	// Read values.
-	var vals []string
-	for {
+	// Read the values of the kept entries only (keys is in position order).
+	vals := make([]string, len(keys))
+	vpos, next := 0, 0
+	for next < len(keys) {
 		page, err := valPages.ReadPage()
 		if err != nil {
 			break
@@ -359,8 +422,12 @@ func readMapColumnToBlockCols(
 		vr := page.Values()
 		for {
 			n, readErr := vr.ReadValues(valBuf[:])
-			for i := 0; i < n; i++ {
-				vals = append(vals, parquetValueToString(valBuf[i]))
+			for i := 0; i < n && next < len(keys); i++ {
+				if vpos == keys[next].pos {
+					vals[next] = parquetValueToString(valBuf[i])
+					next++
+				}
+				vpos++
 			}
 			if readErr != nil {
 				break
@@ -422,4 +489,69 @@ func readMapColumnToBlockCols(
 		})
 	}
 	return result
+}
+
+// mergeDuplicateColumns folds columns that carry the same field name into one:
+// one attribute key present in two MAP columns (resource and log attributes of
+// a log row) is one field, and per row the first non-empty value wins. Without
+// it a row that has the key in only one of them reads as carrying it twice,
+// once empty. Columns keep the order of their first occurrence.
+func mergeDuplicateColumns(cols []logstorage.BlockColumn) []logstorage.BlockColumn {
+	first := make(map[string]int, len(cols))
+	dup := false
+	for i := range cols {
+		if _, ok := first[cols[i].Name]; ok {
+			dup = true
+			break
+		}
+		first[cols[i].Name] = i
+	}
+	if !dup {
+		return cols
+	}
+	first = make(map[string]int, len(cols))
+	out := make([]logstorage.BlockColumn, 0, len(cols))
+	for _, c := range cols {
+		i, ok := first[c.Name]
+		if !ok {
+			first[c.Name] = len(out)
+			out = append(out, c)
+			continue
+		}
+		base := out[i].Values
+		merged := make([]string, len(base))
+		copy(merged, base)
+		for r, v := range c.Values {
+			if r < len(merged) && merged[r] == "" {
+				merged[r] = v
+			}
+		}
+		out[i].Values = merged
+	}
+	return out
+}
+
+// orderedLeafNames lists the projected top-level columns in a fixed order: the
+// attribute MAP columns resource, log, span, scope first (the order OTLP and hot
+// VictoriaLogs/VictoriaTraces see them in), then everything else by name. Where
+// one attribute key is in two MAP columns the first occurrence wins
+// (mergeDuplicateColumns), so the answer must not depend on Go's map order.
+func orderedLeafNames[V any](m map[string]V) []string {
+	rank := map[string]int{"resource.attributes": 0, "log.attributes": 1, "span.attributes": 2, "scope.attributes": 3}
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(a, b int) bool {
+		ra, oka := rank[names[a]]
+		rb, okb := rank[names[b]]
+		switch {
+		case oka && okb:
+			return ra < rb
+		case oka != okb:
+			return !oka // plain columns first, as before; maps keep their relative order
+		}
+		return names[a] < names[b]
+	})
+	return names
 }

@@ -80,11 +80,9 @@ func (a *adapter) GetFieldNames(qctx *logstorage.QueryContext, filter string) ([
 }
 
 func (a *adapter) GetFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	results, err := a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
-	if err != nil {
-		return nil, err
-	}
-	return filterValuesBySubstring(results, filter), nil
+	return valuesFilteredThenLimited(filter, limit, func(limit uint64) ([]logstorage.ValueWithHits, error) {
+		return a.store.GetFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+	})
 }
 
 func (a *adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter string) ([]logstorage.ValueWithHits, error) {
@@ -97,11 +95,38 @@ func (a *adapter) GetStreamFieldNames(qctx *logstorage.QueryContext, filter stri
 }
 
 func (a *adapter) GetStreamFieldValues(qctx *logstorage.QueryContext, fieldName, filter string, limit uint64) ([]logstorage.ValueWithHits, error) {
-	results, err := a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+	return valuesFilteredThenLimited(filter, limit, func(limit uint64) ([]logstorage.ValueWithHits, error) {
+		return a.store.GetStreamFieldValues(qctx.Context, qctx.TenantIDs, qctx.Query, fieldName, limit)
+	})
+}
+
+// valuesFilteredThenLimited answers a values request the way upstream does:
+// the substring filter applies to every value first and the limit to what
+// remains. Limiting first, then filtering, drops matching values behind
+// non-matching ones (and the empty value now takes a slot).
+func valuesFilteredThenLimited(filter string, limit uint64, fetch func(limit uint64) ([]logstorage.ValueWithHits, error)) ([]logstorage.ValueWithHits, error) {
+	if filter == "" {
+		return fetch(limit)
+	}
+	all, err := fetch(0)
 	if err != nil {
 		return nil, err
 	}
-	return filterValuesBySubstring(results, filter), nil
+	filtered := filterValuesBySubstring(all, filter)
+	if len(filtered) == 0 {
+		return filtered, nil
+	}
+	// Upstream (GetStreamFieldValues): sort by hits then value, truncate, and only
+	// then zero the hits. MergeValuesWithHits(..., true) would zero them first
+	// and keep the first values by name instead of the most frequent ones.
+	exceeded := limit > 0 && uint64(len(filtered)) > limit
+	out := logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{filtered}, limit, false)
+	if exceeded {
+		for i := range out {
+			out[i].Hits = 0
+		}
+	}
+	return out, nil
 }
 
 // filterValuesBySubstring narrows results to entries whose Value contains

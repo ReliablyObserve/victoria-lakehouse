@@ -180,6 +180,7 @@ jobs:
           - internal/schema:FuzzResolveToParquet_Traces
           - internal/schema:FuzzSlotMapping
           - internal/schema:FuzzParseFieldType
+          - internal/schema:FuzzParseStreamFields
           - internal/schema:FuzzFormatValue_String
           - internal/schema:FuzzFormatValue_Int64
           - internal/schema:FuzzFormatValue_Float64

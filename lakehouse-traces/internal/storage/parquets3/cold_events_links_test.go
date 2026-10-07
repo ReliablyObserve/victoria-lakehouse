@@ -403,15 +403,19 @@ func TestLabelIndex_EventsLinksFieldNames(t *testing.T) {
 }
 
 // field_values over an event or link field counts, per value, the spans that
-// carry it, as hot VictoriaTraces does; a filter narrows the spans counted.
+// carry it, and the spans that do not under the empty value, as hot
+// VictoriaTraces does; a filter narrows the spans counted.
 func TestCold_EventsLinks_FieldValues(t *testing.T) {
 	_, want, s, start, end := extrasFixtureStorage(t, false)
 	expect := func(field string, keep func(map[string]string) bool) map[string]uint64 {
 		out := map[string]uint64{}
 		for _, w := range want {
-			if v, ok := w[field]; ok && keep(w) {
-				out[v]++
+			if !keep(w) {
+				continue
 			}
+			// A span without the field is one hit of the empty value, as upstream's
+			// uniq counts it.
+			out[w[field]]++
 		}
 		return out
 	}
@@ -424,8 +428,8 @@ func TestCold_EventsLinks_FieldValues(t *testing.T) {
 		{"event name 1", "event:event_name:1", "*", all},
 		{"event attr", "event:event_attr:exception.type:0", "*", all},
 		{"link span id", "link:link_span_id:0", "*", all},
-		// Values of a MAP attribute (span_attr:*, scope_attr:*) are not
-		// enumerable on cold at all today; that is not specific to scope attributes.
+		// Values of a MAP attribute (span_attr:*, scope_attr:*) are covered by
+		// field_values_map_test.go and field_values_map_property_test.go.
 		{"event name filtered by event", "event:event_name:0", `"event:event_name:1":="log"`, func(w map[string]string) bool { return w["event:event_name:1"] == "log" }},
 		{"event name filtered by a link", "event:event_name:0", `"link:link_span_id:0":*`, func(w map[string]string) bool { _, ok := w["link:link_span_id:0"]; return ok }},
 	} {

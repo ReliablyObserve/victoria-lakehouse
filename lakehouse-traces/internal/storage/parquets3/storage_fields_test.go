@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
@@ -254,8 +256,10 @@ func TestGetFieldValues_UnknownField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(vals) != 0 {
-		t.Errorf("expected 0 values for unknown field, got %d", len(vals))
+	// No row carries the field: like hot VictoriaTraces, every row is one hit of
+	// the empty value and nothing else is listed.
+	if len(vals) != 1 || vals[0].Value != "" || vals[0].Hits == 0 {
+		t.Errorf("unknown field = %v, want one empty-value bucket", vals)
 	}
 }
 
@@ -397,23 +401,37 @@ func TestGetStreamIDs_CancelledContext(t *testing.T) {
 	}
 }
 
-func TestGetStreamFieldValues_DelegatesToGetFieldValues(t *testing.T) {
+// stream_field_values lists the tags of the matching streams (forEachStreamField):
+// hits are the spans of each stream, a field that is no tag answers nothing, and
+// the empty value is never listed.
+func TestGetStreamFieldValues_ListsStreamTags(t *testing.T) {
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
 	s := testFieldStorageTraces(t, []fullTraceRow{
-		{TimestampUnixNano: now.UnixNano(), Body: "span1", ServiceName: "api", SpanName: "GET /", TraceID: "t1", SpanID: "s1", Duration: 100000000},
+		{TimestampUnixNano: now.UnixNano(), Body: "span1", ServiceName: "api", SpanName: "GET /", TraceID: "t1", SpanID: "s1", Duration: 100000000, Stream: `{resource_attr:service.name="api",name="GET /"}`},
+		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "span2", ServiceName: "api", SpanName: "GET /", TraceID: "t2", SpanID: "s2", Duration: 100000000, Stream: `{resource_attr:service.name="api",name="GET /"}`},
+		{TimestampUnixNano: now.Add(2 * time.Second).UnixNano(), Body: "span3", ServiceName: "web", TraceID: "t3", SpanID: "s3", Duration: 100000000, Stream: `{resource_attr:service.name="web"}`},
 	})
-
 	q := mustParseQueryWithTime(t, "*",
 		time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC).UnixNano(),
 		time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano(),
 	)
-
-	vals, err := s.GetStreamFieldValues(context.Background(), nil, q, "service.name", 10)
-	if err != nil {
-		t.Fatal(err)
+	got := func(field string, limit uint64) []logstorage.ValueWithHits {
+		vals, err := s.GetStreamFieldValues(context.Background(), nil, q, field, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return vals
 	}
-	if len(vals) != 1 || vals[0].Value != "api" {
-		t.Errorf("expected [{api 1}], got %v", vals)
+	if want := []logstorage.ValueWithHits{{Value: "api", Hits: 2}, {Value: "web", Hits: 1}}; !reflect.DeepEqual(got("resource_attr:service.name", 10), want) {
+		t.Errorf("service = %v, want %v", got("resource_attr:service.name", 10), want)
+	}
+	// The span without a name has no `name` tag: nothing for it, not "".
+	if want := []logstorage.ValueWithHits{{Value: "GET /", Hits: 2}}; !reflect.DeepEqual(got("name", 10), want) {
+		t.Errorf("name = %v, want %v", got("name", 10), want)
+	}
+	// trace_id is a column but no stream tag.
+	if v := got("trace_id", 10); len(v) != 0 {
+		t.Errorf("trace_id = %v, want none (not a stream tag)", v)
 	}
 }
 
@@ -473,7 +491,7 @@ func TestCollectFilteredValues_NilFilter_AllValues(t *testing.T) {
 	}
 }
 
-func TestCollectFilteredValues_EmptyValues_NotIncluded(t *testing.T) {
+func TestGetFieldValues_EmptyValueIsABucket(t *testing.T) {
 	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
 	rows := []fullTraceRow{
 		{TimestampUnixNano: now.UnixNano(), Body: "s1", ServiceName: "alpha", Stream: `{svc="alpha"}`, StreamID: "id1", TraceID: "t1", SpanID: "sp1"},
@@ -490,10 +508,15 @@ func TestCollectFilteredValues_EmptyValues_NotIncluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A row with an empty value is one hit of "", as on hot VictoriaLogs/VictoriaTraces.
+	var empty uint64
 	for _, v := range vals {
 		if v.Value == "" {
-			t.Error("empty string values should not be included in results")
+			empty = v.Hits
 		}
+	}
+	if empty != 1 {
+		t.Errorf("empty-value bucket hits = %d, want 1 (values %v)", empty, vals)
 	}
 }
 

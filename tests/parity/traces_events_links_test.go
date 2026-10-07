@@ -424,9 +424,8 @@ func tempoSearchTraceIDs(t *testing.T, body []byte) []string {
 }
 
 // valueHits reads a field_values response into "value=hits" strings, sorted.
-// The empty value (VictoriaLogs' bucket of rows that lack the field) is left
-// out: the cold tier never lists it, for any optional field, and that is a
-// separate, older difference than the one this test pins.
+// The empty value (the bucket of spans that lack the field) is listed like any
+// other: both tiers count it, so the comparison is exact.
 func valueHits(body []byte) []string {
 	obj, err := parseJSON(body)
 	if err != nil {
@@ -436,9 +435,6 @@ func valueHits(body []byte) []string {
 	for _, e := range asSlice(obj["values"]) {
 		m, _ := e.(map[string]any)
 		if m == nil {
-			continue
-		}
-		if m["value"] == "" {
 			continue
 		}
 		out = append(out, fmt.Sprintf("%v=%v", m["value"], m["hits"]))
