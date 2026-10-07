@@ -206,16 +206,44 @@ func TestLockCodeChanges_ProductLockPackage(t *testing.T) {
 		}
 		return got
 	}
-	head := tree{"internal/p/p_test.go": base["internal/p/p_test.go"], "internal/p/impl.go": "package p\n\nfunc F() { println() }\n"}
-	if got := run(head); len(got) != 1 || !strings.Contains(got[0], "impl.go") {
-		t.Errorf("an existing product file of a lock package is gated: %v", got)
+	cp := func() tree {
+		h := tree{}
+		for k, v := range base {
+			h[k] = v
+		}
+		return h
 	}
-	head = tree{"internal/p/p_test.go": base["internal/p/p_test.go"], "internal/p/impl.go": base["internal/p/impl.go"], "internal/p/new.go": "package p\n\nfunc G() {}\n"}
+	head := cp()
+	head["internal/p/impl.go"] = "package p\n\nfunc F() { println() }\n"
 	if got := run(head); len(got) != 0 {
-		t.Errorf("a new product file with only funcs is free: %v", got)
+		t.Errorf("a product file edit in a lock package is free: %v", got)
 	}
-	head["internal/p/new.go"] = "package p\n\nvar V = 1\n"
+	head = cp()
+	head["internal/p/p_test.go"] += "// x\n"
+	if got := run(head); len(got) != 1 || !strings.Contains(got[0], "p_test.go") {
+		t.Errorf("an existing test file of a lock package is gated: %v", got)
+	}
+	head = cp()
+	delete(head, "internal/p/p_test.go")
 	if got := run(head); len(got) != 1 {
-		t.Errorf("a new product file with a package var is gated: %v", got)
+		t.Errorf("deleting a lock package test file is gated: %v", got)
+	}
+	head = cp()
+	head["internal/p/new.go"] = "package p\n\nvar V = 1\n\nfunc init() {}\n"
+	if got := run(head); len(got) != 0 {
+		t.Errorf("a new non-test product file is free, whatever it declares: %v", got)
+	}
+	head = cp()
+	head["internal/p/new_test.go"] = "package p\n\nfunc TestNew(t *testing.T) {}\n\nfunc helper() {}\n"
+	if got := run(head); len(got) != 0 {
+		t.Errorf("a new func-only test file is free: %v", got)
+	}
+	head["internal/p/new_test.go"] = "package p\n\nvar V = 1\n"
+	if got := run(head); len(got) != 1 {
+		t.Errorf("a new test file with a package var is gated: %v", got)
+	}
+	head["internal/p/new_test.go"] = "package p\n\nfunc TestMain(m *testing.M) {}\n"
+	if got := run(head); len(got) != 1 {
+		t.Errorf("a new test file with TestMain is gated: %v", got)
 	}
 }

@@ -434,20 +434,23 @@ not a security control**: any code in the test process can read the variable and
 only guards against accidental collisions (a stale or copied line). What stops forged cells is the owner gate
 on lock packages below.
 **Lock packages are owner-gated.** A lock package is any directory that holds a lock-referenced test at the
-merge base: `tests/parity`, `tests/e2e`, and every `internal/...` or `lakehouse-traces/...` package with one.
-A PR that edits or deletes an EXISTING `.go` file of such a package (test or plain, any helper), or an existing
-file of the lock suites' runtime config (`tests/parity/` except `lock_cells.txt`, `known_failures.txt` and the
-README; `deployment/docker/docker-compose-e2e.yml`; `deployment/docker/lakehouse-e2e-config.yml`;
-`cmd/datagen/`), fails with `<file>: lock code changed — owner review (<reason>)`. A NEW `.go` file in a lock
-package stays free only if it declares just funcs (tests, fuzz targets, benchmarks, helpers), consts and types:
-a package-level `var` (its initializer runs at load and can repoint shared state), `init()`, `TestMain` or a
-file that does not parse needs the owner. So a parity fix adds its tests in a NEW file. A lock a PR adds itself
-is not protected yet (the merge base decides). Cost, stated plainly: any edit of an existing file in a package
-that holds a lock, product files included, needs the owner's label.
+merge base. In a pure test package (anything under `tests/`: `tests/parity`, `tests/e2e`, ...) a PR that edits or
+deletes ANY existing `.go` file fails with `<file>: lock code changed — owner review (<reason>)`; so does an edit
+or deletion of an existing file of the lock suites' runtime config (`tests/parity/` except `lock_cells.txt`,
+`known_failures.txt` and the README; `deployment/docker/docker-compose-e2e.yml`;
+`deployment/docker/lakehouse-e2e-config.yml`; `cmd/datagen/`). In a product package (`internal/...`,
+`lakehouse-traces/...`, `cmd/...`) only the existing `_test.go` files are gated: product code is what the locks
+verify, so editing it is free. A NEW file is free only if it declares just funcs (tests, fuzz targets,
+benchmarks, helpers), consts and types: in a pure test package that applies to every new `.go` file, in a product
+package to new `_test.go` files (new non-test files there are free). A package-level `var` (its initializer runs
+at load and can repoint shared state), `init()`, `TestMain` or a file that does not parse needs the owner. So a
+parity fix adds its tests in a NEW file. A lock a PR adds itself is not protected yet (the merge base decides).
 Residual risk of the call-graph helper search (it names the reason a file is lock code, depth 4 inside the
 lock test's own package, product code excluded): it does not follow func values, calls into other packages, or
 chains deeper than 4. The whole-package rule covers the package of every lock test regardless; a helper in a
-different package that a lock calls is only reached if that package holds a lock too.
+different package that a lock calls is only reached if that package holds a lock too. Product code in a lock
+package is deliberately free, so a lock that compares through product code is protected by the locks being
+the check on that code, not by this gate.
 Every lock names `file#TestName`; a bare file reference is refused for new or changed lock rows, and every
 `tests/parity` lock has a floor in `lock_cells.txt`. The runtime floor applies only to `tests/parity` locks (the
 job that runs them reports cells); locks elsewhere are covered by the owner gate of their packages.

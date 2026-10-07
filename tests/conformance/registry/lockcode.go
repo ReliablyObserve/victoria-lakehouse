@@ -237,13 +237,16 @@ func declaresOnlyTests(path string, src []byte) (string, error) {
 // LockCodeChanges lists the lock code a PR changed, judged against the locks that
 // exist at the merge base (a lock the PR adds itself is not protected yet).
 //
-//  1. A lock package is a directory that holds a lock-referenced test file. An
-//     existing .go file of it (test or plain, any helper) that the PR edits or
-//     deletes is lock code: a package shares state, so any file of it can make a
-//     lock compare something else.
-//  2. A NEW .go file in a lock package is free when it declares only funcs, consts
-//     and types. A package-level var, init() or TestMain, or a file that does not
-//     parse, is lock code.
+//  1. A lock package is a directory that holds a lock-referenced test file. In a pure
+//     test package (anything under tests/) every existing .go file that the PR edits
+//     or deletes is lock code: the package shares state, so any file of it can make a
+//     lock compare something else. In a product package (internal/..., lakehouse-traces/...,
+//     cmd/...) only the existing _test.go files count; product code is what the locks
+//     verify, so editing it is free.
+//  2. A NEW .go file in a pure test package, or a NEW _test.go file in a product package,
+//     is free when it declares only funcs, consts and types. A package-level var, init()
+//     or TestMain, or a file that does not parse, is lock code. New non-test files in a
+//     product package are free.
 //  3. Existing files of the lock suites' runtime configuration (lockRuntimeConfig)
 //     that the PR edits or deletes.
 //  4. The call-graph helper search (LockCodeFiles) names the reason for the files it
@@ -269,20 +272,32 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 		dirs[filepath.ToSlash(filepath.Dir(f))] = true
 	}
 	for d := range dirs {
+		pureTest := strings.HasPrefix(d+"/", "tests/")
 		inBase := map[string]bool{}
 		for _, p := range baseList(d) {
 			inBase[p] = true
+			// In a pure test package every file is lock support. In a product package only the
+			// test files are: product code is what the locks verify, not a way to game them.
+			if !pureTest && !strings.HasSuffix(p, "_test.go") {
+				continue
+			}
 			bs, hs := baseSrc(p), headSrc(p)
 			if hs == nil || !bytes.Equal(bs, hs) {
 				reason := "an existing file of a package that holds a lock test"
+				if !pureTest {
+					reason = "an existing test file of a package that holds a lock test"
+				}
 				if r, ok := why[p]; ok {
 					reason = r + "; any file of that package can change what it compares"
+					if !pureTest {
+						reason = r
+					}
 				}
 				flag(p, reason)
 			}
 		}
 		for _, p := range headList(d) {
-			if inBase[p] {
+			if inBase[p] || (!pureTest && !strings.HasSuffix(p, "_test.go")) {
 				continue
 			}
 			bad, perr := declaresOnlyTests(p, headSrc(p))
