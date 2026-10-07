@@ -294,10 +294,30 @@ reference fails. Existing unlinked tests need no backfill (`go run ./tests/confo
 `Test` prefix are not tests. The engine is `registry/testlinks.go`; the command is `cmd/testlinks`.
 
 **Exempt without ceremony** (decided before any label is read):
-- release-metadata PRs: only `CHANGELOG.md`, `README.md` and `charts/victoria-lakehouse/Chart.yaml`;
-  the Chart.yaml diff is limited to `version` and `appVersion`, a README diff to version numbers, and
-  the CHANGELOG diff may only move existing text under a new `## [x.y.z] - date` heading; the PR
-  author is the release bot (`github-actions[bot]`) or an approver;
+- release-metadata PRs. The files are exactly `CHANGELOG.md`, `charts/victoria-lakehouse/Chart.yaml`
+  (required), `README.md` (optional badge) and the regenerated `docs/features.md` (optional;
+  `UPSTREAM_COVERAGE.md` and the inventory carry no version naming and may not change). Each file
+  is held to its release shape:
+  - `CHANGELOG.md`: exactly one new `## [x.y.z] - date` section directly below `[Unreleased]`, with
+    x.y.z newer than the newest section. Text may move only between `[Unreleased]`, the new section
+    and the previously newest section (a merge of main into the metadata branch moves bullets
+    there); every older section is byte-identical, and no line may be lost, added, edited or
+    duplicated.
+  - `Chart.yaml`: only the top-level `version` and `appVersion` lines change, both to that same
+    x.y.z, which is newer than the base chart version; every other byte is identical (no stripping).
+  - `README.md`: identical once version numbers are replaced.
+  - `docs/features.md`: identical line for line, in order, except `since:` / `Changelog:` values
+    that turn "the release after vOLD" (OLD = the previously newest release) into vNEW, `NEW` or
+    "the release after vNEW". A `since:` swapped between features, a reordered line, or any other
+    version change fails. A feature that still has an Unreleased bullet is named "the release
+    after vX", so every release renames it. The auto-release workflow regenerates the file with
+    `confgen -write` (and reverts every other generated file); `make conformance-gen` does the
+    same by hand.
+  - The PR author is the release bot (`github-actions[bot]`) or an approver, and when the
+    repository has tags, the release tag `vx.y.z` exists.
+  Which gate checks what: `check_changelog_pr.py` (changelog-check) decides the file set,
+  the CHANGELOG shape and the `docs/features.md` naming; `pr_classify.py` (the registry gate)
+  reuses those and adds the author, Chart.yaml, README and tag checks.
 - dependency-only PRs: only `go.mod`, `go.sum` and `requirements*.txt`, every commit `build(deps…)`
   or `chore(deps…)`, and in `go.mod` only `require` version lines change (no `replace`, `go`,
   `toolchain` or other directive, and no `github.com/VictoriaMetrics/*` module);
@@ -358,3 +378,14 @@ Only the owner's exemption (above) lets one through.
 
 Self-test: `bash scripts/ci/tests/test_check_registry_touch.sh` and
 `python3 -m unittest scripts/ci/tests/test_registry_exempt.py`.
+
+## Release skip (`[skip release]`)
+
+`auto-release.yaml` does not release a push whose commit subject, or whose merged pull request's
+title, contains `[skip release]` (`scripts/ci/release_skip.py`). The PR is looked up from the
+pushed commit (`GET /commits/{sha}/pulls`), so squash, merge and rebase merges all work; a job
+re-run re-reads the title. If the lookup fails three times the push is not released, the run
+summary says why and the run turns red; a manual `workflow_dispatch` run (main only, never
+skipped, optional `pr` input for labels and size) releases. The loki-vl-proxy sync probe commit
+carries the marker itself; a product follow-up commit pushed on that sync PR would not release
+either, so give such a PR its own title without the marker.

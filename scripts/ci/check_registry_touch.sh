@@ -272,9 +272,10 @@ product_reason=$(class_field reason)
 
 has_exempt_label=""
 case ",${PR_LABELS:-}," in *,registry-exempt,*) has_exempt_label=1 ;; esac
-# "Registry: none — <reason>" (em dash, en dash or hyphen), reason non-empty.
+# "Registry: none — <reason>" (em dash, en dash or hyphen), reason non-empty;
+# it may sit in a Markdown quote (`> Registry: none — …`).
 has_exempt_body=""
-if grep -qE '^[[:space:]]*Registry:[[:space:]]*none[[:space:]]*(—|–|--?)[[:space:]]+[[:alnum:]]' <<< "${PR_BODY:-}"; then
+if grep -qE '^[[:space:]>]*Registry:[[:space:]]*none[[:space:]]*(—|–|--?)[[:space:]]+[[:alnum:]]' <<< "${PR_BODY:-}"; then
   has_exempt_body=1
 fi
 

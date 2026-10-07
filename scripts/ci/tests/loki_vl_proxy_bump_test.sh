@@ -52,7 +52,11 @@ check "3 status" "$(fact status)" bump-available
 check "3 open_pr" "$(fact open_pr)" true
 check "3 branch" "$(fact branch)" deps/loki-vl-proxy-latest
 check "3 title" "$(fact title)" "deps: loki-vl-proxy v2.4.1 for the e2e/proof stack [skip release]"
-check "3 subject" "$(g -C "$TMP/work/repo" log -1 --format=%s)" "deps: probe upstream sync loki-vl-proxy v2.4.1"
+check "3 subject" "$(g -C "$TMP/work/repo" log -1 --format=%s)" "deps: probe upstream sync loki-vl-proxy v2.4.1 [skip release]"
+# upstream_sync_publish.sh recognises a probe commit by this prefix; the
+# [skip release] suffix must not break the match.
+subject="$(g -C "$TMP/work/repo" log -1 --format=%s)"
+check "3 subject keeps the probe prefix" "$([[ "$subject" == "deps: probe upstream sync "* ]] && echo yes || echo no)" "yes"
 check "3 email" "$(g -C "$TMP/work/repo" log -1 --format=%ce)" "github-actions[bot]@users.noreply.github.com"
 check "3 pin" "$(sed -n 's/^ARG VERSION=//p' "$TMP/work/repo/deployment/docker/Dockerfile.loki-vl-proxy")" 2.4.1
 check "3 only pin changed" "$(g -C "$TMP/work/repo" diff --stat HEAD~1 | tail -1 | tr -s ' ')" " 1 file changed, 1 insertion(+), 1 deletion(-)"

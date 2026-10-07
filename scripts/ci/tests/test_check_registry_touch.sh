@@ -436,7 +436,6 @@ run_case "a test moved to another file of its package with the reference updated
 
 echo
 echo "== exemptions =="
-PR_AUTHOR=szibis run_case "a release-metadata PR by an approver passes" ok "skipped (release-metadata PR)" materialize_release 9.9.9
 COMMIT_MSG='build(deps): bump y' run_case "a dependency-only PR passes" ok "skipped (dependency-only PR)" dependency_bump
 run_case "a go.mod bump under a non-dependency commit subject is product (kills the commit-subject mutant)" fail "shipped build file: go.mod" dependency_bump
 run_case "a docs-only PR passes" ok "registry-touch check OK" docs_only
@@ -616,12 +615,20 @@ PR_AUTHOR=szibis run_case "M2: a version-only chart bump with the changelog mate
 PR_AUTHOR=github-actions[bot] run_case "M2: the same by the release bot is release metadata" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
 PR_AUTHOR=mallory run_case "M2: the same by anyone else is not" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_version_bump_with_changelog
 run_case "M2: the same with no author known is not" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_version_bump_with_changelog
+chart_appversion_downgrade() { chart_version_bump_with_changelog; sedi 's/^appVersion: "9.9.9"/appVersion: "0.120.0"/' charts/victoria-lakehouse/Chart.yaml; }
+PR_AUTHOR=szibis run_case "N13: an appVersion downgrade hidden in a release PR is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_appversion_downgrade
+chart_reindent() { chart_version_bump_with_changelog; sedi 's/^name: c/ name: c/' charts/victoria-lakehouse/Chart.yaml; }
+PR_AUTHOR=szibis run_case "N9: a whitespace change in Chart.yaml is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_reindent
 PR_AUTHOR=szibis run_case "M2: a chart description edit hidden in a release PR is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_description_edit_with_changelog
 PR_AUTHOR=szibis run_case "M2: a hand-written changelog bullet in a release PR is not release metadata" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" changelog_new_bullet_with_chart
-PR_AUTHOR=szibis PR_LABELS=registry-exempt run_case "L3: an exempt PR needs no body line for a stray label" ok "skipped (release-metadata PR)" materialize_release 9.9.9
+PR_AUTHOR=szibis PR_LABELS=registry-exempt run_case "L3: an exempt PR needs no body line for a stray label" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
 run_case "S3: a chart README is documentation" ok "registry-touch check OK" chart_templates_md
 run_case "S2: a chart test_*.sh script is a test" ok "registry-touch check OK" chart_test_script
 run_case "S3: a chart template file is product even when it is .txt" fail "packaged/patched: charts/victoria-lakehouse/templates/NOTES.txt" chart_template_file
+REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY=$'## Summary\n\n> Registry: none — a quoted reason' \
+  run_case "M3: the body line may sit in a Markdown blockquote" ok "approver 'szibis'" product_change
+REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY=$'text Registry: none — not at the line start' \
+  run_case "M3: the body line must start its line" fail "no 'Registry: none" product_change
 for body in 'Registry: none —' 'Registry: none —    ' 'Registry: none -' 'Registry: none —  .'; do
   REGISTRY_EXEMPT_EVENTS_FILE=$OWNER_EV PR_LABELS=registry-exempt PR_BODY="$body" run_case "S9: an empty reason ('$body') is rejected" fail "no 'Registry: none" product_change
 done
@@ -863,6 +870,122 @@ FIXTURE
 }
 
 run_materialization_case
+
+echo
+echo "== a release whose feature still has an Unreleased bullet carries the regenerated catalog =="
+
+# PR #440 merged after a release commit, so its bullet stayed under
+# [Unreleased] while the new version heading appeared: the feature's "since:
+# the release after vX" wording changed and `confgen -check` reported
+# docs/features.md stale. The release-metadata PR then must carry the
+# regenerated docs/features.md and still pass BOTH gates (changelog gate and
+# registry gate). Negatives: the same PR plus a product file, and plus a
+# non-generated doc, is no longer a release-metadata sync.
+run_unreleased_bullet_case() {
+  local name="a release-metadata PR with a feature still unreleased passes both gates with the regenerated features.md; extra product or non-generated files do not"
+  local tmp
+  tmp="$(clone_repo "$name")" || return 0
+  local log="$tmp/log" ok=1 why=""
+  : > "$log"
+  check_step() {
+    local what="$1"
+    shift
+    if ! (cd "$tmp/repo" && "$@") >>"$log" 2>&1; then
+      ok=0
+      why="$why
+       - $what"
+    fi
+  }
+  # expect_fail <description> <command...>: the command must exit non-zero.
+  expect_fail() {
+    local what="$1"
+    shift
+    if (cd "$tmp/repo" && "$@") >>"$log" 2>&1; then
+      ok=0
+      why="$why
+       - $what"
+    fi
+  }
+  local bullet='{ print } /^## \[Unreleased\]$/ { print ""; print "### Added"; print ""; print "- **Touch-check release fixture.** Added by scripts/ci/tests/test_check_registry_touch.sh." }'
+
+  (
+    cd "$tmp/repo" || exit 1
+    rewrite CHANGELOG.md "$bullet"
+    cat >> tests/conformance/registry/features/ops.yaml <<'FIXTURE'
+
+- id: lh.feature.ops.touch_check_release_fixture
+  title: Touch-check release fixture
+  status: shipped
+  area: ops
+  surfaces: [cli]
+  tests:
+    - scripts/ci/tests/test_check_registry_touch.sh
+  highlight: "**Release fixture**: added by scripts/ci/tests/test_check_registry_touch.sh."
+  description: >-
+    A shipped fixture feature whose changelog entry is unreleased, appended to a throwaway clone
+    to replay a release. It never exists in the repository itself.
+  changelog_bullets:
+    - 'Touch-check release fixture.'
+FIXTURE
+    GOWORK=off go run ./tests/conformance/cmd/confgen -write
+    git add -A
+    git commit -q -m "feature merged"
+    git branch -q base
+    # The release commit materializes the heading; the fixture bullet then
+    # lands again under [Unreleased] (a PR merged after the release commit).
+    # The release cut the heading; the fixture bullet (merged after the release
+    # commit) stays under [Unreleased]: only the heading is inserted.
+    rewrite CHANGELOG.md '/^## \[[0-9]/ && !done { print "## [99.0.0] - 2026-01-01"; print ""; done = 1 } { print }'
+    sed -i.bak -E 's/^version: .*/version: 99.0.0/; s/^appVersion: .*/appVersion: "99.0.0"/' charts/victoria-lakehouse/Chart.yaml && rm -f charts/victoria-lakehouse/Chart.yaml.bak
+    git add CHANGELOG.md charts/victoria-lakehouse/Chart.yaml
+    git commit -q -m "chore: release metadata for v99.0.0 [skip release]"
+    git -c tag.gpgsign=false tag v99.0.0
+  ) >>"$log" 2>&1
+
+  expect_fail "confgen -check reports docs/features.md stale on the metadata commit" \
+    env GOWORK=off go run ./tests/conformance/cmd/confgen -check
+  check_step "regeneration succeeds" env GOWORK=off go run ./tests/conformance/cmd/confgen -write
+  check_step "regeneration changes docs/features.md" bash -c '! git diff --quiet -- docs/features.md'
+  check_step "the regenerated file is committed" bash -c 'git add docs/features.md UPSTREAM_COVERAGE.md README.md && git commit -q -m "regenerate"'
+  check_step "only CHANGELOG.md, Chart.yaml and generated documents differ from base" \
+    bash -c '! git diff --name-only base HEAD | grep -vxE "CHANGELOG.md|charts/victoria-lakehouse/Chart.yaml|docs/features.md|UPSTREAM_COVERAGE.md|README.md"'
+  check_step "the registry gate passes" env SKIP_CONFGEN_CHECK= PR_AUTHOR=szibis bash "$CHECKER" base
+  check_step "the registry gate reports a release-metadata PR" \
+    bash -c 'out=$(python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers); echo "$out"; git diff --stat base HEAD; git diff base HEAD -- docs/features.md | grep "^[-+]" | head -20; grep -qx "exempt=release-metadata" <<<"$out"'
+  check_step "the changelog gate passes" \
+    python3 scripts/ci/check_changelog_pr.py --base base --head HEAD
+
+  # Negatives, each one commit on top.
+  check_step "a product file is added" bash -c 'echo "package server" > internal/zz_relmeta_fixture.go && git add -A && git commit -q -m "product"'
+  check_step "the product PR is no longer a release-metadata PR" \
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
+  check_step "the product PR is classified as product" \
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "product=1"'
+  expect_fail "the registry gate fails a metadata-looking PR that also changes a product file" \
+    env SKIP_CONFGEN_CHECK= PR_AUTHOR=szibis bash "$CHECKER" base
+  check_step "the product file is dropped and a non-generated doc added" \
+    bash -c 'git rm -q internal/zz_relmeta_fixture.go && echo x > docs/zz-relmeta-fixture.md && git add -A && git commit -q -m "doc"'
+  check_step "a non-generated doc is not a release-metadata PR" \
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
+  check_step "the non-generated doc is dropped and docs/features.md gets a change beyond version naming" \
+    bash -c 'git rm -q docs/zz-relmeta-fixture.md && echo "an invented line" >> docs/features.md && git add -A && git commit -q -m "features edit"'
+  check_step "a features.md change beyond version naming is not a release-metadata PR" \
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
+  check_step "the changelog gate does not call it a release metadata sync" \
+    bash -c '! python3 scripts/ci/check_changelog_pr.py --base base --head HEAD | grep -q "release metadata sync"'
+
+  if [[ $ok -eq 1 ]]; then
+    echo "ok   - $name"
+    pass=$((pass + 1))
+  else
+    echo "FAIL - $name:$why"
+    sed 's/^/       log: /' "$log"
+    fail=$((fail + 1))
+  fi
+  rm -rf "$tmp"
+}
+
+run_unreleased_bullet_case
 
 echo
 echo "$pass passed, $fail failed"

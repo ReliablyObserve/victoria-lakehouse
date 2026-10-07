@@ -88,11 +88,13 @@ git -C "$clone" diff --quiet && die "the pin was not rewritten"
 
 # The commit subject must start with the prefix upstream_sync_publish.sh
 # recognises as a probe commit, so a maintainer's follow-up commit on the branch
-# is never overwritten.
+# is never overwritten. It also carries `[skip release]`: GitHub's default squash
+# subject for a one-commit PR is this subject, not the PR title, so the marker
+# must be in the commit (the sync PR changes a non-shipped Dockerfile only).
 GIT_COMMITTER_NAME="$SYNC_GIT_NAME" GIT_COMMITTER_EMAIL="$SYNC_GIT_EMAIL" \
 	GIT_AUTHOR_NAME="$SYNC_GIT_NAME" GIT_AUTHOR_EMAIL="$SYNC_GIT_EMAIL" \
 	git -C "$clone" -c commit.gpgsign=false -c core.hooksPath=/dev/null \
-	commit --quiet -am "deps: probe upstream sync loki-vl-proxy v$LATEST"
+	commit --quiet -am "deps: probe upstream sync loki-vl-proxy v$LATEST [skip release]"
 
 {
 	printf '## loki-vl-proxy bump\n\n'
