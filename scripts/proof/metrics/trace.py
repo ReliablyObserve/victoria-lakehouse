@@ -7,6 +7,7 @@ non-CHILD_OF references. The Tempo API answers OTLP/JSON with base64 ids.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .common import FacetResult, UnknownShape, cap_inexact, delta_score, dumps, set_scores, to_number
@@ -27,7 +28,7 @@ def _int(v: Any) -> int | None:
     if isinstance(v, str) and v.strip().lstrip("-").isdigit():
         return int(v.strip())
     n = to_number(v)
-    return None if n is None or n != n or n in (float("inf"), float("-inf")) else int(n)
+    return None if n is None or math.isnan(n) or math.isinf(n) else int(n)
 
 
 def _plain(v: Any) -> Any:

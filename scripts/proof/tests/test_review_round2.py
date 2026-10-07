@@ -30,7 +30,8 @@ FIX = os.path.join(HERE, "..", "fixtures", "cases")
 
 
 def recorded(name):
-    return json.load(open(os.path.join(REC, name + ".json")))["body"]
+    with open(os.path.join(REC, name + ".json"), encoding="utf-8") as fh:
+        return json.load(fh)["body"]
 
 
 def A(body, status=200, ms=10.0, **kw):
@@ -391,7 +392,8 @@ def test_row_score_tolerance_is_passed_to_the_classifier():
 
 def test_coverage_file_is_git_ignored():
     root = os.path.join(HERE, "..", "..", "..")
-    lines = open(os.path.join(root, ".gitignore")).read().splitlines()
+    with open(os.path.join(root, ".gitignore"), encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
     assert ".coverage" in lines
 
 

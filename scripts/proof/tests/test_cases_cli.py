@@ -66,7 +66,8 @@ def test_recorded_known_gap_shapes():
 def test_no_fixture_mentions_internal_material():
     for dirpath, _, files in os.walk(FIX):
         for f in files:
-            txt = open(os.path.join(dirpath, f)).read().lower()
+            with open(os.path.join(dirpath, f), encoding="utf-8") as fh:
+                txt = fh.read().lower()
             assert "claude" not in txt and "design-doc" not in txt
 
 

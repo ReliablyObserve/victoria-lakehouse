@@ -226,3 +226,12 @@ def test_otlp_decode_and_compare():
 def test_jaeger_otlp_decoders_survive_junk():
     assert decode_jaeger(None) == {} and decode_jaeger({"data": None}) == {}
     assert decode_jaeger({"data": [{"traceID": "t", "spans": [{"spanID": "s"}]}]})["t"]["s"]["service"] is None
+
+
+def test_exact_int_parsing_and_nan_inf_timestamps():
+    from scripts.proof.metrics.trace import _int
+    assert _int("1791357600000000001") == 1791357600000000001  # no float rounding
+    assert _int(7) == 7 and _int(True) is None and _int(None) is None
+    assert _int(float("nan")) is None and _int("NaN") is None
+    assert _int(float("inf")) is None and _int("-Inf") is None
+    assert _int(2.9) == 2 and _int("abc") is None

@@ -7,7 +7,8 @@ import pytest
 from scripts.proof.metrics.ties import explained_by_truncated_tie, tie_group_query
 
 GOLDEN = os.path.join(os.path.dirname(__file__), "..", "..", "..", "tests", "parity", "testdata", "tiecut_golden.json")
-DOC = json.load(open(GOLDEN))
+with open(GOLDEN, encoding="utf-8") as _fh:
+    DOC = json.load(_fh)
 
 
 @pytest.mark.parametrize("c", DOC["query_cases"], ids=lambda c: c["query"])

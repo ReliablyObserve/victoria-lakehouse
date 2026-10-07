@@ -32,8 +32,10 @@ REC = os.path.join(HERE, "recorded")
 def rec(name):
     f = os.path.join(REC, name + ".json")
     if os.path.exists(f):
-        return json.load(open(f))
-    return json.load(gzip.open(f + ".gz"))
+        with open(f, encoding="utf-8") as fh:
+            return json.load(fh)
+    with gzip.open(f + ".gz", "rt", encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 def ans(body, status=200, ms=10.0, ctype="application/json", **extra):
