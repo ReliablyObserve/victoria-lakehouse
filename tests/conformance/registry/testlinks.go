@@ -1,13 +1,20 @@
 package registry
 
 import (
+	"bytes"
 	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/scanner"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,11 +24,6 @@ import (
 // top-level Go Test or Fuzz function a PR adds, in the packages that carry
 // behaviour, must be named by a row's `refs.tests` or a feature's `tests:`, and
 // a reference to a test the PR removed or renamed must not be left behind.
-
-// testFuncRe matches a top-level Go test or fuzz function. Methods, helpers
-// and TestMain are not tests: `Test` must be followed by a non-lowercase rune
-// (the go tool's own rule), so `Testify` is a helper, not a test.
-var testFuncRe = regexp.MustCompile(`(?m)^func +((?:Test|Fuzz)(?:[^a-z\s(][A-Za-z0-9_]*)?)\(`)
 
 // linkedTestPrefixes are the trees whose tests must be linked. The product
 // packages carry behaviour; the tests/ suites are the cross-cutting proofs.
@@ -49,16 +51,105 @@ func IsLinkedTestFile(path string) bool {
 	return false
 }
 
-// TestFuncs returns the names of the top-level Test and Fuzz functions in a Go
-// test file's source, excluding TestMain.
-func TestFuncs(src []byte) []string {
-	var out []string
-	for _, m := range testFuncRe.FindAllSubmatch(src, -1) {
-		if name := string(m[1]); name != "TestMain" {
-			out = append(out, name)
+// isTestName reports whether a function name is a Go test or fuzz name by the
+// go tool's rule: the prefix must not be followed by a lowercase letter. The
+// name may hold any Unicode letter, which a byte-oriented regexp would miss.
+func isTestName(name string) bool {
+	for _, prefix := range []string{"Test", "Fuzz"} {
+		if rest, ok := strings.CutPrefix(name, prefix); ok {
+			r, _ := utf8.DecodeRuneInString(rest)
+			return rest == "" || !unicode.IsLower(r)
 		}
 	}
-	return out
+	return false
+}
+
+// testDecls parses a Go test file and returns its top-level Test and Fuzz
+// functions (no receiver, TestMain excluded) with their comment-free printed
+// source, so a function counts as modified only when its code changed.
+func testDecls(src []byte) (map[string]string, error) {
+	out := map[string]string{}
+	if len(bytes.TrimSpace(src)) == 0 {
+		return out, nil
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", src, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || !isTestName(fn.Name.Name) || fn.Name.Name == "TestMain" {
+			continue
+		}
+		var buf bytes.Buffer
+		if err := format.Node(&buf, fset, fn); err != nil {
+			return nil, err
+		}
+		out[fn.Name.Name] = tokenText(buf.Bytes())
+	}
+	return out, nil
+}
+
+// tokenText renders Go source as its token sequence without semicolons, so
+// whitespace, line breaks and `;` versus newline never count as a change of
+// code (a string literal keeps its exact text).
+func tokenText(src []byte) string {
+	var sc scanner.Scanner
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(src))
+	sc.Init(file, src, nil, 0)
+	var parts []string
+	for {
+		_, tok, lit := sc.Scan()
+		if tok == token.EOF {
+			break
+		}
+		if tok == token.SEMICOLON {
+			continue
+		}
+		if lit == "" {
+			lit = tok.String()
+		}
+		parts = append(parts, lit)
+	}
+	return strings.Join(parts, " ")
+}
+
+// TestFuncs returns the names of the top-level Test and Fuzz functions in a Go
+// test file's source, excluding TestMain, sorted. Found with go/parser.
+func TestFuncs(src []byte) ([]string, error) {
+	decls, err := testDecls(src)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(decls))
+	for n := range decls {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// ModifiedTests returns the Test and Fuzz functions of a file that exist at
+// head and are new or whose code (comments ignored) differs from base.
+func ModifiedTests(baseSrc, headSrc []byte) ([]string, error) {
+	b, err := testDecls(baseSrc)
+	if err != nil {
+		return nil, err
+	}
+	h, err := testDecls(headSrc)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for n, text := range h {
+		if old, ok := b[n]; !ok || old != text {
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // TestRef is one `path#Name` (or bare `path`) test reference of a row or feature.
@@ -128,7 +219,7 @@ type AddedTest struct {
 // is in both sets and so is not added; a renamed function is removed plus
 // added. baseSrc and headSrc return a file's source at that revision (nil when
 // the file does not exist there).
-func DiffAddedTests(changed []string, baseSrc, headSrc func(path string) []byte) []AddedTest {
+func DiffAddedTests(changed []string, baseSrc, headSrc func(path string) []byte) ([]AddedTest, error) {
 	type key struct{ pkg, name string }
 	base := map[key]bool{}
 	head := map[key]string{}
@@ -137,10 +228,18 @@ func DiffAddedTests(changed []string, baseSrc, headSrc func(path string) []byte)
 			continue
 		}
 		pkg := filepath.ToSlash(filepath.Dir(f))
-		for _, n := range TestFuncs(baseSrc(f)) {
+		bn, err := TestFuncs(baseSrc(f))
+		if err != nil {
+			return nil, fmt.Errorf("%s at the merge base: %w", f, err)
+		}
+		hn, err := TestFuncs(headSrc(f))
+		if err != nil {
+			return nil, fmt.Errorf("%s at head: %w", f, err)
+		}
+		for _, n := range bn {
 			base[key{pkg, n}] = true
 		}
-		for _, n := range TestFuncs(headSrc(f)) {
+		for _, n := range hn {
 			head[key{pkg, n}] = f
 		}
 	}
@@ -156,7 +255,7 @@ func DiffAddedTests(changed []string, baseSrc, headSrc func(path string) []byte)
 		}
 		return out[i].Name < out[j].Name
 	})
-	return out
+	return out, nil
 }
 
 // Linked reports whether some reference names the test: `file#Name`, or the
@@ -206,7 +305,9 @@ func UnlinkedTests(repoRoot string, refs []TestRef) (total int, unlinked []Added
 		}
 		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == "deps" || d.Name() == ".claude" {
+			// Every dot-directory (.git, scratch worktrees, tooling) is
+			// outside the repository's tests, as is the vendored deps tree.
+			if p != repoRoot && (strings.HasPrefix(d.Name(), ".") || d.Name() == "deps") {
 				return fs.SkipDir
 			}
 			return nil
@@ -218,7 +319,11 @@ func UnlinkedTests(repoRoot string, refs []TestRef) (total int, unlinked []Added
 		if rerr != nil {
 			return rerr
 		}
-		for _, n := range TestFuncs(data) {
+		names, perr := TestFuncs(data)
+		if perr != nil {
+			return fmt.Errorf("%s: %w", rel, perr)
+		}
+		for _, n := range names {
 			total++
 			t := AddedTest{Pkg: filepath.ToSlash(filepath.Dir(rel)), Name: n, File: rel}
 			if !Linked(t, refs) {

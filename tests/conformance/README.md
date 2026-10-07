@@ -255,47 +255,74 @@ Checklist:
 
 Owner rule (2026-10-07): no PR merges unless its behaviour changes and its tests are covered by
 registry changes. `scripts/ci/check_registry_touch.sh` (workflow `conformance.yaml`, step
-"Route/handler changes carry registry changes") enforces it, on top of the route/pin and
+"Product changes and new tests are covered in the registry") enforces it, on top of the route/pin and
 feature-catalog rules above.
 
-**Rule 1 — product change needs a registry change.** A PR is product-changing when it changes
-non-test, non-generated Go under `internal/`, `cmd/` or `lakehouse-traces/`, or any file under
-`patches/` or `charts/`. That includes the config defaults: `internal/config/config.go` (`Default()`),
-`internal/config/profile.go`, the flag defaults in `cmd/*/main.go` and `charts/victoria-lakehouse/values*.yaml`.
-PRs that touch only `tests/**`, `*_test.go`, `Makefile`, `scripts/`, `.github/`, docs or test
-dependency manifests (`requirements*.txt`, `package.json` under `tests/`) are not product-changing
-(the changelog gate's release-impacting flag is deliberately not the trigger: it also covers tests
-and infra). A product-changing PR must make a real content change under `registry/rows/` or
-`registry/features/`: comment-only, blank-line and whitespace edits do not count (the check compares
-both revisions with comments, blank lines and indentation removed). Add or update the row that
-describes the changed behaviour; for a Lakehouse capability also the feature.
+**The gate runs from the merge base.** CI builds and runs the gate's code (the script, the
+classifier, the exemption check, `cmd/testlinks`) from the PR's merge base against the PR's diff,
+so a PR cannot disable the gate that judges it. A PR that changes the gate takes effect once
+merged, and until then it is held to the owner exemption (Rule 4).
 
-**Rule 2 — tests are linked (Linking tests).** Applies to every PR, including test-only ones. Every top-level `func Test…` / `func Fuzz…` the PR
-adds in `internal/**`, `cmd/**`, `lakehouse-traces/**`, `tests/parity`, `tests/e2e`,
-`tests/conformance` or `tests/ingestmatrix` must be named by a row (`refs.tests`) or a feature
-(`tests:`), as `path/to/file_test.go#TestName`; a bare `path/to/file_test.go` links every test in
-that file. "Added" is a per-package set comparison against the merge base, so a test moved
-between files of its package is not added, a renamed test is a removal plus an addition, and a
-test moved to another package is an addition. A reference into a test file the PR touched must
-still resolve: removing or renaming a test while leaving its reference fails. Existing unlinked
-tests need no backfill (`go run ./tests/conformance/cmd/testlinks -report-unlinked` counts
-them). `TestMain` and helpers without the `Test` prefix are not tests. The engine is
-`registry/testlinks.go`; the command is `cmd/testlinks`.
+**Rule 1 — product change needs a registry change.** A PR is product-changing when it changes any
+file that is not a test under `internal/`, `cmd/` or `lakehouse-traces/` (Go, embedded UI assets,
+SQL, YAML; only `README.md` and `RUNBOOK.md` are documentation), any file under `patches/` or
+`charts/` (their Markdown and text docs excepted, templates included), or a shipped build file:
+`Dockerfile`, `Dockerfile.logs`, `Dockerfile.traces`, and the root `go.mod` and `go.sum`
+(`lakehouse-traces/go.mod` is covered by its tree). That includes the config defaults:
+`internal/config/config.go` (`Default()`), `internal/config/profile.go`, the flag defaults in
+`cmd/*/main.go` and `charts/victoria-lakehouse/values*.yaml`. A test is `*_test.go`, anything under
+`testdata/`, and `test_*` / `*_test` shell and Python scripts. There is no generated-file
+exclusion: the product trees hold none, and a marker comment must not switch the gate off. PRs that
+touch only tests, `Makefile`, `scripts/`, `.github/`, docs or other Dockerfiles are not
+product-changing. A product-changing PR must make a real content change under `registry/rows/` or
+`registry/features/`: comment-only, blank-line and whitespace edits do not count (the check
+compares both revisions with comments, blank lines and indentation removed). Add or update the row
+that describes the changed behaviour; for a Lakehouse capability also the feature. The job summary
+lists the rows and features the PR adds, changes and removes.
 
-**Exempt without ceremony:** release-metadata PRs, dependency-only PRs (only `go.mod`, `go.sum`,
-`requirements*.txt`, every commit `build(deps…)` or `chore(deps…)`), docs-only and CI-only PRs
-(not product-changing). Upstream pin and patch changes keep the stricter route rule above.
+**Rule 2 — tests are linked (Linking tests).** Applies to every PR, including test-only ones. Every
+top-level `func Test…` / `func Fuzz…` the PR adds in `internal/**`, `cmd/**`, `lakehouse-traces/**`,
+`tests/parity`, `tests/e2e`, `tests/conformance` or `tests/ingestmatrix` must be named by a row
+(`refs.tests`) or a feature (`tests:`), as `path/to/file_test.go#TestName`; a bare
+`path/to/file_test.go` links every test in that file. Tests are found with `go/parser` (any Unicode
+name; a test file that does not parse is an error). "Added" is a per-package set comparison against
+the merge base, so a test moved between files of its package is not added, a renamed test is a
+removal plus an addition, and a test moved to another package is an addition. A reference into a
+test file the PR touched must still resolve: removing or renaming a test while leaving its
+reference fails. Existing unlinked tests need no backfill (`go run ./tests/conformance/cmd/testlinks
+-report-unlinked` counts them; dot-directories are skipped). `TestMain` and helpers without the
+`Test` prefix are not tests. The engine is `registry/testlinks.go`; the command is `cmd/testlinks`.
+
+**Exempt without ceremony** (decided before any label is read):
+- release-metadata PRs: only `CHANGELOG.md`, `README.md` and `charts/victoria-lakehouse/Chart.yaml`;
+  the Chart.yaml diff is limited to `version` and `appVersion`, a README diff to version numbers, and
+  the CHANGELOG diff may only move existing text under a new `## [x.y.z] - date` heading; the PR
+  author is the release bot (`github-actions[bot]`) or an approver;
+- dependency-only PRs: only `go.mod`, `go.sum` and `requirements*.txt`, every commit `build(deps…)`
+  or `chore(deps…)`, and in `go.mod` only `require` version lines change (no `replace`, `go`,
+  `toolchain` or other directive, and no `github.com/VictoriaMetrics/*` module);
+- docs-only and CI-only PRs (not product-changing).
+Upstream pin and patch changes keep the stricter route rule above.
 
 **Exemption by the owner.** A PR with genuinely nothing to cover (a pure refactor, say) is
 exempted by the label `registry-exempt` plus a line starting `Registry: none — <reason>` in the
 PR body. Both are required: the label alone fails. **Only the owner applies the label, and the gate
-enforces it:** it reads the PR's issue events with the Actions token and honours the label only when
-its latest "labeled" event was made by a login listed in `.github/registry-exempt-approvers` (read
-from the merge base, so a PR cannot add itself). It fails closed: an API error, an unknown actor, a
-missing approvers file, or a label last (re-)applied by anyone else denies the exemption, and without
-a token (a local run) the label path fails with a message. The workflow re-runs on `labeled`,
-`unlabeled` and `edited`, so applying the label or editing the body re-evaluates the gate. The
-exemption skips Rules 1-4, not the route/pin and feature-catalog rules.
+enforces it.** It reads the PR timeline (GraphQL, the Actions token) and honours the label only when
+all of these hold: its latest "labeled" event was made by a login listed in
+`.github/registry-exempt-approvers` (read from the merge base, so a PR cannot add itself); no
+commit (authored or committed date) and no force push is later than that event, so the owner
+approved the head being merged; and the run was not triggered by a push (`opened`, `synchronize`,
+`reopened`). Events are ordered by time, then id. It fails closed: an API error, an unknown actor, a
+missing approvers file, or a label last (re-)applied by anyone else denies the exemption, and
+without a token (a local run) the label path fails with a message. The workflow re-runs on
+`labeled`, `unlabeled` and `edited`, one run per PR (a newer run cancels the one in flight).
+The exemption skips Rules 1-4, not the route/pin and feature-catalog rules.
+
+**Rule 4 — the gate itself.** A PR that changes `scripts/ci/check_registry_touch.sh`,
+`pr_classify.py`, `registry_exempt.py`, `check_changelog_pr.py`, `cmd/testlinks`,
+`registry/testlinks.go`, `registry/paritygate.go`, `.github/workflows/conformance.yaml` or
+`.github/registry-exempt-approvers` fails unless it carries the owner's verified exemption.
+`.github/CODEOWNERS` lists the owner for `.github/`, `scripts/ci/` and `tests/conformance/`.
 
 ### Parity fixes ship locks
 
@@ -303,24 +330,31 @@ Owner rule (2026-10-07): every parity we fix needs hardening and detailed tests,
 performance change cannot break the compatibility pattern. `cmd/testlinks` (engine:
 `registry/paritygate.go`) detects a **parity-fix PR** when, against the merge base, the PR
 
-- removes an entry from `tests/parity/known_failures.txt`, or
+- removes an entry from the parity allowlist, or
 - marks a divergence **Resolved** in `docs/parity-and-gaps.md` (a table row whose cell is
   `Resolved` that was not resolved before, including a new row born resolved), or
 - flips a registry row from `expect: differ` (a known gap) to `expect: pass`.
 
 (A fourth signal, "closes #N" on an issue labelled `parity`, is not implemented: the gate does not
-call the GitHub API. Reviewers check it.)
+read issue labels. Reviewers check it.)
 
-Such a PR must also change a `tests/parity/*_test.go` file (the differential suite against hot
-VL/VT, which runs on every PR) **and** add or update a registry row with `expect: pass`,
-`compare: {type: exact-json}` whose `refs.tests` names a changed parity test. The skill asks for
-more (every layer, both signals, both tenant forms, property/fuzz coverage); CI can only check that
-the parity test and the exact lock exist, so reviewers check the breadth.
+Such a PR must ship a **lock**: a registry row with `expect: pass` and an exact-equivalent compare
+(`exact-json`, `count`, `trace`, `ndjson-multiset`, `values-with-hits` with `hits_tolerance` 0,
+`series` with `rel_tolerance` 0) whose `refs.tests` names, as `file#Test`, a function of the
+differential suite `tests/parity` that this PR **added or modified** (comments and whitespace do not
+count as a modification). A bare file reference is not enough, and an unchanged row is not this PR's
+lock. For a `differ`-to-`pass` flip, the flipped row itself must be that lock. The owner's rule asks
+for more (every layer, both signals, both tenant forms, property or fuzz coverage); CI can only check
+that the parity test and the exact lock exist, so reviewers check the breadth.
 
-**Locks are never weakened.** Any PR that adds a `known_failures.txt` entry, flips an exact pass
-row to `differ`, loosens its compare type, or deletes an exact row fails, parity fix or not. Only the
-owner's `registry-exempt` exemption (above) lets one through. Renaming an entry (removing one and
-adding another of the same top-level test) is still a weakening; the message says so. Keep the old
-entry name, or ask the owner for the exemption.
+**Locks are never weakened.** Any PR that fails one of these fails, parity fix or not:
+- adds an allowlist entry (renaming one, that is removing and adding the same top-level test, is
+  still an addition, and the message says so: keep the old entry name or ask the owner);
+- changes an `expect: pass` row in any way that could loosen it: the row deleted, no longer `pass`,
+  its `compare` (type, options such as a tolerance, project) changed, or its `request` changed;
+- deletes or moves the allowlist file, or changes the `--allowlist` argument of the parity workflow
+  (the allowlist path is read from `.github/workflows/parity.yaml` at both revisions).
+Only the owner's exemption (above) lets one through.
 
-Self-test: `bash scripts/ci/tests/test_check_registry_touch.sh`.
+Self-test: `bash scripts/ci/tests/test_check_registry_touch.sh` and
+`python3 -m unittest scripts/ci/tests/test_registry_exempt.py`.

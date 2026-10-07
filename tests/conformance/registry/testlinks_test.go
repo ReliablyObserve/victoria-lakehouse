@@ -11,10 +11,42 @@ import (
 func TestTestFuncs_OnlyRealTests(t *testing.T) {
 	src := []byte("package p\n\nfunc TestA(t *testing.T) {}\nfunc Test_b(t *testing.T) {}\nfunc FuzzC(f *testing.F) {}\n" +
 		"func TestMain(m *testing.M) {}\nfunc Testify(t *testing.T) {}\nfunc (s *S) TestMethod() {}\nfunc helper() {}\n  func TestIndented() {}\nfunc Test(t *testing.T) {}\n")
-	got := TestFuncs(src)
-	want := []string{"TestA", "Test_b", "FuzzC", "Test"}
+	got, err := TestFuncs(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"FuzzC", "Test", "TestA", "TestIndented", "Test_b"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("TestFuncs = %v, want %v", got, want)
+	}
+}
+
+func TestTestFuncs_NonASCIIAndSyntax(t *testing.T) {
+	got, err := TestFuncs([]byte("package p\n\nfunc TestÄé(t *testing.T) {}\nfunc Test日本(t *testing.T) {}\nfunc TestÀ_ok(t *testing.T) {}\nfunc Testà(t *testing.T) {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"TestÀ_ok", "TestÄé", "Test日本"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("TestFuncs = %v, want %v (Testà has a lowercase letter after Test: a helper)", got, want)
+	}
+	if _, err := TestFuncs([]byte("package p\nfunc (")); err == nil {
+		t.Error("a file that does not parse must be an error, not zero tests")
+	}
+	if got, err := TestFuncs(nil); err != nil || len(got) != 0 {
+		t.Errorf("a missing file has no tests: %v %v", got, err)
+	}
+}
+
+func TestModifiedTests_IgnoresComments(t *testing.T) {
+	base := []byte("package p\n\nfunc TestA(t *testing.T) { x := 1; _ = x }\nfunc TestB(t *testing.T) {}\n")
+	head := []byte("package p\n\n// a new comment\nfunc TestA(t *testing.T) {\n\t// inside\n\tx := 1; _ = x }\nfunc TestB(t *testing.T) { _ = 2 }\nfunc TestC(t *testing.T) {}\n")
+	got, err := ModifiedTests(base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"TestB", "TestC"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ModifiedTests = %v, want %v (a comment-only edit is not a modification)", got, want)
 	}
 }
 
@@ -53,14 +85,18 @@ func TestDiffAddedTests_MovesAreNotAdds(t *testing.T) {
 	src := func(m map[string]string) func(string) []byte {
 		return func(p string) []byte {
 			if s, ok := m[p]; ok {
-				return []byte(s)
+				return []byte("package x\n\n" + s)
 			}
 			return nil
 		}
 	}
 	changed := []string{"internal/x/a_test.go", "internal/x/b_test.go", "internal/y/a_test.go", "internal/z/a_test.go", "internal/x/c.go"}
 	var got []string
-	for _, a := range DiffAddedTests(changed, src(base), src(head)) {
+	diff, err := DiffAddedTests(changed, src(base), src(head))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range diff {
 		got = append(got, a.Pkg+"#"+a.Name)
 	}
 	want := []string{"internal/x#TestRenamedNew", "internal/z#TestSameNameOtherPkg"}
@@ -84,6 +120,8 @@ func TestCollectTestRefs_LinkedAndStale(t *testing.T) {
 	write("registry/features/f.yaml", "- id: lh.feature.f\n  tests:\n    - internal/x/b_test.go\n    - internal/x/a_test.go#TestGone\n")
 	write("internal/x/a_test.go", "package x\nfunc TestA() {}\nfunc TestNew() {}\n")
 	write("internal/x/b_test.go", "package x\nfunc TestB() {}\n")
+	write("internal/.scratch/c_test.go", "package x\nfunc TestScratch() {}\n")
+	write("deps/V/internal/x/d_test.go", "package x\nfunc TestVendored() {}\n")
 	refs, err := CollectTestRefs(filepath.Join(root, "registry/rows"), filepath.Join(root, "registry/features"))
 	if err != nil || len(refs) != 3 {
 		t.Fatalf("refs = %v, err = %v", refs, err)

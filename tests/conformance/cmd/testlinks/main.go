@@ -27,6 +27,74 @@ func git(repo string, args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
+const (
+	rowsDir     = "tests/conformance/registry/rows"
+	featuresDir = "tests/conformance/registry/features"
+)
+
+// entries loads every registry entry of a directory at a revision.
+func entries(repo, rev, dir string, show func(string) func(string) []byte) (map[string]map[string]any, error) {
+	files, err := git(repo, "ls-tree", "-r", "--name-only", rev, "--", dir)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]map[string]any{}
+	for _, f := range strings.Fields(string(files)) {
+		if strings.HasSuffix(f, ".yaml") {
+			if err := registry.ParseEntries(show(rev)(f), out); err != nil {
+				return nil, fmt.Errorf("%s at %s: %w", f, rev, err)
+			}
+		}
+	}
+	return out, nil
+}
+
+// printRegistryChanges lists the rows and features the PR adds, changes or
+// removes, on stdout and in the job summary, so a reviewer sees what the
+// registry change actually is.
+func printRegistryChanges(repo, base, head string, show func(string) func(string) []byte) error {
+	var sb strings.Builder
+	sb.WriteString("### Registry changes in this PR\n\n")
+	seen := false
+	for _, kind := range []struct{ name, dir string }{{"rows", rowsDir}, {"features", featuresDir}} {
+		b, err := entries(repo, base, kind.dir, show)
+		if err != nil {
+			return err
+		}
+		h, err := entries(repo, head, kind.dir, show)
+		if err != nil {
+			return err
+		}
+		added, changed, removed := registry.ChangedEntries(b, h)
+		for _, g := range []struct {
+			label string
+			ids   []string
+		}{{"added", added}, {"changed", changed}, {"removed", removed}} {
+			if len(g.ids) == 0 {
+				continue
+			}
+			seen = true
+			fmt.Fprintf(&sb, "- %s %s (%d): %s\n", kind.name, g.label, len(g.ids), strings.Join(g.ids, ", "))
+		}
+	}
+	if !seen {
+		sb.WriteString("none\n")
+	}
+	fmt.Print(sb.String())
+	if path := os.Getenv("GITHUB_STEP_SUMMARY"); path != "" {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+		if err != nil {
+			return err
+		}
+		_, werr := f.WriteString(sb.String() + "\n")
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		return werr
+	}
+	return nil
+}
+
 func run() int {
 	repo := flag.String("repo", ".", "repository root")
 	base := flag.String("base", "", "merge-base revision the PR is compared against")
@@ -75,7 +143,11 @@ func run() int {
 			return b
 		}
 	}
-	added := registry.DiffAddedTests(changed, show(*base), show(*head))
+	added, err := registry.DiffAddedTests(changed, show(*base), show(*head))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "testlinks:", err)
+		return 2
+	}
 	failed := false
 	var missing []registry.AddedTest
 	for _, t := range added {
@@ -92,13 +164,28 @@ func run() int {
 		fmt.Println("add each to `refs.tests` of the row it proves (tests/conformance/registry/rows/) or to `tests:` of its feature")
 		fmt.Println("(tests/conformance/registry/features/), as `path/to/file_test.go#TestName`; see tests/conformance/README.md, 'Linking tests'")
 	}
-	// Parity locks: a parity fix ships differential tests and an exact row; a
-	// weakening (allowlist entry added, exact row loosened) always fails.
-	snap := func(rev string) (registry.ParitySnapshot, error) {
+
+	// Parity locks. The allowlist file is the one the parity workflow hands to
+	// the ratchet, read at BOTH revisions: moving or deleting the file, or
+	// pointing the workflow elsewhere, would hide entries from a path-based diff.
+	const parityWorkflow = ".github/workflows/parity.yaml"
+	var weakened []string
+	basePath := registry.AllowlistPath(show(*base)(parityWorkflow))
+	headPath := registry.AllowlistPath(show(*head)(parityWorkflow))
+	switch {
+	case basePath == "" || headPath == "":
+		weakened = append(weakened, parityWorkflow+" has no --allowlist argument at one of the revisions")
+	case basePath != headPath:
+		weakened = append(weakened, fmt.Sprintf("the parity workflow's --allowlist changed from %s to %s", basePath, headPath))
+	}
+	if headPath != "" && show(*head)(headPath) == nil {
+		weakened = append(weakened, "the parity allowlist "+headPath+" is missing at head (deleted or renamed)")
+	}
+	snap := func(rev, allowlist string) (registry.ParitySnapshot, error) {
 		sn := registry.ParitySnapshot{Rows: map[string]registry.RowLite{}}
-		sn.Allowlist = registry.ParseAllowlist(show(rev)("tests/parity/known_failures.txt"))
+		sn.Allowlist = registry.ParseAllowlist(show(rev)(allowlist))
 		sn.Resolved = registry.ParseResolved(show(rev)("docs/parity-and-gaps.md"))
-		files, err := git(*repo, "ls-tree", "-r", "--name-only", rev, "--", "tests/conformance/registry/rows")
+		files, err := git(*repo, "ls-tree", "-r", "--name-only", rev, "--", rowsDir)
 		if err != nil {
 			return sn, err
 		}
@@ -111,19 +198,32 @@ func run() int {
 		}
 		return sn, nil
 	}
-	bs, err1 := snap(*base)
-	hs, err2 := snap(*head)
+	allow := basePath
+	if allow == "" {
+		allow = "tests/parity/known_failures.txt"
+	}
+	bs, err1 := snap(*base, allow)
+	hs, err2 := snap(*head, allow)
 	if err1 != nil || err2 != nil {
 		fmt.Fprintln(os.Stderr, "testlinks: parity snapshot:", err1, err2)
 		return 2
 	}
-	var parityTests []string
+	modified := map[string]bool{}
 	for _, c := range changed {
-		if registry.IsParityTestFile(c) {
-			parityTests = append(parityTests, c)
+		if !registry.IsParityTestFile(c) {
+			continue
+		}
+		names, err := registry.ModifiedTests(show(*base)(c), show(*head)(c))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "testlinks: %s: %v\n", c, err)
+			return 2
+		}
+		for _, n := range names {
+			modified[c+"#"+n] = true
 		}
 	}
-	pv := registry.ParityCheck(bs, hs, parityTests)
+	pv := registry.ParityCheck(bs, hs, modified)
+	pv.Weakenings = append(weakened, pv.Weakenings...)
 	if len(pv.Weakenings) > 0 {
 		failed = true
 		fmt.Println("::error::this PR weakens a parity lock (only the owner can allow that: label registry-exempt + 'Registry: none — <reason>' in the PR body)")
@@ -141,6 +241,10 @@ func run() int {
 			fmt.Println("  missing: " + p)
 		}
 		fmt.Println("see tests/conformance/README.md, 'Parity fixes ship locks'")
+	}
+	if err := printRegistryChanges(*repo, *base, *head, show); err != nil {
+		fmt.Fprintln(os.Stderr, "testlinks: registry summary:", err)
+		return 2
 	}
 	// The stale check reads the files on disk, so it needs HEAD checked out.
 	if stale := registry.StaleRefs(*repo, refs, changed); len(stale) > 0 {

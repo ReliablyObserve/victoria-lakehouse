@@ -5,37 +5,69 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-// The parity-lock gate (cmd/testlinks -parity). Owner rule (2026-10-07): every
-// parity fix ships LOCKS, and a lock is never weakened without the owner.
+// The parity-lock gate (cmd/testlinks). Owner rule (2026-10-07): every parity
+// fix ships LOCKS, and a lock is never weakened without the owner.
 //
 // A PR is a PARITY-FIX PR when it removes entries from the parity allowlist,
 // flips a divergence in docs/parity-and-gaps.md to resolved, or flips a
 // registry row from expect=differ (a known gap) to expect=pass. Such a PR must
-// also change a test under tests/parity and add or update an exact-compare row
-// that references it. Independently, ANY PR that adds an allowlist entry or
-// weakens a row (pass to differ, exact-json to a looser compare, or deletes an
-// exact row) is a weakening and fails.
-
-// ParityExactCompare is the compare type that counts as an exact lock.
-const ParityExactCompare = "exact-json"
+// also ship a LOCK: an expect=pass row with an exact-equivalent compare that
+// references, as `file#Test`, a tests/parity test function the PR added or
+// modified. For a differ-to-pass flip the flipped row itself must be that lock.
+//
+// Independently, ANY PR that weakens an existing lock fails: adds an allowlist
+// entry, or changes an expect=pass row in any way that could loosen it (the
+// row deleted, no longer pass, its compare type/options/project changed, or its
+// request changed).
 
 // RowLite is the part of a registry row the gate reads, plus the whole decoded
 // row for change detection.
 type RowLite struct {
-	ID      string
-	Expect  string
-	Compare string
-	Tests   []string
-	Whole   map[string]any
+	ID         string
+	Expect     string
+	Compare    string         // compare type
+	CompareMap map[string]any // the whole compare block
+	Request    any
+	Tests      []string
+	Whole      map[string]any
 }
 
-// Exact reports whether the row is a lock: expected to pass with an exact compare.
-func (r RowLite) Exact() bool { return r.Expect == "pass" && r.Compare == ParityExactCompare }
+// exactEquivalent reports whether a compare block demands the same answer as
+// hot, with no tolerance: exact-json, count, trace and ndjson-multiset always;
+// values-with-hits with hits_tolerance 0 and series with rel_tolerance 0, both
+// stated explicitly.
+func exactEquivalent(c map[string]any) bool {
+	t, _ := c["type"].(string)
+	switch t {
+	case "exact-json", "count", "trace", "ndjson-multiset":
+		return true
+	case "values-with-hits":
+		return toleranceZero(c, "hits_tolerance")
+	case "series":
+		return toleranceZero(c, "rel_tolerance")
+	}
+	return false
+}
+
+func toleranceZero(c map[string]any, key string) bool {
+	opts, _ := c["options"].(map[string]any)
+	raw, ok := opts[key]
+	if !ok {
+		return false
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(raw)), 64)
+	return err == nil && f == 0
+}
+
+// Exact reports whether the row is a lock: expected to pass with an
+// exact-equivalent compare.
+func (r RowLite) Exact() bool { return r.Expect == "pass" && exactEquivalent(r.CompareMap) }
 
 // ParitySnapshot is the lock-relevant state of the tree at one revision.
 type ParitySnapshot struct {
@@ -44,7 +76,7 @@ type ParitySnapshot struct {
 	Rows      map[string]RowLite // registry rows by id
 }
 
-// ParseAllowlist returns the test paths listed in tests/parity/known_failures.txt:
+// ParseAllowlist returns the test paths listed in the parity allowlist:
 // every non-comment line's first field.
 func ParseAllowlist(src []byte) map[string]bool {
 	out := map[string]bool{}
@@ -58,6 +90,17 @@ func ParseAllowlist(src []byte) map[string]bool {
 		}
 	}
 	return out
+}
+
+var allowlistArgRe = regexp.MustCompile(`--allowlist[ =]+(\S+)`)
+
+// AllowlistPath returns the allowlist file the parity workflow hands to the
+// ratchet (its --allowlist argument), or "" when it has none.
+func AllowlistPath(workflow []byte) string {
+	if m := allowlistArgRe.FindSubmatch(workflow); m != nil {
+		return string(m[1])
+	}
+	return ""
 }
 
 // ParseResolved returns the divergences docs/parity-and-gaps.md marks resolved:
@@ -84,21 +127,31 @@ func ParseResolved(src []byte) map[string]bool {
 	return out
 }
 
-// ParseRowsLenient decodes registry row files leniently (unknown keys kept in
-// Whole), adding the rows to dst.
-func ParseRowsLenient(src []byte, dst map[string]RowLite) error {
+// ParseEntries decodes a registry YAML file leniently into id -> entry.
+func ParseEntries(src []byte, dst map[string]map[string]any) error {
 	var docs []map[string]any
 	if err := yaml.Unmarshal(src, &docs); err != nil {
 		return err
 	}
 	for _, d := range docs {
-		id, _ := d["id"].(string)
-		if id == "" {
-			continue
+		if id, _ := d["id"].(string); id != "" {
+			dst[id] = d
 		}
-		r := RowLite{ID: id, Whole: d}
+	}
+	return nil
+}
+
+// ParseRowsLenient decodes registry row files leniently, adding the rows to dst.
+func ParseRowsLenient(src []byte, dst map[string]RowLite) error {
+	entries := map[string]map[string]any{}
+	if err := ParseEntries(src, entries); err != nil {
+		return err
+	}
+	for id, d := range entries {
+		r := RowLite{ID: id, Whole: d, Request: d["request"]}
 		r.Expect, _ = d["expect"].(string)
 		if c, ok := d["compare"].(map[string]any); ok {
+			r.CompareMap = c
 			r.Compare, _ = c["type"].(string)
 		}
 		if refs, ok := d["refs"].(map[string]any); ok {
@@ -115,8 +168,30 @@ func ParseRowsLenient(src []byte, dst map[string]RowLite) error {
 	return nil
 }
 
-// ParityVerdict compares two snapshots. changedParityTests are the changed
-// `tests/parity/*_test.go` files.
+// ChangedEntries compares two id -> entry sets: ids only in head (added), in
+// both with a different entry (changed), and only in base (removed).
+func ChangedEntries(base, head map[string]map[string]any) (added, changed, removed []string) {
+	for id, h := range head {
+		b, ok := base[id]
+		switch {
+		case !ok:
+			added = append(added, id)
+		case !reflect.DeepEqual(b, h):
+			changed = append(changed, id)
+		}
+	}
+	for id := range base {
+		if _, ok := head[id]; !ok {
+			removed = append(removed, id)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(changed)
+	sort.Strings(removed)
+	return
+}
+
+// ParityVerdict is the outcome of ParityCheck.
 type ParityVerdict struct {
 	Fix        bool
 	Triggers   []string // why the PR is a parity fix
@@ -124,16 +199,14 @@ type ParityVerdict struct {
 	Weakenings []string // a lock was weakened or an allowlist entry added
 }
 
-func ParityCheck(base, head ParitySnapshot, changedParityTests []string) ParityVerdict {
+// ParityCheck compares two snapshots. modified is the set of "path#TestName"
+// tests/parity functions the PR added or modified.
+func ParityCheck(base, head ParitySnapshot, modified map[string]bool) ParityVerdict {
 	var v ParityVerdict
-	for _, e := range sortedKeys(base.Allowlist) {
-		if !head.Allowlist[e] {
-			v.Triggers = append(v.Triggers, "allowlist entry removed: "+e)
-		}
-	}
 	removedTop := map[string]bool{}
 	for _, e := range sortedKeys(base.Allowlist) {
 		if !head.Allowlist[e] {
+			v.Triggers = append(v.Triggers, "allowlist entry removed: "+e)
 			removedTop[topLevelTest(e)] = true
 		}
 	}
@@ -151,48 +224,64 @@ func ParityCheck(base, head ParitySnapshot, changedParityTests []string) ParityV
 			v.Triggers = append(v.Triggers, "divergence marked resolved in docs/parity-and-gaps.md: "+id)
 		}
 	}
+	var flipped []string
 	for _, id := range sortedRowKeys(base.Rows) {
 		b := base.Rows[id]
 		h, ok := head.Rows[id]
+		if b.Expect == "differ" && ok && h.Expect == "pass" {
+			flipped = append(flipped, id)
+			v.Triggers = append(v.Triggers, "row flipped from known gap (differ) to pass: "+id)
+		}
+		if b.Expect != "pass" {
+			continue
+		}
 		switch {
 		case !ok:
-			if b.Exact() {
-				v.Weakenings = append(v.Weakenings, "exact row deleted: "+id)
-			}
-		case b.Expect == "differ" && h.Expect == "pass":
-			v.Triggers = append(v.Triggers, "row flipped from known gap (differ) to pass: "+id)
-		case b.Exact() && !h.Exact():
-			v.Weakenings = append(v.Weakenings, fmt.Sprintf("row weakened from exact pass to expect=%s compare=%s: %s", h.Expect, h.Compare, id))
+			v.Weakenings = append(v.Weakenings, "pass row deleted: "+id)
+		case h.Expect != "pass":
+			v.Weakenings = append(v.Weakenings, fmt.Sprintf("pass row weakened to expect=%s: %s", h.Expect, id))
+		case !reflect.DeepEqual(b.CompareMap, h.CompareMap):
+			v.Weakenings = append(v.Weakenings, fmt.Sprintf("pass row's compare (type, options or project) changed: %s", id))
+		case !reflect.DeepEqual(b.Request, h.Request):
+			v.Weakenings = append(v.Weakenings, fmt.Sprintf("pass row's request changed: %s", id))
 		}
 	}
 	v.Fix = len(v.Triggers) > 0
 	if !v.Fix {
 		return v
 	}
-	if len(changedParityTests) == 0 {
-		v.Problems = append(v.Problems, "no test under tests/parity/ was added or changed: a parity fix needs a differential test against hot VL/VT (all layers, both signals, both tenant forms)")
+	if len(modified) == 0 {
+		v.Problems = append(v.Problems, "no test function under tests/parity/ was added or modified: a parity fix needs a differential test against hot VL/VT (all layers, both signals, both tenant forms)")
 	}
-	linked := false
+	isLock := func(r RowLite) bool {
+		if !r.Exact() {
+			return false
+		}
+		for _, t := range r.Tests {
+			if _, name := splitRef(t); name != "" && modified[t] {
+				return true
+			}
+		}
+		return false
+	}
+	if len(flipped) > 0 {
+		for _, id := range flipped {
+			if !isLock(head.Rows[id]) {
+				v.Problems = append(v.Problems, fmt.Sprintf("the flipped row %s must itself be a lock: expect pass, an exact-equivalent compare (exact-json, count, trace, ndjson-multiset, values-with-hits with hits_tolerance 0, series with rel_tolerance 0) and refs.tests naming, as file#Test, a tests/parity test this PR added or modified", id))
+			}
+		}
+		return v
+	}
 	for _, id := range sortedRowKeys(head.Rows) {
 		h := head.Rows[id]
-		if !h.Exact() {
-			continue
-		}
 		if b, ok := base.Rows[id]; ok && reflect.DeepEqual(b.Whole, h.Whole) {
 			continue // unchanged: not this PR's lock
 		}
-		for _, t := range h.Tests {
-			path, _ := splitRef(t)
-			for _, c := range changedParityTests {
-				if path == c {
-					linked = true
-				}
-			}
+		if isLock(h) {
+			return v
 		}
 	}
-	if !linked {
-		v.Problems = append(v.Problems, "no new or updated registry row with compare type exact-json and expect pass references a changed tests/parity test (refs.tests): the fix needs a named lock")
-	}
+	v.Problems = append(v.Problems, "no new or changed registry row is a lock: expect pass, an exact-equivalent compare (exact-json, count, trace, ndjson-multiset, values-with-hits with hits_tolerance 0, series with rel_tolerance 0) and refs.tests naming, as file#Test, a tests/parity test this PR added or modified")
 	return v
 }
 
