@@ -173,8 +173,11 @@ func TestParity_AllColumnSortTieOrder(t *testing.T) {
 				// and answers from S3 with a fresh manifest.
 				{"restart",
 					func(t *testing.T, c *allColumnSortCase) int {
+						// No wait for the rows to show in the buffer first: the writes
+						// are acknowledged, and the buffer flushes a segment 5 s after
+						// it opened, so the restart must follow the write at once or
+						// the regular flush could write it before the restart.
 						c.write(t, c, 13, 6)
-						buffered(t, c, 6)
 						c.startedAt = restartComposeServices(t, c.cold, c.mode, c.restart)
 						leftBuffer(t, c)
 						return 18
