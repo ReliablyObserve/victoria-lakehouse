@@ -58,6 +58,7 @@ EXEMPT_PATH_PREFIXES = (
     ".github/",
     "website/",
     "scripts/ci/",
+    "scripts/proof/",
 )
 
 NON_RELEASE_PATH_PREFIXES = (

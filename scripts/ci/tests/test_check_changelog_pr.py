@@ -101,6 +101,14 @@ class CheckChangelogPRTests(unittest.TestCase):
             )
         )
 
+    def test_should_skip_for_proof_tooling_only_changes(self):
+        self.assertFalse(
+            should_require_changelog(
+                ["ci(proof): metrics library"],
+                ["scripts/proof/metrics/rows.py", ".github/workflows/proof-metrics.yaml"],
+            )
+        )
+
     def test_is_release_commit_ignores_ci_scope(self):
         self.assertFalse(is_release_commit("feat(ci): consolidate post-release updates"))
         self.assertFalse(is_release_commit("fix(ci): exempt paths from changelog"))
