@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Registry gate: lock packages are owner-gated, locks are `file#Test`, run nonce.** CI tooling only, no runtime change: a PR that edits or deletes an existing file of a package that holds a lock test (or the lock suites' runtime config), or adds a file there that declares a package-level var, init() or TestMain, fails with "lock code changed — owner review"; the six file-level parity locks are named `file#Test` and have floors; the lock-cells nonce only guards against stale lines and is not a security control.
 
+### Changed
+
+- **Proof tooling follow-ups: steadier seeds, safer ports, the proxy tagged by its pin.** Tooling only, no runtime change (`scripts/proof/`, `deployment/docker/docker-compose-proof.yml`, `deployment/docker/Dockerfile.loki-vl-proxy`): the runner waits 45 s for steady counts (hot VictoriaTraces writes its trace-index rows 20-40 s after ingest), rows that share an identity pair equal rows first, a list cut at a limit must carry zeroed hits like the reference, derived port blocks keep clear of the ports other stacks use and below 49152 and are checked free before `up`, image tags are read from the compose file with the proxy tagged by its pinned release, and the proof proxies map the fixtures' dotted fields (`http.method`, `exception.type`, ...) with `-field-mapping`.
+
 ## [0.146.8] - 2026-10-07
 
 ### Added
@@ -18,8 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Proof stack, API runner and visual capture.** Tooling only, no runtime change (`scripts/proof/`, `deployment/docker/docker-compose-proof.yml`, `tests/playwright/proof/`): an isolated compose stack (hot VictoriaLogs/VictoriaTraces, Lakehouse from main and from a PR, Grafana, the Jaeger UI), a runner that sends rows to the three targets in both tenant forms and in the cold and buffer layers and scores the answers in percent, a Playwright capture of Grafana Explore, Logs Drilldown, VMUI, VTUI and the Jaeger UI on the same three sides with the backend traffic compared per question, and a PR comment generator.
 
 ### Changed
-
-- **Proof tooling follow-ups: steadier seeds, safer ports, the proxy pinned once.** Tooling only, no runtime change (`scripts/proof/`, `deployment/docker/docker-compose-proof.yml`, `deployment/docker/Dockerfile.loki-vl-proxy`): the runner waits 45 s for steady counts (hot VictoriaTraces writes its trace-index rows 20-40 s after ingest), rows that share an identity pair equal rows first, a list cut at a limit must carry zeroed hits like the reference, derived port blocks keep clear of the ports other stacks use and below 49152 and are checked free before `up`, image tags are read from the compose file with the proxy tagged by its pinned release (loki-vl-proxy v2.6.0), and the proof proxies map the fixtures' dotted fields (`http.method`, `exception.type`, ...) with `-field-mapping`.
 
 - **The parity restart cell no longer races the periodic flush.** Tooling only, no runtime change. The third batch of the
   all-column sort case is now written into a fresh segment right after a flush has completed and the pod is restarted at
