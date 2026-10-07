@@ -9,7 +9,10 @@
 #
 # Env:
 #   BASE_REF     base branch name (default main); origin/$BASE_REF must exist
-#   PR_DIR       the PR checkout (default: the current directory)
+#   PR_DIR       the repository holding the PR's commits (default: the current directory)
+#   HEAD_REV     the PR head revision (default HEAD). The pull_request_target flavour
+#                fetches the PR commits into the BASE checkout and passes their sha here:
+#                no PR file is ever checked out
 #   GATE_DIR     a checkout of trusted gate code. Default: a worktree of the merge
 #                base at $RUNNER_TEMP/gate-base (pull_request); the workflow for
 #                pull_request_target passes its own base checkout instead.
@@ -31,7 +34,8 @@ export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/de
 export GIT_TERMINAL_PROMPT=0
 
 cd "$PR_DIR"
-merge_base=$(git merge-base "origin/$BASE_REF" HEAD)
+head_rev=${HEAD_REV:-HEAD}
+merge_base=$(git merge-base "origin/$BASE_REF" "$head_rev")
 gate=${GATE_DIR:-$TMP/gate-base}
 
 case "$mode" in
@@ -48,7 +52,7 @@ run)
   # An allow-list environment: nothing an earlier step exported (PATH additions via
   # GITHUB_PATH, GITHUB_ENV, LD_PRELOAD, GOFLAGS ...) reaches the gate.
   pass=()
-  for v in PR_LABELS PR_BODY PR_TITLE PR_AUTHOR PR_NUMBER EVENT_ACTION LABEL_NAME SENDER GITHUB_STEP_SUMMARY GITHUB_OUTPUT; do
+  for v in HEAD_REV PR_LABELS PR_BODY PR_TITLE PR_AUTHOR PR_NUMBER EVENT_ACTION LABEL_NAME SENDER GITHUB_STEP_SUMMARY GITHUB_OUTPUT; do
     [[ -n "${!v+x}" ]] && pass+=("$v=${!v}")
   done
   exec env -i PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin" HOME="${HOME:-/tmp}" TMPDIR="$TMP" LANG=C.UTF-8 \

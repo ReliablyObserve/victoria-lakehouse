@@ -44,6 +44,17 @@ CRITICAL_MODULE_PREFIXES = (
     "github.com/VictoriaMetrics/",
     "github.com/parquet-go/",
     "github.com/aws/",
+    # codecs and wire formats: they decide what bytes mean
+    "github.com/klauspost/",
+    "github.com/golang/snappy",
+    "github.com/pierrec/",
+    "github.com/andybalholm/brotli",
+    "github.com/valyala/gozstd",
+    "github.com/DataDog/zstd",
+    "github.com/gogo/protobuf",
+    "github.com/apache/arrow",
+    "go.opentelemetry.io/proto/",
+    "google.golang.org/",
 )
 RELEASE_BOT = "github-actions[bot]"
 SEMVER = re.compile(r"\d+\.\d+\.\d+")
@@ -116,6 +127,14 @@ def parse_go_mod(text: str) -> tuple[dict[str, str], list[str]]:
                 continue
         others.append(line)
     return requires, others
+
+
+PIN_RE = re.compile(r"^(VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION)\s*:?=\s*(\S*)", re.M)
+
+
+def makefile_pins(text: str) -> dict[str, str]:
+    """The upstream pins a Makefile sets: changing one changes what the product embeds."""
+    return {m.group(1): m.group(2) for m in PIN_RE.finditer(text)}
 
 
 def go_mod_dependency_only(base: str, head: str) -> bool:
@@ -249,6 +268,9 @@ def main() -> int:
             r = product_reason(f)
             if r:
                 reason = r
+                break
+            if f == "Makefile" and makefile_pins(show(a.base, f)) != makefile_pins(show(a.head, f)):
+                reason = "upstream pin changed: " + f
                 break
     print(f"exempt={exempt}")
     print(f"product={1 if reason else 0}")

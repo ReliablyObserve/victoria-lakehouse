@@ -71,8 +71,13 @@ func TestExactEquivalent(t *testing.T) {
 	}
 }
 
+// defaultFloors are the lock cell floors every test snapshot carries unless it overrides them.
+func defaultFloors() map[string]int {
+	return map[string]int{"TestP": 5, "TestFixed": 5, "TestOther": 5, "TestQ": 5}
+}
+
 func snapshot(al []string, res []string, rows ...RowLite) ParitySnapshot {
-	s := ParitySnapshot{Allowlist: map[string]bool{}, Resolved: map[string]bool{}, Rows: map[string]RowLite{}}
+	s := ParitySnapshot{Allowlist: map[string]bool{}, Resolved: map[string]bool{}, Rows: map[string]RowLite{}, Floors: defaultFloors()}
 	for _, a := range al {
 		s.Allowlist[a] = true
 	}
@@ -84,7 +89,11 @@ func snapshot(al []string, res []string, rows ...RowLite) ParitySnapshot {
 			r.CompareMap = map[string]any{"type": r.Compare}
 		}
 		if r.Whole == nil {
-			r.Whole = map[string]any{"id": r.ID, "expect": r.Expect, "compare": r.CompareMap, "request": r.Request, "tests": r.Tests}
+			var tests []any
+			for _, t := range r.Tests {
+				tests = append(tests, t)
+			}
+			r.Whole = map[string]any{"id": r.ID, "expect": r.Expect, "compare": r.CompareMap, "request": r.Request, "refs": map[string]any{"tests": tests}}
 		}
 		s.Rows[r.ID] = r
 	}
@@ -267,6 +276,11 @@ const passRow = `- id: lh.r
   refs: {doc: docs/a.md, tests: [tests/parity/p_test.go#TestP]}
 `
 
+func changesOf(b, h RowLite) []string {
+	out, _ := passRowChanges(b, h, nil, nil, nil)
+	return out
+}
+
 func TestPassRowChanges_WholeRow(t *testing.T) {
 	base := wholeRow(t, passRow)
 	edit := func(old, new string) RowLite { return wholeRow(t, strings.Replace(passRow, old, new, 1)) }
@@ -282,14 +296,14 @@ func TestPassRowChanges_WholeRow(t *testing.T) {
 		"lost test ref": edit("refs: {doc: docs/a.md, tests: [tests/parity/p_test.go#TestP]}", "refs: {doc: docs/a.md, tests: []}"),
 	}
 	for name, h := range weak {
-		if got := passRowChanges(base, h, nil); len(got) == 0 {
+		if got := changesOf(base, h); len(got) == 0 {
 			t.Errorf("%s: a change to a pass row must be a weakening", name)
 		}
 	}
 	// N1: pending set on a row that was executing.
 	exec := wholeRow(t, strings.Replace(passRow, "  pending: true\n", "", 1))
 	pend := wholeRow(t, passRow)
-	if got := passRowChanges(exec, pend, nil); len(got) != 1 || !strings.Contains(got[0], "set to pending") {
+	if got := changesOf(exec, pend); len(got) != 1 || !strings.Contains(got[0], "set to pending") {
 		t.Errorf("N1: pending set must be a weakening, got %v", got)
 	}
 	allowed := map[string]RowLite{
@@ -301,26 +315,54 @@ func TestPassRowChanges_WholeRow(t *testing.T) {
 		"nothing":            base,
 	}
 	for name, h := range allowed {
-		if got := passRowChanges(base, h, nil); len(got) != 0 {
+		if got := changesOf(base, h); len(got) != 0 {
 			t.Errorf("%s must not be a weakening, got %v", name, got)
 		}
 	}
-	// a renamed test: the old reference no longer resolves and the row keeps as many references
+	// a renamed lock test keeps its row only if the new name keeps the old floor
 	renamed := wholeRow(t, strings.Replace(passRow, "#TestP]", "#TestRenamed]", 1))
 	gone := func(ref string) bool { return !strings.HasSuffix(ref, "#TestP") }
-	if got := passRowChanges(base, renamed, gone); len(got) != 0 {
-		t.Errorf("a replaced reference to a renamed test is fine, got %v", got)
+	floors := func(old, renamedFloor int) (map[string]int, map[string]int) {
+		return map[string]int{"TestP": old}, map[string]int{"TestRenamed": renamedFloor}
 	}
-	if got := passRowChanges(base, renamed, nil); len(got) != 1 {
+	bf, hf := floors(5, 5)
+	if got, r := passRowChanges(base, renamed, bf, hf, gone); len(got) != 0 || !r["TestP"] {
+		t.Errorf("a rename that keeps the floor is fine, got %v %v", got, r)
+	}
+	bf, hf = floors(5, 9)
+	if got, _ := passRowChanges(base, renamed, bf, hf, gone); len(got) != 0 {
+		t.Errorf("a rename that raises the floor is fine, got %v", got)
+	}
+	bf, hf = floors(5, 4)
+	if got, _ := passRowChanges(base, renamed, bf, hf, gone); len(got) != 1 {
+		t.Errorf("a rename that lowers the floor is a loss, got %v", got)
+	}
+	bf, hf = floors(5, 0)
+	if got, _ := passRowChanges(base, renamed, bf, hf, gone); len(got) != 1 {
+		t.Errorf("a rename to a test with no floor is a loss, got %v", got)
+	}
+	bf, hf = floors(0, 5)
+	if got, _ := passRowChanges(base, renamed, bf, hf, gone); len(got) != 1 {
+		t.Errorf("the old test had no floor: nothing proves the new one is the same lock, got %v", got)
+	}
+	bf, hf = floors(5, 5)
+	if got, _ := passRowChanges(base, renamed, bf, hf, nil); len(got) != 1 {
 		t.Errorf("without proof the old test is gone the replacement is a loss, got %v", got)
 	}
 	still := func(string) bool { return true }
-	if got := passRowChanges(base, renamed, still); len(got) != 1 {
+	if got, _ := passRowChanges(base, renamed, bf, hf, still); len(got) != 1 {
 		t.Errorf("a reference swapped while its test still exists is a loss, got %v", got)
+	}
+	// a non-parity reference can never be swapped (X1: an empty test with every reference re-pointed)
+	unit := wholeRow(t, strings.Replace(passRow, "tests/parity/p_test.go#TestP", "tests/e2e/m_test.go#TestM", 1))
+	unit2 := wholeRow(t, strings.Replace(passRow, "tests/parity/p_test.go#TestP", "tests/e2e/m_test.go#TestM2", 1))
+	goneAll := func(string) bool { return false }
+	if got, _ := passRowChanges(unit, unit2, map[string]int{"TestM": 5}, map[string]int{"TestM2": 5}, goneAll); len(got) != 1 {
+		t.Errorf("an e2e lock reference swap needs the owner, got %v", got)
 	}
 	// deleting the lock's test and dropping its reference is a weakening
 	dropped := wholeRow(t, strings.Replace(passRow, "tests: [tests/parity/p_test.go#TestP]", "tests: []", 1))
-	if got := passRowChanges(base, dropped, gone); len(got) != 1 {
+	if got, _ := passRowChanges(base, dropped, bf, hf, gone); len(got) != 1 {
 		t.Errorf("a dropped reference is a weakening even when its test is gone, got %v", got)
 	}
 	// differ rows are not protected
@@ -345,18 +387,30 @@ func TestParityCheck_LockMustBeRelatedAndExecuting(t *testing.T) {
 	if len(v.Problems) != 1 || !strings.Contains(v.Problems[0], "TestFixed") {
 		t.Fatalf("an unrelated lock must not lock TestFixed: %+v", v)
 	}
-	// a pending row is never a lock
+	// a pending row IS a lock when its test has a cell floor: the parity job executes it
 	pend := own
 	pend.Pending = true
 	v = ParityCheck(base, snapshot(nil, nil, gap, pend, other), mods)
-	if len(v.Problems) != 1 || !strings.Contains(v.Problems[0], "TestFixed") {
-		t.Fatalf("a pending row is not a lock: %+v", v)
+	if len(v.Problems) != 0 {
+		t.Fatalf("a pending row whose test has a floor is a lock: %+v", v)
 	}
-	// a flipped row must also not be pending
+	// ... and is no lock without one: nothing would hold the test to running
+	noFloor := snapshot(nil, nil, gap, own, other)
+	noFloor.Floors = map[string]int{"TestOther": 5}
+	v = ParityCheck(base, noFloor, mods)
+	if len(v.Problems) != 1 || !strings.Contains(v.Problems[0], "TestFixed") {
+		t.Fatalf("a lock needs a cell floor: %+v", v)
+	}
+	// the same for a flipped row
 	flipBase := snapshot(nil, nil, RowLite{ID: "f", Expect: "differ", Compare: "exact-json", Tests: []string{lockTest}})
 	flipHead := RowLite{ID: "f", Expect: "pass", Compare: "exact-json", Tests: []string{lockTest}, Pending: true}
-	if v := ParityCheck(flipBase, snapshot(nil, nil, flipHead), mod(lockTest)); len(v.Problems) != 1 {
-		t.Fatalf("a pending flipped row is no lock: %+v", v)
+	if v := ParityCheck(flipBase, snapshot(nil, nil, flipHead), mod(lockTest)); len(v.Problems) != 0 {
+		t.Fatalf("a pending flipped row with a floor is a lock: %+v", v)
+	}
+	flipNoFloor := snapshot(nil, nil, flipHead)
+	flipNoFloor.Floors = nil
+	if v := ParityCheck(flipBase, flipNoFloor, mod(lockTest)); len(v.Problems) != 1 {
+		t.Fatalf("a flipped row without a floor is no lock: %+v", v)
 	}
 }
 
@@ -450,5 +504,97 @@ func TestSummarizeChanges_CollapsesLongLists(t *testing.T) {
 	}
 	if got := SummarizeChanges(nil); !strings.Contains(got, "none") {
 		t.Errorf("empty: %q", got)
+	}
+}
+
+func TestParityCheck_FloorsOnlyGrow(t *testing.T) {
+	base := snapshot(nil, nil)
+	base.Floors = map[string]int{"TestA": 10, "TestB": 4}
+	same := snapshot(nil, nil)
+	same.Floors = map[string]int{"TestA": 10, "TestB": 4, "TestNew": 1}
+	if v := ParityCheck(base, same, nil); len(v.Weakenings) != 0 {
+		t.Fatalf("adding a floor is free: %+v", v)
+	}
+	raised := snapshot(nil, nil)
+	raised.Floors = map[string]int{"TestA": 99, "TestB": 4}
+	if v := ParityCheck(base, raised, nil); len(v.Weakenings) != 0 {
+		t.Fatalf("raising a floor is free: %+v", v)
+	}
+	for name, floors := range map[string]map[string]int{
+		"lowered": {"TestA": 9, "TestB": 4},
+		"removed": {"TestB": 4},
+		"emptied": nil,
+	} {
+		h := snapshot(nil, nil)
+		h.Floors = floors
+		v := ParityCheck(base, h, nil)
+		if len(v.Weakenings) < 1 || !strings.Contains(v.Weakenings[0], "cell floor of TestA") {
+			t.Errorf("%s: %+v", name, v)
+		}
+	}
+	// a paired rename of the lock moves the floor without a weakening
+	baseRow := RowLite{ID: "r", Expect: "pass", Compare: "exact-json", Tests: []string{"tests/parity/a_test.go#TestA"}}
+	renamedRow := RowLite{ID: "r", Expect: "pass", Compare: "exact-json", Tests: []string{"tests/parity/a_test.go#TestA2"}}
+	b2 := snapshot(nil, nil, baseRow)
+	b2.Floors = map[string]int{"TestA": 10}
+	h2 := snapshot(nil, nil, renamedRow)
+	h2.Floors = map[string]int{"TestA2": 10}
+	h2.RefExists = func(ref string) bool { return !strings.HasSuffix(ref, "#TestA") }
+	if v := ParityCheck(b2, h2, nil); len(v.Weakenings) != 0 {
+		t.Fatalf("a rename that moves the floor with it: %+v", v)
+	}
+	h3 := snapshot(nil, nil, renamedRow)
+	h3.Floors = map[string]int{"TestA2": 3}
+	h3.RefExists = h2.RefExists
+	if v := ParityCheck(b2, h3, nil); len(v.Weakenings) < 1 {
+		t.Fatalf("a rename that lowers the floor: %+v", v)
+	}
+}
+
+func TestParseLockCells(t *testing.T) {
+	got, err := ParseLockCells([]byte("# floors\n\nTestA  12  # why\nTestB 3\n"))
+	if err != nil || !reflect.DeepEqual(got, map[string]int{"TestA": 12, "TestB": 3}) {
+		t.Fatalf("%v %v", got, err)
+	}
+	for _, bad := range []string{"TestA\n", "TestA 0\n", "TestA -1\n", "TestA x\n", "notatest 3\n", "TestA 3\nTestA 4\n", "TestA 3 extra\n"} {
+		if _, err := ParseLockCells([]byte(bad)); err == nil {
+			t.Errorf("%q must be rejected", bad)
+		}
+	}
+	if got, err := ParseLockCells(nil); err != nil || len(got) != 0 {
+		t.Errorf("a missing file is no floors: %v %v", got, err)
+	}
+}
+
+func TestCheckCanonical(t *testing.T) {
+	ok := "- {id: a, pending: true}\n- {id: b, pending: false}\n- {id: c}\n"
+	if err := CheckCanonical([]byte(ok)); err != nil {
+		t.Fatal(err)
+	}
+	for name, bad := range map[string]string{
+		"yes":           "- {id: a, pending: yes}\n",
+		"on":            "- {id: a, pending: on}\n",
+		"quoted true":   "- {id: a, pending: \"true\"}\n",
+		"a number":      "- {id: a, pending: 1}\n",
+		"two documents": "- {id: a}\n---\n- {id: b}\n",
+		"two docs, 2nd": "- {id: a}\n---\n- {id: b, expect: pass}\n",
+	} {
+		if err := CheckCanonical([]byte(bad)); err == nil {
+			t.Errorf("%s must be rejected", name)
+		}
+	}
+	// the gate's parsers refuse them too
+	if err := ParseEntries([]byte("- {id: a, pending: yes}\n"), map[string]map[string]any{}); err == nil {
+		t.Error("ParseEntries must reject a non-canonical pending")
+	}
+	if err := ParseEntries([]byte("- {id: a}\n---\n- {id: b}\n"), map[string]map[string]any{}); err == nil {
+		t.Error("ParseEntries must reject a second document")
+	}
+	if _, err := TestRefsFromYAML([]byte("- {id: a, refs: {tests: [x_test.go#T]}}\n---\n- {id: b}\n")); err == nil {
+		t.Error("TestRefsFromYAML must reject a second document")
+	}
+	refs, err := TestRefsFromYAML([]byte("- {id: a, refs: {tests: [x_test.go#T]}}\n- {id: f, tests: [y_test.go]}\n"))
+	if err != nil || len(refs) != 2 {
+		t.Errorf("%v %v", refs, err)
 	}
 }

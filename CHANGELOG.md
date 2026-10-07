@@ -71,6 +71,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/s3compat` is in scope; a bump of a storage-critical module is never dependency-only. A release-metadata
   CHANGELOG may only use the Keep-a-Changelog subheadings. The release skip reads only the PR merged as the pushed
   commit and fails loudly when `(#N)` cannot be resolved.
+- **Registry locks are held at runtime.** Static checks cannot catch every way to disable a test (an early return, an
+  aliased `Skip`, a `TestMain` that exits 0, a file renamed so it is not built), so each lock test reports the cells it
+  compared and `tests/parity/lock_cells.txt` holds the minimum per test; the parity ratchet (`python -I`) fails a
+  lock that is missing, skipped, failed or short, and the floor may only grow. Pending rows can be locks. The gate also
+  reads registry YAML exactly like the loader (one document, `true`/`false` only), reads the PR as git blobs (symlinks
+  are rejected, no PR file is checked out for the `pull_request_target` copy), diffs without textconv or external
+  drivers, treats `.gitattributes`, every file under `scripts/ci/` and upstream pin bumps as gate or product changes,
+  never lets codec and protobuf module bumps count as dependency-only, and pins its actions by SHA.
 
 ### Fixed
 

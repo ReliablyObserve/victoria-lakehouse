@@ -102,8 +102,10 @@ FIXTURE
     printf '# chart\n' > charts/victoria-lakehouse/README.md
     printf '#!/bin/sh\n' > charts/victoria-lakehouse/test_templates.sh
     printf '# x\nversion 1.0.0 here\n' > README.md
-    printf 'module x\n\ngo 1.22\n\nrequire (\n\tgithub.com/a/b v1.0.0\n\tgithub.com/VictoriaMetrics/c v1.0.0\n)\n' > go.mod
+    printf 'module x\n\ngo 1.22\n\nrequire (\n\tgithub.com/a/b v1.0.0\n\tgithub.com/klauspost/compress v1.0.0\n\tgithub.com/golang/snappy v1.0.0\n\tgoogle.golang.org/protobuf v1.0.0\n\tgithub.com/pierrec/lz4/v4 v4.0.0\n\tgithub.com/VictoriaMetrics/c v1.0.0\n)\n' > go.mod
+    printf 'VL_VERSION_LOGS := v1.0.0\nVL_COMMIT_TRACES := abc123\nVT_VERSION := v0.1.0\nall:\n' > Makefile
     printf 'x\n' > go.sum
+    printf '# floors\nTestOldParity  5  # lock\n' > tests/parity/lock_cells.txt
     printf '# allowlist\nTestOldParity  # B1: x\nTestParity_B  # B2: y\n' > tests/parity/known_failures.txt
     printf '| Id | Divergence |\n|---|---|\n| **B1** | open one |\n| **B2** | open two |\n| **Old thing (B0)** | **Resolved** | done |\n' > docs/parity-and-gaps.md
     cat >> tests/conformance/registry/rows/lh/endpoints.yaml <<'ROWS'
@@ -387,6 +389,7 @@ rename_referenced_test() {
 rename_and_relink_test() {
   rename_referenced_test
   sed -i.bak 's/TestOldParity/TestRenamedParity/' tests/conformance/registry/rows/lh/endpoints.yaml && rm -f tests/conformance/registry/rows/lh/endpoints.yaml.bak
+  sed -i.bak 's/TestOldParity/TestRenamedParity/' tests/parity/lock_cells.txt && rm -f tests/parity/lock_cells.txt.bak
 }
 delete_referenced_test_file() { registry_row_change; git rm -q tests/parity/parity_test.go; }
 move_test_to_other_file() {
@@ -396,7 +399,7 @@ move_test_to_other_file() {
 }
 dependency_bump() { sed -i.bak 's#github.com/a/b v1.0.0#github.com/a/b v1.2.3#' go.mod && rm -f go.mod.bak; printf 'a==1\n' > requirements.txt; printf 'y\n' >> go.sum; }
 docs_only() { printf '# doc\n' > docs/x.md; }
-ci_only() { printf 'name: x\n' > .github/workflows/x.yaml; printf '#!/bin/sh\n' > scripts/ci/foo.sh; }
+ci_only() { printf 'name: x\n' > .github/workflows/x.yaml; mkdir -p scripts/bench; printf '#!/bin/sh\n' > scripts/bench/foo.sh; }
 
 run_case "a product change without a registry change fails" fail \
   "makes no real content change under tests/conformance/registry/rows/" product_change
@@ -413,7 +416,7 @@ run_case "a new parity test referenced by a feature passes" ok "testlinks OK (1 
 run_case "L1: a file-level reference does not link a new test in that file" fail "tests/parity/parity_test.go#TestNewParity" new_test_in_linked_file
 run_case "TestMain, helpers and Test-prefixed non-tests need no link" ok "testlinks OK (0 tests added" new_test_helper_not_a_test
 run_case "a renamed test whose old name is still referenced fails" fail \
-  "no \`func TestOldParity(\` in tests/parity/parity_test.go" rename_referenced_test
+  "no such test any more in tests/parity/parity_test.go" rename_referenced_test
 run_case "a renamed test is reported as added and unlinked too" fail \
   "tests/parity/parity_test.go#TestRenamedParity" rename_referenced_test
 run_case "a renamed test with the reference updated passes" ok "testlinks OK" rename_and_relink_test
@@ -443,7 +446,7 @@ EVENT_ACTION=labeled LABEL_NAME=registry-exempt SENDER=szibis PR_LABELS='registr
 echo
 echo "== rule 1 fires on product code only =="
 tests_only_change() { mkdir -p tests/e2e; printf 'helper\n' > tests/e2e/data.txt; printf 'x==1\n' > tests/requirements.txt; }
-infra_only_change() { printf 'all:\n' > Makefile; printf '#!/bin/sh\n' > scripts/tool.sh; }
+infra_only_change() { printf '\nextra:\n' >> Makefile; printf '#!/bin/sh\n' > scripts/tool.sh; }
 test_file_edit_only() { printf '// edit\n' >> tests/parity/parity_test.go; }
 chart_change() { mkdir -p charts/c; printf 'a: 1\n' > charts/c/values.yaml; }
 patch_change() { mkdir -p patches; printf 'diff\n' > patches/x.patch; }
@@ -670,6 +673,38 @@ renamed_lock_reference() {
   registry_row_change
   sedi 's/TestOldParity/TestRenamedParity/' tests/parity/parity_test.go
   sedi 's/TestOldParity/TestRenamedParity/' $ROWS
+  sedi 's/TestOldParity/TestRenamedParity/' tests/parity/lock_cells.txt
+}
+renamed_lock_without_the_floor() { renamed_lock_reference; sedi 's/TestRenamedParity  5/TestRenamedParity  2/' tests/parity/lock_cells.txt; }
+renamed_lock_with_no_floor_entry() { renamed_lock_reference; : > tests/parity/lock_cells.txt; }
+lowered_floor() { registry_row_change; sedi 's/TestOldParity  5/TestOldParity  4/' tests/parity/lock_cells.txt; }
+removed_floor() { registry_row_change; : > tests/parity/lock_cells.txt; }
+raised_floor() { registry_row_change; sedi 's/TestOldParity  5/TestOldParity  9/' tests/parity/lock_cells.txt; }
+x1_lock_swapped_for_empty_test() {
+  # the lock's test replaced by an empty one, every reference re-pointed, the old name kept as a helper
+  registry_row_change
+  sedi 's/func TestOldParity(t \*testing.T) {}/func oldParity(t *testing.T) {}\nfunc TestOldParityV2(t *testing.T) {}/' tests/parity/parity_test.go
+  sedi 's/TestOldParity/TestOldParityV2/' $ROWS
+}
+x2_lock_file_renamed() {
+  registry_row_change
+  git mv tests/parity/parity_test.go tests/parity/parity_windows_test.go
+  sedi 's#tests/parity/parity_test.go#tests/parity/parity_windows_test.go#' $ROWS
+}
+x2b_lock_file_hidden() {
+  registry_row_change
+  git mv tests/parity/parity_test.go tests/parity/_parity_test.go
+  sedi 's#tests/parity/parity_test.go#tests/parity/_parity_test.go#' $ROWS
+}
+x6_testmain_exit() {
+  registry_row_change
+  printf 'package parity\n\nimport (\n\t"os"\n\t"testing"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(0) }\n' > tests/parity/zz_main_test.go
+}
+x6_testmain_edit() {
+  registry_row_change
+  printf 'package parity\n\nimport (\n\t"os"\n\t"testing"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(m.Run()) }\n' > tests/parity/main_test.go
+  git add -A; git commit -q -m "add main"; git branch -f base HEAD
+  sedi 's/os.Exit(m.Run())/if os.Getenv("CI") != "" { os.Exit(0) }; os.Exit(m.Run())/' tests/parity/main_test.go
 }
 dropped_lock_reference() { registry_row_change; sedi 's#refs: {tests: \[tests/parity/parity_test.go\#TestOldParity\]}#refs: {tests: []}#' $ROWS; }
 
@@ -680,7 +715,9 @@ run_case "N4: a build constraint on a lock's test file is a weakening" fail "bui
 run_case "N4: so is a comment-only header edit" fail "build constraint header changed" n4_build_comment_edit
 run_case "N5: a Skip added to a lock's test file is a weakening" fail "a Skip call was added" n5_skip_added
 run_case "N6: a parity fix locked by an unrelated test does not pass" fail "no lock row names TestOldParity" n6_unrelated_lock
-run_case "N6: a pending row is never a lock" fail "no lock row names TestOldParity" n6_pending_lock
+run_case "N6/M2: a pending row IS a lock when its test has a cell floor" ok "parity-fix PR: true" n6_pending_lock
+n6_pending_lock_no_floor() { n6_pending_lock; : > tests/parity/lock_cells.txt; }
+run_case "N6/M2: a pending row is no lock without a cell floor" fail "no lock row names TestOldParity" n6_pending_lock_no_floor
 run_case "N7: a product change 'covered' by a prose edit fails" fail "makes no real content change" n7_prose_only_registry_edit
 COMMIT_MSG='build(deps): bump c' run_case "N8: a quoted VictoriaMetrics require is still critical" fail "shipped build file: go.mod" n8_quoted_require
 run_case "N10: parity_ratchet.py is a gate file" fail "changes the registry gate itself" gate_file_touch
@@ -689,8 +726,48 @@ run_case "C1: conformance.yaml is a gate file" fail "changes the registry gate i
 run_case "registry-gate.yaml is a gate file" fail "changes the registry gate itself" workflow_gate_touch registry-gate.yaml
 run_case "registry-gate-base.yaml is a gate file" fail "changes the registry gate itself" workflow_gate_touch registry-gate-base.yaml
 run_case "L2: a new tests/s3compat test must be linked" fail "tests/s3compat/a_test.go#TestS3New" l2_s3compat_test
-run_case "a lock's renamed test replaces its reference without weakening it" ok "testlinks OK" renamed_lock_reference
+run_case "a lock's renamed test replaces its reference without weakening it (the floor moves with it)" ok "testlinks OK" renamed_lock_reference
+run_case "a rename that lowers the floor is a weakening" fail "lost its test reference" renamed_lock_without_the_floor
+run_case "a rename to a test with no floor entry is a weakening" fail "lost its test reference" renamed_lock_with_no_floor_entry
+run_case "a lowered floor is a weakening" fail "cell floor of TestOldParity removed or lowered (5 -> 4)" lowered_floor
+run_case "a removed floor is a weakening" fail "cell floor of TestOldParity removed or lowered (5 -> 0)" removed_floor
+run_case "a raised floor is free" ok "testlinks OK" raised_floor
+run_case "X1: a lock swapped for an empty test with every reference re-pointed fails" fail "lost its test reference" x1_lock_swapped_for_empty_test
+run_case "X2: a lock file renamed to *_windows_test.go fails" fail "name keeps the go tool from building it" x2_lock_file_renamed
+run_case "X2b: a lock file hidden behind a leading underscore fails" fail "name keeps the go tool from building it" x2b_lock_file_hidden
+run_case "X6: a TestMain that exits 0 in a lock's package fails" fail "TestMain of a package that holds a lock changed" x6_testmain_exit
 run_case "a dropped lock reference is a weakening even though the test is kept" fail "lost its test reference" dropped_lock_reference
+
+x5b_pending_yes() { sedi '/lh.row.lock/s/expect: pass/expect: pass, pending: yes/' $ROWS; }
+x5b_pending_on() { sedi '/lh.row.lock/s/expect: pass/expect: pass, pending: on/' $ROWS; }
+x5b_pending_quoted() { sedi '/lh.row.lock/s/expect: pass/expect: pass, pending: "true"/' $ROWS; }
+x8_second_document() { printf -- '---\n- {id: lh.row.hidden, title: h, expect: pass, compare: {type: exact-json}}\n' >> $ROWS; registry_row_change; }
+x7_gitattributes_hides_the_pin() { printf 'Makefile -diff\n' >> .gitattributes; sedi 's/^VL_VERSION_LOGS := .*/VL_VERSION_LOGS := v9.99.0/' Makefile; }
+x7_pin_bump() { sedi 's/^VL_VERSION_LOGS := .*/VL_VERSION_LOGS := v9.99.0/' Makefile; }
+x7_traces_pin_bump() { sedi 's/^VL_COMMIT_TRACES := .*/VL_COMMIT_TRACES := def456/' Makefile; }
+x7_vt_pin_bump() { sedi 's/^VT_VERSION := .*/VT_VERSION := v0.2.0/' Makefile; }
+x7_gitattributes_textconv() { printf '*.yaml diff=none\n*.go -text\n' >> .gitattributes; registry_row_change; }
+x7_gitattributes_alone() { printf '* text=auto\n' > .gitattributes; }
+x9_bump() { sedi "s#$1 v[0-9.]*#$1 v9.9.9#" go.mod; }
+x10_shadow_module() { printf 'import sys\nsys.exit(0)\n' > scripts/ci/dataclasses.py; }
+
+run_case "X5b: pending: yes on a pass row is rejected outright" fail "pending must be true or false" x5b_pending_yes
+run_case "X5b: pending: on is rejected outright" fail "pending must be true or false" x5b_pending_on
+run_case "X5b: a quoted \"true\" is rejected outright" fail "pending must be true or false" x5b_pending_quoted
+run_case "X8: a second YAML document in a registry file is rejected" fail "more than one YAML document" x8_second_document
+run_case "X7: a Makefile pin bump hidden by .gitattributes is product and a gate-file change" fail "route/handler/upstream files" x7_gitattributes_hides_the_pin
+run_case "X7: .gitattributes is a gate file" fail "changes the registry gate itself" x7_gitattributes_alone
+run_case "X7: .gitattributes diff and text attributes do not hide anything" fail "changes the registry gate itself" x7_gitattributes_textconv
+run_case "X7: a VL_VERSION_LOGS bump is a product change" fail "route/handler/upstream files" x7_pin_bump
+run_case "X7: a VL_COMMIT_TRACES bump is a product change" fail "route/handler/upstream files" x7_traces_pin_bump
+run_case "X7: a VT_VERSION bump is a product change" fail "route/handler/upstream files" x7_vt_pin_bump
+for mod in github.com/klauspost/compress github.com/golang/snappy google.golang.org/protobuf github.com/pierrec/lz4/v4; do
+  COMMIT_MSG="build(deps): bump $mod" run_case "X9: a $mod bump is never dependency-only" fail "shipped build file: go.mod" x9_bump "$mod"
+done
+lock_helper_touch() { printf '// x\n' >> tests/parity/lock_cells_test.go; }
+run_case "the lock-cells helper is a gate file" fail "changes the registry gate itself" lock_helper_touch
+run_case "X10: a new file under scripts/ci that could shadow an import is a gate file" fail "changes the registry gate itself" x10_shadow_module
+run_case "a tests/ Makefile-free infra change is still not product" ok "registry-touch check OK" infra_only_change
 echo
 echo "== the generated documents must be current on a feature PR =="
 

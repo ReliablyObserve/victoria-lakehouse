@@ -304,10 +304,13 @@ jobs:
       - name: Parity ratchet (known-failure allowlist)
         if: steps.detect.outputs.relevant == 'true'
         run: |
-          python scripts/ci/parity_ratchet.py \
+          # -I: isolated mode, no script directory or working directory on sys.path, so a
+          # file of the PR named like a standard module cannot shadow what the ratchet imports.
+          python -I scripts/ci/parity_ratchet.py \
             --results parity-results.json \
             --allowlist tests/parity/known_failures.txt \
             --registry tests/conformance/registry/rows \
+            --lock-cells tests/parity/lock_cells.txt \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Upload parity results

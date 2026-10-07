@@ -274,14 +274,22 @@ feature-catalog rules above.
 - A PR that changes the gate takes effect once merged, and until then it is held to the owner
   exemption (Rule 4).
 
-**Owner setup (the one thing code cannot do).** Require these checks on `main`: `conformance-inventory`
-(heavy), `registry-gate`, `registry-gate-base` and the Parity Tests job `parity` (it always runs and
-skips quickly when nothing parity-relevant changed). Pin `registry-gate-base` to the workflow on `main`
-with a ruleset ("Require workflows to pass before merging", path
-`.github/workflows/registry-gate-base.yaml`, branch `main`), enforce it for administrators and apply
-it to the identity the agents push as only through the rules the owner chooses; agents never apply
-the label. Until `registry-gate-base` is pinned, a PR that rewrites `registry-gate.yaml` can neutralise
-that one workflow (the base-run workflow still judges it once it exists).
+**Owner setup (what code cannot do).** Require these checks on `main`: `conformance-inventory`
+(the heavy checks; it no longer holds the gate), `registry-gate`, `registry-gate-base` and the Parity
+Tests job `parity` (it always runs and skips quickly when nothing parity-relevant changed). Pin
+`registry-gate-base` to the workflow on `main` with a ruleset ("Require workflows to pass before
+merging", path `.github/workflows/registry-gate-base.yaml`, branch `main`) and enforce it for
+administrators. Only the repository owner applies `registry-exempt`; automation never does. Until
+`registry-gate-base` is pinned, a PR that rewrites `registry-gate.yaml` can neutralise that one
+workflow (the base-run workflow judges it as soon as it exists).
+
+*Canary check after the setup (a throwaway PR each):* (1) change one line of `internal/` code and no
+registry file: `registry-gate` and `registry-gate-base` must both fail; (2) edit
+`.github/workflows/registry-gate.yaml` to `exit 0` in a PR: `registry-gate-base` must still fail,
+and the PR must show both checks as required; (3) add `registry-exempt` as a non-approver: the gate
+must stay red; as the owner, after the last push: green; push again: red.
+
+All the actions in the two gate workflows are pinned by full commit SHA.
 
 **Rule 1 — product change needs a registry change.** A PR is product-changing when it changes any
 file that is not a test under `internal/`, `cmd/` or `lakehouse-traces/` (Go, embedded UI assets,
@@ -373,13 +381,14 @@ exemption, and a local run (no labeled event) fails with a message. The workflow
 `labeled`, `unlabeled` and `edited`, one run per PR (a newer run cancels the one in flight). The
 exemption skips Rules 1-4, not the route/pin and feature-catalog rules.
 
-**Rule 4 — the gate itself.** A PR that changes `scripts/ci/check_registry_touch.sh`,
-`pr_classify.py`, `registry_exempt.py`, `check_changelog_pr.py`, `gate_bootstrap.sh`,
-`parity_ratchet.py`, `cmd/testlinks`, `registry/testlinks.go`, `registry/paritygate.go`,
+**Rule 4 — the gate itself.** A PR that changes any file directly under `scripts/ci/` (so a new
+file that could shadow an import counts too), `.gitattributes`, `tests/parity/lock_cells_test.go`,
+`cmd/testlinks`, `registry/testlinks.go`, `registry/paritygate.go`,
 `.github/workflows/{conformance,registry-gate,registry-gate-base,parity}.yaml` or
 `.github/registry-exempt-approvers` fails unless it carries the owner's verified exemption (the
-other checks still run and report too). `.github/CODEOWNERS` lists the owner for `.github/`,
-`scripts/ci/` and `tests/conformance/`.
+other checks still run and report too). `tests/parity/lock_cells.txt` is not a blanket gate file: a
+parity fix adds floors freely, and lowering or removing one is a weakening. `.github/CODEOWNERS`
+lists the owner for `.github/`, `scripts/ci/` and `tests/conformance/`.
 
 ### Parity fixes ship locks
 
@@ -408,6 +417,26 @@ does not lock the fix. The owner's rule asks
 for more (every layer, both signals, both tenant forms, property or fuzz coverage); CI can only check
 that the parity test and the exact lock exist, so reviewers check the breadth.
 
+**Locks have a runtime floor.** Static checks on a test file can never be complete (an early return,
+an aliased `Skip`, a helper that skips, a `TestMain` that exits 0, a file renamed so it is not built).
+So every lock test also reports how many cells it compared, through the shared helper
+`tests/parity/lock_cells_test.go` (`reportLockCells`; `RunParity` calls it per case), and
+`tests/parity/lock_cells.txt` holds the minimum per test. The ratchet (`parity_ratchet.py --registry
+--lock-cells`) fails the Parity Tests job when a lock test is missing, skipped, failed, or compared
+fewer cells than its floor, and refuses a registry lock that names a `file#Test` without a floor. The
+floor may only grow: adding a test or raising a number is free (a parity fix that adds cells passes
+without the owner), lowering or removing one is a weakening. A lock test renamed or moved keeps its
+row only if the new name has at least the old floor. The helper file and the ratchet are gate files, the
+helper prints its line without `t.Helper` so go test prefixes it with its own file name (the ratchet
+accepts only that prefix, for the test that printed it), and a change to the `TestMain` of any package
+that holds a lock needs the owner. A bare `tests/parity/<file>_test.go` reference holds every top-level
+test of that file to passing (no count).
+Design scored against "any code change to a lock test needs the owner" (assumed, not measured):
+code about 60 lines Go + 90 lines Python, one baseline file; ongoing burden near zero for a parity fix
+that only adds cells, against one owner review per edit of a lock test under the alternative; failure
+modes: a floor set too high fails the job (visible at once, fixed by lowering it with the owner), a
+floor too low is weaker but never silent; scale: one log line per compare, negligible.
+
 **Locks are never weakened.** Any PR that fails one of these fails, parity fix or not:
 - adds an allowlist entry (renaming one, that is removing and adding the same top-level test, is
   still an addition, and the message says so: keep the old entry name or ask the owner);
@@ -415,11 +444,14 @@ that the parity test and the exact lock exist, so reviewers check the breadth.
   or ANY field changed other than `title`, `notes`, `description`, `highlight`, `differ_note`,
   `refs.doc`, more `refs.tests`, or `pending` going from true to false. That covers `compare`
   (type, options such as a tolerance, project), `request`, `targets`, `seed`, `layers`, `upstream`
-  and `pending` set to true. A test reference may be replaced when its test was renamed or moved
-  (the old reference no longer resolves and the row keeps as many references), never just dropped;
+  and `pending` set to true. A test reference may be replaced only when a tests/parity lock was renamed or moved and the new
+  name has at least the old name's cell floor (any other reference, e2e or unit, needs the owner);
 - changes a test file that a lock row references so it may stop running: any edit of the build
-  constraint header (everything before the `package` clause, comments included) or a newly added
-  `t.Skip`, `t.SkipNow` or `t.Skipf` call;
+  constraint header (everything before the `package` clause, comments included), a newly added
+  `t.Skip`, `t.SkipNow` or `t.Skipf` call, a lock's test file new under a name the go tool ignores or
+  constrains (leading `_` or `.`, a GOOS/GOARCH suffix), or an edited `TestMain` in a lock's package
+  (the runtime floor above catches whatever these static checks cannot);
+- lowers or removes a cell floor in `tests/parity/lock_cells.txt`;
 - deletes or moves the allowlist file, or changes the `--allowlist` argument of the parity workflow
   (the allowlist path is read from `.github/workflows/parity.yaml` at both revisions).
 Only the owner's exemption (above) lets one through.
@@ -429,6 +461,13 @@ tests/conformance/registry/rows` (the Parity Tests job) reads the rows with `exp
 pending, exact-equivalent compare, and requires every `tests/parity/...#Test` they reference to
 report `pass` in the run: a skipped, missing or failing lock test fails the job whatever the test
 file says. Make the `parity` job a required check so a lock cannot go red or skip unnoticed.
+
+Registry YAML is read the same way by the loader and the gate: one document per file (a `---` second
+document is rejected) and booleans spelled `true` or `false` only (`pending: yes` is rejected). The
+gate reads the PR as git blobs (a symlinked or submodule registry file is rejected) and diffs with
+`--text --no-textconv --no-ext-diff`, so a `.gitattributes` cannot hide a change; `.gitattributes` and
+every file directly under `scripts/ci/` are gate files, and a change to an upstream pin in the `Makefile`
+is a product change. The parity ratchet runs with `python -I`.
 
 Self-tests: `bash scripts/ci/tests/test_check_registry_touch.sh`,
 `bash scripts/ci/tests/test_gate_workflow_emulation.sh` (the workflows' steps in a scratch

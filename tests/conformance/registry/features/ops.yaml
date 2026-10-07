@@ -137,6 +137,12 @@
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_NonFixPRsReportNoLockProblems
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_Weakenings
     - tests/conformance/registry/paritygate_test.go#TestChangedEntries
+    - tests/conformance/registry/testlinks_test.go#TestStaleRefsBlobAndRefResolves
+    - tests/conformance/registry/testlinks_test.go#TestTestMainChanges
+    - tests/conformance/registry/testlinks_test.go#TestFilenameConstrained
+    - tests/conformance/registry/paritygate_test.go#TestParityCheck_FloorsOnlyGrow
+    - tests/conformance/registry/paritygate_test.go#TestParseLockCells
+    - tests/conformance/registry/paritygate_test.go#TestCheckCanonical
     - tests/conformance/registry/testlinks_test.go#TestLockFileWeakenings
     - tests/conformance/registry/paritygate_test.go#TestPassRowChanges_WholeRow
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_LockMustBeRelatedAndExecuting

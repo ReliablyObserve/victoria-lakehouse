@@ -38,11 +38,15 @@ excused whenever all of its failing children are listed, even if its own body
 failed too. Keep assertions out of parent bodies whose children are
 allowlisted.
 
-7. A registry lock's parity test did not pass. With ``--registry`` the ratchet
-   reads the registry rows (``expect: pass``, not pending, an exact-equivalent
-   compare) and requires every ``tests/parity/...#Test`` they reference to
-   report ``pass``: a lock whose test is skipped, missing, failing or renamed
-   without its reference fails here, whatever the test file says.
+7. A lock did not run, pass and compare enough. With ``--registry`` the ratchet
+   reads the registry rows (``expect: pass``, an exact-equivalent compare;
+   pending rows count) and requires every ``tests/parity`` test they name to
+   report ``pass``; with ``--lock-cells`` it also requires each test listed in
+   ``tests/parity/lock_cells.txt`` to report at least that many compared cells
+   (``lock-cells`` lines printed by the shared helper). A lock whose test is
+   skipped, missing, emptied, early-returning, build-constrained away or made to
+   exit by a ``TestMain`` fails here, whatever the test file says. Run it with
+   ``python -I`` so no file of the PR can shadow the modules it imports.
 
 Usage::
 
@@ -50,6 +54,7 @@ Usage::
         --results parity-results.json \\
         --allowlist tests/parity/known_failures.txt \\
         [--registry tests/conformance/registry/rows] \\
+        [--lock-cells tests/parity/lock_cells.txt] \\
         [--summary-file "$GITHUB_STEP_SUMMARY"]
 """
 
@@ -81,6 +86,10 @@ PANIC_PREFIX = "panic: "
 
 # (package, test path)
 ResultKey = tuple[str, str]
+
+# The line tests/parity/lock_cells_test.go prints: no t.Helper there, so go test
+# prefixes the helper's own file and line, which a test cannot forge from its file.
+LOCK_CELLS_LINE = re.compile(r"^\s*lock_cells_test\.go:\d+: lock-cells (Test\w+) (\d+)\s*$")
 
 
 @dataclass
@@ -161,6 +170,9 @@ class GoTestRun:
     # First panic line per package, with the test whose output carried it
     # ("" when the package itself printed it).
     panics: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # Cells a lock test reported through tests/parity/lock_cells_test.go, summed per
+    # (package, top-level test).
+    cells: dict[ResultKey, int] = field(default_factory=dict)
 
     def aborted(self) -> list[ResultKey]:
         """Tests that started and never reported pass, fail or skip."""
@@ -194,6 +206,11 @@ def parse_go_test_json(lines: Iterable[str]) -> GoTestRun:
             output = event.get("Output") or ""
             if output.startswith(PANIC_PREFIX) and package not in run.panics:
                 run.panics[package] = (test, output.strip())
+            m = LOCK_CELLS_LINE.match(output)
+            # Only the shared helper's own line counts, and only for the test that printed it.
+            if m and (test == m.group(1) or test.startswith(m.group(1) + "/")):
+                key = (package, m.group(1))
+                run.cells[key] = run.cells.get(key, 0) + int(m.group(2))
             continue
         if not test:
             if action == "fail" and package:
@@ -307,12 +324,49 @@ def exact_equivalent(compare: object) -> bool:
     return False
 
 
-def lock_tests(rows_dir: str) -> dict[str, list[str]]:
+def _strict_bool_loader():
+    """A YAML loader that reads only `true` and `false` as booleans.
+
+    PyYAML (YAML 1.1) reads `yes`, `on` and `y` as booleans; the Go loader reads them
+    into a typed bool as well, while a generic map reader sees strings. The registry
+    accepts one spelling, so a `pending: yes` cannot mean different things to two readers.
+    """
+    import yaml
+
+    class Loader(yaml.SafeLoader):
+        pass
+
+    Loader.yaml_implicit_resolvers = {
+        key: [(tag, rx) for tag, rx in resolvers if tag != "tag:yaml.org,2002:bool"]
+        for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+    }
+    Loader.add_implicit_resolver("tag:yaml.org,2002:bool", re.compile(r"^(?:true|false)$"), list("tf"))
+    return Loader
+
+
+def parse_lock_cells(text: str) -> dict[str, int]:
+    """tests/parity/lock_cells.txt: `TestName  minCells  # why` per line."""
+    out: dict[str, int] = {}
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 2 or not re.fullmatch(r"Test\w*", parts[0]) or not parts[1].isdigit() or int(parts[1]) < 1:
+            raise ValueError(f"lock_cells line {lineno}: want `TestName  minCells` with minCells >= 1, got {raw!r}")
+        if parts[0] in out:
+            raise ValueError(f"lock_cells line {lineno}: duplicate entry {parts[0]}")
+        out[parts[0]] = int(parts[1])
+    return out
+
+
+def lock_tests(rows_dir: str, repo_root: str | None = None) -> dict[str, list[str]]:
     """Top-level parity tests that registry locks reference: {test: [row ids]}.
 
-    A lock is a row with ``expect: pass``, not ``pending``, and an
-    exact-equivalent compare; its ``refs.tests`` entries of the form
-    ``tests/parity/<file>_test.go#TestName`` name the tests that must pass.
+    A lock is a row with ``expect: pass`` and an exact-equivalent compare (a
+    ``pending`` row counts: the parity job, not the row runner, executes its test).
+    ``tests/parity/<file>_test.go#TestName`` names the test; a bare
+    ``tests/parity/<file>_test.go`` names every top-level test of that file.
     """
     import yaml  # PyYAML: the parity job installs it for this check
 
@@ -322,29 +376,68 @@ def lock_tests(rows_dir: str) -> dict[str, list[str]]:
             if not name.endswith(".yaml"):
                 continue
             with open(os.path.join(root, name), encoding="utf-8") as fh:
-                for doc in yaml.safe_load_all(fh):
-                    for row in doc or []:
-                        if not isinstance(row, dict) or row.get("expect") != "pass" or row.get("pending"):
+                docs = list(yaml.load_all(fh, Loader=_strict_bool_loader()))
+            if len(docs) != 1:
+                raise ValueError(f"{name}: more than one YAML document in a registry file")
+            for row in docs[0] or []:
+                if not isinstance(row, dict) or row.get("expect") != "pass":
+                    continue
+                if not isinstance(row.get("pending", False), bool):
+                    raise ValueError(f"{name}: {row.get('id')}: pending must be true or false")
+                if not exact_equivalent(row.get("compare")):
+                    continue
+                refs = row.get("refs") or {}
+                for ref in refs.get("tests") or []:
+                    path, _, test = str(ref).partition("#")
+                    if not path.startswith(PARITY_PREFIX) or "/" in path[len(PARITY_PREFIX):]:
+                        continue
+                    if test and "/" not in test:
+                        found.setdefault(test, []).append(row.get("id", "?"))
+                    elif not test and repo_root:
+                        try:
+                            with open(os.path.join(repo_root, path), encoding="utf-8") as fh:
+                                text = fh.read()
+                        except OSError:
                             continue
-                        if not exact_equivalent(row.get("compare")):
-                            continue
-                        refs = row.get("refs") or {}
-                        for ref in refs.get("tests") or []:
-                            path, _, test = str(ref).partition("#")
-                            if path.startswith(PARITY_PREFIX) and test and "/" not in test:
-                                found.setdefault(test, []).append(row.get("id", "?"))
+                        for t in re.findall(r"^func (Test(?:[A-Z0-9_]\w*)?)\(", text, re.M):
+                            found.setdefault(t, []).append(row.get("id", "?"))
     return found
 
 
-def lock_failures(run: "GoTestRun", locks: dict[str, list[str]]) -> list[str]:
-    """Lock tests that did not report `pass` (skipped, failed, aborted or absent)."""
+def _named(rows_dir: str, test: str) -> bool:
+    """True when some registry lock names ``test`` with ``file#test`` (not a bare file)."""
+    needle = "#" + test
+    for root, _, files in os.walk(rows_dir):
+        for name in files:
+            if name.endswith(".yaml"):
+                with open(os.path.join(root, name), encoding="utf-8") as fh:
+                    if re.search(re.escape(PARITY_PREFIX) + r"[\w.]+_test\.go" + re.escape(needle) + r"(?![\w/])", fh.read()):
+                        return True
+    return False
+
+
+def lock_failures(run: "GoTestRun", locks: dict[str, list[str]], floors: dict[str, int] | None = None) -> list[str]:
+    """Locks that did not run, pass and compare enough.
+
+    Required: every test a registry lock names, and every test with a floor in
+    lock_cells.txt. A test must report ``pass`` (not skipped, failed, aborted or
+    absent) and, when it has a floor, at least that many cells. A registry lock
+    that names a test with no floor is a failure only for NAMED references; a
+    bare file reference has no cell count to hold.
+    """
+    floors = floors or {}
     out = []
-    for test, rows in sorted(locks.items()):
+    for test in sorted(set(locks) | set(floors)):
+        rows = ", ".join(sorted(set(locks.get(test, [])))) or "lock_cells.txt"
         actions = [a for (_, t), a in run.results.items() if t == test]
-        if "pass" in actions and not any(a == "fail" for a in actions):
+        if not actions or "fail" in actions or "pass" not in actions:
+            state = "failed" if "fail" in actions else "was skipped" if "skip" in actions else "did not report a result"
+            out.append(f"{test} {state} (lock for {rows})")
             continue
-        state = "failed" if "fail" in actions else "was skipped" if "skip" in actions else "did not report a result"
-        out.append(f"{test} {state} (lock for {', '.join(sorted(set(rows)))})")
+        floor = floors.get(test)
+        cells = sum(n for (_, t), n in run.cells.items() if t == test)
+        if floor is not None and cells < floor:
+            out.append(f"{test} compared {cells} cells, the floor in lock_cells.txt is {floor} (lock for {rows})")
     return out
 
 
@@ -371,9 +464,10 @@ class Verdict:
         )
 
 
-def evaluate(run: GoTestRun, allowlist: Allowlist, locks: dict[str, list[str]] | None = None) -> Verdict:
+def evaluate(run: GoTestRun, allowlist: Allowlist, locks: dict[str, list[str]] | None = None,
+             floors: dict[str, int] | None = None) -> Verdict:
     verdict = Verdict()
-    verdict.lock_failures = lock_failures(run, locks or {})
+    verdict.lock_failures = lock_failures(run, locks or {}, floors)
     verdict.unexpected = unexpected_failures(run.results, set(allowlist.entries))
     verdict.aborted = run.aborted()
     verdict.panics = dict(run.panics)
@@ -505,6 +599,11 @@ def main(argv: list[str] | None = None) -> int:
         help="registry rows directory: every parity test a lock row references must pass",
     )
     parser.add_argument(
+        "--lock-cells",
+        default=None,
+        help="tests/parity/lock_cells.txt: the minimum cells each lock test must report",
+    )
+    parser.add_argument(
         "--summary-file",
         default=None,
         help="append the markdown summary here (e.g. $GITHUB_STEP_SUMMARY)",
@@ -528,8 +627,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    locks = lock_tests(args.registry) if args.registry else None
-    verdict = evaluate(run, allowlist, locks)
+    locks = None
+    floors = None
+    if args.lock_cells:
+        with open(args.lock_cells, encoding="utf-8") as fh:
+            floors = parse_lock_cells(fh.read())
+    if args.registry:
+        repo_root = os.path.abspath(os.path.join(args.registry, "..", "..", "..", ".."))
+        locks = lock_tests(args.registry, repo_root)
+        # A registry lock that names a test must give it a cell floor.
+        missing = sorted(t for t in locks if floors is not None and t not in floors and _named(args.registry, t))
+        if missing:
+            print("parity_ratchet: registry locks without a floor in lock_cells.txt: " + ", ".join(missing), file=sys.stderr)
+            return 1
+    verdict = evaluate(run, allowlist, locks, floors)
     summary = render_summary(run, allowlist, verdict)
     print(summary)
     if args.summary_file:

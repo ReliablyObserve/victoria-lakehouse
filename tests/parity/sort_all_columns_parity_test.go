@@ -281,6 +281,8 @@ func compareAllColumnSorts(t *testing.T, c *allColumnSortCase, f tenantForm, row
 				break
 			}
 		}
+		// one cell per row position compared (the lock's floor in lock_cells.txt)
+		reportLockCells(t, len(hot))
 	}
 }
 

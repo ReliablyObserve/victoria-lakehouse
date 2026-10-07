@@ -55,11 +55,12 @@ run_gate() {
     cd "$d" || exit 1
     export RUNNER_TEMP="$runner" BASE_REF=main PR_LABELS="" PR_BODY="" PR_TITLE="fix: x" PR_AUTHOR=mallory PR_NUMBER=1 EVENT_ACTION=synchronize LABEL_NAME="" SENDER=mallory
     if [[ "$flavour" == target ]]; then
-      # pull_request_target: GATE_DIR is a checkout of the base, the PR is a separate worktree.
-      local pr="$runner/pr" base_checkout="$runner/base"
+      # pull_request_target: the workspace is a checkout of the BASE; the PR's commits are only
+      # fetched (here they already share the object store) and read as blobs through HEAD_REV.
+      local base_checkout="$runner/base" sha
+      sha=$(git rev-parse HEAD)
       git worktree add -q --detach "$base_checkout" main
-      git worktree add -q --detach "$pr" HEAD
-      GATE_DIR="$base_checkout" PR_DIR="$pr" bash "$base_checkout/scripts/ci/gate_bootstrap.sh" run
+      GATE_DIR="$base_checkout" PR_DIR="$base_checkout" HEAD_REV="$sha" bash "$base_checkout/scripts/ci/gate_bootstrap.sh" run
     else
       # pull_request: the bootstrap is read from the merge base, never from the PR.
       local base
@@ -130,7 +131,27 @@ printf '#!/usr/bin/env bash\necho registry-touch check OK\nexit 0\n' > scripts/c
 commit w3
 out=$(run_gate "$R" target); rc=$?
 check "W3: pull_request_target flavour runs the base gate, not the PR's edited one" "$(rejected $rc "$out"; echo $?)" "rc=$rc"$'\n'"$out"
-check "W3: the PR worktree was only read" "$(cd "$R" && git diff --quiet main w3 -- internal/config/unlinked_emulation_test.go; [[ $? -eq 1 ]]; echo $?)"
+check "W3: no PR file was checked out on the runner" "$([[ ! -e "$T"/runner.*/base/internal/config/unlinked_emulation_test.go ]]; echo $?)"
+git checkout -q main
+
+# --- W3b: symlinks and special files in the PR, read as blobs only ---
+git checkout -q -b w3b main && bad_pr
+ln -s /etc/hosts tests/conformance/registry/rows/zz_link.yaml
+commit w3b
+out=$(run_gate "$R" target); rc=$?
+check "P1: a symlinked registry file is rejected, not followed" "$([[ $rc -ne 0 ]] && grep -q 'symlink or submodule' <<<"$out"; echo $?)" "rc=$rc"$'\n'"$out"
+git checkout -q main
+git checkout -q -b w3c main && bad_pr
+ln -s /dev/zero tests/conformance/registry/rows/zz_zero.yaml
+commit w3c
+out=$(perl -e 'alarm shift; exec @ARGV' 120 bash -c "$(declare -f run_gate rejected check scratch_repo bad_pr commit); T='$T'; R='$R'; REPO_ROOT='$REPO_ROOT'; GATE_GOTOOLCHAIN=auto; run_gate '$R' target" 2>&1); rc=$?
+check "P2: a symlink to /dev/zero neither hangs nor passes" "$([[ $rc -ne 0 && $rc -ne 142 ]]; echo $?)" "rc=$rc"
+git checkout -q main
+git checkout -q -b w3d main && bad_pr
+mkdir -p tests/e2e && ln -s /etc/passwd tests/e2e/zz_link_test.go
+commit w3d
+out=$(run_gate "$R" target); rc=$?
+check "P3: a symlinked test file is rejected" "$([[ $rc -ne 0 ]]; echo $?)" "rc=$rc"$'\n'"$out"
 git checkout -q main
 
 # --- W4 ---

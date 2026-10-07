@@ -16,8 +16,13 @@ on:
     # label is honoured only in the run its own labeled event triggers.
     types: [opened, synchronize, reopened, labeled, unlabeled, edited]
 
+# issues/pull-requests: read serve only the transition fallback below: a merge base
+# that predates this file's bootstrap runs its OWN exemption check, which reads the
+# PR timeline. See https://github.com/ReliablyObserve/victoria-lakehouse/issues/456.
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 
 concurrency:
   group: registry-gate-${{ github.event.pull_request.number }}
@@ -28,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -47,7 +52,8 @@ jobs:
             git show "$base:scripts/ci/gate_bootstrap.sh" > "$RUNNER_TEMP/gate_bootstrap.sh"
           else
             # Transition only: the base predates the bootstrap, so write the same three
-            # commands it contains. Delete this branch once the bootstrap is on main.
+            # commands it contains. Delete this branch once the bootstrap is on main:
+            # https://github.com/ReliablyObserve/victoria-lakehouse/issues/456
             cat > "$RUNNER_TEMP/gate_bootstrap.sh" <<'BOOT'
           set -euo pipefail
           export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
@@ -60,9 +66,11 @@ jobs:
           fi
           bash "$RUNNER_TEMP/gate_bootstrap.sh" prepare >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: ${{ steps.prep.outputs.gate_dir }}/go.mod
+          # No cache: nothing a PR can write into a cache is ever read by the gate.
+          cache: false
 
       - name: Product changes and new tests are covered in the registry
         env:
@@ -75,4 +83,8 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           LABEL_NAME: ${{ github.event.label.name }}
           SENDER: ${{ github.event.sender.login }}
+          # Only the transition fallback (a base without the bootstrap) uses these: its
+          # exemption check reads the PR timeline. The bootstrap's gate run drops them
+          # (env -i allow-list), and the new exemption check needs no token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash "$RUNNER_TEMP/gate_bootstrap.sh" run

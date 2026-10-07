@@ -50,7 +50,11 @@ func LoadDir(dir string) (*Registry, error) {
 			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
 			return nil
 		}
-		// Use strict decoder to reject unknown keys and handle multiple YAML documents
+		if err := CheckCanonical(data); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+			return nil
+		}
+		// Use strict decoder to reject unknown keys
 		dec := yaml.NewDecoder(bytes.NewReader(data))
 		dec.KnownFields(true)
 		for {

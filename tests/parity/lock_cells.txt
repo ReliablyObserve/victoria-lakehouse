@@ -1,0 +1,6 @@
+# Minimum number of cells each lock test must report in a parity run (see lock_cells_test.go).
+# The floor only grows: raising it or adding a test is free, lowering or removing needs the owner.
+# One entry per named tests/parity lock in the registry, and per lock test you want held.
+TestParity_AllColumnSortTieOrder  1  # B8 sort tie order: provisional until measured
+TestParity_PhrasePruning_Logs     1  # provisional until measured
+TestParity_PhrasePruning_Traces   1  # provisional until measured

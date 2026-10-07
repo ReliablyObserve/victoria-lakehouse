@@ -45,6 +45,18 @@ class ProductPaths(unittest.TestCase):
         self.assertIsNone(self.reason("internal/x/hooks_test.sh"))
 
 
+class MakefilePins(unittest.TestCase):
+    MK = "VL_VERSION_LOGS := v1.53.0\nVL_COMMIT_TRACES = c945d29\nVT_VERSION:=v0.12.0\nOTHER := x\nall:\n"
+
+    def test_the_three_pins_are_read_in_every_assignment_spelling(self):
+        self.assertEqual(pc.makefile_pins(self.MK), {"VL_VERSION_LOGS": "v1.53.0", "VL_COMMIT_TRACES": "c945d29", "VT_VERSION": "v0.12.0"})
+
+    def test_other_makefile_edits_are_not_pins(self):
+        self.assertEqual(pc.makefile_pins(self.MK + "extra:\n\techo\n"), pc.makefile_pins(self.MK))
+        self.assertNotEqual(pc.makefile_pins(self.MK.replace("v0.12.0", "v0.13.0")), pc.makefile_pins(self.MK))
+        self.assertEqual(pc.makefile_pins("# VL_VERSION_LOGS := v9\n  VT_VERSION := v9\n"), {})
+
+
 class GoMod(unittest.TestCase):
     def only(self, head):
         return pc.go_mod_dependency_only(GO_MOD, head)

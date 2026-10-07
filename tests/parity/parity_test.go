@@ -81,6 +81,7 @@ func RunParity(t *testing.T, refBase, sutBase string, cases []ParityCase) {
 			ref := fetch(t, refBase, pc.Endpoint, params)
 			sut := fetch(t, sutBase, pc.Endpoint, params)
 			compareParityAt(t, pc, refBase, sutBase, params, ref, sut)
+			reportLockCells(t, 1)
 		})
 	}
 }
@@ -93,6 +94,7 @@ func RunParityWithRange(t *testing.T, refBase, sutBase string, dur time.Duration
 			ref := fetch(t, refBase, pc.Endpoint, params)
 			sut := fetch(t, sutBase, pc.Endpoint, params)
 			compareParityAt(t, pc, refBase, sutBase, params, ref, sut)
+			reportLockCells(t, 1)
 		})
 	}
 }

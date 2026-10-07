@@ -7,11 +7,17 @@ set -euo pipefail
 # Byte-order collation, so `sort` and `comm` agree on every runner and locale.
 export LC_ALL=C
 BASE=${1:-origin/main}
-changed=$(git diff --name-only "$BASE"...HEAD)
+# The PR's head revision. The gate reads blobs of it (git show / git diff) and never
+# the working tree, so a PR cannot make it follow a symlink or smudge an LFS file.
+HEADREV=${HEAD_REV:-HEAD}
+# Never let a .gitattributes of the PR hide a diff from the gate: no textconv, no
+# external diff driver, binary files diffed as text.
+GITDIFF=(git diff --text --no-textconv --no-ext-diff)
+changed=$("${GITDIFF[@]}" --name-only "$BASE"..."$HEADREV")
 # Content comparisons read files at the merge base: the revision
 # `git diff BASE...HEAD` diffs against, so a PR is judged on its own changes
 # only, never on what landed on the base branch after it forked.
-MERGE_BASE=$(git merge-base "$BASE" HEAD)
+MERGE_BASE=$(git merge-base "$BASE" "$HEADREV")
 
 # matching_lines <rev> <path> <ERE>: the distinct lines of <path> at <rev> that
 # match <ERE>, with surrounding whitespace trimmed. A path that does not exist
@@ -28,7 +34,7 @@ matching_lines() {
 # files: the check errs towards asking for a registry or catalog touch rather
 # than risk missing a real change.
 registration_changed() {
-  [[ "$(matching_lines "$MERGE_BASE" "$1" "$2")" != "$(matching_lines HEAD "$1" "$2")" ]]
+  [[ "$(matching_lines "$MERGE_BASE" "$1" "$2")" != "$(matching_lines "$HEADREV" "$1" "$2")" ]]
 }
 
 # Path patterns that always count as route-touching, regardless of content:
@@ -64,7 +70,7 @@ done <<< "$(echo "$changed" | grep -E '\.go$' | grep -v '_test\.go$' || true)"
 # before the (:)= ) so a reformatted assignment is still recognized.
 touches_pin_makefile=""
 if grep -qE '^Makefile$' <<< "$changed"; then
-  if git diff "$BASE"...HEAD -- Makefile | grep -qE '^[+-](VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION)[[:space:]]*:?='; then
+  if "${GITDIFF[@]}" "$BASE"..."$HEADREV" -- Makefile | grep -qE '^[+-](VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION)[[:space:]]*:?='; then
     touches_pin_makefile="Makefile"
   fi
 fi
@@ -156,7 +162,7 @@ if grep -qFx 'CHANGELOG.md' <<< "$changed"; then
     [[ -z "$lead" ]] && continue
     feature_signals="$feature_signals
 CHANGELOG.md: a new '### Added' bullet: $lead"
-  done <<< "$(comm -13 <(added_leadins "$MERGE_BASE") <(added_leadins HEAD))"
+  done <<< "$(comm -13 <(added_leadins "$MERGE_BASE") <(added_leadins "$HEADREV"))"
 fi
 
 FEATURE_CODE_RE='(HandleFunc\(|mux\.Handle\(|\.Handle\(|flag\.[A-Za-z]+\("lakehouse\.)'
@@ -185,7 +191,7 @@ config_keys() {
 
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  new_keys=$(comm -13 <(config_keys "$MERGE_BASE" "$f") <(config_keys HEAD "$f"))
+  new_keys=$(comm -13 <(config_keys "$MERGE_BASE" "$f") <(config_keys "$HEADREV" "$f"))
   if [[ -n "$new_keys" ]]; then
     feature_signals="$feature_signals
 $f: a new YAML config key: $(echo "$new_keys" | paste -s -d ' ' -)"
@@ -194,7 +200,7 @@ done <<< "$(echo "$changed" | grep -E '^internal/config/[^/]+\.go$' | grep -v '_
 
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  if git diff "$BASE"...HEAD -- "$f" | grep -qE '^\+[[:space:]]*-[[:space:]]*id:[[:space:]]*lh\.'; then
+  if "${GITDIFF[@]}" "$BASE"..."$HEADREV" -- "$f" | grep -qE '^\+[[:space:]]*-[[:space:]]*id:[[:space:]]*lh\.'; then
     feature_signals="$feature_signals
 $f: a new Lakehouse registry row"
   fi
@@ -248,7 +254,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 approvers_file=$(mktemp)
 trap 'rm -f "$approvers_file"' EXIT
 git show "$MERGE_BASE:.github/registry-exempt-approvers" > "$approvers_file" 2>/dev/null || : > "$approvers_file"
-CLASSIFY=$(python3 "$HERE/pr_classify.py" --base "$MERGE_BASE" --head HEAD --title "${PR_TITLE:-}" \
+CLASSIFY=$(python3 "$HERE/pr_classify.py" --base "$MERGE_BASE" --head "$HEADREV" --title "${PR_TITLE:-}" \
   --author "${PR_AUTHOR:-}" --approvers "$approvers_file") || { echo "::error::pr_classify.py failed"; exit 1; }
 class_field() { sed -n "s/^$1=//p" <<< "$CLASSIFY" | head -1; }
 exempt_kind=$(class_field exempt)
@@ -265,7 +271,7 @@ if grep -qE '^[[:space:]>]*Registry:[[:space:]]*none[[:space:]]*(—|–|--?)[[:
 fi
 
 # The files that make up the gate: a PR touching them needs the owner.
-GATE_FILES_RE='^(scripts/ci/(check_registry_touch\.sh|pr_classify\.py|registry_exempt\.py|check_changelog_pr\.py|gate_bootstrap\.sh|parity_ratchet\.py)|tests/conformance/cmd/testlinks/|tests/conformance/registry/(testlinks|paritygate)\.go|\.github/workflows/(conformance|registry-gate|registry-gate-base|parity)\.yaml|\.github/registry-exempt-approvers)'
+GATE_FILES_RE='^(scripts/ci/[^/]+$|\.gitattributes$|tests/parity/lock_cells_test\.go$|tests/conformance/cmd/testlinks/|tests/conformance/registry/(testlinks|paritygate)\.go|\.github/workflows/(conformance|registry-gate|registry-gate-base|parity)\.yaml|\.github/registry-exempt-approvers)'
 gate_touched=$(echo "$changed" | grep -E "$GATE_FILES_RE" || true)
 
 if [[ "$exempt_kind" != none ]]; then
@@ -297,10 +303,10 @@ else
   [[ "$is_product" == 1 ]] && product_args=(-product "$product_reason")
   tl_bin=${TESTLINKS_BIN:-}
   if [[ -n "$tl_bin" ]]; then
-    "$tl_bin" -repo . -base "$MERGE_BASE" ${product_args[@]+"${product_args[@]}"} || exit 1
+    "$tl_bin" -repo . -base "$MERGE_BASE" -head "$HEADREV" ${product_args[@]+"${product_args[@]}"} || exit 1
   elif command -v go >/dev/null 2>&1 && [[ -d "$HERE/../../tests/conformance/cmd/testlinks" ]]; then
     (cd "$HERE/../.." && GOWORK=off go build -o "${TMPDIR:-/tmp}/testlinks.$$" ./tests/conformance/cmd/testlinks) || exit 1
-    "${TMPDIR:-/tmp}/testlinks.$$" -repo . -base "$MERGE_BASE" ${product_args[@]+"${product_args[@]}"}; rc=$?
+    "${TMPDIR:-/tmp}/testlinks.$$" -repo . -base "$MERGE_BASE" -head "$HEADREV" ${product_args[@]+"${product_args[@]}"}; rc=$?
     rm -f "${TMPDIR:-/tmp}/testlinks.$$"
     [[ $rc -eq 0 ]] || exit 1
   else
