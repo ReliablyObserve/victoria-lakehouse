@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.146.7] - 2026-10-07
+
 ### Fixed
 
 - **Putting a cold block's columns in upstream's order allocates less.** The ordering step used a heap-allocated
