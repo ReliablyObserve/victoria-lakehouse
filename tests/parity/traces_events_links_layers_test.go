@@ -167,6 +167,7 @@ func compareExtrasTrace(t *testing.T, tn extrasTenant, id string, withTraceAPIs 
 	params := tracesWindow()
 	params.Set("query", fmt.Sprintf(`trace_id:=%q`, id))
 	params.Set("limit", "1000")
+	params.Set("disable_latency_offset", "true")
 	deadline := time.Now().Add(45 * time.Second)
 	var ref, sut fetchResult
 	for {
@@ -308,18 +309,23 @@ func recompactPartition(t *testing.T, at time.Time) {
 	t.Fatalf("recompact of %s never answered 200: %s", partition, last)
 }
 
-// openHourSpanTime returns a time in the current UTC hour, at least 70 seconds
-// in the past (past the latency offset). The partition of that hour is younger
-// than min_age, so no schedule merges it. Late in the hour it waits for the
-// next one: the case runs for minutes and must not cross an hour boundary.
+// openHourSpanTime returns the current time, which puts the spans in the open
+// hour and in front of the flush watermark. Both matter: spans older than the
+// watermark are late rows and go straight to Parquet without passing the insert
+// buffer, so only a fresh span is in the buffer layer; and the partition of the
+// open hour is younger than min_age and holds two files per tenant below the
+// level thresholds, so no schedule merges it and only the explicit recompact
+// does. Queries pass disable_latency_offset so hot VictoriaTraces does not hide
+// the fresh spans. Late in the hour it waits for the next one: the case runs
+// for minutes and must not cross an hour boundary.
 func openHourSpanTime(t *testing.T) time.Time {
 	t.Helper()
 	for {
 		now := time.Now().UTC()
-		if m := now.Minute(); m >= 2 && m < 48 {
-			return now.Truncate(time.Hour).Add(time.Minute)
+		if now.Minute() < 48 {
+			return now
 		}
-		t.Logf("waiting for the open hour to be neither fresh nor nearly over (minute %d)", now.Minute())
+		t.Logf("waiting for the next hour (minute %d)", now.Minute())
 		time.Sleep(20 * time.Second)
 	}
 }
@@ -498,6 +504,7 @@ func TestParity_Traces_EventsLinksInvalidUTF8(t *testing.T) {
 	compare := func(t *testing.T) {
 		params := tracesWindow()
 		params.Set("query", fmt.Sprintf(`trace_id:=%q`, id))
+		params.Set("disable_latency_offset", "true")
 		var hot, cold map[string]string
 		deadline := time.Now().Add(60 * time.Second)
 		for {
