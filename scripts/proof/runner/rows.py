@@ -18,7 +18,7 @@ from ..metrics.evaluate import KINDS
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROWS_DIR = os.path.join(HERE, "rows")
 LAYERS = ("cold", "buffer", "all")
-FORMS = ("numeric", "numeric1001", "alias")
+FORMS = ("numeric", "numeric1001", "alias", "keyorder")
 WINDOWS = ("layer", "jaeger", "none")
 
 
@@ -76,11 +76,18 @@ def _micro(ts: str) -> str:
     return str(int(dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp() * 1_000_000))
 
 
+def window_of(state: dict, layer: str) -> dict:
+    """{"start", "end"} of a data layer; `all` spans the cold and the buffer window."""
+    if layer == "all":
+        return {"start": state["cold"]["start"], "end": state["buffer"]["end"]}
+    return state[layer]
+
+
 def window_params(row: dict, layer: str, state: dict) -> dict:
     w = row.get("window", "layer")
     if w == "none":
         return {}
-    win = {"start": state["cold"]["start"], "end": state["buffer"]["end"]} if layer == "all" else state[layer]
+    win = window_of(state, layer)
     if w == "jaeger":
         return {"start": _micro(win["start"]), "end": _micro(win["end"])}
     return {"start": win["start"], "end": win["end"]}
@@ -112,6 +119,8 @@ def tenant_headers(form: str, target: str) -> dict:
         return {"AccountID": "0", "ProjectID": "0"}
     if form == "numeric1001":
         return {"AccountID": "1001", "ProjectID": "0"}
+    if form == "keyorder":  # the tenant of the key-order fixture (stack.py seed_keyorder)
+        return {"AccountID": "7", "ProjectID": "0"}
     if form == "alias":
         if target == "ref":
             return {"AccountID": "1001", "ProjectID": "0"}

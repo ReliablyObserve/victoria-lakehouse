@@ -21,6 +21,7 @@ import os
 import subprocess
 import time
 import urllib.request
+import zlib
 try:
     from .jsonio import dump_json, load_json
 except ImportError:  # run as a script: python3 scripts/proof/stack.py
@@ -31,17 +32,55 @@ COMPOSE = os.path.join(HERE, "..", "..", "deployment", "docker", "docker-compose
 PROJECT = os.environ.get("PROOF_PROJECT", "lhproof")
 NETWORK = f"{PROJECT}_proof-net"
 PEER_KEY = "proof-peer-key"
-DATAGEN = "lhproof-datagen:1"
-IMAGES = ["lhproof-vlproxy:2.5.1", "lhproof-logs:base", "lhproof-traces:base", "lhproof-logs:pr", "lhproof-traces:pr", DATAGEN, "lhproof-grafana:1"]
+# Every image the stack builds carries the project name, so two stacks never share or remove each other's images.
+DATAGEN = f"{PROJECT}-datagen:1"
+BUILT_BY_COMPOSE = ("vl-ref", "vt-ref", "lvp-ref", "grafana")
 
-PORTS = {"ref-logs": 48428, "ref-traces": 48429, "base-logs": 48430, "base-traces": 48431,
-         "pr-logs": 48432, "pr-traces": 48433, "grafana": 48300,
-         "jaeger-ref": 48440, "jaeger-base": 48441, "jaeger-pr": 48442,
-         "loki-ref": 48450, "loki-base": 48451, "loki-pr": 48452}
+
+def image_tags(project: str = PROJECT) -> list[str]:
+    """The images this stack builds, by exact tag: the only ones `down` removes."""
+    return [f"{project}-{n}" for n in ("logs:base", "traces:base", "logs:pr", "traces:pr", "datagen:1", "grafana:1",
+                                       "vlproxy:latest", "vl:v1.53.0", "vt:v0.12.0")]
+
+
+IMAGES = image_tags()
+
+# offsets from the port base; the default stack (project lhproof) sits at 48000
+PORT_OFFSETS = {"ref-logs": 428, "ref-traces": 429, "base-logs": 430, "base-traces": 431, "pr-logs": 432, "pr-traces": 433,
+                "grafana": 300, "jaeger-ref": 440, "jaeger-base": 441, "jaeger-pr": 442,
+                "loki-ref": 450, "loki-base": 451, "loki-pr": 452}
+
+
+def port_base(project: str = PROJECT, env=None) -> int:
+    """PROOF_PORT_BASE, else 48000 for the default project and a project-derived block (20000-59900) for any other."""
+    env = os.environ if env is None else env
+    if env.get("PROOF_PORT_BASE"):
+        return int(env["PROOF_PORT_BASE"])
+    if project == "lhproof":
+        return 48000
+    return 20000 + (zlib.crc32(project.encode()) % 400) * 100
+
+
+def make_ports(project: str = PROJECT, env=None) -> dict:
+    base = port_base(project, env)
+    return {name: base + off for name, off in PORT_OFFSETS.items()}
+
+
+PORTS = make_ports()
+
+
+def compose_env() -> dict:
+    """Variables the compose file reads: the image prefix and one host port per published service."""
+    env = {"PROOF_PREFIX": PROJECT}
+    for k, v in PORTS.items():
+        env["PORT_" + k.upper().replace("-", "_")] = str(v)
+    return env
+
 
 # (name, account, project, seed, logs, traces)
 TENANTS = [("t0", "0", "0", 11, 3000, 600), ("t1001", "1001", "0", 12, 1500, 300)]
 BUFFER_TENANTS = [("t0", "0", "0", 21, 800, 160), ("t1001", "1001", "0", 22, 400, 80)]
+KEYORDER_TENANT = ("t7", "7", "0")
 
 
 def sh(cmd, **kw):  # pragma: no cover - runs docker
@@ -49,7 +88,7 @@ def sh(cmd, **kw):  # pragma: no cover - runs docker
 
 
 def compose(*args, env=None, **kw):  # pragma: no cover - runs docker
-    e = dict(os.environ, **(env or {}))
+    e = dict(os.environ, **compose_env(), **(env or {}))
     return sh(["docker", "compose", "-p", PROJECT, "-f", COMPOSE, *args], env=e, **kw)
 
 
@@ -61,7 +100,7 @@ def make_state(now: dt.datetime | None = None) -> dict:
     h = hour_floor(now or dt.datetime.now(dt.timezone.utc)) - dt.timedelta(hours=1)
     f = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
     return {"H": f(h), "cold": {"start": f(h - dt.timedelta(hours=4)), "end": f(h)},
-            "buffer": {"start": f(h), "end": f(h + dt.timedelta(hours=1))}, "ports": PORTS,
+            "buffer": {"start": f(h), "end": f(h + dt.timedelta(hours=1))}, "ports": dict(PORTS), "project": PROJECT,
             "tenants": {"numeric": [{"account": a, "project": p} for _, a, p, *_ in TENANTS], "alias": {"acme-corp": "1001:0"}}}
 
 
@@ -110,6 +149,7 @@ def wait_drained(state: dict, timeout: float = 240) -> None:
             for sig, mode in (("logs", "logs"), ("traces", "traces")):
                 for _, a, p, *_ in TENANTS:
                     left += buffered_rows(PORTS[f"{v}-{sig}"], mode, state["cold"]["start"], state["cold"]["end"], a, p)
+            left += buffered_rows(PORTS[f"{v}-logs"], "logs", state["cold"]["start"], state["cold"]["end"], KEYORDER_TENANT[1], KEYORDER_TENANT[2])
         if left == 0:
             return
         if time.time() > deadline:
@@ -117,9 +157,49 @@ def wait_drained(state: dict, timeout: float = 240) -> None:
         time.sleep(5)
 
 
+def keyorder_rows(start: str, n_streams: int = 3, per_stream: int = 40) -> str:
+    """NDJSON of a fixture that exercises the order of the JSON members of a row (#429, #432, #452): several streams in
+    one window, rows of different streams sharing a timestamp (ties for a limit to cut), one field that is the same in
+    the whole stream (`zeta`), one that varies (`alpha`), one that is sparse (`mid`), and field names that are not in
+    alphabetical order in the input. Deterministic: no clock, no randomness."""
+    t0 = dt.datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ") + dt.timedelta(minutes=5)
+    lines = []
+    for i in range(per_stream):
+        ts = (t0 + dt.timedelta(seconds=(i // 2) * 7)).strftime("%Y-%m-%dT%H:%M:%SZ")  # two rows per second and stream
+        for s_ in range(n_streams):
+            row = {"zeta": f"z{s_}", "ts": ts, "msg": f"line {i} of stream a{s_}", "app": f"a{s_}", "env": "proof",
+                   "alpha": f"v{(i * 7 + s_) % 11}", "req": f"r{s_}-{i:03d}"}
+            if i % 3 == 0:
+                row["mid"] = f"m{i}"
+            lines.append(json.dumps(row))
+    return "\n".join(lines) + "\n"
+
+
+def keyorder_request(port: int, start: str) -> urllib.request.Request:
+    q = "_stream_fields=app,env&_msg_field=msg&_time_field=ts"
+    return urllib.request.Request(f"http://127.0.0.1:{port}/insert/jsonline?{q}", data=keyorder_rows(start).encode(), method="POST",
+                                  headers={"AccountID": KEYORDER_TENANT[1], "ProjectID": KEYORDER_TENANT[2],
+                                           # without it VictoriaLogs answers 200 and ingests nothing
+                                           "Content-Type": "application/stream+json"})
+
+
+def post_keyorder(port: int, start: str) -> None:  # pragma: no cover - needs the stack
+    with urllib.request.urlopen(keyorder_request(port, start), timeout=30) as r:  # noqa: S310 - loopback proof stack
+        r.read()
+
+
+def seed_keyorder(state: dict, window: str) -> None:  # pragma: no cover - needs the stack
+    for k in ("ref-logs", "base-logs", "pr-logs"):
+        post_keyorder(PORTS[k], state[window]["start"])
+
+
 def read_buffered(state: dict) -> dict:
-    return {f"{v}-{sig}-{a_}": buffered_rows(PORTS[f"{v}-{sig}"], sig, state["buffer"]["start"], state["buffer"]["end"], a_, p_)
-            for v in ("base", "pr") for sig in ("logs", "traces") for _, a_, p_, *_ in BUFFER_TENANTS}
+    out = {f"{v}-{sig}-{a_}": buffered_rows(PORTS[f"{v}-{sig}"], sig, state["buffer"]["start"], state["buffer"]["end"], a_, p_)
+           for v in ("base", "pr") for sig in ("logs", "traces") for _, a_, p_, *_ in BUFFER_TENANTS}
+    for v in ("base", "pr"):  # the key-order fixture is logs only
+        out[f"{v}-logs-{KEYORDER_TENANT[1]}"] = buffered_rows(PORTS[f"{v}-logs"], "logs", state["buffer"]["start"], state["buffer"]["end"],
+                                                              KEYORDER_TENANT[1], KEYORDER_TENANT[2])
+    return out
 
 
 def settled_buffered(state: dict, timeout: float = 60, step: float = 3) -> dict:
@@ -141,9 +221,11 @@ def cmd_build(a):  # pragma: no cover - drives docker compose
         if not d:
             continue
         for sig in ("logs", "traces"):
-            sh(["docker", "build", "-q", "-f", os.path.join(d, f"Dockerfile.{sig}"), "-t", f"lhproof-{sig}:{tag}", d],
+            sh(["docker", "build", "-q", "-f", os.path.join(d, f"Dockerfile.{sig}"), "-t", f"{PROJECT}-{sig}:{tag}", d],
                env=dict(os.environ, GOWORK="off"))
     sh(["docker", "build", "-q", "-f", os.path.join(a.main, "Dockerfile.datagen"), "-t", DATAGEN, a.main])
+    # hot VictoriaLogs/VictoriaTraces (with a probe binary), loki-vl-proxy (Dockerfile.loki-vl-proxy pins the release) and Grafana
+    compose("build", "-q", *BUILT_BY_COMPOSE)
 
 
 def cmd_up(_a):  # pragma: no cover - drives docker compose
@@ -156,7 +238,9 @@ def cmd_seed(a):  # pragma: no cover - drives docker compose
     for t in TENANTS:
         sh(datagen_cmd(state["H"], 4, t, hot=True, lh="base"))
         sh(datagen_cmd(state["H"], 4, t, hot=False, lh="pr"))
+    seed_keyorder(state, "cold")
     wait_drained(state)
+    state["keyorder"] = True
     dump_json(os.path.join(a.out, "state.json"), state, indent=1)
     print(json.dumps(state))
 
@@ -170,6 +254,7 @@ def cmd_hold(a):  # pragma: no cover - drives docker compose
     for t in BUFFER_TENANTS:
         sh(datagen_cmd(now, 1, t, hot=True, lh="base"))
         sh(datagen_cmd(now, 1, t, hot=False, lh="pr"))
+    seed_keyorder(state, "buffer")
     state["buffered"] = settled_buffered(state)
     state["trace_id"] = pick_trace(state)
     dump_json(path, state, indent=1)
@@ -192,7 +277,7 @@ def cmd_status(_a):  # pragma: no cover - drives docker compose
 
 def cmd_down(_a):  # pragma: no cover - drives docker compose
     compose("down", "-v", "--remove-orphans")
-    for img in IMAGES:
+    for img in image_tags():  # exact tags of this project, nothing else
         subprocess.run(["docker", "rmi", img], check=False)
 
 

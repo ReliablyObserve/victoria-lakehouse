@@ -4,7 +4,9 @@
 #
 #   docker compose -p lhproof -f deployment/docker/docker-compose-proof.yml up -d
 #
-# The Lakehouse images are built by scripts/proof/stack.py (tags lhproof-<signal>:<variant>).
+# Every image carries the project name (PROOF_PREFIX, set by scripts/proof/stack.py from PROOF_PROJECT), and every published
+# port is a PORT_* variable, so a second stack never shares images or ports with this one. The Lakehouse images are built by
+# scripts/proof/stack.py (<project>-logs:base, <project>-traces:pr, ...); the others carry a build recipe here.
 # LH_POLICY selects the buffer behaviour: proof/policy-flush.yml (5 s flush, the cold layer) or
 # proof/policy-hold.yml (1 h, so new rows stay in the insert buffer, the buffer layer).
 name: lhproof
@@ -41,14 +43,19 @@ services:
       "
 
   vl-ref:
-    image: vl-probed:v1.53.0
+    build:
+      context: ../../
+      dockerfile: deployment/docker/Dockerfile.upstream-probe
+      args:
+        UPSTREAM: victoriametrics/victoria-logs:v1.53.0
+    image: ${PROOF_PREFIX:-lhproof}-vl:v1.53.0
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=48h"
       - "-loggerLevel=INFO"
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48428:9428"
+      - "127.0.0.1:${PORT_REF_LOGS:-48428}:9428"
     healthcheck:
       test: ["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:9428/health"]
       interval: 5s
@@ -57,14 +64,19 @@ services:
       start_period: 5s
 
   vt-ref:
-    image: vt-probed:v0.12.0
+    build:
+      context: ../../
+      dockerfile: deployment/docker/Dockerfile.upstream-probe
+      args:
+        UPSTREAM: victoriametrics/victoria-traces:v0.12.0
+    image: ${PROOF_PREFIX:-lhproof}-vt:v0.12.0
     command:
       - "-storageDataPath=/data"
       - "-retentionPeriod=48h"
       - "-loggerLevel=INFO"
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48429:10428"
+      - "127.0.0.1:${PORT_REF_TRACES:-48429}:10428"
     healthcheck:
       test: ["CMD", "/probe/busybox", "wget", "-qO-", "http://127.0.0.1:10428/health"]
       interval: 5s
@@ -73,13 +85,13 @@ services:
       start_period: 10s
 
   lh-logs-base:
-    image: ${LH_LOGS_BASE_IMAGE:-lhproof-logs:base}
+    image: ${LH_LOGS_BASE_IMAGE:-${PROOF_PREFIX:-lhproof}-logs:base}
     depends_on:
       s3-init:
         condition: service_completed_successfully
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48430:9428"
+      - "127.0.0.1:${PORT_BASE_LOGS:-48430}:9428"
     command:
       - "-lakehouse.s3.bucket=proof-base"
       - "-lakehouse.s3.endpoint=http://s3:9000"
@@ -108,13 +120,13 @@ services:
           memory: 2g
 
   lh-traces-base:
-    image: ${LH_TRACES_BASE_IMAGE:-lhproof-traces:base}
+    image: ${LH_TRACES_BASE_IMAGE:-${PROOF_PREFIX:-lhproof}-traces:base}
     depends_on:
       s3-init:
         condition: service_completed_successfully
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48431:10428"
+      - "127.0.0.1:${PORT_BASE_TRACES:-48431}:10428"
     command:
       - "-lakehouse.s3.bucket=proof-base"
       - "-lakehouse.s3.endpoint=http://s3:9000"
@@ -144,13 +156,13 @@ services:
           memory: 2g
 
   lh-logs-pr:
-    image: ${LH_LOGS_PR_IMAGE:-lhproof-logs:pr}
+    image: ${LH_LOGS_PR_IMAGE:-${PROOF_PREFIX:-lhproof}-logs:pr}
     depends_on:
       s3-init:
         condition: service_completed_successfully
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48432:9428"
+      - "127.0.0.1:${PORT_PR_LOGS:-48432}:9428"
     command:
       - "-lakehouse.s3.bucket=proof-pr"
       - "-lakehouse.s3.endpoint=http://s3:9000"
@@ -179,13 +191,13 @@ services:
           memory: 2g
 
   lh-traces-pr:
-    image: ${LH_TRACES_PR_IMAGE:-lhproof-traces:pr}
+    image: ${LH_TRACES_PR_IMAGE:-${PROOF_PREFIX:-lhproof}-traces:pr}
     depends_on:
       s3-init:
         condition: service_completed_successfully
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48433:10428"
+      - "127.0.0.1:${PORT_PR_TRACES:-48433}:10428"
     command:
       - "-lakehouse.s3.bucket=proof-pr"
       - "-lakehouse.s3.endpoint=http://s3:9000"
@@ -218,14 +230,14 @@ services:
     image: nginx:1.27-alpine
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48440:80"
+      - "127.0.0.1:${PORT_JAEGER_REF:-48440}:80"
     environment:
       BACKEND_HOST: vt-ref
       BACKEND_PORT: "10428"
       UI_HOST: jaeger-query
       UI_PORT: "16686"
     volumes:
-      - ./proof/jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
     depends_on:
       jaeger-query:
         condition: service_started
@@ -234,14 +246,14 @@ services:
     image: nginx:1.27-alpine
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48441:80"
+      - "127.0.0.1:${PORT_JAEGER_BASE:-48441}:80"
     environment:
       BACKEND_HOST: lh-traces-base
       BACKEND_PORT: "10428"
       UI_HOST: jaeger-query
       UI_PORT: "16686"
     volumes:
-      - ./proof/jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
     depends_on:
       jaeger-query:
         condition: service_started
@@ -250,23 +262,26 @@ services:
     image: nginx:1.27-alpine
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48442:80"
+      - "127.0.0.1:${PORT_JAEGER_PR:-48442}:80"
     environment:
       BACKEND_HOST: lh-traces-pr
       BACKEND_PORT: "10428"
       UI_HOST: jaeger-query
       UI_PORT: "16686"
     volumes:
-      - ./proof/jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./jaeger-ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
     depends_on:
       jaeger-query:
         condition: service_started
 
   lvp-ref:
-    image: ${VLPROXY_IMAGE:-lhproof-vlproxy:2.5.1}
+    build:
+      context: .
+      dockerfile: Dockerfile.loki-vl-proxy
+    image: ${PROOF_PREFIX:-lhproof}-vlproxy:latest
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48450:3100"
+      - "127.0.0.1:${PORT_LOKI_REF:-48450}:3100"
     environment:
       VL_BACKEND_URL: "http://vl-ref:9428"
     command:
@@ -286,10 +301,10 @@ services:
       start_period: 5s
 
   lvp-base:
-    image: ${VLPROXY_IMAGE:-lhproof-vlproxy:2.5.1}
+    image: ${PROOF_PREFIX:-lhproof}-vlproxy:latest
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48451:3100"
+      - "127.0.0.1:${PORT_LOKI_BASE:-48451}:3100"
     environment:
       VL_BACKEND_URL: "http://lh-logs-base:9428"
     command:
@@ -309,10 +324,10 @@ services:
       start_period: 5s
 
   lvp-pr:
-    image: ${VLPROXY_IMAGE:-lhproof-vlproxy:2.5.1}
+    image: ${PROOF_PREFIX:-lhproof}-vlproxy:latest
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48452:3100"
+      - "127.0.0.1:${PORT_LOKI_PR:-48452}:3100"
     environment:
       VL_BACKEND_URL: "http://lh-logs-pr:9428"
     command:
@@ -338,10 +353,13 @@ services:
       SPAN_STORAGE_TYPE: memory
 
   grafana:
-    image: ${GRAFANA_IMAGE:-lhproof-grafana:1}
+    build:
+      context: .
+      dockerfile: Dockerfile.grafana
+    image: ${PROOF_PREFIX:-lhproof}-grafana:1
     networks: [proof-net]
     ports:
-      - "127.0.0.1:48300:3000"
+      - "127.0.0.1:${PORT_GRAFANA:-48300}:3000"
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin

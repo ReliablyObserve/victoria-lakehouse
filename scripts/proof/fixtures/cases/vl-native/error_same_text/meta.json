@@ -11,6 +11,7 @@
   },
   "verdict": "exact"
  },
+ "expect_error": true,
  "id": "vl-native/error_same_text",
  "kind": "rows",
  "provenance": "derived-from-recorded",

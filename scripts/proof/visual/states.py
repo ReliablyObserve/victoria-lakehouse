@@ -1,6 +1,6 @@
 """Panel state of a captured page, on every side, and the transitions judged against the reference.
 
-The state is decided from two independent signals (spec 4.3):
+The state is decided from two independent signals:
 - the data side, which does not depend on the DOM: `results[refId].error`, frame notices of severity error,
   a non-200 status of a request, frames with no rows;
 - the DOM side, which decides only when the data side is silent: a visible error banner or alert, a panel
@@ -14,6 +14,8 @@ from __future__ import annotations
 from typing import Any
 
 DATA, EMPTY, ERROR, UNSETTLED = "data", "empty", "error", "unsettled"
+# Failed requests of known, tracked differences that must not decide the state of a page: the page renders without them.
+KNOWN_ISSUES = {"/select/buildinfo": "#463"}
 BACKEND_PREFIXES = ("/api/ds/query", "/api/datasources/")
 
 
@@ -46,6 +48,8 @@ def _body_rows(resp: Any) -> int | None:
                 return len(resp[k])
     if isinstance(resp, list):
         return len(resp)
+    if isinstance(resp, str):  # an NDJSON answer (the VMUI/VTUI query call): one row per JSON line
+        return sum(1 for line in resp.splitlines() if line.startswith("{"))
     return None
 
 
@@ -55,7 +59,13 @@ def data_state(records: list[dict]) -> dict:
     kind = ""
     rows = 0
     seen = 0
+    known = []
     for r in records:
+        path = r["url"].split("?")[0]
+        issue = next((i for p, i in KNOWN_ISSUES.items() if path.endswith(p)), None)
+        if issue and r["status"] != 200:
+            known.append(f"{path}: HTTP {r['status']} ({issue})")
+            continue
         seen += 1
         if r["status"] != 200:
             errors.append(f"{r['url'].split('?')[0][-60:]}: HTTP {r['status']}")
@@ -69,10 +79,10 @@ def data_state(records: list[dict]) -> dict:
         n = _body_rows(r.get("response"))
         rows += n or 0
     if errors:
-        return {"state": ERROR, "kind": kind, "errors": errors[:6], "rows": rows}
+        return {"state": ERROR, "kind": kind, "errors": errors[:6], "rows": rows, "known": known}
     if not seen:
-        return {"state": "none", "kind": "", "errors": [], "rows": 0}
-    return {"state": DATA if rows else EMPTY, "kind": "", "errors": [], "rows": rows}
+        return {"state": "none", "kind": "", "errors": [], "rows": 0, "known": known}
+    return {"state": DATA if rows else EMPTY, "kind": "", "errors": [], "rows": rows, "known": known}
 
 
 def dom_state(ui: dict | None) -> dict:
@@ -94,18 +104,22 @@ def panel_state(capture: dict) -> dict:
     warning = ""
     if d["state"] == ERROR and m["state"] != ERROR:
         warning = "the data side shows an error the DOM does not"
-        return {"state": ERROR, "kind": d["kind"], "warning": warning, "errors": d["errors"]}
-    if d["state"] == "none":  # no request seen: only the DOM can say
-        return {"state": m["state"], "kind": m["kind"], "warning": "", "errors": m.get("detail", [])}
+        return {"state": ERROR, "kind": d["kind"], "warning": warning, "errors": d["errors"], "known": d["known"]}
+    if d["state"] == "none":
+        # no backend request was captured: nothing proves the page showed data, so it is never `data`
+        if m["state"] == ERROR:
+            return {"state": ERROR, "kind": m["kind"], "warning": "", "errors": m.get("detail", []), "known": d["known"]}
+        return {"state": EMPTY, "kind": "no-requests", "warning": "no backend request was captured", "errors": [], "known": d["known"]}
     if m["state"] == ERROR:
-        return {"state": ERROR, "kind": m["kind"], "warning": "", "errors": m.get("detail", [])}
+        return {"state": ERROR, "kind": m["kind"], "warning": "", "errors": m.get("detail", []), "known": d["known"]}
     if d["state"] == DATA and m["state"] == EMPTY:
         warning = "the DOM shows 'No data' where responses carry rows"
-    return {"state": d["state"], "kind": "", "warning": warning, "errors": []}
+    return {"state": d["state"], "kind": "", "warning": warning, "errors": [], "known": d["known"],
+            "no_data_panels": m.get("detail", []) if m["state"] == EMPTY else []}
 
 
 def transition(base: str, pr: str, ref: str | None) -> str | None:
-    """The verdict a state change decides on its own, or None when the data metrics decide (spec table 4.3).
+    """The verdict a state change decides on its own, or None when the data metrics decide (the table of state changes below).
 
     `ref` is None when no reference was captured."""
     if UNSETTLED in (base, pr):

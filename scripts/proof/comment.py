@@ -48,10 +48,22 @@ def _group(rs: list[dict]) -> list[dict]:
     out: dict[tuple, dict] = {}
     for r in rs:
         rid = re.sub(rf"\.{r['form']}\.{r['layer']}$", "", r["id"].split("/", 1)[1])
-        key = (r["surface"], rid, r["layer"], r["verdict"], pct(r["base_score"]), pct(r["pr_score"]), _worst(r["base_facets"]), _worst(r["pr_facets"]))
+        key = (r["surface"], rid, r["layer"], r["verdict"], bool(r.get("resample_skipped")), pct(r["base_score"]), pct(r["pr_score"]), _worst(r["base_facets"]), _worst(r["pr_facets"]))
         g = out.setdefault(key, {**r, "rid": rid, "forms": []})
         g["forms"].append(r["form"])
     return sorted(out.values(), key=lambda g: (g["surface"], g["rid"], g["layer"]))
+
+
+def seed_text(rep: dict) -> str:
+    """What the seed check measured, from report.json, never a fixed sentence."""
+    seed = rep.get("seed_equality") or {}
+    if not seed:
+        return "Seed equality was **skipped** for this run."
+    counts = sorted(v["counts"][next(iter(v["counts"]))] for v in seed.values() if isinstance(v, dict) and "counts" in v)
+    if not counts:
+        return "Seed equality was recorded in an older format."
+    return (f"Seed equality held before any comparison: {len(seed)} signal/tenant-form/layer cells, each with the same row count "
+            f"and the same hash of the row identities on ref, base and PR ({counts[0]} to {counts[-1]} rows per cell).")
 
 
 def api_section(rep: dict, label: str, explain: dict) -> tuple[list[str], dict]:
@@ -62,12 +74,12 @@ def api_section(rep: dict, label: str, explain: dict) -> tuple[list[str], dict]:
     remaining = [r for r in rs if r["verdict"] not in ("fixed", "vacuous", "blocked", "harness-error") and (r["pr_score"] or 0) < 100]
     lines = [f"### API data proof: base (main) vs {label} vs hot VictoriaLogs / VictoriaTraces", ""]
     lines.append(f"{len(rs)} requests, " + ", ".join(f"{n} {v}" for v, n in sorted(counts.items())) + ". "
-                 "Seed equality (rows per tenant form and layer) held on ref, base and PR before any comparison. "
+                 + seed_text(rep) + " "
                  "Percentages are the worst quality facet of each answer against the reference (measured; 100 only when exact).")
     lines += ["", f"| request | form | layer | base % | {label} % | worst facet base -> {label} | verdict |", "|---|---|---|--:|--:|---|---|"]
     for r in _group([r for r in rs if not (r["verdict"] == "exact" and (r["base_score"] or 0) >= 100)]):
         lines.append(f"| `{r['rid']}` | {' + '.join(r['forms'])} | {r['layer']} | {pct(r['base_score'])} | {pct(r['pr_score'])} | "
-                     f"{_worst(r['base_facets'])} -> {_worst(r['pr_facets'])} | {ICON[r['verdict']]} |")
+                     f"{_worst(r['base_facets'])} -> {_worst(r['pr_facets'])} | {ICON[r['verdict']]}{' (unconfirmed: re-sample allowance used up)' if r.get('resample_skipped') else ''} |")
     exact = sum(1 for r in rs if r["verdict"] == "exact" and (r["base_score"] or 0) >= 100)
     lines += ["", f"{exact} requests match the reference exactly on both sides (not listed)."]
     lines += ["", "#### Remaining differences from the reference", ""]
@@ -92,7 +104,14 @@ def visual_section(cmp: dict, label: str, image_base: str | None, explain: dict)
         st = r["states"]
         s = " / ".join(st.get(x, {}).get("state", "-") for x in ("base", "pr", "ref"))
         lines.append(f"| `{k}` | {pct(r['base_score'])} | {pct(r['pr_score'])} | {s} | {r['verdict']} |")
-    lines += ["", f"{len(cmp) - len(shown)} page captures match the reference on every question on both sides (not listed)."]
+    warn = [(k, w) for k, r in sorted(cmp.items()) for w in r.get("warnings") or []]
+    if warn:
+        lines += ["", "Warnings of the page checks (a page with a warning proves less than its row says):", ""]
+        lines += [f"- `{k}`: {w}" for k, w in warn]
+    hidden = [k for k in cmp if k not in shown]
+    with_warning = [k for k in hidden if cmp[k].get("warnings")]
+    lines += ["", f"{len(hidden)} page captures match the reference on every question on both sides (not listed)"
+              + (f"; {len(with_warning)} of them have a warning (listed above)." if with_warning else ".")]
     detail = [(k, r) for k, r in sorted(cmp.items()) if r["verdict"] not in ("match", "same-as-reference") and r.get("questions")]
     if detail:
         lines += ["", f"Questions the pages asked that differ from the reference (worst facet of each answer, base % -> {label} %):", ""]

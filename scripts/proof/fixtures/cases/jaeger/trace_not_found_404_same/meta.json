@@ -3,6 +3,7 @@
  "expect": {
   "verdict": "exact"
  },
+ "expect_error": true,
  "id": "jaeger/trace_not_found_404_same",
  "kind": "trace_jaeger",
  "provenance": "recorded",

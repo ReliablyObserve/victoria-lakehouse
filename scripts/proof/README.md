@@ -119,24 +119,31 @@ yet; they are run by hand (and the sticky comment and gate come later).
 
 ### Stack (`stack.py`, `deployment/docker/docker-compose-proof.yml`)
 
-An isolated compose project `lhproof`, loopback ports 48xxx only: hot VictoriaLogs and VictoriaTraces (the
-reference), Lakehouse built from main (`base`) and from the PR (`pr`) for both signals, one RustFS, Grafana
-with a datasource per side (VictoriaLogs, Jaeger, Loki through loki-vl-proxy), the Jaeger UI per side and
-loki-vl-proxy per side.
+An isolated compose project (`PROOF_PROJECT`, default `lhproof`), loopback ports only: hot VictoriaLogs and
+VictoriaTraces (the reference), Lakehouse built from main (`base`) and from the PR (`pr`) for both signals, one RustFS,
+Grafana with a datasource per side (VictoriaLogs, Jaeger, Loki through loki-vl-proxy), the Jaeger UI per side and
+loki-vl-proxy per side. Nothing is shared between two stacks: every image carries the project name
+(`<project>-logs:base`, `<project>-grafana:1`, ...) and `down` removes exactly those tags and no others; every published
+port is a `PORT_*` variable computed from the project (`lhproof` uses 48000..48452, any other project a block derived
+from its name, or `PROOF_PORT_BASE`). Hot VictoriaLogs/VictoriaTraces, loki-vl-proxy (the release pinned in
+`Dockerfile.loki-vl-proxy`, bumped by the daily loki-vl-proxy workflow) and Grafana carry a build recipe in the compose
+file, so a machine with none of the images builds them: `stack.py build` is all it takes.
 
 ```
-python3 scripts/proof/stack.py build --main <main checkout> --pr <PR checkout>   # lhproof-<signal>:base / :pr
+python3 scripts/proof/stack.py build --main <main checkout> --pr <PR checkout>   # <project>-<signal>:base / :pr, datagen, hot, proxy, Grafana
 python3 scripts/proof/stack.py up
 python3 scripts/proof/stack.py seed --out OUT     # cold layer: the same datagen seed and --now to hot + base, then to the PR
 python3 scripts/proof/stack.py hold --out OUT     # buffer layer: restart with a 1 h flush and ingest the buffer batch
-python3 scripts/proof/stack.py down               # compose down -v and the images, by exact tag
+python3 scripts/proof/stack.py down               # compose down -v and this project's images, by exact tag
 ```
 
-The windows are absolute and hour aligned (`OUT/state.json`): cold `[H-4h, H)`, buffer `[H, H+1h)`. Tenants:
-`0:0` and `1001:0`, the latter also reached as the alias `acme-corp` (sent to Lakehouse as `X-Scope-OrgID`
-and to hot as `AccountID: 1001`, because upstream has no aliases). `hold` records the unflushed rows of the
-buffer window per Lakehouse (`buffered`) and a trace of tenant 0:0 whose spans carry events and links
-(`trace_id`).
+The windows are absolute and hour aligned (`OUT/state.json`): cold `[H-4h, H)`, buffer `[H, H+1h)`. Tenants: `0:0` and
+`1001:0`, the latter also reached as the alias `acme-corp` (sent to Lakehouse as `X-Scope-OrgID` and to hot as
+`AccountID: 1001`, because upstream has no aliases), and tenant `7:0`, a logs-only fixture for the order of the JSON
+members of a row (#429, #432, #452): three streams in one window, rows of different streams sharing a second, one
+column that is the same in a whole stream, one that varies, one that is sparse, and input names that are not in
+alphabetical order. `hold` records the unflushed rows of the buffer window per Lakehouse (`buffered`, once two reads in a
+row agree) and a trace of tenant 0:0 whose spans carry events and links (`trace_id`).
 
 ### API runner (`runner/`)
 
@@ -151,8 +158,15 @@ the three targets are called in the order ref, base, PR, and the answers are wri
 with the envelope fields of the contract above: status, raw body, latency, transport error kind, tenant
 form, layer and, for the buffer layer, `buffer_unflushed_rows`. The metrics library scores them. Before any
 comparison the row count of every tenant form and layer must be equal on ref, base and PR; otherwise the run
-exits 2 (it did not complete). A request that is neither `exact` nor `same` is sampled twice more; a verdict
-that flips is `nondeterministic`. `report.md` (request, base %, PR %, worst facet, verdict), `report.json`
+exits 2 (it did not complete). "Equal" means: counts that stay put (rows reach Lakehouse's buffer late, trace-index rows
+included: the run first waits until every count of `*` is the same on two reads), the same count of span rows (logs: of
+all rows), the same hash of the row identities, for every tenant form (numeric, numeric1001, alias, and the key-order
+tenant) and every layer (cold, buffer, all); zero rows on all three is an error, because every window is seeded. A request
+that is neither `exact` nor `same` is sampled twice more (requests already `fixed` or `improved` are re-sampled for free);
+a verdict that flips is `nondeterministic`; a request that could not be re-sampled because the allowance ran out is marked
+`resample_skipped` and shown as unconfirmed. The same 4xx on every target is a `harness-error` unless the row says
+`expect_error`. A row with `limit_arbitrary` (a list cut at `limit`: upstream keeps arbitrary entries past it) is scored
+on the size of the answer and on its membership in the reference answer without the limit, not on which values survived. `report.md` (request, base %, PR %, worst facet, verdict), `report.json`
 (facets and notes) and `bodies.jsonl.gz` (every answer) are written next to the cases.
 
 Exit codes: 0 done, 1 a failing verdict (`regressed`, `nondeterministic`, `harness-error`), 2 incomplete.
@@ -196,6 +210,13 @@ printed as `unexplained` and the command exits 1. Row sets: `runner/rows/core.js
 `field-values.json` (field values over map attributes, the empty-value bucket, stream fields) and
 `audit.json` (span events, links and scope; column and key order of sort rows; field names).
 
+### Known, tracked differences the page checks do not count
+
+A failed request of a known issue (today `/select/buildinfo`, #463) does not decide the panel state of a page; it is listed
+as a warning. A page whose sides are all empty, or where the panel the page is about says "No data" on every side, is
+`vacuous`, never `match`. Logs Drilldown's series-limit triangle ("Show all 500") is a warning about the number of values,
+not a failed panel.
+
 ### Image hosting
 
 `visual/publish.py` is the loki-vl-proxy script unchanged: montages (PNG files of at most 300 KB, at most 80)
@@ -206,6 +227,6 @@ workflow token).
 
 ### Ported files
 
-`visual/vio.py`, `visual/publish.py` and `tests/test_visual_publish.py` are copied from loki-vl-proxy
-`bench/visual` (`429f15b9`); `visual/montage.py` and `visual/compare.py` and `tests/playwright/proof/capture.spec.ts`
+`visual/vio.py` and `tests/test_visual_publish.py` are copied from loki-vl-proxy `bench/visual` (`429f15b9`);
+`visual/publish.py` too, with two changes (the token reaches git through `GIT_CONFIG_*` environment variables, and only PNG files are accepted); `visual/montage.py` and `visual/compare.py` and `tests/playwright/proof/capture.spec.ts`
 are adapted from it. Each file names its source in its header.

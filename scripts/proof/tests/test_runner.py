@@ -11,6 +11,7 @@ import pytest
 
 from scripts.proof.runner import client, rows as R, run as runner
 from scripts.proof.runner.report import markdown, write_reports
+from scripts.proof import stack
 from scripts.proof.jsonio import load_json, read_text
 from scripts.proof.metrics.cases import run_dir
 
@@ -134,7 +135,7 @@ class Stub(BaseHTTPRequestHandler):
         Stub.calls.append((self.command, self.path, dict(self.headers), body))
         status, out = self.server.routes.get(self.path.split("?")[0], (404, "nope"))
         if callable(out):
-            out = out()
+            out = out(body, dict(self.headers)) if out.__code__.co_argcount == 2 else out()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -315,7 +316,7 @@ def test_meta_carries_claims_and_options():
     m = runner.meta_of(req)
     assert m["claimed_gap"] == "B8" and m["may_be_empty"] and m["order"] == "as-upstream" and m["row"] == "reg.row"
     assert runner.case_id(req) == "vl-native/q.numeric.cold"
-    assert runner.count_query("logs") != runner.count_query("traces")
+    assert runner.COUNT_ALL != runner.COUNT_SPANS
 
 
 def test_markdown_table_has_a_verdict_per_request(tmp_path, monkeypatch):
@@ -326,3 +327,226 @@ def test_markdown_table_has_a_verdict_per_request(tmp_path, monkeypatch):
         stop(srvs)
     md = markdown(items, st, {"a": 1}, label="PR 438")
     assert "PR 438 %" in md and "`fv.numeric.cold`" in md and "checked" in md
+
+
+# ---- seed: stability, equality of counts and of rows, every form and layer ----
+
+def window_server(count_by_window, rows_by_window=None, tenant_counts=None):
+    """A stub target answering `* | stats count()` per (account, window start) and the identity rows per window."""
+    def q(body, headers):
+        from urllib.parse import parse_qs
+        p = {k: v[0] for k, v in parse_qs(body).items()}
+        h = {k.lower(): v for k, v in headers.items()}
+        acct = h.get("accountid") or ("1001" if h.get("x-scope-orgid") == "acme-corp" else "0")
+        key = (acct, p["start"][:13])
+        if "stats count" in p["query"]:
+            return json.dumps({"c": str(count_by_window(key))})
+        rows = (rows_by_window or (lambda k: ["r%d" % i for i in range(count_by_window(k))]))(key)
+        return "\n".join(json.dumps({"_time": "t", "_msg": r, "span_id": r, "trace_id": r, "name": r}) for r in rows)
+    return serve({"/select/logsql/query": (200, q)})
+
+
+def three(count_a, count_b=None, count_c=None, rows_b=None):
+    return {"ref": window_server(count_a), "base": window_server(count_b or count_a, rows_b), "pr": window_server(count_c or count_a)}
+
+
+def test_seed_equality_covers_alias_buffer_all_and_numeric1001():
+    ok = lambda key: 5  # noqa: E731
+    srvs = three(ok)
+    try:
+        seen = runner.seed_equality(state_for(srvs))
+    finally:
+        stop(srvs)
+    assert {k.split("/", 1)[1] for k in seen} == {f"{f}/{l}" for f in ("numeric", "numeric1001", "alias") for l in ("cold", "buffer", "all")}
+    # a difference in exactly one form/layer is found in each of them
+    for form_acct, layer_hour in (("1001", "2026-10-07T11"), ("0", "2026-10-07T15"), ("1001", "2026-10-07T15")):
+        srvs = three(ok, count_b=lambda key, fa=form_acct, lh=layer_hour: 4 if (key[0] == fa and key[1] == lh) else 5)
+        try:
+            with pytest.raises(SystemExit) as e:
+                runner.seed_equality(state_for(srvs))
+        finally:
+            stop(srvs)
+        assert e.value.code == 2
+
+
+def test_seed_equality_compares_rows_not_only_counts_and_rejects_zero_everywhere():
+    srvs = three(lambda key: 3, rows_b=lambda key: ["x", "y", "z"])  # base: same count, other rows
+    try:
+        with pytest.raises(SystemExit) as e:
+            runner.seed_equality(state_for(srvs), forms=("numeric",), layers=("cold",))
+    finally:
+        stop(srvs)
+    assert "different rows" in str(e.value)
+    srvs = three(lambda key: 0)
+    try:
+        with pytest.raises(SystemExit) as e:
+            runner.seed_equality(state_for(srvs), forms=("numeric",), layers=("cold",))
+    finally:
+        stop(srvs)
+    assert "no rows at all" in str(e.value)
+
+
+def test_wait_stable_waits_for_late_rows_and_fails_on_a_count_that_keeps_moving(monkeypatch):
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    reads = iter([{"a": 189}, {"a": 242}, {"a": 242}])
+    monkeypatch.setattr(runner, "snapshot", lambda *a, **k: next(reads))
+    runner.wait_stable({})
+    n = iter(range(100))
+    monkeypatch.setattr(runner, "snapshot", lambda *a, **k: {"a": next(n)})
+    with pytest.raises(SystemExit) as e:
+        runner.wait_stable({}, timeout=-1)
+    assert e.value.code == 2 and "still moving" in str(e.value)
+    monkeypatch.setattr(runner, "snapshot", lambda *a, **k: {"a": None})
+    with pytest.raises(SystemExit):
+        runner.wait_stable({}, timeout=-1)
+
+
+def test_snapshot_counts_all_rows_and_span_rows_for_traces():
+    srvs = three(lambda key: 5)
+    try:
+        snap = runner.snapshot(state_for(srvs), ("numeric",), ("cold",))
+    finally:
+        stop(srvs)
+    assert "traces/numeric/cold/ref/spans" in snap and "logs/numeric/cold/base/all" in snap and "logs/numeric/cold/base/spans" not in snap
+
+
+def test_buffer_rows_use_the_account_of_the_tenant_form(monkeypatch):
+    seen = []
+    monkeypatch.setattr(stack, "buffered_rows", lambda port, mode, start, end, acct, proj: seen.append(acct) or 1)
+    st = {"ports": {"base-logs": 1}, "buffer": {"start": "a", "end": "b"}}
+    for form in ("numeric", "alias", "numeric1001", "keyorder"):
+        runner.buffered_rows(st, "base", "logs", form, "buffer")
+    assert seen == ["0", "1001", "1001", "7"]
+
+
+def test_resample_allowance_is_not_used_by_fixed_requests_and_skips_are_reported(tmp_path, monkeypatch):
+    # three requests: base lost a value everywhere (fixed), allowance 0
+    srvs = targets(base_values=[{"value": "GET", "hits": 5}], pr_values=VALUES["values"])
+    rows = [{**FV_ROW, "id": f"fv{i}"} for i in range(3)]
+    try:
+        st = state_for(srvs)
+        monkeypatch.setattr(runner, "buffered_rows", lambda *a, **k: None)
+        runner.run(st, rows, str(tmp_path), allowance=0)
+        for i in range(3):  # fixed requests are re-sampled for free, whatever the allowance
+            assert os.path.isdir(os.path.join(str(tmp_path), "cases", "vl-native", f"fv{i}.numeric.cold", "resample-2"))
+    finally:
+        stop(srvs)
+    # a regressed request past the allowance is not re-sampled and says so
+    srvs = targets(base_values=VALUES["values"], pr_values=[{"value": "GET", "hits": 5}])
+    out = tmp_path / "reg"
+    out.mkdir()
+    try:
+        st = state_for(srvs)
+        runner.run(st, rows[:2], str(out), allowance=1)
+    finally:
+        stop(srvs)
+    metas = [load_json(os.path.join(str(out), "cases", "vl-native", f"fv{i}.numeric.cold", "meta.json")) for i in range(2)]
+    assert [bool(m.get("resample_skipped")) for m in metas] == [False, True]
+
+
+def test_limit_arbitrary_rows_fetch_the_unlimited_reference_answer(tmp_path, monkeypatch):
+    full = [{"value": v, "hits": 1} for v in "abcde"]
+    ref = serve({"/select/logsql/field_values": (200, lambda body, h: json.dumps({"values": full[:2] if "limit=2" in body else full})),
+                 "/select/logsql/query": (200, '{"c":"1"}')})
+    other = serve({"/select/logsql/field_values": (200, json.dumps({"values": full[3:]})), "/select/logsql/query": (200, '{"c":"1"}')})
+    row = {**FV_ROW, "id": "lim", "params": {"query": "*", "field": "f", "limit": "2"}, "limit_arbitrary": True}
+    monkeypatch.setattr(runner, "buffered_rows", lambda *a, **k: None)
+    try:
+        st = state_for({"ref": ref, "base": other, "pr": other})
+        runner.run(st, [row], str(tmp_path))
+    finally:
+        stop({"a": ref, "b": other})
+    meta = load_json(os.path.join(str(tmp_path), "cases", "vl-native", "lim.numeric.cold", "meta.json"))
+    assert meta["universe"] == list("abcde") and meta["limit_arbitrary"]
+    (m, res), = run_dir(os.path.join(str(tmp_path), "cases"))
+    assert res.verdict == "exact"  # two members of the full answer, whichever they are
+
+
+def test_same_4xx_on_every_target_is_a_harness_error_unless_the_row_expects_it(tmp_path, monkeypatch):
+    mk = lambda: serve({"/select/logsql/field_values": (400, "bad request"), "/select/logsql/query": (200, '{"c":"1"}')})  # noqa: E731
+    srvs = {"ref": mk(), "base": mk(), "pr": mk()}
+    monkeypatch.setattr(runner, "buffered_rows", lambda *a, **k: None)
+    try:
+        st = state_for(srvs)
+        runner.run(st, [FV_ROW], str(tmp_path))
+        runner.run(st, [{**FV_ROW, "id": "exp", "expect_error": True}], str(tmp_path))
+    finally:
+        stop(srvs)
+    got = {m["request_id"]: r.verdict for m, r in run_dir(os.path.join(str(tmp_path), "cases"))}
+    assert got == {"fv": "harness-error", "exp": "exact"}
+
+
+def test_the_keyorder_fixture_is_checked_for_logs_only():
+    srvs = three(lambda key: 5)
+    try:
+        seen = runner.seed_equality(state_for(srvs), forms=("numeric", "keyorder"), layers=("cold",))
+        snap = runner.snapshot(state_for(srvs), ("keyorder",), ("cold",))
+    finally:
+        stop(srvs)
+    assert "logs/keyorder/cold" in seen and "traces/keyorder/cold" not in seen and "traces/numeric/cold" in seen
+    assert not any(k.startswith("traces/") for k in snap)
+
+
+def test_a_regressed_request_is_resampled_after_many_fixed_ones_used_no_allowance(tmp_path, monkeypatch):
+    """Fixed requests are re-sampled for free: they must leave the allowance of the regressed one untouched."""
+    # base lost a value on the `fixed*` rows, the PR lost one on the `reg` row
+    def mk(role):
+        def f(body, headers):
+            lost = [{"value": "GET", "hits": 5}]
+            if role == "base":
+                vals = lost if "field=fixed" in body else VALUES["values"]
+            elif role == "pr":
+                vals = lost if "field=reg" in body else VALUES["values"]
+            else:
+                vals = VALUES["values"]
+            return json.dumps({"values": vals})
+        return serve({"/select/logsql/field_values": (200, f), "/select/logsql/query": (200, '{"c":"1"}')})
+    srvs = {"ref": mk("ref"), "base": mk("base"), "pr": mk("pr")}
+    rows = [{**FV_ROW, "id": f"fx{i}", "params": {"query": "*", "field": f"fixed{i}", "limit": "100"}} for i in range(3)]
+    rows.append({**FV_ROW, "id": "rg", "params": {"query": "*", "field": "reg", "limit": "100"}})
+    monkeypatch.setattr(runner, "buffered_rows", lambda *a, **k: None)
+    try:
+        runner.run(state_for(srvs), rows, str(tmp_path), allowance=1)
+    finally:
+        stop(srvs)
+    meta = load_json(os.path.join(str(tmp_path), "cases", "vl-native", "rg.numeric.cold", "meta.json"))
+    assert not meta.get("resample_skipped")
+    assert os.path.isdir(os.path.join(str(tmp_path), "cases", "vl-native", "rg.numeric.cold", "resample-2"))
+
+
+def test_main_waits_for_stable_counts_before_comparing_and_not_when_the_seed_check_is_off(tmp_path, monkeypatch):
+    srvs = targets(VALUES["values"], VALUES["values"])
+    sp = tmp_path / "state.json"
+    sp.write_text(json.dumps(state_for(srvs)))
+    rows = tmp_path / "rows.json"
+    rows.write_text(json.dumps({"rows": [FV_ROW]}))
+    calls = []
+    monkeypatch.setattr(runner, "wait_stable", lambda state, forms=None, **k: calls.append(("wait", tuple(forms))))
+    monkeypatch.setattr(runner, "seed_equality", lambda state, forms=None, **k: calls.append(("seed", tuple(forms))) or {})
+    monkeypatch.setattr(runner, "buffered_rows", lambda *a, **k: None)
+    try:
+        runner.main(["--state", str(sp), "--out", str(tmp_path / "o1"), "--tier", str(rows)])
+        runner.main(["--state", str(sp), "--out", str(tmp_path / "o2"), "--tier", str(rows), "--no-seed-check"])
+    finally:
+        stop(srvs)
+    assert [c[0] for c in calls] == ["wait", "seed"]
+    assert calls[0][1] == calls[1][1] == runner.SEED_FORMS
+
+
+def test_the_keyorder_form_joins_the_seed_check_when_the_state_has_the_fixture(tmp_path, monkeypatch):
+    srvs = targets(VALUES["values"], VALUES["values"])
+    st = state_for(srvs)
+    st["keyorder"] = True
+    sp = tmp_path / "state.json"
+    sp.write_text(json.dumps(st))
+    rows = tmp_path / "rows.json"
+    rows.write_text(json.dumps({"rows": [FV_ROW]}))
+    seen = []
+    monkeypatch.setattr(runner, "wait_stable", lambda state, forms=None, **k: seen.append(forms))
+    monkeypatch.setattr(runner, "seed_equality", lambda state, forms=None, **k: {})
+    monkeypatch.setattr(runner, "buffered_rows", lambda *a, **k: None)
+    try:
+        runner.main(["--state", str(sp), "--out", str(tmp_path / "o"), "--tier", str(rows)])
+    finally:
+        stop(srvs)
+    assert seen == [runner.SEED_FORMS + ("keyorder",)]

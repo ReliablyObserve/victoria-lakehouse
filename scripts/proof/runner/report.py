@@ -47,7 +47,7 @@ def write_reports(out: str, items, state: dict, seed: dict, label: str = "PR", s
     rows = []
     for meta, r in items:
         rows.append({"id": r.id, "row": r.row, "surface": r.surface, "signal": r.signal, "form": meta.get("form"),
-                     "layer": meta.get("layer"), "endpoint": r.endpoint, "verdict": r.verdict, "samples": r.samples,
+                     "layer": meta.get("layer"), "resample_skipped": bool(meta.get("resample_skipped")), "endpoint": r.endpoint, "verdict": r.verdict, "samples": r.samples,
                      "base_score": None if r.base is None else r.base.score, "pr_score": None if r.pr is None else r.pr.score,
                      "base_facets": _facets(r.base), "pr_facets": _facets(r.pr),
                      "base_notes": [] if r.base is None else r.base.notes[:FIRST_DIFF],

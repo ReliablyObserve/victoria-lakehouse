@@ -32,13 +32,15 @@ server {
     # the auth model — those must be assigned by a real auth layer
     # in front of this proxy, not by curl-from-the-internet.
     location /api/ {
+        # The upstream variable is set BEFORE the rewrite: `rewrite ... break` ends the rewrite phase, so a `set` after it
+        # never runs, $jaeger_backend stays empty and every /api call answered 500.
+        set $jaeger_backend "${BACKEND_HOST}:${BACKEND_PORT}";
         rewrite ^/api/(.*)$ /select/jaeger/api/$1 break;
         # Variable-based upstream forces per-request DNS lookup
         # through the resolver above, instead of pinning the IP at
         # nginx config-load time. Combined with the 10s TTL this
         # makes the proxy survive lakehouse-traces restarts within
         # one DNS refresh window.
-        set $jaeger_backend "${BACKEND_HOST}:${BACKEND_PORT}";
         proxy_pass http://$jaeger_backend;
 
         proxy_pass_request_headers off;

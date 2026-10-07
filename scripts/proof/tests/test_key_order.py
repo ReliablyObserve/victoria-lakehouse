@@ -45,3 +45,37 @@ def test_evaluate_body_adds_the_facet_only_when_asked():
     on = evaluate_body({**meta, "key_order": True}, {"status": 200, "body": ref}, {"status": 200, "body": ans})
     assert "key_order" not in off.facets and off.exact
     assert on.facets["key_order"] == 0.0 and not on.exact
+
+
+# ---- a limit that cuts the list: upstream keeps arbitrary entries past it ----
+
+def test_limited_lists_compare_size_and_membership_not_which_values():
+    from scripts.proof.metrics.values import evaluate_limited
+    universe = ["a", "b", "c", "d", "e"]
+    ok = evaluate_limited({"a": 0, "b": 0}, {"d": 0, "e": 0}, universe)
+    assert ok.exact and ok.details["limited"]["universe_n"] == 5
+    short = evaluate_limited({"a": 0, "b": 0}, {"d": 0}, universe)
+    assert short.facets["cardinality"] == 50.0 and short.facets["membership"] == 100.0
+    foreign = evaluate_limited({"a": 0, "b": 0}, {"d": 0, "zzz": 0}, universe)
+    assert foreign.facets["membership"] == 50.0 and foreign.details["limited"]["outside"] == ["zzz"]
+    assert evaluate_limited({}, {}, []).exact
+
+
+def test_evaluate_body_scores_limit_arbitrary_rows_with_the_universe():
+    meta = {"kind": "values", "surface": "vl-native", "limit_arbitrary": True, "universe": ["a", "b", "c", "d"]}
+    ref = json.dumps({"values": [{"value": "a", "hits": 0}, {"value": "b", "hits": 0}]})
+    ans = json.dumps({"values": [{"value": "c", "hits": 0}, {"value": "d", "hits": 0}]})
+    r = evaluate_body(meta, {"status": 200, "body": ref}, {"status": 200, "body": ans})
+    assert r.exact and "value_set" not in r.facets
+    wrong = json.dumps({"values": [{"value": "c", "hits": 0}, {"value": "x", "hits": 0}]})
+    assert evaluate_body(meta, {"status": 200, "body": ref}, {"status": 200, "body": wrong}).facets["membership"] == 50.0
+
+
+def test_rows_with_one_identity_pair_by_occurrence_with_their_own_key_order():
+    ident = ("_time", "_stream_id", "_msg")
+    r1 = {"_time": "t", "_stream_id": "s", "_msg": "m", "x": 1, "y": 2}
+    r2 = {"_time": "t", "_stream_id": "s", "_msg": "m", "y": 2, "x": 1}
+    both = key_order_agreement([r1, r2], [dict(r1), dict(r2)], ident)
+    assert both.facets["key_order"] == 100.0 and both.details["key_order"]["paired_rows"] == 2
+    crossed = key_order_agreement([r1, r2], [dict(r2), dict(r1)], ident)
+    assert crossed.facets["key_order"] == 0.0

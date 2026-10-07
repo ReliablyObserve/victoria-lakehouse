@@ -10,6 +10,7 @@
   },
   "verdict": "regressed"
  },
+ "expect_error": true,
  "id": "vl-native/error_text_changed",
  "kind": "rows",
  "provenance": "derived-from-recorded",

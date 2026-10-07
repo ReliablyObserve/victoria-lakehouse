@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drivers, treats `.gitattributes`, every file under `scripts/ci/` and upstream pin bumps as gate or product changes,
   never lets codec and protobuf module bumps count as dependency-only, and pins its actions by SHA.
 
+### Fixed
+
+- **Compose Jaeger UI proxy answered 500 on every `/api` call.** `deployment/docker/jaeger-ui-proxy.conf.template` set the upstream variable after `rewrite ... break`, which ends the rewrite phase, so `proxy_pass` had an empty upstream. The `set` now comes first (dev compose stacks only, not a shipped image; closes #462).
+
 ## [0.146.7] - 2026-10-07
 
 ### Fixed

@@ -24,7 +24,7 @@ from .generic import (
 from .rows import LOG_IDENTITY, SPAN_IDENTITY, evaluate_count_vector, evaluate_rows, key_order_agreement, parse_ndjson
 from .series import evaluate_series
 from .trace import decode_jaeger, decode_otlp, decode_tempo_search, evaluate_traces
-from .values import evaluate_values
+from .values import evaluate_limited, evaluate_values
 from .ties import tie_group_query
 
 KINDS = (
@@ -134,6 +134,8 @@ def evaluate_body(meta: dict, ref: dict, ans: dict) -> FacetResult:
         body = evaluate_series(decode_hits(rb), decode_hits(ab), rel_tol=rel, abs_tol=ab_tol)
     elif kind == "series_tempo":
         body = evaluate_series(decode_tempo_metrics(rb), decode_tempo_metrics(ab), rel_tol=rel, abs_tol=ab_tol)
+    elif kind == "values" and meta.get("limit_arbitrary"):
+        body = evaluate_limited(decode_values(rb), decode_values(ab), meta.get("universe") or list(decode_values(rb)))
     elif kind == "values":
         body = evaluate_values(decode_values(rb), decode_values(ab), rel_tol=rel if rel > 1e-9 else 0.0)
     elif kind == "trace_jaeger":

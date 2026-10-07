@@ -125,7 +125,9 @@ def test_vacuous_needs_all_sides_empty_200_and_is_a_harness_error_on_a_seeded_co
     assert evaluate_case(empty_ok, {"ref": A(""), "base": A(rows), "pr": A("")}).verdict != "vacuous"
     # a shared error answer is not an empty 200
     err = A("bad", status=400)
-    assert evaluate_case(META, {"ref": err, "base": err, "pr": err}).verdict == "exact"
+    assert evaluate_case({**META, "expect_error": True}, {"ref": err, "base": err, "pr": err}).verdict == "exact"
+    # ... and without the declaration the same 4xx everywhere is a harness error, not a match
+    assert evaluate_case(META, {"ref": err, "base": err, "pr": err}).verdict == "harness-error"
 
 
 def test_resamples_only_classify_never_retry_into_a_pass():

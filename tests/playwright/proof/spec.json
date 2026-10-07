@@ -212,7 +212,8 @@
       "title": "Logs Drilldown: values of a label",
       "path": "service/{service}/label/{label}",
       "service": true,
-      "tier": "focused"
+      "tier": "focused",
+      "target_panel": "{label}"
     },
     {
       "id": "dd-fields",
@@ -225,15 +226,16 @@
     {
       "id": "dd-field-values",
       "kind": "drilldown",
-      "title": "Logs Drilldown: values of a field",
+      "title": "Logs Drilldown: values of a field (a plain name: the reference answers nothing for dotted names)",
       "path": "service/{service}/field/{field}",
       "service": true,
-      "tier": "focused"
+      "tier": "focused",
+      "target_panel": "{field}"
     }
   ],
   "vars": {
     "service": "api-gateway",
     "label": "k8s_namespace_name",
-    "field": "http_method"
+    "field": "client_ip"
   }
 }

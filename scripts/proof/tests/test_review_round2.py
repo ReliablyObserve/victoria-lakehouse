@@ -462,7 +462,7 @@ def test_a_reference_500_is_blocked_exactly_at_the_threshold():
     for status in (500, 503):
         case = evaluate_case(META, {"ref": A("down", status), "base": A(nd(ROWS)), "pr": A(nd(ROWS))})
         assert case.verdict == "blocked", status
-    assert evaluate_case(META, {"ref": A("nope", 404), "base": A("nope", 404), "pr": A("nope", 404)}).verdict == "exact"
+    assert evaluate_case({**META, "expect_error": True}, {"ref": A("nope", 404), "base": A("nope", 404), "pr": A("nope", 404)}).verdict == "exact"
 
 
 def test_fail_on_regression_fails_on_a_nondeterministic_verdict(tmp_path):

@@ -7,6 +7,7 @@ import re
 import pytest
 
 from scripts.proof import stack
+from scripts.proof.jsonio import read_text
 from scripts.proof.runner import run as runner
 from scripts.proof.tests.test_runner import FV_ROW, STATE, VALUES, serve, state_for, stop, targets
 
@@ -124,7 +125,7 @@ def test_settled_buffered_waits_for_two_equal_nonzero_reads(monkeypatch):
 def test_read_buffered_covers_both_variants_signals_and_tenants(monkeypatch):
     monkeypatch.setattr(stack, "buffered_rows", lambda *a, **k: 7)
     got = stack.read_buffered(STATE)
-    assert len(got) == 8 and set(got.values()) == {7} and "pr-traces-1001" in got
+    assert len(got) == 10 and set(got.values()) == {7} and "pr-traces-1001" in got and "pr-logs-7" in got
 
 
 def test_stack_runs_as_a_script_and_as_a_module():
@@ -133,3 +134,70 @@ def test_stack_runs_as_a_script_and_as_a_module():
     path = os.path.join(os.path.dirname(stack.__file__), "stack.py")
     out = subprocess.run([sys.executable, path, "--help"], capture_output=True, text=True, check=True).stdout
     assert "seed" in out and "hold" in out and "down" in out
+
+
+def test_settled_buffered_does_not_accept_two_equal_zero_reads(monkeypatch):
+    reads = iter([{"a": 0}, {"a": 0}, {"a": 3}, {"a": 3}])
+    monkeypatch.setattr(stack, "read_buffered", lambda state: next(reads))
+    monkeypatch.setattr(stack.time, "sleep", lambda s: None)
+    assert stack.settled_buffered(STATE) == {"a": 3}
+
+
+def test_ports_come_from_the_project_or_an_explicit_base():
+    default = stack.make_ports("lhproof", {})
+    assert default["ref-logs"] == 48428 and default["grafana"] == 48300
+    other = stack.make_ports("lhproofb", {})
+    assert set(other.values()).isdisjoint(default.values()) and all(20000 <= p < 60500 for p in other.values())
+    assert other == stack.make_ports("lhproofb", {})  # derived, so the same on every run
+    assert stack.make_ports("lhproofc", {}) != other and stack.make_ports("another", {}) != other  # and different per project
+    assert stack.make_ports("whatever", {"PROOF_PORT_BASE": "30000"})["ref-logs"] == 30428
+    assert len(set(default.values())) == len(default)
+
+
+def test_images_are_scoped_to_the_project_and_nothing_else_is_removed():
+    tags = stack.image_tags("lhproofb")
+    assert tags and all(t.startswith("lhproofb-") for t in tags)
+    assert set(tags).isdisjoint(stack.image_tags("lhproof"))
+    for shared in ("grafana/grafana", "rustfs", "jaegertracing", "nginx", "ghcr.io", "victoriametrics"):
+        assert not any(shared in t for t in tags)
+
+
+def test_compose_publishes_every_port_and_names_every_built_image_through_variables():
+    text = read_text(stack.COMPOSE)
+    ports = re.findall(r'"127\.0\.0\.1:([^"]+)"', text)
+    assert ports and all(p.startswith("${PORT_") for p in ports)
+    wanted = {"PORT_" + k.upper().replace("-", "_") for k in stack.PORT_OFFSETS}
+    assert wanted == {re.match(r"\$\{(PORT_[A-Z_]+):", p).group(1) for p in ports}
+    env = stack.compose_env()
+    assert wanted <= set(env) and env["PROOF_PREFIX"] == stack.PROJECT
+    own = [i for i in re.findall(r"^\s+image: (\S+)", text, re.M) if "PROOF_PREFIX" in i]
+    assert len(own) >= 8 and not any(re.search(r"lhproof-", i) and "PROOF_PREFIX" not in i for i in re.findall(r"^\s+image: (\S+)", text, re.M))
+    for svc in stack.BUILT_BY_COMPOSE:  # the services whose images the stack builds carry a build recipe
+        block = text[text.index(f"\n  {svc}:"):]
+        assert "build:" in block.split("\n\n")[0]
+
+
+def test_the_keyorder_fixture_is_multi_stream_tied_and_not_alphabetical():
+    rows = [json.loads(x) for x in stack.keyorder_rows("2026-10-07T11:00:00Z").splitlines()]
+    assert stack.keyorder_rows("2026-10-07T11:00:00Z") == stack.keyorder_rows("2026-10-07T11:00:00Z")
+    assert {r["app"] for r in rows} == {"a0", "a1", "a2"}
+    assert list(rows[0]) != sorted(rows[0])  # input order is not alphabetical
+    by_ts = {}
+    for r in rows:
+        by_ts.setdefault((r["ts"], r["app"]), 0)
+        by_ts[(r["ts"], r["app"])] += 1
+    assert max(by_ts.values()) == 2  # ties inside a stream, and the same second in every stream
+    assert any("mid" in r for r in rows) and any("mid" not in r for r in rows)  # a sparse column
+    assert len({r["zeta"] for r in rows if r["app"] == "a0"}) == 1 and len({r["alpha"] for r in rows if r["app"] == "a0"}) > 3
+
+
+def test_make_state_marks_the_project_and_ports():
+    st = stack.make_state(dt.datetime(2026, 10, 7, 16, 37, tzinfo=dt.timezone.utc))
+    assert st["project"] == stack.PROJECT and st["ports"] == stack.PORTS
+
+
+def test_the_keyorder_post_carries_the_content_type_that_makes_victorialogs_ingest_it():
+    req = stack.keyorder_request(1234, "2026-10-07T11:00:00Z")
+    h = {k.lower(): v for k, v in req.header_items()}
+    assert h["content-type"] == "application/stream+json" and h["accountid"] == "7" and req.get_method() == "POST"
+    assert "_stream_fields=app,env" in req.full_url and req.data.count(b"\n") == 120

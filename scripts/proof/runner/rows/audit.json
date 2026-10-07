@@ -1,6 +1,6 @@
 {
  "registry_check": false,
- "note": "audit of recently merged user-visible changes: #430 (span events, links and scope), #429 / #432 (column and key order of sort/limit rows), #310 and the field_names noise (B2)",
+ "note": "audit of recently merged user-visible changes: #430 (span events, links and scope), #429 / #432 (column and key order of sort/limit rows), #310 and the field_names noise (B2); the ko.* rows read the key-order fixture (tenant 7: several streams, ties, const / varying / sparse columns), see stack.py; severity_number (#274, injected on cold rows that have none) is skipped in the ko.* rows so the key-order facet is not hidden by it",
  "rows": [
   {
    "id": "vl.query.sort_all.full",
@@ -180,6 +180,121 @@
     "query": "span_id:*"
    },
    "row": "vt.select.logsql_field_names.basic"
+  },
+  {
+   "id": "ko.sort_all.full",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | sort"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "forms": [
+    "keyorder"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ],
+   "meta": {
+    "key_order": true,
+    "skip_fields": [
+     "severity_number"
+    ]
+   }
+  },
+  {
+   "id": "ko.sort_all.limit20",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | sort | limit 20"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "forms": [
+    "keyorder"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ],
+   "meta": {
+    "key_order": true,
+    "skip_fields": [
+     "severity_number"
+    ]
+   }
+  },
+  {
+   "id": "ko.first10",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | first 10 by (_time)"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "forms": [
+    "keyorder"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ],
+   "meta": {
+    "key_order": true,
+    "skip_fields": [
+     "severity_number"
+    ]
+   }
+  },
+  {
+   "id": "ko.sort_time_desc.limit15",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | sort by (_time desc) | limit 15"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "forms": [
+    "keyorder"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ],
+   "meta": {
+    "key_order": true,
+    "skip_fields": [
+     "severity_number"
+    ]
+   }
+  },
+  {
+   "id": "ko.filtered.sort_all",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "alpha:=v3 | sort"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "forms": [
+    "keyorder"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ],
+   "meta": {
+    "key_order": true,
+    "skip_fields": [
+     "severity_number"
+    ]
+   }
   }
  ]
 }

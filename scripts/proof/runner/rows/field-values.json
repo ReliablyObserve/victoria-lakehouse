@@ -469,6 +469,32 @@
     "step": "1h"
    },
    "row": "vt.select.logsql_hits.basic"
+  },
+  {
+   "id": "vl.field_values.limit2.arbitrary",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "*",
+    "field": "level",
+    "limit": "2"
+   },
+   "row": "vl.select.field_values.limit",
+   "limit_arbitrary": true
+  },
+  {
+   "id": "vt.field_values.limit2.arbitrary",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "span_id:*",
+    "field": "name",
+    "limit": "2"
+   },
+   "row": "vt.select.logsql_field_values.limit_and_substring_filter",
+   "limit_arbitrary": true
   }
  ]
 }

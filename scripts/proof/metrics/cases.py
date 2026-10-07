@@ -89,6 +89,12 @@ def evaluate_case(meta: dict, answers: dict[str, dict], resamples: list[dict[str
     def one(ans: dict[str, dict]) -> tuple[str, Any, Any]:
         if any(n not in ans for n in need):
             return "harness-error", None, None
+        sides = [ans[n] for n in ("ref", "base", "pr") if n in ans]
+        if sides and all(400 <= (a.get("status") or 0) < 500 for a in sides) and not meta.get("expect_error"):
+            # the same 4xx on every side is almost always a request the harness got wrong (a bad parameter,
+            # a missing tenant), which would otherwise read as an exact match; a row that expects it says so
+            res.latency["error"] = "the same 4xx on every target and the row does not declare expect_error"
+            return "harness-error", None, None
         try:
             b, p = evaluate_request(meta, ans)
             vacuous = _vacuous(meta, ans)

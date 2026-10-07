@@ -269,17 +269,17 @@ def vl_native():
     same = txt.replace('"', "'").replace(": ", ":  ")
     write(S, "error_same_text", {
         **derived("base and PR answer the recorded error with quotes changed and whitespace doubled", "vl_bad_query"),
-        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.badsyntax",
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.badsyntax", "expect_error": True,
         "expect": {"verdict": "exact", "base": {"status": 100.0, "error": 100.0}, "pr": {"error": 100.0}},
     }, from_rec("vl_bad_query"), ans(same, status=400, ctype="text/plain"), ans(same, status=400, ctype="text/plain"))
     write(S, "error_text_changed", {
         **derived("PR answers a different error text for the recorded bad query", "vl_bad_query"),
-        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.badsyntax2",
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.badsyntax2", "expect_error": True,
         "expect": {"verdict": "regressed", "base": {"error": 100.0}, "pr": {"error": 0.0}},
     }, from_rec("vl_bad_query"), from_rec("vl_bad_query"), ans("bad request", status=400, ctype="text/plain"))
     write(S, "error_case_changed", {
         **derived("PR answers the recorded error text in upper case: case is part of the message", "vl_bad_query"),
-        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.badsyntax3",
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.badsyntax3", "expect_error": True,
         "expect": {"verdict": "regressed", "pr": {"error": 0.0}},
     }, from_rec("vl_bad_query"), from_rec("vl_bad_query"), ans(txt.upper(), status=400, ctype="text/plain"))
     write(S, "base_error_pr_partial", {
@@ -412,6 +412,7 @@ def jaeger():
                                   ("trace_not_found_404_same", "jaeger_trace_missing", "/select/jaeger/api/traces/{id}", "trace_jaeger", "exact")):
         r = from_rec(src)
         write(S, nm, {**REC_META, "recorded_from": [src], "kind": kind, "endpoint": ep, "row": "jaeger." + nm,
+                      **({"expect_error": True} if nm.startswith("trace_not_found") else {}),
                       "expect": {"verdict": ex}}, r, r, r)
     r = from_rec("jaeger_dependencies")
     write(S, "dependencies_empty", {**REC_META, "recorded_from": ["jaeger_dependencies"], "kind": "values",

@@ -49,6 +49,10 @@ function drilldownUrl(p: PageSpec, ds: string, r: string): string {
     "var-lineFilterV2": "", "var-lineFilters": "", "var-primary_label": "service_name|=~|.+",
     ...(p.service ? { displayedFields: "[]", urlColumns: "[]" } : {}),
   });
+  // The breakdown pages read which field or label they show from the URL as well as from the path (what a click on
+  // "Select <name>" produces); without it they render an empty panel on every datasource.
+  const m = (p.path || "").match(/\/(field|label)\/([^/]+)$/);
+  if (m) q.set(m[1] === "field" ? "var-fieldBy" : "var-labelBy", decodeURIComponent(expand(m[2])));
   return `/a/grafana-lokiexplore-app/explore${p.path ? "/" + expand(p.path) : ""}?${q}`;
 }
 
@@ -92,17 +96,31 @@ async function uiState(page: Page) {
     const banner = /(Plugin (unavailable|failed|not found)|Failed to load|Unable to load|Something went wrong|An unexpected error|Error loading|Query error|Bad Gateway|Internal Server Error|Cannot read propert|Network Error|Request failed)[^\n]{0,80}/g;
     const banners = [...new Set(text.match(banner) || [])].sort().slice(0, 8);
     const visible = (e: Element) => e.getClientRects().length > 0;
-    const panelOf = (e: Element) => e.closest('[data-testid*="Panel"], section, [role="region"]') || e.parentElement;
-    const titleOf = (e: Element | null) => (e?.querySelector('h1,h2,h3,h4,[role="heading"]')?.textContent || "").trim().slice(0, 60);
+    // The panel a "No data" belongs to is named by the first line of text of the nearest ancestor that has any other text.
+    const titleOf = (e: Element) => {
+      let n: Element | null = e.parentElement;
+      for (let i = 0; i < 8 && n; i++, n = n.parentElement) {
+        const t = ((n as HTMLElement).innerText || "").split("\n").map((x) => x.trim()).filter((x) => x && x !== "No data")[0];
+        if (t) return t.slice(0, 60);
+      }
+      return "(untitled)";
+    };
     const noDataPanels = [...document.querySelectorAll("*")]
       .filter((e) => e.children.length === 0 && (e.textContent || "").trim() === "No data" && visible(e))
-      .map((e) => titleOf(panelOf(e)) || "(untitled)");
+      .map(titleOf);
+    // Logs Drilldown marks a breakdown panel that hit its series limit ("Show all 500") with the same red triangle as a
+    // failed panel; that is a warning about too many values, not an error.
+    const seriesLimit = (e: Element) => {
+      let n: Element | null = e;
+      for (let i = 0; i < 4 && n; i++, n = n.parentElement) if (/Show all \d+/.test((n as HTMLElement).innerText || "")) return true;
+      return false;
+    };
     return {
       noData: noDataPanels.length,
       noDataPanels: noDataPanels.slice(0, 8),
       banners,
       panelErrors: [...document.querySelectorAll('[data-testid="data-testid Panel status error"], [data-testid="data-testid Alert error"], [data-testid="data-testid Error boundary"], [data-testid="data-testid Query editor row"] [data-testid="icon-exclamation-triangle"]')]
-        .filter(visible).map((e) => (e.textContent || "").trim().slice(0, 120)).slice(0, 8).length,
+        .filter((e) => visible(e) && !seriesLimit(e)).map((e) => (e.textContent || "").trim().slice(0, 120)).slice(0, 8).length,
       jaegerErrors: [...document.querySelectorAll(".ant-alert-error, .ant-message-error, .ErrorMessage")].filter(visible).length,
     };
   }).catch(() => ({ noData: 0, noDataPanels: [], banners: ["page state unreadable"], panelErrors: 0, jaegerErrors: 0 }));
