@@ -45,7 +45,22 @@ FROM alpine:3.21
 #     dashboard, alert, test or script here reads those endpoints, so there is
 #     nothing to adjust — but anything added later that graphs volume must be
 #     written against bytes.
-ARG VERSION=1.76.0
+#
+# Tracks the LATEST loki-vl-proxy release (owner rule). The daily workflow
+# .github/workflows/loki-vl-proxy-bump.yaml opens a "deps: loki-vl-proxy vX.Y.Z"
+# pull request whenever a newer release exists, rewriting only the ARG below.
+#
+# 1.76.0 -> 2.3.1 (2.3.1 changes no proxy code; verified on 2.3.0). Breaking in 2.0.0: VictoriaLogs older than v1.40.0 is no
+# longer supported (-backend-min-version defaults to v1.40.0); this stack runs
+# VictoriaLogs v1.5x, and every flag passed in docker-compose-e2e.yml and
+# docker-compose-benchmark.yml was checked to exist at v2.3.0 with the same
+# meaning. Visible Loki-parity changes on the paths Grafana drives: log queries
+# only expose the labels a stage adds (1.105-1.106), live tail frames follow
+# Loki's encoding (1.107), per-tenant query limits are enforced (1.95), dotted
+# names in LogQL answer Loki's parse error (1.100), and line filters accept
+# `or` alternatives (2.2.0). On this stack's data the service_name label values
+# no longer include the values of the unrelated `component` field.
+ARG VERSION=2.3.1
 ARG TARGETARCH=amd64
 RUN wget -qO /usr/local/bin/loki-vl-proxy \
       "https://github.com/ReliablyObserve/loki-vl-proxy/releases/download/v${VERSION}/loki-vl-proxy-linux-${TARGETARCH}" \

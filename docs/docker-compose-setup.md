@@ -281,9 +281,13 @@ VictoriaTraces in cluster select mode. Fans out trace queries to both hot (victo
 
 ### Loki-VL-proxy (Hot+Cold Routing)
 
+The proxy is built from the release binary pinned in `deployment/docker/Dockerfile.loki-vl-proxy`. It tracks the **latest** loki-vl-proxy release: a daily workflow (`.github/workflows/loki-vl-proxy-bump.yaml`) opens a `deps: loki-vl-proxy vX.Y.Z ... [skip release]` pull request when a newer one exists. It is used only by the e2e, proof and benchmark stacks and is not shipped.
+
 ```yaml
 loki-vl-proxy:
-  image: ghcr.io/reliablyobserve/loki-vl-proxy:v1.31.2
+  build:
+    context: .
+    dockerfile: Dockerfile.loki-vl-proxy   # ARG VERSION = latest loki-vl-proxy release
   environment:
     VL_BACKEND_URL: "http://victorialogs:9428"
   command:
