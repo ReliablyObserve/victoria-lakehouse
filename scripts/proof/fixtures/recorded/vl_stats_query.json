@@ -1,0 +1,15 @@
+{
+ "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"vector\",\"result\":[{\"metric\":{\"__name__\":\"c\"},\"value\":[1791360000,\"300\"]}]}}",
+ "content_type": "application/json",
+ "latency_ms": 0.76,
+ "request": {
+  "method": "POST",
+  "params": {
+   "end": "2026-10-07T08:00:00Z",
+   "query": "* | stats count() c",
+   "start": "2026-10-07T06:00:00Z"
+  },
+  "path": "/select/logsql/stats_query"
+ },
+ "status": 200
+}

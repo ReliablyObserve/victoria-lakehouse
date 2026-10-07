@@ -1,0 +1,6 @@
+{
+ "body": "<html><body>502 Bad Gateway</body></html>",
+ "content_type": "text/html",
+ "latency_ms": 10.0,
+ "status": 200
+}

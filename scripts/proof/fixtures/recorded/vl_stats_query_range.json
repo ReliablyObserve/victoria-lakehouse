@@ -1,0 +1,16 @@
+{
+ "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"matrix\",\"result\":[{\"metric\":{\"__name__\":\"c\",\"level\":\"DEBUG\"},\"values\":[[1791354600,\"14\"],[1791356400,\"38\"],[1791358200,\"15\"]]},{\"metric\":{\"__name__\":\"c\",\"level\":\"ERROR\"},\"values\":[[1791354600,\"9\"],[1791356400,\"43\"],[1791358200,\"23\"]]},{\"metric\":{\"__name__\":\"c\",\"level\":\"INFO\"},\"values\":[[1791354600,\"9\"],[1791356400,\"57\"],[1791358200,\"21\"]]},{\"metric\":{\"__name__\":\"c\",\"level\":\"WARN\"},\"values\":[[1791354600,\"8\"],[1791356400,\"45\"],[1791358200,\"18\"]]}]}}",
+ "content_type": "application/json",
+ "latency_ms": 0.83,
+ "request": {
+  "method": "POST",
+  "params": {
+   "end": "2026-10-07T08:00:00Z",
+   "query": "* | stats by (level) count() c",
+   "start": "2026-10-07T06:00:00Z",
+   "step": "30m"
+  },
+  "path": "/select/logsql/stats_query_range"
+ },
+ "status": 200
+}

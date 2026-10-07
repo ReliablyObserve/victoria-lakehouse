@@ -1,0 +1,6 @@
+{
+ "body": "{\"newest_data\":\"2026-10-07T07:49:58Z\",\"oldest_data\":\"2026-10-07T06:50:01Z\",\"partition_count\":3,\"storage_by_class\":[{\"bytes\":123456,\"class\":\"STANDARD\"}],\"tenant_count\":1,\"total_bytes\":123456,\"total_files\":12,\"total_raw_bytes\":654321,\"total_rows\":300}",
+ "content_type": "application/json",
+ "latency_ms": 10.0,
+ "status": 200
+}

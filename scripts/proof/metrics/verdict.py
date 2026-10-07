@@ -59,11 +59,21 @@ def classify(
     return "same"
 
 
+# Samples that say nothing about the PR's determinism: the reference was down (blocked) or the
+# harness failed. They are left out of the flake check and reported separately.
+EXCLUDED_SAMPLES = ("blocked", "harness-error")
+
+
 def classify_samples(verdicts: list[str]) -> str:
-    """Re-sampling only classifies: a verdict that differs between samples is nondeterministic."""
+    """Re-sampling only classifies: a verdict that differs between the usable samples is
+    nondeterministic. Blocked and harness-error samples are not usable; when none is usable
+    the first sample's verdict stands."""
     if not verdicts:
         return "harness-error"
-    return verdicts[0] if len(set(verdicts)) == 1 else "nondeterministic"
+    kept = [v for v in verdicts if v not in EXCLUDED_SAMPLES]
+    if not kept:
+        return verdicts[0]
+    return kept[0] if len(set(kept)) == 1 else "nondeterministic"
 
 
 @dataclass
@@ -79,6 +89,7 @@ class CaseResult:
     latency: dict[str, Any] = field(default_factory=dict)
     claimed: bool = False
     samples: list[str] = field(default_factory=list)
+    excluded_samples: list[str] = field(default_factory=list)
 
     @property
     def q_base(self) -> float | None:

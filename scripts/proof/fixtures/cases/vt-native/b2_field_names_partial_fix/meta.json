@@ -1,17 +1,22 @@
 {
  "claimed_gap": "B2",
+ "derivation": "base keeps 13 of 36 recorded field names, PR keeps 24",
  "endpoint": "/select/logsql/field_names",
  "expect": {
   "base": {
-   "value_set": 34.9
+   "value_set": 36.111111111111114
   },
   "pr": {
-   "value_set": 63.5
+   "value_set": 66.66666666666667
   },
   "verdict": "improved"
  },
  "id": "vt-native/b2_field_names_partial_fix",
  "kind": "values",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vt_field_names"
+ ],
  "row": "vt.select.field_names.cold2",
  "surface": "vt-native"
 }

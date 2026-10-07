@@ -1,21 +1,26 @@
 {
  "claimed_gap": "B2",
+ "derivation": "base and PR keep the first 13 of the 36 recorded field names (35%)",
  "endpoint": "/select/logsql/field_names",
  "expect": {
   "base": {
-   "value_set": 34.9
+   "value_set": 36.111111111111114
   },
   "details": {
    "base.value_set.precision": 100.0,
-   "base.value_set.recall": 34.9
+   "base.value_set.recall": 36.111111111111114
   },
   "pr": {
-   "value_set": 34.9
+   "value_set": 36.111111111111114
   },
   "verdict": "same"
  },
  "id": "vt-native/b2_field_names_recall",
  "kind": "values",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vt_field_names"
+ ],
  "row": "vt.select.field_names.cold",
  "surface": "vt-native"
 }

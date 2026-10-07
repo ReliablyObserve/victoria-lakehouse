@@ -1,39 +1,65 @@
 """Generate the offline fixture cases under scripts/proof/fixtures/cases/.
 
-The bodies are synthesised in the wire formats of VictoriaLogs LogsQL
-(query, stats_query, stats_query_range, hits, field_values, field_names,
-streams), VictoriaTraces rows, Jaeger (trace by id, search, services) and
-Tempo (OTLP trace by id, search, metrics) and Loki (query_range matrix).
-Run: python3 scripts/proof/fixtures/_gen.py   (deterministic output)
+Three kinds of case, labelled in every meta.json as `provenance`:
 
-Each case directory holds meta.json (surface, kind, options and the
-expectation), ref.json, base.json and pr.json answers.
+  recorded               ref, base and PR are the same recorded answer (recorded/*.json[.gz], taken
+                         from hot VictoriaLogs v1.53.0 and VictoriaTraces v0.12.0 by record.py)
+  derived-from-recorded  the reference is a recorded answer; the base and/or PR answer is that
+                         recorded answer after the transformation named in `derivation`
+  synthetic              hand-written body (Lakehouse-only APIs, Loki and the Tempo metrics API,
+                         which have no recording yet); the shapes follow the documented formats
+
+No answer here is a recording of Lakehouse itself: recording real Lakehouse base and PR answers
+belongs to the runner that calls these functions. Latencies of derived and synthetic cases are
+those of the recorded call they derive from, or a placeholder.
+
+Run: python3 scripts/proof/fixtures/_gen.py   (deterministic output)
 """
 from __future__ import annotations
 
 import copy
+import gzip
 import json
 import os
-import random
 import shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "cases")
-T0 = 1_790_000_000  # 2026-09-21T12:53:20Z, hour-aligned windows are not needed for fixtures
+REC = os.path.join(HERE, "recorded")
 
 
-def iso(sec: int, ns: int = 0) -> str:
-    import datetime
-    d = datetime.datetime.fromtimestamp(sec, datetime.timezone.utc)
-    return d.strftime("%Y-%m-%dT%H:%M:%S") + f".{ns:09d}Z"
+# ----------------------------------------------------------------------- helpers
+def rec(name):
+    f = os.path.join(REC, name + ".json")
+    if os.path.exists(f):
+        with open(f, encoding="utf-8") as fh:
+            return json.load(fh)
+    with gzip.open(f + ".gz", "rt", encoding="utf-8") as fh:
+        return json.load(fh)
 
 
-def ans(body, status=200, ms=10.0, **extra):
-    return {"status": status, "latency_ms": ms, "body": body, **extra}
+def ans(body, status=200, ms=10.0, ctype="application/json", **extra):
+    if not isinstance(body, str):
+        body = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return {"status": status, "latency_ms": ms, "content_type": ctype, "body": body, **extra}
 
 
-def ndjson(rows):
-    return "\n".join(json.dumps(r, sort_keys=True) for r in rows) + ("\n" if rows else "")
+def from_rec(name, body=None):
+    r = rec(name)
+    return {"status": r["status"], "latency_ms": r.get("latency_ms", 10.0), "content_type": r["content_type"],
+            "body": r["body"] if body is None else (body if isinstance(body, str) else json.dumps(body, sort_keys=True, separators=(",", ":")))}
+
+
+def nd(rows):
+    return "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows)
+
+
+def rows_of(name):
+    return [json.loads(l) for l in rec(name)["body"].splitlines() if l.strip()]
+
+
+def jbody(name):
+    return json.loads(rec(name)["body"])
 
 
 def write(surface, name, meta, ref=None, base=None, pr=None, extra=None, resamples=None):
@@ -58,384 +84,473 @@ def write(surface, name, meta, ref=None, base=None, pr=None, extra=None, resampl
                 f.write("\n")
 
 
-def log_rows(n=40, seed=1):
-    rnd = random.Random(seed)
-    rows = []
-    for i in range(n):
-        rows.append({
-            "_time": iso(T0 + i * 7, rnd.randrange(0, 999) * 1000),
-            "_stream_id": f"0000000000000000{(i % 4):016x}",
-            "_stream": '{app="api",pod="p%d"}' % (i % 4),
-            "_msg": f"request {i} handled in {rnd.randrange(1, 90)}ms",
-            "level": rnd.choice(["info", "warn", "error"]),
-            "service": rnd.choice(["api", "web", "db"]),
-        })
-    rows.sort(key=lambda r: r["_time"], reverse=True)
-    return rows
+REC_META = {"provenance": "recorded"}
 
 
-def span_rows(n=24, seed=2, with_extra=True):
-    rnd = random.Random(seed)
-    rows = []
-    for i in range(n):
-        r = {
-            "_time": iso(T0 + i, 0),
-            "_stream_id": "00000000000000000000000000000001",
-            "trace_id": f"{(i // 6):032x}",
-            "span_id": f"{i + 1:016x}",
-            "parent_span_id": "" if i % 6 == 0 else f"{i:016x}",
-            "name": f"op{i % 5}",
-            "resource_attr:service.name": rnd.choice(["frontend", "cart", "pay"]),
-            "duration": str(rnd.randrange(1000, 90000)),
-            "kind": "2",
-            "status_code": "0",
-        }
-        if with_extra:
-            r["events"] = json.dumps([{"name": "exception", "time_unix_nano": 1}]) if i % 3 == 0 else "[]"
-            r["links"] = json.dumps([{"trace_id": f"{99:032x}", "span_id": f"{7:016x}"}]) if i % 4 == 0 else "[]"
-            r["scope_name"] = "io.opentelemetry.instrumentation"
-        rows.append(r)
-    return rows
+def derived(desc, *sources, **kw):
+    return {"provenance": "derived-from-recorded", "derivation": desc, "recorded_from": list(sources), **kw}
 
 
-def prom_matrix(series, ts_values):
-    return {"status": "success", "data": {"resultType": "matrix", "result": [
-        {"metric": m, "values": [[t, str(v)] for t, v in zip(ts_values, vals)]} for m, vals in series]}}
+def synthetic(why, **kw):
+    return {"provenance": "synthetic", "derivation": why, **kw}
 
 
-def prom_vector(n, name="count(*)"):
-    return {"status": "success", "data": {"resultType": "vector", "result": [{"metric": {"__name__": name}, "value": [T0, str(n)]}]}}
-
-
-def values_body(pairs):
-    return {"values": [{"value": v, "hits": h} for v, h in pairs]}
-
-
-# ---------------------------------------------------------------- vl-native
+# ------------------------------------------------------------------- vl-native
 def vl_native():
-    rows = log_rows()
     S = "vl-native"
-    # B1: columnar reader adds <null>, account_id, ded_s0x fields
-    junk = []
-    for r in rows:
-        r2 = dict(r)
-        r2.update({"<null>": "", "account_id": "0", "ded_s0x": ""})
-        junk.append(r2)
+    rows = rows_of("vl_query")
+    q = from_rec("vl_query")
+    nfields = len({k for r in rows for k in r})
+
+    write(S, "query_exact", {**REC_META, "recorded_from": ["vl_query"], "kind": "rows", "endpoint": "/select/logsql/query",
+                             "row": "vl.select.query.recorded",
+                             "expect": {"verdict": "exact", "base": {"row_set": 100.0}, "pr": {"row_set": 100.0}}}, q, q, q)
+
+    junk = [dict(r, **{"<null>": "", "account_id": "0", "ded_s0x": ""}) for r in rows]
     write(S, "b1_junk_fields", {
+        **derived("base adds the fields <null>, account_id and ded_s0x to every recorded row", "vl_query"),
         "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.cold", "claimed_gap": "B1",
-        "order": ["_time"], "query": "* | limit 100",
-        "expect": {"verdict": "fixed", "base": {"row_set": 0.0, "field_coverage": 66.6, "count": 100.0},
+        "expect": {"verdict": "fixed",
+                   "base": {"row_set": 0.0, "field_coverage": round(100.0 * nfields / (nfields + 3), 2), "count": 100.0},
                    "pr": {"row_set": 100.0, "field_coverage": 100.0},
                    "details": {"base.field_coverage.extra": ["<null>", "account_id", "ded_s0x"]}},
-    }, ans(ndjson(rows), ms=20), ans(ndjson(junk), ms=24), ans(ndjson(rows), ms=21))
+    }, q, ans(nd(junk), ms=q["latency_ms"]), q)
 
-    # B5: stats_query_range, right totals, wrong distribution
-    ts = [T0 + 60 * i for i in range(24)]
-    good = [10 + (i * 7) % 11 for i in range(24)]
-    shifted = list(good)
-    for i in (1, 5, 9, 13, 17, 21):  # neighbouring buckets swapped: same total, different distribution
-        shifted[i], shifted[i + 1] = shifted[i + 1], shifted[i]
-    m = {"level": "error"}
+    rng = jbody("vl_stats_query_range")
+    swapped = copy.deepcopy(rng)
+    same_pos = tot = 0
+    for s in swapped["data"]["result"]:
+        v = s["values"]
+        a, b = v[0][1], v[1][1]
+        v[0][1], v[1][1] = b, a  # swap the first two buckets: the total stays, the distribution does not
+        tot += len(v)
+        same_pos += (len(v) - 2) + (2 if a == b else 0)
     write(S, "b5_stats_range_distribution", {
-        "kind": "series_prom", "endpoint": "/select/logsql/stats_query_range", "row": "vl.select.stats_query_range.cold",
-        "claimed_gap": "B5",
-        "expect": {"verdict": "fixed", "base": {"totals": 100.0, "points_within_tol": 50.0, "series_set": 100.0},
-                   "pr": {"points_within_tol": 100.0},
-                   "details": {"base.totals.delta": 0.0}},
-    }, ans(prom_matrix([(m, good)], ts)), ans(prom_matrix([(m, shifted)], ts)), ans(prom_matrix([(m, good)], ts)))
+        **derived("base swaps the values of the first two buckets of every series (same total, different distribution)", "vl_stats_query_range"),
+        "kind": "series_prom", "endpoint": "/select/logsql/stats_query_range", "row": "vl.select.stats_query_range.cold", "claimed_gap": "B5",
+        "expect": {"verdict": "fixed", "base": {"totals": 100.0, "points_within_tol": round(100.0 * same_pos / tot, 2), "series_set": 100.0},
+                   "pr": {"points_within_tol": 100.0}, "details": {"base.totals.delta": 0.0}},
+    }, from_rec("vl_stats_query_range"), ans(swapped), from_rec("vl_stats_query_range"))
 
-    # B8 / #429: sort by (_time) ties; base orders a block wrongly, PR only permutes inside ties
-    tie_rows = log_rows(30, seed=5)
-    for i in (4, 5, 6):  # a 3-row tie group on _time
-        tie_rows[i]["_time"] = tie_rows[3]["_time"]
-    tie_rows.sort(key=lambda r: r["_time"], reverse=True)
-    wrong = copy.deepcopy(tie_rows)
-    wrong[10:16] = list(reversed(wrong[10:16]))
-    permuted = copy.deepcopy(tie_rows)
-    grp = [i for i, r in enumerate(permuted) if r["_time"] == tie_rows[3]["_time"]]
-    permuted[grp[0]], permuted[grp[-1]] = permuted[grp[-1]], permuted[grp[0]]
+    srows = rows_of("vl_query_sorted")
+    n = len(srows)
+    times = [r["_time"] for r in srows]
+    tie_idx = [i for i in range(n) if times.count(times[i]) > 1]
+    assert len(tie_idx) == 2, tie_idx
+    i0, i1 = tie_idx
+    blk = 20
+    wrong = srows[:40] + list(reversed(srows[40:40 + blk])) + srows[40 + blk:]
+    assert not (40 <= i0 < 40 + blk)
+    permuted = list(srows)
+    permuted[i0], permuted[i1] = permuted[i1], permuted[i0]
+    comparable = n * (n - 1) // 2 - 1
+    sq = from_rec("vl_query_sorted")
     write(S, "b8_429_sort_order", {
+        **derived(f"base reverses rows 40-{40 + blk - 1}; PR swaps the two rows that tie on _time", "vl_query_sorted"),
         "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.pipes.sort_time", "claimed_gap": "B8",
-        "order": ["_time"], "query": "* | sort by (_time) desc",
-        "expect": {"verdict": "fixed", "base": {"row_set": 100.0, "order": 96.5, "value_equality": 100.0},
-                   "pr": {"order": 100.0}, "details": {"pr.order.tie_groups": 1}},
-    }, ans(ndjson(tie_rows)), ans(ndjson(wrong)), ans(ndjson(permuted)))
+        "order": ["_time"], "query": "* | sort by (_time) desc | limit 120",
+        "expect": {"verdict": "fixed",
+                   "base": {"row_set": 100.0, "order": round(100.0 * (1 - blk * (blk - 1) / 2 / comparable), 2), "value_equality": 100.0},
+                   "pr": {"order": 100.0}, "details": {"pr.order.tie_groups": 1, "pr.order.comparable_pairs": comparable}},
+    }, sq, ans(nd(wrong), ms=sq["latency_ms"]), ans(nd(permuted), ms=sq["latency_ms"]))
 
-    # B8: limit cuts a tie group; each side keeps a different member: accepted
-    g = [{"_time": iso(T0 + 50, 5), "_stream_id": "s1", "_msg": f"tie {c}", "level": "info"} for c in "ABC"]
-    head = [{"_time": iso(T0 + 100 - i, 0), "_stream_id": "s1", "_msg": f"top {i}", "level": "info"} for i in range(3)]
-    ref_rows, sut_rows = head + [g[0], g[1]], head + [g[0], g[2]]
-    tie = {"ref": ndjson(g), "sut": ndjson(list(reversed(g)))}
+    a, b = srows[i0], srows[i1]
+    group = [a, b]
+    cut_ref = srows[: i0 + 1]
+    cut_sut = srows[:i0] + [b]
+    qtxt = f"* | sort by (_time) desc | limit {i0 + 1}"
     write(S, "b8_tie_cut_accepted", {
-        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.pipes.sort_time_limit",
-        "order": ["_time"], "query": "* | sort by (_time) desc | limit 5", "tie_group": tie,
+        **derived("a limit cuts the recorded 2-row tie group: the reference kept one member, base and PR the other; the group is re-read identically", "vl_query_sorted"),
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.pipes.sort_time_limit", "order": ["_time"], "query": qtxt,
+        "tie_group": {"ref": nd(group), "sut": nd(list(reversed(group)))},
         "expect": {"verdict": "exact", "base": {"row_set": 100.0}, "pr": {"row_set": 100.0, "order": 100.0}},
-    }, ans(ndjson(ref_rows)), ans(ndjson(sut_rows)), ans(ndjson(sut_rows)))
-    # same shape but the group differs between tiers: not accepted, PR regresses vs the exact base
-    bad_tie = {"ref": ndjson(g), "sut": ndjson(g[:2])}
+    }, ans(nd(cut_ref)), ans(nd(cut_sut)), ans(nd(cut_sut)))
     write(S, "b8_tie_cut_rejected", {
-        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.pipes.sort_time_limit_b",
-        "order": ["_time"], "query": "* | sort by (_time) desc | limit 5", "tie_group": bad_tie,
-        "expect": {"verdict": "regressed", "base": {"row_set": 100.0}, "pr": {"row_set": 66.6}},
-    }, ans(ndjson(ref_rows)), ans(ndjson(ref_rows)), ans(ndjson(sut_rows)))
+        **derived("as b8_tie_cut_accepted, but the PR side re-reads a group that lacks a member", "vl_query_sorted"),
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.pipes.sort_time_limit_b", "order": ["_time"], "query": qtxt,
+        "tie_group": {"ref": nd(group), "sut": nd(group[:1])},
+        "expect": {"verdict": "regressed", "base": {"row_set": 100.0},
+                   "pr": {"row_set": round(100.0 * i0 / (i0 + 2), 2)}},
+    }, ans(nd(cut_ref)), ans(nd(cut_ref)), ans(nd(cut_sut)))
 
-    # map field_values: a map field's sub-field values, base and PR both partial
-    ref_vals = [(f"v{i}", 100 - i * 3) for i in range(10)]
-    write(S, "map_field_values", {
-        "kind": "values", "endpoint": "/select/logsql/field_values", "row": "vl.select.field_values.map",
-        "claimed_gap": "B-map",
-        "expect": {"verdict": "improved", "base": {"value_set": 50.0, "hits_equality": 100.0},
-                   "pr": {"value_set": 80.0, "hits_equality": 100.0},
-                   "details": {"base.value_set.recall": 50.0, "pr.value_set.recall": 80.0}},
-    }, ans(values_body(ref_vals)), ans(values_body(ref_vals[:5])), ans(values_body(ref_vals[:8])))
-    # same values, hits drift on the PR
-    drift = [(v, h + (1 if i == 2 else 0)) for i, (v, h) in enumerate(ref_vals)]
+    fv = jbody("vl_field_values")
+    vals = fv["values"]
+    k = len(vals)
+    part = lambda m: {"values": vals[:m]}  # noqa: E731
+    write(S, "field_values_partial_fix", {
+        **derived("base keeps the first half of the recorded values, PR keeps all but the last", "vl_field_values"),
+        "kind": "values", "endpoint": "/select/logsql/field_values", "row": "vl.select.field_values.partial", "claimed_gap": "field-values",
+        "expect": {"verdict": "improved", "base": {"value_set": 100.0 * (k // 2) / k, "hits_equality": 100.0},
+                   "pr": {"value_set": 100.0 * (k - 1) / k, "hits_equality": 100.0},
+                   "details": {"base.value_set.recall": 100.0 * (k // 2) / k}},
+    }, from_rec("vl_field_values"), ans(part(k // 2)), ans(part(k - 1)))
+    drift = {"values": [dict(v, hits=v["hits"] + 1) if i == 2 else v for i, v in enumerate(vals)]}
     write(S, "field_values_hits_drift", {
+        **derived("PR adds 1 to the hits of the third value", "vl_field_values"),
         "kind": "values", "endpoint": "/select/logsql/field_values", "row": "vl.select.field_values.hits",
-        "expect": {"verdict": "regressed", "base": {"value_set": 100.0, "hits_equality": 100.0},
-                   "pr": {"value_set": 100.0, "hits_equality": 90.0}},
-    }, ans(values_body(ref_vals)), ans(values_body(ref_vals)), ans(values_body(drift)))
+        "expect": {"verdict": "regressed", "base": {"hits_equality": 100.0}, "pr": {"value_set": 100.0, "hits_equality": 100.0 * (k - 1) / k}},
+    }, from_rec("vl_field_values"), from_rec("vl_field_values"), ans(drift))
+    lost = {"values": [{"value": v["value"]} for v in vals]}
+    write(S, "field_values_lost_hits", {
+        **derived("PR answers the same values without their hits", "vl_field_values"),
+        "kind": "values", "endpoint": "/select/logsql/field_values", "row": "vl.select.field_values.lost_hits",
+        "expect": {"verdict": "regressed", "base": {"hits_equality": 100.0}, "pr": {"value_set": 100.0, "hits_equality": 0.0}},
+    }, from_rec("vl_field_values"), from_rec("vl_field_values"), ans(lost))
 
-    write(S, "field_names_exact", {
-        "kind": "values", "endpoint": "/select/logsql/field_names", "row": "vl.select.field_names",
-        "expect": {"verdict": "exact", "base": {"value_set": 100.0}, "pr": {"value_set": 100.0}},
-    }, *[ans(values_body([("_msg", 40), ("_time", 40), ("level", 40), ("service", 40)]))] * 3)
-    write(S, "streams_exact", {
-        "kind": "values", "endpoint": "/select/logsql/streams", "row": "vl.select.streams",
-        "expect": {"verdict": "exact", "base": {"value_set": 100.0}, "pr": {"value_set": 100.0}},
-    }, *[ans(values_body([('{app="api",pod="p0"}', 10), ('{app="api",pod="p1"}', 10)]))] * 3)
+    for nm, ep, kind, row in (("field_names", "/select/logsql/field_names", "values", "vl.select.field_names"),
+                              ("streams", "/select/logsql/streams", "values", "vl.select.streams"),
+                              ("facets", "/select/logsql/facets", "values", "vl.select.facets"),
+                              ("hits", "/select/logsql/hits", "series_hits", "vl.select.hits"),
+                              ("hits_by_level", "/select/logsql/hits", "series_hits", "vl.select.hits.by_level"),
+                              ("stats_query_by", "/select/logsql/stats_query", "count", "vl.select.stats_query.by"),
+                              ("stats_query_range", "/select/logsql/stats_query_range", "series_prom", "vl.select.stats_query_range")):
+        src = {"hits_by_level": "vl_hits_by_level", "stats_query_by": "vl_stats_query_by", "stats_query_range": "vl_stats_query_range"}.get(nm, "vl_" + nm)
+        r = from_rec(src)
+        write(S, nm + "_exact", {**REC_META, "recorded_from": [src], "kind": kind, "endpoint": ep, "row": row,
+                                 "expect": {"verdict": "exact"}}, r, r, r)
 
-    # hits: exact on both
-    hts = [iso(T0 + 3600 * i) for i in range(6)]
-    hits = {"hits": [{"fields": {}, "timestamps": hts, "values": [5, 6, 7, 8, 9, 10], "total": 45}]}
-    write(S, "hits_exact", {
-        "kind": "series_hits", "endpoint": "/select/logsql/hits", "row": "vl.select.hits",
-        "expect": {"verdict": "exact", "base": {"points_within_tol": 100.0}, "pr": {"points_within_tol": 100.0}},
-    }, ans(hits), ans(hits), ans(hits))
+    fac = jbody("vl_facets")
+    fac2 = copy.deepcopy(fac)
+    fac2["facets"][0]["values"][0]["hits"] += 1
+    write(S, "facets_hits_changed", {
+        **derived("PR adds 1 to the hits of the first value of the first facet", "vl_facets"),
+        "kind": "values", "endpoint": "/select/logsql/facets", "row": "vl.select.facets.hits",
+        "expect": {"verdict": "regressed", "pr": {"value_set": 100.0}},
+    }, from_rec("vl_facets"), from_rec("vl_facets"), ans(fac2))
+    fac3 = copy.deepcopy(fac)
+    fac3["facets"][0]["values"][0]["field_value"] = "other"
+    write(S, "facets_value_changed", {
+        **derived("PR answers a different value for the first facet value", "vl_facets"),
+        "kind": "values", "endpoint": "/select/logsql/facets", "row": "vl.select.facets.value",
+        "expect": {"verdict": "regressed"},
+    }, from_rec("vl_facets"), from_rec("vl_facets"), ans(fac3))
 
-    # count: cold count short by 3 percent, fixed on PR
+    cnt = jbody("vl_stats_query")
+    total = float(cnt["data"]["result"][0]["value"][1])
+    low = copy.deepcopy(cnt)
+    low["data"]["result"][0]["value"][1] = str(int(total * 0.97))
+    delta = total - int(total * 0.97)
     write(S, "stats_count_fixed", {
+        **derived("base reports 97% of the recorded count", "vl_stats_query"),
         "kind": "count", "endpoint": "/select/logsql/stats_query", "row": "vl.select.stats_query.count", "claimed_gap": "cold-count",
-        "expect": {"verdict": "fixed", "base": {"count": 97.0}, "pr": {"count": 100.0}},
-    }, ans(prom_vector(10000)), ans(prom_vector(9700)), ans(prom_vector(10000)))
+        "expect": {"verdict": "fixed", "base": {"count": 100.0 * (1 - delta / total)}, "pr": {"count": 100.0}},
+    }, from_rec("vl_stats_query"), ans(low), from_rec("vl_stats_query"))
 
-    # regression: PR drops a field and one row
-    dropped = [{k: v for k, v in r.items() if k != "service"} for r in rows][:-1]
+    by = jbody("vl_stats_query_by")
+    lost_group = copy.deepcopy(by)
+    lost_group["data"]["result"] = [r for r in lost_group["data"]["result"] if r["metric"]["level"] != "WARN"]
+    write(S, "stats_by_group_missing", {
+        **derived("base lacks the WARN group of the recorded `stats by (level)` vector", "vl_stats_query_by"),
+        "kind": "count", "endpoint": "/select/logsql/stats_query", "row": "vl.select.stats_query.by_missing", "claimed_gap": "cold-count",
+        "expect": {"verdict": "fixed", "base": {"count": 0.0}, "pr": {"count": 100.0}},
+    }, from_rec("vl_stats_query_by"), ans(lost_group), from_rec("vl_stats_query_by"))
+
+    fields = sorted({k for r in rows for k in r})
+    drop = "http.target"
+    dropped = [{k: v for k, v in r.items() if k != drop} for r in rows]
+    untouched = sum(1 for r in rows[:-1] if drop not in r)
+    jac = 100.0 * untouched / (len(rows) + (len(rows) - 1) - untouched)
     write(S, "rows_regressed", {
+        **derived(f"PR drops the field {drop} from every row and the last row", "vl_query"),
         "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.regress",
-        "expect": {"verdict": "regressed", "base": {"row_set": 100.0}, "pr": {"field_coverage": 83.3}},
-    }, ans(ndjson(rows)), ans(ndjson(rows)), ans(ndjson(dropped)))
+        "expect": {"verdict": "regressed", "base": {"row_set": 100.0}, "pr": {"row_set": jac, "field_coverage": 100.0 * (len(fields) - 1) / len(fields), "value_equality": 0.0}},
+    }, q, q, ans(nd(dropped[:-1])))
 
-    # claimed fix that never reproduced on base
-    write(S, "claim_not_reproduced", {
-        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.claimed", "claimed_gap": "B9",
-        "expect": {"verdict": "not-reproduced-on-base", "base": {"row_set": 100.0}, "pr": {"row_set": 100.0}},
-    }, *[ans(ndjson(rows))] * 3)
-
-    # vacuous: three empty 200 answers prove nothing
-    write(S, "vacuous_empty", {
-        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.empty",
-        "expect": {"verdict": "vacuous"},
-    }, *[ans("")] * 3)
-
-    # blocked: the reference answered 503
+    write(S, "claim_not_reproduced", {**REC_META, "recorded_from": ["vl_query"], "kind": "rows", "endpoint": "/select/logsql/query",
+                                      "row": "vl.select.query.claimed", "claimed_gap": "B9",
+                                      "expect": {"verdict": "not-reproduced-on-base"}}, q, q, q)
     write(S, "blocked_ref_503", {
-        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.blocked",
-        "expect": {"verdict": "blocked"},
-    }, ans("service unavailable", status=503), ans(ndjson(rows)), ans(ndjson(rows)))
+        **derived("the reference answered 503 (a recorded answer with its status replaced)", "vl_query"),
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.blocked", "expect": {"verdict": "blocked"},
+    }, ans("service unavailable", status=503, ctype="text/plain"), q, q)
 
-    # errors: the same error in different quoting is the same error
-    err = lambda t: ans(t, status=400)  # noqa: E731
+    bad = rec("vl_bad_query")
+    txt = bad["body"]
+    same = txt.replace('"', "'").replace(": ", ":  ")
     write(S, "error_same_text", {
+        **derived("base and PR answer the recorded error with quotes changed and whitespace doubled", "vl_bad_query"),
         "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.badsyntax",
         "expect": {"verdict": "exact", "base": {"status": 100.0, "error": 100.0}, "pr": {"error": 100.0}},
-    }, err("cannot parse query: unexpected token 'foo'"), err('cannot parse query:  unexpected token "foo"'),
-        err("cannot  parse query: unexpected token `foo`"))
+    }, from_rec("vl_bad_query"), ans(same, status=400, ctype="text/plain"), ans(same, status=400, ctype="text/plain"))
     write(S, "error_text_changed", {
+        **derived("PR answers a different error text for the recorded bad query", "vl_bad_query"),
         "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.badsyntax2",
         "expect": {"verdict": "regressed", "base": {"error": 100.0}, "pr": {"error": 0.0}},
-    }, err("cannot parse query: unexpected token 'foo'"), err("cannot parse query: unexpected token 'foo'"),
-        err("bad request"))
-
-    # nondeterministic: the PR answer flips between samples
-    flip = ans(ndjson(rows[:-1]))
+    }, from_rec("vl_bad_query"), from_rec("vl_bad_query"), ans("bad request", status=400, ctype="text/plain"))
+    write(S, "error_case_changed", {
+        **derived("PR answers the recorded error text in upper case: case is part of the message", "vl_bad_query"),
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.badsyntax3",
+        "expect": {"verdict": "regressed", "pr": {"error": 0.0}},
+    }, from_rec("vl_bad_query"), from_rec("vl_bad_query"), ans(txt.upper(), status=400, ctype="text/plain"))
+    write(S, "base_error_pr_partial", {
+        **derived("base answers 500; PR answers all but the last recorded row", "vl_query"),
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.one_side_error",
+        "expect": {"verdict": "improved", "base": {"status": 0.0, "row_set": 0.0, "count": 0.0, "value_equality": 0.0},
+                   "pr": {"status": 100.0, "field_coverage": 100.0, "value_equality": 100.0}},
+    }, q, ans("internal error", status=500, ctype="text/plain"), ans(nd(rows[:-1])))
+    flip = ans(nd(rows[:-1]))
     write(S, "flaky_answer", {
+        **derived("PR answers all rows in the first sample and all but the last in the second", "vl_query"),
         "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.flaky",
         "expect": {"verdict": "nondeterministic", "base": {"row_set": 100.0}},
-    }, ans(ndjson(rows)), ans(ndjson(rows)), ans(ndjson(rows)),
-        resamples=[{"ref": ans(ndjson(rows)), "base": ans(ndjson(rows)), "pr": flip}])
-
-    # Lakehouse-only: stats overview schema vs base and truth vs hot count()
-    ov_base = {"rows": 10000, "bytes": 123456, "tenants": [{"account_id": 0, "project_id": 0}], "oldest": "2026-09-01T00:00:00Z"}
-    ov_pr = dict(ov_base, extra_counter=3)
-    truth = prom_vector(10000)
-    write(S, "lh_overview_schema_change", {
-        "kind": "schema", "lh_only": True, "endpoint": "/lakehouse/api/v1/stats/overview", "row": "lh.stats.overview",
-        "contract": {"rows": "number", "bytes": "number", "oldest": "string"},
-        "truth": {"shape": "scalar", "lh_path": "rows"},
-        "expect": {"verdict": "regressed", "base": {"schema_keys": 100.0, "truth": 100.0}, "pr": {"schema_keys": 83.3, "truth": 100.0}},
-    }, None, ans(ov_base), ans(ov_pr), extra={"truth_base": ans(truth), "truth_pr": ans(truth)})
-    write(S, "lh_overview_truth_fixed", {
-        "kind": "schema", "lh_only": True, "endpoint": "/lakehouse/api/v1/stats/overview", "row": "lh.stats.overview.truth",
-        "truth": {"shape": "scalar", "lh_path": "rows", "unflushed_rows": 120},
-        "expect": {"verdict": "fixed", "base": {"truth": 98.8}, "pr": {"truth": 100.0}, "details": {"base.truth.unflushed_rows": 120}},
-    }, None, ans(dict(ov_base, rows=10000)), ans(dict(ov_base, rows=10120)),
-        extra={"truth_base": ans(prom_vector(10120)), "truth_pr": ans(prom_vector(10120))})
+    }, q, q, q, resamples=[{"ref": q, "base": q, "pr": flip}])
+    write(S, "empty_core_row_harness_error", {
+        **derived("all three answers are empty on a core row", "vl_query"),
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.empty_core", "expect": {"verdict": "harness-error"},
+    }, ans(""), ans(""), ans(""))
+    html = ans("<html><body>502 Bad Gateway</body></html>", ctype="text/html")
+    write(S, "unknown_shape_html_200", {
+        **synthetic("an HTML page served with status 200 where rows were expected"),
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vl.select.query.html", "expect": {"verdict": "harness-error"},
+    }, html, html, html)
 
 
-# ---------------------------------------------------------------- vt-native
+# ------------------------------------------------------------------- vt-native
 def vt_native():
     S = "vt-native"
-    spans = span_rows()
-    base = [{k: v for k, v in r.items() if k not in ("events", "links", "scope_name")} for r in spans]
-    write(S, "430_events_links_scope", {
-        "kind": "rows", "signal": "traces", "endpoint": "/select/logsql/query", "row": "vt.select.query.span_fields",
-        "claimed_gap": "430",
-        "expect": {"verdict": "fixed", "base": {"row_set": 0.0, "field_coverage": 76.9},
+    trows = rows_of("vt_query_trace_rows")
+    tq = from_rec("vt_query_trace_rows")
+    lost = [{k: v for k, v in r.items() if not (k.startswith("event:") or k.startswith("link:") or k.startswith("scope_attr:"))} for r in trows]
+    allf = {k for r in trows for k in r}
+    keptf = {k for r in lost for k in r}
+    write(S, "430_events_links_scope_attrs", {
+        **derived("base lacks every event:*, link:* and scope_attr:* field (scope_name and scope_version are kept)", "vt_query_trace_rows"),
+        "kind": "rows", "endpoint": "/select/logsql/query", "row": "vt.select.query.span_fields", "claimed_gap": "430",
+        "expect": {"verdict": "fixed",
+                   "base": {"row_set": 0.0, "field_coverage": 100.0 * len(keptf) / len(allf), "value_equality": 0.0},
                    "pr": {"row_set": 100.0, "value_equality": 100.0}},
-    }, ans(ndjson(spans)), ans(ndjson(base)), ans(ndjson(spans)))
-
-    # B2: field_names built from Parquet columns only: 22 of 63 fields
-    names = [f"field_{i:02d}" for i in range(63)]
-    pairs = lambda ns: values_body([(n, 100) for n in ns])  # noqa: E731
+    }, tq, ans(nd(lost), ms=tq["latency_ms"]), tq)
+    names = jbody("vt_field_names")["values"]
+    n = len(names)
+    k = round(0.349 * n)
+    keep = lambda m: {"values": names[:m]}  # noqa: E731
     write(S, "b2_field_names_recall", {
+        **derived(f"base and PR keep the first {k} of the {n} recorded field names (35%)", "vt_field_names"),
         "kind": "values", "endpoint": "/select/logsql/field_names", "row": "vt.select.field_names.cold", "claimed_gap": "B2",
-        "expect": {"verdict": "same", "base": {"value_set": 34.9}, "pr": {"value_set": 34.9},
-                   "details": {"base.value_set.recall": 34.9, "base.value_set.precision": 100.0}},
-    }, ans(pairs(names)), ans(pairs(names[:22])), ans(pairs(names[:22])))
+        "expect": {"verdict": "same", "base": {"value_set": 100.0 * k / n}, "pr": {"value_set": 100.0 * k / n},
+                   "details": {"base.value_set.recall": 100.0 * k / n, "base.value_set.precision": 100.0}},
+    }, from_rec("vt_field_names"), ans(keep(k)), ans(keep(k)))
+    m = round(0.667 * n)
     write(S, "b2_field_names_partial_fix", {
+        **derived(f"base keeps {k} of {n} recorded field names, PR keeps {m}", "vt_field_names"),
         "kind": "values", "endpoint": "/select/logsql/field_names", "row": "vt.select.field_names.cold2", "claimed_gap": "B2",
-        "expect": {"verdict": "improved", "base": {"value_set": 34.9}, "pr": {"value_set": 63.5}},
-    }, ans(pairs(names)), ans(pairs(names[:22])), ans(pairs(names[:40])))
-    write(S, "stats_count_exact", {
-        "kind": "count", "signal": "traces", "endpoint": "/select/logsql/stats_query", "row": "vt.select.stats_query.count",
-        "expect": {"verdict": "exact", "base": {"count": 100.0}, "pr": {"count": 100.0}},
-    }, *[ans(prom_vector(24))] * 3)
+        "expect": {"verdict": "improved", "base": {"value_set": 100.0 * k / n}, "pr": {"value_set": 100.0 * m / n}},
+    }, from_rec("vt_field_names"), ans(keep(k)), ans(keep(m)))
+    for nm, src, ep, kind in (("stats_count_exact", "vt_stats_query", "/select/logsql/stats_query", "count"),
+                              ("field_values_service_exact", "vt_field_values_service", "/select/logsql/field_values", "values")):
+        r = from_rec(src)
+        write(S, nm, {**REC_META, "recorded_from": [src], "kind": kind, "endpoint": ep, "row": "vt.select." + nm,
+                      "expect": {"verdict": "exact"}}, r, r, r)
 
 
-# ---------------------------------------------------------------- jaeger
-def jaeger_trace(tid, spans_n=6, full=True, wrong_parent=()):
-    procs = {"p1": {"serviceName": "frontend", "tags": []}, "p2": {"serviceName": "cart", "tags": []}}
-    spans = []
-    for i in range(spans_n):
-        sid = f"{(i + 1) + int(tid, 16) * 16:016x}"
-        parent = None if i == 0 else f"{(i) + int(tid, 16) * 16:016x}"
-        if i in wrong_parent:
-            parent = f"{1 + int(tid, 16) * 16:016x}"
-        tags = [{"key": "span.kind", "type": "string", "value": "server"}, {"key": "http.status_code", "type": "int64", "value": 200}]
-        sp = {"traceID": tid, "spanID": sid, "operationName": f"op{i % 3}", "startTime": 1_790_000_000_000_000 + i * 1000,
-              "duration": 500 + i * 10, "processID": "p1" if i % 2 == 0 else "p2",
-              "references": [{"refType": "CHILD_OF", "traceID": tid, "spanID": parent}] if parent else [],
-              "tags": tags, "logs": []}
-        if full:
-            sp["tags"].append({"key": "otel.scope.name", "type": "string", "value": "cart-instrumentation"})
-            if i % 3 == 0:
-                sp["logs"] = [{"timestamp": 1_790_000_000_000_100 + i, "fields": [{"key": "event", "type": "string", "value": "exception"}]}]
-            if i % 4 == 0:
-                sp["references"].append({"refType": "FOLLOWS_FROM", "traceID": f"{255:032x}", "spanID": f"{9:016x}"})
-        spans.append(sp)
-    return {"traceID": tid, "spans": spans, "processes": procs}
-
-
-def jaeger_resp(traces):
-    return {"data": traces, "total": 0, "limit": 0, "offset": 0, "errors": None}
-
-
+# ---------------------------------------------------------------------- jaeger
 def jaeger():
     S = "jaeger"
-    tid = f"{5:032x}"
-    write(S, "430_trace_events_links_scope", {
-        "kind": "trace_jaeger", "signal": "traces", "endpoint": "/select/jaeger/api/traces/{id}", "row": "jaeger.trace.by_id",
-        "claimed_gap": "430",
-        "expect": {"verdict": "fixed", "base": {"span_set": 100.0, "parent_links": 100.0, "span_fields": 0.0},
+    full = jbody("jaeger_trace")
+    spans = full["data"][0]["spans"]
+    jt = from_rec("jaeger_trace")
+    nsp = len(spans)
+
+    def strip430(sp):
+        sp = copy.deepcopy(sp)
+        sp["logs"] = []
+        sp["references"] = [r for r in sp["references"] if r["refType"] == "CHILD_OF"]
+        sp["tags"] = [t for t in sp["tags"] if not t["key"].startswith("scope_attr:")]
+        return sp
+
+    base = copy.deepcopy(full)
+    base["data"][0]["spans"] = [strip430(s) for s in spans]
+    with_logs = sum(1 for s in spans if s["logs"])
+    with_links = sum(1 for s in spans if any(r["refType"] != "CHILD_OF" for r in s["references"]))
+    with_sa = sum(1 for s in spans if any(t["key"].startswith("scope_attr:") for t in s["tags"]))
+    write(S, "430_trace_events_links_scope_attrs", {
+        **derived("base lacks span logs (events), FOLLOWS_FROM references (links) and scope_attr:* tags; the scope name tag is kept", "jaeger_trace"),
+        "kind": "trace_jaeger", "endpoint": "/select/jaeger/api/traces/{id}", "row": "jaeger.trace.by_id", "claimed_gap": "430",
+        "expect": {"verdict": "fixed", "base": {"span_set": 100.0, "parent_links": 100.0, "span_fields": 100.0 * (nsp - with_sa) / nsp},
                    "pr": {"span_fields": 100.0, "span_count": 100.0},
-                   "details": {"base.span_fields.min_field": "scope"}},
-    }, ans(jaeger_resp([jaeger_trace(tid)])), ans(jaeger_resp([jaeger_trace(tid, full=False)])), ans(jaeger_resp([jaeger_trace(tid)])))
+                   "details": {"base.span_fields.min_field": "scope_attributes",
+                               "base.span_fields.per_field.events": 100.0 * (nsp - with_logs) / nsp,
+                               "base.span_fields.per_field.links": 100.0 * (nsp - with_links) / nsp,
+                               "base.span_fields.per_field.scope": 100.0}},
+    }, jt, ans(base, ms=jt["latency_ms"]), jt)
+
+    ids = [s["spanID"] for s in spans]
+    rep = copy.deepcopy(full)
+    moved = 0
+    for s in rep["data"][0]["spans"]:
+        if s["spanID"] in ids[2:]:
+            for r in s["references"]:
+                if r["refType"] == "CHILD_OF":
+                    r["spanID"] = ids[0]
+                    moved += 1
     write(S, "trace_parent_links", {
-        "kind": "trace_jaeger", "signal": "traces", "endpoint": "/select/jaeger/api/traces/{id}", "row": "jaeger.trace.parents",
-        "expect": {"verdict": "fixed", "base": {"parent_links": 66.6, "span_fields": 100.0}, "pr": {"parent_links": 100.0}},
-    }, ans(jaeger_resp([jaeger_trace(tid)])), ans(jaeger_resp([jaeger_trace(tid, wrong_parent=(3, 4))])), ans(jaeger_resp([jaeger_trace(tid)])))
+        **derived("base re-parents the spans after the second onto the root span", "jaeger_trace"),
+        "kind": "trace_jaeger", "endpoint": "/select/jaeger/api/traces/{id}", "row": "jaeger.trace.parents",
+        "expect": {"verdict": "fixed", "base": {"parent_links": 100.0 * (nsp - moved) / nsp}, "pr": {"parent_links": 100.0}},
+    }, jt, ans(rep), jt)
+    fewer = copy.deepcopy(full)
+    fewer["data"][0]["spans"] = spans[:-1]
     write(S, "trace_span_count_regressed", {
-        "kind": "trace_jaeger", "signal": "traces", "endpoint": "/select/jaeger/api/traces/{id}", "row": "jaeger.trace.spans",
-        "expect": {"verdict": "regressed", "base": {"span_set": 100.0}, "pr": {"span_set": 83.3, "span_count": 83.3}},
-    }, ans(jaeger_resp([jaeger_trace(tid)])), ans(jaeger_resp([jaeger_trace(tid)])), ans(jaeger_resp([jaeger_trace(tid, spans_n=5)])))
-    full = [jaeger_trace(f"{i:032x}", 3) for i in range(1, 11)]
+        **derived("PR drops the last span of the recorded trace", "jaeger_trace"),
+        "kind": "trace_jaeger", "endpoint": "/select/jaeger/api/traces/{id}", "row": "jaeger.trace.spans",
+        "expect": {"verdict": "regressed", "base": {"span_set": 100.0}, "pr": {"span_set": 100.0 * (nsp - 1) / nsp, "span_count": 100.0 * (nsp - 1) / nsp}},
+    }, jt, jt, ans(fewer))
+    srch = jbody("jaeger_search_order")
+    nt = len(srch["data"])
+    trimmed = copy.deepcopy(srch)
+    trimmed["data"] = trimmed["data"][: nt - 2]
+    sr = from_rec("jaeger_search_order")
     write(S, "search_missing_traces", {
-        "kind": "trace_jaeger", "signal": "traces", "endpoint": "/select/jaeger/api/traces", "row": "jaeger.search",
-        "expect": {"verdict": "fixed", "base": {"trace_set": 80.0}, "pr": {"trace_set": 100.0},
-                   "details": {"base.trace_set.recall": 80.0}},
-    }, ans(jaeger_resp(full)), ans(jaeger_resp(full[:8])), ans(jaeger_resp(full)))
-    svc = {"data": ["cart", "frontend", "pay"], "total": 3, "limit": 0, "offset": 0, "errors": None}
-    write(S, "services_exact", {
-        "kind": "values", "signal": "traces", "endpoint": "/select/jaeger/api/services", "row": "jaeger.services",
-        "expect": {"verdict": "exact", "base": {"value_set": 100.0}, "pr": {"value_set": 100.0}},
-    }, ans(svc), ans(svc), ans(svc))
-    ops = {"data": [{"name": "op0", "spanKind": "server"}, {"name": "op1", "spanKind": "server"}], "total": 2}
-    write(S, "operations_exact", {
-        "kind": "values", "signal": "traces", "endpoint": "/select/jaeger/api/services/{svc}/operations", "row": "jaeger.operations",
-        "expect": {"verdict": "exact", "base": {"value_set": 100.0}, "pr": {"value_set": 100.0}},
-    }, ans(ops), ans(ops), ans(ops))
+        **derived("base lacks the last two traces of the recorded search", "jaeger_search_order"),
+        "kind": "trace_jaeger", "endpoint": "/select/jaeger/api/traces", "row": "jaeger.search", "claimed_gap": "search",
+        "expect": {"verdict": "fixed", "base": {"trace_set": 100.0 * (nt - 2) / nt}, "pr": {"trace_set": 100.0},
+                   "details": {"base.trace_set.recall": 100.0 * (nt - 2) / nt}},
+    }, sr, ans(trimmed), sr)
+    for nm, src, ep, kind, ex in (("services_exact", "jaeger_services", "/select/jaeger/api/services", "values", "exact"),
+                                  ("operations_exact", "jaeger_operations", "/select/jaeger/api/services/{svc}/operations", "values", "exact"),
+                                  ("search_exact", "jaeger_search", "/select/jaeger/api/traces", "trace_jaeger", "exact"),
+                                  ("trace_not_found_404_same", "jaeger_trace_missing", "/select/jaeger/api/traces/{id}", "trace_jaeger", "exact")):
+        r = from_rec(src)
+        write(S, nm, {**REC_META, "recorded_from": [src], "kind": kind, "endpoint": ep, "row": "jaeger." + nm,
+                      "expect": {"verdict": ex}}, r, r, r)
+    r = from_rec("jaeger_dependencies")
+    write(S, "dependencies_empty", {**REC_META, "recorded_from": ["jaeger_dependencies"], "kind": "values",
+                                    "endpoint": "/select/jaeger/api/dependencies", "row": "jaeger.dependencies", "may_be_empty": True,
+                                    "expect": {"verdict": "vacuous"}}, r, r, r)
+    ops = jbody("jaeger_services")
+    ops2 = copy.deepcopy(ops)
+    ops2["data"] = ops2["data"][:-1]
+    write(S, "services_missing_one", {
+        **derived("PR lacks the last recorded service", "jaeger_services"),
+        "kind": "values", "endpoint": "/select/jaeger/api/services", "row": "jaeger.services.missing",
+        "expect": {"verdict": "regressed", "pr": {"value_set": 100.0 * (len(ops["data"]) - 1) / len(ops["data"])}},
+    }, from_rec("jaeger_services"), from_rec("jaeger_services"), ans(ops2))
 
 
-# ---------------------------------------------------------------- tempo
-def otlp_trace(tid, n=4, full=True):
-    spans = []
-    for i in range(n):
-        sp = {"traceId": tid, "spanId": f"{i + 1:016x}", "parentSpanId": "" if i == 0 else f"{i:016x}", "name": f"op{i}",
-              "kind": "SPAN_KIND_SERVER", "startTimeUnixNano": str(1_790_000_000_000_000_000 + i * 1000),
-              "endTimeUnixNano": str(1_790_000_000_000_000_000 + i * 1000 + 500),
-              "attributes": [{"key": "http.method", "value": {"stringValue": "GET"}}],
-              "status": {"code": "STATUS_CODE_OK"}}
-        if full:
-            if i % 2 == 0:
-                sp["events"] = [{"timeUnixNano": str(1_790_000_000_000_000_100 + i), "name": "exception", "attributes": []}]
-            if i % 3 == 0:
-                sp["links"] = [{"traceId": f"{9:032x}", "spanId": f"{3:016x}"}]
-        spans.append(sp)
-    scope = {"name": "cart-instrumentation"} if full else {}
-    return {"trace": {"resourceSpans": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "cart"}}]},
-                                         "scopeSpans": [{"scope": scope, "spans": spans}]}]}}
-
-
+# ----------------------------------------------------------------------- tempo
 def tempo():
     S = "tempo"
-    tid = f"{7:032x}"
-    write(S, "430_trace_events_links_scope", {
-        "kind": "trace_otlp", "signal": "traces", "endpoint": "/api/v2/traces/{id}", "row": "tempo.trace.by_id", "claimed_gap": "430",
-        "expect": {"verdict": "fixed", "base": {"span_fields": 0.0, "span_set": 100.0}, "pr": {"span_fields": 100.0}},
-    }, ans(otlp_trace(tid)), ans(otlp_trace(tid, full=False)), ans(otlp_trace(tid)))
-    s = {"traces": [{"traceID": f"{i:032x}", "rootServiceName": "cart", "rootTraceName": "op0", "durationMs": 5} for i in range(5)]}
-    write(S, "search_exact", {
-        "kind": "tempo_search", "signal": "traces", "endpoint": "/api/search", "row": "tempo.search",
-        "expect": {"verdict": "exact", "base": {"trace_set": 100.0}, "pr": {"trace_set": 100.0}},
-    }, ans(s), ans(s), ans(s))
+    full = jbody("tempo_trace_v2")
+    base = copy.deepcopy(full)
+    for rs in base["trace"]["resourceSpans"]:
+        for ss in rs["scopeSpans"]:
+            ss["scope"].pop("attributes", None)
+            for sp in ss["spans"]:
+                sp.pop("events", None)
+                sp.pop("links", None)
+    tt = from_rec("tempo_trace_v2")
+    write(S, "430_trace_events_links_scope_attrs", {
+        **derived("base lacks scope attributes, span events and span links", "tempo_trace_v2"),
+        "kind": "trace_otlp", "endpoint": "/api/v2/traces/{id}", "row": "tempo.trace.by_id", "claimed_gap": "430",
+        "expect": {"verdict": "fixed", "base": {"span_set": 100.0, "span_fields": 0.0}, "pr": {"span_fields": 100.0},
+                   "details": {"base.span_fields.min_field": "scope_attributes", "base.span_fields.per_field.events": 25.0}},
+    }, tt, ans(base, ms=tt["latency_ms"]), tt)
+    for nm, src, kind, ep in (("search_exact", "tempo_search", "tempo_search", "/api/search"),
+                              ("tag_values_exact", "tempo_tag_values", "values", "/api/v2/search/tag/{tag}/values"),
+                              ("tags_exact", "tempo_tags", "values", "/api/v2/search/tags")):
+        r = from_rec(src)
+        write(S, nm, {**REC_META, "recorded_from": [src], "kind": kind, "endpoint": ep, "row": "tempo." + nm,
+                      "expect": {"verdict": "exact"}}, r, r, r)
+    tv = jbody("tempo_tag_values")
+    tv2 = copy.deepcopy(tv)
+    tv2["tagValues"] = tv2["tagValues"][:-2]
+    nv = len(tv["tagValues"])
+    write(S, "tag_values_missing", {
+        **derived("base lacks the last two recorded tag values", "tempo_tag_values"),
+        "kind": "values", "endpoint": "/api/v2/search/tag/{tag}/values", "row": "tempo.tag_values.missing", "claimed_gap": "tags",
+        "expect": {"verdict": "fixed", "base": {"value_set": 100.0 * (nv - 2) / nv}},
+    }, from_rec("tempo_tag_values"), ans(tv2), from_rec("tempo_tag_values"))
     lbl = lambda v: [{"key": "service", "value": {"stringValue": v}}]  # noqa: E731
-    smp = lambda vals: [{"timestampMs": str(T0 * 1000 + 15000 * i), "value": v} for i, v in enumerate(vals)]  # noqa: E731
+    smp = lambda vals: [{"timestampMs": str(1791357600000 + 15000 * i), "value": v} for i, v in enumerate(vals)]  # noqa: E731
     ref = {"series": [{"labels": lbl("cart"), "samples": smp([1, 2, 3, 4])}, {"labels": lbl("pay"), "samples": smp([0, 1, 0, 1])}]}
-    base = {"series": [{"labels": lbl("cart"), "samples": smp([1, 2, 3, 4])}]}
-    pr = {"series": [{"labels": lbl("cart"), "samples": smp([1, 2, 3, 4])}, {"labels": lbl("pay"), "samples": smp([0, 1, 0, 2])}]}
+    b = {"series": [{"labels": lbl("cart"), "samples": smp([1, 2, 3, 4])}]}
+    p = {"series": [{"labels": lbl("cart"), "samples": smp([1, 2, 3, 4])}, {"labels": lbl("pay"), "samples": smp([0, 1, 0, 2])}]}
     write(S, "metrics_missing_series", {
-        "kind": "series_tempo", "signal": "traces", "endpoint": "/api/metrics/query_range", "row": "tempo.metrics.rate",
+        **synthetic("TraceQL metrics query_range body in the documented format; not recorded"),
+        "kind": "series_tempo", "endpoint": "/api/metrics/query_range", "row": "tempo.metrics.rate",
         "expect": {"verdict": "improved", "base": {"series_set": 50.0}, "pr": {"series_set": 100.0, "points_within_tol": 87.5}},
-    }, ans(ref), ans(base), ans(pr))
+    }, ans(ref), ans(b), ans(p))
 
 
-# ---------------------------------------------------------------- loki
+# ------------------------------------------------------------------------ loki
 def loki():
     S = "loki"
-    ts = [T0 + 60 * i for i in range(6)]
-    ref = prom_matrix([({"level": "error"}, [3, 4, 5, 6, 7, 8]), ({"level": "info"}, [30, 40, 50, 60, 70, 80])], ts)
-    base = prom_matrix([({"level": "error"}, [3, 4, 5, 6, 7, 8])], ts)
+    T0 = 1791357600
+    mat = lambda series: {"status": "success", "data": {"resultType": "matrix", "result": [  # noqa: E731
+        {"metric": m, "values": [[T0 + 60 * i, str(v)] for i, v in enumerate(vs)]} for m, vs in series]}}
+    ref = mat([({"level": "error"}, [3, 4, 5, 6, 7, 8]), ({"level": "info"}, [30, 40, 50, 60, 70, 80])])
+    base = mat([({"level": "error"}, [3, 4, 5, 6, 7, 8])])
     write(S, "query_range_matrix", {
+        **synthetic("Loki query_range matrix body in the documented format; not recorded"),
         "kind": "series_prom", "endpoint": "/loki/api/v1/query_range", "row": "loki.query_range.rate",
-        "expect": {"verdict": "fixed", "base": {"series_set": 50.0, "ts_alignment": 100.0}, "pr": {"series_set": 100.0}},
+        "expect": {"verdict": "fixed", "base": {"series_set": 50.0}, "pr": {"series_set": 100.0}},
     }, ans(ref), ans(base), ans(ref))
+    st = lambda app, line: {"status": "success", "data": {"resultType": "streams", "result": [  # noqa: E731
+        {"stream": {"app": app}, "values": [[str(T0 * 10**9), line]]}]}}
+    write(S, "streams_lines_differ", {
+        **synthetic("Loki streams bodies in the documented format; not recorded"),
+        "kind": "series_prom", "endpoint": "/loki/api/v1/query_range", "row": "loki.query_range.streams",
+        "expect": {"verdict": "regressed", "base": {"row_set": 100.0}, "pr": {"row_set": 0.0}},
+    }, ans(st("a", "line one")), ans(st("a", "line one")), ans(st("b", "totally different")))
+    write(S, "empty_vacuous", {
+        **synthetic("three empty matrices"), "kind": "series_prom", "endpoint": "/loki/api/v1/query_range",
+        "row": "loki.query_range.empty", "may_be_empty": True, "expect": {"verdict": "vacuous"},
+    }, *[ans(mat([]))] * 3)
+
+
+# ------------------------------------------------------------------- lh-logs/traces
+def lh():
+    cnt = jbody("vl_stats_query_by")
+    total = int(sum(float(r["value"][1]) for r in cnt["data"]["result"]))
+    truth = from_rec("vl_stats_query_by")
+    ov = lambda rows: {"total_rows": rows, "total_files": 12, "total_bytes": 123456, "total_raw_bytes": 654321,  # noqa: E731
+                       "oldest_data": "2026-10-07T06:50:01Z", "newest_data": "2026-10-07T07:49:58Z", "tenant_count": 1,
+                       "partition_count": 3, "storage_by_class": [{"class": "STANDARD", "bytes": 123456}]}
+    write("lh-logs", "stats_overview_truth", {
+        **synthetic("Lakehouse /stats/overview body with its documented keys (not recorded); the truth answer is the recorded stats by (level) vector, summed",
+                    recorded_from=["vl_stats_query_by"]),
+        "kind": "schema", "endpoint": "/lakehouse/api/v1/stats/overview", "row": "lh.stats.overview.truth",
+        "truth": {"shape": "scalar_sum", "lh_path": "total_rows", "unflushed_rows": 10},
+        "expect": {"verdict": "fixed", "base": {"truth": 100.0 * (1 - 10 / total)}, "pr": {"truth": 100.0},
+                   "details": {"base.truth.unflushed_rows": 10, "base.truth.delta": -10}},
+    }, None, ans(ov(total - 10)), ans(ov(total)), extra={"truth_base": truth, "truth_pr": truth})
+    changed = dict(ov(total), extra_counter=3, total_files="12")
+    write("lh-logs", "stats_overview_schema_change", {
+        **synthetic("Lakehouse /stats/overview body (not recorded): the PR adds a key and turns total_files into a string"),
+        "kind": "schema", "endpoint": "/lakehouse/api/v1/stats/overview", "row": "lh.stats.overview",
+        "contract": {"total_rows": "number", "total_bytes": "number", "oldest_data": "string"},
+        "truth": {"shape": "scalar_sum", "lh_path": "total_rows"},
+        "expect": {"verdict": "regressed", "base": {"schema_keys": 100.0, "schema_types": 100.0, "truth": 100.0},
+                   "pr": {"schema_keys": 100.0 * 10 / 11, "schema_types": 90.0, "truth": 100.0}},
+    }, None, ans(ov(total)), ans(changed), extra={"truth_base": truth, "truth_pr": truth})
+    uniq = from_rec("vl_stats_count_uniq")
+    card = lambda lv, hm: {"fields": [  # noqa: E731
+        {"name": "level", "cardinality": lv, "type": "string", "has_bloom": True, "indexed": True, "storage_bytes": 100},
+        {"name": "http.method", "cardinality": hm, "type": "string", "has_bloom": False, "indexed": True, "storage_bytes": 50},
+        {"name": "not_indexed", "cardinality": 99999, "type": "string", "has_bloom": False, "indexed": False, "storage_bytes": 0}]}
+    write("lh-logs", "cardinality_fields_hll", {
+        **synthetic("Lakehouse /cardinality/fields body with its documented keys (not recorded); truth is the recorded count_uniq vector",
+                    recorded_from=["vl_stats_count_uniq"]),
+        "kind": "schema", "endpoint": "/lakehouse/api/v1/cardinality/fields", "row": "lh.cardinality.fields",
+        "truth": {"shape": "per_key", "lh_path": "fields", "key_field": "name", "value_field": "cardinality", "key_label": "__name__",
+                  "where": {"indexed": True}, "rel_tol": 0.05},
+        "expect": {"verdict": "fixed", "base": {"truth": 40.0}, "pr": {"truth": 100.0}},
+    }, None, ans(card(4, 8)), ans(card(4, 5)), extra={"truth_base": uniq, "truth_pr": uniq})
+    tids = from_rec("vt_tenant_ids")
+    tenants = lambda ids: {"tenants": [{"account_id": a, "project_id": p} for a, p in ids], "total_tenants": len(ids)}  # noqa: E731
+    write("lh-traces", "tenants_truth", {
+        **synthetic("Lakehouse /tenants body with its documented keys (not recorded); truth is the recorded /select/tenant_ids answer",
+                    recorded_from=["vt_tenant_ids"]),
+        "kind": "schema", "endpoint": "/lakehouse/api/v1/tenants", "row": "lh.tenants",
+        "truth": {"shape": "tenant_set", "lh_path": "tenants"},
+        "expect": {"verdict": "fixed", "base": {"truth": 0.0}, "pr": {"truth": 100.0}},
+    }, None, ans(tenants([("1", "0")])), ans(tenants([("0", "0")])), extra={"truth_base": tids, "truth_pr": tids})
 
 
 def main():
     if os.path.isdir(OUT):
         shutil.rmtree(OUT)
-    vl_native(); vt_native(); jaeger(); tempo(); loki()
+    vl_native(); vt_native(); jaeger(); lh(); loki(); tempo()
     n = sum(1 for _, _, f in os.walk(OUT) if "meta.json" in f)
     print(f"wrote {n} cases under {OUT}")
 

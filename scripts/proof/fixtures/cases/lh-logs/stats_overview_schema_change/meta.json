@@ -1,0 +1,31 @@
+{
+ "contract": {
+  "oldest_data": "string",
+  "total_bytes": "number",
+  "total_rows": "number"
+ },
+ "derivation": "Lakehouse /stats/overview body (not recorded): the PR adds a key and turns total_files into a string",
+ "endpoint": "/lakehouse/api/v1/stats/overview",
+ "expect": {
+  "base": {
+   "schema_keys": 100.0,
+   "schema_types": 100.0,
+   "truth": 100.0
+  },
+  "pr": {
+   "schema_keys": 90.9090909090909,
+   "schema_types": 90.0,
+   "truth": 100.0
+  },
+  "verdict": "regressed"
+ },
+ "id": "lh-logs/stats_overview_schema_change",
+ "kind": "schema",
+ "provenance": "synthetic",
+ "row": "lh.stats.overview",
+ "surface": "lh-logs",
+ "truth": {
+  "lh_path": "total_rows",
+  "shape": "scalar_sum"
+ }
+}

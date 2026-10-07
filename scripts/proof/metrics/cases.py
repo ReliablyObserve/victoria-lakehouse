@@ -5,10 +5,10 @@ import json
 import os
 from typing import Any
 
-from .common import SURFACE_SIGNAL, SURFACES
-from .evaluate import answer_empty, check_meta, evaluate_request
+from .common import CORE_SURFACES, SURFACE_SIGNAL, SURFACES
+from .evaluate import answer_empty, check_meta, evaluate_request, is_lh_only
 from .generic import is_error, latency_ratio
-from .verdict import CaseResult, classify, classify_samples
+from .verdict import DEFAULT_TOL, EXCLUDED_SAMPLES, CaseResult, classify, classify_samples
 
 ANSWER_FILES = ("ref", "base", "pr", "truth_base", "truth_pr")
 
@@ -40,17 +40,34 @@ def case_dirs(root: str) -> list[str]:
 def _blocked(meta: dict, answers: dict[str, dict]) -> bool:
     """A reference answer with 5xx, a timeout or a warning is blocked, never a difference.
     Lakehouse-only rows have no reference: an unhealthy base blocks them."""
-    ref = answers.get("base") if meta.get("lh_only") else answers.get("ref")
+    ref = answers.get("base") if is_lh_only(meta) else answers.get("ref")
     if ref is None:
         return False
     return (ref.get("status") or 0) >= 500 or bool(ref.get("timeout")) or bool(ref.get("warnings"))
 
 
 def _vacuous(meta: dict, answers: dict[str, dict]) -> bool:
-    names = ("base", "pr") if meta.get("lh_only") else ("ref", "base", "pr")
+    names = ("base", "pr") if is_lh_only(meta) else ("ref", "base", "pr")
     if not all(n in answers for n in names):
         return False
     return all(answer_empty(meta["kind"], answers[n]) for n in names)
+
+
+def _seeded(meta: dict) -> bool:
+    """Core rows run on seeded data: an answer with nothing in it there is a broken harness,
+    not a pass. A row that legitimately answers empty says so with may_be_empty."""
+    return meta["surface"] in CORE_SURFACES and not meta.get("may_be_empty")
+
+
+def _valid_states(verdict: str) -> tuple[bool, bool]:
+    """(base answer valid, PR answer valid) for latency: an answer counts only when it is in the
+    expected state, which here means no other side beats it on the facet vector (an exact answer,
+    or a pre-existing difference nobody improved on). Wrong answers are not latency."""
+    if verdict in ("fixed", "improved"):
+        return False, True  # base was the wrong one
+    if verdict == "regressed":
+        return True, False
+    return True, True
 
 
 def evaluate_case(meta: dict, answers: dict[str, dict], resamples: list[dict[str, dict]] | None = None) -> CaseResult:
@@ -65,28 +82,37 @@ def evaluate_case(meta: dict, answers: dict[str, dict], resamples: list[dict[str
         verdict="harness-error",
         claimed=bool(meta.get("claimed_gap")),
     )
-    need = ["base", "pr"] + ([] if meta.get("lh_only") else ["ref"]) + (["truth_base", "truth_pr"] if meta.get("truth") else [])
+    lh_only = is_lh_only(meta)
+    need = ["base", "pr"] + ([] if lh_only else ["ref"]) + (["truth_base", "truth_pr"] if meta.get("truth") else [])
+    tol = meta.get("score_tolerance", DEFAULT_TOL)
 
     def one(ans: dict[str, dict]) -> tuple[str, Any, Any]:
         if any(n not in ans for n in need):
             return "harness-error", None, None
         try:
             b, p = evaluate_request(meta, ans)
-        except Exception as e:  # a malformed answer is the harness's problem, never a pass
+            vacuous = _vacuous(meta, ans)
+        except Exception as e:  # a malformed or unknown answer is the harness's problem, never a pass
             res.latency["error"] = f"{type(e).__name__}: {e}"
             return "harness-error", None, None
-        v = classify(b, p, claimed=res.claimed, blocked=_blocked(meta, ans), vacuous=_vacuous(meta, ans))
-        return v, b, p
+        if vacuous and _seeded(meta):
+            res.latency["error"] = "empty answers on a seeded core row"
+            return "harness-error", b, p
+        return classify(b, p, claimed=res.claimed, blocked=_blocked(meta, ans), vacuous=vacuous, tol=tol), b, p
 
     v, b, p = one(answers)
     res.base, res.pr = b, p
     verdicts = [v] + [one(r)[0] for r in (resamples or [])]
     res.samples = verdicts
     res.verdict = classify_samples(verdicts)
+    res.excluded_samples = [x for x in verdicts if x in EXCLUDED_SAMPLES]
     if "base" in answers and "pr" in answers:
-        def lat(a):
-            return [(a.get("latency_ms") or 0.0, not is_error(a))]
-        res.latency = {**res.latency, **latency_ratio(lat(answers["pr"]), lat(answers["base"]),
+        b_ok, p_ok = _valid_states(res.verdict)
+
+        def lat(a, ok=True):
+            return [(a.get("latency_ms") or 0.0, ok and not is_error(a))]
+
+        res.latency = {**res.latency, **latency_ratio(lat(answers["pr"], p_ok), lat(answers["base"], b_ok),
                                                     lat(answers["ref"]) if "ref" in answers else None)}
     return res
 

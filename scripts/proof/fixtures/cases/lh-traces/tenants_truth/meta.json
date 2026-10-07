@@ -1,0 +1,25 @@
+{
+ "derivation": "Lakehouse /tenants body with its documented keys (not recorded); truth is the recorded /select/tenant_ids answer",
+ "endpoint": "/lakehouse/api/v1/tenants",
+ "expect": {
+  "base": {
+   "truth": 0.0
+  },
+  "pr": {
+   "truth": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "lh-traces/tenants_truth",
+ "kind": "schema",
+ "provenance": "synthetic",
+ "recorded_from": [
+  "vt_tenant_ids"
+ ],
+ "row": "lh.tenants",
+ "surface": "lh-traces",
+ "truth": {
+  "lh_path": "tenants",
+  "shape": "tenant_set"
+ }
+}

@@ -1,0 +1,6 @@
+{
+ "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"vector\",\"result\":[{\"metric\":{\"__name__\":\"level\"},\"value\":[1791360000,\"4\"]},{\"metric\":{\"__name__\":\"http.method\"},\"value\":[1791360000,\"5\"]}]}}",
+ "content_type": "application/json",
+ "latency_ms": 1.42,
+ "status": 200
+}

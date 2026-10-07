@@ -1,0 +1,14 @@
+{
+ "endpoint": "/select/logsql/field_values",
+ "expect": {
+  "verdict": "exact"
+ },
+ "id": "vt-native/field_values_service_exact",
+ "kind": "values",
+ "provenance": "recorded",
+ "recorded_from": [
+  "vt_field_values_service"
+ ],
+ "row": "vt.select.field_values_service_exact",
+ "surface": "vt-native"
+}

@@ -1,18 +1,22 @@
 {
+ "derivation": "PR adds 1 to the hits of the third value",
  "endpoint": "/select/logsql/field_values",
  "expect": {
   "base": {
-   "hits_equality": 100.0,
-   "value_set": 100.0
+   "hits_equality": 100.0
   },
   "pr": {
-   "hits_equality": 90.0,
+   "hits_equality": 75.0,
    "value_set": 100.0
   },
   "verdict": "regressed"
  },
  "id": "vl-native/field_values_hits_drift",
  "kind": "values",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "vl_field_values"
+ ],
  "row": "vl.select.field_values.hits",
  "surface": "vl-native"
 }

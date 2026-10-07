@@ -1,9 +1,9 @@
 {
+ "derivation": "base re-parents the spans after the second onto the root span",
  "endpoint": "/select/jaeger/api/traces/{id}",
  "expect": {
   "base": {
-   "parent_links": 66.6,
-   "span_fields": 100.0
+   "parent_links": 50.0
   },
   "pr": {
    "parent_links": 100.0
@@ -12,7 +12,10 @@
  },
  "id": "jaeger/trace_parent_links",
  "kind": "trace_jaeger",
+ "provenance": "derived-from-recorded",
+ "recorded_from": [
+  "jaeger_trace"
+ ],
  "row": "jaeger.trace.parents",
- "signal": "traces",
  "surface": "jaeger"
 }

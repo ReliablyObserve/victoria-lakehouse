@@ -1,0 +1,32 @@
+{
+ "derivation": "Lakehouse /cardinality/fields body with its documented keys (not recorded); truth is the recorded count_uniq vector",
+ "endpoint": "/lakehouse/api/v1/cardinality/fields",
+ "expect": {
+  "base": {
+   "truth": 40.0
+  },
+  "pr": {
+   "truth": 100.0
+  },
+  "verdict": "fixed"
+ },
+ "id": "lh-logs/cardinality_fields_hll",
+ "kind": "schema",
+ "provenance": "synthetic",
+ "recorded_from": [
+  "vl_stats_count_uniq"
+ ],
+ "row": "lh.cardinality.fields",
+ "surface": "lh-logs",
+ "truth": {
+  "key_field": "name",
+  "key_label": "__name__",
+  "lh_path": "fields",
+  "rel_tol": 0.05,
+  "shape": "per_key",
+  "value_field": "cardinality",
+  "where": {
+   "indexed": true
+  }
+ }
+}

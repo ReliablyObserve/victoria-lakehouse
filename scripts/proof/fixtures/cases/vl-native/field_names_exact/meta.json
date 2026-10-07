@@ -1,16 +1,14 @@
 {
  "endpoint": "/select/logsql/field_names",
  "expect": {
-  "base": {
-   "value_set": 100.0
-  },
-  "pr": {
-   "value_set": 100.0
-  },
   "verdict": "exact"
  },
  "id": "vl-native/field_names_exact",
  "kind": "values",
+ "provenance": "recorded",
+ "recorded_from": [
+  "vl_field_names"
+ ],
  "row": "vl.select.field_names",
  "surface": "vl-native"
 }

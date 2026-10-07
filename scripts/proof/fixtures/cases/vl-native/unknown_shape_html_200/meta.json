@@ -1,0 +1,12 @@
+{
+ "derivation": "an HTML page served with status 200 where rows were expected",
+ "endpoint": "/select/logsql/query",
+ "expect": {
+  "verdict": "harness-error"
+ },
+ "id": "vl-native/unknown_shape_html_200",
+ "kind": "rows",
+ "provenance": "synthetic",
+ "row": "vl.select.query.html",
+ "surface": "vl-native"
+}

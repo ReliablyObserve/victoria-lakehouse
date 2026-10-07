@@ -1,0 +1,6 @@
+{
+ "body": "{\"tenants\":[{\"account_id\":\"0\",\"project_id\":\"0\"}],\"total_tenants\":1}",
+ "content_type": "application/json",
+ "latency_ms": 10.0,
+ "status": 200
+}

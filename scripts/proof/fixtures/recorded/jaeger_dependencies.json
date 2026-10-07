@@ -1,0 +1,14 @@
+{
+ "body": "{\"data\":[],\"errors\": null,\"limit\": 0,\"offset\": 0,\"total\":0}",
+ "content_type": "application/json",
+ "latency_ms": 0.78,
+ "request": {
+  "method": "GET",
+  "params": {
+   "endTs": "1791360000000",
+   "lookback": "7200000"
+  },
+  "path": "/select/jaeger/api/dependencies"
+ },
+ "status": 200
+}

@@ -1,21 +1,6 @@
 {
- "body": {
-  "data": {
-   "result": [
-    {
-     "metric": {
-      "__name__": "count(*)"
-     },
-     "value": [
-      1790000000,
-      "10000"
-     ]
-    }
-   ],
-   "resultType": "vector"
-  },
-  "status": "success"
- },
- "latency_ms": 10.0,
+ "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"vector\",\"result\":[{\"metric\":{\"__name__\":\"c\"},\"value\":[1791360000,\"300\"]}]}}",
+ "content_type": "application/json",
+ "latency_ms": 0.76,
  "status": 200
 }
