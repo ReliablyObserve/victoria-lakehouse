@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.146.8] - 2026-10-07
+
 ### Added
 
 - **Proof stack, API runner and visual capture.** Tooling only, no runtime change (`scripts/proof/`, `deployment/docker/docker-compose-proof.yml`, `tests/playwright/proof/`): an isolated compose stack (hot VictoriaLogs/VictoriaTraces, Lakehouse from main and from a PR, Grafana, the Jaeger UI), a runner that sends rows to the three targets in both tenant forms and in the cold and buffer layers and scores the answers in percent, a Playwright capture of Grafana Explore, Logs Drilldown, VMUI, VTUI and the Jaeger UI on the same three sides with the backend traffic compared per question, and a PR comment generator.
