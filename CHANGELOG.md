@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The loki-vl-proxy in the e2e, proof and benchmark stacks is now v2.3.1 and tracks the latest release.**
+  Test-stack only, not shipped: `deployment/docker/Dockerfile.loki-vl-proxy` moves from v1.76.0 to v2.3.1, and a daily
+  workflow (`loki-vl-proxy-bump.yaml`) opens a `deps: loki-vl-proxy vX.Y.Z ... [skip release]` pull request when a newer
+  release exists.
+
 ## [0.146.3] - 2026-10-07
 
 ### Fixed
