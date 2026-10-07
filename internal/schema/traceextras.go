@@ -186,9 +186,10 @@ func (g *subGroups) add(rest, value string) {
 	if i := strings.LastIndexByte(rest, ':'); i >= 0 {
 		sub, idx, noSuffix = rest[:i], rest[i+1:], false
 	}
-	key := idx
+	// The group key tells "no suffix" from every suffix text, NUL included.
+	key := "i" + idx
 	if noSuffix {
-		key = "\x00"
+		key = "n"
 	}
 	grp, ok := g.byKey[key]
 	if !ok {
