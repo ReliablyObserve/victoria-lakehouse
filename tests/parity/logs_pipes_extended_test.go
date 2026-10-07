@@ -25,11 +25,10 @@ func TestParity_PipesExtended(t *testing.T) {
 		{Name: "pipe_chain_complex", Endpoint: queryEndpoint(), Params: map[string]string{"query": `* | filter level:="ERROR" | fields _time, _msg, service.name | sort by(_time) desc | limit 5`, "limit": "5"}, Compare: RowsMatch},
 		{Name: "pipe_chain_rename_stats", Endpoint: statsEndpoint(), Params: map[string]string{"query": "* | rename level AS sev | stats by(sev) count() rows"}, Compare: StructureMatch},
 		{Name: "pipe_chain_delete_sort", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | delete trace_id, span_id | sort by(_time) desc | limit 10", "limit": "10"}, Compare: RowsMatch},
-		// `first N` / `last N` with `by (_time)`: without `by` they sort over
-		// all columns, where the tiers order rows that share a _time
-		// differently (divergence B8, pinned every run by
-		// TestParity_AllColumnSortTieOrder). With `by (_time)` such rows are a
-		// plain tie, which RowsMatch compares as a group.
+		// `first N` / `last N` with `by (_time)`: rows that share a _time are a
+		// plain tie, which RowsMatch compares as a group. Without `by` they
+		// sort over all columns (B8, resolved in #427, pinned every run by
+		// TestParity_AllColumnSortTieOrder).
 		{Name: "first_pipe", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | first 5 by (_time)", "limit": "5"}, Compare: RowsMatch},
 		{Name: "last_pipe", Endpoint: queryEndpoint(), Params: map[string]string{"query": "* | last 5 by (_time)", "limit": "5"}, Compare: RowsMatch},
 	}

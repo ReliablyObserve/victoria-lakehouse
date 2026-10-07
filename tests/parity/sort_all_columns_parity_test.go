@@ -2,7 +2,7 @@
 
 package parity
 
-// Divergence B8: the order rows take under a sort over all columns.
+// B8 (resolved, #427): the order rows take under a sort over all columns.
 //
 // `sort` without `by`, and `first N` / `last N` without `by`, order rows by
 // every column of the row (pipe_sort.go: "Sort by all the columns"), compared
@@ -23,7 +23,10 @@ package parity
 // The rows are compared twice. First while Lakehouse still holds them in its
 // insert buffer, which answers with upstream's own engine and must agree with
 // hot ("buffer"). Then once they have left the buffer and are read from
-// Parquet only ("parquet"): that is where B8 lives.
+// Parquet only ("parquet"): that is where B8 lived. Cold blocks listed their
+// columns in map-iteration order, different on every read, so the cold order
+// was random and this case passed about once in 64 runs; they now list them in
+// upstream's order and the case must pass on every run.
 
 import (
 	"bytes"

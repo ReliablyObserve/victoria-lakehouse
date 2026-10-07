@@ -1464,6 +1464,7 @@ func (s *Storage) projectedFieldsToDataBlock(rows [][]field, startNs, endNs int6
 
 	db := &logstorage.DataBlock{}
 	db.SetColumns(blockCols)
+	orderColumnsLikeUpstream(db)
 	return db
 }
 
@@ -1723,6 +1724,7 @@ func typedRowsToDataBlock[T any](s *Storage, rows []T, startNs, endNs int64, toF
 
 	db := &logstorage.DataBlock{}
 	db.SetColumns(blockCols)
+	orderColumnsLikeUpstream(db)
 	return db
 }
 
@@ -3143,4 +3145,12 @@ func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, f
 	} else {
 		logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
 	}
+}
+
+// orderColumnsLikeUpstream gives a block of raw rows the column order upstream
+// gives the same rows (storage.OrderColumnsLikeUpstream): deterministic across
+// reads, so a sort over all columns breaks _time ties like hot does (#427).
+// Every builder of raw-row blocks calls it last.
+func orderColumnsLikeUpstream(db *logstorage.DataBlock) {
+	storage.OrderColumnsLikeUpstream(db)
 }

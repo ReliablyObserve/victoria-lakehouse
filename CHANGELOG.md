@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A sort over all columns now orders rows that share a `_time` like upstream, on every read, on cold data (closes #427, #324).**
+  User-visible symptom: the same `sort`, `first N` or `last N` query without `by` could return different rows under a limit
+  on cold data from one call to the next, and differently from hot VictoriaLogs/VictoriaTraces. Those pipes compare every
+  column in block order, and cold blocks listed their columns in map-iteration order, which changed on every read. Cold
+  blocks now list their columns in upstream's order (`_time`, `_stream_id`, `_stream`, `_msg`, then the columns with one
+  value in the block by name, then the rest by name), so tied rows are ordered by `_stream_id` exactly like hot. This
+  resolves parity divergence B8; its allowlist entries are removed. Both binaries.
+
 ## [0.146.2] - 2026-10-06
 
 ### Fixed
