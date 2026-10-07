@@ -11,6 +11,9 @@ from scripts.ci.parity_ratchet import (
     Verdict,
     count_by_action,
     evaluate,
+    exact_equivalent,
+    lock_failures,
+    lock_tests,
     main,
     parse_allowlist,
     parse_go_test_json,
@@ -525,6 +528,90 @@ class MainTests(unittest.TestCase):
     def test_invalid_allowlist_raises(self):
         with self.assertRaises(ValueError):
             self.run_main(events(("TestA", "pass")), "# min-pass: 1\n# min-pass: 2\n")
+
+
+ROWS = """
+- {id: lh.lock.exact, title: a, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/a_test.go#TestLockA, tests/parity/a_test.go]}}
+- {id: lh.lock.vwh, title: b, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0"}}, refs: {tests: ["tests/parity/b_test.go#TestLockB/sub", "internal/x/x_test.go#TestUnit"]}}
+- {id: lh.not.pending, title: c, expect: pass, pending: true, compare: {type: exact-json}, refs: {tests: [tests/parity/a_test.go#TestPending]}}
+- {id: lh.not.differ, title: d, expect: differ, compare: {type: exact-json}, refs: {tests: [tests/parity/a_test.go#TestDiffer]}}
+- {id: lh.not.exact, title: e, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0.5"}}, refs: {tests: [tests/parity/a_test.go#TestLoose]}}
+- {id: lh.second, title: f, expect: pass, compare: {type: count}, refs: {tests: [tests/parity/a_test.go#TestLockA]}}
+"""
+
+
+class RegistryLockTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        os.makedirs(os.path.join(self.dir.name, "sub"))
+        with open(os.path.join(self.dir.name, "sub", "rows.yaml"), "w", encoding="utf-8") as fh:
+            fh.write(ROWS)
+        with open(os.path.join(self.dir.name, "ignored.txt"), "w", encoding="utf-8") as fh:
+            fh.write("- {id: x, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/z_test.go#TestIgnored]}}")
+
+    def test_only_executing_exact_pass_rows_with_a_named_parity_test_are_locks(self):
+        got = lock_tests(self.dir.name)
+        self.assertEqual({k: sorted(v) for k, v in got.items()}, {"TestLockA": ["lh.lock.exact", "lh.second"]})
+
+    def test_exact_equivalent_compares(self):
+        for c, want in (({"type": "exact-json"}, True), ({"type": "count"}, True), ({"type": "trace"}, True),
+                        ({"type": "ndjson-multiset"}, True), ({"type": "status"}, False), ({"type": "schema"}, False),
+                        ({"type": "values-with-hits", "options": {"hits_tolerance": "0"}}, True),
+                        ({"type": "values-with-hits", "options": {"hits_tolerance": "0.0"}}, True),
+                        ({"type": "values-with-hits", "options": {"hits_tolerance": "0.1"}}, False),
+                        ({"type": "values-with-hits", "options": {"hits_tolerance": "x"}}, False),
+                        ({"type": "values-with-hits"}, False),
+                        ({"type": "series", "options": {"rel_tolerance": "0"}}, True),
+                        ({"type": "series", "options": {"rel_tolerance": "0.02"}}, False), ({"type": "series"}, False),
+                        ("exact-json", False), (None, False)):
+            self.assertEqual(exact_equivalent(c), want, c)
+
+    def test_a_subtest_reference_is_not_a_top_level_lock(self):
+        self.assertNotIn("TestLockB/sub", lock_tests(self.dir.name))
+
+    def test_lock_failures(self):
+        locks = {"TestLockA": ["lh.lock.exact"], "TestLockC": ["lh.c"]}
+        ok = GoTestRun(results={(PKG, "TestLockA"): "pass", (PKG, "TestLockC"): "pass"})
+        self.assertEqual(lock_failures(ok, locks), [])
+        skipped = GoTestRun(results={(PKG, "TestLockA"): "skip", (PKG, "TestLockC"): "pass"})
+        self.assertEqual(len(lock_failures(skipped, locks)), 1)
+        self.assertIn("was skipped", lock_failures(skipped, locks)[0])
+        failed = GoTestRun(results={(PKG, "TestLockA"): "fail", (PKG, "TestLockC"): "pass"})
+        self.assertIn("failed", lock_failures(failed, locks)[0])
+        missing = GoTestRun(results={(PKG, "TestLockC"): "pass"})
+        self.assertIn("did not report a result", lock_failures(missing, locks)[0])
+        # a subtest result is not the top-level test
+        sub = GoTestRun(results={(PKG, "TestLockA/sub"): "pass", (PKG, "TestLockC"): "pass"})
+        self.assertEqual(len(lock_failures(sub, locks)), 1)
+        # one failing package result is enough even if another package passes the same name
+        both = GoTestRun(results={("a", "TestLockA"): "pass", ("b", "TestLockA"): "fail", (PKG, "TestLockC"): "pass"})
+        self.assertIn("failed", lock_failures(both, locks)[0])
+
+    def test_evaluate_fails_the_run_and_the_summary_names_the_lock(self):
+        run = GoTestRun(results={(PKG, "TestLockA"): "skip", (PKG, "TestOther"): "pass"})
+        verdict = evaluate(run, Allowlist(), {"TestLockA": ["lh.lock.exact"]})
+        self.assertTrue(verdict.failed)
+        out = render_summary(run, Allowlist(), verdict)
+        self.assertIn("Registry locks that did not pass", out)
+        self.assertIn("TestLockA was skipped (lock for lh.lock.exact)", out)
+        self.assertFalse(evaluate(run, Allowlist()).failed, "without a registry the check is off")
+
+    def test_main_reads_the_registry_option(self):
+        with tempfile.TemporaryDirectory() as d:
+            results = os.path.join(d, "r.json")
+            with open(results, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(events(("TestLockA", "skip"), ("TestB", "pass"))) + "\n")
+            allow = os.path.join(d, "a.txt")
+            with open(allow, "w", encoding="utf-8") as fh:
+                fh.write("# min-pass: 1\n")
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                code = main(["--results", results, "--allowlist", allow, "--registry", self.dir.name])
+            self.assertEqual(code, 1)
+            self.assertIn("TestLockA was skipped", out.getvalue())
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["--results", results, "--allowlist", allow]), 0)
 
 
 if __name__ == "__main__":

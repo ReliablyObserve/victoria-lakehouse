@@ -38,11 +38,18 @@ excused whenever all of its failing children are listed, even if its own body
 failed too. Keep assertions out of parent bodies whose children are
 allowlisted.
 
+7. A registry lock's parity test did not pass. With ``--registry`` the ratchet
+   reads the registry rows (``expect: pass``, not pending, an exact-equivalent
+   compare) and requires every ``tests/parity/...#Test`` they reference to
+   report ``pass``: a lock whose test is skipped, missing, failing or renamed
+   without its reference fails here, whatever the test file says.
+
 Usage::
 
     python scripts/ci/parity_ratchet.py \\
         --results parity-results.json \\
         --allowlist tests/parity/known_failures.txt \\
+        [--registry tests/conformance/registry/rows] \\
         [--summary-file "$GITHUB_STEP_SUMMARY"]
 """
 
@@ -50,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -271,6 +279,75 @@ def count_by_action(results: dict[ResultKey, str]) -> dict[str, int]:
     return counts
 
 
+# Compare types that demand the same answer as hot VL/VT with no tolerance.
+EXACT_COMPARES = ("exact-json", "count", "trace", "ndjson-multiset")
+PARITY_PREFIX = "tests/parity/"
+
+
+def _tolerance_zero(compare: dict, key: str) -> bool:
+    opts = compare.get("options") or {}
+    if key not in opts:
+        return False
+    try:
+        return float(str(opts[key]).strip()) == 0.0
+    except ValueError:
+        return False
+
+
+def exact_equivalent(compare: object) -> bool:
+    if not isinstance(compare, dict):
+        return False
+    kind = compare.get("type")
+    if kind in EXACT_COMPARES:
+        return True
+    if kind == "values-with-hits":
+        return _tolerance_zero(compare, "hits_tolerance")
+    if kind == "series":
+        return _tolerance_zero(compare, "rel_tolerance")
+    return False
+
+
+def lock_tests(rows_dir: str) -> dict[str, list[str]]:
+    """Top-level parity tests that registry locks reference: {test: [row ids]}.
+
+    A lock is a row with ``expect: pass``, not ``pending``, and an
+    exact-equivalent compare; its ``refs.tests`` entries of the form
+    ``tests/parity/<file>_test.go#TestName`` name the tests that must pass.
+    """
+    import yaml  # PyYAML: the parity job installs it for this check
+
+    found: dict[str, list[str]] = {}
+    for root, _, files in os.walk(rows_dir):
+        for name in sorted(files):
+            if not name.endswith(".yaml"):
+                continue
+            with open(os.path.join(root, name), encoding="utf-8") as fh:
+                for doc in yaml.safe_load_all(fh):
+                    for row in doc or []:
+                        if not isinstance(row, dict) or row.get("expect") != "pass" or row.get("pending"):
+                            continue
+                        if not exact_equivalent(row.get("compare")):
+                            continue
+                        refs = row.get("refs") or {}
+                        for ref in refs.get("tests") or []:
+                            path, _, test = str(ref).partition("#")
+                            if path.startswith(PARITY_PREFIX) and test and "/" not in test:
+                                found.setdefault(test, []).append(row.get("id", "?"))
+    return found
+
+
+def lock_failures(run: "GoTestRun", locks: dict[str, list[str]]) -> list[str]:
+    """Lock tests that did not report `pass` (skipped, failed, aborted or absent)."""
+    out = []
+    for test, rows in sorted(locks.items()):
+        actions = [a for (_, t), a in run.results.items() if t == test]
+        if "pass" in actions and not any(a == "fail" for a in actions):
+            continue
+        state = "failed" if "fail" in actions else "was skipped" if "skip" in actions else "did not report a result"
+        out.append(f"{test} {state} (lock for {', '.join(sorted(set(rows)))})")
+    return out
+
+
 @dataclass
 class Verdict:
     unexpected: list[ResultKey] = field(default_factory=list)
@@ -279,6 +356,7 @@ class Verdict:
     crashed_packages: list[str] = field(default_factory=list)
     stale: list[tuple[str, str]] = field(default_factory=list)
     pass_regression: str | None = None
+    lock_failures: list[str] = field(default_factory=list)
 
     @property
     def failed(self) -> bool:
@@ -289,11 +367,13 @@ class Verdict:
             or self.crashed_packages
             or self.stale
             or self.pass_regression
+            or self.lock_failures
         )
 
 
-def evaluate(run: GoTestRun, allowlist: Allowlist) -> Verdict:
+def evaluate(run: GoTestRun, allowlist: Allowlist, locks: dict[str, list[str]] | None = None) -> Verdict:
     verdict = Verdict()
+    verdict.lock_failures = lock_failures(run, locks or {})
     verdict.unexpected = unexpected_failures(run.results, set(allowlist.entries))
     verdict.aborted = run.aborted()
     verdict.panics = dict(run.panics)
@@ -383,6 +463,15 @@ def render_summary(run: GoTestRun, allowlist: Allowlist, verdict: Verdict) -> st
         lines.append(verdict.pass_regression)
         lines.append("")
 
+    if verdict.lock_failures:
+        lines.append("### Registry locks that did not pass")
+        lines.append("")
+        lines.append("A registry lock names these parity tests; a skipped, missing or failing lock test is a regression.")
+        lines.append("")
+        for item in verdict.lock_failures:
+            lines.append(f"- {item}")
+        lines.append("")
+
     if not verdict.failed:
         lines.append("All failures are known and every allowlist entry is still live.")
         lines.append("")
@@ -411,6 +500,11 @@ def main(argv: list[str] | None = None) -> int:
         help="path to the known-failure allowlist",
     )
     parser.add_argument(
+        "--registry",
+        default=None,
+        help="registry rows directory: every parity test a lock row references must pass",
+    )
+    parser.add_argument(
         "--summary-file",
         default=None,
         help="append the markdown summary here (e.g. $GITHUB_STEP_SUMMARY)",
@@ -434,7 +528,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    verdict = evaluate(run, allowlist)
+    locks = lock_tests(args.registry) if args.registry else None
+    verdict = evaluate(run, allowlist, locks)
     summary = render_summary(run, allowlist, verdict)
     print(summary)
     if args.summary_file:

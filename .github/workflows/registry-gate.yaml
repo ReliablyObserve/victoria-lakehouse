@@ -1,0 +1,78 @@
+name: Registry Gate
+
+# The registry gate in its own job on a fresh runner. It runs NO code from the
+# pull request: it checks the PR out as data, takes the gate (script, classifier,
+# testlinks) from the PR's merge base, and runs that. A label or body edit
+# re-runs only this workflow (the heavy Conformance workflow does not listen to
+# those events), so a bot's label cannot cancel or mask the heavy checks.
+#
+# Required check: `registry-gate`. This job has no job-level `if:` on purpose
+# (a skipped required job counts as passed).
+
+on:
+  pull_request:
+    branches: [main]
+    # labeled/unlabeled/edited re-evaluate the gate: the owner's `registry-exempt`
+    # label is honoured only in the run its own labeled event triggers.
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: registry-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  registry-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # git only: no PR file is executed, hooks are disabled. The bootstrap is read
+      # from the merge base, never from the PR.
+      - name: Prepare the gate from the merge base
+        id: prep
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
+          base=$(git merge-base "origin/$BASE_REF" HEAD)
+          if git cat-file -e "$base:scripts/ci/gate_bootstrap.sh" 2>/dev/null; then
+            git show "$base:scripts/ci/gate_bootstrap.sh" > "$RUNNER_TEMP/gate_bootstrap.sh"
+          else
+            # Transition only: the base predates the bootstrap, so write the same three
+            # commands it contains. Delete this branch once the bootstrap is on main.
+            cat > "$RUNNER_TEMP/gate_bootstrap.sh" <<'BOOT'
+          set -euo pipefail
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
+          base=$(git merge-base "origin/${BASE_REF:-main}" HEAD)
+          gate="${RUNNER_TEMP:-/tmp}/gate-base"
+          if [ "$1" = prepare ]; then git worktree add --detach "$gate" "$base" >&2; echo "gate_dir=$gate"; exit 0; fi
+          (cd "$gate" && GOWORK=off GOTOOLCHAIN=local go build -o "${RUNNER_TEMP:-/tmp}/testlinks" ./tests/conformance/cmd/testlinks)
+          TESTLINKS_BIN="${RUNNER_TEMP:-/tmp}/testlinks" exec "$gate/scripts/ci/check_registry_touch.sh" "origin/${BASE_REF:-main}"
+          BOOT
+          fi
+          bash "$RUNNER_TEMP/gate_bootstrap.sh" prepare >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ steps.prep.outputs.gate_dir }}/go.mod
+
+      - name: Product changes and new tests are covered in the registry
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          SENDER: ${{ github.event.sender.login }}
+        run: bash "$RUNNER_TEMP/gate_bootstrap.sh" run

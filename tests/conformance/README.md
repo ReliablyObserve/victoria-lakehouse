@@ -254,14 +254,34 @@ Checklist:
 ## Registry gate on every PR
 
 Owner rule (2026-10-07): no PR merges unless its behaviour changes and its tests are covered by
-registry changes. `scripts/ci/check_registry_touch.sh` (workflow `conformance.yaml`, step
-"Product changes and new tests are covered in the registry") enforces it, on top of the route/pin and
+registry changes. `scripts/ci/check_registry_touch.sh` enforces it, on top of the route/pin and
 feature-catalog rules above.
 
-**The gate runs from the merge base.** CI builds and runs the gate's code (the script, the
-classifier, the exemption check, `cmd/testlinks`) from the PR's merge base against the PR's diff,
-so a PR cannot disable the gate that judges it. A PR that changes the gate takes effect once
-merged, and until then it is held to the owner exemption (Rule 4).
+**Where the gate runs, and what it never runs.**
+- `registry-gate.yaml` (job `registry-gate`, on `pull_request`) is a job of its own on a fresh
+  runner. It runs no code from the PR: it checks the PR out as data, reads `gate_bootstrap.sh`
+  from the merge base, builds `cmd/testlinks` from a worktree of the merge base, and runs the base's
+  `check_registry_touch.sh` against the PR's diff with an allow-listed environment and git hooks
+  disabled. The heavy `Conformance` workflow (which does run PR code: `make conformance-check`, the
+  gate's self-tests) listens to pushes only, never to label or body edits, so a bot's label cannot
+  cancel or mask it.
+- `registry-gate-base.yaml` (job `registry-gate-base`, on `pull_request_target`) is the same gate
+  from the base branch's own workflow file: a PR can edit `registry-gate.yaml` (that file comes from
+  the PR) but not this one. It fetches the PR head into a detached worktree and only reads it; the
+  gate code comes from the base checkout. It only starts running after it is on `main`.
+- The gate no longer runs `confgen`: `make conformance-check` (heavy job) checks the generated
+  documents.
+- A PR that changes the gate takes effect once merged, and until then it is held to the owner
+  exemption (Rule 4).
+
+**Owner setup (the one thing code cannot do).** Require these checks on `main`: `conformance-inventory`
+(heavy), `registry-gate`, `registry-gate-base` and the Parity Tests job `parity` (it always runs and
+skips quickly when nothing parity-relevant changed). Pin `registry-gate-base` to the workflow on `main`
+with a ruleset ("Require workflows to pass before merging", path
+`.github/workflows/registry-gate-base.yaml`, branch `main`), enforce it for administrators and apply
+it to the identity the agents push as only through the rules the owner chooses; agents never apply
+the label. Until `registry-gate-base` is pinned, a PR that rewrites `registry-gate.yaml` can neutralise
+that one workflow (the base-run workflow still judges it once it exists).
 
 **Rule 1 — product change needs a registry change.** A PR is product-changing when it changes any
 file that is not a test under `internal/`, `cmd/` or `lakehouse-traces/` (Go, embedded UI assets,
@@ -274,17 +294,30 @@ SQL, YAML; only `README.md` and `RUNBOOK.md` are documentation), any file under 
 `testdata/`, and `test_*` / `*_test` shell and Python scripts. There is no generated-file
 exclusion: the product trees hold none, and a marker comment must not switch the gate off. PRs that
 touch only tests, `Makefile`, `scripts/`, `.github/`, docs or other Dockerfiles are not
-product-changing. A product-changing PR must make a real content change under `registry/rows/` or
-`registry/features/`: comment-only, blank-line and whitespace edits do not count (the check
-compares both revisions with comments, blank lines and indentation removed). Add or update the row
-that describes the changed behaviour; for a Lakehouse capability also the feature. The job summary
-lists the rows and features the PR adds, changes and removes.
+product-changing. A product-changing PR must add, remove or change a row or feature by more than
+prose: edits of `title`, `notes`, `description`, `highlight`, `differ_note` and `refs.doc` do not
+count, and neither do comments, blank lines or indentation (entries are compared parsed, at both
+revisions). Add or update the row that describes the changed behaviour; for a Lakehouse capability
+also the feature. The job summary lists the rows and features the PR adds, changes and removes
+(counts, the first eight ids, the rest in a collapsed block).
+
+*Not checked yet:* that the changed entries are *about* the changed product paths (a stray structural
+edit to an unrelated row still passes). A `covers:` glob per row or feature would close it; it is
+proposed, not built, because the scoring below says the migration is the cost: code about 150 lines
+(schema field, loader, matcher in `registry/` and `testlinks`) and 1 package touched; features 1 new
+key to author per entry (about 800 rows and 160 features today to fill, by a one-off script from
+their refs) and one new failure mode (a path nobody covers); scale none (a glob match per changed
+file, microseconds). The alternative of requiring each changed product package to appear in some
+changed entry's `refs.tests` paths costs nothing to add but fails for rows that prove behaviour from
+`tests/e2e` and `tests/parity`, so it needs the same exemption volume. All numbers are estimates
+(assumed), not measurements.
 
 **Rule 2 — tests are linked (Linking tests).** Applies to every PR, including test-only ones. Every
 top-level `func Test…` / `func Fuzz…` the PR adds in `internal/**`, `cmd/**`, `lakehouse-traces/**`,
 `tests/parity`, `tests/e2e`, `tests/conformance` or `tests/ingestmatrix` must be named by a row
-(`refs.tests`) or a feature (`tests:`), as `path/to/file_test.go#TestName`; a bare
-`path/to/file_test.go` links every test in that file. Tests are found with `go/parser` (any Unicode
+(`refs.tests`) or a feature (`tests:`), as `path/to/file_test.go#TestName`. A bare
+`path/to/file_test.go` reference does not link a new test (it was written before the test existed);
+`tests/s3compat` is in scope too. Tests are found with `go/parser` (any Unicode
 name; a test file that does not parse is an error). "Added" is a per-package set comparison against
 the merge base, so a test moved between files of its package is not added, a renamed test is a
 removal plus an addition, and a test moved to another package is an addition. A reference into a
@@ -319,30 +352,34 @@ reference fails. Existing unlinked tests need no backfill (`go run ./tests/confo
   the CHANGELOG shape and the `docs/features.md` naming; `pr_classify.py` (the registry gate)
   reuses those and adds the author, Chart.yaml, README and tag checks.
 - dependency-only PRs: only `go.mod`, `go.sum` and `requirements*.txt`, every commit `build(deps…)`
-  or `chore(deps…)`, and in `go.mod` only `require` version lines change (no `replace`, `go`,
-  `toolchain` or other directive, and no `github.com/VictoriaMetrics/*` module);
+  or `chore(deps…)` (at least one commit), and in `go.mod` only `require` version lines change (no
+  `replace`, `go`, `toolchain` or other directive). A bump of a storage-critical module
+  (`github.com/VictoriaMetrics/*`, `github.com/parquet-go/*`, `github.com/aws/*`, quoted or not)
+  is never dependency-only: it needs registry coverage or the owner's exemption;
 - docs-only and CI-only PRs (not product-changing).
 Upstream pin and patch changes keep the stricter route rule above.
 
 **Exemption by the owner.** A PR with genuinely nothing to cover (a pure refactor, say) is
 exempted by the label `registry-exempt` plus a line starting `Registry: none — <reason>` in the
-PR body. Both are required: the label alone fails. **Only the owner applies the label, and the gate
-enforces it.** It reads the PR timeline (GraphQL, the Actions token) and honours the label only when
-all of these hold: its latest "labeled" event was made by a login listed in
-`.github/registry-exempt-approvers` (read from the merge base, so a PR cannot add itself); no
-commit (authored or committed date) and no force push is later than that event, so the owner
-approved the head being merged; and the run was not triggered by a push (`opened`, `synchronize`,
-`reopened`). Events are ordered by time, then id. It fails closed: an API error, an unknown actor, a
-missing approvers file, or a label last (re-)applied by anyone else denies the exemption, and
-without a token (a local run) the label path fails with a message. The workflow re-runs on
-`labeled`, `unlabeled` and `edited`, one run per PR (a newer run cancels the one in flight).
-The exemption skips Rules 1-4, not the route/pin and feature-catalog rules.
+PR body (the line may sit in a Markdown quote). Both are required: the label alone fails. **Only
+the owner applies the label, and the gate enforces it, in one run only:** the gate honours the
+label in the run its own `labeled` event triggers, when the label is `registry-exempt` and the
+sender (`github.event.sender.login`) is listed in `.github/registry-exempt-approvers` (read from the
+merge base, so a PR cannot add itself). Every other run (a push, an edit, another label, a re-run)
+denies it, so an approval can never outlive the head it was given for: the owner applies the label
+after the last push, and re-applies it (remove, add) after any later push. There is no timeline
+lookup and no token needed. It fails closed: a missing approvers file or sender denies the
+exemption, and a local run (no labeled event) fails with a message. The workflows re-run on
+`labeled`, `unlabeled` and `edited`, one run per PR (a newer run cancels the one in flight). The
+exemption skips Rules 1-4, not the route/pin and feature-catalog rules.
 
 **Rule 4 — the gate itself.** A PR that changes `scripts/ci/check_registry_touch.sh`,
-`pr_classify.py`, `registry_exempt.py`, `check_changelog_pr.py`, `cmd/testlinks`,
-`registry/testlinks.go`, `registry/paritygate.go`, `.github/workflows/conformance.yaml` or
-`.github/registry-exempt-approvers` fails unless it carries the owner's verified exemption.
-`.github/CODEOWNERS` lists the owner for `.github/`, `scripts/ci/` and `tests/conformance/`.
+`pr_classify.py`, `registry_exempt.py`, `check_changelog_pr.py`, `gate_bootstrap.sh`,
+`parity_ratchet.py`, `cmd/testlinks`, `registry/testlinks.go`, `registry/paritygate.go`,
+`.github/workflows/{conformance,registry-gate,registry-gate-base,parity}.yaml` or
+`.github/registry-exempt-approvers` fails unless it carries the owner's verified exemption (the
+other checks still run and report too). `.github/CODEOWNERS` lists the owner for `.github/`,
+`scripts/ci/` and `tests/conformance/`.
 
 ### Parity fixes ship locks
 
@@ -358,12 +395,16 @@ performance change cannot break the compatibility pattern. `cmd/testlinks` (engi
 (A fourth signal, "closes #N" on an issue labelled `parity`, is not implemented: the gate does not
 read issue labels. Reviewers check it.)
 
-Such a PR must ship a **lock**: a registry row with `expect: pass` and an exact-equivalent compare
+Such a PR must ship a **lock**: a registry row with `expect: pass`, not `pending` (a pending row is
+declared but not executed), and an exact-equivalent compare
 (`exact-json`, `count`, `trace`, `ndjson-multiset`, `values-with-hits` with `hits_tolerance` 0,
 `series` with `rel_tolerance` 0) whose `refs.tests` names, as `file#Test`, a function of the
 differential suite `tests/parity` that this PR **added or modified** (comments and whitespace do not
 count as a modification). A bare file reference is not enough, and an unchanged row is not this PR's
-lock. For a `differ`-to-`pass` flip, the flipped row itself must be that lock. The owner's rule asks
+lock. For a `differ`-to-`pass` flip, the flipped row itself must be that lock. For a removed
+allowlist entry, a lock must reference the **top-level test of that entry** (entry
+`TestParity_X/logs/parquet` needs a lock naming `file#TestParity_X`), so a lock for an unrelated test
+does not lock the fix. The owner's rule asks
 for more (every layer, both signals, both tenant forms, property or fuzz coverage); CI can only check
 that the parity test and the exact lock exist, so reviewers check the breadth.
 
@@ -371,13 +412,28 @@ that the parity test and the exact lock exist, so reviewers check the breadth.
 - adds an allowlist entry (renaming one, that is removing and adding the same top-level test, is
   still an addition, and the message says so: keep the old entry name or ask the owner);
 - changes an `expect: pass` row in any way that could loosen it: the row deleted, no longer `pass`,
-  its `compare` (type, options such as a tolerance, project) changed, or its `request` changed;
+  or ANY field changed other than `title`, `notes`, `description`, `highlight`, `differ_note`,
+  `refs.doc`, more `refs.tests`, or `pending` going from true to false. That covers `compare`
+  (type, options such as a tolerance, project), `request`, `targets`, `seed`, `layers`, `upstream`
+  and `pending` set to true. A test reference may be replaced when its test was renamed or moved
+  (the old reference no longer resolves and the row keeps as many references), never just dropped;
+- changes a test file that a lock row references so it may stop running: any edit of the build
+  constraint header (everything before the `package` clause, comments included) or a newly added
+  `t.Skip`, `t.SkipNow` or `t.Skipf` call;
 - deletes or moves the allowlist file, or changes the `--allowlist` argument of the parity workflow
   (the allowlist path is read from `.github/workflows/parity.yaml` at both revisions).
 Only the owner's exemption (above) lets one through.
 
-Self-test: `bash scripts/ci/tests/test_check_registry_touch.sh` and
-`python3 -m unittest scripts/ci/tests/test_registry_exempt.py`.
+**The ratchet holds the locks too.** `scripts/ci/parity_ratchet.py --registry
+tests/conformance/registry/rows` (the Parity Tests job) reads the rows with `expect: pass`, not
+pending, exact-equivalent compare, and requires every `tests/parity/...#Test` they reference to
+report `pass` in the run: a skipped, missing or failing lock test fails the job whatever the test
+file says. Make the `parity` job a required check so a lock cannot go red or skip unnoticed.
+
+Self-tests: `bash scripts/ci/tests/test_check_registry_touch.sh`,
+`bash scripts/ci/tests/test_gate_workflow_emulation.sh` (the workflows' steps in a scratch
+repository: PR code, a planted git hook, an edited gate or bootstrap, and an exported
+`TESTLINKS_BIN` never run) and `python -m unittest discover -s scripts/ci/tests`.
 
 ## Release skip (`[skip release]`)
 

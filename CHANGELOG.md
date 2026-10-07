@@ -59,6 +59,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`workflow_dispatch`, new, main only, never skipped, optional `pr` input for labels and size) releases. The
   loki-vl-proxy bump's probe commit carries the marker itself; a product follow-up commit pushed on that sync PR would
   not release either, so such a PR needs its own title without the marker.
+- **The registry gate no longer runs PR code, and its locks are whole-row.** The gate is its own job on a fresh
+  runner (`registry-gate`), takes its code from the merge base, disables git hooks and runs with an allow-listed
+  environment; a second copy, `registry-gate-base`, runs from the base branch's own workflow file
+  (`pull_request_target`) and only reads the PR. The gate no longer runs `confgen`. Every `expect: pass` registry
+  row is protected as a whole (targets, seed, layers, upstream, pending ...), a lock's test file may not gain a build
+  constraint edit or a `t.Skip`, a lock must name the top-level test of each removed allowlist entry and must not be
+  pending, and the parity ratchet requires the locks' tests to pass. The `registry-exempt` label is honoured only in
+  the run its own `labeled` event triggers, applied by an approver; a registry change for a product change must be
+  more than prose; new tests need a `file#Test` reference (a bare file reference no longer links them) and
+  `tests/s3compat` is in scope; a bump of a storage-critical module is never dependency-only. A release-metadata
+  CHANGELOG may only use the Keep-a-Changelog subheadings. The release skip reads only the PR merged as the pushed
+  commit and fails loudly when `(#N)` cannot be resolved.
 
 ### Fixed
 

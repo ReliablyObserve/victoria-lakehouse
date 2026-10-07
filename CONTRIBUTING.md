@@ -223,8 +223,9 @@ internal/
    code (any non-test file under `internal/`, `cmd/`, `lakehouse-traces/`, `patches/`, `charts/`, and
    the shipped `Dockerfile`, `Dockerfile.logs`, `Dockerfile.traces`, root `go.mod`/`go.sum`) must change
    registry rows or features (a real content change), every new `Test`/`Fuzz` function must be linked
-   from a row or feature, references to removed tests must go, a parity fix must ship a lock, and locks
-   are never weakened. Only the owner exempts a PR
+   from a row or feature by name (`file#Test`), references to removed tests must go, a parity fix must ship a lock,
+   and locks are never weakened (any change to an `expect: pass` row, or a build constraint or `t.Skip` in a
+   lock's test file, needs the owner). Only the owner exempts a PR
    (`registry-exempt` label plus a `Registry: none — <reason>` line in the PR body); see
    [`tests/conformance/README.md`](tests/conformance/README.md#registry-gate-on-every-pr).
 3. **Performance is measured, never claimed.** Benchmarks validate every timed response (status, parse, exact

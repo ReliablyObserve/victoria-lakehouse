@@ -137,8 +137,16 @@
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_NonFixPRsReportNoLockProblems
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_Weakenings
     - tests/conformance/registry/paritygate_test.go#TestChangedEntries
+    - tests/conformance/registry/testlinks_test.go#TestLockFileWeakenings
+    - tests/conformance/registry/paritygate_test.go#TestPassRowChanges_WholeRow
+    - tests/conformance/registry/paritygate_test.go#TestParityCheck_LockMustBeRelatedAndExecuting
+    - tests/conformance/registry/paritygate_test.go#TestModifiedParityTests_OnlyTheParitySuite
+    - tests/conformance/registry/paritygate_test.go#TestSubstantiveChanges_ProseDoesNotCount
+    - tests/conformance/registry/paritygate_test.go#TestSummarizeChanges_CollapsesLongLists
     - scripts/ci/tests/test_registry_exempt.py
     - scripts/ci/tests/test_check_registry_touch.sh
+    - scripts/ci/tests/test_pr_classify_paths.py
+    - scripts/ci/tests/test_gate_workflow_emulation.sh
   docs:
     - tests/conformance/README.md
     - UPSTREAM_COVERAGE.md
