@@ -29,6 +29,7 @@ package parity
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -45,6 +46,9 @@ var extrasTenants = []extrasTenant{{"7312", "0"}, {"7313", "5"}}
 // isEventsLinksTenant reports whether account is one this case owns, so the
 // tests that iterate the seeded tenants leave it out.
 func isEventsLinksTenant(account string) bool {
+	if account == "7314" { // TestParity_Traces_EventsLinksInvalidUTF8
+		return true
+	}
 	for _, tn := range extrasTenants {
 		if tn.account == account {
 			return true
@@ -136,8 +140,11 @@ func pushExtrasTrace(t *testing.T, base string, tn extrasTenant, traceID string,
 }
 
 // compareExtrasTrace requires Lakehouse to answer trace id like hot for tenant
-// tn through LogsQL, Jaeger and Tempo, once both tiers return all three spans.
-func compareExtrasTrace(t *testing.T, tn extrasTenant, id string) {
+// tn through LogsQL and, with withTraceAPIs, Jaeger and Tempo, once both tiers
+// return all three spans. Trace-by-ID reads hot VictoriaTraces' trace index,
+// which lags the write by its latency offset, so the buffer layer (read within
+// the few seconds before the buffer flushes) compares LogsQL only.
+func compareExtrasTrace(t *testing.T, tn extrasTenant, id string, withTraceAPIs bool) {
 	t.Helper()
 	get := func(base, path string, params url.Values) fetchResult {
 		return tenantFetch(t, base, path, params, tn.account, tn.project)
@@ -201,6 +208,10 @@ func compareExtrasTrace(t *testing.T, tn extrasTenant, id string) {
 		t.Fatalf("vacuous: only %d event/link/scope fields on the reference side", compared)
 	}
 
+	if !withTraceAPIs {
+		return
+	}
+
 	jr, js := byID("/select/jaeger/api/traces/" + id)
 	if jr.StatusCode != 200 || js.StatusCode != 200 {
 		t.Fatalf("jaeger status hot=%d cold=%d", jr.StatusCode, js.StatusCode)
@@ -261,48 +272,71 @@ func tenantFiles(t *testing.T, account, project string) int64 {
 	return -1
 }
 
-// recompactPartition merges the tenant files of the partition holding at, and
-// returns once every tenant of this case has a single object there: through
-// POST /lakehouse/compaction/recompact, or because the compaction schedule
-// (15 s in the parity stack) merged them first, in which case the recompact
-// answers 400 (fewer than two files left to merge).
+// recompactPartition merges the tenant files of the partition holding at with
+// POST /lakehouse/compaction/recompact and requires the 200 answer: the
+// partition is in the open hour with two files per tenant, below the level
+// thresholds and inside min_age, so the compaction schedule never merges it and
+// only this call does. It retries while the answer is 400 (the segment guard
+// has not released the objects yet) and fails if it never succeeds.
 func recompactPartition(t *testing.T, at time.Time) {
 	t.Helper()
 	partition := at.UTC().Format("dt=2006-01-02/hour=15")
 	body, _ := json.Marshal(map[string]any{"partition": partition})
-	merged := func() bool {
-		for _, tn := range extrasTenants {
-			if tenantFiles(t, tn.account, tn.project) != 1 {
-				return false
-			}
-		}
-		return true
-	}
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(180 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
-		if merged() {
-			return
-		}
 		req, _ := http.NewRequest(http.MethodPost, lhtBaseURL+"/lakehouse/compaction/recompact", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := httpClient.Do(req)
 		if err == nil {
 			b := readAllOrEmpty(resp)
 			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				for _, tn := range extrasTenants {
+					if n := tenantFiles(t, tn.account, tn.project); n != 1 {
+						t.Fatalf("after the recompact of %s tenant %s:%s has %d objects, want 1 (%s)", partition, tn.account, tn.project, n, b)
+					}
+				}
+				return
+			}
 			last = fmt.Sprintf("%d %s", resp.StatusCode, b)
 		} else {
 			last = err.Error()
 		}
 		time.Sleep(3 * time.Second)
 	}
-	t.Fatalf("the tenants of this case never ended with one object each in %s (last recompact answer: %s; files: %d, %d)",
-		partition, last, tenantFiles(t, extrasTenants[0].account, extrasTenants[0].project), tenantFiles(t, extrasTenants[1].account, extrasTenants[1].project))
+	t.Fatalf("recompact of %s never answered 200: %s", partition, last)
+}
+
+// openHourSpanTime returns a time in the current UTC hour, at least 70 seconds
+// in the past (past the latency offset). The partition of that hour is younger
+// than min_age, so no schedule merges it. Late in the hour it waits for the
+// next one: the case runs for minutes and must not cross an hour boundary.
+func openHourSpanTime(t *testing.T) time.Time {
+	t.Helper()
+	for {
+		now := time.Now().UTC()
+		if m := now.Minute(); m >= 2 && m < 48 {
+			return now.Truncate(time.Hour).Add(time.Minute)
+		}
+		t.Logf("waiting for the open hour to be neither fresh nor nearly over (minute %d)", now.Minute())
+		time.Sleep(20 * time.Second)
+	}
+}
+
+// bufferedRowsOf counts the rows the insert buffer holds for the case's tenant.
+func bufferedRowsOf(t *testing.T, tn extrasTenant, at time.Time) int {
+	t.Helper()
+	n, err := bufferedRows(lhtBaseURL, "traces", url.Values{"account_id": {tn.account}, "project_id": {tn.project}}, at.Add(-time.Minute), at.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestParity_Traces_EventsLinksLayers(t *testing.T) {
 	stamp := time.Now().UnixNano()
-	at := time.Now().UTC().Truncate(time.Hour).Add(-2*time.Hour + 30*time.Minute)
+	at := openHourSpanTime(t)
 
 	type pushed struct {
 		tn  extrasTenant
@@ -317,11 +351,11 @@ func TestParity_Traces_EventsLinksLayers(t *testing.T) {
 		all = append(all, p)
 	}
 	pushedBatches := 1
-	compareAll := func(t *testing.T) {
+	compareAll := func(t *testing.T, withTraceAPIs bool) {
 		for _, p := range all {
 			for _, id := range p.ids[:pushedBatches] {
 				t.Run(fmt.Sprintf("tenant_%s_%s/trace_%s", p.tn.account, p.tn.project, id[16:]), func(t *testing.T) {
-					compareExtrasTrace(t, p.tn, id)
+					compareExtrasTrace(t, p.tn, id, withTraceAPIs)
 				})
 			}
 		}
@@ -339,7 +373,20 @@ func TestParity_Traces_EventsLinksLayers(t *testing.T) {
 			pushExtrasTrace(t, base, p.tn, p.ids[0], at)
 		}
 	}
-	t.Run("buffer", compareAll)
+	t.Run("buffer", func(t *testing.T) {
+		// The layer is only proven if the rows are in the buffer when read.
+		for _, p := range all {
+			if n := bufferedRowsOf(t, p.tn, at); n == 0 {
+				t.Fatalf("tenant %s:%s: nothing in the insert buffer before the buffer-layer compare; the rows were read from Parquet", p.tn.account, p.tn.project)
+			}
+		}
+		compareAll(t, false)
+		for _, p := range all {
+			if n := bufferedRowsOf(t, p.tn, at); n == 0 {
+				t.Fatalf("tenant %s:%s: the buffer was drained during the buffer-layer compare; part of it read Parquet", p.tn.account, p.tn.project)
+			}
+		}
+	})
 	flushed(t)
 	for _, p := range all {
 		for _, base := range []string{vtBaseURL, lhtBaseURL} {
@@ -348,7 +395,160 @@ func TestParity_Traces_EventsLinksLayers(t *testing.T) {
 	}
 	pushedBatches = 2
 	flushed(t)
-	t.Run("parquet", compareAll)
+	t.Run("parquet", func(t *testing.T) {
+		// Two objects per tenant, none buffered: the read is Parquet only and
+		// not yet compacted.
+		for _, p := range all {
+			if n := tenantFiles(t, p.tn.account, p.tn.project); n != 2 {
+				t.Fatalf("tenant %s:%s has %d objects before the parquet-layer compare, want 2", p.tn.account, p.tn.project, n)
+			}
+			if n := bufferedRowsOf(t, p.tn, at); n != 0 {
+				t.Fatalf("tenant %s:%s still has %d rows in the insert buffer", p.tn.account, p.tn.project, n)
+			}
+		}
+		compareAll(t, true)
+		for _, p := range all {
+			if n := tenantFiles(t, p.tn.account, p.tn.project); n != 2 {
+				t.Fatalf("tenant %s:%s has %d objects after the parquet-layer compare, want 2 (something merged them)", p.tn.account, p.tn.project, n)
+			}
+		}
+	})
 	recompactPartition(t, at)
-	t.Run("compacted", compareAll)
+	t.Run("compacted", func(t *testing.T) { compareAll(t, true) })
+}
+
+// Minimal protobuf encoding of an OTLP ExportTraceServiceRequest, enough to send
+// strings that are not valid UTF-8 (OTLP/JSON cannot carry them; protobuf
+// strings are bytes on the wire and VictoriaTraces does not validate them).
+func pbVarint(v uint64) []byte {
+	var b []byte
+	for v >= 0x80 {
+		b = append(b, byte(v)|0x80)
+		v >>= 7
+	}
+	return append(b, byte(v))
+}
+
+func pbField(num int, wire int, payload []byte) []byte {
+	return append(pbVarint(uint64(num<<3|wire)), payload...)
+}
+
+func pbBytes(num int, b []byte) []byte {
+	return pbField(num, 2, append(pbVarint(uint64(len(b))), b...))
+}
+
+func pbFixed64(num int, v uint64) []byte {
+	b := make([]byte, 8)
+	for i := 0; i < 8; i++ {
+		b[i] = byte(v >> (8 * i))
+	}
+	return pbField(num, 1, b)
+}
+
+func pbCat(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
+
+func pbKV(key, val string) []byte {
+	return pbBytes(1, pbCat(pbBytes(1, []byte(key)), pbBytes(2, pbBytes(1, []byte(val)))))
+}
+
+// invalidUTF8Trace is one span with an event and a link whose names and values
+// hold bytes that are not valid UTF-8.
+func invalidUTF8Trace(traceID string, at time.Time) []byte {
+	tid, _ := hex.DecodeString(traceID)
+	sid, _ := hex.DecodeString("00000000000000c1")
+	ev := pbCat(pbFixed64(1, uint64(at.UnixNano())), pbBytes(2, []byte("\xff\xfe")),
+		pbBytes(3, pbCat(pbBytes(1, []byte("bin")), pbBytes(2, pbBytes(1, []byte("a\x80b"))))))
+	lk := pbCat(pbBytes(1, bytes.Repeat([]byte{0xab}, 16)), pbBytes(2, []byte{0, 0, 0, 0, 0, 0, 0, 0xb1}),
+		pbBytes(4, pbCat(pbBytes(1, []byte("raw")), pbBytes(2, pbBytes(1, []byte("\xc3("))))))
+	span := pbCat(pbBytes(1, tid), pbBytes(2, sid), pbBytes(5, []byte("bad-utf8")), pbField(6, 0, pbVarint(2)),
+		pbFixed64(7, uint64(at.Add(-time.Second).UnixNano())), pbFixed64(8, uint64(at.UnixNano())),
+		pbBytes(11, ev), pbBytes(13, lk))
+	rs := pbCat(
+		pbBytes(1, pbKV("service.name", "utf8-svc")),
+		pbBytes(2, pbCat(pbBytes(1, pbBytes(1, []byte("utf8-scope"))), pbBytes(2, span))))
+	return pbBytes(1, rs)
+}
+
+// #434: event and link strings that are not valid UTF-8 are answered the same
+// by Lakehouse as by hot VictoriaTraces, in the buffer and from Parquet.
+func TestParity_Traces_EventsLinksInvalidUTF8(t *testing.T) {
+	tn := extrasTenant{"7314", "0"}
+	at := openHourSpanTime(t)
+	id := fmt.Sprintf("%016x%016x", time.Now().UnixNano(), 0xe0ff)
+	for _, base := range []string{vtBaseURL, lhtBaseURL} {
+		req, err := http.NewRequest(http.MethodPost, base+"/insert/opentelemetry/v1/traces", bytes.NewReader(invalidUTF8Trace(id, at)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-protobuf")
+		req.Header.Set("AccountID", tn.account)
+		req.Header.Set("ProjectID", tn.project)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			t.Fatalf("push to %s: %v", base, err)
+		}
+		b := readAllOrEmpty(resp)
+		_ = resp.Body.Close()
+		if resp.StatusCode/100 != 2 {
+			t.Fatalf("push to %s: status %d: %s", base, resp.StatusCode, b)
+		}
+	}
+	compare := func(t *testing.T) {
+		params := tracesWindow()
+		params.Set("query", fmt.Sprintf(`trace_id:=%q`, id))
+		var hot, cold map[string]string
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			ref := tenantFetch(t, vtBaseURL, "/select/logsql/query", params, tn.account, tn.project)
+			sut := tenantFetch(t, lhtBaseURL, "/select/logsql/query", params, tn.account, tn.project)
+			hr, cr := parseNDJSON(ref.Body), parseNDJSON(sut.Body)
+			if len(hr) == 1 && len(cr) == 1 {
+				hot, cold = extrasFields(hr[0]), extrasFields(cr[0])
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the span never answered on both tiers: hot=%d cold=%d rows", len(hr), len(cr))
+			}
+			time.Sleep(time.Second)
+		}
+		if len(hot) < 6 {
+			t.Fatalf("vacuous: hot returned only %d event/link/scope fields: %v", len(hot), hot)
+		}
+		for k, v := range hot {
+			if cold[k] != v {
+				t.Errorf("%s: cold %q, hot %q", k, cold[k], v)
+			}
+		}
+		for k := range cold {
+			if _, ok := hot[k]; !ok {
+				t.Errorf("cold has %s, hot does not", k)
+			}
+		}
+	}
+	t.Run("buffer", compare)
+	waitLeftBufferTenant(t, lhtBaseURL, "traces", tn.account, tn.project, at.Add(-time.Minute), at.Add(time.Minute))
+	t.Run("parquet", compare)
+}
+
+// The forward fence's counter is 0 on this single-version stack, on both
+// binaries: a non-zero value would be a false positive (an object the running
+// code wrote itself, refused as unknown). Runs after the cases that flush and
+// compact.
+func TestParity_ForwardFenceCounterStaysZero(t *testing.T) {
+	for name, base := range map[string]string{"logs": lhBaseURL, "traces": lhtBaseURL} {
+		body := string(fetch(t, base, "/metrics", nil).Body)
+		found := 0
+		for _, line := range strings.Split(body, "\n") {
+			if !strings.HasPrefix(line, "lakehouse_compaction_skipped_unknown_columns_total{") {
+				continue
+			}
+			found++
+			if !strings.HasSuffix(line, " 0") {
+				t.Errorf("%s: %s", name, line)
+			}
+		}
+		if found != 4 {
+			t.Errorf("%s: %d fence series exported, want 4 (signal x op)", name, found)
+		}
+	}
 }

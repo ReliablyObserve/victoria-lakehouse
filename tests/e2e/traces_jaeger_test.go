@@ -307,9 +307,10 @@ func TestJaeger_TraceDetail_SpanAttributes(t *testing.T) {
 func TestJaeger_TraceDetail_ParentRefs(t *testing.T) {
 	// Prefer a trace whose spans carry links, so the FOLLOWS_FROM half of the
 	// contract is exercised; fall back to any trace.
-	traceID := ""
+	traceID, linked := "", false
 	if rows := queryTraces(t, `"link:link_span_id:0":*`, 1); len(rows) > 0 {
 		traceID, _ = rows[0]["trace_id"].(string)
+		linked = traceID != ""
 	}
 	if traceID == "" {
 		traceID = getAnyTraceID(t)
@@ -402,6 +403,9 @@ func TestJaeger_TraceDetail_ParentRefs(t *testing.T) {
 		}
 	}
 
+	if linked && followsFrom == 0 {
+		t.Errorf("trace %s has span links in LogsQL but its Jaeger detail has no FOLLOWS_FROM reference", traceID)
+	}
 	if len(spans) >= 2 && childOf == 0 {
 		t.Error("no span has a CHILD_OF reference in a multi-span trace")
 	}

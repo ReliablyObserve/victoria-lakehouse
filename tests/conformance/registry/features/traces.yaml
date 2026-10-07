@@ -274,6 +274,7 @@
     - lh.cold.span_events_links_roundtrip_property
     - lh.cold.jaeger_refs_follow_span_links
     - lh.cold.logs_scalar_after_map_field_values
+    - lh.cold.trace_events_invalid_utf8_matches_hot_traces
     - lh.compaction.fence_skips_unknown_columns_logs
     - lh.compaction.fence_skips_unknown_columns_traces
     - lh.delete.fence_unknown_columns_logs
@@ -293,6 +294,10 @@
     - internal/schema/column_fence_test.go
     - internal/compaction/column_fence_test.go
     - internal/delete/column_fence_test.go
+    - internal/compaction/column_fence_callers_test.go
+    - internal/metrics/fence_visibility_test.go
+    - tests/parity/traces_events_links_layers_test.go#TestParity_Traces_EventsLinksInvalidUTF8
+    - tests/parity/traces_events_links_layers_test.go#TestParity_ForwardFenceCounterStaysZero
     - internal/storage/parquets3/leaf_index_test.go
     - scripts/ci/parquet-readback/gen/main_test.go#TestGenTraces_TruthMatchesTheFileWritten
   docs:

@@ -470,15 +470,15 @@
     the field name), on hot as on cold, so only the instrumentation scope has a search row.
 
 - id: lh.compaction.fence_skips_unknown_columns_logs
-  title: "LH compaction leaves a logs object with a column it does not model alone — its rows stay readable, the column is not dropped"
+  title: "LH compaction leaves a logs object with a column it does not model alone: the object stays, the rest merges"
   surface: lh
-  kind: select
+  kind: admin
   origin: lh-addition
   expect: pass
   targets: [cold]
   seed: [logs.base]
-  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
-  compare: { type: count }
+  request: { method: POST, path: /lakehouse/compaction/recompact, params: { partition: "dt=2026-01-01/hour=00" } }
+  compare: { type: status }
   layers: [api, chaos]
   pending: true
   refs:
@@ -487,30 +487,39 @@
       - internal/compaction/column_fence_test.go#TestCompactor_Fence_NothingToMergeLeavesEverything
       - internal/compaction/column_fence_test.go#TestCompactor_Fence_KnownSchemaMergesAsBefore
       - internal/compaction/column_fence_test.go#TestCompactor_Fence_PropertyNoUnknownInputIsRewritten
+      - internal/compaction/column_fence_callers_test.go#TestFence_Scheduler_AnnouncesOnlyMergedInputs
+      - internal/compaction/column_fence_callers_test.go#TestFence_TierA_AnnouncesOnlyMergedInputs
+      - internal/compaction/column_fence_callers_test.go#TestFence_AllFencedPlanDoesNotStarveTenant
+      - internal/compaction/column_fence_callers_test.go#TestFence_FencedObjectsAreNotDownloadedAgain
+      - internal/compaction/column_fence_callers_test.go#TestFence_CounterCountsObjectsOnce
+      - internal/compaction/column_fence_callers_test.go#TestFence_ForceCompactReportsFencedNoOp
+      - internal/compaction/column_fence_callers_test.go#TestFence_KeyedByBucketAndKey
       - internal/schema/column_fence_test.go#TestUnknownColumns
       - internal/schema/column_fence_test.go#TestUnknownColumns_RetiredColumnsAreAllowed
       - internal/schema/column_fence_test.go#TestFenceLog
-
+      - internal/metrics/fence_visibility_test.go#TestSkippedUnknownColumns_ExportedAndObservable
+      - tests/parity/traces_events_links_layers_test.go#TestParity_ForwardFenceCounterStaysZero
   notes: >-
-    Forward fence (#409 review): before merging an input, compaction compares its top-level Parquet columns with the
-    columns schema.LogRow models (plus schema.RetiredColumns, empty today). An object with an unknown column is
-    skipped: the other inputs are merged, the object stays in place and in the manifest, and
-    lakehouse_compaction_skipped_unknown_columns_total{signal="logs",op="compact"} counts it (logged once per
-    object). Protects every future column addition; it cannot protect the #430 transition itself, because older
-    pods have no fence (docs/operations.md, Upgrading to the span events and links columns). The conformance
-    runner does not execute the row yet (pending).
-
-
+    Forward fence (#409 review, logs): before merging an input, compaction compares its top-level Parquet columns with the
+    columns the current row struct models (plus schema.RetiredColumns, empty today). An object with an unknown column is
+    skipped: the other inputs are merged and announced (pmeta, peers) as removed, the object stays in place and in the
+    manifest, is never planned again in this process (no download per tick, no run counted, no merge slot taken: an
+    all-fenced plan does not starve the tenant), and a forced recompaction reports it (fenced_files). Counted once per
+    object in lakehouse_compaction_skipped_unknown_columns_total{signal="logs",op="compact"}; alert
+    LakehouseCompactionSkippedUnknownColumns, dashboard panel Compaction Forward Fence; the parity stack asserts the
+    counter stays 0 on a single-version fleet. Protects every future column addition; it cannot protect the #430
+    transition itself, because older pods have no fence (docs/operations.md). The conformance runner does not execute
+    the row yet (pending).
 - id: lh.compaction.fence_skips_unknown_columns_traces
-  title: "LH compaction leaves a traces object with a column it does not model alone — its spans stay readable, the column is not dropped"
+  title: "LH compaction leaves a traces object with a column it does not model alone: the object stays, the rest merges"
   surface: lh
-  kind: select
+  kind: admin
   origin: lh-addition
   expect: pass
   targets: [cold]
   seed: [traces.base]
-  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
-  compare: { type: count }
+  request: { method: POST, path: /lakehouse/compaction/recompact, params: { partition: "dt=2026-01-01/hour=00" } }
+  compare: { type: status }
   layers: [api, chaos]
   pending: true
   refs:
@@ -519,30 +528,39 @@
       - internal/compaction/column_fence_test.go#TestCompactor_Fence_NothingToMergeLeavesEverything
       - internal/compaction/column_fence_test.go#TestCompactor_Fence_KnownSchemaMergesAsBefore
       - internal/compaction/column_fence_test.go#TestCompactor_Fence_PropertyNoUnknownInputIsRewritten
+      - internal/compaction/column_fence_callers_test.go#TestFence_Scheduler_AnnouncesOnlyMergedInputs
+      - internal/compaction/column_fence_callers_test.go#TestFence_TierA_AnnouncesOnlyMergedInputs
+      - internal/compaction/column_fence_callers_test.go#TestFence_AllFencedPlanDoesNotStarveTenant
+      - internal/compaction/column_fence_callers_test.go#TestFence_FencedObjectsAreNotDownloadedAgain
+      - internal/compaction/column_fence_callers_test.go#TestFence_CounterCountsObjectsOnce
+      - internal/compaction/column_fence_callers_test.go#TestFence_ForceCompactReportsFencedNoOp
+      - internal/compaction/column_fence_callers_test.go#TestFence_KeyedByBucketAndKey
       - internal/schema/column_fence_test.go#TestUnknownColumns
       - internal/schema/column_fence_test.go#TestUnknownColumns_RetiredColumnsAreAllowed
       - internal/schema/column_fence_test.go#TestFenceLog
-
+      - internal/metrics/fence_visibility_test.go#TestSkippedUnknownColumns_ExportedAndObservable
+      - tests/parity/traces_events_links_layers_test.go#TestParity_ForwardFenceCounterStaysZero
   notes: >-
-    Forward fence (#409 review): before merging an input, compaction compares its top-level Parquet columns with the
-    columns schema.TraceRow models (plus schema.RetiredColumns, empty today). An object with an unknown column is
-    skipped: the other inputs are merged, the object stays in place and in the manifest, and
-    lakehouse_compaction_skipped_unknown_columns_total{signal="traces",op="compact"} counts it (logged once per
-    object). Protects every future column addition; it cannot protect the #430 transition itself, because older
-    pods have no fence (docs/operations.md, Upgrading to the span events and links columns). The conformance
-    runner does not execute the row yet (pending).
-
-
+    Forward fence (#409 review, traces): before merging an input, compaction compares its top-level Parquet columns with the
+    columns the current row struct models (plus schema.RetiredColumns, empty today). An object with an unknown column is
+    skipped: the other inputs are merged and announced (pmeta, peers) as removed, the object stays in place and in the
+    manifest, is never planned again in this process (no download per tick, no run counted, no merge slot taken: an
+    all-fenced plan does not starve the tenant), and a forced recompaction reports it (fenced_files). Counted once per
+    object in lakehouse_compaction_skipped_unknown_columns_total{signal="traces",op="compact"}; alert
+    LakehouseCompactionSkippedUnknownColumns, dashboard panel Compaction Forward Fence; the parity stack asserts the
+    counter stays 0 on a single-version fleet. Protects every future column addition; it cannot protect the #430
+    transition itself, because older pods have no fence (docs/operations.md). The conformance runner does not execute
+    the row yet (pending).
 - id: lh.delete.fence_unknown_columns_logs
-  title: "LH delete rewrite refuses a logs object with a column it does not model — the object and the pending tombstone stay, nothing is dropped"
+  title: "LH delete rewrite defers a logs object with a column it does not model: the object and the tombstone stay"
   surface: lh
-  kind: select
+  kind: admin
   origin: lh-addition
   expect: pass
   targets: [cold]
   seed: [logs.base]
-  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
-  compare: { type: count }
+  request: { method: GET, path: /delete/logsql/tombstones }
+  compare: { type: status }
   layers: [api, chaos]
   pending: true
   refs:
@@ -550,25 +568,26 @@
       - internal/delete/column_fence_test.go#TestRewriter_Fence_UnknownColumnsAreNotRewritten
       - internal/delete/column_fence_test.go#TestRewriter_Fence_KnownSchemaRewritesAsBefore
       - internal/delete/column_fence_test.go#TestRewriter_Fence_PropertyNoUnknownInputIsRewritten
-
+      - internal/delete/column_fence_test.go#TestRewriteScheduler_FencedObjectIsDeferredNotAnError
   notes: >-
-    Forward fence (#409 review): Rewriter.Prepare fails with delete.ErrUnknownColumns for an object whose top-level
-    columns schema.LogRow does not model, so no replacement is written, the source is untouched and the rewrite
-    scheduler keeps the tombstone pending (its rows stay hidden by the tombstone). Counted in
-    lakehouse_compaction_skipped_unknown_columns_total{signal="logs",op="delete_rewrite"}. The conformance runner
-    does not execute the row yet (pending).
-
-
+    Forward fence (#409 review, logs): Rewriter.Prepare fails with delete.ErrUnknownColumns for an object whose top-level
+    columns the current row struct does not model, without downloading it again after the first refusal. No
+    replacement is written and the source is untouched; the rewrite scheduler counts it as a deferral
+    (lakehouse_delete_rewrite_deferred_total{reason="unknown_columns"}), not a rewrite error, so the rewrite-error
+    alert stays quiet, and keeps the tombstone pending: it stays listed (/delete/logsql/tombstones, /delete/active_tasks),
+    its rows stay hidden by the tombstone and the metadata-only fast paths stay off for that tenant in its range.
+    Counted once per object in lakehouse_compaction_skipped_unknown_columns_total{signal="logs",op="delete_rewrite"}.
+    The conformance runner does not execute the row yet (pending).
 - id: lh.delete.fence_unknown_columns_traces
-  title: "LH delete rewrite refuses a traces object with a column it does not model — the object and the pending tombstone stay, nothing is dropped"
+  title: "LH delete rewrite defers a traces object with a column it does not model: the object and the tombstone stay"
   surface: lh
-  kind: select
+  kind: admin
   origin: lh-addition
   expect: pass
   targets: [cold]
   seed: [traces.base]
-  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
-  compare: { type: count }
+  request: { method: GET, path: /delete/tracessql/tombstones }
+  compare: { type: status }
   layers: [api, chaos]
   pending: true
   refs:
@@ -576,15 +595,16 @@
       - internal/delete/column_fence_test.go#TestRewriter_Fence_UnknownColumnsAreNotRewritten
       - internal/delete/column_fence_test.go#TestRewriter_Fence_KnownSchemaRewritesAsBefore
       - internal/delete/column_fence_test.go#TestRewriter_Fence_PropertyNoUnknownInputIsRewritten
-
+      - internal/delete/column_fence_test.go#TestRewriteScheduler_FencedObjectIsDeferredNotAnError
   notes: >-
-    Forward fence (#409 review): Rewriter.Prepare fails with delete.ErrUnknownColumns for an object whose top-level
-    columns schema.TraceRow does not model, so no replacement is written, the source is untouched and the rewrite
-    scheduler keeps the tombstone pending (its rows stay hidden by the tombstone). Counted in
-    lakehouse_compaction_skipped_unknown_columns_total{signal="traces",op="delete_rewrite"}. The conformance runner
-    does not execute the row yet (pending).
-
-
+    Forward fence (#409 review, traces): Rewriter.Prepare fails with delete.ErrUnknownColumns for an object whose top-level
+    columns the current row struct does not model, without downloading it again after the first refusal. No
+    replacement is written and the source is untouched; the rewrite scheduler counts it as a deferral
+    (lakehouse_delete_rewrite_deferred_total{reason="unknown_columns"}), not a rewrite error, so the rewrite-error
+    alert stays quiet, and keeps the tombstone pending: it stays listed (/delete/tracessql/tombstones, /delete/active_tasks),
+    its rows stay hidden by the tombstone and the metadata-only fast paths stay off for that tenant in its range.
+    Counted once per object in lakehouse_compaction_skipped_unknown_columns_total{signal="traces",op="delete_rewrite"}.
+    The conformance runner does not execute the row yet (pending).
 - id: lh.cold.trace_events_layers_match_hot_traces
   title: "Span events, links and scope attributes of spans written by the test match hot on every layer and tenant form — LogsQL, Jaeger, Tempo v1/v2"
   surface: lh
@@ -594,7 +614,7 @@
   targets: [hot, cold]
   seed: [traces.base]
   request: { method: GET, path: "/select/jaeger/api/traces/{{seed.trace_id}}" }
-  compare: { type: trace }
+  compare: { type: exact-json }
   layers: [api]
   pending: true
   refs:
@@ -677,3 +697,32 @@
     (app/vtselect/traces/jaeger/model.go). The e2e case checks the shape (32-hex trace and 16-hex span IDs, no
     other reference type) and that the FOLLOWS_FROM set equals the link:link_trace_id:N / link:link_span_id:N
     pairs of the span's LogsQL row.
+
+- id: lh.cold.trace_events_invalid_utf8_matches_hot_traces
+  title: "Event and link strings that are not valid UTF-8 come back from cold byte for byte, as hot returns them"
+  surface: lh
+  kind: select
+  origin: lh-shim
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "span_id:*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs:
+    tests:
+      - tests/parity/traces_events_links_layers_test.go#TestParity_Traces_EventsLinksInvalidUTF8
+      - internal/schema/traceextras_test.go#TestSpanSubFields_InvalidUTF8IsReversible
+      - internal/schema/traceextras_test.go#TestForEachSpanSubField_RejectsMalformedBytesObject
+      - internal/schema/traceextras_test.go#FuzzSpanSubFields
+      - lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go#TestCold_EventsLinks_InvalidUTF8ComesBackExact
+  notes: >-
+    Closes #434. encoding/json rewrites invalid UTF-8 to U+FFFD, so the two JSON columns could not carry what hot
+    VictoriaTraces keeps. A value that is not valid UTF-8 is now the object {"$bytes":"<base64>"} in place of the
+    string and a name the key "$b64:<base64>"; both stay valid JSON for external readers (docs/open-parquet-format.md),
+    valid text is written exactly as before, and an attribute value is always a string so the object form cannot
+    collide with a value. The parity case sends the strings in OTLP protobuf (JSON cannot carry them) to hot and cold
+    and compares the LogsQL fields in the buffer and from Parquet. The conformance runner does not execute the row yet
+    (pending).
