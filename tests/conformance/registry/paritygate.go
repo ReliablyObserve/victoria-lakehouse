@@ -38,7 +38,6 @@ type RowLite struct {
 	CompareMap map[string]any // the whole compare block
 	Request    any
 	Tests      []string
-	Pending    bool // declared but not executed by the runner: never a lock
 	Whole      map[string]any
 }
 
@@ -171,7 +170,6 @@ func ParseRowsLenient(src []byte, dst map[string]RowLite) error {
 	for id, d := range entries {
 		r := RowLite{ID: id, Whole: d, Request: d["request"]}
 		r.Expect, _ = d["expect"].(string)
-		r.Pending, _ = d["pending"].(bool)
 		if c, ok := d["compare"].(map[string]any); ok {
 			r.CompareMap = c
 			r.Compare, _ = c["type"].(string)

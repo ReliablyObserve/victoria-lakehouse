@@ -538,7 +538,7 @@ ROWS = """
 - {id: lh.not.differ, title: d, expect: differ, compare: {type: exact-json}, refs: {tests: [tests/parity/a_test.go#TestDiffer]}}
 - {id: lh.not.exact, title: e, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0.5"}}, refs: {tests: [tests/parity/a_test.go#TestLoose]}}
 - {id: lh.second, title: f, expect: pass, compare: {type: count}, refs: {tests: [tests/parity/a_test.go#TestLockA]}}
-- {id: lh.bare, title: g, expect: pass, compare: {type: trace}, refs: {tests: [tests/parity/bare_test.go, tests/parity/sub/deep_test.go]}}
+- {id: lh.bare, title: g, expect: pass, compare: {type: trace}, refs: {tests: [tests/parity/bare_test.go, tests/parity/sub/deep_test.go, "tests/parity/sub/deep_test.go#TestDeep"]}}
 """
 
 

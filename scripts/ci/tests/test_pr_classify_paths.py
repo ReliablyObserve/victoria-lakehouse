@@ -16,6 +16,13 @@ require (
 \tgithub.com/VictoriaMetrics/c v1.0.0
 \tgithub.com/parquet-go/parquet-go v0.20.0
 \tgithub.com/aws/aws-sdk-go-v2/service/s3 v1.0.0
+\tgithub.com/klauspost/compress v1.0.0
+\tgithub.com/golang/snappy v1.0.0
+\tgithub.com/pierrec/lz4/v4 v4.0.0
+\tgoogle.golang.org/protobuf v1.0.0
+\tgo.opentelemetry.io/proto/otlp v1.0.0
+\tgithub.com/andybalholm/brotli v1.0.0
+\tgithub.com/valyala/gozstd v1.0.0
 )
 """
 
@@ -57,6 +64,35 @@ class MakefilePins(unittest.TestCase):
         self.assertEqual(pc.makefile_pins("# VL_VERSION_LOGS := v9\n  VT_VERSION := v9\n"), {})
 
 
+class MainWithMakefile(unittest.TestCase):
+    """pr_classify.py end to end: an upstream pin bump in the Makefile is a product change."""
+
+    def classify(self, edit):
+        with tempfile.TemporaryDirectory() as d:
+            def git(*a):
+                subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@e", "-c", "commit.gpgsign=false", *a], cwd=d, check=True, capture_output=True)
+            git("init", "-q", "-b", "main")
+            with open(os.path.join(d, "Makefile"), "w", encoding="utf-8") as fh:
+                fh.write(MakefilePins.MK)
+            git("add", "-A")
+            git("commit", "-q", "-m", "base")
+            with open(os.path.join(d, "Makefile"), "w", encoding="utf-8") as fh:
+                fh.write(edit(MakefilePins.MK))
+            git("add", "-A")
+            git("commit", "-q", "-m", "change")
+            out = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "pr_classify.py"), "--base", "HEAD~1", "--head", "HEAD"],
+                                 cwd=d, check=True, capture_output=True, text=True).stdout
+            return dict(l.split("=", 1) for l in out.splitlines())
+
+    def test_a_pin_bump_is_product(self):
+        got = self.classify(lambda m: m.replace("v0.12.0", "v0.13.0"))
+        self.assertEqual((got["product"], got["reason"]), ("1", "upstream pin changed: Makefile"))
+        self.assertEqual(self.classify(lambda m: m.replace("c945d29", "deadbee"))["product"], "1")
+
+    def test_any_other_makefile_edit_is_not(self):
+        self.assertEqual(self.classify(lambda m: m + "extra:\n\techo\n")["product"], "0")
+
+
 class GoMod(unittest.TestCase):
     def only(self, head):
         return pc.go_mod_dependency_only(GO_MOD, head)
@@ -78,7 +114,10 @@ class GoMod(unittest.TestCase):
             self.assertFalse(self.only(edit))
 
     def test_storage_critical_modules_need_coverage(self):
-        for mod in ("github.com/VictoriaMetrics/c", "github.com/parquet-go/parquet-go", "github.com/aws/aws-sdk-go-v2/service/s3"):
+        for mod in ("github.com/VictoriaMetrics/c", "github.com/parquet-go/parquet-go", "github.com/aws/aws-sdk-go-v2/service/s3",
+                    "github.com/klauspost/compress", "github.com/golang/snappy", "github.com/pierrec/lz4/v4",
+                    "google.golang.org/protobuf", "go.opentelemetry.io/proto/otlp", "github.com/andybalholm/brotli",
+                    "github.com/valyala/gozstd"):
             base = GO_MOD
             old = [l for l in GO_MOD.splitlines() if mod in l][0]
             self.assertFalse(self.only(base.replace(old, old.rsplit(" ", 1)[0] + " v9.9.9")), mod)

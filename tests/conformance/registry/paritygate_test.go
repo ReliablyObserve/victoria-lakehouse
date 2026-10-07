@@ -389,7 +389,6 @@ func TestParityCheck_LockMustBeRelatedAndExecuting(t *testing.T) {
 	}
 	// a pending row IS a lock when its test has a cell floor: the parity job executes it
 	pend := own
-	pend.Pending = true
 	v = ParityCheck(base, snapshot(nil, nil, gap, pend, other), mods)
 	if len(v.Problems) != 0 {
 		t.Fatalf("a pending row whose test has a floor is a lock: %+v", v)
@@ -403,7 +402,7 @@ func TestParityCheck_LockMustBeRelatedAndExecuting(t *testing.T) {
 	}
 	// the same for a flipped row
 	flipBase := snapshot(nil, nil, RowLite{ID: "f", Expect: "differ", Compare: "exact-json", Tests: []string{lockTest}})
-	flipHead := RowLite{ID: "f", Expect: "pass", Compare: "exact-json", Tests: []string{lockTest}, Pending: true}
+	flipHead := RowLite{ID: "f", Expect: "pass", Compare: "exact-json", Tests: []string{lockTest}}
 	if v := ParityCheck(flipBase, snapshot(nil, nil, flipHead), mod(lockTest)); len(v.Problems) != 0 {
 		t.Fatalf("a pending flipped row with a floor is a lock: %+v", v)
 	}
@@ -596,5 +595,29 @@ func TestCheckCanonical(t *testing.T) {
 	refs, err := TestRefsFromYAML([]byte("- {id: a, refs: {tests: [x_test.go#T]}}\n- {id: f, tests: [y_test.go]}\n"))
 	if err != nil || len(refs) != 2 {
 		t.Errorf("%v %v", refs, err)
+	}
+}
+
+func TestRenameNeedsOneNewReferencePerOldOne(t *testing.T) {
+	two := wholeRow(t, strings.Replace(passRow, "tests: [tests/parity/p_test.go#TestP]", "tests: [tests/parity/p_test.go#TestA, tests/parity/p_test.go#TestB]", 1))
+	one := wholeRow(t, strings.Replace(passRow, "tests: [tests/parity/p_test.go#TestP]", "tests: [tests/parity/p_test.go#TestC]", 1))
+	bf := map[string]int{"TestA": 5, "TestB": 5}
+	hf := map[string]int{"TestC": 9}
+	gone := func(string) bool { return false }
+	got, renamed := passRowChanges(two, one, bf, hf, gone)
+	if len(got) != 1 || len(renamed) != 1 {
+		t.Fatalf("two lost references cannot both be 'renamed' to one new one: %v %v", got, renamed)
+	}
+}
+
+func TestRefResolves_AnchorOnANonGoFile(t *testing.T) {
+	src := func(p string) []byte {
+		if p == "docs/x.md" {
+			return []byte("# hi\n")
+		}
+		return nil
+	}
+	if !RefResolves(src, "docs/x.md#hi") || !RefResolves(src, "docs/x.md") || RefResolves(src, "docs/y.md#hi") {
+		t.Error("a name on a non-Go file is an anchor: it resolves when the file exists")
 	}
 }
