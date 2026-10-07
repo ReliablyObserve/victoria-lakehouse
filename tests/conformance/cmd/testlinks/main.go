@@ -86,9 +86,11 @@ func printRegistryChanges(repo, base, head string, show func(string) func(string
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		_, err = f.WriteString(sb.String() + "\n")
-		return err
+		_, werr := f.WriteString(sb.String() + "\n")
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		return werr
 	}
 	return nil
 }
