@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -171,45 +172,56 @@ func TestRangePartitions_FullWalkAndEarlyStop(t *testing.T) {
 
 // TestRangePartitions_WriterNotBlockedForWholeWalk guards the one-partition-at
 // -a-time lock: a writer that starts while the walk is inside the first
-// partition gets in at a partition boundary, before the walk ends. With the
-// read lock held for the whole walk the writer could only finish after the
-// last partition. The walk has many partitions and the check passes as soon as
-// any later callback sees the write done, so a slow scheduler (a loaded CI
-// runner) only delays the write by a few partitions instead of failing the test.
+// partition gets in at the next partition boundary, before the walk ends. With
+// the read lock held for the whole walk the writer could only finish after the
+// last partition.
+//
+// Deterministic, no sleeps: the first callback waits until the writer is
+// provably queued on the write lock (sync.RWMutex.TryRLock fails exactly while
+// a writer is pending), so the walk's next read lock cannot be granted before
+// the write has been applied. The second callback therefore must already see
+// the written partition; a walk that held the read lock throughout would show
+// it only after the walk.
 func TestRangePartitions_WriterNotBlockedForWholeWalk(t *testing.T) {
 	const parts = 64
+	const written = "dt=2026-06-11/hour=00"
 	m := New("b", "logs/")
 	for h := 0; h < parts; h++ {
 		part := fmt.Sprintf("dt=2026-06-10/hour=%02d/p=%02d", h%24, h)
 		m.AddFile(part, FileInfo{Key: "logs/" + part + "/a.parquet"})
 	}
-	writerStarted := make(chan struct{})
 	writerDone := make(chan struct{})
 	visited := 0
-	doneBeforeEnd := false
+	seenBeforeEnd := false
 	m.RangePartitions(func(string, []FileInfo) bool {
 		visited++
-		if visited == 1 {
+		switch visited {
+		case 1:
 			go func() {
-				close(writerStarted)
-				m.AddFile("dt=2026-06-11/hour=00", FileInfo{Key: "logs/dt=2026-06-11/hour=00/w.parquet"})
-				close(writerDone)
+				defer close(writerDone)
+				m.AddFile(written, FileInfo{Key: "logs/" + written + "/w.parquet"})
 			}()
-			<-writerStarted
-			time.Sleep(20 * time.Millisecond) // let the writer reach the lock
-			return true
-		}
-		select {
-		case <-writerDone:
-			if visited < parts {
-				doneBeforeEnd = true
+			// Wait until the writer is queued: a read lock is refused only
+			// while a writer is pending.
+			for {
+				if m.mu.TryRLock() {
+					m.mu.RUnlock()
+					runtime.Gosched()
+					continue
+				}
+				break
 			}
-		default:
+		case 2:
+			// The lock was granted after the writer, so its file is in.
+			_, seenBeforeEnd = m.files[written]
 		}
 		return true
 	})
 	<-writerDone
-	if !doneBeforeEnd {
+	if visited < parts {
+		t.Fatalf("walk visited %d of %d partitions", visited, parts)
+	}
+	if !seenBeforeEnd {
 		t.Fatal("a concurrent writer waited for the whole walk")
 	}
 }
