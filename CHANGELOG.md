@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Proof stack, API runner and visual capture.** Tooling only, no runtime change (`scripts/proof/`, `deployment/docker/docker-compose-proof.yml`, `tests/playwright/proof/`): an isolated compose stack (hot VictoriaLogs/VictoriaTraces, Lakehouse from main and from a PR, Grafana, the Jaeger UI), a runner that sends rows to the three targets in both tenant forms and in the cold and buffer layers and scores the answers in percent, a Playwright capture of Grafana Explore, Logs Drilldown, VMUI, VTUI and the Jaeger UI on the same three sides with the backend traffic compared per question, and a PR comment generator.
 
+### Changed
+
+- **The parity restart cell no longer races the periodic flush.** Tooling only, no runtime change. The third batch of the
+  all-column sort case is now written into a fresh segment right after a flush has completed and the pod is restarted at
+  once; the cell waits for the object the restarted pod flushes from its recovered segment, and repeats with a new batch
+  (at most three attempts, each logged) if the periodic flush still wrote it before the restart.
+
 ## [0.146.7] - 2026-10-07
 
 ### Fixed
