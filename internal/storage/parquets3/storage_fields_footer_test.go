@@ -115,69 +115,6 @@ func makeLargeParquet(t *testing.T, baseTime time.Time, minBytes int) []byte {
 	}, parquet.Compression(&parquet.Zstd))
 }
 
-// TestGetFieldNames_ServesOnlyFooterBytes locks in the regression guard
-// that `GetFieldNames` reads only the parquet footers (~16 KB per file)
-// instead of downloading every full file body.
-//
-// Before this guard, GetFieldNames called `s.getFileData(...)` for every
-// file in the time range — a 612-file manifest at ~1 MB average meant
-// ~600 MB of sequential S3 downloads per `/select/logsql/field_names`
-// call, which caused OOM kills on lakehouse-logs under Grafana load.
-//
-// We assert against an instrumented mock S3 server that the bytes served
-// during one GetFieldNames invocation are at most
-// `5 * footerPrefetchSize + slack`, and that zero full-file (no-Range)
-// downloads are issued.
-func TestGetFieldNames_ServesOnlyFooterBytes(t *testing.T) {
-	mock := newInstrumentedS3Server()
-	defer mock.close()
-	s := testStorageWithS3(t, mock.url())
-
-	baseTime := time.Date(2026, 5, 28, 10, 0, 0, 0, time.UTC)
-	const fileBytes = 200 * 1024
-	data := makeLargeParquet(t, baseTime, fileBytes)
-
-	const numFiles = 5
-	for i := 0; i < numFiles; i++ {
-		key := fmt.Sprintf("logs/dt=2026-05-28/hour=%02d/file%d.parquet", 10+i, i)
-		mock.putFile(key, data)
-		s.manifest.AddFile(fmt.Sprintf("dt=2026-05-28/hour=%02d", 10+i), manifest.FileInfo{
-			Key:       key,
-			Size:      int64(len(data)),
-			MinTimeNs: baseTime.Add(time.Duration(i)*time.Hour - time.Minute).UnixNano(),
-			MaxTimeNs: baseTime.Add(time.Duration(i)*time.Hour + time.Minute).UnixNano(),
-		})
-	}
-
-	q := mustParseQueryWithTime(t, `*`,
-		baseTime.Add(-time.Hour).UnixNano(),
-		baseTime.Add(10*time.Hour).UnixNano(),
-	)
-
-	fields, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatalf("GetFieldNames: %v", err)
-	}
-	if len(fields) == 0 {
-		t.Fatal("expected non-empty field names")
-	}
-
-	served := mock.bytesServed.Load()
-	rangeReqs := mock.rangeReqs.Load()
-	fullReqs := mock.fullReqs.Load()
-	maxAllowed := int64(numFiles)*s.footerPrefetchBytes() + 8192 // slack for HTTP
-
-	t.Logf("served=%d bytes (range=%d, full=%d), %d files x %d bytes = %d full-download total",
-		served, rangeReqs, fullReqs, numFiles, len(data), numFiles*len(data))
-
-	if fullReqs > 0 {
-		t.Errorf("GetFieldNames issued %d full-file downloads; expected only range reads (footer-only)", fullReqs)
-	}
-	if served > maxAllowed {
-		t.Errorf("GetFieldNames served %d bytes; expected <= %d. Regression: not using footer-only path.", served, maxAllowed)
-	}
-}
-
 // TestGetFieldNames_HitsRemainCorrect verifies that the footer-only
 // optimization preserves the per-field hit count semantics. We check
 // non-zero hits for the columns we wrote.

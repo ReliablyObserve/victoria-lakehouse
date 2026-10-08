@@ -188,14 +188,9 @@ func TestGetStreams_TombstonedRowsAreNotEnumerated(t *testing.T) {
 	}
 }
 
-// TestFieldNames_HitsAreUnknownUnderATombstone documents the bound we accept.
-//
-// Hit counts come from the Parquet column index — no row is read — so a
-// tombstone cannot be applied per row without turning a footer walk into a full
-// scan of every candidate file. Reporting the raw counts anyway would hand the
-// caller a number that still includes deleted rows, so the counts are reported
-// as unknown (Hits=0) instead. Names stay over-inclusive until the rewrite
-// lands; that is documented in docs/operations.md.
+// TestFieldNames_HitsAreUnknownUnderATombstone (name kept: registry-linked) pins
+// the hit counts under a tombstone: field_names reads the rows, so a deleted row
+// is not counted, and the counts are exact rather than unknown.
 func TestFieldNames_HitsAreUnknownUnderATombstone(t *testing.T) {
 	f := newFieldsTombstoneFixture(t, false)
 	q := mustParseQueryWithTime(t, "*", f.startNs, f.endNs)
@@ -221,12 +216,18 @@ func TestFieldNames_HitsAreUnknownUnderATombstone(t *testing.T) {
 		t.Fatalf("GetFieldNames after: %v", err)
 	}
 	if len(after) == 0 {
-		t.Fatal("field names must still be returned; only the counts become unknown")
+		t.Fatal("field names must still be returned")
 	}
-	for _, v := range after {
-		if v.Hits != 0 {
-			t.Errorf("field %q reports %d hits; that count still includes the deleted rows", v.Value, v.Hits)
+	hits := func(vs []logstorage.ValueWithHits, name string) uint64 {
+		for _, v := range vs {
+			if v.Value == name {
+				return v.Hits
+			}
 		}
+		return 0
+	}
+	if b, a := hits(before, "_msg"), hits(after, "_msg"); b != 3 || a != 2 {
+		t.Errorf("_msg hits before/after the delete of one of three rows = %d/%d, want 3/2: the count must be exact and exclude the deleted row", b, a)
 	}
 }
 
@@ -401,79 +402,6 @@ func TestFieldNames_EmptyHitsFallsThroughUnderATombstone(t *testing.T) {
 // Both are pure, and both decide what a caller SEES in a field picker, so they
 // are worth pinning independently of the endpoint that calls them.
 
-func TestLabelIndexNamesWithHits(t *testing.T) {
-	got := labelIndexNamesWithHits([]string{"a", "b"}, map[string]uint64{"a": 7})
-	if len(got) != 2 {
-		t.Fatalf("got %d entries, want 2", len(got))
-	}
-	if got[0].Value != "a" || got[0].Hits != 7 {
-		t.Errorf("entry 0 = %+v, want a/7", got[0])
-	}
-	// A name with no recorded count reports 0 — the documented "unknown count"
-	// signal, which is exactly what the tombstone branch relies on.
-	if got[1].Value != "b" || got[1].Hits != 0 {
-		t.Errorf("entry 1 = %+v, want b/0", got[1])
-	}
-
-	// A nil hits map means every count is unknown.
-	all := labelIndexNamesWithHits([]string{"x", "y"}, nil)
-	for _, v := range all {
-		if v.Hits != 0 {
-			t.Errorf("%q reports %d hits from a nil map", v.Value, v.Hits)
-		}
-	}
-	if len(labelIndexNamesWithHits(nil, nil)) != 0 {
-		t.Error("no names in, no entries out")
-	}
-}
-
-func TestRemapSlotFieldHits(t *testing.T) {
-	prev := activeSlotResolver
-	t.Cleanup(func() { activeSlotResolver = prev })
-	activeSlotResolver = schema.NewSlotResolver([]schema.SlotAttr{{Name: "tenant.tier"}})
-
-	mapping := activeSlotResolver.Mapping()
-	var mappedSlot string
-	for slot := range mapping {
-		mappedSlot = slot
-		break
-	}
-	if mappedSlot == "" {
-		t.Fatal("fixture is wrong: the resolver mapped no slot")
-	}
-
-	hits := map[string]uint64{
-		mappedSlot:     5,
-		"ded_s99":      3, // a slot with no operator mapping
-		"service.name": 11,
-	}
-	remapSlotFieldHits(hits)
-
-	// A MAPPED slot is reported under its configured attribute name.
-	if hits["tenant.tier"] != 5 {
-		t.Errorf("mapped slot not reported under its attribute name: %v", hits)
-	}
-	// An UNMAPPED slot is an empty placeholder column and must never surface —
-	// it shows up as `ded_sNN` noise in a field picker with no values on any row.
-	if _, still := hits["ded_s99"]; still {
-		t.Errorf("an unmapped slot column leaked into the field list: %v", hits)
-	}
-	if _, still := hits[mappedSlot]; still {
-		t.Errorf("the raw slot name is still present alongside its attribute name: %v", hits)
-	}
-	// Ordinary fields are untouched.
-	if hits["service.name"] != 11 {
-		t.Errorf("an ordinary field was disturbed: %v", hits)
-	}
-
-	// Empty input is a no-op rather than a panic.
-	empty := map[string]uint64{}
-	remapSlotFieldHits(empty)
-	if len(empty) != 0 {
-		t.Errorf("empty hits grew to %v", empty)
-	}
-}
-
 // --- pmeta catalog rebuild after rows are removed ------------------------------
 
 func TestPmetaRebuildCatalogValues_NoCatalogOrNoKeysIsANoOp(t *testing.T) {
@@ -591,9 +519,9 @@ func TestFilesTimeSpan(t *testing.T) {
 	}
 }
 
-// TestFieldNames_TombstoneInsideACountedFileButOutsideTheWindow: hit counts come
-// from whole-file column indexes, so a tombstone outside the query window but
-// inside a counted file's rows still means the counts include deleted rows.
+// TestFieldNames_TombstoneInsideACountedFileButOutsideTheWindow: a tombstone
+// outside the query window but inside the object the window reads changes
+// nothing in the window's counts, which are exact.
 func TestFieldNames_TombstoneInsideACountedFileButOutsideTheWindow(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
@@ -642,9 +570,17 @@ func TestFieldNames_TombstoneInsideACountedFileButOutsideTheWindow(t *testing.T)
 	if len(after) == 0 {
 		t.Fatal("names must still be returned")
 	}
-	for _, v := range after {
-		if v.Hits != 0 {
-			t.Fatalf("field %q reports %d hits although a tombstone covers rows in the counted file", v.Value, v.Hits)
+	// The tombstone covers a row outside the window: the window's counts are
+	// the rows read, so they are exact and unchanged.
+	hits := func(vs []logstorage.ValueWithHits, name string) uint64 {
+		for _, v := range vs {
+			if v.Value == name {
+				return v.Hits
+			}
 		}
+		return 0
+	}
+	if b, a := hits(before, "_msg"), hits(after, "_msg"); b != 1 || a != 1 {
+		t.Fatalf("_msg hits before/after = %d/%d, want 1/1", b, a)
 	}
 }

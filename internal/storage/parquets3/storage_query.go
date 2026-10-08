@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -84,6 +85,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// context value is attached below, once the tombstones are known.
 	neededFields := logstorage.GetQueryNeededFields(q)
 	filter := parseFilterFromQuery(q)
+	if storage.IsFieldNamesQuery(ctx) {
+		// A field_names enumeration applies the row filter and the time range
+		// AFTER a block's column set is known (see readRowGroupWithProjectionKeys),
+		// so the whole filter, the time range included, is evaluated per row here.
+		filter = logstorage.QueryFilter(q)
+	}
 
 	// Per-query memory ceiling for in-flight DataBlock rows. Bounds the live
 	// memory footprint a single wildcard query can pin: workers backpressure
@@ -100,6 +107,12 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	var rowsEmitted atomic.Int64
 	maxRows := s.cfg.Query.MaxRows
+	if storage.IsFieldNamesQuery(ctx) {
+		// The row ceiling guards queries that return rows. A field_names
+		// enumeration keeps O(fields) state, and a ceiling that stopped it early
+		// would hand back a field list missing the fields of the unread rows.
+		maxRows = 0
+	}
 
 	// Wrap writeBlock to apply LogsQL filter evaluation, tombstone filtering,
 	// max_rows enforcement, and panic recovery. The synchronous writeBlock
@@ -226,7 +239,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// carries no row the tombstone filter could drop, so deleted buffered
 		// rows would be counted; the raw-row path below filters them.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
-		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, filteredWriteBlock) {
+		pureWrite := filteredWriteBlock
+		if storage.IsFieldNamesCounter(ctx) {
+			pureWrite = storage.MarkFieldNamesBufferWriter(pureWrite)
+		}
+		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, pureWrite) {
 			return nil
 		}
 		s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
@@ -1108,7 +1125,7 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 			return ctx.Err()
 		}
 		metrics.ParquetRowGroupsScanned.Inc()
-		if err := s.readOneRowGroup(f, m.rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr); err != nil {
+		if err := s.readOneRowGroup(f, m.rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr, storage.IsFieldNamesQuery(ctx)); err != nil {
 			return err
 		}
 	}
@@ -1124,11 +1141,11 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	return nil
 }
 
-func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
+func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, fieldNames ...bool) error {
 	if projectedCols == nil {
 		projectedCols = allLeafColumns(f)
 	}
-	return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs)
+	return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs, fieldNames...)
 }
 
 // allLeafColumns is the projection used by an unprojected (wildcard) scan. It
@@ -1215,14 +1232,25 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 	return nil
 }
 
-func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string) error {
-	return s.readRowGroupWithProjectionKeys(f, rg, startNs, endNs, cols, pdf, writeBlock, traceIDs, nil)
+func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, fieldNames ...bool) error {
+	return s.readRowGroupWithProjectionKeys(f, rg, startNs, endNs, cols, pdf, writeBlock, traceIDs, nil, fieldNames...)
 }
 
 // readRowGroupWithProjectionKeys is readRowGroupWithProjection that, with
 // onlyKeys not nil, expands only those attribute keys of the MAP columns on the
 // columnar path (see readRowGroupColumnarKeys).
-func (s *Storage) readRowGroupWithProjectionKeys(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, onlyKeys map[string]struct{}) error {
+//
+// With fieldNames set (a field_names enumeration) the row group is not narrowed
+// by the time range or the push-down filter, and its rows reach writeBlock as
+// the blocks upstream would have stored them: one per stream, listing only the
+// columns some row of the stream has a value for (storage.EmitFieldNamesStreamBlocks).
+// The caller's row filter then selects the rows, and upstream's field_names pipe
+// credits each column of a block with the rows that matched.
+func (s *Storage) readRowGroupWithProjectionKeys(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, onlyKeys map[string]struct{}, fieldNames ...bool) error {
+	streamBlocks := len(fieldNames) > 0 && fieldNames[0]
+	if streamBlocks {
+		startNs, endNs, pdf = math.MinInt64, math.MaxInt64, nil
+	}
 	// Bound concurrent row-group decoders process-wide. Each decode buffers
 	// a full row group's projected columns (~30-50 MiB at production scale
 	// per the near-OOM heap-diff: readMapColumnToBlockCols=154 MiB flat,
@@ -1237,7 +1265,7 @@ func (s *Storage) readRowGroupWithProjectionKeys(f *parquet.File, rg parquet.Row
 
 	maxRowsPerBlock := defaultMaxRowsPerBlock
 
-	emit := func(db *logstorage.DataBlock) {
+	emitChunk := func(db *logstorage.DataBlock) {
 		if db == nil || db.RowsCount() == 0 {
 			return
 		}
@@ -1247,6 +1275,10 @@ func (s *Storage) readRowGroupWithProjectionKeys(f *parquet.File, rg parquet.Row
 				extractTraceIDs(chunk, traceIDs)
 			}
 		})
+	}
+	emit := emitChunk
+	if streamBlocks {
+		emit = func(db *logstorage.DataBlock) { storage.EmitFieldNamesStreamBlocks(db, emitChunk) }
 	}
 
 	// Tier-2 slot binding for THIS file (footer KV first, live config as the
@@ -2292,6 +2324,9 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		}
 	}
 	if idx == nil {
+		if s.pool == nil {
+			return false // no object store to fetch a bloom from: cannot prune
+		}
 		metrics.S3GetsByPhase.Inc("bloom")
 		data, err := s.pool.DownloadDedup(ctx, "bloom", bloomKey)
 		if err != nil || len(data) == 0 {

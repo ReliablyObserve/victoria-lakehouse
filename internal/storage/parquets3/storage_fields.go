@@ -2,17 +2,16 @@ package parquets3
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // pageIndexLookBehind is how far before an oversize footer the two-phase footer
@@ -135,246 +134,17 @@ func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl 
 	return cached, f, nil
 }
 
-// remapSlotFieldHits drops UNMAPPED Tier-2 spare-slot columns (ded_sNN) from a
-// field-name hit map and renames MAPPED ones to their configured attribute name,
-// mirroring remapSlotFields on the row read path. Spare-slot column names are
-// exactly 7 chars with the "ded_s" prefix (ded_s01..ded_s99); no real field
-// collides with that shape.
-func remapSlotFieldHits(hits map[string]uint64) {
-	if len(hits) == 0 {
-		return
-	}
-	slotMap := activeSlotResolver.Mapping()
-	var drop []string
-	add := map[string]uint64{}
-	for name, n := range hits {
-		if len(name) == 7 && name[:5] == "ded_s" {
-			drop = append(drop, name)
-			if mapped, ok := slotMap[name]; ok && mapped != "" {
-				add[mapped] = n
-			}
-		}
-	}
-	for _, k := range drop {
-		delete(hits, k)
-	}
-	for k, n := range add {
-		hits[k] = n
-	}
-}
-
+// GetFieldNames answers /select/logsql/field_names as VictoriaLogs does: the
+// field_names pipe over the rows of the query, in every data layer at once (the
+// insert buffer, the peers' buffers and the Parquet objects, through RunQuery),
+// with the query's filter, the tenant scope and the tombstones applied to the
+// rows. The names and the hits of each are upstream's: a column of a block is
+// credited with every matching row of the block (storage.EmitFieldNamesStreamBlocks
+// gives the cold blocks the shape upstream's have). The Parquet footers cannot
+// answer this: they know the columns of a file, not the fields of its rows (a
+// MAP's keys, the names a trace span is stored under) nor the streams.
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
-	scope := scopeFor(ctx, tenantIDs)
-
-	startNs, endNs := q.GetFilterTimeRange()
-	files := s.filesForScope("field_names", startNs, endNs, scope)
-
-	// Aggregate actual non-null row counts across candidate files.
-	// Previously this returned Hits=1 for every field — a stub that fed
-	// inaccurate cardinality estimates downstream. We compute per-field
-	// hit counts from the Parquet column index without reading data
-	// pages: (rowGroupNumRows - nullCount) per row group, summed.
-	hits := make(map[string]uint64)
-
-	if len(files) == 0 {
-		// A window holding no objects has no field names, as on VictoriaLogs
-		// (and as the traces binary already answered). The in-memory label
-		// index is not time-scoped — it remembers names from any hour — so it
-		// is not an answer for a window with no data.
-		return nil, nil
-	}
-
-	// Pre-warm the footer cache in parallel using small range reads
-	// (~16 KB per file) so the sequential loop below hits the cache.
-	if s.pool != nil && s.footerCache != nil {
-		prefetchFooters(ctx, s.pool, files, s.footerCache, 16, s.footerPrefetchBytes())
-	}
-	unknown := make(map[string]struct{})
-
-	// Walk all files; for each, accumulate hits per (internal) field name.
-	// fetchFooterFile uses the cache populated above; on a miss it falls
-	// back to a single-file footer fetch rather than a full-file download.
-	for _, fi := range files {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		cached, err := s.fetchFooterEntry(ctx, fi)
-		if err != nil {
-			logger.Warnf("get footer for field names: %s; key=%s", err, fi.Key)
-			continue
-		}
-		// The null counts come from the page index. An entry cached without it
-		// (its stripe read failed, or an older writer) is upgraded by one more
-		// footer fetch; if that still leaves it out, accumulateFieldHits reports
-		// the columns of the file as "hits unknown" instead of crediting them in
-		// full. The answer therefore does not depend on what the cache held.
-		if cached.needsPageIndex() && s.pool != nil && s.footerCache != nil {
-			s.footerCache.Remove(fi.Key)
-			if up, uerr := s.fetchFooterEntry(ctx, fi); uerr == nil {
-				cached = up
-			}
-		}
-		f := cached.File
-		// Footer-only file: cannot safely scan data pages for distinct
-		// values (parquet-go falls back to truncated column-index min/max).
-		// Register names; defer value extraction to the query path which
-		// has the full file open.
-		s.updateLabelIndexNamesOnly(f)
-		s.accumulateFieldHits(f, hits, unknown)
-	}
-	// A column whose hit count could not be read from any file is still a field
-	// of the window: report its name with Hits=0, this function's "unknown
-	// count" signal, unless another file supplied a (lower-bound) count.
-	for name := range unknown {
-		if _, ok := hits[name]; !ok {
-			hits[name] = 0
-		}
-	}
-
-	// The Tier-2 spare-slot columns (ded_s01..ded_sNN) are internal: an UNMAPPED
-	// slot is an empty placeholder column (no operator promoted_attributes config)
-	// and must never surface in the field list — it shows up as `ded_sNN` noise in
-	// Drilldown/Explore field pickers with no values on any row. A MAPPED slot is
-	// reported under its configured attribute name, matching what the row read path
-	// emits via remapSlotFields. The raw Parquet column index (accumulateFieldHits)
-	// has no way to know this, so apply the same remap/drop here.
-	remapSlotFieldHits(hits)
-
-	// Hit counts here come from the Parquet COLUMN INDEX (row count minus null
-	// count per page) — no row is ever read, so a tombstone cannot be applied
-	// per row without turning a footer walk into a full scan of every candidate
-	// file. Reporting the raw counts anyway would hand the caller a number that
-	// still includes rows the user deleted.
-	//
-	// The honest answer is the one this function already uses for its fallback
-	// paths: emit the names with Hits=0, the documented "unknown count" signal.
-	// Names stay over-inclusive (a field carried only by deleted rows still
-	// appears until the rewrite lands and the file is replaced) — that bound is
-	// documented in docs/operations.md rather than papered over.
-	//
-	// The check covers every row the counts came from: the column index of a
-	// whole file, whose rows can extend past the query window, so a tombstone
-	// just outside the window but inside a counted file still taints the count.
-	if tsLo, tsHi := filesTimeSpan(files, startNs, endNs); len(s.fieldsTombstones(scope, tsLo, tsHi)) > 0 {
-		noteFieldsScanFallback("field_names")
-		names := make([]string, 0, len(hits))
-		for name := range hits {
-			names = append(names, name)
-		}
-		if len(names) > 0 {
-			return labelIndexNamesWithHits(names, nil), nil
-		}
-	}
-
-	if len(hits) > 0 {
-		result := make([]logstorage.ValueWithHits, 0, len(hits))
-		for name, n := range hits {
-			result = append(result, logstorage.ValueWithHits{Value: name, Hits: n})
-		}
-		return result, nil
-	}
-
-	// Fall back to field names (emitted with Hits=0 to signal "unknown count")
-	// so callers that only want names still see them. pmeta read-flip: catalog
-	// first, legacy labelIndex second.
-	if s.catalog != nil {
-		if names := s.catalogFieldNames(q, scope); len(names) > 0 {
-			return labelIndexNamesWithHits(names, hits), nil
-		}
-	}
-	if s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
-		return labelIndexNamesWithHits(s.labelIndex.GetFieldNames(), hits), nil
-	}
-	return nil, nil
-}
-
-// labelIndexNamesWithHits returns each name as a ValueWithHits, populating
-// Hits from the provided map (or 0 if absent).
-func labelIndexNamesWithHits(names []string, hits map[string]uint64) []logstorage.ValueWithHits {
-	result := make([]logstorage.ValueWithHits, len(names))
-	for i, name := range names {
-		result[i] = logstorage.ValueWithHits{Value: name, Hits: hits[name]}
-	}
-	return result
-}
-
-// accumulateFieldHits computes per-field non-null row counts for every
-// top-level column in f and adds them into the hits map keyed by the
-// registry's internal field name.
-//
-// Uses the Parquet column index: for each row group and column the count is
-// the chunk's values minus the nulls summed over the pages, without reading
-// data pages. A column whose chunks carry no usable index is handled by cause:
-//
-//   - the file has none (ErrMissingColumnIndex, an external writer that wrote
-//     no page index) or it lists no pages: the chunk is credited in full, a
-//     slight over-count rather than a silent drop (the writer gave no null
-//     information at all);
-//   - the index exists but is not readable here (a cache entry that holds the
-//     footer without the page-index stripe fails the read with
-//     errOutsideCachedRange; an S3 error): the count is UNKNOWN. The column is
-//     recorded in unknown (nil to ignore), never credited: zero-filled bytes
-//     used to decode as an empty index and credit every all-null column with
-//     its full row count, a different answer for the same file depending on the
-//     cache state.
-func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64, unknown map[string]struct{}) {
-	rgs := f.RowGroups()
-	if len(rgs) == 0 {
-		return
-	}
-	// Chunks are addressed by leaf column index, not top-level position: a MAP
-	// column owns two leaves, so every column after one is shifted.
-	for _, col := range f.Root().Columns() {
-		parquetName := col.Name()
-		ci := firstLeafIndex(col)
-		if ci < 0 {
-			continue
-		}
-		internal := parquetName
-		if m := s.registry.ResolveFromParquet(parquetName); m != nil {
-			internal = m.InternalName
-		}
-		var nonNull int64
-		colUnknown := false
-		for _, rg := range rgs {
-			cols := rg.ColumnChunks()
-			if ci >= len(cols) {
-				continue
-			}
-			cidx, err := cols[ci].ColumnIndex()
-			if err != nil && !errors.Is(err, parquet.ErrMissingColumnIndex) {
-				colUnknown = true
-				break
-			}
-			if err != nil || cidx == nil || cidx.NumPages() == 0 {
-				nonNull += cols[ci].NumValues()
-				continue
-			}
-			var nulls int64
-			for p := 0; p < cidx.NumPages(); p++ {
-				nulls += cidx.NullCount(p)
-			}
-			n := cols[ci].NumValues() - nulls
-			if n < 0 {
-				n = 0
-			}
-			// A MAP column's chunk counts entries, not rows: a row cannot carry
-			// the column more than once.
-			if !col.Leaf() && n > rg.NumRows() {
-				n = rg.NumRows()
-			}
-			nonNull += n
-		}
-		if colUnknown {
-			if unknown != nil {
-				unknown[internal] = struct{}{}
-			}
-			continue
-		}
-		if nonNull > 0 {
-			hits[internal] += uint64(nonNull)
-		}
-	}
+	return storage.FieldNamesViaQuery(ctx, tenantIDs, q, s.RunQuery)
 }
 
 // scanProjectedFieldValues iterates a Parquet file extracting values
@@ -607,13 +377,35 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	return valuesWithHits(seen, limit), nil
 }
 
+// GetStreamFieldNames lists the tags of the streams the query matches, as
+// VictoriaLogs/VictoriaTraces do: upstream takes the streams (every layer: buffer,
+// bridge and cold) and walks their tags (forEachStreamField), crediting each tag
+// name with the rows of every matching stream that carries it. The walk is the
+// one GetStreamFieldValues does over the same streams.
 func (s *Storage) GetStreamFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
-	streamFields := s.registry.StreamFields()
-	result := make([]logstorage.ValueWithHits, 0, len(streamFields))
-	for _, name := range streamFields {
-		result = append(result, logstorage.ValueWithHits{Value: name, Hits: 1})
+	streams, err := s.streamsWithHits(ctx, tenantIDs, q, "stream_field_names")
+	if err != nil {
+		return nil, err
 	}
-	return result, nil
+	names := make(map[string]uint64)
+	var tags []schema.StreamField
+	for stream, hits := range streams {
+		tags, err = schema.ParseStreamFields(tags[:0], stream)
+		if err != nil {
+			continue // upstream skips a stream it cannot parse
+		}
+		for _, t := range tags {
+			names[t.Name] += hits
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	vhs := make([]logstorage.ValueWithHits, 0, len(names))
+	for n, h := range names {
+		vhs = append(vhs, logstorage.ValueWithHits{Value: n, Hits: h})
+	}
+	return logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{vhs}, 0, false), nil
 }
 
 // GetStreamFieldValues lists the values of a stream tag over the streams the

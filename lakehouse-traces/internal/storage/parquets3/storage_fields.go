@@ -11,6 +11,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // pageIndexLookBehind is how far before an oversize footer the two-phase footer
@@ -129,64 +130,18 @@ func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl 
 	return cached, f, nil
 }
 
+// GetFieldNames answers /select/logsql/field_names as VictoriaTraces does: the
+// field_names pipe over the rows of the query, in every data layer at once (the
+// insert buffer, the peers' buffers and the Parquet objects, through RunQuery),
+// with the query's filter, the tenant scope and the tombstones applied to the
+// rows. The names are the ones the rows are stored under in VictoriaTraces
+// (span_attr:..., resource_attr:..., event:..., link:...) and the hits are
+// upstream's: a column of a block is credited with every matching row of the
+// block (storage.EmitFieldNamesStreamBlocks gives the cold blocks the shape
+// upstream's have). The Parquet footers cannot answer this: they know the
+// columns of a file, not the fields of its spans.
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
-	filter := parseFilterFromQuery(q)
-	scope := scopeFor(ctx, tenantIDs)
-
-	// pmeta labels read-flip: catalog field names first (range-aware), labelIndex fallback.
-	if filter == nil && s.catalog != nil {
-		if names := s.catalogFieldNames(q, scope); len(names) > 0 {
-			result := make([]logstorage.ValueWithHits, len(names))
-			for i, name := range names {
-				result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
-			}
-			return result, nil
-		}
-	}
-	startNs, endNs := q.GetFilterTimeRange()
-
-	// A window holding no objects has no field names, as on VictoriaTraces.
-	// The in-memory label index is not time-scoped — it remembers names from
-	// any hour — so it is consulted only below, for a window that has objects
-	// whose footers could not name their columns.
-	files := s.filesForScope("field_names", startNs, endNs, scope)
-	if len(files) == 0 {
-		return nil, nil
-	}
-
-	// Use a footer-only read instead of downloading the full ~1 MB file
-	// just to walk its schema. Matches the logs module's GetFieldNames
-	// pattern so behaviour stays consistent across signals.
-	fi := files[0]
-	f, err := s.fetchFooterFile(ctx, fi)
-	if err != nil {
-		return nil, fmt.Errorf("get footer: %w", err)
-	}
-
-	// Footer-only file: cannot safely scan data pages for distinct
-	// values (parquet-go falls back to truncated column-index min/max).
-	// Register names; defer value extraction to the query path which
-	// has the full file open.
-	s.updateLabelIndexNamesOnly(f)
-
-	if s.catalog != nil {
-		if names := s.catalogFieldNames(q, scope); len(names) > 0 {
-			result := make([]logstorage.ValueWithHits, len(names))
-			for i, name := range names {
-				result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
-			}
-			return result, nil
-		}
-	}
-	if s.labelIndex.Len() > 0 && s.tenantScopeAllowsGlobalIndex(scope) {
-		names := s.labelIndex.GetFieldNames()
-		result := make([]logstorage.ValueWithHits, len(names))
-		for i, name := range names {
-			result[i] = logstorage.ValueWithHits{Value: name, Hits: 1}
-		}
-		return result, nil
-	}
-	return nil, nil
+	return storage.FieldNamesViaQuery(ctx, tenantIDs, q, s.RunQuery)
 }
 
 // scanProjectedFieldValues iterates a Parquet file extracting values
@@ -413,13 +368,35 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 	return valuesWithHits(seen, limit), nil
 }
 
+// GetStreamFieldNames lists the tags of the streams the query matches, as
+// VictoriaTraces does: upstream takes the streams (every layer: buffer, bridge
+// and cold) and walks their tags (forEachStreamField), crediting each tag name
+// with the rows of every matching stream that carries it. The walk is the one
+// GetStreamFieldValues does over the same streams.
 func (s *Storage) GetStreamFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
-	streamFields := s.registry.StreamFields()
-	result := make([]logstorage.ValueWithHits, 0, len(streamFields))
-	for _, name := range streamFields {
-		result = append(result, logstorage.ValueWithHits{Value: name, Hits: 1})
+	streams, err := s.streamsWithHits(ctx, tenantIDs, q, "stream_field_names")
+	if err != nil {
+		return nil, err
 	}
-	return result, nil
+	names := make(map[string]uint64)
+	var tags []schema.StreamField
+	for stream, hits := range streams {
+		tags, err = schema.ParseStreamFields(tags[:0], stream)
+		if err != nil {
+			continue // upstream skips a stream it cannot parse
+		}
+		for _, t := range tags {
+			names[t.Name] += hits
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	vhs := make([]logstorage.ValueWithHits, 0, len(names))
+	for n, h := range names {
+		vhs = append(vhs, logstorage.ValueWithHits{Value: n, Hits: h})
+	}
+	return logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{vhs}, 0, false), nil
 }
 
 // GetStreamFieldValues lists the values of a stream tag over the streams the

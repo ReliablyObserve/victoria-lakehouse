@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`field_names` and `stream_field_names` answer from the rows, like VictoriaLogs and VictoriaTraces (both binaries; #280, #378, #269, #461, #464, #480).** `/select/logsql/field_names` listed the Parquet columns of the objects in the window (the map columns, `account_id` and `project_id` as fields, no map key, whole-object hit counts, nothing from the insert buffer; on the traces binary the column names with hits 1). It now runs on the rows of the window in every layer (insert buffer, peers' buffers, Parquet): the fields hot lists, each credited with the matching rows of the stream blocks that list it (`exception.type` 610, not 612), VictoriaTraces' own names for spans, the filter, the tenant scope and tombstones applied to the rows. A window held only in the buffer lists its fields. `stream_field_names` credits each stream tag with the rows of the matching streams, in upstream's order (it answered hits 1). The answer reads the rows of the window, not the footers, so a large window costs the object reads of a `query=*` over it (`docs/operations.md`); the per-query row ceiling does not apply to it. Registry rows `vl.select.field_names.hits_per_stream_block`, `vl.select.field_names.buffer_only_window`, `vl.select.stream_field_names.row_hits`, `vt.select.logsql_field_names.vt_field_names`, `vt.select.logsql_stream_field_names.row_hits`; parity locks `TestParity_FieldNames_Layers` and `TestParity_FieldNames_SeedCorpus`; the B2 known failures are gone.
+
 ## [0.146.9] - 2026-10-08
 
 ### Added

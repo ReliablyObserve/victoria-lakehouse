@@ -569,7 +569,7 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_manifest_retired_settled_total` — retired keys an accepted listing proved gone. This is the drain signal: on a node compacting faster than it refreshes the gauge above never reads zero even while draining perfectly, so alert on this counter standing still, not on the gauge being non-zero
 - `lakehouse_delete_tombstone_removed_markers_evicted_total` — removed-tombstone markers dropped by their TTL or cap (never while their S3 delete is owed)
 - `lakehouse_delete_compaction_rows_removed_total` / `lakehouse_delete_compaction_keys_reaped_total` — rows and source keys compaction reaped
-- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`). Only tombstones acting on the request's own tenants count
+- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`). Only tombstones acting on the request's own tenants count
 - `lakehouse_delete_tenant_scope_skips_total{site="rewrite"}` — objects of another tenant a tombstone record named, left untouched and recorded clean; non-zero means a defect or a hand-edited record (alert `LakehouseDeleteTenantScopeViolation`)
 
 **Alert on** a sustained non-zero `lakehouse_delete_tombstone_persist_pending`
@@ -790,17 +790,11 @@ while a compacted file still holds its rows. Keys under a never-delete prefix
 | log/span query results | rows matching an active tombstone are filtered out |
 | aggregates over the unflushed window (`stats`, counts) | the pure-buffer fast path — the whole query, pipes included, run in the co-located buffer's engine — is skipped while a tombstone overlaps the window, because its aggregated result carries no row the tombstone filter could drop; the raw rows are filtered instead (`lakehouse_delete_fields_scan_fallback_total{endpoint="pure_buffer"}`) |
 | `field_values`, `streams`, `stream_ids` | a tombstoned row's values are not enumerated and its row is not counted in hits. The row scans read whole files, so they apply every tombstone overlapping the scanned files' rows, not only the query window. An object's label counts predate the delete, so an object a tombstone of its tenant reaches is scanned instead of answered from them until the tombstone retires — counted in `lakehouse_delete_fields_scan_fallback_total{endpoint}` |
-| `field_names` | names are still returned. On the logs binary hit **counts** are reported as unknown (`0`) whenever a tombstone overlaps the rows they were counted from — the whole of every counted file, which can extend past the query window — rather than counts that still include the deleted rows. The traces binary never reports per-field counts (every name carries `1`), so there is no count a tombstone could make wrong |
+| `field_names`, `stream_field_names` | a tombstoned row's fields are not listed and its row is not counted in hits, on both binaries: `field_names` reads the rows of the window (see "`field_names` reads the rows of its window" below) and the tombstone filter runs on them like on a query; `stream_field_names` counts the rows of the matching streams the same way |
 | compaction output | rows of tombstones eligible for physical removal are dropped; `hide` and in-window rows are carried forward |
 
 **Known bounds**, stated rather than papered over:
 
-- `field_names` can stay *over-inclusive* — a field carried only by deleted rows
-  still appears in the list until the rewrite replaces the file. Hit counts for
-  that window come from the Parquet column index, which is row-count metadata,
-  so applying a per-row predicate there would turn a footer walk into a full
-  scan of every candidate file. Reporting the counts as unknown is the honest
-  answer; the names settle once the background rewriter runs.
 - A tombstone whose range overlaps a file in a storage class the rewriter does
   not touch (`auto_rewrite_classes`, Glacier or IA by default) never retires:
   that file is skipped every pass and keeps the tombstone active, which is what
@@ -906,6 +900,36 @@ curl -X POST 'http://lakehouse:9428/delete/logsql/verify?query=service.name:="le
 ```
 
 Normal mode (default): runs the query through the normal read path — if results are empty, deletion is working. Deep mode (`mode=deep`): scans affected files directly for compliance auditing.
+
+## `field_names` reads the rows of its window
+
+`/select/logsql/field_names` answers like VictoriaLogs/VictoriaTraces: from the rows. A request reads every
+row of the window that the query's filter and the tenant scope select, in the insert buffer, the peers'
+buffers and the Parquet objects alike, and lists each field a row carries (a MAP column's keys, VictoriaTraces'
+own names such as `span_attr:*`, never a Parquet column name), credited with the matching rows of the stream
+blocks that list it. The Parquet footers cannot give that answer: they know the columns of an object, not the
+fields of its rows or the streams. `stream_field_names` is the tags of the matching streams, each credited with
+the rows of the streams that carry it, the walk `stream_field_values` does.
+
+Measured (`BenchmarkGetFieldNames_ObjectReads`, benchstat n=8 interleaved, five 200 KiB objects, cold caches, mock S3,
+logs binary): S3 requests per call 5 to 10, bytes served 328 KB to 1,406 KB (+329 %), time 1.3 ms to 8.9 ms, allocations
+9.4 k to 356 k per call. On the proof stack (3,000 rows over 4 h, warm caches) a call takes 1.4 ms to 14 ms. These grow
+with the window's bytes, not with its object count. Tracked: [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482).
+
+What it costs: the object reads of a `query=*` over the same window (all columns, every object overlapping the
+window), where the footer answer cost one ranged read of the footer per object. The per-query row ceiling
+(`query.max_rows`) does not apply, the live-bytes budget and the per-process decoder limit do. Keep Explore and
+Drilldown field pickers on short windows, or narrow the query with a filter; the answer for a large window is
+exact but not cheap. State kept per request is the columns of each stream in the window (about 150 bytes per
+stream at 40 columns, 256 Ki streams, then a block is credited on its own as upstream's block rule does).
+
+Known bound: upstream credits a column with the rows of the *blocks* that list it. Hot storage holds a stream in
+few large blocks; here the blocks of a stream are unioned across the objects of the window, which gives hot's
+answer when the window covers the stream's objects. A window that cuts a stream's objects (a few minutes inside
+an hour, for example) cannot see the objects outside it, so on a field that only some of a stream's rows carry
+(span events and links on the traces binary) the hits and, for a field the window's stream blocks never list,
+the name can differ from hot's, which counts the whole block. Logs with fields set per stream are exact in any
+window.
 
 ## Troubleshooting
 
