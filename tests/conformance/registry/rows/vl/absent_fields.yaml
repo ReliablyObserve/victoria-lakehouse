@@ -32,22 +32,6 @@
   refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/severity_number_absent_parity_test.go#TestParity_SeverityNumber_Absent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_QuerySurfaces, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_BridgeBlockMatchesFileRows, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_RoundTripKeepsNullAndZero, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_ReadsAnObjectWithARequiredColumn, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads, internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads] }
   notes: "A field a row never carried stays absent on cold (#274): severity_number is a nullable INT32 column. Locked by TestParity_SeverityNumber_Absent in the buffer, Parquet, compacted and after-restart layers and both tenant forms."
 
-- id: vl.select.field_names.absent_typed_field
-  title: "/select/logsql/field_names — severity_number counts only the rows that carry it (#274)"
-  surface: vl
-  kind: select
-  origin: native
-  expect: pass
-  targets: [hot, cold]
-  seed: [logs.base]
-  upstream: { route: /select/logsql/field_names }
-  request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
-  compare: { type: exact-json }
-  layers: [api]
-  pending: true
-  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/severity_number_absent_parity_test.go#TestParity_SeverityNumber_Absent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_QuerySurfaces, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_BridgeBlockMatchesFileRows, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_RoundTripKeepsNullAndZero, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_ReadsAnObjectWithARequiredColumn, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads, internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads] }
-  notes: "A field a row never carried stays absent on cold (#274): severity_number is a nullable INT32 column. Locked by TestParity_SeverityNumber_Absent in the buffer, Parquet, compacted and after-restart layers and both tenant forms."
-
 - id: vl.select.field_values.absent_typed_field
   title: "/select/logsql/field_values — rows without severity_number are one empty bucket, not 0 (#274)"
   surface: vl

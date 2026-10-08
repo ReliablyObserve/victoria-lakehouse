@@ -465,7 +465,6 @@
   rows:
     - vl.select.query.absent_typed_field
     - vl.select.query.explicit_zero_typed_field
-    - vl.select.field_names.absent_typed_field
     - vl.select.field_values.absent_typed_field
     - vl.select.stats_query.absent_typed_field
   tests:

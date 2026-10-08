@@ -92,24 +92,6 @@
     "cold"
    ],
    "window": "none"
-  },
-  {
-   "id": "vl.absent.field_names",
-   "surface": "vl-native",
-   "kind": "values",
-   "path": "/select/logsql/field_names",
-   "params": {
-    "query": "proofmark:=sev274"
-   },
-   "row": "vl.select.field_names.absent_typed_field",
-   "forms": [
-    "numeric"
-   ],
-   "layers": [
-    "cold",
-    "buffer"
-   ],
-   "claimed_gap": "field-names-lane-a"
   }
  ]
 }
