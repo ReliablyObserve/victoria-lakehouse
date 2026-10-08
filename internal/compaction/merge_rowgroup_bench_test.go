@@ -63,7 +63,7 @@ func benchMergeRows(fileIdx, n int, interleave bool) []schema.LogRow {
 			TimestampUnixNano: ts,
 			Body:              fmt.Sprintf("processed request %d on file %d", i, fileIdx),
 			SeverityText:      []string{"DEBUG", "INFO", "WARN", "ERROR"}[i%4],
-			SeverityNumber:    int32(5 + 4*(i%4)),
+			SeverityNumber:    schema.Int32Ptr(int32(5 + 4*(i%4))),
 			ServiceName:       svc,
 			TraceID:           fmt.Sprintf("%032x", fileIdx*n+i),
 			SpanID:            fmt.Sprintf("%016x", fileIdx*n+i),

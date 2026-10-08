@@ -31,7 +31,7 @@ type LogRow struct {
 	TimestampUnixNano int64  `json:"timestamp_unix_nano" parquet:"timestamp_unix_nano,delta"`
 	Body              string `json:"body" parquet:"body"`
 	SeverityText      string `json:"severity_text" parquet:"severity_text,dict"`
-	SeverityNumber    int32  `json:"severity_number" parquet:"severity_number"`
+	SeverityNumber    *int32 `json:"severity_number,omitempty" parquet:"severity_number,optional"`
 	ServiceName       string `json:"service.name" parquet:"service.name,dict"`
 	TraceID           string `json:"trace_id" parquet:"trace_id"`
 	SpanID            string `json:"span_id" parquet:"span_id"`

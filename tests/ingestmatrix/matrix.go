@@ -204,8 +204,6 @@ type Gap struct {
 // a divergence without one is a failure of the matrix, not a gap.
 func Gaps() []Gap {
 	return []Gap{
-		{ID: "cold-read-adds-severity-number", Issue: "https://github.com/ReliablyObserve/victoria-lakehouse/issues/274", AfterFlush: true,
-			Title: "after the flush Lakehouse adds severity_number=\"0\" to rows VictoriaLogs stores without it"},
 		{ID: "cold-read-renames-severity-text-to-level", Issue: "https://github.com/ReliablyObserve/victoria-lakehouse/issues/331", AfterFlush: true,
 			Title: "after the flush an OTLP log row comes back with level in place of severity_text"},
 		{ID: "traces-default-msg-value", Issue: "https://github.com/ReliablyObserve/victoria-lakehouse/issues/332",

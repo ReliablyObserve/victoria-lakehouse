@@ -98,7 +98,7 @@ func coldRowFieldsTestRows(now time.Time, n int) []schema.LogRow {
 			TimestampUnixNano: now.Add(time.Duration(i) * time.Second).UnixNano(),
 			Body:              "line one\nline two\ttab",
 			SeverityText:      "INFO",
-			SeverityNumber:    9,
+			SeverityNumber:    schema.Int32Ptr(9),
 			ServiceName:       "api-gw",
 			K8sNamespaceName:  "prod",
 			Stream:            `{service.name="api-gw"}`,

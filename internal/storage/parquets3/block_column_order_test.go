@@ -54,7 +54,7 @@ func orderTestLogRows(n int) []schema.LogRow {
 			TimestampUnixNano: base + int64(i%2)*int64(time.Millisecond),
 			Body:              fmt.Sprintf("message %d", i),
 			SeverityText:      "INFO",
-			SeverityNumber:    9,
+			SeverityNumber:    schema.Int32Ptr(9),
 			ServiceName:       fmt.Sprintf("svc-%d", i%3),
 			TraceID:           fmt.Sprintf("trace-%d", i),
 			SpanID:            "span",

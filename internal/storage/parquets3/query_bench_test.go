@@ -365,7 +365,7 @@ func BenchmarkWriteAndReadParquet_RoundTrip(b *testing.B) {
 			TimestampUnixNano: int64(1716393600000000000 + i*1000000),
 			Body:              "test log message body content here for round trip benchmark",
 			SeverityText:      "INFO",
-			SeverityNumber:    int32(9),
+			SeverityNumber:    schema.Int32Ptr(int32(9)),
 			ServiceName:       "api-gateway",
 			K8sNamespaceName:  "production",
 			K8sPodName:        "api-gateway-7b8c9d-xkq2v",
