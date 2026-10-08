@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"math/bits"
 	"strconv"
 	"sync"
 
@@ -25,18 +26,28 @@ func IsFieldNamesQuery(ctx context.Context) bool {
 }
 
 // FieldNamesViaQuery answers /select/logsql/field_names the way upstream does:
-// by running its field_names pipe over the rows of the query. read is the
-// storage's RunQuery, which owns the tenant scope, the time range, tombstones
-// and the merge of the insert buffer, the peers' buffers and the Parquet
-// objects; the pipe, its hit rule (a column of a block is credited with every
-// row of the block that matches) and its order are upstream's own.
+// it reads the rows of the query and credits every field with the matching rows
+// of the blocks that list it. read is the storage's RunQuery, which owns the
+// tenant scope, the time range, tombstones and the merge of the insert buffer,
+// the peers' buffers and the Parquet objects. A query with pipes goes through
+// upstream's own field_names pipe after them; a plain filter goes through
+// fieldNamesCounter, which applies the same rule.
 //
-// The enumeration reads every row of the window and keeps O(fields) state, so
-// the storage's per-query row ceiling (a guard for queries that return rows) does
+// The enumeration reads every row of the window and keeps bounded state, so the
+// storage's per-query row ceiling (a guard for queries that return rows) does
 // not apply to it: RunQuery lifts it for a read marked WithFieldNamesQuery, as a
 // field list missing the fields of the rows that were never read must not pass
 // for a complete one.
 func FieldNamesViaQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, read func(context.Context, []logstorage.TenantID, *logstorage.Query, logstorage.WriteDataBlockFunc) error) ([]logstorage.ValueWithHits, error) {
+	if !logstorage.QueryHasPipes(q) && !logstorage.QueryHasFilterSubqueries(q) {
+		c := newFieldNamesCounter(fieldNamesStreamCap)
+		rctx := WithFieldNamesQuery(WithAllFieldsHint(ctx))
+		if err := read(rctx, tenantIDs, q, c.add); err != nil {
+			return nil, err
+		}
+		return c.result(), nil
+	}
+
 	qNew := logstorage.QueryWithFieldNames(q)
 	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, tenantIDs, qNew, false, nil)
 
@@ -64,6 +75,131 @@ func FieldNamesViaQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q 
 	}
 	// Upstream's order (hits descending, then name), and one entry per name.
 	return logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{out}, 0, false), nil
+}
+
+// fieldNamesStreamCap bounds the streams fieldNamesCounter tracks (about 150
+// bytes each at 40 columns); past it a block is credited on its own.
+var fieldNamesStreamCap = 1 << 18
+
+// fieldNamesCounter is upstream's field_names rule over a stream-shaped input:
+// a field is credited with the matching rows of every block that lists it.
+// Upstream stores a stream in few large blocks, while Parquet objects hold the
+// same stream in one block per object and row group (an hour, a flush, a
+// compaction level), so crediting each block alone would make the answer depend
+// on the object layout: a field that one span of a stream carries would credit
+// that stream's rows in one object and not in the next. The counter therefore
+// unions the columns of all blocks of a stream (_stream_id, else _stream) and
+// credits the field with all the stream's matching rows, which is what a block
+// holding the whole stream gives. Past fieldNamesStreamCap distinct streams it
+// credits a block on its own, upstream's exact per-block rule, so its memory
+// stays bounded.
+type fieldNamesCounter struct {
+	mu      sync.Mutex
+	cap     int
+	ids     map[string]int // field name -> column id
+	names   []string
+	streams map[string]*streamColumns
+	blocks  map[string]uint64 // per-block credit past the cap
+}
+
+type streamColumns struct {
+	rows uint64
+	cols []uint64 // bit set over column ids
+}
+
+func newFieldNamesCounter(streamCap int) *fieldNamesCounter {
+	return &fieldNamesCounter{cap: streamCap, ids: make(map[string]int), streams: make(map[string]*streamColumns), blocks: make(map[string]uint64)}
+}
+
+func (c *fieldNamesCounter) add(_ uint, db *logstorage.DataBlock) {
+	if db == nil || db.RowsCount() == 0 {
+		return
+	}
+	cols := db.GetColumns(false)
+	key := streamKeyOf(cols)
+	n := uint64(db.RowsCount())
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.streams[key]
+	if st == nil {
+		if len(c.streams) >= c.cap {
+			for _, col := range cols {
+				name := col.Name
+				if name == "" {
+					name = "_msg"
+				}
+				c.blocks[name] += n
+			}
+			return
+		}
+		st = &streamColumns{}
+		c.streams[key] = st
+	}
+	st.rows += n
+	for _, col := range cols {
+		name := col.Name
+		if name == "" {
+			name = "_msg"
+		}
+		id, ok := c.ids[name]
+		if !ok {
+			id = len(c.names)
+			c.ids[name] = id
+			c.names = append(c.names, name)
+		}
+		for id/64 >= len(st.cols) {
+			st.cols = append(st.cols, 0)
+		}
+		st.cols[id/64] |= 1 << (id % 64)
+	}
+}
+
+func (c *fieldNamesCounter) result() []logstorage.ValueWithHits {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	hits := make(map[string]uint64, len(c.names)+len(c.blocks))
+	for name, n := range c.blocks {
+		hits[name] += n
+	}
+	for _, st := range c.streams {
+		for w, word := range st.cols {
+			for ; word != 0; word &= word - 1 {
+				hits[c.names[w*64+bits.TrailingZeros64(word)]] += st.rows
+			}
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+	out := make([]logstorage.ValueWithHits, 0, len(hits))
+	for name, n := range hits {
+		out = append(out, logstorage.ValueWithHits{Value: name, Hits: n})
+	}
+	return logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{out}, 0, false)
+}
+
+// streamKeyOf is the stream a block's rows belong to: its _stream_id, else its
+// _stream, else none. The blocks the readers emit hold one stream.
+func streamKeyOf(cols []logstorage.BlockColumn) string {
+	var stream string
+	for _, c := range cols {
+		if len(c.Values) == 0 {
+			continue
+		}
+		switch c.Name {
+		case "_stream_id":
+			if c.Values[0] != "" {
+				return "i" + c.Values[0]
+			}
+		case "_stream":
+			stream = c.Values[0]
+		}
+	}
+	if stream != "" {
+		return "s" + stream
+	}
+	return ""
 }
 
 // valuesWithHitsOfBlock reads the two columns (name, hits) upstream's

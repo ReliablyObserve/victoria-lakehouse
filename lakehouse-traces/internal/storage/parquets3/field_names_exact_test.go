@@ -146,3 +146,27 @@ func TestTraceGetStreamFieldNames_CreditsTheSpansOfEachStream(t *testing.T) {
 		t.Errorf("empty window answered %v", got)
 	}
 }
+
+// The answer does not depend on how the spans of a stream are spread over
+// objects: one stream held in two objects credits a field one span carries
+// with every span of the stream, as one block does.
+func TestTraceFieldNames_DoNotDependOnTheObjectLayout(t *testing.T) {
+	first := []schema.TraceRow{fnSpan(1*time.Minute, "GET", "GET"), fnSpan(2*time.Minute, "GET", "")}
+	second := []schema.TraceRow{fnSpan(3*time.Minute, "GET", ""), fnSpan(4*time.Minute, "GET", "")}
+	one := fvcStorage(t, append(append([]schema.TraceRow{}, first...), second...))
+	two := fvcStorage(t, first, second)
+	a, err := one.GetFieldNames(context.Background(), nil, fnWindow(t, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := two.GetFieldNames(context.Background(), nil, fnWindow(t, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("one object: %v\ntwo objects: %v", a, b)
+	}
+	if m := namesToHits(b); m["span_attr:custom.attr"] != 4 {
+		t.Errorf("span_attr:custom.attr hits = %d, want 4", m["span_attr:custom.attr"])
+	}
+}
