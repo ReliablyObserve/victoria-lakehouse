@@ -66,15 +66,14 @@ class GateWorkflows(unittest.TestCase):
         self.assertEqual(set(base[True]["pull_request_target"]["types"]), want)
         self.assertEqual(set(heavy[True]["pull_request"]["types"]), {"opened", "synchronize", "reopened"})
 
-    def test_transition_fallback_can_read_the_timeline(self):
-        # B1: a merge base that predates the bootstrap runs its own exemption check, which
-        # reads the PR timeline and needs the token and the read permissions.
+    def test_there_is_no_transition_fallback_and_no_token(self):
+        # Issue 456: the bootstrap is on main, so a base without it is refused, not emulated.
         text, doc = load("registry-gate.yaml")
-        self.assertEqual(doc["permissions"], {"contents": "read", "issues": "read", "pull-requests": "read"})
+        self.assertEqual(doc["permissions"], {"contents": "read"})
         gate_step = [s for s in steps(doc) if s.get("name", "").startswith("Product changes")][0]
-        self.assertEqual(gate_step["env"]["GITHUB_TOKEN"], "${{ secrets.GITHUB_TOKEN }}")
-        self.assertIn("PR_NUMBER", gate_step["env"])
-        self.assertIn("issues/456", text)
+        self.assertNotIn("GITHUB_TOKEN", gate_step["env"])
+        self.assertNotIn("<<'BOOT'", text)
+        self.assertIn("rebase this PR onto the current", text)
 
     def test_the_pull_request_target_gate_never_checks_the_pr_out(self):
         text, doc = load("registry-gate-base.yaml")
@@ -100,6 +99,18 @@ class GateWorkflows(unittest.TestCase):
         self.assertIn("--lock-cells tests/parity/lock_cells.txt", m.group(0))
         self.assertIn("--registry tests/conformance/registry/rows", m.group(0))
         self.assertIn("--allowlist tests/parity/known_failures.txt", m.group(0))
+
+
+    def test_the_parity_job_generates_a_fresh_nonce_for_the_suite_and_the_ratchet(self):
+        text, doc = load("parity.yaml")
+        run = [s for s in steps(doc) if s.get("name", "").startswith("Run parity tests")][0]["run"]
+        self.assertIn("PARITY_LOCK_NONCE=$(openssl rand -hex 16)", run)
+        self.assertIn('echo "PARITY_LOCK_NONCE=$PARITY_LOCK_NONCE" >> "$GITHUB_ENV"', run)
+        self.assertLess(run.index("openssl rand"), run.index("docker compose"), "the nonce exists before the suite starts")
+        with open(os.path.join(ROOT, "tests/parity/docker-compose.yml"), encoding="utf-8") as fh:
+            self.assertIn("PARITY_LOCK_NONCE: ${PARITY_LOCK_NONCE:-}", fh.read())
+        with open(os.path.join(ROOT, "tests/parity/lock_cells_test.go"), encoding="utf-8") as fh:
+            self.assertIn('os.Getenv("PARITY_LOCK_NONCE")', fh.read())
 
 
 if __name__ == "__main__":

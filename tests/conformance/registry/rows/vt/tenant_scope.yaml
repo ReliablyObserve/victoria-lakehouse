@@ -15,7 +15,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vt.jaeger.services.tenant_scope.default.bucket
@@ -31,7 +31,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
 
 - id: vt.jaeger.services.tenant_scope.scoped.prefix
@@ -47,7 +47,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vt.jaeger.services.tenant_scope.scoped.bucket
@@ -63,7 +63,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
 
 - id: vt.jaeger.services.tenant_scope.unknown.prefix
@@ -79,7 +79,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vt.jaeger.services.tenant_scope.unknown.bucket
@@ -95,7 +95,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
 
 - id: vt.jaeger.services.tenant_scope.global.prefix
@@ -111,7 +111,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vt.jaeger.services.tenant_scope.global.bucket
@@ -127,7 +127,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
 
 - id: vt.jaeger.traces_search.tenant_scope.default.prefix
@@ -143,7 +143,7 @@
   compare: { type: trace }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vt.jaeger.traces_search.tenant_scope.default.bucket
@@ -159,7 +159,7 @@
   compare: { type: trace }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "Without AccountID/ProjectID headers VL scopes the read to tenant 0:0; the cold tier must answer with tenant 0:0's data only (plus legacy untenanted objects, which belong to 0:0). Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
 
 - id: vt.jaeger.traces_search.tenant_scope.scoped.prefix
@@ -175,7 +175,7 @@
   compare: { type: trace }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vt.jaeger.traces_search.tenant_scope.scoped.bucket
@@ -191,7 +191,7 @@
   compare: { type: trace }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
 
 - id: vt.jaeger.traces_search.tenant_scope.unknown.prefix
@@ -207,7 +207,7 @@
   compare: { type: trace }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vt.jaeger.traces_search.tenant_scope.unknown.bucket
@@ -223,7 +223,7 @@
   compare: { type: trace }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."
 
 - id: vt.jaeger.traces_search.tenant_scope.global.prefix
@@ -239,7 +239,7 @@
   compare: { type: trace }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vt.jaeger.traces_search.tenant_scope.global.bucket
@@ -255,5 +255,5 @@
   compare: { type: trace }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "Only a request presenting the configured global-read header or bearer token is widened to all tenants; a wrong value keeps the default-tenant scope. Cold-only: hot VL has no global-read credential. Layout: the tenant's objects live in a dedicated bucket (s3.bucket override); the request must not reach any other tenant's bucket."

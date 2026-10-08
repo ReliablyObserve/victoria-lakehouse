@@ -133,6 +133,12 @@
     - tests/conformance/registry/paritygate_test.go#TestParityParsers
     - tests/conformance/registry/paritygate_test.go#TestExactEquivalent
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_FixNeedsLocks
+    - tests/conformance/registry/lockcode_test.go#TestLockCodeFiles_CallGraph
+    - tests/conformance/registry/lockcode_test.go#TestLockCodeFiles_ProductPackagesKeepProductCodeOut
+    - tests/conformance/registry/lockcode_test.go#TestLockCodeFiles_ParseError
+    - tests/conformance/registry/lockcode_test.go#TestLockCodeChanges
+    - tests/conformance/registry/lockcode_test.go#TestLockCodeChanges_ProductLockPackage
+    - tests/conformance/registry/lockcode_test.go#TestLockTestRefs_OnlyExactRowsAndTestFiles
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_FlipIsTheOnlyTrigger
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_NonFixPRsReportNoLockProblems
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_Weakenings
@@ -162,6 +168,7 @@
     - UPSTREAM_COVERAGE.md
   changelog_bullets:
     - 'Conformance registry + upstream inventory (verification machine, first slice).'
+    - 'Registry gate: lock packages are owner-gated, locks are `file#Test`, run nonce.'
   highlight: >-
     **Conformance registry**: one row per upstream endpoint, pipe, filter, stats function and TraceQL function, extracted from the vendored VL/VT sources and gated in CI — an upstream surface without a row fails the build.
   description: >-

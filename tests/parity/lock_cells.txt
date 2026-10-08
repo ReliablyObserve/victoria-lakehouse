@@ -14,3 +14,9 @@ TestParity_Traces_EventsLinksLayers            2270
 TestParity_Traces_EventsLinksScopeAttrs       85  # traces selected x 4 comparisons + 5 count cases
 TestParity_FieldValues_EmptyBucket              208  # (13 logs + 13 traces cases) x 4 layers x 2 tenant forms
 TestParity_FieldValues_MapAttributes             48  # 24 logs + 18 traces + 2 unknown-field + 4 tenant cells
+TestParity_ColdRowFields                          50  # limit=50 rows, exactly the query limit; observed in parity run 37674171609
+TestParity_Traces_ColdSpanFields                  50  # limit=50 spans; observed in parity run 37674171609
+TestTenantParity_TenantCountsSumToTotal           2  # file total and byte total; observed in parity run 37674171609
+TestTenantParity_UnknownTenantReturnsEmpty        4  # two subtests x 2 cells; observed in parity run 37674171609
+TestTenantParity_DependenciesAPI_RespectsScope    2  # one cell per tenant graph; observed in parity run 37674171609
+TestTenantParity_TraceQLPerTenant                 2  # one cell per tenant search; observed in parity run 37674171609

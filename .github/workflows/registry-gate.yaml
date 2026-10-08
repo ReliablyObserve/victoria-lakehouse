@@ -16,13 +16,8 @@ on:
     # label is honoured only in the run its own labeled event triggers.
     types: [opened, synchronize, reopened, labeled, unlabeled, edited]
 
-# issues/pull-requests: read serve only the transition fallback below: a merge base
-# that predates this file's bootstrap runs its OWN exemption check, which reads the
-# PR timeline. See https://github.com/ReliablyObserve/victoria-lakehouse/issues/456.
 permissions:
   contents: read
-  issues: read
-  pull-requests: read
 
 concurrency:
   group: registry-gate-${{ github.event.pull_request.number }}
@@ -51,18 +46,9 @@ jobs:
           if git cat-file -e "$base:scripts/ci/gate_bootstrap.sh" 2>/dev/null; then
             git show "$base:scripts/ci/gate_bootstrap.sh" > "$RUNNER_TEMP/gate_bootstrap.sh"
           else
-            # Transition only: the base predates the bootstrap, so write the same three
-            # commands it contains. Delete this branch once the bootstrap is on main:
-            # https://github.com/ReliablyObserve/victoria-lakehouse/issues/456
-            cat > "$RUNNER_TEMP/gate_bootstrap.sh" <<'BOOT'
-          set -euo pipefail
-          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
-          base=$(git merge-base "origin/${BASE_REF:-main}" HEAD)
-          gate="${RUNNER_TEMP:-/tmp}/gate-base"
-          if [ "$1" = prepare ]; then git worktree add --detach "$gate" "$base" >&2; echo "gate_dir=$gate"; exit 0; fi
-          (cd "$gate" && GOWORK=off GOTOOLCHAIN=local go build -o "${RUNNER_TEMP:-/tmp}/testlinks" ./tests/conformance/cmd/testlinks)
-          TESTLINKS_BIN="${RUNNER_TEMP:-/tmp}/testlinks" exec "$gate/scripts/ci/check_registry_touch.sh" "origin/${BASE_REF:-main}"
-          BOOT
+            # No fallback: a PR whose merge base predates the bootstrap must be rebased.
+            echo "::error::the merge base has no scripts/ci/gate_bootstrap.sh: rebase this PR onto the current $BASE_REF"
+            exit 1
           fi
           bash "$RUNNER_TEMP/gate_bootstrap.sh" prepare >> "$GITHUB_OUTPUT"
 
@@ -83,8 +69,4 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           LABEL_NAME: ${{ github.event.label.name }}
           SENDER: ${{ github.event.sender.login }}
-          # Only the transition fallback (a base without the bootstrap) uses these: its
-          # exemption check reads the PR timeline. The bootstrap's gate run drops them
-          # (env -i allow-list), and the new exemption check needs no token.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash "$RUNNER_TEMP/gate_bootstrap.sh" run

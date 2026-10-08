@@ -55,7 +55,7 @@
   compare: { type: ndjson-multiset }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vl.select.query.tenant_scope.scoped.bucket
@@ -87,7 +87,7 @@
   compare: { type: ndjson-multiset }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vl.select.query.tenant_scope.unknown.bucket
@@ -183,7 +183,7 @@
   compare: { type: values-with-hits }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vl.select.field_values.tenant_scope.scoped.bucket
@@ -215,7 +215,7 @@
   compare: { type: values-with-hits }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vl.select.field_values.tenant_scope.unknown.bucket
@@ -311,7 +311,7 @@
   compare: { type: values-with-hits }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vl.select.streams.tenant_scope.scoped.bucket
@@ -343,7 +343,7 @@
   compare: { type: values-with-hits }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vl.select.streams.tenant_scope.unknown.bucket
@@ -439,7 +439,7 @@
   compare: { type: series }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A read carrying one tenant's headers answers with exactly that tenant's data and nothing from any other tenant. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vl.select.hits.tenant_scope.scoped.bucket
@@ -471,7 +471,7 @@
   compare: { type: series }
   layers: [api]
   pending: true
-  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go] }
+  refs: { doc: docs/multi-tenancy.md, tests: [internal/storage/parquets3/tenant_scope_test.go, tests/e2e/multitenancy_test.go, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TenantCountsSumToTotal, tests/parity/tenant_scope_parity_test.go#TestTenantParity_UnknownTenantReturnsEmpty, tests/parity/tenant_scope_parity_test.go#TestTenantParity_DependenciesAPI_RespectsScope, tests/parity/tenant_scope_parity_test.go#TestTenantParity_TraceQLPerTenant] }
   notes: "A tenant with no data returns an empty answer; it must never fall through to a wider scan. Layout: tenants share one bucket under {AccountID}/{ProjectID}/."
 
 - id: vl.select.hits.tenant_scope.unknown.bucket

@@ -92,6 +92,8 @@ FIXTURE
     printf -- '- id: lh.existing.row\n  title: existing\n  refs:\n    tests:\n      - tests/parity/parity_test.go#TestOldParity\n' > tests/conformance/registry/rows/lh/endpoints.yaml
     mkdir -p tests/parity docs .github/workflows scripts/ci
     printf 'package parity\n\nimport "testing"\n\nfunc TestOldParity(t *testing.T) {}\n' > tests/parity/parity_test.go
+    printf 'package parity\n\nfunc helper() {}\n' > tests/parity/helpers.go
+    printf 'services: {}\n' > tests/parity/docker-compose.yml
     printf '# approvers\nszibis\n' > .github/registry-exempt-approvers
     printf 'jobs:\n  parity:\n    steps:\n      - run: |\n          python scripts/ci/parity_ratchet.py \\\n            --allowlist tests/parity/known_failures.txt \\\n            --summary-file x\n' > .github/workflows/parity.yaml
     mkdir -p internal/ui/static charts/victoria-lakehouse/templates
@@ -105,12 +107,15 @@ FIXTURE
     printf 'module x\n\ngo 1.22\n\nrequire (\n\tgithub.com/a/b v1.0.0\n\tgithub.com/klauspost/compress v1.0.0\n\tgithub.com/golang/snappy v1.0.0\n\tgoogle.golang.org/protobuf v1.0.0\n\tgithub.com/pierrec/lz4/v4 v4.0.0\n\tgithub.com/VictoriaMetrics/c v1.0.0\n)\n' > go.mod
     printf 'VL_VERSION_LOGS := v1.0.0\nVL_COMMIT_TRACES := abc123\nVT_VERSION := v0.1.0\nall:\n' > Makefile
     printf 'x\n' > go.sum
-    printf '# floors\nTestOldParity  5  # lock\n' > tests/parity/lock_cells.txt
-    printf '# allowlist\nTestOldParity  # B1: x\nTestParity_B  # B2: y\n' > tests/parity/known_failures.txt
+    printf 'package x\n\nimport "testing"\n\nfunc TestE(t *testing.T) {}\n' > internal/x/e_test.go
+    mkdir -p internal/y; printf 'package y\n\nimport "testing"\n\nfunc TestY(t *testing.T) {}\n' > internal/y/y_test.go
+    printf '# floors\nTestOldParity  5  # lock\nTestFixParity  3  # fixture parity test no row locks at base\n' > tests/parity/lock_cells.txt
+    printf '# allowlist\nTestFixParity  # B1: x\nTestParity_B  # B2: y\n' > tests/parity/known_failures.txt
     printf '| Id | Divergence |\n|---|---|\n| **B1** | open one |\n| **B2** | open two |\n| **Old thing (B0)** | **Resolved** | done |\n' > docs/parity-and-gaps.md
     cat >> tests/conformance/registry/rows/lh/endpoints.yaml <<'ROWS'
 - {id: lh.row.gap, title: gap, expect: differ, compare: {type: ndjson-multiset}}
 - {id: lh.row.lock, title: lock, expect: pass, compare: {type: exact-json}, request: {method: GET, path: /a}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}
+- {id: lh.row.prodlock, title: prodlock, expect: pass, compare: {type: exact-json}, request: {method: GET, path: /p}, refs: {tests: [internal/x/e_test.go#TestE]}}
 - {id: lh.row.vwh, title: vwh, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0"}}, request: {method: GET, path: /b}}
 ROWS
     printf -- '- id: lh.feature.storage.existing\n  title: existing\n' > tests/conformance/registry/features/storage.yaml
@@ -130,6 +135,7 @@ ROWS
 run_case() {
   local name="$1" want="$2" fragment="$3"
   shift 3
+  [[ -z "${ONLY:-}" || "$name" == *"$ONLY"* ]] || return 0
   local dir out rc pre_ok=1
   dir="$(new_repo)"
   (
@@ -363,16 +369,16 @@ product_and_whitespace_registry() {
   printf -- '- id: lh.feature.storage.existing\n\n  title:   existing\n' > tests/conformance/registry/features/storage.yaml
 }
 add_parity_test() {
-  printf '\nfunc TestNewParity(t *testing.T) {}\n' >> tests/parity/parity_test.go
+  printf 'package parity\n\nimport "testing"\n\nfunc TestNewParity(t *testing.T) {}\n' > tests/parity/new_parity_test.go
 }
 new_test_unreferenced() { registry_row_change; add_parity_test; }
 new_test_referenced() {
   add_parity_test
-  printf -- '  refs:\n    tests:\n      - tests/parity/parity_test.go#TestNewParity\n' >> tests/conformance/registry/features/storage.yaml
+  printf -- '  refs:\n    tests:\n      - tests/parity/new_parity_test.go#TestNewParity\n' >> tests/conformance/registry/features/storage.yaml
 }
 new_test_in_linked_file() {
   add_parity_test
-  printf -- '- id: lh.feature.storage.f\n  title: f\n  tests:\n    - tests/parity/parity_test.go\n' >> tests/conformance/registry/features/storage.yaml
+  printf -- '- id: lh.feature.storage.f\n  title: f\n  tests:\n    - tests/parity/new_parity_test.go\n' >> tests/conformance/registry/features/storage.yaml
 }
 new_unit_test_unreferenced() {
   registry_row_change
@@ -380,7 +386,7 @@ new_unit_test_unreferenced() {
 }
 new_test_helper_not_a_test() {
   registry_row_change
-  printf 'package x\n\nimport "testing"\n\nfunc TestMain(m *testing.M) {}\nfunc helper(t *testing.T) {}\nfunc Testify(t *testing.T) {}\n' > internal/x/new_test.go
+  printf 'package x\n\nimport "testing"\n\nfunc TestMain(m *testing.M) {}\nfunc helper(t *testing.T) {}\nfunc Testify(t *testing.T) {}\n' > internal/y/new_test.go
 }
 rename_referenced_test() {
   registry_row_change
@@ -409,20 +415,20 @@ run_case "a product change with a features change passes" ok "registry-touch che
 run_case "a whitespace/comment-only registry change does not count" fail \
   "makes no real content change" product_and_whitespace_registry
 run_case "a new parity test nobody references fails" fail \
-  "tests/parity/parity_test.go#TestNewParity" new_test_unreferenced
+  "tests/parity/new_parity_test.go#TestNewParity" new_test_unreferenced
 run_case "a new unit test in a product package nobody references fails" fail \
   "internal/x/new_test.go#TestNewUnit" new_unit_test_unreferenced
 run_case "a new parity test referenced by a feature passes" ok "testlinks OK (1 tests added, all linked" new_test_referenced
-run_case "L1: a file-level reference does not link a new test in that file" fail "tests/parity/parity_test.go#TestNewParity" new_test_in_linked_file
+run_case "L1: a file-level reference does not link a new test in that file" fail "tests/parity/new_parity_test.go#TestNewParity" new_test_in_linked_file
 run_case "TestMain, helpers and Test-prefixed non-tests need no link" ok "testlinks OK (0 tests added" new_test_helper_not_a_test
 run_case "a renamed test whose old name is still referenced fails" fail \
   "no such test any more in tests/parity/parity_test.go" rename_referenced_test
 run_case "a renamed test is reported as added and unlinked too" fail \
   "tests/parity/parity_test.go#TestRenamedParity" rename_referenced_test
-run_case "a renamed test with the reference updated passes" ok "testlinks OK" rename_and_relink_test
+run_case "renaming a lock test is lock code, owner review" fail "lock code changed — owner review" rename_and_relink_test
 run_case "a deleted test file whose reference remains fails" fail \
   "registry references point at tests this PR removed" delete_referenced_test_file
-run_case "a test moved to another file of its package with the reference updated passes" ok "testlinks OK (0 tests added" \
+run_case "moving a lock test to another file is lock code, owner review" fail "lock code changed — owner review" \
   move_test_to_other_file
 
 echo
@@ -447,7 +453,7 @@ echo
 echo "== rule 1 fires on product code only =="
 tests_only_change() { mkdir -p tests/e2e; printf 'helper\n' > tests/e2e/data.txt; printf 'x==1\n' > tests/requirements.txt; }
 infra_only_change() { printf '\nextra:\n' >> Makefile; printf '#!/bin/sh\n' > scripts/tool.sh; }
-test_file_edit_only() { printf '// edit\n' >> tests/parity/parity_test.go; }
+test_file_edit_only() { printf '// edit\n' >> internal/y/y_test.go; }
 chart_change() { mkdir -p charts/c; printf 'a: 1\n' > charts/c/values.yaml; }
 patch_change() { mkdir -p patches; printf 'diff\n' > patches/x.patch; }
 generated_go_change() { printf '// Code generated by x. DO NOT EDIT.\n\npackage x\n' > internal/x/z.go; }
@@ -459,7 +465,7 @@ run_case "a patches/ change is product code" fail "but not tests/conformance/reg
 run_case "a Code-generated marker does not exempt product Go (H3)" fail "product code: internal/x/z.go" generated_go_change
 run_case "a feat: commit that touches only docs does not trigger rule 1" ok "registry-touch check OK" docs_only
 COMMIT_MSG='feat: only tests' run_case "a feat: subject alone does not trigger rule 1" ok "registry-touch check OK" tests_only_change
-run_case "new tests in a tests-only PR still need links (rule 2)" fail "tests/parity/parity_test.go#TestNewParity" add_parity_test
+run_case "new tests in a tests-only PR still need links (rule 2)" fail "tests/parity/new_parity_test.go#TestNewParity" add_parity_test
 
 echo
 echo "== the exempt label is honoured only when an approver applied it =="
@@ -474,10 +480,10 @@ PR_LABELS=registry-exempt PR_BODY='Registry: none — refactor' EVENT_ACTION=lab
   bash -c "printf 'szibis\nmallory\n' > .github/registry-exempt-approvers; $(declare -f product_change); product_change" 
 echo
 echo "== parity fixes ship locks; locks are never weakened =="
-drop_allowlist_entry() { sed -i.bak '/TestOldParity/d' tests/parity/known_failures.txt && rm -f tests/parity/known_failures.txt.bak; }
-touch_parity_test() { printf 'package parity\n\nimport "testing"\n\nfunc TestOldParity(t *testing.T) { _ = 1 }\n' > tests/parity/parity_test.go; }
-add_exact_row_for_parity_test() { printf -- '- {id: lh.row.new_lock, title: new lock, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
-add_loose_row_for_parity_test() { printf -- '- {id: lh.row.loose, title: loose, expect: pass, compare: {type: status}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
+drop_allowlist_entry() { sed -i.bak '/TestFixParity/d' tests/parity/known_failures.txt && rm -f tests/parity/known_failures.txt.bak; }
+touch_parity_test() { printf 'package parity\n\nimport "testing"\n\nfunc TestFixParity(t *testing.T) { _ = 1 }\n' > tests/parity/fix_test.go; } # a NEW file: editing an existing file of tests/parity is lock code
+add_exact_row_for_parity_test() { printf -- '- {id: lh.row.new_lock, title: new lock, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/fix_test.go#TestFixParity]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
+add_loose_row_for_parity_test() { printf -- '- {id: lh.row.loose, title: loose, expect: pass, compare: {type: status}, refs: {tests: [tests/parity/fix_test.go#TestFixParity]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
 add_exact_row_other_tests() { printf -- '- {id: lh.row.elsewhere, title: e, expect: pass, compare: {type: exact-json}, refs: {tests: [internal/x/x_test.go]}}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml; }
 full_parity_fix() { drop_allowlist_entry; touch_parity_test; add_exact_row_for_parity_test; }
 mark_resolved() { sed -i.bak 's/| \*\*B1\*\* | open one |/| **B1** | **Resolved** | fixed |/' docs/parity-and-gaps.md && rm -f docs/parity-and-gaps.md.bak; }
@@ -505,7 +511,7 @@ run_case "flipping a known-gap row to pass is a parity fix" fail "row flipped fr
 run_case "a docs-resolved parity fix with its locks passes" ok "parity-fix PR: true" \
   bash -c "$(declare -f mark_resolved touch_parity_test add_exact_row_for_parity_test); mark_resolved; touch_parity_test; add_exact_row_for_parity_test"
 run_case "a PR that leaves the allowlist and docs alone is not a parity fix" ok "parity-fix PR: false" product_and_row
-rename_allowlist_entry() { sed -i.bak 's#^TestOldParity #TestOldParity/sub #' tests/parity/known_failures.txt && rm -f tests/parity/known_failures.txt.bak; registry_row_change; }
+rename_allowlist_entry() { sed -i.bak 's#^TestFixParity #TestFixParity/sub #' tests/parity/known_failures.txt && rm -f tests/parity/known_failures.txt.bak; registry_row_change; }
 run_case "renaming an allowlist entry is a weakening with a rename hint" fail "looks like a rename" rename_allowlist_entry
 run_case "adding an allowlist entry fails as a weakening" fail "allowlist entry added: TestParity_C" add_allowlist_entry
 EVENT_ACTION=labeled LABEL_NAME=registry-exempt SENDER=szibis PR_LABELS=registry-exempt PR_BODY='Registry: none — owner accepted a new known failure' run_case "the owner exemption allows an allowlist entry" ok "skipped" add_allowlist_entry
@@ -545,18 +551,18 @@ b9_allowlist_deleted() { git rm -q tests/parity/known_failures.txt; registry_row
 b9_workflow_arg_changed() { sedi 's#tests/parity/known_failures.txt#tests/parity/other.txt#' .github/workflows/parity.yaml; : > tests/parity/other.txt; registry_row_change; }
 b10_comment_only_parity_touch() {
   drop_allowlist_entry
-  printf '\n// touch\n' >> tests/parity/parity_test.go
+  printf '// a comment\n' >> tests/parity/parity_test.go
   sedi 's/title: lock/title: lock (edited)/' $ROWS
 }
 fix_with_vwh_lock() {
   drop_allowlist_entry; touch_parity_test
-  printf -- '- {id: lh.row.vwh2, title: v, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0"}}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> $ROWS
+  printf -- '- {id: lh.row.vwh2, title: v, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0"}}, refs: {tests: [tests/parity/fix_test.go#TestFixParity]}}\n' >> $ROWS
 }
 fix_with_loose_vwh() {
   drop_allowlist_entry; touch_parity_test
-  printf -- '- {id: lh.row.vwh2, title: v, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0.5"}}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> $ROWS
+  printf -- '- {id: lh.row.vwh2, title: v, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0.5"}}, refs: {tests: [tests/parity/fix_test.go#TestFixParity]}}\n' >> $ROWS
 }
-flip_gap_exact_with_ref() { flip_gap_to_pass; sedi '/lh.row.gap/s#compare: {type: ndjson-multiset}#compare: {type: exact-json}, refs: {tests: [tests/parity/parity_test.go\#TestOldParity]}#' $ROWS; touch_parity_test; }
+flip_gap_exact_with_ref() { flip_gap_to_pass; sedi '/lh.row.gap/s#compare: {type: ndjson-multiset}#compare: {type: exact-json}, refs: {tests: [tests/parity/fix_test.go\#TestFixParity]}#' $ROWS; touch_parity_test; }
 flip_gap_only_other_lock() { flip_gap_to_pass; touch_parity_test; add_exact_row_for_parity_test; }
 b11_unicode_test() { registry_row_change; printf 'package x\n\nimport "testing"\n\nfunc TestÄé(t *testing.T) {}\n' > internal/x/uni_test.go; }
 l1_syntax_error_test() { registry_row_change; printf 'package x\n\nfunc TestBroken( {\n' > internal/x/broken_test.go; }
@@ -658,12 +664,12 @@ n4_build_constraint() { printf '//go:build ignore\n\n' | cat - tests/parity/pari
 n4_build_comment_edit() { printf '// harmless comment\n' | cat - tests/parity/parity_test.go > tests/parity/x.tmp && mv tests/parity/x.tmp tests/parity/parity_test.go; registry_row_change; }
 n5_skip_added() { sedi 's/func TestOldParity(t \*testing.T) {}/func TestOldParity(t *testing.T) { t.Skip("flaky") }/' tests/parity/parity_test.go; registry_row_change; }
 n6_unrelated_lock() {
-  sedi '/TestOldParity/d' tests/parity/known_failures.txt
+  sedi '/TestFixParity/d' tests/parity/known_failures.txt
   touch_parity_test
   printf 'package parity\n\nimport "testing"\n\nfunc TestElse(t *testing.T) { _ = 1 }\n' > tests/parity/else_test.go
   printf -- '- {id: lh.row.else, title: e, expect: pass, compare: {type: exact-json}, refs: {tests: [tests/parity/else_test.go#TestElse]}}\n' >> $ROWS
 }
-n6_pending_lock() { drop_allowlist_entry; touch_parity_test; printf -- '- {id: lh.row.pend, title: p, expect: pass, pending: true, compare: {type: exact-json}, refs: {tests: [tests/parity/parity_test.go#TestOldParity]}}\n' >> $ROWS; }
+n6_pending_lock() { drop_allowlist_entry; touch_parity_test; printf -- '- {id: lh.row.pend, title: p, expect: pass, pending: true, compare: {type: exact-json}, refs: {tests: [tests/parity/fix_test.go#TestFixParity]}}\n' >> $ROWS; }
 n7_prose_only_registry_edit() { product_change; sedi 's/title: lock/title: lock (reworded)/' $ROWS; printf -- '- id: lh.feature.storage.existing\n  title: existing\n  description: Also words\n' > tests/conformance/registry/features/storage.yaml; }
 n8_quoted_require() { sedi 's#github.com/VictoriaMetrics/c v1.0.0#"github.com/VictoriaMetrics/c" v1.5.0#' go.mod; }
 gate_file_touch() { mkdir -p scripts/ci tests/parity; printf '#!/usr/bin/env python3\n' > scripts/ci/parity_ratchet.py; }
@@ -714,10 +720,10 @@ run_case "N3: swapping a pass row's seed is a weakening" fail "pass row's seed c
 run_case "N4: a build constraint on a lock's test file is a weakening" fail "build constraint header changed" n4_build_constraint
 run_case "N4: so is a comment-only header edit" fail "build constraint header changed" n4_build_comment_edit
 run_case "N5: a Skip added to a lock's test file is a weakening" fail "a Skip call was added" n5_skip_added
-run_case "N6: a parity fix locked by an unrelated test does not pass" fail "no lock row names TestOldParity" n6_unrelated_lock
+run_case "N6: a parity fix locked by an unrelated test does not pass" fail "no lock row names TestFixParity" n6_unrelated_lock
 run_case "N6/M2: a pending row IS a lock when its test has a cell floor" ok "parity-fix PR: true" n6_pending_lock
 n6_pending_lock_no_floor() { n6_pending_lock; : > tests/parity/lock_cells.txt; }
-run_case "N6/M2: a pending row is no lock without a cell floor" fail "no lock row names TestOldParity" n6_pending_lock_no_floor
+run_case "N6/M2: a pending row is no lock without a cell floor" fail "no lock row names TestFixParity" n6_pending_lock_no_floor
 run_case "N7: a product change 'covered' by a prose edit fails" fail "makes no real content change" n7_prose_only_registry_edit
 COMMIT_MSG='build(deps): bump c' run_case "N8: a quoted VictoriaMetrics require is still critical" fail "shipped build file: go.mod" n8_quoted_require
 run_case "N10: parity_ratchet.py is a gate file" fail "changes the registry gate itself" gate_file_touch
@@ -726,7 +732,7 @@ run_case "C1: conformance.yaml is a gate file" fail "changes the registry gate i
 run_case "registry-gate.yaml is a gate file" fail "changes the registry gate itself" workflow_gate_touch registry-gate.yaml
 run_case "registry-gate-base.yaml is a gate file" fail "changes the registry gate itself" workflow_gate_touch registry-gate-base.yaml
 run_case "L2: a new tests/s3compat test must be linked" fail "tests/s3compat/a_test.go#TestS3New" l2_s3compat_test
-run_case "a lock's renamed test replaces its reference without weakening it (the floor moves with it)" ok "testlinks OK" renamed_lock_reference
+run_case "a lock's renamed test is lock code, owner review (the floor moves with it)" fail "lock code changed — owner review" renamed_lock_reference
 run_case "a rename that lowers the floor is a weakening" fail "lost its test reference" renamed_lock_without_the_floor
 run_case "a rename to a test with no floor entry is a weakening" fail "lost its test reference" renamed_lock_with_no_floor_entry
 run_case "a lowered floor is a weakening" fail "cell floor of TestOldParity removed or lowered (5 -> 4)" lowered_floor
@@ -1113,6 +1119,41 @@ FIXTURE
   fi
   rm -rf "$tmp"
 }
+
+echo "== lock packages are owner-gated =="
+lock_test_edited() { registry_row_change; printf 'package parity\n\nimport "testing"\n\nfunc TestOldParity(t *testing.T) { t.Skip() }\n' > tests/parity/parity_test.go; }
+lock_helper_added() { registry_row_change; printf '\nfunc judge() bool { return true }\n' >> tests/parity/parity_test.go; }
+lock_pkg_init_file() { registry_row_change; printf 'package parity\n\nfunc init() {}\n' > tests/parity/setup_test.go; }
+lock_pkg_var_file() { registry_row_change; printf 'package parity\n\nvar _ = func() int { return 0 }()\n' > tests/parity/zz_env_test.go; }
+lock_pkg_testmain_file() { registry_row_change; printf 'package parity\n\nimport "testing"\n\nfunc TestMain(m *testing.M) {}\n' > tests/parity/main_test.go; }
+lock_pkg_func_only_file() { registry_row_change; printf 'package parity\n\nfunc Helper() {}\n\nconst K = 1\n\ntype T struct{}\n' > tests/parity/rows_ties.go; }
+lock_pkg_init_appended_to_nonlock_file() { registry_row_change; printf 'package parity\n\nfunc TestNotALock(t *testing.T) {}\n\nfunc init() {}\n' > tests/parity/parity_test.go; }
+lock_pkg_compose_edited() { registry_row_change; mkdir -p tests/parity; printf 'services: {lh: {}}\n' > tests/parity/docker-compose.yml; }
+lock_pkg_existing_plain_go_edited() { registry_row_change; printf 'package parity\n\nfunc helperEdited() {}\n' > tests/parity/helpers.go; }
+lock_new_test_new_file() {
+  printf 'package parity\n\nimport "testing"\n\nfunc TestFreshParity(t *testing.T) {}\n' > tests/parity/fresh_test.go
+  printf -- '  refs:\n    tests:\n      - tests/parity/fresh_test.go#TestFreshParity\n' >> tests/conformance/registry/features/storage.yaml
+}
+other_test_file_edited() { printf 'package x\n\nimport "testing"\n\nfunc TestOther(t *testing.T) {}\n' > internal/x/other_test.go; printf -- '  refs:\n    tests:\n      - internal/x/other_test.go#TestOther\n' >> tests/conformance/registry/features/storage.yaml; }
+run_case "editing a lock test file is flagged for owner review" fail "lock code changed — owner review" lock_test_edited
+run_case "the lock-code message names the file" fail "tests/parity/parity_test.go" lock_test_edited
+run_case "adding a helper to a lock test file is flagged" fail "lock code changed — owner review" lock_helper_added
+run_case "a new file with init() in a lock package is flagged" fail "tests/parity/setup_test.go" lock_pkg_init_file
+run_case "G1: a new file with a package-level var initializer is flagged" fail "tests/parity/zz_env_test.go" lock_pkg_var_file
+run_case "a new file with TestMain is flagged" fail "tests/parity/main_test.go" lock_pkg_testmain_file
+run_case "a new file with only funcs, consts and types is free" ok "testlinks OK" lock_pkg_func_only_file
+run_case "G2: an init() appended to an existing non-lock test file is flagged" fail "tests/parity/parity_test.go" lock_pkg_init_appended_to_nonlock_file
+run_case "G3: the parity compose runtime config is flagged" fail "tests/parity/docker-compose.yml" lock_pkg_compose_edited
+run_case "an existing plain .go helper of a lock package is flagged" fail "tests/parity/helpers.go" lock_pkg_existing_plain_go_edited
+run_case "a new test in a new file of a lock package is free" ok "testlinks OK" lock_new_test_new_file
+lock_product_test_file_edited() { registry_row_change; printf 'package x\n\nimport "testing"\n\nfunc TestE(t *testing.T) { t.Skip() }\n' > internal/x/e_test.go; }
+lock_product_new_nontest_file() { registry_row_change; printf 'package x\n\nvar V = 1\n\nfunc init() {}\n' > internal/x/new.go; }
+lock_product_new_test_var() { registry_row_change; printf 'package x\n\nvar V = 1\n' > internal/x/v_test.go; }
+run_case "a product file edit in a package that holds a lock passes" ok "registry-touch check OK" product_and_row
+run_case "a new non-test file in a product lock package is free" ok "" lock_product_new_nontest_file
+run_case "an existing test file of a product lock package is flagged" fail "internal/x/e_test.go" lock_product_test_file_edited
+run_case "a new test file with a package var in a product lock package is flagged" fail "internal/x/v_test.go" lock_product_new_test_var
+run_case "a new test file outside every lock package is free" ok "" other_test_file_edited
 
 run_unreleased_bullet_case
 
