@@ -204,10 +204,11 @@ func TestGetFieldNames_FreshFlushInsideACompactedRange(t *testing.T) {
 			hits = n.Hits
 		}
 	}
-	// Both objects carry service.name, so the hits must cover both; the drop
-	// showed only the compacted object's rows.
-	want := uint64(files[0].RowCount + files[1].RowCount)
-	if hits != want {
-		t.Errorf("field_names service.name hits=%d, want %d (both objects)", hits, want)
+	// The query selects the marker rows, which only the fresh flush holds: the
+	// field list must carry them (the drop lost the fresh object), and the hits
+	// are the matching rows exactly.
+	_ = files
+	if want := uint64(overlapMarkerRows); hits != want {
+		t.Errorf("field_names service.name hits=%d, want %d (the marker rows of the fresh flush)", hits, want)
 	}
 }

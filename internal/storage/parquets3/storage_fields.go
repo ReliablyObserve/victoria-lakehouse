@@ -2,7 +2,6 @@ package parquets3
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 
@@ -135,34 +134,6 @@ func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl 
 	return cached, f, nil
 }
 
-// remapSlotFieldHits drops UNMAPPED Tier-2 spare-slot columns (ded_sNN) from a
-// field-name hit map and renames MAPPED ones to their configured attribute name,
-// mirroring remapSlotFields on the row read path. Spare-slot column names are
-// exactly 7 chars with the "ded_s" prefix (ded_s01..ded_s99); no real field
-// collides with that shape.
-func remapSlotFieldHits(hits map[string]uint64) {
-	if len(hits) == 0 {
-		return
-	}
-	slotMap := activeSlotResolver.Mapping()
-	var drop []string
-	add := map[string]uint64{}
-	for name, n := range hits {
-		if len(name) == 7 && name[:5] == "ded_s" {
-			drop = append(drop, name)
-			if mapped, ok := slotMap[name]; ok && mapped != "" {
-				add[mapped] = n
-			}
-		}
-	}
-	for _, k := range drop {
-		delete(hits, k)
-	}
-	for k, n := range add {
-		hits[k] = n
-	}
-}
-
 // GetFieldNames answers /select/logsql/field_names as VictoriaLogs does: the
 // field_names pipe over the rows of the query, in every data layer at once (the
 // insert buffer, the peers' buffers and the Parquet objects, through RunQuery),
@@ -174,95 +145,6 @@ func remapSlotFieldHits(hits map[string]uint64) {
 // MAP's keys, the names a trace span is stored under) nor the streams.
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
 	return storage.FieldNamesViaQuery(ctx, tenantIDs, q, s.RunQuery)
-}
-
-// labelIndexNamesWithHits returns each name as a ValueWithHits, populating
-// Hits from the provided map (or 0 if absent).
-func labelIndexNamesWithHits(names []string, hits map[string]uint64) []logstorage.ValueWithHits {
-	result := make([]logstorage.ValueWithHits, len(names))
-	for i, name := range names {
-		result[i] = logstorage.ValueWithHits{Value: name, Hits: hits[name]}
-	}
-	return result
-}
-
-// accumulateFieldHits computes per-field non-null row counts for every
-// top-level column in f and adds them into the hits map keyed by the
-// registry's internal field name.
-//
-// Uses the Parquet column index: for each row group and column the count is
-// the chunk's values minus the nulls summed over the pages, without reading
-// data pages. A column whose chunks carry no usable index is handled by cause:
-//
-//   - the file has none (ErrMissingColumnIndex, an external writer that wrote
-//     no page index) or it lists no pages: the chunk is credited in full, a
-//     slight over-count rather than a silent drop (the writer gave no null
-//     information at all);
-//   - the index exists but is not readable here (a cache entry that holds the
-//     footer without the page-index stripe fails the read with
-//     errOutsideCachedRange; an S3 error): the count is UNKNOWN. The column is
-//     recorded in unknown (nil to ignore), never credited: zero-filled bytes
-//     used to decode as an empty index and credit every all-null column with
-//     its full row count, a different answer for the same file depending on the
-//     cache state.
-func (s *Storage) accumulateFieldHits(f *parquet.File, hits map[string]uint64, unknown map[string]struct{}) {
-	rgs := f.RowGroups()
-	if len(rgs) == 0 {
-		return
-	}
-	// Chunks are addressed by leaf column index, not top-level position: a MAP
-	// column owns two leaves, so every column after one is shifted.
-	for _, col := range f.Root().Columns() {
-		parquetName := col.Name()
-		ci := firstLeafIndex(col)
-		if ci < 0 {
-			continue
-		}
-		internal := parquetName
-		if m := s.registry.ResolveFromParquet(parquetName); m != nil {
-			internal = m.InternalName
-		}
-		var nonNull int64
-		colUnknown := false
-		for _, rg := range rgs {
-			cols := rg.ColumnChunks()
-			if ci >= len(cols) {
-				continue
-			}
-			cidx, err := cols[ci].ColumnIndex()
-			if err != nil && !errors.Is(err, parquet.ErrMissingColumnIndex) {
-				colUnknown = true
-				break
-			}
-			if err != nil || cidx == nil || cidx.NumPages() == 0 {
-				nonNull += cols[ci].NumValues()
-				continue
-			}
-			var nulls int64
-			for p := 0; p < cidx.NumPages(); p++ {
-				nulls += cidx.NullCount(p)
-			}
-			n := cols[ci].NumValues() - nulls
-			if n < 0 {
-				n = 0
-			}
-			// A MAP column's chunk counts entries, not rows: a row cannot carry
-			// the column more than once.
-			if !col.Leaf() && n > rg.NumRows() {
-				n = rg.NumRows()
-			}
-			nonNull += n
-		}
-		if colUnknown {
-			if unknown != nil {
-				unknown[internal] = struct{}{}
-			}
-			continue
-		}
-		if nonNull > 0 {
-			hits[internal] += uint64(nonNull)
-		}
-	}
 }
 
 // scanProjectedFieldValues iterates a Parquet file extracting values

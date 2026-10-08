@@ -1,7 +1,6 @@
 package parquets3
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 )
 
 // instrumentedS3Server tracks every served request's byte count so tests
@@ -112,62 +110,4 @@ func makeLargeParquet(t *testing.T, baseTime time.Time, minBytes int) []byte {
 			ServiceName:       fmt.Sprintf("service-%d", i%32),
 		}
 	}, parquet.Compression(&parquet.Zstd))
-}
-
-// TestGetFieldNames_ServesOnlyFooterBytes_Traces locks in the regression
-// guard that traces' `GetFieldNames` reads only the parquet footer
-// (~16 KB) instead of downloading the full file body.
-//
-// Before this guard, GetFieldNames called `s.getFileData(files[0])` —
-// for a 1 MB file that meant a full 1 MB S3 download just to read the
-// schema. Mirrors the equivalent guard added to the logs module so the
-// two signals stay aligned on this behaviour.
-func TestGetFieldNames_ServesOnlyFooterBytes_Traces(t *testing.T) {
-	mock := newInstrumentedS3Server()
-	defer mock.close()
-	s := testStorageWithS3(t, mock.url())
-
-	baseTime := time.Date(2026, 5, 28, 10, 0, 0, 0, time.UTC)
-	const fileBytes = 200 * 1024
-	data := makeLargeParquet(t, baseTime, fileBytes)
-	if len(data) < fileBytes {
-		t.Fatalf("generated parquet too small: got %d, want >= %d", len(data), fileBytes)
-	}
-
-	key := "traces/dt=2026-05-28/hour=10/file0.parquet"
-	mock.putFile(key, data)
-	s.manifest.AddFile("dt=2026-05-28/hour=10", manifest.FileInfo{
-		Key:       key,
-		Size:      int64(len(data)),
-		MinTimeNs: baseTime.Add(-time.Minute).UnixNano(),
-		MaxTimeNs: baseTime.Add(time.Minute).UnixNano(),
-	})
-
-	q := mustParseQueryWithTime(t, `*`,
-		baseTime.Add(-time.Hour).UnixNano(),
-		baseTime.Add(time.Hour).UnixNano(),
-	)
-
-	fields, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatalf("GetFieldNames: %v", err)
-	}
-	if len(fields) == 0 {
-		t.Fatal("expected non-empty field names")
-	}
-
-	served := mock.bytesServed.Load()
-	rangeReqs := mock.rangeReqs.Load()
-	fullReqs := mock.fullReqs.Load()
-	maxAllowed := s.footerPrefetchBytes() + 4096 // single file footer + slack
-
-	t.Logf("served=%d bytes (range=%d, full=%d), file_size=%d",
-		served, rangeReqs, fullReqs, len(data))
-
-	if fullReqs > 0 {
-		t.Errorf("GetFieldNames issued %d full-file downloads; expected only range reads (footer-only)", fullReqs)
-	}
-	if served > maxAllowed {
-		t.Errorf("GetFieldNames served %d bytes; expected <= %d. Regression: not using footer-only path.", served, maxAllowed)
-	}
 }

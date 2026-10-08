@@ -587,21 +587,7 @@ func TestInteg_PmetaFlip_FieldNamesAndBloom(t *testing.T) {
 		t.Fatal("no file after flush")
 	}
 	fi := files[0]
-	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
-
-	// (1) labels field_names flip: the catalog serves field names, incl. service.name.
-	names := s.catalogFieldNames(q, tenantScope{all: true})
-	hasSvc := false
-	for _, n := range names {
-		if n == "service.name" {
-			hasSvc = true
-		}
-	}
-	if !hasSvc {
-		t.Fatalf("catalogFieldNames missing service.name: %v", names)
-	}
-
-	// (2) bloom flip: a file whose bloom-indexed value IS present must never be
+	// (1) bloom flip: a file whose bloom-indexed value IS present must never be
 	// excluded by the facet path (blooms have no false negatives).
 	if s.checkFileBloom(context.Background(), fi, "service.name:api-gateway") {
 		t.Fatal("checkFileBloom wrongly excluded a file containing service.name=api-gateway")
@@ -905,87 +891,6 @@ func TestInteg_EnrichEquivalence_ProviderVsSidecar(t *testing.T) {
 			p.RawBytes != sc.RawBytes || p.SchemaFingerprint != sc.SchemaFingerprint {
 			t.Fatalf("provider vs sidecar enrichment diverged for %s:\n provider=%+v\n sidecar=%+v", p.Key, p, sc)
 		}
-	}
-}
-
-// TestInteg_GetFieldNames_CatalogFlip drives the field_names read-flip END-TO-END
-// through s.GetFieldNames (not the catalogFieldNames helper): after a real flush
-// with --pmeta on the result must include service.name, and flipping the catalog
-// off (s.catalog=nil) must return the SAME name set via the legacy path (parity).
-// The degraded twin then deletes the parquet objects and clears every cache so the
-// footer-hits path yields nothing — proving the catalog fallback branch (pmeta on)
-// and the labelIndex branch (pmeta off) both still serve the names.
-func TestInteg_GetFieldNames_CatalogFlip(t *testing.T) {
-	mock := newMockS3Server()
-	defer mock.close()
-	s := testStorageWithS3(t, mock.url())
-	s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
-	s.catalog = newCatalogStore(s.cfg.Pmeta, "logs/")
-	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeLogs)
-	bw.catalogObserver = &catalogObserver{store: s.catalog}
-
-	now := time.Now()
-	bw.stageLogRows([]schema.LogRow{
-		{TimestampUnixNano: now.UnixNano(), Body: "a", ServiceName: "api-gateway"},
-		{TimestampUnixNano: now.Add(time.Second).UnixNano(), Body: "b", ServiceName: "order-service"},
-	})
-	bw.flushStagedNow()
-
-	q := mustParseQueryWithTime(t, "*", now.Add(-time.Hour).UnixNano(), now.Add(time.Hour).UnixNano())
-	hasName := func(vs []logstorage.ValueWithHits, name string) bool {
-		for _, v := range vs {
-			if v.Value == name {
-				return true
-			}
-		}
-		return false
-	}
-
-	on, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasName(on, "service.name") {
-		t.Fatalf("GetFieldNames(pmeta on) missing service.name: %v", valueStrings(on))
-	}
-
-	catalog := s.catalog
-	s.catalog = nil
-	off, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(valueStrings(on), valueStrings(off)) {
-		t.Fatalf("field-names cross-path mismatch:\n catalog on=%v\n legacy=%v", valueStrings(on), valueStrings(off))
-	}
-
-	// Degraded twin: parquet objects gone + footer/mem caches cleared → the
-	// footer-hits path yields nothing, so GetFieldNames must take the fallbacks.
-	s.catalog = catalog
-	mock.mu.Lock()
-	for k := range mock.files {
-		if strings.HasSuffix(k, ".parquet") {
-			delete(mock.files, k)
-		}
-	}
-	mock.mu.Unlock()
-	s.footerCache = NewFooterCache(0)
-	s.memCache = cache.NewLRU(1024 * 1024)
-
-	on2, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasName(on2, "service.name") {
-		t.Fatalf("catalog fallback branch (footers gone) missing service.name: %v", valueStrings(on2))
-	}
-	s.catalog = nil
-	off2, err := s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasName(off2, "service.name") {
-		t.Fatalf("legacy labelIndex branch (footers gone) missing service.name: %v", valueStrings(off2))
 	}
 }
 

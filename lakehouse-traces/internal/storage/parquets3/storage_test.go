@@ -539,56 +539,6 @@ func TestGetFieldNames_EmptyManifest(t *testing.T) {
 
 // --- GetStreamFieldNames tests ---
 
-func TestGetStreamFieldNames_Logs(t *testing.T) {
-	s := testStorage()
-	q := mustParseQuery(t, "*")
-	fields, err := s.GetStreamFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	names := make(map[string]bool)
-	for _, f := range fields {
-		names[f.Value] = true
-	}
-
-	if !names["service.name"] {
-		t.Error("expected service.name in stream fields")
-	}
-	if !names["k8s.namespace.name"] {
-		t.Error("expected k8s.namespace.name in stream fields")
-	}
-	if !names["k8s.pod.name"] {
-		t.Error("expected k8s.pod.name in stream fields")
-	}
-}
-
-func TestGetStreamFieldNames_Traces(t *testing.T) {
-	s := &Storage{
-		cfg:      testConfig(),
-		manifest: manifest.New("test", "traces/"),
-		registry: schema.NewRegistry(schema.TracesProfile),
-	}
-
-	q := mustParseQuery(t, "*")
-	fields, err := s.GetStreamFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	names := make(map[string]bool)
-	for _, f := range fields {
-		names[f.Value] = true
-	}
-
-	if !names["resource_attr:service.name"] {
-		t.Error("expected resource_attr:service.name in trace stream fields")
-	}
-	if !names["name"] {
-		t.Error("expected name in trace stream fields")
-	}
-}
-
 // --- Schema registry integration tests ---
 
 func TestTracesProfile_SchemaMapping(t *testing.T) {

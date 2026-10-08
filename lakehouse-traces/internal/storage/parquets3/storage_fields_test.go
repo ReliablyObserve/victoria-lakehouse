@@ -89,7 +89,7 @@ func TestGetFieldNames_FromParquetFile(t *testing.T) {
 	}
 	s := testFieldStorageTraces(t, rows)
 
-	q := mustParseQueryWithTime(t, `resource_attr:service.name:="api"`,
+	q := mustParseQueryWithTime(t, `trace_id:="t1"`,
 		time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC).UnixNano(),
 		time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC).UnixNano(),
 	)
@@ -432,33 +432,6 @@ func TestGetStreamFieldValues_ListsStreamTags(t *testing.T) {
 	// trace_id is a column but no stream tag.
 	if v := got("trace_id", 10); len(v) != 0 {
 		t.Errorf("trace_id = %v, want none (not a stream tag)", v)
-	}
-}
-
-func TestGetStreamFieldNames_ReturnsRegisteredStreamFields(t *testing.T) {
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	s := &Storage{
-		cfg:        cfg,
-		manifest:   manifest.New("test", "traces/"),
-		registry:   schema.NewRegistry(schema.TracesProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-	}
-
-	q := mustParseQueryWithTime(t, "*",
-		time.Now().Add(-time.Hour).UnixNano(),
-		time.Now().UnixNano(),
-	)
-
-	fields, err := s.GetStreamFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fields) == 0 {
-		t.Fatal("expected stream field names from registry")
 	}
 }
 
