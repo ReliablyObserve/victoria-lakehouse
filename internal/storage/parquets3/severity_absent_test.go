@@ -201,6 +201,40 @@ func TestSeverityAbsent_QuerySurfaces(t *testing.T) {
 	}
 }
 
+// A row still in a peer's buffer must read like the same row after the flush:
+// the bridge block holds an empty value (an absent field) for a row without
+// severity_number and "0" for an explicit 0.
+func TestSeverityAbsent_BridgeBlockMatchesFileRows(t *testing.T) {
+	s := testStorage()
+	now := time.Date(2026, 5, 10, 14, 0, 0, 0, time.UTC)
+	rows := severityAbsentRows(now)
+	db := s.logRowsToDataBlock(tenantScope{account: "0", project: "0"}, "test", rows)
+	if db == nil {
+		t.Fatal("no block")
+	}
+	var got []string
+	for _, c := range db.GetColumns(false) {
+		if c.Name == "severity_number" {
+			got = c.Values
+		}
+	}
+	if strings.Join(got, "|") != strings.Join(wantSeverity, "|") {
+		t.Errorf("bridge severity_number per row = %q, want %q", got, wantSeverity)
+	}
+	// and the file path (logRowToFields) agrees row by row
+	for i := range rows {
+		file := ""
+		for _, f := range logRowToFields(&rows[i], nil) {
+			if f.name == "severity_number" {
+				file = s.registry.FormatField(f.name, f.value)
+			}
+		}
+		if file != wantSeverity[i] {
+			t.Errorf("row %d: file path severity_number %q, want %q", i, file, wantSeverity[i])
+		}
+	}
+}
+
 // A file written before the fix has a required INT32 severity_number: every
 // cell is a value, and a row that never carried the field holds a 0. There are
 // no users on such files yet and nothing rewrites them, so the contract is only
