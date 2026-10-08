@@ -1,0 +1,115 @@
+{
+ "registry_check": true,
+ "note": "#274: a field a row never carried stays absent. Reads the proofmark=sev274 rows the proof run inserts by hand into hot, base and PR (three rows per window: no severity_number, severity_number=0, severity_number=9).",
+ "rows": [
+  {
+   "id": "vl.absent.rows",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "proofmark:=sev274 | sort by (_time)",
+    "limit": "100"
+   },
+   "row": "vl.select.query.absent_typed_field",
+   "forms": [
+    "numeric"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ]
+  },
+  {
+   "id": "vl.absent.rows_without",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "proofmark:=sev274 -severity_number:* | sort by (_time)",
+    "limit": "100"
+   },
+   "row": "vl.select.query.absent_typed_field",
+   "forms": [
+    "numeric"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ]
+  },
+  {
+   "id": "vl.absent.rows_zero",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "proofmark:=sev274 severity_number:=0 | sort by (_time)",
+    "limit": "100"
+   },
+   "row": "vl.select.query.explicit_zero_typed_field",
+   "forms": [
+    "numeric"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ]
+  },
+  {
+   "id": "vl.absent.field_values",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_values",
+   "params": {
+    "query": "proofmark:=sev274",
+    "field": "severity_number",
+    "limit": "1000"
+   },
+   "row": "vl.select.field_values.absent_typed_field",
+   "forms": [
+    "numeric"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ]
+  },
+  {
+   "id": "vl.absent.count_without",
+   "surface": "vl-native",
+   "kind": "count",
+   "path": "/select/logsql/stats_query",
+   "params": {
+    "query": "proofmark:=sev274 -severity_number:* | stats count() c",
+    "time": "{END}"
+   },
+   "row": "vl.select.stats_query.absent_typed_field",
+   "forms": [
+    "numeric"
+   ],
+   "layers": [
+    "cold"
+   ],
+   "window": "none"
+  },
+  {
+   "id": "vl.absent.field_names",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "proofmark:=sev274"
+   },
+   "row": "vl.select.field_names.absent_typed_field",
+   "forms": [
+    "numeric"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ],
+   "claimed_gap": "field-names-lane-a"
+  }
+ ]
+}

@@ -20,3 +20,4 @@ TestTenantParity_TenantCountsSumToTotal           2  # file total and byte total
 TestTenantParity_UnknownTenantReturnsEmpty        4  # two subtests x 2 cells; observed in parity run 37674171609
 TestTenantParity_DependenciesAPI_RespectsScope    2  # one cell per tenant graph; observed in parity run 37674171609
 TestTenantParity_TraceQLPerTenant                 2  # one cell per tenant search; observed in parity run 37674171609
+TestParity_SeverityNumber_Absent                106  # (3 + 3 + 6 + 9 rows + 8 checks) x 2 tenant forms in the restart-attempt-1 case; observed in a local parity run, #274

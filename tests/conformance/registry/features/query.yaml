@@ -456,3 +456,34 @@
     stream_field_values lists the tags of the matching streams only (a non-stream field answers nothing, never the empty value); the substring filter applies
     before the limit. The scan reads MAP columns through the query path's reader (only the requested keys)
     and addresses every other column by its leaf index.
+
+- id: lh.feature.query.absent_typed_fields
+  title: A field a row never carried stays absent (nullable severity_number)
+  status: shipped
+  area: query
+  surfaces: [api, storage]
+  rows:
+    - vl.select.query.absent_typed_field
+    - vl.select.query.explicit_zero_typed_field
+    - vl.select.field_names.absent_typed_field
+    - vl.select.field_values.absent_typed_field
+    - vl.select.stats_query.absent_typed_field
+  tests:
+    - tests/parity/severity_number_absent_parity_test.go#TestParity_SeverityNumber_Absent
+    - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable
+    - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent
+    - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_QuerySurfaces
+    - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads
+    - internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing
+    - lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable
+    - lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent
+    - lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads
+  docs:
+    - docs/parity-and-gaps.md
+  highlight: >-
+    **A field a row never carried stays absent**: `severity_number` is a nullable Parquet column, so a plain log row comes back without it, as on hot VictoriaLogs, and an explicit `0` stays `0`.
+  description: >-
+    severity_number is a nullable INT32 column. A row stored without the field (jsonline, Loki, Elasticsearch,
+    syslog rows) is returned without it by every read surface and in every data layer, exactly like hot
+    VictoriaLogs, while an explicit 0 (OTLP UNSPECIFIED) stays "0". Standard Parquet readers see NULL for the
+    absent cells. Files written before the change keep the 0 they hold.
