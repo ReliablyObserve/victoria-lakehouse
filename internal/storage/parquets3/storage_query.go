@@ -1494,7 +1494,14 @@ func logRowToFields(r *schema.LogRow, buf []field) []field {
 		field{"_time", r.TimestampUnixNano},
 		field{"_msg", r.Body},
 		field{"level", r.SeverityText},
-		field{"severity_number", r.SeverityNumber},
+	)
+	// severity_number is a nullable column: a row that never carried the field
+	// (a plain jsonline row, as hot VictoriaLogs stores it) emits nothing, while
+	// an explicit 0 (what OTLP writes for UNSPECIFIED) is emitted as "0".
+	if r.SeverityNumber != nil {
+		buf = append(buf, field{"severity_number", *r.SeverityNumber})
+	}
+	buf = append(buf,
 		field{"service.name", r.ServiceName},
 		field{"k8s.namespace.name", r.K8sNamespaceName},
 		field{"k8s.pod.name", r.K8sPodName},

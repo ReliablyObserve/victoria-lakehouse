@@ -53,8 +53,14 @@ type fileTruth struct {
 	// losslessly into an arbitrary-precision int.
 	Int64Sums      map[string]*big.Int `json:"int64_sums"`
 	DistinctCounts map[string]int64    `json:"distinct_counts"`
-	DeltaColumns   []string            `json:"delta_columns"`
-	DictColumns    []string            `json:"dict_columns"`
+	// NullCounts / ZeroCounts hold, for a nullable integer column, the number
+	// of rows whose cell is NULL (the field was absent) and the number whose
+	// cell is an explicit 0. An engine that reads NULL as 0 (or the reverse)
+	// gets one of the two wrong; sums alone cannot tell them apart.
+	NullCounts   map[string]int64 `json:"null_counts,omitempty"`
+	ZeroCounts   map[string]int64 `json:"zero_counts,omitempty"`
+	DeltaColumns []string         `json:"delta_columns"`
+	DictColumns  []string         `json:"dict_columns"`
 	// SpanExtras is the writer-side truth of the span events and links
 	// columns (traces file only): what verify.py recomputes with pyarrow and
 	// with duckdb from the JSON in span.events_json / span.links_json.
@@ -153,13 +159,24 @@ func genLogs(path string, n, rowGroupSize int) (fileTruth, error) {
 		// Near-sorted timestamps with small jitter — matches what the
 		// insert buffer actually flushes.
 		ts := base + int64(i)*1_000_000 + rng.Int63n(500_000)
+		// severity_number is nullable: some rows never carried it (NULL), some
+		// carry an explicit 0 (OTLP UNSPECIFIED), the rest a real severity.
+		var sevNum *int32
+		switch {
+		case i%11 == 3:
+			sevNum = nil
+		case i%13 == 5:
+			sevNum = schema.Int32Ptr(0)
+		default:
+			sevNum = schema.Int32Ptr(sev.num)
+		}
 		logRows[i] = schema.LogRow{
 			AccountID:         uint32(i % 3),
 			ProjectID:         uint32(i % 5),
 			TimestampUnixNano: ts,
 			Body:              fmt.Sprintf("processed request %d for user-%d in %dms", i, rng.Intn(10_000), rng.Intn(900)),
 			SeverityText:      sev.text,
-			SeverityNumber:    sev.num,
+			SeverityNumber:    sevNum,
 			ServiceName:       svc,
 			TraceID:           hexID(rng, 16),
 			SpanID:            hexID(rng, 8),
@@ -210,6 +227,8 @@ func genLogs(path string, n, rowGroupSize int) (fileTruth, error) {
 			"project_id":          big.NewInt(0),
 		},
 		DistinctCounts: map[string]int64{},
+		NullCounts:     map[string]int64{"severity_number": 0},
+		ZeroCounts:     map[string]int64{"severity_number": 0},
 		DeltaColumns:   taggedColumns(reflect.TypeOf(schema.LogRow{}), "delta"),
 		DictColumns:    taggedColumns(reflect.TypeOf(schema.LogRow{}), "dict"),
 	}
@@ -226,7 +245,15 @@ func genLogs(path string, n, rowGroupSize int) (fileTruth, error) {
 	}
 	for _, r := range logRows {
 		addInt("timestamp_unix_nano", r.TimestampUnixNano)
-		addInt("severity_number", int64(r.SeverityNumber))
+		switch {
+		case r.SeverityNumber == nil:
+			truth.NullCounts["severity_number"]++
+		default:
+			addInt("severity_number", int64(*r.SeverityNumber))
+			if *r.SeverityNumber == 0 {
+				truth.ZeroCounts["severity_number"]++
+			}
+		}
 		addInt("account_id", int64(r.AccountID))
 		addInt("project_id", int64(r.ProjectID))
 		distinct["service.name"][r.ServiceName] = struct{}{}

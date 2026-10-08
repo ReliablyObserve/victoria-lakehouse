@@ -1041,7 +1041,7 @@ func TestMedium_logRowToFields(t *testing.T) {
 		TimestampUnixNano: 1234567890,
 		Body:              "test message",
 		SeverityText:      "error",
-		SeverityNumber:    17,
+		SeverityNumber:    schema.Int32Ptr(17),
 		ServiceName:       "api-gateway",
 		K8sNamespaceName:  "prod",
 		K8sPodName:        "api-pod-1",

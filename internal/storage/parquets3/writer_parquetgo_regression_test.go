@@ -63,7 +63,7 @@ func TestWriterPageCountsPerRowGroup(t *testing.T) {
 				TimestampUnixNano: int64(1_760_000_000_000_000_000) + int64(idx)*1_000_000,
 				Body:              fmt.Sprintf("%0*d", width, idx),
 				SeverityText:      "INFO",
-				SeverityNumber:    9,
+				SeverityNumber:    schema.Int32Ptr(9),
 				ServiceName:       fmt.Sprintf("svc-%03d", idx%250),
 				TraceID:           fmt.Sprintf("%032x", idx),
 				SpanID:            fmt.Sprintf("%016x", idx),

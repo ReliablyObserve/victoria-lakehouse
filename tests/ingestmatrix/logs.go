@@ -29,50 +29,48 @@ const (
 
 var bothForms = []Form{Numeric, Alias}
 
-var sevGap = []string{"cold-read-adds-severity-number"}
-
 func logsCases() []Case {
 	return []Case{
 		{
-			ID: "jsonline", Signal: Logs, Gaps: sevGap, Title: "/insert/jsonline: newline-delimited JSON", Transport: HTTP,
+			ID: "jsonline", Signal: Logs, Title: "/insert/jsonline: newline-delimited JSON", Transport: HTTP,
 			Forms: bothForms, Rows: rows3, Routes: []string{"/insert/jsonline"},
 			Counter: `vl_rows_ingested_total{type="jsonline"}`, Build: buildJSONLine,
 		},
 		{
-			ID: "native", Signal: Logs, Gaps: sevGap, Title: "/insert/native: VictoriaLogs native binary protocol", Transport: HTTP,
+			ID: "native", Signal: Logs, Title: "/insert/native: VictoriaLogs native binary protocol", Transport: HTTP,
 			Forms: bothForms, Rows: rows3, Routes: []string{"/insert/native"},
 			Counter: `vl_rows_ingested_total{type="nativeinsert"}`, Build: buildNative(false),
 		},
 		{
-			ID: "multitenant_native", Signal: Logs, Gaps: sevGap, Title: "/insert/multitenant/native: native protocol, tenant inside each row", Transport: HTTP,
+			ID: "multitenant_native", Signal: Logs, Title: "/insert/multitenant/native: native protocol, tenant inside each row", Transport: HTTP,
 			Forms: []Form{Numeric}, FormNote: "the tenant is carried by each row of the payload and request tenant headers are ignored upstream, so there is no header or alias form",
 			Rows: rows3, Routes: []string{"/insert/multitenant/native"}, NoTenantHeaders: true,
 			Counter: `vl_rows_ingested_total{type="nativemultitenant"}`, Build: buildNative(true),
 		},
 		{
-			ID: "internal_insert", Signal: Logs, Gaps: sevGap, Title: "/internal/insert: storage-node ingest used by a vlinsert tier (native rows)", Transport: HTTP,
+			ID: "internal_insert", Signal: Logs, Title: "/internal/insert: storage-node ingest used by a vlinsert tier (native rows)", Transport: HTTP,
 			Forms: []Form{Numeric}, FormNote: "the tenant is carried by each row of the payload and request tenant headers are ignored upstream, so there is no header or alias form",
 			Rows: rows3, Routes: []string{"/internal/insert"}, NoTenantHeaders: true,
 			Counter: `vl_rows_ingested_total{type="internalinsert"}`, Build: buildNativeAt("/internal/insert"),
 		},
 		{
-			ID: "loki_json", Signal: Logs, Gaps: sevGap, Title: "/insert/loki/api/v1/push: Loki push, JSON", Transport: HTTP,
+			ID: "loki_json", Signal: Logs, Title: "/insert/loki/api/v1/push: Loki push, JSON", Transport: HTTP,
 			Forms: bothForms, Rows: rows3, Routes: []string{"/insert/loki/api/v1/push"},
 			Counter: `vl_rows_ingested_total{type="loki_json"}`, Build: buildLokiJSON,
 		},
 		{
-			ID: "loki_protobuf", Signal: Logs, Gaps: sevGap, Title: "/insert/loki/api/v1/push: Loki push, snappy protobuf", Transport: HTTP,
+			ID: "loki_protobuf", Signal: Logs, Title: "/insert/loki/api/v1/push: Loki push, snappy protobuf", Transport: HTTP,
 			Forms: bothForms, Rows: rows3, Routes: []string{"/insert/loki/api/v1/push"},
 			Counter: `vl_rows_ingested_total{type="loki_protobuf"}`, Build: buildLokiProtobuf,
 		},
 		{
-			ID: "elasticsearch_bulk", Signal: Logs, Gaps: sevGap, Title: "/insert/elasticsearch/_bulk: Elasticsearch bulk", Transport: HTTP,
+			ID: "elasticsearch_bulk", Signal: Logs, Title: "/insert/elasticsearch/_bulk: Elasticsearch bulk", Transport: HTTP,
 			Forms: bothForms, Rows: rows3, Routes: []string{"/insert/elasticsearch/_bulk"},
 			Counter: `vl_rows_ingested_total{type="elasticsearch_bulk"}`, Build: buildESBulk,
 			NormalizeResponse: dropJSONKey("took"),
 		},
 		{
-			ID: "splunk_event", Signal: Logs, Gaps: sevGap, Title: "Splunk HEC events: four route spellings", Transport: HTTP,
+			ID: "splunk_event", Signal: Logs, Title: "Splunk HEC events: four route spellings", Transport: HTTP,
 			Forms: bothForms, Rows: 4, Routes: []string{
 				"/insert/splunk/services/collector/event", "/insert/splunk/services/collector/event/1.0",
 				"/services/collector/event", "/services/collector/event/1.0",
@@ -80,12 +78,12 @@ func logsCases() []Case {
 			Counter: `vl_rows_ingested_total{type="splunk"}`, Build: buildSplunk,
 		},
 		{
-			ID: "datadog_logs", Signal: Logs, Gaps: sevGap, Title: "Datadog v2 logs intake: both route spellings", Transport: HTTP,
+			ID: "datadog_logs", Signal: Logs, Title: "Datadog v2 logs intake: both route spellings", Transport: HTTP,
 			Forms: bothForms, Rows: rows3, Routes: []string{"/insert/datadog/api/v2/logs", "/api/v2/logs"},
 			Counter: `vl_rows_ingested_total{type="datadog"}`, Build: buildDatadog,
 		},
 		{
-			ID: "journald", Signal: Logs, Gaps: sevGap, Title: "/insert/journald/upload: systemd-journal-upload export format", Transport: HTTP,
+			ID: "journald", Signal: Logs, Title: "/insert/journald/upload: systemd-journal-upload export format", Transport: HTTP,
 			Forms: bothForms, Rows: rows3, Routes: []string{"/insert/journald/upload"},
 			Counter: `vl_rows_ingested_total{type="journald"}`, Build: buildJournald,
 		},
@@ -100,25 +98,25 @@ func logsCases() []Case {
 			Build: buildOTLPLogsJSON,
 		},
 		{
-			ID: "syslog_tcp_rfc3164", Signal: Logs, Gaps: sevGap, Title: "syslog over TCP, RFC3164 lines", Transport: TCP,
+			ID: "syslog_tcp_rfc3164", Signal: Logs, Title: "syslog over TCP, RFC3164 lines", Transport: TCP,
 			Forms: []Form{Numeric}, FormNote: "upstream syslog pins the tenant per listener (-syslog.tenantID.tcp), there is no per-message tenant, header or alias form",
 			Rows: rows3, Flags: []string{"syslog.listenAddr.tcp"},
 			Counter: `vl_rows_ingested_total{type="syslog_tcp"}`, Lines: syslogLines(false),
 		},
 		{
-			ID: "syslog_tcp_rfc5424", Signal: Logs, Gaps: sevGap, Title: "syslog over TCP, RFC5424 lines", Transport: TCP,
+			ID: "syslog_tcp_rfc5424", Signal: Logs, Title: "syslog over TCP, RFC5424 lines", Transport: TCP,
 			Forms: []Form{Numeric}, FormNote: "see syslog_tcp_rfc3164",
 			Rows: rows3, Flags: []string{"syslog.listenAddr.tcp"},
 			Counter: `vl_rows_ingested_total{type="syslog_tcp"}`, Lines: syslogLines(true),
 		},
 		{
-			ID: "syslog_udp_rfc3164", Signal: Logs, Gaps: sevGap, Title: "syslog over UDP, RFC3164 datagrams", Transport: UDP,
+			ID: "syslog_udp_rfc3164", Signal: Logs, Title: "syslog over UDP, RFC3164 datagrams", Transport: UDP,
 			Forms: []Form{Numeric}, FormNote: "see syslog_tcp_rfc3164",
 			Rows: rows3, Flags: []string{"syslog.listenAddr.udp"},
 			Counter: `vl_rows_ingested_total{type="syslog_udp"}`, Lines: syslogLines(false),
 		},
 		{
-			ID: "syslog_udp_rfc5424", Signal: Logs, Gaps: sevGap, Title: "syslog over UDP, RFC5424 datagrams", Transport: UDP,
+			ID: "syslog_udp_rfc5424", Signal: Logs, Title: "syslog over UDP, RFC5424 datagrams", Transport: UDP,
 			Forms: []Form{Numeric}, FormNote: "see syslog_tcp_rfc3164",
 			Rows: rows3, Flags: []string{"syslog.listenAddr.udp"},
 			Counter: `vl_rows_ingested_total{type="syslog_udp"}`, Lines: syslogLines(true),

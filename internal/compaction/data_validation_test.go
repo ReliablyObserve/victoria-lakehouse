@@ -25,7 +25,7 @@ func generateLogRows(n int, baseTS int64, serviceName string) []schema.LogRow {
 			Body:              fmt.Sprintf("log-%s-%d-%d", serviceName, baseTS, i),
 			ServiceName:       serviceName,
 			SeverityText:      "INFO",
-			SeverityNumber:    9,
+			SeverityNumber:    schema.Int32Ptr(9),
 			TraceID:           fmt.Sprintf("trace-%06d", i),
 			K8sNamespaceName:  "default",
 			DeployEnv:         "prod",
@@ -700,7 +700,7 @@ func TestDataValidation_LogFields_AllPreserved(t *testing.T) {
 		TimestampUnixNano: 42_000_000_000,
 		Body:              "test body with special chars: éàü & <tag>",
 		SeverityText:      "ERROR",
-		SeverityNumber:    17,
+		SeverityNumber:    schema.Int32Ptr(17),
 		ServiceName:       "payment-service",
 		TraceID:           "abc123def456",
 		SpanID:            "span-789",
@@ -760,8 +760,9 @@ func TestDataValidation_LogFields_AllPreserved(t *testing.T) {
 	if found.SeverityText != original.SeverityText {
 		t.Errorf("SeverityText: got %q, want %q", found.SeverityText, original.SeverityText)
 	}
-	if found.SeverityNumber != original.SeverityNumber {
-		t.Errorf("SeverityNumber: got %d, want %d", found.SeverityNumber, original.SeverityNumber)
+	if schema.Int32Value(found.SeverityNumber) != schema.Int32Value(original.SeverityNumber) ||
+		(found.SeverityNumber == nil) != (original.SeverityNumber == nil) {
+		t.Errorf("SeverityNumber: got %v, want %v", found.SeverityNumber, original.SeverityNumber)
 	}
 	if found.ServiceName != original.ServiceName {
 		t.Errorf("ServiceName: got %q, want %q", found.ServiceName, original.ServiceName)

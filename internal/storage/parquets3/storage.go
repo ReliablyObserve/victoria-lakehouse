@@ -1044,7 +1044,9 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 		times[i] = s.registry.FormatField("_time", row.TimestampUnixNano)
 		bodies[i] = row.Body
 		levels[i] = row.SeverityText
-		sevNums[i] = s.registry.FormatField("severity_number", row.SeverityNumber)
+		if row.SeverityNumber != nil {
+			sevNums[i] = s.registry.FormatField("severity_number", *row.SeverityNumber)
+		}
 		services[i] = row.ServiceName
 		traceIDs[i] = row.TraceID
 		spanIDs[i] = row.SpanID

@@ -411,7 +411,7 @@ func fmSlotRows(hour, slot int) []schema.LogRow {
 			TimestampUnixNano: start.Add(time.Duration(i) * 150 * time.Millisecond).UnixNano(),
 			Body:              fmt.Sprintf("GET /api/v1/items/%d status=%d dur=%dms", rng.Intn(100000), 200+100*rng.Intn(4), rng.Intn(500)),
 			SeverityText:      level,
-			SeverityNumber:    fmSevNums[level],
+			SeverityNumber:    schema.Int32Ptr(fmSevNums[level]),
 			ServiceName:       svc,
 			TraceID:           traceID,
 			Stream:            fmStream(svc),
@@ -1040,7 +1040,7 @@ func TestFieldMetadataMatrixVL(t *testing.T) {
 			{Name: "service.name", Value: r.ServiceName}, // the stream field
 			{Name: "_msg", Value: r.Body},
 			{Name: "level", Value: r.SeverityText},
-			{Name: "severity_number", Value: strconv.Itoa(int(r.SeverityNumber))},
+			{Name: "severity_number", Value: strconv.Itoa(int(schema.Int32Value(r.SeverityNumber)))},
 		}
 		if r.TraceID != "" {
 			fields = append(fields, logstorage.Field{Name: "trace_id", Value: r.TraceID})

@@ -132,7 +132,8 @@
           "name": "severity_number",
           "type": "INT32",
           "encodings": [
-            "PLAIN"
+            "PLAIN",
+            "RLE"
           ],
           "codecs": [
             "ZSTD"
@@ -1353,7 +1354,8 @@
           "name": "severity_number",
           "type": "INT32",
           "encodings": [
-            "PLAIN"
+            "PLAIN",
+            "RLE"
           ],
           "codecs": [
             "ZSTD"

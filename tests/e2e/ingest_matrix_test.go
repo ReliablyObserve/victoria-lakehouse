@@ -189,13 +189,6 @@ func metricOrZero(t *testing.T, base, series string) float64 {
 // declares one it no longer observes: the issue is fixed, so the declaration must go
 // and the registry row go back to pass. A divergence without a declared gap fails the cell.
 var gapRewrites = map[string]func(row map[string]any) bool{
-	"cold-read-adds-severity-number": func(m map[string]any) bool {
-		if v, ok := m["severity_number"]; ok && fmt.Sprint(v) == "0" {
-			delete(m, "severity_number")
-			return true
-		}
-		return false
-	},
 	"cold-read-renames-severity-text-to-level": func(m map[string]any) bool {
 		lv, hasLevel := m["level"]
 		_, hasText := m["severity_text"]

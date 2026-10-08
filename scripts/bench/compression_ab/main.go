@@ -58,7 +58,7 @@ type baselineLogRow struct {
 
 func toBaseline(r schema.LogRow) baselineLogRow {
 	return baselineLogRow{r.AccountID, r.ProjectID, r.TimestampUnixNano, r.Body,
-		r.SeverityText, r.SeverityNumber, r.ServiceName, r.TraceID, r.SpanID,
+		r.SeverityText, schema.Int32Value(r.SeverityNumber), r.ServiceName, r.TraceID, r.SpanID,
 		r.K8sNamespaceName, r.K8sPodName, r.K8sDeploymentName, r.K8sNodeName,
 		r.DeployEnv, r.CloudRegion, r.HostName, r.Stream, r.StreamID, r.ScopeName,
 		r.ResourceAttributes, r.LogAttributes, r.ScopeAttributes}

@@ -44,6 +44,21 @@ func detectConstantColumns(f *parquet.File, rg parquet.RowGroup, wantCols map[st
 			continue
 		}
 
+		// Min and max ignore NULL cells. A page that holds NULLs next to values
+		// is not constant: injecting its min/max would give the NULL rows a
+		// value they never had (an absent severity_number turned into the
+		// neighbouring row's value, issue #274).
+		hasNulls := false
+		for p := 0; p < numPages; p++ {
+			if cidx.NullPage(p) || cidx.NullCount(p) > 0 {
+				hasNulls = true
+				break
+			}
+		}
+		if hasNulls {
+			continue
+		}
+
 		// ByteArray (variable-length string/binary) min/max may be
 		// truncated by the writer per Apache Parquet's PageIndex spec.
 		// Treating a truncated min == max as a constant injects the

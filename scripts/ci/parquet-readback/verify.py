@@ -10,6 +10,8 @@ writer options) with BOTH pyarrow and duckdb and asserts:
      low-cardinality string columns), independently for each engine;
   2. pyarrow <-> duckdb row-level equality: EXCEPT ALL in both
      directions over ALL columns (maps included) returns zero rows;
+     the NULL and explicit-zero cells of a nullable integer column
+     (severity_number: absent field vs explicit 0) are counted apart;
   3. the schema-tag encodings actually landed: every delta-tagged
      column chunk uses DELTA_BINARY_PACKED, every dict-tagged column
      chunk uses RLE_DICTIONARY;
@@ -63,6 +65,12 @@ def verify_pyarrow(path: str, truth: dict) -> None:
     for col, want in sorted(truth["distinct_counts"].items()):
         got = pc.count_distinct(tbl.column(col)).as_py()
         check(got == want, f"pyarrow distinct({col}) == {want}", f"got {got}")
+    for col, want in sorted(truth.get("null_counts", {}).items()):
+        got = tbl.column(col).null_count
+        check(got == want, f"pyarrow nulls({col}) == {want}", f"got {got}")
+    for col, want in sorted(truth.get("zero_counts", {}).items()):
+        got = sum(1 for v in tbl.column(col).to_pylist() if v == 0)
+        check(got == want, f"pyarrow zeros({col}) == {want}", f"got {got}")
 
 
 def verify_duckdb(con, path: str, truth: dict) -> None:
@@ -80,6 +88,16 @@ def verify_duckdb(con, path: str, truth: dict) -> None:
             f'SELECT count(DISTINCT "{col}") FROM read_parquet(?)',
             [path]).fetchone()
         check(got == want, f"duckdb distinct({col}) == {want}", f"got {got}")
+    for col, want in sorted(truth.get("null_counts", {}).items()):
+        (got,) = con.execute(
+            f'SELECT count(*) FROM read_parquet(?) WHERE "{col}" IS NULL',
+            [path]).fetchone()
+        check(got == want, f"duckdb nulls({col}) == {want}", f"got {got}")
+    for col, want in sorted(truth.get("zero_counts", {}).items()):
+        (got,) = con.execute(
+            f'SELECT count(*) FROM read_parquet(?) WHERE "{col}" = 0',
+            [path]).fetchone()
+        check(got == want, f"duckdb zeros({col}) == {want}", f"got {got}")
 
 
 def verify_cross_engine(con, path: str) -> None:

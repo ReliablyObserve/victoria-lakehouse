@@ -716,7 +716,7 @@ func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {
 					st = nil
 				}
 			}
-			if derived := schema.DeriveSeverityText("", merged[i].SeverityNumber, st); derived != "" {
+			if derived := schema.DeriveSeverityText("", schema.Int32Value(merged[i].SeverityNumber), st); derived != "" {
 				merged[i].SeverityText = derived
 				backfilled++
 			}
