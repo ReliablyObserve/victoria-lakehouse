@@ -217,3 +217,28 @@ func TestFieldNamesCounter_BufferAndObjectsAreSeparateBlocks(t *testing.T) {
 		t.Error("a nil block stays nil")
 	}
 }
+
+// Upstream partitions its storage by UTC day and a block never spans two
+// partitions: the same stream on two days is two blocks.
+func TestFieldNamesCounter_DaysAreSeparateBlocks(t *testing.T) {
+	day := func(d string, n int, extra bool) *logstorage.DataBlock {
+		db := fnBlock("s1", n, map[string]bool{"a": true, "b": extra})
+		cols := append(db.GetColumns(false), logstorage.BlockColumn{Name: "_time", Values: func() []string {
+			v := make([]string, n)
+			for i := range v {
+				v[i] = d + "T10:00:00Z"
+			}
+			return v
+		}()})
+		out := &logstorage.DataBlock{}
+		out.SetColumns(cols)
+		return out
+	}
+	c := newFieldNamesCounter(10)
+	c.add(0, day("2026-10-07", 3, true))
+	c.add(0, day("2026-10-08", 2, false))
+	want := map[string]uint64{"_stream_id": 5, "_time": 5, "a": 5, "b": 3}
+	if got := fnHits(c.result()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("hits = %v, want %v", got, want)
+	}
+}

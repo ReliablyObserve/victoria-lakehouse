@@ -18,7 +18,7 @@ import (
 	"testing"
 )
 
-func fieldNamesSeedPair(t *testing.T, hot, cold, endpoint, query string, tenant tenantSummary) {
+func fieldNamesSeedPair(t *testing.T, hot, cold, endpoint, query string, tenant tenantSummary, allowEmpty bool) {
 	t.Helper()
 	params := fullRangeParams()
 	params.Set("query", query)
@@ -26,7 +26,9 @@ func fieldNamesSeedPair(t *testing.T, hot, cold, endpoint, query string, tenant 
 	ref := tenantFetch(t, hot, endpoint, params, tenant.AccountID, tenant.ProjectID)
 	sut := tenantFetch(t, cold, endpoint, params, tenant.AccountID, tenant.ProjectID)
 	name := fmt.Sprintf("%s %s tenant %s:%s", endpoint, query, tenant.AccountID, tenant.ProjectID)
-	compareFieldValues(t, name, ref, sut, false)
+	// A tenant with no logs (the second seeded tenant holds spans only) answers
+	// nothing on both sides.
+	compareFieldValues(t, name, ref, sut, allowEmpty)
 	if want, got := fieldNamesOrder(t, name+" reference", ref), fieldNamesOrder(t, name+" SUT", sut); !reflect.DeepEqual(want, got) {
 		t.Errorf("%s: order differs:\n hot:  %v\n cold: %v", name, want, got)
 	}
@@ -40,7 +42,7 @@ func TestParity_FieldNames_SeedCorpus(t *testing.T) {
 			for _, q := range []string{"*", "level:=ERROR", "service.name:=api-gateway", "exception.type:*"} {
 				for _, ep := range endpoints {
 					t.Run(fmt.Sprintf("%s/%s/%s", te.AccountID, ep[len("/select/logsql/"):], url.QueryEscape(q)), func(t *testing.T) {
-						fieldNamesSeedPair(t, vlBaseURL, lhBaseURL, ep, q, te)
+						fieldNamesSeedPair(t, vlBaseURL, lhBaseURL, ep, q, te, te.AccountID != "0")
 					})
 				}
 			}
@@ -51,7 +53,7 @@ func TestParity_FieldNames_SeedCorpus(t *testing.T) {
 			for _, q := range []string{"span_id:*", "span_id:* `resource_attr:service.name`:=\"api-gateway\"", "span_id:* name:*GET*"} {
 				for _, ep := range endpoints {
 					t.Run(fmt.Sprintf("%s/%s/%s", te.AccountID, ep[len("/select/logsql/"):], url.QueryEscape(q)), func(t *testing.T) {
-						fieldNamesSeedPair(t, vtBaseURL, lhtBaseURL, ep, q, te)
+						fieldNamesSeedPair(t, vtBaseURL, lhtBaseURL, ep, q, te, false)
 					})
 				}
 			}
