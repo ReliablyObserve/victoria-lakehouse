@@ -473,6 +473,9 @@
     - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable
     - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent
     - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_QuerySurfaces
+    - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_BridgeBlockMatchesFileRows
+    - internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_RoundTripKeepsNullAndZero
+    - internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_ReadsAnObjectWithARequiredColumn
     - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads
     - internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing
     - lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable
