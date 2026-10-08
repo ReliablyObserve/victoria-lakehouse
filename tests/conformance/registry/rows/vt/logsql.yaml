@@ -233,3 +233,20 @@
   pending: true
   refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] }
   notes: "Hot VictoriaTraces writes one trace_id_idx row per trace (fields trace_id_idx, trace_id_idx_stream, start_time, end_time) and counts them in every query that matches them, such as *; Lakehouse drops those rows at flush (issue 458). The span fields themselves are exact: ask for span_id:* (vt.select.logsql_field_names.vt_field_names)."
+
+- id: vt.select.logsql_field_names.window_cuts_stream
+  title: "/select/logsql/field_names — in a window that cuts a stream's objects, hits of a field only some spans carry (events, links) and the names no object of the window lists can differ from hot (known gap)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Hot credits a column with the rows of the whole stored block that lists it; Lakehouse reads only the objects overlapping the window (issue 481). Exact for windows that cover a stream's objects and for logs, whose fields are set per stream. Fix needs a per-stream presence index (owner decision, issue 482)."
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "span_id:*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [] }
+  notes: "Measured 2026-10-08 on the proof stack: window 06:00-07:00, event:event_attr:attempt:0 hot 343, Lakehouse 158; the full seed window is exact. Issue 481."
