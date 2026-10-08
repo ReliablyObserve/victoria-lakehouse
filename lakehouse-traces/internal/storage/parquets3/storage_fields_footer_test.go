@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/parquet-go/parquet-go"
-
 )
 
 // instrumentedS3Server tracks every served request's byte count so tests
