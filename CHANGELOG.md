@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A field a log row never carried stays absent (`severity_number`, #274).** `severity_number` is now a nullable `INT32` Parquet column (`*int32` in `schema.LogRow`), so a row stored without it (a plain jsonline, Loki, Elasticsearch or syslog row) is read back without it on every layer (insert buffer, flushed Parquet, compacted, after a restart) and every surface (query rows, `field_names`, `field_values`, filters, `stats`), exactly as hot VictoriaLogs returns it, while an explicit `0` (what OTLP writes for UNSPECIFIED) stays `"0"`. A value that is not an integer (`"abc"`) is still not stored, as before; hot keeps it, so that case remains a known difference. Also fixed on the way: a Parquet column chunk that holds NULLs next to one repeated value was treated as a constant column and gave the NULL rows that value. Files written before this change keep the `0` they hold (there is no rewrite). The same fix covers the numeric span columns of the traces binary (`start_time_unix_nano`, `duration_ns`, `status.code`, `span.kind`): a service-graph edge row no longer comes back with `kind`, `status_code`, `duration` and `start_time_unix_nano` = `"0"`, while a span with status UNSET keeps its `"0"`; `start_time_unix_nano` loses its delta encoding (+0.7 % file size on the readback fixture). Both binaries; DuckDB, pyarrow and ClickHouse read the new NULL cells as NULL (parquet-readback gate). Locks: `TestParity_SeverityNumber_Absent` (hot vs Lakehouse in four layers and both tenant forms) and the ingest parity matrix no longer declares the gap.
+
 ## [0.146.9] - 2026-10-08
 
 ### Added
@@ -16,10 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Proof tooling follow-ups: steadier seeds, safer ports, the proxy tagged by its pin.** Tooling only, no runtime change (`scripts/proof/`, `deployment/docker/docker-compose-proof.yml`, `deployment/docker/Dockerfile.loki-vl-proxy`): the runner waits 45 s for steady counts (hot VictoriaTraces writes its trace-index rows 20-40 s after ingest), rows that share an identity pair equal rows first, a list cut at a limit must carry zeroed hits like the reference, derived port blocks keep clear of the ports other stacks use and below 49152 and are checked free before `up`, image tags are read from the compose file with the proxy tagged by its pinned release, and the proof proxies map the fixtures' dotted fields (`http.method`, `exception.type`, ...) with `-field-mapping`.
-
-### Fixed
-
-- **A field a log row never carried stays absent (`severity_number`, #274).** `severity_number` is now a nullable `INT32` Parquet column (`*int32` in `schema.LogRow`), so a row stored without it (a plain jsonline, Loki, Elasticsearch or syslog row) is read back without it on every layer (insert buffer, flushed Parquet, compacted, after a restart) and every surface (query rows, `field_names`, `field_values`, filters, `stats`), exactly as hot VictoriaLogs returns it, while an explicit `0` (what OTLP writes for UNSPECIFIED) stays `"0"`. A value that is not an integer (`"abc"`) is still not stored, as before; hot keeps it, so that case remains a known difference. Also fixed on the way: a Parquet column chunk that holds NULLs next to one repeated value was treated as a constant column and gave the NULL rows that value. Files written before this change keep the `0` they hold (there is no rewrite). The same fix covers the numeric span columns of the traces binary (`start_time_unix_nano`, `duration_ns`, `status.code`, `span.kind`): a service-graph edge row no longer comes back with `kind`, `status_code`, `duration` and `start_time_unix_nano` = `"0"`, while a span with status UNSET keeps its `"0"`; `start_time_unix_nano` loses its delta encoding (+0.7 % file size on the readback fixture). Both binaries; DuckDB, pyarrow and ClickHouse read the new NULL cells as NULL (parquet-readback gate). Locks: `TestParity_SeverityNumber_Absent` (hot vs Lakehouse in four layers and both tenant forms) and the ingest parity matrix no longer declares the gap.
 
 ## [0.146.8] - 2026-10-07
 

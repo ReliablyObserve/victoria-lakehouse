@@ -21,4 +21,4 @@ TestTenantParity_UnknownTenantReturnsEmpty        4  # two subtests x 2 cells; o
 TestTenantParity_DependenciesAPI_RespectsScope    2  # one cell per tenant graph; observed in parity run 37674171609
 TestTenantParity_TraceQLPerTenant                 2  # one cell per tenant search; observed in parity run 37674171609
 TestParity_SeverityNumber_Absent                106  # (3 + 3 + 6 + 9 rows + 8 checks) x 2 tenant forms in the restart-attempt-1 case; observed in a local parity run, #274
-TestParity_ServiceGraph_RowsCarryNoSpanNumerics  2  # at least one edge row on each tier (hot, cold); #274 traces side
+TestParity_ServiceGraph_RowsCarryNoSpanNumerics  40  # 20 edge rows (the query limit) on each of the two tiers; observed in a local parity run, #274 traces side
