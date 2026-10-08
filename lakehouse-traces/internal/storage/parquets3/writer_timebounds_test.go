@@ -89,7 +89,7 @@ func TestFlushTraceTenantGroup_ShuffledRows_ManifestHoldsTrueBounds(t *testing.T
 			SpanID:            fmt.Sprintf("span-%d", i),
 			SpanName:          "test-span",
 			ServiceName:       "test-svc",
-			DurationNs:        int64(i+1) * 1000,
+			DurationNs:        schema.Int64Ptr(int64(i+1) * 1000),
 		}
 	}
 	wantMin := base.Add(10 * time.Second).UnixNano()

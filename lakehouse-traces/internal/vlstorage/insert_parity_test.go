@@ -273,17 +273,17 @@ func TestTraceMapFieldToRow_OTELSpanAttributes(t *testing.T) {
 	if row.SpanName != "HTTP GET /api" {
 		t.Errorf("SpanName = %q, want %q", row.SpanName, "HTTP GET /api")
 	}
-	if row.SpanKind != 2 {
-		t.Errorf("SpanKind = %d, want 2", row.SpanKind)
+	if schema.Int32Value(row.SpanKind) != 2 {
+		t.Errorf("SpanKind = %d, want 2", schema.Int32Value(row.SpanKind))
 	}
-	if row.DurationNs != 15_000_000 {
-		t.Errorf("DurationNs = %d, want 15000000", row.DurationNs)
+	if schema.Int64Value(row.DurationNs) != 15_000_000 {
+		t.Errorf("DurationNs = %d, want 15000000", schema.Int64Value(row.DurationNs))
 	}
-	if row.StartTimeUnixNano != 1_700_000_000_000_000_000 {
-		t.Errorf("StartTimeUnixNano = %d, want 1700000000000000000", row.StartTimeUnixNano)
+	if schema.Int64Value(row.StartTimeUnixNano) != 1_700_000_000_000_000_000 {
+		t.Errorf("StartTimeUnixNano = %d, want 1700000000000000000", schema.Int64Value(row.StartTimeUnixNano))
 	}
-	if row.StatusCode != 1 {
-		t.Errorf("StatusCode = %d, want 1", row.StatusCode)
+	if schema.Int32Value(row.StatusCode) != 1 {
+		t.Errorf("StatusCode = %d, want 1", schema.Int32Value(row.StatusCode))
 	}
 	if row.StatusMessage != "OK" {
 		t.Errorf("StatusMessage = %q, want %q", row.StatusMessage, "OK")

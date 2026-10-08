@@ -596,8 +596,8 @@ func TestTraceRowToMap(t *testing.T) {
 		SpanID:         "span456",
 		SpanName:       "HTTP GET /users",
 		ServiceName:    "user-service",
-		StatusCode:     2,
-		DurationNs:     50000000,
+		StatusCode:     schema.Int32Ptr(2),
+		DurationNs:     schema.Int64Ptr(50000000),
 		HTTPMethod:     "GET",
 		HTTPUrl:        "http://user-service:8080/users",
 		DeployEnv:      "production",
@@ -634,11 +634,11 @@ func TestRewriteFile_Traces_MatchingRowsRemoved(t *testing.T) {
 	ctx := context.Background()
 
 	rows := []schema.TraceRow{
-		{TimestampUnixNano: 1000, TraceID: "t1", SpanID: "s1", SpanName: "GET /users", ServiceName: "user-svc", StatusCode: 0},
-		{TimestampUnixNano: 2000, TraceID: "t1", SpanID: "s2", SpanName: "DB SELECT", ServiceName: "user-svc", StatusCode: 0},
-		{TimestampUnixNano: 3000, TraceID: "t2", SpanID: "s3", SpanName: "GET /orders", ServiceName: "order-svc", StatusCode: 2},
-		{TimestampUnixNano: 4000, TraceID: "t2", SpanID: "s4", SpanName: "DB INSERT", ServiceName: "order-svc", StatusCode: 0},
-		{TimestampUnixNano: 5000, TraceID: "t3", SpanID: "s5", SpanName: "GET /health", ServiceName: "user-svc", StatusCode: 0},
+		{TimestampUnixNano: 1000, TraceID: "t1", SpanID: "s1", SpanName: "GET /users", ServiceName: "user-svc", StatusCode: schema.Int32Ptr(0)},
+		{TimestampUnixNano: 2000, TraceID: "t1", SpanID: "s2", SpanName: "DB SELECT", ServiceName: "user-svc", StatusCode: schema.Int32Ptr(0)},
+		{TimestampUnixNano: 3000, TraceID: "t2", SpanID: "s3", SpanName: "GET /orders", ServiceName: "order-svc", StatusCode: schema.Int32Ptr(2)},
+		{TimestampUnixNano: 4000, TraceID: "t2", SpanID: "s4", SpanName: "DB INSERT", ServiceName: "order-svc", StatusCode: schema.Int32Ptr(0)},
+		{TimestampUnixNano: 5000, TraceID: "t3", SpanID: "s5", SpanName: "GET /health", ServiceName: "user-svc", StatusCode: schema.Int32Ptr(0)},
 	}
 
 	key := "traces/dt=2026-05-02/hour=10/batch-01.parquet"

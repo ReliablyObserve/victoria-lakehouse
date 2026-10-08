@@ -467,6 +467,7 @@
     - vl.select.query.explicit_zero_typed_field
     - vl.select.field_values.absent_typed_field
     - vl.select.stats_query.absent_typed_field
+    - vt.select.logsql_query.service_graph_row_no_span_numerics
   tests:
     - tests/parity/severity_number_absent_parity_test.go#TestParity_SeverityNumber_Absent
     - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable
@@ -476,6 +477,13 @@
     - internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_RoundTripKeepsNullAndZero
     - internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_ReadsAnObjectWithARequiredColumn
     - internal/schema/severity_nullable_test.go#TestInt32Value
+    - internal/storage/parquets3/severity_absent_property_test.go#TestSeverityAbsent_Property
+    - lakehouse-traces/internal/storage/parquets3/span_numeric_absent_property_test.go#TestSpanNumericAbsent_Property
+    - tests/parity/service_graph_numeric_absent_parity_test.go#TestParity_ServiceGraph_RowsCarryNoSpanNumerics
+    - lakehouse-traces/internal/storage/parquets3/span_numeric_absent_test.go#TestSpanNumericAbsent_ParquetColumnsAreNullable
+    - lakehouse-traces/internal/storage/parquets3/span_numeric_absent_test.go#TestSpanNumericAbsent_ScanPathsKeepAbsentAbsent
+    - lakehouse-traces/internal/storage/parquets3/span_numeric_absent_test.go#TestSpanNumericAbsent_BridgeBlockMatchesFileRows
+    - lakehouse-traces/internal/vlstorage/numeric_absent_test.go#TestMapFieldToTraceRow_NumericColumnsAbsentVsZero
     - internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads
     - internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing
     - lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable

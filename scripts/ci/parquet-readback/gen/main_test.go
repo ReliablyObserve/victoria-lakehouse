@@ -209,10 +209,18 @@ func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
 	graphEdges := 0
 	for _, r := range rows {
 		add("timestamp_unix_nano", r.TimestampUnixNano)
-		add("start_time_unix_nano", r.StartTimeUnixNano)
-		add("duration_ns", r.DurationNs)
-		add("status.code", int64(r.StatusCode))
-		add("span.kind", int64(r.SpanKind))
+		if r.StartTimeUnixNano != nil {
+			add("start_time_unix_nano", *r.StartTimeUnixNano)
+		}
+		if r.DurationNs != nil {
+			add("duration_ns", *r.DurationNs)
+		}
+		if r.StatusCode != nil {
+			add("status.code", int64(*r.StatusCode))
+		}
+		if r.SpanKind != nil {
+			add("span.kind", int64(*r.SpanKind))
+		}
 		see("service.name", r.ServiceName)
 		see("span.name", r.SpanName)
 		see("http.method", r.HTTPMethod)

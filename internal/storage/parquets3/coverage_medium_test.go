@@ -1107,15 +1107,15 @@ func TestMedium_logRowToFields(t *testing.T) {
 func TestMedium_traceRowToFields(t *testing.T) {
 	row := &schema.TraceRow{
 		TimestampUnixNano: 1234567890,
-		StartTimeUnixNano: 1234567800,
+		StartTimeUnixNano: schema.Int64Ptr(1234567800),
 		TraceID:           "trace-abc",
 		SpanID:            "span-123",
 		ParentSpanID:      "span-000",
 		SpanName:          "GET /api/users",
-		SpanKind:          2, // SERVER
-		StatusCode:        1, // OK
+		SpanKind:          schema.Int32Ptr(2), // SERVER
+		StatusCode:        schema.Int32Ptr(1), // OK
 		StatusMessage:     "success",
-		DurationNs:        90,
+		DurationNs:        schema.Int64Ptr(90),
 		ServiceName:       "api-gateway",
 		ScopeName:         "my.library",
 		DeployEnv:         "prod",

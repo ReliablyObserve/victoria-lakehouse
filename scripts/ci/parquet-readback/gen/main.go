@@ -285,16 +285,16 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 			AccountID:         uint32(i % 3),
 			ProjectID:         uint32(i % 5),
 			TimestampUnixNano: end,
-			StartTimeUnixNano: end - dur,
+			StartTimeUnixNano: schema.Int64Ptr(end - dur),
 			TraceID:           hexID(rng, 16),
 			SpanID:            hexID(rng, 8),
 			ParentSpanID:      hexID(rng, 8),
 			SpanName:          fmt.Sprintf("op-%d", i%20),
 			ServiceName:       svc,
-			DurationNs:        dur,
-			StatusCode:        int32(i % 3),
+			DurationNs:        schema.Int64Ptr(dur),
+			StatusCode:        schema.Int32Ptr(int32(i % 3)),
 			StatusMessage:     []string{"", "OK", "deadline exceeded"}[i%3],
-			SpanKind:          int32(i%5 + 1),
+			SpanKind:          schema.Int32Ptr(int32(i%5 + 1)),
 			HTTPMethod:        methods[i%len(methods)],
 			HTTPStatusCode:    statuses[i%len(statuses)],
 			HTTPUrl:           fmt.Sprintf("https://api.example.com/v1/items/%d", i),
@@ -321,6 +321,11 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 			ScopeAttributes: map[string]string{
 				"lib.version": fmt.Sprintf("1.2.%d", i%4),
 			},
+		}
+		// A row that is not a span (a service-graph edge row) never carries the
+		// numeric span columns: they are NULL, not 0.
+		if i%19 == 7 {
+			row.StartTimeUnixNano, row.DurationNs, row.StatusCode, row.SpanKind = nil, nil, nil, nil
 		}
 		// Span events and links, as VictoriaTraces writes them: a span with an
 		// exception carries the exception event and its stack trace, some
@@ -400,6 +405,8 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 			"span.kind":            big.NewInt(0),
 		},
 		DistinctCounts: map[string]int64{},
+		NullCounts:     map[string]int64{"start_time_unix_nano": 0, "duration_ns": 0, "status.code": 0, "span.kind": 0},
+		ZeroCounts:     map[string]int64{"status.code": 0},
 		DeltaColumns:   taggedColumns(reflect.TypeOf(schema.TraceRow{}), "delta"),
 		DictColumns:    taggedColumns(reflect.TypeOf(schema.TraceRow{}), "dict"),
 	}
@@ -415,10 +422,29 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 	}
 	for _, r := range traceRows {
 		addInt("timestamp_unix_nano", r.TimestampUnixNano)
-		addInt("start_time_unix_nano", r.StartTimeUnixNano)
-		addInt("duration_ns", r.DurationNs)
-		addInt("status.code", int64(r.StatusCode))
-		addInt("span.kind", int64(r.SpanKind))
+		if r.StartTimeUnixNano != nil {
+			addInt("start_time_unix_nano", *r.StartTimeUnixNano)
+		} else {
+			truth.NullCounts["start_time_unix_nano"]++
+		}
+		if r.DurationNs != nil {
+			addInt("duration_ns", *r.DurationNs)
+		} else {
+			truth.NullCounts["duration_ns"]++
+		}
+		if r.StatusCode != nil {
+			addInt("status.code", int64(*r.StatusCode))
+			if *r.StatusCode == 0 {
+				truth.ZeroCounts["status.code"]++
+			}
+		} else {
+			truth.NullCounts["status.code"]++
+		}
+		if r.SpanKind != nil {
+			addInt("span.kind", int64(*r.SpanKind))
+		} else {
+			truth.NullCounts["span.kind"]++
+		}
 		distinct["service.name"][r.ServiceName] = struct{}{}
 		distinct["span.name"][r.SpanName] = struct{}{}
 		distinct["http.method"][r.HTTPMethod] = struct{}{}

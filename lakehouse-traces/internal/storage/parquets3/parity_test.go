@@ -787,7 +787,7 @@ func TestTraceRowToFields_UsesVTPrefixes(t *testing.T) {
 		SpanID:             "s1",
 		SpanName:           "op",
 		ServiceName:        "svc",
-		DurationNs:         1000,
+		DurationNs:         schema.Int64Ptr(1000),
 		K8sNamespaceName:   "prod",
 		HTTPMethod:         "GET",
 		DBSystem:           "postgres",

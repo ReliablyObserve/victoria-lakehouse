@@ -8,10 +8,10 @@ import (
 
 func TestComputeTraceIndex(t *testing.T) {
 	rows := []schema.TraceRow{
-		{TraceID: "trace-a", StartTimeUnixNano: 1000, DurationNs: 100},
-		{TraceID: "trace-a", StartTimeUnixNano: 900, DurationNs: 200},
-		{TraceID: "trace-b", StartTimeUnixNano: 2000, DurationNs: 50},
-		{TraceID: "", StartTimeUnixNano: 3000, DurationNs: 10},
+		{TraceID: "trace-a", StartTimeUnixNano: schema.Int64Ptr(1000), DurationNs: schema.Int64Ptr(100)},
+		{TraceID: "trace-a", StartTimeUnixNano: schema.Int64Ptr(900), DurationNs: schema.Int64Ptr(200)},
+		{TraceID: "trace-b", StartTimeUnixNano: schema.Int64Ptr(2000), DurationNs: schema.Int64Ptr(50)},
+		{TraceID: "", StartTimeUnixNano: schema.Int64Ptr(3000), DurationNs: schema.Int64Ptr(10)},
 	}
 
 	entries := computeTraceIndex(rows)

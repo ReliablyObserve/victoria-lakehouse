@@ -19,7 +19,7 @@ var fvcBase = time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 func fvcSpan(at time.Duration, name string) schema.TraceRow {
 	ts := fvcBase.Add(at).UnixNano()
 	return schema.TraceRow{
-		TimestampUnixNano: ts, StartTimeUnixNano: ts, TraceID: "t" + name, SpanID: "s" + name,
+		TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts), TraceID: "t" + name, SpanID: "s" + name,
 		SpanName: name, ServiceName: "svc-" + name,
 		Stream: `{resource_attr:service.name="svc-` + name + `"}`, StreamID: "id-" + name,
 	}

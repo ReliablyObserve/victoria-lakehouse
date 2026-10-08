@@ -95,14 +95,14 @@ func fullReadStreamRows(rng *rand.Rand, base time.Time, n int) []schema.TraceRow
 		start := end.Add(-time.Duration(5+rng.Intn(50)) * time.Millisecond)
 		rows = append(rows, schema.TraceRow{
 			TimestampUnixNano:  end.UnixNano(),
-			StartTimeUnixNano:  start.UnixNano(),
+			StartTimeUnixNano:  schema.Int64Ptr(start.UnixNano()),
 			TraceID:            traceIDs[rng.Intn(len(traceIDs))],
 			SpanID:             hex(16),
 			ParentSpanID:       hex(16),
 			SpanName:           name,
 			ServiceName:        svc,
-			DurationNs:         end.Sub(start).Nanoseconds(),
-			SpanKind:           int32(2 + rng.Intn(2)),
+			DurationNs:         schema.Int64Ptr(end.Sub(start).Nanoseconds()),
+			SpanKind:           schema.Int32Ptr(int32(2 + rng.Intn(2))),
 			HTTPUrl:            "http://" + svc + ":8080/api/v1/users",
 			K8sPodName:         svc + "-" + hex(10),
 			Stream:             fmt.Sprintf(`{name=%q,resource_attr:service.name=%q}`, name, svc),
@@ -122,13 +122,13 @@ func fullReadMarkerSpans(base time.Time, marker string) []schema.TraceRow {
 		start := base.Add(-time.Duration(i+1) * time.Millisecond)
 		rows = append(rows, schema.TraceRow{
 			TimestampUnixNano: start.Add(time.Millisecond).UnixNano(),
-			StartTimeUnixNano: start.UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(start.UnixNano()),
 			TraceID:           fmt.Sprintf("%016x%016x", base.UnixNano(), i),
 			SpanID:            fmt.Sprintf("%016x", i),
 			SpanName:          marker,
 			ServiceName:       marker + "-svc",
-			DurationNs:        int64(time.Millisecond),
-			SpanKind:          2,
+			DurationNs:        schema.Int64Ptr(int64(time.Millisecond)),
+			SpanKind:          schema.Int32Ptr(2),
 			Stream:            fmt.Sprintf(`{name=%q,resource_attr:service.name=%q}`, marker, marker+"-svc"),
 		})
 	}

@@ -64,12 +64,12 @@ func FuzzTraceRowToDataBlock(f *testing.F) {
 		}
 		row := schema.TraceRow{
 			TimestampUnixNano: tsNano,
-			StartTimeUnixNano: startNano,
+			StartTimeUnixNano: schema.Int64Ptr(startNano),
 			TraceID:           traceID,
 			SpanID:            spanID,
 			SpanName:          spanName,
 			ServiceName:       serviceName,
-			DurationNs:        durationNs,
+			DurationNs:        schema.Int64Ptr(durationNs),
 			HTTPMethod:        method,
 			HTTPStatusCode:    statusCode,
 		}

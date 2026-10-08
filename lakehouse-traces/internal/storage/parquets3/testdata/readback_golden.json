@@ -3119,7 +3119,8 @@
           "name": "start_time_unix_nano",
           "type": "INT64",
           "encodings": [
-            "DELTA_BINARY_PACKED"
+            "PLAIN",
+            "RLE"
           ],
           "codecs": [
             "ZSTD"
@@ -3241,7 +3242,8 @@
           "name": "duration_ns",
           "type": "INT64",
           "encodings": [
-            "PLAIN"
+            "PLAIN",
+            "RLE"
           ],
           "codecs": [
             "ZSTD"
@@ -3261,7 +3263,8 @@
           "name": "status.code",
           "type": "INT32",
           "encodings": [
-            "PLAIN"
+            "PLAIN",
+            "RLE"
           ],
           "codecs": [
             "ZSTD"
@@ -3302,7 +3305,8 @@
           "name": "span.kind",
           "type": "INT32",
           "encodings": [
-            "PLAIN"
+            "PLAIN",
+            "RLE"
           ],
           "codecs": [
             "ZSTD"

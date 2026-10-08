@@ -53,21 +53,21 @@ func makeTestTraceParquetData(t *testing.T) ([]byte, string) {
 	rows := []schema.TraceRow{
 		{
 			TimestampUnixNano: time.Now().UnixNano(),
-			StartTimeUnixNano: time.Now().UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(time.Now().UnixNano()),
 			TraceID:           "trace-aaa",
 			SpanID:            "span-001",
 			SpanName:          "GET /api/users",
 			ServiceName:       "svc-a",
-			DurationNs:        42000,
+			DurationNs:        schema.Int64Ptr(42000),
 		},
 		{
 			TimestampUnixNano: time.Now().UnixNano(),
-			StartTimeUnixNano: time.Now().UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(time.Now().UnixNano()),
 			TraceID:           "trace-bbb",
 			SpanID:            "span-002",
 			SpanName:          "POST /api/orders",
 			ServiceName:       "svc-b",
-			DurationNs:        99000,
+			DurationNs:        schema.Int64Ptr(99000),
 		},
 	}
 	result, err := writeTracesParquet(rows, 1000, 1)
