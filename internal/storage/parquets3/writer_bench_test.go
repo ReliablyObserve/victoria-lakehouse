@@ -67,7 +67,7 @@ func generateRealisticLogRows(n int) []schema.LogRow {
 			TimestampUnixNano: ts,
 			Body:              bodies[rng.Intn(len(bodies))],
 			SeverityText:      sevText,
-			SeverityNumber:    sevNum,
+			SeverityNumber:    schema.Int32Ptr(sevNum),
 			ServiceName:       services[rng.Intn(len(services))],
 			K8sNamespaceName:  namespaces[rng.Intn(len(namespaces))],
 			K8sPodName:        pods[rng.Intn(len(pods))],

@@ -85,10 +85,10 @@ func TestDataBlockToTraceRows_FieldMapping(t *testing.T) {
 			t.Fatalf("row %d name: got %q", i, g.SpanName)
 		case g.ParentSpanID != "p":
 			t.Fatalf("row %d parent_span_id: got %q", i, g.ParentSpanID)
-		case g.DurationNs != 1000:
-			t.Fatalf("row %d duration_ns: got %d", i, g.DurationNs)
-		case g.StartTimeUnixNano != now:
-			t.Fatalf("row %d start_time: got %d want %d", i, g.StartTimeUnixNano, now)
+		case schema.Int64Value(g.DurationNs) != 1000:
+			t.Fatalf("row %d duration_ns: got %d", i, schema.Int64Value(g.DurationNs))
+		case schema.Int64Value(g.StartTimeUnixNano) != now:
+			t.Fatalf("row %d start_time: got %d want %d", i, schema.Int64Value(g.StartTimeUnixNano), now)
 		case g.TimestampUnixNano != now:
 			t.Fatalf("row %d timestamp: got %d want %d", i, g.TimestampUnixNano, now)
 		case g.Stream != wantStream:

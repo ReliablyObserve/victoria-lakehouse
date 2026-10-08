@@ -98,7 +98,7 @@ func DataBlockToLogRows(db *logstorage.DataBlock, tenant logstorage.TenantID) []
 				st = nil
 			}
 		}
-		row.SeverityText = schema.DeriveSeverityText(row.SeverityText, row.SeverityNumber, st)
+		row.SeverityText = schema.DeriveSeverityText(row.SeverityText, schema.Int32Value(row.SeverityNumber), st)
 		if st != nil {
 			logstorage.PutStreamTags(st)
 		}

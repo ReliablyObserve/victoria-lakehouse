@@ -31,7 +31,7 @@ type LogRow struct {
 	TimestampUnixNano int64  `json:"timestamp_unix_nano" parquet:"timestamp_unix_nano,delta"`
 	Body              string `json:"body" parquet:"body"`
 	SeverityText      string `json:"severity_text" parquet:"severity_text,dict"`
-	SeverityNumber    int32  `json:"severity_number" parquet:"severity_number"`
+	SeverityNumber    *int32 `json:"severity_number,omitempty" parquet:"severity_number,optional"`
 	ServiceName       string `json:"service.name" parquet:"service.name,dict"`
 	TraceID           string `json:"trace_id" parquet:"trace_id"`
 	SpanID            string `json:"span_id" parquet:"span_id"`
@@ -92,16 +92,16 @@ type TraceRow struct {
 	AccountID         uint32 `json:"account_id" parquet:"account_id"`
 	ProjectID         uint32 `json:"project_id" parquet:"project_id"`
 	TimestampUnixNano int64  `json:"timestamp_unix_nano" parquet:"timestamp_unix_nano,delta"`
-	StartTimeUnixNano int64  `json:"start_time_unix_nano" parquet:"start_time_unix_nano,delta"`
+	StartTimeUnixNano *int64 `json:"start_time_unix_nano,omitempty" parquet:"start_time_unix_nano,optional"`
 	TraceID           string `json:"trace_id" parquet:"trace_id"`
 	SpanID            string `json:"span_id" parquet:"span_id"`
 	ParentSpanID      string `json:"parent_span_id" parquet:"parent_span_id"`
 	SpanName          string `json:"span.name" parquet:"span.name,dict"`
 	ServiceName       string `json:"service.name" parquet:"service.name,dict"`
-	DurationNs        int64  `json:"duration_ns" parquet:"duration_ns"`
-	StatusCode        int32  `json:"status.code" parquet:"status.code"`
+	DurationNs        *int64 `json:"duration_ns,omitempty" parquet:"duration_ns,optional"`
+	StatusCode        *int32 `json:"status.code,omitempty" parquet:"status.code,optional"`
 	StatusMessage     string `json:"status.message" parquet:"status.message,dict"`
-	SpanKind          int32  `json:"span.kind" parquet:"span.kind"`
+	SpanKind          *int32 `json:"span.kind,omitempty" parquet:"span.kind,optional"`
 	HTTPMethod        string `json:"http.method" parquet:"http.method,dict"`
 	HTTPStatusCode    string `json:"http.status_code" parquet:"http.status_code,dict"`
 	HTTPUrl           string `json:"http.url" parquet:"http.url"`

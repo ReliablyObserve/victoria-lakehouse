@@ -262,25 +262,26 @@ func TestVerifyInsert_EmptyRows(t *testing.T) {
 }
 
 // TestVerifyInsert_SeverityNumberParsing verifies correct int32 parsing for the
-// severity_number field: valid decimal integers are stored; invalid or empty
-// values leave SeverityNumber at zero.
+// severity_number field: a decimal integer is stored in the typed column (a
+// present zero stays present); an invalid or empty value leaves the column
+// absent, not zero (issue #274).
 func TestVerifyInsert_SeverityNumberParsing(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name    string
 		input   string
-		wantNum int32
+		wantNum *int32
 	}{
-		{"valid_zero", "0", 0},
-		{"valid_positive", "9", 9},
-		{"valid_max_severity", "24", 24},
-		{"valid_large", "2147483647", 2147483647},
-		{"empty_string", "", 0},
-		{"non_numeric", "critical", 0},
-		{"float_string", "9.5", 0},
-		{"negative", "-1", -1},
-		{"overflow", "99999999999", 0},
+		{"valid_zero", "0", schema.Int32Ptr(0)},
+		{"valid_positive", "9", schema.Int32Ptr(9)},
+		{"valid_max_severity", "24", schema.Int32Ptr(24)},
+		{"valid_large", "2147483647", schema.Int32Ptr(2147483647)},
+		{"empty_string", "", nil},
+		{"non_numeric", "critical", nil},
+		{"float_string", "9.5", nil},
+		{"negative", "-1", schema.Int32Ptr(-1)},
+		{"overflow", "99999999999", nil},
 	}
 
 	for _, tc := range cases {
@@ -290,8 +291,9 @@ func TestVerifyInsert_SeverityNumberParsing(t *testing.T) {
 			row := schema.LogRow{}
 			mapFieldToRow(&row, "severity_number", tc.input)
 
-			if row.SeverityNumber != tc.wantNum {
-				t.Errorf("SeverityNumber for input %q = %d, want %d",
+			if (row.SeverityNumber == nil) != (tc.wantNum == nil) ||
+				(tc.wantNum != nil && *row.SeverityNumber != *tc.wantNum) {
+				t.Errorf("SeverityNumber for input %q = %v, want %v",
 					tc.input, row.SeverityNumber, tc.wantNum)
 			}
 		})

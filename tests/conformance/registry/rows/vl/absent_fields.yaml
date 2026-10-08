@@ -1,0 +1,65 @@
+# Rows locking #274: a typed (INT32) column that a row never carried stays absent on every layer and surface, as on hot VictoriaLogs.
+
+- id: vl.select.query.absent_typed_field
+  title: "/select/logsql/query — rows stored without severity_number come back without it (#274)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "-severity_number:*", limit: "50", disable_latency_offset: "true", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/severity_number_absent_parity_test.go#TestParity_SeverityNumber_Absent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_QuerySurfaces, internal/storage/parquets3/severity_absent_property_test.go#TestSeverityAbsent_Property, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_BridgeBlockMatchesFileRows, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_RoundTripKeepsNullAndZero, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_ReadsAnObjectWithARequiredColumn, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads, internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads] }
+  notes: "A field a row never carried stays absent on cold (#274): severity_number is a nullable INT32 column. Locked by TestParity_SeverityNumber_Absent in the buffer, Parquet, compacted and after-restart layers and both tenant forms. Known differences, not covered by the lock: a severity_number that is not a canonical integer is dropped or rewritten (https://github.com/ReliablyObserve/victoria-lakehouse/issues/478); Lakehouse derives a level from severity_number on rows without one (https://github.com/ReliablyObserve/victoria-lakehouse/issues/477); field_names hits of a sparse column are block-granular on hot (https://github.com/ReliablyObserve/victoria-lakehouse/issues/480)."
+
+- id: vl.select.query.explicit_zero_typed_field
+  title: "/select/logsql/query — an explicit severity_number=0 stays \"0\" (#274)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "severity_number:=0", limit: "50", disable_latency_offset: "true", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/severity_number_absent_parity_test.go#TestParity_SeverityNumber_Absent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_QuerySurfaces, internal/storage/parquets3/severity_absent_property_test.go#TestSeverityAbsent_Property, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_BridgeBlockMatchesFileRows, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_RoundTripKeepsNullAndZero, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_ReadsAnObjectWithARequiredColumn, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads, internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads] }
+  notes: "A field a row never carried stays absent on cold (#274): severity_number is a nullable INT32 column. Locked by TestParity_SeverityNumber_Absent in the buffer, Parquet, compacted and after-restart layers and both tenant forms. Known differences, not covered by the lock: a severity_number that is not a canonical integer is dropped or rewritten (https://github.com/ReliablyObserve/victoria-lakehouse/issues/478); Lakehouse derives a level from severity_number on rows without one (https://github.com/ReliablyObserve/victoria-lakehouse/issues/477); field_names hits of a sparse column are block-granular on hot (https://github.com/ReliablyObserve/victoria-lakehouse/issues/480)."
+
+- id: vl.select.field_values.absent_typed_field
+  title: "/select/logsql/field_values — rows without severity_number are one empty bucket, not 0 (#274)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_values }
+  request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: severity_number, start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/severity_number_absent_parity_test.go#TestParity_SeverityNumber_Absent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_QuerySurfaces, internal/storage/parquets3/severity_absent_property_test.go#TestSeverityAbsent_Property, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_BridgeBlockMatchesFileRows, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_RoundTripKeepsNullAndZero, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_ReadsAnObjectWithARequiredColumn, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads, internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads] }
+  notes: "A field a row never carried stays absent on cold (#274): severity_number is a nullable INT32 column. Locked by TestParity_SeverityNumber_Absent in the buffer, Parquet, compacted and after-restart layers and both tenant forms. Known differences, not covered by the lock: a severity_number that is not a canonical integer is dropped or rewritten (https://github.com/ReliablyObserve/victoria-lakehouse/issues/478); Lakehouse derives a level from severity_number on rows without one (https://github.com/ReliablyObserve/victoria-lakehouse/issues/477); field_names hits of a sparse column are block-granular on hot (https://github.com/ReliablyObserve/victoria-lakehouse/issues/480)."
+
+- id: vl.select.stats_query.absent_typed_field
+  title: "/select/logsql/stats_query — count of rows without severity_number (#274)"
+  surface: vl
+  kind: stats
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "-severity_number:* | stats count() c", disable_latency_offset: "true", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/severity_number_absent_parity_test.go#TestParity_SeverityNumber_Absent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_QuerySurfaces, internal/storage/parquets3/severity_absent_property_test.go#TestSeverityAbsent_Property, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_BridgeBlockMatchesFileRows, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_RoundTripKeepsNullAndZero, internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_ReadsAnObjectWithARequiredColumn, internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads, internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent, lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads] }
+  notes: "A field a row never carried stays absent on cold (#274): severity_number is a nullable INT32 column. Locked by TestParity_SeverityNumber_Absent in the buffer, Parquet, compacted and after-restart layers and both tenant forms. Known differences, not covered by the lock: a severity_number that is not a canonical integer is dropped or rewritten (https://github.com/ReliablyObserve/victoria-lakehouse/issues/478); Lakehouse derives a level from severity_number on rows without one (https://github.com/ReliablyObserve/victoria-lakehouse/issues/477); field_names hits of a sparse column are block-granular on hot (https://github.com/ReliablyObserve/victoria-lakehouse/issues/480)."

@@ -53,8 +53,14 @@ type fileTruth struct {
 	// losslessly into an arbitrary-precision int.
 	Int64Sums      map[string]*big.Int `json:"int64_sums"`
 	DistinctCounts map[string]int64    `json:"distinct_counts"`
-	DeltaColumns   []string            `json:"delta_columns"`
-	DictColumns    []string            `json:"dict_columns"`
+	// NullCounts / ZeroCounts hold, for a nullable integer column, the number
+	// of rows whose cell is NULL (the field was absent) and the number whose
+	// cell is an explicit 0. An engine that reads NULL as 0 (or the reverse)
+	// gets one of the two wrong; sums alone cannot tell them apart.
+	NullCounts   map[string]int64 `json:"null_counts,omitempty"`
+	ZeroCounts   map[string]int64 `json:"zero_counts,omitempty"`
+	DeltaColumns []string         `json:"delta_columns"`
+	DictColumns  []string         `json:"dict_columns"`
 	// SpanExtras is the writer-side truth of the span events and links
 	// columns (traces file only): what verify.py recomputes with pyarrow and
 	// with duckdb from the JSON in span.events_json / span.links_json.
@@ -153,13 +159,24 @@ func genLogs(path string, n, rowGroupSize int) (fileTruth, error) {
 		// Near-sorted timestamps with small jitter — matches what the
 		// insert buffer actually flushes.
 		ts := base + int64(i)*1_000_000 + rng.Int63n(500_000)
+		// severity_number is nullable: some rows never carried it (NULL), some
+		// carry an explicit 0 (OTLP UNSPECIFIED), the rest a real severity.
+		var sevNum *int32
+		switch {
+		case i%11 == 3:
+			sevNum = nil
+		case i%13 == 5:
+			sevNum = schema.Int32Ptr(0)
+		default:
+			sevNum = schema.Int32Ptr(sev.num)
+		}
 		logRows[i] = schema.LogRow{
 			AccountID:         uint32(i % 3),
 			ProjectID:         uint32(i % 5),
 			TimestampUnixNano: ts,
 			Body:              fmt.Sprintf("processed request %d for user-%d in %dms", i, rng.Intn(10_000), rng.Intn(900)),
 			SeverityText:      sev.text,
-			SeverityNumber:    sev.num,
+			SeverityNumber:    sevNum,
 			ServiceName:       svc,
 			TraceID:           hexID(rng, 16),
 			SpanID:            hexID(rng, 8),
@@ -210,6 +227,8 @@ func genLogs(path string, n, rowGroupSize int) (fileTruth, error) {
 			"project_id":          big.NewInt(0),
 		},
 		DistinctCounts: map[string]int64{},
+		NullCounts:     map[string]int64{"severity_number": 0},
+		ZeroCounts:     map[string]int64{"severity_number": 0},
 		DeltaColumns:   taggedColumns(reflect.TypeOf(schema.LogRow{}), "delta"),
 		DictColumns:    taggedColumns(reflect.TypeOf(schema.LogRow{}), "dict"),
 	}
@@ -226,7 +245,15 @@ func genLogs(path string, n, rowGroupSize int) (fileTruth, error) {
 	}
 	for _, r := range logRows {
 		addInt("timestamp_unix_nano", r.TimestampUnixNano)
-		addInt("severity_number", int64(r.SeverityNumber))
+		switch {
+		case r.SeverityNumber == nil:
+			truth.NullCounts["severity_number"]++
+		default:
+			addInt("severity_number", int64(*r.SeverityNumber))
+			if *r.SeverityNumber == 0 {
+				truth.ZeroCounts["severity_number"]++
+			}
+		}
 		addInt("account_id", int64(r.AccountID))
 		addInt("project_id", int64(r.ProjectID))
 		distinct["service.name"][r.ServiceName] = struct{}{}
@@ -258,16 +285,16 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 			AccountID:         uint32(i % 3),
 			ProjectID:         uint32(i % 5),
 			TimestampUnixNano: end,
-			StartTimeUnixNano: end - dur,
+			StartTimeUnixNano: schema.Int64Ptr(end - dur),
 			TraceID:           hexID(rng, 16),
 			SpanID:            hexID(rng, 8),
 			ParentSpanID:      hexID(rng, 8),
 			SpanName:          fmt.Sprintf("op-%d", i%20),
 			ServiceName:       svc,
-			DurationNs:        dur,
-			StatusCode:        int32(i % 3),
+			DurationNs:        schema.Int64Ptr(dur),
+			StatusCode:        schema.Int32Ptr(int32(i % 3)),
 			StatusMessage:     []string{"", "OK", "deadline exceeded"}[i%3],
-			SpanKind:          int32(i%5 + 1),
+			SpanKind:          schema.Int32Ptr(int32(i%5 + 1)),
 			HTTPMethod:        methods[i%len(methods)],
 			HTTPStatusCode:    statuses[i%len(statuses)],
 			HTTPUrl:           fmt.Sprintf("https://api.example.com/v1/items/%d", i),
@@ -294,6 +321,11 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 			ScopeAttributes: map[string]string{
 				"lib.version": fmt.Sprintf("1.2.%d", i%4),
 			},
+		}
+		// A row that is not a span (a service-graph edge row) never carries the
+		// numeric span columns: they are NULL, not 0.
+		if i%19 == 7 {
+			row.StartTimeUnixNano, row.DurationNs, row.StatusCode, row.SpanKind = nil, nil, nil, nil
 		}
 		// Span events and links, as VictoriaTraces writes them: a span with an
 		// exception carries the exception event and its stack trace, some
@@ -373,6 +405,8 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 			"span.kind":            big.NewInt(0),
 		},
 		DistinctCounts: map[string]int64{},
+		NullCounts:     map[string]int64{"start_time_unix_nano": 0, "duration_ns": 0, "status.code": 0, "span.kind": 0},
+		ZeroCounts:     map[string]int64{"status.code": 0},
 		DeltaColumns:   taggedColumns(reflect.TypeOf(schema.TraceRow{}), "delta"),
 		DictColumns:    taggedColumns(reflect.TypeOf(schema.TraceRow{}), "dict"),
 	}
@@ -388,10 +422,29 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 	}
 	for _, r := range traceRows {
 		addInt("timestamp_unix_nano", r.TimestampUnixNano)
-		addInt("start_time_unix_nano", r.StartTimeUnixNano)
-		addInt("duration_ns", r.DurationNs)
-		addInt("status.code", int64(r.StatusCode))
-		addInt("span.kind", int64(r.SpanKind))
+		if r.StartTimeUnixNano != nil {
+			addInt("start_time_unix_nano", *r.StartTimeUnixNano)
+		} else {
+			truth.NullCounts["start_time_unix_nano"]++
+		}
+		if r.DurationNs != nil {
+			addInt("duration_ns", *r.DurationNs)
+		} else {
+			truth.NullCounts["duration_ns"]++
+		}
+		if r.StatusCode != nil {
+			addInt("status.code", int64(*r.StatusCode))
+			if *r.StatusCode == 0 {
+				truth.ZeroCounts["status.code"]++
+			}
+		} else {
+			truth.NullCounts["status.code"]++
+		}
+		if r.SpanKind != nil {
+			addInt("span.kind", int64(*r.SpanKind))
+		} else {
+			truth.NullCounts["span.kind"]++
+		}
 		distinct["service.name"][r.ServiceName] = struct{}{}
 		distinct["span.name"][r.SpanName] = struct{}{}
 		distinct["http.method"][r.HTTPMethod] = struct{}{}

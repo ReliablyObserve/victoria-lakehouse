@@ -28,7 +28,7 @@ func TestColdBloom_BloomSoundness(t *testing.T) {
 			k := i / 10
 			ts := base.Add(time.Duration(f*40+i) * time.Second).UnixNano()
 			rows = append(rows, schema.TraceRow{
-				TimestampUnixNano: ts, StartTimeUnixNano: ts,
+				TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts),
 				TraceID: ztid(f, k), SpanID: fmt.Sprintf("%016x", f*100+i), SpanName: fmt.Sprintf("op%d-%s%d", k%2, pad, i), ServiceName: []string{"alpha", "beta"}[f],
 				Stream: fmt.Sprintf(`{resource_attr:service.name=%q}`, []string{"alpha", "beta"}[f]), StreamID: fmt.Sprintf("%048x", 3+f),
 			})
@@ -141,7 +141,7 @@ func TestColdBloom_FileLevelSidecars(t *testing.T) {
 			k := i / 10
 			ts := base.Add(time.Duration(f*40+i) * time.Second).UnixNano()
 			rows = append(rows, schema.TraceRow{
-				TimestampUnixNano: ts, StartTimeUnixNano: ts,
+				TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts),
 				TraceID: ztid(f, k), SpanID: fmt.Sprintf("%016x", f*100+i), SpanName: fmt.Sprintf("op%d-%s%d", k%2, pad, i), ServiceName: []string{"alpha", "beta"}[f],
 				Stream: fmt.Sprintf(`{resource_attr:service.name=%q}`, []string{"alpha", "beta"}[f]), StreamID: fmt.Sprintf("%048x", 3+f),
 			})
@@ -200,7 +200,7 @@ func TestColdBloom_QuotedPushdownText(t *testing.T) {
 			k := i / 10
 			ts := base.Add(time.Duration(f*40+i) * time.Second).UnixNano()
 			rows = append(rows, schema.TraceRow{
-				TimestampUnixNano: ts, StartTimeUnixNano: ts,
+				TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts),
 				TraceID: fmt.Sprintf("tr-%d-%d", f, k), SpanID: fmt.Sprintf("%016x", f*100+i), SpanName: fmt.Sprintf("op%d-%s%d", k%2, pad, i), ServiceName: []string{"alpha", "beta"}[f],
 				Stream: fmt.Sprintf(`{resource_attr:service.name=%q}`, []string{"alpha", "beta"}[f]), StreamID: fmt.Sprintf("%048x", 3+f),
 			})

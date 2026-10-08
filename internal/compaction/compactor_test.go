@@ -445,10 +445,10 @@ func TestCompactor_PreservesTraceIndexFooter(t *testing.T) {
 	// Two source files. Each carries a different trace; the compactor
 	// must emit a merged file whose footer index covers both.
 	src1 := []schema.TraceRow{
-		{TimestampUnixNano: 1000, TraceID: "trace-alpha", SpanID: "a1", SpanName: "op1", ServiceName: "svc", StartTimeUnixNano: 1000, DurationNs: 500},
+		{TimestampUnixNano: 1000, TraceID: "trace-alpha", SpanID: "a1", SpanName: "op1", ServiceName: "svc", StartTimeUnixNano: schema.Int64Ptr(1000), DurationNs: schema.Int64Ptr(500)},
 	}
 	src2 := []schema.TraceRow{
-		{TimestampUnixNano: 2000, TraceID: "trace-beta", SpanID: "b1", SpanName: "op2", ServiceName: "svc", StartTimeUnixNano: 2000, DurationNs: 750},
+		{TimestampUnixNano: 2000, TraceID: "trace-beta", SpanID: "b1", SpanName: "op2", ServiceName: "svc", StartTimeUnixNano: schema.Int64Ptr(2000), DurationNs: schema.Int64Ptr(750)},
 	}
 	data1 := makeTestTraceParquet(t, src1)
 	data2 := makeTestTraceParquet(t, src2)
@@ -572,8 +572,8 @@ func TestReadLogRows_InvalidData(t *testing.T) {
 
 func TestWriteCompactedTraces_RoundTrip(t *testing.T) {
 	input := []schema.TraceRow{
-		{TimestampUnixNano: 100, TraceID: "t1", SpanID: "s1", SpanName: "op1", ServiceName: "svc-a", DurationNs: 500},
-		{TimestampUnixNano: 200, TraceID: "t2", SpanID: "s2", SpanName: "op2", ServiceName: "svc-b", DurationNs: 1000},
+		{TimestampUnixNano: 100, TraceID: "t1", SpanID: "s1", SpanName: "op1", ServiceName: "svc-a", DurationNs: schema.Int64Ptr(500)},
+		{TimestampUnixNano: 200, TraceID: "t2", SpanID: "s2", SpanName: "op2", ServiceName: "svc-b", DurationNs: schema.Int64Ptr(1000)},
 	}
 
 	data, err := writeCompactedTraces(input, 100, 3, false)
@@ -591,8 +591,8 @@ func TestWriteCompactedTraces_RoundTrip(t *testing.T) {
 	if rows[0].SpanName != "op1" {
 		t.Errorf("row[0].SpanName = %q, want op1", rows[0].SpanName)
 	}
-	if rows[1].DurationNs != 1000 {
-		t.Errorf("row[1].DurationNs = %d, want 1000", rows[1].DurationNs)
+	if schema.Int64Value(rows[1].DurationNs) != 1000 {
+		t.Errorf("row[1].DurationNs = %v, want 1000", rows[1].DurationNs)
 	}
 }
 

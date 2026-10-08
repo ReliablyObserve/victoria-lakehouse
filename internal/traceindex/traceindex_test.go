@@ -32,10 +32,10 @@ func TestPartition_DifferentInputs(t *testing.T) {
 
 func TestCompute_AggregatesByTraceID(t *testing.T) {
 	rows := []schema.TraceRow{
-		{TraceID: "trace-a", StartTimeUnixNano: 1000, DurationNs: 100}, // ends at 1100
-		{TraceID: "trace-a", StartTimeUnixNano: 900, DurationNs: 200},  // ends at 1100
-		{TraceID: "trace-b", StartTimeUnixNano: 2000, DurationNs: 50},  // ends at 2050
-		{TraceID: "", StartTimeUnixNano: 3000, DurationNs: 10},         // skipped: no trace_id
+		{TraceID: "trace-a", StartTimeUnixNano: schema.Int64Ptr(1000), DurationNs: schema.Int64Ptr(100)}, // ends at 1100
+		{TraceID: "trace-a", StartTimeUnixNano: schema.Int64Ptr(900), DurationNs: schema.Int64Ptr(200)},  // ends at 1100
+		{TraceID: "trace-b", StartTimeUnixNano: schema.Int64Ptr(2000), DurationNs: schema.Int64Ptr(50)},  // ends at 2050
+		{TraceID: "", StartTimeUnixNano: schema.Int64Ptr(3000), DurationNs: schema.Int64Ptr(10)},         // skipped: no trace_id
 	}
 	entries := Compute(rows)
 	if len(entries) != 2 {
@@ -58,7 +58,7 @@ func TestCompute_AggregatesByTraceID(t *testing.T) {
 }
 
 func TestCompute_PartitionMatchesPartition(t *testing.T) {
-	rows := []schema.TraceRow{{TraceID: "deadbeef", StartTimeUnixNano: 5, DurationNs: 1}}
+	rows := []schema.TraceRow{{TraceID: "deadbeef", StartTimeUnixNano: schema.Int64Ptr(5), DurationNs: schema.Int64Ptr(1)}}
 	entries := Compute(rows)
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -79,7 +79,7 @@ func TestCompute_EmptyInput(t *testing.T) {
 
 func TestCompute_DurationZero(t *testing.T) {
 	// DurationNs <= 0: end equals start, single-point trace.
-	rows := []schema.TraceRow{{TraceID: "t", StartTimeUnixNano: 100, DurationNs: 0}}
+	rows := []schema.TraceRow{{TraceID: "t", StartTimeUnixNano: schema.Int64Ptr(100), DurationNs: schema.Int64Ptr(0)}}
 	entries := Compute(rows)
 	if len(entries) != 1 || entries[0].StartNs != 100 || entries[0].EndNs != 100 {
 		t.Errorf("zero duration: got %+v", entries)
@@ -218,8 +218,8 @@ func TestCompute_SortedAndMarshalStable(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		rows = append(rows, schema.TraceRow{
 			TraceID:           string(rune('a'+i%26)) + string(rune('a'+(i*7)%26)) + "-trace",
-			StartTimeUnixNano: int64(1000 + i),
-			DurationNs:        int64(i),
+			StartTimeUnixNano: schema.Int64Ptr(int64(1000 + i)),
+			DurationNs:        schema.Int64Ptr(int64(i)),
 		})
 	}
 	first := Marshal(Compute(rows))

@@ -77,7 +77,7 @@ func objectBytes(t *testing.T, mode config.Mode, ids []string, base int64) []byt
 		rows := make([]schema.TraceRow, len(ids))
 		for i, id := range ids {
 			ts := base + int64(i)
-			rows[i] = schema.TraceRow{TimestampUnixNano: ts, StartTimeUnixNano: ts, TraceID: id, SpanID: fmt.Sprintf("s%d", i), SpanName: "op", ServiceName: "svc", DurationNs: 10}
+			rows[i] = schema.TraceRow{TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts), TraceID: id, SpanID: fmt.Sprintf("s%d", i), SpanName: "op", ServiceName: "svc", DurationNs: schema.Int64Ptr(10)}
 		}
 		return makeTestTraceParquet(t, rows)
 	default:

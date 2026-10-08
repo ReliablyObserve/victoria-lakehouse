@@ -363,7 +363,7 @@ func TestRunQueryProjectionEquivalence_Random(t *testing.T) {
 			body = "needle-exact"
 		}
 		rows = append(rows, schema.LogRow{
-			TimestampUnixNano: ts.UnixNano(), Body: body, SeverityText: []string{"INFO", "ERROR"}[i%2], SeverityNumber: int32(9 + i%5),
+			TimestampUnixNano: ts.UnixNano(), Body: body, SeverityText: []string{"INFO", "ERROR"}[i%2], SeverityNumber: schema.Int32Ptr(int32(9 + i%5)),
 			ServiceName: svc, HostName: "host-" + svc, TraceID: fmt.Sprintf("%032x", i),
 			Stream: fmt.Sprintf(`{service.name=%q}`, svc), StreamID: fmt.Sprintf("%048x", len(svc)),
 			LogAttributes: map[string]string{"repro_layer": []string{"cold", "warm"}[i%2], "region": "eu-" + svc[:1]},

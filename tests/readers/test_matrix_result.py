@@ -178,13 +178,14 @@ def test_known_divergences_that_external_readers_see():
     #333: spans flushed to Parquet have no `_msg`; the traces files have no message column at all,
     so a reader sees the span name instead. When #333 is fixed this assertion flips and is removed.
     #331 / #274 concern how the logs read path renames or adds severity fields; the Parquet columns a
-    reader sees are `severity_text` (the jsonline `level`) and `severity_number` (int32, 0 when the
-    source did not send one), which is what the fixture rows carry.
+    reader sees are `severity_text` (the jsonline `level`) and `severity_number` (a nullable int32: NULL when the
+    source did not send one, an explicit 0 stays 0; #274), which is what the fixture rows carry.
     """
     traces = _fixture_schema("traces")
     assert "_msg" not in traces.names, "#333 is fixed: drop this expectation and the gap"
     logs = _fixture_schema("logs")
     assert str(logs.field("severity_number").type) == "int32"
+    assert logs.field("severity_number").nullable, "severity_number must be nullable so an absent value is NULL (#274)"
     assert str(logs.field("severity_text").type) == "string"
     assert str(logs.field("account_id").type) == "uint32" and str(logs.field("project_id").type) == "uint32"
     assert str(logs.field("timestamp_unix_nano").type) == "int64"

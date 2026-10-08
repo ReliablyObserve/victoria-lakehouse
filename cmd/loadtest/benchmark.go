@@ -120,7 +120,7 @@ func benchGenerateLogRows(rng *rand.Rand, count int) []schema.LogRow {
 			TimestampUnixNano: ts.UnixNano(),
 			Body:              fmt.Sprintf("[%s] %s svc=%s req=%x", lvl, msg, svc, rng.Int63()),
 			SeverityText:      lvl,
-			SeverityNumber:    levelNums[lvl],
+			SeverityNumber:    schema.Int32Ptr(levelNums[lvl]),
 			ServiceName:       svc,
 			K8sNamespaceName:  namespaces[rng.Intn(len(namespaces))],
 			K8sPodName:        fmt.Sprintf("%s-%x", svc, rng.Int31()),

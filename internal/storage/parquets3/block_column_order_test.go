@@ -54,7 +54,7 @@ func orderTestLogRows(n int) []schema.LogRow {
 			TimestampUnixNano: base + int64(i%2)*int64(time.Millisecond),
 			Body:              fmt.Sprintf("message %d", i),
 			SeverityText:      "INFO",
-			SeverityNumber:    9,
+			SeverityNumber:    schema.Int32Ptr(9),
 			ServiceName:       fmt.Sprintf("svc-%d", i%3),
 			TraceID:           fmt.Sprintf("trace-%d", i),
 			SpanID:            "span",
@@ -124,8 +124,8 @@ func TestBlockBuilders_EmitUpstreamColumnOrder(t *testing.T) {
 	t.Run("typed traces", func(t *testing.T) {
 		s := testTracesStorage()
 		trows := []schema.TraceRow{
-			{TimestampUnixNano: 1, StartTimeUnixNano: 1, TraceID: "t2", SpanID: "s2", SpanName: "op", ServiceName: "b", DurationNs: 5},
-			{TimestampUnixNano: 1, StartTimeUnixNano: 1, TraceID: "t1", SpanID: "s1", SpanName: "op", ServiceName: "a", DurationNs: 7},
+			{TimestampUnixNano: 1, StartTimeUnixNano: schema.Int64Ptr(1), TraceID: "t2", SpanID: "s2", SpanName: "op", ServiceName: "b", DurationNs: schema.Int64Ptr(5)},
+			{TimestampUnixNano: 1, StartTimeUnixNano: schema.Int64Ptr(1), TraceID: "t1", SpanID: "s1", SpanName: "op", ServiceName: "a", DurationNs: schema.Int64Ptr(7)},
 		}
 		requireUpstreamOrder(t, "typedRowsToDataBlock(traces)", typedRowsToDataBlock(s, trows, 0, maxNs, traceRowToFields))
 	})

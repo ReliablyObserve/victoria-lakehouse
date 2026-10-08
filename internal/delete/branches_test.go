@@ -171,7 +171,7 @@ func TestRowFields_AgreeWithTheMapForm(t *testing.T) {
 		t.Error("LogRowFields and logRowToMap disagree on the field set")
 	}
 
-	tr := &schema.TraceRow{ServiceName: "svc", SpanName: "op", SpanKind: 2, StatusCode: 1, DurationNs: 5,
+	tr := &schema.TraceRow{ServiceName: "svc", SpanName: "op", SpanKind: schema.Int32Ptr(2), StatusCode: schema.Int32Ptr(1), DurationNs: schema.Int64Ptr(5),
 		SpanAttributes: map[string]string{"a": "b"}, ScopeAttributes: map[string]string{"c": "d"}}
 	tm := traceRowToMap(tr)
 	for _, f := range TraceRowFields(tr) {

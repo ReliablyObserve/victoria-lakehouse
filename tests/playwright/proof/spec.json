@@ -20,7 +20,10 @@
       "vl-stream-values",
       "vmui-logs",
       "jaeger-ui-services",
-      "jaeger-ui-trace"
+      "jaeger-ui-trace",
+      "vl-explore-absent-sev",
+      "vl-builder-severity",
+      "vmui-severity-json"
     ]
   },
   "pages": [
@@ -240,6 +243,51 @@
       "service": true,
       "tier": "focused",
       "target_panel": "{plain_field}"
+    },
+    {
+      "id": "vl-explore-absent-sev",
+      "kind": "vl-explore",
+      "title": "Explore, VictoriaLogs datasource: rows written without severity_number (#274)",
+      "query": "proofmark:=sev274",
+      "covers": [
+        "vl.select.query.absent_typed_field"
+      ],
+      "fixes": [
+        "274-severity-number"
+      ]
+    },
+    {
+      "id": "vl-builder-severity",
+      "kind": "vl-builder",
+      "title": "Explore query builder: values of severity_number (#274)",
+      "query": "proofmark:=sev274",
+      "field": "severity_number",
+      "covers": [
+        "vl.select.field_values.absent_typed_field"
+      ],
+      "fixes": [
+        "274-severity-number"
+      ],
+      "clip": {
+        "x": 520,
+        "y": 110,
+        "width": 780,
+        "height": 480
+      }
+    },
+    {
+      "id": "vmui-severity-json",
+      "kind": "vmui",
+      "family": "logs",
+      "title": "VMUI JSON view of proofmark:=sev274 | sort by (_time) (the fields of each row, #274)",
+      "query": "proofmark:=sev274 | sort by (_time)",
+      "tab": "json",
+      "covers": [
+        "vl.select.query.absent_typed_field"
+      ],
+      "fixes": [
+        "274-severity-number"
+      ]
     }
   ],
   "vars": {

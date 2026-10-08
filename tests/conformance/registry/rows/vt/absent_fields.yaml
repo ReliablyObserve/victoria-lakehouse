@@ -1,0 +1,17 @@
+# Row locking #274 on the traces binary: the numeric span columns are nullable.
+
+- id: vt.select.logsql_query.service_graph_row_no_span_numerics
+  title: "/select/logsql/query — a service-graph edge row carries no kind, status_code, duration or start_time_unix_nano (#274)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: "parent:* | limit 20", disable_latency_offset: "true", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: exact-json }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/service_graph_numeric_absent_parity_test.go#TestParity_ServiceGraph_RowsCarryNoSpanNumerics, lakehouse-traces/internal/storage/parquets3/span_numeric_absent_test.go#TestSpanNumericAbsent_ParquetColumnsAreNullable, lakehouse-traces/internal/storage/parquets3/span_numeric_absent_test.go#TestSpanNumericAbsent_ScanPathsKeepAbsentAbsent, lakehouse-traces/internal/storage/parquets3/span_numeric_absent_test.go#TestSpanNumericAbsent_BridgeBlockMatchesFileRows, lakehouse-traces/internal/vlstorage/numeric_absent_test.go#TestMapFieldToTraceRow_NumericColumnsAbsentVsZero, lakehouse-traces/internal/storage/parquets3/span_numeric_absent_property_test.go#TestSpanNumericAbsent_Property] }
+  notes: "The numeric span columns are nullable (#274). The parity case checks that no edge row carries one of the four fields on either tier; the edge counts and values are computed independently by each tier and are not compared here. Known difference, not covered by the lock: the edge row lacks the trace_service_graph_stream field that hot returns (https://github.com/ReliablyObserve/victoria-lakehouse/issues/479)."

@@ -10,7 +10,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 |---|---|---|---|---|---|
 | Ingest | 8 | 0 | 0 | 0 | 8 |
 | Storage | 32 | 0 | 1 | 2 | 35 |
-| Query | 15 | 1 | 0 | 1 | 17 |
+| Query | 16 | 1 | 0 | 1 | 18 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 7 | 0 | 0 | 1 | 8 |
 | Deletion | 11 | 0 | 0 | 0 | 11 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 1 | 0 | 15 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **150** | **1** | **2** | **8** | **161** |
+| **Total** | **151** | **1** | **2** | **8** | **162** |
 
 ## Coverage gaps
 
@@ -536,7 +536,18 @@ Ingest writes at a level chosen for throughput; each compaction level re-encodes
 - Verification: tests: `internal/storage/parquets3/writer_test.go#TestWriteLogsParquet_CompressionLevels`, `internal/compaction/ttl_compression_test.go`, `internal/config/config_test.go#TestCompressionLevelForOutput_GlobalSchedule`, `internal/storage/parquets3/writer_realdata_bench_test.go#TestRealDataCompressionBenchmark`
 - Docs: `docs/zstd-compression-benchmark.md`, `docs/open-parquet-format.md`
 
-## Query (17)
+## Query (18)
+
+### ✅ A field a row never carried stays absent (nullable severity_number)
+
+`lh.feature.query.absent_typed_fields` · status: shipped · surfaces: api, storage
+
+**A field a row never carried stays absent**: `severity_number` is a nullable Parquet column, so a plain log row comes back without it, as on hot VictoriaLogs, and an explicit `0` stays `0`.
+
+severity_number is a nullable INT32 column. A row stored without the field (jsonline, Loki, Elasticsearch, syslog rows) is returned without it by every read surface and in every data layer, exactly like hot VictoriaLogs, while an explicit 0 (OTLP UNSPECIFIED) stays "0". Standard Parquet readers see NULL for the absent cells. Files written before the change keep the 0 they hold.
+
+- Verification: rows: `vl.select.query.absent_typed_field` (pass, pending), `vl.select.query.explicit_zero_typed_field` (pass, pending), `vl.select.field_values.absent_typed_field` (pass, pending), `vl.select.stats_query.absent_typed_field` (pass, pending), `vt.select.logsql_query.service_graph_row_no_span_numerics` (pass, pending) · tests: `tests/parity/severity_number_absent_parity_test.go#TestParity_SeverityNumber_Absent`, `internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable`, `internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent`, `internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_QuerySurfaces`, `internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_BridgeBlockMatchesFileRows`, `internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_RoundTripKeepsNullAndZero`, `internal/schema/severity_nullable_test.go#TestLogRowSeverityNumber_ReadsAnObjectWithARequiredColumn`, `internal/schema/severity_nullable_test.go#TestInt32Value`, `internal/storage/parquets3/severity_absent_property_test.go#TestSeverityAbsent_Property`, `lakehouse-traces/internal/storage/parquets3/span_numeric_absent_property_test.go#TestSpanNumericAbsent_Property`, `tests/parity/service_graph_numeric_absent_parity_test.go#TestParity_ServiceGraph_RowsCarryNoSpanNumerics`, `lakehouse-traces/internal/storage/parquets3/span_numeric_absent_test.go#TestSpanNumericAbsent_ParquetColumnsAreNullable`, `lakehouse-traces/internal/storage/parquets3/span_numeric_absent_test.go#TestSpanNumericAbsent_ScanPathsKeepAbsentAbsent`, `lakehouse-traces/internal/storage/parquets3/span_numeric_absent_test.go#TestSpanNumericAbsent_BridgeBlockMatchesFileRows`, `lakehouse-traces/internal/vlstorage/numeric_absent_test.go#TestMapFieldToTraceRow_NumericColumnsAbsentVsZero`, `internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads`, `internal/vlstorage/insert_verify_test.go#TestVerifyInsert_SeverityNumberParsing`, `lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ParquetColumnIsNullable`, `lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_ScanPathsKeepAbsentAbsent`, `lakehouse-traces/internal/storage/parquets3/severity_absent_test.go#TestSeverityAbsent_LegacyRequiredColumnStillReads`
+- Docs: `docs/parity-and-gaps.md`
 
 ### ✅ Multi-tier bloom index
 

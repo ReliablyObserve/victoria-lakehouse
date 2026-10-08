@@ -148,9 +148,17 @@ func TestGenLogs_TruthMatchesTheFileWritten(t *testing.T) {
 		}
 		distinct[col][v] = true
 	}
+	var nulls, zeros int64
 	for _, r := range rows {
 		add("timestamp_unix_nano", r.TimestampUnixNano)
-		add("severity_number", int64(r.SeverityNumber))
+		if r.SeverityNumber != nil {
+			add("severity_number", int64(*r.SeverityNumber))
+			if *r.SeverityNumber == 0 {
+				zeros++
+			}
+		} else {
+			nulls++
+		}
 		add("account_id", int64(r.AccountID))
 		add("project_id", int64(r.ProjectID))
 		see("service.name", r.ServiceName)
@@ -162,6 +170,15 @@ func TestGenLogs_TruthMatchesTheFileWritten(t *testing.T) {
 	}
 	assertTruth(t, truth, len(rows), sums, distinct)
 	assertWriterOptions(t, f, truth)
+	// severity_number is nullable: the fixture holds absent (NULL) and explicit
+	// 0 cells, and the truth counts them apart (#274).
+	if nulls == 0 || zeros == 0 {
+		t.Fatalf("the fixture must hold NULL and explicit-0 severity_number cells, got %d NULL and %d zero", nulls, zeros)
+	}
+	if truth.NullCounts["severity_number"] != nulls || truth.ZeroCounts["severity_number"] != zeros {
+		t.Errorf("truth null/zero counts = %d/%d, the file holds %d/%d",
+			truth.NullCounts["severity_number"], truth.ZeroCounts["severity_number"], nulls, zeros)
+	}
 }
 
 func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
@@ -192,10 +209,18 @@ func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
 	graphEdges := 0
 	for _, r := range rows {
 		add("timestamp_unix_nano", r.TimestampUnixNano)
-		add("start_time_unix_nano", r.StartTimeUnixNano)
-		add("duration_ns", r.DurationNs)
-		add("status.code", int64(r.StatusCode))
-		add("span.kind", int64(r.SpanKind))
+		if r.StartTimeUnixNano != nil {
+			add("start_time_unix_nano", *r.StartTimeUnixNano)
+		}
+		if r.DurationNs != nil {
+			add("duration_ns", *r.DurationNs)
+		}
+		if r.StatusCode != nil {
+			add("status.code", int64(*r.StatusCode))
+		}
+		if r.SpanKind != nil {
+			add("span.kind", int64(*r.SpanKind))
+		}
 		see("service.name", r.ServiceName)
 		see("span.name", r.SpanName)
 		see("http.method", r.HTTPMethod)

@@ -60,12 +60,12 @@ func spanWithExtras(i, nEvents, nLinks int, base time.Time, constKind bool) (sch
 	}
 	row := schema.TraceRow{
 		TimestampUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(),
-		StartTimeUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(),
+		StartTimeUnixNano: schema.Int64Ptr(base.Add(time.Duration(i) * time.Second).UnixNano()),
 		TraceID:           fmt.Sprintf("trace-%02d", i/3),
 		SpanID:            fmt.Sprintf("%016x", i+1),
 		SpanName:          fmt.Sprintf("op-%d", i),
 		ServiceName:       "checkout",
-		SpanKind:          kind,
+		SpanKind:          schema.Int32Ptr(kind),
 		Stream:            `{resource_attr:service.name="checkout"}`,
 		StreamID:          fmt.Sprintf("%048x", 7),
 	}
@@ -547,7 +547,7 @@ func TestCold_EventsLinks_InvalidUTF8ComesBackExact(t *testing.T) {
 		c.Add(k, v)
 	}
 	row := schema.TraceRow{
-		TimestampUnixNano: base.UnixNano(), StartTimeUnixNano: base.UnixNano(),
+		TimestampUnixNano: base.UnixNano(), StartTimeUnixNano: schema.Int64Ptr(base.UnixNano()),
 		TraceID: "trace-bad", SpanID: fmt.Sprintf("%016x", 1), SpanName: "op", ServiceName: "checkout",
 		Stream: `{resource_attr:service.name="checkout"}`, StreamID: fmt.Sprintf("%048x", 7),
 	}

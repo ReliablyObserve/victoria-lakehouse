@@ -24,12 +24,12 @@ func testTracesStorage() *Storage {
 func TestTraceRowToFields_NoDuplicateNames(t *testing.T) {
 	row := &schema.TraceRow{
 		TimestampUnixNano: time.Now().UnixNano(),
-		StartTimeUnixNano: time.Now().UnixNano(),
+		StartTimeUnixNano: schema.Int64Ptr(time.Now().UnixNano()),
 		TraceID:           "abc123",
 		SpanID:            "span1",
 		SpanName:          "GET /api",
 		ServiceName:       "api-gw",
-		DurationNs:        42000,
+		DurationNs:        schema.Int64Ptr(42000),
 	}
 
 	fields := traceRowToFields(row, nil)
@@ -46,7 +46,7 @@ func TestTraceRowToFields_NoCollisionCausingRenames(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
 	row := &schema.TraceRow{
 		TimestampUnixNano: time.Now().UnixNano(),
-		StartTimeUnixNano: time.Now().UnixNano(),
+		StartTimeUnixNano: schema.Int64Ptr(time.Now().UnixNano()),
 		TraceID:           "abc",
 		SpanID:            "s1",
 		SpanName:          "op",
@@ -97,12 +97,12 @@ func TestTypedRowsToDataBlock_TimeColumnValid(t *testing.T) {
 	rows := []schema.TraceRow{
 		{
 			TimestampUnixNano: time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC).UnixNano(),
-			StartTimeUnixNano: time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC).UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC).UnixNano()),
 			TraceID:           "t1",
 			SpanID:            "s1",
 			SpanName:          "op",
 			ServiceName:       "svc",
-			DurationNs:        1000,
+			DurationNs:        schema.Int64Ptr(1000),
 		},
 	}
 
@@ -147,13 +147,13 @@ func TestTypedRowsToDataBlock_NoDuplicateColumns(t *testing.T) {
 	rows := []schema.TraceRow{
 		{
 			TimestampUnixNano: time.Now().UnixNano(),
-			StartTimeUnixNano: time.Now().UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(time.Now().UnixNano()),
 			TraceID:           "t1",
 			SpanID:            "s1",
 			SpanName:          "GET /api",
 			ServiceName:       "api-gw",
-			DurationNs:        5000,
-			StatusCode:        0,
+			DurationNs:        schema.Int64Ptr(5000),
+			StatusCode:        schema.Int32Ptr(0),
 			HTTPMethod:        "GET",
 			HTTPStatusCode:    "200",
 			HTTPUrl:           "http://example.com",
@@ -235,7 +235,7 @@ func TestSchemaRegistry_RenameDoesNotCollideWithExplicitFields(t *testing.T) {
 	reg := schema.NewRegistry(schema.TracesProfile)
 	traceRow := &schema.TraceRow{
 		TimestampUnixNano: time.Now().UnixNano(),
-		StartTimeUnixNano: time.Now().UnixNano(),
+		StartTimeUnixNano: schema.Int64Ptr(time.Now().UnixNano()),
 		TraceID:           "t1",
 		SpanID:            "s1",
 		SpanName:          "op",
@@ -268,12 +268,12 @@ func TestTypedRowsToDataBlock_RowCountConsistency(t *testing.T) {
 	for i := range rows {
 		rows[i] = schema.TraceRow{
 			TimestampUnixNano: now + int64(i)*1000,
-			StartTimeUnixNano: now + int64(i)*1000,
+			StartTimeUnixNano: schema.Int64Ptr(now + int64(i)*1000),
 			TraceID:           fmt.Sprintf("trace-%d", i),
 			SpanID:            fmt.Sprintf("span-%d", i),
 			SpanName:          fmt.Sprintf("op-%d", i%5),
 			ServiceName:       "svc",
-			DurationNs:        int64(i * 100),
+			DurationNs:        schema.Int64Ptr(int64(i * 100)),
 		}
 	}
 
@@ -319,15 +319,15 @@ func TestTraceRowToFields_EmptyRow(t *testing.T) {
 func TestTraceRowToFields_AllFieldsHaveValidNames(t *testing.T) {
 	row := &schema.TraceRow{
 		TimestampUnixNano: time.Now().UnixNano(),
-		StartTimeUnixNano: time.Now().UnixNano(),
+		StartTimeUnixNano: schema.Int64Ptr(time.Now().UnixNano()),
 		TraceID:           "t1",
 		SpanID:            "s1",
 		ParentSpanID:      "p1",
 		SpanName:          "op",
-		SpanKind:          1,
-		StatusCode:        0,
+		SpanKind:          schema.Int32Ptr(1),
+		StatusCode:        schema.Int32Ptr(0),
 		StatusMessage:     "OK",
-		DurationNs:        1000,
+		DurationNs:        schema.Int64Ptr(1000),
 		ServiceName:       "svc",
 		ScopeName:         "scope",
 		DeployEnv:         "prod",
@@ -363,7 +363,7 @@ func TestTypedRowsToDataBlock_GetTimestampsSucceeds(t *testing.T) {
 	rows := []schema.TraceRow{
 		{
 			TimestampUnixNano: now.UnixNano(),
-			StartTimeUnixNano: now.UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(now.UnixNano()),
 			TraceID:           "t1",
 			SpanID:            "s1",
 			SpanName:          "op",
@@ -371,7 +371,7 @@ func TestTypedRowsToDataBlock_GetTimestampsSucceeds(t *testing.T) {
 		},
 		{
 			TimestampUnixNano: now.Add(time.Second).UnixNano(),
-			StartTimeUnixNano: now.Add(time.Second).UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(now.Add(time.Second).UnixNano()),
 			TraceID:           "t2",
 			SpanID:            "s2",
 			SpanName:          "op2",
@@ -440,12 +440,12 @@ func TestTypedRowsToDataBlock_LargeBatch(t *testing.T) {
 	for i := range rows {
 		rows[i] = schema.TraceRow{
 			TimestampUnixNano: now + int64(i)*1_000_000,
-			StartTimeUnixNano: now + int64(i)*1_000_000,
+			StartTimeUnixNano: schema.Int64Ptr(now + int64(i)*1_000_000),
 			TraceID:           fmt.Sprintf("trace-%06d", i),
 			SpanID:            fmt.Sprintf("span-%06d", i),
 			SpanName:          fmt.Sprintf("operation-%d", i%10),
 			ServiceName:       fmt.Sprintf("service-%d", i%5),
-			DurationNs:        int64(i),
+			DurationNs:        schema.Int64Ptr(int64(i)),
 			HTTPMethod:        "GET",
 			HTTPStatusCode:    fmt.Sprintf("%d", 200+i%5),
 		}
@@ -490,13 +490,13 @@ func TestTypedRowsToDataBlock_RandomizedTraceRows(t *testing.T) {
 		for i := range rows {
 			rows[i] = schema.TraceRow{
 				TimestampUnixNano: rng.Int63n(2_000_000_000_000_000_000),
-				StartTimeUnixNano: rng.Int63n(2_000_000_000_000_000_000),
+				StartTimeUnixNano: schema.Int64Ptr(rng.Int63n(2_000_000_000_000_000_000)),
 				TraceID:           fmt.Sprintf("t-%d-%d", iter, i),
 				SpanID:            fmt.Sprintf("s-%d-%d", iter, i),
 				SpanName:          fmt.Sprintf("op-%d", rng.Intn(20)),
 				ServiceName:       services[rng.Intn(len(services))],
-				DurationNs:        rng.Int63n(10_000_000),
-				StatusCode:        int32(rng.Intn(3)),
+				DurationNs:        schema.Int64Ptr(rng.Int63n(10_000_000)),
+				StatusCode:        schema.Int32Ptr(int32(rng.Intn(3))),
 				HTTPMethod:        methods[rng.Intn(len(methods))],
 				HTTPStatusCode:    statuses[rng.Intn(len(statuses))],
 			}

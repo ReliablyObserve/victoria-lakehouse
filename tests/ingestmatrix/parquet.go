@@ -147,7 +147,7 @@ func (r RawParquetRow) checkFields(sig Signal, hot map[string]string) error {
 			if _, expected := hot[public]; value == "" && !expected {
 				continue
 			}
-			if _, expected := hot[public]; !expected && value == "0" && (leaf == "severity_number" || leaf == "duration_ns" || leaf == "status.code" || leaf == "span.kind" || leaf == "start_time_unix_nano") {
+			if _, expected := hot[public]; !expected && value == "0" && (leaf == "duration_ns" || leaf == "status.code" || leaf == "span.kind" || leaf == "start_time_unix_nano") {
 				continue
 			}
 			want, ok := hot[public]

@@ -118,7 +118,6 @@ in `Gaps()` and `Case.Gaps` in `tests/ingestmatrix`, with its rewrite in `gapRew
 
 | Gap | Where | Issue |
 |---|---|---|
-| After the flush, Lakehouse returns `severity_number: "0"` on rows VictoriaLogs stores without it | logs, every protocol that does not carry a severity | [#274](https://github.com/ReliablyObserve/victoria-lakehouse/issues/274) |
 | After the flush, an OTLP log row comes back with `level` in place of `severity_text` | logs, OTLP/HTTP protobuf | [#331](https://github.com/ReliablyObserve/victoria-lakehouse/issues/331) |
 | Spans are stored with `_msg` = VictoriaLogs' default text instead of VictoriaTraces' `-` | traces: OTLP protobuf, OTLP/gRPC and native (OTLP/JSON spans are right), buffer and Parquet | [#332](https://github.com/ReliablyObserve/victoria-lakehouse/issues/332) |
 
@@ -209,7 +208,7 @@ says where the time went.
 With the pinned VictoriaLogs v1.52 and VictoriaTraces v0.12, the isolated protocol run completed
 in 153.709 s with all 26 log and 8 trace cells passing, plus probes, route gaps and the two
 mixed-tenant native controls. Every stored span retained its native message; #333 is absent
-from active gap declarations. The run still observed #274, #331, #332 and #279, and does not
+from active gap declarations. The run still observed #331, #332, #279 and the since-fixed #274, and does not
 claim those production gaps are fixed. #279 (a `trace_id` query returning each flushed span twice
 while the buffer still held it) was closed afterwards by the segment buffer: a query drops the
 objects of the segments it reads from the buffer, on the trace-ID path too, so the matrix no

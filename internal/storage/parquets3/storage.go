@@ -1044,7 +1044,9 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 		times[i] = s.registry.FormatField("_time", row.TimestampUnixNano)
 		bodies[i] = row.Body
 		levels[i] = row.SeverityText
-		sevNums[i] = s.registry.FormatField("severity_number", row.SeverityNumber)
+		if row.SeverityNumber != nil {
+			sevNums[i] = s.registry.FormatField("severity_number", *row.SeverityNumber)
+		}
 		services[i] = row.ServiceName
 		traceIDs[i] = row.TraceID
 		spanIDs[i] = row.SpanID
@@ -1169,8 +1171,12 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 		spanIDs[i] = row.SpanID
 		names[i] = row.SpanName
 		services[i] = row.ServiceName
-		durations[i] = s.registry.FormatField("duration", row.DurationNs)
-		statusCodes[i] = s.registry.FormatField("status_code", int64(row.StatusCode))
+		if row.DurationNs != nil {
+			durations[i] = s.registry.FormatField("duration", *row.DurationNs)
+		}
+		if row.StatusCode != nil {
+			statusCodes[i] = s.registry.FormatField("status_code", int64(*row.StatusCode))
+		}
 		parentSpanIDs[i] = row.ParentSpanID
 		statusMsgs[i] = row.StatusMessage
 	}
