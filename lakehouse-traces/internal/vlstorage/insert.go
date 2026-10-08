@@ -213,23 +213,23 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 		return
 	case otelpb.KindField:
 		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
-			row.SpanKind = int32(v)
+			row.SpanKind = schema.Int32Ptr(int32(v))
 		}
 		return
 	case otelpb.DurationField:
 		if v, err := strconv.ParseInt(value, 10, 64); err == nil {
-			row.DurationNs = v
+			row.DurationNs = schema.Int64Ptr(v)
 		}
 		return
 	case otelpb.StartTimeUnixNanoField:
 		if v, err := strconv.ParseInt(value, 10, 64); err == nil {
-			row.StartTimeUnixNano = v
+			row.StartTimeUnixNano = schema.Int64Ptr(v)
 		}
 		storeSpanAttr(row, strings.Clone(name), strings.Clone(value))
 		return
 	case otelpb.StatusCodeField:
 		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
-			row.StatusCode = int32(v)
+			row.StatusCode = schema.Int32Ptr(int32(v))
 		}
 		return
 	case otelpb.StatusMessageField:
@@ -331,21 +331,21 @@ func mapFieldToTraceRow(row *schema.TraceRow, name, value string) {
 		row.ServiceName = strings.Clone(value)
 	case "duration_ns":
 		if v, err := strconv.ParseInt(value, 10, 64); err == nil {
-			row.DurationNs = v
+			row.DurationNs = schema.Int64Ptr(v)
 		}
 	case "start_time_unix_nano":
 		if v, err := strconv.ParseInt(value, 10, 64); err == nil {
-			row.StartTimeUnixNano = v
+			row.StartTimeUnixNano = schema.Int64Ptr(v)
 		}
 	case "status.code":
 		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
-			row.StatusCode = int32(v)
+			row.StatusCode = schema.Int32Ptr(int32(v))
 		}
 	case "status.message":
 		row.StatusMessage = strings.Clone(value)
 	case "span.kind":
 		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
-			row.SpanKind = int32(v)
+			row.SpanKind = schema.Int32Ptr(int32(v))
 		}
 	case "scope.name":
 		row.ScopeName = strings.Clone(value)

@@ -175,7 +175,7 @@ func TestCompactor_RowGroupSchedule_TracesL2Halves(t *testing.T) {
 			ts := int64((f*n + i + 1) * 1000)
 			rows[i] = schema.TraceRow{
 				TimestampUnixNano: ts,
-				StartTimeUnixNano: ts,
+				StartTimeUnixNano: schema.Int64Ptr(ts),
 				TraceID:           fmt.Sprintf("trace-%d-%d", f, i),
 				SpanID:            fmt.Sprintf("span-%d-%d", f, i),
 				SpanName:          "op",

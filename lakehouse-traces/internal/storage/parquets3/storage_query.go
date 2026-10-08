@@ -1647,15 +1647,11 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 	}
 	buf = append(buf,
 		field{"_time", r.TimestampUnixNano},
-		field{"start_time_unix_nano", r.StartTimeUnixNano},
 		field{"trace_id", r.TraceID},
 		field{"span_id", r.SpanID},
 		field{"parent_span_id", r.ParentSpanID},
 		field{"name", r.SpanName},
-		field{"kind", r.SpanKind},
-		field{"status_code", r.StatusCode},
 		field{"status_message", r.StatusMessage},
-		field{"duration", r.DurationNs},
 		field{"resource_attr:service.name", r.ServiceName},
 		field{"scope_name", r.ScopeName},
 		field{"resource_attr:deployment.environment", r.DeployEnv},
@@ -1682,6 +1678,21 @@ func traceRowToFields(r *schema.TraceRow, buf []field) []field {
 		field{"child", r.ServiceGraphChild},
 		field{"callCount", r.ServiceGraphCallCount},
 	)
+	// The numeric span columns are nullable: a row that never carried one (a
+	// service-graph edge row, as hot VictoriaTraces stores it) emits nothing,
+	// while an explicit 0 (status UNSET, kind UNSPECIFIED) is emitted as "0".
+	if r.StartTimeUnixNano != nil {
+		buf = append(buf, field{"start_time_unix_nano", *r.StartTimeUnixNano})
+	}
+	if r.SpanKind != nil {
+		buf = append(buf, field{"kind", *r.SpanKind})
+	}
+	if r.StatusCode != nil {
+		buf = append(buf, field{"status_code", *r.StatusCode})
+	}
+	if r.DurationNs != nil {
+		buf = append(buf, field{"duration", *r.DurationNs})
+	}
 	// Dedicated columns (Tier 1) — emitted under VT's stream-tag prefix
 	// (span_attr:/resource_attr:) to match this module's existing promoted
 	// columns (e.g. span_attr:db.statement), NOT bare. Conditional for

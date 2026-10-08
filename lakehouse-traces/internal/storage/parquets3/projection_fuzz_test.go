@@ -48,14 +48,14 @@ func projectionFixture(t testing.TB) (*parquet.File, time.Time) {
 						}
 						rows = append(rows, schema.TraceRow{
 							TimestampUnixNano: projFixtureBase.Add(time.Duration(i) * time.Second).UnixNano(),
-							StartTimeUnixNano: projFixtureBase.Add(time.Duration(i) * time.Second).UnixNano(),
+							StartTimeUnixNano: schema.Int64Ptr(projFixtureBase.Add(time.Duration(i) * time.Second).UnixNano()),
 							TraceID:           fmt.Sprintf("trace-%s-%d", svc, i%5),
 							SpanID:            fmt.Sprintf("%016x", i),
 							SpanName:          name,
 							ServiceName:       svc,
 							HostName:          "host-" + svc,
-							DurationNs:        int64(1000000 * (1 + i%4)),
-							StatusCode:        int32(i % 3),
+							DurationNs:        schema.Int64Ptr(int64(1000000 * (1 + i%4))),
+							StatusCode:        schema.Int32Ptr(int32(i % 3)),
 							HTTPMethod:        method,
 							Stream:            fmt.Sprintf(`{resource_attr:service.name=%q}`, svc),
 							StreamID:          fmt.Sprintf("%048x", len(svc)),

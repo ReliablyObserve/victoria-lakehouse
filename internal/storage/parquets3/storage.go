@@ -1171,8 +1171,12 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 		spanIDs[i] = row.SpanID
 		names[i] = row.SpanName
 		services[i] = row.ServiceName
-		durations[i] = s.registry.FormatField("duration", row.DurationNs)
-		statusCodes[i] = s.registry.FormatField("status_code", int64(row.StatusCode))
+		if row.DurationNs != nil {
+			durations[i] = s.registry.FormatField("duration", *row.DurationNs)
+		}
+		if row.StatusCode != nil {
+			statusCodes[i] = s.registry.FormatField("status_code", int64(*row.StatusCode))
+		}
 		parentSpanIDs[i] = row.ParentSpanID
 		statusMsgs[i] = row.StatusMessage
 	}

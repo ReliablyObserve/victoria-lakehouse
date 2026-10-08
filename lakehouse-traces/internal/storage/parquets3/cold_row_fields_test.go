@@ -115,15 +115,18 @@ func coldSpanFieldsTestRows(now time.Time, n int) []schema.TraceRow {
 	rows := make([]schema.TraceRow, 0, n)
 	for i := 0; i < n; i++ {
 		r := schema.TraceRow{
-			AccountID:          7,
-			ProjectID:          42,
-			TimestampUnixNano:  now.Add(time.Duration(i) * time.Second).UnixNano(),
-			StartTimeUnixNano:  now.Add(time.Duration(i) * time.Second).UnixNano(),
-			TraceID:            "trace-abcdef",
-			SpanID:             "span-0" + string(rune('0'+i)),
-			SpanName:           "GET /api/v1/things",
-			ServiceName:        "api-gateway",
-			DurationNs:         1_500_000,
+			AccountID:         7,
+			ProjectID:         42,
+			TimestampUnixNano: now.Add(time.Duration(i) * time.Second).UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(now.Add(time.Duration(i) * time.Second).UnixNano()),
+			TraceID:           "trace-abcdef",
+			SpanID:            "span-0" + string(rune('0'+i)),
+			SpanName:          "GET /api/v1/things",
+			ServiceName:       "api-gateway",
+			DurationNs:        schema.Int64Ptr(1_500_000),
+			// A span always carries its kind and status code; 0 (status UNSET) is a value.
+			SpanKind:           schema.Int32Ptr(2),
+			StatusCode:         schema.Int32Ptr(0),
 			HTTPMethod:         "GET",
 			ResourceAttributes: map[string]string{"custom.res": "r1"},
 			SpanAttributes:     map[string]string{"custom.span": "s1"},

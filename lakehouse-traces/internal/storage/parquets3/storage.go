@@ -1063,10 +1063,16 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 		set("span_id", i, row.SpanID)
 		set("parent_span_id", i, row.ParentSpanID)
 		set("name", i, row.SpanName)
-		set("duration", i, s.registry.FormatField("duration", row.DurationNs))
-		set("status_code", i, s.registry.FormatField("status_code", int64(row.StatusCode)))
+		if row.DurationNs != nil {
+			set("duration", i, s.registry.FormatField("duration", *row.DurationNs))
+		}
+		if row.StatusCode != nil {
+			set("status_code", i, s.registry.FormatField("status_code", int64(*row.StatusCode)))
+		}
 		set("status_message", i, row.StatusMessage)
-		set("kind", i, s.registry.FormatField("kind", int64(row.SpanKind)))
+		if row.SpanKind != nil {
+			set("kind", i, s.registry.FormatField("kind", int64(*row.SpanKind)))
+		}
 		// Stream selector + id — the load-bearing columns for step-1
 		// `_stream:{...}` filters.
 		set("_stream", i, row.Stream)
@@ -1099,7 +1105,9 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 		// makes Grafana's trace panel crash with
 		// "Cannot read properties of undefined (reading 'spanID')" on the
 		// log→trace drilldown for any recently-ingested trace.
-		set("start_time_unix_nano", i, s.registry.FormatField("start_time_unix_nano", row.StartTimeUnixNano))
+		if row.StartTimeUnixNano != nil {
+			set("start_time_unix_nano", i, s.registry.FormatField("start_time_unix_nano", *row.StartTimeUnixNano))
+		}
 		for k, v := range row.ResourceAttributes {
 			set("resource_attr:"+k, i, v)
 		}

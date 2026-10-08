@@ -174,7 +174,7 @@ func TestColdTier2Slot_FilterAndGroupBy(t *testing.T) {
 	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 	var rows []schema.TraceRow
 	for i := 0; i < 30; i++ {
-		r := schema.TraceRow{TimestampUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(), StartTimeUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(),
+		r := schema.TraceRow{TimestampUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(), StartTimeUnixNano: schema.Int64Ptr(base.Add(time.Duration(i) * time.Second).UnixNano()),
 			TraceID: fmt.Sprintf("t%d", i), SpanID: fmt.Sprintf("%016x", i), SpanName: "slot-span", ServiceName: "api",
 			Stream: `{resource_attr:service.name="api"}`, StreamID: fmt.Sprintf("%048x", 1)}
 		schema.SetTraceSlot(&r, "ded_s01", []string{"gold", "silver", "bronze"}[i%3])

@@ -194,7 +194,7 @@ func TestQueryBufferBridge_LogsMode(t *testing.T) {
 func TestQueryBufferBridge_TracesMode(t *testing.T) {
 	now := time.Now().UnixNano()
 	traceRows := []schema.TraceRow{
-		{TimestampUnixNano: now, TraceID: "trace-bb-1", SpanID: "span-bb-1", SpanName: "GET /api", ServiceName: "buf-svc", DurationNs: 5000000},
+		{TimestampUnixNano: now, TraceID: "trace-bb-1", SpanID: "span-bb-1", SpanName: "GET /api", ServiceName: "buf-svc", DurationNs: schema.Int64Ptr(5000000)},
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

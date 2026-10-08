@@ -103,7 +103,7 @@ func TestWriteTracesParquet(t *testing.T) {
 			SpanID:            "span1",
 			SpanName:          "HTTP GET /api",
 			ServiceName:       "test-service",
-			DurationNs:        5000000,
+			DurationNs:        schema.Int64Ptr(5000000),
 		},
 	}
 
@@ -127,7 +127,7 @@ func TestWriteTracesParquet_SmallRowGroupSize(t *testing.T) {
 			TraceID:           fmt.Sprintf("trace-%d", i),
 			SpanID:            fmt.Sprintf("span-%d", i),
 			ServiceName:       "svc",
-			DurationNs:        int64(i * 1000),
+			DurationNs:        schema.Int64Ptr(int64(i * 1000)),
 		}
 	}
 
@@ -262,7 +262,7 @@ func sampleTraceRows(n int, baseTime time.Time) []schema.TraceRow {
 			SpanID:            fmt.Sprintf("span-%d", i),
 			SpanName:          "test-span",
 			ServiceName:       "test-svc",
-			DurationNs:        int64(i+1) * 1000000,
+			DurationNs:        schema.Int64Ptr(int64(i+1) * 1000000),
 		}
 	}
 	return rows

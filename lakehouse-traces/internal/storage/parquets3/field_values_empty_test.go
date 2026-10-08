@@ -23,7 +23,7 @@ func TestFieldValuesEmpty_Traces_StreamFieldValues_NoEmptyBucket(t *testing.T) {
 	for i, n := range []string{"op", "op", "", ""} {
 		rows = append(rows, schema.TraceRow{
 			TimestampUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(),
-			StartTimeUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(base.Add(time.Duration(i) * time.Second).UnixNano()),
 			TraceID:           fmt.Sprintf("t%d", i), SpanID: fmt.Sprintf("%016x", i+1),
 			SpanName: n, ServiceName: "svc",
 		})

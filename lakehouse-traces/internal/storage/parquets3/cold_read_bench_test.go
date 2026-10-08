@@ -250,8 +250,8 @@ func traceRows(n int, end time.Time) []schema.TraceRow {
 			layer = "big"
 		}
 		out = append(out, schema.TraceRow{
-			TimestampUnixNano: ts, StartTimeUnixNano: ts - 1_000_000, TraceID: tid, SpanID: fmt.Sprintf("%016x", rnd.Uint64()),
-			SpanName: name, ServiceName: svc, DurationNs: int64(1+rnd.Intn(900)) * 1_000_000, SpanKind: 2,
+			TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts - 1_000_000), TraceID: tid, SpanID: fmt.Sprintf("%016x", rnd.Uint64()),
+			SpanName: name, ServiceName: svc, DurationNs: schema.Int64Ptr(int64(1+rnd.Intn(900)) * 1_000_000), SpanKind: schema.Int32Ptr(2),
 			HTTPMethod: []string{"GET", "GET", "POST", "PUT"}[rnd.Intn(4)], HTTPStatusCode: []string{"200", "200", "500"}[rnd.Intn(3)],
 			Stream:             fmt.Sprintf(`{name=%q,resource_attr:service.name=%q}`, name, svc),
 			StreamID:           fmt.Sprintf("%032x%016x", 0x7ace, rnd.Intn(320)),
@@ -686,7 +686,7 @@ func profTruth(rows []schema.TraceRow, anchor time.Time) map[string]string {
 		}),
 		"T04": cnt(func(r *schema.TraceRow) bool { return true }),
 		"T06": cnt(func(r *schema.TraceRow) bool { return r.TraceID == tid }),
-		"T07": cnt(func(r *schema.TraceRow) bool { return r.DurationNs > 800_000_000 }),
+		"T07": cnt(func(r *schema.TraceRow) bool { return schema.Int64Value(r.DurationNs) > 800_000_000 }),
 		"T09": cnt(func(r *schema.TraceRow) bool { return r.SpanAttributes["peer"] != "p7" }),
 	}
 }

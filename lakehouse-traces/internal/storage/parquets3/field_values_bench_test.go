@@ -163,9 +163,9 @@ func fmtSlotRows(hour, slot int) []schema.TraceRow {
 		ts := start.Add(time.Duration(i) * 150 * time.Millisecond).UnixNano()
 		id := fmt.Sprintf("%02d%02d%04d", hour, slot, i)
 		rows = append(rows, schema.TraceRow{
-			TimestampUnixNano: ts, StartTimeUnixNano: ts,
+			TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts),
 			TraceID: "t" + id, SpanID: "s" + id,
-			SpanName: name, ServiceName: svc, DurationNs: int64(i%500) * 1000,
+			SpanName: name, ServiceName: svc, DurationNs: schema.Int64Ptr(int64(i%500) * 1000),
 			Stream: fmtStream(svc), StreamID: "id-" + svc,
 		})
 	}
