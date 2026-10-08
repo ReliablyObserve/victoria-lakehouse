@@ -36,8 +36,8 @@ func severityAbsentRows(now time.Time) []schema.LogRow {
 	return rows
 }
 
-// wantSeverity is the expected severity_number per row ("" = field absent).
-var wantSeverity = []string{"", "0", "9", ""}
+// wantSeverityRows is the expected severity_number per row ("" = field absent).
+func wantSeverityRows() []string { return []string{"", "0", "9", ""} }
 
 func severityOf(rows []map[string]string) []string {
 	out := make([]string, len(rows))
@@ -113,8 +113,8 @@ func TestSeverityAbsent_ScanPathsKeepAbsentAbsent(t *testing.T) {
 			"typed": scanRowGroupsTyped(t, s, f, startNs, endNs),
 		} {
 			got = sortedByMsg(got)
-			if g := severityOf(got); strings.Join(g, "|") != strings.Join(wantSeverity, "|") {
-				t.Errorf("rowGroupSize=%d %s path: severity_number per row = %q, want %q", rgSize, name, g, wantSeverity)
+			if g := severityOf(got); strings.Join(g, "|") != strings.Join(wantSeverityRows(), "|") {
+				t.Errorf("rowGroupSize=%d %s path: severity_number per row = %q, want %q", rgSize, name, g, wantSeverityRows())
 			}
 		}
 	}

@@ -39,8 +39,8 @@ func severityAbsentRows(now time.Time) []schema.LogRow {
 	return rows
 }
 
-// wantSeverity is the expected severity_number per row ("" = field absent).
-var wantSeverity = []string{"", "0", "9", ""}
+// wantSeverityRows is the expected severity_number per row ("" = field absent).
+func wantSeverityRows() []string { return []string{"", "0", "9", ""} }
 
 func severityOf(rows []map[string]string) []string {
 	out := make([]string, len(rows))
@@ -116,8 +116,8 @@ func TestSeverityAbsent_ScanPathsKeepAbsentAbsent(t *testing.T) {
 			"typed": scanRowGroupsTyped(t, s, f, startNs, endNs),
 		} {
 			got = sortedByMsg(got)
-			if g := severityOf(got); strings.Join(g, "|") != strings.Join(wantSeverity, "|") {
-				t.Errorf("rowGroupSize=%d %s path: severity_number per row = %q, want %q", rgSize, name, g, wantSeverity)
+			if g := severityOf(got); strings.Join(g, "|") != strings.Join(wantSeverityRows(), "|") {
+				t.Errorf("rowGroupSize=%d %s path: severity_number per row = %q, want %q", rgSize, name, g, wantSeverityRows())
 			}
 		}
 	}
@@ -151,13 +151,13 @@ func TestSeverityAbsent_QuerySurfaces(t *testing.T) {
 	}
 
 	// query rows
-	if g := severityOf(run("*")); strings.Join(g, "|") != strings.Join(wantSeverity, "|") {
-		t.Errorf("query rows: severity_number per row = %q, want %q", g, wantSeverity)
+	if g := severityOf(run("*")); strings.Join(g, "|") != strings.Join(wantSeverityRows(), "|") {
+		t.Errorf("query rows: severity_number per row = %q, want %q", g, wantSeverityRows())
 	}
 	// the projection layer (pipes and filters take different column sets)
 	for _, qs := range []string{"* | sort by (_time)", "* | limit 10", "* | fields _msg, severity_number"} {
-		if g := severityOf(run(qs)); strings.Join(g, "|") != strings.Join(wantSeverity, "|") {
-			t.Errorf("%q: severity_number per row = %q, want %q", qs, g, wantSeverity)
+		if g := severityOf(run(qs)); strings.Join(g, "|") != strings.Join(wantSeverityRows(), "|") {
+			t.Errorf("%q: severity_number per row = %q, want %q", qs, g, wantSeverityRows())
 		}
 	}
 	// filters: the field exists on two rows only
@@ -218,8 +218,8 @@ func TestSeverityAbsent_BridgeBlockMatchesFileRows(t *testing.T) {
 			got = c.Values
 		}
 	}
-	if strings.Join(got, "|") != strings.Join(wantSeverity, "|") {
-		t.Errorf("bridge severity_number per row = %q, want %q", got, wantSeverity)
+	if strings.Join(got, "|") != strings.Join(wantSeverityRows(), "|") {
+		t.Errorf("bridge severity_number per row = %q, want %q", got, wantSeverityRows())
 	}
 	// and the file path (logRowToFields) agrees row by row
 	for i := range rows {
@@ -229,8 +229,8 @@ func TestSeverityAbsent_BridgeBlockMatchesFileRows(t *testing.T) {
 				file = s.registry.FormatField(f.name, f.value)
 			}
 		}
-		if file != wantSeverity[i] {
-			t.Errorf("row %d: file path severity_number %q, want %q", i, file, wantSeverity[i])
+		if file != wantSeverityRows()[i] {
+			t.Errorf("row %d: file path severity_number %q, want %q", i, file, wantSeverityRows()[i])
 		}
 	}
 }
