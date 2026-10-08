@@ -190,3 +190,27 @@ func TestGetStreamFieldNames_CreditsTheRowsOfEachStream(t *testing.T) {
 		t.Errorf("empty window answered %v", got)
 	}
 }
+
+// The answer does not depend on how the rows of a stream are spread over
+// objects: one stream held in two objects (a flush each) credits a field one
+// of its rows carries with every row of the stream, as one block does.
+func TestFieldNames_DoNotDependOnTheObjectLayout(t *testing.T) {
+	first := []schema.LogRow{fnRow(1*time.Minute, "INFO", "t1"), fnRow(2*time.Minute, "INFO", "")}
+	second := []schema.LogRow{fnRow(3*time.Minute, "INFO", ""), fnRow(4*time.Minute, "INFO", "")}
+	one := fvcStorage(t, append(append([]schema.LogRow{}, first...), second...))
+	two := fvcStorage(t, first, second)
+	a, err := one.GetFieldNames(context.Background(), nil, fnWindow(t, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := two.GetFieldNames(context.Background(), nil, fnWindow(t, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("one object: %v\ntwo objects: %v", a, b)
+	}
+	if m := namesToHits(b); m["trace_id"] != 4 {
+		t.Errorf("trace_id hits = %d, want 4", m["trace_id"])
+	}
+}
