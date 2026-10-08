@@ -444,8 +444,8 @@
     Event and link fields answer like hot, including the empty value (the spans without the field, with
     their hits: #435, fixed with #433 in the vl./vt.select.*field_values rows). field_values over a MAP
     attribute is covered by vt.select.logsql_field_values.map_attr. field_names for
-    event, link and scope names follows B2 (docs/parity-and-gaps.md): the cold tier lists the names found in
-    a sample of one row group per file, not every name hot lists.
+    event, link and scope names lists the names of the rows in the window, like hot (B2, resolved:
+    vt.select.logsql_field_names.vt_field_names).
 
 - id: lh.cold.instrumentation_scope_search_matches_hot_traces
   title: "TraceQL instrumentation.* filters find the same traces on cold as on hot"
@@ -688,7 +688,6 @@
   refs:
     tests:
       - internal/storage/parquets3/leaf_index_test.go#TestScanProjectedFieldValues_ScalarAfterMapsIsIndexedByLeaf
-      - internal/storage/parquets3/leaf_index_test.go#TestAccumulateFieldHits_ScalarAfterMapsIsIndexedByLeaf
       - internal/storage/parquets3/field_values_map_property_test.go#TestFieldValues_MapAttributes_Property
       - internal/storage/parquets3/field_values_map_test.go#TestFieldValuesMapAttributes_Logs
   notes: >-

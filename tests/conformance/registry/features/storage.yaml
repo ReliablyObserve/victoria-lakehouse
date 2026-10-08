@@ -261,7 +261,6 @@
   surfaces: [storage, flag]
   tests:
     - internal/storage/parquets3/pmeta_integration_test.go#TestInteg_PmetaFlip_FieldNamesAndBloom
-    - internal/storage/parquets3/pmeta_integration_test.go#TestInteg_GetFieldNames_CatalogFlip
     - internal/storage/parquets3/pmeta_integration_test.go#TestInteg_EnrichEquivalence_ProviderVsSidecar
     - lakehouse-traces/internal/storage/parquets3/pmeta_integration_test.go#TestInteg_PmetaFlip_TracesBloomFacet
   docs:
@@ -272,7 +271,7 @@
     - 'pmeta bloom read-flip — `checkFileBloom` consults the in-RAM bloom facet before a per-file `.bloom` S3 GET (`--pmeta`, logs + traces).'
     - 'pmeta labels `field_names` read-flip — `GetFieldNames` serves from the catalog before the legacy labelIndex (`--pmeta`, logs + traces).'
   highlight: >-
-    **pmeta read path**: file enrichment, bloom checks and field-name lookups are served from the in-RAM bundle before any sidecar GET, with equivalence tests asserting the bundle answers exactly what the sidecars answered.
+    **pmeta read path**: file enrichment and bloom checks are served from the in-RAM bundle before any sidecar GET, with equivalence tests asserting the bundle answers exactly what the sidecars answered.
   description: >-
     Each read flip moved one consumer from its legacy sidecar to the bundle behind a flag, and
     each landed with an equivalence test proving the two sources agree. That is what makes
@@ -441,8 +440,6 @@
     - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go#TestFooterCache_ByteBoundNotEntryBound
     - internal/storage/parquets3/footer_budget_test.go#TestFooterBudget_FortyFilesFiveEntries
     - internal/storage/parquets3/footer_budget_test.go#TestEnrichSmallFiles_OnlyBelowTheFooterPrefetchFloor
-    - internal/storage/parquets3/footer_budget_test.go#TestFieldNames_AllNullColumnsAnswerDoesNotDependOnCacheState
-    - internal/storage/parquets3/footer_budget_test.go#TestFieldNames_PageIndexUnavailable_ReportsUnknownNotInventedHits
     - internal/storage/parquets3/footer_review_test.go#TestFooterOnlyEntry_PageIndexReadFailsAndIsNotMemoized
     - internal/storage/parquets3/footer_review_test.go#TestFooterCache_PutIfFits_NeverEvicts
     - internal/storage/parquets3/footer_review_test.go#TestParseObjectFor
@@ -451,7 +448,6 @@
     - internal/storage/parquets3/footer_review_test.go#TestEnrichFromCachedFooter_RealPageIndexBounds
     - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestFooterBudget_FortyFilesFiveEntries
     - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestEnrichSmallFiles_OnlyBelowTheFooterPrefetchFloor
-    - lakehouse-traces/internal/storage/parquets3/footer_budget_test.go#TestFieldNames_TracesAnswerUnaffectedByFooterCacheState
     - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestFooterOnlyEntry_PageIndexReadFailsAndIsNotMemoized
     - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestFooterCache_PutIfFits_NeverEvicts
     - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestParseObjectFor
@@ -478,8 +474,7 @@
     no more footers than the cache holds (budget over the measured mean entry weight, minus the file
     workers' share), and the startup enrichment takes each footer as it is parsed instead of reading it back
     through the cache, so a small budget costs no wasted or whole-object GETs. A footer-only entry never
-    answers a page-index read with zeros: the read fails, and the logs field_names hit counts are the same
-    whatever the cache holds (an unreadable page index reports the hits as unknown, never invented).
+    answers a page-index read with zeros: the read fails instead.
 
 - id: lh.feature.storage.planned_fetch_v2
   title: Planned-fetch v2 levers (footer prefetch, span concurrency, gap discipline)
