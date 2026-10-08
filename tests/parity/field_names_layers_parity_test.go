@@ -229,6 +229,9 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 			for i, r := range rows {
 				r["_time"] = at.Add(time.Duration(batch*len(rows)+i) * time.Second).Format(time.RFC3339Nano)
 				r["_msg"] = token
+				// an explicit severity: the cold path adds severity_number "0" to a row
+				// that has none (issue 274), which is not what this lock is about
+				r["severity_number"] = "9"
 				b, _ := json.Marshal(r)
 				body.Write(b)
 				body.WriteByte('\n')
@@ -285,7 +288,7 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 		c.cases = []fnCase{
 			{name: "field_names", endpoint: "field_names", query: q},
 			{name: "field_names_filtered_stream", endpoint: "field_names", query: q + " name:=op2"},
-			{name: "field_names_filtered_by_a_sparse_attribute", endpoint: "field_names", query: q + " span_attr:sa:=v1"},
+			{name: "field_names_filtered_by_a_sparse_attribute", endpoint: "field_names", query: q + " `span_attr:sa`:=v1"},
 			{name: "field_names_substring_filter", endpoint: "field_names", query: q, extra: map[string]string{"filter": "_attr:"}},
 			{name: "stream_field_names", endpoint: "stream_field_names", query: q},
 			{name: "stream_field_names_filtered", endpoint: "stream_field_names", query: q + " name:=op2"},

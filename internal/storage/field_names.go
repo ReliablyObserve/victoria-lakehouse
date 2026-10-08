@@ -128,7 +128,8 @@ var fieldNamesStreamCap = 1 << 18
 // compaction level), so crediting each block alone would make the answer depend
 // on the object layout: a field that one span of a stream carries would credit
 // that stream's rows in one object and not in the next. The counter therefore
-// unions the columns of all blocks of a stream (_stream_id, else _stream) and
+// unions the columns of all blocks of a stream (_stream_id, else _stream) within
+// one UTC day (upstream's partition) and
 // credits the field with all the stream's matching rows, which is what a block
 // holding the whole stream gives. Past fieldNamesStreamCap distinct streams it
 // credits a block on its own, upstream's exact per-block rule, so its memory
@@ -156,7 +157,7 @@ func (c *fieldNamesCounter) add(_ uint, db *logstorage.DataBlock) {
 		return
 	}
 	cols := db.GetColumns(false)
-	key := streamKeyOf(cols)
+	key := streamKeyOf(cols) + "|" + utcDayOf(cols)
 	n := uint64(db.RowsCount())
 	if hasLayerColumn(cols) {
 		key = "b" + key
@@ -244,6 +245,19 @@ func hasLayerColumn(cols []logstorage.BlockColumn) bool {
 		}
 	}
 	return false
+}
+
+// utcDayOf is the UTC day (YYYY-MM-DD) of a block's first row: upstream
+// partitions its storage by day, and a block never spans two partitions, so a
+// stream's rows of two days are two blocks there. "" when the block has no
+// readable _time.
+func utcDayOf(cols []logstorage.BlockColumn) string {
+	for _, c := range cols {
+		if c.Name == "_time" && len(c.Values) > 0 && len(c.Values[0]) >= 10 {
+			return c.Values[0][:10]
+		}
+	}
+	return ""
 }
 
 // streamKeyOf is the stream a block's rows belong to: its _stream_id, else its
