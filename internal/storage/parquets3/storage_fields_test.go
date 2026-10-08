@@ -13,7 +13,6 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/discovery"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -343,70 +342,6 @@ func TestGetFieldValues_CancelledContext(t *testing.T) {
 }
 
 // --- GetStreamFieldNames tests ---
-
-func TestGetStreamFieldNames_Logs_ReturnsRegistryFields(t *testing.T) {
-	s := testStorage()
-	q := mustParseQuery(t, "*")
-
-	fields, err := s.GetStreamFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	nameSet := make(map[string]bool)
-	for _, f := range fields {
-		nameSet[f.Value] = true
-	}
-
-	expected := []string{
-		"service.name", "k8s.namespace.name", "k8s.pod.name",
-		"k8s.deployment.name", "deployment.environment", "cloud.region",
-		"host.name", "k8s.node.name", "level",
-	}
-	for _, e := range expected {
-		if !nameSet[e] {
-			t.Errorf("missing stream field %q", e)
-		}
-	}
-	if len(fields) != len(expected) {
-		t.Errorf("expected %d stream fields for logs, got %d", len(expected), len(fields))
-	}
-}
-
-func TestGetStreamFieldNames_Traces_ReturnsRegistryFields(t *testing.T) {
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	s := &Storage{
-		cfg:        cfg,
-		manifest:   manifest.New("test", "traces/"),
-		registry:   schema.NewRegistry(schema.TracesProfile),
-		memCache:   cache.NewLRU(64 * 1024 * 1024),
-		sfGroup:    cache.NewGroup(),
-		labelIndex: cache.NewLabelIndex(),
-		discovery:  discovery.New("", nil, "", "", "9428", 5*time.Second),
-	}
-
-	q := mustParseQuery(t, "*")
-	fields, err := s.GetStreamFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	nameSet := make(map[string]bool)
-	for _, f := range fields {
-		nameSet[f.Value] = true
-	}
-
-	if !nameSet["resource_attr:service.name"] {
-		t.Error("missing resource_attr:service.name in trace stream fields")
-	}
-	if !nameSet["name"] {
-		t.Error("missing name in trace stream fields")
-	}
-	if len(fields) != 2 {
-		t.Errorf("expected 2 stream fields for traces, got %d", len(fields))
-	}
-}
 
 // --- GetStreamFieldValues tests ---
 

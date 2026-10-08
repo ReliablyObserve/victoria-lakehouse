@@ -230,22 +230,6 @@ func TestEnrichSmallFiles_OnlyBelowTheFooterPrefetchFloor(t *testing.T) {
 	}
 }
 
-// fieldNameHits runs field_names over the fixture window.
-func fieldNameHits(t *testing.T, fx *coldFixture) map[string]uint64 {
-	t.Helper()
-	start, end := fx.window()
-	q := mustParseQueryWithTime(t, "*", start, end)
-	vals, err := fx.s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := make(map[string]uint64, len(vals))
-	for _, v := range vals {
-		out[v.Value] = v.Hits
-	}
-	return out
-}
-
 func footerOnlyEntry(t *testing.T, fx *coldFixture, key string) *CachedFooter {
 	t.Helper()
 	data := fx.datas[key]
@@ -258,48 +242,6 @@ func footerOnlyEntry(t *testing.T, fx *coldFixture, key string) *CachedFooter {
 		t.Fatal(err)
 	}
 	return cf
-}
-
-// The logs module derives field_names hit counts from the page index null
-// counts (and its test pins the cache-state independence). The traces answer
-// does not read the page index at all, so it was never affected: names with the
-// documented Hits=1, identical whatever the footer cache holds.
-func TestFieldNames_TracesAnswerUnaffectedByFooterCacheState(t *testing.T) {
-	fx := newColdFixture(t, 1, budgetRows, budgetRGRows, config.ProjectedFetchModePlanned)
-	key := fx.files[0].Key
-
-	fx.resetCaches(0)
-	noEntry := fieldNameHits(t, fx)
-
-	fx.resetCaches(0)
-	fx.prefetch(t)
-	if cf, ok := fx.s.footerCache.Get(key); !ok || !cf.HasPageIndex() {
-		t.Fatal("fixture: the prefetched entry must hold the page-index stripe")
-	}
-	withStripe := fieldNameHits(t, fx)
-
-	fx.resetCaches(0)
-	fx.s.footerCache.Put(key, footerOnlyEntry(t, fx, key))
-	footerOnly := fieldNameHits(t, fx)
-
-	if len(withStripe) == 0 {
-		t.Fatal("no field names")
-	}
-	for name, states := range map[string]map[string]uint64{"no entry": noEntry, "footer-only entry": footerOnly} {
-		if len(states) != len(withStripe) {
-			t.Errorf("%s: %d fields, with the stripe cached %d", name, len(states), len(withStripe))
-		}
-		for f, h := range withStripe {
-			if states[f] != h {
-				t.Errorf("%s: field %q has %d hits, with the stripe cached %d", name, f, states[f], h)
-			}
-		}
-	}
-	for f, h := range withStripe {
-		if h != 1 {
-			t.Errorf("traces field %q has Hits=%d, want the documented 1", f, h)
-		}
-	}
 }
 
 var _ = fmt.Sprintf

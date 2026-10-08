@@ -59,6 +59,9 @@ func FieldNamesViaQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q 
 	if err != nil {
 		return nil, err
 	}
+	if len(out) == 0 {
+		return nil, nil
+	}
 	// Upstream's order (hits descending, then name), and one entry per name.
 	return logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{out}, 0, false), nil
 }

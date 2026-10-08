@@ -2320,6 +2320,9 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		}
 	}
 	if idx == nil {
+		if s.pool == nil {
+			return false // no object store to fetch a bloom from: cannot prune
+		}
 		metrics.S3GetsByPhase.Inc("bloom")
 		data, err := s.pool.DownloadDedup(ctx, "bloom", bloomKey)
 		if err != nil || len(data) == 0 {
