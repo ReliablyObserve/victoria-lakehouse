@@ -179,7 +179,67 @@
    "params": {
     "query": "span_id:*"
    },
-   "row": "vt.select.logsql_field_names.basic"
+   "row": "vt.select.logsql_field_names.vt_field_names"
+  },
+  {
+   "id": "vl.field_names.filtered_level",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "level:=ERROR"
+   },
+   "row": "vl.select.field_names.hits_per_stream_block"
+  },
+  {
+   "id": "vl.field_names.filtered_service",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "service.name:=api-gateway"
+   },
+   "row": "vl.select.field_names.hits_per_stream_block"
+  },
+  {
+   "id": "vl.field_names.sparse_exception",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "exception.type:*"
+   },
+   "row": "vl.select.field_names.hits_per_stream_block"
+  },
+  {
+   "id": "vl.stream_field_names.filtered",
+   "surface": "vl-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_names",
+   "params": {
+    "query": "level:=ERROR"
+   },
+   "row": "vl.select.stream_field_names.row_hits"
+  },
+  {
+   "id": "vt.field_names.spans_filtered",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/field_names",
+   "params": {
+    "query": "span_id:* `resource_attr:service.name`:=\"api-gateway\""
+   },
+   "row": "vt.select.logsql_field_names.vt_field_names"
+  },
+  {
+   "id": "vt.stream_field_names.spans_only",
+   "surface": "vt-native",
+   "kind": "values",
+   "path": "/select/logsql/stream_field_names",
+   "params": {
+    "query": "span_id:*"
+   },
+   "row": "vt.select.logsql_stream_field_names.row_hits"
   },
   {
    "id": "ko.sort_all.full",

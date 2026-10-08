@@ -261,13 +261,17 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 			for i, r := range rows {
 				r["_time"] = at.Add(time.Duration(batch*len(rows)+i) * time.Second).Format(time.RFC3339Nano)
 				r["_msg"] = token
+				// a stream of its own per run: upstream credits a column with the rows of the
+				// blocks that list it, and the blocks of a stream written by an earlier run
+				// (other fields, same day) would otherwise list theirs
+				r["run"] = token
 				b, _ := json.Marshal(r)
 				body.Write(b)
 				body.WriteByte('\n')
 			}
 			for _, f := range c.forms {
-				post(t, c.hot+"/insert/jsonline?_stream_fields=app,ns", "application/stream+json", body.Bytes(), f.header(false))
-				post(t, c.cold+"/insert/jsonline?_stream_fields=app,ns", "application/stream+json", body.Bytes(), f.header(true))
+				post(t, c.hot+"/insert/jsonline?_stream_fields=app,ns,run", "application/stream+json", body.Bytes(), f.header(false))
+				post(t, c.cold+"/insert/jsonline?_stream_fields=app,ns,run", "application/stream+json", body.Bytes(), f.header(true))
 			}
 		}
 		c.cases = []fnCase{
@@ -307,8 +311,8 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 				id := fmt.Sprintf("%016x%016x", stamp, 0xfa00+batch*len(spans)+i)
 				ids = append(ids, id)
 				for _, f := range c.forms {
-					pushOTLPSpanAttrsAs(t, c.hot, f.header(false), id, fmt.Sprintf("%016x", batch*len(spans)+i+1), sp.name, "fn-svc", sp.spanAttr, sp.resAttr, at.Add(time.Duration(batch*len(spans)+i)*time.Second))
-					pushOTLPSpanAttrsAs(t, c.cold, f.header(true), id, fmt.Sprintf("%016x", batch*len(spans)+i+1), sp.name, "fn-svc", sp.spanAttr, sp.resAttr, at.Add(time.Duration(batch*len(spans)+i)*time.Second))
+					pushOTLPSpanAttrsAs(t, c.hot, f.header(false), id, fmt.Sprintf("%016x", batch*len(spans)+i+1), sp.name, fmt.Sprintf("fn-svc-%d", stamp), sp.spanAttr, sp.resAttr, at.Add(time.Duration(batch*len(spans)+i)*time.Second))
+					pushOTLPSpanAttrsAs(t, c.cold, f.header(true), id, fmt.Sprintf("%016x", batch*len(spans)+i+1), sp.name, fmt.Sprintf("fn-svc-%d", stamp), sp.spanAttr, sp.resAttr, at.Add(time.Duration(batch*len(spans)+i)*time.Second))
 				}
 			}
 			c.filter = "trace_id:in(" + strings.Join(ids, ",") + ")"
