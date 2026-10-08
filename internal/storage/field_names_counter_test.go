@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"unsafe"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
@@ -126,7 +127,9 @@ func TestFieldNamesViaQuery_PlainFilter(t *testing.T) {
 		t.Fatalf("hits = %v, want %v", fnHits(got), want)
 	}
 	boom := context.DeadlineExceeded
-	if _, err = FieldNamesViaQuery(context.Background(), nil, q, func(context.Context, []logstorage.TenantID, *logstorage.Query, logstorage.WriteDataBlockFunc) error { return boom }); err != boom {
+	if _, err = FieldNamesViaQuery(context.Background(), nil, q, func(context.Context, []logstorage.TenantID, *logstorage.Query, logstorage.WriteDataBlockFunc) error {
+		return boom
+	}); err != boom {
 		t.Fatalf("err = %v, want %v", err, boom)
 	}
 }
@@ -171,4 +174,46 @@ func TestEmitFieldNamesStreamBlocks(t *testing.T) {
 		t.Fatalf("blocks = %v, want %v", got, want)
 	}
 	EmitFieldNamesStreamBlocks(nil, func(*logstorage.DataBlock) { t.Fatal("nil block emitted") })
+}
+
+// The insert buffer hands out blocks whose names and values point into memory
+// it reuses once the callback returns: the counter keeps its own copies.
+func TestFieldNamesCounter_KeepsNoBorrowedStrings(t *testing.T) {
+	buf := []byte("borrowed.name")
+	stream := []byte("stream-1")
+	name := unsafe.String(&buf[0], len(buf))
+	sid := unsafe.String(&stream[0], len(stream))
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{
+		{Name: "_stream_id", Values: []string{sid}},
+		{Name: name, Values: []string{"v"}},
+	})
+	for _, capacity := range []int{10, 0} { // tracked and past-the-cap paths
+		c := newFieldNamesCounter(capacity)
+		c.add(0, db)
+		copy(buf, "XXXXXXXXXXXXX")
+		copy(stream, "XXXXXXXX")
+		want := map[string]uint64{"_stream_id": 1, "borrowed.name": 1}
+		if got := fnHits(c.result()); !reflect.DeepEqual(got, want) {
+			t.Fatalf("cap %d: hits = %v, want %v", capacity, got, want)
+		}
+		copy(buf, "borrowed.name")
+		copy(stream, "stream-1")
+	}
+}
+
+// A stream held both in the insert buffer and in objects is two blocks on hot
+// storage (an in-memory part is not merged into the stored ones yet): the
+// counter unions the blocks of a stream within a layer only.
+func TestFieldNamesCounter_BufferAndObjectsAreSeparateBlocks(t *testing.T) {
+	c := newFieldNamesCounter(10)
+	c.add(0, fnBlock("s1", 3, map[string]bool{"a": true}))
+	c.add(0, MarkFieldNamesBufferBlock(fnBlock("s1", 2, map[string]bool{"a": true, "b": true})))
+	want := map[string]uint64{"_stream_id": 5, "a": 5, "b": 2}
+	if got := fnHits(c.result()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("hits = %v, want %v", got, want)
+	}
+	if MarkFieldNamesBufferBlock(nil) != nil {
+		t.Error("a nil block stays nil")
+	}
 }

@@ -228,10 +228,17 @@ func (s *Storage) emitBridgeTraceRows(scope tenantScope, rows []schema.TraceRow,
 
 // writeBridgeBlock writes a block of bridged rows. For a field_names
 // enumeration (fieldNames[0]) the block is first given the per-stream column sets
-// every other layer's blocks have (storage.EmitFieldNamesStreamBlocks).
+// every other layer's blocks have (storage.EmitFieldNamesStreamBlocks), and,
+// when fieldNames[1] says the field names are counted, marked as the buffer's.
 func writeBridgeBlock(write logstorage.WriteDataBlockFunc, db *logstorage.DataBlock, fieldNames []bool) {
 	if len(fieldNames) > 0 && fieldNames[0] {
-		storage.EmitFieldNamesStreamBlocks(db, func(b *logstorage.DataBlock) { write(0, b) })
+		counter := len(fieldNames) > 1 && fieldNames[1]
+		storage.EmitFieldNamesStreamBlocks(db, func(b *logstorage.DataBlock) {
+			if counter {
+				b = storage.MarkFieldNamesBufferBlock(b) // the peers' rows are the buffer layer
+			}
+			write(0, b)
+		})
 		return
 	}
 	write(0, db)

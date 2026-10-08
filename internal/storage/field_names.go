@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/bits"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -17,6 +18,17 @@ type fieldNamesQueryKey struct{}
 // to the rows of a block AFTER its columns are known, as on hot storage.
 func WithFieldNamesQuery(ctx context.Context) context.Context {
 	return context.WithValue(ctx, fieldNamesQueryKey{}, true)
+}
+
+type fieldNamesCounterKey struct{}
+
+// IsFieldNamesCounter reports whether the field_names enumeration is counted by
+// fieldNamesCounter, which wants the insert buffer's blocks marked
+// (MarkFieldNamesBufferBlock); a query with pipes runs upstream's pipe instead
+// and must see no extra column.
+func IsFieldNamesCounter(ctx context.Context) bool {
+	v, _ := ctx.Value(fieldNamesCounterKey{}).(bool)
+	return v
 }
 
 // IsFieldNamesQuery reports whether the read answers a field_names enumeration.
@@ -41,7 +53,7 @@ func IsFieldNamesQuery(ctx context.Context) bool {
 func FieldNamesViaQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, read func(context.Context, []logstorage.TenantID, *logstorage.Query, logstorage.WriteDataBlockFunc) error) ([]logstorage.ValueWithHits, error) {
 	if !logstorage.QueryHasPipes(q) && !logstorage.QueryHasFilterSubqueries(q) {
 		c := newFieldNamesCounter(fieldNamesStreamCap)
-		rctx := WithFieldNamesQuery(WithAllFieldsHint(ctx))
+		rctx := context.WithValue(WithFieldNamesQuery(WithAllFieldsHint(ctx)), fieldNamesCounterKey{}, true)
 		if err := read(rctx, tenantIDs, q, c.add); err != nil {
 			return nil, err
 		}
@@ -75,6 +87,34 @@ func FieldNamesViaQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q 
 	}
 	// Upstream's order (hits descending, then name), and one entry per name.
 	return logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{out}, 0, false), nil
+}
+
+// fieldNamesLayerColumn marks the blocks of the insert buffer for the counter.
+// The readers add it to a block served from the buffer (the co-located segments
+// or an insert peer's rows) when the read is a field_names enumeration, and the
+// counter takes it out again. A stream held both in the buffer and in objects is
+// two blocks on hot storage too (an in-memory part is not yet merged into the
+// stored ones), so the counter unions the blocks of a stream within a layer, not
+// across the buffer and the objects.
+const fieldNamesLayerColumn = "\x00layer"
+
+// MarkFieldNamesBufferBlock returns db marked as served from the insert buffer.
+func MarkFieldNamesBufferBlock(db *logstorage.DataBlock) *logstorage.DataBlock {
+	if db == nil || db.RowsCount() == 0 {
+		return db
+	}
+	cols := db.GetColumns(false)
+	marked := make([]logstorage.BlockColumn, 0, len(cols)+1)
+	marked = append(marked, cols...)
+	marked = append(marked, logstorage.BlockColumn{Name: fieldNamesLayerColumn, Values: make([]string, db.RowsCount())})
+	out := &logstorage.DataBlock{}
+	out.SetColumns(marked)
+	return out
+}
+
+// MarkFieldNamesBufferWriter wraps write so every block it receives is marked.
+func MarkFieldNamesBufferWriter(write logstorage.WriteDataBlockFunc) logstorage.WriteDataBlockFunc {
+	return func(worker uint, db *logstorage.DataBlock) { write(worker, MarkFieldNamesBufferBlock(db)) }
 }
 
 // fieldNamesStreamCap bounds the streams fieldNamesCounter tracks (about 150
@@ -118,6 +158,18 @@ func (c *fieldNamesCounter) add(_ uint, db *logstorage.DataBlock) {
 	cols := db.GetColumns(false)
 	key := streamKeyOf(cols)
 	n := uint64(db.RowsCount())
+	if hasLayerColumn(cols) {
+		key = "b" + key
+		kept := make([]logstorage.BlockColumn, 0, len(cols))
+		for _, col := range cols {
+			if col.Name != fieldNamesLayerColumn {
+				kept = append(kept, col)
+			}
+		}
+		cols = kept
+	} else {
+		key = "o" + key
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -128,6 +180,9 @@ func (c *fieldNamesCounter) add(_ uint, db *logstorage.DataBlock) {
 				name := col.Name
 				if name == "" {
 					name = "_msg"
+				}
+				if _, ok := c.blocks[name]; !ok {
+					name = strings.Clone(name)
 				}
 				c.blocks[name] += n
 			}
@@ -144,6 +199,9 @@ func (c *fieldNamesCounter) add(_ uint, db *logstorage.DataBlock) {
 		}
 		id, ok := c.ids[name]
 		if !ok {
+			// The name may point into a buffer the reader reuses once this
+			// call returns (the insert buffer's blocks do): keep a copy.
+			name = strings.Clone(name)
 			id = len(c.names)
 			c.ids[name] = id
 			c.names = append(c.names, name)
@@ -177,6 +235,15 @@ func (c *fieldNamesCounter) result() []logstorage.ValueWithHits {
 		out = append(out, logstorage.ValueWithHits{Value: name, Hits: n})
 	}
 	return logstorage.MergeValuesWithHits([][]logstorage.ValueWithHits{out}, 0, false)
+}
+
+func hasLayerColumn(cols []logstorage.BlockColumn) bool {
+	for _, c := range cols {
+		if c.Name == fieldNamesLayerColumn {
+			return true
+		}
+	}
+	return false
 }
 
 // streamKeyOf is the stream a block's rows belong to: its _stream_id, else its
