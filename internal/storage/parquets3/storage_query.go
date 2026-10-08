@@ -239,7 +239,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// carries no row the tombstone filter could drop, so deleted buffered
 		// rows would be counted; the raw-row path below filters them.
 		// Mirror in lakehouse-traces/internal/storage/parquets3/storage_query.go.
-		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, filteredWriteBlock) {
+		pureWrite := filteredWriteBlock
+		if storage.IsFieldNamesCounter(ctx) {
+			pureWrite = storage.MarkFieldNamesBufferWriter(pureWrite)
+		}
+		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, pureWrite) {
 			return nil
 		}
 		s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)

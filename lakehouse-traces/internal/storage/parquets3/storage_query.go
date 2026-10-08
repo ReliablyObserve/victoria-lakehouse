@@ -238,7 +238,11 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// carries no row the tombstone filter could drop, so deleted buffered
 		// spans would be counted; the raw-row path below filters them.
 		// Twin of internal/storage/parquets3/storage_query.go.
-		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, filteredWriteBlock) {
+		pureWrite := filteredWriteBlock
+		if storage.IsFieldNamesCounter(ctx) {
+			pureWrite = storage.MarkFieldNamesBufferWriter(pureWrite)
+		}
+		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, pureWrite) {
 			return nil
 		}
 		// No cold-tier files cover the requested window, but the in-flight
