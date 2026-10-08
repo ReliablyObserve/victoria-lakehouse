@@ -151,9 +151,9 @@ func (s *Storage) serveBufferView(ctx context.Context, v *bufferView, startNs, e
 	scope := scopeFor(ctx, tenantIDs)
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		s.emitBridgeLogRows(scope, rowsInWindow(v.logRows, startNs, endNs, func(r *schema.LogRow) int64 { return r.TimestampUnixNano }), sink)
+		s.emitBridgeLogRows(scope, rowsInWindow(v.logRows, startNs, endNs, func(r *schema.LogRow) int64 { return r.TimestampUnixNano }), sink, storage.IsFieldNamesQuery(ctx))
 	case config.ModeTraces:
-		s.emitBridgeTraceRows(scope, rowsInWindow(v.traceRows, startNs, endNs, func(r *schema.TraceRow) int64 { return r.TimestampUnixNano }), sink)
+		s.emitBridgeTraceRows(scope, rowsInWindow(v.traceRows, startNs, endNs, func(r *schema.TraceRow) int64 { return r.TimestampUnixNano }), sink, storage.IsFieldNamesQuery(ctx))
 	}
 }
 

@@ -198,6 +198,23 @@ func CloneWithoutPipes(q *Query) *Query {
 	return &qCopy
 }
 
+// QueryWithFieldNames returns a shallow copy of q with upstream's field_names
+// pipe appended, exactly as (*Storage).GetFieldNames builds it: the query's own
+// timestamp, filter and pipes stay as they are, and nothing is rendered or
+// re-parsed (a round trip loses relative time anchors and fails for queries
+// VictoriaLogs accepts but cannot print back; see QueryFilter).
+//
+// upstream-original: the shallow clone and pipe construction of upstream's
+// (*Storage).GetFieldNames, which cannot be called with an external storage.
+func QueryWithFieldNames(q *Query) *Query {
+	qNew := q.cloneShallow()
+	qNew.pipes = append(append([]pipe{}, q.pipes...), &pipeFieldNames{
+		resultName:  "name",
+		isFirstPipe: len(q.pipes) == 0,
+	})
+	return qNew
+}
+
 // QueryFilter returns the filter of q for row-level evaluation (MatchRow)
 // without rendering q to text and parsing it back. That round trip fails for
 // queries VL accepts but cannot print back in parseable form (for example

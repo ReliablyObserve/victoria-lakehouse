@@ -8,6 +8,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // Tenant-scoped tombstones on the read path.
@@ -184,13 +185,13 @@ func (sk *tombstoneSink) cached(key string, pick func() []tombstone) logstorage.
 // emitBridgeLogRows converts bridged log rows to a block and writes it. With a
 // per-tenant sink the rows are grouped by the tenant each carries, so each
 // tenant's rows are filtered by that tenant's tombstones only.
-func (s *Storage) emitBridgeLogRows(scope tenantScope, rows []schema.LogRow, sink *tombstoneSink) {
+func (s *Storage) emitBridgeLogRows(scope tenantScope, rows []schema.LogRow, sink *tombstoneSink, fieldNames ...bool) {
 	if len(rows) == 0 {
 		return
 	}
 	if !sink.perTenant {
 		if db := s.logRowsToDataBlock(scope, "bridge_logs", rows); db != nil && db.RowsCount() > 0 {
-			sink.uniform(0, db)
+			writeBridgeBlock(sink.uniform, db, fieldNames)
 		}
 		return
 	}
@@ -199,19 +200,19 @@ func (s *Storage) emitBridgeLogRows(scope tenantScope, rows []schema.LogRow, sin
 	})
 	for _, tid := range order {
 		if db := s.logRowsToDataBlock(scope, "bridge_logs", groups[tid]); db != nil && db.RowsCount() > 0 {
-			sink.forTenant(tid)(0, db)
+			writeBridgeBlock(sink.forTenant(tid), db, fieldNames)
 		}
 	}
 }
 
 // emitBridgeTraceRows is emitBridgeLogRows for spans.
-func (s *Storage) emitBridgeTraceRows(scope tenantScope, rows []schema.TraceRow, sink *tombstoneSink) {
+func (s *Storage) emitBridgeTraceRows(scope tenantScope, rows []schema.TraceRow, sink *tombstoneSink, fieldNames ...bool) {
 	if len(rows) == 0 {
 		return
 	}
 	if !sink.perTenant {
 		if db := s.traceRowsToDataBlock(scope, "bridge_traces", rows); db != nil && db.RowsCount() > 0 {
-			sink.uniform(0, db)
+			writeBridgeBlock(sink.uniform, db, fieldNames)
 		}
 		return
 	}
@@ -220,9 +221,20 @@ func (s *Storage) emitBridgeTraceRows(scope tenantScope, rows []schema.TraceRow,
 	})
 	for _, tid := range order {
 		if db := s.traceRowsToDataBlock(scope, "bridge_traces", groups[tid]); db != nil && db.RowsCount() > 0 {
-			sink.forTenant(tid)(0, db)
+			writeBridgeBlock(sink.forTenant(tid), db, fieldNames)
 		}
 	}
+}
+
+// writeBridgeBlock writes a block of bridged rows. For a field_names
+// enumeration (fieldNames[0]) the block is first given the per-stream column sets
+// every other layer's blocks have (storage.EmitFieldNamesStreamBlocks).
+func writeBridgeBlock(write logstorage.WriteDataBlockFunc, db *logstorage.DataBlock, fieldNames []bool) {
+	if len(fieldNames) > 0 && fieldNames[0] {
+		storage.EmitFieldNamesStreamBlocks(db, func(b *logstorage.DataBlock) { write(0, b) })
+		return
+	}
+	write(0, db)
 }
 
 // groupRowsByTenant splits rows by tenant, keeping first-seen tenant order and
