@@ -911,6 +911,11 @@ blocks that list it. The Parquet footers cannot give that answer: they know the 
 fields of its rows or the streams. `stream_field_names` is the tags of the matching streams, each credited with
 the rows of the streams that carry it, the walk `stream_field_values` does.
 
+Measured (`BenchmarkGetFieldNames_ObjectReads`, benchstat n=8 interleaved, five 200 KiB objects, cold caches, mock S3,
+logs binary): S3 requests per call 5 to 10, bytes served 328 KB to 1,406 KB (+329 %), time 1.3 ms to 8.9 ms, allocations
+9.4 k to 356 k per call. On the proof stack (3,000 rows over 4 h, warm caches) a call takes 1.4 ms to 14 ms. These grow
+with the window's bytes, not with its object count. Tracked: [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482).
+
 What it costs: the object reads of a `query=*` over the same window (all columns, every object overlapping the
 window), where the footer answer cost one ranged read of the footer per object. The per-query row ceiling
 (`query.max_rows`) does not apply, the live-bytes budget and the per-process decoder limit do. Keep Explore and
