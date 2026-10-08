@@ -262,9 +262,9 @@ func TestVerifyInsert_EmptyRows(t *testing.T) {
 }
 
 // TestVerifyInsert_SeverityNumberParsing verifies correct int32 parsing for the
-// severity_number field: a canonical decimal integer is stored in the typed
-// column (a present zero stays present); any other value leaves the column
-// absent and is kept verbatim as a log attribute (issue #274).
+// severity_number field: a decimal integer is stored in the typed column (a
+// present zero stays present); an invalid or empty value leaves the column
+// absent, not zero (issue #274).
 func TestVerifyInsert_SeverityNumberParsing(t *testing.T) {
 	t.Parallel()
 
@@ -295,10 +295,6 @@ func TestVerifyInsert_SeverityNumberParsing(t *testing.T) {
 				(tc.wantNum != nil && *row.SeverityNumber != *tc.wantNum) {
 				t.Errorf("SeverityNumber for input %q = %v, want %v",
 					tc.input, row.SeverityNumber, tc.wantNum)
-			}
-			if tc.wantNum == nil && row.LogAttributes["severity_number"] != tc.input {
-				t.Errorf("untyped input %q must stay verbatim in the attribute map, got %q",
-					tc.input, row.LogAttributes["severity_number"])
 			}
 		})
 	}

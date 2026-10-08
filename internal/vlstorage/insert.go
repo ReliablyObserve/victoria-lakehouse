@@ -182,21 +182,11 @@ func mapFieldToRow(row *schema.LogRow, name, value string) {
 		// don't fall into the "unknown level" bucket in Grafana.
 		row.SeverityText = strings.Clone(value)
 	case "severity_number":
-		// Typed only when the value round-trips: the column renders the number
-		// back as written, so "007", "+5" or "abc" stay verbatim in the
-		// attribute map instead of being rewritten or dropped. A present zero
-		// ("0", what OTLP writes for UNSPECIFIED) stays present.
-		if v, err := strconv.ParseInt(value, 10, 32); err == nil && strconv.FormatInt(v, 10) == value {
+		// A present zero ("0", what OTLP writes for UNSPECIFIED) stays present;
+		// a value that is not an integer, or is empty, leaves the field absent.
+		if v, err := strconv.ParseInt(value, 10, 32); err == nil {
 			row.SeverityNumber = schema.Int32Ptr(int32(v))
-			return
 		}
-		if value == "" {
-			return // an empty value equals a non-existing field
-		}
-		if row.LogAttributes == nil {
-			row.LogAttributes = make(map[string]string)
-		}
-		row.LogAttributes[name] = strings.Clone(value)
 	case "service.name":
 		row.ServiceName = strings.Clone(value)
 	case "trace_id":
