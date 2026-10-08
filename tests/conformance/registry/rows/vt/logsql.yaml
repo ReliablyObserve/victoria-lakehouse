@@ -7,12 +7,12 @@
 - { id: vt.select.logsql_query.wildcard, title: "/select/logsql/query — wildcard over the trace attribute index", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/query }, request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: ndjson-multiset, project: [trace_id, span_id, name] }, layers: [api], pending: true, notes: "Native trace messages are persisted separately from customer attributes. Both dependency graphs exercise Parquet readback, message filtering after restart and typed/peer bridges in trace_message_test.go and trace_message_filters_test.go; shared schema, compaction and deletion message-provenance regressions also run in CI. Legacy objects lacking the optional body column cannot recover historical messages." }
 - { id: vt.select.logsql_query_time_range.basic, title: "/select/logsql/query_time_range — trace attribute index bounds", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/query_time_range }, request: { method: GET, path: /select/logsql/query_time_range, params: { query: '`resource_attr:service.name`:checkout', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: exact-json }, layers: [api], pending: true }
 - { id: vt.select.logsql_facets.basic, title: "/select/logsql/facets — top attribute values", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/facets }, request: { method: GET, path: /select/logsql/facets, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", limit: "5" } }, compare: { type: exact-json }, layers: [api], pending: true }
-- { id: vt.select.logsql_field_names.basic, title: "/select/logsql/field_names — indexed attribute names", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/field_names }, request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: exact-json }, layers: [api], pending: true }
+- { id: vt.select.logsql_field_names.basic, title: "/select/logsql/field_names — indexed attribute names", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/field_names }, request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: exact-json }, layers: [api], pending: true, refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] } }
 - { id: vt.select.logsql_field_values.basic, title: "/select/logsql/field_values — resource_attr:service.name top values", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/field_values }, request: { method: GET, path: /select/logsql/field_values, params: { query: "*", field: "resource_attr:service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: values-with-hits, options: { hits_tolerance: "0" } }, layers: [api], pending: true }
 - { id: vt.select.logsql_hits.basic, title: "/select/logsql/hits — span histogram buckets", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/hits }, request: { method: GET, path: /select/logsql/hits, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}", step: "1h" } }, compare: { type: series, options: { rel_tolerance: "0" } }, layers: [api], pending: true }
 - { id: vt.select.logsql_stats_query.basic, title: "/select/logsql/stats_query — instant span stats", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/stats_query }, request: { method: GET, path: /select/logsql/stats_query, params: { query: "* | stats count() as total", time: "{{seed.cold_end}}", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: count }, layers: [api], pending: true }
 - { id: vt.select.logsql_stats_query_range.basic, title: "/select/logsql/stats_query_range — ranged span stats series", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/stats_query_range }, request: { method: GET, path: /select/logsql/stats_query_range, params: { query: "* | stats count() as total", start: "{{seed.start}}", end: "{{seed.cold_end}}", step: "1h" } }, compare: { type: series, options: { rel_tolerance: "0" } }, layers: [api], pending: true }
-- { id: vt.select.logsql_stream_field_names.basic, title: "/select/logsql/stream_field_names — trace stream-indexed fields", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/stream_field_names }, request: { method: GET, path: /select/logsql/stream_field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: exact-json }, layers: [api], pending: true }
+- { id: vt.select.logsql_stream_field_names.basic, title: "/select/logsql/stream_field_names — trace stream-indexed fields", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/stream_field_names }, request: { method: GET, path: /select/logsql/stream_field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: exact-json }, layers: [api], pending: true, refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] } }
 - { id: vt.select.logsql_stream_field_values.basic, title: "/select/logsql/stream_field_values — trace stream field top values", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/stream_field_values }, request: { method: GET, path: /select/logsql/stream_field_values, params: { query: "*", field: "resource_attr:service.name", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: values-with-hits, options: { hits_tolerance: "0" } }, layers: [api], pending: true }
 - { id: vt.select.logsql_stream_ids.basic, title: "/select/logsql/stream_ids — trace stream id enumeration", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/stream_ids }, request: { method: GET, path: /select/logsql/stream_ids, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: exact-json }, layers: [api], pending: true }
 - { id: vt.select.logsql_streams.basic, title: "/select/logsql/streams — trace stream enumeration", surface: vt, kind: select, origin: native, expect: pass, targets: [hot, cold], seed: [traces.base], upstream: { route: /select/logsql/streams }, request: { method: GET, path: /select/logsql/streams, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }, compare: { type: exact-json }, layers: [api], pending: true }
@@ -184,3 +184,52 @@
   layers: [api]
   pending: true
   refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+
+- id: vt.select.logsql_field_names.vt_field_names
+  title: "/select/logsql/field_names — spans are listed under VictoriaTraces' own field names with the hits of their stream blocks"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "span_id:*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AreVictoriaTracesFieldsCreditedPerStream, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AnswersAWindowHeldOnlyInTheLocalBuffer, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_MergesPeerBufferAndObjects, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_DoNotDependOnTheObjectLayout, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] }
+  notes: "Issue 269. The list was the Parquet column names (service.name, span.name, http.method) with hits 1; it is the names a span is stored under in VictoriaTraces (span_attr:*, resource_attr:*, event:*, link:*, scope_attr:*, _msg, _stream, name, trace_id, ...) with upstream's hits, in every layer (buffer, Parquet, compacted, restart), for numeric and alias tenants, and on the seeded corpus for every seeded tenant. Asked for spans (span_id:*), see vt.select.logsql_field_names.index_rows for the trace index rows."
+
+- id: vt.select.logsql_stream_field_names.row_hits
+  title: "/select/logsql/stream_field_names — each stream tag is credited with the spans of the matching streams that carry it"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/stream_field_names }
+  request: { method: GET, path: /select/logsql/stream_field_names, params: { query: "span_id:*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceGetStreamFieldNames_CreditsTheSpansOfEachStream, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] }
+  notes: "Issue 461 on the traces binary: name and resource_attr:service.name with the number of spans of the matching streams, in upstream's order."
+
+- id: vt.select.logsql_field_names.index_rows
+  title: "/select/logsql/field_names — hot VictoriaTraces also lists the fields and rows of its trace index rows under * (known gap)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Hot lists the trace index rows (issue 458); Lakehouse does not store them. Flips to pass with issue 458."
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] }
+  notes: "Hot VictoriaTraces writes one trace_id_idx row per trace (fields trace_id_idx, trace_id_idx_stream, start_time, end_time) and counts them in every query that matches them, such as *; Lakehouse drops those rows at flush (issue 458). The span fields themselves are exact: ask for span_id:* (vt.select.logsql_field_names.vt_field_names)."

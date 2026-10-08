@@ -33,21 +33,6 @@
 # tenant columns, the ded_s01..ded_s08 dedicated slot columns, and unprefixed
 # duplicates of the traces attributes.
 
-# --- B2: field_names is built from Parquet columns only ---------------------
-# Cold reports only the columns present in the scanned files, so _time, _msg,
-# _stream, the VT metadata fields and every map-stored attribute are missing.
-TestParity_CrossValidationExtended/field_names_parity  # B2: field_names from Parquet columns only
-TestParity_Endpoints/field_names  # B2: field_names from Parquet columns only
-TestParity_Fields/field_names_all  # B2: field_names from Parquet columns only
-TestParity_Fields/field_names_filtered  # B2: field_names from Parquet columns only
-TestParity_LogsQL_FieldNamesSuperset  # B2: field_names from Parquet columns only
-TestParity_Response/field_names_jsonl/field_names_jsonl  # B2: field_names from Parquet columns only
-TestParity_TracesExtended/traces_field_names_completeness  # B2: field_names from Parquet columns only
-TestParity_Traces_LogsQL/traces_field_names  # B2: field_names from Parquet columns only
-TestParity_Traces_LogsQL/traces_field_names_resource_attr_prefix  # B2: resource_attr:service.name absent from cold field_names
-TestParity_Traces_LogsQL/traces_field_names_span_attr_prefix  # B2: span_attr:* absent from cold field_names
-TestParity_Traces_LogsQL/traces_field_names_vt_metadata  # B2: VT metadata fields absent from cold field_names
-
 # --- B4: rename/format/len/math/extract/unpack lose input columns -----------
 
 # --- B5: /hits at sub-hour steps returns synthetic buckets ------------------
