@@ -295,6 +295,50 @@
      "severity_number"
     ]
    }
+  },
+  {
+   "id": "ko.pack_json",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | sort | limit 30 | pack_json as j | fields _time, j"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "forms": [
+    "keyorder"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ],
+   "meta": {
+    "skip_fields": [
+     "severity_number"
+    ]
+   }
+  },
+  {
+   "id": "ko.pack_logfmt",
+   "surface": "vl-native",
+   "kind": "rows",
+   "path": "/select/logsql/query",
+   "params": {
+    "query": "* | sort | limit 30 | pack_logfmt as j | fields _time, j"
+   },
+   "row": "vl.select.logsql_query.wildcard",
+   "forms": [
+    "keyorder"
+   ],
+   "layers": [
+    "cold",
+    "buffer"
+   ],
+   "meta": {
+    "skip_fields": [
+     "severity_number"
+    ]
+   }
   }
  ]
 }

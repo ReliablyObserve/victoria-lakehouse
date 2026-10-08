@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Registry gate: lock packages are owner-gated, locks are `file#Test`, run nonce.** CI tooling only, no runtime change: a PR that edits or deletes an existing file of a package that holds a lock test (or the lock suites' runtime config), or adds a file there that declares a package-level var, init() or TestMain, fails with "lock code changed — owner review"; the six file-level parity locks are named `file#Test` and have floors; the lock-cells nonce only guards against stale lines and is not a security control.
 
+### Changed
+
+- **Proof tooling follow-ups: steadier seeds, safer ports, the proxy tagged by its pin.** Tooling only, no runtime change (`scripts/proof/`, `deployment/docker/docker-compose-proof.yml`, `deployment/docker/Dockerfile.loki-vl-proxy`): the runner waits 45 s for steady counts (hot VictoriaTraces writes its trace-index rows 20-40 s after ingest), rows that share an identity pair equal rows first, a list cut at a limit must carry zeroed hits like the reference, derived port blocks keep clear of the ports other stacks use and below 49152 and are checked free before `up`, image tags are read from the compose file with the proxy tagged by its pinned release, and the proof proxies map the fixtures' dotted fields (`http.method`, `exception.type`, ...) with `-field-mapping`.
+
 ## [0.146.8] - 2026-10-07
 
 ### Added

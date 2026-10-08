@@ -453,3 +453,15 @@ def test_every_non_200_status_is_an_error_state_and_known_issues_do_not_decide_a
     cap_ = cap([rec("not found", status=404, url="/select/buildinfo"), rec(OK_FRAMES)])
     st = states.panel_state(cap_)
     assert st["state"] == DATA and st["known"]
+
+
+def test_a_known_issue_that_answered_200_is_a_request_like_any_other():
+    only = states.data_state([rec({"version": "v1"}, status=200, url="/select/buildinfo")])
+    assert only["state"] == EMPTY and only["known"] == []  # counted as the one request it is (no rows in it), not skipped as a known failure
+    assert states.panel_state(cap([rec({"version": "v1"}, status=200, url="/select/buildinfo")]))["kind"] != "no-requests"
+
+
+def test_the_dom_warning_names_the_panels_and_does_not_blame_the_dom():
+    ui = {"noData": 1, "noDataPanels": ["http_method"], "banners": [], "panelErrors": 0, "jaegerErrors": 0}
+    st = states.panel_state(cap([rec(OK_FRAMES)], ui))
+    assert "http_method" in st["warning"] and "No data" in st["warning"] and "DOM" not in st["warning"]

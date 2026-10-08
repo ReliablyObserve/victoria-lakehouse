@@ -54,5 +54,12 @@ def evaluate_limited(ref: dict, ans: dict, universe: list[str]) -> FacetResult:
     res.facets["cardinality"] = 100.0 if len(ans) == len(ref) else 100.0 * min(len(ans), len(ref)) / max(len(ans), len(ref), 1)
     outside = sorted(v for v in ans if v not in known)
     res.facets["membership"] = 100.0 if not outside else 100.0 * (len(ans) - len(outside)) / len(ans)
+    # Past the limit upstream zeroes the hits of what it keeps: when the reference's are all 0 and the list was cut,
+    # the answer's must be 0 as well (a list cut with real counts would claim numbers upstream does not give).
+    cut = len(set(universe)) > len(ref)
+    if cut and ref and all(h == 0 for h in ref.values()):
+        zeroed = [v for v, h in ans.items() if h != 0]
+        res.facets["hits_zeroed"] = 100.0 if not zeroed else 100.0 * (len(ans) - len(zeroed)) / len(ans)
+        res.details["hits_zeroed"] = {"not_zero": sorted(zeroed)[:20]}
     res.details["limited"] = {"ref_n": len(ref), "ans_n": len(ans), "universe_n": len(known), "outside": outside[:20]}
     return res

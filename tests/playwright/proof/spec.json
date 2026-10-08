@@ -226,16 +226,26 @@
     {
       "id": "dd-field-values",
       "kind": "drilldown",
-      "title": "Logs Drilldown: values of a field (a plain name: the reference answers nothing for dotted names)",
+      "title": "Logs Drilldown: values of a custom attribute with a dotted name (http.method)",
       "path": "service/{service}/field/{field}",
       "service": true,
       "tier": "focused",
       "target_panel": "{field}"
+    },
+    {
+      "id": "dd-field-values-plain",
+      "kind": "drilldown",
+      "title": "Logs Drilldown: values of a custom attribute with a plain name (client_ip)",
+      "path": "service/{service}/field/{plain_field}",
+      "service": true,
+      "tier": "focused",
+      "target_panel": "{plain_field}"
     }
   ],
   "vars": {
     "service": "api-gateway",
     "label": "k8s_namespace_name",
-    "field": "client_ip"
+    "field": "http_method",
+    "plain_field": "client_ip"
   }
 }

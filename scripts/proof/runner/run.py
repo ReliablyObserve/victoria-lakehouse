@@ -111,18 +111,27 @@ def snapshot(state: dict, forms, layers) -> dict:
     return out
 
 
-def wait_stable(state: dict, forms=SEED_FORMS, layers=SEED_LAYERS, timeout: float = 120, step: float = 3) -> None:
-    """Rows reach Lakehouse's insert buffer late (trace-index rows included): wait until the count of `*` is the same
-    on two consecutive reads for every signal, form, layer and target. A count that keeps moving fails the run."""
-    deadline = time.time() + timeout
+STABLE_FOR_S = 45  # longer than the delay of hot VictoriaTraces' trace-index rows (measured: a count steady for 9 s, then +20)
+
+
+def wait_stable(state: dict, forms=SEED_FORMS, layers=SEED_LAYERS, timeout: float = 240, step: float = 3,
+                stable_for: float = STABLE_FOR_S) -> None:
+    """Rows reach the stores late, hot VictoriaTraces' trace-index rows 20-40 s after ingest (a count of `*` stood
+    still for 9 s and then grew by 20): wait until every count of `*` (and of span rows for traces) has not changed for
+    `stable_for` seconds, for every signal, form, layer and target. A count that keeps moving fails the run."""
+    t0 = time.time()
     last = None
+    since = t0
     while True:
         cur = snapshot(state, forms, layers)
-        if cur == last and None not in cur.values():
+        now = time.time()
+        if cur != last or None in cur.values():
+            since = now
+        if cur == last and None not in cur.values() and now - since >= stable_for:
             return
-        if time.time() > deadline:
+        if now - t0 > timeout:
             moving = sorted(k for k in cur if last is None or cur[k] != last.get(k))
-            raise Incomplete(f"counts still moving after {timeout:.0f}s: {moving[:6]}")
+            raise Incomplete(f"counts not steady for {stable_for:.0f}s within {timeout:.0f}s: {moving[:6]}")
         last = cur
         time.sleep(step)
 
