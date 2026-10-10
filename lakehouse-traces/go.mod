@@ -1,6 +1,6 @@
 module github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces
 
-go 1.27.1
+go 1.27.2
 
 // VictoriaLogs at commit c945d2949e98 (= VL v1.52.0) — the commit VictoriaTraces
 // v0.12.0 pins in its own go.mod. Derived from VT, never chosen independently;
@@ -73,7 +73,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.46.0 // indirect
 	go.opentelemetry.io/otel/trace v1.46.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
