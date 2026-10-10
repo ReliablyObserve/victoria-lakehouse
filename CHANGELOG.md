@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix 12 advisories govulncheck reports.** The Go standard library of 1.27.1 (`net/http` and its bundled HTTP/2, `crypto/tls`, `mime/multipart`, `html/template`: GO-2026-6599, 6600, 6603, 6605, 6607, 6608, 6609, 6610, 6611, 6612, 6613, 6617) and `x/net` v0.59.0 (the HTTP/2 advisories 6603, 6610, 6611, 6612 and 6617) were reachable from the select, insert and sync HTTP handlers of both binaries. Both go.mod files, `go.work`, the three Dockerfiles and the parity runner image now use Go 1.27.2, and both modules require `x/net` v0.60.0. `govulncheck ./internal/... ./cmd/...` reports no vulnerabilities in either module. Parquet data is unchanged.
+- **Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix 12 advisories govulncheck reports.** The Go standard library of 1.27.1 (`net/http` and its bundled HTTP/2, `crypto/tls`, `mime/multipart`, `html/template`: GO-2026-6599, 6600, 6603, 6605, 6607, 6608, 6609, 6610, 6611, 6612, 6613, 6617) and `x/net` v0.59.0 (the HTTP/2 advisories 6603, 6610, 6611, 6612 and 6617) were reachable from the select, insert and sync HTTP handlers of both binaries. Both go.mod files, `go.work`, the three Dockerfiles and the parity runner image now use Go 1.27.2, and both modules require `x/net` v0.60.0. `govulncheck ./internal/... ./cmd/...` reports no vulnerabilities in either module. Parquet data is unchanged. The CI `gosec` step builds gosec with the latest `golang.org/x/tools`: gosec v2.29.0 ships x/tools v0.49.0, which cannot read the export data version 5 that Go 1.27.2 writes.
 
 ## [0.146.9] - 2026-10-08
 
