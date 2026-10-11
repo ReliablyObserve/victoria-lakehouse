@@ -86,6 +86,18 @@ def q(v):
     return json.dumps(v, ensure_ascii=True)
 
 
+# The field_names cells are exact because of the parity lock that compares the
+# rows' answer with hot VictoriaLogs/VictoriaTraces in every layer; an exact
+# field_names row names it (a differ row has nothing to name).
+FIELD_NAMES_LOCK = "tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers"
+
+
+def refs_for(endpoint, exact):
+    if exact and endpoint.endswith("field_names"):
+        return 'refs: { doc: "docs/perf/field-metadata-cells.md", tests: [%s] }' % q(FIELD_NAMES_LOCK)
+    return 'refs: { doc: "docs/perf/field-metadata-cells.md" }'
+
+
 def row_for(cell, recs, at, shape_recs=None):
     """shape_recs: every record of the cell's shape across S3 latencies — the
     counters are held per shape (the gate compares a run at any latency), so
@@ -113,7 +125,7 @@ def row_for(cell, recs, at, shape_recs=None):
               f"upstream: {{ route: {q(route)} }}",
               f"request: {{ method: \"GET\", path: {q(route)}, params: {{ {params_s} }} }}",
               'compare: { type: "values-with-hits", options: { hits_tolerance: "0" } }',
-              'layers: ["perf"]', "pending: true", 'refs: { doc: "docs/perf/field-metadata-cells.md" }']
+              'layers: ["perf"]', "pending: true", refs_for(p["ep"], exact)]
     perf = [f"cell: {q(cell)}"]
     if exact:
         perf.append(f"budget: {{ p50_ms: {s['p50'] / 1e6:.3f}, p90_ms: {max(s['p90'], s['p50']) / 1e6:.3f}, valid: \"{s['exact']}/{s['n']}\" }}")
