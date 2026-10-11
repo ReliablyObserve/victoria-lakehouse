@@ -50,7 +50,12 @@ func TestIsRetryable_APIErrors(t *testing.T) {
 }
 
 func TestRetryS3_CancelDuringBackoff(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// The backoff after attempt i is drawn uniformly from [0, 100 ms << i), so a 4th
+	// call needs the first three waits to sum to less than the timeout: with 2 ms that
+	// is 2^3 / 6 / (100 x 200 x 400) = 1.7e-7 per run (50 ms was 0.26 %, which failed
+	// CI). A shorter window can only lower the number of calls, so a slow runner
+	// cannot make this worse.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Millisecond)
 	defer cancel()
 
 	calls := 0
