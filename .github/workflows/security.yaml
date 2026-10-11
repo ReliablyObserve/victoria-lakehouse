@@ -85,8 +85,17 @@ jobs:
 
       - name: Run gosec
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -exclude=G110,G115,G304,G401,G501,G705 ./internal/... ./cmd/...
+          # gosec v2.29.0 is built with golang.org/x/tools v0.49.0, which reads export
+          # data up to version 4. Go 1.27.2 writes version 5 (go.dev/issue/81188), so the
+          # released binary cannot import the standard library: build it with the latest
+          # x/tools instead. Drop this once a gosec release requires x/tools >= v0.50.0.
+          gosec_dir="$RUNNER_TEMP/gosec-build"
+          mkdir -p "$gosec_dir"
+          (cd "$gosec_dir" \
+            && go mod init gosecbuild \
+            && go get github.com/securego/gosec/v2/cmd/gosec@latest golang.org/x/tools@latest \
+            && go build -o "$gosec_dir/gosec" github.com/securego/gosec/v2/cmd/gosec)
+          "$gosec_dir/gosec" -exclude=G110,G115,G304,G401,G501,G705 ./internal/... ./cmd/...
 
   trivy:
     runs-on: ubuntu-latest
