@@ -139,6 +139,11 @@ func (s *Storage) serveBufferView(ctx context.Context, v *bufferView, startNs, e
 		for _, id := range v.tenantIDs(ctx, tenantIDs, startNs, endNs) {
 			qBuf := q.CloneWithTimeFilter(q.GetTimestamp(), startNs, endNs)
 			qBuf.DropAllPipes()
+			if storage.IsFieldNamesCounter(ctx) {
+				if all := storage.FieldNamesBufferQuery(q, startNs, endNs); all != nil {
+					qBuf = all
+				}
+			}
 			qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, qBuf, false, nil)
 			write := sink.forTenant(id)
 			if storage.IsFieldNamesCounter(ctx) {

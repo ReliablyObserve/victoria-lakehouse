@@ -7,6 +7,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // neededFieldsKey carries the query's needed-field list down to queryFile.
@@ -262,6 +263,9 @@ func stripTimeRange(filterPart string) string {
 func withReadContext(ctx context.Context, q *logstorage.Query, needed []string, filter *logstorage.Filter, queryStr string, tss []tombstone) context.Context {
 	ctx = withNeededFields(ctx, withTombstoneFields(needed, tss))
 	ctx = withRowFilter(ctx, filter != nil || len(tss) > 0)
-	ctx = withNoFooterBloom(ctx, FilterContainsNotOr(filter) || strings.Contains(queryStr, " if ("))
+	// A field_names count lists the columns of every block of a stream, so no
+	// object or row group may be skipped for the row filter's sake: a block with
+	// no matching row still contributes its columns.
+	ctx = withNoFooterBloom(ctx, FilterContainsNotOr(filter) || strings.Contains(queryStr, " if (") || storage.IsFieldNamesCounter(ctx))
 	return withReadAll(ctx, logstorage.QueryHasPipes(q) && containsWildcard(needed))
 }

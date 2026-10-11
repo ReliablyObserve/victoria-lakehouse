@@ -6,8 +6,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 type fieldNamesQueryKey struct{}
@@ -24,11 +29,25 @@ type fieldNamesCounterKey struct{}
 
 // IsFieldNamesCounter reports whether the field_names enumeration is counted by
 // fieldNamesCounter, which wants the insert buffer's blocks marked
-// (MarkFieldNamesBufferBlock); a query with pipes runs upstream's pipe instead
-// and must see no extra column.
+// (MarkFieldNamesBufferBlock) and every block's columns observed before the row
+// filter runs (ObserveFieldNamesBlock); a query with pipes runs upstream's pipe
+// instead and must see no extra column.
 func IsFieldNamesCounter(ctx context.Context) bool {
-	v, _ := ctx.Value(fieldNamesCounterKey{}).(bool)
-	return v
+	c, _ := ctx.Value(fieldNamesCounterKey{}).(*fieldNamesCounter)
+	return c != nil
+}
+
+// ObserveFieldNamesBlock tells a field_names counting read the columns of a block
+// BEFORE the query's row filter drops its non-matching rows. A stream's blocks
+// are one block on hot storage (once merged), so a column carried by the rows of
+// one object that the filter does not select still belongs to the stream's
+// column set and is credited with the stream's matching rows. It credits no row:
+// the rows that pass the filter reach the counter through the read's write
+// function. No effect on any other read.
+func ObserveFieldNamesBlock(ctx context.Context, db *logstorage.DataBlock) {
+	if c, _ := ctx.Value(fieldNamesCounterKey{}).(*fieldNamesCounter); c != nil {
+		c.observe(db)
+	}
 }
 
 // IsFieldNamesQuery reports whether the read answers a field_names enumeration.
@@ -53,7 +72,7 @@ func IsFieldNamesQuery(ctx context.Context) bool {
 func FieldNamesViaQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, read func(context.Context, []logstorage.TenantID, *logstorage.Query, logstorage.WriteDataBlockFunc) error) ([]logstorage.ValueWithHits, error) {
 	if !logstorage.QueryHasPipes(q) && !logstorage.QueryHasFilterSubqueries(q) {
 		c := newFieldNamesCounter(fieldNamesStreamCap)
-		rctx := context.WithValue(WithFieldNamesQuery(WithAllFieldsHint(ctx)), fieldNamesCounterKey{}, true)
+		rctx := context.WithValue(WithFieldNamesQuery(WithAllFieldsHint(ctx)), fieldNamesCounterKey{}, c)
 		if err := read(rctx, tenantIDs, q, c.add); err != nil {
 			return nil, err
 		}
@@ -112,6 +131,22 @@ func MarkFieldNamesBufferBlock(db *logstorage.DataBlock) *logstorage.DataBlock {
 	return out
 }
 
+// FieldNamesBufferQuery is the query the insert buffer's engine runs for a
+// field_names count of q over [startNs, endNs]: every row of the window, with no
+// row filter. The engine would otherwise drop the rows q's filter rejects before
+// the counter sees their blocks, and a block with no matching row still
+// contributes its columns (see ObserveFieldNamesBlock); RunQuery applies q's
+// filter to the rows afterwards, as it does for objects. It returns nil when the
+// query cannot be built, and the caller keeps q.
+func FieldNamesBufferQuery(q *logstorage.Query, startNs, endNs int64) *logstorage.Query {
+	all, err := logstorage.ParseQueryAtTimestamp("*", q.GetTimestamp())
+	if err != nil {
+		return nil
+	}
+	all.AddTimeFilter(startNs, endNs)
+	return all
+}
+
 // MarkFieldNamesBufferWriter wraps write so every block it receives is marked.
 func MarkFieldNamesBufferWriter(write logstorage.WriteDataBlockFunc) logstorage.WriteDataBlockFunc {
 	return func(worker uint, db *logstorage.DataBlock) { write(worker, MarkFieldNamesBufferBlock(db)) }
@@ -121,6 +156,12 @@ func MarkFieldNamesBufferWriter(write logstorage.WriteDataBlockFunc) logstorage.
 // bytes each at 40 columns); past it a block is credited on its own.
 var fieldNamesStreamCap = 1 << 18
 
+// fieldNamesCapWarnEvery is the least time between two warnings that the stream
+// cap tripped.
+const fieldNamesCapWarnEvery = 30 * time.Second
+
+var fieldNamesCapWarnedAt atomic.Int64 // unix nanoseconds of the last warning
+
 // fieldNamesCounter is upstream's field_names rule over a stream-shaped input:
 // a field is credited with the matching rows of every block that lists it.
 // Upstream stores a stream in few large blocks, while Parquet objects hold the
@@ -129,11 +170,18 @@ var fieldNamesStreamCap = 1 << 18
 // on the object layout: a field that one span of a stream carries would credit
 // that stream's rows in one object and not in the next. The counter therefore
 // unions the columns of all blocks of a stream (_stream_id, else _stream) within
-// one UTC day (upstream's partition) and
-// credits the field with all the stream's matching rows, which is what a block
-// holding the whole stream gives. Past fieldNamesStreamCap distinct streams it
-// credits a block on its own, upstream's exact per-block rule, so its memory
-// stays bounded.
+// one UTC day (upstream's partition) and credits the field with all the stream's
+// matching rows, which is what a block holding the whole stream gives. The union
+// covers the blocks BEFORE the row filter (observe), so a block with no matching
+// row still contributes its columns, and the credit counts only the rows the
+// filter kept (add). A name nobody credited is not listed. Past
+// fieldNamesStreamCap distinct streams it credits a block on its own, upstream's
+// exact per-block rule, so its memory stays bounded (the cap tripping is counted
+// in lakehouse_field_names_stream_cap_total).
+//
+// Exact against hot VL/VT for a stream that fits one hot block (about 2 MiB of
+// rows a day); a larger stream is several blocks there, and the counter still
+// treats the stream-day as one.
 type fieldNamesCounter struct {
 	mu      sync.Mutex
 	cap     int
@@ -141,6 +189,7 @@ type fieldNamesCounter struct {
 	names   []string
 	streams map[string]*streamColumns
 	blocks  map[string]uint64 // per-block credit past the cap
+	capHit  bool
 }
 
 type streamColumns struct {
@@ -152,31 +201,56 @@ func newFieldNamesCounter(streamCap int) *fieldNamesCounter {
 	return &fieldNamesCounter{cap: streamCap, ids: make(map[string]int), streams: make(map[string]*streamColumns), blocks: make(map[string]uint64)}
 }
 
+// blockKey is the stream-day (and layer) a block belongs to, with the block's
+// columns minus the layer marker.
+func blockKey(cols []logstorage.BlockColumn) (string, []logstorage.BlockColumn) {
+	key := streamKeyOf(cols) + "|" + utcDayOf(cols)
+	if !hasLayerColumn(cols) {
+		return "o" + key, cols
+	}
+	kept := make([]logstorage.BlockColumn, 0, len(cols))
+	for _, col := range cols {
+		if col.Name != fieldNamesLayerColumn {
+			kept = append(kept, col)
+		}
+	}
+	return "b" + key, kept
+}
+
+// observe unions the columns of a block into its stream-day without crediting a
+// row. A stream-day the cap has no room for is left to add.
+func (c *fieldNamesCounter) observe(db *logstorage.DataBlock) {
+	if db == nil || db.RowsCount() == 0 {
+		return
+	}
+	key, cols := blockKey(db.GetColumns(false))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.streams[key]
+	if st == nil {
+		if len(c.streams) >= c.cap {
+			return
+		}
+		st = &streamColumns{}
+		c.streams[key] = st
+	}
+	c.unionColumns(st, cols)
+}
+
+// add credits the rows of a block the row filter kept, and unions its columns.
 func (c *fieldNamesCounter) add(_ uint, db *logstorage.DataBlock) {
 	if db == nil || db.RowsCount() == 0 {
 		return
 	}
-	cols := db.GetColumns(false)
-	key := streamKeyOf(cols) + "|" + utcDayOf(cols)
+	key, cols := blockKey(db.GetColumns(false))
 	n := uint64(db.RowsCount())
-	if hasLayerColumn(cols) {
-		key = "b" + key
-		kept := make([]logstorage.BlockColumn, 0, len(cols))
-		for _, col := range cols {
-			if col.Name != fieldNamesLayerColumn {
-				kept = append(kept, col)
-			}
-		}
-		cols = kept
-	} else {
-		key = "o" + key
-	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st := c.streams[key]
 	if st == nil {
 		if len(c.streams) >= c.cap {
+			c.noteCapHit()
 			for _, col := range cols {
 				name := col.Name
 				if name == "" {
@@ -193,6 +267,11 @@ func (c *fieldNamesCounter) add(_ uint, db *logstorage.DataBlock) {
 		c.streams[key] = st
 	}
 	st.rows += n
+	c.unionColumns(st, cols)
+}
+
+// unionColumns adds the columns to the stream's set. c.mu is held.
+func (c *fieldNamesCounter) unionColumns(st *streamColumns, cols []logstorage.BlockColumn) {
 	for _, col := range cols {
 		name := col.Name
 		if name == "" {
@@ -214,6 +293,23 @@ func (c *fieldNamesCounter) add(_ uint, db *logstorage.DataBlock) {
 	}
 }
 
+// noteCapHit counts a block credited on its own because the stream cap is full,
+// and warns (at most every fieldNamesCapWarnEvery) that the answer has become
+// per-block for the streams past it. c.mu is held.
+func (c *fieldNamesCounter) noteCapHit() {
+	metrics.FieldNamesStreamCap.Inc()
+	if c.capHit {
+		return
+	}
+	c.capHit = true
+	now := time.Now().UnixNano()
+	last := fieldNamesCapWarnedAt.Load()
+	if now-last < int64(fieldNamesCapWarnEvery) || !fieldNamesCapWarnedAt.CompareAndSwap(last, now) {
+		return
+	}
+	logger.Warnf("field_names: more than %d streams in the window; the streams past the limit are counted per block, so their field hits may be lower than hot storage's (see lakehouse_field_names_stream_cap_total)", c.cap)
+}
+
 func (c *fieldNamesCounter) result() []logstorage.ValueWithHits {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -222,6 +318,9 @@ func (c *fieldNamesCounter) result() []logstorage.ValueWithHits {
 		hits[name] += n
 	}
 	for _, st := range c.streams {
+		if st.rows == 0 {
+			continue // observed, but no row of it passed the filter
+		}
 		for w, word := range st.cols {
 			for ; word != 0; word &= word - 1 {
 				hits[c.names[w*64+bits.TrailingZeros64(word)]] += st.rows

@@ -149,6 +149,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// Pre-filter runs in each worker goroutine without locks.
 	// Only the final writeBlock call is serialized.
 	var writeBlockPanic atomic.Bool
+	counting := storage.IsFieldNamesCounter(ctx)
 	preFilter := func(db *logstorage.DataBlock, tss []tombstone) *logstorage.DataBlock {
 		if writeBlockPanic.Load() {
 			return nil
@@ -163,6 +164,23 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				liveBytes.Load(), maxLiveBytes)
 			cancel()
 			return nil
+		}
+		if counting {
+			// A field_names count unions the columns of every block of a stream
+			// before the row filter runs: a block none of whose rows match still
+			// belongs to the stream's column set (see storage.ObserveFieldNamesBlock).
+			if len(tss) > 0 {
+				db = suppressTombstonedRows(db, tss)
+				if db == nil || db.RowsCount() == 0 {
+					return nil
+				}
+			}
+			storage.ObserveFieldNamesBlock(ctx, db)
+			db = filterDataBlock(db, filter)
+			if db == nil || db.RowsCount() == 0 {
+				return nil
+			}
+			return db
 		}
 		db = filterDataBlock(db, filter)
 		if db == nil || db.RowsCount() == 0 {
@@ -248,11 +266,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// carries no row the tombstone filter could drop, so deleted buffered
 		// spans would be counted; the raw-row path below filters them.
 		// Twin of internal/storage/parquets3/storage_query.go.
-		pureWrite := filteredWriteBlock
-		if storage.IsFieldNamesCounter(ctx) {
-			pureWrite = storage.MarkFieldNamesBufferWriter(pureWrite)
-		}
-		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, pureWrite) {
+		// (A field_names count needs no layer mark here: nothing but the buffer
+		// is read, so there is no other layer to keep apart.)
+		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
 		}
 		// No cold-tier files cover the requested window, but the in-flight
@@ -313,7 +329,9 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		files = remaining
 	}
 
-	files = s.preFilterFiles(files, queryStr)
+	if !counting { // a field_names count must not skip an object for the row filter (see withReadContext)
+		files = s.preFilterFiles(files, queryStr)
+	}
 
 	if len(files) == 0 {
 		s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
@@ -911,6 +929,13 @@ func (s *Storage) servePureBufferQuery(ctx context.Context, view *bufferView, q 
 	if logstorage.QueryHasPipes(q) {
 		qBuf = logstorage.CloneWithoutPipes(q)
 	}
+	if storage.IsFieldNamesCounter(ctx) {
+		// The engine must not drop the rows the filter rejects before their blocks'
+		// columns are known (see storage.FieldNamesBufferQuery).
+		if all := storage.FieldNamesBufferQuery(q, startNs, endNs); all != nil {
+			qBuf = all
+		}
+	}
 	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, view.tenantIDs(ctx, tenantIDs, startNs, endNs), qBuf, false, nil)
 	if err := view.local.RunQuery(qctx, writeBlock); err != nil {
 		logger.Warnf("pure-buffer fast path failed, falling back to bridge: %s", err)
@@ -1129,6 +1154,9 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	tsIdx := findColumnIndex(f.Root(), s.registry.TimestampColumn())
 	bloomChecks := resolveBloomCheckIndices(f, s.buildBloomChecksFor(queryStr, schema.FooterTraceIDHex(f.Metadata())))
 	pdf := resolvePushDownIndices(f, buildPushDownFilter(stripPipeOutsideQuotes(queryStr), s.registry))
+	if storage.IsFieldNamesCounter(ctx) {
+		pdf = nil // no row group is skipped for the row filter's sake (see withReadContext)
+	}
 
 	// Footer-bloom row-group skip is SOUND ONLY when the file body is fully
 	// resident. On the projected range-read path (projectedCols != nil →

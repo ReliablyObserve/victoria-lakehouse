@@ -188,10 +188,10 @@ func TestGetStreams_TombstonedRowsAreNotEnumerated(t *testing.T) {
 	}
 }
 
-// TestFieldNames_HitsAreUnknownUnderATombstone (name kept: registry-linked) pins
-// the hit counts under a tombstone: field_names reads the rows, so a deleted row
-// is not counted, and the counts are exact rather than unknown.
-func TestFieldNames_HitsAreUnknownUnderATombstone(t *testing.T) {
+// TestFieldNames_HitsExcludeTombstonedRows pins the hit counts under a
+// tombstone: field_names reads the rows, so a deleted row is not counted, and
+// the counts are exact rather than unknown.
+func TestFieldNames_HitsExcludeTombstonedRows(t *testing.T) {
 	f := newFieldsTombstoneFixture(t, false)
 	q := mustParseQueryWithTime(t, "*", f.startNs, f.endNs)
 

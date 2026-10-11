@@ -561,11 +561,11 @@ func TestInteg_PmetaCatalog_LabelsParityWithLabelIndex(t *testing.T) {
 	}
 }
 
-// TestInteg_PmetaFlip_FieldNamesAndBloom covers the two read-flips added on top of
-// the file-meta flip: (1) labels field_names served from the catalog, and (2) the
-// bloom flip keeping a file whose bloom-indexed value is present (the
-// no-false-negative safety property — the facet path must never exclude a file that
-// actually holds the queried value).
+// TestInteg_PmetaFlip_FieldNamesAndBloom covers the bloom read-flip (the name
+// predates the field_names flip, which is gone: field_names reads the rows of
+// the window, see storage.FieldNamesViaQuery): the bloom flip keeps a file
+// whose bloom-indexed value is present (the no-false-negative safety property —
+// the facet path must never exclude a file that actually holds the queried value).
 func TestInteg_PmetaFlip_FieldNamesAndBloom(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
@@ -587,7 +587,7 @@ func TestInteg_PmetaFlip_FieldNamesAndBloom(t *testing.T) {
 		t.Fatal("no file after flush")
 	}
 	fi := files[0]
-	// (1) bloom flip: a file whose bloom-indexed value IS present must never be
+	// A file whose bloom-indexed value IS present must never be
 	// excluded by the facet path (blooms have no false negatives).
 	if s.checkFileBloom(context.Background(), fi, "service.name:api-gateway") {
 		t.Fatal("checkFileBloom wrongly excluded a file containing service.name=api-gateway")

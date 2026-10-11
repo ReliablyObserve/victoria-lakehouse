@@ -109,18 +109,21 @@ func TestAccumulateFieldHits_ScalarAfterMapsIsIndexedByLeaf(t *testing.T) {
 	if all["level"] != 3 || all["service.name"] != 3 || all["_msg"] != 3 {
 		t.Errorf("level, service.name and _msg are set on all 3 rows, got %v", all)
 	}
-	// A map read through another map's chunk would credit the wrong rows: rk is
-	// set on two rows, lk on three, but the block lists a column for all rows of
-	// its stream, so the proof is that the keys are fields at all.
-	if _, ok := all["rk"]; !ok {
-		t.Errorf("resource attribute rk is not listed: %v", all)
-	}
-	if _, ok := all["lk"]; !ok {
-		t.Errorf("log attribute lk is not listed: %v", all)
+	// The rows carry no stream column, so they are one block: a map key some row
+	// has is listed and credited with every row of the block. A map read through
+	// another map's chunk would list the wrong keys or credit another number of
+	// rows (rk is set on two rows, lk on three, but both credit all three).
+	if all["rk"] != 3 || all["lk"] != 3 {
+		t.Errorf("rk/lk hits = %d/%d, want 3/3 (resource and log attribute keys of the one block): %v", all["rk"], all["lk"], all)
 	}
 	errRow := hits("level:=ERROR")
 	if errRow["_msg"] != 1 || errRow["service.name"] != 1 {
 		t.Errorf("level:=ERROR must match the one ERROR row, got %v", errRow)
+	}
+	// The ERROR row carries both keys, and the block lists them: credited with
+	// the one matching row each.
+	if errRow["rk"] != 1 || errRow["lk"] != 1 {
+		t.Errorf("level:=ERROR rk/lk hits = %d/%d, want 1/1: %v", errRow["rk"], errRow["lk"], errRow)
 	}
 	svcB := hits("service.name:=svc-b")
 	if svcB["_msg"] != 1 {
