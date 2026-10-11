@@ -34,13 +34,33 @@ KIND_LINE=""
 GATE_TOUCHED=""
 approvers_file="$REPORT_DIR/approvers"
 
+# Everything an author controls (file names, row ids, test names, YAML values) is escaped for the
+# place it lands in: Markdown for the report, workflow-command syntax for annotations. Nothing the
+# author wrote reaches either raw. (Paths come from git, which quotes CR/LF itself; the control
+# characters are dropped here as well.)
+#
+# md_esc <text>: one Markdown-safe line: & < > | and the backtick are neutralised, CR/LF/TAB
+# become spaces and other control characters are dropped.
+md_esc() {
+  printf '%s' "$1" | tr '\r\n\t' '   ' | tr -d '\000-\010\013-\037\177' \
+    | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e "s/\`/'/g" -e 's/|/\\|/g'
+}
+# wf_prop <text>: a workflow-command property value (`file=<prop>`): % : , escaped.
+wf_prop() {
+  printf '%s' "$1" | tr -d '\000-\037\177' | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's/,/%2C/g'
+}
+# plain_list: stdin lines as inert log lines. The runner trims leading spaces before it looks for a
+# `::` command, so a path named `::error::x` must not start a line: every line gets a "- " prefix.
+plain_list() { tr -d '\000-\010\013-\037\177' | sed 's/^/  - /'; }
+
 # rule_row <rule> <PASS|FAIL|n/a> <detail>
-rule_row() { printf '| %s | %s | %s |\n' "$1" "$2" "${3//|/\\|}" >> "$ROWS_FILE"; }
+rule_row() { printf '| %s | %s | %s |\n' "$1" "$2" "$(md_esc "$3")" >> "$ROWS_FILE"; }
 # hard_fail <rule> <detail> <how to fix>
 hard_fail() { HARD_FAIL=1; rule_row "$1" FAIL "$2"; printf -- '- **%s**: %s\n' "$1" "$3" >> "$FIXES_FILE"; }
 
 render_report() {
   local verdict=$1 rules_md="$REPORT_DIR/rules.md" fixes_md="$REPORT_DIR/fixes.md" details_md="$REPORT_DIR/details.md"
+  if [[ "$verdict" == PASS ]]; then verdict="PASS$(review_suffix)"; fi
   echo "## Registry gate: $verdict"
   echo
   [[ -z "$KIND_LINE" ]] || { echo "$KIND_LINE"; echo; }
@@ -59,11 +79,48 @@ render_report() {
   if [[ -n "$GATE_TOUCHED" ]]; then
     echo "### Gate files changed (informational, covered by the required review)"
     echo
-    echo "$GATE_TOUCHED" | sed 's/^/- `/; s/$/`/'
+    while IFS= read -r g; do
+      # shellcheck disable=SC2016  # the backticks are Markdown, not a command substitution
+      [[ -z "$g" ]] || printf -- '- `%s`\n' "$(md_esc "$g")"
+    done <<< "$GATE_TOUCHED"
     echo
   fi
   [[ -f "$details_md" ]] && cat "$details_md"
-  echo "Run locally: \`make registry-gate\` (same script, same base)."
+  echo "Preview locally: \`make registry-gate\` (your working tree's copy of this script; CI judges with the base branch's)."
+}
+
+# review_suffix: " - N lock-affecting files and M gate files need review (listed below)", or nothing.
+# A bare PASS would hide that a person has to look: the pull request's required approval is the control
+# for these files.
+review_suffix() {
+  local n_lock=0 n_gate=0 parts=()
+  [[ -f "$REPORT_DIR/review-count" ]] && n_lock=$(tr -dc '0-9' < "$REPORT_DIR/review-count")
+  [[ -z "$GATE_TOUCHED" ]] || n_gate=$(grep -c . <<< "$GATE_TOUCHED")
+  n_lock=${n_lock:-0}
+  [[ $n_lock -eq 0 ]] || parts+=("$n_lock lock-affecting file$([[ $n_lock -eq 1 ]] || echo s)")
+  [[ $n_gate -eq 0 ]] || parts+=("$n_gate gate file$([[ $n_gate -eq 1 ]] || echo s)")
+  [[ ${#parts[@]} -gt 0 ]] || return 0
+  local joined=${parts[0]} total=$((n_lock + n_gate))
+  [[ ${#parts[@]} -lt 2 ]] || joined="${parts[0]} and ${parts[1]}"
+  printf ' - %s %s review (listed below)' "$joined" "$([[ $total -eq 1 ]] && echo needs || echo need)"
+}
+
+# gate_annotations: one inline `::warning file=...::` per changed gate file (at most 10, then one
+# "... and N more"), so the Files tab of the pull request shows them. Lock-affecting files get the same
+# from testlinks.
+gate_annotations() {
+  local n=0 total
+  [[ -n "$GATE_TOUCHED" ]] || return 0
+  total=$(grep -c . <<< "$GATE_TOUCHED")
+  while IFS= read -r g; do
+    [[ -n "$g" ]] || continue
+    if [[ $n -eq 10 ]]; then
+      echo "::warning::... and $((total - 10)) more gate files (see the job summary)"
+      break
+    fi
+    echo "::warning file=$(wf_prop "$g")::gate file: the owner's approval is the control"
+    n=$((n + 1))
+  done <<< "$GATE_TOUCHED"
 }
 
 finish() {
@@ -144,7 +201,7 @@ touches_routes=$(printf '%s\n%s\n%s\n' "$touches_direct" "$touches_handle_calls"
 touches_registry=$(echo "$changed" | grep -E '^tests/conformance/(registry/rows/|inventory\.generated\.yaml)' || true)
 if [[ -n "$touches_routes" && -z "$touches_registry" ]]; then
   echo "::error::this PR changes route/handler/upstream files but not tests/conformance/registry/rows/ — add or update the rows (see tests/conformance/README.md)"
-  echo "$touches_routes"
+  plain_list <<< "$touches_routes"
   hard_fail "Routes, handlers, pins" "changes $(echo "$touches_routes" | head -3 | paste -s -d ' ' -) but no registry row" \
     "add or update the rows under tests/conformance/registry/rows/ (tests/conformance/README.md)"
 elif [[ -n "$touches_routes" ]]; then
@@ -157,7 +214,7 @@ touches_extractors=$(echo "$changed" | grep -E '^tests/conformance/inventory/[^/
 touches_generated_inventory=$(echo "$changed" | grep -E '^tests/conformance/inventory\.generated\.yaml$' || true)
 if [[ -n "$touches_extractors" && -z "$touches_generated_inventory" ]]; then
   echo "::error::this PR changes tests/conformance/inventory/ extractors but not tests/conformance/inventory.generated.yaml — run 'make conformance-gen' and commit the result"
-  echo "$touches_extractors"
+  plain_list <<< "$touches_extractors"
   hard_fail "Inventory extractors" "extractors changed, inventory.generated.yaml not regenerated" \
     "run 'make conformance-gen' and commit the result"
 elif [[ -n "$touches_extractors" ]]; then
@@ -284,7 +341,7 @@ touches_features=$(echo "$changed" | grep -E '^tests/conformance/registry/featur
 
 if [[ -n "$feature_signals" && -z "$touches_features" ]]; then
   echo "::error::this PR adds or extends a Lakehouse feature but does not touch tests/conformance/registry/features/ — every shipped feature must be in the catalog with its rows, tests and docs"
-  echo "$feature_signals"
+  plain_list <<< "$feature_signals"
   echo "steps:"
   echo "  1. add or update the feature in tests/conformance/registry/features/<area>.yaml"
   echo "     (id, title, status, area, surfaces, rows, tests, docs, highlight, description, changelog_bullets)"
@@ -319,21 +376,28 @@ fi
 # covers (edits of lock code, of the gate's own files) is listed in the report, not
 # failed.
 #
-# Exempt kinds, decided first and only from the content of the diff (pr_classify.py):
+# Exempt kinds, decided first and only from the content of the diff, read as bytes (pr_classify.py):
 #   release-metadata   exact release-metadata shape, by the release bot or an approver;
 #                      Rules 1-3 skipped
-#   dependency-only    go.mod `require` version lines outside VictoriaMetrics/*, go.sum,
-#                      requirements*.txt; build(deps) commits; Rules 1-3 skipped
+#   dependency-only    go.mod `require` versions outside the storage-critical modules, go.sum
+#                      hash lines, requirements*.txt package lines; no title or commit subject is
+#                      read; Rule 1 is waived, Rules 2 and 3 still run
 #   toolchain-only     a Go toolchain bump: go/toolchain directives, dependency versions,
 #                      golang image tags, plus docs/CI/scripts; Rule 1 is waived, Rules 2
 #                      and 3 still run
 # Docs-only and CI-only PRs are not product-changing, so Rule 1 passes them by
 # classification.
-# Env: PR_TITLE, PR_AUTHOR (optional; the dependency-only and release-metadata kinds).
+# Env: PR_AUTHOR (optional; the release-metadata kind). PR_TITLE is accepted and ignored.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# The approvers come from the merge base, so a PR cannot approve itself.
-git show "$MERGE_BASE:.github/registry-exempt-approvers" > "$approvers_file" 2>/dev/null || : > "$approvers_file"
-CLASSIFY=$(python3 "$HERE/pr_classify.py" --base "$MERGE_BASE" --head "$HEADREV" --title "${PR_TITLE:-}" \
+# The release-metadata approvers come from the merge base, so a PR cannot approve itself. The file
+# was named registry-exempt-approvers before there was nothing left to exempt: the new name wins
+# when the merge base has it, the old one is read otherwise (an older merge base), and the old file
+# stays in the tree for one release so such a base still resolves.
+approvers_src=.github/release-metadata-approvers
+git cat-file -e "$MERGE_BASE:$approvers_src" 2>/dev/null || approvers_src=.github/registry-exempt-approvers
+git show "$MERGE_BASE:$approvers_src" > "$approvers_file" 2>/dev/null || : > "$approvers_file"
+# No title and no commit subject is passed: the kind is decided from the diff alone.
+CLASSIFY=$(python3 "$HERE/pr_classify.py" --base "$MERGE_BASE" --head "$HEADREV" \
   --author "${PR_AUTHOR:-}" --approvers "$approvers_file") || { echo "::error::pr_classify.py failed"; exit 1; }
 class_field() { sed -n "s/^$1=//p" <<< "$CLASSIFY" | head -1; }
 exempt_kind=$(class_field exempt)
@@ -342,22 +406,24 @@ product_reason=$(class_field reason)
 exempt_detail=$(class_field detail)
 GATE_TOUCHED=$(sed -n 's/^gate_file=//p' <<< "$CLASSIFY")
 
+gate_annotations
+
 if [[ "$exempt_kind" != none ]]; then
-  KIND_LINE="PR kind: \`$exempt_kind\` (decided from the diff: $exempt_detail)"
+  KIND_LINE="PR kind: \`$exempt_kind\` (decided from the diff: $(md_esc "$exempt_detail"))"
 elif [[ "$is_product" == 1 ]]; then
-  KIND_LINE="PR kind: product change ($product_reason)"
+  KIND_LINE="PR kind: product change ($(md_esc "$product_reason"))"
 else
   KIND_LINE="PR kind: not a product change (tests, docs, CI or tooling only)"
 fi
 
 case "$exempt_kind" in
-release-metadata|dependency-only)
+release-metadata)
   echo "registry coverage gate: skipped ($exempt_kind PR)"
   rule_row "Rules 1-3" n/a "skipped ($exempt_kind PR, verified from the diff)"
   ;;
 *)
-  # Rules 1-3 are decided where the registry is parsed: testlinks. A toolchain-only PR
-  # is not product-changing for Rule 1 (no -product), but Rules 2 and 3 still run.
+  # Rules 1-3 are decided where the registry is parsed: testlinks. A toolchain-only or
+  # dependency-only PR is not product-changing for Rule 1 (no -product), but Rules 2 and 3 still run.
   product_args=()
   [[ "$is_product" == 1 ]] && product_args=(-product "$product_reason")
   tl_bin=${TESTLINKS_BIN:-}

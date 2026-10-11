@@ -264,15 +264,29 @@ human step. What a reviewer should look at but the gate cannot judge (edits of l
 gate's own files) is listed in the report, not failed. What can be judged from content (Rules 1-3)
 is hard and has no bypass.
 
-**Run it before every push:** `make registry-gate` runs the same script against `origin/main` for
-the current `HEAD` (commit first: the gate reads commits, not the working tree), and prints the
-same report. `GATE_BASE=<rev> make registry-gate` compares against another base.
+**Run it before every push:** `make registry-gate` (`scripts/ci/gate_local.sh`) runs the gate script
+against `origin/main` for the current `HEAD` and prints the same report. It is a preview of CI, not the
+same code path, in three ways it says out loud:
+- it runs the gate code of your WORKING TREE, while CI judges a pull request with the gate code of its
+  merge base (so a PR cannot weaken the gate that judges it). When your branch changes gate files, the
+  command prints a notice: CI's verdict will come from main's copy of the gate;
+- it judges `HEAD` only, so uncommitted edits are ignored (a warning lists them): commit first;
+- it fetches `origin/main` first and exits non-zero when it cannot, because a verdict against a stale
+  base is worse than none. `REGISTRY_GATE_OFFLINE=1` judges against the local `origin/main` anyway (with
+  a warning when it was last fetched more than 24h ago).
+`GATE_BASE=<rev> make registry-gate` compares against another base (no fetch).
 
 **One report.** The gate writes one Markdown report to the job summary (`$GITHUB_STEP_SUMMARY`; no
 new token permission) and prints it when run locally: the kind of PR (an exempt kind, product change,
 or not a product change), a PASS / FAIL / n/a row per rule with its detail, for every failure a
 one-line "how to fix", the lock-affecting files and gate files the PR touches (informational), and the
-registry entries the PR adds, changes and removes. `registry-gate` and `registry-gate-base` run the same
+registry entries the PR adds, changes and removes. When files need a person's review the verdict says so
+instead of a bare PASS ("PASS - 3 lock-affecting files and 1 gate file need review (listed below)"), and
+every such file also gets an inline `::warning file=<path>::` annotation (at most 10 per kind, then one
+"... and N more"), which GitHub shows in the pull request's Files tab. Every path, row id and test name
+that reaches the report or a workflow command is escaped first (Markdown: `& < > |` and the backtick;
+workflow commands: `%`, CR, LF, and `:` `,` in a property); a file named ``a`<!--`` or a row id with a
+newline and `::error::` cannot forge report markup or a log command. `registry-gate` and `registry-gate-base` run the same
 script and print the same report. The exit status is nonzero only for a hard failure.
 
 **Where the gate runs, and what it never runs.**
@@ -377,11 +391,18 @@ commit message):
   Which gate checks what: `check_changelog_pr.py` (changelog-check) decides the file set,
   the CHANGELOG shape and the `docs/features.md` naming; `pr_classify.py` (the registry gate)
   reuses those and adds the author, Chart.yaml, README and tag checks.
-- dependency-only PRs: only `go.mod`, `go.sum` and `requirements*.txt`, every commit `build(deps…)`
-  or `chore(deps…)` (at least one commit), and in `go.mod` only `require` version lines change (no
-  `replace`, `go`, `toolchain` or other directive). A bump of a storage-critical module
-  (`github.com/VictoriaMetrics/*`, `github.com/parquet-go/*`, `github.com/aws/*`, quoted or not)
-  is never dependency-only: it needs registry coverage;
+- dependency-only PRs, decided from the content of every changed file and from nothing the author
+  writes (no title, no commit subject): the files are the two modules' `go.mod` / `go.sum` and
+  `requirements*.txt` outside the product trees; in `go.mod` only `require` entries are added, removed
+  or change version (no `replace`, `go`, `toolchain` or other directive); `go.sum` changes only
+  well-formed hash lines of non-critical modules; a requirements file changes only package
+  requirement lines (no URLs, `-r`, `-e`, index options). A bump of a storage-critical module
+  (`github.com/VictoriaMetrics/*`, `github.com/parquet-go/*`, `github.com/aws/*`,
+  `github.com/cespare/xxhash*` and the codec and wire-format modules in
+  `CRITICAL_MODULE_PREFIXES`, quoted or not) is never dependency-only: it needs registry coverage. The
+  kind waives **Rule 1 only**; Rules 2 and 3 still run. (It used to read the commit subjects and the PR
+  title, which the author writes, and to skip Rules 1-3.) `test_pr_classify_critical.py` fails when a
+  module imported by the stream-id, trace-index, schema or Parquet code is missing from that list;
 - `toolchain-only` PRs: a Go toolchain bump such as #491 (Go 1.27.1 to 1.27.2). Every changed file
   must be in this set and its diff must be nothing but versions: `go.mod` and
   `lakehouse-traces/go.mod` (the `go` and `toolchain` directive lines, and the version of `require`
@@ -396,6 +417,25 @@ commit message):
   var, a changed `replace`, a storage-critical module bump, a test, a registry row, a parity lock or
   a gate file in the same PR make it a normal product change. The kind waives **Rule 1 only**: Rules 2
   and 3 still run. (`pr_classify.py`; its tests are `scripts/ci/tests/test_pr_classify_toolchain.py`.)
+  The alpine release in a builder tag (`golang:1.27.2-alpine3.23`) is part of the toolchain: a PR
+  that moves only `alpine3.23` to `alpine3.24` is `toolchain-only` by design (the Go version is
+  unchanged but the builder image is a toolchain input, exactly like the Go tag).
+- **How the files are read (every kind above).** A classifier that reads a file differently from the tool
+  that consumes it can be made to approve a change it never saw. So `pr_classify.py` reads each file as
+  BYTES, decodes it as strict UTF-8 and splits lines only on `\n`, as Docker, Go and git do. Python's
+  text mode and `str.splitlines()` also split on a lone CR and on U+0085, U+2028 and U+2029, which let a
+  build change hide inside a "comment" line (a CR between `# ... per deployment.` and `ARG FIPS=0` in
+  `Dockerfile.logs` made the FIPS argument vanish from the Docker build but not from the classifier; a CR
+  before a `replace` line in `go.mod` dropped the patched VictoriaLogs tree). A covered file whose base
+  or head holds a control byte (CR included, so a CRLF file is never verified), a BOM, one of those
+  separators or invalid UTF-8 is not verified: the PR falls through to the path rules and stays an
+  ordinary product change (it is rejected, never normalised). Every line a kind interprets is matched
+  with ASCII-only character classes (`[0-9]`, `[!-~]`; Python's `\d` matches Arabic-Indic digits, Go's
+  and Docker's do not), and every line that CHANGES in a covered file must be printable ASCII. Unchanged
+  non-ASCII text is fine: `lakehouse-traces/go.mod` and the parity compose file hold an em dash in a
+  comment, and rejecting those files outright would have made the real #491 diff a product change. The Go
+  twin (`GolangImageBumpOnly`) rejects the same bytes and shares the fixture
+  `scripts/ci/tests/testdata/golang_image_cases.json`.
 - docs-only and CI-only PRs (not product-changing).
 Upstream pin and patch changes keep the stricter route rule above.
 
@@ -411,7 +451,8 @@ covers them and a content check cannot judge them:
 - **Gate files:** any file directly under `scripts/ci/`, `.gitattributes`,
   `tests/parity/lock_cells_test.go`, `cmd/testlinks`, `registry/{testlinks,paritygate,lockcode}.go`,
   `.github/workflows/{conformance,registry-gate,registry-gate-base,gate-selftest,parity}.yaml` and
-  `.github/registry-exempt-approvers`. `.github/CODEOWNERS` lists the owner for `.github/`,
+  `.github/release-metadata-approvers` (its deprecated name `.github/registry-exempt-approvers` is
+  still read from a merge base that predates the rename, and is deleted one release later). `.github/CODEOWNERS` lists the owner for `.github/`,
   `scripts/ci/` and `tests/conformance/`. A PR that changes any of them is judged by the merge
   base's copy of the gate, so it cannot loosen its own judge. `tests/parity/lock_cells.txt` is not a
   gate file: a parity fix adds floors freely, and lowering or removing one is a Rule 3 failure.
@@ -420,10 +461,16 @@ covers them and a content check cannot judge them:
 **Gate replay.** `make gate-replay` (`scripts/ci/gate_replay.sh`) replays the gate over recorded pull
 requests, pinned by sha, and over synthetic pull requests built in a scratch clone, and compares each
 verdict and its set of failing rules with `scripts/ci/tests/gate_replay_expected.txt`. It runs in CI
-(`gate-selftest.yaml`) whenever the gate, `scripts/ci/` or `tests/conformance/` change, so a change that
-makes the gate accept what it must reject (or reject what it must accept) fails on real history. To record a
-new case, add a line to the table (the header of the script documents the columns); a fixed gate bug gets
-the pull request that exposed it.
+(`gate-selftest.yaml`) whenever the gate, `scripts/ci/`, `tests/conformance/` or the approvers file
+change, so a change that makes the gate accept what it must reject (or reject what it must accept) fails
+on real history. The table has exactly nine columns (a row with another count is an error; a literal `|`
+in a cell is written `\|`), and for a synthetic case the title column is also the commit subject, so a case
+can wear the title an attacker would choose. The synthetic negatives include the review's smuggles
+(`cr_fips`, `cr_replace_tc`, `cr_replace_dep`, `u2028_replace_dep`, `tc_unidigit`, `init_exit`). Cost
+(measured 2026-10-11 by the independent review; it varies with the runner): judging one large recorded pull request
+took 68 s (#483) and 79 s (#487) locally, one CI replay shard about 1:40, one gate job about 30 s; the gate jobs have a
+10 minute timeout and the replay jobs 40, and a timeout fails the check (closed). To record a new case, add a line to the table (the header of
+the script documents the columns); a fixed gate bug gets the pull request that exposed it.
 
 ### Parity fixes ship locks
 
@@ -466,8 +513,11 @@ helper prints its line without `t.Helper` so go test prefixes it with its own fi
 accepts only that file:line, for the test test2json attributes it to) and carries a per-run random
 nonce (`PARITY_LOCK_NONCE`, generated in the workflow step and passed to the test container). **The nonce is
 not a security control**: any code in the test process can read the variable and print a matching line. It
-only guards against accidental collisions (a stale or copied line). What stops forged cells is the review of lock
-code: the report lists the lock packages' files for the reviewer (below).
+only guards against accidental collisions (a stale or copied line). What stops forged cells is two controls: the
+content rules below (hard Rule 3: no new `init()`, package-level `var` or `TestMain` in a lock package, no new
+`t.Skip` or build constraint in a lock's test file, no lowered floor), and the required approval of the pull
+request, which covers the rest: the report and inline annotations list the lock packages' files for the
+reviewer (below).
 **Lock packages are reported to the reviewer.** A lock package is any directory that holds a lock-referenced test at the
 merge base. In a pure test package (anything under `tests/`: `tests/parity`, `tests/e2e`, ...) a PR that edits or
 deletes ANY existing `.go` file is listed in the report's "Lock-affecting files" section (informational, not a
@@ -477,11 +527,17 @@ or deletion of an existing file of the lock suites' runtime config (`tests/parit
 `image: golang:<version>` line, which changes nothing a lock compares; `deployment/docker/docker-compose-e2e.yml`;
 `deployment/docker/lakehouse-e2e-config.yml`; `cmd/datagen/`). In a product package (`internal/...`,
 `lakehouse-traces/...`, `cmd/...`) only the existing `_test.go` files are gated: product code is what the locks
-verify, so editing it is free. A NEW file is free only if it declares just funcs (tests, fuzz targets,
-benchmarks, helpers), consts and types: in a pure test package that applies to every new `.go` file, in a product
-package to new `_test.go` files (new non-test files there are free). A package-level `var` (its initializer runs
-at load and can repoint shared state), `init()`, `TestMain` or a file that does not parse is listed too. So a
-parity fix adds its tests in a NEW file, which is never listed. A lock a PR adds itself is not protected yet (the merge base decides).
+verify, so editing it is free. **A lock package may not gain load-time code (hard, Rule 3).** A package-level
+`var` (its initializer runs before any test and can repoint shared state), an `init()` or a `TestMain` can
+end the test binary with success (`func init() { if os.Getenv("PARITY_LOCK_NONCE") != "" { os.Exit(0) } }`) and
+silence every lock of the package, so the gate fails a PR that adds one to a file of a lock package: a new
+file, or an existing file whose `init()` count or set of package-level var names grew (a `_` counts per
+occurrence). In a pure test package that applies to every `.go` file, in a product package to `_test.go`
+files (non-test files there are product code and free). Funcs, consts and types are free; moving or removing a
+var is free; editing the value of an existing var (a table) is listed as lock-affecting, not failed. Setup
+belongs in the test function or in a helper func it calls. A new file that declares only funcs, consts and
+types is never listed, so a parity fix adds its tests in a NEW file. A lock a PR adds itself is not protected yet
+(the merge base decides).
 Residual risk of the call-graph helper search (it names the reason a file is lock code, depth 4 inside the
 lock test's own package, product code excluded): it does not follow func values, calls into other packages, or
 chains deeper than 4. The whole-package rule covers the package of every lock test regardless; a helper in a
@@ -513,6 +569,8 @@ and made the toolchain bump #491 unmergeable, with no way to turn it green; it i
   `t.Skip`, `t.SkipNow` or `t.Skipf` call, a lock's test file new under a name the go tool ignores or
   constrains (leading `_` or `.`, a GOOS/GOARCH suffix), or an edited `TestMain` in a lock's package
   (the runtime floor above catches whatever these static checks cannot);
+- adds an `init()` function or a package-level `var` to a file of a lock package (a new file or an
+  existing one), or any `TestMain` change there: load-time code that can silence the locks;
 - lowers or removes a cell floor in `tests/parity/lock_cells.txt`;
 - deletes or moves the allowlist file, or changes the `--allowlist` argument of the parity workflow
   (the allowlist path is read from `.github/workflows/parity.yaml` at both revisions).
@@ -532,6 +590,8 @@ every file directly under `scripts/ci/` are gate files, and a change to an upstr
 is a product change. The parity ratchet runs with `python -I`.
 
 Self-tests: `bash scripts/ci/tests/test_check_registry_touch.sh`,
+`bash scripts/ci/tests/gate_replay_test.sh` (the replay harness against a stub gate),
+`bash scripts/ci/tests/gate_local_test.sh` (`make registry-gate`),
 `bash scripts/ci/tests/test_gate_workflow_emulation.sh` (the workflows' steps in a scratch
 repository: PR code, a planted git hook, an edited gate or bootstrap, and an exported
 `TESTLINKS_BIN` never run) and `python -m unittest discover -s scripts/ci/tests`.

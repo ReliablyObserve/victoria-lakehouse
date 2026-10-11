@@ -68,6 +68,15 @@ class ReleaseMetadataShape(unittest.TestCase):
 
     GOOD = {"CHANGELOG.md": CL_HEAD, "charts/victoria-lakehouse/Chart.yaml": CHART_HEAD, "docs/features.md": FEATURES_HEAD}
 
+    def test_a_cr_line_break_in_a_metadata_file_is_not_release_metadata(self):
+        # the same bytes a CR-translating reader sees as an LF: not read, so not verified
+        for name, text in (("charts/victoria-lakehouse/Chart.yaml", CHART_HEAD.replace("\n", "\r")),
+                           ("CHANGELOG.md", CL_HEAD.replace("\n\n", "\n\r")),
+                           ("docs/features.md", FEATURES_HEAD.replace("\n", "\u2028"))):
+            with self.subTest(name):
+                git(self.d, "reset", "-q", "--hard", self.base)
+                self.assertFalse(self.verdict({**self.GOOD, name: text}))
+
     def test_453_shape_is_release_metadata(self):
         self.assertTrue(self.verdict(self.GOOD))
 

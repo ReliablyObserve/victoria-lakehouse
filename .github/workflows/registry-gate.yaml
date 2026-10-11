@@ -13,7 +13,8 @@ name: Registry Gate
 on:
   pull_request:
     branches: [main]
-    # `edited` re-evaluates the gate after a title change (the dependency-only kind reads it).
+    # `edited` re-evaluates the gate when the PR is edited. No kind reads the title any more (it is
+    # still passed through for the gate code of an older merge base, which did).
     types: [opened, synchronize, reopened, edited]
 
 permissions:

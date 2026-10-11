@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Lock code is every file whose edit could make a lock pass without comparing
@@ -330,10 +331,103 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 	return out, nil
 }
 
+// loadTimeDecls returns what a Go file declares that runs at package load or on every test binary
+// start: the count of init() functions and the multiset of package-level var names. A package-level
+// var initializer and init() run before any test, can call os.Exit, and can repoint shared state, so
+// a lock package may not gain one (TestMain is checked by TestMainChanges).
+func loadTimeDecls(path string, src []byte) (inits int, vars map[string]int, err error) {
+	vars = map[string]int{}
+	if src == nil {
+		return 0, vars, nil
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil && d.Name.Name == "init" {
+				inits++
+			}
+		case *ast.GenDecl:
+			if d.Tok != token.VAR {
+				continue
+			}
+			for _, sp := range d.Specs {
+				if vs, ok := sp.(*ast.ValueSpec); ok {
+					for _, n := range vs.Names {
+						vars[n.Name]++
+					}
+				}
+			}
+		}
+	}
+	return inits, vars, nil
+}
+
+// LockInitVarAdditions lists the files of a lock package that gain an init() function or a
+// package-level var at head: a new file that declares one, or an existing file whose declarations
+// now include one the merge base did not have (per name, `_` counted). Lock packages are judged
+// against the locks that exist at the merge base. In a pure test package (under tests/) every .go
+// file is in scope; in a product package only the _test.go files are. A file that no longer parses
+// is listed too: the package would not build and its locks would not run. Removing a var or an
+// init() is free; so is a func, const or type.
+//
+// This is a content rule (hard, Rule 3): the owner's approval is not what stops a lock from being
+// silenced by `func init() { if os.Getenv(...) != "" { os.Exit(0) } }`.
+func LockInitVarAdditions(baseRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, headList PackageFiles) []string {
+	dirs := map[string]bool{}
+	for f := range baseRefs {
+		dirs[filepath.ToSlash(filepath.Dir(f))] = true
+	}
+	var out []string
+	for d := range dirs {
+		pureTest := strings.HasPrefix(d+"/", "tests/")
+		for _, p := range headList(d) {
+			if !pureTest && !strings.HasSuffix(p, "_test.go") {
+				continue
+			}
+			hs := headSrc(p)
+			if hs == nil || bytes.Equal(baseSrc(p), hs) {
+				continue
+			}
+			hi, hv, err := loadTimeDecls(p, hs)
+			if err != nil {
+				out = append(out, p+": does not parse, so the locks of its package would not run")
+				continue
+			}
+			bi, bv, berr := loadTimeDecls(p, baseSrc(p))
+			if berr != nil {
+				bi, bv = 0, map[string]int{} // a base that did not parse has nothing to compare: all of it is new
+			}
+			var added []string
+			if hi > bi {
+				added = append(added, fmt.Sprintf("%d new init() function(s)", hi-bi))
+			}
+			var names []string
+			for n, c := range hv {
+				if c > bv[n] {
+					names = append(names, n)
+				}
+			}
+			sort.Strings(names)
+			if len(names) > 0 {
+				added = append(added, "package-level var "+strings.Join(names, ", "))
+			}
+			if len(added) > 0 {
+				out = append(out, fmt.Sprintf("%s: adds %s to a package that holds a registry lock", p, strings.Join(added, " and ")))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // golangImageLine matches a compose `image: golang:<version>[-alpine[<ver>]]` line.
 // pre is everything before the version (indentation and key), so the two lines of a
 // pair must agree on it exactly.
-var golangImageLine = regexp.MustCompile(`^(?P<pre>[ \t]+image:[ \t]+golang:)(?P<ver>\d+\.\d+(?:\.\d+)?)(?P<alp>-alpine(?:\d+\.\d+)?)?[ \t]*$`)
+var golangImageLine = regexp.MustCompile(`^(?P<pre>[ \t]+image:[ \t]+golang:)(?P<ver>[0-9]+\.[0-9]+(?:\.[0-9]+)?)(?P<alp>-alpine(?:[0-9]+\.[0-9]+)?)?[ \t]*$`)
 
 // GolangImageBumpOnly reports whether head differs from base only in the version of
 // `image: golang:<version>` lines: same line count, every differing line pair is such a
@@ -342,6 +436,12 @@ var golangImageLine = regexp.MustCompile(`^(?P<pre>[ \t]+image:[ \t]+golang:)(?P
 // every other line byte-identical. The Python classifier (scripts/ci/pr_classify.py)
 // holds the same rule; both are tested against the same fixture.
 func GolangImageBumpOnly(base, head []byte) bool {
+	// A control byte (CR included) or a non-UTF-8 byte means the file is not read the way the
+	// Python twin and Docker read it: nothing is verified. Only "\n" separates lines; \d and \S
+	// below are ASCII in RE2, like the Python twin's [0-9] and [!-~].
+	if hasUnreadableBytes(base) || hasUnreadableBytes(head) {
+		return false
+	}
 	bl := strings.Split(string(base), "\n")
 	hl := strings.Split(string(head), "\n")
 	if len(bl) != len(hl) {
@@ -364,13 +464,31 @@ func GolangImageBumpOnly(base, head []byte) bool {
 	return changed
 }
 
+// hasUnreadableBytes reports whether b is not clean text: invalid UTF-8, a control byte other than
+// TAB and LF (CR, VT, FF, FS, GS, RS, DEL ...), or one of U+0085, U+2028, U+2029 and a BOM. The
+// Python classifier's clean_text rejects the same set.
+func hasUnreadableBytes(b []byte) bool {
+	if !utf8.Valid(b) {
+		return true
+	}
+	for _, r := range string(b) {
+		if r == '\n' || r == '\t' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 || r == 0xfeff {
+			return true
+		}
+	}
+	return false
+}
+
 // imageSuffixShape reduces an image tag suffix to its shape: none, bare `-alpine`, or
 // `-alpine` with a version. A bump may change the version, never the shape.
 func imageSuffixShape(suffix string) string {
-	switch {
-	case suffix == "":
+	switch suffix {
+	case "":
 		return ""
-	case suffix == "-alpine":
+	case "-alpine":
 		return "-alpine"
 	default:
 		return "-alpineV"

@@ -164,13 +164,15 @@ conformance-check: deps-logs deps-traces deps-vt
 	go run ./tests/conformance/cmd/confgen -check
 	CONFORMANCE_REQUIRE_DEPS=1 go test ./tests/conformance/... -count=1 -timeout=5m
 
-# The registry gate on the current HEAD against origin/main: the same script CI runs
-# (scripts/ci/check_registry_touch.sh), the same report. Run it before every push.
-# GATE_BASE=<rev> compares against another base. Needs no deps/ checkout.
+# The registry gate on the current HEAD against origin/main (scripts/ci/gate_local.sh): the same
+# report as the CI checks, with three differences it says out loud. It runs YOUR WORKING TREE's gate
+# code, while CI judges a pull request with the BASE branch's gate (so a branch that edits the gate is
+# only previewed here); it judges HEAD only, so uncommitted edits are ignored (a warning lists them);
+# and it fails when it cannot fetch origin/main (REGISTRY_GATE_OFFLINE=1 judges against the local
+# copy anyway). GATE_BASE=<rev> compares against another base. Needs no deps/ checkout.
 GATE_BASE ?= origin/main
 registry-gate:
-	@git fetch -q origin main 2>/dev/null || true
-	GOWORK=off bash scripts/ci/check_registry_touch.sh $(GATE_BASE)
+	bash scripts/ci/gate_local.sh $(GATE_BASE)
 
 # Replays the gate over the recorded pull requests and compares each verdict with
 # scripts/ci/tests/gate_replay_expected.txt (what CI runs when the gate changes).

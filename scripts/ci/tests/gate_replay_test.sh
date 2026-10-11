@@ -39,7 +39,7 @@ if grep -q '^internal/' <<<"$files"; then
   printf '## Registry gate: FAIL\n\n| Rule | Verdict | Detail |\n|---|---|---|\n| Rule 1: stub | FAIL | internal changed |\n' >> "$GITHUB_STEP_SUMMARY"
   exit 1
 fi
-printf '## Registry gate: PASS\n\nPR kind: `toolchain-only`\n\n| Rule | Verdict | Detail |\n|---|---|---|\n| Rule 3: stub | PASS | ok |\n' >> "$GITHUB_STEP_SUMMARY"
+printf '## Registry gate: PASS\n\nPR kind: `toolchain-only`\n\ntitle=%s subject=%s\na|b piped\n\n| Rule | Verdict | Detail |\n|---|---|---|\n| Rule 3: stub | PASS | ok |\n' "$PR_TITLE" "$(git log -1 --format=%s "${HEAD_REV:-HEAD}")" >> "$GITHUB_STEP_SUMMARY"
 exit 0
 STUB
   git init -q -b main && git config user.email t@e && git config user.name t && git config commit.gpgsign false
@@ -77,6 +77,19 @@ $GOOD" --allow-unavailable-open
 check "the flag never excuses a merged commit" 1 "MISSING" "$GONE" --allow-unavailable-open
 check "an empty table replays nothing and fails" 1 "nothing replayed" "# only a comment"
 check "--only replays the matching cases only" 0 "1 case(s), 0 mismatch(es)" "$GOOD" --only '^prod$'
+
+# the title column is the PR title the gate sees and, for a synthetic case, the commit subject
+check "a synthetic case's title reaches the gate as the PR title and the commit subject" 0 "1 case(s), 0 mismatch(es)" \
+  "t | synthetic | - | toolchain_bump | replay | PASS | - | title=build(deps): bump x subject=build(deps): bump x | build(deps): bump x"
+check "without a title the default is replay: <case>" 0 "1 case(s), 0 mismatch(es)" \
+  "t | synthetic | - | toolchain_bump | replay | PASS | - | title=replay: toolchain_bump subject=replay: toolchain_bump |"
+# a literal bar in a cell is written \|
+check "an escaped bar inside the report fragment is matched" 0 "1 case(s), 0 mismatch(es)" \
+  'b | synthetic | - | toolchain_bump | replay | PASS | - | a\|b piped | replay: b'
+# the table is strict: a wrong column count is an error, never a silent shift
+check "a row with eight columns is refused" 1 "malformed row" "t | synthetic | - | toolchain_bump | replay | PASS | - | toolchain-only"
+check "a row with ten columns is refused" 1 "malformed row" "t | synthetic | - | toolchain_bump | replay | PASS | - | - | a | b"
+check "an unescaped bar in a cell is a ten-column row" 1 "malformed row" "t | synthetic | - | toolchain_bump | replay | PASS | - | a|b | title"
 
 # shards partition the table: together they replay every case exactly once
 printf '%s\n' "$GOOD" > "$T/shard.txt"

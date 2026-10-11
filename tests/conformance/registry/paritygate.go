@@ -560,6 +560,15 @@ const maxInlineIDs = 8
 // summary: counts and the first few ids per line, the full list in a details
 // block when longer.
 func SummarizeChanges(sets []ChangeSet) string {
+	// ids come from YAML an author wrote: one with a newline or Markdown syntax must not forge a
+	// line of the job log (`::error::`) or of the report
+	esc := func(ids []string) []string {
+		out := make([]string, len(ids))
+		for i, id := range ids {
+			out[i] = MDEscape(id)
+		}
+		return out
+	}
 	var sb strings.Builder
 	sb.WriteString("### Registry changes in this PR\n\n")
 	listed := false
@@ -567,7 +576,7 @@ func SummarizeChanges(sets []ChangeSet) string {
 		for _, g := range []struct {
 			label string
 			ids   []string
-		}{{"added", cs.Added}, {"changed", cs.Changed}, {"removed", cs.Removed}} {
+		}{{"added", esc(cs.Added)}, {"changed", esc(cs.Changed)}, {"removed", esc(cs.Removed)}} {
 			if len(g.ids) == 0 {
 				continue
 			}

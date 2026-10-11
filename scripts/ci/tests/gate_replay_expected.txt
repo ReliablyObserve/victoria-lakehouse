@@ -3,6 +3,9 @@
 #
 #   id | kind | base | head | author | verdict | failing rules | report must contain | title
 #
+# Exactly nine columns (the replay refuses a row with another count); a literal '|' inside a cell
+# is written '\|'. For a synthetic row the title is also the commit subject.
+#
 # Every row is pinned by sha, so the replay is deterministic. `failing rules` is the exact set,
 # so a regression that fails a case for the wrong reason is caught too. When a rule changes on
 # purpose, change the row in the same pull request and say why in its description.
@@ -26,7 +29,7 @@ pr488 | main | 883039b0fe3a02af058e008a22cb0dd406bf0fec | dc784a024b800b0210c6be
 pr471 | main | 3acc177d2ca648763a76bad4b6c90d7db9e7d7b5 | 3c4c8650dcdeb795e49829de46403ad1260b83dc | szibis | PASS | - | release-metadata | chore: release metadata for v0.146.9 [skip release] (#471)
 pr470 | main | f7d8264bf079e8034d54cfdfa0f05509df590ec0 | 3acc177d2ca648763a76bad4b6c90d7db9e7d7b5 | dependabot[bot] | PASS | - | dependency-only | chore(deps): bump pytest (#470)
 pr467 | main | 1cc31eeb10783bd4795e840026e41c2ae105941a | f7d8264bf079e8034d54cfdfa0f05509df590ec0 | szibis | PASS | - | - | ci(proof): follow-ups of the #465 review: steadier seeds, safer ports, dotted fields, #452 triage [skip release] (#467)
-pr438 | main | c0172b30daa246128e6623d5384d18f9e670562f | 054954edbd5e44757cd6b67086a1c2516cf9214a | szibis | PASS | - | Rule 1: a product change changes the registry | PASS | fix(read): field_values over map attributes returns the attribute's own values on cold (both binaries) (#438)
+pr438 | main | c0172b30daa246128e6623d5384d18f9e670562f | 054954edbd5e44757cd6b67086a1c2516cf9214a | szibis | PASS | - | Rule 1: a product change changes the registry \| PASS | fix(read): field_values over map attributes returns the attribute's own values on cold (both binaries) (#438)
 pr444 | main | 2e706b5886954df867e39267bbfce732859a47d1 | 959ab8ce92f7540fddf6c6f79633f5488d59b559 | szibis | PASS | - | Gate files changed | ci: registry gate hardening from the independent review [skip release] (#444)
 pr436 | main | ddcbdf9d5407c629a63bf84b963a329db5568acc | 56a6a592ff1f34d7cd14f05535af5a3f3d5b4208 | szibis | PASS | - | Gate files changed | ci: every product change and new test must be covered in the conformance registry [skip release] (#436)
 pr329 | main | 83c6ce9eb5e4ce02fc3eef6cc6d16a1b08028a87 | 671d5430d46ad186635495c7e4c972d5df75d272 | szibis | PASS | - | - | test(read): slowest parquets3 property tests run a smaller sample under -short (main test-logs over budget) [skip release] (#329)
@@ -45,3 +48,15 @@ syn_delete_lock_reference | synthetic | - | delete_lock_reference | replay | FAI
 syn_product_no_registry | synthetic | - | product_change_no_registry | replay | FAIL | Rule 1 | - | replay: product_change_no_registry
 syn_unlinked_new_test | synthetic | - | unlinked_new_test | replay | FAIL | Rule 2 | - | replay: unlinked_new_test
 syn_lock_code_edit | synthetic | - | lock_code_edit | replay | PASS | - | Lock-affecting files | replay: lock_code_edit
+# The smuggles of the independent review of this gate (a line break Python saw and Docker/Go did not, a Unicode
+# digit). Each wears the title an attacker would choose; every one must stay an ordinary product change (Rule 1),
+# and the dependency shapes must not escape the registry check either.
+syn_cr_fips | synthetic | - | cr_fips | replay | FAIL | Rule 1 | - | fix(security): Go 1.27.3 fixes advisories
+syn_cr_replace_tc | synthetic | - | cr_replace_tc | replay | FAIL | Rule 1 | - | fix(security): Go 1.27.3 fixes advisories
+syn_tc_unidigit | synthetic | - | tc_unidigit | replay | FAIL | Rule 1 | - | fix(security): Go 1.27.3 fixes advisories
+syn_cr_replace_dep | synthetic | - | cr_replace_dep | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/net
+syn_u2028_replace_dep | synthetic | - | u2028_replace_dep | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/net
+# A lock package may not gain a load-time init() (or package var): the nonce-triggered os.Exit(0) of the review.
+syn_init_exit | synthetic | - | init_exit | replay | FAIL | Rule 3 | - | test(parity): add an environment hook
+# dependency-only is decided from the diff, never from the title or commit subject.
+syn_dependency_bump | synthetic | - | dependency_bump | replay | PASS | - | dependency-only | chore: tidy things

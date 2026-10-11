@@ -20,11 +20,16 @@
 #                    does not fail the run. Recorded merged commits and synthetic cases are
 #                    never allowed to be unavailable.
 #
-# Table format (one case per line, '|' separated, '#' starts a comment):
+# Table format (one case per line, '|' separated, '#' starts a comment; a literal '|' inside a
+# cell is written '\|'). Exactly nine columns: a row with another count is an error (exit 2),
+# never silently shifted:
 #   id | kind | base | head | author | verdict | failing rules | report must contain | title
 #     kind      main       a squash commit of main: head is the commit, base its parent
 #               open       a pull request that was open when recorded: head is its head sha
 #               synthetic  built in a scratch clone by the function syn_<head> of this script
+#     title     the pull request title; for a synthetic case it is also the subject of the one
+#               commit (default "replay: <head>"), so a case can wear the title an attacker would
+#               choose (the gate decides from the diff and must not care)
 #     verdict   PASS or FAIL
 #     failing   the exact set of rules that fail, comma separated ("-" for none): the rows of
 #               the report whose verdict is FAIL, named by the text before the first colon
@@ -195,15 +200,90 @@ syn_unlinked_new_test() {
   printf 'package %s\n\nimport "testing"\n\nfunc TestGateReplayUnlinkedNewTest(t *testing.T) {}\n' "$pkg" > "$d/zz_gate_replay_test.go"
 }
 
+# --- smuggles found by the independent review: a line break the gate's reader saw and Docker/Go did not.
+# cr_fips: the Go tag moves and the LF between a comment and `ARG FIPS=0` becomes a CR (Docker reads one
+# comment line; the FIPS build arg is gone). cr_replace_tc: a go.mod `replace` is hidden behind a CR
+# in a comment. u2028_replace_dep / cr_replace_dep: the same under a build(deps) title with a
+# dependency version bump. tc_unidigit: an Arabic-Indic digit in the golang tag.
+hide_replace() { # hide_replace <separator escape as python source>
+  python3 - "$1" <<'PY'
+import re, sys
+sep = sys.argv[1].encode().decode("unicode_escape")
+s = open("go.mod", encoding="utf-8", newline="").read()
+n = re.sub(r"^replace github.com/VictoriaMetrics/VictoriaLogs ", "// local tree" + sep + "replace github.com/VictoriaMetrics/VictoriaLogs ", s, count=1, flags=re.M)
+assert n != s
+open("go.mod", "w", encoding="utf-8", newline="").write(n)
+PY
+}
+
+bump_dep() { # a non-critical require version
+  python3 - <<'PY'
+import re
+s = open("go.mod", encoding="utf-8", newline="").read()
+n = re.sub(r"^(\tgolang\.org/x/net v[0-9]+\.[0-9]+\.)([0-9]+)", lambda m: m.group(1) + str(int(m.group(2)) + 1), s, count=1, flags=re.M)
+assert n != s
+open("go.mod", "w", encoding="utf-8", newline="").write(n)
+PY
+}
+
+# bump_go_min: the Go bump without the parity compose file, which the gate of main treats as lock code
+# (so main rejects any bump for that reason); with only go.mod and Dockerfile.logs the verdict of
+# every gate generation below is decided by Rule 1, which is what the smuggles attack.
+bump_go_min() {
+  python3 - <<'PY'
+import re
+def sub(path, pat, fn):
+    s = open(path, encoding="utf-8").read()
+    n = re.sub(pat, fn, s, count=1, flags=re.M)
+    assert n != s, path
+    open(path, "w", encoding="utf-8").write(n)
+bump = lambda m: m.group(1) + str(int(m.group(2)) + 1)
+sub("go.mod", r"^(go \d+\.\d+\.)(\d+)$", bump)
+sub("Dockerfile.logs", r"(golang:\d+\.\d+\.)(\d+)", bump)
+PY
+}
+
+syn_cr_fips() {
+  bump_go_min
+  python3 - <<'PY'
+s = open("Dockerfile.logs", encoding="utf-8", newline="").read()
+n = s.replace("per deployment.\nARG FIPS=0", "per deployment.\rARG FIPS=0", 1)
+assert n != s
+open("Dockerfile.logs", "w", encoding="utf-8", newline="").write(n)
+PY
+}
+
+syn_cr_replace_tc() { bump_go_min; hide_replace '\r'; }
+syn_cr_replace_dep() { bump_dep; hide_replace '\r'; }
+syn_u2028_replace_dep() { bump_dep; hide_replace '\u2028'; }
+syn_dependency_bump() { bump_dep; }
+
+syn_tc_unidigit() {
+  bump_go_min
+  python3 - <<'PY'
+import re
+s = open("Dockerfile.logs", encoding="utf-8", newline="").read()
+n = re.sub(r"(golang:[0-9]+\.[0-9]+\.)[0-9]+", lambda m: m.group(1) + "\u0663", s, count=1)
+assert n != s
+open("Dockerfile.logs", "w", encoding="utf-8", newline="").write(n)
+PY
+}
+
+# init_exit: a new test file in a lock package whose init() ends the test binary with success when the
+# lock run's nonce is set, so every lock of the package "passes" without running.
+syn_init_exit() {
+  printf 'package parity\n\nimport "os"\n\nfunc init() {\n\tif os.Getenv("PARITY_LOCK_NONCE") != "" {\n\t\tos.Exit(0)\n\t}\n}\n' > tests/parity/zz_env_test.go
+}
+
 syn_lock_code_edit() {
   local f
   f=$(git ls-files 'tests/parity/*_test.go' | head -1)
   printf '\n// replay: an edit of a file in a lock package\n' >> "$f"
 }
 
-# run_synthetic <name> <author> <report> <log>: builds the case in a scratch clone and runs the gate.
+# run_synthetic <name> <author> <title> <report> <log>: builds the case in a scratch clone and runs the gate.
 run_synthetic() {
-  local name=$1 author=$2 report=$3 log=$4 clone="$WORK/syn.$1" base
+  local name=$1 author=$2 title=$3 report=$4 log=$5 clone="$WORK/syn.$1" base
   base=$(git -C "$GATE_DIR" rev-parse HEAD 2>/dev/null) || return 3
   git clone -q --shared --no-checkout "$GATE_DIR" "$clone" 2>/dev/null || return 3
   (
@@ -215,9 +295,9 @@ run_synthetic() {
     "syn_$name" || exit 3
     git add -A
     git diff --cached --quiet && { echo "synthetic case $name changed nothing" >&2; exit 3; }
-    git commit -q -m "replay: $name" || exit 3
+    git commit -q -m "$title" || exit 3
   ) 2>"$log" || { cat "$log" >&2; return 3; }
-  run_gate "$clone" replay-base HEAD "$author" "replay: $name" "$report" "$log"
+  run_gate "$clone" replay-base HEAD "$author" "$title" "$report" "$log"
   local rc=$?
   rm -rf "$clone"
   return $rc
@@ -225,16 +305,23 @@ run_synthetic() {
 
 # -------------------------------------------------------------------- main ---
 checked=0; mismatched=0; unavailable=0; row=-1
-TABLE=""
 SUMMARY="$WORK/summary.md"
 printf '| case | old/new verdict | failing rules | expected | result |\n|---|---|---|---|---|\n' > "$SUMMARY"
 
 while IFS= read -r raw || [[ -n "$raw" ]]; do
   line=${raw%%#*}
   [[ -n "$(trim "$line")" ]] || continue
+  # '\|' is a literal bar inside a cell; any other count of bars than eight is a malformed row
+  line=${line//\\|/$'\x01'}
+  bars=${line//[^|]/}
+  if [[ ${#bars} -ne 8 ]]; then
+    echo "malformed row (want 9 '|'-separated columns, got $((${#bars} + 1))): ${raw:0:120}" >&2
+    exit 2
+  fi
   IFS='|' read -r id kind base head author verdict failing contains title <<< "$line"
-  id=$(trim "$id"); kind=$(trim "$kind"); base=$(trim "$base"); head=$(trim "$head"); author=$(trim "$author")
-  verdict=$(trim "$verdict"); failing=$(trim "$failing"); contains=$(trim "$contains"); title=$(trim "${title:-}")
+  id=$(trim "${id//$'\x01'/|}"); kind=$(trim "${kind//$'\x01'/|}"); base=$(trim "${base//$'\x01'/|}"); head=$(trim "${head//$'\x01'/|}")
+  author=$(trim "${author//$'\x01'/|}"); verdict=$(trim "${verdict//$'\x01'/|}"); failing=$(trim "${failing//$'\x01'/|}")
+  contains=$(trim "${contains//$'\x01'/|}"); title=$(trim "${title//$'\x01'/|}")
   [[ -z "$ONLY" || "$id" =~ $ONLY ]] || continue
   row=$((row + 1))
   [[ $((row % SHARD_N)) -eq $SHARD_I ]] || continue
@@ -255,7 +342,7 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
     run_gate "$ROOT" "$base" "$head" "$author" "$title" "$report" "$log" || rc=$?
     ;;
   synthetic)
-    run_synthetic "$head" "${author:-replay}" "$report" "$log" || rc=$?
+    run_synthetic "$head" "${author:-replay}" "${title:-replay: $head}" "$report" "$log" || rc=$?
     if [[ $rc -eq 3 ]]; then
       printf '%-34s SETUP ERROR\n' "$id"; sed 's/^/    /' "$log" | head -5
       printf '| %s | SETUP ERROR | - | %s %s | FAIL |\n' "$id" "$verdict" "$failing" >> "$SUMMARY"

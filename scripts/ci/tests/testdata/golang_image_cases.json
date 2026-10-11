@@ -1,5 +1,5 @@
 {
-  "comment": "One fixture for both twins of the rule 'only the version of a golang image line changed': scripts/ci/pr_classify.py (golang_image_bump_only) and tests/conformance/registry/lockcode.go (GolangImageBumpOnly). kind=compose is read by both, kind=dockerfile by the Python side only.",
+  "comment": "One fixture for both twins of the rule 'only the version of a golang image line changed': scripts/ci/pr_classify.py (golang_image_bump_only) and tests/conformance/registry/lockcode.go (GolangImageBumpOnly). kind=compose is read by both, kind=dockerfile by the Python side only. The CR, Unicode-digit and Unicode-space cases are smuggles found by an independent review.",
   "cases": [
     {"name": "491 compose: the toolchain image tag moved", "kind": "compose", "want": true,
      "base": "services:\n  build:\n    image: golang:1.27.1\n    environment:\n      LH_BASE_URL: lh\n",
@@ -58,6 +58,14 @@
     {"name": "dockerfile: the suffix flavour changes", "kind": "dockerfile", "want": false,
      "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-bookworm AS builder\n"},
     {"name": "dockerfile: a stage is added", "kind": "dockerfile", "want": false,
-     "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.23 AS builder\nFROM scratch\n"}
+     "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.23 AS builder\nFROM scratch\n"},
+    {"name": "dockerfile: a CR replaces the LF between a comment and the next instruction (cr_fips)", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.1-alpine3.23 AS builder\n# per deployment.\nARG FIPS=0\n", "head": "FROM golang:1.27.2-alpine3.23 AS builder\n# per deployment.\rARG FIPS=0\n"},
+    {"name": "dockerfile: a CR at the end of the bumped line", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.1-alpine3.23 AS builder\nRUN make\n", "head": "FROM golang:1.27.2-alpine3.23 AS builder\r\nRUN make\n"},
+    {"name": "dockerfile: an Arabic-Indic digit in the version (tc_unidigit)", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.\u0663-alpine3.23 AS builder\n"},
+    {"name": "dockerfile: an Arabic-Indic digit in the alpine release", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.\u0662\u0663 AS builder\n"},
+    {"name": "dockerfile: a Unicode space after the image", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.23\u00a0AS builder\n"},
+    {"name": "compose: an Arabic-Indic digit in the version", "kind": "compose", "want": false, "base": "    image: golang:1.27.1\n", "head": "    image: golang:1.27.\u0663\n"},
+    {"name": "compose: a CR hides a line break", "kind": "compose", "want": false, "base": "    image: golang:1.27.1\n    command: x\n", "head": "    image: golang:1.27.2\r    command: x\n"},
+    {"name": "compose: a Unicode line separator after the bumped line", "kind": "compose", "want": false, "base": "    image: golang:1.27.1\n", "head": "    image: golang:1.27.2\u2028\n"}
   ]
 }

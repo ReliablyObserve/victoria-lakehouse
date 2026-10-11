@@ -16,6 +16,14 @@ There is no exemption by label or by PR text: every kind is decided from the con
 of the diff. `toolchain-only` is a Go toolchain / dependency-version bump whose every
 changed line is verified (see toolchain_only): it waives Rule 1 only.
 
+Every file the classifier interprets is read as BYTES and split only on "\n", the way Docker,
+Go and git split it (`str.splitlines()` and text-mode reads also split on a lone CR and on
+U+0085/U+2028/U+2029, which lets a build change hide inside a "comment" line). A covered file
+that holds a control byte (CR included), U+0085/U+2028/U+2029, a BOM or invalid UTF-8 is
+never classified as a verified kind: it falls through to the path rules. Every line a kind
+interprets is matched with ASCII-only character classes, and every line that CHANGES in a
+covered file must be printable ASCII (an em dash in an unchanged comment is fine).
+
 A path is PRODUCT when it is not a test artifact and is
   - anything under internal/, cmd/, lakehouse-traces/ (Go, embedded UI assets,
     SQL, YAML ...) except README.md / RUNBOOK.md;
@@ -43,13 +51,14 @@ PRODUCT_DIR_PREFIXES = ("patches/", "charts/")
 PRODUCT_DOC_NAMES = ("README.md", "RUNBOOK.md")
 SHIPPED_BUILD_FILES = ("Dockerfile", "Dockerfile.logs", "Dockerfile.traces")
 ROOT_MODULE_FILES = ("go.mod", "go.sum")
-DEP_COMMIT_PREFIXES = ("build(deps", "chore(deps")
 # Modules whose bump changes what the product stores or answers: never
 # dependency-only, they need registry coverage or the owner's exemption.
 CRITICAL_MODULE_PREFIXES = (
     "github.com/VictoriaMetrics/",
     "github.com/parquet-go/",
     "github.com/aws/",
+    # the stream-id and trace-index hashes: they decide where a row lives
+    "github.com/cespare/xxhash",
     # codecs and wire formats: they decide what bytes mean
     "github.com/klauspost/",
     "github.com/golang/snappy",
@@ -70,21 +79,52 @@ GATE_FILES_RE = re.compile(
     r"^(scripts/ci/[^/]+$|\.gitattributes$|tests/parity/lock_cells_test\.go$|tests/conformance/cmd/testlinks/"
     r"|tests/conformance/registry/(testlinks|paritygate|lockcode)\.go"
     r"|\.github/workflows/(conformance|registry-gate|registry-gate-base|gate-selftest|parity)\.yaml"
-    r"|\.github/registry-exempt-approvers)"
+    r"|\.github/(registry-exempt-approvers|release-metadata-approvers))"
 )
-SEMVER = re.compile(r"\d+\.\d+\.\d+")
-REQUIRE_ENTRY = re.compile(r"^(?:require\s+)?(\S+)\s+(v\S+?)(?:\s*//.*)?$")
+SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+REQUIRE_ENTRY = re.compile(r"^(?:require[ \t]+)?([!-~]+)[ \t]+(v[!-~]+?)(?:[ \t]*//.*)?$")
 
 
 def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
 
-def show(rev: str, path: str) -> str:
+def show(rev: str, path: str) -> bytes:
+    """The blob at rev:path as bytes ("" bytes when the path does not exist there)."""
     try:
-        return git("show", f"{rev}:{path}")
+        return subprocess.run(["git", "show", f"{rev}:{path}"], check=True, capture_output=True).stdout
     except subprocess.CalledProcessError:
-        return ""
+        return b""
+
+
+# Characters that make a line splitter disagree with Docker, Go and git, or that no reviewed
+# file of this repository holds: control bytes other than TAB and LF (CR, VT, FF, FS, GS, RS
+# ...), DEL, NEL, LS, PS and a BOM.
+_BAD_TEXT = re.compile("[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029\ufeff]")
+
+
+def clean_text(raw: bytes) -> "str | None":
+    """raw decoded as UTF-8, or None when it cannot be read the way Docker and Go read it:
+    invalid UTF-8, or a character from _BAD_TEXT. Newlines are not translated."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return None if _BAD_TEXT.search(text) else text
+
+
+def show_text(rev: str, path: str) -> "str | None":
+    return clean_text(show(rev, path))
+
+
+def changed_lines_ascii(base: str, head: str) -> bool:
+    """Every line that differs between the two texts is printable ASCII (TAB allowed)."""
+    return all(re.fullmatch(r"[\t -~]*", ln) for ln in set(base.split("\n")) ^ set(head.split("\n")))
+
+
+def printable(s: str) -> str:
+    """s with every character that could break a key=value line made visible."""
+    return "".join(c if c.isprintable() else (f"\\x{ord(c):02x}" if ord(c) < 256 else f"\\u{ord(c):04x}") for c in s)
 
 
 def is_test_artifact(path: str) -> bool:
@@ -118,8 +158,8 @@ def parse_go_mod(text: str) -> tuple[dict[str, str], list[str]]:
     requires: dict[str, str] = {}
     others: list[str] = []
     in_block = False
-    for raw in text.splitlines():
-        line = raw.strip()
+    for raw in text.split("\n"):
+        line = raw.strip(" \t")
         if not line or line.startswith("//"):
             continue
         if in_block:
@@ -132,7 +172,7 @@ def parse_go_mod(text: str) -> tuple[dict[str, str], list[str]]:
             else:
                 others.append(line)
             continue
-        if re.fullmatch(r"require\s*\(", line):
+        if re.fullmatch(r"require[ \t]*\(", line):
             in_block = True
             continue
         if line.startswith("require "):
@@ -144,7 +184,7 @@ def parse_go_mod(text: str) -> tuple[dict[str, str], list[str]]:
     return requires, others
 
 
-PIN_RE = re.compile(r"^(VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION)\s*:?=\s*(\S*)", re.M)
+PIN_RE = re.compile(r"^(VL_VERSION_LOGS|VL_COMMIT_TRACES|VT_VERSION)[ \t]*:?=[ \t]*([!-~]*)", re.M | re.A)
 
 
 def makefile_pins(text: str) -> dict[str, str]:
@@ -164,19 +204,49 @@ def go_mod_dependency_only(base: str, head: str) -> bool:
     return True
 
 
+# requirements*.txt: a pinned or ranged package line (extras and environment markers allowed),
+# a comment or a blank line. No URLs, `-r`/`-e`/index options or hashes.
+_OP = r"(?:==|>=|<=|~=|!=|<|>)"
+_VERS = r"[A-Za-z0-9][A-Za-z0-9.*+!_-]*"
+REQ_LINE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?[ \t]*" + _OP + r"[ \t]*" + _VERS
+    + r"(?:[ \t]*,[ \t]*" + _OP + r"[ \t]*" + _VERS + r")*(?:[ \t]*;[ -~]*)?[ \t]*$"
+)
+
+
+def requirements_only(base: str, head: str) -> bool:
+    """requirements*.txt: every line that changed is a package requirement, a comment or blank."""
+    for line in set(base.split("\n")) ^ set(head.split("\n")):
+        if line.strip(" \t") and not line.lstrip(" \t").startswith("#") and not REQ_LINE.match(line):
+            return False
+    return True
+
+
 def is_dependency_manifest(path: str) -> bool:
-    b = os.path.basename(path)
-    return b in ("go.mod", "go.sum") or fnmatch.fnmatch(b, "requirements*.txt")
+    """The manifests a dependency-only PR may change: the two Go modules' go.mod/go.sum, and
+    a Python requirements file that is not itself product code."""
+    if path in GO_MOD_FILES or path in GO_SUM_FILES:
+        return True
+    return fnmatch.fnmatch(os.path.basename(path), "requirements*.txt") and product_reason(path) is None
 
 
-def dependency_only(files: list[str], commits: list[str], base: str, head: str) -> bool:
+def dependency_only(files: list[str], base: str, head: str) -> bool:
+    """A dependency-version PR, decided from the content of every changed file alone (never from a
+    commit subject or a title): go.mod `require` versions outside the storage-critical modules,
+    go.sum hash lines of non-critical modules, requirements*.txt package lines. Waives Rule 1 only."""
     if not files or not all(is_dependency_manifest(f) for f in files):
         return False
-    subjects = [c for c in commits if c.strip() and not c.startswith("Merge ")]
-    if not subjects or not all(c.strip().lower().startswith(DEP_COMMIT_PREFIXES) for c in subjects):
-        return False
     for f in files:
-        if os.path.basename(f) == "go.mod" and not go_mod_dependency_only(show(base, f), show(head, f)):
+        b, h = show_text(base, f), show_text(head, f)
+        if b is None or h is None or not changed_lines_ascii(b, h):
+            return False
+        if f in GO_MOD_FILES:
+            ok = go_mod_dependency_only(b, h)
+        elif f in GO_SUM_FILES:
+            ok = go_sum_toolchain_only(b, h)
+        else:
+            ok = requirements_only(b, h)
+        if not ok:
             return False
     return True
 
@@ -208,13 +278,15 @@ GO_WORK_FILE = "go.work"
 GOLANG_DOCKERFILES = ("Dockerfile", "Dockerfile.logs", "Dockerfile.traces", "Dockerfile.datagen")
 GOLANG_COMPOSE_FILES = ("tests/parity/docker-compose.yml",)
 
-GO_DIRECTIVE = re.compile(r"^go \d+\.\d+(?:\.\d+)?$")
-TOOLCHAIN_DIRECTIVE = re.compile(r"^toolchain go\d+\.\d+(?:\.\d+)?$")
-GO_SUM_LINE = re.compile(r"^(\S+) (v\S+?)(?:/go\.mod)? h1:\S+$")
-_VER = r"(?P<ver>\d+\.\d+(?:\.\d+)?)"
-_ALP = r"(?P<alp>-alpine(?P<alpver>\d+\.\d+)?)?"
+# ASCII digits only ([0-9], not \d: Python's \d also matches Arabic-Indic and other Unicode
+# digits, which the Go twin and Docker do not).
+GO_DIRECTIVE = re.compile(r"^go [0-9]+\.[0-9]+(?:\.[0-9]+)?$")
+TOOLCHAIN_DIRECTIVE = re.compile(r"^toolchain go[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
+GO_SUM_LINE = re.compile(r"^([!-~]+) (v[!-~]+?)(?:/go\.mod)? h1:[!-~]+$")
+_VER = r"(?P<ver>[0-9]+\.[0-9]+(?:\.[0-9]+)?)"
+_ALP = r"(?P<alp>-alpine(?P<alpver>[0-9]+\.[0-9]+)?)?"
 FROM_GOLANG = re.compile(
-    r"^(?P<pre>FROM(?:[ \t]+--platform=\S+)?[ \t]+golang:)" + _VER + _ALP + r"(?P<post>(?:[ \t]+AS[ \t]+\S+)?[ \t]*)$"
+    r"^(?P<pre>FROM(?:[ \t]+--platform=[!-~]+)?[ \t]+golang:)" + _VER + _ALP + r"(?P<post>(?:[ \t]+AS[ \t]+[!-~]+)?[ \t]*)$"
 )
 IMAGE_GOLANG = re.compile(r"^(?P<pre>[ \t]+image:[ \t]+golang:)" + _VER + _ALP + r"(?P<post>[ \t]*)$")
 
@@ -268,7 +340,7 @@ def go_mod_toolchain_only(base: str, head: str) -> bool:
 
 def go_work_toolchain_only(base: str, head: str) -> bool:
     def split(text: str) -> tuple[list[str], list[str]]:
-        lines = [x.strip() for x in text.splitlines() if x.strip()]
+        lines = [x.strip(" \t") for x in text.split("\n") if x.strip(" \t")]
         return [x for x in lines if _is_directive(x)], [x for x in lines if not _is_directive(x)]
 
     _, b_rest = split(base)
@@ -278,7 +350,7 @@ def go_work_toolchain_only(base: str, head: str) -> bool:
 
 def go_sum_toolchain_only(base: str, head: str) -> bool:
     """go.sum: only well-formed hash lines differ, none for a storage-critical module."""
-    for line in set(base.splitlines()) ^ set(head.splitlines()):
+    for line in set(base.split("\n")) ^ set(head.split("\n")):
         m = GO_SUM_LINE.match(line)
         if not m or m.group(1).startswith(CRITICAL_MODULE_PREFIXES):
             return False
@@ -298,11 +370,21 @@ def toolchain_extra_ok(path: str) -> bool:
     return path.startswith("scripts/")
 
 
-def toolchain_only(files: list[str], base: str, head: str) -> str | None:
-    """A description of what was verified when the PR is toolchain-only, else None."""
+def toolchain_only(files: list[str], base: str, head: str) -> "str | None":
+    """A description of what was verified when the PR is toolchain-only, else None.
+
+    Every covered file is read as bytes and must be clean text (see clean_text); a file that is
+    not, or whose changed lines are not printable ASCII, makes the PR an ordinary product change."""
     verified = []
     for f in files:
-        b, h = show(base, f), show(head, f)
+        covered = f in GO_MOD_FILES or f in GO_SUM_FILES or f == GO_WORK_FILE or f in GOLANG_DOCKERFILES or f in GOLANG_COMPOSE_FILES
+        if not covered:
+            if not toolchain_extra_ok(f):
+                return None
+            continue
+        b, h = show_text(base, f), show_text(head, f)
+        if b is None or h is None or not changed_lines_ascii(b, h):
+            return None
         if f in GO_MOD_FILES:
             ok = go_mod_toolchain_only(b, h)
         elif f in GO_SUM_FILES:
@@ -311,12 +393,8 @@ def toolchain_only(files: list[str], base: str, head: str) -> str | None:
             ok = go_work_toolchain_only(b, h)
         elif f in GOLANG_DOCKERFILES:
             ok = golang_image_bump_only(b, h, FROM_GOLANG)
-        elif f in GOLANG_COMPOSE_FILES:
-            ok = golang_image_bump_only(b, h, IMAGE_GOLANG)
         else:
-            if not toolchain_extra_ok(f):
-                return None
-            continue
+            ok = golang_image_bump_only(b, h, IMAGE_GOLANG)
         if not ok:
             return None
         verified.append(f)
@@ -328,8 +406,8 @@ def toolchain_only(files: list[str], base: str, head: str) -> str | None:
 # ------------------------------------------------------ release metadata --
 
 CHART_PATH = "charts/victoria-lakehouse/Chart.yaml"
-_CHART_VERSION = re.compile(r"^version: (\d+\.\d+\.\d+)$")
-_CHART_APPVERSION = re.compile(r'^appVersion: "?(\d+\.\d+\.\d+)"?$')
+_CHART_VERSION = re.compile(r"^version: ([0-9]+\.[0-9]+\.[0-9]+)$")
+_CHART_APPVERSION = re.compile(r'^appVersion: "?([0-9]+\.[0-9]+\.[0-9]+)"?$')
 
 
 def chart_versions(text: str) -> tuple[str, str, list[str]] | None:
@@ -372,24 +450,43 @@ def release_metadata(files: list[str], base: str, head: str, author: str, approv
     the release bot or an approver; and when the repository has tags, the release
     has its tag.
     """
-    shape = cc.changelog_release_shape(show(base, "CHANGELOG.md"), show(head, "CHANGELOG.md"))
+    texts: dict[tuple[str, str], str] = {}
+
+    def tx(rev: str, path: str) -> "str | None":
+        if (rev, path) not in texts:
+            t = show_text(rev, path)
+            if t is None:
+                return None
+            texts[(rev, path)] = t
+        return texts[(rev, path)]
+
+    # every file read below is clean text (bytes, "\n" lines only): a CR or a Unicode line
+    # separator hidden in a CHANGELOG, Chart.yaml, README or generated document is no metadata
+    base_changelog, head_changelog = tx(base, "CHANGELOG.md"), tx(head, "CHANGELOG.md")
+    if base_changelog is None or head_changelog is None:
+        return False
+    shape = cc.changelog_release_shape(base_changelog, head_changelog)
     if shape is None:
         return False
     old, new = shape
     # (a release without a Chart.yaml change fails chart_ok: the version is not newer)
-    generated_ok = all(
-        cc.generated_docs_version_naming_only(show(base, f), show(head, f), old, new)
-        for f in files
-        if f in cc.RELEASE_METADATA_GENERATED_FILES
-    )
+    generated_ok = True
+    for f in files:
+        if f in cc.RELEASE_METADATA_GENERATED_FILES:
+            b, h = tx(base, f), tx(head, f)
+            if b is None or h is None or not cc.generated_docs_version_naming_only(b, h, old, new):
+                generated_ok = False
     if not cc.is_release_metadata_sync(files, generated_ok=generated_ok):
         return False
     if not author or author.lower() not in approvers | {RELEASE_BOT}:
         return False
-    if not chart_ok(show(base, CHART_PATH), show(head, CHART_PATH), new):
+    b_chart, h_chart = tx(base, CHART_PATH), tx(head, CHART_PATH)
+    if b_chart is None or h_chart is None or not chart_ok(b_chart, h_chart, new):
         return False
-    if "README.md" in files and SEMVER.sub("VER", show(base, "README.md")) != SEMVER.sub("VER", show(head, "README.md")):
-        return False
+    if "README.md" in files:
+        b_readme, h_readme = tx(base, "README.md"), tx(head, "README.md")
+        if b_readme is None or h_readme is None or SEMVER.sub("VER", b_readme) != SEMVER.sub("VER", h_readme):
+            return False
     tags = git("tag", "-l", "v*").split()
     return not tags or f"v{new}" in tags
 
@@ -398,19 +495,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True, help="merge base")
     ap.add_argument("--head", default="HEAD")
-    ap.add_argument("--title", default="")
+    ap.add_argument("--title", default="", help="ignored: no kind is decided from a title or a commit subject")
     ap.add_argument("--author", default="", help="PR author login (release-metadata exemption)")
     ap.add_argument("--approvers", default="", help="file with approver logins, read from the merge base")
     a = ap.parse_args()
 
-    files = [f for f in git("diff", "--no-renames", "--name-only", a.base, a.head).splitlines() if f]
-    commits = git("log", "--pretty=format:%s", f"{a.base}..{a.head}").splitlines()
-    if a.title:
-        commits.append(a.title)
+    # NUL-separated: a path with a newline, a CR or a Unicode separator stays one path
+    files = [f for f in git("diff", "--no-renames", "--name-only", "-z", a.base, a.head).split("\0") if f]
     approvers = set()
     if a.approvers and os.path.exists(a.approvers):
         with open(a.approvers, encoding="utf-8") as fh:
-            for line in fh.read().splitlines():
+            for line in fh.read().split("\n"):
                 line = line.split("#", 1)[0].strip().lower()
                 if line:
                     approvers.add(line)
@@ -419,9 +514,9 @@ def main() -> int:
     if release_metadata(files, a.base, a.head, a.author, approvers):
         exempt = "release-metadata"
         detail = "exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
-    elif dependency_only(files, commits, a.base, a.head):
+    elif dependency_only(files, a.base, a.head):
         exempt = "dependency-only"
-        detail = "only go.mod require versions and go.sum changed, every commit is build(deps)/chore(deps)"
+        detail = "only go.mod require versions outside the storage-critical modules, go.sum hash lines and requirements files changed"
     elif (tc := toolchain_only(files, a.base, a.head)) is not None:
         exempt = "toolchain-only"
         detail = tc
@@ -433,16 +528,21 @@ def main() -> int:
             if r:
                 reason = r
                 break
-            if f == "Makefile" and makefile_pins(show(a.base, f)) != makefile_pins(show(a.head, f)):
-                reason = "upstream pin changed: " + f
-                break
+            if f == "Makefile":
+                b, h = show_text(a.base, f), show_text(a.head, f)
+                if b is None or h is None:
+                    reason = "the Makefile is not clean text: " + f
+                    break
+                if makefile_pins(b) != makefile_pins(h):
+                    reason = "upstream pin changed: " + f
+                    break
     print(f"exempt={exempt}")
     print(f"product={1 if reason else 0}")
-    print(f"reason={reason}")
-    print(f"detail={detail}")
+    print(f"reason={printable(reason)}")
+    print(f"detail={printable(detail)}")
     for f in files:
         if GATE_FILES_RE.match(f):
-            print(f"gate_file={f}")
+            print(f"gate_file={printable(f)}")
     return 0
 
 

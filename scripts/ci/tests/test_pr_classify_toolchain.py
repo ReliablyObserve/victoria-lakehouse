@@ -31,7 +31,7 @@ GO_MOD_491 = GO_MOD.replace("go 1.27.1", "go 1.27.2").replace("x/net v0.59.0", "
 GO_SUM = "golang.org/x/net v0.59.0 h1:aaa=\ngolang.org/x/net v0.59.0/go.mod h1:bbb=\n"
 GO_SUM_491 = GO_SUM + "golang.org/x/net v0.60.0 h1:ccc=\ngolang.org/x/net v0.60.0/go.mod h1:ddd=\n"
 GO_WORK = "go 1.27.1\n\nuse (\n\t.\n\t./lakehouse-traces\n)\n"
-DOCKERFILE = "FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.23 AS builder\nRUN make\nFROM gcr.io/distroless/static-debian12:nonroot\n"
+DOCKERFILE = "FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.23 AS builder\n# set per deployment.\nARG FIPS=0\nRUN make\nFROM gcr.io/distroless/static-debian12:nonroot\n"
 DATAGEN = "FROM golang:1.27.1-alpine3.23 AS builder\nRUN make\n"
 COMPOSE = "services:\n  build:\n    image: golang:1.27.1\n    environment:\n      LH_BASE_URL: lh\n"
 
@@ -152,8 +152,15 @@ class Classified(unittest.TestCase):
         for p, t in files.items():
             full = os.path.join(self.d, p)
             os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
-            with open(full, "w", encoding="utf-8") as fh:
-                fh.write(t)
+            with open(full, "wb") as fh:  # bytes: a CR or a U+2028 stays what the test wrote
+                fh.write(t if isinstance(t, bytes) else t.encode("utf-8"))
+
+    def rebase_to(self, files):
+        """Make `files` the new base (one more commit), so a case can start from another base."""
+        self.write(files)
+        git(self.d, "add", "-A")
+        git(self.d, "commit", "-q", "-m", "base2")
+        self.base = git(self.d, "rev-parse", "HEAD").strip()
 
     def classify(self, change, title="fix(security): Go 1.27.2"):
         self.write(change)
@@ -163,7 +170,8 @@ class Classified(unittest.TestCase):
                              cwd=self.d, check=True, capture_output=True, text=True).stdout
         got = {}
         gate = []
-        for line in out.splitlines():
+        self.lines = out.split("\n")[:-1]  # the classifier prints "\n" separated lines only
+        for line in self.lines:
             k, v = line.split("=", 1)
             if k == "gate_file":
                 gate.append(v)
@@ -225,6 +233,86 @@ class Classified(unittest.TestCase):
     def test_docs_and_scripts_ride_along(self):
         got = self.classify({**CHANGE_491, "docs/x.md": "x\n", "scripts/proof/run.sh": "echo 2\n"})
         self.assertEqual(got["exempt"], "toolchain-only")
+
+    # ---- B1: a line break that Python's text mode or str.splitlines() sees and Docker/Go do not ----
+
+    def test_cr_fips_a_cr_hides_a_build_arg_in_a_comment(self):
+        # Dockerfile.logs: the Go tag moves and the LF between the comment and `ARG FIPS=0` becomes a CR.
+        # Docker reads one comment line (the ARG is gone); a CR-translating reader saw an unchanged file.
+        head = bump(DOCKERFILE).replace("# set per deployment.\nARG FIPS=0", "# set per deployment.\rARG FIPS=0")
+        self.assertNotEqual(head, bump(DOCKERFILE))
+        got = self.classify({**CHANGE_491, "Dockerfile.logs": head})
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+        self.assertIn("Dockerfile.logs", got["reason"])
+
+    def test_cr_replace_tc_a_cr_hides_a_replace_directive(self):
+        self.rebase_to({"go.mod": GO_MOD + "\nreplace github.com/a/b => ./deps/b\n"})
+        head = GO_MOD_491 + "\n// local tree\rreplace github.com/a/b => ./deps/b\n"
+        got = self.classify({"go.mod": head, "go.sum": GO_SUM_491})
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_every_line_separator_python_knows_is_rejected(self):
+        self.rebase_to({"go.mod": GO_MOD + "\nreplace github.com/a/b => ./deps/b\n"})
+        for sep in ("\r", "\u2028", "\u2029", "\u0085", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e"):
+            with self.subTest(repr(sep)):
+                git(self.d, "reset", "-q", "--hard", self.base)
+                got = self.classify({"go.mod": GO_MOD_491 + "\n// local tree" + sep + "replace github.com/a/b => ./deps/b\n"})
+                self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_a_separator_on_an_unchanged_line_of_a_covered_file_is_rejected_too(self):
+        # not a smuggle by itself, but no covered file of this repository holds one: nothing to verify
+        self.rebase_to({"go.mod": GO_MOD + "\n// a\u2028b\n"})
+        got = self.classify({"go.mod": GO_MOD_491 + "\n// a\u2028b\n"})
+        self.assertEqual(got["exempt"], "none")
+
+    def test_tc_unidigit_a_unicode_digit_is_not_a_version(self):
+        for tag in ("golang:1.27.\u0663-alpine3.23", "golang:1.27.2-alpine3.\u0662\u0663", "golang:\u0661.27.2-alpine3.23"):
+            with self.subTest(tag):
+                git(self.d, "reset", "-q", "--hard", self.base)
+                got = self.classify({**CHANGE_491, "Dockerfile.logs": DOCKERFILE.replace("golang:1.27.1-alpine3.23", tag)})
+                self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_a_unicode_digit_in_go_mod_directive_is_not_a_version(self):
+        got = self.classify({"go.mod": GO_MOD_491.replace("go 1.27.2", "go 1.27.\u0663")})
+        self.assertEqual(got["exempt"], "none")
+
+    def test_a_whole_file_with_crlf_endings_is_never_verified(self):
+        # the covered files of this repository are all LF (git ls-files --eol); a CRLF file is not
+        # silently read as LF: it is not verified and the PR stays an ordinary product change
+        crlf = {p: t.replace("\n", "\r\n") for p, t in {"go.mod": GO_MOD, "Dockerfile.logs": DOCKERFILE}.items()}
+        self.rebase_to(crlf)
+        head = {"go.mod": crlf["go.mod"].replace("go 1.27.1", "go 1.27.2"), "Dockerfile.logs": crlf["Dockerfile.logs"].replace("1.27.1", "1.27.2")}
+        got = self.classify(head)
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_a_non_ascii_changed_line_is_rejected_but_an_unchanged_one_is_fine(self):
+        self.rebase_to({"go.mod": GO_MOD.replace("module github.com/x/y", "// the commit \u2014 pinned\nmodule github.com/x/y")})
+        ok = self.classify({"go.mod": GO_MOD_491.replace("module github.com/x/y", "// the commit \u2014 pinned\nmodule github.com/x/y")})
+        self.assertEqual(ok["exempt"], "toolchain-only")
+        git(self.d, "reset", "-q", "--hard", self.base)
+        bad = self.classify({"go.mod": GO_MOD_491.replace("module github.com/x/y", "// the commit \u2014 pinned\nmodule github.com/x/y").replace("go 1.27.2", "go 1.27.2 // caf\u00e9")})
+        self.assertEqual(bad["exempt"], "none")
+
+    def test_invalid_utf8_is_not_verified(self):
+        got = self.classify({**CHANGE_491, "go.mod": GO_MOD_491.encode() + b"\xff\n"})
+        self.assertEqual(got["exempt"], "none")
+
+    def test_tc_xxhash_the_stream_id_hash_is_storage_critical(self):
+        base = GO_MOD.replace("\n)\n", "\n\tgithub.com/cespare/xxhash/v2 v2.3.0\n)\n")
+        self.rebase_to({"go.mod": base})
+        got = self.classify({"go.mod": base.replace("go 1.27.1", "go 1.27.2").replace("xxhash/v2 v2.3.0", "xxhash/v2 v2.4.0")})
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_tc_alpinever_an_alpine_release_only_change_is_toolchain_only_by_design(self):
+        # documented in tests/conformance/README.md: the builder image's alpine release is part of the toolchain
+        got = self.classify({"Dockerfile.logs": DOCKERFILE.replace("alpine3.23", "alpine3.24")})
+        self.assertEqual((got["exempt"], got["product"]), ("toolchain-only", "0"))
+
+    def test_a_path_with_a_newline_cannot_forge_a_classifier_line(self):
+        name = "scripts/ci/a\nexempt=release-metadata"
+        got = self.classify({**CHANGE_491, name: "x\n"})
+        self.assertEqual([ln for ln in self.lines if ln.startswith("exempt=")], ["exempt=none"])
+        self.assertIn("scripts/ci/a\\x0aexempt=release-metadata", got["gate_files"])
 
 
 if __name__ == "__main__":

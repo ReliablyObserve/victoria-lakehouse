@@ -9,6 +9,7 @@ name: Gate Self-test
 # This workflow is a check on the gate, not part of it: it runs the PR's own copy (the PR
 # changes the gate and its expected table together, so the PR's copy is what must be
 # consistent). The gate that judges a PR runs from the merge base (registry-gate*.yaml).
+# Actions are pinned by commit SHA, like the gate workflows.
 
 on:
   pull_request:
@@ -20,6 +21,7 @@ on:
       - '.github/workflows/registry-gate-base.yaml'
       - '.github/workflows/gate-selftest.yaml'
       - '.github/registry-exempt-approvers'
+      - '.github/release-metadata-approvers'
       - 'Makefile'
   push:
     branches: [main]
@@ -47,18 +49,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install test dependencies
         run: python -m pip install --disable-pip-version-check pyyaml==6.0.2
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps/VictoriaLogs
@@ -69,28 +71,29 @@ jobs:
         run: make deps-logs deps-traces deps-vt
       - name: Classifier and workflow tests (python)
         run: python -m unittest discover -s scripts/ci/tests -p 'test_pr_classify*.py' -v && python -m unittest scripts/ci/tests/test_gate_workflows_static.py -v
-      - name: Replay harness self-test (stub gate, seconds)
-        run: bash scripts/ci/tests/gate_replay_test.sh
+      - name: Replay harness and make registry-gate self-tests (stub gate, seconds)
+        run: bash scripts/ci/tests/gate_replay_test.sh && bash scripts/ci/tests/gate_local_test.sh
       - name: Gate engine tests (go)
         run: go test ./tests/conformance/registry/ ./tests/conformance/cmd/... -count=1 -timeout=5m
 
   gate-replay:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    # The table is split over three jobs: a large recorded pull request takes a minute or two
-    # to judge, and the whole table is about half an hour on one runner.
+    # The table is split over three jobs. Measured 2026-10-11: a large recorded pull request takes
+    # 1 to 1.5 minutes to judge (locally #483 68 s, #487 79 s) and one CI shard about 1:40; the
+    # timeout below is a generous bound, and a timeout fails the job (closed).
     strategy:
       fail-fast: false
       matrix:
         shard: ["0/3", "1/3", "2/3"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install test dependencies

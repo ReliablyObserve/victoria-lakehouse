@@ -327,7 +327,95 @@ func TestGolangImageBumpOnly_SharedFixture(t *testing.T) {
 			t.Errorf("%s: got %v, want %v", c.Name, got, c.Want)
 		}
 	}
-	if n < 8 {
+	if n < 12 {
 		t.Errorf("the shared fixture has only %d compose cases", n)
+	}
+}
+
+// The reviewer's smuggles: a lone CR, a Unicode digit, a Unicode separator and invalid UTF-8 are
+// never a verified image bump, whatever the rest of the file says.
+func TestGolangImageBumpOnly_UnreadableBytesAreNeverABump(t *testing.T) {
+	for name, head := range map[string]string{
+		"a CR after the bumped line":           "    image: golang:1.27.2\r\n    command: x\n",
+		"a CR instead of the LF":               "    image: golang:1.27.2\r    command: x\n",
+		"an Arabic-Indic digit in the version": "    image: golang:1.27.\u0663\n    command: x\n",
+		"a Unicode line separator":             "    image: golang:1.27.2\u2028    command: x\n",
+		"invalid UTF-8":                        "    image: golang:1.27.2\n    command: x\xff\n",
+		"a BOM":                                "\ufeff    image: golang:1.27.2\n    command: x\n",
+	} {
+		if GolangImageBumpOnly([]byte("    image: golang:1.27.1\n    command: x\n"), []byte(head)) {
+			t.Errorf("%s must not be a verified bump", name)
+		}
+	}
+	// the same file with CR in BOTH revisions is still not read as LF text
+	crlf := "    image: golang:1.27.1\r\n"
+	if GolangImageBumpOnly([]byte(crlf), []byte(strings.Replace(crlf, "1.27.1", "1.27.2", 1))) {
+		t.Error("a CRLF file is not verified")
+	}
+	// an em dash in an untouched comment line is fine (the compose file of this repository holds some)
+	base := "    # a \u2014 b\n    image: golang:1.27.1\n"
+	if !GolangImageBumpOnly([]byte(base), []byte(strings.Replace(base, "1.27.1", "1.27.2", 1))) {
+		t.Error("an unchanged UTF-8 comment must not block a bump")
+	}
+}
+
+func lockInitVar(baseTree, headTree tree) []string {
+	refs := LockTestRefs(lockRows("tests/parity/lock_test.go#TestLock", "internal/p/p_test.go#TestP"))
+	return LockInitVarAdditions(refs, baseTree.src, headTree.src, headTree.list)
+}
+
+func TestLockInitVarAdditions(t *testing.T) {
+	base := func() tree {
+		tr := parityTree()
+		tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1}\n\nvar _ = 0\n\nfunc init() {}\n"
+		tr["internal/p/p_test.go"] = "package p\n\nfunc TestP(t *testing.T) {}\n"
+		tr["internal/p/p.go"] = "package p\n\nfunc F() {}\n"
+		return tr
+	}
+	cp := func(mod func(tr tree)) tree { tr := base(); mod(tr); return tr }
+	cases := []struct {
+		name string
+		head tree
+		want int // number of flagged files
+		frag string
+	}{
+		{"nothing changed", base(), 0, ""},
+		{"init_exit: a new test file whose init() exits when the nonce is set", cp(func(tr tree) {
+			tr["tests/parity/zz_env_test.go"] = "package parity\n\nimport \"os\"\n\nfunc init() {\n\tif os.Getenv(\"PARITY_LOCK_NONCE\") != \"\" {\n\t\tos.Exit(0)\n\t}\n}\n"
+		}), 1, "adds 1 new init() function(s)"},
+		{"a new file with a package-level var initializer", cp(func(tr tree) {
+			tr["tests/parity/zz.go"] = "package parity\n\nvar _ = func() int { return 0 }()\n"
+		}), 1, "package-level var _"},
+		{"an init() added to an existing lock file", cp(func(tr tree) { tr["tests/parity/lock_test.go"] += "\nfunc init() {}\n" }), 1, "tests/parity/lock_test.go"},
+		{"a var added to an existing helper file", cp(func(tr tree) { tr["tests/parity/helpers.go"] += "\nvar x = 1\n" }), 1, "package-level var x"},
+		{"a second blank var in a file that had one", cp(func(tr tree) { tr["tests/parity/vars.go"] += "\nvar _ = 1\n" }), 1, "package-level var _"},
+		{"a second init() in a file that had one", cp(func(tr tree) { tr["tests/parity/vars.go"] += "\nfunc init() {}\n" }), 1, "1 new init()"},
+		{"a var inside a grouped declaration", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\nvar (\n\ta = 1\n\tb = 2\n)\n" }), 1, "package-level var a, b"},
+		{"an existing var table edited in place is only listed as lock-affecting, not failed", cp(func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1, 2, 3}\n\nvar _ = 0\n\nfunc init() {}\n"
+		}), 0, ""},
+		{"removing a var and an init() is free", cp(func(tr tree) { tr["tests/parity/vars.go"] = "package parity\n" }), 0, ""},
+		{"funcs, consts and types are free", cp(func(tr tree) {
+			tr["tests/parity/zz.go"] = "package parity\n\nconst K = 1\n\ntype T struct{}\n\nfunc Helper() {}\n\nfunc TestNew(t *testing.T) { var local = 1; _ = local }\n"
+		}), 0, ""},
+		{"a local var inside a func is free", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\nfunc f() { var x = 1; _ = x }\n" }), 0, ""},
+		{"a method named init is not init()", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\ntype T struct{}\n\nfunc (T) init() {}\n" }), 0, ""},
+		{"a new file that does not parse", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\nfunc (\n" }), 1, "does not parse"},
+		{"a product package: a new non-test file with init and var is product code", cp(func(tr tree) {
+			tr["internal/p/new.go"] = "package p\n\nvar V = 1\n\nfunc init() {}\n"
+		}), 0, ""},
+		{"a product package: a new _test.go with a var is not free", cp(func(tr tree) { tr["internal/p/v_test.go"] = "package p\n\nvar V = 1\n" }), 1, "internal/p/v_test.go"},
+		{"a product package: an init() added to an existing _test.go is not free", cp(func(tr tree) { tr["internal/p/p_test.go"] += "\nfunc init() {}\n" }), 1, "internal/p/p_test.go"},
+		{"a package without a lock is free", cp(func(tr tree) { tr["tests/other/zz_test.go"] = "package other\n\nvar V = 1\n\nfunc init() {}\n" }), 0, ""},
+	}
+	for _, c := range cases {
+		got := lockInitVar(base(), c.head)
+		if len(got) != c.want {
+			t.Errorf("%s: got %d flagged %v, want %d", c.name, len(got), got, c.want)
+			continue
+		}
+		if c.frag != "" && !strings.Contains(strings.Join(got, "\n"), c.frag) {
+			t.Errorf("%s: %v lacks %q", c.name, got, c.frag)
+		}
 	}
 }

@@ -37,6 +37,19 @@ class GateWorkflows(unittest.TestCase):
                 if re.search(r"uses: \S+@[0-9a-f]{40}", line):
                     self.assertRegex(line, r"# v\d", f"{name}: {line.strip()}")
 
+    def test_the_selftest_workflow_pins_by_sha_too(self):
+        # gate-selftest.yaml replays the gate over history: a moved tag must not change what it runs
+        text, doc = load("gate-selftest.yaml")
+        found = 0
+        for step in steps(doc):
+            if "uses" in step:
+                found += 1
+                self.assertRegex(step["uses"], r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$", step["uses"])
+        for line in text.splitlines():
+            if re.search(r"uses: \S+@[0-9a-f]{40}", line):
+                self.assertRegex(line, r"# v\d+\.\d+\.\d+", line.strip())
+        self.assertGreaterEqual(found, 6)
+
     def test_setup_go_has_no_cache_and_no_cache_action(self):
         for name in self.NAMES:
             text, doc = load(name)

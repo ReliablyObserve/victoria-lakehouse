@@ -18,8 +18,9 @@
 #                pull_request_target passes its own base checkout instead.
 #   RUNNER_TEMP  scratch directory (default /tmp)
 #   PR_TITLE PR_AUTHOR PR_NUMBER
-#                the event data the gate reads (title and author only); passed through,
-#                nothing else is. No label and no PR body reach the gate: it has no exemption.
+#                the event data passed through to the gate (nothing else is). Only the author is
+#                read (the release-metadata kind); the title is passed for the gate code of an older
+#                merge base and ignored by this one. No label and no PR body reach the gate: it has no exemption.
 #   GITHUB_STEP_SUMMARY GITHUB_OUTPUT   passed through when set
 #   GATE_GOTOOLCHAIN  GOTOOLCHAIN for the testlinks build (default local: the workflow
 #                installed the exact Go the base's go.mod asks for)

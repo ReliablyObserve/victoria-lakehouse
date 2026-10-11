@@ -177,6 +177,7 @@ type rule struct {
 	fails   []string // one entry per failure group
 	fixes   []string // one line per failure group: how to fix it
 	lines   [][]string
+	review  int // files the verdict PASS hands to the required review (listed in the report)
 }
 
 func (r *rule) verdict() string {
@@ -185,6 +186,10 @@ func (r *rule) verdict() string {
 		return "FAIL"
 	case r.skipped != "":
 		return "n/a"
+	case r.review == 1:
+		return "PASS - 1 lock-affecting file needs review (listed below)"
+	case r.review > 1:
+		return fmt.Sprintf("PASS - %d lock-affecting files need review (listed below)", r.review)
 	}
 	return "PASS"
 }
@@ -192,15 +197,20 @@ func (r *rule) verdict() string {
 // fail prints a failure group the way the gate always has (an annotation, the
 // offending lines) and records it for the report.
 func (r *rule) fail(headline string, lines []string, fix string) {
-	fmt.Println("::error::" + headline)
+	// headline and lines can hold author-controlled text (paths, row ids, test names): escaped as
+	// workflow-command data / inert log lines, never printed raw
+	fmt.Println("::error::" + registry.WorkflowData(headline))
 	for _, l := range lines {
-		fmt.Println("  " + l)
+		fmt.Println("  " + registry.LogSafe(l))
 	}
 	fmt.Println("  how to fix: " + fix)
 	r.fails = append(r.fails, headline)
 	r.fixes = append(r.fixes, fix)
 	r.lines = append(r.lines, lines)
 }
+
+// maxAnnotations bounds the inline annotations of one kind; the rest is one "... and N more" line.
+const maxAnnotations = 10
 
 // maxReportLines bounds the offending lines the report quotes per failure group.
 const maxReportLines = 25
@@ -218,7 +228,7 @@ func writeReport(dir string, rules []*rule, lockAffecting []string, summary stri
 		if len(r.fails) > 0 {
 			detail = strings.Join(r.fails, "; ")
 		}
-		fmt.Fprintf(&rows, "| %s | %s | %s |\n", r.id+": "+r.title, r.verdict(), strings.ReplaceAll(detail, "|", "\\|"))
+		fmt.Fprintf(&rows, "| %s | %s | %s |\n", r.id+": "+r.title, r.verdict(), registry.MDEscape(detail))
 	}
 	if err := os.WriteFile(filepath.Join(dir, "rules.md"), []byte(rows.String()), 0o600); err != nil {
 		return err
@@ -243,7 +253,7 @@ func writeReport(dir string, rules []*rule, lockAffecting []string, summary stri
 					fmt.Fprintf(&what, "- … and %d more (see the job log)\n", len(ls)-maxReportLines)
 					break
 				}
-				fmt.Fprintf(&what, "- `%s`\n", strings.ReplaceAll(l, "`", "'"))
+				fmt.Fprintf(&what, "- `%s`\n", registry.MDEscape(l))
 			}
 			what.WriteString("\n")
 		}
@@ -257,11 +267,15 @@ func writeReport(dir string, rules []*rule, lockAffecting []string, summary stri
 	} else {
 		d.WriteString("These files belong to a package that holds a registry lock, or to the lock suites' runtime configuration. The gate lists them so the reviewer sees them; it does not block them.\n\n")
 		for _, l := range lockAffecting {
-			d.WriteString("- `" + strings.Replace(l, ": ", "`: ", 1) + "\n")
+			path, reason, _ := strings.Cut(l, ": ")
+			d.WriteString("- `" + registry.MDEscape(path) + "`: " + registry.MDEscape(reason) + "\n")
 		}
 		d.WriteString("\n")
 	}
 	d.WriteString(summary + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "review-count"), []byte(fmt.Sprintf("%d\n", len(lockAffecting))), 0o600); err != nil {
+		return err
+	}
 	return os.WriteFile(filepath.Join(dir, "details.md"), []byte(d.String()), 0o600)
 }
 
@@ -467,6 +481,12 @@ func run() int {
 		r3.fail("this PR changes the TestMain of a package that holds a registry lock", tm,
 			"revert the TestMain change: a TestMain that can exit early silences every test of its package, locks included")
 	}
+	// Load-time code: a lock package may not gain an init() or a package-level var (it runs before
+	// any test and can exit, skip or repoint shared state). A content rule, hard like TestMain.
+	if iv := registry.LockInitVarAdditions(registry.LockTestRefs(bs.Rows), show(*base), show(*head), packageFiles(*repo, *head)); len(iv) > 0 {
+		r3.fail("this PR adds init() or a package-level var to a package that holds a registry lock", iv,
+			"move the setup into the test function or a helper func the test calls: a package-level var initializer and init() run before every test of the package, can call os.Exit and can repoint shared state, which would silence the locks")
+	}
 	// Lock-affecting files: every existing file of a package that holds a lock test, the
 	// lock suites' runtime config, and new files there that declare vars, init or TestMain.
 	// Informational: the report lists them for the required review; they do not fail.
@@ -478,8 +498,15 @@ func run() int {
 	}
 	if len(lc) > 0 {
 		fmt.Println("lock-affecting files in this PR (listed in the report, not a failure):")
+		var paths []string
 		for _, w := range lc {
-			fmt.Println("  " + w)
+			fmt.Println("  " + registry.LogSafe(w))
+			p, _, _ := strings.Cut(w, ": ")
+			paths = append(paths, p)
+		}
+		// inline in the PR's Files tab: the approval of the required reviewer is the control here
+		for _, a := range registry.WorkflowWarnings(paths, "lock-affecting file: the owner's approval is the control", maxAnnotations) {
+			fmt.Println(a)
 		}
 	}
 	summary, substantive, err := registryChanges(*repo, *base, *head, show)
@@ -502,6 +529,7 @@ func run() int {
 	r1.note = fmt.Sprintf("%d registry entries changed by more than prose", len(substantive))
 	r2.note = fmt.Sprintf("%d tests added, all linked; no reference to a removed test", len(added))
 	r3.note = fmt.Sprintf("no lock weakened; parity-fix PR: %v", pv.Fix)
+	r3.review = len(lc)
 	if *reportDir != "" {
 		if err := writeReport(*reportDir, []*rule{r1, r2, r3}, lc, summary); err != nil {
 			fmt.Fprintln(os.Stderr, "testlinks: report:", err)

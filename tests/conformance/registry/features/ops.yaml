@@ -161,7 +161,16 @@
     - tests/conformance/registry/lockcode_test.go#TestGolangImageBumpOnly
     - tests/conformance/registry/lockcode_test.go#TestGolangImageBumpOnly_SharedFixture
     - tests/conformance/registry/lockcode_test.go#TestLockCodeChanges_ParityComposeToolchainImageBumpIsNotLockCode
+    - tests/conformance/registry/lockcode_test.go#TestGolangImageBumpOnly_UnreadableBytesAreNeverABump
+    - tests/conformance/registry/lockcode_test.go#TestLockInitVarAdditions
+    - tests/conformance/registry/escape_test.go#TestMDEscape
+    - tests/conformance/registry/escape_test.go#TestWorkflowEscape
+    - tests/conformance/registry/escape_test.go#TestLogSafe
+    - tests/conformance/registry/escape_test.go#TestWorkflowWarnings
+    - tests/conformance/registry/paritygate_test.go#TestSummarizeChanges_EscapesHostileIDs
     - scripts/ci/tests/test_pr_classify_toolchain.py
+    - scripts/ci/tests/test_pr_classify_critical.py
+    - scripts/ci/tests/gate_local_test.sh
     - scripts/ci/tests/gate_replay_test.sh
     - scripts/ci/tests/test_check_registry_touch.sh
     - scripts/ci/tests/test_pr_classify_paths.py

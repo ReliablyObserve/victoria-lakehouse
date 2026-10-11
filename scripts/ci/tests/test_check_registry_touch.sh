@@ -100,13 +100,13 @@ FIXTURE
     printf 'jobs:\n  parity:\n    steps:\n      - run: |\n          python scripts/ci/parity_ratchet.py \\\n            --allowlist tests/parity/known_failures.txt \\\n            --summary-file x\n' > .github/workflows/parity.yaml
     mkdir -p internal/ui/static charts/victoria-lakehouse/templates
     printf 'window.x = 0;\n' > internal/ui/static/lakehouse-ui.js
-    printf 'FROM --platform=$BUILDPLATFORM golang:1.22.0-alpine3.20 AS builder\nARG VL_VERSION=v1.0.0\nRUN make\n' > Dockerfile.logs
+    printf 'FROM --platform=$BUILDPLATFORM golang:1.22.0-alpine3.20 AS builder\nARG VL_VERSION=v1.0.0\n# FIPS is set per deployment.\nARG FIPS=0\nRUN make\n' > Dockerfile.logs
     printf 'ARG X=1\n' > Dockerfile.loki-vl-proxy
     printf 'apiVersion: v2\nname: c\ndescription: d\nversion: 1.0.0\nappVersion: "1.0.0"\n' > charts/victoria-lakehouse/Chart.yaml
     printf '# chart\n' > charts/victoria-lakehouse/README.md
     printf '#!/bin/sh\n' > charts/victoria-lakehouse/test_templates.sh
     printf '# x\nversion 1.0.0 here\n' > README.md
-    printf 'module x\n\ngo 1.22\n\nrequire (\n\tgithub.com/a/b v1.0.0\n\tgithub.com/klauspost/compress v1.0.0\n\tgithub.com/golang/snappy v1.0.0\n\tgoogle.golang.org/protobuf v1.0.0\n\tgithub.com/pierrec/lz4/v4 v4.0.0\n\tgithub.com/VictoriaMetrics/c v1.0.0\n)\n' > go.mod
+    printf 'module x\n\ngo 1.22\n\nrequire (\n\tgithub.com/a/b v1.0.0\n\tgithub.com/klauspost/compress v1.0.0\n\tgithub.com/golang/snappy v1.0.0\n\tgoogle.golang.org/protobuf v1.0.0\n\tgithub.com/pierrec/lz4/v4 v4.0.0\n\tgithub.com/VictoriaMetrics/c v1.0.0\n\tgithub.com/cespare/xxhash/v2 v2.3.0\n)\n' > go.mod
     printf 'VL_VERSION_LOGS := v1.0.0\nVL_COMMIT_TRACES := abc123\nVT_VERSION := v0.1.0\nall:\n' > Makefile
     printf 'x\n' > go.sum
     printf 'package x\n\nimport "testing"\n\nfunc TestE(t *testing.T) {}\n' > internal/x/e_test.go
@@ -404,7 +404,7 @@ move_test_to_other_file() {
   git mv tests/parity/parity_test.go tests/parity/moved_test.go
   sed -i.bak 's/parity_test.go/moved_test.go/' tests/conformance/registry/rows/lh/endpoints.yaml && rm -f tests/conformance/registry/rows/lh/endpoints.yaml.bak
 }
-dependency_bump() { sed -i.bak 's#github.com/a/b v1.0.0#github.com/a/b v1.2.3#' go.mod && rm -f go.mod.bak; printf 'a==1\n' > requirements.txt; printf 'y\n' >> go.sum; }
+dependency_bump() { sed -i.bak 's#github.com/a/b v1.0.0#github.com/a/b v1.2.3#' go.mod && rm -f go.mod.bak; printf 'a==1\n' > requirements.txt; printf 'github.com/a/b v1.2.3 h1:aaa=\n' >> go.sum; }
 docs_only() { printf '# doc\n' > docs/x.md; }
 ci_only() { printf 'name: x\n' > .github/workflows/x.yaml; mkdir -p scripts/bench; printf '#!/bin/sh\n' > scripts/bench/foo.sh; }
 
@@ -434,8 +434,11 @@ run_case "moving a lock test to another file is reported as lock-affecting, not 
 
 echo
 echo "== exemptions =="
-COMMIT_MSG='build(deps): bump y' run_case "a dependency-only PR passes" ok "skipped (dependency-only PR)" dependency_bump
-run_case "a go.mod bump under a non-dependency commit subject is product (kills the commit-subject mutant)" fail "shipped build file: go.mod" dependency_bump
+COMMIT_MSG='build(deps): bump y' run_case "a dependency-only PR passes" ok "PR kind: \`dependency-only\`" dependency_bump
+# the kind is decided from the diff alone: the commit subject is not an input (it was, and the author writes it)
+COMMIT_MSG='feat: not a deps commit, the content decides' run_case "a dependency bump is dependency-only whatever the commit subject says" ok "PR kind: \`dependency-only\`" dependency_bump
+run_case "dependency-only waives Rule 1 only: Rules 2 and 3 still report" ok "Rule 3: parity fixes ship locks, locks are not weakened | PASS" dependency_bump
+run_case "dependency-only: Rule 1 is n/a" ok "Rule 1: a product change changes the registry | n/a" dependency_bump
 run_case "a docs-only PR passes" ok "registry-touch check OK" docs_only
 run_case "a CI-only PR passes" ok "registry-touch check OK" ci_only
 
@@ -566,11 +569,14 @@ run_case "B2: a non-test Go file named test_*.go is product code" fail "product 
 run_case "internal testdata, README, RUNBOOK and test_*.sh scripts are not product" ok "registry-touch check OK" doc_and_testdata_only
 run_case "B3: a Code-generated marker on a product file does not exempt it" fail "product code: internal/x/x.go" b3_generated_marker
 COMMIT_MSG='chore(deps): bump parquet-go' run_case "B4: a go.mod replace directive is never dependency-only" fail "shipped build file: go.mod" b4_replace_directive
+PR_TITLE='build(deps): bump' COMMIT_MSG='feat: x' run_case "and the PR title is no input either: a product go.mod edit titled build(deps) is not dependency-only" fail "shipped build file: go.mod" b4_replace_directive
 COMMIT_MSG='chore(deps): bump c' run_case "a VictoriaMetrics/* module bump is never dependency-only" fail "shipped build file: go.mod" dep_vm_module
 COMMIT_MSG='chore(deps): bump go' run_case "a go directive change is never dependency-only; it is toolchain-only (Rule 1 waived, Rules 2-3 run)" ok "toolchain-only" dep_go_directive
-COMMIT_MSG='build(deps): add e' run_case "a new require line is dependency-only" ok "skipped (dependency-only PR)" dep_new_require
-COMMIT_MSG='build(deps): bump y' run_case "go.sum and requirements.txt alone are dependency-only" ok "skipped (dependency-only PR)" \
-  bash -c "printf 'y\n' >> go.sum; printf 'a==1\n' > requirements.txt"
+COMMIT_MSG='build(deps): add e' run_case "a new require line is dependency-only" ok "PR kind: \`dependency-only\`" dep_new_require
+COMMIT_MSG='build(deps): bump y' run_case "go.sum hash lines and requirements.txt alone are dependency-only" ok "PR kind: \`dependency-only\`" \
+  bash -c "printf 'github.com/a/b v1.2.3 h1:aaa=\n' >> go.sum; printf 'a==1\n' > requirements.txt"
+COMMIT_MSG='build(deps): bump y' run_case "a go.sum line that is not a hash line is not dependency-only" fail "shipped build file: go.sum" \
+  bash -c "printf 'y\n' >> go.sum"
 run_case "B5: a shipped Dockerfile change is product" fail "shipped build file: Dockerfile.logs" b5_dockerfile
 run_case "the loki-vl-proxy Dockerfile is not shipped product" ok "registry-touch check OK" other_dockerfile
 run_case "lakehouse-traces/go.mod is product" fail "product code: lakehouse-traces/go.mod" traces_go_mod
@@ -1055,26 +1061,26 @@ FIXTURE
     bash -c '! git diff --name-only base HEAD | grep -vxE "CHANGELOG.md|charts/victoria-lakehouse/Chart.yaml|docs/features.md|UPSTREAM_COVERAGE.md|README.md"'
   check_step "the registry gate passes" env SKIP_CONFGEN_CHECK= PR_AUTHOR=szibis bash "$CHECKER" base
   check_step "the registry gate reports a release-metadata PR" \
-    bash -c 'out=$(python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers); echo "$out"; git diff --stat base HEAD; git diff base HEAD -- docs/features.md | grep "^[-+]" | head -20; grep -qx "exempt=release-metadata" <<<"$out"'
+    bash -c 'out=$(python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/release-metadata-approvers); echo "$out"; git diff --stat base HEAD; git diff base HEAD -- docs/features.md | grep "^[-+]" | head -20; grep -qx "exempt=release-metadata" <<<"$out"'
   check_step "the changelog gate passes" \
     python3 scripts/ci/check_changelog_pr.py --base base --head HEAD
 
   # Negatives, each one commit on top.
   check_step "a product file is added" bash -c 'echo "package server" > internal/zz_relmeta_fixture.go && git add -A && git commit -q -m "product"'
   check_step "the product PR is no longer a release-metadata PR" \
-    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/release-metadata-approvers | grep -qx "exempt=none"'
   check_step "the product PR is classified as product" \
-    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "product=1"'
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/release-metadata-approvers | grep -qx "product=1"'
   expect_fail "the registry gate fails a metadata-looking PR that also changes a product file" \
     env SKIP_CONFGEN_CHECK= PR_AUTHOR=szibis bash "$CHECKER" base
   check_step "the product file is dropped and a non-generated doc added" \
     bash -c 'git rm -q internal/zz_relmeta_fixture.go && echo x > docs/zz-relmeta-fixture.md && git add -A && git commit -q -m "doc"'
   check_step "a non-generated doc is not a release-metadata PR" \
-    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/release-metadata-approvers | grep -qx "exempt=none"'
   check_step "the non-generated doc is dropped and docs/features.md gets a change beyond version naming" \
     bash -c 'git rm -q docs/zz-relmeta-fixture.md && echo "an invented line" >> docs/features.md && git add -A && git commit -q -m "features edit"'
   check_step "a features.md change beyond version naming is not a release-metadata PR" \
-    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/registry-exempt-approvers | grep -qx "exempt=none"'
+    bash -c 'python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/release-metadata-approvers | grep -qx "exempt=none"'
   check_step "the changelog gate does not call it a release metadata sync" \
     bash -c '! python3 scripts/ci/check_changelog_pr.py --base base --head HEAD | grep -q "release metadata sync"'
 
@@ -1107,13 +1113,22 @@ other_test_file_edited() { printf 'package x\n\nimport "testing"\n\nfunc TestOth
 run_case "adding a Skip to a lock test file is a Rule 3 failure" fail "a Skip call was added" lock_test_edited
 run_case "the failure names the file" fail "tests/parity/parity_test.go" lock_test_edited
 run_case "adding a helper to a lock test file is reported, not failed" ok "tests/parity/parity_test.go: it holds a lock test" lock_helper_added
-run_case "a new file with init() in a lock package is reported" ok "tests/parity/setup_test.go: a new file in the package of a lock declares func init" lock_pkg_init_file
-run_case "G1: a new file with a package-level var initializer is reported" ok "tests/parity/zz_env_test.go: a new file in the package of a lock declares a package-level var" lock_pkg_var_file
+run_case "a new file with init() in a lock package is a Rule 3 failure" fail "tests/parity/setup_test.go: adds 1 new init() function(s) to a package that holds a registry lock" lock_pkg_init_file
+run_case "G1: a new file with a package-level var initializer is a Rule 3 failure" fail "tests/parity/zz_env_test.go: adds package-level var _ to a package that holds a registry lock" lock_pkg_var_file
+run_case "G1: the failure is Rule 3's row, with a how-to-fix line" fail "| Rule 3: parity fixes ship locks, locks are not weakened | FAIL" lock_pkg_var_file
+init_exit() {
+  # a test file whose init() ends the test binary with success when the nonce of the lock run is set: every lock of the package "passes"
+  registry_row_change
+  printf 'package parity\n\nimport "os"\n\nfunc init() {\n\tif os.Getenv("PARITY_LOCK_NONCE") != "" {\n\t\tos.Exit(0)\n\t}\n}\n' > tests/parity/zz_env_test.go
+}
+run_case "init_exit: a new test file whose init() exits 0 under the lock nonce is a Rule 3 failure" fail "adds 1 new init() function(s)" init_exit
 run_case "a new TestMain in a lock package is a Rule 3 failure (it can silence every lock of the package)" fail "TestMain of a package that holds a lock changed" lock_pkg_testmain_file
 run_case "and the new file is also listed as lock-affecting" fail "tests/parity/main_test.go: a new file in the package of a lock declares func TestMain" lock_pkg_testmain_file
 run_case "a new file with only funcs, consts and types is free" ok "testlinks OK" lock_pkg_func_only_file
 lock_pkg_init_appended() { registry_row_change; printf '\nfunc init() {}\n' >> tests/parity/parity_test.go; }
-run_case "G2: an init() appended to a test file of a lock package is reported" ok "tests/parity/parity_test.go: it holds a lock test" lock_pkg_init_appended
+run_case "G2: an init() appended to a test file of a lock package is a Rule 3 failure" fail "tests/parity/parity_test.go: adds 1 new init() function(s)" lock_pkg_init_appended
+lock_pkg_var_edited_in_place() { registry_row_change; printf 'package parity\n\nimport "testing"\n\nvar table = []int{1, 2}\n\nfunc TestOldParity(t *testing.T) {}\n' > tests/parity/parity_test.go; }
+run_case "a package var that is only a new table in a lock test file is a Rule 3 failure too (the file declares a var the base did not)" fail "package-level var table" lock_pkg_var_edited_in_place
 run_case "G3: the parity compose runtime config is reported" ok "tests/parity/docker-compose.yml: runtime configuration of the lock suites" lock_pkg_compose_edited
 run_case "an existing plain .go helper of a lock package is reported" ok "tests/parity/helpers.go" lock_pkg_existing_plain_go_edited
 parity_compose_toolchain_tag() { sedi 's#golang:1.22.0#golang:1.22.1#' tests/parity/docker-compose.yml; registry_row_change; }
@@ -1125,7 +1140,7 @@ lock_product_new_test_var() { registry_row_change; printf 'package x\n\nvar V = 
 run_case "a product file edit in a package that holds a lock passes" ok "registry-touch check OK" product_and_row
 run_case "a new non-test file in a product lock package is free" ok "" lock_product_new_nontest_file
 run_case "adding a Skip to a test file of a product lock package fails Rule 3" fail "internal/x/e_test.go" lock_product_test_file_edited
-run_case "a new test file with a package var in a product lock package is reported" ok "internal/x/v_test.go" lock_product_new_test_var
+run_case "a new test file with a package var in a product lock package is a Rule 3 failure" fail "internal/x/v_test.go: adds package-level var V" lock_product_new_test_var
 run_case "a new test file outside every lock package is free" ok "" other_test_file_edited
 
 echo
@@ -1203,6 +1218,107 @@ absent_case() {
   rm -rf "$dir"
 }
 absent_case "a golang image tag bump of the parity compose file is not listed as lock-affecting" "docker-compose.yml: runtime configuration" parity_compose_toolchain_tag
+
+echo
+echo "== B1/M2: a line break that the classifier's reader sees and Docker/Go do not =="
+# The fixture Dockerfile.logs holds "# FIPS is set per deployment." above "ARG FIPS=0". With the LF between
+# them replaced by a CR, Docker reads ONE comment line (the build argument is gone); a reader that turns a
+# lone CR into a line break saw an unchanged file and approved the Go bump as toolchain-only.
+swap_bytes() { python3 -c 'import sys; f,a,b=sys.argv[1:4]; s=open(f,"rb").read(); a=a.encode().decode("unicode_escape").encode("latin-1"); b=b.encode().decode("unicode_escape").encode("utf-8"); n=s.replace(a,b,1); assert n!=s, "nothing replaced"; open(f,"wb").write(n)' "$@"; }
+rebase_here() { git add -A; git commit -q -m "base2"; git branch -f base HEAD; }
+cr_fips() { tc_bump; swap_bytes Dockerfile.logs 'deployment.\nARG FIPS=0' 'deployment.\rARG FIPS=0'; }
+run_case "cr_fips: a CR between a comment and ARG FIPS=0 is not toolchain-only (it was approved)" fail "shipped build file: Dockerfile.logs" cr_fips
+cr_fips_lf() { tc_bump; }
+run_case "cr_fips control: the same bump without the CR is toolchain-only" ok "PR kind: \`toolchain-only\`" cr_fips_lf
+cr_replace_base() { printf '\nreplace github.com/a/b => ./deps/b\n' >> go.mod; rebase_here; }
+cr_replace_tc() { cr_replace_base; tc_bump; swap_bytes go.mod '\nreplace github.com/a/b' '\n// local tree\rreplace github.com/a/b'; }
+run_case "cr_replace_tc: a CR hiding a replace directive is not toolchain-only (the patched tree was dropped)" fail "makes no real content change" cr_replace_tc
+u2028_replace_tc() { cr_replace_base; tc_bump; swap_bytes go.mod '\nreplace github.com/a/b' '\n// local tree replace github.com/a/b'; }
+run_case "u2028_replace_tc: so does U+2028" fail "makes no real content change" u2028_replace_tc
+dep_bump_only() { sedi 's#github.com/a/b v1.0.0#github.com/a/b v1.2.3#' go.mod; printf 'github.com/a/b v1.2.3 h1:aaa=\n' >> go.sum; }
+cr_replace_dep() { cr_replace_base; dep_bump_only; swap_bytes go.mod '\nreplace github.com/a/b' '\n// local tree\rreplace github.com/a/b'; }
+u2028_replace_dep() { cr_replace_base; dep_bump_only; swap_bytes go.mod '\nreplace github.com/a/b' '\n// local tree replace github.com/a/b'; }
+COMMIT_MSG='build(deps): bump a/b' run_case "cr_replace_dep: a CR hiding a replace directive is not dependency-only (the gate skipped Rules 1-3)" fail "shipped build file: go.mod" cr_replace_dep
+COMMIT_MSG='build(deps): bump a/b' run_case "u2028_replace_dep: so does U+2028" fail "shipped build file: go.mod" u2028_replace_dep
+dep_bump_with_replace_kept() { cr_replace_base; dep_bump_only; }
+COMMIT_MSG='build(deps): bump a/b' run_case "control: the same bump with the replace line visible and unchanged is dependency-only" ok "PR kind: \`dependency-only\`" dep_bump_with_replace_kept
+tc_unidigit() { tc_bump; swap_bytes Dockerfile.logs 'golang:1.22.5' 'golang:1.22.٣'; }
+run_case "tc_unidigit: an Arabic-Indic digit in the golang tag is not a version" fail "shipped build file: Dockerfile.logs" tc_unidigit
+crlf_base() { python3 -c 'for f in ("go.mod", "Dockerfile.logs"):
+    data = open(f, "rb").read()
+    assert data
+    open(f, "wb").write(data.replace(b"\n", b"\r\n"))'; rebase_here; }
+crlf_whole_file() { crlf_base; tc_bump; }
+run_case "a whole file with CRLF endings in base and head is never verified (it stays a product change)" fail "makes no real content change" crlf_whole_file
+tc_xxhash() { tc_bump; sedi 's#xxhash/v2 v2.3.0#xxhash/v2 v2.4.0#' go.mod; }
+run_case "tc_xxhash: the stream-id hash is a storage-critical module, not a toolchain bump" fail "makes no real content change" tc_xxhash
+dep_xxhash() { sedi 's#xxhash/v2 v2.3.0#xxhash/v2 v2.4.0#' go.mod; }
+COMMIT_MSG='build(deps): bump xxhash' run_case "tc_xxhash: nor dependency-only" fail "shipped build file: go.mod" dep_xxhash
+tc_alpinever() { sedi 's#alpine3.20#alpine3.21#' Dockerfile.logs; }
+run_case "tc_alpinever: an alpine-release-only change is toolchain-only by design (documented)" ok "PR kind: \`toolchain-only\`" tc_alpinever
+
+echo
+echo "== M4: the control that replaces the old failures is visible =="
+two_lock_files() { registry_row_change; printf '\nfunc judge() bool { return true }\n' >> tests/parity/parity_test.go; printf '\nfunc helperEdited() {}\n' >> tests/parity/helpers.go; }
+run_case "a lock-affecting file is an inline annotation" ok "::warning file=tests/parity/parity_test.go::lock-affecting file: the owner's approval is the control" lock_helper_added
+run_case "the Rule 3 verdict says how many files need review" ok "| Rule 3: parity fixes ship locks, locks are not weakened | PASS - 2 lock-affecting files need review (listed below) |" two_lock_files
+run_case "the report header says it too, instead of a bare PASS" ok "## Registry gate: PASS - 2 lock-affecting files need review (listed below)" two_lock_files
+run_case "one file reads 'needs review'" ok "PASS - 1 lock-affecting file needs review (listed below)" lock_helper_added
+run_case "a gate file is an inline annotation" ok "::warning file=scripts/ci/pr_classify.py::gate file: the owner's approval is the control" gate_file_change
+run_case "a gate file shows in the header count" ok "## Registry gate: PASS - 1 gate file needs review (listed below)" gate_file_change
+lock_and_gate() { two_lock_files; gate_file_change; }
+run_case "lock-affecting and gate files are counted together" ok "## Registry gate: PASS - 2 lock-affecting files and 1 gate file need review (listed below)" lock_and_gate
+absent_case "a PR with nothing to review keeps the bare PASS" "need review" product_and_row
+
+many_gate_files() { local i; for i in 01 02 03 04 05 06 07 08 09 10 11 12; do printf '#!/bin/sh\n' > "scripts/ci/g$i.sh"; done; }
+cap_case() {
+  local name=$1 want=$2 fn=$3 dir out n
+  dir="$(new_repo)"
+  ( cd "$dir" && "$fn" && git add -A && git commit -q -m change ) >/dev/null 2>&1
+  out="$(cd "$dir" && bash "$CHECKER" base 2>&1)"
+  n=$(grep -c '^::warning file=scripts/ci/g' <<<"$out")
+  if [[ "$n" == 10 ]] && grep -qF -- "$want" <<<"$out"; then echo "ok   - $name"; pass=$((pass + 1)); else echo "FAIL - $name ($n inline annotations)"; echo "$out" | sed 's/^/       /' | head -30; fail=$((fail + 1)); fi
+  rm -rf "$dir"
+}
+cap_case "annotations are capped at 10 per kind, then one '... and N more' line" "::warning::... and 2 more gate files (see the job summary)" many_gate_files
+
+echo
+echo "== untrusted strings never reach the report or the log raw =="
+hostile_case() {
+  local dir out sum ok=1 why=""
+  dir="$(new_repo)"; sum="$(mktemp)"
+  (
+    cd "$dir" || exit 1
+    printf '#!/bin/sh\n' > 'scripts/ci/a`<!--x'
+    printf '#!/bin/sh\n' > 'scripts/ci/::error::boom'
+    printf '#!/bin/sh\n' > 'scripts/ci/p%q,r:s'
+    printf '#!/bin/sh\n' > 'scripts/ci/pipe|x'
+    printf -- '- {id: "lh.x\\n::error::forged`<!--|", title: t}\n' >> tests/conformance/registry/rows/lh/endpoints.yaml
+    git add -A && git commit -q -m change
+  ) >/dev/null 2>&1
+  out="$(cd "$dir" && GITHUB_STEP_SUMMARY="$sum" bash "$CHECKER" base 2>&1)"
+  if grep -q '<!--' "$sum"; then ok=0; why="$why raw <!-- in the report;"; fi
+  grep -q 'scripts/ci/a'"'"'&lt;!--x' "$sum" || { ok=0; why="$why escaped name missing from the report;"; }
+  grep -q 'scripts/ci/pipe\\|x' "$sum" || { ok=0; why="$why pipe not escaped;"; }
+  if sed 's/^[[:space:]]*//' <<<"$out" | grep -qE '^::error::(boom|forged)'; then ok=0; why="$why a hostile string started a workflow command in the log;"; fi
+  grep -q '^::warning file=scripts/ci/p%25q%2Cr%3As::gate file' <<<"$out" || { ok=0; why="$why property not escaped;"; }
+  grep -q 'lh.x ::error::forged' "$sum" || { ok=0; why="$why row id not flattened in the report;"; }
+  if [[ $ok -eq 1 ]]; then echo "ok   - hostile file names and row ids are escaped (report, annotations, log)"; pass=$((pass + 1)); else echo "FAIL - hostile strings:$why"; sed 's/^/       summary: /' "$sum" | head -40; echo "$out" | sed 's/^/       log: /' | head -40; fail=$((fail + 1)); fi
+  rm -rf "$dir" "$sum"
+}
+hostile_case
+
+echo
+echo "== the release-metadata approvers file was renamed: the merge base decides which name is read =="
+approvers_new_only() { git mv .github/registry-exempt-approvers .github/release-metadata-approvers; rebase_here; chart_version_bump_with_changelog; }
+approvers_both_new_wins() { printf '# approvers\nalice\n' > .github/release-metadata-approvers; rebase_here; chart_version_bump_with_changelog; }
+approvers_added_by_pr() { printf 'mallory\n' > .github/release-metadata-approvers; chart_version_bump_with_changelog; }
+PR_AUTHOR=szibis run_case "the new name alone is read" ok "skipped (release-metadata PR)" approvers_new_only
+PR_AUTHOR=mallory run_case "the new name alone: a stranger is still no approver" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" approvers_new_only
+PR_AUTHOR=alice run_case "both names at the merge base: the new one wins" ok "skipped (release-metadata PR)" approvers_both_new_wins
+PR_AUTHOR=szibis run_case "both names: a login only in the old file is not an approver" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" approvers_both_new_wins
+PR_AUTHOR=szibis run_case "the old name alone (a merge base before the rename) is the fallback" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
+PR_AUTHOR=mallory run_case "a PR cannot approve itself by adding the new file" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" approvers_added_by_pr
 
 run_unreleased_bullet_case
 
