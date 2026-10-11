@@ -220,7 +220,8 @@ func TestSmoke_LogsStreams(t *testing.T) {
 	}
 }
 
-// TestSmoke_TracesFieldNames verifies field_names returns trace-specific fields.
+// TestSmoke_TracesFieldNames verifies field_names returns trace-specific fields,
+// duration and kind among them as on hot VictoriaTraces (#269).
 func TestSmoke_TracesFieldNames(t *testing.T) {
 	params := defaultTimeParams()
 	params.Set("query", "*")
@@ -242,26 +243,10 @@ func TestSmoke_TracesFieldNames(t *testing.T) {
 		}
 	}
 
-	for _, required := range []string{"trace_id", "span_id"} {
+	for _, required := range []string{"trace_id", "span_id", "duration", "kind"} {
 		if !fieldNames[required] {
 			t.Errorf("missing expected trace field: %s", required)
 		}
-	}
-
-	// KNOWN GAP #269: lakehouse-traces lists Parquet column names, not
-	// VictoriaTraces' stored field names, so duration and kind (which hot VT
-	// lists) are absent. The gap must stay real: when #269 is fixed this
-	// check fails and the declaration is removed.
-	var absent []string
-	for _, field := range []string{"duration", "kind"} {
-		if !fieldNames[field] {
-			absent = append(absent, field)
-		}
-	}
-	if len(absent) == 0 {
-		t.Error("duration and kind are listed now: #269 is fixed, make them required above and delete this known-gap block")
-	} else {
-		t.Logf("KNOWN GAP #269: field_names lacks %v that hot VictoriaTraces lists", absent)
 	}
 }
 
