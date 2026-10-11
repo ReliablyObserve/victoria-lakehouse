@@ -5,6 +5,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/parquet-go/parquet-go"
 
@@ -28,10 +29,17 @@ type mapsThenScalars struct {
 
 func mapsThenScalarsFile(t *testing.T) []byte {
 	t.Helper()
+	return mapsThenScalarsFileAt(t, 0)
+}
+
+// mapsThenScalarsFileAt is the fixture with its three rows at base+1000,
+// base+2000 and base+3000 ns.
+func mapsThenScalarsFileAt(t *testing.T, base int64) []byte {
+	t.Helper()
 	rows := []mapsThenScalars{
-		{1000, "a", map[string]string{"rk": "rv1"}, map[string]string{"lk": "lv1"}, "INFO", "svc-a"},
-		{2000, "b", map[string]string{"rk": "rv2"}, map[string]string{"lk": "lv2"}, "ERROR", "svc-a"},
-		{3000, "c", nil, map[string]string{"lk": "lv3"}, "INFO", "svc-b"},
+		{base + 1000, "a", map[string]string{"rk": "rv1"}, map[string]string{"lk": "lv1"}, "INFO", "svc-a"},
+		{base + 2000, "b", map[string]string{"rk": "rv2"}, map[string]string{"lk": "lv2"}, "ERROR", "svc-a"},
+		{base + 3000, "c", nil, map[string]string{"lk": "lv3"}, "INFO", "svc-b"},
 	}
 	var buf bytes.Buffer
 	w := parquet.NewGenericWriter[mapsThenScalars](&buf)
@@ -70,5 +78,52 @@ func TestScanProjectedFieldValues_ScalarAfterMapsIsIndexedByLeaf(t *testing.T) {
 				t.Errorf("%s: %q hits %d, want %d (all: %v)", col, v, seen[v], n, seen)
 			}
 		}
+	}
+}
+
+// Twin of the scan test above for field_names, which now reads the rows
+// (storage.FieldNamesViaQuery over RunQuery) instead of the footers: the
+// scalar columns that follow the maps must be read from their own chunks, or the
+// rows carry another column's values. The level of the rows is the proof: the
+// filter picks the one ERROR row, so reading severity_text through a map's chunk
+// would match no row (or the wrong rows) and the hits would not be 1.
+func TestAccumulateFieldHits_ScalarAfterMapsIsIndexedByLeaf(t *testing.T) {
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC).UnixNano()
+	data := mapsThenScalarsFileAt(t, base)
+	key := "logs/dt=2026-06-09/hour=10/maps-names.parquet"
+	mock.putFile(key, data)
+	s.manifest.AddFile("dt=2026-06-09/hour=10", manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: 3, MinTimeNs: base + 1000, MaxTimeNs: base + 3000})
+
+	hits := func(query string) map[string]uint64 {
+		t.Helper()
+		got, err := s.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, query, base, base+4000))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return namesToHits(got)
+	}
+	all := hits("*")
+	if all["level"] != 3 || all["service.name"] != 3 || all["_msg"] != 3 {
+		t.Errorf("level, service.name and _msg are set on all 3 rows, got %v", all)
+	}
+	// A map read through another map's chunk would credit the wrong rows: rk is
+	// set on two rows, lk on three, but the block lists a column for all rows of
+	// its stream, so the proof is that the keys are fields at all.
+	if _, ok := all["rk"]; !ok {
+		t.Errorf("resource attribute rk is not listed: %v", all)
+	}
+	if _, ok := all["lk"]; !ok {
+		t.Errorf("log attribute lk is not listed: %v", all)
+	}
+	errRow := hits("level:=ERROR")
+	if errRow["_msg"] != 1 || errRow["service.name"] != 1 {
+		t.Errorf("level:=ERROR must match the one ERROR row, got %v", errRow)
+	}
+	svcB := hits("service.name:=svc-b")
+	if svcB["_msg"] != 1 {
+		t.Errorf("service.name:=svc-b must match the one row of svc-b, got %v", svcB)
 	}
 }

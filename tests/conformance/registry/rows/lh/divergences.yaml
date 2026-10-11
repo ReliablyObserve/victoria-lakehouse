@@ -688,6 +688,7 @@
   refs:
     tests:
       - internal/storage/parquets3/leaf_index_test.go#TestScanProjectedFieldValues_ScalarAfterMapsIsIndexedByLeaf
+      - internal/storage/parquets3/leaf_index_test.go#TestAccumulateFieldHits_ScalarAfterMapsIsIndexedByLeaf
       - internal/storage/parquets3/field_values_map_property_test.go#TestFieldValues_MapAttributes_Property
       - internal/storage/parquets3/field_values_map_test.go#TestFieldValuesMapAttributes_Logs
   notes: >-
