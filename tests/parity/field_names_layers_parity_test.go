@@ -11,11 +11,21 @@ package parity
 // write the same rows to hot and Lakehouse and compare them in every data layer
 // the rows pass through (the insert buffer, Parquet, compacted, after a restart
 // of the Lakehouse service), for a numeric tenant and for an alias tenant, with
-// no filter and with a filter, for both binaries. Every batch has the same
-// shape, so the answer does not depend on how many objects or parts hold it.
+// no filter and with a filter, for both binaries. Apart from the az / op3
+// stream below every batch has the same shape, so the answer does not depend on
+// how many objects or parts hold it.
 //
 // The tenants are the ones of TestParity_FieldValues_EmptyBucket; the layers are
 // the ones of TestParity_AllColumnSortTieOrder.
+//
+// One stream of each fixture (app az, operation op3) is written in batches of
+// DIFFERENT shapes: its first batch carries a field (onlya) in one request and
+// not in the next, and the later batches never carry it. Hot is asked to merge
+// after every layer that wrote data (forceMergeHot), because a stream is one block on hot only
+// once its parts are merged, and the cases filter to the rows that lack the
+// field: a filter selects rows, not the blocks whose columns the answer lists
+// (a block, an object or a row group with no matching row still lists its
+// columns for the stream; issue 480, review of PR 487).
 
 import (
 	"bytes"
@@ -140,6 +150,12 @@ type fnFixture struct {
 	startedAt      time.Time
 	rowsPer        int // rows one batch writes per tenant form
 	restartBatches int // batches the restart layer wrote (retries add one each)
+	// afterWrite runs once after a layer that wrote data has been brought into
+	// its state and before the cases are compared (hot is asked to merge there,
+	// not in write: the restart layer restarts the service right after a write,
+	// and a delay between the two lets the periodic flush win the race).
+	afterWrite func(t *testing.T)
+	written    bool
 }
 
 func runFnLayers(t *testing.T, c *fnFixture) {
@@ -222,6 +238,10 @@ func runFnLayers(t *testing.T, c *fnFixture) {
 	for _, l := range layers {
 		t.Run(l.name, func(t *testing.T) {
 			rows := l.prepare(t, c)
+			if c.afterWrite != nil && c.written {
+				c.afterWrite(t)
+				c.written = false
+			}
 			for _, f := range c.forms {
 				t.Run(f.name, func(t *testing.T) {
 					l.prove(t, c, f)
@@ -245,7 +265,8 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 		t.Parallel()
 		token := fmt.Sprintf("fn%d", stamp)
 		q := "@F"
-		c := &fnFixture{hot: vlBaseURL, cold: lhBaseURL, mode: "logs", at: at, from: from, to: to, filter: "_msg:=" + token, rowsPer: 6,
+		var base []fnCase
+		c := &fnFixture{hot: vlBaseURL, cold: lhBaseURL, mode: "logs", at: at, from: from, to: to, filter: "_msg:=" + token, rowsPer: 10,
 			forms:   []tenantForm{numericTenant(fvEmptyLogsAccount), aliasTenant(allColumnSortLogsAliasAccount, parityLogsOrgID)},
 			restart: []string{"lakehouse-logs"}}
 		c.write = func(t *testing.T, c *fnFixture, batch int) {
@@ -260,24 +281,53 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 				{"app": "ay", "ns": "n2", "common": "c"},
 				{"app": "ay", "ns": "n2"},
 			}
-			var body bytes.Buffer
-			for i, r := range rows {
-				r["_time"] = at.Add(time.Duration(batch*len(rows)+i) * time.Second).Format(time.RFC3339Nano)
-				r["_msg"] = token
-				// a stream of its own per run: upstream credits a column with the rows of the
-				// blocks that list it, and the blocks of a stream written by an earlier run
-				// (other fields, same day) would otherwise list theirs
-				r["run"] = token
-				b, _ := json.Marshal(r)
-				body.Write(b)
-				body.WriteByte('\n')
+			send := func(rows []map[string]string, offset int) {
+				var body bytes.Buffer
+				for i, r := range rows {
+					r["_time"] = at.Add(time.Duration(batch*10+offset+i) * time.Second).Format(time.RFC3339Nano)
+					r["_msg"] = token
+					// a stream of its own per run: upstream credits a column with the rows of the
+					// blocks that list it, and the blocks of a stream written by an earlier run
+					// (other fields, same day) would otherwise list theirs
+					r["run"] = token
+					b, _ := json.Marshal(r)
+					body.Write(b)
+					body.WriteByte('\n')
+				}
+				for _, f := range c.forms {
+					post(t, c.hot+"/insert/jsonline?_stream_fields=app,ns,run", "application/stream+json", body.Bytes(), f.header(false))
+					post(t, c.cold+"/insert/jsonline?_stream_fields=app,ns,run", "application/stream+json", body.Bytes(), f.header(true))
+				}
 			}
-			for _, f := range c.forms {
-				post(t, c.hot+"/insert/jsonline?_stream_fields=app,ns,run", "application/stream+json", body.Bytes(), f.header(false))
-				post(t, c.cold+"/insert/jsonline?_stream_fields=app,ns,run", "application/stream+json", body.Bytes(), f.header(true))
+			send(rows, 0)
+			// The az stream, whose batches differ in shape: the first batch is two
+			// requests, the first carrying onlya, the second not; every later batch
+			// is one request without it.
+			az := func(part string, withField bool) map[string]string {
+				r := map[string]string{"app": "az", "ns": "n3", "part": part, "gen": fmt.Sprintf("g%d", batch)}
+				if withField {
+					r["onlya"] = "a"
+				}
+				return r
+			}
+			if batch == 0 {
+				send([]map[string]string{az("first", true), az("first", true)}, 6)
+				send([]map[string]string{az("second", false), az("second", false)}, 8)
+			} else {
+				send([]map[string]string{az("later", false), az("later", false), az("later", false), az("later", false)}, 6)
+			}
+			c.written = true
+			c.cases = append(append([]fnCase{}, base...),
+				fnCase{name: "field_names_rows_without_the_field", endpoint: "field_names", query: q + " part:=second"},
+				fnCase{name: "field_names_rows_with_the_field", endpoint: "field_names", query: q + " part:=first"})
+			if batch > 0 {
+				// the rows of the newest batch alone: after the restart layer it is an object of
+				// its own, and the objects that carry onlya have no matching row
+				c.cases = append(c.cases, fnCase{name: "field_names_rows_of_the_newest_batch_only", endpoint: "field_names", query: q + fmt.Sprintf(" gen:=g%d", batch)})
 			}
 		}
-		c.cases = []fnCase{
+		c.afterWrite = func(t *testing.T) { forceMergeHot(t, c.hot, "logs", at) }
+		base = []fnCase{
 			{name: "field_names", endpoint: "field_names", query: q},
 			{name: "field_names_filtered_stream", endpoint: "field_names", query: q + " app:=ay"},
 			{name: "field_names_filtered_by_a_sparse_field", endpoint: "field_names", query: q + " lk:=v1"},
@@ -306,17 +356,20 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 			{"op2", map[string]string{"other": "x"}, nil},
 		}
 		var ids []string
-		c := &fnFixture{hot: vtBaseURL, cold: lhtBaseURL, mode: "traces", at: at, from: from, to: to, rowsPer: len(spans),
+		q := "@F"
+		var base []fnCase
+		c := &fnFixture{hot: vtBaseURL, cold: lhtBaseURL, mode: "traces", at: at, from: from, to: to, rowsPer: len(spans) + 4,
 			forms:   []tenantForm{numericTenant(fvEmptyTracesAccount), aliasTenant(parityTracesAccount, parityTracesOrgID)},
 			restart: []string{"lakehouse-traces"}}
 		c.write = func(t *testing.T, c *fnFixture, batch int) {
-			// One request per batch and target: upstream credits a field with the rows
-			// of the blocks that list it, and the rows of separate requests are blocks
-			// of separate in-memory parts until they merge, a layout that depends on
-			// timing (the same spans in two requests a second apart credit "sa" and
-			// "other" differently on hot, and differently again after a merge). The rows
-			// of one request are one block of their stream, so the answer is defined
-			// by the rows.
+			// One request per batch and target for the op and op2 streams: upstream
+			// credits a field with the rows of the blocks that list it, and the rows of
+			// separate requests are blocks of separate in-memory parts until they merge,
+			// a layout that depends on timing (the same spans in two requests a second
+			// apart credit "sa" and "other" differently on hot, and differently again
+			// after a merge). The rows of one request are one block of their stream, so
+			// the answer is defined by the rows. The op3 stream below is written in
+			// several requests on purpose, and hot is merged after the write.
 			batchSpans := make([]fnOTLPSpan, 0, len(spans))
 			for i, sp := range spans {
 				id := fmt.Sprintf("%016x%016x", stamp, 0xfa00+batch*len(spans)+i)
@@ -324,14 +377,45 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 				batchSpans = append(batchSpans, fnOTLPSpan{traceID: id, spanID: fmt.Sprintf("%016x", batch*len(spans)+i+1), name: sp.name,
 					service: fmt.Sprintf("fn-svc-%d", stamp), spanAttrs: sp.spanAttr, resAttrs: sp.resAttr, at: at.Add(time.Duration(batch*len(spans)+i) * time.Second)})
 			}
-			for _, f := range c.forms {
-				pushOTLPSpansOneRequest(t, c.hot, f.header(false), batchSpans)
-				pushOTLPSpansOneRequest(t, c.cold, f.header(true), batchSpans)
+			send := func(spans []fnOTLPSpan) {
+				for _, f := range c.forms {
+					pushOTLPSpansOneRequest(t, c.hot, f.header(false), spans)
+					pushOTLPSpansOneRequest(t, c.cold, f.header(true), spans)
+				}
 			}
+			send(batchSpans)
+			// The op3 stream, whose batches differ in shape: the first batch is two
+			// requests, the first carrying the attribute onlya, the second not; every
+			// later batch is one request without it.
+			op3 := func(i int, part string, withField bool) fnOTLPSpan {
+				id := fmt.Sprintf("%016x%016x", stamp, 0xfb00+batch*10+i)
+				ids = append(ids, id)
+				attrs := map[string]string{"part": part, "gen": fmt.Sprintf("g%d", batch)}
+				if withField {
+					attrs["onlya"] = "a"
+				}
+				return fnOTLPSpan{traceID: id, spanID: fmt.Sprintf("%016x", 0x100+batch*10+i), name: "op3",
+					service: fmt.Sprintf("fn-svc-%d", stamp), spanAttrs: attrs, at: at.Add(time.Duration(batch*10+6+i) * time.Second)}
+			}
+			if batch == 0 {
+				send([]fnOTLPSpan{op3(0, "first", true), op3(1, "first", true)})
+				send([]fnOTLPSpan{op3(2, "second", false), op3(3, "second", false)})
+			} else {
+				send([]fnOTLPSpan{op3(0, "later", false), op3(1, "later", false), op3(2, "later", false), op3(3, "later", false)})
+			}
+			c.written = true
 			c.filter = "trace_id:in(" + strings.Join(ids, ",") + ")"
+			c.cases = append(append([]fnCase{}, base...),
+				fnCase{name: "field_names_spans_without_the_attribute", endpoint: "field_names", query: q + " `span_attr:part`:=second"},
+				fnCase{name: "field_names_spans_with_the_attribute", endpoint: "field_names", query: q + " `span_attr:part`:=first"})
+			if batch > 0 {
+				// the spans of the newest batch alone: after the restart layer it is an object of
+				// its own, and the objects that carry onlya have no matching span
+				c.cases = append(c.cases, fnCase{name: "field_names_spans_of_the_newest_batch_only", endpoint: "field_names", query: q + fmt.Sprintf(" `span_attr:gen`:=g%d", batch)})
+			}
 		}
-		q := "@F"
-		c.cases = []fnCase{
+		c.afterWrite = func(t *testing.T) { forceMergeHot(t, c.hot, "traces", at) }
+		base = []fnCase{
 			{name: "field_names", endpoint: "field_names", query: q},
 			{name: "field_names_filtered_stream", endpoint: "field_names", query: q + " name:=op2"},
 			{name: "field_names_filtered_by_a_sparse_attribute", endpoint: "field_names", query: q + " `span_attr:sa`:=v1"},
