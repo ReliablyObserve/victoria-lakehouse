@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -14,8 +15,10 @@ import (
 // Lock code is every file whose edit could make a lock pass without comparing
 // what it claims to compare: the files of the lock tests, and the files that
 // define the helpers those tests call for their comparison. Runtime floors
-// (lock_cells.txt) only protect tests/parity; this gate protects all of it by
-// making any change to lock code the owner's decision.
+// (lock_cells.txt) only protect tests/parity. The gate does not block an edit of
+// lock code: it lists the files in the report, so the reviewer whose approval the
+// pull request requires sees them. Whatever can be checked from content is Rule 3
+// (a lost reference, a lowered floor, a new Skip) and stays automatic.
 
 // lockCallDepth bounds how many calls deep the helper search follows a lock
 // test's body inside its package. Four reaches the comparison and judging
@@ -234,8 +237,9 @@ func declaresOnlyTests(path string, src []byte) (string, error) {
 	return "", nil
 }
 
-// LockCodeChanges lists the lock code a PR changed, judged against the locks that
-// exist at the merge base (a lock the PR adds itself is not protected yet).
+// LockCodeChanges lists the lock-affecting files a PR changed, judged against the
+// locks that exist at the merge base (a lock the PR adds itself is not protected
+// yet). The result is informational: the caller reports it, it does not fail.
 //
 //  1. A lock package is a directory that holds a lock-referenced test file. In a pure
 //     test package (anything under tests/) every existing .go file that the PR edits
@@ -264,7 +268,7 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 	flag := func(f, reason string) {
 		if !flagged[f] {
 			flagged[f] = true
-			out = append(out, fmt.Sprintf("%s: lock code changed — owner review (%s)", f, reason))
+			out = append(out, fmt.Sprintf("%s: %s", f, reason))
 		}
 	}
 	dirs := map[string]bool{}
@@ -315,10 +319,60 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 				continue
 			}
 			if hs := headSrc(p); hs == nil || !bytes.Equal(baseSrc(p), hs) {
+				if hs != nil && GolangImageBumpOnly(baseSrc(p), hs) {
+					continue // the Go toolchain image of a build container moved; nothing a lock compares changed
+				}
 				flag(p, "runtime configuration of the lock suites")
 			}
 		}
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// golangImageLine matches a compose `image: golang:<version>[-alpine[<ver>]]` line.
+// pre is everything before the version (indentation and key), so the two lines of a
+// pair must agree on it exactly.
+var golangImageLine = regexp.MustCompile(`^(?P<pre>[ \t]+image:[ \t]+golang:)(?P<ver>\d+\.\d+(?:\.\d+)?)(?P<alp>-alpine(?:\d+\.\d+)?)?[ \t]*$`)
+
+// GolangImageBumpOnly reports whether head differs from base only in the version of
+// `image: golang:<version>` lines: same line count, every differing line pair is such a
+// line in both revisions with the same indentation, the same image family and the same
+// suffix shape (`-alpine` stays `-alpine`, its optional version may change), and
+// every other line byte-identical. The Python classifier (scripts/ci/pr_classify.py)
+// holds the same rule; both are tested against the same fixture.
+func GolangImageBumpOnly(base, head []byte) bool {
+	bl := strings.Split(string(base), "\n")
+	hl := strings.Split(string(head), "\n")
+	if len(bl) != len(hl) {
+		return false
+	}
+	changed := false
+	for i := range bl {
+		if bl[i] == hl[i] {
+			continue
+		}
+		bm, hm := golangImageLine.FindStringSubmatch(bl[i]), golangImageLine.FindStringSubmatch(hl[i])
+		if bm == nil || hm == nil || bm[1] != hm[1] {
+			return false
+		}
+		if imageSuffixShape(bm[3]) != imageSuffixShape(hm[3]) {
+			return false
+		}
+		changed = true
+	}
+	return changed
+}
+
+// imageSuffixShape reduces an image tag suffix to its shape: none, bare `-alpine`, or
+// `-alpine` with a version. A bump may change the version, never the shape.
+func imageSuffixShape(suffix string) string {
+	switch {
+	case suffix == "":
+		return ""
+	case suffix == "-alpine":
+		return "-alpine"
+	default:
+		return "-alpineV"
+	}
 }

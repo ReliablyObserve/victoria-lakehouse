@@ -363,7 +363,7 @@ func ParityCheck(base, head ParitySnapshot, modified map[string]bool) ParityVerd
 		if !base.Allowlist[e] {
 			msg := "allowlist entry added: " + e
 			if removedTop[topLevelTest(e)] {
-				msg += " (looks like a rename of a removed entry of the same test — needs owner review (registry-exempt) or keep the old entry name)"
+				msg += " (looks like a rename of a removed entry of the same test: keep the old entry name)"
 			}
 			v.Weakenings = append(v.Weakenings, msg)
 		}

@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"encoding/json"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -145,7 +147,7 @@ func TestLockCodeChanges(t *testing.T) {
 	check("nothing", base, 0, "")
 	check("LC1: the lock test returns early", edit(func(h tree) {
 		h["tests/parity/lock_test.go"] = strings.Replace(parityTest, "RunParity(t)", "if true {\n\t\treturn\n\t}\n\tRunParity(t)", 1)
-	}), 1, "tests/parity/lock_test.go: lock code changed — owner review")
+	}), 1, "tests/parity/lock_test.go: it holds a lock test")
 	check("the judging helper is gutted", edit(func(h tree) { h["tests/parity/judge.go"] = "package parity\n\nfunc judge(t *testing.T) {}\n" }), 1, "judge.go")
 	check("a helper deleted", edit(func(h tree) { delete(h, "tests/parity/deep.go") }), 1, "deep.go")
 	check("G2: an init() appended to an existing non-lock test file", edit(func(h tree) {
@@ -245,5 +247,87 @@ func TestLockCodeChanges_ProductLockPackage(t *testing.T) {
 	head["internal/p/new_test.go"] = "package p\n\nfunc TestMain(m *testing.M) {}\n"
 	if got := run(head); len(got) != 1 {
 		t.Errorf("a new test file with TestMain is gated: %v", got)
+	}
+}
+
+// The #491 compose diff: a Go toolchain image tag moved and nothing else.
+const composeBase = "services:\n  build:\n    image: golang:1.27.1\n    environment:\n      LH_BASE_URL: lh\n"
+
+func TestGolangImageBumpOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		head string
+		want bool
+	}{
+		{"the toolchain image tag moved", strings.Replace(composeBase, "golang:1.27.1", "golang:1.27.2", 1), true},
+		{"unchanged", composeBase, false},
+		{"another image family", strings.Replace(composeBase, "golang:1.27.1", "node:1.27.2", 1), false},
+		{"a suffix appears", strings.Replace(composeBase, "golang:1.27.1", "golang:1.27.2-alpine", 1), false},
+		{"a flag line is added", composeBase + "    command: x\n", false},
+		{"the environment changed too", strings.Replace(strings.Replace(composeBase, "golang:1.27.1", "golang:1.27.2", 1), "LH_BASE_URL: lh", "LH_BASE_URL: vl", 1), false},
+		{"a digest instead of a version", strings.Replace(composeBase, "golang:1.27.1", "golang:1.27.2@sha256:abcd", 1), false},
+		{"the indentation changed", strings.Replace(strings.Replace(composeBase, "golang:1.27.1", "golang:1.27.2", 1), "    image:", "  image:", 1), false},
+	}
+	for _, c := range cases {
+		if got := GolangImageBumpOnly([]byte(composeBase), []byte(c.head)); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+	alpBase := "    image: golang:1.27.1-alpine3.23\n"
+	if !GolangImageBumpOnly([]byte(alpBase), []byte("    image: golang:1.27.2-alpine3.24\n")) {
+		t.Error("an alpine release may move together with the Go version")
+	}
+	if GolangImageBumpOnly([]byte(alpBase), []byte("    image: golang:1.27.2-alpine\n")) {
+		t.Error("the suffix shape may not change")
+	}
+}
+
+func TestLockCodeChanges_ParityComposeToolchainImageBumpIsNotLockCode(t *testing.T) {
+	base := tree{"tests/parity/lock_test.go": parityTest, "tests/parity/docker-compose.yml": composeBase}
+	refs := LockTestRefs(lockRows("tests/parity/lock_test.go#TestLock"))
+	run := func(compose string) []string {
+		head := tree{"tests/parity/lock_test.go": parityTest, "tests/parity/docker-compose.yml": compose}
+		got, err := LockCodeChanges(refs, refs, base.src, head.src, base.list, head.list, base.files, head.files)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := run(strings.Replace(composeBase, "golang:1.27.1", "golang:1.27.2", 1)); len(got) != 0 {
+		t.Errorf("a toolchain image tag bump of the parity compose file is not lock code: %v", got)
+	}
+	if got := run(strings.Replace(composeBase, "LH_BASE_URL: lh", "LH_BASE_URL: vl", 1)); len(got) != 1 {
+		t.Errorf("any other edit of the parity compose file is lock code: %v", got)
+	}
+}
+
+// The compose cases of the fixture that scripts/ci/pr_classify.py is tested against too:
+// the two twins of the rule cannot drift apart without one of the tests failing.
+func TestGolangImageBumpOnly_SharedFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../../scripts/ci/tests/testdata/golang_image_cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Cases []struct {
+			Name, Kind, Base, Head string
+			Want                   bool
+		}
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range fx.Cases {
+		if c.Kind != "compose" {
+			continue
+		}
+		n++
+		if got := GolangImageBumpOnly([]byte(c.Base), []byte(c.Head)); got != c.Want {
+			t.Errorf("%s: got %v, want %v", c.Name, got, c.Want)
+		}
+	}
+	if n < 8 {
+		t.Errorf("the shared fixture has only %d compose cases", n)
 	}
 }

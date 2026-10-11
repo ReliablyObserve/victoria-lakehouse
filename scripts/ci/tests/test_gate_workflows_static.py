@@ -57,14 +57,37 @@ class GateWorkflows(unittest.TestCase):
             for step in steps(doc):
                 self.assertNotRegex(step.get("run", ""), r"\$\{\{\s*github\.event", f"{name}: {step.get('name')}")
 
-    def test_the_label_events_rerun_the_gate_and_not_the_heavy_workflow(self):
+    def test_a_title_edit_reruns_the_gate_and_not_the_heavy_workflow(self):
         _, gate = load("registry-gate.yaml")
         _, base = load("registry-gate-base.yaml")
         _, heavy = load("conformance.yaml")
-        want = {"opened", "synchronize", "reopened", "labeled", "unlabeled", "edited"}
+        want = {"opened", "synchronize", "reopened", "edited"}
         self.assertEqual(set(gate[True]["pull_request"]["types"]), want)
         self.assertEqual(set(base[True]["pull_request_target"]["types"]), want)
         self.assertEqual(set(heavy[True]["pull_request"]["types"]), {"opened", "synchronize", "reopened"})
+
+    def test_there_is_no_exemption_input(self):
+        # The gate decides from the diff: no label, no PR body and no label event reach it.
+        for name in self.NAMES:
+            text, doc = load(name)
+            gate_step = [s for s in steps(doc) if s.get("name", "").startswith("Product changes")][0]
+            for banned in ("PR_LABELS", "PR_BODY", "EVENT_ACTION", "LABEL_NAME", "SENDER"):
+                self.assertNotIn(banned, gate_step["env"], f"{name}: {banned}")
+            self.assertNotIn("registry-exempt", text, name)
+        with open(os.path.join(ROOT, "scripts/ci/gate_bootstrap.sh"), encoding="utf-8") as fh:
+            boot = fh.read()
+        for banned in ("PR_LABELS", "PR_BODY", "LABEL_NAME", "SENDER"):
+            self.assertNotIn(banned, boot)
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "scripts/ci/registry_exempt.py")))
+
+    def test_the_gate_selftest_replays_the_gate_and_is_path_filtered(self):
+        _, doc = load("gate-selftest.yaml")
+        paths = doc[True]["pull_request"]["paths"]
+        for want in ("scripts/ci/**", "tests/conformance/**", ".github/workflows/registry-gate.yaml", ".github/workflows/registry-gate-base.yaml"):
+            self.assertIn(want, paths)
+        runs = " ".join(s.get("run", "") for s in steps(doc))
+        self.assertIn("scripts/ci/gate_replay.sh", runs)
+        self.assertEqual(doc["permissions"], {"contents": "read"})
 
     def test_there_is_no_transition_fallback_and_no_token(self):
         # Issue 456: the bootstrap is on main, so a base without it is refused, not emulated.

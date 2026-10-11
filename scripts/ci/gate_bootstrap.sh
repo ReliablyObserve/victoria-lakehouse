@@ -17,8 +17,9 @@
 #                base at $RUNNER_TEMP/gate-base (pull_request); the workflow for
 #                pull_request_target passes its own base checkout instead.
 #   RUNNER_TEMP  scratch directory (default /tmp)
-#   PR_LABELS PR_BODY PR_TITLE PR_AUTHOR PR_NUMBER EVENT_ACTION LABEL_NAME SENDER
-#                the event data the gate reads; passed through, nothing else is
+#   PR_TITLE PR_AUTHOR PR_NUMBER
+#                the event data the gate reads (title and author only); passed through,
+#                nothing else is. No label and no PR body reach the gate: it has no exemption.
 #   GITHUB_STEP_SUMMARY GITHUB_OUTPUT   passed through when set
 #   GATE_GOTOOLCHAIN  GOTOOLCHAIN for the testlinks build (default local: the workflow
 #                installed the exact Go the base's go.mod asks for)
@@ -52,7 +53,7 @@ run)
   # An allow-list environment: nothing an earlier step exported (PATH additions via
   # GITHUB_PATH, GITHUB_ENV, LD_PRELOAD, GOFLAGS ...) reaches the gate.
   pass=()
-  for v in HEAD_REV PR_LABELS PR_BODY PR_TITLE PR_AUTHOR PR_NUMBER EVENT_ACTION LABEL_NAME SENDER GITHUB_STEP_SUMMARY GITHUB_OUTPUT; do
+  for v in HEAD_REV PR_TITLE PR_AUTHOR PR_NUMBER GITHUB_STEP_SUMMARY GITHUB_OUTPUT; do
     [[ -n "${!v+x}" ]] && pass+=("$v=${!v}")
   done
   exec env -i PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin" HOME="${HOME:-/tmp}" TMPDIR="$TMP" LANG=C.UTF-8 \

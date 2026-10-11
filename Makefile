@@ -44,7 +44,7 @@ VT_VERSION := v0.12.0
 VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
 VT_DIR := lakehouse-traces/deps/VictoriaTraces
 
-.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt sync-vmui sync-vmui-traces conformance-gen conformance-check config-surface config-docs config-drift
+.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt sync-vmui sync-vmui-traces conformance-gen conformance-check registry-gate gate-replay config-surface config-docs config-drift
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -163,6 +163,19 @@ conformance-gen: deps-logs deps-traces deps-vt
 conformance-check: deps-logs deps-traces deps-vt
 	go run ./tests/conformance/cmd/confgen -check
 	CONFORMANCE_REQUIRE_DEPS=1 go test ./tests/conformance/... -count=1 -timeout=5m
+
+# The registry gate on the current HEAD against origin/main: the same script CI runs
+# (scripts/ci/check_registry_touch.sh), the same report. Run it before every push.
+# GATE_BASE=<rev> compares against another base. Needs no deps/ checkout.
+GATE_BASE ?= origin/main
+registry-gate:
+	@git fetch -q origin main 2>/dev/null || true
+	GOWORK=off bash scripts/ci/check_registry_touch.sh $(GATE_BASE)
+
+# Replays the gate over the recorded pull requests and compares each verdict with
+# scripts/ci/tests/gate_replay_expected.txt (what CI runs when the gate changes).
+gate-replay:
+	GOWORK=off bash scripts/ci/gate_replay.sh
 
 # Configuration surface. The code defaults are the source of truth: both
 # binaries' `print-default-config` output and the config field comments are

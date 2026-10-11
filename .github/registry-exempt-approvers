@@ -1,3 +1,4 @@
-# Logins whose application of the `registry-exempt` label the registry gate honours.
-# Read from the merge base, so a PR cannot add itself. Owner only.
+# Logins that may author a release-metadata PR besides the release bot (github-actions[bot]).
+# The registry gate reads this file from the merge base, so a PR cannot add itself.
+# It is not an exemption list: no label or PR text exempts anything from the gate.
 szibis

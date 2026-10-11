@@ -6,9 +6,15 @@ and tightens it, so the two gates never disagree about what a release-metadata
 sync is.
 
 Prints `key=value` lines:
-  exempt=release-metadata|dependency-only|none
+  exempt=release-metadata|dependency-only|toolchain-only|none
   product=1|0
   reason=<first path that made it product-changing>
+  detail=<what was verified, for the report>
+  gate_file=<path>        (repeated: the changed files that make up the gate itself)
+
+There is no exemption by label or by PR text: every kind is decided from the content
+of the diff. `toolchain-only` is a Go toolchain / dependency-version bump whose every
+changed line is verified (see toolchain_only): it waives Rule 1 only.
 
 A path is PRODUCT when it is not a test artifact and is
   - anything under internal/, cmd/, lakehouse-traces/ (Go, embedded UI assets,
@@ -57,6 +63,15 @@ CRITICAL_MODULE_PREFIXES = (
     "google.golang.org/",
 )
 RELEASE_BOT = "github-actions[bot]"
+
+# The files that make up the gate itself. A change to one is listed in the report for
+# the reviewer; it is not a failure (the pull request's required approval covers it).
+GATE_FILES_RE = re.compile(
+    r"^(scripts/ci/[^/]+$|\.gitattributes$|tests/parity/lock_cells_test\.go$|tests/conformance/cmd/testlinks/"
+    r"|tests/conformance/registry/(testlinks|paritygate|lockcode)\.go"
+    r"|\.github/workflows/(conformance|registry-gate|registry-gate-base|gate-selftest|parity)\.yaml"
+    r"|\.github/registry-exempt-approvers)"
+)
 SEMVER = re.compile(r"\d+\.\d+\.\d+")
 REQUIRE_ENTRY = re.compile(r"^(?:require\s+)?(\S+)\s+(v\S+?)(?:\s*//.*)?$")
 
@@ -166,6 +181,150 @@ def dependency_only(files: list[str], commits: list[str], base: str, head: str) 
     return True
 
 
+# ---------------------------------------------------------- toolchain-only --
+#
+# A Go toolchain bump touches a fixed, small set of files and changes nothing but
+# version numbers in them. The kind is decided from the content of every changed
+# file (base blob against head blob), never from a commit message or a title:
+#
+#   go.mod, lakehouse-traces/go.mod   the `go` and `toolchain` directive lines, and
+#                                     the version of `require` entries (indirect
+#                                     markers included), none of them a storage-critical
+#                                     module (CRITICAL_MODULE_PREFIXES); the set of
+#                                     required modules and every other line unchanged
+#   go.work                           the `go` and `toolchain` lines
+#   go.sum, lakehouse-traces/go.sum   hash lines, none of a storage-critical module
+#   Dockerfile, Dockerfile.logs,      `FROM [--platform=..] golang:<version>[-alpine[<ver>]] [AS x]`
+#   Dockerfile.traces,                lines where only the versions change
+#   Dockerfile.datagen
+#   tests/parity/docker-compose.yml   `image: golang:<version>[-alpine[<ver>]]` lines, same
+#
+# plus files that are plainly not product: docs and Markdown, CI workflows and scripts
+# that are not gate files. Tests, registry rows and the parity locks are NOT in that
+# set, so a "toolchain" PR cannot carry a lock change through this kind.
+GO_MOD_FILES = ("go.mod", "lakehouse-traces/go.mod")
+GO_SUM_FILES = ("go.sum", "lakehouse-traces/go.sum")
+GO_WORK_FILE = "go.work"
+GOLANG_DOCKERFILES = ("Dockerfile", "Dockerfile.logs", "Dockerfile.traces", "Dockerfile.datagen")
+GOLANG_COMPOSE_FILES = ("tests/parity/docker-compose.yml",)
+
+GO_DIRECTIVE = re.compile(r"^go \d+\.\d+(?:\.\d+)?$")
+TOOLCHAIN_DIRECTIVE = re.compile(r"^toolchain go\d+\.\d+(?:\.\d+)?$")
+GO_SUM_LINE = re.compile(r"^(\S+) (v\S+?)(?:/go\.mod)? h1:\S+$")
+_VER = r"(?P<ver>\d+\.\d+(?:\.\d+)?)"
+_ALP = r"(?P<alp>-alpine(?P<alpver>\d+\.\d+)?)?"
+FROM_GOLANG = re.compile(
+    r"^(?P<pre>FROM(?:[ \t]+--platform=\S+)?[ \t]+golang:)" + _VER + _ALP + r"(?P<post>(?:[ \t]+AS[ \t]+\S+)?[ \t]*)$"
+)
+IMAGE_GOLANG = re.compile(r"^(?P<pre>[ \t]+image:[ \t]+golang:)" + _VER + _ALP + r"(?P<post>[ \t]*)$")
+
+
+def _image_shape(m: "re.Match[str]") -> tuple[str, str, str]:
+    """Everything of a golang image line that must not change in a bump."""
+    alp = m.group("alp")
+    return m.group("pre"), ("" if alp is None else ("-alpineV" if m.group("alpver") else "-alpine")), m.group("post")
+
+
+def golang_image_bump_only(base: str, head: str, line_re: "re.Pattern[str]") -> bool:
+    """True when head differs from base only in the version of golang image lines.
+
+    Compared by position: the same number of lines, every differing pair matching
+    `line_re` in both with the same prefix (platform, indentation), the same suffix shape
+    (`-alpine` stays `-alpine`; its release number may move) and the same trailer (AS name);
+    every other line byte-identical. The Go twin is registry.GolangImageBumpOnly; both are
+    tested against one fixture.
+    """
+    bl, hl = base.split("\n"), head.split("\n")
+    if len(bl) != len(hl):
+        return False
+    changed = False
+    for b, h in zip(bl, hl):
+        if b == h:
+            continue
+        bm, hm = line_re.match(b), line_re.match(h)
+        if not bm or not hm or _image_shape(bm) != _image_shape(hm):
+            return False
+        changed = True
+    return changed
+
+
+def _is_directive(line: str) -> bool:
+    return bool(GO_DIRECTIVE.match(line) or TOOLCHAIN_DIRECTIVE.match(line))
+
+
+def go_mod_toolchain_only(base: str, head: str) -> bool:
+    """go.mod: the go/toolchain directives and non-critical require versions only."""
+    b_req, b_other = parse_go_mod(base)
+    h_req, h_other = parse_go_mod(head)
+    b_rest = [x for x in b_other if not _is_directive(x)]
+    h_rest = [x for x in h_other if not _is_directive(x)]
+    if b_rest != h_rest or set(b_req) != set(h_req):
+        return False
+    for other in (b_other, h_other):
+        if sum(1 for x in other if GO_DIRECTIVE.match(x)) != 1:
+            return False
+    return not any(b_req[m] != h_req[m] and m.startswith(CRITICAL_MODULE_PREFIXES) for m in b_req)
+
+
+def go_work_toolchain_only(base: str, head: str) -> bool:
+    def split(text: str) -> tuple[list[str], list[str]]:
+        lines = [x.strip() for x in text.splitlines() if x.strip()]
+        return [x for x in lines if _is_directive(x)], [x for x in lines if not _is_directive(x)]
+
+    _, b_rest = split(base)
+    h_dir, h_rest = split(head)
+    return b_rest == h_rest and any(GO_DIRECTIVE.match(x) for x in h_dir)
+
+
+def go_sum_toolchain_only(base: str, head: str) -> bool:
+    """go.sum: only well-formed hash lines differ, none for a storage-critical module."""
+    for line in set(base.splitlines()) ^ set(head.splitlines()):
+        m = GO_SUM_LINE.match(line)
+        if not m or m.group(1).startswith(CRITICAL_MODULE_PREFIXES):
+            return False
+    return True
+
+
+def toolchain_extra_ok(path: str) -> bool:
+    """A file that rides along with a toolchain bump without needing a content check:
+    documentation, CI workflows and scripts that are not part of the gate. Never a test,
+    a registry row, a parity lock or anything product."""
+    if GATE_FILES_RE.match(path) or is_test_artifact(path) or product_reason(path):
+        return False
+    if path.startswith("docs/") or path.endswith(".md"):
+        return True
+    if path.startswith(".github/workflows/") and path.endswith((".yaml", ".yml")):
+        return True
+    return path.startswith("scripts/")
+
+
+def toolchain_only(files: list[str], base: str, head: str) -> str | None:
+    """A description of what was verified when the PR is toolchain-only, else None."""
+    verified = []
+    for f in files:
+        b, h = show(base, f), show(head, f)
+        if f in GO_MOD_FILES:
+            ok = go_mod_toolchain_only(b, h)
+        elif f in GO_SUM_FILES:
+            ok = go_sum_toolchain_only(b, h)
+        elif f == GO_WORK_FILE:
+            ok = go_work_toolchain_only(b, h)
+        elif f in GOLANG_DOCKERFILES:
+            ok = golang_image_bump_only(b, h, FROM_GOLANG)
+        elif f in GOLANG_COMPOSE_FILES:
+            ok = golang_image_bump_only(b, h, IMAGE_GOLANG)
+        else:
+            if not toolchain_extra_ok(f):
+                return None
+            continue
+        if not ok:
+            return None
+        verified.append(f)
+    if not verified:
+        return None
+    return "only Go toolchain and dependency versions changed in " + ", ".join(verified)
+
+
 # ------------------------------------------------------ release metadata --
 
 CHART_PATH = "charts/victoria-lakehouse/Chart.yaml"
@@ -256,11 +415,16 @@ def main() -> int:
                 if line:
                     approvers.add(line)
 
-    exempt = "none"
+    exempt, detail = "none", ""
     if release_metadata(files, a.base, a.head, a.author, approvers):
         exempt = "release-metadata"
+        detail = "exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
     elif dependency_only(files, commits, a.base, a.head):
         exempt = "dependency-only"
+        detail = "only go.mod require versions and go.sum changed, every commit is build(deps)/chore(deps)"
+    elif (tc := toolchain_only(files, a.base, a.head)) is not None:
+        exempt = "toolchain-only"
+        detail = tc
 
     reason = ""
     if exempt == "none":
@@ -275,6 +439,10 @@ def main() -> int:
     print(f"exempt={exempt}")
     print(f"product={1 if reason else 0}")
     print(f"reason={reason}")
+    print(f"detail={detail}")
+    for f in files:
+        if GATE_FILES_RE.match(f):
+            print(f"gate_file={f}")
     return 0
 
 

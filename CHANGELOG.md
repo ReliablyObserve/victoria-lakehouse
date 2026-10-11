@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The registry gate decides from verified content: no exemption label, one report, a replay corpus.** CI tooling only, no runtime change (`scripts/ci/`, `tests/conformance/`, `.github/workflows/registry-gate*.yaml`, `Makefile`): the `registry-exempt` label, the `Registry: none` body line and `registry_exempt.py` are removed, because the label only counted in the run of its own `labeled` event, which the base-workflow check never re-ran, so an exempt pull request could not turn green. A Go toolchain bump (the `go` and `toolchain` directives, `require` versions outside the storage-critical modules, `go.sum` hash lines, `golang:` image tags in the Dockerfiles and the parity compose file) is recognised from the content of the diff as the new `toolchain-only` kind, which waives Rule 1 only; any other line in those files keeps the PR a normal product change. Edits of lock code and of the gate's own files are listed in the report instead of failing the gate (the required review covers them); Rules 1-3 stay hard, with no bypass. The gate writes one Markdown report (rule verdicts, the kind of PR, how to fix each failure, lock-affecting files) to the job summary, and `make registry-gate` runs the same script locally. `scripts/ci/gate_replay.sh` replays the gate over recorded and synthetic pull requests against an expected table in CI (`gate-selftest.yaml`).
+
 ## [0.146.10] - 2026-10-11
 
 ### Security

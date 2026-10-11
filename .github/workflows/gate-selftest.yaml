@@ -1,0 +1,103 @@
+name: Gate Self-test
+
+# The registry gate is judged on real history, not only on its own unit tests: this
+# workflow replays it over recorded pull requests and over synthetic ones (a toolchain
+# bump that also changes a base image, a deleted lock reference ...) and compares each
+# verdict, and the exact set of failing rules, with scripts/ci/tests/gate_replay_expected.txt.
+# It runs only when the gate, its scripts, its tests or the registry rules change.
+#
+# This workflow is a check on the gate, not part of it: it runs the PR's own copy (the PR
+# changes the gate and its expected table together, so the PR's copy is what must be
+# consistent). The gate that judges a PR runs from the merge base (registry-gate*.yaml).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/ci/**'
+      - 'tests/conformance/**'
+      - '.github/workflows/registry-gate.yaml'
+      - '.github/workflows/registry-gate-base.yaml'
+      - '.github/workflows/gate-selftest.yaml'
+      - '.github/registry-exempt-approvers'
+      - 'Makefile'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ci/**'
+      - 'tests/conformance/**'
+      - '.github/workflows/gate-selftest.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-selftest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOWORK: "off"
+  VL_VERSION_LOGS: v1.53.0
+  VL_COMMIT_TRACES: c945d2949e98
+  VT_VERSION: v0.12.0
+
+jobs:
+  gate-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check pyyaml==6.0.2
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+      - name: Prepare deps (no-op when cache hit)
+        run: make deps-logs deps-traces deps-vt
+      - name: Classifier and workflow tests (python)
+        run: python -m unittest discover -s scripts/ci/tests -p 'test_pr_classify*.py' -v && python -m unittest scripts/ci/tests/test_gate_workflows_static.py -v
+      - name: Replay harness self-test (stub gate, seconds)
+        run: bash scripts/ci/tests/gate_replay_test.sh
+      - name: Gate engine tests (go)
+        run: go test ./tests/conformance/registry/ ./tests/conformance/cmd/... -count=1 -timeout=5m
+
+  gate-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # The table is split over three jobs: a large recorded pull request takes a minute or two
+    # to judge, and the whole table is about half an hour on one runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["0/3", "1/3", "2/3"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check pyyaml==6.0.2
+      # Recorded merged commits come from main's history (fetch-depth 0); a recorded open
+      # pull request is fetched by sha. One whose head was force-pushed away is reported as
+      # UNAVAILABLE (loudly, in the summary) and does not fail the run; every merged
+      # commit and every synthetic case must replay.
+      - name: Replay the gate over recorded and synthetic pull requests
+        run: bash scripts/ci/gate_replay.sh --allow-unavailable-open --shard ${{ matrix.shard }}
