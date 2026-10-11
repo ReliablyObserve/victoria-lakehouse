@@ -430,12 +430,48 @@ before #239 Lakehouse read the objects one by one. Steps 1–3 remove the struct
 steps 4–6 go past ClickHouse by not reading data at all for most objects, which is how disk
 VictoriaLogs answers (block headers carry the stream id).
 
+## `field_names` from the rows (#487)
+
+`field_names` no longer answers from the footers or the catalog: it reads the rows of the window
+(`docs/operations.md`, "`field_names` reads the rows of its window"), so every one of its 192 cells
+(96 per signal) is now exact (they were `expect: differ`), and Lakehouse reads more to give the right
+answer. Counters below are **measured** (in-process mock S3, deterministic: a function of the files and
+the query), `old` = the registry rows on `main` before this change, `new` = this build; the p50 is
+**measured** on a shared developer host (Apple M-series, 18 cores, 2 iterations, 0 ms S3), indicative
+only. Unfiltered, pmeta off (pmeta on gives the same `new` counters; the old pmeta-on traces rows read
+0 objects because they answered from the catalog with wrong names and hits 1).
+
+| signal | layout | window | S3 GETs old to new | S3 bytes old to new | p50 new |
+|---|---|---|---|---|---|
+| logs | flushed (24 objects of about 72 KB) | whole | 24 to 24 | 1.72 MB to 1.72 MB | 12.8 ms |
+| logs | flushed | narrow (30 s) | 1 to 1 | 74 KB to 74 KB | 2.3 ms |
+| logs | compacted (2 hour objects) | whole | 2 to 4 | 173 KB to 1.56 MB (9.0x) | 21.3 ms |
+| logs | compacted | narrow | 1 to 2 | 90 KB to 807 KB (9.0x) | 9.9 ms |
+| traces | flushed | whole | 1 to 24 | 95 KB to 2.29 MB (24x) | 65.7 ms |
+| traces | flushed | narrow | 1 to 1 | 96 KB to 96 KB | 13.9 ms |
+| traces | compacted | whole | 2 to 4 | 869 KB to 2.20 MB (2.5x) | 168.9 ms |
+| traces | compacted | narrow | 2 to 2 | 871 KB to 1.11 MB (1.3x) | 62.9 ms |
+
+Lakehouse loses here: the old answer read one footer per object (logs) or the footer of the first object
+only (traces, the reason it was wrong), the new one reads the row groups the query needs. Flushed logs
+objects are smaller than the footer prefetch, so their footer read already was the whole object and the
+cost is unchanged; compacted objects, and traces objects (which carry the attribute maps), cost several
+times more bytes. The per-stream presence index that would give the footer cost back is the open option
+of [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482). The cost guard
+`BenchmarkGetFieldNames_ObjectReads` holds the object reads of a call.
+
+Regenerating the rows: run the harness as in [Harness](#harness) (logs and traces, 0 ms and 100 ms), then
+`scripts/bench/field_metadata/perf_rows.py gen MATRIX.jsonl`; the 192 `field_names` rows were replaced by
+the generated ones, the other 576 rows keep their earlier measured budgets (their counters and expectations
+came out the same).
+
 ## Findings (not fixed here)
 
 1. **`field_names` is wrong on both signals.** Logs: lists all-null columns, ignores filter and
    window, depends on footer-cache state. Traces: pmeta on returns the catalog's Parquet keys
    (`account_id`, `project_id`, `service.name`, `span.name`) with hits 1; pmeta off returns all 48
    schema columns with hits 1; the answer is 11 fields × 48 000.
+   Fixed in #487, see above.
 2. **Buffered rows are named differently from flushed rows** on map attributes (`resource_attr:K`
    vs `K` on logs), Tier-2 slots (not emitted by the bridge) and traces promoted attributes. The
    logs bridge now carries `_stream_id`, `severity_number` and `scope.name`
