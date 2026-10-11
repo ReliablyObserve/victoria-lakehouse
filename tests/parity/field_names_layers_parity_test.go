@@ -102,6 +102,8 @@ func runFnCases(t *testing.T, hot, cold string, f tenantForm, from, to time.Time
 			ref := getWith(t, hot, path, params, f.header(false))
 			sut := getWith(t, cold, path, params, f.header(true))
 			sut = withoutColdOnlyField(t, ref, sut, "severity_number")
+			// hits written as JSON numbers by both (compareFieldValues reads either form) ...
+			requireNumericHits(t, c.name, ref, sut)
 			// the same names with the same hits ...
 			compareFieldValues(t, c.name, ref, sut, false)
 			// ... in the same order (hits descending, then name)
@@ -397,6 +399,7 @@ func assertFieldNamesExact(t *testing.T, hot, cold, endpoint, query string, wind
 		t.Fatalf("%s %s: status hot=%d cold=%d", endpoint, query, ref.StatusCode, sut.StatusCode)
 	}
 	name := endpoint + " " + query
+	requireNumericHits(t, name, ref, sut)
 	compareFieldValues(t, name, ref, sut, false)
 	if want, got := fieldNamesOrder(t, name+" reference", ref), fieldNamesOrder(t, name+" SUT", sut); !reflect.DeepEqual(want, got) {
 		t.Errorf("%s: order differs:\n hot:  %v\n cold: %v", name, want, got)

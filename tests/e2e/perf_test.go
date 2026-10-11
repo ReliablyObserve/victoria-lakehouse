@@ -78,10 +78,11 @@ func TestPerf_FieldNames(t *testing.T) {
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/field_names", params)
 	elapsed := time.Since(start)
 
-	// field_names reads the rows of the window like hot VictoriaLogs (#487), so
-	// it costs about what the time range scan above does (259 ms measured in
-	// CI), not the one footer read it was held to before; reading less again is
-	// the open option of #482. The bound still catches a runaway.
+	// field_names reads the rows of the window like hot VictoriaLogs (#487), not
+	// the one footer read it was held to before: 259 ms was measured for this
+	// call in CI, against a few milliseconds on hot VictoriaLogs. Reading less
+	// again is the open option of #482 (a per-stream presence index). The bound
+	// only catches a runaway.
 	if elapsed > time.Second {
 		t.Errorf("field_names took %s, expected <1s (it reads the rows of the window)", elapsed)
 	}
