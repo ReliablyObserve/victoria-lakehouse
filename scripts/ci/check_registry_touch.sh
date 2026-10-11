@@ -135,7 +135,9 @@ finish() {
 }
 trap finish EXIT
 
-changed=$("${GITDIFF[@]}" --name-only "$BASE"..."$HEADREV")
+# NUL-separated, then one path per line: without -z git prints a non-ASCII path in octal quotes
+# ("internal/selectapi/\303\251.go"), which no anchored pattern below would match.
+changed=$("${GITDIFF[@]}" --name-only -z "$BASE"..."$HEADREV" | tr '\0' '\n')
 # Content comparisons read files at the merge base: the revision
 # `git diff BASE...HEAD` diffs against, so a PR is judged on its own changes
 # only, never on what landed on the base branch after it forked.

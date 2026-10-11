@@ -436,6 +436,9 @@ commit message):
   comment, and rejecting those files outright would have made the real #491 diff a product change. The Go
   twin (`GolangImageBumpOnly`) rejects the same bytes and shares the fixture
   `scripts/ci/tests/testdata/golang_image_cases.json`.
+  Changed paths are read NUL-separated (`git diff -z`) by the classifier, `testlinks` and the shell gate: git
+  prints a path with a space unquoted (white-space splitting would lose the first half, and with it the new
+  tests in that file) and a non-ASCII path in octal quotes (an anchored pattern would miss it).
 - docs-only and CI-only PRs (not product-changing).
 Upstream pin and patch changes keep the stricter route rule above.
 
@@ -540,9 +543,9 @@ declaration, and the two standard-library constructors `regexp.MustCompile` and 
 file imports the standard-library package of that name; they cannot end the run with success, and #412
 added `regexp.MustCompile` vars to a lock helper). A call to anything else counts, including a conversion
 to a user-defined type, which looks like a call: wrap those in a function the test calls. Funcs, consts and types are free; moving or removing a var is free; editing a literal table
-in place is listed as lock-affecting, not failed. Residual: a package that redefines a builtin or
-predeclared name as a func (`func len(...)`) could hide a call from this syntactic check; the required
-review covers it. A new file that declares only funcs, consts and
+in place is listed as lock-affecting, not failed. A package that declares a top-level name shadowing a predeclared type or builtin (`func len(...)`) is refused,
+because it would turn the trusted `len(x)` into a call of that func. The check is syntactic; the required review
+covers what it cannot see. A new file that declares only funcs, consts and
 types is never listed, so a parity fix adds its tests in a NEW file. A lock a PR adds itself is not protected yet
 (the merge base decides).
 Residual risk of the call-graph helper search (it names the reason a file is lock code, depth 4 inside the

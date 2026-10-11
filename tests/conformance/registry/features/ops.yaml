@@ -163,6 +163,7 @@
     - tests/conformance/registry/lockcode_test.go#TestLockCodeChanges_ParityComposeToolchainImageBumpIsNotLockCode
     - tests/conformance/registry/lockcode_test.go#TestGolangImageBumpOnly_UnreadableBytesAreNeverABump
     - tests/conformance/registry/lockcode_test.go#TestLockInitVarAdditions
+    - tests/conformance/registry/lockcode_test.go#TestLockInitVarAdditions_ShadowAlreadyAtBase
     - tests/conformance/registry/escape_test.go#TestMDEscape
     - tests/conformance/registry/escape_test.go#TestWorkflowEscape
     - tests/conformance/registry/escape_test.go#TestLogSafe

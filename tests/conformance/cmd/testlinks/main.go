@@ -314,12 +314,19 @@ func run() int {
 		return 2
 	}
 
-	out, err := git(*repo, "diff", "--no-renames", "--name-only", *base, *head)
+	// NUL-separated: git prints a path with a space unquoted and a non-ASCII path in octal quotes, so
+	// splitting the plain output on white space would lose the first and quote the second
+	out, err := git(*repo, "diff", "--no-renames", "--name-only", "-z", *base, *head)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "testlinks: git diff:", err)
 		return 2
 	}
-	changed := strings.Fields(string(out))
+	var changed []string
+	for _, f := range strings.Split(string(out), "\x00") {
+		if f != "" {
+			changed = append(changed, f)
+		}
+	}
 	show := func(rev string) func(string) []byte {
 		return func(p string) []byte {
 			b, err := git(*repo, "show", rev+":"+p)
@@ -483,7 +490,7 @@ func run() int {
 	}
 	// Load-time code: a lock package may not gain an init() or a package-level var (it runs before
 	// any test and can exit, skip or repoint shared state). A content rule, hard like TestMain.
-	if iv := registry.LockInitVarAdditions(registry.LockTestRefs(bs.Rows), show(*base), show(*head), packageFiles(*repo, *head)); len(iv) > 0 {
+	if iv := registry.LockInitVarAdditions(registry.LockTestRefs(bs.Rows), show(*base), show(*head), packageFiles(*repo, *base), packageFiles(*repo, *head)); len(iv) > 0 {
 		r3.fail("this PR adds init() or a package-level var to a package that holds a registry lock", iv,
 			"move the setup into the test function or a helper func the test calls: a package-level var initializer and init() run before every test of the package, can call os.Exit and can repoint shared state, which would silence the locks")
 	}

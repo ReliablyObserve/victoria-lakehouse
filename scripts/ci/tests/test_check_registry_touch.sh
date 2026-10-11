@@ -597,7 +597,7 @@ run_case "a test file that does not parse is a tool error, not zero tests" fail 
 run_case "a change to the gate itself is listed in the report, not failed" ok "Gate files changed (informational" gate_file_change
 run_case "the gate-file listing names the file" ok "scripts/ci/pr_classify.py" gate_file_change
 PR_AUTHOR=szibis run_case "M2: a version-only chart bump with the changelog materialization, by the owner, is release metadata" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
-PR_AUTHOR=github-actions[bot] run_case "M2: the same by the release bot is release metadata" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
+PR_AUTHOR='github-actions[bot]' run_case "M2: the same by the release bot is release metadata" ok "skipped (release-metadata PR)" chart_version_bump_with_changelog
 PR_AUTHOR=mallory run_case "M2: the same by anyone else is not" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_version_bump_with_changelog
 run_case "M2: the same with no author known is not" fail "packaged/patched: charts/victoria-lakehouse/Chart.yaml" chart_version_bump_with_changelog
 chart_appversion_downgrade() { chart_version_bump_with_changelog; sedi 's/^appVersion: "9.9.9"/appVersion: "0.120.0"/' charts/victoria-lakehouse/Chart.yaml; }
@@ -759,7 +759,7 @@ head_rev_case() {
   local dir out rc1 rc2
   dir="$(new_repo)"
   ( cd "$dir" && product_change && git add -A && git commit -q -m change && git branch -q pr && git checkout -q base ) >/dev/null 2>&1
-  out="$(cd "$dir" && HEAD_REV=pr bash "$CHECKER" base 2>&1)"; rc1=$?
+  out="$(cd "$dir" && HEAD_REV="pr" bash "$CHECKER" base 2>&1)"; rc1=$?
   (cd "$dir" && bash "$CHECKER" base) >/dev/null 2>&1; rc2=$?
   if [[ $rc1 -ne 0 && $rc2 -eq 0 ]] && grep -q "makes no real content change" <<<"$out"; then
     echo "ok   - HEAD_REV judges that revision, not the checked-out one (the pull_request_target gate has no PR checkout)"; pass=$((pass + 1))
@@ -845,12 +845,12 @@ FIXTURE
     git commit -q -m "feature PR with stale generated docs"
   ) >/dev/null 2>&1
 
-  stale_out="$(cd "$tmp/repo" && SKIP_CONFGEN_CHECK= bash "$CHECKER" base 2>&1)"
+  stale_out="$(cd "$tmp/repo" && SKIP_CONFGEN_CHECK='' bash "$CHECKER" base 2>&1)"
   stale_rc=$?
 
   ( cd "$tmp/repo" && GOWORK=off go run ./tests/conformance/cmd/confgen -write && git add -A && git commit -q -m "make conformance-gen" ) >/dev/null 2>&1
 
-  out="$(cd "$tmp/repo" && SKIP_CONFGEN_CHECK= bash "$CHECKER" base 2>&1)"
+  out="$(cd "$tmp/repo" && SKIP_CONFGEN_CHECK='' bash "$CHECKER" base 2>&1)"
   rc=$?
   rm -rf "$tmp"
 
@@ -948,7 +948,7 @@ FIXTURE
   check_step "confgen -check notes the still-true release references" \
     bash -c 'GOWORK=off go run ./tests/conformance/cmd/confgen -check | grep -q "^current: .*docs/features.md"'
   check_step "the checker passes the release commit" \
-    env SKIP_CONFGEN_CHECK= bash "$CHECKER" base
+    env SKIP_CONFGEN_CHECK='' bash "$CHECKER" base
 
   check_step "regeneration succeeds" env GOWORK=off go run ./tests/conformance/cmd/confgen -write
   check_step "regeneration names the released version" \
@@ -966,7 +966,7 @@ FIXTURE
   check_step "confgen -check passes a second unregenerated release" \
     env GOWORK=off go run ./tests/conformance/cmd/confgen -check
   check_step "the checker passes the second release commit" \
-    env SKIP_CONFGEN_CHECK= bash "$CHECKER" release
+    env SKIP_CONFGEN_CHECK='' bash "$CHECKER" release
 
   if [[ $ok -eq 1 ]]; then
     echo "ok   - $name"
@@ -1311,6 +1311,21 @@ hostile_case() {
   rm -rf "$dir" "$sum"
 }
 hostile_case
+
+echo
+echo "== paths git would quote or split: spaces and non-ASCII names =="
+# git prints a path with a space unquoted (white-space splitting loses the first half) and a non-ASCII
+# path in octal quotes (an anchored pattern misses it): the gate reads paths NUL-separated.
+space_test_name() {
+  registry_row_change
+  printf 'package parity\n\nimport "testing"\n\nfunc TestSpaceName(t *testing.T) {}\n' > 'tests/parity/new space_test.go'
+}
+run_case "a new test in a file whose name has a space is still seen by Rule 2" fail "tests/parity/new space_test.go#TestSpaceName" space_test_name
+utf8_route_file() {
+  printf 'package selectapi\n\nfunc register() { mux.HandleFunc("/lakehouse/api/v1/utf8", nil) }\n' > $'internal/selectapi/caf\303\251.go'
+}
+utf8_route_setup() { mkdir -p internal/selectapi; utf8_route_file; }
+run_case "a route registered in a non-ASCII file name still needs registry rows" fail "but not tests/conformance/registry/rows/" utf8_route_setup
 
 echo
 echo "== the release-metadata approvers file was renamed: the merge base decides which name is read =="

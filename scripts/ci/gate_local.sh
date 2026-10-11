@@ -19,11 +19,9 @@ GATE=${GATE_SCRIPT:-scripts/ci/check_registry_touch.sh}
 if [[ "$BASE" == origin/main ]]; then
   if [[ -n "${REGISTRY_GATE_OFFLINE:-}" ]]; then
     fetch_head=$(git rev-parse --git-path FETCH_HEAD)
-    now=$(date +%s)
-    # BSD stat -f %m, GNU stat -c %Y
-    mtime=$(stat -f %m "$fetch_head" 2>/dev/null || stat -c %Y "$fetch_head" 2>/dev/null || echo 0)
-    if [[ $((now - mtime)) -gt 86400 ]]; then
-      echo "warning: REGISTRY_GATE_OFFLINE=1 and origin/main was last fetched more than 24h ago: the verdict may be against a stale base" >&2
+    # find -mmin is the same on BSD and GNU (stat is not): a missing or older-than-24h FETCH_HEAD warns
+    if [[ ! -e "$fetch_head" || -n "$(find "$fetch_head" -mmin +1440 2>/dev/null)" ]]; then
+      echo "warning: REGISTRY_GATE_OFFLINE=1 and origin/main was last fetched more than 24h ago (or never): the verdict may be against a stale base" >&2
     fi
   elif ! git fetch -q origin main; then
     echo "registry-gate: cannot fetch origin/main, so the verdict would be against a stale base." >&2

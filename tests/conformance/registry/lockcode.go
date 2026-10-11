@@ -453,6 +453,46 @@ func loadTimeDecls(path string, src []byte) (inits int, vars map[string]int, err
 	return inits, vars, nil
 }
 
+// shadowedBuiltins lists the top-level names (functions, types, vars, consts) a Go file declares that
+// shadow a predeclared type or a builtin function the load-time check trusts: `func len(...)` in a
+// package would turn `var _ = len(x)` into a call of that func.
+func shadowedBuiltins(path string, src []byte) []string {
+	if src == nil {
+		return nil
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	note := func(name string) {
+		if predeclaredTypes[name] || pureBuiltins[name] {
+			out = append(out, name)
+		}
+	}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil {
+				note(d.Name.Name)
+			}
+		case *ast.GenDecl:
+			for _, sp := range d.Specs {
+				switch sp := sp.(type) {
+				case *ast.TypeSpec:
+					note(sp.Name.Name)
+				case *ast.ValueSpec:
+					for _, n := range sp.Names {
+						note(n.Name)
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // LockInitVarAdditions lists the files of a lock package that gain load-time code at head: an
 // init() function, or a package-level var whose initializer calls a function (it runs before any
 // test). A new file that declares one, or an existing file whose declarations now include one the
@@ -467,7 +507,7 @@ func loadTimeDecls(path string, src []byte) (inits int, vars map[string]int, err
 //
 // This is a content rule (hard, Rule 3): the owner's approval is not what stops a lock from being
 // silenced by `func init() { if os.Getenv(...) != "" { os.Exit(0) } }`.
-func LockInitVarAdditions(baseRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, headList PackageFiles) []string {
+func LockInitVarAdditions(baseRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles) []string {
 	dirs := map[string]bool{}
 	for f := range baseRefs {
 		dirs[filepath.ToSlash(filepath.Dir(f))] = true
@@ -475,6 +515,26 @@ func LockInitVarAdditions(baseRefs map[string]map[string]bool, baseSrc, headSrc 
 	var out []string
 	for d := range dirs {
 		pureTest := strings.HasPrefix(d+"/", "tests/")
+		// A package that newly declares a name shadowing a predeclared type or builtin (len, string, ...)
+		// would make the "pure" calls the check trusts into calls of its own code. Every file of the
+		// package counts here, test or not: product code shares the package scope with its tests.
+		baseShadow := map[string]bool{}
+		for _, p := range baseList(d) {
+			for _, n := range shadowedBuiltins(p, baseSrc(p)) {
+				baseShadow[n] = true
+			}
+		}
+		for _, p := range headList(d) {
+			var fresh []string
+			for _, n := range shadowedBuiltins(p, headSrc(p)) {
+				if !baseShadow[n] {
+					fresh = append(fresh, n)
+				}
+			}
+			if len(fresh) > 0 {
+				out = append(out, fmt.Sprintf("%s: declares %s, which shadows a predeclared identifier in a package that holds a registry lock", p, strings.Join(fresh, ", ")))
+			}
+		}
 		for _, p := range headList(d) {
 			if !pureTest && !strings.HasSuffix(p, "_test.go") {
 				continue

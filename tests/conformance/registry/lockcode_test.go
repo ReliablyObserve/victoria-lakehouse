@@ -361,7 +361,7 @@ func TestGolangImageBumpOnly_UnreadableBytesAreNeverABump(t *testing.T) {
 
 func lockInitVar(baseTree, headTree tree) []string {
 	refs := LockTestRefs(lockRows("tests/parity/lock_test.go#TestLock", "internal/p/p_test.go#TestP"))
-	return LockInitVarAdditions(refs, baseTree.src, headTree.src, headTree.list)
+	return LockInitVarAdditions(refs, baseTree.src, headTree.src, baseTree.list, headTree.list)
 }
 
 func TestLockInitVarAdditions(t *testing.T) {
@@ -405,6 +405,11 @@ func TestLockInitVarAdditions(t *testing.T) {
 		{"a literal var initializer edited into a call", cp(func(tr tree) {
 			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = load()\n\nvar _ = compute()\n\nfunc init() {}\n"
 		}), 1, "cases = load()"},
+		{"a func named like a builtin makes a later `var _ = len(x)` a call of that func: the declaration is refused", cp(func(tr tree) {
+			tr["tests/parity/zz.go"] = "package parity\n\nfunc len(x any) int { os.Exit(0); return 0 }\n"
+		}), 1, "declares len, which shadows a predeclared identifier"},
+		{"a type, var or const named like a predeclared type is refused too", newFile("type string struct{}\n"), 1, "declares string"},
+		{"shadowing from a NON-test file of a product package is refused as well", cp(func(tr tree) { tr["internal/p/shadow.go"] = "package p\n\nfunc make(n int) int { return n }\n" }), 1, "internal/p/shadow.go: declares make"},
 		// free
 		{"a literal table is not load-time code (#438's var fvPropMaps)", newFile("var fvPropMaps = []fvPropMap{{\"resource.attributes\", \"\"}, {\"log.attributes\", \"\"}}\n"), 0, ""},
 		{"scalars, maps, conversions, builtins and a bare declaration are free", newFile("var n = 3\nvar m = map[string]int{\"a\": 1}\nvar b = []byte(\"x\")\nvar l = len(m)\nvar f64 = float64(n)\nvar x int\nvar d = 5 * time.Second\nvar mk = make([]int, 3)\n"), 0, ""},
@@ -434,5 +439,14 @@ func TestLockInitVarAdditions(t *testing.T) {
 		if c.frag != "" && !strings.Contains(strings.Join(got, "\n"), c.frag) {
 			t.Errorf("%s: %v lacks %q", c.name, got, c.frag)
 		}
+	}
+}
+
+// A shadow the merge base already had is not an addition: only new declarations are refused.
+func TestLockInitVarAdditions_ShadowAlreadyAtBase(t *testing.T) {
+	tr := parityTree()
+	tr["tests/parity/old_shadow.go"] = "package parity\n\nfunc len(x any) int { return 0 }\n"
+	if got := lockInitVar(tr, tr); len(got) != 0 {
+		t.Errorf("unchanged tree: %v", got)
 	}
 }
