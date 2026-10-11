@@ -7,7 +7,6 @@ package parquets3
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -229,19 +228,3 @@ func TestEnrichSmallFiles_OnlyBelowTheFooterPrefetchFloor(t *testing.T) {
 		}
 	}
 }
-
-func footerOnlyEntry(t *testing.T, fx *coldFixture, key string) *CachedFooter {
-	t.Helper()
-	data := fx.datas[key]
-	fl, err := FooterLength(data[len(data)-8:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	cf, _, err := ParseFooterFromBytes(key, append([]byte(nil), data[len(data)-fl-8:]...), int64(len(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cf
-}
-
-var _ = fmt.Sprintf

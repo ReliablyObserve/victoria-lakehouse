@@ -69,6 +69,28 @@ func (s *Storage) applyCacheAffinity(files []manifest.FileInfo) {
 	}
 }
 
+// rowFilterOf is the filter RunQuery evaluates per row. A field_names
+// enumeration applies the row filter and the time range AFTER a block's column
+// set is known (see readRowGroupWithProjectionKeys), so the whole filter, the
+// time range included, is evaluated per row there.
+func rowFilterOf(ctx context.Context, q *logstorage.Query) *logstorage.Filter {
+	if storage.IsFieldNamesQuery(ctx) {
+		return logstorage.QueryFilter(q)
+	}
+	return parseFilterFromQuery(q)
+}
+
+// rowCeilingOf is the per-query row ceiling. It guards queries that return
+// rows: a field_names enumeration keeps O(fields) state, and a ceiling that
+// stopped it early would hand back a field list missing the fields of the
+// unread rows, so it has none.
+func rowCeilingOf(ctx context.Context, maxRows int64) int64 {
+	if storage.IsFieldNamesQuery(ctx) {
+		return 0
+	}
+	return maxRows
+}
+
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -108,13 +130,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// (filter AND pipes), not from the query text — see neededColumns. The
 	// context value is attached below, once the tombstones are known.
 	neededFields := logstorage.GetQueryNeededFields(q)
-	filter := parseFilterFromQuery(q)
-	if storage.IsFieldNamesQuery(ctx) {
-		// A field_names enumeration applies the row filter and the time range
-		// AFTER a block's column set is known (see readRowGroupWithProjectionKeys),
-		// so the whole filter, the time range included, is evaluated per row here.
-		filter = logstorage.QueryFilter(q)
-	}
+	filter := rowFilterOf(ctx, q)
 
 	// Per-query memory ceiling for in-flight DataBlock rows. Mirror of the
 	// budget in internal/storage/parquets3 (logs module). See that file for
@@ -126,13 +142,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	var liveBytes atomic.Int64
 
 	var rowsEmitted atomic.Int64
-	maxRows := s.cfg.Query.MaxRows
-	if storage.IsFieldNamesQuery(ctx) {
-		// The row ceiling guards queries that return rows. A field_names
-		// enumeration keeps O(fields) state, and a ceiling that stopped it early
-		// would hand back a field list missing the fields of the unread rows.
-		maxRows = 0
-	}
+	maxRows := rowCeilingOf(ctx, s.cfg.Query.MaxRows)
 
 	// Wrap writeBlock to apply LogsQL filter evaluation, tombstone filtering,
 	// max_rows enforcement, and panic recovery.

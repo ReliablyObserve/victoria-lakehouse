@@ -7,7 +7,6 @@ package parquets3
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -229,35 +228,3 @@ func TestEnrichSmallFiles_OnlyBelowTheFooterPrefetchFloor(t *testing.T) {
 		}
 	}
 }
-
-// fieldNameHits runs field_names over the fixture window.
-func fieldNameHits(t *testing.T, fx *coldFixture) map[string]uint64 {
-	t.Helper()
-	start, end := fx.window()
-	q := mustParseQueryWithTime(t, "*", start, end)
-	vals, err := fx.s.GetFieldNames(context.Background(), nil, q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := make(map[string]uint64, len(vals))
-	for _, v := range vals {
-		out[v.Value] = v.Hits
-	}
-	return out
-}
-
-func footerOnlyEntry(t *testing.T, fx *coldFixture, key string) *CachedFooter {
-	t.Helper()
-	data := fx.datas[key]
-	fl, err := FooterLength(data[len(data)-8:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	cf, _, err := ParseFooterFromBytes(key, append([]byte(nil), data[len(data)-fl-8:]...), int64(len(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cf
-}
-
-var _ = fmt.Sprintf

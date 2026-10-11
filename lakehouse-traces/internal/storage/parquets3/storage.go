@@ -423,16 +423,6 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 	s.updateLabelIndexImpl(f, true)
 }
 
-// updateLabelIndexNamesOnly registers field names (and MAP-key field names)
-// without attempting to extract DISTINCT VALUES for promoted columns. Use
-// this when the parquet.File was opened in a footer-only context (where
-// data-page reads return nothing or fall back to truncated column-index
-// stats — exactly how "notification-ser" first leaked into the label
-// index from GetFieldNames over hundreds of files).
-func (s *Storage) updateLabelIndexNamesOnly(f *parquet.File) {
-	s.updateLabelIndexImpl(f, false)
-}
-
 func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 	// Derived from the shared dimensional label set so the Cardinality Explorer
 	// surfaces real cardinality for every dedicated dimension and can't drift

@@ -725,16 +725,3 @@ func windowRowGroups(f *parquet.File, lo, hi int64) []int {
 	}
 	return all
 }
-
-// firstLeafIndex returns the leaf column index of col, or of its first leaf
-// when col is a group (a MAP column's key leaf); -1 when it has none.
-func firstLeafIndex(col *parquet.Column) int {
-	for !col.Leaf() {
-		cs := col.Columns()
-		if len(cs) == 0 {
-			return -1
-		}
-		col = cs[0]
-	}
-	return col.Index()
-}

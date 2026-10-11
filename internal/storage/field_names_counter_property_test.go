@@ -159,7 +159,7 @@ func FuzzFieldNamesCounter(f *testing.F) {
 			c.add(0, b.block())
 		}
 		want := fnReference(blocks)
-		if got := fnHits(c.result()); !(len(want) == 0 && len(got) == 0) && !reflect.DeepEqual(got, want) {
+		if got := fnHits(c.result()); (len(want) != 0 || len(got) != 0) && !reflect.DeepEqual(got, want) {
 			t.Fatalf("hits = %v, want %v", got, want)
 		}
 	})
