@@ -1114,7 +1114,7 @@ run_case "adding a Skip to a lock test file is a Rule 3 failure" fail "a Skip ca
 run_case "the failure names the file" fail "tests/parity/parity_test.go" lock_test_edited
 run_case "adding a helper to a lock test file is reported, not failed" ok "tests/parity/parity_test.go: it holds a lock test" lock_helper_added
 run_case "a new file with init() in a lock package is a Rule 3 failure" fail "tests/parity/setup_test.go: adds 1 new init() function(s) to a package that holds a registry lock" lock_pkg_init_file
-run_case "G1: a new file with a package-level var initializer is a Rule 3 failure" fail "tests/parity/zz_env_test.go: adds package-level var _ to a package that holds a registry lock" lock_pkg_var_file
+run_case "G1: a new file with a package-level var initializer is a Rule 3 failure" fail "tests/parity/zz_env_test.go: adds package-level var whose initializer calls a function: _ = func() int { return 0 }() to a package that holds a registry lock" lock_pkg_var_file
 run_case "G1: the failure is Rule 3's row, with a how-to-fix line" fail "| Rule 3: parity fixes ship locks, locks are not weakened | FAIL" lock_pkg_var_file
 init_exit() {
   # a test file whose init() ends the test binary with success when the nonce of the lock run is set: every lock of the package "passes"
@@ -1128,7 +1128,9 @@ run_case "a new file with only funcs, consts and types is free" ok "testlinks OK
 lock_pkg_init_appended() { registry_row_change; printf '\nfunc init() {}\n' >> tests/parity/parity_test.go; }
 run_case "G2: an init() appended to a test file of a lock package is a Rule 3 failure" fail "tests/parity/parity_test.go: adds 1 new init() function(s)" lock_pkg_init_appended
 lock_pkg_var_edited_in_place() { registry_row_change; printf 'package parity\n\nimport "testing"\n\nvar table = []int{1, 2}\n\nfunc TestOldParity(t *testing.T) {}\n' > tests/parity/parity_test.go; }
-run_case "a package var that is only a new table in a lock test file is a Rule 3 failure too (the file declares a var the base did not)" fail "package-level var table" lock_pkg_var_edited_in_place
+lock_pkg_var_table_call() { registry_row_change; printf 'package parity\n\nimport "testing"\n\nvar table = load()\n\nfunc TestOldParity(t *testing.T) {}\n' > tests/parity/parity_test.go; }
+run_case "a var in a lock test file whose initializer calls a function is a Rule 3 failure (the file declares code the base did not)" fail "package-level var whose initializer calls a function: table = load()" lock_pkg_var_table_call
+run_case "a literal var table in a lock test file runs no code: listed as lock-affecting, not failed (#438 shape)" ok "tests/parity/parity_test.go: it holds a lock test" lock_pkg_var_edited_in_place
 run_case "G3: the parity compose runtime config is reported" ok "tests/parity/docker-compose.yml: runtime configuration of the lock suites" lock_pkg_compose_edited
 run_case "an existing plain .go helper of a lock package is reported" ok "tests/parity/helpers.go" lock_pkg_existing_plain_go_edited
 parity_compose_toolchain_tag() { sedi 's#golang:1.22.0#golang:1.22.1#' tests/parity/docker-compose.yml; registry_row_change; }
@@ -1136,11 +1138,13 @@ run_case "a Go image tag bump of the parity compose file is not lock-affecting" 
 run_case "a new test in a new file of a lock package is free" ok "testlinks OK" lock_new_test_new_file
 lock_product_test_file_edited() { registry_row_change; printf 'package x\n\nimport "testing"\n\nfunc TestE(t *testing.T) { t.Skip() }\n' > internal/x/e_test.go; }
 lock_product_new_nontest_file() { registry_row_change; printf 'package x\n\nvar V = 1\n\nfunc init() {}\n' > internal/x/new.go; }
-lock_product_new_test_var() { registry_row_change; printf 'package x\n\nvar V = 1\n' > internal/x/v_test.go; }
+lock_product_new_test_var() { registry_row_change; printf 'package x\n\nvar V = compute()\n' > internal/x/v_test.go; }
+lock_product_new_test_table() { registry_row_change; printf 'package x\n\nvar V = []int{1}\n' > internal/x/v_test.go; }
 run_case "a product file edit in a package that holds a lock passes" ok "registry-touch check OK" product_and_row
 run_case "a new non-test file in a product lock package is free" ok "" lock_product_new_nontest_file
 run_case "adding a Skip to a test file of a product lock package fails Rule 3" fail "internal/x/e_test.go" lock_product_test_file_edited
-run_case "a new test file with a package var in a product lock package is a Rule 3 failure" fail "internal/x/v_test.go: adds package-level var V" lock_product_new_test_var
+run_case "a new test file with a called package var in a product lock package is a Rule 3 failure" fail "internal/x/v_test.go: adds package-level var whose initializer calls a function: V = compute()" lock_product_new_test_var
+run_case "a new test file with a literal table in a product lock package is free" ok "registry-touch check OK" lock_product_new_test_table
 run_case "a new test file outside every lock package is free" ok "" other_test_file_edited
 
 echo

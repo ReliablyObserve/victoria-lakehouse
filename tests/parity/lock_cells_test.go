@@ -28,9 +28,9 @@ import (
 // environment and print a forged line, so it only guards against an accidental stale
 // or copied line. What stops forged cells is two controls (tests/conformance/README.md,
 // "Lock packages"): content rules the registry gate enforces as hard Rule 3 failures
-// (a new init(), package-level var or TestMain in a file of this package, a new t.Skip or
-// build constraint in a lock's test file, a lowered cell floor, a lost lock reference),
-// and the required approval of the pull request, which covers the rest: the gate lists
+// (a new init(), a package-level var whose initializer calls a function, or a TestMain in a
+// file of this package; a new t.Skip or build constraint in a lock's test file; a lowered
+// cell floor; a lost lock reference), and the required approval of the pull request, which covers the rest: the gate lists
 // every edit of an existing file of this package, of its runtime config and of the gate's
 // own files in its report and as inline annotations, and the reviewer decides.
 func reportLockCells(t *testing.T, n int) {

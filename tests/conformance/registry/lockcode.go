@@ -331,18 +331,93 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 	return out, nil
 }
 
-// loadTimeDecls returns what a Go file declares that runs at package load or on every test binary
-// start: the count of init() functions and the multiset of package-level var names. A package-level
-// var initializer and init() run before any test, can call os.Exit, and can repoint shared state, so
-// a lock package may not gain one (TestMain is checked by TestMainChanges).
+// predeclaredTypes are the identifiers a call expression can name without calling a function: a
+// conversion such as int64(x) or string(b). Everything else spelled `name(...)` is a function call.
+var predeclaredTypes = map[string]bool{
+	"bool": true, "byte": true, "rune": true, "string": true, "error": true, "any": true,
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+	"float32": true, "float64": true, "complex64": true, "complex128": true,
+}
+
+// pureBuiltins are the builtin functions that run no user code.
+var pureBuiltins = map[string]bool{
+	"len": true, "cap": true, "make": true, "new": true, "append": true, "min": true, "max": true,
+	"complex": true, "real": true, "imag": true,
+}
+
+// pureStdlibCalls are the standard-library constructors a test file may call in a package-level var
+// initializer: they cannot end the test binary with success (regexp.MustCompile panics on a bad
+// pattern, which fails the run). Keyed by import path; a file that imports another package under the
+// name `regexp` gets no exemption.
+var pureStdlibCalls = map[string]map[string]bool{
+	"regexp": {"MustCompile": true, "MustCompilePOSIX": true},
+	"errors": {"New": true},
+}
+
+// runsCodeAtLoad reports whether evaluating the expression at package load can run user code: it
+// contains a function call that is not a conversion to a predeclared or composite type, not a pure
+// builtin and not one of the pure standard-library constructors (pureStdlibCalls). A function literal is only code that CAN run later; its body is not run at load, so it is
+// not descended into (calling it, `func() int {...}()`, is itself a call and is flagged).
+func runsCodeAtLoad(e ast.Expr, imports map[string]string) bool {
+	// isConversion reports whether fun names a type that is converted to, not a function that is called.
+	// Only syntactically certain cases count; a user-defined type name or a qualified one looks like a
+	// function and is treated as a call (conservative).
+	var isConversion func(fun ast.Expr) bool
+	isConversion = func(fun ast.Expr) bool {
+		switch f := fun.(type) {
+		case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType, *ast.StructType:
+			return true
+		case *ast.ParenExpr:
+			return isConversion(f.X)
+		case *ast.Ident:
+			return predeclaredTypes[f.Name] || pureBuiltins[f.Name]
+		}
+		return false
+	}
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.CallExpr:
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); ok && pureStdlibCalls[imports[id.Name]][sel.Sel.Name] {
+					return true // pure: its arguments are still inspected
+				}
+			}
+			if !isConversion(n.Fun) {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// loadTimeDecls returns what a Go file declares that runs code at package load, before any test:
+// the count of init() functions and the multiset of package-level vars whose initializer calls a
+// function (keyed `name = initializer source`). A literal table (`var cases = []T{{...}}`), a
+// conversion or a var without an initializer runs nothing and is not counted. TestMain is checked
+// by TestMainChanges.
 func loadTimeDecls(path string, src []byte) (inits int, vars map[string]int, err error) {
 	vars = map[string]int{}
 	if src == nil {
 		return 0, vars, nil
 	}
-	f, err := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
 	if err != nil {
 		return 0, nil, err
+	}
+	imports := map[string]string{} // local name -> import path
+	for _, im := range f.Imports {
+		path := strings.Trim(im.Path.Value, `"`+"`")
+		name := path[strings.LastIndex(path, "/")+1:]
+		if im.Name != nil {
+			name = im.Name.Name
+		}
+		imports[name] = path
 	}
 	for _, d := range f.Decls {
 		switch d := d.(type) {
@@ -355,10 +430,22 @@ func loadTimeDecls(path string, src []byte) (inits int, vars map[string]int, err
 				continue
 			}
 			for _, sp := range d.Specs {
-				if vs, ok := sp.(*ast.ValueSpec); ok {
-					for _, n := range vs.Names {
-						vars[n.Name]++
+				vs, ok := sp.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, v := range vs.Values {
+					if !runsCodeAtLoad(v, imports) {
+						continue
 					}
+					name := "_"
+					if i < len(vs.Names) {
+						name = vs.Names[i].Name
+					} else if len(vs.Names) > 0 {
+						name = vs.Names[0].Name // var a, b = f(): one call, several names
+					}
+					text := string(src[fset.Position(v.Pos()).Offset:fset.Position(v.End()).Offset])
+					vars[name+" = "+strings.Join(strings.Fields(text), " ")]++
 				}
 			}
 		}
@@ -366,13 +453,17 @@ func loadTimeDecls(path string, src []byte) (inits int, vars map[string]int, err
 	return inits, vars, nil
 }
 
-// LockInitVarAdditions lists the files of a lock package that gain an init() function or a
-// package-level var at head: a new file that declares one, or an existing file whose declarations
-// now include one the merge base did not have (per name, `_` counted). Lock packages are judged
+// LockInitVarAdditions lists the files of a lock package that gain load-time code at head: an
+// init() function, or a package-level var whose initializer calls a function (it runs before any
+// test). A new file that declares one, or an existing file whose declarations now include one the
+// merge base did not have (per name and initializer; `_` counted). Lock packages are judged
 // against the locks that exist at the merge base. In a pure test package (under tests/) every .go
 // file is in scope; in a product package only the _test.go files are. A file that no longer parses
 // is listed too: the package would not build and its locks would not run. Removing a var or an
-// init() is free; so is a func, const or type.
+// init() is free; so is a func, const or type, and so is a var whose initializer runs no code: a
+// literal table, a conversion, a var with no initializer (a table cannot end the test binary; #438's
+// `var fvPropMaps = []fvPropMap{{...}}` is one). Editing a var's initializer to call a function is an
+// addition.
 //
 // This is a content rule (hard, Rule 3): the owner's approval is not what stops a lock from being
 // silenced by `func init() { if os.Getenv(...) != "" { os.Exit(0) } }`.
@@ -413,7 +504,7 @@ func LockInitVarAdditions(baseRefs map[string]map[string]bool, baseSrc, headSrc 
 			}
 			sort.Strings(names)
 			if len(names) > 0 {
-				added = append(added, "package-level var "+strings.Join(names, ", "))
+				added = append(added, "package-level var whose initializer calls a function: "+strings.Join(names, ", "))
 			}
 			if len(added) > 0 {
 				out = append(out, fmt.Sprintf("%s: adds %s to a package that holds a registry lock", p, strings.Join(added, " and ")))

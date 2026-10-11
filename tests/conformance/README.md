@@ -514,7 +514,7 @@ accepts only that file:line, for the test test2json attributes it to) and carrie
 nonce (`PARITY_LOCK_NONCE`, generated in the workflow step and passed to the test container). **The nonce is
 not a security control**: any code in the test process can read the variable and print a matching line. It
 only guards against accidental collisions (a stale or copied line). What stops forged cells is two controls: the
-content rules below (hard Rule 3: no new `init()`, package-level `var` or `TestMain` in a lock package, no new
+content rules below (hard Rule 3: no new `init()`, called package-level `var` or `TestMain` in a lock package, no new
 `t.Skip` or build constraint in a lock's test file, no lowered floor), and the required approval of the pull
 request, which covers the rest: the report and inline annotations list the lock packages' files for the
 reviewer (below).
@@ -527,15 +527,22 @@ or deletion of an existing file of the lock suites' runtime config (`tests/parit
 `image: golang:<version>` line, which changes nothing a lock compares; `deployment/docker/docker-compose-e2e.yml`;
 `deployment/docker/lakehouse-e2e-config.yml`; `cmd/datagen/`). In a product package (`internal/...`,
 `lakehouse-traces/...`, `cmd/...`) only the existing `_test.go` files are gated: product code is what the locks
-verify, so editing it is free. **A lock package may not gain load-time code (hard, Rule 3).** A package-level
-`var` (its initializer runs before any test and can repoint shared state), an `init()` or a `TestMain` can
-end the test binary with success (`func init() { if os.Getenv("PARITY_LOCK_NONCE") != "" { os.Exit(0) } }`) and
-silence every lock of the package, so the gate fails a PR that adds one to a file of a lock package: a new
-file, or an existing file whose `init()` count or set of package-level var names grew (a `_` counts per
-occurrence). In a pure test package that applies to every `.go` file, in a product package to `_test.go`
-files (non-test files there are product code and free). Funcs, consts and types are free; moving or removing a
-var is free; editing the value of an existing var (a table) is listed as lock-affecting, not failed. Setup
-belongs in the test function or in a helper func it calls. A new file that declares only funcs, consts and
+verify, so editing it is free. **A lock package may not gain load-time code (hard, Rule 3).** An `init()`, a `TestMain` or a package-level
+`var` whose initializer calls a function runs before any test and can end the test binary with success
+(`func init() { if os.Getenv("PARITY_LOCK_NONCE") != "" { os.Exit(0) } }`), silencing every lock of the
+package, so the gate fails a PR that adds one to a file of a lock package: a new file, or an existing file
+that now holds an `init()` or a called-var (per name and initializer text, `_` counted per occurrence) the
+merge base did not. In a pure test package that applies to every `.go` file, in a product package to
+`_test.go` files (non-test files there are product code and free). A var whose initializer runs no code
+is free: a literal table (`var fvPropMaps = []fvPropMap{{...}}`, which #438 added), a conversion to a
+predeclared type, a pure builtin (`len`, `make` ...), a func literal that is not called, a bare
+declaration, and the two standard-library constructors `regexp.MustCompile` and `errors.New` (when the
+file imports the standard-library package of that name; they cannot end the run with success, and #412
+added `regexp.MustCompile` vars to a lock helper). A call to anything else counts, including a conversion
+to a user-defined type, which looks like a call: wrap those in a function the test calls. Funcs, consts and types are free; moving or removing a var is free; editing a literal table
+in place is listed as lock-affecting, not failed. Residual: a package that redefines a builtin or
+predeclared name as a func (`func len(...)`) could hide a call from this syntactic check; the required
+review covers it. A new file that declares only funcs, consts and
 types is never listed, so a parity fix adds its tests in a NEW file. A lock a PR adds itself is not protected yet
 (the merge base decides).
 Residual risk of the call-graph helper search (it names the reason a file is lock code, depth 4 inside the
@@ -569,8 +576,9 @@ and made the toolchain bump #491 unmergeable, with no way to turn it green; it i
   `t.Skip`, `t.SkipNow` or `t.Skipf` call, a lock's test file new under a name the go tool ignores or
   constrains (leading `_` or `.`, a GOOS/GOARCH suffix), or an edited `TestMain` in a lock's package
   (the runtime floor above catches whatever these static checks cannot);
-- adds an `init()` function or a package-level `var` to a file of a lock package (a new file or an
-  existing one), or any `TestMain` change there: load-time code that can silence the locks;
+- adds an `init()` function or a package-level `var` whose initializer calls a function to a file of a
+  lock package (a new file or an existing one), or changes a `TestMain` there: load-time code that can
+  silence the locks;
 - lowers or removes a cell floor in `tests/parity/lock_cells.txt`;
 - deletes or moves the allowlist file, or changes the `--allowlist` argument of the parity workflow
   (the allowlist path is read from `.github/workflows/parity.yaml` at both revisions).

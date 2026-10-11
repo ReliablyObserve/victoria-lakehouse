@@ -367,12 +367,15 @@ func lockInitVar(baseTree, headTree tree) []string {
 func TestLockInitVarAdditions(t *testing.T) {
 	base := func() tree {
 		tr := parityTree()
-		tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1}\n\nvar _ = 0\n\nfunc init() {}\n"
+		tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1}\n\nvar _ = compute()\n\nfunc init() {}\n"
 		tr["internal/p/p_test.go"] = "package p\n\nfunc TestP(t *testing.T) {}\n"
 		tr["internal/p/p.go"] = "package p\n\nfunc F() {}\n"
 		return tr
 	}
 	cp := func(mod func(tr tree)) tree { tr := base(); mod(tr); return tr }
+	newFile := func(src string) tree {
+		return cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\n" + src })
+	}
 	cases := []struct {
 		name string
 		head tree
@@ -383,30 +386,44 @@ func TestLockInitVarAdditions(t *testing.T) {
 		{"init_exit: a new test file whose init() exits when the nonce is set", cp(func(tr tree) {
 			tr["tests/parity/zz_env_test.go"] = "package parity\n\nimport \"os\"\n\nfunc init() {\n\tif os.Getenv(\"PARITY_LOCK_NONCE\") != \"\" {\n\t\tos.Exit(0)\n\t}\n}\n"
 		}), 1, "adds 1 new init() function(s)"},
-		{"a new file with a package-level var initializer", cp(func(tr tree) {
-			tr["tests/parity/zz.go"] = "package parity\n\nvar _ = func() int { return 0 }()\n"
-		}), 1, "package-level var _"},
+		{"a new file with a var initialized by a called func literal", newFile("var _ = func() int { return 0 }()\n"), 1, "package-level var whose initializer calls a function: _ = func() int { return 0 }()"},
+		{"a var initialized by a package func", newFile("var x = compute()\n"), 1, "x = compute()"},
+		{"a var initialized by a stdlib constructor", newFile("var re = regexp.MustCompile(\"x\")\nvar e = errors.New(\"x\")\n"), 1, "re = regexp.MustCompile"},
+		{"a parenthesised call of os.Exit", newFile("var _ = (os.Exit)(0)\n"), 1, "(os.Exit)(0)"},
+		{"regexp.MustCompile and errors.New of the standard library are pure constructors", newFile("import (\n\t\"errors\"\n\t\"regexp\"\n)\n\nvar re = regexp.MustCompile(`^a+$`)\nvar e = errors.New(\"x\")\n"), 0, ""},
+		{"a regexp.MustCompile whose argument calls a function is not", newFile("import \"regexp\"\n\nvar re = regexp.MustCompile(pattern())\n"), 1, "re = regexp.MustCompile(pattern())"},
+		{"a package that is not the standard library regexp gets no exemption", newFile("import regexp \"example.com/evil/regexp\"\n\nvar re = regexp.MustCompile(\"x\")\n"), 1, "re = regexp.MustCompile"},
+		{"the stdlib name without its import is a call like any other", newFile("var re = regexp.MustCompile(\"x\")\n"), 1, "re = regexp.MustCompile"},
+		{"an aliased stdlib import keeps the exemption", newFile("import rx \"regexp\"\n\nvar re = rx.MustCompile(\"x\")\n"), 0, ""},
+		{"a call buried in a composite literal", newFile("var tbl = []int{1, f(), 3}\n"), 1, "tbl = []int{1, f(), 3}"},
+		{"a call to a user type name looks like a function call and is flagged", newFile("var v = T(3)\n"), 1, "v = T(3)"},
 		{"an init() added to an existing lock file", cp(func(tr tree) { tr["tests/parity/lock_test.go"] += "\nfunc init() {}\n" }), 1, "tests/parity/lock_test.go"},
-		{"a var added to an existing helper file", cp(func(tr tree) { tr["tests/parity/helpers.go"] += "\nvar x = 1\n" }), 1, "package-level var x"},
-		{"a second blank var in a file that had one", cp(func(tr tree) { tr["tests/parity/vars.go"] += "\nvar _ = 1\n" }), 1, "package-level var _"},
+		{"a called var added to an existing helper file", cp(func(tr tree) { tr["tests/parity/helpers.go"] += "\nvar x = compute()\n" }), 1, "x = compute()"},
+		{"a second identical blank call-var in a file that had one", cp(func(tr tree) { tr["tests/parity/vars.go"] += "\nvar _ = compute()\n" }), 1, "_ = compute()"},
 		{"a second init() in a file that had one", cp(func(tr tree) { tr["tests/parity/vars.go"] += "\nfunc init() {}\n" }), 1, "1 new init()"},
-		{"a var inside a grouped declaration", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\nvar (\n\ta = 1\n\tb = 2\n)\n" }), 1, "package-level var a, b"},
-		{"an existing var table edited in place is only listed as lock-affecting, not failed", cp(func(tr tree) {
-			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1, 2, 3}\n\nvar _ = 0\n\nfunc init() {}\n"
+		{"a call var inside a grouped declaration", newFile("var (\n\ta = 1\n\tb = f()\n)\n"), 1, "b = f()"},
+		{"a literal var initializer edited into a call", cp(func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = load()\n\nvar _ = compute()\n\nfunc init() {}\n"
+		}), 1, "cases = load()"},
+		// free
+		{"a literal table is not load-time code (#438's var fvPropMaps)", newFile("var fvPropMaps = []fvPropMap{{\"resource.attributes\", \"\"}, {\"log.attributes\", \"\"}}\n"), 0, ""},
+		{"scalars, maps, conversions, builtins and a bare declaration are free", newFile("var n = 3\nvar m = map[string]int{\"a\": 1}\nvar b = []byte(\"x\")\nvar l = len(m)\nvar f64 = float64(n)\nvar x int\nvar d = 5 * time.Second\nvar mk = make([]int, 3)\n"), 0, ""},
+		{"a func value that is never called at load is free", newFile("var hook = func() { os.Exit(0) }\n"), 0, ""},
+		{"an existing literal table edited in place is only listed as lock-affecting, not failed", cp(func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1, 2, 3}\n\nvar _ = compute()\n\nfunc init() {}\n"
 		}), 0, ""},
 		{"removing a var and an init() is free", cp(func(tr tree) { tr["tests/parity/vars.go"] = "package parity\n" }), 0, ""},
-		{"funcs, consts and types are free", cp(func(tr tree) {
-			tr["tests/parity/zz.go"] = "package parity\n\nconst K = 1\n\ntype T struct{}\n\nfunc Helper() {}\n\nfunc TestNew(t *testing.T) { var local = 1; _ = local }\n"
+		{"funcs, consts and types are free", newFile("const K = 1\n\ntype T struct{}\n\nfunc Helper() {}\n\nfunc TestNew(t *testing.T) { var local = f(); _ = local }\n"), 0, ""},
+		{"a local var inside a func is free", newFile("func f() { var x = g(); _ = x }\n"), 0, ""},
+		{"a method named init is not init()", newFile("type T struct{}\n\nfunc (T) init() {}\n"), 0, ""},
+		{"a new file that does not parse", newFile("func (\n"), 1, "does not parse"},
+		{"a product package: a new non-test file with init and call-var is product code", cp(func(tr tree) {
+			tr["internal/p/new.go"] = "package p\n\nvar V = f()\n\nfunc init() {}\n"
 		}), 0, ""},
-		{"a local var inside a func is free", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\nfunc f() { var x = 1; _ = x }\n" }), 0, ""},
-		{"a method named init is not init()", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\ntype T struct{}\n\nfunc (T) init() {}\n" }), 0, ""},
-		{"a new file that does not parse", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\nfunc (\n" }), 1, "does not parse"},
-		{"a product package: a new non-test file with init and var is product code", cp(func(tr tree) {
-			tr["internal/p/new.go"] = "package p\n\nvar V = 1\n\nfunc init() {}\n"
-		}), 0, ""},
-		{"a product package: a new _test.go with a var is not free", cp(func(tr tree) { tr["internal/p/v_test.go"] = "package p\n\nvar V = 1\n" }), 1, "internal/p/v_test.go"},
+		{"a product package: a new _test.go with a call-var is not free", cp(func(tr tree) { tr["internal/p/v_test.go"] = "package p\n\nvar V = f()\n" }), 1, "internal/p/v_test.go"},
+		{"a product package: a new _test.go with a literal table is free", cp(func(tr tree) { tr["internal/p/v_test.go"] = "package p\n\nvar V = []int{1}\n" }), 0, ""},
 		{"a product package: an init() added to an existing _test.go is not free", cp(func(tr tree) { tr["internal/p/p_test.go"] += "\nfunc init() {}\n" }), 1, "internal/p/p_test.go"},
-		{"a package without a lock is free", cp(func(tr tree) { tr["tests/other/zz_test.go"] = "package other\n\nvar V = 1\n\nfunc init() {}\n" }), 0, ""},
+		{"a package without a lock is free", cp(func(tr tree) { tr["tests/other/zz_test.go"] = "package other\n\nvar V = f()\n\nfunc init() {}\n" }), 0, ""},
 	}
 	for _, c := range cases {
 		got := lockInitVar(base(), c.head)
