@@ -91,6 +91,25 @@ func rowCeilingOf(ctx context.Context, maxRows int64) int64 {
 	return maxRows
 }
 
+// preFilterFieldNames is RunQuery's per-block filter for a field_names count. It
+// unions the columns of every block of a stream before the row filter runs: a
+// block none of whose rows match still belongs to the stream's column set (see
+// storage.ObserveFieldNamesBlock). The rows the filter keeps reach the counter.
+func (s *Storage) preFilterFieldNames(ctx context.Context, db *logstorage.DataBlock, tss []tombstone, filter *logstorage.Filter) *logstorage.DataBlock {
+	if len(tss) > 0 {
+		db = suppressTombstonedRows(db, tss)
+		if db == nil || db.RowsCount() == 0 {
+			return nil
+		}
+	}
+	storage.ObserveFieldNamesBlock(ctx, db)
+	db = filterDataBlock(db, filter)
+	if db == nil || db.RowsCount() == 0 {
+		return nil
+	}
+	return db
+}
+
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -166,21 +185,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			return nil
 		}
 		if counting {
-			// A field_names count unions the columns of every block of a stream
-			// before the row filter runs: a block none of whose rows match still
-			// belongs to the stream's column set (see storage.ObserveFieldNamesBlock).
-			if len(tss) > 0 {
-				db = suppressTombstonedRows(db, tss)
-				if db == nil || db.RowsCount() == 0 {
-					return nil
-				}
-			}
-			storage.ObserveFieldNamesBlock(ctx, db)
-			db = filterDataBlock(db, filter)
-			if db == nil || db.RowsCount() == 0 {
-				return nil
-			}
-			return db
+			return s.preFilterFieldNames(ctx, db, tss, filter)
 		}
 		db = filterDataBlock(db, filter)
 		if db == nil || db.RowsCount() == 0 {
