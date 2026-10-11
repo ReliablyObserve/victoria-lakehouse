@@ -48,3 +48,22 @@ func TestFieldNames_IgnoresTheRowCeiling(t *testing.T) {
 		t.Errorf("trace_id/span_attr:custom.attr hits = %d/%d, want 5/3 whatever query.max_rows is: %v", m["trace_id"], m["span_attr:custom.attr"], m)
 	}
 }
+
+// The time range selects the spans AFTER a block's columns are known, so only
+// the spans inside it are credited (twin of the windowed half of
+// TestFieldNames_FilterSelectsRowsAfterTheColumnsAreKnown in the logs module).
+func TestTraceFieldNames_TimeRangeSelectsTheCreditedSpans(t *testing.T) {
+	s := fvcStorage(t, []schema.TraceRow{
+		fnSpan(1*time.Minute, "GET", "GET"), fnSpan(2*time.Minute, "GET", ""), fnSpan(3*time.Minute, "GET", ""),
+		fnSpan(4*time.Minute, "PUT", ""), fnSpan(5*time.Minute, "PUT", ""),
+	})
+	win := mustParseQueryWithTime(t, "*", fvcBase.Add(90*time.Second).UnixNano(), fvcBase.Add(3*time.Minute+time.Second).UnixNano())
+	got, err := s.GetFieldNames(context.Background(), nil, win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := namesToHits(got)
+	if m["trace_id"] != 2 || m["span_attr:custom.attr"] != 2 {
+		t.Errorf("windowed trace_id/span_attr:custom.attr hits = %d/%d, want 2/2 (the two spans inside the window, the GET stream lists the attribute): %v", m["trace_id"], m["span_attr:custom.attr"], m)
+	}
+}

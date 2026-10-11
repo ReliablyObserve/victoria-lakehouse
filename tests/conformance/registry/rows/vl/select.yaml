@@ -606,3 +606,20 @@
   pending: true
   refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/parquets3/field_names_exact_test.go#TestGetStreamFieldNames_CreditsTheRowsOfEachStream, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] }
   notes: "Issue 461. Answered from the streams the query matches (every layer) and their tags, summed per tag, sorted by hits then name: the walk stream_field_values does. It answered hits 1 per tag in registry order. Exact compare in every layer and tenant form, and on the seeded corpus."
+
+- id: vl.select.field_names.unmerged_parts
+  title: "/select/logsql/field_names — hits of a sparse field of rows that reached hot in separate requests depend on hot's unmerged part layout (known gap)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Hot credits a field with the rows of the stored blocks that list it, and rows of separate insert requests are separate blocks until hot merges them, so the hits depend on the batching and timing of the requests (issue 500). Lakehouse credits the merged value, which depends on the rows only. Names are equal; only sparse-field hits differ, and only until hot merges parts."
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [] }
+  notes: "Measured 2026-10-11 on a parity compose stack (hot VictoriaLogs v1.53.0): four rows of one stream, one carrying lk and one sp, give lk 4 and sp 4 when sent in one request and 1 and 1 when sent in four (back to back or 0.6 s apart) right after the writes, while Lakehouse answers 4 and 4 in both; hot's answer to the four-request streams became 4 and 4 after about ten minutes (parts merged). Traces: vt.select.logsql_field_names.unmerged_parts. The parity fixture sends each batch in one request. Issue 500."
