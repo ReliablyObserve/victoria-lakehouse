@@ -286,7 +286,7 @@ pmeta replaces the per-file metadata sidecars with a single bundle per partition
 
 **pmeta read path**: file enrichment and bloom checks are served from the in-RAM bundle before any sidecar GET, with equivalence tests asserting the bundle answers exactly what the sidecars answered.
 
-Each read flip moved one consumer from its legacy sidecar to the bundle behind a flag, and each landed with an equivalence test proving the two sources agree. That is what makes retiring the sidecar writes safe.
+Each read flip moved one consumer from its legacy sidecar to the bundle behind a flag, and each landed with an equivalence test proving the two sources agree. That is what makes retiring the sidecar writes safe. The `field_names` flip of release 0.79.0 is history: `GetFieldNames` no longer serves from the catalog or the label index. It reads the rows of the window like hot VictoriaLogs and VictoriaTraces (see the `field_names` rows `vl.select.field_names.hits_per_stream_block` and `vt.select.logsql_field_names.vt_field_names`), because the catalog knows a file's columns and not the fields of its rows.
 
 - Verification: tests: `internal/storage/parquets3/pmeta_integration_test.go#TestInteg_PmetaFlip_FieldNamesAndBloom`, `internal/storage/parquets3/pmeta_integration_test.go#TestInteg_EnrichEquivalence_ProviderVsSidecar`, `lakehouse-traces/internal/storage/parquets3/pmeta_integration_test.go#TestInteg_PmetaFlip_TracesBloomFacet`
 - Docs: `docs/architecture/metadata-consolidation.md`, `docs/architecture/field-value-catalog.md`

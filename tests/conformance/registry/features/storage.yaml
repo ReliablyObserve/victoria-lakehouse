@@ -276,6 +276,11 @@
     Each read flip moved one consumer from its legacy sidecar to the bundle behind a flag, and
     each landed with an equivalence test proving the two sources agree. That is what makes
     retiring the sidecar writes safe.
+    The `field_names` flip of release 0.79.0 is history: `GetFieldNames` no longer serves from the
+    catalog or the label index. It reads the rows of the window like hot VictoriaLogs and
+    VictoriaTraces (see the `field_names` rows `vl.select.field_names.hits_per_stream_block` and
+    `vt.select.logsql_field_names.vt_field_names`), because the catalog knows a file's columns and
+    not the fields of its rows.
 
 - id: lh.feature.storage.pmeta_retire_sidecars
   title: Retiring the legacy metadata sidecars

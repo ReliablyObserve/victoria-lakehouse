@@ -460,6 +460,24 @@ times more bytes. The per-stream presence index that would give the footer cost 
 of [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482). The cost guard
 `BenchmarkGetFieldNames_ObjectReads` holds the object reads of a call.
 
+**Against hot (measured by the independent review of the change, RustFS, 0 ms S3, warm p50, not re-measured by the
+author).** The table above compares Lakehouse with its own earlier, wrong answer; against hot VictoriaLogs and
+VictoriaTraces the new answer costs:
+
+| signal, window | hot | main (footer answer, wrong) | this change | this change / hot |
+|---|--:|--:|--:|--:|
+| logs, 240,000 rows, 1 h | 2.3 ms | 0.4 ms | 116 ms | about 50x |
+| logs, 240,000 rows, 6 h | 1.1 ms | 0.5 ms | 262 ms | about 240x |
+| traces, 60,000 spans, `span_id:*`, 1 h | 2.0 ms | 0.4 ms | 80 ms | about 40x |
+| traces, 60,000 spans, `span_id:*`, 6 h | 2.4 ms | 0.4 ms | 136 ms | about 57x |
+
+Lakehouse loses by one to two orders of magnitude against hot, roughly linearly in the rows of the window. Scale
+(assumed, not measured): the read is not bounded in bytes and a filter does not narrow it (no object or row group is skipped
+for the filter's sake, so the filtered cells read what the unfiltered ones read), so at 100 TB/day a 7-day window would read
+hundreds of TB. The per-stream presence index of [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482)
+is the structural fix; bounding the call waits for the owner. The counters of the cells of a 0 ms run (both signals, 384 cells) are
+unchanged by the filter fix (`perf_rows.py check`: 384 cells measured, 0 failures): the `svc` filter of the matrix matches every object.
+
 Regenerating the rows: run the harness as in [Harness](#harness) (logs and traces, 0 ms and 100 ms), then
 `scripts/bench/field_metadata/perf_rows.py gen MATRIX.jsonl`; the 192 `field_names` rows were replaced by
 the generated ones, the other 576 rows keep their earlier measured budgets (their counters and expectations

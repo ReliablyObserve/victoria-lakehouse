@@ -269,7 +269,7 @@ func checkOracle(t *testing.T, label string, rows []oracleRow, chunks [][]oracle
 	got := fnHits(c.result())
 	want := oracleHits(rows)
 	if capacity >= 1<<10 {
-		if !(len(got) == 0 && len(want) == 0) && !reflect.DeepEqual(got, want) {
+		if (len(got) != 0 || len(want) != 0) && !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s: counter = %v, hot (merged) = %v", label, got, want)
 		}
 		// While the batches are still separate blocks hot credits no more than the

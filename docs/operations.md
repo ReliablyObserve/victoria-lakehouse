@@ -917,6 +917,21 @@ logs binary): S3 requests per call 5 to 10, bytes served 328 KB to 1,406 KB (+32
 with the window's bytes, not with its object count. Tracked: [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482).
 On the field-metadata matrix (`docs/perf/field-metadata-cells.md`, counters measured on a mock S3) the compacted hour objects cost 9.0x the bytes of the footer answer (173 KB to 1.56 MB over two hours) and the traces binary, which answered from the first object's footer only, reads every object of the window (1 to 24 GETs, 95 KB to 2.29 MB over 24 flushed objects). Lakehouse is slower and reads more than before; the answer is the right one.
 
+**Against hot VictoriaLogs/VictoriaTraces** (measured by the independent review of the change on RustFS at 0 ms S3, warm p50, not re-measured by the author):
+
+| signal, window | hot | main (footer answer, wrong) | this change | this change / hot |
+|---|--:|--:|--:|--:|
+| logs, 240,000 rows, 1 h | 2.3 ms | 0.4 ms | 116 ms | about 50x |
+| logs, 240,000 rows, 6 h | 1.1 ms | 0.5 ms | 262 ms | about 240x |
+| traces, 60,000 spans, `span_id:*`, 1 h | 2.0 ms | 0.4 ms | 80 ms | about 40x |
+| traces, 60,000 spans, `span_id:*`, 6 h | 2.4 ms | 0.4 ms | 136 ms | about 57x |
+
+Lakehouse loses here, by one to two orders of magnitude against hot and roughly linearly in the rows of the window. Scale
+(assumed, not measured): nothing bounds the bytes one call reads (`query.max_rows` does not apply and
+`--lakehouse.query.max-files-per-query` defaults to 0), and a filter does not narrow the read (see below), so at 100 TB/day a
+7-day window would read hundreds of TB. The structural fix is a per-stream column-presence index (#482, an owner decision); a
+bound on the call waits for the owner's decision too.
+
 What it costs: the object reads of a `query=*` over the same window (all columns, every object overlapping the
 window), where the footer answer cost one ranged read of the footer per object. The per-query row ceiling
 (`query.max_rows`) does not apply, the live-bytes budget and the per-process decoder limit do. Keep Explore and
@@ -924,13 +939,42 @@ Drilldown field pickers on short windows, or narrow the query with a filter; the
 exact but not cheap. State kept per request is the columns of each stream in the window (about 150 bytes per
 stream at 40 columns, 256 Ki streams, then a block is credited on its own as upstream's block rule does).
 
-Known bound: upstream credits a column with the rows of the *blocks* that list it. Hot storage holds a stream in
-few large blocks; here the blocks of a stream are unioned across the objects of the window, which gives hot's
-answer when the window covers the stream's objects. A window that cuts a stream's objects (a few minutes inside
-an hour, for example) cannot see the objects outside it, so on a field that only some of a stream's rows carry
-(span events and links on the traces binary) the hits and, for a field the window's stream blocks never list,
-the name can differ from hot's, which counts the whole block. Logs with fields set per stream are exact in any
-window.
+A filter selects rows, not objects: the columns of a stream are the union over every object of the stream in the window,
+also the objects none of whose rows match the filter, because on hot the stream is one block whose columns are all
+listed. An object or row group is therefore never skipped for the filter's sake (no file, bloom, statistics or
+push-down pruning in this read), so a filtered call costs as much as the unfiltered one; the hits count only the rows the
+filter keeps. The price of that, measured on a mock S3 (24 objects of 2,000 rows each, 0 ms latency, the previous head of
+the change against this one, warm p50): a call filtered on `trace_id:="..."` (bloom-prunable) 8 ms to 50 ms (6x), the
+unfiltered call and filters nothing prunes (`level:="..."`, an OR of two ids) unchanged at about 50 ms. The mock's S3
+reads did not change (24 GETs, 665,921 bytes in every case: an all-fields read downloads each object whole and the mock
+carries no bloom sidecars or statistics for the manifest to prune with); in production the file-level bloom and label
+pruning that this read no longer uses would also have skipped whole objects, so a filtered call now costs the window's N
+object reads (assumed, not measured). The answer before was the wrong one: it lost the columns of the pruned objects. A name no row of the answer credits is not listed. A query with pipes goes through upstream's own
+`field_names` pipe over the pipes' output and is not covered by this rule: it credits the blocks that reach it.
+
+Known bounds. Upstream credits a column with the rows of the *blocks* that list it, and Lakehouse approximates a block
+by the stream-day:
+
+- **A stream-day bigger than one hot block.** Hot cuts a block at 2 MiB of uncompressed rows even after merging (about
+  7,000 rows of 300 bytes). The answer is exact for a stream-day that fits in one hot block; a bigger one is several blocks
+  on hot and one block here, so a field only some rows carry is overcounted (measured by the independent review after
+  `POST /internal/force_merge`: 40,000 log rows in one stream, `rare` on one row: hot 6,971, Lakehouse 40,000; 20,000 spans:
+  hot 3,335, Lakehouse 20,000; names equal). Hot's block boundaries depend on its merge history, so chunking here would be
+  false precision. [#501](https://github.com/ReliablyObserve/victoria-lakehouse/issues/501).
+- **A window that cuts a stream's objects** cannot see the objects outside it, so on a field that only some batches or
+  spans of a stream carry (span events and links on traces, a field set by one batch on logs) the hits and, for a field the
+  window's objects never list, the name can differ from hot's, which counts the whole block, on both binaries
+  ([#481](https://github.com/ReliablyObserve/victoria-lakehouse/issues/481)). measured after this change on the parity stack: the seeded traces corpus differs in 25 to 26 of its 91 event and link fields in each of four 1-hour windows (for example `event:event_attr:attempt:0` hot 198, Lakehouse 37) and is equal over the whole range; the seeded logs corpus is equal in every window; a logs stream written as two batches an hour apart, the first carrying a field the second lacks, lists the field on hot in a window holding only the second batch (hot 3, Lakehouse not listed, with and without a filter on the second batch) and is equal in the other windows; traces attributes in that shape were equal.
+- **Hot's unmerged parts.** Rows that reached hot in separate insert requests are separate blocks until hot merges them
+  (how long that takes varies: minutes to many minutes), so hot's hits for a sparse field depend on the batching and timing;
+  Lakehouse answers the merged value ([#500](https://github.com/ReliablyObserve/victoria-lakehouse/issues/500)). The insert
+  buffer is kept apart from the objects of a stream (hot's state before a merge) while separate requests inside the buffer
+  are unioned (its state after one): a mixed model, equal to hot when the buffer and the objects list the same columns or
+  when hot has merged.
+- **More than 262,144 streams in the window.** Every stream of the window counts toward the limit, matching the filter or
+  not (the columns of a stream are observed before the filter). The counter then credits a block on its own, upstream's exact per-block
+  rule; its hits for a sparse field can be lower than hot's. `lakehouse_field_names_stream_cap_total` counts the blocks
+  credited that way and one warning per 30 s names the limit.
 
 ## Troubleshooting
 

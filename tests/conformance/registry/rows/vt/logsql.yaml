@@ -198,7 +198,7 @@
   compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
   layers: [api]
   pending: true
-  refs: { doc: docs/parity-and-gaps.md, tests: [lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AreVictoriaTracesFieldsCreditedPerStream, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AnswersAWindowHeldOnlyInTheLocalBuffer, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_MergesPeerBufferAndObjects, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_DoNotDependOnTheObjectLayout, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus, tests/parity/coldhot_endpoint_parity_test.go#TestParity_LogsQL_FieldNamesSuperset, tests/parity/traces_extended_test.go#TestParity_TracesExtended, tests/parity/traces_parity_test.go#TestParity_Traces_LogsQL, lakehouse-traces/internal/storage/parquets3/field_names_ceiling_test.go#TestRowCeilingOf_AppliesToRowQueriesOnly, lakehouse-traces/internal/storage/parquets3/field_names_ceiling_test.go#TestRowFilterOf_FieldNamesKeepsTheTimeRange, lakehouse-traces/internal/storage/parquets3/field_names_ceiling_test.go#TestFieldNames_IgnoresTheRowCeiling, lakehouse-traces/internal/storage/parquets3/field_names_ceiling_test.go#TestTraceFieldNames_TimeRangeSelectsTheCreditedSpans] }
+  refs: { doc: docs/parity-and-gaps.md, tests: [lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AreVictoriaTracesFieldsCreditedPerStream, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AnswersAWindowHeldOnlyInTheLocalBuffer, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_MergesPeerBufferAndObjects, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_DoNotDependOnTheObjectLayout, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus, tests/parity/coldhot_endpoint_parity_test.go#TestParity_LogsQL_FieldNamesSuperset, tests/parity/traces_extended_test.go#TestParity_TracesExtended, tests/parity/traces_parity_test.go#TestParity_Traces_LogsQL, lakehouse-traces/internal/storage/parquets3/field_names_ceiling_test.go#TestRowCeilingOf_AppliesToRowQueriesOnly, lakehouse-traces/internal/storage/parquets3/field_names_ceiling_test.go#TestRowFilterOf_FieldNamesKeepsTheTimeRange, lakehouse-traces/internal/storage/parquets3/field_names_ceiling_test.go#TestFieldNames_IgnoresTheRowCeiling, lakehouse-traces/internal/storage/parquets3/field_names_ceiling_test.go#TestTraceFieldNames_TimeRangeSelectsTheCreditedSpans, lakehouse-traces/internal/storage/parquets3/field_names_filter_columns_test.go#TestTraceFieldNames_FilterKeepsColumnsOfNonMatchingObjectsOfTheStream, lakehouse-traces/internal/storage/parquets3/field_names_filter_columns_test.go#TestTraceFieldNames_StreamWithoutMatchingSpansListsNoName, lakehouse-traces/internal/storage/parquets3/field_names_filter_columns_test.go#TestTraceFieldNames_FilterDoesNotSkipObjectsOrRowGroupsOfTheStream, lakehouse-traces/internal/storage/parquets3/field_names_buffer_layers_test.go#TestTraceFieldNames_LocalBufferAndObjectsOfOneStreamAreTwoBlocks, lakehouse-traces/internal/storage/parquets3/field_names_buffer_layers_test.go#TestTraceFieldNames_FilterKeepsColumnsOfNonMatchingPartsInTheLocalBuffer, tests/parity/field_names_shapes_parity_test.go#TestParity_FieldNames_BatchShapes] }
   notes: "Issue 269. The list was the Parquet column names (service.name, span.name, http.method) with hits 1; it is the names a span is stored under in VictoriaTraces (span_attr:*, resource_attr:*, event:*, link:*, scope_attr:*, _msg, _stream, name, trace_id, ...) with upstream's hits, in every layer (buffer, Parquet, compacted, restart), for numeric and alias tenants, and on the seeded corpus for every seeded tenant. Asked for spans (span_id:*), see vt.select.logsql_field_names.index_rows for the trace index rows."
 
 - id: vt.select.logsql_stream_field_names.row_hits
@@ -240,7 +240,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "Hot credits a column with the rows of the whole stored block that lists it; Lakehouse reads only the objects overlapping the window (issue 481). Exact for windows that cover a stream's objects and for logs, whose fields are set per stream. Fix needs a per-stream presence index (owner decision, issue 482)."
+  differ_note: "Hot credits a column with the rows of the whole stored block that lists it; Lakehouse reads only the objects overlapping the window (issue 481). Exact for windows that cover a stream's objects. Logs have the same difference for a field that one batch of a stream carries and a later one lacks: vl.select.field_names.window_cuts_stream. Fix needs a per-stream presence index (owner decision, issue 482)."
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /select/logsql/field_names }
@@ -249,7 +249,24 @@
   layers: [api]
   pending: true
   refs: { doc: docs/parity-and-gaps.md, tests: [] }
-  notes: "Measured 2026-10-08 on the proof stack: window 06:00-07:00, event:event_attr:attempt:0 hot 343, Lakehouse 158; the full seed window is exact. Issue 481."
+  notes: "Measured 2026-10-08 on the proof stack: window 06:00-07:00, event:event_attr:attempt:0 hot 343, Lakehouse 158; the full seed window is exact. Re-measured 2026-10-11 on a parity stack after the columns fix: the seeded corpus differs in 25 to 26 of 91 event and link fields in each of four 1-hour windows (event:event_attr:attempt:0 hot 198, Lakehouse 37) and is equal over the whole range. Issue 481."
+
+- id: vt.select.logsql_field_names.stream_larger_than_a_block
+  title: "/select/logsql/field_names — a stream-day bigger than one hot block (about 2 MiB of rows) overcounts the hits of a sparse field (known gap; the logs twin is vl.select.field_names.stream_larger_than_a_block)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Hot cuts a block at 2 MiB of uncompressed rows even after it has merged all parts, so a big stream-day is several blocks and a field only some rows carry is credited with the rows of the blocks that list it; Lakehouse counts a stream-day as one block and credits the field with every row (issue 501). Names are equal; only the hits of a sparse field differ, for every stream-day over about 2 MiB. Hot's block boundaries depend on its merge history, so no chunking on our side is exact: the answer is exact for a stream-day that fits in one hot block and approximated by the whole stream-day otherwise."
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "span_id:*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [] }
+  notes: "Measured 2026-10-11 on a parity stack (hot VictoriaTraces v0.12.0 after the forced merge): one stream of 20,000 spans in four OTLP requests of 5,000, attribute rare on one span: hot span_attr:rare 5,000, Lakehouse 20,000 in the buffer and after the flush (an independent review measured hot 3,335). Names equal. Logs twin: vl.select.field_names.stream_larger_than_a_block. Issue 501."
 
 - id: vt.select.logsql_field_names.unmerged_parts
   title: "/select/logsql/field_names — hits of a sparse field of spans that reached hot in separate requests depend on hot's unmerged part layout (known gap; the logs twin is vl.select.field_names.unmerged_parts)"
@@ -257,7 +274,7 @@
   kind: select
   origin: native
   expect: differ
-  differ_note: "Hot credits a field with the rows of the stored blocks that list it, and rows of separate insert requests are separate blocks until hot merges them, so the hits depend on the batching and timing of the requests (issue 500). Lakehouse credits the merged value, which depends on the rows only. Names are equal; only sparse-field hits differ, and only until hot merges parts (measured on logs: minutes; sourced: the parity run 37772285608 of 2026-10-08 passed its parquet, compacted and restart layers with the earlier multi-request fixture)."
+  differ_note: "Hot credits a field with the rows of the stored blocks that list it, and rows of separate insert requests are separate blocks until hot merges them, so the hits depend on the batching and timing of the requests (issue 500). Lakehouse credits the merged value, which depends on the rows only. Names are equal; only sparse-field hits differ, and only until hot merges parts (how long that takes varies: minutes in the logs measurement, more than two minutes for batches 25 s apart in an independent review, converging only after POST /internal/force_merge; sourced: the parity run 37772285608 of 2026-10-08 passed its parquet, compacted and restart layers with the earlier multi-request fixture; the equality after a merge holds only for a stream-day that fits in one hot block, vt.select.logsql_field_names.stream_larger_than_a_block)."
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /select/logsql/field_names }
