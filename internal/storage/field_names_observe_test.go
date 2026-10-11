@@ -138,7 +138,7 @@ type oracleRow struct {
 	match  bool
 }
 
-var fnOracleNames = []string{"a", "b", "c", "d"}
+func fnOracleNames() []string { return []string{"a", "b", "c", "d"} }
 
 func (r oracleRow) group() string { return fmt.Sprintf("%v|%d|%d", r.buffer, r.stream, r.day) }
 
@@ -166,7 +166,7 @@ func oracleHits(rows []oracleRow) map[string]uint64 {
 		}
 		out["_stream_id"] += gr.matched
 		out["_time"] += gr.matched
-		for i, n := range fnOracleNames {
+		for i, n := range fnOracleNames() {
 			if gr.cols>>i&1 == 1 {
 				out[n] += gr.matched
 			}
@@ -203,7 +203,7 @@ func chunkBlocks(rows []oracleRow) (full, matching *logstorage.DataBlock) {
 			{Name: "_stream_id", Values: repeat(fmt.Sprintf("s%d", rs[0].stream), len(rs))},
 			{Name: "_time", Values: repeat(fmt.Sprintf("2026-10-0%dT10:00:00Z", 1+rs[0].day), len(rs))},
 		}
-		for i, n := range fnOracleNames {
+		for i, n := range fnOracleNames() {
 			vals := make([]string, len(rs))
 			for j, r := range rs {
 				if r.cols>>i&1 == 1 {
