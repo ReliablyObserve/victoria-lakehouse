@@ -78,8 +78,12 @@ func TestPerf_FieldNames(t *testing.T) {
 	body := httpGetBody(t, logsBaseURL, "/select/logsql/field_names", params)
 	elapsed := time.Since(start)
 
-	if elapsed > 200*time.Millisecond {
-		t.Errorf("field_names took %s, expected <200ms (target <1ms, allowing E2E overhead)", elapsed)
+	// field_names reads the rows of the window like hot VictoriaLogs (#487), so
+	// it costs about what the time range scan above does (259 ms measured in
+	// CI), not the one footer read it was held to before; reading less again is
+	// the open option of #482. The bound still catches a runaway.
+	if elapsed > time.Second {
+		t.Errorf("field_names took %s, expected <1s (it reads the rows of the window)", elapsed)
 	}
 	if len(body) == 0 {
 		t.Error("field_names returned empty response")
