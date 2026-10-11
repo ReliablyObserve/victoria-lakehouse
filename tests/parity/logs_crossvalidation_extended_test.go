@@ -224,6 +224,8 @@ func TestParity_CrossValidationExtended(t *testing.T) {
 			}
 		}
 		t.Logf("VL_fields=%d LH_fields=%d", len(refNames), len(sutNames))
+		// The same names also carry the same hits, in the same order.
+		assertFieldNamesExact(t, vlBaseURL, lhBaseURL, "/select/logsql/field_names", "*", fullRangeParams())
 	})
 
 	t.Run("stats_sum_across_steps_matches_total", func(t *testing.T) {

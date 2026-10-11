@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
@@ -307,13 +308,23 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 			forms:   []tenantForm{numericTenant(fvEmptyTracesAccount), aliasTenant(parityTracesAccount, parityTracesOrgID)},
 			restart: []string{"lakehouse-traces"}}
 		c.write = func(t *testing.T, c *fnFixture, batch int) {
+			// One request per batch and target: upstream credits a field with the rows
+			// of the blocks that list it, and the rows of separate requests are blocks
+			// of separate in-memory parts until they merge, a layout that depends on
+			// timing (the same spans in two requests a second apart credit "sa" and
+			// "other" differently on hot, and differently again after a merge). The rows
+			// of one request are one block of their stream, so the answer is defined
+			// by the rows.
+			batchSpans := make([]fnOTLPSpan, 0, len(spans))
 			for i, sp := range spans {
 				id := fmt.Sprintf("%016x%016x", stamp, 0xfa00+batch*len(spans)+i)
 				ids = append(ids, id)
-				for _, f := range c.forms {
-					pushOTLPSpanAttrsAs(t, c.hot, f.header(false), id, fmt.Sprintf("%016x", batch*len(spans)+i+1), sp.name, fmt.Sprintf("fn-svc-%d", stamp), sp.spanAttr, sp.resAttr, at.Add(time.Duration(batch*len(spans)+i)*time.Second))
-					pushOTLPSpanAttrsAs(t, c.cold, f.header(true), id, fmt.Sprintf("%016x", batch*len(spans)+i+1), sp.name, fmt.Sprintf("fn-svc-%d", stamp), sp.spanAttr, sp.resAttr, at.Add(time.Duration(batch*len(spans)+i)*time.Second))
-				}
+				batchSpans = append(batchSpans, fnOTLPSpan{traceID: id, spanID: fmt.Sprintf("%016x", batch*len(spans)+i+1), name: sp.name,
+					service: fmt.Sprintf("fn-svc-%d", stamp), spanAttrs: sp.spanAttr, resAttrs: sp.resAttr, at: at.Add(time.Duration(batch*len(spans)+i) * time.Second)})
+			}
+			for _, f := range c.forms {
+				pushOTLPSpansOneRequest(t, c.hot, f.header(false), batchSpans)
+				pushOTLPSpansOneRequest(t, c.cold, f.header(true), batchSpans)
 			}
 			c.filter = "trace_id:in(" + strings.Join(ids, ",") + ")"
 		}
@@ -329,4 +340,75 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 		}
 		runFnLayers(t, c)
 	})
+}
+
+// fnOTLPSpan is one span of pushOTLPSpansOneRequest.
+type fnOTLPSpan struct {
+	traceID, spanID, name, service string
+	spanAttrs, resAttrs            map[string]string
+	at                             time.Time
+}
+
+// pushOTLPSpansOneRequest writes the spans in a single OTLP request (one
+// ResourceSpans per span, so each keeps its own resource attributes).
+func pushOTLPSpansOneRequest(t *testing.T, base string, hdr http.Header, spans []fnOTLPSpan) {
+	t.Helper()
+	kv := func(m map[string]string) []map[string]any {
+		out := []map[string]any{}
+		for k, v := range m {
+			out = append(out, map[string]any{"key": k, "value": map[string]any{"stringValue": v}})
+		}
+		return out
+	}
+	var resources []map[string]any
+	for _, sp := range spans {
+		res := append(kv(sp.resAttrs), map[string]any{"key": "service.name", "value": map[string]any{"stringValue": sp.service}})
+		resources = append(resources, map[string]any{
+			"resource": map[string]any{"attributes": res},
+			"scopeSpans": []map[string]any{{
+				"scope": map[string]any{"name": "fn-parity"},
+				"spans": []map[string]any{{
+					"traceId": sp.traceID, "spanId": sp.spanID, "name": sp.name, "kind": 2,
+					"startTimeUnixNano": fmt.Sprintf("%d", sp.at.Add(-time.Second).UnixNano()),
+					"endTimeUnixNano":   fmt.Sprintf("%d", sp.at.UnixNano()),
+					"attributes":        kv(sp.spanAttrs),
+				}},
+			}},
+		})
+	}
+	body, _ := json.Marshal(map[string]any{"resourceSpans": resources})
+	post(t, base+"/insert/opentelemetry/v1/traces", "application/json", body, hdr)
+}
+
+// assertFieldNamesExact compares one field_names or stream_field_names answer of
+// hot and Lakehouse over the given window the way the lock tests do: the same
+// names with the same hits, in the same order (hits descending, then name).
+func assertFieldNamesExact(t *testing.T, hot, cold, endpoint, query string, window url.Values) {
+	t.Helper()
+	params := url.Values{}
+	for k, v := range window {
+		params[k] = append([]string(nil), v...)
+	}
+	params.Set("query", query)
+	params.Set("disable_latency_offset", "true")
+	ref := fetch(t, hot, endpoint, params)
+	sut := fetch(t, cold, endpoint, params)
+	if ref.StatusCode != 200 || sut.StatusCode != 200 {
+		t.Fatalf("%s %s: status hot=%d cold=%d", endpoint, query, ref.StatusCode, sut.StatusCode)
+	}
+	name := endpoint + " " + query
+	compareFieldValues(t, name, ref, sut, false)
+	if want, got := fieldNamesOrder(t, name+" reference", ref), fieldNamesOrder(t, name+" SUT", sut); !reflect.DeepEqual(want, got) {
+		t.Errorf("%s: order differs:\n hot:  %v\n cold: %v", name, want, got)
+	}
+	reportLockCells(t, 1) // one cell per compared order (floor in lock_cells.txt)
+}
+
+// last48h is the window the traces cases of the suite read.
+func last48h() url.Values {
+	now := time.Now()
+	return url.Values{
+		"start": {fmt.Sprintf("%d", now.Add(-48*time.Hour).UnixNano())},
+		"end":   {fmt.Sprintf("%d", now.UnixNano())},
+	}
 }

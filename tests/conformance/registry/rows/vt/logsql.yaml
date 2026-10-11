@@ -198,7 +198,7 @@
   compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
   layers: [api]
   pending: true
-  refs: { doc: docs/parity-and-gaps.md, tests: [lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AreVictoriaTracesFieldsCreditedPerStream, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AnswersAWindowHeldOnlyInTheLocalBuffer, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_MergesPeerBufferAndObjects, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_DoNotDependOnTheObjectLayout, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] }
+  refs: { doc: docs/parity-and-gaps.md, tests: [lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AreVictoriaTracesFieldsCreditedPerStream, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_AnswersAWindowHeldOnlyInTheLocalBuffer, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_MergesPeerBufferAndObjects, lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go#TestTraceFieldNames_DoNotDependOnTheObjectLayout, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus, tests/parity/coldhot_endpoint_parity_test.go#TestParity_LogsQL_FieldNamesSuperset, tests/parity/traces_extended_test.go#TestParity_TracesExtended, tests/parity/traces_parity_test.go#TestParity_Traces_LogsQL] }
   notes: "Issue 269. The list was the Parquet column names (service.name, span.name, http.method) with hits 1; it is the names a span is stored under in VictoriaTraces (span_attr:*, resource_attr:*, event:*, link:*, scope_attr:*, _msg, _stream, name, trace_id, ...) with upstream's hits, in every layer (buffer, Parquet, compacted, restart), for numeric and alias tenants, and on the seeded corpus for every seeded tenant. Asked for spans (span_id:*), see vt.select.logsql_field_names.index_rows for the trace index rows."
 
 - id: vt.select.logsql_stream_field_names.row_hits
@@ -250,3 +250,20 @@
   pending: true
   refs: { doc: docs/parity-and-gaps.md, tests: [] }
   notes: "Measured 2026-10-08 on the proof stack: window 06:00-07:00, event:event_attr:attempt:0 hot 343, Lakehouse 158; the full seed window is exact. Issue 481."
+
+- id: vt.select.logsql_field_names.unmerged_parts
+  title: "/select/logsql/field_names — hits of a sparse field of rows that reached hot in separate requests depend on hot's unmerged part layout (known gap, both binaries)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Hot credits a field with the rows of the stored blocks that list it, and rows of separate insert requests are separate blocks until hot merges them, so the hits depend on the batching and timing of the requests (issue 500). Lakehouse credits the merged value, which depends on the rows only. Names are equal; only sparse-field hits differ, and only until hot merges."
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "span_id:*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [] }
+  notes: "Measured 2026-10-11 on a parity compose stack (hot VictoriaTraces v0.12.0): the same four spans give span_attr:other 2 when sent in one OTLP request and 1 when sent in four, while Lakehouse answers 2 in both. The parity fixture (TestParity_FieldNames_Layers) sends each batch in one request. Applies to the logs binary the same way (a stream with a sparse field written by separate requests). Issue 500."
