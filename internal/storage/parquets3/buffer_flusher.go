@@ -692,7 +692,6 @@ func (f *BufferFlusher) planSegment(ctx context.Context, g *membuffer.Segment) (
 		}
 		return tenants[i].ProjectID < tenants[j].ProjectID
 	})
-	var held, planned int64
 	for _, tenant := range tenants {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -720,12 +719,7 @@ func (f *BufferFlusher) planSegment(ctx context.Context, g *membuffer.Segment) (
 		if n != tp.rows {
 			return nil, nil, f.invariantViolation(g, fmt.Sprintf("tenant %d:%d: the plan covers %d rows, the segment holds %d", tenant.AccountID, tenant.ProjectID, tp.rows, n))
 		}
-		held += n
-		planned += tp.rows
 		plans = append(plans, tp)
-	}
-	if planErr == nil && held != planned {
-		return nil, nil, f.invariantViolation(g, fmt.Sprintf("the plan covers %d rows, the segment holds %d", planned, held))
 	}
 	return plans, planErr, nil
 }
