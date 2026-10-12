@@ -453,7 +453,8 @@ s = open(p, encoding="utf-8").read()
 line = '\tnearby = row(afterTS, "next microsecond", "api-gateway")\n'
 assert line in s
 open(p, "w", encoding="utf-8").write(s.replace(line, "", 1))
-open("tests/parity/zz_nearby_test.go", "w", encoding="utf-8").write('package parity\n\nvar nearby = row(afterTS, "%s", "api-gateway")\n' % sys.argv[1])
+# the file it leaves is built under `parity`: the new one carries the same constraint, so only the literal differs
+open("tests/parity/zz_nearby_test.go", "w", encoding="utf-8").write('//go:build parity\n\npackage parity\n\nvar nearby = row(afterTS, "%s", "api-gateway")\n' % sys.argv[1])
 PY2
 }
 # white space inside a string literal: strings.Fields collapsed it, so this "pure move" passed
