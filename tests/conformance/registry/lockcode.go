@@ -291,8 +291,8 @@ func stdlibImport(p string) bool {
 //     lock compare something else. In a product package (internal/..., lakehouse-traces/...,
 //     cmd/...) only the existing _test.go files count; product code is what the locks
 //     verify, so editing it is free.
-//  2. EVERY NEW .go file in a pure test package, and every new _test.go file in a product
-//     package, is listed, whatever it declares. A test file that declares only funcs still
+//  2. EVERY NEW .go file of a lock package (a pure test package or a product package, test file
+//     or not) is listed, whatever it declares. A test file that declares only funcs still
 //     runs inside the lock package: `func TestAAA(t *testing.T) { vlBaseURL = lhBaseURL }`
 //     sorts first and every later lock then compares Lakehouse with itself; a test that
 //     prints a forged transcript and exits does the same. No syntactic rule can tell that
@@ -367,11 +367,15 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 		}
 		for _, p := range headList(d) {
 			hs := headSrc(p)
-			if !inBase[p] && (pureTest || strings.HasSuffix(p, "_test.go")) {
+			if !inBase[p] {
 				bad, perr := declaresOnlyTests(p, hs)
 				switch {
 				case perr != nil:
 					flag(p, "a new file in the package of a lock that does not parse")
+				case !pureTest && !strings.HasSuffix(p, "_test.go"):
+					// product code: it declares vars and init() as a matter of course, so the reason says only
+					// what is true of every such file
+					flag(p, "a new Go file in a package that holds a registry lock: it is linked into the package's test binary")
 				case bad != "":
 					flag(p, "a new file in the package of a lock declares "+bad)
 				default:

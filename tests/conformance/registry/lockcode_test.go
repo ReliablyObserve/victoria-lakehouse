@@ -254,8 +254,8 @@ func TestLockCodeChanges_ProductLockPackage(t *testing.T) {
 	}
 	head = cp()
 	head["internal/p/new.go"] = "package p\n\nvar V = 1\n\nfunc init() {}\n"
-	if got := run(head); len(got) != 0 {
-		t.Errorf("a new non-test product file is free, whatever it declares: %v", got)
+	if got := run(head); len(got) != 1 || !strings.Contains(got[0], "internal/p/new.go: a new Go file in a package that holds a registry lock: it is linked into the package's test binary") {
+		t.Errorf("a new non-test product file of a lock package is listed (with the neutral reason): %v", got)
 	}
 	head = cp()
 	head["internal/p/new_test.go"] = "package p\n\nfunc TestNew(t *testing.T) {}\n\nfunc helper() {}\n"
@@ -268,9 +268,14 @@ func TestLockCodeChanges_ProductLockPackage(t *testing.T) {
 		t.Errorf("a product file of a lock package that blank-imports a package nobody imported before is listed: %v", got)
 	}
 	head = cp()
-	head["internal/p/new.go"] = "package p\n\nimport \"fmt\"\n\nfunc G() { fmt.Println() }\n"
+	head["internal/p/impl.go"] = "package p\n\nimport _ \"example.com/evil/hook\"\n\nfunc F() {}\n"
+	if got := run(head); len(got) != 1 || !strings.Contains(got[0], `internal/p/impl.go: blank-imports "example.com/evil/hook"`) {
+		t.Errorf("an EXISTING product file of a lock package that starts blank-importing a new package is listed: %v", got)
+	}
+	head = cp()
+	head["internal/p/impl.go"] = "package p\n\nimport \"fmt\"\n\nfunc F() { fmt.Println() }\n"
 	if got := run(head); len(got) != 0 {
-		t.Errorf("a product file that imports only the standard library is free: %v", got)
+		t.Errorf("editing a product file to import only the standard library is free: %v", got)
 	}
 	head = cp()
 	head["internal/p/new_test.go"] = "package p\n\nfunc TestNew(t *testing.T) {}\n\nfunc helper() {}\n"

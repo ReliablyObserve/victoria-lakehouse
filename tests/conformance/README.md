@@ -566,7 +566,8 @@ or deletion of an existing file of the lock suites' runtime config (`tests/parit
 `image: golang:<version>` line, which changes nothing a lock compares; `deployment/docker/docker-compose-e2e.yml`;
 `deployment/docker/lakehouse-e2e-config.yml`; `cmd/datagen/`). In a product package (`internal/...`,
 `lakehouse-traces/...`, `cmd/...`) only the existing `_test.go` files are gated: product code is what the locks
-verify, so editing it is free. **A lock package may not gain load-time code (hard, Rule 3).** An `init()`, a `TestMain` or a package-level
+verify, so editing it is free. A NEW file there is listed whether it is a test or not (informational; a new product
+file is linked into the package's test binary like any other), and an edit that adds an import the package did not have is listed. **A lock package may not gain load-time code (hard, Rule 3).** An `init()`, a `TestMain` or a package-level
 `var` whose initializer calls a function runs before any test and can end the test binary with success
 (`func init() { if os.Getenv("PARITY_LOCK_NONCE") != "" { os.Exit(0) } }`), silencing every lock of the
 package, so the gate fails a PR that adds one to a file of a lock package: a new file, or an existing file
