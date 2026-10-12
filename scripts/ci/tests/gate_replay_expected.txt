@@ -110,10 +110,13 @@ syn_m_build_constraint | synthetic | - | m_build_constraint | replay | FAIL | Ru
 # imported product package) is a hard failure; a new file in the test-support package is listed.
 syn_x_ingestmatrix_init | synthetic | - | x_ingestmatrix_init | replay | FAIL | Rule 3 | - | test(ingestmatrix): warm the matrix
 syn_x_ingestmatrix_newfile | synthetic | - | x_ingestmatrix_newfile | replay | PASS | - | tests/ingestmatrix/zz_extra.go | test(ingestmatrix): add a helper
+syn_x_ingestmatrix_cgo | synthetic | - | x_ingestmatrix_cgo | replay | FAIL | Rule 3 | - | test(ingestmatrix): add native helpers
+syn_x_ingestmatrix_native | synthetic | - | x_ingestmatrix_native | replay | FAIL | Rule 3 | - | test(ingestmatrix): add native helpers
 syn_x_product_adjacent_init | synthetic | - | x_product_adjacent_init | replay | FAIL | Rule 1,Rule 3 | - | fix(pmeta): warm the cache at load
 # min-pass may only grow; x/sync (singleflight shares one result among concurrent cold reads) and x/sys (CPU features select
 # parquet-go's encoders) can change a stored or answered byte; a toolchain version that overflows is never a bump
 syn_minpass_lowered | synthetic | - | minpass_lowered | replay | FAIL | Rule 3 | - | test(parity): trim the expected passes
+syn_minpass_removed | synthetic | - | minpass_removed | replay | FAIL | Rule 3 | - | test(parity): drop the expected passes
 syn_x_sync_bump | synthetic | - | x_sync_bump | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/sync
 syn_x_sys_bump | synthetic | - | x_sys_bump | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/sys
 syn_toolchain_overflow | synthetic | - | toolchain_overflow | replay | FAIL | Rule 1 | - | fix(security): Go 1.27.99999999999999999999
