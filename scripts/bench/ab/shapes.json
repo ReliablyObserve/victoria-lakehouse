@@ -1,5 +1,5 @@
 {
-  "_comment": "Shape sets of the PR perf smoke (scripts/bench/ab). A shape is one request template; a cell is shape x layer x range x tenant form. `covers` names registry row and feature ids (selection.py --check fails on an unknown id or an empty list). `smoke: true` shapes run on every runtime change (control sets only). `kind` picks the answer validator in validate.py. Windows are absolute and end at the layer's end (see stack.py make_state); `full` is the whole layer window.",
+  "_comment": "`vs_ref: false` shapes are not compared with hot VL/VT here (Jaeger and Tempo trace bodies order spans and processes by arrival, so a byte-level comparison reports differences that are not differences; the API matrix scores them structurally); they still compare base with PR. Shape sets of the PR perf smoke (scripts/bench/ab). A shape is one request template; a cell is shape x layer x range x tenant form. `covers` names registry row and feature ids (selection.py --check fails on an unknown id or an empty list). `smoke: true` shapes run on every runtime change (control sets only). `kind` picks the answer validator in validate.py. Windows are absolute and end at the layer's end (see stack.py make_state); `full` is the whole layer window.",
   "ranges": {"15m": 900, "1h": 3600, "full": null},
   "layers": {
     "cold": {"description": "flushed by the 5 s policy, not compacted: the newest 2 hours of the seeded window"},
@@ -175,9 +175,9 @@
          "covers": ["vt.jaeger.services.basic", "lh.feature.traces.jaeger_api"]},
         {"name": "jaeger operations", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/services/api-gateway/operations", "window": "none",
          "covers": ["vt.jaeger.operations.basic", "lh.feature.traces.jaeger_api"]},
-        {"name": "jaeger search by_service", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/traces", "params": {"service": "payment-service", "limit": "20"}, "window": "micros",
+        {"name": "jaeger search by_service", "vs_ref": false, "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/traces", "params": {"service": "payment-service", "limit": "20"}, "window": "micros",
          "covers": ["vt.jaeger.traces_search.by_service", "lh.feature.traces.jaeger_api"]},
-        {"name": "jaeger search min_duration", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/traces", "params": {"service": "payment-service", "minDuration": "40ms", "limit": "20"}, "window": "micros",
+        {"name": "jaeger search min_duration", "vs_ref": false, "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/traces", "params": {"service": "payment-service", "minDuration": "40ms", "limit": "20"}, "window": "micros",
          "covers": ["vt.jaeger.traces_search.min_duration", "lh.feature.traces.jaeger_api"]},
         {"name": "jaeger dependencies", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/dependencies", "params": {"lookback": "21600000"}, "window": "end-ms",
          "covers": ["vt.jaeger.dependencies.basic", "lh.feature.traces.dependency_preaggregation"]}
@@ -188,11 +188,11 @@
       "layers": ["cold", "compacted"],
       "ranges": ["1h", "full"],
       "shapes": [
-        {"name": "tempo search empty", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ }", "limit": "20"}, "window": "start-end",
+        {"name": "tempo search empty", "vs_ref": false, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ }", "limit": "20"}, "window": "start-end",
          "covers": ["vt.tempo.search.empty_query", "lh.feature.traces.tempo_api"]},
-        {"name": "tempo search service", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ resource.service.name = \"payment-service\" }", "limit": "20"}, "window": "start-end",
+        {"name": "tempo search service", "vs_ref": false, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ resource.service.name = \"payment-service\" }", "limit": "20"}, "window": "start-end",
          "covers": ["vt.tempo.search.service_name", "lh.feature.traces.tempo_api"]},
-        {"name": "tempo search duration", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ duration > 40ms }", "limit": "20"}, "window": "start-end",
+        {"name": "tempo search duration", "vs_ref": false, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ duration > 40ms }", "limit": "20"}, "window": "start-end",
          "covers": ["vt.tempo.search.duration_filter", "lh.feature.traces.tempo_api"]},
         {"name": "tempo tags", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/search/tags", "window": "start-end",
          "covers": ["vt.tempo.v2_search_tags.basic", "lh.feature.traces.tempo_api"]},
@@ -218,9 +218,9 @@
       "layers": ["cold", "compacted", "buffer"],
       "ranges": ["full"],
       "shapes": [
-        {"name": "jaeger trace_by_id", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/traces/{trace_id}", "window": "none", "pick": "trace_id", "smoke": false,
+        {"name": "jaeger trace_by_id", "vs_ref": false, "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/traces/{trace_id}", "window": "none", "pick": "trace_id", "smoke": false,
          "covers": ["vt.jaeger.traces_by_id.basic", "lh.feature.traces.trace_by_id_fastpath"]},
-        {"name": "tempo v2 trace_by_id", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/traces/{trace_id}", "window": "none", "pick": "trace_id",
+        {"name": "tempo v2 trace_by_id", "vs_ref": false, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/traces/{trace_id}", "window": "none", "pick": "trace_id",
          "covers": ["vt.tempo.traces_v2.by_id", "lh.feature.traces.trace_by_id_fastpath"]},
         {"name": "logsql trace_by_id spans", "signal": "traces", "api": "logsql", "kind": "scan", "query": "trace_id:={trace_id} | fields trace_id, span_id, name", "pick": "trace_id",
          "covers": ["vt.select.logsql_query.wildcard", "lh.feature.traces.trace_by_id_fastpath", "lh.feature.traces.trace_index"]}

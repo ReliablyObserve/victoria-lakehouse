@@ -77,3 +77,13 @@ def test_confirm_replaces_only_the_moved_cells_and_marks_them():
     again = report.summarize(raw(cell_rows(K, 10, 10, runs=7)), "again")
     merged = report.merge_confirm(first, again)
     assert merged["cells"][0]["verdict"] == "same" and merged["cells"][0]["confirmed"] and merged["verdicts"] == {"same": 1}
+
+
+def test_shapes_marked_vs_ref_false_compare_base_with_pr_only():
+    skip = frozenset({"logs count_total"})
+    c = report.summarize(raw(cell_rows(K, 10, 10, base_result="41", pr_result="41")), "t", ref_skip=skip)["cells"][0]
+    assert c["vs_ref"] == {"base": "n/a", "pr": "n/a"} and c["difference"] == "none"
+    c = report.summarize(raw(cell_rows(K, 10, 10, base_result="41", pr_result="43")), "t", ref_skip=skip)["cells"][0]
+    assert c["difference"] == "new"  # not compared with hot, but the PR answers differently from the base
+    spec = {"sets": {"s": {"shapes": [{"name": "a", "vs_ref": False}, {"name": "b"}]}}}
+    assert report.ref_skip_from(spec) == frozenset({"a"})

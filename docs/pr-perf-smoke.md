@@ -35,7 +35,7 @@ make ab-test                                                          # unit tes
 ```
 
 The run needs Docker and about 6 GiB of memory for the stack. It writes, in `--out`: `selection.json`, `state.json`,
-`raw-0ms.json`, `summary-0ms.json` (and one summary per extra latency), `api-matrix.json`, `components.json`, `known.json`,
+`raw-0ms.json`, `summary-0ms.json` (and one summary per extra latency), `api-matrix.json`, `components.json`, `known-perf.json`, `known-api.json`,
 `perf-smoke.md`, `api-matrix.md`, `perf-verdict.json`, `api-verdict.json` and `meta.json`. The exit status is the larger of the two
 verdicts: 0 passed or skipped, 1 a regression or a new difference, 2 the run is invalid, 3 it did not complete.
 
@@ -99,6 +99,10 @@ cleared invalidates the run. Hot VL/VT cannot clear its caches, so its cold colu
 documented misses), identical to the cell's first valid result (else flapping), and for a truncated scan every row a member of the
 reference window. A scalar count, a group-by (rows, total, hash of the pairs), field values (hash of value and hits), a scan (hash of
 the row keys), spans, or a canonical JSON hash for Jaeger, Tempo and TraceQL metrics. **An invalid answer is never a latency.**
+
+Jaeger and Tempo trace bodies order spans and processes by arrival, so a canonical hash of them against hot reports differences that are
+not differences; those shapes carry `vs_ref: false`, compare base with PR only, and the API matrix scores the traces structurally.
+Each comment reports the differences its own run found.
 
 **S3 cost.** From Lakehouse's `/metrics`: GETs (`lakehouse_s3_requests_total` for GET and GetObject), all non-write requests, and
 `lakehouse_s3_bytes_read_total`. `/metrics` shows the state of about a second ago (measured: a counter turns up 1.0 s after the

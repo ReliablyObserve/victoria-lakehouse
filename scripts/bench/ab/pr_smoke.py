@@ -18,7 +18,7 @@ Steps (each its own module, usable alone):
   7. known.py         the differences found, joined with the registry rows and issues; UNTRACKED and NEW ones fail
   8. comment.py       perf-smoke.md and api-matrix.md plus their verdicts
 
-Outputs in --out: selection.json, state.json, raw-*.json, summary-*.json, api-matrix.json, components.json, known.json,
+Outputs in --out: selection.json, state.json, raw-*.json, summary-*.json, api-matrix.json, components.json, known-perf.json, known-api.json,
 perf-smoke.md, api-matrix.md, perf-verdict.json, api-verdict.json, meta.json.
 Exit status: the larger of the two verdicts (comment.py documents the codes).
 """
@@ -106,7 +106,7 @@ def confirm(summary: dict, state: dict, spec: dict, cells_by_key: dict, args) ->
     if not moved:
         return summary
     log(f"re-measuring {len(moved)} cell(s) the first pass moved")
-    again = report.summarize(run_cells(state, spec, moved, args.confirm_runs), "confirm", args.noise, args.min_delta_ms)
+    again = report.summarize(run_cells(state, spec, moved, args.confirm_runs), "confirm", args.noise, args.min_delta_ms, report.ref_skip_from(spec))
     return report.merge_confirm(summary, again)
 
 
@@ -175,7 +175,7 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
     raw = merge_raw(parts)
     raw.update(runs=args.runs, sets=list(sel["sets"]), state={k: state[k] for k in ("H", "layers", "project")})
     abreg.dump_json(os.path.join(out, "raw-0ms.json"), raw)
-    summary = report.summarize(raw, "pr-smoke 0 ms", args.noise, args.min_delta_ms)
+    summary = report.summarize(raw, "pr-smoke 0 ms", args.noise, args.min_delta_ms, report.ref_skip_from(spec))
     summary = confirm(summary, state, spec, by_key, args)
     abreg.dump_json(os.path.join(out, "summary-0ms.json"), summary)
     extra = {}
@@ -187,7 +187,7 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
         if sub:
             r = run_cells(state, spec, sub, args.runs)
             r.update(runs=args.runs, sets=list(sel["sets"]))
-            s = report.summarize(r, f"pr-smoke {ms_:g} ms", args.noise, args.min_delta_ms)
+            s = report.summarize(r, f"pr-smoke {ms_:g} ms", args.noise, args.min_delta_ms, report.ref_skip_from(spec))
             extra[f"{ms_:g}"] = confirm(s, state, spec, {c["key"]: c for c in sub}, args)
             abreg.dump_json(os.path.join(out, f"summary-{ms_:g}ms.json"), extra[f"{ms_:g}"])
     latency.clear(stack.api_url())
@@ -290,12 +290,13 @@ def main(argv=None) -> int:
         meta["host_load_end"] = ", ".join(f"{x:.1f}" for x in os.getloadavg())
         rows = abreg.load_rows()
         gaps = abreg.gaps_doc_issues()
-        observed = knownmod.observed_from_perf(result["summary"], spec) + knownmod.observed_from_api(result["matrix"])
-        known = knownmod.join(observed, rows, gaps, a.require_issue)
-        known["registry"] = knownmod.registry_gap_stats(rows, gaps)
-        meta["registry_gap_stats"] = known["registry"]
-        abreg.dump_json(os.path.join(out, "known.json"), known)
-        perf_text, perf_v = comment.render_perf(result["summary"], sel, meta, known, result["components"])
+        # each comment reports the differences its own run found, so a perf check never fails on an API row and the reverse
+        known_perf = knownmod.join(knownmod.observed_from_perf(result["summary"], spec), rows, gaps, a.require_issue)
+        known = knownmod.join(knownmod.observed_from_api(result["matrix"]), rows, gaps, a.require_issue)
+        known["registry"] = known_perf["registry"] = meta["registry_gap_stats"] = knownmod.registry_gap_stats(rows, gaps)
+        abreg.dump_json(os.path.join(out, "known-perf.json"), known_perf)
+        abreg.dump_json(os.path.join(out, "known-api.json"), known)
+        perf_text, perf_v = comment.render_perf(result["summary"], sel, meta, known_perf, result["components"])
         if result["extra"]:
             marker = "\n<sub>"
             i = perf_text.rfind(marker)

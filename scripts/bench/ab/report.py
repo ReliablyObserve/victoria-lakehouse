@@ -75,7 +75,7 @@ def parity(res_t, res_ref):
     return "same" if res_t == res_ref else "differs"
 
 
-def cell_summary(key: str, rows: list[dict], s3: dict | None, noise: float, min_delta: float) -> dict:
+def cell_summary(key: str, rows: list[dict], s3: dict | None, noise: float, min_delta: float, ref_skip: frozenset = frozenset()) -> dict:
     first = rows[0]
     out = {"cell": key, "set": first["set"], "shape": first["shape"], "signal": first["signal"], "layer": first["layer"],
            "range": first["range"], "form": first["form"], "window": first["window"], "p50": {}, "p95": {}, "cold": {}, "n_valid": {},
@@ -100,7 +100,7 @@ def cell_summary(key: str, rows: list[dict], s3: dict | None, noise: float, min_
             out["cold_cleared"][t] = all(cc)
     out["s3"] = s3 or {}
     ref_res = out["result"].get("ref")
-    out["vs_ref"] = {t: parity(out["result"].get(t), ref_res) for t in ("base", "pr")}
+    out["vs_ref"] = {t: ("n/a" if first["shape"] in ref_skip else parity(out["result"].get(t), ref_res)) for t in ("base", "pr")}
     b_ok, p_ok = out["n_valid"].get("base", 0) > 0, out["n_valid"].get("pr", 0) > 0
     if b_ok and not p_ok:
         verdict = "broken"
@@ -123,6 +123,8 @@ def cell_summary(key: str, rows: list[dict], s3: dict | None, noise: float, min_
         diff = "fixed"
     else:
         diff = "none"
+    if first["shape"] in ref_skip and out["result"].get("base") != out["result"].get("pr") and p_ok and b_ok:
+        diff = "new"  # not compared with hot, but the PR answers differently from the base
     out["difference"] = diff
     sc, sw = (s3 or {}).get("base", {}), (s3 or {}).get("pr", {})
     out["s3_verdict"] = {"cold": s3_verdict(sc.get("cold"), sw.get("cold")), "warm": s3_verdict(sc.get("warm_per_query"), sw.get("warm_per_query"))}
@@ -130,11 +132,16 @@ def cell_summary(key: str, rows: list[dict], s3: dict | None, noise: float, min_
     return out
 
 
-def summarize(raw: dict, label: str, noise: float = NOISE_REL, min_delta: float = NOISE_ABS_MS) -> dict:
+def ref_skip_from(spec: dict) -> frozenset:
+    """Shape names that are not compared with hot VL/VT (`vs_ref: false`)."""
+    return frozenset(sh["name"] for s in spec.get("sets", {}).values() for sh in s["shapes"] if sh.get("vs_ref") is False)
+
+
+def summarize(raw: dict, label: str, noise: float = NOISE_REL, min_delta: float = NOISE_ABS_MS, ref_skip: frozenset = frozenset()) -> dict:
     by: dict[str, list[dict]] = {}
     for r in raw["rows"]:
         by.setdefault(r["cell"], []).append(r)
-    cells = [cell_summary(k, rs, (raw.get("s3") or {}).get(k), noise, min_delta) for k, rs in by.items()]
+    cells = [cell_summary(k, rs, (raw.get("s3") or {}).get(k), noise, min_delta, ref_skip) for k, rs in by.items()]
     counts: dict[str, int] = {}
     for c in cells:
         counts[c["verdict"]] = counts.get(c["verdict"], 0) + 1
@@ -174,7 +181,7 @@ def main(argv=None) -> int:
     s.add_argument("--noise", type=float, default=NOISE_REL)
     s.add_argument("--min-delta-ms", type=float, default=NOISE_ABS_MS)
     a = ap.parse_args(argv)
-    summary = summarize(abreg.load_json(a.raw), a.label, a.noise, a.min_delta_ms)
+    summary = summarize(abreg.load_json(a.raw), a.label, a.noise, a.min_delta_ms, ref_skip_from(abreg.load_json(abreg.SHAPES)))
     if a.save:
         abreg.dump_json(a.save, summary)
     print(f"{len(summary['cells'])} cells: {summary['verdicts']}; differences {summary['differences']}; invalid requests {summary['invalid_requests']}")
