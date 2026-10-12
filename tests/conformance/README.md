@@ -508,12 +508,12 @@ covers them and a content check cannot judge them:
   product files of the lock packages themselves and what they import (the code under test; a registry content change
   is the only control), dynamic loading (plugins, `go:linkname`), build tags set from the environment, `go.mod`
   `replace` directives and other non-blob inputs.
-- **Listing size.** The report lists every file above, so its length is a cost of review. Measured with the
-  gate's own binaries over merged pull requests (see the pull request that added this paragraph): #487 lists 49
-  files (22 before the new-file rule of #512; the new files are the 27 new product and test files of
-  `internal/storage/parquets3` and `lakehouse-traces/internal/storage/parquets3`), a typical product PR with no new
-  file in a lock package lists 0-3. Not reduced: a func-only new file can be the `TestAAAWarmup` shape, and a new
-  product file of a lock package could not be proven harmless (issue #546).
+- **Listing size.** The report lists every file above, so its length is a cost of review. Measured on
+  2026-10-12 with the gate binaries of main (#512) and of this change over eight pull requests, files listed
+  before and after: #487 49 and 49 (22 before the new-file rule of #512), #438 28 and 28, #430 17 and 17, #310 48 and
+  49, #412 9 and 9, #369 6 and 6, #404 37 and 37, #483 77 and 77. The lock-adjacent rules add one listed file in
+  eight pull requests (a called package-level var in `internal/metrics`, #310). Not reduced: a func-only new test file
+  can be the `TestAAAWarmup` shape, and a new product file of a lock package could not be proven harmless (issue #546).
 - **Not enforced, on purpose:** that an edited lock or helper still compares what it compared. The gate cannot
   decide that from content; it makes sure a person looks.
 
