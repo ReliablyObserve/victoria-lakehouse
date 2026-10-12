@@ -12,6 +12,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
 	"github.com/parquet-go/parquet-go"
+	"github.com/parquet-go/parquet-go/format"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -32,7 +33,8 @@ type CachedFooter struct {
 	File       *parquet.File
 	FileSize   int64
 	footerSize int
-	chunks     int // column chunks over all row groups (what the weight model scales by)
+	chunks     int   // column chunks over all row groups (what the weight model scales by)
+	tailLen    int32 // FileInfo.FooterTail of this object, from the parsed footer (see TailLen)
 
 	tail    []byte
 	tailOff int64
@@ -120,14 +122,24 @@ func pageIndexStripeStart(f *parquet.File) int64 {
 // records as FileInfo.FooterTail. It is derived from the parsed footer, so it is
 // right whether or not the entry's tail holds the stripe. 0 when unknown.
 func (c *CachedFooter) TailLen() int32 {
-	if c == nil || c.File == nil || c.FileSize <= 0 || c.footerSize <= 0 {
+	if c == nil {
 		return 0
 	}
-	start := c.FileSize - int64(c.footerSize)
-	if ps := pageIndexStripeStart(c.File); ps > 0 && ps < start {
+	return c.tailLen
+}
+
+// tailLenOf is the bytes from the page-index stripe (when it sits before the
+// footer) to the end of an object of fileSize whose footer, with its trailer, is
+// footerSize bytes; 0 when out of range.
+func tailLenOf(fileSize int64, footerSize int, md *format.FileMetaData) int32 {
+	if fileSize <= 0 || footerSize <= 0 {
+		return 0
+	}
+	start := fileSize - int64(footerSize)
+	if ps := parquetfooter.StripeStart(md); ps > 0 && ps < start {
 		start = ps
 	}
-	if n := c.FileSize - start; n >= parquetfooter.TrailerLen && n <= parquetfooter.MaxHint {
+	if n := fileSize - start; n >= parquetfooter.TrailerLen && n <= parquetfooter.MaxHint {
 		return int32(n)
 	}
 	return 0
@@ -194,6 +206,17 @@ func (fc *FooterCache) Get(key string) (*CachedFooter, bool) {
 	fc.mu.Unlock()
 	metrics.FooterCacheHits.Inc()
 	return footer, true
+}
+
+// Peek is Get without the hit count and the LRU touch: for a caller that only
+// wants to read what the entry says about its object.
+func (fc *FooterCache) Peek(key string) (*CachedFooter, bool) {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	if entry, ok := fc.items[key]; ok {
+		return entry.footer, true
+	}
+	return nil, false
 }
 
 // GetFor is Get for a caller that knows the object's current size (the
@@ -539,7 +562,8 @@ func parseFooterBytes(key string, footerBytes []byte, fileSize int64) (cachedFoo
 		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: %w", key, err)
 	}
 	chunks := 0
-	if md := f.Metadata(); md != nil {
+	md := f.Metadata()
+	if md != nil {
 		for i := range md.RowGroups {
 			chunks += len(md.RowGroups[i].Columns)
 		}
@@ -549,6 +573,7 @@ func parseFooterBytes(key string, footerBytes []byte, fileSize int64) (cachedFoo
 		FileSize:   fileSize,
 		footerSize: int(declaredLen) + 8,
 		chunks:     chunks,
+		tailLen:    tailLenOf(fileSize, int(declaredLen)+8, md),
 		tail:       footerBytes,
 		tailOff:    fileSize - int64(len(footerBytes)),
 	}, f, r, nil

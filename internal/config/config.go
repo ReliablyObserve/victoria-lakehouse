@@ -484,7 +484,9 @@ type S3Config struct {
 
 	// FooterPrefetchBytes is the tail range-read size used to prefetch
 	// parquet footers (footer cache fills: prefetchFooters,
-	// shouldSkipByFooter, fetchFooterFile, the inline open-path fetch).
+	// shouldSkipByFooter, fetchFooterFile, the inline open-path fetch)
+	// of an object whose manifest entry has no recorded footer tail
+	// (FileInfo.FooterTail); a recorded one is read exactly, in one request.
 	// 0 = per-signal default: logs 128KB, traces 640KB. The defaults
 	// DIFFER because the footer geometry does: every live traces
 	// compacted-L2 footer measures 467-519KB (the trace index lives in

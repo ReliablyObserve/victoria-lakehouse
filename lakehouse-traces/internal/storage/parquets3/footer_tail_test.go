@@ -10,6 +10,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 )
@@ -307,5 +308,29 @@ func TestFooterTail_PrefetchSkipsFootersOverTheBudget(t *testing.T) {
 	}
 	if n, _ := tailGETs(fx); n == 0 {
 		t.Fatal("the open path read nothing")
+	}
+}
+
+// Peek reads an entry without counting a footer-cache hit or touching the LRU:
+// the learn hook of the footer probe must not inflate lakehouse_footer_cache_hits_total.
+func TestFooterTail_PeekDoesNotCountAHit(t *testing.T) {
+	fx := newColdFixture(t, 1, 9000, 3000, config.ProjectedFetchModePlanned)
+	if _, err := fx.s.fetchFooterFile(context.Background(), fx.files[0]); err != nil {
+		t.Fatal(err)
+	}
+	before := metrics.FooterCacheHits.Get()
+	cf, ok := fx.s.footerCache.Peek(fx.files[0].Key)
+	if !ok || cf.TailLen() != parquetfooter.Inspect(fx.datas[fx.files[0].Key]).Tail {
+		t.Fatalf("Peek = %v %v, TailLen must equal the writer's measure", cf, ok)
+	}
+	if _, ok := fx.s.footerCache.Peek("nope"); ok {
+		t.Fatal("Peek found a key that is not cached")
+	}
+	if d := metrics.FooterCacheHits.Get() - before; d != 0 {
+		t.Fatalf("Peek counted %d footer-cache hits", d)
+	}
+	fx.s.footerCache.Get(fx.files[0].Key)
+	if metrics.FooterCacheHits.Get()-before != 1 {
+		t.Fatal("Get must still count its hit")
 	}
 }

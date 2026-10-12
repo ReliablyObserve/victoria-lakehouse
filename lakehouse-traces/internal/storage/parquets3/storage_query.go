@@ -497,7 +497,7 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 	if s.footerCache != nil && fi.FooterTail == 0 {
 		// The probe above may have just read this file's footer: record how long
 		// its tail is, so the next cold read is one exact request.
-		if cf, ok := s.footerCache.Get(fi.Key); ok {
+		if cf, ok := s.footerCache.Peek(fi.Key); ok {
 			s.learnFooterTail(fi, cf)
 		}
 	}

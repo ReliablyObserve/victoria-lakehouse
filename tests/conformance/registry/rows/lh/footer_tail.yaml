@@ -52,11 +52,13 @@
       - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_PrefetchCachesFootersLargerThanTheWindow
       - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_AnyRecordedValueIsHarmless
       - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_PrefetchSkipsFootersOverTheBudget
+      - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_PeekDoesNotCountAHit
       - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_LearnedFromTheFirstRead
       - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_ColdQueryReadsFewerFooterBytes
       - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_ExactRecordedReadIsOneRequest
       - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_AnyRecordedValueIsHarmless
       - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_PrefetchSkipsFootersOverTheBudget
+      - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_PeekDoesNotCountAHit
       - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_LearnedFromTheFirstRead
       - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_ColdQueryReadsFewerFooterBytes
       - lakehouse-traces/internal/storage/parquets3/trace_by_id_cold_ab_test.go#TestTraceByIDColdAB
