@@ -1447,7 +1447,7 @@ link_go_in_docs() { ln -s ../README.md docs/zz.go; }
 link_replaces_runtime_config() { mkdir -p deployment/docker; printf 'x: 1\n' > deployment/docker/docker-compose-e2e.yml; rebase_here; rm deployment/docker/docker-compose-e2e.yml; ln -s ../../README.md deployment/docker/docker-compose-e2e.yml; }
 run_case "s_newlink_parity: a new .go symlink in a lock package is a Rule 3 failure" fail "tests/parity/zz_link.go: a symbolic link added" link_in_parity
 run_case "s_newlink_product_lockpkg: ... in a product lock package too" fail "internal/x/zz_link.go: a symbolic link added: the go tool compiles a linked .go file" link_in_product_lock_pkg
-run_case "s_replace_lockfile: a symlink replacing an existing lock-package file is a failure, not a deletion" fail "tests/parity/helpers.go: a symbolic link changed to a symbolic link" link_replaces_lock_file
+run_case "s_replace_lockfile: a symlink replacing an existing lock-package file is a failure, not a deletion" fail "tests/parity/helpers.go: a regular file replaced by a symbolic link" link_replaces_lock_file
 run_case "s_symlinked_test: a symlinked _test.go is a Rule 3 failure, not a tool error" fail "| Rule 3: parity fixes ship locks, locks are not weakened | FAIL |" link_test_go
 run_case "s_symlink_dir: a symlink to a directory under a lock dir is refused" fail "tests/parity/zzdir: a symbolic link added in a package that holds a registry lock" link_to_dir
 run_case "s_symlink_docs_only: a docs-only symlink outside every lock dir stays a pass" ok "registry-touch check OK" link_docs_only

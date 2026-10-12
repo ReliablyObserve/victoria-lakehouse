@@ -721,7 +721,7 @@ func TestSymlinkProblems(t *testing.T) {
 		{"a new .go symlink in tests/parity", []string{rec("000000", "120000", "A", "tests/parity/zz_link.go")}, 1, "tests/parity/zz_link.go"},
 		{"a new .go symlink in a product lock package", []string{rec("000000", "120000", "A", "internal/storage/parquets3/zz_link.go")}, 1, "the go tool compiles a linked .go file"},
 		{"a new symlink in a lock-adjacent package", []string{rec("000000", "120000", "A", "tests/ingestmatrix/zz.txt")}, 1, "tests/ingestmatrix/zz.txt"},
-		{"a regular lock file replaced by a symlink", []string{rec("100644", "120000", "T", "tests/parity/aaa_test.go")}, 1, "changed to a symbolic link"},
+		{"a regular lock file replaced by a symlink", []string{rec("100644", "120000", "T", "tests/parity/aaa_test.go")}, 1, "a regular file replaced by a symbolic link"},
 		{"a symlinked _test.go", []string{rec("000000", "120000", "A", "tests/parity/zz_link_test.go")}, 1, "zz_link_test.go"},
 		{"a symlink to a directory under a lock dir", []string{rec("000000", "120000", "A", "tests/e2e/zzdir")}, 1, "tests/e2e/zzdir"},
 		{"a symlink in a subdirectory of a lock dir", []string{rec("000000", "120000", "A", "tests/e2e/testdata/link.json")}, 1, "testdata/link.json"},

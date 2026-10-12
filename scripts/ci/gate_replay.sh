@@ -481,6 +481,9 @@ syn_x_ingestmatrix_init() {
   printf '\nfunc init() {\n\tif os.Getenv("LH_NONCE") != "" {\n\t\tos.Exit(0)\n\t}\n}\n' >> tests/ingestmatrix/sample.go
 }
 syn_x_ingestmatrix_newfile() { printf 'package ingestmatrix\n\nfunc Extra() {}\n' > tests/ingestmatrix/zz_extra.go; }
+# import "C" and a native source file in the test-support package are hard failures too
+syn_x_ingestmatrix_cgo() { printf 'package ingestmatrix\n\n/*\nvoid __attribute__((constructor)) boot(void) {}\n*/\nimport "C"\n' > tests/ingestmatrix/zz_cgo.go; }
+syn_x_ingestmatrix_native() { printf 'int boot;\n' > tests/ingestmatrix/zz_boot.c; }
 # an imported PRODUCT package (internal/pmeta) gains an init()
 syn_x_product_adjacent_init() {
   local f
@@ -495,6 +498,18 @@ import re
 p = "tests/parity/known_failures.txt"
 s = open(p, encoding="utf-8").read()
 n = re.sub(r"^(# min-pass: )(\d+)$", lambda m: m.group(1) + str(int(m.group(2)) - 1), s, count=1, flags=re.M)
+assert n != s
+open(p, "w", encoding="utf-8").write(n)
+PY2
+}
+
+# removing the directive lowers the expected number of passing tests to none
+syn_minpass_removed() {
+  python3 - <<'PY2'
+import re
+p = "tests/parity/known_failures.txt"
+s = open(p, encoding="utf-8").read()
+n = re.sub(r"^# min-pass: \d+\n", "", s, count=1, flags=re.M)
 assert n != s
 open(p, "w", encoding="utf-8").write(n)
 PY2
