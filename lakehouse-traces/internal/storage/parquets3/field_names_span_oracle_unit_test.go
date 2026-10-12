@@ -91,7 +91,7 @@ func TestFmtSpanNamesTruth_CreditsStreamDayBlocks(t *testing.T) {
 	span := func(stream, svc string, at time.Duration, traceID string) schema.TraceRow {
 		ts := fmtBase.Add(at).UnixNano()
 		return schema.TraceRow{
-			TimestampUnixNano: ts, StartTimeUnixNano: ts, TraceID: traceID, SpanID: "s", SpanName: "n",
+			TimestampUnixNano: ts, StartTimeUnixNano: ptr(ts), TraceID: traceID, SpanID: "s", SpanName: "n",
 			ServiceName: svc, Stream: stream, StreamID: "id-" + stream,
 		}
 	}

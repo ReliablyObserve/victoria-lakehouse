@@ -60,7 +60,7 @@ func TestTraceFieldNames_LocalBufferAndObjectsOfOneStreamAreOneBlock(t *testing.
 	obj := func(at time.Duration) schema.TraceRow {
 		ts := base.Add(at).UnixNano()
 		return schema.TraceRow{
-			TimestampUnixNano: ts, StartTimeUnixNano: ts, TraceID: "to", SpanID: "so", SpanName: "GET",
+			TimestampUnixNano: ts, StartTimeUnixNano: ptr(ts), TraceID: "to", SpanID: "so", SpanName: "GET",
 			ServiceName: "checkout", Stream: stream, StreamID: streamID,
 			SpanAttributes: map[string]string{"custom.attr": "v"},
 		}
@@ -131,7 +131,7 @@ func TestTraceFieldNames_FilterKeepsColumnsOfNonMatchingPartsInTheLocalBuffer(t 
 			bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
 			other := fvcSpan(0, "PUT")
 			other.TimestampUnixNano = base.Add(1 * time.Minute).UnixNano()
-			other.StartTimeUnixNano = other.TimestampUnixNano
+			other.StartTimeUnixNano = ptr(other.TimestampUnixNano)
 			fvcUpload(t, bw, "", []schema.TraceRow{other})
 		}
 		q := mustParseQueryWithTime(t, "`span_attr:gen`:=g1", base.UnixNano(), base.Add(time.Hour).UnixNano())
