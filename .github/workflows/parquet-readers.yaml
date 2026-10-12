@@ -28,6 +28,7 @@ on:
       - 'internal/schema/**'
       - 'internal/compaction/**'
       - 'internal/traceindex/**'
+      - 'internal/footerkv/**'
       - 'internal/delete/**'
       - 'internal/config/**'
       - 'internal/vlstorage/**'

@@ -439,9 +439,10 @@ func footerTailOfObject(data []byte, f *parquet.File) ([]byte, error) {
 
 // maxParquetFooterBytes is a policy cap on the trusted parquet footer
 // size, not the hang guard (the buffer bound below is). Trace L2 files
-// carry a `_trace_idx` footer KV that reaches ~11 MB at 512 MB objects and
-// scales up to ~39 MB at traceindex.maxEntries (1<<20 entries x ~37 bytes
-// each); 64 MiB leaves headroom over that plus row-group metadata for
+// carry a `_trace_idx` footer KV that reached ~11 MB at 512 MB objects before it
+// was stored as base64 (#340; +33 %, so ~15 MB now) and scales up to ~39 MB raw
+// (~52 MB as base64) at traceindex.maxEntries (1<<20 entries x ~37 bytes each,
+// assumed); 64 MiB leaves headroom over that plus row-group metadata for
 // wide schemas, while remaining far below the ~4 GiB an
 // attacker/corruption-controlled uint32 length field could otherwise
 // claim.
