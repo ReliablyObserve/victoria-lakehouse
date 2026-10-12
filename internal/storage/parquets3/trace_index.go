@@ -9,9 +9,12 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
+// traceIndexMetadataKey is the footer KV key; its value is standard base64 of
+// marshalTraceIndex (see internal/footerkv), never the raw bytes.
 const traceIndexMetadataKey = "_trace_idx"
 const traceIndexVersion byte = 1
 
@@ -148,11 +151,15 @@ func unmarshalTraceIndex(data []byte) ([]TraceIndexEntry, error) {
 
 // traceIndexFromMetadata extracts the trace index from Parquet file metadata.
 func traceIndexFromMetadata(metadata map[string]string) ([]TraceIndexEntry, bool) {
-	raw, ok := metadata[traceIndexMetadataKey]
+	val, ok := metadata[traceIndexMetadataKey]
 	if !ok {
 		return nil, false
 	}
-	entries, err := unmarshalTraceIndex([]byte(raw))
+	raw, ok := footerkv.Decode(val)
+	if !ok {
+		return nil, false
+	}
+	entries, err := unmarshalTraceIndex(raw)
 	if err != nil {
 		return nil, false
 	}

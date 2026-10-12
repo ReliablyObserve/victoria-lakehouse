@@ -377,9 +377,7 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 	// The production trace writer + compactor both embed the
 	// _trace_idx footer KV (internal/traceindex); keep the gate file
 	// shaped identically so external readers see the same footer.
-	if idxData := traceindex.Marshal(traceindex.Compute(traceRows)); len(idxData) > 0 {
-		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, string(idxData)))
-	}
+	opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, traceindex.MetadataValue(traceindex.Compute(traceRows))))
 
 	var buf bytes.Buffer
 	w := schema.NewTraceWriter(&buf, opts...)

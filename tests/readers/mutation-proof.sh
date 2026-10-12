@@ -12,6 +12,8 @@
 #   MB   logs writer truncates timestamps to microseconds                                         fixture + engines
 #   MC   logs writer drops the log MAP key `format`                                               fixture + engines
 #   MD2  logs flush writes every 10th acme-corp row with tenant columns 4401:1                    fixture + engines
+#   MF   both traces writers store the `_trace_idx` footer value as raw bytes (#340)             fixture
+#   MG   both token_bloom.go store the `_bloom_body_rg_N` footer value as raw bytes (#340)        fixture
 #   H1a  harness: the "raw" layer is snapshotted after compaction (it holds compacted objects)    fixture
 #   H1b  harness: the engines read the compacted bucket for the "raw" layer                       engines
 #
@@ -26,14 +28,14 @@ set -euo pipefail
 ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 ENGINES=${1:-duckdb,pyarrow}
 shift || true
-MUTANTS=${*:-M1 M2 MA MB MC MD2 H1a H1b}
+MUTANTS=${*:-M1 M2 MA MB MC MD2 MF MG H1a H1b}
 PY=${PYTHON:-python3}
 SUMMARY=$(mktemp)
 
 expect() { # expected red lines per mutant
   case $1 in
     M1|M2|H1b) echo engines ;;
-    H1a) echo fixture ;;
+    H1a|MF|MG) echo fixture ;;
     *) echo "fixture engines" ;;
   esac
 }

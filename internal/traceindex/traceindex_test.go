@@ -146,7 +146,7 @@ func TestUnmarshal_ErrorsOnTruncatedEntry(t *testing.T) {
 
 func TestFromMetadata_HitAndMiss(t *testing.T) {
 	entries := []Entry{{TraceID: "t1", Partition: 10, StartNs: 100, EndNs: 200}}
-	meta := map[string]string{MetadataKey: string(Marshal(entries))}
+	meta := map[string]string{MetadataKey: MetadataValue(entries)}
 
 	got, ok := FromMetadata(meta)
 	if !ok || len(got) != 1 || got[0].TraceID != "t1" {
@@ -238,4 +238,48 @@ func TestCompute_SortedAndMarshalStable(t *testing.T) {
 			t.Fatalf("run %d: Marshal(Compute(rows)) differs for the same spans in another order", run)
 		}
 	}
+}
+
+// The footer value is standard base64 (ASCII) of Marshal, so Arrow-rs readers
+// that validate key_value_metadata as UTF-8 open the file (issue #340).
+func TestMetadataValue_IsASCIIBase64OfMarshal(t *testing.T) {
+	entries := []Entry{{TraceID: "t1", Partition: 10, StartNs: 100, EndNs: 200}, {TraceID: "t2", Partition: 0xffff, StartNs: -1, EndNs: 1 << 62}}
+	v := MetadataValue(entries)
+	for i := 0; i < len(v); i++ {
+		if v[i] < 0x20 || v[i] >= 0x80 {
+			t.Fatalf("non-ASCII byte %#x at %d", v[i], i)
+		}
+	}
+	got, ok := FromMetadata(map[string]string{MetadataKey: v})
+	if !ok || len(got) != 2 || got[1].EndNs != 1<<62 {
+		t.Fatalf("round trip: ok=%v %+v", ok, got)
+	}
+}
+
+// No dual-format reader: the former raw encoding, truncation and junk read as
+// "no index" (ok=false), never an error and never a panic.
+func TestFromMetadata_NotBase64IsAbsent(t *testing.T) {
+	entries := []Entry{{TraceID: "t1", Partition: 10, StartNs: 100, EndNs: 200}}
+	good := MetadataValue(entries)
+	for name, v := range map[string]string{
+		"raw marshal bytes": string(Marshal(entries)),
+		"truncated":         good[:len(good)-6],
+		"junk":              "\x01\xff\xfe",
+		"empty":             "",
+		"short payload":     good[:8],
+	} {
+		if e, ok := FromMetadata(map[string]string{MetadataKey: v}); ok {
+			t.Errorf("%s: decoded %+v, want absent", name, e)
+		}
+	}
+}
+
+func FuzzFromMetadata(f *testing.F) {
+	f.Add(MetadataValue([]Entry{{TraceID: "t1", Partition: 1, StartNs: 1, EndNs: 2}}))
+	f.Add("")
+	f.Add("\x01\x05\x00\x00\x00")
+	f.Add("AQAAAAA=")
+	f.Fuzz(func(t *testing.T, v string) {
+		_, _ = FromMetadata(map[string]string{MetadataKey: v}) // must not panic or over-allocate
+	})
 }

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 )
 
 func TestTokenBloomAddTest(t *testing.T) {
@@ -354,7 +356,7 @@ func TestBuildTokenBloomMetadata(t *testing.T) {
 
 	// Verify value can be unmarshaled
 	var bloom TokenBloom
-	if err := bloom.UnmarshalBinary(value); err != nil {
+	if err := bloom.UnmarshalBinary(mustDecodeFooterKV(t, value)); err != nil {
 		t.Fatalf("cannot unmarshal metadata value: %v", err)
 	}
 
@@ -375,7 +377,7 @@ func TestBuildTokenBloomMetadataEmpty(t *testing.T) {
 	}
 	// Should still produce valid (empty) bloom
 	var bloom TokenBloom
-	if err := bloom.UnmarshalBinary(value); err != nil {
+	if err := bloom.UnmarshalBinary(mustDecodeFooterKV(t, value)); err != nil {
 		t.Errorf("cannot unmarshal empty bloom: %v", err)
 	}
 }
@@ -451,4 +453,13 @@ func TestExtractSearchTokensNativeGuarantees(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustDecodeFooterKV(t *testing.T, v string) []byte {
+	t.Helper()
+	raw, ok := footerkv.Decode(v)
+	if !ok {
+		t.Fatalf("footer KV value is not base64: %q", v)
+	}
+	return raw
 }

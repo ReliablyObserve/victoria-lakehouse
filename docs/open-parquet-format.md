@@ -245,12 +245,12 @@ Lakehouse metadata that belongs to one file lives in standard Parquet footer key
 
 | Key | Written by | Value |
 |---|---|---|
-| `_trace_idx` | traces writers | the file's trace IDs with their time bounds |
-| `_bloom_body_rg_N` | flush writers | token bloom of row group N's message bodies |
+| `_trace_idx` | traces writers (flush, compaction, delete rewrite) | the file's trace IDs with their time bounds, as standard base64 (RFC 4648, padding on) of the binary index (`[version:u8][count:u32]` then per trace `[idLen:u16][id][partition:u16][startNs:i64][endNs:i64]`, little-endian) |
+| `_bloom_body_rg_N` | flush writers (logs and traces) | token bloom of row group N's message bodies, as standard base64 (padding on) of `[k:u16][words:u32][words x u64]`, little-endian |
 | `lakehouse.dedicated_slots` | all writers, when slots are configured | the Tier-2 slot-to-attribute binding |
 | `lh.trace_id_hex` | all writers (flush, compaction, delete rewrite; both binaries) | ASCII `1` when every `trace_id` value in the file is lowercase hex (or empty), `0` otherwise; see [read-path.md](read-path.md#attested-lowercase-hex-trace_id-files-lhtrace_id_hex) |
 
-`lh.trace_id_hex` is plain ASCII, so the footer stays valid UTF-8 for every reader.
+Every value is plain ASCII, so the footer stays valid UTF-8 for every reader. The thrift `KeyValue.value` is a string, and Arrow-rs based engines (Polars, DataFusion, InfluxDB 3, Databend) validate it and refuse the whole file otherwise; the two binary entries (`_trace_idx`, `_bloom_body_rg_N`) are therefore base64, never raw bytes ([#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340)). The size cost is 4/3 of those two values. A value that is not valid base64 is read as an absent entry (the file or row group is then kept, never pruned); there is no reader for the former raw encoding. CI asserts that every footer key-value of flushed, compacted and delete-rewritten objects of both signals is valid UTF-8 (a property over all entries, so a future entry holding raw bytes fails too) and runs Polars and DataFusion against real files in the reader matrix.
 
 ## Writer Library
 
@@ -299,14 +299,14 @@ s3://<bucket>/<AccountID>/<ProjectID>/<signal>/dt=<YYYY-MM-DD>/hour=<HH>/<file>.
 - Flushed files have a random hexadecimal name; compacted files are `compacted-L<n>-<id>.parquet`. Both are plain Parquet with the same columns.
 - There is **no table catalog**: no Iceberg, Delta or Hive Metastore. Point the engine at the tenant prefix or at the glob `dt=*/hour=*/*.parquet`.
 - Other objects sit next to the data (`_pmeta.bundle`, `_meta/`, `_segments/` commit markers of the insert buffer, `_tombstones/`, `_write_check`). They are not Parquet, so globs end in `*.parquet`; engines that scan a directory skip names that start with `_`.
-- Lakehouse stores its own metadata (the trace-ID index, token blooms) in the Parquet footer key-value area and in `_pmeta.bundle`. A reader that ignores footer key-values never sees it, and nothing else depends on it. Two readers do currently refuse some files because of how those footer values are encoded; see the coverage table.
+- Lakehouse stores its own metadata (the trace-ID index, token blooms) in the Parquet footer key-value area and in `_pmeta.bundle`. A reader that ignores footer key-values never sees it, and nothing else depends on it. Both binary entries are base64, so a reader that validates footer key-values as UTF-8 (Polars, DataFusion) opens every file; see the coverage table.
 
 Facts about the objects that matter to a reader that does not go through Lakehouse:
 
 - **Tombstoned rows stay visible until the file is rewritten.** A delete through the API writes a tombstone (`_tombstones/`) and Lakehouse hides the rows at query time. The Parquet objects are not touched until the rewrite (`delete.rewrite_delay`, or a compaction that picks the file up), so a direct reader still sees deleted rows until then. If deletes must be honoured, read through Lakehouse or wait for the rewrite.
 - **`ded_s01` to `ded_s08` are operator-configured attribute slots.** When a custom attribute is bound to a slot (`--lakehouse.schema.extra-promoted`), its values are in a generic column `ded_sNN`; the binding is recorded in the footer key-value `lakehouse.dedicated_slots`. A reader that ignores footer key-values sees the slot name, not the attribute name.
 - **A listing taken during a compaction can see a row twice.** Compaction publishes the merged object first and deletes its inputs afterwards. Lakehouse reads through its manifest and never sees both; a reader that lists the prefix between the two steps does. Spans can be de-duplicated on `(trace_id, span_id)`; log records have no unique key, so read data older than the compaction age (`compaction.min_age`) or retry a count that looks high.
-- **Footer key-values are not UTF-8** in the files Lakehouse writes today: `_trace_idx` in every traces file and `_bloom_body_rg_N` in every logs file that has a body bloom, raw or compacted. Readers that decode them as text (Polars, DataFusion) refuse the files ([#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340)).
+- **Footer key-values are valid UTF-8.** `_trace_idx` and `_bloom_body_rg_N` hold standard base64 of their binary payloads, so Polars and DataFusion open the files ([#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340), fixed). Objects written before that fix carry the raw bytes and are refused by those two engines until compaction or a delete rewrite replaces them; Lakehouse itself reads them as having no trace index and no body bloom (they are scanned, never wrongly pruned).
 
 Column facts that hold for every engine:
 
@@ -966,8 +966,8 @@ Athena is Trino, so a tenant above 2^31 reads back negative whatever type you de
 | DuckDB | 1.5.6 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
 | pyarrow | 25.0.1 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
 | pandas | 2.3.3 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
-| Polars | 1.44.2 | partial (#340) | no (#340) | no (#340) | partial (#340) | partial (#340) | yes | `readers-inprocess` |
-| Apache DataFusion | 54.0.0 | partial (#340) | no (#340) | no (#340) | partial (#340) | partial (#340, engine caveat) | yes | `readers-inprocess` |
+| Polars | 1.44.2 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
+| Apache DataFusion | 54.0.0 | yes | yes | yes | yes | partial (engine caveat) | yes | `readers-inprocess` |
 | ClickHouse | 25.8.33.6 | partial (#341) | partial (#341) | partial (#341) | partial (#341) | yes | yes | `readers-clickhouse` |
 | Trino | 476 | partial (#342) | partial (#342) | partial (#342) | partial (#342) | yes | yes | `readers-trino` |
 | Apache Spark | 4.0.0 | yes | yes | yes | yes | yes | yes | `readers-spark` |
@@ -979,8 +979,6 @@ Athena is Trino, so a tenant above 2^31 reads back negative whatever type you de
 
 Known gaps behind the `no` and `partial` cells (each cell still runs in CI and must keep failing until its issue is fixed):
 
-- polars, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; Polars refuses a file that carries either. Every traces object and every raw logs object does; a compacted logs object only sometimes (compaction keeps the body token blooms of some files, #344)
-- datafusion, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; DataFusion (arrow-rs) refuses a file that carries either. Every traces object and every raw logs object does; a compacted logs object only sometimes (compaction keeps the body token blooms of some files, #344)
 - datafusion, engine caveat: needs an explicit schema. engine behaviour, not a Lakehouse defect: register_parquet infers the schema from every file footer before any partition filter applies, so one unreadable object in an unrelated partition fails the registration. Pass an explicit schema= to avoid the listing-time footer reads
 - clickhouse, [#341](https://github.com/ReliablyObserve/victoria-lakehouse/issues/341): equality filters on a bloom column need bloom push down off. split-block bloom filters whose size is not a power of two (96 bytes for 60 values, 160 after compaction) are written for every bloom column with enough distinct values; ClickHouse fails an equality filter on such a column. The workaround is input_format_parquet_bloom_filter_push_down = 0
 - trino, [#342](https://github.com/ReliablyObserve/victoria-lakehouse/issues/342): tenant IDs >= 2^31 need a mask. Trino reads UINT_32 account_id 3000000000 as -1294967296 and 4294967294 as -2

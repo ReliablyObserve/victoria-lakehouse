@@ -12,6 +12,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
@@ -107,7 +108,7 @@ func TestColdHotParity_TraceIdxKeptFile_MustReturnRows(t *testing.T) {
 	var buf bytes.Buffer
 	w := parquet.NewGenericWriter[traceParityRow](&buf,
 		parquet.Compression(&parquet.Zstd),
-		parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData)),
+		parquet.KeyValueMetadata(traceIndexMetadataKey, footerkv.Encode(idxData)),
 	)
 	if _, err := w.Write(rows); err != nil {
 		t.Fatal(err)
@@ -234,7 +235,7 @@ func TestColdHotParity_TraceIdxIntegrity_WriterSelfCheck(t *testing.T) {
 	// Round-trip through the parquet KV so we exercise the same
 	// decoding path the query side uses.
 	entries, ok := traceIndexFromMetadata(map[string]string{
-		traceIndexMetadataKey: string(idxData),
+		traceIndexMetadataKey: footerkv.Encode(idxData),
 	})
 	if !ok {
 		t.Fatal("decoded _trace_idx unexpectedly empty")
@@ -291,7 +292,7 @@ func buildParityTraceFile(t *testing.T, s *Storage, mock *mockS3Server, svc stri
 				EndNs: baseTime.Add(time.Second).UnixNano(),
 			})
 		}
-		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, string(marshalTraceIndex(entries))))
+		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, footerkv.Encode(marshalTraceIndex(entries))))
 	}
 	var buf bytes.Buffer
 	w := parquet.NewGenericWriter[traceParityRow](&buf, opts...)

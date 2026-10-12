@@ -92,7 +92,22 @@ def h1b(root):
     patch(root + "/tests/readers/lib.py", 'BUCKET = {"compacted": "obs-archive", "raw": "obs-raw"}', 'BUCKET = {"compacted": "obs-archive", "raw": "obs-archive"}')
 
 
-MUTANTS = {"M1": m1, "M2": m2, "MA": ma, "MB": mb, "MC": mc, "MD2": md2, "H1a": h1a, "H1b": h1b}
+def mf(root):
+    """Both traces writers store the `_trace_idx` footer value as raw bytes again (#340): Polars and DataFusion refuse
+    every traces object, and the fixture's own footer check (truth.py assert-footer) must catch it first."""
+    for w in TRACES_WRITERS:
+        patch(root + "/" + w, "parquet.KeyValueMetadata(traceIndexMetadataKey, footerkv.Encode(idxData))",
+              "parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData))")
+        patch(root + "/" + w, '\t"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"\n', '')
+
+
+def mg(root):
+    """Both token_bloom.go store the `_bloom_body_rg_N` footer value as raw bytes again (#340)."""
+    for p in ("internal/storage/parquets3/token_bloom.go", "lakehouse-traces/internal/storage/parquets3/token_bloom.go"):
+        patch(root + "/" + p, "return key, footerkv.Encode(data)", "return key, string(data)")
+
+
+MUTANTS = {"M1": m1, "M2": m2, "MA": ma, "MB": mb, "MC": mc, "MD2": md2, "MF": mf, "MG": mg, "H1a": h1a, "H1b": h1b}
 
 if __name__ == "__main__":
     MUTANTS[sys.argv[1]](sys.argv[2])

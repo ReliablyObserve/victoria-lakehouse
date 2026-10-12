@@ -24,6 +24,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -31,8 +32,10 @@ import (
 // which we store the marshaled trace-ID index.
 //
 // `_` prefix marks it as an LH-internal extension; standard Parquet
-// readers (duckdb, pyarrow, parquet-tools) see it as an opaque KV pair
-// and pass over it — the file remains 100% spec-compliant.
+// readers (duckdb, pyarrow, polars, datafusion, parquet-tools) see it as an
+// opaque KV pair and pass over it — the file remains 100% spec-compliant. The
+// value is standard base64 of the Marshal payload (see MetadataValue), because
+// the thrift KeyValue.value is a string that Arrow-rs readers validate as UTF-8.
 const MetadataKey = "_trace_idx"
 
 // Version identifies the marshal format; bumped on any wire change.
@@ -199,16 +202,28 @@ func Unmarshal(data []byte) ([]Entry, error) {
 	return entries, nil
 }
 
+// MetadataValue is the footer key_value_metadata value for entries: the
+// Marshal payload as standard base64 (ASCII, so every Parquet reader opens the
+// file). Every writer must store this, never the raw Marshal bytes.
+func MetadataValue(entries []Entry) string {
+	return footerkv.Encode(Marshal(entries))
+}
+
 // FromMetadata pulls and decodes an index out of a Parquet KV metadata
-// map. Returns ok=false on absence or any decode failure (corrupted
-// payload is silently treated as "no index" rather than an error: a
-// single bad file must not break a lookup other files can answer).
+// map. Returns ok=false on absence or any decode failure (a value that is not
+// valid base64, or a corrupted or truncated payload, is silently treated as
+// "no index" rather than an error: a single bad file must not break a lookup
+// other files can answer).
 func FromMetadata(metadata map[string]string) ([]Entry, bool) {
-	raw, ok := metadata[MetadataKey]
+	val, ok := metadata[MetadataKey]
 	if !ok {
 		return nil, false
 	}
-	entries, err := Unmarshal([]byte(raw))
+	raw, ok := footerkv.Decode(val)
+	if !ok {
+		return nil, false
+	}
+	entries, err := Unmarshal(raw)
 	if err != nil {
 		return nil, false
 	}

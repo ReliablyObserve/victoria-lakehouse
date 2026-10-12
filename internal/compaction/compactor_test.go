@@ -505,9 +505,10 @@ func TestCompactor_PreservesTraceIndexFooter(t *testing.T) {
 		t.Fatalf("compacted file is missing %q KV metadata — trace-by-ID fast path will miss on this file", traceindex.MetadataKey)
 	}
 
-	entries, err := traceindex.Unmarshal([]byte(idxBlob))
-	if err != nil {
-		t.Fatalf("traceindex.Unmarshal: %v", err)
+	// The footer value must be base64 ASCII (Arrow-rs readers validate it as UTF-8).
+	entries, ok := traceindex.FromMetadata(map[string]string{traceindex.MetadataKey: idxBlob})
+	if !ok {
+		t.Fatalf("compacted %q KV does not decode as base64 trace index: %q", traceindex.MetadataKey, idxBlob[:min(len(idxBlob), 32)])
 	}
 	if len(entries) != 2 {
 		t.Fatalf("merged index has %d entries, want 2 (alpha + beta)", len(entries))

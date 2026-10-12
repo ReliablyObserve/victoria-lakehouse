@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-engine parquet readback gate (pyarrow + duckdb).
+"""Multi-engine parquet readback gate (pyarrow + duckdb + Polars + DataFusion).
 
 Reads the files produced by gen/main.go (the REAL production schemas +
 writer options) with BOTH pyarrow and duckdb and asserts:
@@ -22,6 +22,13 @@ writer options) with BOTH pyarrow and duckdb and asserts:
      exception events and the stack-trace bytes decoded from the JSON
      match the writer truth under pyarrow and under duckdb's JSON functions.
 
+  6. the Arrow-rs engines (Polars, Apache DataFusion) open the same files
+     and agree on the row count and the distinct counts. They validate the
+     footer key-value metadata as UTF-8 and refuse a file whose
+     `_trace_idx` / `_bloom_body_rg_N` entries hold raw bytes (#340), so this
+     is the check that would have caught it; every footer key-value is also
+     asserted to be valid UTF-8 directly, and the trace index to be base64.
+
 Any failure exits non-zero with a per-check report. Every parquet encoding
 change ships behind this gate.
 
@@ -33,7 +40,9 @@ import json
 import os
 import sys
 
+import datafusion
 import duckdb
+import polars as pl
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
@@ -285,6 +294,49 @@ def verify_span_extras(con, path: str, truth: dict) -> None:
           f"duckdb link_flags sum == {want['link_flags_sum']}", f"got {fl}")
 
 
+def verify_footer_kv(path: str, truth: dict) -> None:
+    """Every footer key-value is valid UTF-8 (Arrow-rs readers refuse the file otherwise)
+    and the binary Lakehouse entries are base64 of their payloads."""
+    kv = pq.ParquetFile(path).metadata.metadata or {}
+    for k, v in sorted(kv.items()):
+        try:
+            k.decode("utf-8")
+            v.decode("utf-8")
+            ok = True
+        except UnicodeDecodeError:
+            ok = False
+        check(ok, f"footer key-value {k.decode('utf-8', 'replace')} is valid UTF-8")
+    if truth["signal"] == "traces":
+        raw = kv.get(b"_trace_idx")
+        check(raw is not None, "traces file carries the _trace_idx footer key-value")
+        if raw is not None:
+            try:
+                payload = base64.b64decode(raw, validate=True)
+                ok = len(payload) >= 5 and payload[0] == 1
+            except ValueError:
+                ok = False
+            check(ok, "_trace_idx is standard base64 of a version-1 trace index")
+
+
+def verify_polars(path: str, truth: dict) -> None:
+    lf = pl.scan_parquet(path)
+    rows = lf.select(pl.len()).collect().item()
+    check(rows == truth["rows"], f"polars rows == {truth['rows']}", f"got {rows}")
+    for col, want in sorted(truth["distinct_counts"].items()):
+        got = lf.select(pl.col(col).n_unique()).collect().item()
+        check(got == want, f"polars distinct({col}) == {want}", f"got {got}")
+
+
+def verify_datafusion(path: str, truth: dict) -> None:
+    ctx = datafusion.SessionContext()
+    ctx.register_parquet("t", path)
+    rows = ctx.sql("SELECT count(*) AS n FROM t").to_pylist()[0]["n"]
+    check(rows == truth["rows"], f"datafusion rows == {truth['rows']}", f"got {rows}")
+    for col, want in sorted(truth["distinct_counts"].items()):
+        got = ctx.sql(f'SELECT count(DISTINCT "{col}") AS n FROM t').to_pylist()[0]["n"]
+        check(got == want, f"datafusion distinct({col}) == {want}", f"got {got}")
+
+
 def main() -> int:
     outdir = sys.argv[1] if len(sys.argv) > 1 else "/tmp/parquet-readback"
     with open(os.path.join(outdir, "manifest.json")) as fh:
@@ -297,6 +349,9 @@ def main() -> int:
         verify_pyarrow(path, truth)
         verify_duckdb(con, path, truth)
         verify_cross_engine(con, path)
+        verify_footer_kv(path, truth)
+        verify_polars(path, truth)
+        verify_datafusion(path, truth)
         verify_encodings_and_pageindex(path, truth)
         verify_span_extras(con, path, truth)
 
@@ -306,7 +361,7 @@ def main() -> int:
         for f in FAILURES:
             print(f"  - {f}")
         return 1
-    print("parquet-readback: PASS — both engines read every file, "
+    print("parquet-readback: PASS — all four engines read every file, "
           "aggregates match writer truth, row-level equality holds, "
           "encodings + PageIndex verified")
     return 0

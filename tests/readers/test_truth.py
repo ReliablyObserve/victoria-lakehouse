@@ -163,8 +163,20 @@ def test_assert_bloom_accepts_96_and_reports_a_closed_gap(tmp_path, capsys):
     assert "gap entry must be removed" in capsys.readouterr().out
 
 
+def test_assert_footer_accepts_utf8_footers_and_names_the_bad_cells(tmp_path, capsys):
+    p = tmp_path / "f.json"
+    p.write_text(json.dumps({"nonutf8_total": 0, "footer": {"4401/1/logs/raw": {"objects": 3, "nonutf8": 0, "keys": []}}}))
+    truth.assert_footer(str(p))
+    assert "valid UTF-8" in capsys.readouterr().out
+    p.write_text(json.dumps({"nonutf8_total": 2, "footer": {"4401/1/traces/raw": {"objects": 3, "nonutf8": 2, "keys": ["_trace_idx"]}}}))
+    with pytest.raises(SystemExit) as e:
+        truth.assert_footer(str(p))
+    assert "4401/1/traces/raw" in str(e.value) and "_trace_idx" in str(e.value)
+
+
 MUTANT_FILES = ["internal/schema/row.go", "internal/storage/parquets3/writer.go", "lakehouse-traces/internal/storage/parquets3/writer.go",
-                "internal/storage/parquets3/buffer_flusher.go", "tests/readers/run.sh", "tests/readers/lib.py"]
+                "internal/storage/parquets3/buffer_flusher.go", "internal/storage/parquets3/token_bloom.go",
+                "lakehouse-traces/internal/storage/parquets3/token_bloom.go", "tests/readers/run.sh", "tests/readers/lib.py"]
 
 
 @pytest.mark.parametrize("mutant", sorted(mutants.MUTANTS))

@@ -8,12 +8,15 @@ tracking issue exists. A gap is not a skip, and it is narrow:
   * the cell still runs, and when it starts passing the matrix turns red (`gap-closed`) so the
     entry is removed in the change that fixes it.
 
-`bloom` and `footer` mark the two gaps that depend on the bytes Lakehouse wrote. ClickHouse fails an
+`bloom` and `footer` mark the gaps that depend on the bytes Lakehouse wrote. ClickHouse fails an
 equality filter on a bloom column exactly when a file it reads has a split-block bloom filter whose size
 is not a power of two; Polars and DataFusion refuse exactly the files whose footer key-values are not
-UTF-8. For them the fixture reads the files (truth.py facts) and the matrix expects the error in
-exactly the cells where the facts say so, and nowhere else. When no file has the property any more the
-gap applies to every cell, so they all pass and turn red: the entry is removed with the fix."""
+UTF-8 (#340, fixed: the `_trace_idx` and `_bloom_body_rg_N` values are base64 now, so no gap of this kind is
+open; the mechanism stays, and `truth.py assert-footer` fails the fixture if a file ever carries a
+non-UTF-8 footer value again). For such a gap the fixture reads the files (truth.py facts) and the matrix
+expects the error in exactly the cells where the facts say so, and nowhere else. When no file has the
+property any more the gap applies to every cell, so they all pass and turn red: the entry is removed with
+the fix."""
 
 ISSUES = "https://github.com/ReliablyObserve/victoria-lakehouse/issues/"
 ALL_QUERIES = ("count", "by_service", "field_filter", "time_range", "map_filter",
@@ -23,22 +26,6 @@ ALL_TENANTS = ("numeric", "alias", "big", "golden", "bloom", "prune")
 UTF8_ERR = r"invalid utf-?8|utf-?8 error|not valid utf-?8"
 
 GAPS = [
-    {"id": "footer-kv-not-utf8/polars", "issue": ISSUES + "340", "engines": ("polars",), "footer": True,
-     "layers": ("raw", "compacted", "pruned"), "label": "files with a non-UTF-8 footer value", "error": UTF8_ERR,
-     # scan_parquet reads the schema from the first object of the listing, then only the objects of the
-     # dt= partitions the filter keeps: these queries meet those objects, not the whole cell
-     "partition_pruned": ("dt_filter",),
-     # where every object is affected (the doc table says `no` there, `partial` elsewhere)
-     "full": (("logs", "raw"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")),
-     "note": "the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; Polars refuses a file "
-             "that carries either. Every traces object and every raw logs object does; a compacted logs object only sometimes "
-             "(compaction keeps the body token blooms of some files, #344)"},
-    {"id": "footer-kv-not-utf8/datafusion", "issue": ISSUES + "340", "engines": ("datafusion",), "footer": True,
-     "layers": ("raw", "compacted", "pruned"), "label": "files with a non-UTF-8 footer value", "error": UTF8_ERR,
-     "full": (("logs", "raw"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")),
-     "note": "the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; DataFusion (arrow-rs) "
-             "refuses a file that carries either. Every traces object and every raw logs object does; a compacted logs object only "
-             "sometimes (compaction keeps the body token blooms of some files, #344)"},
     {"id": "schema-inference-opens-every-file/datafusion", "issue": None, "engines": ("datafusion",),
      "signals": ("logs",), "layers": ("pruned",), "queries": ("dt_filter",), "label": "needs an explicit schema",
      "error": r"range start must not be greater than end|footer|magic number|not a valid parquet",

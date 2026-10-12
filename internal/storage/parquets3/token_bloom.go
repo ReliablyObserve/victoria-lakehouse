@@ -10,6 +10,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 )
 
 // TokenBloom is a minimal bloom filter for full-text token searches.
@@ -145,8 +147,10 @@ func tokenize(s string) []string {
 // buildTokenBloomMetadata creates a metadata key-value pair for a row group's
 // body field token bloom filter.
 // Key format: _bloom_body_rg_{N}
-// Value: marshaled TokenBloom bytes (base64-encoded for Parquet string metadata).
-func buildTokenBloomMetadata(bodies []string, rgIndex int) (key string, value []byte) {
+// Value: standard base64 (ASCII) of the marshaled TokenBloom bytes, because the
+// Parquet footer key_value_metadata value is a string that Arrow-rs readers
+// validate as UTF-8 (see internal/footerkv).
+func buildTokenBloomMetadata(bodies []string, rgIndex int) (key, value string) {
 	// Collect all tokens from all body strings
 	allTokens := make(map[string]struct{})
 	for _, body := range bodies {
@@ -167,7 +171,7 @@ func buildTokenBloomMetadata(bodies []string, rgIndex int) (key string, value []
 
 	data, _ := bloom.MarshalBinary()
 	key = fmt.Sprintf("_bloom_body_rg_%d", rgIndex)
-	return key, data
+	return key, footerkv.Encode(data)
 }
 
 // tokenBloomSkip returns true if ANY search token is definitely absent from
@@ -183,8 +187,19 @@ func tokenBloomSkip(metadata map[string]string, rgIndex int, searchTokens []stri
 		return false
 	}
 
+	// A value that is not valid base64 reads as an absent bloom (keep the row
+	// group), never an error.
+	data, ok := footerkv.Decode(raw)
+	if !ok {
+		return false
+	}
 	var bloom TokenBloom
-	if err := bloom.UnmarshalBinary([]byte(raw)); err != nil {
+	if err := bloom.UnmarshalBinary(data); err != nil {
+		return false
+	}
+	// A decodable but degenerate filter (no words or no hash functions) cannot
+	// attest absence; never prune on it.
+	if len(bloom.bits) == 0 || bloom.k == 0 {
 		return false
 	}
 

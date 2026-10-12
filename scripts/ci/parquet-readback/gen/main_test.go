@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/parquet-go/parquet-go"
 
@@ -309,9 +310,12 @@ func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
 	if !ok {
 		t.Fatalf("no %s footer key", traceindex.MetadataKey)
 	}
-	entries, err := traceindex.Unmarshal([]byte(raw))
-	if err != nil {
-		t.Fatalf("the %s footer does not decode: %v", traceindex.MetadataKey, err)
+	if !utf8.ValidString(raw) {
+		t.Fatalf("the %s footer value is not valid UTF-8: Polars and DataFusion refuse such a file (#340)", traceindex.MetadataKey)
+	}
+	entries, ok := traceindex.FromMetadata(map[string]string{traceindex.MetadataKey: raw})
+	if !ok {
+		t.Fatalf("the %s footer does not decode as base64", traceindex.MetadataKey)
 	}
 	if want := len(traceindex.Compute(rows)); len(entries) != want || want == 0 {
 		t.Errorf("the footer indexes %d traces, the rows read back hold %d", len(entries), want)
@@ -398,9 +402,9 @@ func sortedIndex(t *testing.T, f *parquet.File) []traceindex.Entry {
 	if !ok {
 		t.Fatalf("no %s footer key", traceindex.MetadataKey)
 	}
-	entries, err := traceindex.Unmarshal([]byte(raw))
-	if err != nil {
-		t.Fatal(err)
+	entries, ok := traceindex.FromMetadata(map[string]string{traceindex.MetadataKey: raw})
+	if !ok {
+		t.Fatal("the trace index footer does not decode as base64")
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].TraceID < entries[j].TraceID })
 	return entries

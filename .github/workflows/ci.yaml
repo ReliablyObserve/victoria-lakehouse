@@ -208,8 +208,11 @@ jobs:
             lakehouse-traces/deps/VictoriaTraces
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
+      # Polars and DataFusion are the Arrow-rs engines: they validate the footer
+      # key-value metadata as UTF-8 and refuse a file with raw bytes in it (#340).
+      # The versions are the ones of the reader matrix (tests/readers/requirements.txt).
       - name: Install readers
-        run: pip install pyarrow duckdb
+        run: pip install pyarrow duckdb polars==1.44.2 datafusion==54.0.0
 
       # The truth verify.py holds both engines to must itself match the
       # files written: read back with parquet-go and recomputed.
@@ -219,7 +222,7 @@ jobs:
       - name: Generate parquet files (production schemas + options)
         run: go run ./scripts/ci/parquet-readback/gen -out /tmp/parquet-readback
 
-      - name: Verify with pyarrow + duckdb
+      - name: Verify with pyarrow + duckdb + polars + datafusion
         run: python scripts/ci/parquet-readback/verify.py /tmp/parquet-readback
 
   test-logs:

@@ -10,6 +10,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 )
 
 // TokenBloom is a minimal bloom filter for full-text token searches.
@@ -136,7 +138,7 @@ func tokenize(s string) []string {
 	return result
 }
 
-func buildTokenBloomMetadata(bodies []string, rgIndex int) (key string, value []byte) {
+func buildTokenBloomMetadata(bodies []string, rgIndex int) (key, value string) {
 	allTokens := make(map[string]struct{})
 	for _, body := range bodies {
 		for _, tok := range tokenize(body) {
@@ -156,7 +158,7 @@ func buildTokenBloomMetadata(bodies []string, rgIndex int) (key string, value []
 
 	data, _ := bloom.MarshalBinary()
 	key = fmt.Sprintf("_bloom_body_rg_%d", rgIndex)
-	return key, data
+	return key, footerkv.Encode(data)
 }
 
 func tokenBloomSkip(metadata map[string]string, rgIndex int, searchTokens []string) bool {
@@ -170,8 +172,19 @@ func tokenBloomSkip(metadata map[string]string, rgIndex int, searchTokens []stri
 		return false
 	}
 
+	// A value that is not valid base64 reads as an absent bloom (keep the row
+	// group), never an error.
+	data, ok := footerkv.Decode(raw)
+	if !ok {
+		return false
+	}
 	var bloom TokenBloom
-	if err := bloom.UnmarshalBinary([]byte(raw)); err != nil {
+	if err := bloom.UnmarshalBinary(data); err != nil {
+		return false
+	}
+	// A decodable but degenerate filter (no words or no hash functions) cannot
+	// attest absence; never prune on it.
+	if len(bloom.bits) == 0 || bloom.k == 0 {
 		return false
 	}
 

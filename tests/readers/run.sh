@@ -93,9 +93,10 @@ fixture() {
   check "$PY" oracle.py compare "$OUT/oracle-raw.json" "$OUT/oracle-compacted.json"
   # The pruning fixture (one real day of the compacted layer plus a garbage partition) exists before the files are read for facts.
   "$PY" fixture.py make-prune-fixture "$OUT/truth.json"
-  log "what the files say (bloom filter sizes, non-UTF-8 footer values): the cells where the known gaps #340 / #341 are expected"
+  log "what the files say (bloom filter sizes, non-UTF-8 footer values): the cells where the known gap #341 is expected, and no footer value that is not UTF-8 (#340)"
   "$PY" truth.py facts "$OUT/facts.json"
   check "$PY" truth.py assert-bloom "$OUT/facts.json"
+  check "$PY" truth.py assert-footer "$OUT/facts.json"
   "$PY" fixture.py inventory | tee "$OUT/inventory.txt"
   rm -rf "$OUT/fixture"
   "$PY" fixture.py dump "$OUT/fixture"

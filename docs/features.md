@@ -9,7 +9,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Area | ✅ covered by a test | 🟡 declared only | 🔧 in progress | 📝 planned | Total |
 |---|---|---|---|---|---|
 | Ingest | 8 | 0 | 0 | 0 | 8 |
-| Storage | 32 | 0 | 1 | 2 | 35 |
+| Storage | 33 | 0 | 1 | 2 | 36 |
 | Query | 16 | 1 | 0 | 1 | 18 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 7 | 0 | 0 | 1 | 8 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 2 | 0 | 16 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **151** | **1** | **3** | **8** | **163** |
+| **Total** | **152** | **1** | **3** | **8** | **164** |
 
 ## Coverage gaps
 
@@ -127,7 +127,7 @@ Lakehouse mounts the upstream `vlinsert` handlers instead of re-implementing the
 - Docs: `docs/write-path.md`, `docs/getting-started.md`
 - Changelog: `0.8.0`
 
-## Storage (35)
+## Storage (36)
 
 ### 📝 Cold-open round-trip elimination
 
@@ -163,6 +163,18 @@ The size of every field — its column bytes on S3 and the metadata bytes it cos
 - Verification: rows: `lh.stats.fields.schema` (pass, pending) · tests: `internal/pmeta/metadata_bytes_by_field_test.go`, `internal/stats/api_fields_test.go`, `tests/e2e/stats_metadata_test.go#TestStatsOverviewMetadata`
 - Docs: `docs/tenant-stats.md`, `docs/architecture/field-value-catalog.md`
 - Changelog: `0.100.0`
+
+### ✅ Footer key-values are valid UTF-8, so Arrow-rs engines open every file
+
+`lh.feature.storage.footer_kv_utf8` · status: shipped · surfaces: storage
+
+**Footer key-values are valid UTF-8**: the trace-ID index (`_trace_idx`) and the per-row-group body token blooms (`_bloom_body_rg_N`) are stored as base64 text, so Polars, DataFusion and every other reader that validates the Parquet footer opens Lakehouse files.
+
+The Parquet footer key_value_metadata value is a string, and Arrow-rs based engines (Polars, DataFusion, InfluxDB 3, Databend) refuse a file whose footer holds invalid UTF-8. Both binary Lakehouse entries are standard base64 on every write path (flush, compaction, delete rewrite; both binaries) and decoded on every read path; a value that is not valid base64 reads as an absent entry and never prunes. The tests assert the property over every footer entry of flushed, compacted and delete-rewritten objects, so a future entry that stores raw bytes fails a test instead of an external reader. The cost is 4/3 of the two values.
+
+- Verification: tests: `internal/footerkv/footerkv_test.go#TestRoundTrip`, `internal/footerkv/footerkv_test.go#TestDecodeRejects`, `internal/footerkv/footerkv_test.go#FuzzDecode`, `internal/traceindex/traceindex_test.go#TestMetadataValue_IsASCIIBase64OfMarshal`, `internal/traceindex/traceindex_test.go#TestFromMetadata_NotBase64IsAbsent`, `internal/traceindex/traceindex_test.go#FuzzFromMetadata`, `internal/storage/parquets3/footer_kv_utf8_test.go#TestFlushedLogsFooterKVAllUTF8`, `internal/storage/parquets3/footer_kv_utf8_test.go#TestFlushedTracesFooterKVAllUTF8`, `internal/storage/parquets3/footer_kv_utf8_test.go#TestTokenBloomFooterValueRoundTripPrunes`, `internal/storage/parquets3/footer_kv_utf8_test.go#TestFooterKVNotBase64IsAbsent`, `internal/storage/parquets3/footer_kv_utf8_test.go#FuzzFooterKVReaders`, `lakehouse-traces/internal/storage/parquets3/footer_kv_utf8_test.go#TestFlushedLogsFooterKVAllUTF8`, `lakehouse-traces/internal/storage/parquets3/footer_kv_utf8_test.go#TestFlushedTracesFooterKVAllUTF8`, `lakehouse-traces/internal/storage/parquets3/footer_kv_utf8_test.go#TestTokenBloomFooterValueRoundTripPrunes`, `lakehouse-traces/internal/storage/parquets3/footer_kv_utf8_test.go#TestFooterKVNotBase64IsAbsent`, `lakehouse-traces/internal/storage/parquets3/footer_kv_utf8_test.go#FuzzFooterKVReaders`, `internal/compaction/footer_kv_utf8_test.go#TestCompactedAndRewrittenFooterKVAllUTF8`, `tests/readers/test_truth.py#test_assert_footer_accepts_utf8_footers_and_names_the_bad_cells`
+- Docs: `docs/open-parquet-format.md#footer-keyvalue-entries`
+- Note: The same property is asserted on real files by the parquet-readers CI workflow (truth.py assert-footer over every object of both layers, then Polars and DataFusion read them), and by the parquet-readback CI job (Polars and DataFusion over files built with the production writer options). Mutants MF and MG of the reader mutation proof restore the raw encoding and must turn the fixture red.
 
 ### ✅ S3 storage-class lifecycle tiering
 
@@ -339,17 +351,17 @@ ClickHouse 25.8 reads logs and traces through the S3 table engine with use_hive_
 - Docs: `docs/open-parquet-format.md#querying-with-external-tools`
 - Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. Known gap, issue-linked and still run in CI: #341 (split-block bloom filters are written in sizes that are not a power of two, 96 bytes for 60 values and 160 for 120, so an equality filter on any bloom column fails with "Given length of bitset is illegal" while bloom filter push down is on; this is not limited to trace_id: logs have 10 bloom columns and traces 19. The fixture reads every filter size and the failure is expected in exactly the cells whose files make it happen; the same table with input_format_parquet_bloom_filter_push_down = 0 answers correctly and is checked in CI as the workaround).
 
-### ✅ Apache DataFusion reads part of Lakehouse's Parquet in place (open issue #340)
+### ✅ Apache DataFusion reads Lakehouse Parquet in place
 
 `lh.feature.storage.reader_datafusion` · status: shipped · surfaces: storage
 
-**Apache DataFusion reads part of Lakehouse's Parquet in place (open issue #340)**: DataFusion 54.0.0 refuses every traces file, every raw logs file and the compacted logs files that carry a body token bloom, because their footer key-values are not UTF-8; only compacted logs files without one read.
+**Apache DataFusion reads Lakehouse Parquet in place**: DataFusion 54.0.0 registers logs and traces on S3 with Hive partition columns, on raw and compacted files; every footer key-value is valid UTF-8, so the whole file opens.
 
-DataFusion 54.0.0 registers Lakehouse Parquet on S3 with Hive partition columns, but refuses any file whose footer key-values are not UTF-8 (#340): every traces file, every raw logs file and the compacted logs files that carry a body token bloom. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the truth computed from the rows that were sent, and checks that the engine read exactly the objects of the layer.
+DataFusion 54.0.0 registers Lakehouse Parquet on S3 with Hive partition columns, on raw and compacted files. It opens every file because the footer key-values (`_trace_idx`, `_bloom_body_rg_N`) are base64 text, not raw bytes (#340). The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the truth computed from the rows that were sent, and checks that the engine read exactly the objects of the layer.
 
 - Verification: tests: `tests/readers/test_matrix_result.py#test_datafusion_logs`, `tests/readers/test_matrix_result.py#test_datafusion_traces`
 - Docs: `docs/open-parquet-format.md#querying-with-external-tools`
-- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. Known gaps, issue-linked and still run in CI: #340 (footer key-value values are not UTF-8: DataFusion refuses every traces file, every raw logs file and every compacted logs file that carries a body token bloom; compacted logs files without one read correctly) and an engine caveat (register_parquet reads every footer before partition filters apply, so partition pruning needs an explicit schema). The #340 gap is expected in exactly the cells whose files carry such a value, and a cell that starts passing turns the CI job red so the entry is removed with the fix.
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. The footer key-values of every object are valid UTF-8 (`_trace_idx` and `_bloom_body_rg_N` are base64, #340), which the fixture asserts over all objects of both layers before the engines run. Known engine caveat, still run in CI: register_parquet reads every footer before partition filters apply, so partition pruning needs an explicit schema.
 
 ### ✅ DuckDB reads Lakehouse Parquet in place
 
@@ -387,17 +399,17 @@ parquet-tools 0.2.16 inspects one logs and one traces object: footer metadata, s
 - Docs: `docs/open-parquet-format.md#querying-with-external-tools`
 - Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with Lakehouse's own answers.
 
-### ✅ Polars reads part of Lakehouse's Parquet in place (open issue #340)
+### ✅ Polars reads Lakehouse Parquet in place
 
 `lh.feature.storage.reader_polars` · status: shipped · surfaces: storage
 
-**Polars reads part of Lakehouse's Parquet in place (open issue #340)**: Polars 1.44.2 refuses every traces file, every raw logs file and the compacted logs files that carry a body token bloom, because their footer key-values are not UTF-8; only compacted logs files without one read.
+**Polars reads Lakehouse Parquet in place**: Polars 1.44.2 scans logs and traces over S3 with Hive partitioning, on raw and compacted files; every footer key-value is valid UTF-8, so the whole file opens.
 
-Polars 1.44.2 scans Lakehouse Parquet over S3 with Hive partitioning, but refuses any file whose footer key-values are not UTF-8 (#340): every traces file, every raw logs file and the compacted logs files that carry a body token bloom. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the truth computed from the rows that were sent, and checks that the engine read exactly the objects of the layer.
+Polars 1.44.2 scans Lakehouse Parquet over S3 with Hive partitioning, on raw and compacted files. It opens every file because the footer key-values (`_trace_idx`, `_bloom_body_rg_N`) are base64 text, not raw bytes (#340). The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the truth computed from the rows that were sent, and checks that the engine read exactly the objects of the layer.
 
 - Verification: tests: `tests/readers/test_matrix_result.py#test_polars_logs`, `tests/readers/test_matrix_result.py#test_polars_traces`
 - Docs: `docs/open-parquet-format.md#querying-with-external-tools`
-- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. Known gap, issue-linked and still run in CI: #340 (footer key-value values are not UTF-8: Polars refuses every traces file, every raw logs file and every compacted logs file that carries a body token bloom; compacted logs files without one read correctly). The gap is expected in exactly the cells whose files carry such a value (the fixture reads the footers), and a cell that starts passing turns the CI job red so the entry is removed with the fix.
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. The footer key-values of every object are valid UTF-8 (`_trace_idx` and `_bloom_body_rg_N` are base64, #340), which the fixture asserts over all objects of both layers before the engines run.
 
 ### ✅ pyarrow reads Lakehouse Parquet in place
 

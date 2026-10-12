@@ -179,6 +179,24 @@ FACTS = {"nonpow2_total": 1, "nonutf8_total": 2,
                     "4401/1/traces/raw": {"objects": 3, "nonutf8": 0, "nonutf8_dts": [], "first_nonutf8": False}}}
 
 
+# #340 is fixed (the footer values are base64), so gaps.GAPS holds no footer gap. The facts-driven
+# mechanism stays covered with synthetic gaps shaped like the two that were removed.
+FOOTER_GAPS = [
+    {"id": "synthetic-footer/polars", "issue": gaps.ISSUES + "340", "engines": ("polars",), "footer": True,
+     "layers": ("raw", "compacted", "pruned"), "label": "files with a non-UTF-8 footer value", "error": gaps.UTF8_ERR,
+     "partition_pruned": ("dt_filter",),
+     "full": (("logs", "raw"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")), "note": "synthetic"},
+    {"id": "synthetic-footer/datafusion", "issue": gaps.ISSUES + "340", "engines": ("datafusion",), "footer": True,
+     "layers": ("raw", "compacted", "pruned"), "label": "files with a non-UTF-8 footer value", "error": gaps.UTF8_ERR,
+     "full": (("logs", "raw"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")), "note": "synthetic"},
+]
+
+
+@pytest.fixture
+def footer_gaps(monkeypatch):
+    monkeypatch.setattr(gaps, "GAPS", list(gaps.GAPS) + FOOTER_GAPS)
+
+
 def gap_for(engine, sig, layer, tenant, q, prefix, facts=FACTS):
     return gaps.known_gap(engine, sig, layer, tenant, q, facts, prefix)
 
@@ -197,7 +215,7 @@ def test_bloom_gap_closes_when_the_writer_stops_writing_such_filters():
     assert g and matrix.judge({"trace_by_id": 5}, "trace_by_id", 5, g)["status"] == "gap-closed"
 
 
-def test_footer_gap_applies_exactly_where_an_object_has_a_non_utf8_footer_value():
+def test_footer_gap_applies_exactly_where_an_object_has_a_non_utf8_footer_value(footer_gaps):
     assert gap_for("polars", "logs", "raw", "numeric", "count", "4401/1")
     assert gap_for("polars", "logs", "compacted", "numeric", "count", "4401/1") is None   # compaction left no such object here
     assert gap_for("polars", "traces", "raw", "numeric", "count", "4401/1") is None       # facts say none here
@@ -205,7 +223,7 @@ def test_footer_gap_applies_exactly_where_an_object_has_a_non_utf8_footer_value(
     assert gap_for("duckdb", "logs", "raw", "numeric", "count", "4401/1") is None
 
 
-def test_footer_gap_of_a_partition_pruned_query_looks_only_at_its_partition():
+def test_footer_gap_of_a_partition_pruned_query_looks_only_at_its_partition(footer_gaps):
     # Polars prunes dt= before it opens a footer: dt_filter meets only the filtered day's objects
     assert gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1", "2026-01-01")
     assert gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1", "2026-01-02") is None
@@ -223,7 +241,7 @@ def test_footer_gap_of_a_partition_pruned_query_looks_only_at_its_partition():
     assert matrix.judge({"dt_filter": 5}, "dt_filter", 5, g)["status"] == "gap-closed"
 
 
-def test_footer_gap_of_a_partition_pruned_query_includes_the_first_object_of_the_listing():
+def test_footer_gap_of_a_partition_pruned_query_includes_the_first_object_of_the_listing(footer_gaps):
     # Polars reads the schema from the first object (sorted by key) before it prunes: a clean day
     # still fails when that object carries a non-UTF-8 value (CI: 4401/1/logs/compacted, 2026-10-04)
     first_bad = dict(FACTS, footer=dict(FACTS["footer"], **{"4401/1/logs/raw": dict(FACTS["footer"]["4401/1/logs/raw"],
@@ -232,7 +250,7 @@ def test_footer_gap_of_a_partition_pruned_query_includes_the_first_object_of_the
     assert g and matrix.judge({"dt_filter": QE("ComputeError: invalid utf8")}, "dt_filter", 5, g)["status"] == "known-gap"
 
 
-def test_a_partition_pruned_footer_gap_needs_the_partition():
+def test_a_partition_pruned_footer_gap_needs_the_partition(footer_gaps):
     with pytest.raises(ValueError):
         gaps.known_gap("polars", "logs", "raw", "numeric", "dt_filter", FACTS, "4401/1")
 
@@ -243,13 +261,13 @@ def test_facts_record_the_partition_of_an_object():
     assert truth.dt_of("4401/1/logs/x.parquet") is None
 
 
-def test_footer_gap_closes_when_no_object_has_a_non_utf8_footer_value():
+def test_footer_gap_closes_when_no_object_has_a_non_utf8_footer_value(footer_gaps):
     fixed = dict(FACTS, nonutf8_total=0)
     g = gap_for("polars", "logs", "compacted", "numeric", "count", "4401/1", fixed)
     assert g and matrix.judge({"count": 5}, "count", 5, g)["status"] == "gap-closed"
 
 
-def test_the_doc_view_of_a_data_dependent_gap_is_where_it_can_occur():
+def test_the_doc_view_of_a_data_dependent_gap_is_where_it_can_occur(footer_gaps):
     assert gaps.known_gap("polars", "logs", "compacted", "numeric", "count")
     assert gaps.known_gap("clickhouse", "traces", "raw", "numeric", "trace_by_id")
 
@@ -289,7 +307,7 @@ def test_every_gap_is_issue_linked_or_an_explained_engine_caveat():
             assert re.fullmatch(r"https://github\.com/ReliablyObserve/victoria-lakehouse/issues/\d+", g["issue"])
 
 
-def test_known_gap_lookup_is_specific():
+def test_known_gap_lookup_is_specific(footer_gaps):
     assert gaps.known_gap("trino", "logs", "raw", "big", "tenant")
     assert gaps.known_gap("trino", "traces", "compacted", "golden", "tenant")
     assert gaps.known_gap("trino", "logs", "raw", "numeric", "tenant") is None

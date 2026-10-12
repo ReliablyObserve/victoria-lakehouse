@@ -16,6 +16,7 @@ import (
 	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
@@ -541,7 +542,7 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 		}
 		if len(bodies) > 0 {
 			key, value := buildTokenBloomMetadata(bodies, rgIdx)
-			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
+			opts = append(opts, parquet.KeyValueMetadata(key, value))
 		}
 	}
 
@@ -595,14 +596,14 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		}
 		if len(bodies) > 0 {
 			key, value := buildTokenBloomMetadata(bodies, rgIdx)
-			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
+			opts = append(opts, parquet.KeyValueMetadata(key, value))
 		}
 	}
 
 	tidxStart := time.Now()
 	tidxEntries := computeTraceIndex(rows)
 	if idxData := marshalTraceIndex(tidxEntries); len(idxData) > 0 {
-		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData)))
+		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, footerkv.Encode(idxData)))
 		metrics.WriterTraceIdxBuildsTotal.Inc()
 		metrics.WriterTraceIdxEntriesTotal.Add(len(tidxEntries))
 		metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())

@@ -15,6 +15,7 @@ cut to microseconds, rows filed under the wrong tenant) differs from the manifes
   truth.py verify-files <manifest.json> <layer>
                                         read every Parquet object of the layer and compare it with the manifest
   truth.py facts <out.json>             bloom filter header sizes and non-UTF-8 footer values of every object (both layers)
+  truth.py assert-footer <facts.json>   fail when any object has a footer key-value that is not UTF-8 (#340)
   truth.py assert-bloom <facts.json>    the bloom tenant writes 96-byte filters (writer side of the #341 expectation)
 """
 import glob
@@ -362,6 +363,22 @@ def assert_bloom(path):
     print("sbbf: the bloom tenant writes 96-byte bloom filters (raw) and non-power-of-two ones after compaction")
 
 
+def assert_footer(path):
+    """Writer side: no object Lakehouse wrote may carry a footer key-value that is not UTF-8. The thrift
+    KeyValue.value is a string and arrow-rs readers (Polars, DataFusion) refuse the whole file otherwise
+    (#340, fixed: `_trace_idx` and `_bloom_body_rg_N` are base64). Checking the property here, over every
+    key of every object of both layers, fails the fixture the moment any new footer entry stores raw
+    bytes, before an engine has to fail on it."""
+    res = lib.read_json(path)
+    if res["nonutf8_total"] == 0:
+        n = sum(f["objects"] for f in res["footer"].values())
+        print("footer: every key-value of all %d objects is valid UTF-8" % n)
+        return
+    bad = ["%s: %d of %d objects, keys %s" % (cell, f["nonutf8"], f["objects"], f["keys"])
+           for cell, f in sorted(res["footer"].items()) if f["nonutf8"]]
+    sys.exit("objects with a footer key-value that is not UTF-8 (Polars and DataFusion refuse them, #340): %s" % bad)
+
+
 def nonpow2(sizes):
     return any(s & (s - 1) for s in sizes)
 
@@ -378,5 +395,7 @@ if __name__ == "__main__":
         facts_scan(sys.argv[2])
     elif cmd == "assert-bloom":
         assert_bloom(sys.argv[2])
+    elif cmd == "assert-footer":
+        assert_footer(sys.argv[2])
     else:
         sys.exit(__doc__)

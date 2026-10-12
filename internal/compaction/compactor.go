@@ -935,9 +935,9 @@ func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionL
 	// the original writer in lakehouse-traces/.../parquets3/writer.go,
 	// so a query can't tell whether the file was freshly flushed or
 	// later compacted.
-	if idxData := traceindex.Marshal(traceindex.Compute(rows)); len(idxData) > 0 {
-		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, string(idxData)))
-	}
+	// The value is base64 (traceindex.MetadataValue): the footer KV is a UTF-8
+	// string to Arrow-rs readers, so raw index bytes would make them refuse the file.
+	opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, traceindex.MetadataValue(traceindex.Compute(rows))))
 
 	writer := schema.NewTraceWriter(&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
