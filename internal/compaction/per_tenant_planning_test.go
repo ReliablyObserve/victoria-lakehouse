@@ -60,7 +60,7 @@ func (w *planWorld) add(tenant, partition string, level, n, rows int, mutate fun
 			tr := make([]schema.TraceRow, rows)
 			for r := range tr {
 				ts := base + int64(r)
-				tr[r] = schema.TraceRow{TimestampUnixNano: ts, StartTimeUnixNano: ts, TraceID: fmt.Sprintf("t-%s-%d-%d", tenant, w.seq, r), SpanID: fmt.Sprintf("s-%d-%d", w.seq, r), SpanName: "op", ServiceName: "svc", DurationNs: 10}
+				tr[r] = schema.TraceRow{TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts), TraceID: fmt.Sprintf("t-%s-%d-%d", tenant, w.seq, r), SpanID: fmt.Sprintf("s-%d-%d", w.seq, r), SpanName: "op", ServiceName: "svc", DurationNs: schema.Int64Ptr(10)}
 			}
 			data = makeTestTraceParquet(w.t, tr)
 		default:

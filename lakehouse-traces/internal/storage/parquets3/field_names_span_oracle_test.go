@@ -40,11 +40,14 @@ func fmtSpanFields() []fmtSpanField {
 		{"span_id", func(r *schema.TraceRow) bool { return r.SpanID != "" }},
 		{"name", func(r *schema.TraceRow) bool { return r.SpanName != "" }},
 		{"resource_attr:service.name", func(r *schema.TraceRow) bool { return r.ServiceName != "" }},
-		// A span always carries these, with value 0 when nothing else is said.
-		{"duration", fmtAlways},
-		{"kind", fmtAlways},
-		{"status_code", fmtAlways},
-		{"start_time_unix_nano", fmtAlways},
+		// VictoriaTraces' OTLP ingest writes these four for every span (value 0
+		// when the span says nothing: app/vtinsert/opentelemetry pushFieldsFromSpan),
+		// so a generated span sets all four. They are nullable columns: a span
+		// that never carried one (a nil pointer) lists no name for it (#274).
+		{"duration", func(r *schema.TraceRow) bool { return r.DurationNs != nil }},
+		{"kind", func(r *schema.TraceRow) bool { return r.SpanKind != nil }},
+		{"status_code", func(r *schema.TraceRow) bool { return r.StatusCode != nil }},
+		{"start_time_unix_nano", func(r *schema.TraceRow) bool { return r.StartTimeUnixNano != nil }},
 	}
 }
 
@@ -55,6 +58,7 @@ func fmtGeneratedSpanFields() map[string]bool {
 	return map[string]bool{
 		"TimestampUnixNano": true, "StartTimeUnixNano": true, "TraceID": true, "SpanID": true,
 		"SpanName": true, "ServiceName": true, "DurationNs": true, "Stream": true, "StreamID": true,
+		"SpanKind": true, "StatusCode": true,
 	}
 }
 

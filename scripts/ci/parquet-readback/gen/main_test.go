@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
@@ -93,9 +94,36 @@ func assertWriterOptions(t *testing.T, f *parquet.File, truth fileTruth) {
 		for _, col := range cols {
 			if _, ok := f.Schema().Lookup(col); !ok {
 				t.Errorf("%s: %s column %q is not in the written schema", truth.File, kind, col)
+				continue
+			}
+			// The footer must record the encoding the truth promises (a
+			// pointer column cannot carry the delta struct tag; the writer
+			// attaches it to the schema node, and this proves it landed).
+			want := "DELTA_BINARY_PACKED"
+			if kind == "dict" {
+				want = "RLE_DICTIONARY"
+			}
+			if !footerHasEncoding(f, col, want) {
+				t.Errorf("%s: column %q footer lacks %s", truth.File, col, want)
 			}
 		}
 	}
+}
+
+func footerHasEncoding(f *parquet.File, col, want string) bool {
+	for _, rg := range f.Metadata().RowGroups {
+		for _, c := range rg.Columns {
+			if len(c.MetaData.PathInSchema) != 1 || c.MetaData.PathInSchema[0] != col {
+				continue
+			}
+			for _, e := range c.MetaData.Encoding {
+				if e.String() == want {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // assertTruth compares the truth the generator reported with the one
@@ -148,9 +176,17 @@ func TestGenLogs_TruthMatchesTheFileWritten(t *testing.T) {
 		}
 		distinct[col][v] = true
 	}
+	var nulls, zeros int64
 	for _, r := range rows {
 		add("timestamp_unix_nano", r.TimestampUnixNano)
-		add("severity_number", int64(r.SeverityNumber))
+		if r.SeverityNumber != nil {
+			add("severity_number", int64(*r.SeverityNumber))
+			if *r.SeverityNumber == 0 {
+				zeros++
+			}
+		} else {
+			nulls++
+		}
 		add("account_id", int64(r.AccountID))
 		add("project_id", int64(r.ProjectID))
 		see("service.name", r.ServiceName)
@@ -162,6 +198,15 @@ func TestGenLogs_TruthMatchesTheFileWritten(t *testing.T) {
 	}
 	assertTruth(t, truth, len(rows), sums, distinct)
 	assertWriterOptions(t, f, truth)
+	// severity_number is nullable: the fixture holds absent (NULL) and explicit
+	// 0 cells, and the truth counts them apart (#274).
+	if nulls == 0 || zeros == 0 {
+		t.Fatalf("the fixture must hold NULL and explicit-0 severity_number cells, got %d NULL and %d zero", nulls, zeros)
+	}
+	if truth.NullCounts["severity_number"] != nulls || truth.ZeroCounts["severity_number"] != zeros {
+		t.Errorf("truth null/zero counts = %d/%d, the file holds %d/%d",
+			truth.NullCounts["severity_number"], truth.ZeroCounts["severity_number"], nulls, zeros)
+	}
 }
 
 func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
@@ -172,6 +217,13 @@ func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
 	}
 	if truth.Signal != "traces" || truth.File != "traces.parquet" {
 		t.Errorf("truth names %s/%s", truth.Signal, truth.File)
+	}
+	// Spelled out here, not derived from the schema package: the gate must hold
+	// the optional start time to DELTA_BINARY_PACKED even if the writer's list is emptied.
+	for _, want := range []string{"timestamp_unix_nano", "start_time_unix_nano"} {
+		if !slices.Contains(truth.DeltaColumns, want) {
+			t.Errorf("traces delta columns %v lack %s", truth.DeltaColumns, want)
+		}
 	}
 	f, rows := readBack[schema.TraceRow](t, path)
 
@@ -192,10 +244,18 @@ func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
 	graphEdges := 0
 	for _, r := range rows {
 		add("timestamp_unix_nano", r.TimestampUnixNano)
-		add("start_time_unix_nano", r.StartTimeUnixNano)
-		add("duration_ns", r.DurationNs)
-		add("status.code", int64(r.StatusCode))
-		add("span.kind", int64(r.SpanKind))
+		if r.StartTimeUnixNano != nil {
+			add("start_time_unix_nano", *r.StartTimeUnixNano)
+		}
+		if r.DurationNs != nil {
+			add("duration_ns", *r.DurationNs)
+		}
+		if r.StatusCode != nil {
+			add("status.code", int64(*r.StatusCode))
+		}
+		if r.SpanKind != nil {
+			add("span.kind", int64(*r.SpanKind))
+		}
 		see("service.name", r.ServiceName)
 		see("span.name", r.SpanName)
 		see("http.method", r.HTTPMethod)

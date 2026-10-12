@@ -119,17 +119,17 @@ func TestVTInsertAdapter_MustAddRows_AllPromotedFields(t *testing.T) {
 		}
 	}
 
-	if row.DurationNs != 5_000_000 {
-		t.Errorf("DurationNs = %d, want %d", row.DurationNs, 5_000_000)
+	if schema.Int64Value(row.DurationNs) != 5_000_000 {
+		t.Errorf("DurationNs = %d, want %d", schema.Int64Value(row.DurationNs), 5_000_000)
 	}
-	if row.StartTimeUnixNano != 999_000_000 {
-		t.Errorf("StartTimeUnixNano = %d, want %d", row.StartTimeUnixNano, 999_000_000)
+	if schema.Int64Value(row.StartTimeUnixNano) != 999_000_000 {
+		t.Errorf("StartTimeUnixNano = %d, want %d", schema.Int64Value(row.StartTimeUnixNano), 999_000_000)
 	}
-	if row.StatusCode != 2 {
-		t.Errorf("StatusCode = %d, want %d", row.StatusCode, 2)
+	if schema.Int32Value(row.StatusCode) != 2 {
+		t.Errorf("StatusCode = %d, want %d", schema.Int32Value(row.StatusCode), 2)
 	}
-	if row.SpanKind != 3 {
-		t.Errorf("SpanKind = %d, want %d", row.SpanKind, 3)
+	if schema.Int32Value(row.SpanKind) != 3 {
+		t.Errorf("SpanKind = %d, want %d", schema.Int32Value(row.SpanKind), 3)
 	}
 }
 
@@ -241,17 +241,17 @@ func TestVTInsertAdapter_MustAddRows_NumericParsingErrors(t *testing.T) {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
 	row := rows[0]
-	if row.DurationNs != 0 {
-		t.Errorf("DurationNs should be 0 on parse error, got %d", row.DurationNs)
+	if schema.Int64Value(row.DurationNs) != 0 {
+		t.Errorf("DurationNs should be 0 on parse error, got %d", schema.Int64Value(row.DurationNs))
 	}
-	if row.StatusCode != 0 {
-		t.Errorf("StatusCode should be 0 on parse error, got %d", row.StatusCode)
+	if schema.Int32Value(row.StatusCode) != 0 {
+		t.Errorf("StatusCode should be 0 on parse error, got %d", schema.Int32Value(row.StatusCode))
 	}
-	if row.SpanKind != 0 {
-		t.Errorf("SpanKind should be 0 on parse error, got %d", row.SpanKind)
+	if schema.Int32Value(row.SpanKind) != 0 {
+		t.Errorf("SpanKind should be 0 on parse error, got %d", schema.Int32Value(row.SpanKind))
 	}
-	if row.StartTimeUnixNano != 0 {
-		t.Errorf("StartTimeUnixNano should be 0 on parse error, got %d", row.StartTimeUnixNano)
+	if schema.Int64Value(row.StartTimeUnixNano) != 0 {
+		t.Errorf("StartTimeUnixNano should be 0 on parse error, got %d", schema.Int64Value(row.StartTimeUnixNano))
 	}
 }
 
@@ -402,17 +402,17 @@ func TestMapFieldToTraceRow_AllCases(t *testing.T) {
 		}
 	}
 
-	if row.DurationNs != 42000 {
-		t.Errorf("DurationNs = %d, want %d", row.DurationNs, 42000)
+	if schema.Int64Value(row.DurationNs) != 42000 {
+		t.Errorf("DurationNs = %d, want %d", schema.Int64Value(row.DurationNs), 42000)
 	}
-	if row.StartTimeUnixNano != 1000 {
-		t.Errorf("StartTimeUnixNano = %d, want %d", row.StartTimeUnixNano, 1000)
+	if schema.Int64Value(row.StartTimeUnixNano) != 1000 {
+		t.Errorf("StartTimeUnixNano = %d, want %d", schema.Int64Value(row.StartTimeUnixNano), 1000)
 	}
-	if row.StatusCode != 1 {
-		t.Errorf("StatusCode = %d, want %d", row.StatusCode, 1)
+	if schema.Int32Value(row.StatusCode) != 1 {
+		t.Errorf("StatusCode = %d, want %d", schema.Int32Value(row.StatusCode), 1)
 	}
-	if row.SpanKind != 2 {
-		t.Errorf("SpanKind = %d, want %d", row.SpanKind, 2)
+	if schema.Int32Value(row.SpanKind) != 2 {
+		t.Errorf("SpanKind = %d, want %d", schema.Int32Value(row.SpanKind), 2)
 	}
 	if row.SpanAttributes["custom_attr"] != "custom_val" {
 		t.Errorf("custom_attr = %q, want %q", row.SpanAttributes["custom_attr"], "custom_val")
@@ -461,17 +461,17 @@ func TestVTInsertAdapter_MustAddRows_OTLPFields(t *testing.T) {
 			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
 		}
 	}
-	if row.SpanKind != 2 {
-		t.Errorf("SpanKind = %d, want 2", row.SpanKind)
+	if schema.Int32Value(row.SpanKind) != 2 {
+		t.Errorf("SpanKind = %d, want 2", schema.Int32Value(row.SpanKind))
 	}
-	if row.DurationNs != 15_000_000 {
-		t.Errorf("DurationNs = %d, want 15000000", row.DurationNs)
+	if schema.Int64Value(row.DurationNs) != 15_000_000 {
+		t.Errorf("DurationNs = %d, want 15000000", schema.Int64Value(row.DurationNs))
 	}
-	if row.StartTimeUnixNano != 1_700_000_000_000_000_000 {
-		t.Errorf("StartTimeUnixNano = %d, want 1700000000000000000", row.StartTimeUnixNano)
+	if schema.Int64Value(row.StartTimeUnixNano) != 1_700_000_000_000_000_000 {
+		t.Errorf("StartTimeUnixNano = %d, want 1700000000000000000", schema.Int64Value(row.StartTimeUnixNano))
 	}
-	if row.StatusCode != 1 {
-		t.Errorf("StatusCode = %d, want 1", row.StatusCode)
+	if schema.Int32Value(row.StatusCode) != 1 {
+		t.Errorf("StatusCode = %d, want 1", schema.Int32Value(row.StatusCode))
 	}
 }
 
@@ -680,17 +680,17 @@ func TestVTInsertAdapter_MustAddRows_FullOTLPSpan(t *testing.T) {
 	if row.SpanName != "gRPC /payment.Process" {
 		t.Errorf("SpanName = %q", row.SpanName)
 	}
-	if row.SpanKind != 3 {
-		t.Errorf("SpanKind = %d", row.SpanKind)
+	if schema.Int32Value(row.SpanKind) != 3 {
+		t.Errorf("SpanKind = %d", schema.Int32Value(row.SpanKind))
 	}
-	if row.DurationNs != 250_000_000 {
-		t.Errorf("DurationNs = %d", row.DurationNs)
+	if schema.Int64Value(row.DurationNs) != 250_000_000 {
+		t.Errorf("DurationNs = %d", schema.Int64Value(row.DurationNs))
 	}
-	if row.StartTimeUnixNano != 1_700_000_000_000_000_000 {
-		t.Errorf("StartTimeUnixNano = %d", row.StartTimeUnixNano)
+	if schema.Int64Value(row.StartTimeUnixNano) != 1_700_000_000_000_000_000 {
+		t.Errorf("StartTimeUnixNano = %d", schema.Int64Value(row.StartTimeUnixNano))
 	}
-	if row.StatusCode != 2 {
-		t.Errorf("StatusCode = %d", row.StatusCode)
+	if schema.Int32Value(row.StatusCode) != 2 {
+		t.Errorf("StatusCode = %d", schema.Int32Value(row.StatusCode))
 	}
 	if row.StatusMessage != "internal error" {
 		t.Errorf("StatusMessage = %q", row.StatusMessage)

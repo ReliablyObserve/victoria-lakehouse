@@ -70,10 +70,10 @@ func Compute(rows []schema.TraceRow) []Entry {
 		if tid == "" {
 			continue
 		}
-		start := rows[i].StartTimeUnixNano
+		start := schema.Int64Value(rows[i].StartTimeUnixNano)
 		end := start
-		if rows[i].DurationNs > 0 {
-			end += rows[i].DurationNs
+		if d := schema.Int64Value(rows[i].DurationNs); d > 0 {
+			end += d
 		}
 		a, ok := m[tid]
 		if !ok {

@@ -80,7 +80,7 @@ func TestColdReview_NotOrIfAroundBloomColumn(t *testing.T) {
 	var rows []schema.TraceRow
 	for i := 0; i < 40; i++ {
 		rows = append(rows, schema.TraceRow{
-			TimestampUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(), StartTimeUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(),
+			TimestampUnixNano: base.Add(time.Duration(i) * time.Second).UnixNano(), StartTimeUnixNano: schema.Int64Ptr(base.Add(time.Duration(i) * time.Second).UnixNano()),
 			TraceID: fmt.Sprintf("trace-%d", i/10), SpanID: fmt.Sprintf("%016x", i), SpanName: "op", ServiceName: "svc",
 			Stream: `{resource_attr:service.name="svc"}`, StreamID: fmt.Sprintf("%048x", 3),
 		})
@@ -134,8 +134,8 @@ func TestColdReview_PushdownTimeShapes(t *testing.T) {
 			ts = minute.Add(10*time.Minute + time.Duration(i)*time.Second)
 			name = "late"
 		}
-		rows = append(rows, schema.TraceRow{TimestampUnixNano: ts.UnixNano(), StartTimeUnixNano: ts.UnixNano(), TraceID: fmt.Sprintf("t%d", i), SpanID: fmt.Sprintf("%016x", i),
-			SpanName: name, ServiceName: "svc", StatusCode: int32(i % 2), Stream: `{resource_attr:service.name="svc"}`, StreamID: fmt.Sprintf("%048x", 3)})
+		rows = append(rows, schema.TraceRow{TimestampUnixNano: ts.UnixNano(), StartTimeUnixNano: schema.Int64Ptr(ts.UnixNano()), TraceID: fmt.Sprintf("t%d", i), SpanID: fmt.Sprintf("%016x", i),
+			SpanName: name, ServiceName: "svc", StatusCode: schema.Int32Ptr(int32(i % 2)), Stream: `{resource_attr:service.name="svc"}`, StreamID: fmt.Sprintf("%048x", 3)})
 	}
 	res, err := writeTracesParquet(rows, 20, 3)
 	if err != nil {

@@ -52,7 +52,7 @@ func projectionFixture(t testing.TB) (*parquet.File, time.Time) {
 							TimestampUnixNano: projFixtureBase.Add(time.Duration(i) * time.Second).UnixNano(),
 							Body:              body,
 							SeverityText:      level,
-							SeverityNumber:    int32(9 + i%5),
+							SeverityNumber:    schema.Int32Ptr(int32(9 + i%5)),
 							ServiceName:       svc,
 							HostName:          "host-" + svc,
 							TraceID:           fmt.Sprintf("%032x", i),

@@ -497,7 +497,7 @@ func (r *Rewriter) filterTraceRows(data []byte, tombstones []Tombstone, result *
 
 	var buf bytes.Buffer
 	opts := append(r.writerOptions(data), schema.TraceIDHexOption(schema.TraceRowsTraceIDHex(kept)))
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
+	writer := schema.NewTraceWriter(&buf, opts...)
 	if _, err := writer.Write(kept); err != nil {
 		return nil, fmt.Errorf("write parquet: %w", err)
 	}
@@ -613,14 +613,14 @@ func traceRowToMap(row *schema.TraceRow) map[string]string {
 		"db.system":              row.DBSystem,
 		"db.statement":           row.DBStatement,
 	}
-	if row.SpanKind != 0 {
-		m["span.kind"] = fmt.Sprintf("%d", row.SpanKind)
+	if row.SpanKind != nil {
+		m["span.kind"] = fmt.Sprintf("%d", *row.SpanKind)
 	}
-	if row.StatusCode != 0 {
-		m["status.code"] = fmt.Sprintf("%d", row.StatusCode)
+	if row.StatusCode != nil {
+		m["status.code"] = fmt.Sprintf("%d", *row.StatusCode)
 	}
-	if row.DurationNs != 0 {
-		m["duration_ns"] = fmt.Sprintf("%d", row.DurationNs)
+	if row.DurationNs != nil {
+		m["duration_ns"] = fmt.Sprintf("%d", *row.DurationNs)
 	}
 	for k, v := range row.ResourceAttributes {
 		k = schema.TraceMessageAttributeName("resource_attr:", k)

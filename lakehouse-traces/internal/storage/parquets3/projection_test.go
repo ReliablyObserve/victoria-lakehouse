@@ -266,14 +266,14 @@ func TestNeededColumns_BytesRead_Traces(t *testing.T) {
 	for i := 0; i < 20000; i++ {
 		rows = append(rows, schema.TraceRow{
 			TimestampUnixNano: base.Add(time.Duration(i) * time.Millisecond).UnixNano(),
-			StartTimeUnixNano: base.Add(time.Duration(i) * time.Millisecond).UnixNano(),
+			StartTimeUnixNano: schema.Int64Ptr(base.Add(time.Duration(i) * time.Millisecond).UnixNano()),
 			TraceID:           fmt.Sprintf("%032x", i/4*2654435761),
 			SpanID:            fmt.Sprintf("%016x", i),
 			ParentSpanID:      fmt.Sprintf("%016x", i/2),
 			SpanName:          fmt.Sprintf("GET /api/v1/items/%d", i%50),
 			ServiceName:       fmt.Sprintf("svc-%d", i%8),
-			DurationNs:        int64(1000000 + i%977*1000),
-			StatusCode:        int32(i % 3),
+			DurationNs:        schema.Int64Ptr(int64(1000000 + i%977*1000)),
+			StatusCode:        schema.Int32Ptr(int32(i % 3)),
 			HTTPMethod:        []string{"GET", "POST"}[i%2],
 			HTTPUrl:           fmt.Sprintf("https://svc-%d.example.com/api/v1/items/%d?q=%x", i%8, i, i*2654435761),
 			DBStatement:       fmt.Sprintf("SELECT * FROM items WHERE id = %d AND tag = '%x'", i, i*40503),

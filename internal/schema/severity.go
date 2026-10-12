@@ -40,3 +40,27 @@ func DeriveSeverityText(severityText string, severityNumber int32, st *logstorag
 	}
 	return ""
 }
+
+// Int32Ptr returns a pointer to v. It builds the presence-carrying value of an
+// optional numeric column, such as LogRow.SeverityNumber.
+func Int32Ptr(v int32) *int32 { return &v }
+
+// Int32Value returns *p, or 0 when p is nil (the field was absent).
+func Int32Value(p *int32) int32 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// Int64Ptr returns a pointer to v (the presence-carrying value of an optional
+// int64 column, such as TraceRow.DurationNs).
+func Int64Ptr(v int64) *int64 { return &v }
+
+// Int64Value returns *p, or 0 when p is nil (the field was absent).
+func Int64Value(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}

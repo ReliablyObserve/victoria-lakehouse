@@ -324,7 +324,7 @@ func TestNeededColumns_BytesRead(t *testing.T) {
 			TimestampUnixNano: base.Add(time.Duration(i) * time.Millisecond).UnixNano(),
 			Body:              fmt.Sprintf("request %d handled path=/api/v1/items/%d status=%d trace=%x", i, i*7, 200+i%5, i*2654435761),
 			SeverityText:      []string{"INFO", "WARN", "ERROR", "DEBUG"}[i%4],
-			SeverityNumber:    int32(9 + i%4),
+			SeverityNumber:    schema.Int32Ptr(int32(9 + i%4)),
 			ServiceName:       fmt.Sprintf("svc-%d", i%8),
 			TraceID:           fmt.Sprintf("%032x", i*2654435761),
 			SpanID:            fmt.Sprintf("%016x", i),

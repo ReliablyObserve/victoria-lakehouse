@@ -266,7 +266,7 @@ func compareAllColumnSorts(t *testing.T, c *allColumnSortCase, f tenantForm, row
 	}
 	for _, q := range allColumnSortQueries {
 		hot := allColumnSortRaw(t, c, c.hot, c.filter+" | "+q, f.header(false))
-		cold := dropKnownColdOnlyFields(allColumnSortRaw(t, c, c.cold, c.filter+" | "+q, f.header(true)))
+		cold := allColumnSortRaw(t, c, c.cold, c.filter+" | "+q, f.header(true))
 		if len(hot) == 0 {
 			t.Fatalf("hot answered %q with no rows", q)
 		}
@@ -284,18 +284,6 @@ func compareAllColumnSorts(t *testing.T, c *allColumnSortCase, f tenantForm, row
 		// one cell per row position compared (the lock's floor in lock_cells.txt)
 		reportLockCells(t, len(hot))
 	}
-}
-
-// dropKnownColdOnlyFields removes the one field the cold logs path adds to
-// every row and hot VictoriaLogs does not return: "severity_number":"0", open
-// issue #274. Nothing else is dropped, so any other difference in fields or in
-// their order still fails.
-func dropKnownColdOnlyFields(lines []string) []string {
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		out[i] = strings.Replace(l, `,"severity_number":"0"`, "", 1)
-	}
-	return out
 }
 
 // allColumnSortRaw returns the raw NDJSON lines a tier answers query with, in

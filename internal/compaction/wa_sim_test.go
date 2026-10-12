@@ -179,7 +179,7 @@ func runSimScenario(t *testing.T, label string, mode config.Mode, tenantCount, d
 				rows := make([]schema.TraceRow, rowsPerFile)
 				for r := range rows {
 					ts := base + int64(r)
-					rows[r] = schema.TraceRow{TimestampUnixNano: ts, StartTimeUnixNano: ts, TraceID: fmt.Sprintf("t%d-%d", seq, r), SpanID: fmt.Sprintf("s%d-%d", seq, r), SpanName: "op", ServiceName: "svc", DurationNs: 10}
+					rows[r] = schema.TraceRow{TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts), TraceID: fmt.Sprintf("t%d-%d", seq, r), SpanID: fmt.Sprintf("s%d-%d", seq, r), SpanName: "op", ServiceName: "svc", DurationNs: schema.Int64Ptr(10)}
 				}
 				data = makeTestTraceParquet(t, rows)
 			} else {

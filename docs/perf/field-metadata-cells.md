@@ -501,6 +501,21 @@ Regenerating the rows: run the harness as in [Harness](#harness) (logs and trace
 the generated ones, the other 576 rows keep their earlier measured budgets (their counters and expectations
 came out the same).
 
+**Counter change of #274 (nullable `severity_number` and numeric span columns).** The columns a row may
+never carry are now `optional` (definition levels). `start_time_unix_nano` keeps its `DELTA_BINARY_PACKED`
+encoding although it is optional: parquet-go v0.32.0 answers `delta is an invalid parquet tag` for a pointer
+field, so `schema.NewTraceWriter` attaches the encoding to the schema node (the struct-derived schema with one
+field swapped; equal to the struct schema under `parquet.EqualNodes`, so the write path and the column order are
+unchanged) and flush, compaction and the delete rewrite all write through it. Measured with the matrix above
+(0 ms and 100 ms, both signals, 768 cells, one iteration each): 744 rows move, all in `s3_bytes` (GETs, row
+groups, pages and the answering path are unchanged; the 24 catalog-answer rows read 0 bytes before and after).
+Logs +0.007 % to +0.023 % (mean +0.018 %: the definition levels of one INT32 column, 17 to 385 bytes per
+cell). Traces +0.022 % to +0.068 % (mean +0.052 %: the definition levels of four optional columns; flushed and
+peer cells +0.067 %, compacted cells +0.022 %). Without the encoding, traces objects grew +6.64 % to +7.76 %
+(mean +7.05 %; `field_names`, flushed, whole: 2,288,589 to 2,442,587 bytes), measured on the same matrix.
+Only the `s3_bytes` of those rows were regenerated, by a counters-only patch (a diff of the file shows nothing
+but `s3_bytes` values); every latency budget is unchanged.
+
 ## Findings (not fixed here)
 
 1. **`field_names` is wrong on both signals.** Logs: lists all-null columns, ignores filter and

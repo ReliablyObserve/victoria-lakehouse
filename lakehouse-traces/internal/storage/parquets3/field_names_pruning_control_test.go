@@ -131,7 +131,7 @@ func rowGroupStore(t *testing.T) *Storage {
 			k := i / 10
 			ts := base.Add(time.Duration(f*40+i) * time.Second).UnixNano()
 			rows = append(rows, schema.TraceRow{
-				TimestampUnixNano: ts, StartTimeUnixNano: ts,
+				TimestampUnixNano: ts, StartTimeUnixNano: ptr(ts),
 				TraceID: ztid(f, k), SpanID: fmt.Sprintf("%016x", f*100+i), SpanName: fmt.Sprintf("op%d-%s%d", k%2, pad, i), ServiceName: []string{"alpha", "beta"}[f],
 				Stream: fmt.Sprintf(`{resource_attr:service.name=%q}`, []string{"alpha", "beta"}[f]), StreamID: fmt.Sprintf("%048x", 3+f),
 			})

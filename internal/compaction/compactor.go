@@ -716,7 +716,7 @@ func (c *Compactor) mergeLogFiles(allData [][]byte) ([]schema.LogRow, error) {
 					st = nil
 				}
 			}
-			if derived := schema.DeriveSeverityText("", merged[i].SeverityNumber, st); derived != "" {
+			if derived := schema.DeriveSeverityText("", schema.Int32Value(merged[i].SeverityNumber), st); derived != "" {
 				merged[i].SeverityText = derived
 				backfilled++
 			}
@@ -939,7 +939,7 @@ func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionL
 		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, string(idxData)))
 	}
 
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
+	writer := schema.NewTraceWriter(&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
 	}

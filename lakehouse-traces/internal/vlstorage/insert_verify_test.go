@@ -71,8 +71,8 @@ func TestVerifyTraceInsert_AllPromotedFields(t *testing.T) {
 			value:     "7654321",
 			check: func(t *testing.T, row schema.TraceRow) {
 				t.Helper()
-				if row.DurationNs != 7_654_321 {
-					t.Errorf("DurationNs = %d, want %d", row.DurationNs, 7_654_321)
+				if schema.Int64Value(row.DurationNs) != 7_654_321 {
+					t.Errorf("DurationNs = %d, want %d", schema.Int64Value(row.DurationNs), 7_654_321)
 				}
 			},
 		},
@@ -81,8 +81,8 @@ func TestVerifyTraceInsert_AllPromotedFields(t *testing.T) {
 			value:     "2",
 			check: func(t *testing.T, row schema.TraceRow) {
 				t.Helper()
-				if row.StatusCode != 2 {
-					t.Errorf("StatusCode = %d, want %d", row.StatusCode, 2)
+				if schema.Int32Value(row.StatusCode) != 2 {
+					t.Errorf("StatusCode = %d, want %d", schema.Int32Value(row.StatusCode), 2)
 				}
 			},
 		},
@@ -101,8 +101,8 @@ func TestVerifyTraceInsert_AllPromotedFields(t *testing.T) {
 			value:     "4",
 			check: func(t *testing.T, row schema.TraceRow) {
 				t.Helper()
-				if row.SpanKind != 4 {
-					t.Errorf("SpanKind = %d, want %d", row.SpanKind, 4)
+				if schema.Int32Value(row.SpanKind) != 4 {
+					t.Errorf("SpanKind = %d, want %d", schema.Int32Value(row.SpanKind), 4)
 				}
 			},
 		},
@@ -256,8 +256,8 @@ func TestVerifyTraceInsert_StartTimePreserved(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if rows[0].StartTimeUnixNano != wantNano {
-		t.Errorf("StartTimeUnixNano = %d, want %d", rows[0].StartTimeUnixNano, wantNano)
+	if schema.Int64Value(rows[0].StartTimeUnixNano) != wantNano {
+		t.Errorf("StartTimeUnixNano = %d, want %d", schema.Int64Value(rows[0].StartTimeUnixNano), wantNano)
 	}
 }
 

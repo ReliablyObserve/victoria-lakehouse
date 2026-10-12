@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 // TestSeverityText_FallsBackFromSeverityNumber pins the regression
@@ -52,8 +54,8 @@ func TestSeverityText_FallsBackFromSeverityNumber(t *testing.T) {
 			if rows[0].SeverityText != tc.wantLevel {
 				t.Errorf("SeverityText = %q, want %q", rows[0].SeverityText, tc.wantLevel)
 			}
-			if rows[0].SeverityNumber != tc.wantNumeric {
-				t.Errorf("SeverityNumber = %d, want %d", rows[0].SeverityNumber, tc.wantNumeric)
+			if schema.Int32Value(rows[0].SeverityNumber) != tc.wantNumeric || rows[0].SeverityNumber == nil {
+				t.Errorf("SeverityNumber = %v, want %d", rows[0].SeverityNumber, tc.wantNumeric)
 			}
 		})
 	}

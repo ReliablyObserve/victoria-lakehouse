@@ -25,7 +25,7 @@ func generateLogRows(n int, baseTS int64, serviceName string) []schema.LogRow {
 			Body:              fmt.Sprintf("log-%s-%d-%d", serviceName, baseTS, i),
 			ServiceName:       serviceName,
 			SeverityText:      "INFO",
-			SeverityNumber:    9,
+			SeverityNumber:    schema.Int32Ptr(9),
 			TraceID:           fmt.Sprintf("trace-%06d", i),
 			K8sNamespaceName:  "default",
 			DeployEnv:         "prod",
@@ -40,13 +40,13 @@ func generateTraceRows(n int, baseTS int64, serviceName string) []schema.TraceRo
 	for i := range rows {
 		rows[i] = schema.TraceRow{
 			TimestampUnixNano: baseTS + int64(i)*1_000_000,
-			StartTimeUnixNano: baseTS + int64(i)*1_000_000 - 500_000,
+			StartTimeUnixNano: schema.Int64Ptr(baseTS + int64(i)*1_000_000 - 500_000),
 			TraceID:           fmt.Sprintf("trace-%06d", i),
 			SpanID:            fmt.Sprintf("span-%06d", i),
 			SpanName:          fmt.Sprintf("op-%d", i%10),
 			ServiceName:       serviceName,
-			DurationNs:        int64(100_000 + i*1000),
-			StatusCode:        0,
+			DurationNs:        schema.Int64Ptr(int64(100_000 + i*1000)),
+			StatusCode:        schema.Int32Ptr(0),
 			K8sNamespaceName:  "default",
 			DeployEnv:         "prod",
 			CloudRegion:       "us-east-1",
@@ -700,7 +700,7 @@ func TestDataValidation_LogFields_AllPreserved(t *testing.T) {
 		TimestampUnixNano: 42_000_000_000,
 		Body:              "test body with special chars: éàü & <tag>",
 		SeverityText:      "ERROR",
-		SeverityNumber:    17,
+		SeverityNumber:    schema.Int32Ptr(17),
 		ServiceName:       "payment-service",
 		TraceID:           "abc123def456",
 		SpanID:            "span-789",
@@ -760,8 +760,9 @@ func TestDataValidation_LogFields_AllPreserved(t *testing.T) {
 	if found.SeverityText != original.SeverityText {
 		t.Errorf("SeverityText: got %q, want %q", found.SeverityText, original.SeverityText)
 	}
-	if found.SeverityNumber != original.SeverityNumber {
-		t.Errorf("SeverityNumber: got %d, want %d", found.SeverityNumber, original.SeverityNumber)
+	if schema.Int32Value(found.SeverityNumber) != schema.Int32Value(original.SeverityNumber) ||
+		(found.SeverityNumber == nil) != (original.SeverityNumber == nil) {
+		t.Errorf("SeverityNumber: got %v, want %v", found.SeverityNumber, original.SeverityNumber)
 	}
 	if found.ServiceName != original.ServiceName {
 		t.Errorf("ServiceName: got %q, want %q", found.ServiceName, original.ServiceName)
@@ -914,16 +915,16 @@ func TestDataValidation_TraceFields_AllPreserved(t *testing.T) {
 
 	original := schema.TraceRow{
 		TimestampUnixNano: 42_000_000_000,
-		StartTimeUnixNano: 41_999_500_000,
+		StartTimeUnixNano: schema.Int64Ptr(41_999_500_000),
 		TraceID:           "trace-unique-abc",
 		SpanID:            "span-def-123",
 		ParentSpanID:      "span-parent-456",
 		SpanName:          "POST /api/checkout",
 		ServiceName:       "payment-service",
-		DurationNs:        1_500_000,
-		StatusCode:        2,
+		DurationNs:        schema.Int64Ptr(1_500_000),
+		StatusCode:        schema.Int32Ptr(2),
 		StatusMessage:     "Internal error",
-		SpanKind:          1,
+		SpanKind:          schema.Int32Ptr(1),
 		HTTPMethod:        "POST",
 		HTTPStatusCode:    "500",
 		HTTPUrl:           "https://api.example.com/checkout",
@@ -976,8 +977,8 @@ func TestDataValidation_TraceFields_AllPreserved(t *testing.T) {
 		t.Fatal("original trace row not found in compacted output")
 	}
 
-	if found.StartTimeUnixNano != original.StartTimeUnixNano {
-		t.Errorf("StartTimeUnixNano: got %d, want %d", found.StartTimeUnixNano, original.StartTimeUnixNano)
+	if schema.Int64Value(found.StartTimeUnixNano) != schema.Int64Value(original.StartTimeUnixNano) || (found.StartTimeUnixNano == nil) != (original.StartTimeUnixNano == nil) {
+		t.Errorf("StartTimeUnixNano: got %v, want %v", found.StartTimeUnixNano, original.StartTimeUnixNano)
 	}
 	if found.SpanID != original.SpanID {
 		t.Errorf("SpanID: got %q, want %q", found.SpanID, original.SpanID)
@@ -988,17 +989,17 @@ func TestDataValidation_TraceFields_AllPreserved(t *testing.T) {
 	if found.SpanName != original.SpanName {
 		t.Errorf("SpanName: got %q, want %q", found.SpanName, original.SpanName)
 	}
-	if found.DurationNs != original.DurationNs {
-		t.Errorf("DurationNs: got %d, want %d", found.DurationNs, original.DurationNs)
+	if schema.Int64Value(found.DurationNs) != schema.Int64Value(original.DurationNs) || (found.DurationNs == nil) != (original.DurationNs == nil) {
+		t.Errorf("DurationNs: got %v, want %v", found.DurationNs, original.DurationNs)
 	}
-	if found.StatusCode != original.StatusCode {
-		t.Errorf("StatusCode: got %d, want %d", found.StatusCode, original.StatusCode)
+	if schema.Int32Value(found.StatusCode) != schema.Int32Value(original.StatusCode) || (found.StatusCode == nil) != (original.StatusCode == nil) {
+		t.Errorf("StatusCode: got %v, want %v", found.StatusCode, original.StatusCode)
 	}
 	if found.StatusMessage != original.StatusMessage {
 		t.Errorf("StatusMessage: got %q, want %q", found.StatusMessage, original.StatusMessage)
 	}
-	if found.SpanKind != original.SpanKind {
-		t.Errorf("SpanKind: got %d, want %d", found.SpanKind, original.SpanKind)
+	if schema.Int32Value(found.SpanKind) != schema.Int32Value(original.SpanKind) || (found.SpanKind == nil) != (original.SpanKind == nil) {
+		t.Errorf("SpanKind: got %v, want %v", found.SpanKind, original.SpanKind)
 	}
 	if found.HTTPMethod != original.HTTPMethod {
 		t.Errorf("HTTPMethod: got %q, want %q", found.HTTPMethod, original.HTTPMethod)

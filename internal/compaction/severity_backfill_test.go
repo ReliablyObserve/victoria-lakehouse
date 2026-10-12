@@ -84,13 +84,13 @@ func TestCompactor_BackfillsSeverityTextFromSeverityNumber(t *testing.T) {
 		{
 			TimestampUnixNano: 1_000_000_000,
 			Body:              "msg-info",
-			SeverityNumber:    9, // Info
+			SeverityNumber:    schema.Int32Ptr(9), // Info
 			Stream:            `{service.name="foo"}`,
 		},
 		{
 			TimestampUnixNano: 2_000_000_000,
 			Body:              "msg-error",
-			SeverityNumber:    17, // Error
+			SeverityNumber:    schema.Int32Ptr(17), // Error
 			Stream:            `{service.name="foo"}`,
 		},
 	}

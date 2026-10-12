@@ -176,8 +176,8 @@ func newPhraseStorage(t *testing.T, pmeta bool) (*Storage, func(), time.Time) {
 			i++
 			rows = append(rows, schema.TraceRow{
 				TimestampUnixNano: ts,
-				StartTimeUnixNano: ts,
-				DurationNs:        1000,
+				StartTimeUnixNano: schema.Int64Ptr(ts),
+				DurationNs:        schema.Int64Ptr(1000),
 				TraceID:           r.traceID,
 				SpanID:            r.id,
 				SpanName:          r.span,
