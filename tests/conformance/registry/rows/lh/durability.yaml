@@ -14,8 +14,10 @@
 # docs/durability.md names every cell (or its family) and no cell that does not
 # exist. The metric check is lexical: it stops a cell from naming a general
 # counter such as lakehouse_insert_rows_total, but it does not prove that the code
-# increments the counter on the loss. That is proved by the tests a cell cites,
-# which read the counter before and after.
+# increments the counter on the loss, and it accepts any counter whose name
+# contains "errors" (lakehouse_buffer_flush_errors_total counts failures that are
+# retried, not losses). That is proved by the tests a cell cites, which read the
+# counter before and after.
 
 - id: lh.durability.pre1970_rows_logs
   title: "Logs: a row with _time before 1970 is refused when added and counted; no acknowledged row is lost at the drain"
@@ -153,18 +155,15 @@
       - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
       - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_SameStreamTwoTenantsOneBatch
       - internal/vlstorage/insert_admission_test.go#TestFlushRowsDroppedSeries_ExportedFromStart
-      - internal/vlstorage/insert_admission_test.go#TestFlushRowsDroppedSeries_Helper
-      - internal/metrics/must_stay_zero_test.go#TestMustStayZeroSeries_ExportedFromStart
-      - internal/metrics/must_stay_zero_test.go#TestMustStayZeroSeries_Helper
-      - internal/metrics/must_stay_zero_test.go#TestBufferFlushErrorStages_MatchCallSites
       - internal/storage/epoch_test.go#TestReasonConstants_AreListedInMetrics
       - internal/storage/tenant_stream_map_test.go#TestTenantStreamMap_ZeroValue
       - internal/storage/tenant_stream_map_test.go#TestTenantStreamMap_SameHashTwoTenants
       - internal/storage/tenant_stream_map_test.go#TestTenantStreamMap_MatchesAPairKeyedMap
+      - internal/storage/tenant_stream_map_fuzz_test.go#FuzzTenantStreamMap
       - internal/vlstorage/insert_admission_test.go#TestFlushRowKeeper_CountsTheTraceShapedDrop
       - internal/storage/epoch_test.go#TestNoteCardinalityRefused_CountsEveryRow
       - scripts/ci/tests/cardinality_restart_test.sh#cardinality_limit
-  notes: "Fixes #389. The real binary is checked with a restart by scripts/ci/tests/cardinality_restart_test.sh (the code before the fix loses the acknowledged rows of stream a). Restart matrix (clean closes only): no restart, restart while the segment is active, restart after the seal, an upload failure in the middle of the drain then a restart; the fresh limiter admits other streams first. What the limiter admits is stated by a model in the test, not read back from the limiter; the rows the adapter really added to the buffer and the refusals it counted are compared to it on every request. A stream admitted before a restart can be refused after it and its new rows are counted in lakehouse_insert_rows_dropped_total{reason=\"cardinality_limit\"}: the known gap of https://github.com/ReliablyObserve/victoria-lakehouse/issues/485 The admission decision is made per tenant AND stream, so one batch that mixes tenants (/internal/insert and /insert/multitenant/native; /insert/multitenant/native in traces) refuses the tenant at its limit and admits the one with room, in either row order, and each refusal is attributed to the tenant whose limit refused it. The series that must stay 0 (lakehouse_insert_rows_dropped_total, lakehouse_buffer_flush_errors_total and the signal-specific drop counters) are exported at 0 from process start."
+  notes: "Fixes #389. The real binary is checked with a restart by scripts/ci/tests/cardinality_restart_test.sh (the code before the fix loses the acknowledged rows of stream a). Restart matrix (clean closes only): no restart, restart while the segment is active, restart after the seal, an upload failure in the middle of the drain then a restart; the fresh limiter admits other streams first. What the limiter admits is stated by a model in the test, not read back from the limiter; the rows the adapter really added to the buffer and the refusals it counted are compared to it on every request. A stream admitted before a restart can be refused after it and its new rows are counted in lakehouse_insert_rows_dropped_total{reason=\"cardinality_limit\"}: the known gap of https://github.com/ReliablyObserve/victoria-lakehouse/issues/485. The admission decision is made per tenant AND stream, so one batch that mixes tenants (/internal/insert and /insert/multitenant/native; /insert/multitenant/native in traces) refuses the tenant at its limit and admits the one with room, in either row order, and each refusal is attributed to the tenant whose limit refused it. The series that must stay 0 (lakehouse_insert_rows_dropped_total, lakehouse_buffer_flush_errors_total and the signal-specific drop counters) are exported at 0 from process start."
 
 - id: lh.durability.restart_cardinality_gate_traces
   title: "Traces: a span admitted under the tenant cardinality limit is never judged by the limit again; a restart does not drop acknowledged spans"
@@ -190,13 +189,12 @@
       - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
       - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInsertAdapter_SameStreamTwoTenantsOneBatch
       - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInternalDroppedSeries_ExportedFromStart
-      - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInternalDroppedSeries_Helper
       - lakehouse-traces/internal/vlstorage/insert_index_rows_test.go#TestVTInsertAdapter_IndexRowsRefusedForTheLimitAreCountedApart
       - scripts/ci/tests/cardinality_restart_test.sh#cardinality_limit
   notes: "Fixes #389 for the traces binary. Same restart matrix as logs. The trace_id_idx streams count against the limit too and are counted apart (lakehouse_vt_internal_rows_dropped_total{kind=\"trace_id_idx_cardinality_limit\"}). Remaining limit semantics: https://github.com/ReliablyObserve/victoria-lakehouse/issues/485. The real binary is checked with a restart by scripts/ci/tests/cardinality_restart_test.sh (the code before the fix loses the acknowledged rows). The admission decision is made per tenant AND stream, so one batch that mixes tenants (/internal/insert and /insert/multitenant/native; /insert/multitenant/native in traces) refuses the tenant at its limit and admits the one with room, in either row order, and each refusal is attributed to the tenant whose limit refused it. The series that must stay 0 (lakehouse_insert_rows_dropped_total, lakehouse_buffer_flush_errors_total and the signal-specific drop counters) are exported at 0 from process start."
 
 - id: lh.durability.drain_plan_mismatch_logs
-  title: "Logs: a segment whose rows the drain's plan does not cover is stalled, not committed; nothing is uploaded for it"
+  title: "Logs: a segment whose rows the drain's plan does not cover is stalled and not committed; no commit marker is written"
   surface: lh
   kind: durability
   origin: lh-addition
@@ -225,11 +223,21 @@
       - internal/storage/parquets3/drain_cancel_test.go#TestDrain_CancelAtEveryStepNeverMovesInvariant
       - internal/storage/parquets3/drain_healthy_property_test.go#TestDrain_HealthySegmentsAreNeverStalled
       - internal/storage/parquets3/drain_stalled_move_aside_test.go#TestDrain_MovingAStalledSegmentAside
+      - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeAfterTransientMismatchThenOutage
+      - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_PersistentGroupMismatchKeepsTheGaugeAtOne
+      - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StopLeavesTheStalledGaugeAsItWas
+      - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan
+      - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_AttemptWithoutACheckLeavesTheStalledGaugeAsItWas
+      - internal/storage/parquets3/drain_collect_once_test.go#TestDrain_CancelDuringPlanCountsCollectOnce_TwoTenants
+      - internal/storage/parquets3/drain_collect_once_test.go#TestDrain_StopMidDrainCountsCollectOnce_TwoTenants
+      - internal/metrics/must_stay_zero_test.go#TestMustStayZeroSeries_ExportedFromStart
+      - internal/metrics/must_stay_zero_test.go#TestBufferFlushErrorStages_MatchCallSites
       - internal/metrics/buffer_stalled_test.go#TestAlerts_DrainPlanMismatchAndStalledSegment
-  notes: "The runtime check that would have stopped #388: the drain compares its plan with a count of every row of every tenant over all of int64 time before the first upload, and each group's rows with the plan. A mismatch is lakehouse_buffer_flush_errors_total{stage=\"invariant\"}, an error log, lakehouse_buffer_stalled_segments = 1, and the segment stays pending; the plan is made again on every attempt, so a mismatch that does not repeat clears, and a persistent one blocks the later segments until the volume's free-space floor answers 429. A drain cut short by Stop (a cancelled context makes upstream's query return partial rows) is not a mismatch: it is counted once under stage=\"collect\" and never under invariant. A healthy segment is never stalled: a property test draws random tenants (0:0 and the largest ids among them), times at the epoch, 1 ns and second and hour edges, exact duplicates, several parts and random group sizes. Runbook: docs/durability.md."
+      - internal/metrics/buffer_stalled_test.go#TestAlerts_DrainPlanMismatchPrintsAWholeNumber
+  notes: "The runtime check that would have stopped #388: the drain compares its plan with a count of every row of every tenant over all of int64 time before the first upload, and each group's rows with the plan. A mismatch is lakehouse_buffer_flush_errors_total{stage=\"invariant\"}, an error log, lakehouse_buffer_stalled_segments = 1 while the latest attempt failed a check (written once when an attempt ends: an attempt that passes its checks sets 0 even if an upload then fails, a Stop leaves it), and the segment stays pending. The plan check uploads nothing in the attempt it stops; a group's check can fire after earlier groups were uploaded (no commit marker); the plan is made again on every attempt, so a mismatch that does not repeat clears, and a persistent one blocks the later segments until the volume's free-space floor answers 429. A drain cut short by Stop (a cancelled context makes upstream's query return partial rows) is not a mismatch: it is counted once under stage=\"collect\" and never under invariant. A healthy segment is never stalled: a property test draws random tenants (0:0 and the largest ids among them), times at the epoch, 1 ns and second and hour edges, exact duplicates, several parts and random group sizes. Runbook: docs/durability.md."
 
 - id: lh.durability.drain_plan_mismatch_traces
-  title: "Traces: a segment whose spans the drain's plan does not cover is stalled, not committed; nothing is uploaded for it"
+  title: "Traces: a segment whose spans the drain's plan does not cover is stalled and not committed; no commit marker is written"
   surface: lh
   kind: durability
   origin: lh-addition
@@ -258,6 +266,13 @@
       - lakehouse-traces/internal/storage/parquets3/drain_cancel_test.go#TestDrain_CancelAtEveryStepNeverMovesInvariant
       - lakehouse-traces/internal/storage/parquets3/drain_healthy_property_test.go#TestDrain_HealthySegmentsAreNeverStalled
       - lakehouse-traces/internal/storage/parquets3/drain_stalled_move_aside_test.go#TestDrain_MovingAStalledSegmentAside
+      - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeAfterTransientMismatchThenOutage
+      - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_PersistentGroupMismatchKeepsTheGaugeAtOne
+      - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StopLeavesTheStalledGaugeAsItWas
+      - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan
+      - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_AttemptWithoutACheckLeavesTheStalledGaugeAsItWas
+      - lakehouse-traces/internal/storage/parquets3/drain_collect_once_test.go#TestDrain_CancelDuringPlanCountsCollectOnce_TwoTenants
+      - lakehouse-traces/internal/storage/parquets3/drain_collect_once_test.go#TestDrain_StopMidDrainCountsCollectOnce_TwoTenants
   notes: "Same check in the traces binary; the property test also draws VictoriaTraces trace_id_idx rows (some stamped before the epoch) and uses the production keep filter."
 
 - id: lh.durability.kill_between_upload_and_commit_logs
