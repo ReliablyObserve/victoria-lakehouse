@@ -4,6 +4,7 @@ package parity
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -32,17 +33,60 @@ func fieldNamesHitsTypeError(body []byte) error {
 	return nil
 }
 
+// numericHitsErrors lists, for hot ("hot") and Lakehouse ("cold") in that order,
+// the answers that do not write hits as JSON numbers. An answer whose status is
+// not 200 is skipped (the status is compared elsewhere).
+func numericHitsErrors(label string, ref, sut fetchResult) []string {
+	var out []string
+	for _, who := range []struct {
+		name string
+		r    fetchResult
+	}{{"hot", ref}, {"cold", sut}} {
+		if who.r.StatusCode != 200 {
+			continue
+		}
+		if err := fieldNamesHitsTypeError(who.r.Body); err != nil {
+			out = append(out, fmt.Sprintf("%s: %s answer: %v", label, who.name, err))
+		}
+	}
+	return out
+}
+
 // requireNumericHits fails unless hot's and Lakehouse's answers both write
 // hits as JSON numbers.
 func requireNumericHits(t *testing.T, label string, ref, sut fetchResult) {
 	t.Helper()
-	for who, r := range map[string]fetchResult{"hot": ref, "cold": sut} {
-		if r.StatusCode != 200 {
-			continue // the status is compared elsewhere
+	for _, msg := range numericHitsErrors(label, ref, sut) {
+		t.Error(msg)
+	}
+}
+
+func TestNumericHitsErrors(t *testing.T) {
+	ok := fetchResult{StatusCode: 200, Body: []byte(`{"values":[{"value":"a","hits":3}]}`)}
+	str := fetchResult{StatusCode: 200, Body: []byte(`{"values":[{"value":"a","hits":"3"}]}`)}
+	bad := fetchResult{StatusCode: 500, Body: []byte(`oops`)}
+	for name, tc := range map[string]struct {
+		ref, sut fetchResult
+		want     []string
+	}{
+		"both numbers":                          {ok, ok, nil},
+		"cold writes strings":                   {ok, str, []string{"x: cold answer"}},
+		"hot writes strings":                    {str, ok, []string{"x: hot answer"}},
+		"both write strings":                    {str, str, []string{"x: hot answer", "x: cold answer"}},
+		"a failed status is compared elsewhere": {bad, ok, nil},
+		"a failed cold status is skipped":       {ok, bad, nil},
+	} {
+		got := numericHitsErrors("x", tc.ref, tc.sut)
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: %d errors %q, want %d", name, len(got), got, len(tc.want))
+			continue
 		}
-		if err := fieldNamesHitsTypeError(r.Body); err != nil {
-			t.Errorf("%s: %s answer: %v", label, who, err)
+		for i, w := range tc.want {
+			if !strings.HasPrefix(got[i], w) {
+				t.Errorf("%s: error %d = %q, want prefix %q", name, i, got[i], w)
+			}
 		}
+		reportLockCells(t, 1) // one cell per case (floor in lock_cells.txt)
 	}
 }
 

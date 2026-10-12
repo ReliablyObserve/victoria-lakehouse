@@ -16,20 +16,42 @@ import (
 	"time"
 )
 
+// forceMergeStartWait bounds how long forceMergeHot waits for the merge it asked
+// for to begin.
+const forceMergeStartWait = 10 * time.Second
+
 // forceMergeHot merges the parts of the partition of at on the hot instance and
-// returns once the merge is done: the endpoint answers at once and merges in the
-// background, so the instance's active-merges gauge is polled until it has been
-// zero twice in a row.
+// returns once the merge is done. The endpoint answers at once and merges in a
+// goroutine that raises the instance's active-merges gauge only when it runs, so
+// the wait has two phases: first (bounded by forceMergeStartWait) until the merge
+// is seen to have begun, that is the gauge is above zero or the instance's part
+// count changed, then until the gauge has been zero twice in a row. A merge that
+// never shows (no gauge, no change in the parts for the whole bound) is a hot
+// instance with nothing to merge, which is logged; a merge that does not finish
+// in 2 minutes fails the test.
 func forceMergeHot(t *testing.T, hot, mode string, at time.Time) {
 	t.Helper()
-	gauge := "vl_active_force_merges"
+	prefix := "vl"
 	if mode == "traces" {
-		gauge = "vt_active_force_merges"
+		prefix = "vt"
 	}
+	gauge := prefix + "_active_force_merges"
 	post(t, hot+"/internal/force_flush", "text/plain", nil, http.Header{})
+	partsBefore := hotPartCount(t, hot, prefix) // after the flush: the parts the merge starts from
 	post(t, hot+"/internal/force_merge?partition_prefix="+at.UTC().Format("20060102"), "text/plain", nil, http.Header{})
+
+	started := false
+	for deadline := time.Now().Add(forceMergeStartWait); !started && time.Now().Before(deadline); {
+		started = hotGaugeValue(t, hot, gauge) > 0 || hotPartCount(t, hot, prefix) != partsBefore
+		if !started {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if !started {
+		t.Logf("forceMergeHot(%s): no merge began within %s (parts %.0f before and after): hot had nothing to merge", hot, forceMergeStartWait, partsBefore)
+	}
+
 	deadline := time.Now().Add(2 * time.Minute)
-	time.Sleep(500 * time.Millisecond) // the gauge is raised by the merge goroutine, not by the request
 	for idle := 0; idle < 2; {
 		if time.Now().After(deadline) {
 			t.Fatalf("%s: the forced merge on %s did not finish in 2 minutes", gauge, hot)
@@ -43,8 +65,8 @@ func forceMergeHot(t *testing.T, hot, mode string, at time.Time) {
 	}
 }
 
-// hotGaugeValue reads one unlabelled metric from the instance's /metrics.
-func hotGaugeValue(t *testing.T, base, name string) float64 {
+// hotMetrics reads the instance's /metrics.
+func hotMetrics(t *testing.T, base string) []string {
 	t.Helper()
 	resp, err := httpClient.Get(base + "/metrics")
 	if err != nil {
@@ -55,7 +77,40 @@ func hotGaugeValue(t *testing.T, base, name string) float64 {
 	if err != nil {
 		t.Fatalf("read %s/metrics: %v", base, err)
 	}
-	for _, line := range strings.Split(string(body), "\n") {
+	return strings.Split(string(body), "\n")
+}
+
+// hotPartCount is the number of storage parts the instance holds (the sum of
+// <prefix>_storage_parts over its types), or -1 when it exposes none.
+func hotPartCount(t *testing.T, base, prefix string) float64 {
+	t.Helper()
+	total, found := 0.0, false
+	for _, line := range hotMetrics(t, base) {
+		rest, ok := strings.CutPrefix(line, prefix+"_storage_parts{")
+		if !ok {
+			continue
+		}
+		i := strings.LastIndex(rest, " ")
+		if i < 0 {
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(rest[i+1:]), 64)
+		if err != nil {
+			t.Fatalf("metric %s_storage_parts: %q: %v", prefix, line, err)
+		}
+		total += v
+		found = true
+	}
+	if !found {
+		return -1
+	}
+	return total
+}
+
+// hotGaugeValue reads one unlabelled metric from the instance's /metrics.
+func hotGaugeValue(t *testing.T, base, name string) float64 {
+	t.Helper()
+	for _, line := range hotMetrics(t, base) {
 		if rest, ok := strings.CutPrefix(line, name+" "); ok {
 			v, err := strconv.ParseFloat(strings.TrimSpace(rest), 64)
 			if err != nil {

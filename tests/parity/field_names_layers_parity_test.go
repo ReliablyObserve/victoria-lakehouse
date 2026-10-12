@@ -26,6 +26,13 @@ package parity
 // field: a filter selects rows, not the blocks whose columns the answer lists
 // (a block, an object or a row group with no matching row still lists its
 // columns for the stream; issue 480, review of PR 487).
+//
+// The last layer (buffer_over_objects) leaves one more batch of that stream in
+// the insert buffer, carrying a field (onlyb) the objects lack, while the earlier
+// batches are objects that carry one (onlya) the batch lacks: the stream is split
+// across the buffer and the objects, hot is force-merged, and the filters that
+// select only the buffered rows, only the objects' rows and everything must give
+// hot's answers (the buffer and the objects are one block per stream-day).
 
 import (
 	"bytes"
@@ -133,6 +140,12 @@ type fnLayer struct {
 	name    string
 	prepare func(t *testing.T, c *fnFixture) int
 	prove   func(t *testing.T, c *fnFixture, f tenantForm)
+	// only, when set, restricts the layer to the cases of these names.
+	only []string
+	// provedOnce skips the proof after the compares: the layer's state (rows in
+	// the insert buffer) may change under the compares, and the answer must not
+	// (the buffer and the objects are unioned per stream-day).
+	provedOnce bool
 }
 
 // fnFixture is one signal's fixture; every tenant form writes and reads its
@@ -148,8 +161,11 @@ type fnFixture struct {
 	write          func(t *testing.T, c *fnFixture, batch int)
 	restart        []string
 	startedAt      time.Time
-	rowsPer        int // rows one batch writes per tenant form
-	restartBatches int // batches the restart layer wrote (retries add one each)
+	rowsPer        int      // rows one batch writes per tenant form
+	restartBatches int      // batches the restart layer wrote (retries add one each)
+	splitBatch     int      // the batch the last layer keeps in the insert buffer, the only one that also carries onlyb
+	splitCases     []string // the cases of the last layer: those that tell the buffer's columns from the objects'
+
 	// afterWrite runs once after a layer that wrote data has been brought into
 	// its state and before the cases are compared (hot is asked to merge there,
 	// not in write: the restart layer restarts the service right after a write,
@@ -170,25 +186,25 @@ func runFnLayers(t *testing.T, c *fnFixture) {
 		}
 	}
 	layers := []fnLayer{
-		{"buffer",
-			func(t *testing.T, c *fnFixture) int { c.write(t, c, 0); buffered(t, c.rowsPer); return c.rowsPer },
-			func(t *testing.T, c *fnFixture, f tenantForm) {
+		{name: "buffer",
+			prepare: func(t *testing.T, c *fnFixture) int { c.write(t, c, 0); buffered(t, c.rowsPer); return c.rowsPer },
+			prove: func(t *testing.T, c *fnFixture, f tenantForm) {
 				requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, c.rowsPer)
 			}},
-		{"parquet",
-			func(t *testing.T, c *fnFixture) int { leftBuffer(t); return c.rowsPer },
-			func(t *testing.T, c *fnFixture, f tenantForm) {
+		{name: "parquet",
+			prepare: func(t *testing.T, c *fnFixture) int { leftBuffer(t); return c.rowsPer },
+			prove: func(t *testing.T, c *fnFixture, f tenantForm) {
 				requireFlushedOnly(t, c.cold, c.mode, f.account, c.at, c.from, c.to)
 			}},
-		{"compacted",
-			func(t *testing.T, c *fnFixture) int {
+		{name: "compacted",
+			prepare: func(t *testing.T, c *fnFixture) int {
 				c.write(t, c, 1)
 				buffered(t, c.rowsPer)
 				leftBuffer(t)
 				recompactHourPartition(t, c.cold, c.at, 2*len(c.forms))
 				return 2 * c.rowsPer
 			},
-			func(t *testing.T, c *fnFixture, f tenantForm) {
+			prove: func(t *testing.T, c *fnFixture, f tenantForm) {
 				requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, 0)
 				requireCompactedOnce(t, c.mode, f.account, c.at)
 			}},
@@ -199,8 +215,8 @@ func runFnLayers(t *testing.T, c *fnFixture) {
 		// new StartedAt. If the periodic flush still won the race the attempt is
 		// repeated with another batch, at most restartAttempts times in all (the
 		// same helpers and bounds as TestParity_AllColumnSortTieOrder).
-		{"restart",
-			func(t *testing.T, c *fnFixture) int {
+		{name: "restart",
+			prepare: func(t *testing.T, c *fnFixture) int {
 				for attempt := 1; attempt <= restartAttempts; attempt++ {
 					for _, f := range c.forms {
 						waitFlushIdle(t, c.cold, c.mode, f.account, c.from, c.to)
@@ -228,12 +244,36 @@ func runFnLayers(t *testing.T, c *fnFixture) {
 				t.Fatalf("the periodic flush won the race in all %d restart attempts", restartAttempts)
 				return 0
 			},
-			func(t *testing.T, c *fnFixture, f tenantForm) {
+			prove: func(t *testing.T, c *fnFixture, f tenantForm) {
 				requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, 0)
 				if why := recoveredSegmentFlushed(t, c.mode, f.account, c.at, c.startedAt, c.restartBatches); why != "" {
 					t.Fatalf("layer proof: %s", why)
 				}
 			}},
+		// One more batch stays in the insert buffer while every earlier batch is an
+		// object: the stream is split across the buffer and the objects, and the
+		// batch in the buffer carries a field (onlyb) the objects lack while the
+		// objects carry one (onlya) the batch lacks. Hot is force-merged, so its
+		// stream is one block, and Lakehouse must answer the same whichever layer
+		// holds a row: the filters select the buffer's rows only, the objects' rows
+		// only, and everything. A periodic flush that moves the batch into an
+		// object while the cases run must not change an answer either.
+		{name: "buffer_over_objects",
+			prepare: func(t *testing.T, c *fnFixture) int {
+				for _, f := range c.forms {
+					waitFlushIdle(t, c.cold, c.mode, f.account, c.from, c.to)
+				}
+				c.splitBatch = 2 + c.restartBatches
+				c.write(t, c, c.splitBatch)
+				for _, f := range c.forms {
+					waitBuffered(t, c.cold, c.mode, f.account, c.from, c.to, c.rowsPer)
+				}
+				return (3 + c.restartBatches) * c.rowsPer
+			},
+			prove: func(t *testing.T, c *fnFixture, f tenantForm) {
+				requireBuffered(t, c.cold, c.mode, f.account, c.from, c.to, c.rowsPer)
+			},
+			only: c.splitCases, provedOnce: true},
 	}
 	for _, l := range layers {
 		t.Run(l.name, func(t *testing.T) {
@@ -242,13 +282,29 @@ func runFnLayers(t *testing.T, c *fnFixture) {
 				c.afterWrite(t)
 				c.written = false
 			}
+			cases := c.cases
+			if len(l.only) > 0 {
+				cases = nil
+				for _, fc := range c.cases {
+					for _, name := range l.only {
+						if fc.name == name {
+							cases = append(cases, fc)
+						}
+					}
+				}
+				if len(cases) != len(l.only) {
+					t.Fatalf("layer %s: %d of its %d cases are defined", l.name, len(cases), len(l.only))
+				}
+			}
 			for _, f := range c.forms {
 				t.Run(f.name, func(t *testing.T) {
 					l.prove(t, c, f)
 					waitRowsVisible(t, c.hot, false, f, c.filter, c.from, c.to, rows)
 					waitRowsVisible(t, c.cold, true, f, c.filter, c.from, c.to, rows)
-					runFnCases(t, c.hot, c.cold, f, c.from, c.to, c.filter, c.cases)
-					l.prove(t, c, f)
+					runFnCases(t, c.hot, c.cold, f, c.from, c.to, c.filter, cases)
+					if !l.provedOnce {
+						l.prove(t, c, f)
+					}
 				})
 			}
 		})
@@ -267,8 +323,9 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 		q := "@F"
 		var base []fnCase
 		c := &fnFixture{hot: vlBaseURL, cold: lhBaseURL, mode: "logs", at: at, from: from, to: to, filter: "_msg:=" + token, rowsPer: 10,
-			forms:   []tenantForm{numericTenant(fvEmptyLogsAccount), aliasTenant(allColumnSortLogsAliasAccount, parityLogsOrgID)},
-			restart: []string{"lakehouse-logs"}}
+			forms:      []tenantForm{numericTenant(fvEmptyLogsAccount), aliasTenant(allColumnSortLogsAliasAccount, parityLogsOrgID)},
+			restart:    []string{"lakehouse-logs"},
+			splitCases: []string{"field_names", "field_names_rows_with_the_field", "field_names_rows_of_the_newest_batch_only"}}
 		c.write = func(t *testing.T, c *fnFixture, batch int) {
 			// Two streams (app, ns). The ax stream has a field only some of its rows
 			// carry (lk, sparse), a field only it has (only_ax) and a field set to
@@ -307,6 +364,9 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 				r := map[string]string{"app": "az", "ns": "n3", "part": part, "gen": fmt.Sprintf("g%d", batch)}
 				if withField {
 					r["onlya"] = "a"
+				}
+				if batch == c.splitBatch && batch > 0 {
+					r["onlyb"] = "b" // the batch the last layer keeps in the insert buffer
 				}
 				return r
 			}
@@ -359,8 +419,9 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 		q := "@F"
 		var base []fnCase
 		c := &fnFixture{hot: vtBaseURL, cold: lhtBaseURL, mode: "traces", at: at, from: from, to: to, rowsPer: len(spans) + 4,
-			forms:   []tenantForm{numericTenant(fvEmptyTracesAccount), aliasTenant(parityTracesAccount, parityTracesOrgID)},
-			restart: []string{"lakehouse-traces"}}
+			forms:      []tenantForm{numericTenant(fvEmptyTracesAccount), aliasTenant(parityTracesAccount, parityTracesOrgID)},
+			restart:    []string{"lakehouse-traces"},
+			splitCases: []string{"field_names", "field_names_spans_with_the_attribute", "field_names_spans_of_the_newest_batch_only"}}
 		c.write = func(t *testing.T, c *fnFixture, batch int) {
 			// One request per batch and target for the op and op2 streams: upstream
 			// credits a field with the rows of the blocks that list it, and the rows of
@@ -393,6 +454,9 @@ func TestParity_FieldNames_Layers(t *testing.T) {
 				attrs := map[string]string{"part": part, "gen": fmt.Sprintf("g%d", batch)}
 				if withField {
 					attrs["onlya"] = "a"
+				}
+				if batch == c.splitBatch && batch > 0 {
+					attrs["onlyb"] = "b" // the batch the last layer keeps in the insert buffer
 				}
 				return fnOTLPSpan{traceID: id, spanID: fmt.Sprintf("%016x", 0x100+batch*10+i), name: "op3",
 					service: fmt.Sprintf("fn-svc-%d", stamp), spanAttrs: attrs, at: at.Add(time.Duration(batch*10+6+i) * time.Second)}
