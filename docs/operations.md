@@ -910,9 +910,12 @@ own names such as `span_attr:*`, never a Parquet column name), credited with the
 blocks that list it. On the traces binary the spans an insert peer serves carry the promoted attributes under their
 Parquet names too (`service.name` next to `resource_attr:service.name`, `http.method` next to `span_attr:http.method`) so a
 filter spelling either matches. The aliases are no field of a span on hot (a filter on `service.name` matches no span
-there), so the enumeration asks the buffer bridge for VictoriaTraces' names only and never lists them for a peer's spans
-([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504)); a row query, `field_values` and `streams` still
-see the aliases. The Parquet footers cannot give that answer: they know
+there), so every `field_names` read (the plain-filter path and the pipe and subquery paths of a `field_names` call alike:
+the rule keys on the read being a `field_names` enumeration) asks the buffer bridge for VictoriaTraces' names only and never
+lists them for a peer's spans ([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504), the `field_names`
+part; the row-level part is not fixed: a row query, `field_values` and `streams` still see the aliases on a peer's spans).
+The objects still honour a Parquet-dialect filter in a `field_names` call
+([#505](https://github.com/ReliablyObserve/victoria-lakehouse/issues/505)). The Parquet footers cannot give that answer: they know
 the columns of an object, not the
 fields of its rows or the streams. `stream_field_names` is the tags of the matching streams, each credited with
 the rows of the streams that carry it, the walk `stream_field_values` does.

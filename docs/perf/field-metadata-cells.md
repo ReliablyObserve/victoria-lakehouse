@@ -40,8 +40,13 @@ level / `warmup` span only in 10:00–10:10); hour 11:00 is busy (150 distinct s
 **Cells** (per signal): endpoint (logs: `field_values level`, `field_values service.name`,
 `streams`, `field_names`; traces: `field_values name`, `field_values resource_attr:service.name`,
 `streams`, `field_names`) × pmeta {on, off} × layout × window × filter {none,
-`service.name:="svc-a"` (traces: `"resource_attr:service.name":="svc-a"`, the field a span has on VictoriaTraces)} ×
-S3 latency {0, 100 ms} = 384 cells per signal.
+`service.name:="svc-a"`} × S3 latency {0, 100 ms} = 384 cells per signal. The traces `field_names` cells spell the filter
+as hot VictoriaTraces knows it, `"resource_attr:service.name":="svc-a"` (the field a span has there; the alias rule changes
+that endpoint's answer only). The traces `field_values` and `streams` cells keep `service.name:="svc-a"`, which the
+objects honour as a filter convenience and hot VictoriaTraces does not match
+([#505](https://github.com/ReliablyObserve/victoria-lakehouse/issues/505)): their exactness is Lakehouse's own filter
+behaviour against the generator's truth, not equality with hot. Hot-spelled `field_values` and `streams` cells would be new
+rows (an extension that needs owner review) and are not added.
 
 | layout | what it is |
 |---|---|
