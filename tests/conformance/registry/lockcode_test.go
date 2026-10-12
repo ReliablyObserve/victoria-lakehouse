@@ -588,6 +588,8 @@ func TestLoadTimeKey_ResolvesWhatADeclarationMeans(t *testing.T) {
 	mk := func(vars string) tree {
 		tr := parityTree()
 		tr["tests/parity/vars.go"] = vars
+		// a repository package whose clause (schema) is not the last element of its path
+		tr["tests/realpkg/r.go"] = "package schema\n\nfunc Estimate(int) int { return 1 }\n"
 		return tr
 	}
 	cases := []struct {
@@ -612,6 +614,11 @@ func TestLoadTimeKey_ResolvesWhatADeclarationMeans(t *testing.T) {
 		{"alias swap with no alias: the package CLAUSE of a repository package is chosen by the author", bare, func(tr tree) {
 			tr["tests/parity/vars.go"] = "package parity\n"
 			tr["tests/evilpkg/x.go"] = "package schema\n\nfunc Estimate(int) int { return 0 }\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/tests/evilpkg\"\n\nvar fixed = schema.Estimate(1)\n"
+		}, 1, "fixed = schema.Estimate(1)"},
+		{"two repository packages that both declare `package schema` are not the same package (the last path element names neither)", "package parity\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/tests/realpkg\"\n\nvar fixed = schema.Estimate(1)\n", func(tr tree) {
+			tr["tests/evilpkg/e.go"] = "package schema\n\nfunc Estimate(int) int { return 0 }\n"
+			tr["tests/parity/vars.go"] = "package parity\n"
 			tr["tests/parity/moved.go"] = "package parity\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/tests/evilpkg\"\n\nvar fixed = schema.Estimate(1)\n"
 		}, 1, "fixed = schema.Estimate(1)"},
 		{"the same import path under another alias is a different spelling and is refused", real, func(tr tree) {

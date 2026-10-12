@@ -139,6 +139,7 @@
     - tests/conformance/registry/lockcode_test.go#TestLockCodeChanges
     - tests/conformance/registry/lockcode_test.go#TestLockCodeChanges_ProductLockPackage
     - tests/conformance/registry/lockcode_test.go#TestLockTestRefs_OnlyExactRowsAndTestFiles
+    - tests/conformance/cmd/testlinks/main_test.go#TestWriteReportKeepsAPathWithColonWhole
     - tests/conformance/registry/lockcode_test.go#TestLoadTimeKey_ResolvesWhatADeclarationMeans
     - tests/conformance/registry/lockcode_test.go#TestFileNameConstraint
     - tests/conformance/registry/lockcode_test.go#TestSymlinkProblems

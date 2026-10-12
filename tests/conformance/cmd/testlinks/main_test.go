@@ -4,8 +4,11 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/registry"
 )
 
 // A tool error can carry a path the author chose (`x\n::warning title=...::PASS`). It must reach the
@@ -33,5 +36,23 @@ func TestToolErrIsLogSafe(t *testing.T) {
 	}
 	if !strings.HasPrefix(text, "testlinks: registry summary: ") || !strings.Contains(text, `\u000a::warning`) {
 		t.Errorf("unexpected rendering %q", text)
+	}
+}
+
+// A path that holds ": " (git allows it) must reach the report whole, with its reason apart.
+func TestWriteReportKeepsAPathWithColonWhole(t *testing.T) {
+	dir := t.TempDir()
+	rules := []*rule{{id: "Rule 3", title: "t", note: "n"}}
+	lock := []registry.LockChange{{Path: "tests/parity/a: b.go", Reason: "an existing file of a package that holds a lock test"}}
+	if err := writeReport(dir, rules, lock, "summary\n"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "details.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "- `tests/parity/a: b.go`: an existing file of a package that holds a lock test"
+	if !strings.Contains(string(raw), want) {
+		t.Errorf("details.md lacks %q:\n%s", want, raw)
 	}
 }

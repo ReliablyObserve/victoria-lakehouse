@@ -1469,6 +1469,13 @@ move_and_change() { alias_base; printf 'package parity\n' > tests/parity/est.go;
 run_case "m_pure_move: a pure move with identical imports is listed, not failed" ok "tests/parity/est_moved.go" alias_pure_move
 run_case "m_alias_swap: the same declaration under an alias for another package is an addition" fail "tests/parity/est_moved.go: adds package-level var whose initializer calls a function: fixed = schema.Estimate(1)" alias_swap
 run_case "m_noalias_clause: an unaliased import whose package clause is chosen by the author is an addition" fail "tests/parity/est_moved.go: adds package-level var" alias_noalias_clause
+alias_same_clause() {
+  mkdir -p tests/realpkg; printf 'package schema\n\nfunc Estimate(int) int { return 1 }\n' > tests/realpkg/r.go
+  printf 'package parity\n\nimport "x/tests/realpkg"\n\nvar fixed = schema.Estimate(1)\n' > tests/parity/est.go; rebase_here
+  mkdir -p tests/evilpkg; printf 'package schema\n\nfunc Estimate(int) int { return 0 }\n' > tests/evilpkg/e.go
+  printf 'package parity\n' > tests/parity/est.go; printf 'package parity\n\nimport "x/tests/evilpkg"\n\nvar fixed = schema.Estimate(1)\n' > tests/parity/est_moved.go
+}
+run_case "m_same_clause: two repository packages that both declare package schema are different packages" fail "tests/parity/est_moved.go: adds package-level var" alias_same_clause
 run_case "m_literal_whitespace: white space inside a string literal is not collapsed" fail "tests/parity/lit_moved.go: adds package-level var" literal_whitespace
 run_case "m_constraint_change: a move into a file with a build constraint is an addition" fail "tests/parity/est_moved.go: adds package-level var" constraint_change
 run_case "m_move_changed: a move that also changes the initializer is an addition" fail "fixed = schema.Estimate(2)" move_and_change
