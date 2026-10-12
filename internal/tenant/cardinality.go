@@ -103,8 +103,10 @@ func (l *CardinalityLimiter) AllowField(accountID, projectID uint32, field strin
 }
 
 // Rejected returns the cumulative count of rejected AllowStream +
-// AllowField calls since process start. Surfaced via the metrics
-// package for operator dashboards.
+// AllowField calls since process start. It counts decisions, not rows (the
+// insert path asks once per stream of a batch), and it is not exported as a
+// metric: the rows refused for the limit are counted per row in
+// lakehouse_insert_rows_dropped_total{reason="cardinality_limit"}.
 func (l *CardinalityLimiter) Rejected() int64 {
 	if l == nil {
 		return 0

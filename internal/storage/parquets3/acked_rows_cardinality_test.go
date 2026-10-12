@@ -11,6 +11,8 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
@@ -21,51 +23,121 @@ import (
 // had been admitted and acknowledged. The drain keeps only the stateless
 // filters. The matrix below acknowledges rows under one limiter, restarts at
 // every point of the life of a segment, lets a fresh limiter admit other
-// streams first, and requires every acknowledged row in Parquet exactly once.
+// streams first, and requires every acknowledged row in Parquet exactly once and
+// every refused row absent from it.
+//
+// What a stream's limit is, is stated by the tests themselves in limitModel (a
+// tenant admits its first N distinct streams, per process), not read back from
+// the limiter under test: the rows the insert adapter really added to the buffer
+// and the rows it counted as refused are compared to the model after every
+// request, so an adapter that admits too much or too little is caught there.
 
-// limitedPolicy gives tenant 1:2 room for one stream and 2:3 room for two.
-func limitedPolicy(t *testing.T) *tenant.PolicyRegistry {
+const cardinalityLimit = storage.ReasonCardinalityLimit
+
+// limits are the cardinality.max_streams overrides of the tests; a tenant
+// without an entry has no limit.
+var ackLimits = map[logstorage.TenantID]int{segTenantA: 1, segTenantB: 2}
+
+func policyFor(t *testing.T, limits map[logstorage.TenantID]int) *tenant.PolicyRegistry {
 	t.Helper()
-	p, err := tenant.NewPolicyRegistry(map[string]config.TenantOverride{
-		"1:2": {Cardinality: config.TenantCardinalityOverride{MaxStreams: 1}},
-		"2:3": {Cardinality: config.TenantCardinalityOverride{MaxStreams: 2}},
-	}, nil)
+	ov := map[string]config.TenantOverride{}
+	for tn, n := range limits {
+		ov[fmt.Sprintf("%d:%d", tn.AccountID, tn.ProjectID)] = config.TenantOverride{Cardinality: config.TenantCardinalityOverride{MaxStreams: n}}
+	}
+	p, err := tenant.NewPolicyRegistry(ov, nil)
 	if err != nil {
 		t.Fatalf("policy: %v", err)
 	}
 	return p
 }
 
-// ingestApp sends n rows of stream {app=<app>} of tenant through the insert
-// adapter, whose gate is lim. It returns the _msg of the rows the adapter
-// admitted (acknowledged into the buffer): none if the stream is over the
-// tenant's limit.
-func (e *segEnv) ingestApp(lim *tenant.CardinalityLimiter, tn logstorage.TenantID, app string, ts time.Time, n int) []string {
+// limitModel is the test's own statement of the rule: within one process, a
+// tenant with a limit of N admits the first N distinct streams it is sent and
+// refuses every row of any other stream; a tenant without a limit admits all. A
+// restart forgets the streams.
+type limitModel struct {
+	limits map[logstorage.TenantID]int
+	seen   map[logstorage.TenantID]map[string]bool
+}
+
+func newLimitModel(limits map[logstorage.TenantID]int) *limitModel {
+	m := &limitModel{limits: limits}
+	m.restart()
+	return m
+}
+
+func (m *limitModel) restart() { m.seen = map[logstorage.TenantID]map[string]bool{} }
+
+// admits records that stream app of tn was sent and says whether its rows are
+// admitted.
+func (m *limitModel) admits(tn logstorage.TenantID, app string) bool {
+	n := m.limits[tn]
+	if n <= 0 {
+		return true
+	}
+	if m.seen[tn] == nil {
+		m.seen[tn] = map[string]bool{}
+	}
+	if m.seen[tn][app] {
+		return true
+	}
+	if len(m.seen[tn]) >= n {
+		return false
+	}
+	m.seen[tn][app] = true
+	return true
+}
+
+// ackSet is the outcome of requests as the model predicts and the buffer
+// confirms: the rows that were acknowledged into the buffer and the rows that
+// were refused (answered as a success and not stored).
+type ackSet struct{ acked, refused []string }
+
+func (a *ackSet) add(o ackSet) {
+	a.acked = append(a.acked, o.acked...)
+	a.refused = append(a.refused, o.refused...)
+}
+
+// ingestApp sends n rows of stream <app> of tenant tn through the insert adapter
+// of the binary, whose gate is the process's limiter. It checks what the adapter
+// did against the model m: the rows in the active segment and the refusal
+// counter must move by n in the way the model says, and then returns the rows as
+// acknowledged or refused.
+func (e *segEnv) ingestApp(m *limitModel, tn logstorage.TenantID, app string, ts time.Time, n int) ackSet {
 	e.t.Helper()
 	rows := make([]adapterRow, 0, n)
 	var msgs []string
 	for i := 0; i < n; i++ {
 		msg := fmt.Sprintf("%s-%d-%d", app, tn.AccountID, e.seq.Add(1))
-		rows = append(rows, adapterRow{ts: ts.Add(time.Duration(i) * time.Millisecond).UnixNano(), fields: []logstorage.Field{
-			{Name: "app", Value: app}, {Name: "_msg", Value: msg},
-		}})
+		rows = append(rows, adapterRow{ts: ts.Add(time.Duration(i) * time.Millisecond).UnixNano(), fields: ackFields(app, msg)})
 		msgs = append(msgs, msg)
 	}
-	e.sendViaAdapter(tn, "app", rows)
-	// The adapter admitted the stream iff the limiter knows it now: asking again
-	// admits a stream with room and refuses one without, as it did.
-	if !lim.AllowStream(tn.AccountID, tn.ProjectID, fmt.Sprintf(`{app=%q}`, app)) {
-		return nil
+	admit := m.admits(tn, app)
+	rows0, refused0 := e.segs.Active().Rows(), metrics.InsertRowsDropped.Get(cardinalityLimit)
+	e.sendViaAdapter(tn, rows)
+	gotRows := e.segs.Active().Rows() - rows0
+	gotRefused := metrics.InsertRowsDropped.Get(cardinalityLimit) - refused0
+	switch {
+	case admit && (gotRows != int64(n) || gotRefused != 0):
+		e.t.Fatalf("stream %s of tenant %d:%d: the rule admits it, but the buffer took %d of %d rows and %d were counted as refused",
+			app, tn.AccountID, tn.ProjectID, gotRows, n, gotRefused)
+	case !admit && (gotRows != 0 || gotRefused != uint64(n)):
+		e.t.Fatalf("stream %s of tenant %d:%d: the rule refuses it, but the buffer took %d of %d rows and %d were counted as refused",
+			app, tn.AccountID, tn.ProjectID, gotRows, n, gotRefused)
 	}
-	return msgs
+	if admit {
+		return ackSet{acked: msgs}
+	}
+	return ackSet{refused: msgs}
 }
 
-// mustStoreAll fails unless every message in acked is stored exactly once.
-func (e *segEnv) mustStoreAll(acked []string, when string) {
+// mustStoreAll fails unless every acknowledged row is stored exactly once and no
+// refused row is stored at all.
+func (e *segEnv) mustStoreAll(a ackSet, when string) {
 	e.t.Helper()
 	got := e.storedMsgs()
-	var missing, dup []string
-	for _, m := range acked {
+	var missing, dup, leaked []string
+	for _, m := range a.acked {
 		switch c := got[m]; {
 		case c == 0:
 			missing = append(missing, m)
@@ -73,10 +145,15 @@ func (e *segEnv) mustStoreAll(acked []string, when string) {
 			dup = append(dup, m)
 		}
 	}
-	if len(missing)+len(dup) > 0 {
+	for _, m := range a.refused {
+		if got[m] > 0 {
+			leaked = append(leaked, m)
+		}
+	}
+	if len(missing)+len(dup)+len(leaked) > 0 {
 		sort.Strings(missing)
-		e.t.Fatalf("%s: %d acknowledged rows, %d stored; missing %d %v; duplicated %v (pending segments: %d)",
-			when, len(acked), len(got), len(missing), head(missing, 5), head(dup, 5), len(e.segs.Pending()))
+		e.t.Fatalf("%s: %d acknowledged rows, %d stored; missing %d %v; duplicated %v; refused rows stored: %d %v (pending segments: %d)",
+			when, len(a.acked), len(got), len(missing), head(missing, 5), head(dup, 5), len(leaked), head(leaked, 5), len(e.segs.Pending()))
 	}
 	if n := len(e.segs.Pending()); n != 0 {
 		e.t.Fatalf("%s: %d segments still pending", when, n)
@@ -85,11 +162,9 @@ func (e *segEnv) mustStoreAll(acked []string, when string) {
 
 // useLimiter installs a fresh limiter as the process's gate, the way a restarted
 // process has one, and makes the flusher use the process's flush filter.
-func (e *segEnv) useLimiter(p *tenant.PolicyRegistry) *tenant.CardinalityLimiter {
-	l := tenant.NewCardinalityLimiter(p)
-	vlstorage.SetCardinalityGate(l)
+func (e *segEnv) useLimiter(p *tenant.PolicyRegistry) {
+	vlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(p))
 	e.keep = FlushRowFilter(vlstorage.FlushRowKeeper())
-	return l
 }
 
 // The reproduction of #389 as a matrix over where the restart falls.
@@ -110,7 +185,10 @@ func TestAckedRows_NotRejudgedByAFreshCardinalityLimiter(t *testing.T) {
 			e.seal()
 			e.restart()
 		}},
-		{"crash in the middle of the drain", true, func(e *segEnv) {
+		// Every restart in this test is a clean close of the buffer (the segment
+		// tests call Segments.Close), so this is an upload failure in the middle
+		// of a drain followed by a clean restart, not a crash of the process.
+		{"upload failure in the middle of the drain, then a clean restart", true, func(e *segEnv) {
 			e.seal()
 			uploads := 0
 			e.failFn.Store(func(key string) bool {
@@ -129,38 +207,57 @@ func TestAckedRows_NotRejudgedByAFreshCardinalityLimiter(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			defer vlstorage.SetCardinalityGate(nil)
 			e := newSegEnv(t)
-			policy := limitedPolicy(t)
+			policy := policyFor(t, ackLimits)
+			m := newLimitModel(ackLimits)
 
 			// Process 1: stream a of tenant 1:2 and streams x, y of tenant 2:3
 			// are admitted and acknowledged; stream z of 2:3 is over its limit.
-			l1 := e.useLimiter(policy)
-			var acked []string
-			acked = append(acked, e.ingestApp(l1, segTenantA, "a", hourAgo, 12)...)
-			acked = append(acked, e.ingestApp(l1, segTenantB, "x", hourAgo, 7)...)
-			acked = append(acked, e.ingestApp(l1, segTenantB, "y", hourAgo, 7)...)
-			if got := e.ingestApp(l1, segTenantB, "z", hourAgo, 3); got != nil {
-				t.Fatalf("the limiter admitted a third stream of a tenant with room for two")
+			e.useLimiter(policy)
+			var all ackSet
+			all.add(e.ingestApp(m, segTenantA, "a", hourAgo, 12))
+			all.add(e.ingestApp(m, segTenantB, "x", hourAgo, 7))
+			all.add(e.ingestApp(m, segTenantB, "y", hourAgo, 7))
+			z := e.ingestApp(m, segTenantB, "z", hourAgo, 3)
+			if len(z.refused) != 3 {
+				t.Fatalf("a third stream of a tenant with room for two was admitted")
 			}
+			all.add(z)
 
 			c.run(e)
 
 			// Process 2: its limiter is empty, and other streams arrive first
 			// and take the room before the drain reaches the old rows.
-			l2 := l1
 			if c.restarts {
-				l2 = e.useLimiter(policy)
+				e.useLimiter(policy)
+				m.restart()
 			}
-			acked = append(acked, e.ingestApp(l2, segTenantA, "b", hourAgo, 5)...)
-			acked = append(acked, e.ingestApp(l2, segTenantB, "p", hourAgo, 4)...)
-			acked = append(acked, e.ingestApp(l2, segTenantB, "q", hourAgo, 4)...)
-			if got := e.ingestApp(l2, segTenantA, "a", hourAgo, 2); c.restarts && got != nil {
-				t.Fatalf("the fresh limiter admitted a second stream of a tenant with room for one")
+			all.add(e.ingestApp(m, segTenantA, "b", hourAgo, 5))
+			all.add(e.ingestApp(m, segTenantB, "p", hourAgo, 4))
+			all.add(e.ingestApp(m, segTenantB, "q", hourAgo, 4))
+
+			// Stream a, admitted in process 1, is sent again. Without a restart
+			// the limiter still knows it. After a restart the fresh limiter has
+			// given the tenant's only slot to b, so new rows of a are refused:
+			// they are answered as a success, counted under
+			// lakehouse_insert_rows_dropped_total{reason="cardinality_limit"} and
+			// not stored. This is the known gap of #485 (the limiter's set of
+			// streams is per process); the assertion pins today's behaviour so a
+			// change of it is a decision, and the rows already acknowledged are
+			// still never lost (checked below).
+			again := e.ingestApp(m, segTenantA, "a", hourAgo, 2)
+			if c.restarts && len(again.acked) != 0 {
+				t.Fatalf("known gap #485 changed: a stream admitted before the restart was admitted again after it")
 			}
+			if !c.restarts && len(again.refused) != 0 {
+				t.Fatalf("without a restart the limiter must still know stream a, but it refused %d rows", len(again.refused))
+			}
+			all.add(again)
+
 			if e.segs.Active().Rows() > 0 {
 				e.seal()
 			}
 			e.drainAll(e.flusher(1000))
-			e.mustStoreAll(acked, c.name)
+			e.mustStoreAll(all, c.name)
 		})
 	}
 }
@@ -174,17 +271,11 @@ func TestAckedRows_FlushFilterNeverDropsOnCardinality(t *testing.T) {
 	defer vlstorage.SetCardinalityGate(nil)
 	for iter := 0; iter < 200; iter++ {
 		limit := rng.Intn(4)
-		p, err := tenant.NewPolicyRegistry(map[string]config.TenantOverride{
-			"1:2": {Cardinality: config.TenantCardinalityOverride{MaxStreams: limit}},
-		}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		lim := tenant.NewCardinalityLimiter(p)
+		lim := tenant.NewCardinalityLimiter(policyFor(t, map[logstorage.TenantID]int{{AccountID: 1, ProjectID: 2}: limit}))
 		vlstorage.SetCardinalityGate(lim)
 		keep := vlstorage.FlushRowKeeper()
 		for i := 0; i < 1+rng.Intn(12); i++ {
-			s := fmt.Sprintf(`{app="s%d"}`, rng.Intn(9))
+			s := fmt.Sprintf(`{%s="s%d"}`, ackStreamField, rng.Intn(9))
 			admitted := lim.AllowStream(1, 2, s) // what the insert adapter asks
 			if !keep(1, 2, s) {
 				t.Fatalf("iteration %d: the flush filter dropped %s at limit %d (admitted at ingest: %v); only a stateless filter may drop at the drain", iter, s, limit, admitted)
@@ -194,25 +285,22 @@ func TestAckedRows_FlushFilterNeverDropsOnCardinality(t *testing.T) {
 }
 
 // Property: random tenants, streams and limits, with restarts and seals at
-// random points. The rows added under each process's limiter are the
-// acknowledged ones; all of them reach Parquet once.
+// random points. Which rows each process's limiter admits is decided by the
+// model; the rows the adapter took are checked against it on every request, all
+// admitted rows reach Parquet once and none of the refused ones does.
 func TestAckedRows_PropertyRandomRestartsAndLimits(t *testing.T) {
 	for seed := int64(1); seed <= 8; seed++ {
 		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
 			defer vlstorage.SetCardinalityGate(nil)
 			rng := rand.New(rand.NewSource(seed))
 			e := newSegEnv(t)
-			policy, err := tenant.NewPolicyRegistry(map[string]config.TenantOverride{
-				"1:2": {Cardinality: config.TenantCardinalityOverride{MaxStreams: 1 + rng.Intn(3)}},
-				"2:3": {Cardinality: config.TenantCardinalityOverride{MaxStreams: 1 + rng.Intn(3)}},
-			}, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			limits := map[logstorage.TenantID]int{segTenantA: 1 + rng.Intn(3), segTenantB: 1 + rng.Intn(3)}
+			policy := policyFor(t, limits)
+			m := newLimitModel(limits)
 			tenants := []logstorage.TenantID{segTenantA, segTenantB, {AccountID: 9, ProjectID: 9}} // the last has no limit
-			lim := e.useLimiter(policy)
+			e.useLimiter(policy)
 			f := e.flusher(25)
-			var acked []string
+			var all ackSet
 			for step := 0; step < 16; step++ {
 				switch rng.Intn(6) {
 				case 0:
@@ -225,19 +313,20 @@ func TestAckedRows_PropertyRandomRestartsAndLimits(t *testing.T) {
 						e.seal()
 					}
 					e.restart()
-					lim = e.useLimiter(policy)
+					e.useLimiter(policy)
+					m.restart()
 					f = e.flusher(25)
 				default:
 					tn := tenants[rng.Intn(len(tenants))]
 					app := fmt.Sprintf("app%d", rng.Intn(5))
-					acked = append(acked, e.ingestApp(lim, tn, app, hourAgo.Add(time.Duration(rng.Intn(120))*time.Minute), 1+rng.Intn(8))...)
+					all.add(e.ingestApp(m, tn, app, hourAgo.Add(time.Duration(rng.Intn(120))*time.Minute), 1+rng.Intn(8)))
 				}
 			}
 			if e.segs.Active().Rows() > 0 {
 				e.seal()
 			}
 			e.drainAll(f)
-			e.mustStoreAll(acked, "end")
+			e.mustStoreAll(all, "end")
 		})
 	}
 }

@@ -231,6 +231,7 @@ jobs:
           - internal/traceindex:FuzzRoundTripIndex
           - internal/vlstorage:FuzzRepromoteLogRow
           - internal/vlstorage:FuzzDataBlockToLogRows
+          - internal/vlstorage:FuzzAdmittedRows
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -353,6 +354,7 @@ jobs:
           - internal/vlstorage:FuzzUnmarshalStreamTags
           - internal/vlstorage:FuzzRepromoteTraceRow
           - internal/vlstorage:FuzzDataBlockToTraceRows
+          - internal/vlstorage:FuzzAdmittedRows
           - internal/vtstorage_adapter:FuzzTraceIndexLookupTraceID
           - internal/vtstorage_adapter:FuzzRewriteTraceIndexQuery
     steps:

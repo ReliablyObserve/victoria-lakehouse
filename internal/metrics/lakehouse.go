@@ -479,14 +479,27 @@ var (
 	// is below its free-space floor. An unreachable object store refuses
 	// nothing: the rows wait in the buffer.
 	InsertRejected = NewCounterVec("lakehouse_insert_rejected_total", "reason")
-	// InsertRowsDropped counts rows the insert buffer refused when they were
-	// added, as upstream's storage drops rows outside its time window (its
-	// vl_rows_dropped_total): reason="too_small_timestamp" is a row whose _time
-	// is before the Unix epoch, which the Parquet layout, the manifest and the
-	// drain cannot hold. The request that carried it is still acknowledged, as
-	// upstream acknowledges it. A row counted here was never acknowledged into
-	// storage: nothing the buffer holds is lost later.
+	// InsertRowsDropped counts rows the insert path dropped when they were added,
+	// by reason; the request that carried the row is still answered as a success,
+	// as upstream answers it when its storage drops a row. The row is not stored
+	// and is not in the buffer, so nothing the buffer holds is lost later.
+	// reason="too_small_timestamp" is a row whose _time is before the Unix epoch
+	// (upstream's name and wording: vl_rows_dropped_total{reason="too_small_timestamp"}),
+	// which the Parquet layout, the manifest and the drain cannot hold.
+	// reason="cardinality_limit" is a row of a stream the tenant's
+	// cardinality.max_streams limit does not admit; the limiter's set of streams
+	// is per process, so a restart can refuse a stream that was admitted before
+	// (#485). The traces binary counts spans only: its trace_id_idx rows are
+	// counted in lakehouse_vt_internal_rows_dropped_total.
 	InsertRowsDropped = NewCounterVec("lakehouse_insert_rows_dropped_total", "reason")
+	// BufferFlushRowsDropped counts rows the flusher left out of the Parquet
+	// objects of a drain although the buffer held them (acknowledged rows), by
+	// reason: reason="trace_shaped_stream" is a row of a stream that identifies
+	// trace spans, not logs (logs binary; the insert path refuses such rows too,
+	// so a buffer only holds them if the rule changed between writing and
+	// draining). A row counted here is also counted again if its group is
+	// collected again after a restart.
+	BufferFlushRowsDropped = NewCounterVec("lakehouse_buffer_flush_rows_dropped_total", "reason")
 	// InsertFlushTotal counts buffer segments written to object storage
 	// completely; InsertFlushErrorsTotal the drains that stopped on an error
 	// (they resume, with the same bytes, after a back-off); InsertFlushDuration

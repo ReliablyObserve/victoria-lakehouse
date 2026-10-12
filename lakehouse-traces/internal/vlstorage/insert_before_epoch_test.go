@@ -36,7 +36,7 @@ func batchAt(app string, times ...int64) *logstorage.LogRows {
 	return lr
 }
 
-// Spans before the Unix epoch are refused (an OTLP start time above 2^63 ns wraps to one) when they are added (#388): they are
+// Spans before the Unix epoch are refused (an OTLP end time above 2^63 ns wraps to one: VictoriaTraces stamps a span with its end time) when they are added (#388): they are
 // not passed to the buffer, they are counted under
 // lakehouse_insert_rows_dropped_total{reason="too_small_timestamp"}, and
 // lakehouse_insert_rows_total counts only the spans the buffer was given, so the

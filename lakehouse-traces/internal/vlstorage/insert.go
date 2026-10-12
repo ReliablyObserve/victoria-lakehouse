@@ -20,6 +20,16 @@ import (
 // for VictoriaTraces' trace-ID index rows, which the flush drops.
 const vtInternalKindTraceIDIdx = "trace_id_idx"
 
+// The kinds of metrics.VTInternalRowsDropped for trace_id_idx rows the insert
+// path refuses when they are added: one whose _time (the span's start time) is
+// before the Unix epoch, and one of a stream over the tenant's cardinality
+// limit. They are not spans, so lakehouse_insert_rows_dropped_total does not
+// count them.
+const (
+	vtInternalKindTraceIDIdxBeforeEpoch = "trace_id_idx_before_epoch"
+	vtInternalKindTraceIDIdxCardinality = "trace_id_idx_cardinality_limit"
+)
+
 // TenantCardinalityGate gates rows by per-tenant cardinality limits.
 // Implemented by *tenant.CardinalityLimiter; declared here as an
 // interface to keep this package's imports narrow.
@@ -58,7 +68,7 @@ func keepStream(accountID, projectID uint32, stream string) bool {
 // service_graph rows are kept.
 func FlushRowKeeper() func(accountID, projectID uint32, stream string) bool {
 	return func(_, _ uint32, stream string) bool {
-		if strings.Contains(stream, otelpb.TraceIDIndexStreamName) {
+		if isTraceIDIndexRow(stream) {
 			metrics.VTInternalRowsDropped.Inc(vtInternalKindTraceIDIdx)
 			return false
 		}
@@ -110,7 +120,7 @@ func (a *vtInsertAdapter) MustAddRows(lr *logstorage.LogRows) {
 func spanRows(lr *logstorage.LogRows) int {
 	n := 0
 	lr.ForEachRow(func(_ uint64, r *logstorage.InsertRow) {
-		if !strings.Contains(r.StreamTagsCanonical, otelpb.TraceIDIndexStreamName) {
+		if !isTraceIDIndexRow(r.StreamTagsCanonical) {
 			n++
 		}
 	})
@@ -121,25 +131,44 @@ func spanRows(lr *logstorage.LogRows) int {
 // when it admits them all (the common case), nil when it admits none, otherwise
 // a copy (owned is then true and the caller releases it). The rule has two
 // parts, and both are decided here, when the row is added, never again when it
-// is flushed: a span before the Unix epoch is refused (storage.BeforeEpoch; an
-// OTLP start time above 2^63 ns wraps to one), and keepStream decides the
-// stream, once per stream of the batch. A refused row does not take a slot of
-// its tenant's cardinality limit.
+// is flushed: a row before the Unix epoch is refused (storage.BeforeEpoch), and
+// keepStream decides the stream, once per stream of the batch. A refused row
+// does not take a slot of its tenant's cardinality limit.
+//
+// VictoriaTraces stamps a span with its END time and the trace's trace_id_idx
+// row with the trace's START time; OTLP times are unsigned, so one above 2^63 ns
+// wraps to a negative _time. A span can therefore be admitted while its index
+// row is refused (and the reverse). Refused spans are counted in
+// lakehouse_insert_rows_dropped_total; refused index rows, which are not spans,
+// in lakehouse_vt_internal_rows_dropped_total.
 func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) {
-	decided := map[uint64]bool{}
+	type verdict struct {
+		keep    bool
+		tenant  logstorage.TenantID
+		stream  string
+		idx     bool // the stream of VictoriaTraces' trace_id_idx rows, not of spans
+		refused int  // rows of this stream in lr that were refused
+	}
+	decided := map[uint64]*verdict{}
 	var st logstorage.StreamTags
 	dropped, total := 0, 0
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
 		total++
 		if storage.BeforeEpoch(r.Timestamp) {
 			dropped++
-			storage.NoteBeforeEpoch(r)
+			if isTraceIDIndexRow(r.StreamTagsCanonical) {
+				// An index row carries the span's start time. It is internal, not a
+				// span: counted apart, so the span counters stay span counts.
+				metrics.VTInternalRowsDropped.Inc(vtInternalKindTraceIDIdxBeforeEpoch)
+			} else {
+				storage.NoteBeforeEpoch(r)
+			}
 			return
 		}
 		if globalCardinalityGate == nil {
 			return
 		}
-		keep, ok := decided[streamHash]
+		v, ok := decided[streamHash]
 		if !ok {
 			stream := ""
 			if r.StreamTagsCanonical != "" {
@@ -148,13 +177,25 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 					stream = st.String()
 				}
 			}
-			keep = keepStream(r.TenantID.AccountID, r.TenantID.ProjectID, stream)
-			decided[streamHash] = keep
+			v = &verdict{tenant: r.TenantID, stream: stream, idx: isTraceIDIndexRow(r.StreamTagsCanonical)}
+			v.keep = keepStream(r.TenantID.AccountID, r.TenantID.ProjectID, stream)
+			decided[streamHash] = v
 		}
-		if !keep {
+		if !v.keep {
 			dropped++
+			v.refused++
 		}
 	})
+	// Every row refused for the limit is counted, once per batch.
+	for _, v := range decided {
+		switch {
+		case v.keep:
+		case v.idx:
+			metrics.VTInternalRowsDropped.Add(vtInternalKindTraceIDIdxCardinality, v.refused)
+		default:
+			storage.NoteCardinalityRefused(v.tenant.AccountID, v.tenant.ProjectID, v.stream, v.refused)
+		}
+	}
 	switch dropped {
 	case 0:
 		return lr, false
@@ -166,11 +207,17 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 		if storage.BeforeEpoch(r.Timestamp) {
 			return
 		}
-		if globalCardinalityGate == nil || decided[streamHash] {
+		if v := decided[streamHash]; v == nil || v.keep {
 			cp.MustAddInsertRow(r)
 		}
 	})
 	return cp, true
+}
+
+// isTraceIDIndexRow reports whether a row's canonical stream tags name the
+// stream of VictoriaTraces' trace_id_idx rows.
+func isTraceIDIndexRow(streamTagsCanonical string) bool {
+	return strings.Contains(streamTagsCanonical, otelpb.TraceIDIndexStreamName)
 }
 
 // CanWriteData is upstream's rule (VictoriaLogs app/vlstorage
