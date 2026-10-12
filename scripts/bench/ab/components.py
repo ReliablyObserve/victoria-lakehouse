@@ -17,6 +17,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 import time
 import zlib
@@ -93,6 +94,11 @@ def ingest(url: str, signal: str, start: dt.datetime, repeats: int = REPEATS) ->
     return {"rows": total, "seconds": round(secs, 2), "per_s": rate(total, secs), "bad_posts": bad}
 
 
+def field_int(text: str, key: str) -> int:
+    m = re.search(rf'"{key}"\s*:\s*(\d+)', text)
+    return int(m.group(1)) if m else 0
+
+
 def compaction_rows(state: dict) -> list[dict]:
     out = []
     for sig in ("logs", "traces"):
@@ -102,13 +108,10 @@ def compaction_rows(state: dict) -> list[dict]:
             inp = outp = byt = 0
             secs = 0.0
             for r in hours.values():
-                try:
-                    body = json.loads(r["body"]) if r["body"].startswith("{") and r["body"].endswith("}") else {}
-                except ValueError:
-                    body = {}
-                inp += int(body.get("input_files", 0))
-                outp += int(body.get("output_files", 0))
-                byt += int(body.get("bytes_written", 0))
+                # the saved body is cut at a fixed length, so it is read by key, not parsed as JSON
+                inp += field_int(r["body"], "input_files")
+                outp += field_int(r["body"], "output_files")
+                byt += field_int(r["body"], "bytes_written")
                 secs += float(r.get("seconds", 0))
             figs[t] = {"in": inp, "out": outp, "bytes": byt, "seconds": round(secs, 2)}
         out.append({"component": "forced compaction of the older hours", "signal": sig,

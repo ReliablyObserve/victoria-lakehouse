@@ -21,5 +21,5 @@ def test_batches_are_deterministic_and_well_formed():
 
 def test_rate_and_compaction_rows_without_data():
     assert components.rate(1000, 2.0) == 500 and components.rate(1, 0) is None
-    rows = components.compaction_rows({"ab": {"recompact": {"base-logs": {"dt=a/hour=00": {"body": '{"input_files": 8, "output_files": 2, "bytes_written": 1000000}', "seconds": 1.5}}}}})
+    rows = components.compaction_rows({"ab": {"recompact": {"base-logs": {"dt=a/hour=00": {"body": '{"bytes_written":1000000,"fenced_files":0,"input_files":8,"output_files":2,"output_lev', "seconds": 1.5}}}}})
     assert rows[0]["base"] == "8 -> 2 files, 1.00 MB, 1.5 s" and rows[0]["pr"] == "0 -> 0 files, 0.00 MB, 0.0 s"
