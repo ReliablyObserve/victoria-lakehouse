@@ -55,6 +55,18 @@ Reading it plainly:
 - **Bytes do grow, with the number of streams.** GETs stay at 10. At 10,000 streams per object a cold trace-by-ID reads 29 % more bytes; at 100 MB/s that is about 6 ms of transfer per object, spread over parallel reads, and invisible at the injected first-byte latencies. On an S3 link much slower than that it would show.
 - The facet is not read by this query, but it travels in the footer tail the query fetches. Keeping it out of the cached footer (so queries never carry it) is the mitigation if the growth matters; it is not done here because nothing reads the facet yet.
 
+### A footer that no longer fits the prefetch tail (measured)
+
+The table above uses small objects (2 MB), whose footers are already larger than the footer prefetch tail (`max(64 KiB, size/8)`, at most 640 KiB), so both builds fetch them with a second exact read. A production-sized object is the case that matters: the trace index makes a compacted traces footer 470 to 520 KB, which the 640 KiB tail covers in one read. Re-run with `TBID_SPANS=17000 TBID_BODY_BYTES=300` (6.5 MB objects, footers of 478 KB on `main`), 4 interleaved rounds of 3 runs per latency, all answers valid:
+
+| Streams per object | Footer per object main → branch | GETs | Bytes | Latency, branch ÷ main at 0 / 20 / 50 / 100 ms (median of 4 round ratios; range) |
+|--:|---|--:|--:|---|
+| 100 | 478 → 492 KB | 53 / 53 | +0.2 % | not run (the footer stays inside the tail) |
+| 1,000 | 478 → 586 KB | 53 / 53 | +1.6 % | not run (the footer stays inside the tail) |
+| 10,000 | 478 → 772 KB | 53 → 59 (+2 per object) | +9.5 % | 1.031 / 1.038 / 1.037 / 1.041 (1.02 to 1.07) |
+
+At 10,000 streams per object the facet pushes a traces footer past the 640 KiB tail, so each object's footer needs a second read (the 2 extra GETs per object): a sequential round trip per cold query, +3 to 4 % latency here (below the 5 % that would have stopped this change, and consistent across rounds and latencies). Up to about 1,000 streams per object (the facet adds about 110 KB to a 480 KB footer, still inside 640 KiB) it does not. Raising `s3.footer_prefetch_bytes` removes the second read at the price of a larger tail per object; the facet is not read by this query, so keeping it out of the cached footer is the other option. Neither is done here.
+
 Reproduce: build `trace_by_id_cold_ab_test.go` into both trees (`go test -c`) and alternate the two binaries with `TBID_AB_OUT=… TBID_BUILD=main|branch TBID_ROUND=n TBID_STREAMS=… TBID_NAMES=… TBID_REPEATS=3` (the header of the test file lists the knobs).
 
 ## External readers (measured)

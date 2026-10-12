@@ -11,6 +11,9 @@ package parquets3
 // answer validated against the spans written.
 //
 // Run the same file against two builds and compare the JSONL:
+// TBID_BODY_BYTES adds an incompressible message of that size to every span, so the
+// footer is a production-like small share of the object (a footer larger than the
+// prefetch tail, max(64 KiB, size/8) up to 640 KiB, is fetched in a second read).
 //   TBID_AB_OUT=/tmp/x.jsonl TBID_BUILD=main TBID_STREAMS=1000 TBID_REPEATS=5 \
 //     GOWORK=off go test -run TestTraceByIDColdAB -count=1 ./internal/storage/parquets3/
 
@@ -58,7 +61,7 @@ type tbidRecord struct {
 // tbidSpans builds nSpans spans in 2-span traces over `streams` services; each
 // service draws its attribute names from its own pool of namesPerStream names out
 // of a universe of `universe` distinct attribute names.
-func tbidSpans(rng *rand.Rand, anchor time.Time, nSpans, streams, namesPerStream, universe int) []schema.TraceRow {
+func tbidSpans(rng *rand.Rand, anchor time.Time, nSpans, streams, namesPerStream, universe, bodyBytes int) []schema.TraceRow {
 	pools := make([][]string, streams)
 	for s := range pools {
 		pools[s] = make([]string, namesPerStream)
@@ -83,6 +86,11 @@ func tbidSpans(rng *rand.Rand, anchor time.Time, nSpans, streams, namesPerStream
 			SpanName: fmt.Sprintf("op-%d", s%40), ServiceName: fmt.Sprintf("svc-%d", s), DurationNs: int64(1+rng.Intn(900)) * 1_000_000,
 			SpanKind: 2, Stream: fmt.Sprintf(`{resource_attr:service.name="svc-%d"}`, s), StreamID: fmt.Sprintf("%032x%016x", 0x7ace, s),
 			SpanAttributes: attrs,
+		}
+		if bodyBytes > 0 { // incompressible text, so objects are as big as production ones relative to their footers
+			b := make([]byte, bodyBytes/2)
+			_, _ = rng.Read(b)
+			rows[i].Body = fmt.Sprintf("%x", b)
 		}
 	}
 	return rows
@@ -115,7 +123,7 @@ func TestTraceByIDColdAB(t *testing.T) {
 		return def
 	}
 	streams, names, repeats := atoi("TBID_STREAMS", 1000), atoi("TBID_NAMES", 300), atoi("TBID_REPEATS", 5)
-	universe := atoi("TBID_UNIVERSE", 2000)
+	universe, bodyBytes := atoi("TBID_UNIVERSE", 2000), atoi("TBID_BODY_BYTES", 0)
 	nObjs, spansPerObj := atoi("TBID_OBJECTS", 3), atoi("TBID_SPANS", 24000)
 	var lats []time.Duration
 	for _, f := range strings.Split(os.Getenv("TBID_LATENCIES_MS"), ",") {
@@ -140,7 +148,7 @@ func TestTraceByIDColdAB(t *testing.T) {
 	var target string
 	var wantSpans int
 	for i := 0; i < nObjs; i++ {
-		rows := tbidSpans(rng, anchor.Add(time.Duration(i)*time.Hour), spansPerObj, streams, names, universe)
+		rows := tbidSpans(rng, anchor.Add(time.Duration(i)*time.Hour), spansPerObj, streams, names, universe, bodyBytes)
 		res, err := writeTracesParquet(rows, 10000, 3)
 		if err != nil {
 			t.Fatal(err)

@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"math/rand"
 	"sync"
 	"testing"
@@ -106,7 +107,7 @@ func fullReadStreamRows(rng *rand.Rand, base time.Time, n int) []schema.TraceRow
 			HTTPUrl:            "http://" + svc + ":8080/api/v1/users",
 			K8sPodName:         svc + "-" + hex(10),
 			Stream:             fmt.Sprintf(`{name=%q,resource_attr:service.name=%q}`, name, svc),
-			StreamID:           hex(32),
+			StreamID:           fullReadStreamID(svc, name),
 			ContainerID:        hex(64),
 			ServiceInstanceID:  svc + "-" + hex(8),
 			ResourceAttributes: map[string]string{"telemetry.sdk.language": "go", "os.type": "linux"},
@@ -114,6 +115,17 @@ func fullReadStreamRows(rng *rand.Rand, base time.Time, n int) []schema.TraceRow
 		})
 	}
 	return rows
+}
+
+// fullReadStreamID is the id of the stream a span of this service and name
+// belongs to: a few dozen streams for thousands of spans, as in production. (A
+// random id per span made every span its own stream, and the field-presence
+// entry of such an object is larger than the footer this test keeps under the
+// footer prefetch tail.)
+func fullReadStreamID(svc, name string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(svc + "|" + name))
+	return fmt.Sprintf("%032x", h.Sum64())
 }
 
 func fullReadMarkerSpans(base time.Time, marker string) []schema.TraceRow {
