@@ -139,6 +139,14 @@
     - tests/conformance/registry/lockcode_test.go#TestLockCodeChanges
     - tests/conformance/registry/lockcode_test.go#TestLockCodeChanges_ProductLockPackage
     - tests/conformance/registry/lockcode_test.go#TestLockTestRefs_OnlyExactRowsAndTestFiles
+    - tests/conformance/registry/lockcode_test.go#TestLoadTimeKey_ResolvesWhatADeclarationMeans
+    - tests/conformance/registry/lockcode_test.go#TestFileNameConstraint
+    - tests/conformance/registry/lockcode_test.go#TestSymlinkProblems
+    - tests/conformance/registry/lockcode_test.go#TestLockAdjacent
+    - tests/conformance/registry/lockcode_test.go#TestLockCodeChangeList_KeepsPathAndReasonApart
+    - tests/conformance/registry/lockcode_test.go#TestMinPassProblems
+    - tests/conformance/registry/lockcode_test.go#TestVersionBefore_Overflow
+    - tests/conformance/registry/lockcode_test.go#TestParityParse_SharedFixture
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_FlipIsTheOnlyTrigger
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_NonFixPRsReportNoLockProblems
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_Weakenings

@@ -398,6 +398,130 @@ syn_gate_file_listing() {
   printf '\n# replay: a note\n' >> .github/CODEOWNERS
 }
 
+# --- the third review of the gate (symlinks, alias swaps, packages a lock package imports, min-pass) ---
+# MAJOR-1. The target of every link is a docs file holding what a lock-silencing init() would hold; `go test`
+# compiles a linked .go file and no lock rule can read it.
+link_target() {
+  printf '//go:build e2e\n\npackage e2e\n\nimport "os"\n\nfunc init() {\n\tif os.Getenv("LH_NONCE") != "" {\n\t\tos.Exit(0)\n\t}\n}\n' > docs/zz.txt
+}
+syn_s_newlink_e2e_nontest() { link_target; ln -s ../../docs/zz.txt tests/e2e/zz_link.go; }
+syn_s_newlink_parity() { link_target; ln -s ../../docs/zz.txt tests/parity/zz_link.go; }
+syn_s_newlink_product_lockpkg() { link_target; ln -s ../../../docs/zz.txt internal/storage/parquets3/zz_link.go; }
+# an existing lock-package file replaced by a link to a copy of itself (a blob that is the link target, not Go)
+syn_s_replace_lockfile() { cp tests/parity/helpers.go docs/zz.txt; rm tests/parity/helpers.go; ln -s ../../docs/zz.txt tests/parity/helpers.go; }
+syn_s_symlinked_test() { link_target; ln -s ../../docs/zz.txt tests/parity/zz_link_test.go; }
+syn_s_symlink_dir() { ln -s ../../docs tests/e2e/zzdir; }
+syn_s_symlink_docs_only() { ln -s ../README.md docs/zz_link.md; }
+
+# MAJOR-2. alias_attacker: a package whose function ends the test binary, imported under the name `schema`.
+mk_evil_schema() {
+  mkdir -p tests/evilschema
+  printf 'package evilschema\n\nimport "os"\n\ntype LogRow struct{}\n\nfunc EstimateRawBytesLogs([]LogRow) int { os.Exit(0); return 0 }\n' > tests/evilschema/evil.go
+}
+drop_fixed_log_row_bytes() {
+  python3 - <<'PY2'
+p = "internal/storage/parquets3/raw_bytes_test.go"
+s = open(p, encoding="utf-8").read()
+line = "var fixedLogRowBytes = schema.EstimateRawBytesLogs([]schema.LogRow{{}})\n"
+assert line in s
+open(p, "w", encoding="utf-8").write(s.replace(line, "", 1))
+PY2
+}
+# the reviewer's m_alias_swap: the declaration moves to a new file where `schema` is another package
+syn_m_alias_swap() {
+  mk_evil_schema; drop_fixed_log_row_bytes
+  printf 'package parquets3\n\nimport schema "github.com/ReliablyObserve/victoria-lakehouse/tests/evilschema"\n\nvar fixedLogRowBytes = schema.EstimateRawBytesLogs([]schema.LogRow{{}})\n' > internal/storage/parquets3/zz_moved_test.go
+}
+# ... and with no alias at all: the package clause of the repository package names it
+syn_m_alias_noalias() {
+  mkdir -p tests/evilschema
+  printf 'package schema\n\nimport "os"\n\ntype LogRow struct{}\n\nfunc EstimateRawBytesLogs([]LogRow) int { os.Exit(0); return 0 }\n' > tests/evilschema/evil.go
+  drop_fixed_log_row_bytes
+  printf 'package parquets3\n\nimport "github.com/ReliablyObserve/victoria-lakehouse/tests/evilschema"\n\nvar fixedLogRowBytes = schema.EstimateRawBytesLogs([]schema.LogRow{{}})\n' > internal/storage/parquets3/zz_moved_test.go
+}
+# the control: the same move with the same imports
+syn_m_pure_move_imports() {
+  drop_fixed_log_row_bytes
+  printf 'package parquets3\n\nimport "github.com/ReliablyObserve/victoria-lakehouse/internal/schema"\n\nvar fixedLogRowBytes = schema.EstimateRawBytesLogs([]schema.LogRow{{}})\n' > internal/storage/parquets3/zz_moved_test.go
+}
+# move_nearby <literal>: `nearby` leaves the var group of rows_ties_harness_test.go for a new file
+move_nearby() {
+  python3 - "$1" <<'PY2'
+import sys
+p = "tests/parity/rows_ties_harness_test.go"
+s = open(p, encoding="utf-8").read()
+line = '\tnearby = row(afterTS, "next microsecond", "api-gateway")\n'
+assert line in s
+open(p, "w", encoding="utf-8").write(s.replace(line, "", 1))
+open("tests/parity/zz_nearby_test.go", "w", encoding="utf-8").write('package parity\n\nvar nearby = row(afterTS, "%s", "api-gateway")\n' % sys.argv[1])
+PY2
+}
+# white space inside a string literal: strings.Fields collapsed it, so this "pure move" passed
+syn_m_literal_whitespace() { move_nearby "next  microsecond"; }
+syn_m_move_changed() { move_nearby "next nanosecond"; }
+syn_m_pure_move_nearby() { move_nearby "next microsecond"; }
+# a declaration leaves a //go:build e2e file for an unconstrained one
+syn_m_build_constraint() {
+  python3 - <<'PY2'
+p = "tests/e2e/buffer_query_auth_test.go"
+s = open(p, encoding="utf-8").read()
+line = '\tbufferAuthOrgID = envOrDefault("LH_BUFFER_AUTH_ORGID", "acme-corp:1001:0")\n'
+assert line in s
+open(p, "w", encoding="utf-8").write(s.replace(line, "", 1))
+open("tests/e2e/zz_orgid_test.go", "w", encoding="utf-8").write('package e2e\n\nvar bufferAuthOrgID = envOrDefault("LH_BUFFER_AUTH_ORGID", "acme-corp:1001:0")\n')
+PY2
+}
+
+# MAJOR-3. tests/ingestmatrix is imported by tests/e2e and is neither a lock package nor product code.
+syn_x_ingestmatrix_init() {
+  printf '\nfunc init() {\n\tif os.Getenv("LH_NONCE") != "" {\n\t\tos.Exit(0)\n\t}\n}\n' >> tests/ingestmatrix/sample.go
+}
+syn_x_ingestmatrix_newfile() { printf 'package ingestmatrix\n\nfunc Extra() {}\n' > tests/ingestmatrix/zz_extra.go; }
+# an imported PRODUCT package (internal/pmeta) gains an init()
+syn_x_product_adjacent_init() {
+  local f
+  f=$(git ls-files 'internal/pmeta/*.go' | grep -v '_test\.go$' | head -1)
+  printf '\nfunc init() { println("replay") }\n' >> "$f"
+}
+
+# min-pass: the expected number of passing parity tests is lowered by one
+syn_minpass_lowered() {
+  python3 - <<'PY2'
+import re
+p = "tests/parity/known_failures.txt"
+s = open(p, encoding="utf-8").read()
+n = re.sub(r"^(# min-pass: )(\d+)$", lambda m: m.group(1) + str(int(m.group(2)) - 1), s, count=1, flags=re.M)
+assert n != s
+open(p, "w", encoding="utf-8").write(n)
+PY2
+}
+
+# x/sync (singleflight in the cold read path) and x/sys (CPU feature detection behind parquet-go's encoders)
+# are critical now
+bump_mod() { # bump_mod <module>: the patch number of its require line in go.mod
+  python3 - "$1" <<'PY2'
+import re, sys
+m = re.escape(sys.argv[1])
+s = open("go.mod", encoding="utf-8", newline="").read()
+n = re.sub(r"(^\t" + m + r" v[0-9]+\.[0-9]+\.)([0-9]+)", lambda x: x.group(1) + str(int(x.group(2)) + 1), s, count=1, flags=re.M)
+assert n != s
+open("go.mod", "w", encoding="utf-8", newline="").write(n)
+PY2
+}
+syn_x_sync_bump() { bump_mod golang.org/x/sync; }
+syn_x_sys_bump() { bump_mod golang.org/x/sys; }
+# a toolchain version that does not fit 31 bits
+syn_toolchain_overflow() {
+  python3 - <<'PY2'
+import re
+for path, pat in (("go.mod", r"^(go \d+\.\d+\.)\d+$"), ("Dockerfile.logs", r"(golang:\d+\.\d+\.)\d+")):
+    s = open(path, encoding="utf-8").read()
+    n = re.sub(pat, lambda m: m.group(1) + "99999999999999999999", s, count=1, flags=re.M)
+    assert n != s, path
+    open(path, "w", encoding="utf-8").write(n)
+PY2
+}
+
 # run_synthetic <name> <author> <title> <report> <log>: builds the case in a scratch clone and runs the gate.
 run_synthetic() {
   local name=$1 author=$2 title=$3 report=$4 log=$5 clone="$WORK/syn.$1" base

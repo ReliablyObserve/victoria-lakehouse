@@ -403,12 +403,17 @@ commit message):
   `valyala/quicktemplate`, `gopkg.in/yaml.v3`, `google/uuid`, `golang.org/x/text`, ...), so
   `INERT_MODULES` in `pr_classify.py` is an allowlist of the modules a bump of which cannot change a
   stored or answered byte, each with its reason: test-only libraries (`go.uber.org/goleak`), runtime
-  helpers without a data format (`golang.org/x/sync`, `x/sys`, `x/oauth2`), the OpenTelemetry SDK and
+  the outbound OAuth2 token source (`x/oauth2`), the OpenTelemetry SDK and
   its exporters (`go.opentelemetry.io/otel/...`, which trace the process and ship spans out of band), the
   logging facade and retry timer behind them, and `golang.org/x/net`. `x/net` is inert because nothing in
   this repository or in `deps/` imports it: it is reached only through `google.golang.org/grpc` (the OTLP
   trace exporter client), and `net/http` uses the copy vendored into GOROOT; `test_pr_classify_critical.py`
-  re-checks that. NOT inert: `go.opentelemetry.io/proto/` (the OTLP wire format),
+  re-checks that, by scanning import lines with a regular expression (it is not `go list -deps`, so it sees
+  neither build-tag-only nor generated imports; cross-check by hand when deciding). NOT inert:
+  `golang.org/x/sync` (the `singleflight` of `internal/s3reader/dedup.go` hands one result to every concurrent
+  cold read of the same range) and `golang.org/x/sys` (`x/sys/cpu` is what parquet-go consults to select its SIMD
+  encoders): a bump of either can change a stored or answered byte, so it needs registry coverage;
+  `go.opentelemetry.io/proto/` (the OTLP wire format),
   `go.opentelemetry.io/contrib/` and `httpsnoop` (they wrap every handler's `ResponseWriter`),
   `golang.org/x/text`, `google/uuid`, `yaml.v3`, every `valyala/*` module, the codecs, the AWS SDK, parquet-go,
   VictoriaMetrics/VictoriaLogs and `google.golang.org/*`. A module in neither list is critical, and the drift
@@ -487,6 +492,28 @@ covers them and a content check cannot judge them:
   import of a package the package did not import at the merge base (a blank import runs that package's `init()`
   before any test), every new native source file (`.c`, `.s`, `.syso` ...) in the package directory, and the
   lock suites' runtime configuration.
+- **Lock-adjacent packages.** A lock package's test binary also links every package its test layer imports, and
+  an `init()` there runs before any test. A lock-adjacent package is an in-repo package whose NON-test files are
+  linked into a lock package's test binary through the lock package's test layer (its `_test.go` files, and every `.go`
+  file of a package under `tests/`), followed through non-test files to depth 3, computed at the merge base AND at
+  head (a package the PR adds and a lock test imports is covered from its first commit). Today (computed by
+  `LockAdjacentDirs` over 20 lock directories) that is 16 packages: `tests/ingestmatrix` (imported by `tests/e2e`,
+  neither lock nor product), `internal/testutil` and `internal/testutil/storageinvariants`, and 13 product packages
+  (`internal/pmeta`, `internal/config`, `internal/buffer`, `internal/s3reader` ...); none of them has ever held an
+  `init()` (git history, `git log -S'func init()'`). A new `.go` file in a test-support
+  package (under `tests/`), a package-level var whose initializer calls a function, a blank or dot import, an import of
+  a module outside this repository (or of a package under `tests/`), and a changed file that stops parsing are listed.
+  An added `init()`, `import "C"` and any new or changed native source file are hard failures (Rule 3). A new func-only
+  file in an adjacent product package is not listed (it runs nothing at load). **Known limits** (issue #545): the
+  product files of the lock packages themselves and what they import (the code under test; a registry content change
+  is the only control), dynamic loading (plugins, `go:linkname`), build tags set from the environment, `go.mod`
+  `replace` directives and other non-blob inputs.
+- **Listing size.** The report lists every file above, so its length is a cost of review. Measured with the
+  gate's own binaries over merged pull requests (see the pull request that added this paragraph): #487 lists 49
+  files (22 before the new-file rule of #512; the new files are the 27 new product and test files of
+  `internal/storage/parquets3` and `lakehouse-traces/internal/storage/parquets3`), a typical product PR with no new
+  file in a lock package lists 0-3. Not reduced: a func-only new file can be the `TestAAAWarmup` shape, and a new
+  product file of a lock package could not be proven harmless (issue #546).
 - **Not enforced, on purpose:** that an edited lock or helper still compares what it compared. The gate cannot
   decide that from content; it makes sure a person looks.
 
@@ -501,7 +528,12 @@ can wear the title an attacker would choose. The synthetic negatives include the
 (`cr_fips`, `cr_replace_tc`, `cr_replace_dep`, `u2028_replace_dep`, `tc_unidigit`, `init_exit`) and the shapes of the second review
 (issue #502): `warmup_test`, `forged_transcript_exit`, `blank_import_hook`, `cgo_constructor`, `allowlist_nel`, `fastjson_bump`,
 `toolchain_downgrade`, `dependency_new_require`, `loadtime_var_move`, `loadtime_file_rename`, `path_with_newline`,
-`gate_file_listing`. Cost
+`gate_file_listing`; the third review adds the symlink rows (`s_newlink_e2e_nontest`, `s_newlink_parity`,
+`s_newlink_product_lockpkg`, `s_replace_lockfile`, `s_symlinked_test`, `s_symlink_dir`, `s_symlink_docs_only`), the moved-declaration rows
+(`m_alias_swap`, `m_alias_noalias`, `m_literal_whitespace`, `m_build_constraint`, `m_move_changed`, and the controls
+`m_pure_move_imports`, `m_pure_move_nearby`), the lock-adjacent rows (`x_ingestmatrix_init`, `x_ingestmatrix_newfile`,
+`x_product_adjacent_init`; `blank_import_hook` became a failure), `minpass_lowered`, `x_sync_bump`, `x_sys_bump` and
+`toolchain_overflow`. Cost
 (measured 2026-10-11 by the independent review; it varies with the runner): judging one large recorded pull request
 took 68 s (#483) and 79 s (#487) locally, one CI replay shard about 1:40, one gate job about 30 s; the gate jobs have a
 10 minute timeout and the replay jobs 40, and a timeout fails the check (closed). `testlinks` reads every blob through one
@@ -572,10 +604,19 @@ file is linked into the package's test binary like any other), and an edit that 
 (`func init() { if os.Getenv("PARITY_LOCK_NONCE") != "" { os.Exit(0) } }`), silencing every lock of the
 package, so the gate fails a PR that adds one to a file of a lock package: a new file, or an existing file
 that now holds an `init()` or a called-var the merge base did not. These declarations are compared as a
-**multiset per package**, not per file: an `init()` is keyed by its normalised body and a var by its name and
-initializer text (`_` counted per occurrence), so moving a declaration to another file of the package, or
-renaming the file that holds it, adds nothing (the files are still listed for the reviewer), while a new
-declaration (another body, another initializer, one more copy) fails wherever it sits. **cgo is load-time code
+**multiset per package**, not per file, and the key of a declaration holds what decides what it runs: its exact
+Go token stream (`go/scanner`: string and rune literals keep their exact bytes, so `"a b"` and `"a  b"` differ; only
+white space, comments and the spelling of automatic semicolons are normalised), the **resolved import path** of every
+package qualifier it uses (`schema.F` is `schema` as the alias or `package` clause of which import path; for a package of
+this repository the clause is read from the revision's blobs, because the author of a change chooses it, so an
+unaliased `tests/evilpkg` that declares `package schema` is not `internal/schema`) together with the dot-imported
+paths of the file, and the file's **build constraints** (`//go:build`, `// +build` and the GOOS/GOARCH file-name
+suffix: moving a declaration out of an `e2e`-constrained file into an unconstrained one changes whether it runs). Moving
+a declaration to another file of the package, or renaming the file that holds it, with the same imports and
+constraints adds nothing (the files are still listed for the reviewer), while a new declaration (another body or
+initializer, an alias for another package, a changed literal, a changed constraint, one more copy; a var is keyed by
+its name too, `_` counted per occurrence) fails wherever it sits. A move that also changes the declaration is an
+addition: `m_move_changed`, `m_alias_swap`, `m_alias_noalias`, `m_literal_whitespace` and `m_build_constraint` are replay rows. **cgo is load-time code
 too** (an `__attribute__((constructor))` in the preamble runs before `main`), so a lock package may not start
 importing `"C"` in any `.go` file, test or product, new or edited (hard, Rule 3). In a pure test package that applies to every `.go` file, in a product package to
 `_test.go` files (non-test files there are product code and free). A var whose initializer runs no code
@@ -626,12 +667,25 @@ and made the toolchain bump #491 unmergeable, with no way to turn it green; it i
   lock package (a new file or an existing one), or changes a `TestMain` there: load-time code that can
   silence the locks;
 - adds `import "C"` (cgo) to any `.go` file of a lock package;
+- adds or changes a **symbolic link or submodule** where `go test` or a lock would read it: any link whose name is a
+  `.go` or native-source file (`.c`, `.h`, `.s`, `.F` ...) anywhere in the repository, and any link at all inside a
+  lock package directory (tests/e2e and tests/parity included), inside a lock-adjacent package (below), or at the lock
+  suites' runtime configuration. `go test` compiles a linked `.go` file, and every lock rule reads blobs of regular
+  files (git mode 100*), so a link was invisible to all of them; a regular lock file replaced by a link is a failure,
+  not a deletion. A link elsewhere (`docs/`) is free. The modes come from `git diff --raw`, and a linked path never
+  reaches the Go parsers (a symlinked `_test.go` is a Rule 3 failure, not a tool error);
+- adds an `init()`, `import "C"` or a native source file to a **lock-adjacent package** (below);
+- lowers or removes `# min-pass: N` in `tests/parity/known_failures.txt` (raising it is free; the directive is read
+  as the Python ratchet reads it, with an ASCII-digit value, and a duplicate or unreadable one fails closed);
 - leaves a control byte other than LF and TAB, a NEL, U+2028, U+2029, a BOM or invalid UTF-8 in the parity
   allowlist or in `tests/parity/lock_cells.txt`. The Go gate splits these files on `\n`; Python's
   `splitlines()` also splits on a lone CR, VT, FF, FS/GS/RS, NEL, U+2028 and U+2029, so a separator inside an existing
   line hid a smuggled entry from the gate while the ratchet counted it. Both readers now refuse those bytes (the
-  ratchet reads bytes and splits on LF only; one fixture, `scripts/ci/tests/testdata/parity_data_bytes.json`, is
-  read by the Go and the Python tests);
+  ratchet reads bytes and splits on LF only; two fixtures are read by the Go and the Python tests:
+  `scripts/ci/tests/testdata/parity_data_bytes.json` classifies bytes, and `parity_data_parse.json` pins what each
+  reader PARSES from Unicode spaces, Unicode digits, tabs, trailing spaces, CRLF and duplicate keys. The rule it encodes:
+  where both readers accept an input they return the same entries, and every one-sided rejection fails closed (a
+  rejecting ratchet fails the parity job, a rejecting gate fails the pull request);
 - lowers or removes a cell floor in `tests/parity/lock_cells.txt`;
 - deletes or moves the allowlist file, or changes the `--allowlist` argument of the parity workflow
   (the allowlist path is read from `.github/workflows/parity.yaml` at both revisions).
