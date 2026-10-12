@@ -245,9 +245,8 @@ func TestTraceWriter_NoProductionPathBypassesTheHelper(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			switch d.Name() {
-			case "deps", ".git", "node_modules", ".claude", "vendor":
-				return filepath.SkipDir
+			if p != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "deps" || d.Name() == "node_modules" || d.Name() == "vendor") {
+				return filepath.SkipDir // .git, .claude, .before-<ref> worktrees, the pinned upstream trees
 			}
 			return nil
 		}
@@ -259,7 +258,14 @@ func TestTraceWriter_NoProductionPathBypassesTheHelper(t *testing.T) {
 			return err
 		}
 		s := string(b)
-		for _, pat := range []string{"NewGenericWriter[schema.TraceRow]", "NewGenericWriter[TraceRow]"} {
+		// Any other way to build a Parquet file from rows or row groups would
+		// also bypass the schema node: none exists in production code today, and
+		// none may appear without going through (or extending) NewTraceWriter.
+		for _, pat := range []string{
+			"NewGenericWriter[schema.TraceRow]", "NewGenericWriter[TraceRow]",
+			"parquet.NewWriter(", "parquet.NewSortingWriter", "parquet.NewGenericBuffer", "parquet.NewBuffer(",
+			"parquet.WriteFile", "parquet.Write[", "parquet.CopyRows(", "parquet.MergeRowGroups(",
+		} {
 			if strings.Contains(s, pat) && !strings.HasSuffix(p, filepath.Join("internal", "schema", "trace_writer.go")) {
 				rel, _ := filepath.Rel(root, p)
 				offenders = append(offenders, rel)
