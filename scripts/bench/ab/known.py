@@ -69,7 +69,7 @@ def observed_from_perf(summary: dict, spec: dict) -> list[dict]:
 
 
 def observed_from_api(matrix: dict) -> list[dict]:
-    out = []
+    groups: dict[tuple, dict] = {}
     for r in matrix.get("results", []):
         v = r["verdict"]
         if v in NOT_A_DIFFERENCE:
@@ -82,8 +82,14 @@ def observed_from_api(matrix: dict) -> list[dict]:
             continue
         else:
             status = "pre-existing" if v in ("same", "improved") else "new"
-        out.append({"source": "api", "what": f"{r['surface']} {r['path']}", "status": status, "covers": [r["row"]], "where": [r["id"]],
-                    "signal": r["signal"], "detail": (r.get("notes") or [""])[0][:140], "verdict": v})
+        g = groups.setdefault((r["row"], status), {"source": "api", "what": r["row"], "status": status, "covers": [r["row"]], "where": [], "signals": [],
+                                                   "detail": f"{r['surface']} {r['path']} " + (r.get("notes") or [""])[0][:100], "verdict": v})
+        g["where"].append(r["id"])
+        if r["signal"] not in g["signals"]:
+            g["signals"].append(r["signal"])
+    out = list(groups.values())
+    for g in out:
+        g["signal"] = "+".join(g["signals"])
     return out
 
 
@@ -165,7 +171,7 @@ def render(known: dict, stats: dict | None = None, max_rows: int = 40) -> list[s
                 st = "fixed by this PR"
                 tr = ("row can flip to `expect: pass` with a lock: " + ", ".join(f"`{x}`" for x in it.get("flip", []))) if it.get("flip") else "no row recorded it"
             else:
-                st = "pre-existing on base"
+                st = "pre-existing on base" + (" (row cites no issue)" if it.get("no_issue") else "")
                 tr = tracked_text(it)
             lines.append(f"| {icon} | {where} | `{it['what']}`{cells}{(': ' + it['detail']) if it.get('detail') else ''} | {st} | {tr} |")
         if len(items) > max_rows:

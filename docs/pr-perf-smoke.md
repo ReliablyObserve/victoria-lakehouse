@@ -56,8 +56,10 @@ base commit and from the PR. Grafana, the Jaeger UI and the proxies are not star
   (29xxx, 39xxx, 47xxx), the e2e stacks (20xxx-23xxx) and loki-vl-proxy's (3002, 13xxx, 18xxx, 19428, 33xxx, 34xxx).
 - **S3 latency.** toxiproxy sits between every Lakehouse and RustFS. Latency is set through its HTTP API, the call must answer 2xx
   and the toxic is read back (`latency.py`). A probe then times the same request through the proxy and directly to RustFS,
-  interleaved, and fails the run when the measured added delay is off the injected one by more than max(10 ms, 25 %). This
-  replaces the 2026-09 injector, which exec'd into a container of another compose project, ignored the failure and measured
+  interleaved, and fails the run when the measured added delay is off the injected one by more than max(10 ms, 25 %). A second
+  check reads Lakehouse's own `lakehouse_s3_request_duration_seconds` around one cold query at 0 ms and at the injected value and
+  requires the mean to rise by about the injected delay, which proves that Lakehouse's S3 traffic crosses the proxy (the original
+  bug was a wrong path). This replaces the 2026-09 injector, which exec'd into a container of another compose project, ignored the failure and measured
   nothing: its "20/50/100 ms" columns had no latency in them. Reproduction of the old behaviour:
   `scripts/bench/with-s3-latency.sh 50 0 -- python3 scripts/bench/ab/latency.py probe --timing-only ...` prints "injected 50ms" and the probe
   measures +0.2 ms.
@@ -148,9 +150,10 @@ status change from base to PR.
 
 Rows that cannot be exercised read-only are **listed with the reason and counted, never dropped**: writes, deletes, drains and the
 cache clear; flags; rows that need a fixture the stack does not seed (edge-case logs, a second tenant for isolation, the
-field-metadata generators, the ingest matrix); streaming endpoints (`tail`); binary answers. Rows that prove nothing about the PR are
-listed apart: `arbitrary` (a `limit` without a `sort`, `facets` and tag samples keep an arbitrary subset, so two correct systems
-answer different rows), `vacuous` (empty on every target) and `unusable` (hot itself rejects the request the registry row
+field-metadata generators, the ingest matrix); streaming endpoints (`tail`); binary answers. A row whose query ends in `limit N` keeps an arbitrary subset
+of the matching rows, so two correct systems answer different rows: it is scored by membership (every row an answer returns must
+be a row of the unlimited reference answer, and an answer is empty exactly when the reference is). Rows that prove nothing about the
+PR are listed apart: `arbitrary` (`facets`, Tempo's tag lists and `sample`, which are samples by definition), `vacuous` (empty on every target) and `unusable` (hot itself rejects the request the registry row
 declares: the row needs fixing).
 
 ## Known differences and gaps

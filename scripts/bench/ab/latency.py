@@ -156,6 +156,28 @@ def mean_ms(before: tuple[float, float], after: tuple[float, float]) -> float | 
     return (after[0] - before[0]) / dn * 1000.0
 
 
+def scrape_text(url: str, timeout: float = 10.0) -> str:
+    with urllib.request.urlopen(url + "/metrics", timeout=timeout) as r:  # noqa: S310 - loopback test stack
+        return r.read().decode("utf-8", "replace")
+
+
+def lh_s3_mean_ms(url: str, run_query, peer_key: str, settle_s: float = 1.2, sleep=time.sleep) -> float | None:
+    """Mean duration (ms) of the S3 requests one cold query makes, from Lakehouse's own histogram: clear its caches, let the
+    metrics catch up (/metrics shows the state of about a second ago), run the query, let them catch up, take the difference."""
+    req = urllib.request.Request(url + "/internal/cache/clear", method="POST", headers={"Authorization": f"Bearer {peer_key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310 - loopback test stack
+            if not 200 <= r.status < 300:
+                return None
+    except (urllib.error.URLError, OSError):
+        return None
+    sleep(settle_s)
+    before = s3_duration(scrape_text(url))
+    run_query()
+    sleep(settle_s)
+    return mean_ms(before, s3_duration(scrape_text(url)))
+
+
 def lh_view_ok(mean_at_zero: float | None, mean_at_l: float | None, expect_ms: float) -> dict:
     """Lakehouse's own view: the mean S3 request duration rose by about the injected latency."""
     if mean_at_zero is None or mean_at_l is None:

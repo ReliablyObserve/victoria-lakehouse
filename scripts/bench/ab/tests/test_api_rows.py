@@ -70,7 +70,8 @@ def test_limit_without_sort_is_arbitrary_and_stats_first_only_when_it_cuts():
     f = api_rows.limit_of
     assert f({"query": "* | copy a as b | limit 100"}, "/select/logsql/query") == (100, False)
     assert f({"query": "* | stats by (x) count() | limit 5"}, "/select/logsql/query") == (5, True)
-    assert f({"query": "* | sort by (_time) | limit 100"}, "/select/logsql/query") is None
+    assert f({"query": "* | sort by (_time) | limit 100"}, "/select/logsql/query") == (100, True)   # ties on the sort key past the limit
+    assert f({"query": "* | sort by (service.name) | limit 100"}, "/select/logsql/query") is None
     assert f({"query": "*"}, "/select/logsql/query") is None
     assert f({"query": "* | limit 3"}, "/select/logsql/field_values") is None
 
@@ -88,3 +89,7 @@ def test_the_real_registry_translates_without_an_error_and_accounts_for_every_ro
     out, sk = api_rows.translate(rows, VALUES, {"seed.trace_id": "t", "seed.stream_id": "s"})
     assert len({o["row"] for o in out}) + len(sk) == len(rows)  # every row either runs (possibly on two binaries) or is listed
     assert len(out) > 100
+
+
+def test_sample_is_random_and_therefore_not_scored():
+    assert api_rows.random_pipe({"query": "* | sample 10 | limit 100"}) and not api_rows.random_pipe({"query": "* | limit 100"})

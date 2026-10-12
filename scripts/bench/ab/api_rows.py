@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re
 
+from scripts.proof.metrics.ties import tie_group_query
+
 PLACEHOLDER = re.compile(r"\{\{([a-z_.]+)\}\}")
 # Paths a read-only matrix never calls: they change data, state or availability of the stack under test.
 MUTATING_PREFIXES = ("/insert/", "/internal/insert", "/internal/delete", "/delete/", "/lakehouse/drain", "/internal/cache/clear",
@@ -110,9 +112,16 @@ def limit_of(params: dict, path: str) -> tuple[int, bool] | None:
     pipe comes first: then the limit only cuts when more than N groups exist."""
     q = (params.get("query") or "") if path.endswith("/query") else ""
     m = LIMIT_RE.search(q.strip())
-    if not m or "sort" in q:
+    if not m:
         return None
+    if "sort" in q:  # a sort keeps the first N, but rows that tie on the sort key past the limit are still an arbitrary choice
+        return (int(m.group(1)), True) if tie_group_query(q) is not None else None
     return int(m.group(1)), "stats" in q
+
+
+def random_pipe(params: dict) -> bool:
+    """`sample N` keeps every N-th row at random: two runs of the same system answer different rows."""
+    return bool(re.search(r"\|\s*sample\s+\d+", params.get("query") or ""))
 
 
 # Sample- and tie-dependent by design: hot VictoriaTraces itself answers a different tag list on every call.
@@ -187,7 +196,7 @@ def translate_row(row: dict, values: dict[str, str]) -> list[dict]:
                     "kind": k, "method": resolved["path"] and req["method"], "path": resolved["path"],
                     "params": tempo_seconds(resolved["path"], {a: str(b) for a, b in resolved["params"].items()}), "headers": resolved["headers"],
                     "limit": limit_of(resolved["params"], resolved["path"]),
-                    "arbitrary": resolved["path"].endswith(ARBITRARY_PATHS),
+                    "arbitrary": resolved["path"].endswith(ARBITRARY_PATHS) or random_pipe(resolved["params"]),
                     "expect": row["expect"], "compare": row["compare"]["type"], "lh_only": lh_only,
                     "expect_error": row["compare"]["type"] in ("error", "status", "absent")})
     return out

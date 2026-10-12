@@ -114,13 +114,30 @@ def profile_cells(spec: dict, cells: list[dict]) -> list[dict]:
     return [c for c in cells if c["set"] in CONTROL and c["shape"].get("smoke") and c["layer"] in ("cold", "compacted")]
 
 
-def set_latency(ms: float, state: dict) -> dict:
-    """Inject `ms` and prove it: the probe through the proxy vs direct must measure it, else the run is invalid."""
+PROBE_SHAPE = {"name": "latency probe", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "level:ERROR | stats count() n"}
+
+
+def lh_mean(state: dict) -> float | None:
+    """Mean S3 request duration of one cold query on the base Lakehouse, from its own histogram."""
+    end = state["layers"]["cold"]["end"]
+    start = (measure.parse_ts(end) - measure.dt.timedelta(hours=1)).strftime(measure.FMT)
+    req = measure.build_request(PROBE_SHAPE, state, "base", start, end, "numeric")
+    return latency.lh_s3_mean_ms(measure.base_url(state, "base", "logs"), lambda: measure.send(req), measure.PEER_KEY)
+
+
+def set_latency(ms: float, state: dict, mean_at_zero: float | None = None) -> dict:
+    """Inject `ms` and prove it twice: the probe through the proxy vs direct must measure it, and Lakehouse's own S3 request
+    duration must have risen by about as much (so its traffic really crosses the proxy). Else the run is invalid."""
     api = stack.api_url()
     latency.set_latency(api, ms)
     ports = stack.extra_ports()
     res = latency.probe(f"http://127.0.0.1:{ports['ab-s3-direct']}/health", f"http://127.0.0.1:{ports['ab-s3-proxied']}/health", ms)
-    log(f"S3 latency {ms:g} ms: probe measured +{res['added_ms']} ms ({'ok' if res['ok'] else 'FAILED'})")
+    res["lh_mean_ms"] = lh_mean(state)
+    if ms > 0:
+        res["lh_view"] = latency.lh_view_ok(mean_at_zero, res["lh_mean_ms"], ms)
+        res["ok"] = res["ok"] and res["lh_view"]["ok"]
+    log(f"S3 latency {ms:g} ms: probe measured +{res['added_ms']} ms; Lakehouse's own S3 mean {res['lh_mean_ms']} ms "
+        f"({'ok' if res['ok'] else 'FAILED'})")
     return res
 
 
@@ -146,6 +163,7 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
                     f"tenant 1001:0 (alias acme-corp) {c.get('logs/numeric1001/cold')} and {c.get('traces/numeric1001/cold')}; buffer window {c.get('logs/numeric/buffer')} rows and "
                     f"{c.get('traces/numeric/buffer')} spans")
     probes = [set_latency(0.0, state)]
+    mean0 = probes[0]["lh_mean_ms"]
     pre = [c for c in cells if c["layer"] != "after-restart"]
     post = [c for c in cells if c["layer"] == "after-restart"]
     parts = [run_cells(state, spec, pre, args.runs)]
@@ -164,7 +182,7 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
         if ms_ <= 0:
             continue
         sub = profile_cells(spec, cells)
-        probes.append(set_latency(ms_, state))
+        probes.append(set_latency(ms_, state, mean0))
         if sub:
             r = run_cells(state, spec, sub, args.runs)
             r.update(runs=args.runs, sets=list(sel["sets"]))
@@ -268,6 +286,7 @@ def main(argv=None) -> int:
         started = True
         result = measure_all(a, sel, spec, out, meta)
         meta["elapsed_s"] = round(time.time() - t0)
+        meta["host_load_end"] = ", ".join(f"{x:.1f}" for x in os.getloadavg())
         rows = abreg.load_rows()
         gaps = abreg.gaps_doc_issues()
         observed = knownmod.observed_from_perf(result["summary"], spec) + knownmod.observed_from_api(result["matrix"])

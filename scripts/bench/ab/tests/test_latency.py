@@ -95,3 +95,23 @@ def test_cli_probe_refuses_when_the_proxy_does_not_hold_the_toxic():
         assert latency.main(["clear", "--api", s.url]) == 1
     finally:
         s.close()
+
+
+def test_lakehouse_own_view_takes_the_histogram_difference_around_one_cold_query():
+    state = {"sum": 1.0, "count": 10.0}
+
+    def handler(method, path, headers, body):
+        if path.startswith("/metrics"):
+            return 200, f"lakehouse_s3_request_duration_seconds_sum {state['sum']}\nlakehouse_s3_request_duration_seconds_count {state['count']}\n", {}
+        if path.startswith("/internal/cache/clear"):
+            return (200, "{}", {}) if headers.get("Authorization") == "Bearer key" else (401, "no", {})
+        return 404, "", {}
+    s = Server(handler)
+    try:
+        def query():
+            state["sum"] += 0.4   # four requests of 100 ms
+            state["count"] += 4
+        assert latency.lh_s3_mean_ms(s.url, query, "key", settle_s=0, sleep=lambda x: None) == pytest.approx(100.0)
+        assert latency.lh_s3_mean_ms(s.url, query, "wrong", settle_s=0, sleep=lambda x: None) is None  # the cache could not be cleared: no figure
+    finally:
+        s.close()

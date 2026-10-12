@@ -139,7 +139,9 @@ def meta_stamp(meta: dict, summary: dict | None = None) -> str:
     if meta.get("versions"):
         bits.append("hot " + ", ".join(f"{k} {v}" for k, v in meta["versions"].items()))
     if meta.get("latency"):
-        bits.append("S3 latency " + ", ".join(f"{x['expect_ms']:g} ms (probe: +{x['added_ms']:g} ms, {'ok' if x['ok'] else 'FAILED'})" for x in meta["latency"]))
+        bits.append("S3 latency " + ", ".join(
+            f"{x['expect_ms']:g} ms (probe +{x['added_ms']:g} ms" + (f", Lakehouse's own S3 mean {x['lh_mean_ms']:.0f} ms" if x.get("lh_mean_ms") is not None else "")
+            + f", {'ok' if x['ok'] else 'FAILED'})" for x in meta["latency"]))
     if summary:
         bits.append(f"{summary.get('runs')} runs per target (first cold), warm p50; noise max({int(summary['noise'] * 100)}%, {summary['min_delta_ms']:g} ms)")
     if meta.get("data"):
@@ -147,7 +149,7 @@ def meta_stamp(meta: dict, summary: dict | None = None) -> str:
     if meta.get("elapsed_s"):
         bits.append(f"{meta['elapsed_s'] / 60:.1f} min")
     if meta.get("host_load"):
-        bits.append(f"host load {meta['host_load']}")
+        bits.append(f"host load average {meta['host_load']} at the start" + (f", {meta['host_load_end']} at the end" if meta.get("host_load_end") else ""))
     return " · ".join(bits)
 
 

@@ -11,7 +11,9 @@ JSON schema, whichever the row's comparator names); the other rounds only classi
 scored PR against base. Rows that cannot be exercised read-only are listed with the reason.
 
 Verdicts are scripts.proof.metrics': exact, same, fixed, improved, regressed, nondeterministic, vacuous, blocked,
-harness-error. The check fails on regressed, nondeterministic and harness-error, and on a status change base -> PR.
+harness-error. A row whose query ends in `limit N` keeps an arbitrary subset, so it is scored by membership: every row an
+answer returns must be a row of the unlimited reference answer (`evaluate_limited`). `facets` and Tempo's tag lists, which
+are samples, are reported as `arbitrary`. The check fails on regressed, nondeterministic and harness-error, and on a status change base -> PR.
 """
 from __future__ import annotations
 
@@ -107,6 +109,58 @@ def evaluate(req: dict, answers: dict[str, dict], resamples: list[dict[str, dict
     return res
 
 
+LIMIT_TAIL = re.compile(r"\s*\|\s*limit\s+\d+\s*$")
+
+
+def canonical_rows(body: str) -> list[str]:
+    out = []
+    for line in body.splitlines():
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.dumps(json.loads(line), sort_keys=True))
+            except ValueError:
+                out.append(line)
+    return out
+
+
+def limited_facets(universe: set[str], total: int, ans: dict) -> FacetResult:
+    """A limited query keeps an arbitrary subset, so two correct systems answer different rows. What must hold is that every
+    row an answer returns belongs to the unlimited reference answer (the pipes did the same thing to it), and that an answer
+    is empty exactly when the reference is."""
+    res = FacetResult()
+    rows = canonical_rows(ans["body"]) if (ans.get("status") or 0) == 200 else []
+    res.facets["status"] = 100.0 if ans.get("status") == 200 else 0.0
+    inside = sum(1 for r in rows if r in universe)
+    res.facets["membership"] = 100.0 if not rows else 100.0 * inside / len(rows)
+    res.facets["emptiness"] = 100.0 if bool(rows) == bool(total) else 0.0
+    if rows and inside < len(rows):
+        res.notes.append(f"{len(rows) - inside} of {len(rows)} rows are not in the unlimited reference answer")
+    res.details["rows"] = len(rows)
+    return res
+
+
+def evaluate_limited(state: dict, req: dict, answers: dict[str, dict], resamples: list[dict[str, dict]]) -> CaseResult:
+    unlimited = dict(req, params=dict(req["params"], query=LIMIT_TAIL.sub("", req["params"]["query"])))
+    env = send(state, unlimited, "ref")
+    universe = set(canonical_rows(env["body"])) if env["status"] == 200 else set()
+    total = len(universe)
+    res = CaseResult(id=f"{req['surface']}/{req['id']}", row=req["row"], surface=req["surface"], signal=SURFACE_SIGNAL[req["surface"]], endpoint=req["path"],
+                     verdict="harness-error")
+    if env["status"] != 200:
+        res.latency["error"] = f"the unlimited reference answer is {env['status']}"
+        return res
+    verdicts = []
+    for ans in [answers] + resamples:
+        b, p = limited_facets(universe, total, ans["base"]), limited_facets(universe, total, ans["pr"])
+        verdicts.append(classify(b, p))
+        if ans is answers:
+            res.base, res.pr = b, p
+    res.samples = verdicts
+    res.verdict = classify_samples(verdicts)
+    return res
+
+
 def p50(values: list[float]) -> float | None:
     return round(statistics.median(values), 2) if values else None
 
@@ -128,13 +182,16 @@ def run_request(state: dict, req: dict, rounds: int) -> dict:
     if all(400 <= (e.get("status") or 0) < 500 for e in sides) and not req["expect_error"]:
         # hot VictoriaLogs/VictoriaTraces itself rejects the request the registry declares: the row needs fixing, not the PR
         return dict(out, verdict="unusable", error=f"every target answers {status} to the request the registry row declares", status_changed=False)
-    result = evaluate(req, first, rest)
+    lim = req.get("limit")
+    if lim is not None and req["kind"] == "rows" and not req["lh_only"] and not req.get("arbitrary"):
+        result = evaluate_limited(state, req, first, rest)  # scored by membership in the unlimited reference answer
+    else:
+        result = evaluate(req, first, rest)
     verdict = result.verdict
     ref_env = first.get("ref") or first["base"]
-    lim = req.get("limit")
-    truncated = lim is not None and (not lim[1] or sum(1 for ln in ref_env["body"].splitlines() if ln.strip()) >= lim[0])
+    truncated = lim is not None and req["kind"] not in (None, "rows") and (not lim[1] or sum(1 for ln in ref_env["body"].splitlines() if ln.strip()) >= lim[0])
     if (req.get("arbitrary") or truncated) and verdict not in ("harness-error", "blocked"):
-        verdict = "arbitrary"  # not scored: the request asks for an arbitrary subset (limit without sort)
+        verdict = "arbitrary"  # not scored: the request asks for an arbitrary subset (facets, tag samples, limited lakehouse-only rows)
     return dict(out, verdict=verdict, samples=result.samples, notes=(result.pr.notes if result.pr else [])[:3],
                 base_score=None if result.base is None else result.base.score, pr_score=None if result.pr is None else result.pr.score,
                 base_worst=None if result.base is None else result.base.worst[0], pr_worst=None if result.pr is None else result.pr.worst[0],
@@ -156,6 +213,10 @@ NOT_PROVING = ("vacuous", "blocked", "arbitrary", "unusable")
 
 
 def failing(row: dict) -> bool:
+    """regressed and harness-error fail; so does a status change from base to PR. A request whose verdict flips between samples fails only
+    when one of the samples had the PR worse than the base: a flip the other way is the base being unstable, not the PR."""
+    if row["verdict"] == "nondeterministic":
+        return "regressed" in row["samples"]
     return row["verdict"] in FAILING or (row["status_changed"] and row["verdict"] not in NOT_PROVING)
 
 
