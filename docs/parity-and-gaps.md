@@ -199,7 +199,7 @@ docker compose -f tests/parity/docker-compose.yml up -d
 # unchanged across four checks 5s apart. The "Wait for LH to flush and settle" step of
 # .github/workflows/parity.yaml is that poll.
 docker compose -f tests/parity/docker-compose.yml --profile test run --rm --no-deps -T \
-  parity-tests go test -tags=parity -json -count=1 -timeout=15m ./... \
+  parity-tests go test -tags=parity -json -count=1 -timeout=25m ./... \
   > parity-results.json
 python scripts/ci/parity_ratchet.py --results parity-results.json
 docker compose -f tests/parity/docker-compose.yml down -v
