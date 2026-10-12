@@ -18,10 +18,10 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
-| Ops | 14 | 0 | 1 | 0 | 15 |
+| Ops | 14 | 0 | 2 | 0 | 16 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **151** | **1** | **2** | **8** | **162** |
+| **Total** | **151** | **1** | **3** | **8** | **163** |
 
 ## Coverage gaps
 
@@ -1623,7 +1623,7 @@ Cold-query latency is a sum of many small object-store operations, which aggrega
 - Verification: tests: `internal/telemetry/telemetry_test.go`, `internal/telemetry/traced_storage_test.go`, `internal/telemetry/traced_writer_test.go`, `internal/config/telemetry_test.go`
 - Docs: `docs/telemetry.md`
 
-## Ops (15)
+## Ops (16)
 
 ### 🔧 API data-proof metrics
 
@@ -1759,6 +1759,18 @@ The promise that Lakehouse files are plain Parquet is only as good as the last e
 - Docs: `docs/open-parquet-format.md`
 - Changelog: `0.85.0`
 - Note: The engine comparison itself (`verify.py` reading the generated files with pyarrow and DuckDB) is the `parquet-readback` CI job, not a test the catalog can link. The linked tests, which run in that job first, read the generated files back and check the truth the engines are compared against and the production writer options the files carry.
+
+### 🔧 PR perf smoke, API matrix and known-differences report
+
+`lh.feature.ops.pr_perf_smoke` · status: in-progress · surfaces: cli
+
+**PR perf smoke**: a pull request's Lakehouse build against `main` and against hot VictoriaLogs / VictoriaTraces on one isolated stack, per signal, layer and shape, with every answer validated and the S3 requests of each query counted, behind a latency injector whose delay is measured by a probe.
+
+A performance claim is only as good as the stack it was measured on. The smoke builds the base and the PR, seeds the same rows into hot VictoriaLogs/VictoriaTraces, base and PR, force-compacts the older hours, and asks named shape sets the same questions of all three in turn, one cold run and five warm. A fast empty, wrong or flapping answer is never a latency. S3 latency is injected through toxiproxy's API, read back and verified by a probe that fails the run when the measured delay is off: the earlier injector measured nothing. Every registry endpoint row that can be read without changing the stack is sent to the three targets and scored; every difference found is joined with the registry's `differ`, `unsupported` and `absent` rows and their issues, and one that the pull request introduces, or that no row records, fails the check and is printed as such.
+
+- Verification: tests: `scripts/bench/ab/tests/test_validate.py`, `scripts/bench/ab/tests/test_latency.py`, `scripts/bench/ab/tests/test_report.py`, `scripts/bench/ab/tests/test_measure.py`, `scripts/bench/ab/tests/test_selection.py`, `scripts/bench/ab/tests/test_known.py`, `scripts/bench/ab/tests/test_api_rows.py`, `scripts/bench/ab/tests/test_api_matrix.py`, `scripts/bench/ab/tests/test_comment.py`, `scripts/bench/ab/tests/test_stack.py`, `scripts/bench/ab/tests/test_quality.py`, `scripts/bench/ab/tests/test_components.py`, `scripts/bench/ab/tests/test_pr_smoke.py`, `scripts/bench/ab/tests/test_old_injector.py`, `scripts/bench/ab/tests/test_report.py#test_b1_a_pr_that_answers_the_cold_run_and_flaps_on_every_warm_run_is_unstable_not_n_a`, `scripts/bench/ab/tests/test_comment.py#test_m1_the_other_latency_profiles_reach_the_verdict`, `scripts/bench/ab/tests/test_selection.py#test_m4_a_dependency_bump_in_the_traces_module_and_non_go_runtime_files_are_not_skipped`, `scripts/bench/ab/tests/test_latency.py#test_an_injector_that_fails_raises_instead_of_being_swallowed`, `scripts/bench/ab/tests/test_latency.py#test_an_injector_that_answers_200_but_changes_nothing_is_caught_by_the_read_back`, `scripts/bench/ab/tests/test_latency.py#test_probe_evaluation_passes_on_the_injected_delay_and_fails_off_it`, `scripts/bench/ab/tests/test_validate.py#test_error_status_empty_and_flapping_are_never_valid`, `scripts/bench/ab/tests/test_known.py#test_a_difference_on_a_row_that_says_pass_is_untracked_and_fails`
+- Docs: `docs/pr-perf-smoke.md`
+- Note: Tooling for pull requests, run by hand until the GitHub Actions wiring lands (a separate change); the harness tests are standard-library plus PyYAML Python (`make ab-test`). The shape sets and their `covers` are checked against this registry by `make conformance-check` (`scripts/bench/ab/selection.py --check`).
 
 ### ✅ Three-level profile hierarchy
 

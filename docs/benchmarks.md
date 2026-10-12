@@ -7,6 +7,10 @@ sidebar_position: 17
 
 Victoria Lakehouse includes two benchmark tools: `cmd/loadtest` for latency and throughput testing against a running instance, and `cmd/datagen` for generating realistic test data. This document describes how to run each benchmark mode, interpret results, and integrate with CI.
 
+For a pull request, `scripts/bench/ab` measures the PR's build against `main` and against hot VictoriaLogs / VictoriaTraces on one
+isolated stack, with a verified S3 latency injector, validated answers and the S3 requests of every query; see
+[PR perf smoke](pr-perf-smoke.md).
+
 ## Performance Targets
 
 The benchmark suite validates these p95 latency targets:

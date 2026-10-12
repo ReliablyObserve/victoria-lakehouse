@@ -44,7 +44,7 @@ VT_VERSION := v0.12.0
 VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
 VT_DIR := lakehouse-traces/deps/VictoriaTraces
 
-.PHONY: build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt sync-vmui sync-vmui-traces conformance-gen conformance-check registry-gate gate-replay config-surface config-docs config-drift
+.PHONY: ab-test ab-check build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt sync-vmui sync-vmui-traces conformance-gen conformance-check registry-gate gate-replay config-surface config-docs config-drift
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -163,6 +163,16 @@ conformance-gen: deps-logs deps-traces deps-vt
 conformance-check: deps-logs deps-traces deps-vt
 	go run ./tests/conformance/cmd/confgen -check
 	CONFORMANCE_REQUIRE_DEPS=1 go test ./tests/conformance/... -count=1 -timeout=5m
+	python3 scripts/bench/ab/selection.py --check
+
+# The PR perf smoke's shape sets against the registry (no unknown id, every shape covers something reachable).
+# Part of conformance-check; docs/pr-perf-smoke.md.
+ab-check:
+	python3 scripts/bench/ab/selection.py --check
+
+# Unit tests of the PR perf smoke harness (scripts/bench/ab): pip install -r scripts/bench/ab/requirements.txt
+ab-test:
+	python3 -m pytest scripts/bench/ab/tests -q
 
 # The registry gate on the current HEAD against origin/main (scripts/ci/gate_local.sh): the same
 # report as the CI checks, with three differences it says out loud. It runs YOUR WORKING TREE's gate
