@@ -148,30 +148,32 @@ insert buffer. Benchmarks: `BenchmarkInsertAdapter_Admission` and
 `BenchmarkInsertAdapter_MixedTenants` (`BenchmarkVTInsertAdapter_MixedTenants` in
 the traces module) in `internal/vlstorage` and `lakehouse-traces/internal/vlstorage`:
 100 rows, 10 streams (the mixed one 10 tenants), main against this branch, the
-two builds run interleaved. Two runs are given because the noise of each is 10-20%: run A
-(`-count=6`, 200 000 iterations) and run B (12 interleaved runs of each build). "n.s." is a difference inside the noise.
+two builds run interleaved. Two runs are given because the noise of each is
+10-20%: run A (`-count=6`, 200 000 iterations) and run C (8 interleaved runs of
+each build, 200 000 iterations, `benchstat`, p < 0.05 unless "n.s.").
 
-| Signal | Case | Run A, change vs main | Run B, µs per batch, main → branch |
+| Signal | Case | Run A, change vs main | Run C, µs per batch, main → branch |
 |---|---|---|---|
-| logs | no gate | n.s. (+2 allocs, +16% B/op) | 2.27 → 2.16 (n.s.) |
-| logs | gate admits all | n.s. | 2.26 → 2.16 (n.s.) |
-| logs | gate refuses half of the streams | +19% time (89 vs 55 allocs) | 8.30 → 10.15 (+22%) |
-| logs | 10 tenants in the batch, gate refuses half | +41% time (B/op +352%) | not run |
-| traces | no gate | +27% time (933 → 1185 ns) | 1.15 → 1.51 (+32%) |
-| traces | gate admits all | n.s. | 3.46 → 3.82 (n.s.) |
-| traces | gate refuses half of the streams | +20% time | 10.3 → 13.8 (+34%) |
+| logs | no gate | n.s. (+2 allocs, +16% B/op) | 1.55 → 1.77 (+14%) |
+| logs | gate admits all | n.s. | 1.56 → 1.71 (+9%) |
+| logs | gate refuses half of the streams | +19% (89 vs 55 allocs) | 6.45 → 7.97 (+24%) |
+| logs | 10 tenants in the batch, gate refuses half | +41% (B/op +352%) | 6.49 → 9.42 (+45%; B/op +352%, allocs 55 → 119) |
+| traces | no gate | +27% (933 → 1185 ns) | 0.90 → 1.18 (+31%) |
+| traces | gate admits all | n.s. | 2.53 → 2.80 (+11%) |
+| traces | gate refuses half of the streams | +20% | 8.25 → 9.63 (+17%) |
+| traces | 10 tenants in the batch, gate refuses half | not run | 8.27 → 11.05 (+34%; B/op +175%) |
 
-Lakehouse is slower than main in the refusing cases and in the traces no-gate
-case; the cost is the price of the fix, and the batch sizes above are small. A
-batch with refused rows is slower because every refused row is now counted and
-logged (throttled) per tenant and stream, which main did not do at all (main
-dropped those rows silently), and a batch that mixes tenants keeps one verdict
-map per tenant. The traces binary without a gate is slower because the
-before-the-epoch check visits every span (a `_time` before 1970 is refused
-before the buffer, §2). The largest absolute difference in either run is about
-3.5 µs per batch of 100 rows. The insert buffer's own work on the same batch
-is measured by `BenchmarkInsertAdapter_IntoRealSegment`. The usual case, one
-tenant with a gate that admits everything, is within noise in both signals.
+Lakehouse is slower than main in every case of run C, by 9% to 45%, and run A
+found only some of them outside its noise. The largest absolute difference is
+about 3 µs per batch of 100 rows (the 10-tenant case). The causes: every refused
+row is now counted and logged (throttled) per tenant and stream, which main did
+not do at all (main dropped those rows silently); a batch that mixes tenants
+keeps one verdict map per tenant; and each row now passes the before-the-epoch
+check (a `_time` before 1970 is refused before the buffer, §2), which is the
+assumed cause (not isolated) of the 0.15 to 0.3 µs the no-gate and admit-all
+cases cost more. The insert
+buffer's own work on the same batch is measured by
+`BenchmarkInsertAdapter_IntoRealSegment`.
 
 `TenantStreamMap`, which holds the verdicts of a batch, keeps one plain map for
 the first tenant of the batch and a map per further tenant, so its memory is
