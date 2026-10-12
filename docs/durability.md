@@ -424,7 +424,9 @@ today.
    passed; `TestDrain_MovingAStalledSegmentAside`). **Never move your only copy
    back**: the directory is deleted. Nothing re-imports a segment that was moved
    aside; keep the copy from step 4 outside `insert.buffer_dir` for as long as
-   the rows matter.
+   the rows matter. There is no supported override yet; an opt-in policy for a
+   stalled segment (`hold`, or `write-planned` with the unplanned rows counted as
+   lost) is proposed in issue #509.
 
 The dirty pmeta bundles (the bloom facet cannot be rebuilt from the manifest) are
 written after each drain and retried on every tick.
