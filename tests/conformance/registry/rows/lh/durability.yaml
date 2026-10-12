@@ -198,6 +198,8 @@
       - internal/storage/parquets3/drain_invariant_test.go#TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover
       - internal/storage/parquets3/drain_invariant_test.go#TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment
       - internal/storage/parquets3/drain_invariant_test.go#TestPlanSegment_ReadErrorsAreNotInvariantViolations
+      - internal/storage/parquets3/drain_invariant_test.go#TestPlanSegment_AFailingTenantIsReportedNotHeld
+      - internal/storage/parquets3/drain_invariant_test.go#TestPlanTenant_Checks
   notes: "The runtime check that would have stopped #388: the drain compares its plan with a count of every row of every tenant over all of int64 time before the first upload, and each group's rows with the plan. A mismatch is lakehouse_buffer_flush_errors_total{stage=\"invariant\"}, an error log, and the segment stays pending (it blocks the later segments until the volume's free-space floor answers 429)."
 
 - id: lh.durability.drain_plan_mismatch_traces
@@ -220,6 +222,8 @@
       - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover
       - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment
       - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestPlanSegment_ReadErrorsAreNotInvariantViolations
+      - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestPlanSegment_AFailingTenantIsReportedNotHeld
+      - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestPlanTenant_Checks
   notes: "Same check in the traces binary."
 
 - id: lh.durability.kill_between_upload_and_commit_logs
