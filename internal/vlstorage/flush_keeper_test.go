@@ -7,31 +7,30 @@ type fakeGate struct{ deny map[string]bool }
 
 func (g fakeGate) AllowStream(_, _ uint32, stream string) bool { return !g.deny[stream] }
 
-func TestFlushRowKeeper_GatePredicate(t *testing.T) {
+// The flush filter does not consult the tenant cardinality gate: a row in the
+// insert buffer was admitted when it was added, and the gate (process-local,
+// empty after a restart) must not judge it again (#389). The insert path still
+// applies the gate; only the stateless drop of trace-shaped streams remains at
+// the flush.
+func TestFlushRowKeeper_IgnoresTheCardinalityGate(t *testing.T) {
 	orig := globalCardinalityGate
 	t.Cleanup(func() { globalCardinalityGate = orig })
 
-	// No gate → keep everything.
-	SetCardinalityGate(nil)
+	denied := `{service.name="blocked"}`
+	SetCardinalityGate(fakeGate{deny: map[string]bool{denied: true}})
 	keep := FlushRowKeeper()
-	if !keep(1, 2, `{service.name="api-gateway"}`) {
-		t.Fatal("nil gate must keep all rows")
+	if !keep(1, 2, denied) {
+		t.Fatal("the flush filter dropped a stream the cardinality gate denies; the gate is applied when a row is added, never at the flush")
 	}
-	if !keep(1, 2, "") {
-		t.Fatal("empty stream must be kept")
+	if admitted, _ := keepStream(1, 2, denied); admitted {
+		t.Fatal("the insert path admitted a stream the cardinality gate denies")
 	}
-
-	// With a gate → drop only denied streams.
-	SetCardinalityGate(fakeGate{deny: map[string]bool{`{service.name="blocked"}`: true}})
-	keep = FlushRowKeeper()
-	if keep(1, 2, `{service.name="blocked"}`) {
-		t.Fatal("cardinality-denied stream must be dropped")
+	if !keep(1, 2, `{service.name="api-gateway"}`) || !keep(1, 2, "") {
+		t.Fatal("an ordinary stream, and the empty stream, must be kept")
 	}
-	if !keep(1, 2, `{service.name="api-gateway"}`) {
-		t.Fatal("allowed stream must be kept")
-	}
-	// Empty stream short-circuits before the gate (never denied).
-	if !keep(1, 2, "") {
-		t.Fatal("empty stream must be kept even with a gate")
+	// Stateless: the trace-shaped drop does not depend on the gate.
+	SetCardinalityGate(nil)
+	if keep(1, 2, `{resource_attr:service.name="api"}`) {
+		t.Fatal("a trace-shaped stream must not be written as logs")
 	}
 }

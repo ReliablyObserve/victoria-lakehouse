@@ -479,6 +479,14 @@ var (
 	// is below its free-space floor. An unreachable object store refuses
 	// nothing: the rows wait in the buffer.
 	InsertRejected = NewCounterVec("lakehouse_insert_rejected_total", "reason")
+	// InsertRowsDropped counts rows the insert buffer refused when they were
+	// added, as upstream's storage drops rows outside its time window (its
+	// vl_rows_dropped_total): reason="too_small_timestamp" is a row whose _time
+	// is before the Unix epoch, which the Parquet layout, the manifest and the
+	// drain cannot hold. The request that carried it is still acknowledged, as
+	// upstream acknowledges it. A row counted here was never acknowledged into
+	// storage: nothing the buffer holds is lost later.
+	InsertRowsDropped = NewCounterVec("lakehouse_insert_rows_dropped_total", "reason")
 	// InsertFlushTotal counts buffer segments written to object storage
 	// completely; InsertFlushErrorsTotal the drains that stopped on an error
 	// (they resume, with the same bytes, after a back-off); InsertFlushDuration

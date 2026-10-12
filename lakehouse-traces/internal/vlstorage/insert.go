@@ -13,6 +13,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
 
 // vtInternalKindTraceIDIdx is the "kind" label of metrics.VTInternalRowsDropped
@@ -34,30 +35,34 @@ func SetCardinalityGate(g TenantCardinalityGate) {
 	globalCardinalityGate = g
 }
 
-// keepStream is the admission rule of the traces binary, applied when a row is
-// added to the insert buffer and again when it is flushed: a stream over its
-// tenant's cardinality limit is dropped.
+// keepStream is the admission rule of the traces binary for a stream, applied
+// once, when a row is added to the insert buffer: a stream over its tenant's
+// cardinality limit is dropped. The limiter is per process and starts empty, so
+// the decision cannot be repeated later: the flusher uses FlushRowKeeper, which
+// holds only the part that does not depend on state.
 func keepStream(accountID, projectID uint32, stream string) bool {
 	return globalCardinalityGate == nil || stream == "" ||
 		globalCardinalityGate.AllowStream(accountID, projectID, stream)
 }
 
-// FlushRowKeeper returns the flusher's keep filter: the admission rule the
-// insert path applies (keepStream), read live so it tracks SetCardinalityGate,
-// and the drop of VictoriaTraces' trace_id_idx rows. Those rows stay in the
-// insert buffer, where hot VictoriaTraces also returns them for unflushed
-// data; they are never written to Parquet (only the _trace_idx footer is used
-// in reads, never a Parquet row); each one dropped is counted in
+// FlushRowKeeper returns the flusher's keep filter. A row in the insert buffer
+// was admitted when it was added and acknowledged, so the flusher never judges
+// it by a limit again: the tenant cardinality gate is process-local and empty
+// after a restart, and applying it here dropped acknowledged rows (#389). The
+// one drop that remains does not depend on state: VictoriaTraces' trace_id_idx
+// rows stay in the insert buffer, where hot VictoriaTraces also returns them for
+// unflushed data; they are never written to Parquet (only the _trace_idx footer
+// is used in reads, never a Parquet row); each one dropped is counted in
 // lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}, which the
 // parity check uses to explain the difference from hot VictoriaTraces.
 // service_graph rows are kept.
 func FlushRowKeeper() func(accountID, projectID uint32, stream string) bool {
-	return func(accountID, projectID uint32, stream string) bool {
+	return func(_, _ uint32, stream string) bool {
 		if strings.Contains(stream, otelpb.TraceIDIndexStreamName) {
 			metrics.VTInternalRowsDropped.Inc(vtInternalKindTraceIDIdx)
 			return false
 		}
-		return keepStream(accountID, projectID, stream)
+		return true
 	}
 }
 
@@ -112,19 +117,28 @@ func spanRows(lr *logstorage.LogRows) int {
 	return n
 }
 
-// admittedRows returns the rows of lr that keepStream admits: lr itself when it
-// admits them all (the common case), nil when it admits none, otherwise a copy
-// (owned is then true and the caller releases it). The decision is made once
-// per stream of the batch.
+// admittedRows returns the rows of lr that the admission rule admits: lr itself
+// when it admits them all (the common case), nil when it admits none, otherwise
+// a copy (owned is then true and the caller releases it). The rule has two
+// parts, and both are decided here, when the row is added, never again when it
+// is flushed: a span before the Unix epoch is refused (storage.BeforeEpoch; an
+// OTLP start time above 2^63 ns wraps to one), and keepStream decides the
+// stream, once per stream of the batch. A refused row does not take a slot of
+// its tenant's cardinality limit.
 func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) {
-	if globalCardinalityGate == nil {
-		return lr, false
-	}
 	decided := map[uint64]bool{}
 	var st logstorage.StreamTags
 	dropped, total := 0, 0
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
 		total++
+		if storage.BeforeEpoch(r.Timestamp) {
+			dropped++
+			storage.NoteBeforeEpoch(r)
+			return
+		}
+		if globalCardinalityGate == nil {
+			return
+		}
 		keep, ok := decided[streamHash]
 		if !ok {
 			stream := ""
@@ -149,7 +163,10 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 	}
 	cp := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
-		if decided[streamHash] {
+		if storage.BeforeEpoch(r.Timestamp) {
+			return
+		}
+		if globalCardinalityGate == nil || decided[streamHash] {
 			cp.MustAddInsertRow(r)
 		}
 	})

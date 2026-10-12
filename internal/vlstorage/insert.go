@@ -31,10 +31,12 @@ func SetCardinalityGate(g TenantCardinalityGate) {
 	globalCardinalityGate = g
 }
 
-// keepStream is the admission rule of the logs binary, applied when a row is
-// added to the insert buffer and again when it is flushed: a stream that
-// identifies trace spans, not logs, is dropped (see storage.IsTraceShapedStream),
-// and so is a stream over its tenant's cardinality limit.
+// keepStream is the admission rule of the logs binary for a stream, applied
+// once, when a row is added to the insert buffer: a stream that identifies trace
+// spans, not logs, is dropped (see storage.IsTraceShapedStream), and so is a
+// stream over its tenant's cardinality limit. The limiter is per process and
+// starts empty, so the decision cannot be repeated later: the flusher uses
+// FlushRowKeeper, which holds only the part that does not depend on state.
 func keepStream(accountID, projectID uint32, stream string) (keep bool, traceShaped bool) {
 	if storage.IsTraceShapedStream(stream) {
 		return false, true
@@ -46,13 +48,16 @@ func keepStream(accountID, projectID uint32, stream string) (keep bool, traceSha
 	return true, false
 }
 
-// FlushRowKeeper returns the flusher's keep filter: the same admission rule
-// the insert path applies (keepStream), read live so it tracks
-// SetCardinalityGate.
+// FlushRowKeeper returns the flusher's keep filter. A row in the insert buffer
+// was admitted when it was added and acknowledged, so the flusher never judges
+// it by a limit again: the tenant cardinality gate is process-local and empty
+// after a restart, and applying it here dropped acknowledged rows (#389). Only a
+// filter that depends on the stream alone remains: a trace-shaped stream (which
+// the insert path refuses too; a buffer written by an earlier release may still
+// hold such rows) is not written as logs.
 func FlushRowKeeper() func(accountID, projectID uint32, stream string) bool {
-	return func(accountID, projectID uint32, stream string) bool {
-		keep, _ := keepStream(accountID, projectID, stream)
-		return keep
+	return func(_, _ uint32, stream string) bool {
+		return !storage.IsTraceShapedStream(stream)
 	}
 }
 
@@ -91,10 +96,13 @@ func (a *insertAdapter) MustAddRows(lr *logstorage.LogRows) {
 	}
 }
 
-// admittedRows returns the rows of lr that keepStream admits: lr itself when it
-// admits them all (the common case), nil when it admits none, otherwise a copy
-// (owned is then true and the caller releases it). The decision is made once
-// per stream of the batch.
+// admittedRows returns the rows of lr that the admission rule admits: lr itself
+// when it admits them all (the common case), nil when it admits none, otherwise
+// a copy (owned is then true and the caller releases it). The rule has two
+// parts, and both are decided here, when the row is added, never again when it
+// is flushed: a row before the Unix epoch is refused (storage.BeforeEpoch), and
+// keepStream decides the stream, once per stream of the batch. A refused row
+// does not take a slot of its tenant's cardinality limit.
 func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) {
 	type verdict struct{ keep, traceShaped bool }
 	decided := map[uint64]verdict{}
@@ -102,6 +110,11 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 	dropped, total := 0, 0
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
 		total++
+		if storage.BeforeEpoch(r.Timestamp) {
+			dropped++
+			storage.NoteBeforeEpoch(r)
+			return
+		}
 		v, ok := decided[streamHash]
 		if !ok {
 			stream := ""
@@ -129,7 +142,7 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 	}
 	cp := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
-		if decided[streamHash].keep {
+		if !storage.BeforeEpoch(r.Timestamp) && decided[streamHash].keep {
 			cp.MustAddInsertRow(r)
 		}
 	})
