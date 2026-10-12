@@ -169,6 +169,10 @@ func fmtSlotRows(hour, slot int) []schema.TraceRow {
 			TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts),
 			TraceID: "t" + id, SpanID: "s" + id,
 			SpanName: name, ServiceName: svc, DurationNs: schema.Int64Ptr(int64(i%500) * 1000),
+			// OTLP ingest writes kind and status_code for every span (0 when the
+			// span leaves them unset), so the generated span sets both to 0, the
+			// value these columns held before they became nullable.
+			SpanKind: schema.Int32Ptr(0), StatusCode: schema.Int32Ptr(0),
 			Stream: fmtStream(svc), StreamID: "id-" + svc,
 		})
 	}
