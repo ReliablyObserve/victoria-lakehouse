@@ -1,0 +1,65 @@
+# Expected verdicts of the registry gate over recorded and synthetic pull requests.
+# Read by scripts/ci/gate_replay.sh (its header documents the columns).
+#
+#   id | kind | base | head | author | verdict | failing rules | report must contain | title
+#
+# Exactly nine columns (the replay refuses a row with another count); a literal '|' inside a cell
+# is written '\|'. For a synthetic row the title is also the commit subject.
+#
+# Every row is pinned by sha, so the replay is deterministic. `failing rules` is the exact set,
+# so a regression that fails a case for the wrong reason is caught too. When a rule changes on
+# purpose, change the row in the same pull request and say why in its description.
+#
+# Groups:
+#   open       pull requests that were open when recorded (a head that was force-pushed away is
+#              reported UNAVAILABLE in CI, never silently skipped; replace the row by the squash
+#              commit once the pull request is merged)
+#   main       squash commits of main: head is the commit, base its parent
+#   synthetic  built in a scratch clone by gate_replay.sh, one temporary commit each
+#
+# The FAIL rows of old product pull requests are strictness locks: those pull requests predate
+# the rules the gate enforces now (Rule 1 content change, Rule 2 file#Test links, Rule 3 locks),
+# so the current gate must keep rejecting them for exactly these rules.
+pr487 | open | 3c4c8650dcdeb795e49829de46403ad1260b83dc | e9ea7f1a2ed43d9aa314dd8661d50a240ca8ef94 | reliablyobserve-bot | FAIL | Rule 3 | - | fix(fields): field_names and stream_field_names answer from the rows like hot VL/VT (both binaries)
+pr483 | open | 3c4c8650dcdeb795e49829de46403ad1260b83dc | 41db0a8f42587807a284bf56be29449f23389fe9 | reliablyobserve-bot | PASS | - | parity-fix PR: true | fix(logs,traces): a field a row never carried stays absent; nullable severity_number and numeric span columns (#274)
+pr492 | main | 94c9554f54fcb2d4727958fa2b2cf292bb46de2d | 7429c8679d7a836261a2a40d251a953ac4596fda | szibis | PASS | - | release-metadata | chore: release metadata for v0.146.10 [skip release] (#492)
+pr491 | main | 3c4c8650dcdeb795e49829de46403ad1260b83dc | 94c9554f54fcb2d4727958fa2b2cf292bb46de2d | reliablyobserve-bot | PASS | - | toolchain-only | fix(security): Go 1.27.2 and golang.org/x/net v0.60.0 fix 12 govulncheck advisories (#491)
+pr490 | main | 7429c8679d7a836261a2a40d251a953ac4596fda | 883039b0fe3a02af058e008a22cb0dd406bf0fec | reliablyobserve-bot | PASS | - | - | ci(proof): the 100k-row performance check measures growth, not a machine-dependent time [skip release] (#490)
+pr488 | main | 883039b0fe3a02af058e008a22cb0dd406bf0fec | dc784a024b800b0210c6bea2c1263894523c7fd8 | szibis | PASS | - | - | deps: loki-vl-proxy v2.9.0 for the e2e/proof stack [skip release] (#488)
+pr471 | main | 3acc177d2ca648763a76bad4b6c90d7db9e7d7b5 | 3c4c8650dcdeb795e49829de46403ad1260b83dc | szibis | PASS | - | release-metadata | chore: release metadata for v0.146.9 [skip release] (#471)
+# A real Go-module bump: OpenTelemetry v1.45.0 moves go.opentelemetry.io/proto/otlp and google.golang.org/genproto, which decide wire formats
+# (storage-critical in CRITICAL_MODULE_PREFIXES), so it is a product change that needs registry coverage, whatever the title says.
+pr313 | main | 510f44117402dc695d0263b0f4887347ac84853b | feac4e2776901fce8230b03d4982a147d07158eb | szibis | FAIL | Rule 1 | - | fix(deps): OpenTelemetry Go v1.45.0 in both modules (GO-2026-6505) (#313)
+pr470 | main | f7d8264bf079e8034d54cfdfa0f05509df590ec0 | 3acc177d2ca648763a76bad4b6c90d7db9e7d7b5 | dependabot[bot] | PASS | - | dependency-only | chore(deps): bump pytest (#470)
+pr467 | main | 1cc31eeb10783bd4795e840026e41c2ae105941a | f7d8264bf079e8034d54cfdfa0f05509df590ec0 | szibis | PASS | - | - | ci(proof): follow-ups of the #465 review: steadier seeds, safer ports, dotted fields, #452 triage [skip release] (#467)
+pr438 | main | c0172b30daa246128e6623d5384d18f9e670562f | 054954edbd5e44757cd6b67086a1c2516cf9214a | szibis | PASS | - | Rule 1: a product change changes the registry \| PASS | fix(read): field_values over map attributes returns the attribute's own values on cold (both binaries) (#438)
+pr444 | main | 2e706b5886954df867e39267bbfce732859a47d1 | 959ab8ce92f7540fddf6c6f79633f5488d59b559 | szibis | PASS | - | Gate files changed | ci: registry gate hardening from the independent review [skip release] (#444)
+pr436 | main | ddcbdf9d5407c629a63bf84b963a329db5568acc | 56a6a592ff1f34d7cd14f05535af5a3f3d5b4208 | szibis | PASS | - | Gate files changed | ci: every product change and new test must be covered in the conformance registry [skip release] (#436)
+pr329 | main | 83c6ce9eb5e4ce02fc3eef6cc6d16a1b08028a87 | 671d5430d46ad186635495c7e4c972d5df75d272 | szibis | PASS | - | - | test(read): slowest parquets3 property tests run a smaller sample under -short (main test-logs over budget) [skip release] (#329)
+pr323 | main | c9207e5c0679c0448959e4d84dfd8a29791e1a9c | 4b540e678090d8f7ac09b6166e5c440487027171 | szibis | PASS | - | - | ci(changelog): compare a PR from its merge-base, not the moving base tip (#323)
+pr282 | main | 330bef3f97209db1242efd71c4aab2cf80557116 | 1907f38976eb9b0a5204ab77e84f4380cc26aaa4 | dependabot[bot] | PASS | - | toolchain-only | chore(deps): bump golang from 1.26.8-alpine3.23 to 1.27.1-alpine3.23 (#282)
+pr430 | main | 7ed7f81b58fb1a269567145f79bbca97750633d4 | db8a7a4d581207c880c628d40d8001d33a24d712 | szibis | FAIL | Rule 2,Rule 3 | - | fix(traces): keep span events, links and scope attributes on cold storage (closes #409) (#430)
+pr412 | main | f8b6992714c6f5669ac8531e63e60f3dfef0d378 | bdab914d7f8a069f8dd03e0515080b5aa0ba4ed2 | szibis | FAIL | Rule 2 | - | fix(stats): admin parity compares the same tenants and an hour-aligned window, and reports unflushed rows (both binaries) (#412)
+pr369 | main | 70a6c6ae711d10a0aa81089151a08594d7a925ea | 9723104d2c64c31d14b92f792ce5b72936200bd1 | szibis | FAIL | Rule 1,Rule 2 | - | fix(buffer): retire committed segments past their grace so overlapping queries cannot keep them alive (both binaries) (#369)
+pr310 | main | 4d1d02dd9be68edcdc32b773a34634ff37ac13b6 | 1c23300aceda7084d40e8fac5d28d7d31e43d9c4 | szibis | FAIL | Rule 2,Rule 3 | - | perf(read): open cached Parquet files with zero S3 round trips; planned read mode by default (#310)
+syn_toolchain_bump | synthetic | - | toolchain_bump | replay | PASS | - | toolchain-only | replay: toolchain_bump
+syn_toolchain_base_image | synthetic | - | toolchain_bump_and_base_image | replay | FAIL | Rule 1 | - | replay: toolchain_bump_and_base_image
+syn_toolchain_product_change | synthetic | - | toolchain_bump_and_product_change | replay | FAIL | Rule 1 | - | replay: toolchain_bump_and_product_change
+syn_toolchain_resolve | synthetic | - | toolchain_bump_and_resolve_divergence | replay | FAIL | Rule 3 | toolchain-only | replay: toolchain_bump_and_resolve_divergence
+syn_toolchain_lower_floor | synthetic | - | toolchain_bump_and_lower_floor | replay | FAIL | Rule 1,Rule 3 | - | replay: toolchain_bump_and_lower_floor
+syn_delete_lock_reference | synthetic | - | delete_lock_reference | replay | FAIL | Rule 3 | - | replay: delete_lock_reference
+syn_product_no_registry | synthetic | - | product_change_no_registry | replay | FAIL | Rule 1 | - | replay: product_change_no_registry
+syn_unlinked_new_test | synthetic | - | unlinked_new_test | replay | FAIL | Rule 2 | - | replay: unlinked_new_test
+syn_lock_code_edit | synthetic | - | lock_code_edit | replay | PASS | - | Lock-affecting files | replay: lock_code_edit
+# The smuggles of the independent review of this gate (a line break Python saw and Docker/Go did not, a Unicode
+# digit). Each wears the title an attacker would choose; every one must stay an ordinary product change (Rule 1),
+# and the dependency shapes must not escape the registry check either.
+syn_cr_fips | synthetic | - | cr_fips | replay | FAIL | Rule 1 | - | fix(security): Go 1.27.3 fixes advisories
+syn_cr_replace_tc | synthetic | - | cr_replace_tc | replay | FAIL | Rule 1 | - | fix(security): Go 1.27.3 fixes advisories
+syn_tc_unidigit | synthetic | - | tc_unidigit | replay | FAIL | Rule 1 | - | fix(security): Go 1.27.3 fixes advisories
+syn_cr_replace_dep | synthetic | - | cr_replace_dep | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/net
+syn_u2028_replace_dep | synthetic | - | u2028_replace_dep | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/net
+# A lock package may not gain a load-time init() (or package var): the nonce-triggered os.Exit(0) of the review.
+syn_init_exit | synthetic | - | init_exit | replay | FAIL | Rule 3 | - | test(parity): add an environment hook
+# dependency-only is decided from the diff, never from the title or commit subject.
+syn_dependency_bump | synthetic | - | dependency_bump | replay | PASS | - | dependency-only | chore: tidy things

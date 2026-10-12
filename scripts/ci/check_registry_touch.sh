@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
+# The registry gate. It decides from the verified content of the diff alone: there is
+# no exemption by label, by PR text or by who asks. Run it locally with
+# `make registry-gate`: it is the same code path as the two CI checks.
+#
 # A PR that changes HTTP route registrations, upstream pins or patches must also
 # change the conformance registry (or the inventory). A PR that changes the
-# inventory extractors must also regenerate the committed inventory.
+# inventory extractors must also regenerate the committed inventory. Rules 1-3
+# (below) are decided by tests/conformance/cmd/testlinks.
+#
+# The verdict is ONE Markdown report: appended to $GITHUB_STEP_SUMMARY in CI, printed
+# otherwise. Exit status is nonzero only for a hard failure. Edits of lock code and of
+# the gate's own files are listed in the report, not failed: the pull request's
+# required review covers them.
 # Base ref in $1 (default origin/main).
 set -euo pipefail
 # Byte-order collation, so `sort` and `comm` agree on every runner and locale.
@@ -13,7 +23,121 @@ HEADREV=${HEAD_REV:-HEAD}
 # Never let a .gitattributes of the PR hide a diff from the gate: no textconv, no
 # external diff driver, binary files diffed as text.
 GITDIFF=(git diff --text --no-textconv --no-ext-diff)
-changed=$("${GITDIFF[@]}" --name-only "$BASE"..."$HEADREV")
+
+# ---- the report ------------------------------------------------------------
+REPORT_DIR=$(mktemp -d)
+ROWS_FILE="$REPORT_DIR/shell-rows.md"
+FIXES_FILE="$REPORT_DIR/shell-fixes.md"
+: > "$ROWS_FILE"; : > "$FIXES_FILE"
+HARD_FAIL=""
+KIND_LINE=""
+GATE_TOUCHED=""
+approvers_file="$REPORT_DIR/approvers"
+
+# Everything an author controls (file names, row ids, test names, YAML values) is escaped for the
+# place it lands in: Markdown for the report, workflow-command syntax for annotations. Nothing the
+# author wrote reaches either raw. (Paths come from git, which quotes CR/LF itself; the control
+# characters are dropped here as well.)
+#
+# md_esc <text>: one Markdown-safe line: & < > | and the backtick are neutralised, CR/LF/TAB
+# become spaces and other control characters are dropped.
+md_esc() {
+  printf '%s' "$1" | tr '\r\n\t' '   ' | tr -d '\000-\010\013-\037\177' \
+    | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e "s/\`/'/g" -e 's/|/\\|/g'
+}
+# wf_prop <text>: a workflow-command property value (`file=<prop>`): % : , escaped.
+wf_prop() {
+  printf '%s' "$1" | tr -d '\000-\037\177' | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's/,/%2C/g'
+}
+# plain_list: stdin lines as inert log lines. The runner trims leading spaces before it looks for a
+# `::` command, so a path named `::error::x` must not start a line: every line gets a "- " prefix.
+plain_list() { tr -d '\000-\010\013-\037\177' | sed 's/^/  - /'; }
+
+# rule_row <rule> <PASS|FAIL|n/a> <detail>
+rule_row() { printf '| %s | %s | %s |\n' "$1" "$2" "$(md_esc "$3")" >> "$ROWS_FILE"; }
+# hard_fail <rule> <detail> <how to fix>
+hard_fail() { HARD_FAIL=1; rule_row "$1" FAIL "$2"; printf -- '- **%s**: %s\n' "$1" "$3" >> "$FIXES_FILE"; }
+
+render_report() {
+  local verdict=$1 rules_md="$REPORT_DIR/rules.md" fixes_md="$REPORT_DIR/fixes.md" details_md="$REPORT_DIR/details.md"
+  if [[ "$verdict" == PASS ]]; then verdict="PASS$(review_suffix)"; fi
+  echo "## Registry gate: $verdict"
+  echo
+  [[ -z "$KIND_LINE" ]] || { echo "$KIND_LINE"; echo; }
+  echo "| Rule | Verdict | Detail |"
+  echo "|---|---|---|"
+  cat "$ROWS_FILE"
+  [[ -f "$rules_md" ]] && cat "$rules_md"
+  echo
+  if [[ -s "$FIXES_FILE" || -s "$fixes_md" ]]; then
+    echo "### How to fix"
+    echo
+    cat "$FIXES_FILE"
+    [[ -f "$fixes_md" ]] && cat "$fixes_md"
+    echo
+  fi
+  if [[ -n "$GATE_TOUCHED" ]]; then
+    echo "### Gate files changed (informational, covered by the required review)"
+    echo
+    while IFS= read -r g; do
+      # shellcheck disable=SC2016  # the backticks are Markdown, not a command substitution
+      [[ -z "$g" ]] || printf -- '- `%s`\n' "$(md_esc "$g")"
+    done <<< "$GATE_TOUCHED"
+    echo
+  fi
+  [[ -f "$details_md" ]] && cat "$details_md"
+  echo "Preview locally: \`make registry-gate\` (your working tree's copy of this script; CI judges with the base branch's)."
+}
+
+# review_suffix: " - N lock-affecting files and M gate files need review (listed below)", or nothing.
+# A bare PASS would hide that a person has to look: the pull request's required approval is the control
+# for these files.
+review_suffix() {
+  local n_lock=0 n_gate=0 parts=()
+  [[ -f "$REPORT_DIR/review-count" ]] && n_lock=$(tr -dc '0-9' < "$REPORT_DIR/review-count")
+  [[ -z "$GATE_TOUCHED" ]] || n_gate=$(grep -c . <<< "$GATE_TOUCHED")
+  n_lock=${n_lock:-0}
+  [[ $n_lock -eq 0 ]] || parts+=("$n_lock lock-affecting file$([[ $n_lock -eq 1 ]] || echo s)")
+  [[ $n_gate -eq 0 ]] || parts+=("$n_gate gate file$([[ $n_gate -eq 1 ]] || echo s)")
+  [[ ${#parts[@]} -gt 0 ]] || return 0
+  local joined=${parts[0]} total=$((n_lock + n_gate))
+  [[ ${#parts[@]} -lt 2 ]] || joined="${parts[0]} and ${parts[1]}"
+  printf ' - %s %s review (listed below)' "$joined" "$([[ $total -eq 1 ]] && echo needs || echo need)"
+}
+
+# gate_annotations: one inline `::warning file=...::` per changed gate file (at most 10, then one
+# "... and N more"), so the Files tab of the pull request shows them. Lock-affecting files get the same
+# from testlinks.
+gate_annotations() {
+  local n=0 total
+  [[ -n "$GATE_TOUCHED" ]] || return 0
+  total=$(grep -c . <<< "$GATE_TOUCHED")
+  while IFS= read -r g; do
+    [[ -n "$g" ]] || continue
+    if [[ $n -eq 10 ]]; then
+      echo "::warning::... and $((total - 10)) more gate files (see the job summary)"
+      break
+    fi
+    echo "::warning file=$(wf_prop "$g")::gate file: the owner's approval is the control"
+    n=$((n + 1))
+  done <<< "$GATE_TOUCHED"
+}
+
+finish() {
+  local rc=$? verdict=PASS
+  [[ $rc -eq 0 ]] || verdict=FAIL
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    render_report "$verdict" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  else
+    render_report "$verdict" 2>/dev/null || true
+  fi
+  rm -rf "$REPORT_DIR"
+}
+trap finish EXIT
+
+# NUL-separated, then one path per line: without -z git prints a non-ASCII path in octal quotes
+# ("internal/selectapi/\303\251.go"), which no anchored pattern below would match.
+changed=$("${GITDIFF[@]}" --name-only -z "$BASE"..."$HEADREV" | tr '\0' '\n')
 # Content comparisons read files at the merge base: the revision
 # `git diff BASE...HEAD` diffs against, so a PR is judged on its own changes
 # only, never on what landed on the base branch after it forked.
@@ -79,16 +203,24 @@ touches_routes=$(printf '%s\n%s\n%s\n' "$touches_direct" "$touches_handle_calls"
 touches_registry=$(echo "$changed" | grep -E '^tests/conformance/(registry/rows/|inventory\.generated\.yaml)' || true)
 if [[ -n "$touches_routes" && -z "$touches_registry" ]]; then
   echo "::error::this PR changes route/handler/upstream files but not tests/conformance/registry/rows/ — add or update the rows (see tests/conformance/README.md)"
-  echo "$touches_routes"
-  exit 1
+  plain_list <<< "$touches_routes"
+  hard_fail "Routes, handlers, pins" "changes $(echo "$touches_routes" | head -3 | paste -s -d ' ' -) but no registry row" \
+    "add or update the rows under tests/conformance/registry/rows/ (tests/conformance/README.md)"
+elif [[ -n "$touches_routes" ]]; then
+  rule_row "Routes, handlers, pins" PASS "route/pin change, registry rows touched"
+else
+  rule_row "Routes, handlers, pins" n/a "no route, handler or pin change"
 fi
 
 touches_extractors=$(echo "$changed" | grep -E '^tests/conformance/inventory/[^/]+\.go$' | grep -v '_test\.go$' || true)
 touches_generated_inventory=$(echo "$changed" | grep -E '^tests/conformance/inventory\.generated\.yaml$' || true)
 if [[ -n "$touches_extractors" && -z "$touches_generated_inventory" ]]; then
   echo "::error::this PR changes tests/conformance/inventory/ extractors but not tests/conformance/inventory.generated.yaml — run 'make conformance-gen' and commit the result"
-  echo "$touches_extractors"
-  exit 1
+  plain_list <<< "$touches_extractors"
+  hard_fail "Inventory extractors" "extractors changed, inventory.generated.yaml not regenerated" \
+    "run 'make conformance-gen' and commit the result"
+elif [[ -n "$touches_extractors" ]]; then
+  rule_row "Inventory extractors" PASS "inventory regenerated"
 fi
 
 # --- feature catalog ---------------------------------------------------------
@@ -211,13 +343,16 @@ touches_features=$(echo "$changed" | grep -E '^tests/conformance/registry/featur
 
 if [[ -n "$feature_signals" && -z "$touches_features" ]]; then
   echo "::error::this PR adds or extends a Lakehouse feature but does not touch tests/conformance/registry/features/ — every shipped feature must be in the catalog with its rows, tests and docs"
-  echo "$feature_signals"
+  plain_list <<< "$feature_signals"
   echo "steps:"
   echo "  1. add or update the feature in tests/conformance/registry/features/<area>.yaml"
   echo "     (id, title, status, area, surfaces, rows, tests, docs, highlight, description, changelog_bullets)"
   echo "  2. run 'make conformance-gen' and commit the regenerated docs/features.md and README.md"
   echo "  3. see tests/conformance/README.md, section 'Adding or extending a feature'"
-  exit 1
+  hard_fail "Feature catalog" "adds or extends a Lakehouse feature ($(echo "$feature_signals" | head -1)) without touching tests/conformance/registry/features/" \
+    "add the feature to tests/conformance/registry/features/<area>.yaml, run 'make conformance-gen', commit docs/features.md and README.md (tests/conformance/README.md, 'Adding or extending a feature')"
+elif [[ -n "$feature_signals" ]]; then
+  rule_row "Feature catalog" PASS "feature signals present, catalog touched"
 fi
 
 # --- every product change and every new test is covered in the registry -----
@@ -238,82 +373,84 @@ fi
 #           row (refs.tests) or a feature (tests:), and references to removed
 #           or renamed tests must not be left behind (tests/conformance/cmd/testlinks).
 #   Rule 3  Parity fixes ship locks; locks are never weakened (testlinks).
-#   Rule 4  A PR that changes the gate itself needs the owner's exemption.
 #
-# Exempt, decided first: release-metadata PRs (exact shape, by the release bot or
-# an approver), dependency-only PRs (go.mod `require` version lines outside
-# VictoriaMetrics/*, go.sum, requirements*.txt; build(deps) commits), and PRs the
-# owner labelled `registry-exempt` whose body has a "Registry: none — <reason>"
-# line, verified by registry_exempt.py. Docs-only and CI-only PRs are not
-# product-changing, so Rule 1 passes them by classification.
-# Env: PR_LABELS (comma separated), PR_BODY, PR_TITLE, PR_AUTHOR (all optional);
-# for the label EVENT_ACTION, LABEL_NAME and SENDER (the labeled event's label and
-# sender): it is honoured only in the run its own `labeled` event triggers.
+# There is no exemption by label or by PR text. What the owner's required approval
+# covers (edits of lock code, of the gate's own files) is listed in the report, not
+# failed.
+#
+# Exempt kinds, decided first and only from the content of the diff, read as bytes (pr_classify.py):
+#   release-metadata   exact release-metadata shape, by the release bot or an approver;
+#                      Rules 1-3 skipped
+#   dependency-only    go.mod `require` versions outside the storage-critical modules, go.sum
+#                      hash lines, requirements*.txt package lines; no title or commit subject is
+#                      read; Rule 1 is waived, Rules 2 and 3 still run
+#   toolchain-only     a Go toolchain bump: go/toolchain directives, dependency versions,
+#                      golang image tags, plus docs/CI/scripts; Rule 1 is waived, Rules 2
+#                      and 3 still run
+# Docs-only and CI-only PRs are not product-changing, so Rule 1 passes them by
+# classification.
+# Env: PR_AUTHOR (optional; the release-metadata kind). PR_TITLE is accepted and ignored.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# The approvers come from the merge base, so a PR cannot approve itself.
-approvers_file=$(mktemp)
-trap 'rm -f "$approvers_file"' EXIT
-git show "$MERGE_BASE:.github/registry-exempt-approvers" > "$approvers_file" 2>/dev/null || : > "$approvers_file"
-CLASSIFY=$(python3 "$HERE/pr_classify.py" --base "$MERGE_BASE" --head "$HEADREV" --title "${PR_TITLE:-}" \
+# The release-metadata approvers come from the merge base, so a PR cannot approve itself. The file
+# was named registry-exempt-approvers before there was nothing left to exempt: the new name wins
+# when the merge base has it, the old one is read otherwise (an older merge base), and the old file
+# stays in the tree for one release so such a base still resolves.
+approvers_src=.github/release-metadata-approvers
+git cat-file -e "$MERGE_BASE:$approvers_src" 2>/dev/null || approvers_src=.github/registry-exempt-approvers
+git show "$MERGE_BASE:$approvers_src" > "$approvers_file" 2>/dev/null || : > "$approvers_file"
+# No title and no commit subject is passed: the kind is decided from the diff alone.
+CLASSIFY=$(python3 "$HERE/pr_classify.py" --base "$MERGE_BASE" --head "$HEADREV" \
   --author "${PR_AUTHOR:-}" --approvers "$approvers_file") || { echo "::error::pr_classify.py failed"; exit 1; }
 class_field() { sed -n "s/^$1=//p" <<< "$CLASSIFY" | head -1; }
 exempt_kind=$(class_field exempt)
 is_product=$(class_field product)
 product_reason=$(class_field reason)
+exempt_detail=$(class_field detail)
+GATE_TOUCHED=$(sed -n 's/^gate_file=//p' <<< "$CLASSIFY")
 
-has_exempt_label=""
-case ",${PR_LABELS:-}," in *,registry-exempt,*) has_exempt_label=1 ;; esac
-# "Registry: none — <reason>" (em dash, en dash or hyphen), reason non-empty;
-# it may sit in a Markdown quote (`> Registry: none — …`).
-has_exempt_body=""
-if grep -qE '^[[:space:]>]*Registry:[[:space:]]*none[[:space:]]*(—|–|--?)[[:space:]]+[[:alnum:]]' <<< "${PR_BODY:-}"; then
-  has_exempt_body=1
-fi
-
-# The files that make up the gate: a PR touching them needs the owner.
-GATE_FILES_RE='^(scripts/ci/[^/]+$|\.gitattributes$|tests/parity/lock_cells_test\.go$|tests/conformance/cmd/testlinks/|tests/conformance/registry/(testlinks|paritygate)\.go|\.github/workflows/(conformance|registry-gate|registry-gate-base|parity)\.yaml|\.github/registry-exempt-approvers)'
-gate_touched=$(echo "$changed" | grep -E "$GATE_FILES_RE" || true)
+gate_annotations
 
 if [[ "$exempt_kind" != none ]]; then
-  echo "registry coverage gate: skipped ($exempt_kind PR)"
-elif [[ -n "$has_exempt_label" && -z "$has_exempt_body" ]]; then
-  echo "::error::the registry-exempt label is set but the PR body has no 'Registry: none — <reason>' line; add the line (with a reason) or remove the label"
-  exit 1
-elif [[ -n "$has_exempt_label" && -n "$has_exempt_body" ]]; then
-  # The label bypasses the gate, so it counts only in the run its own `labeled`
-  # event triggers, applied by an approver (see registry_exempt.py). Fails closed.
-  if verdict=$(python3 "$HERE/registry_exempt.py" --approvers "$approvers_file"); then
-    echo "registry coverage gate: skipped (registry-exempt label + 'Registry: none —' reason in the PR body; $verdict)"
-  else
-    echo "::error::the registry-exempt label is not honoured: $verdict"
-    echo "  only an approver listed in .github/registry-exempt-approvers (at the merge base) can apply it, and only the run its own labeled event triggers honours it; this check fails closed."
-    exit 1
-  fi
+  KIND_LINE="PR kind: \`$exempt_kind\` (decided from the diff: $(md_esc "$exempt_detail"))"
+elif [[ "$is_product" == 1 ]]; then
+  KIND_LINE="PR kind: product change ($(md_esc "$product_reason"))"
 else
-  gate_failed=""
-  if [[ -n "$gate_touched" ]]; then
-    echo "::error::this PR changes the registry gate itself; only the owner may allow that (label 'registry-exempt' applied by an approver, plus a 'Registry: none — <reason>' line in the PR body)"
-    echo "$gate_touched" | sed 's/^/  /'
-    gate_failed=1  # keep going: the checks below report everything else wrong with the PR too
-  fi
+  KIND_LINE="PR kind: not a product change (tests, docs, CI or tooling only)"
+fi
 
-  # Rule 1 (a real registry change for a product change) is decided where the
-  # registry is parsed: testlinks, with the reason the PR counts as product.
+case "$exempt_kind" in
+release-metadata)
+  echo "registry coverage gate: skipped ($exempt_kind PR)"
+  rule_row "Rules 1-3" n/a "skipped ($exempt_kind PR, verified from the diff)"
+  ;;
+*)
+  # Rules 1-3 are decided where the registry is parsed: testlinks. A toolchain-only or
+  # dependency-only PR is not product-changing for Rule 1 (no -product), but Rules 2 and 3 still run.
   product_args=()
   [[ "$is_product" == 1 ]] && product_args=(-product "$product_reason")
   tl_bin=${TESTLINKS_BIN:-}
-  if [[ -n "$tl_bin" ]]; then
-    "$tl_bin" -repo . -base "$MERGE_BASE" -head "$HEADREV" ${product_args[@]+"${product_args[@]}"} || exit 1
-  elif command -v go >/dev/null 2>&1 && [[ -d "$HERE/../../tests/conformance/cmd/testlinks" ]]; then
-    (cd "$HERE/../.." && GOWORK=off go build -o "${TMPDIR:-/tmp}/testlinks.$$" ./tests/conformance/cmd/testlinks) || exit 1
-    "${TMPDIR:-/tmp}/testlinks.$$" -repo . -base "$MERGE_BASE" -head "$HEADREV" ${product_args[@]+"${product_args[@]}"}; rc=$?
-    rm -f "${TMPDIR:-/tmp}/testlinks.$$"
-    [[ $rc -eq 0 ]] || exit 1
-  else
-    echo "::error::cannot run tests/conformance/cmd/testlinks (no Go toolchain)"
-    exit 1
+  built=""
+  if [[ -z "$tl_bin" ]]; then
+    if command -v go >/dev/null 2>&1 && [[ -d "$HERE/../../tests/conformance/cmd/testlinks" ]]; then
+      tl_bin="$REPORT_DIR/testlinks"
+      built=1
+      (cd "$HERE/../.." && GOWORK=off go build -o "$tl_bin" ./tests/conformance/cmd/testlinks) || { echo "::error::cannot build tests/conformance/cmd/testlinks"; exit 1; }
+    else
+      echo "::error::cannot run tests/conformance/cmd/testlinks (no Go toolchain)"
+      exit 1
+    fi
   fi
-  [[ -z "$gate_failed" ]] || exit 1
-fi
+  rc=0
+  "$tl_bin" -repo . -base "$MERGE_BASE" -head "$HEADREV" -report-dir "$REPORT_DIR" ${product_args[@]+"${product_args[@]}"} || rc=$?
+  [[ -z "$built" ]] || rm -f "$tl_bin"
+  if [[ $rc -ne 0 ]]; then
+    HARD_FAIL=1
+    if [[ ! -f "$REPORT_DIR/rules.md" ]]; then  # a tool error: no rule verdicts were written
+      rule_row "Rules 1-3" FAIL "testlinks failed to run (exit $rc), see the log"
+    fi
+  fi
+  ;;
+esac
 
+[[ -z "$HARD_FAIL" ]] || exit 1
 echo "registry-touch check OK"

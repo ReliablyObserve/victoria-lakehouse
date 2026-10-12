@@ -26,10 +26,13 @@ import (
 //
 // The nonce is NOT a security control: code in the test process can read it from the
 // environment and print a forged line, so it only guards against an accidental stale
-// or copied line. What stops forged cells is the owner gate on lock packages: any edit
-// of an existing file of this package (or its runtime config), and any new file that
-// declares a package-level var, init() or TestMain, needs the owner (see
-// tests/conformance/README.md).
+// or copied line. What stops forged cells is two controls (tests/conformance/README.md,
+// "Lock packages"): content rules the registry gate enforces as hard Rule 3 failures
+// (a new init(), a package-level var whose initializer calls a function, or a TestMain in a
+// file of this package; a new t.Skip or build constraint in a lock's test file; a lowered
+// cell floor; a lost lock reference), and the required approval of the pull request, which covers the rest: the gate lists
+// every edit of an existing file of this package, of its runtime config and of the gate's
+// own files in its report and as inline annotations, and the reviewer decides.
 func reportLockCells(t *testing.T, n int) {
 	root, _, _ := strings.Cut(t.Name(), "/")
 	nonce := os.Getenv("PARITY_LOCK_NONCE")

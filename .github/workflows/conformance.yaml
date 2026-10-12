@@ -3,9 +3,8 @@ name: Conformance
 on:
   pull_request:
     branches: [main]
-    # Label and body edits are deliberately not listed: they re-run only the
-    # registry gate (registry-gate.yaml, registry-gate-base.yaml), never these
-    # heavy checks, so a bot's label cannot cancel or mask them.
+    # Title edits are deliberately not listed: they re-run only the registry gate
+    # (registry-gate.yaml, registry-gate-base.yaml), never these heavy checks.
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
@@ -55,4 +54,4 @@ jobs:
         run: |
           bash scripts/ci/tests/test_check_registry_touch.sh
           bash scripts/ci/tests/test_gate_workflow_emulation.sh
-          python3 -m unittest scripts/ci/tests/test_registry_exempt.py
+          python3 -m unittest scripts/ci/tests/test_pr_classify_toolchain.py

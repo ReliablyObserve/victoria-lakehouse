@@ -7,15 +7,19 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Lock code is every file whose edit could make a lock pass without comparing
 // what it claims to compare: the files of the lock tests, and the files that
 // define the helpers those tests call for their comparison. Runtime floors
-// (lock_cells.txt) only protect tests/parity; this gate protects all of it by
-// making any change to lock code the owner's decision.
+// (lock_cells.txt) only protect tests/parity. The gate does not block an edit of
+// lock code: it lists the files in the report, so the reviewer whose approval the
+// pull request requires sees them. Whatever can be checked from content is Rule 3
+// (a lost reference, a lowered floor, a new Skip) and stays automatic.
 
 // lockCallDepth bounds how many calls deep the helper search follows a lock
 // test's body inside its package. Four reaches the comparison and judging
@@ -234,8 +238,9 @@ func declaresOnlyTests(path string, src []byte) (string, error) {
 	return "", nil
 }
 
-// LockCodeChanges lists the lock code a PR changed, judged against the locks that
-// exist at the merge base (a lock the PR adds itself is not protected yet).
+// LockCodeChanges lists the lock-affecting files a PR changed, judged against the
+// locks that exist at the merge base (a lock the PR adds itself is not protected
+// yet). The result is informational: the caller reports it, it does not fail.
 //
 //  1. A lock package is a directory that holds a lock-referenced test file. In a pure
 //     test package (anything under tests/) every existing .go file that the PR edits
@@ -264,7 +269,7 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 	flag := func(f, reason string) {
 		if !flagged[f] {
 			flagged[f] = true
-			out = append(out, fmt.Sprintf("%s: lock code changed — owner review (%s)", f, reason))
+			out = append(out, fmt.Sprintf("%s: %s", f, reason))
 		}
 	}
 	dirs := map[string]bool{}
@@ -315,10 +320,328 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 				continue
 			}
 			if hs := headSrc(p); hs == nil || !bytes.Equal(baseSrc(p), hs) {
+				if hs != nil && GolangImageBumpOnly(baseSrc(p), hs) {
+					continue // the Go toolchain image of a build container moved; nothing a lock compares changed
+				}
 				flag(p, "runtime configuration of the lock suites")
 			}
 		}
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// predeclaredTypes are the identifiers a call expression can name without calling a function: a
+// conversion such as int64(x) or string(b). Everything else spelled `name(...)` is a function call.
+var predeclaredTypes = map[string]bool{
+	"bool": true, "byte": true, "rune": true, "string": true, "error": true, "any": true,
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+	"float32": true, "float64": true, "complex64": true, "complex128": true,
+}
+
+// pureBuiltins are the builtin functions that run no user code.
+var pureBuiltins = map[string]bool{
+	"len": true, "cap": true, "make": true, "new": true, "append": true, "min": true, "max": true,
+	"complex": true, "real": true, "imag": true,
+}
+
+// pureStdlibCalls are the standard-library constructors a test file may call in a package-level var
+// initializer: they cannot end the test binary with success (regexp.MustCompile panics on a bad
+// pattern, which fails the run). Keyed by import path; a file that imports another package under the
+// name `regexp` gets no exemption.
+var pureStdlibCalls = map[string]map[string]bool{
+	"regexp": {"MustCompile": true, "MustCompilePOSIX": true},
+	"errors": {"New": true},
+}
+
+// runsCodeAtLoad reports whether evaluating the expression at package load can run user code: it
+// contains a function call that is not a conversion to a predeclared or composite type, not a pure
+// builtin and not one of the pure standard-library constructors (pureStdlibCalls). A function literal is only code that CAN run later; its body is not run at load, so it is
+// not descended into (calling it, `func() int {...}()`, is itself a call and is flagged).
+func runsCodeAtLoad(e ast.Expr, imports map[string]string) bool {
+	// isConversion reports whether fun names a type that is converted to, not a function that is called.
+	// Only syntactically certain cases count; a user-defined type name or a qualified one looks like a
+	// function and is treated as a call (conservative).
+	var isConversion func(fun ast.Expr) bool
+	isConversion = func(fun ast.Expr) bool {
+		switch f := fun.(type) {
+		case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType, *ast.StructType:
+			return true
+		case *ast.ParenExpr:
+			return isConversion(f.X)
+		case *ast.Ident:
+			return predeclaredTypes[f.Name] || pureBuiltins[f.Name]
+		}
+		return false
+	}
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.CallExpr:
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); ok && pureStdlibCalls[imports[id.Name]][sel.Sel.Name] {
+					return true // pure: its arguments are still inspected
+				}
+			}
+			if !isConversion(n.Fun) {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// loadTimeDecls returns what a Go file declares that runs code at package load, before any test:
+// the count of init() functions and the multiset of package-level vars whose initializer calls a
+// function (keyed `name = initializer source`). A literal table (`var cases = []T{{...}}`), a
+// conversion or a var without an initializer runs nothing and is not counted. TestMain is checked
+// by TestMainChanges.
+func loadTimeDecls(path string, src []byte) (inits int, vars map[string]int, err error) {
+	vars = map[string]int{}
+	if src == nil {
+		return 0, vars, nil
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
+	if err != nil {
+		return 0, nil, err
+	}
+	imports := map[string]string{} // local name -> import path
+	for _, im := range f.Imports {
+		path := strings.Trim(im.Path.Value, `"`+"`")
+		name := path[strings.LastIndex(path, "/")+1:]
+		if im.Name != nil {
+			name = im.Name.Name
+		}
+		imports[name] = path
+	}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil && d.Name.Name == "init" {
+				inits++
+			}
+		case *ast.GenDecl:
+			if d.Tok != token.VAR {
+				continue
+			}
+			for _, sp := range d.Specs {
+				vs, ok := sp.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, v := range vs.Values {
+					if !runsCodeAtLoad(v, imports) {
+						continue
+					}
+					name := "_"
+					if i < len(vs.Names) {
+						name = vs.Names[i].Name
+					} else if len(vs.Names) > 0 {
+						name = vs.Names[0].Name // var a, b = f(): one call, several names
+					}
+					text := string(src[fset.Position(v.Pos()).Offset:fset.Position(v.End()).Offset])
+					vars[name+" = "+strings.Join(strings.Fields(text), " ")]++
+				}
+			}
+		}
+	}
+	return inits, vars, nil
+}
+
+// shadowedBuiltins lists the top-level names (functions, types, vars, consts) a Go file declares that
+// shadow a predeclared type or a builtin function the load-time check trusts: `func len(...)` in a
+// package would turn `var _ = len(x)` into a call of that func.
+func shadowedBuiltins(path string, src []byte) []string {
+	if src == nil {
+		return nil
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	note := func(name string) {
+		if predeclaredTypes[name] || pureBuiltins[name] {
+			out = append(out, name)
+		}
+	}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil {
+				note(d.Name.Name)
+			}
+		case *ast.GenDecl:
+			for _, sp := range d.Specs {
+				switch sp := sp.(type) {
+				case *ast.TypeSpec:
+					note(sp.Name.Name)
+				case *ast.ValueSpec:
+					for _, n := range sp.Names {
+						note(n.Name)
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// LockInitVarAdditions lists the files of a lock package that gain load-time code at head: an
+// init() function, or a package-level var whose initializer calls a function (it runs before any
+// test). A new file that declares one, or an existing file whose declarations now include one the
+// merge base did not have (per name and initializer; `_` counted). Lock packages are judged
+// against the locks that exist at the merge base. In a pure test package (under tests/) every .go
+// file is in scope; in a product package only the _test.go files are. A file that no longer parses
+// is listed too: the package would not build and its locks would not run. Removing a var or an
+// init() is free; so is a func, const or type, and so is a var whose initializer runs no code: a
+// literal table, a conversion, a var with no initializer (a table cannot end the test binary; #438's
+// `var fvPropMaps = []fvPropMap{{...}}` is one). Editing a var's initializer to call a function is an
+// addition.
+//
+// This is a content rule (hard, Rule 3): the owner's approval is not what stops a lock from being
+// silenced by `func init() { if os.Getenv(...) != "" { os.Exit(0) } }`.
+func LockInitVarAdditions(baseRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles) []string {
+	dirs := map[string]bool{}
+	for f := range baseRefs {
+		dirs[filepath.ToSlash(filepath.Dir(f))] = true
+	}
+	var out []string
+	for d := range dirs {
+		pureTest := strings.HasPrefix(d+"/", "tests/")
+		// A package that newly declares a name shadowing a predeclared type or builtin (len, string, ...)
+		// would make the "pure" calls the check trusts into calls of its own code. Every file of the
+		// package counts here, test or not: product code shares the package scope with its tests.
+		baseShadow := map[string]bool{}
+		for _, p := range baseList(d) {
+			for _, n := range shadowedBuiltins(p, baseSrc(p)) {
+				baseShadow[n] = true
+			}
+		}
+		for _, p := range headList(d) {
+			var fresh []string
+			for _, n := range shadowedBuiltins(p, headSrc(p)) {
+				if !baseShadow[n] {
+					fresh = append(fresh, n)
+				}
+			}
+			if len(fresh) > 0 {
+				out = append(out, fmt.Sprintf("%s: declares %s, which shadows a predeclared identifier in a package that holds a registry lock", p, strings.Join(fresh, ", ")))
+			}
+		}
+		for _, p := range headList(d) {
+			if !pureTest && !strings.HasSuffix(p, "_test.go") {
+				continue
+			}
+			hs := headSrc(p)
+			if hs == nil || bytes.Equal(baseSrc(p), hs) {
+				continue
+			}
+			hi, hv, err := loadTimeDecls(p, hs)
+			if err != nil {
+				out = append(out, p+": does not parse, so the locks of its package would not run")
+				continue
+			}
+			bi, bv, berr := loadTimeDecls(p, baseSrc(p))
+			if berr != nil {
+				bi, bv = 0, map[string]int{} // a base that did not parse has nothing to compare: all of it is new
+			}
+			var added []string
+			if hi > bi {
+				added = append(added, fmt.Sprintf("%d new init() function(s)", hi-bi))
+			}
+			var names []string
+			for n, c := range hv {
+				if c > bv[n] {
+					names = append(names, n)
+				}
+			}
+			sort.Strings(names)
+			if len(names) > 0 {
+				added = append(added, "package-level var whose initializer calls a function: "+strings.Join(names, ", "))
+			}
+			if len(added) > 0 {
+				out = append(out, fmt.Sprintf("%s: adds %s to a package that holds a registry lock", p, strings.Join(added, " and ")))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// golangImageLine matches a compose `image: golang:<version>[-alpine[<ver>]]` line.
+// pre is everything before the version (indentation and key), so the two lines of a
+// pair must agree on it exactly.
+var golangImageLine = regexp.MustCompile(`^(?P<pre>[ \t]+image:[ \t]+golang:)(?P<ver>[0-9]+\.[0-9]+(?:\.[0-9]+)?)(?P<alp>-alpine(?:[0-9]+\.[0-9]+)?)?[ \t]*$`)
+
+// GolangImageBumpOnly reports whether head differs from base only in the version of
+// `image: golang:<version>` lines: same line count, every differing line pair is such a
+// line in both revisions with the same indentation, the same image family and the same
+// suffix shape (`-alpine` stays `-alpine`, its optional version may change), and
+// every other line byte-identical. The Python classifier (scripts/ci/pr_classify.py)
+// holds the same rule; both are tested against the same fixture.
+func GolangImageBumpOnly(base, head []byte) bool {
+	// A control byte (CR included) or a non-UTF-8 byte means the file is not read the way the
+	// Python twin and Docker read it: nothing is verified. Only "\n" separates lines; \d and \S
+	// below are ASCII in RE2, like the Python twin's [0-9] and [!-~].
+	if hasUnreadableBytes(base) || hasUnreadableBytes(head) {
+		return false
+	}
+	bl := strings.Split(string(base), "\n")
+	hl := strings.Split(string(head), "\n")
+	if len(bl) != len(hl) {
+		return false
+	}
+	changed := false
+	for i := range bl {
+		if bl[i] == hl[i] {
+			continue
+		}
+		bm, hm := golangImageLine.FindStringSubmatch(bl[i]), golangImageLine.FindStringSubmatch(hl[i])
+		if bm == nil || hm == nil || bm[1] != hm[1] {
+			return false
+		}
+		if imageSuffixShape(bm[3]) != imageSuffixShape(hm[3]) {
+			return false
+		}
+		changed = true
+	}
+	return changed
+}
+
+// hasUnreadableBytes reports whether b is not clean text: invalid UTF-8, a control byte other than
+// TAB and LF (CR, VT, FF, FS, GS, RS, DEL ...), or one of U+0085, U+2028, U+2029 and a BOM. The
+// Python classifier's clean_text rejects the same set.
+func hasUnreadableBytes(b []byte) bool {
+	if !utf8.Valid(b) {
+		return true
+	}
+	for _, r := range string(b) {
+		if r == '\n' || r == '\t' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 || r == 0xfeff {
+			return true
+		}
+	}
+	return false
+}
+
+// imageSuffixShape reduces an image tag suffix to its shape: none, bare `-alpine`, or
+// `-alpine` with a version. A bump may change the version, never the shape.
+func imageSuffixShape(suffix string) string {
+	switch suffix {
+	case "":
+		return ""
+	case "-alpine":
+		return "-alpine"
+	default:
+		return "-alpineV"
+	}
 }

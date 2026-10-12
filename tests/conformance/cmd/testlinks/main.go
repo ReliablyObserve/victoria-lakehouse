@@ -2,10 +2,23 @@
 // function a PR adds must be linked from a registry row or feature, and no
 // reference to a removed or renamed test may be left behind.
 //
-//	testlinks -base <merge-base rev> [-repo .] [-head HEAD] [-product <reason>]
+//	testlinks -base <merge-base rev> [-repo .] [-head HEAD] [-product <reason>] [-report-dir <dir>]
 //	testlinks -report-unlinked        # calibration: how many existing tests are unlinked
 //
 // Exit 0 when the gate holds, 1 when it does not, 2 on a tool error.
+//
+// The hard rules are decided from content alone, with no exemption:
+//
+//	Rule 1  a product change makes a real registry content change (-product is set);
+//	Rule 2  every added Test or Fuzz function is linked, no reference to a removed one is left;
+//	Rule 3  parity fixes ship locks, locks are never weakened.
+//
+// Edits of lock code (files whose change could alter what a lock compares) are not
+// failures: they are listed in the report, because the pull request's required
+// review covers them. With -report-dir the command writes rules.md (one table row
+// per rule), fixes.md (one "how to fix" line per failure) and details.md (lock-affecting
+// files, registry changes) for
+// scripts/ci/check_registry_touch.sh, which renders the single report.
 package main
 
 import (
@@ -133,41 +146,137 @@ func treeFiles(repo, rev string) registry.TreeFiles {
 	}
 }
 
-// registryChanges loads the rows and features at both revisions, prints the
-// summary (stdout and the job summary), and returns the ids of the entries the
-// PR changed in a way that is more than prose.
-func registryChanges(repo, base, head string, show func(string) func(string) []byte) ([]string, error) {
+// registryChanges loads the rows and features at both revisions, and returns the
+// summary text and the ids of the entries the PR changed in a way that is more than
+// prose.
+func registryChanges(repo, base, head string, show func(string) func(string) []byte) (string, []string, error) {
 	var sets []registry.ChangeSet
 	var substantive []string
 	for _, kind := range []struct{ name, dir string }{{"rows", rowsDir}, {"features", featuresDir}} {
 		b, err := entries(repo, base, kind.dir, show)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		h, err := entries(repo, head, kind.dir, show)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		added, changed, removed := registry.ChangedEntries(b, h)
 		sets = append(sets, registry.ChangeSet{Kind: kind.name, Added: added, Changed: changed, Removed: removed})
 		substantive = append(substantive, registry.SubstantiveChanges(b, h)...)
 	}
-	summary := registry.SummarizeChanges(sets)
-	fmt.Print(summary)
-	if path := os.Getenv("GITHUB_STEP_SUMMARY"); path != "" {
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
-		if err != nil {
-			return nil, err
+	return registry.SummarizeChanges(sets), substantive, nil
+}
+
+// rule is the verdict of one hard rule, for the console and the report.
+type rule struct {
+	id      string
+	title   string
+	skipped string   // why the rule does not apply to this PR ("" when it does)
+	note    string   // what a passing verdict rests on
+	fails   []string // one entry per failure group
+	fixes   []string // one line per failure group: how to fix it
+	lines   [][]string
+	review  int // files the verdict PASS hands to the required review (listed in the report)
+}
+
+func (r *rule) verdict() string {
+	switch {
+	case len(r.fails) > 0:
+		return "FAIL"
+	case r.skipped != "":
+		return "n/a"
+	case r.review == 1:
+		return "PASS - 1 lock-affecting file needs review (listed below)"
+	case r.review > 1:
+		return fmt.Sprintf("PASS - %d lock-affecting files need review (listed below)", r.review)
+	}
+	return "PASS"
+}
+
+// fail prints a failure group the way the gate always has (an annotation, the
+// offending lines) and records it for the report.
+func (r *rule) fail(headline string, lines []string, fix string) {
+	// headline and lines can hold author-controlled text (paths, row ids, test names): escaped as
+	// workflow-command data / inert log lines, never printed raw
+	fmt.Println("::error::" + registry.WorkflowData(headline))
+	for _, l := range lines {
+		fmt.Println("  " + registry.LogSafe(l))
+	}
+	fmt.Println("  how to fix: " + fix)
+	r.fails = append(r.fails, headline)
+	r.fixes = append(r.fixes, fix)
+	r.lines = append(r.lines, lines)
+}
+
+// maxAnnotations bounds the inline annotations of one kind; the rest is one "... and N more" line.
+const maxAnnotations = 10
+
+// maxReportLines bounds the offending lines the report quotes per failure group.
+const maxReportLines = 25
+
+func writeReport(dir string, rules []*rule, lockAffecting []string, summary string) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	var rows strings.Builder
+	for _, r := range rules {
+		detail := r.skipped
+		if detail == "" {
+			detail = r.note
 		}
-		_, werr := f.WriteString(summary + "\n")
-		if cerr := f.Close(); werr == nil {
-			werr = cerr
+		if len(r.fails) > 0 {
+			detail = strings.Join(r.fails, "; ")
 		}
-		if werr != nil {
-			return nil, werr
+		fmt.Fprintf(&rows, "| %s | %s | %s |\n", r.id+": "+r.title, r.verdict(), registry.MDEscape(detail))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rules.md"), []byte(rows.String()), 0o600); err != nil {
+		return err
+	}
+	var fixes strings.Builder
+	for _, r := range rules {
+		for _, f := range r.fixes {
+			fmt.Fprintf(&fixes, "- **%s**: %s\n", r.id, f)
 		}
 	}
-	return substantive, nil
+	if err := os.WriteFile(filepath.Join(dir, "fixes.md"), []byte(fixes.String()), 0o600); err != nil {
+		return err
+	}
+	var d strings.Builder
+	var what strings.Builder
+	for _, r := range rules {
+		for i, f := range r.fails {
+			fmt.Fprintf(&what, "**%s**: %s\n\n", r.id, f)
+			ls := r.lines[i]
+			for k, l := range ls {
+				if k == maxReportLines {
+					fmt.Fprintf(&what, "- … and %d more (see the job log)\n", len(ls)-maxReportLines)
+					break
+				}
+				fmt.Fprintf(&what, "- `%s`\n", registry.MDEscape(l))
+			}
+			what.WriteString("\n")
+		}
+	}
+	if what.Len() > 0 {
+		d.WriteString("### What failed\n\n" + what.String())
+	}
+	d.WriteString("### Lock-affecting files (informational, covered by the required review)\n\n")
+	if len(lockAffecting) == 0 {
+		d.WriteString("none\n\n")
+	} else {
+		d.WriteString("These files belong to a package that holds a registry lock, or to the lock suites' runtime configuration. The gate lists them so the reviewer sees them; it does not block them.\n\n")
+		for _, l := range lockAffecting {
+			path, reason, _ := strings.Cut(l, ": ")
+			d.WriteString("- `" + registry.MDEscape(path) + "`: " + registry.MDEscape(reason) + "\n")
+		}
+		d.WriteString("\n")
+	}
+	d.WriteString(summary + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "review-count"), []byte(fmt.Sprintf("%d\n", len(lockAffecting))), 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "details.md"), []byte(d.String()), 0o600)
 }
 
 func run() int {
@@ -175,6 +284,7 @@ func run() int {
 	base := flag.String("base", "", "merge-base revision the PR is compared against")
 	head := flag.String("head", "HEAD", "head revision")
 	report := flag.Bool("report-unlinked", false, "report existing unlinked tests and exit")
+	reportDir := flag.String("report-dir", "", "write rules.md and details.md here for the gate's single report")
 	product := flag.String("product", "", "why the PR counts as changing product code (empty: it does not); it then must change a registry row or feature by more than prose")
 	flag.Parse()
 
@@ -204,12 +314,19 @@ func run() int {
 		return 2
 	}
 
-	out, err := git(*repo, "diff", "--no-renames", "--name-only", *base, *head)
+	// NUL-separated: git prints a path with a space unquoted and a non-ASCII path in octal quotes, so
+	// splitting the plain output on white space would lose the first and quote the second
+	out, err := git(*repo, "diff", "--no-renames", "--name-only", "-z", *base, *head)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "testlinks: git diff:", err)
 		return 2
 	}
-	changed := strings.Fields(string(out))
+	var changed []string
+	for _, f := range strings.Split(string(out), "\x00") {
+		if f != "" {
+			changed = append(changed, f)
+		}
+	}
 	show := func(rev string) func(string) []byte {
 		return func(p string) []byte {
 			b, err := git(*repo, "show", rev+":"+p)
@@ -229,7 +346,12 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "testlinks:", err)
 		return 2
 	}
-	failed := false
+	r1 := &rule{id: "Rule 1", title: "a product change changes the registry"}
+	r2 := &rule{id: "Rule 2", title: "new tests are linked, no stale references"}
+	r3 := &rule{id: "Rule 3", title: "parity fixes ship locks, locks are not weakened"}
+	if *product == "" {
+		r1.skipped = "not a product change"
+	}
 	var missing []registry.AddedTest
 	for _, t := range added {
 		if !registry.Linked(t, refs) {
@@ -237,13 +359,12 @@ func run() int {
 		}
 	}
 	if len(missing) > 0 {
-		failed = true
-		fmt.Println("::error::this PR adds tests that no conformance registry row or feature references")
+		var lines []string
 		for _, t := range missing {
-			fmt.Printf("  %s#%s\n", t.File, t.Name)
+			lines = append(lines, t.File+"#"+t.Name)
 		}
-		fmt.Println("add each to `refs.tests` of the row it proves (tests/conformance/registry/rows/) or to `tests:` of its feature")
-		fmt.Println("(tests/conformance/registry/features/), as `path/to/file_test.go#TestName`; see tests/conformance/README.md, 'Linking tests'")
+		r2.fail("this PR adds tests that no conformance registry row or feature references", lines,
+			"add each to `refs.tests` of the row it proves (tests/conformance/registry/rows/) or to `tests:` of its feature (tests/conformance/registry/features/), as `path/to/file_test.go#TestName` (tests/conformance/README.md, 'Linking tests')")
 	}
 
 	// Parity locks. The allowlist file is the one the parity workflow hands to
@@ -310,22 +431,19 @@ func run() int {
 	pv := registry.ParityCheck(bs, hs, modified)
 	pv.Weakenings = append(weakened, pv.Weakenings...)
 	if len(pv.Weakenings) > 0 {
-		failed = true
-		fmt.Println("::error::this PR weakens a parity lock (only the owner can allow that: label registry-exempt + 'Registry: none — <reason>' in the PR body)")
-		for _, w := range pv.Weakenings {
-			fmt.Println("  " + w)
-		}
+		r3.fail("this PR weakens a parity lock", pv.Weakenings,
+			"undo the weakening: keep the allowlist entry removed, keep every `expect: pass` row and its test references, keep every cell floor in tests/parity/lock_cells.txt (a renamed lock test keeps at least the old floor); a fix adds cells, it never lowers them")
 	}
 	if len(pv.Problems) > 0 {
-		failed = true
-		fmt.Println("::error::this is a parity-fix PR but it does not ship its locks")
+		var lines []string
 		for _, t := range pv.Triggers {
-			fmt.Println("  parity fix because: " + t)
+			lines = append(lines, "parity fix because: "+t)
 		}
 		for _, p := range pv.Problems {
-			fmt.Println("  missing: " + p)
+			lines = append(lines, "missing: "+p)
 		}
-		fmt.Println("see tests/conformance/README.md, 'Parity fixes ship locks'")
+		r3.fail("this is a parity-fix PR but it does not ship its locks", lines,
+			"add the lock: an `expect: pass` row with an exact compare whose refs.tests names a tests/parity test this PR adds or modifies, plus its floor in tests/parity/lock_cells.txt (tests/conformance/README.md, 'Parity fixes ship locks')")
 	}
 	// A lock's test file must keep running: no changed build constraint, no new Skip.
 	lockFiles := map[string]bool{}
@@ -343,11 +461,8 @@ func run() int {
 		lockList = append(lockList, f)
 	}
 	if lw := registry.LockFileWeakenings(lockList, show(*base), show(*head)); len(lw) > 0 {
-		failed = true
-		fmt.Println("::error::this PR changes a test file that a registry lock references so that it may stop running (only the owner can allow that)")
-		for _, w := range lw {
-			fmt.Println("  " + w)
-		}
+		r3.fail("this PR changes a test file that a registry lock references so that it may stop running", lw,
+			"remove the new t.Skip / build-constraint edit from the lock's test file, or move the test out of the lock's file")
 	}
 	// A TestMain that exits early silences every test of its package: the packages that
 	// hold a lock may not change theirs.
@@ -370,14 +485,18 @@ func run() int {
 		}
 	}
 	if tm := registry.TestMainChanges(mainFiles, show(*base), show(*head)); len(tm) > 0 {
-		failed = true
-		fmt.Println("::error::this PR changes the TestMain of a package that holds a registry lock (only the owner can allow that)")
-		for _, w := range tm {
-			fmt.Println("  " + w)
-		}
+		r3.fail("this PR changes the TestMain of a package that holds a registry lock", tm,
+			"revert the TestMain change: a TestMain that can exit early silences every test of its package, locks included")
 	}
-	// Lock code: every existing file of a package that holds a lock test, the lock suites'
-	// runtime config, and new files there that declare vars, init or TestMain.
+	// Load-time code: a lock package may not gain an init() or a package-level var (it runs before
+	// any test and can exit, skip or repoint shared state). A content rule, hard like TestMain.
+	if iv := registry.LockInitVarAdditions(registry.LockTestRefs(bs.Rows), show(*base), show(*head), packageFiles(*repo, *base), packageFiles(*repo, *head)); len(iv) > 0 {
+		r3.fail("this PR adds init() or a package-level var to a package that holds a registry lock", iv,
+			"move the setup into the test function or a helper func the test calls: a package-level var initializer and init() run before every test of the package, can call os.Exit and can repoint shared state, which would silence the locks")
+	}
+	// Lock-affecting files: every existing file of a package that holds a lock test, the
+	// lock suites' runtime config, and new files there that declare vars, init or TestMain.
+	// Informational: the report lists them for the required review; they do not fail.
 	lc, lerr := registry.LockCodeChanges(registry.LockTestRefs(bs.Rows), registry.LockTestRefs(hs.Rows),
 		show(*base), show(*head), packageFiles(*repo, *base), packageFiles(*repo, *head), treeFiles(*repo, *base), treeFiles(*repo, *head))
 	if lerr != nil {
@@ -385,34 +504,46 @@ func run() int {
 		return 2
 	}
 	if len(lc) > 0 {
-		failed = true
-		fmt.Println("::error::lock code changed — owner review: this PR edits a file of a package that holds a registry lock, or the runtime config of the lock suites (only the owner can allow that)")
+		fmt.Println("lock-affecting files in this PR (listed in the report, not a failure):")
+		var paths []string
 		for _, w := range lc {
-			fmt.Println("  " + w)
+			fmt.Println("  " + registry.LogSafe(w))
+			p, _, _ := strings.Cut(w, ": ")
+			paths = append(paths, p)
+		}
+		// inline in the PR's Files tab: the approval of the required reviewer is the control here
+		for _, a := range registry.WorkflowWarnings(paths, "lock-affecting file: the owner's approval is the control", maxAnnotations) {
+			fmt.Println(a)
 		}
 	}
-	substantive, err := registryChanges(*repo, *base, *head, show)
+	summary, substantive, err := registryChanges(*repo, *base, *head, show)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "testlinks: registry summary:", err)
 		return 2
 	}
-	if *product != "" && len(substantive) == 0 {
-		failed = true
-		fmt.Printf("::error::this PR changes product behaviour (%s) but makes no real content change under tests/conformance/registry/rows/ or tests/conformance/registry/features/\n", *product)
-		fmt.Println("  title, notes, description, highlight, differ_note and refs.doc edits are prose and do not count; comment-only and whitespace edits do not either.")
-		fmt.Println("  add or change a row or feature (its refs, targets, compare, request ...) that describes the new behaviour.")
-		fmt.Println("  see tests/conformance/README.md, section 'Registry gate on every PR'.")
-		fmt.Println("  a PR with genuinely nothing to cover is exempted by the owner only: label 'registry-exempt' plus a 'Registry: none — <reason>' line in the PR body.")
+	fmt.Print(summary)
+	if *product != "" {
+		if len(substantive) == 0 {
+			r1.fail(fmt.Sprintf("this PR changes product behaviour (%s) but makes no real content change under tests/conformance/registry/rows/ or tests/conformance/registry/features/", *product),
+				[]string{"title, notes, description, highlight, differ_note and refs.doc edits are prose and do not count; comment-only and whitespace edits do not either."},
+				"add or change a row or feature (its refs, targets, compare, request ...) that describes the new behaviour (tests/conformance/README.md, 'Registry gate on every PR')")
+		}
 	}
 	if stale := registry.StaleRefsBlob(show(*head), refs, changed); len(stale) > 0 {
-		failed = true
-		fmt.Println("::error::registry references point at tests this PR removed, renamed or moved")
-		for _, s := range stale {
-			fmt.Println("  " + s)
-		}
-		fmt.Println("update or drop the reference (tests/conformance/README.md, 'Linking tests')")
+		r2.fail("registry references point at tests this PR removed, renamed or moved", stale,
+			"update or drop the reference (tests/conformance/README.md, 'Linking tests')")
 	}
-	if failed {
+	r1.note = fmt.Sprintf("%d registry entries changed by more than prose", len(substantive))
+	r2.note = fmt.Sprintf("%d tests added, all linked; no reference to a removed test", len(added))
+	r3.note = fmt.Sprintf("no lock weakened; parity-fix PR: %v", pv.Fix)
+	r3.review = len(lc)
+	if *reportDir != "" {
+		if err := writeReport(*reportDir, []*rule{r1, r2, r3}, lc, summary); err != nil {
+			fmt.Fprintln(os.Stderr, "testlinks: report:", err)
+			return 2
+		}
+	}
+	if len(r1.fails)+len(r2.fails)+len(r3.fails) > 0 {
 		return 1
 	}
 	fmt.Printf("testlinks OK (%d tests added, all linked; parity-fix PR: %v)\n", len(added), pv.Fix)

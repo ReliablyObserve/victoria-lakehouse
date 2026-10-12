@@ -1,3 +1,6 @@
-# Logins whose application of the `registry-exempt` label the registry gate honours.
-# Read from the merge base, so a PR cannot add itself. Owner only.
+# DEPRECATED name of .github/release-metadata-approvers (this file once listed who could apply the
+# registry-exempt label; that label no longer exists). It is kept for one release so a merge base
+# that predates the rename still resolves: the gate reads release-metadata-approvers when the merge
+# base has it and falls back to this file otherwise. Delete it one release after the rename merged.
+# Keep the two lists identical while both exist.
 szibis
