@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sys
 
@@ -242,7 +243,7 @@ def extract_tempo_tag_values(body: str) -> str:
 
 
 def _sig_digits(v, digits: int = 6) -> str:
-    return "nan" if v is None or v != v else f"{v:.{digits - 1}e}"
+    return "nan" if v is None or (isinstance(v, float) and math.isnan(v)) else f"{v:.{digits - 1}e}"
 
 
 def extract_series_tempo(body: str) -> str:

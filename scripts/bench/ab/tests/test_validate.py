@@ -170,3 +170,10 @@ def test_s1_tag_lists_compare_by_scopes_and_tag_values_exactly():
     assert validate.extract_result("tempo_tag_values", TAG_VALUES) != validate.extract_result("tempo_tag_values", other)
     assert validate.extract_result("tempo_tag_values", TAG_VALUES) == validate.extract_result(
         "tempo_tag_values", json.dumps({"tagValues": list(reversed(json.loads(TAG_VALUES)["tagValues"]))}))
+
+
+def test_sig_digits_treats_none_and_nan_alike_and_keeps_six_significant_digits():
+    assert validate._sig_digits(None) == validate._sig_digits(float("nan")) == "nan"
+    assert validate._sig_digits(1.0000004) == validate._sig_digits(1.0000006) == "1.00000e+00"
+    assert validate._sig_digits(1.00001) != validate._sig_digits(1.0)
+    assert validate._sig_digits(0.0) == "0.00000e+00"
