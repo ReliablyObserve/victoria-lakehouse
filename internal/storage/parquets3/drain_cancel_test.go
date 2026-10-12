@@ -99,6 +99,7 @@ func TestDrain_StopMidDrainIsNotAnInvariantViolation(t *testing.T) {
 	f := e.flusher(3) // one group per second: 5 groups
 	ctx, cancel := context.WithCancel(context.Background())
 	e.hook.Store(func(string) { cancel() })
+	metrics.BufferStalledSegments.Set(0) // process-global: an earlier test may have left it at 1
 	inv, col := invariantNow(), collectNow()
 	err := f.drain(ctx, g)
 	if err == nil {

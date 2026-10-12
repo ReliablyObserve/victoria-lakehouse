@@ -321,20 +321,24 @@ today.
    floor: if the volume is filling, grow it first (sizing: `operations/sizing.md`).
 4. **Keep a copy.** With the pod running or stopped, copy the segment directory
    somewhere else (`cp -a`). Report the log line and the copy's size.
-5. **Fix the cause, not the segment.** If the log shows a count of rows before
-   1970 (the plan is made over `[0, MaxInt64]`, the count over all time), the
-   segment was written by an older build; that build is the cause, and the
-   segment cannot be drained by this one. If it shows a group whose query
-   returned fewer or more rows than planned, it is a bug: file an issue with the
-   log line.
+5. **Fix the cause, not the segment.** The log line gives the plan's count and
+   the segment's count for a tenant. The plan is made over `[0, MaxInt64]` and the
+   count over all time, so a segment count **larger** than the plan's points to
+   rows with a `_time` before 1970, which the plan cannot reach: the segment was
+   written by an older build, which is the cause, and this build cannot drain it
+   (the line does not say so; the check is only that the two counts differ). A
+   group whose query returned fewer or more rows than planned is a bug: file an
+   issue with the log line.
 6. **Last resort, and it loses data.** Stop the pod, move the segment directory
-   out of `insert.buffer_dir`, start the pod. The drain continues with the next
-   segment and the stalled one's rows are no longer served or written: **removing
-   or deleting the segment directory loses every row of the segment** from the
-   Lakehouse. The copy from step 4 can be moved back into `insert.buffer_dir`
-   while the pod is stopped (segments are found again by their directory name),
-   for instance after a fixed build is deployed. Do not delete the copy until
-   the rows are accounted for.
+   out of `insert.buffer_dir`, start the pod. The segments after it are then
+   drained and the gauge returns to 0, but the stalled segment's rows are no
+   longer served or written: **removing, deleting or moving away the segment
+   directory loses every row of the segment** from the Lakehouse. Moving it back
+   later does not recover them: by then the segments after it have committed,
+   the commit watermark is past it, and it comes back as an already committed
+   segment that is never drained (`TestDrain_MovingAStalledSegmentAside`).
+   Nothing re-imports a segment that was moved aside; keep the copy from step 4
+   outside `insert.buffer_dir` for as long as the rows matter.
 
 The dirty pmeta bundles (the bloom facet cannot be rebuilt from the manifest) are
 written after each drain and retried on every tick.
@@ -355,7 +359,8 @@ for the plan check: `TestDrain_StallsASegmentWithRowsThePlanDoesNotCover`,
 `TestDrain_CancelDuringPlanIsNotAnInvariantViolation`,
 `TestDrain_StopMidDrainIsNotAnInvariantViolation`,
 `TestDrain_CancelAtEveryStepNeverMovesInvariant`,
-`TestDrain_StalledGaugeClearsWhenTheSegmentCommits` and
+`TestDrain_StalledGaugeClearsWhenTheSegmentCommits`,
+`TestDrain_MovingAStalledSegmentAside` and
 `TestDrain_HealthySegmentsAreNeverStalled` (a property test: random tenants
 including 0:0 and the largest ids, times at the epoch, 1 ns, second and hour
 edges, exact duplicates, several parts and random group sizes; in the traces

@@ -224,6 +224,7 @@
       - internal/storage/parquets3/drain_cancel_test.go#TestDrain_StopMidDrainIsNotAnInvariantViolation
       - internal/storage/parquets3/drain_cancel_test.go#TestDrain_CancelAtEveryStepNeverMovesInvariant
       - internal/storage/parquets3/drain_healthy_property_test.go#TestDrain_HealthySegmentsAreNeverStalled
+      - internal/storage/parquets3/drain_stalled_move_aside_test.go#TestDrain_MovingAStalledSegmentAside
       - internal/metrics/buffer_stalled_test.go#TestAlerts_DrainPlanMismatchAndStalledSegment
   notes: "The runtime check that would have stopped #388: the drain compares its plan with a count of every row of every tenant over all of int64 time before the first upload, and each group's rows with the plan. A mismatch is lakehouse_buffer_flush_errors_total{stage=\"invariant\"}, an error log, lakehouse_buffer_stalled_segments = 1, and the segment stays pending; the plan is made again on every attempt, so a mismatch that does not repeat clears, and a persistent one blocks the later segments until the volume's free-space floor answers 429. A drain cut short by Stop (a cancelled context makes upstream's query return partial rows) is not a mismatch: it is counted once under stage=\"collect\" and never under invariant. A healthy segment is never stalled: a property test draws random tenants (0:0 and the largest ids among them), times at the epoch, 1 ns and second and hour edges, exact duplicates, several parts and random group sizes. Runbook: docs/durability.md."
 
@@ -256,6 +257,7 @@
       - lakehouse-traces/internal/storage/parquets3/drain_cancel_test.go#TestDrain_StopMidDrainIsNotAnInvariantViolation
       - lakehouse-traces/internal/storage/parquets3/drain_cancel_test.go#TestDrain_CancelAtEveryStepNeverMovesInvariant
       - lakehouse-traces/internal/storage/parquets3/drain_healthy_property_test.go#TestDrain_HealthySegmentsAreNeverStalled
+      - lakehouse-traces/internal/storage/parquets3/drain_stalled_move_aside_test.go#TestDrain_MovingAStalledSegmentAside
   notes: "Same check in the traces binary; the property test also draws VictoriaTraces trace_id_idx rows (some stamped before the epoch) and uses the production keep filter."
 
 - id: lh.durability.kill_between_upload_and_commit_logs
