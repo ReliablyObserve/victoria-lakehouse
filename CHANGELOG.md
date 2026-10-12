@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.156.2] - 2026-10-12
+
 ### Changed
 
 - **Registry: `kind: durability` cells.** Tooling only, no runtime change (`tests/conformance/registry/`): a registry row can be a durability cell (one fault, one write mode, one signal, the guarantees, the Go tests that prove it; a known gap names its issue). Every cell has a `_logs` and a `_traces` twin; `confgen -check` and `go test ./tests/conformance/registry` verify that every cited test exists, that the twins agree, that a `loss-counted` cell names a counter `internal/metrics` registers whose name contains `dropped`, `lost` or `errors`, and that `docs/durability.md` names every cell. The first cells cover the fixes below.
