@@ -1,7 +1,10 @@
 package registry
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -679,5 +682,95 @@ func TestBareFileReferenceBecomesNamedReferences(t *testing.T) {
 	loose := snapshot(nil, nil, RowLite{ID: "loose", Expect: "pass", Compare: "status", Tests: []string{"internal/x/y_test.go"}})
 	if v := ParityCheck(base, loose, nil); len(v.Weakenings) != 0 {
 		t.Errorf("%+v", v)
+	}
+}
+
+// M-B: the Go gate splits the allowlist on "\n" and the Python ratchet on every line boundary
+// str.splitlines() knows. A separator inside an existing line therefore hides an entry from one
+// reader. The files may hold only LF, TAB and printable text.
+func TestParityDataProblems(t *testing.T) {
+	clean := "# header\nTestA  # reason\nTestB/sub\t# reason\n"
+	src := func(m map[string]string) func(string) []byte {
+		return func(p string) []byte {
+			if v, ok := m[p]; ok {
+				return []byte(v)
+			}
+			return nil
+		}
+	}
+	paths := []string{"tests/parity/known_failures.txt", "tests/parity/lock_cells.txt"}
+	base := map[string]string{paths[0]: clean, paths[1]: "TestLock 3\n"}
+	if got := ParityDataProblems(paths, src(base), src(base)); len(got) != 0 {
+		t.Fatalf("clean files: %v", got)
+	}
+	cases := []struct {
+		name, file, content, frag string
+	}{
+		{"U+2028 inside a line", paths[0], "TestA  # reason\u2028TestSmuggled  # x\n", "U+2028 at line 1"},
+		{"U+2029", paths[0], "# h\nTestA\u2029TestSmuggled\n", "U+2029 at line 2"},
+		{"NEL", paths[0], "TestA\u0085TestSmuggled\n", "U+0085 at line 1"},
+		{"a lone CR", paths[0], "TestA  # r\rTestSmuggled\n", "U+000D at line 1"},
+		{"CRLF line endings are refused too", paths[0], "TestA  # r\r\n", "U+000D"},
+		{"VT, FF, FS, GS, RS, US", paths[0], "a\vb\x0c\x1c\x1d\x1e\x1f\n", "U+000B"},
+		{"DEL", paths[1], "TestLock 3\x7f\n", "U+007F"},
+		{"a NUL", paths[1], "TestLock\x003\n", "U+0000"},
+		{"a BOM", paths[1], "\ufeffTestLock 3\n", "U+FEFF at line 1"},
+		{"invalid UTF-8", paths[0], "TestA  # r\n\xff\xfe\n", "invalid UTF-8 at line 2"},
+	}
+	for _, c := range cases {
+		head := map[string]string{paths[0]: clean, paths[1]: "TestLock 3\n"}
+		head[c.file] = c.content
+		got := ParityDataProblems(paths, src(base), src(head))
+		if len(got) != 1 || !strings.Contains(got[0], c.file+": ") || !strings.Contains(got[0], c.frag) {
+			t.Errorf("%s: %v", c.name, got)
+		}
+	}
+	// a PR that REMOVES bad bytes passes; one that keeps them says the base had them too
+	dirty := map[string]string{paths[0]: "TestA\u2028x\n", paths[1]: "TestLock 3\n"}
+	if got := ParityDataProblems(paths, src(dirty), src(base)); len(got) != 0 {
+		t.Errorf("cleaning a dirty file must pass: %v", got)
+	}
+	if got := ParityDataProblems(paths, src(dirty), src(dirty)); len(got) != 1 || !strings.Contains(got[0], "the merge base has it too") {
+		t.Errorf("keeping the bad bytes: %v", got)
+	}
+	// a file missing at head is another rule's business; a duplicate path is checked once
+	if got := ParityDataProblems([]string{paths[0], paths[0], ""}, src(base), src(map[string]string{})); len(got) != 0 {
+		t.Errorf("missing file: %v", got)
+	}
+	// tab and LF are the only controls allowed
+	if got := ParityDataProblems(paths, src(base), src(map[string]string{paths[0]: "a\tb\nc\n"})); len(got) != 0 {
+		t.Errorf("tab and LF are fine: %v", got)
+	}
+}
+
+// The Go gate and the Python ratchet refuse the same bytes: one fixture, read by both
+// (scripts/ci/tests/test_parity_ratchet.py reads it too).
+func TestParityDataProblems_SharedFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../../scripts/ci/tests/testdata/parity_data_bytes.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Cases []struct {
+			Name  string
+			Hex   string
+			Clean bool
+		}
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.Cases) < 20 {
+		t.Fatalf("the shared fixture has only %d cases", len(fx.Cases))
+	}
+	for _, c := range fx.Cases {
+		b, err := hex.DecodeString(c.Hex)
+		if err != nil {
+			t.Fatalf("%s: %v", c.Name, err)
+		}
+		got := ParityDataProblems([]string{"f.txt"}, func(string) []byte { return nil }, func(string) []byte { return b })
+		if (len(got) == 0) != c.Clean {
+			t.Errorf("%s: clean=%v but ParityDataProblems gave %v", c.Name, c.Clean, got)
+		}
 	}
 }

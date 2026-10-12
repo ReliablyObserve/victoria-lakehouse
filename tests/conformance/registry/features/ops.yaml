@@ -169,6 +169,12 @@
     - tests/conformance/registry/escape_test.go#TestLogSafe
     - tests/conformance/registry/escape_test.go#TestWorkflowWarnings
     - tests/conformance/registry/paritygate_test.go#TestSummarizeChanges_EscapesHostileIDs
+    - tests/conformance/registry/lockcode_test.go#TestLockCgoAdditions
+    - tests/conformance/registry/paritygate_test.go#TestParityDataProblems
+    - tests/conformance/registry/paritygate_test.go#TestParityDataProblems_SharedFixture
+    - tests/conformance/cmd/testlinks/blobs_test.go#TestBlobReaderMatchesGitShow
+    - tests/conformance/cmd/testlinks/blobs_test.go#TestBlobReaderFallsBackWhenTheBatchProcessDies
+    - tests/conformance/cmd/testlinks/main_test.go#TestToolErrIsLogSafe
     - scripts/ci/tests/test_pr_classify_toolchain.py
     - scripts/ci/tests/test_pr_classify_critical.py
     - scripts/ci/tests/gate_local_test.sh

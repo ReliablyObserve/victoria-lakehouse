@@ -1,0 +1,110 @@
+{
+ "comment": "One fixture for both readers of the parity allowlist and lock floors: scripts/ci/parity_ratchet.py (decode_parity_data) and tests/conformance/registry (hasUnreadableBytes / ParityDataProblems). clean=false means the file must be refused by both. Bytes are hex so no tool can normalise them.",
+ "cases": [
+  {
+   "name": "an allowlist with comments, entries and tabs",
+   "hex": "23206d696e2d706173733a20330a54657374412020232042313a20726561736f6e0a54657374422f73756209232042323a20726561736f6e0a",
+   "clean": true
+  },
+  {
+   "name": "an empty file",
+   "hex": "",
+   "clean": true
+  },
+  {
+   "name": "non-ASCII printable text is fine",
+   "hex": "54657374412020232042313a20636166c3a920e2809420726561736f6e0a",
+   "clean": true
+  },
+  {
+   "name": "a NBSP is printable text (not a line boundary for either reader)",
+   "hex": "5465737441c2a02320780a",
+   "clean": true
+  },
+  {
+   "name": "a U+2028 inside a line",
+   "hex": "54657374412020232072e280a854657374536d7567676c656420202320720a",
+   "clean": false
+  },
+  {
+   "name": "a U+2029",
+   "hex": "5465737441e280a954657374536d7567676c65640a",
+   "clean": false
+  },
+  {
+   "name": "a NEL (U+0085)",
+   "hex": "54657374412020232072c28554657374536d7567676c656420202320720a",
+   "clean": false
+  },
+  {
+   "name": "a lone CR",
+   "hex": "546573744120202320720d54657374536d7567676c656420202320720a",
+   "clean": false
+  },
+  {
+   "name": "CRLF line endings",
+   "hex": "546573744120202320720d0a546573744220202320720d0a",
+   "clean": false
+  },
+  {
+   "name": "a vertical tab",
+   "hex": "546573744120202320720b54657374536d7567676c656420202320720a",
+   "clean": false
+  },
+  {
+   "name": "a form feed",
+   "hex": "546573744120202320720c54657374536d7567676c656420202320720a",
+   "clean": false
+  },
+  {
+   "name": "a FS separator (Python str.split treats it as white space, Go does not)",
+   "hex": "54657374411c54657374536d7567676c656420202320720a",
+   "clean": false
+  },
+  {
+   "name": "a GS separator (Python str.split treats it as white space, Go does not)",
+   "hex": "54657374411d54657374536d7567676c656420202320720a",
+   "clean": false
+  },
+  {
+   "name": "a RS separator (Python str.split treats it as white space, Go does not)",
+   "hex": "54657374411e54657374536d7567676c656420202320720a",
+   "clean": false
+  },
+  {
+   "name": "a US separator (Python str.split treats it as white space, Go does not)",
+   "hex": "54657374411f54657374536d7567676c656420202320720a",
+   "clean": false
+  },
+  {
+   "name": "a NUL",
+   "hex": "54657374410020202320720a",
+   "clean": false
+  },
+  {
+   "name": "a DEL",
+   "hex": "54657374417f20202320720a",
+   "clean": false
+  },
+  {
+   "name": "a BOM",
+   "hex": "efbbbf546573744120202320720a",
+   "clean": false
+  },
+  {
+   "name": "invalid UTF-8 (a lone continuation byte)",
+   "hex": "546573744120202320720a800a",
+   "clean": false
+  },
+  {
+   "name": "invalid UTF-8 (truncated sequence)",
+   "hex": "5465737441202023207220e2800a",
+   "clean": false
+  },
+  {
+   "name": "an overlong encoding of LF",
+   "hex": "5465737441c08a54657374536d7567676c65640a",
+   "clean": false
+  }
+ ]
+}

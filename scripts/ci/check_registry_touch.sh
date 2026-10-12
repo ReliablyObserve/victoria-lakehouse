@@ -138,6 +138,25 @@ trap finish EXIT
 # NUL-separated, then one path per line: without -z git prints a non-ASCII path in octal quotes
 # ("internal/selectapi/\303\251.go"), which no anchored pattern below would match.
 changed=$("${GITDIFF[@]}" --name-only -z "$BASE"..."$HEADREV" | tr '\0' '\n')
+# The checks below split `changed` into one path per line. A path that itself holds a line break (or any
+# other control character) would split into two lines that match no pattern, and `internal/stats/zz<LF>route.go`
+# with a new HandleFunc would raise no route or feature signal. No path of this repository has a control
+# character, so one is a hard failure rather than something to parse: the NUL-separated list is walked
+# path by path, so the check does not depend on the line-splitting it guards.
+ctrl_paths=""
+while IFS= read -r -d '' p; do
+  if [[ "$p" == *[[:cntrl:]]* ]]; then
+    ctrl_paths="$ctrl_paths
+$(printf '%s' "$p" | tr -d '\000' | tr '\001-\037\177' '?')"
+  fi
+done < <("${GITDIFF[@]}" --name-only -z "$BASE"..."$HEADREV")
+ctrl_paths=$(sed '/^$/d' <<< "$ctrl_paths")
+if [[ -n "$ctrl_paths" ]]; then
+  echo "::error::this PR changes a path that contains a control character (a line break, CR, ...): the route and feature checks read paths line by line and would not see it"
+  plain_list <<< "$ctrl_paths"
+  hard_fail "Changed paths" "a changed path holds a control character ($(wc -l <<< "$ctrl_paths" | tr -d ' ') path(s), shown with ? for each control byte)" \
+    "rename the file: a path may not contain a line break, a carriage return or any other control character"
+fi
 # Content comparisons read files at the merge base: the revision
 # `git diff BASE...HEAD` diffs against, so a PR is judged on its own changes
 # only, never on what landed on the base branch after it forked.

@@ -8,6 +8,8 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from scripts.ci.parity_ratchet import (
     Allowlist,
+    decode_parity_data,
+    helper_line,
     GoTestRun,
     Verdict,
     count_by_action,
@@ -785,6 +787,95 @@ class RegistryLockTests(unittest.TestCase):
         # the registry option is optional
         self.assertEqual(self.run_main(early, floors)[0], 1, "floors alone still hold TestLockA")
         self.assertEqual(self.run_main(early, None)[0], 0)
+
+
+class ParityDataBytesTests(unittest.TestCase):
+    """M-B: the Go gate splits the allowlist on LF, the ratchet used to split on every Unicode line boundary.
+    A U+2028 / NEL / lone CR appended inside an existing line then gave the ratchet one more entry than the
+    gate saw. Both readers now refuse those bytes (one shared fixture) and split on LF only."""
+
+    FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "parity_data_bytes.json")
+
+    def cases(self):
+        with open(self.FIXTURE, encoding="utf-8") as fh:
+            return json.load(fh)["cases"]
+
+    def test_shared_fixture_decides_the_same_as_the_go_gate(self):
+        cases = self.cases()
+        self.assertGreaterEqual(len(cases), 20)
+        for c in cases:
+            raw = bytes.fromhex(c["hex"])
+            with self.subTest(c["name"]):
+                if c["clean"]:
+                    decode_parity_data(raw, "f")
+                else:
+                    with self.assertRaises(ValueError):
+                        decode_parity_data(raw, "f")
+
+    def test_the_smuggle_of_the_review_is_refused_by_both_parsers(self):
+        for sep in ("\u2028", "\u2029", "\u0085", "\r", "\x0b", "\x0c", "\x1c"):
+            smuggled = "# min-pass: 1\nTestA  # B1: reason" + sep + "TestSmuggled  # B9: reason\nTestB  # B2: reason\n"
+            with self.subTest(sep=repr(sep)):
+                with self.assertRaises(ValueError):
+                    parse_allowlist(smuggled)
+        with self.assertRaises(ValueError):
+            parse_lock_cells("TestLock 3\u2028TestSmuggled 1\n")
+
+    def test_splitting_is_on_lf_only(self):
+        # without the byte check this text would be one entry for Go; the parser must never invent a second
+        al = parse_allowlist("# min-pass: 1\nTestA  # B1: reason\nTestB  # B2: reason\n")
+        self.assertEqual(sorted(al.entries), ["TestA", "TestB"])
+        self.assertEqual(parse_lock_cells("# c\nTestLock  3  # why\n"), {"TestLock": 3})
+
+    def test_main_reads_bytes_and_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            results = os.path.join(d, "r.json")
+            with open(results, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(events(("TestA", "pass"))) + "\n")
+            for name, raw in (
+                ("u2028", "# min-pass: 1\nTestOld  # B1: reason\u2028TestSmuggled  # B9: reason\n".encode()),
+                ("lone cr", b"# min-pass: 1\nTestOld  # B1: reason\rTestSmuggled  # B9: reason\n"),
+                ("invalid utf-8", b"# min-pass: 1\n\xff\n"),
+            ):
+                allow = os.path.join(d, "allow.txt")
+                with open(allow, "wb") as fh:
+                    fh.write(raw)
+                out, err = io.StringIO(), io.StringIO()
+                with self.subTest(name), redirect_stdout(out), redirect_stderr(err):
+                    code = main(["--results", results, "--allowlist", allow])
+                self.assertEqual(code, 1)
+                self.assertIn("parity_ratchet:", err.getvalue())
+            # a clean file with the same entries passes the parse (and the run has nothing unexpected)
+            with open(allow, "wb") as fh:
+                fh.write(b"# min-pass: 1\nTestOld  # B1: reason\n")
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                main(["--results", results, "--allowlist", allow])
+            self.assertNotIn("invalid", err.getvalue())
+
+    def test_lock_cells_file_is_read_as_bytes_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            results = os.path.join(d, "r.json")
+            with open(results, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(events(("TestA", "pass"))) + "\n")
+            allow = os.path.join(d, "a.txt")
+            with open(allow, "w", encoding="utf-8") as fh:
+                fh.write("# min-pass: 1\n")
+            cells = os.path.join(d, "lock_cells.txt")
+            with open(cells, "wb") as fh:
+                fh.write("TestLock 3\u2028TestSmuggled 1\n".encode())
+            with open(os.path.join(d, "lock_cells_test.go"), "w", encoding="utf-8") as fh:
+                fh.write('package parity\nfunc f(t *testing.T) {\n\tt.Logf("lock-cells %s %s %d")\n}\n')
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch.dict(os.environ, {"PARITY_LOCK_NONCE": "n"}), redirect_stdout(out), redirect_stderr(err):
+                code = main(["--results", results, "--allowlist", allow, "--lock-cells", cells])
+            self.assertEqual(code, 1)
+            self.assertIn("U+2028", err.getvalue())
+
+    def test_helper_line_counts_lf_only(self):
+        # a U+2028 in the helper must not shift the line the ratchet expects go test to print
+        src = 'package parity\n// note\u2028still line 2\nfunc f(t *testing.T) {\n\tt.Logf("lock-cells x")\n}\n'
+        self.assertEqual(helper_line(src), 4)
 
 
 if __name__ == "__main__":

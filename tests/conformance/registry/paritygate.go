@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -634,4 +635,58 @@ func ParseLockCells(src []byte) (map[string]int, error) {
 		out[f[0]] = n
 	}
 	return out, nil
+}
+
+// firstUnreadable describes the first byte or character of b that hasUnreadableBytes rejects, with
+// its line (LF-separated, 1-based); "" when b is clean.
+func firstUnreadable(b []byte) string {
+	if !hasUnreadableBytes(b) {
+		return ""
+	}
+	line := 1
+	for i := 0; i < len(b); {
+		r, n := utf8.DecodeRune(b[i:])
+		switch {
+		case r == utf8.RuneError && n <= 1:
+			return fmt.Sprintf("invalid UTF-8 at line %d", line)
+		case r == '\n':
+			line++
+		case r == '\t':
+		case r < 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 || r == 0xfeff:
+			return fmt.Sprintf("U+%04X at line %d", r, line)
+		}
+		i += n
+	}
+	return "an unreadable byte"
+}
+
+// ParityDataProblems checks the files the Go gate and the Python runtime ratchet both read line by
+// line (the parity allowlist and tests/parity/lock_cells.txt). Go splits on "\n" and Python's
+// str.splitlines() also splits on a lone CR, NEL, U+2028 and U+2029, so one extra "line" can exist
+// for the ratchet only: a smuggled allowlist entry the gate never sees. The files may hold no control
+// byte except LF and TAB, no NEL/LS/PS, no BOM and only valid UTF-8; the ratchet enforces the same set.
+// Only the head matters for the verdict (the base is main's file, and a PR that removes bad bytes
+// must pass); a head problem says when the merge base had it too.
+func ParityDataProblems(paths []string, baseSrc, headSrc func(string) []byte) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range paths {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		hs := headSrc(p)
+		if hs == nil {
+			continue
+		}
+		if why := firstUnreadable(hs); why != "" {
+			also := ""
+			if hasUnreadableBytes(baseSrc(p)) {
+				also = " (the merge base has it too)"
+			}
+			out = append(out, fmt.Sprintf("%s: %s%s", p, why, also))
+		}
+	}
+	sort.Strings(out)
+	return out
 }

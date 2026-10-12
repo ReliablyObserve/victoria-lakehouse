@@ -92,6 +92,36 @@ ResultKey = tuple[str, str]
 LOCK_CELLS_LINE = re.compile(r"^\s*lock_cells_test\.go:(\d+): lock-cells (\S+) (Test\w+) (\d+)\s*$")
 
 
+# The allowlist and the lock floors are read line by line by this ratchet (Python) and by the registry
+# gate (Go, tests/conformance/registry/paritygate.go). Go splits on "\n" only; `str.splitlines()` and a
+# text-mode `open()` also split on a lone CR, VT, FF, FS/GS/RS, NEL, U+2028 and U+2029, so one extra
+# "line" could exist for this reader and not for the gate: an allowlist entry the gate never saw. Both
+# readers therefore accept only LF and TAB as control characters, no BOM and valid UTF-8, and split on
+# "\n" alone. The Go twin is registry.ParityDataProblems; both are tested against
+# scripts/ci/tests/testdata/parity_data_bytes.json.
+_UNREADABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029\ufeff]")
+
+
+def decode_parity_data(raw: bytes, what: str = "file") -> str:
+    """raw as UTF-8 text with "\n" lines untouched, or ValueError when it is not clean text."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        line = raw[: exc.start].count(b"\n") + 1
+        raise ValueError(f"{what}: invalid UTF-8 at line {line}") from exc
+    bad = _UNREADABLE.search(text)
+    if bad:
+        line = text.count("\n", 0, bad.start()) + 1
+        raise ValueError(f"{what}: U+{ord(bad.group()):04X} at line {line}: only LF separates lines and TAB is the only other control character allowed")
+    return text
+
+
+def read_parity_data(path: str) -> str:
+    """The text of an allowlist or lock-floor file, read as bytes (no newline translation)."""
+    with open(path, "rb") as fh:
+        return decode_parity_data(fh.read(), path)
+
+
 @dataclass
 class Allowlist:
     """Parsed contents of ``known_failures.txt``."""
@@ -110,7 +140,8 @@ def parse_allowlist(text: str) -> Allowlist:
     """
     result = Allowlist()
     min_pass_line: int | None = None
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    decode_parity_data(text.encode("utf-8", errors="surrogatepass"), "allowlist")
+    for lineno, raw in enumerate(text.split("\n"), start=1):
         line = raw.strip()
         if not line:
             continue
@@ -184,7 +215,8 @@ class GoTestRun:
 
 def helper_line(helper_source: str) -> int | None:
     """The line of the t.Logf in tests/parity/lock_cells_test.go that prints the cells."""
-    for number, line in enumerate(helper_source.splitlines(), start=1):
+    # "\n" only, like Go's line numbers: splitlines() would also break on U+2028, NEL and a lone CR
+    for number, line in enumerate(helper_source.split("\n"), start=1):
         if 't.Logf("lock-cells' in line:
             return number
     return None
@@ -361,7 +393,8 @@ def _strict_bool_loader():
 def parse_lock_cells(text: str) -> dict[str, int]:
     """tests/parity/lock_cells.txt: `TestName  minCells  # why` per line."""
     out: dict[str, int] = {}
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    decode_parity_data(text.encode("utf-8", errors="surrogatepass"), "lock_cells")
+    for lineno, raw in enumerate(text.split("\n"), start=1):
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
@@ -647,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
                   "random value before it runs the suite and the ratchet", file=sys.stderr)
             return 1
         helper = os.path.join(os.path.dirname(os.path.abspath(args.lock_cells)), "lock_cells_test.go")
-        with open(helper, encoding="utf-8") as fh:
+        with open(helper, encoding="utf-8", newline="") as fh:
             expect_line = helper_line(fh.read())
         if expect_line is None:
             print(f"parity_ratchet: no t.Logf(\"lock-cells ...\") line in {helper}", file=sys.stderr)
@@ -658,8 +691,12 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.results, encoding="utf-8", errors="replace") as fh:
             run = parse_go_test_json(fh, nonce, expect_line)
 
-    with open(args.allowlist, encoding="utf-8") as fh:
-        allowlist = parse_allowlist(fh.read())
+    try:
+        allow_text = read_parity_data(args.allowlist)
+    except ValueError as exc:
+        print(f"parity_ratchet: {exc}", file=sys.stderr)
+        return 1
+    allowlist = parse_allowlist(allow_text)
 
     if not run.results and not run.started and not run.failed_packages:
         print(
@@ -672,8 +709,12 @@ def main(argv: list[str] | None = None) -> int:
     locks = None
     floors = None
     if args.lock_cells:
-        with open(args.lock_cells, encoding="utf-8") as fh:
-            floors = parse_lock_cells(fh.read())
+        try:
+            floors_text = read_parity_data(args.lock_cells)
+        except ValueError as exc:
+            print(f"parity_ratchet: {exc}", file=sys.stderr)
+            return 1
+        floors = parse_lock_cells(floors_text)
     if args.registry:
         repo_root = os.path.abspath(os.path.join(args.registry, "..", "..", "..", ".."))
         bare: list[str] = []

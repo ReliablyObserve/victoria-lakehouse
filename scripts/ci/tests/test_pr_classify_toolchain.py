@@ -314,6 +314,88 @@ class Classified(unittest.TestCase):
         self.assertEqual([ln for ln in self.lines if ln.startswith("exempt=")], ["exempt=none"])
         self.assertIn("scripts/ci/a\\x0aexempt=release-metadata", got["gate_files"])
 
+    # --- the second review: a bump moves forward ---
+
+    def test_a_toolchain_downgrade_is_not_toolchain_only(self):
+        # go 1.27.1 -> 1.21 with the builder image going back too: a downgrade is a product change
+        down = {"go.mod": GO_MOD.replace("go 1.27.1", "go 1.21"), "Dockerfile.logs": DOCKERFILE.replace("golang:1.27.1", "golang:1.21.0")}
+        got = self.classify(down)
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_each_file_of_a_downgrade_is_refused_alone(self):
+        for name, change in (
+            ("go directive", {"go.mod": GO_MOD.replace("go 1.27.1", "go 1.26.9")}),
+            ("go directive, patch level", {"go.mod": GO_MOD.replace("go 1.27.1", "go 1.27.0")}),
+            ("golang image", {"Dockerfile.logs": DOCKERFILE.replace("golang:1.27.1", "golang:1.20.14")}),
+            ("alpine release", {"Dockerfile.logs": DOCKERFILE.replace("alpine3.23", "alpine3.9")}),
+            ("compose image", {"tests/parity/docker-compose.yml": COMPOSE.replace("golang:1.27.1", "golang:1.21.0")}),
+            ("go.work", {"go.work": GO_WORK.replace("go 1.27.1", "go 1.21")}),
+        ):
+            with self.subTest(name):
+                git(self.d, "reset", "-q", "--hard", self.base)
+                got = self.classify(change)
+                self.assertEqual(got["exempt"], "none", got)
+
+    def test_a_toolchain_line_that_goes_back_is_a_downgrade(self):
+        tc = GO_MOD.replace("go 1.27.1\n", "go 1.27.1\n\ntoolchain go1.27.2\n")
+        self.rebase_to({"go.mod": tc})
+        self.assertEqual(self.classify({"go.mod": tc.replace("go1.27.2", "go1.27.1")})["exempt"], "none")
+        git(self.d, "reset", "-q", "--hard", self.base)
+        self.assertEqual(self.classify({"go.mod": tc.replace("go1.27.2", "go1.27.3")})["exempt"], "toolchain-only")
+
+    def test_a_dropped_toolchain_line_is_a_downgrade(self):
+        self.rebase_to({"go.mod": GO_MOD.replace("go 1.27.1\n", "go 1.27.1\n\ntoolchain go1.27.1\n")})
+        got = self.classify({"go.mod": GO_MOD})
+        self.assertEqual(got["exempt"], "none")
+
+    def test_upgrades_compare_numerically(self):
+        self.rebase_to({"Dockerfile.logs": DOCKERFILE.replace("golang:1.27.1-alpine3.23", "golang:1.9.5-alpine3.9")})
+        got = self.classify({"Dockerfile.logs": DOCKERFILE.replace("golang:1.27.1-alpine3.23", "golang:1.10.0-alpine3.10")})
+        self.assertEqual(got["exempt"], "toolchain-only")
+
+    def test_a_new_required_module_is_not_a_toolchain_bump(self):
+        got = self.classify({**CHANGE_491, "go.mod": GO_MOD_491.replace("\n)\n", "\n\tgolang.org/x/sys v0.48.0\n)\n")})
+        self.assertEqual(got["exempt"], "none")
+
+    # --- files that shape the verdict are gate files (listed, never failed) ---
+
+    def test_files_that_shape_the_verdict_are_listed_as_gate_files(self):
+        for path in ("tests/parity/known_failures.txt", "tests/parity/lock_cells.txt", ".github/CODEOWNERS",
+                     "tests/conformance/registry/escape.go", "tests/conformance/registry/canonical.go",
+                     "scripts/ci/tests/test_x.py", "scripts/ci/tests/testdata/cases.json", "scripts/ci/gate_replay.sh"):
+            with self.subTest(path):
+                self.assertTrue(pc.GATE_FILES_RE.match(path), path)
+        for path in ("tests/parity/README.md", "tests/parity/testdata/seed.json", "tests/conformance/registry/features.go",
+                     "scripts/proof/run.sh", "docs/x.md"):
+            with self.subTest(path):
+                self.assertFalse(pc.GATE_FILES_RE.match(path), path)
+        got = self.classify({"tests/parity/known_failures.txt": "# a\n", ".github/CODEOWNERS": "* @owner\n",
+                             "scripts/ci/tests/new_test.py": "x\n"})
+        self.assertEqual(sorted(got["gate_files"]), [".github/CODEOWNERS", "scripts/ci/tests/new_test.py", "tests/parity/known_failures.txt"])
+
+    def test_a_gate_test_file_cannot_ride_along_with_a_toolchain_bump(self):
+        got = self.classify({**CHANGE_491, "scripts/ci/tests/test_x.py": "x\n"})
+        self.assertEqual(got["exempt"], "none")
+
+    def test_a_path_that_is_not_utf8_is_still_classified(self):
+        # a git path is bytes (macOS cannot even create such a file, so the tree is built with plumbing)
+        raw = b"internal/x/caf\xe9.go"
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.d, input=b"package x\n", check=True, capture_output=True).stdout.strip().decode()
+        subprocess.run(["git", "update-index", "--add", "--cacheinfo", b"100644," + blob.encode() + b"," + raw], cwd=self.d, check=True)
+        git(self.d, "commit", "-q", "-m", "change")
+        out = subprocess.run([sys.executable, os.path.join(HERE, "..", "pr_classify.py"), "--base", self.base, "--head", "HEAD"],
+                             cwd=self.d, check=True, capture_output=True, text=True).stdout
+        fields = dict(line.split("=", 1) for line in out.split("\n")[:-1] if "=" in line)
+        self.assertEqual(fields["product"], "1")
+        self.assertIn("product code: internal/x/caf", fields["reason"])
+        self.assertEqual(fields["exempt"], "none")
+
+    def test_a_path_with_a_cr_is_not_translated_to_a_newline(self):
+        got = self.classify({"internal/x/a\rb.go": "package x\n"})
+        self.assertEqual(got["product"], "1")
+        self.assertIn("a\\x0db.go", got["reason"])
+        self.assertEqual(len(self.lines), 4 + len(got["gate_files"]), self.lines)
+
 
 if __name__ == "__main__":
     unittest.main()

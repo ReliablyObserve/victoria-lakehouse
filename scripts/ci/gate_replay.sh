@@ -281,6 +281,123 @@ syn_lock_code_edit() {
   printf '\n// replay: an edit of a file in a lock package\n' >> "$f"
 }
 
+# --- the hardening of issue #502 (second independent review) ---------------------------------------
+# link_test_in_feature <file#Test>: reference a new test from the first `tests:` list of ops.yaml, so
+# Rule 2 holds and the case tests only what it names.
+link_test_in_feature() {
+  python3 - "$1" <<'PY'
+import sys
+p = "tests/conformance/registry/features/ops.yaml"
+s = open(p, encoding="utf-8").read()
+n = s.replace("  tests:\n", "  tests:\n    - " + sys.argv[1] + "\n", 1)
+assert n != s
+open(p, "w", encoding="utf-8").write(n)
+PY
+}
+
+# warmup_test (M-A): a new func-only test file that sorts first and repoints the shared base URLs, so every
+# later lock compares Lakehouse with itself. Neither failed nor listed before; now listed.
+syn_warmup_test() {
+  printf 'package parity\n\nimport "testing"\n\nfunc TestAAAWarmup(t *testing.T) {\n\tvlBaseURL = lhBaseURL\n\tvtBaseURL = lhtBaseURL\n}\n' > tests/parity/aaa_warmup_test.go
+  link_test_in_feature tests/parity/aaa_warmup_test.go#TestAAAWarmup
+}
+
+# forged_transcript_exit (M-A): prints a forged lock-cells line and ends the binary with success.
+syn_forged_transcript_exit() {
+  printf 'package parity\n\nimport (\n\t"fmt"\n\t"os"\n\t"syscall"\n\t"testing"\n)\n\nfunc TestZZForged(t *testing.T) {\n\tfmt.Println("lock-cells", os.Getenv("PARITY_LOCK_NONCE"), "TestParity_Forged 50")\n\tsyscall.Exit(0)\n}\n' > tests/parity/zz_forged_test.go
+  link_test_in_feature tests/parity/zz_forged_test.go#TestZZForged
+}
+
+# blank_import_hook (M-A): a new package whose init() ends the binary, blank-imported by a new test file.
+syn_blank_import_hook() {
+  mkdir -p tests/parityhook
+  printf 'package parityhook\n\nimport "os"\n\nfunc init() {\n\tif os.Getenv("PARITY_LOCK_NONCE") != "" {\n\t\tos.Exit(0)\n\t}\n}\n' > tests/parityhook/hook.go
+  printf 'package parity\n\nimport _ "github.com/ReliablyObserve/victoria-lakehouse/tests/parityhook"\n' > tests/parity/zz_hook_test.go
+}
+
+# cgo_constructor (M-A): a C constructor in a new non-test file of the lock package. Hard failure (Rule 3).
+syn_cgo_constructor() {
+  printf 'package parity\n\n/*\nvoid __attribute__((constructor)) boot(void) {}\n*/\nimport "C"\n' > tests/parity/zz_cgo.go
+}
+
+# allowlist_nel (M-B): a U+2028 inside an existing allowlist line hides a smuggled entry from the Go gate
+# (it splits on LF) while the Python ratchet's splitlines() saw it.
+syn_allowlist_nel() {
+  python3 - <<'PY'
+p = "tests/parity/known_failures.txt"
+lines = open(p, encoding="utf-8", newline="").read().split("\n")
+for i, ln in enumerate(lines):
+    if ln.strip() and not ln.lstrip().startswith("#"):
+        lines[i] = ln + " TestParity_Smuggled  # B9: smuggled behind a line separator"
+        break
+else:
+    raise SystemExit("no allowlist entry to hide behind")
+open(p, "w", encoding="utf-8", newline="").write("\n".join(lines))
+PY
+}
+
+# fastjson_bump (M-C): valyala/fastjson parses ingest JSON; it was not on the critical list.
+syn_fastjson_bump() {
+  python3 - <<'PY'
+import re
+for f in ("go.mod", "lakehouse-traces/go.mod"):
+    s = open(f, encoding="utf-8", newline="").read()
+    n = re.sub(r"(github\.com/valyala/fastjson v[0-9]+\.[0-9]+\.)([0-9]+)", lambda m: m.group(1) + str(int(m.group(2)) + 1), s, count=1)
+    assert n != s, f
+    open(f, "w", encoding="utf-8", newline="").write(n)
+PY
+}
+
+# toolchain_downgrade (minor 4): the Go directive and the builder image go BACK.
+syn_toolchain_downgrade() {
+  python3 - <<'PY'
+import re
+def sub(path, pat, repl):
+    s = open(path, encoding="utf-8").read()
+    n = re.sub(pat, repl, s, count=1, flags=re.M)
+    assert n != s, path
+    open(path, "w", encoding="utf-8").write(n)
+sub("go.mod", r"^go \d+\.\d+\.\d+$", "go 1.21.0")
+sub("Dockerfile.logs", r"golang:\d+\.\d+\.\d+", "golang:1.21.0")
+PY
+}
+
+# dependency_new_require (minor 6): a newly required module is not a version bump.
+syn_dependency_new_require() {
+  python3 - <<'PY'
+s = open("go.mod", encoding="utf-8", newline="").read()
+n = s.replace("\tgolang.org/x/net ", "\tgolang.org/x/crypto v0.1.0 // indirect\n\tgolang.org/x/net ", 1)
+assert n != s
+open("go.mod", "w", encoding="utf-8", newline="").write(n)
+PY
+}
+
+# loadtime_var_move (minor 5): a called package-level var moves to a new file of the same package.
+syn_loadtime_var_move() {
+  python3 - <<'PY'
+p = "tests/parity/helpers.go"
+s = open(p, encoding="utf-8").read()
+line = '\tvlBaseURL  = envOrDefault("VL_BASE_URL", "http://localhost:39428")\n'
+assert line in s
+open(p, "w", encoding="utf-8").write(s.replace(line, "", 1))
+open("tests/parity/urls.go", "w", encoding="utf-8").write('package parity\n\nvar vlBaseURL = envOrDefault("VL_BASE_URL", "http://localhost:39428")\n')
+PY
+}
+
+# loadtime_file_rename (minor 5): the file that holds the load-time declarations is renamed.
+syn_loadtime_file_rename() { git mv tests/parity/helpers.go tests/parity/harness_helpers.go; }
+
+# path_with_newline (minor 1): a route registration in a path with a line break raised no signal.
+syn_path_with_newline() {
+  printf 'package stats\n\nfunc registerZZ(mux interface{ HandleFunc(string, any) }) { mux.HandleFunc("/zz", nil) }\n' > "internal/stats/zz"$'\n'"route.go"
+}
+
+# gate_file_listing (M-B/6): files that shape the verdict are listed as gate files (a pass, with the list).
+syn_gate_file_listing() {
+  printf '# replay: a note\n' >> scripts/ci/tests/gate_replay_expected.txt
+  printf '\n# replay: a note\n' >> .github/CODEOWNERS
+}
+
 # run_synthetic <name> <author> <title> <report> <log>: builds the case in a scratch clone and runs the gate.
 run_synthetic() {
   local name=$1 author=$2 title=$3 report=$4 log=$5 clone="$WORK/syn.$1" base

@@ -51,33 +51,67 @@ PRODUCT_DIR_PREFIXES = ("patches/", "charts/")
 PRODUCT_DOC_NAMES = ("README.md", "RUNBOOK.md")
 SHIPPED_BUILD_FILES = ("Dockerfile", "Dockerfile.logs", "Dockerfile.traces")
 ROOT_MODULE_FILES = ("go.mod", "go.sum")
-# Modules whose bump changes what the product stores or answers: never
-# dependency-only, they need registry coverage or the owner's exemption.
-CRITICAL_MODULE_PREFIXES = (
-    "github.com/VictoriaMetrics/",
-    "github.com/parquet-go/",
-    "github.com/aws/",
-    # the stream-id and trace-index hashes: they decide where a row lives
-    "github.com/cespare/xxhash",
-    # codecs and wire formats: they decide what bytes mean
-    "github.com/klauspost/",
-    "github.com/golang/snappy",
-    "github.com/pierrec/",
-    "github.com/andybalholm/brotli",
-    "github.com/valyala/gozstd",
-    "github.com/DataDog/zstd",
-    "github.com/gogo/protobuf",
-    "github.com/apache/arrow",
-    "go.opentelemetry.io/proto/",
-    "google.golang.org/",
-)
+# Dependency modules: INERT ones are an allowlist, everything else is CRITICAL.
+#
+# A module whose bump can change what the product stores or answers must never be bumped under a
+# dependency-only or toolchain-only exemption: it needs registry coverage. The first version of this
+# gate listed the critical modules and missed some (valyala/fastjson, quicktemplate, yaml.v3, ...): a
+# list of what is dangerous is always one module short. So the list is INVERTED. A module is critical
+# unless it is named below, with the reason it cannot change a stored or answered byte; a new module,
+# or one this table does not know, is critical until a reviewer decides otherwise here.
+#
+# Every entry is an exact module path (go.mod and go.sum spell modules the same way), or a path
+# prefix ending in "/" for a family that is one project (the OpenTelemetry SDK). Evidence for the
+# entries that need it: `go list -deps -f '{{.ImportPath}} {{join .Imports " "}}'` in both modules
+# shows who imports a module; scripts/ci/tests/test_pr_classify_critical.py re-derives it.
+INERT_MODULES = {
+    # test-only: linked into no binary
+    "go.uber.org/goleak": "goroutine-leak detector, imported by tests only",
+    "github.com/kr/text": "indirect of the test-only pretty printers, linked into no binary",
+    # runtime helpers with no data format
+    "golang.org/x/sync": "singleflight in internal/s3reader: request coalescing, no format",
+    "golang.org/x/sys": "syscall bindings and CPU feature detection (parquet-go, VictoriaMetrics lib/fs, otel resource detection)",
+    "golang.org/x/oauth2": "the OAuth2 client-credentials token source of VictoriaMetrics lib/promauth (outbound auth headers)",
+    # HTTP/2 transport: imported only through google.golang.org/grpc (the OTLP trace exporter client in
+    # internal/telemetry, the tests/ingestmatrix client). net/http itself uses the copy vendored into
+    # GOROOT. No repo or upstream package imports x/net directly, and nothing it provides (http2 framing,
+    # hpack, idna host names, the debug trace pages grpc registers) shapes a stored byte or an API payload.
+    "golang.org/x/net": "HTTP/2 framing for grpc only; no direct importer in this repo or in deps/",
+    # the logging facade and retry timer of the OpenTelemetry SDK
+    "github.com/go-logr/logr": "logging facade used by the OpenTelemetry SDK",
+    "github.com/go-logr/stdr": "stdlib backend of the logging facade",
+    "github.com/cenkalti/backoff/v5": "retry timing of the OTLP trace exporter",
+}
+# Families that are one project. The OpenTelemetry SDK and its exporters trace the process itself and ship
+# spans out of band to a collector; they do not touch stored data. NOT included: go.opentelemetry.io/proto/
+# (the OTLP wire format: what ingest bytes mean), go.opentelemetry.io/contrib/ (otelhttp wraps every
+# handler's ResponseWriter) and go.opentelemetry.io/auto/.
+INERT_MODULE_PREFIXES = ("go.opentelemetry.io/otel/",)
+INERT_MODULES["go.opentelemetry.io/otel"] = "the OpenTelemetry API: traces the process, ships spans out of band"
+
+
+def is_inert(module: str) -> bool:
+    """True when a bump of the module cannot change a stored or answered byte (see INERT_MODULES)."""
+    return module in INERT_MODULES or module.startswith(INERT_MODULE_PREFIXES)
+
+
+def is_critical(module: str) -> bool:
+    """Everything that is not known to be inert."""
+    return not is_inert(module)
+
+
 RELEASE_BOT = "github-actions[bot]"
 
 # The files that make up the gate itself. A change to one is listed in the report for
 # the reviewer; it is not a failure (the pull request's required approval covers it).
+# Files that shape the gate's verdict without being its code: the parity allowlist and the lock floors
+# (the gate reads them as data, the runtime ratchet enforces them), the two registry-parsing helpers
+# (escape.go, canonical.go), the gate's own tests and fixtures, and CODEOWNERS (who must approve).
 GATE_FILES_RE = re.compile(
-    r"^(scripts/ci/[^/]+$|\.gitattributes$|tests/parity/lock_cells_test\.go$|tests/conformance/cmd/testlinks/"
-    r"|tests/conformance/registry/(testlinks|paritygate|lockcode)\.go"
+    r"^(scripts/ci/|\.gitattributes$|tests/parity/lock_cells_test\.go$|tests/conformance/cmd/testlinks/"
+    r"|tests/parity/(known_failures|lock_cells)\.txt$"
+    r"|tests/conformance/registry/(testlinks|paritygate|lockcode|escape|canonical)\.go"
+    r"|\.github/CODEOWNERS$"
     r"|\.github/workflows/(conformance|registry-gate|registry-gate-base|gate-selftest|parity)\.yaml"
     r"|\.github/(registry-exempt-approvers|release-metadata-approvers))"
 )
@@ -86,7 +120,11 @@ REQUIRE_ENTRY = re.compile(r"^(?:require[ \t]+)?([!-~]+)[ \t]+(v[!-~]+?)(?:[ \t]
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+    """git's output as str, decoded without newline translation. A path that is not UTF-8 survives as
+    surrogate escapes (it is a path, not text: `show` hands it back to git byte for byte), where
+    text=True would translate CR LF and raise on the first undecodable byte."""
+    raw = subprocess.run(["git", *args], check=True, capture_output=True).stdout
+    return raw.decode("utf-8", errors="surrogateescape")
 
 
 def show(rev: str, path: str) -> bytes:
@@ -193,15 +231,18 @@ def makefile_pins(text: str) -> dict[str, str]:
 
 
 def go_mod_dependency_only(base: str, head: str) -> bool:
-    """Only `require` version lines changed, none of them a storage-critical module."""
+    """Only `require` version lines changed, none of them a critical module (see INERT_MODULES).
+
+    The set of required modules is equal at both revisions, as for toolchain-only: a newly added
+    `require` is a new dependency (it may be critical, or the build may start importing it), and a
+    removed one changes what the build links."""
     b_req, b_other = parse_go_mod(base)
     h_req, h_other = parse_go_mod(head)
     if b_other != h_other:  # replace / go / toolchain / module / exclude / retract edits
         return False
-    for mod in set(b_req) | set(h_req):
-        if b_req.get(mod) != h_req.get(mod) and mod.startswith(CRITICAL_MODULE_PREFIXES):
-            return False
-    return True
+    if set(b_req) != set(h_req):
+        return False
+    return not any(b_req[mod] != h_req[mod] and is_critical(mod) for mod in b_req)
 
 
 # requirements*.txt: a pinned or ranged package line (extras and environment markers allowed),
@@ -260,7 +301,7 @@ def dependency_only(files: list[str], base: str, head: str) -> bool:
 #   go.mod, lakehouse-traces/go.mod   the `go` and `toolchain` directive lines, and
 #                                     the version of `require` entries (indirect
 #                                     markers included), none of them a storage-critical
-#                                     module (CRITICAL_MODULE_PREFIXES); the set of
+#                                     module (see INERT_MODULES); the set of
 #                                     required modules and every other line unchanged
 #   go.work                           the `go` and `toolchain` lines
 #   go.sum, lakehouse-traces/go.sum   hash lines, none of a storage-critical module
@@ -302,8 +343,8 @@ def golang_image_bump_only(base: str, head: str, line_re: "re.Pattern[str]") -> 
 
     Compared by position: the same number of lines, every differing pair matching
     `line_re` in both with the same prefix (platform, indentation), the same suffix shape
-    (`-alpine` stays `-alpine`; its release number may move) and the same trailer (AS name);
-    every other line byte-identical. The Go twin is registry.GolangImageBumpOnly; both are
+    (`-alpine` stays `-alpine`; its release number may move forward) and the same trailer (AS name);
+    the Go version and the alpine release never go back; every other line byte-identical. The Go twin is registry.GolangImageBumpOnly; both are
     tested against one fixture.
     """
     bl, hl = base.split("\n"), head.split("\n")
@@ -316,12 +357,42 @@ def golang_image_bump_only(base: str, head: str, line_re: "re.Pattern[str]") -> 
         bm, hm = line_re.match(b), line_re.match(h)
         if not bm or not hm or _image_shape(bm) != _image_shape(hm):
             return False
+        # a bump moves forward: neither the Go version nor the alpine release may go back
+        if _vtuple(hm.group("ver")) < _vtuple(bm.group("ver")):
+            return False
+        if bm.group("alpver") and _vtuple(hm.group("alpver")) < _vtuple(bm.group("alpver")):
+            return False
         changed = True
     return changed
 
 
 def _is_directive(line: str) -> bool:
     return bool(GO_DIRECTIVE.match(line) or TOOLCHAIN_DIRECTIVE.match(line))
+
+
+def _vtuple(version: str) -> tuple[int, ...]:
+    """A dotted numeric version as a tuple padded to three parts: "1.27" == "1.27.0" < "1.27.1" and
+    "3.9" < "3.23" (numeric, not lexical). ASCII digits only: the callers' regexes guarantee it."""
+    parts = [int(x) for x in version.split(".")]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+def _directives_not_older(base_lines: list[str], head_lines: list[str]) -> bool:
+    """The `go` directive and the `toolchain` directive of head are not older than base's. A toolchain
+    line present at base may not disappear; one that appears is fine."""
+    def pick(lines: list[str], regex: "re.Pattern[str]", prefix: str) -> "tuple[int, ...] | None":
+        for x in lines:
+            if regex.match(x):
+                return _vtuple(x[len(prefix):])
+        return None
+
+    b_go, h_go = pick(base_lines, GO_DIRECTIVE, "go "), pick(head_lines, GO_DIRECTIVE, "go ")
+    if b_go is None or h_go is None or h_go < b_go:
+        return False
+    b_tc, h_tc = pick(base_lines, TOOLCHAIN_DIRECTIVE, "toolchain go"), pick(head_lines, TOOLCHAIN_DIRECTIVE, "toolchain go")
+    if b_tc is not None and (h_tc is None or h_tc < b_tc):
+        return False
+    return True
 
 
 def go_mod_toolchain_only(base: str, head: str) -> bool:
@@ -335,7 +406,10 @@ def go_mod_toolchain_only(base: str, head: str) -> bool:
     for other in (b_other, h_other):
         if sum(1 for x in other if GO_DIRECTIVE.match(x)) != 1:
             return False
-    return not any(b_req[m] != h_req[m] and m.startswith(CRITICAL_MODULE_PREFIXES) for m in b_req)
+    # a bump moves forward: the go directive and the toolchain line may not go back, nor be dropped
+    if not _directives_not_older(b_other, h_other):
+        return False
+    return not any(b_req[m] != h_req[m] and is_critical(m) for m in b_req)
 
 
 def go_work_toolchain_only(base: str, head: str) -> bool:
@@ -343,16 +417,16 @@ def go_work_toolchain_only(base: str, head: str) -> bool:
         lines = [x.strip(" \t") for x in text.split("\n") if x.strip(" \t")]
         return [x for x in lines if _is_directive(x)], [x for x in lines if not _is_directive(x)]
 
-    _, b_rest = split(base)
+    b_dir, b_rest = split(base)
     h_dir, h_rest = split(head)
-    return b_rest == h_rest and any(GO_DIRECTIVE.match(x) for x in h_dir)
+    return b_rest == h_rest and any(GO_DIRECTIVE.match(x) for x in h_dir) and _directives_not_older(b_dir, h_dir)
 
 
 def go_sum_toolchain_only(base: str, head: str) -> bool:
-    """go.sum: only well-formed hash lines differ, none for a storage-critical module."""
+    """go.sum: only well-formed hash lines differ, none for a critical module (see INERT_MODULES)."""
     for line in set(base.split("\n")) ^ set(head.split("\n")):
         m = GO_SUM_LINE.match(line)
-        if not m or m.group(1).startswith(CRITICAL_MODULE_PREFIXES):
+        if not m or is_critical(m.group(1)):
             return False
     return True
 
