@@ -144,10 +144,21 @@ func TestPerfBlockRule_RequiredCounterDisappears(t *testing.T) {
 
 func TestPerfBlockRule_PerfBlockAddedOrRemoved(t *testing.T) {
 	with := newSpec().row(t, "r")
-	without := wholeRow(t, strings.Replace(newSpec().yaml("r"), ", perf: {", ", xperf: {", 1))
+	// the same row without its perf block: every other field is identical
+	src := newSpec().yaml("r")
+	i := strings.Index(src, ", perf: {")
+	without := wholeRow(t, src[:i]+" }\n")
+	if _, ok := without.Whole["perf"]; ok || without.Whole["request"] == nil {
+		t.Fatalf("fixture: %v", without.Whole)
+	}
 	v := ParityCheck(perfSnap(with), perfSnap(without), nil)
-	if len(v.Weakenings) == 0 {
+	if len(v.Weakenings) != 1 || !strings.Contains(v.Weakenings[0], "pass row's perf changed: r") {
 		t.Fatalf("a perf block that vanishes from a pass row is a weakening: %+v", v)
+	}
+	// and the other way round: a pass row gaining a perf block is a different measurement too
+	v = ParityCheck(perfSnap(without), perfSnap(with), nil)
+	if len(v.Weakenings) != 1 || !strings.Contains(v.Weakenings[0], "pass row's perf changed: r") {
+		t.Fatalf("a perf block that appears on a pass row is a weakening: %+v", v)
 	}
 }
 
@@ -214,7 +225,7 @@ func TestPerfBlockRule_RealRowsFile(t *testing.T) {
 	const path = "rows/perf/field_metadata.yaml"
 	src, err := os.ReadFile(path)
 	if err != nil {
-		t.Skipf("no perf rows file: %v", err)
+		t.Fatalf("the perf rows file is part of this test (a moved file must not skip it): %v", err)
 	}
 	re := regexp.MustCompile(`s3_bytes: (\d+)`)
 	scale := func(num, den int64) []byte {
