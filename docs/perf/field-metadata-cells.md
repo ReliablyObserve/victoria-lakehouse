@@ -44,7 +44,7 @@ level / `warmup` span only in 10:00–10:10); hour 11:00 is busy (150 distinct s
 as hot VictoriaTraces knows it, `"resource_attr:service.name":="svc-a"` (the field a span has there; the alias rule changes
 that endpoint's answer only). The traces `field_values` and `streams` cells keep `service.name:="svc-a"`, which the
 objects honour as a filter convenience and hot VictoriaTraces does not match
-([#505](https://github.com/ReliablyObserve/victoria-lakehouse/issues/505)): their exactness is Lakehouse's own filter
+(`docs/parity-and-gaps.md`, "Intentional differences"): their exactness is Lakehouse's own filter
 behaviour against the generator's truth, not equality with hot. Hot-spelled `field_values` and `streams` cells would be new
 rows (an extension that needs owner review) and are not added.
 
@@ -535,6 +535,16 @@ came out the same).
    silently counted as the peer's whole answer, now the answer is dropped whole and counted in
    `lakehouse_buffer_bridge_errors_total{reason="decode"}`. A peer answering enumeration with
    (value, hits) pairs instead of rows keeps large unflushed windows inside the timeout.
+8. **The traces `field_names` cells are blind to stream grouping.** Every span of the generator carries the same
+   names, so a counter that groups by day alone instead of by stream and day (the mutation `blockKey` = day only)
+   leaves all 384 cells exact (sourced: the independent review). A name only one service's spans carry (a `custom.attr` span attribute on one in
+   sixteen spans of `svc-b`) makes the cells sensitive to it: measured in an isolated copy with that generator
+   change and the day-only counter, 36 of the 48 traces `field_names` shapes fail at 0 ms (for example
+   `span_attr:custom.attr=24000/1500`), and with the correct counter all 384 cells stay exact. It is not in the
+   harness because the extra attribute moves `s3_bytes` of 248 traces cells (about +0.8%, measured), which are
+   registry counters: re-baselining them is an owner decision. Until then the stream grouping is held by
+   `TestFmtSpanNamesTruth_CreditsStreamDayBlocks` (the oracle) and the counter's unit tests
+   (`TestFieldNamesCounter_*`, `TestTraceFieldNames_AreVictoriaTracesFieldsCreditedPerStream`).
 
 ## Deterministic counters
 

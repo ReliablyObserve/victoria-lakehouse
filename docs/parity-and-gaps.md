@@ -101,12 +101,7 @@ decisions, not gaps — a change here needs a reason, not a fix.
     `service.name` next to `resource_attr:service.name`; hot matches no span and
     lists nothing, [#505](https://github.com/ReliablyObserve/victoria-lakehouse/issues/505)).
     It never lists an alias for the spans an insert peer serves.
-  - **Known gap, not fixed ([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504)):**
-    the spans an insert peer serves carry the aliases (`service.name`,
-    `http.method`, ...) in **every row read** and in `field_values` and `streams`
-    (the buffer bridge adds them on purpose as filter conveniences), where hot has
-    no such field. Only the `field_names` part of #504 is fixed: the enumeration
-    asks the bridge for VictoriaTraces' names only.
+  - The spans an insert peer serves carry the aliases in row reads, which hot does not: that is a gap, not part of this decision (register row below, [#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504)).
 
 ## Cold-tier feature gaps register
 
@@ -121,6 +116,7 @@ What hot VT/VL gives users that the cold tier silently doesn't, with rough effor
 | **Per-tenant stats group-by** (`* \| stats by(account_id, project_id) count()`) | Not supported via VL stats path | Metric-only | `account_id`/`project_id` are plain Parquet columns, not VL stream tags, so VL stats can't group on them. Workaround: read `/api/v1/tenants`. Closing requires promoting these to stream-id components or extending stats path. |
 | **TraceQL non-trivial aggregations** | Partial | Functional-degradation | Simple traceQL works via vtselect → vlselect overlay. Complex `count_over_time()` / `histogram_over_time()` paths may not have been exercised end-to-end on cold tier. |
 | **TraceQL search `/select/tempo/api/search?q=...`** | **Resolved** | UX-degradation | Was broken before the registry registration of cold-tier columns + full compose rebuild. Cold now matches hot on `{}`, `{.service.name="X"}` and other TraceQL filters. Pinned by `TestServiceGraphParity_TraceQLSearch`. |
+| **Traces: an insert peer's spans carry Parquet-name aliases in row reads, `field_values` and `streams`** ([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504)) | Open (the `field_names` part is fixed) | UX-degradation | The buffer bridge decodes an insert peer's spans with the aliases of the promoted attributes (`service.name` next to `resource_attr:service.name`, `http.method` next to `span_attr:http.method`) on purpose, as filter conveniences. Hot VictoriaTraces has no such field, so a row read of those spans, their `field_values` and `streams` differ from hot where the aliases show; spans read from the Parquet objects carry an alias only when the query spells it (see Intentional differences). Every `field_names` read (plain filter, pipes and subqueries alike) lists no alias for a peer's spans, pinned by `TestTraceFieldNames_PeerSpansListNoParquetAliasNames` and `TestTraceFieldNames_PipePathListsNoPeerAliasNames`. Only deployments with insert peers are affected (the parity stack has none). |
 | **Live tail** (`/api/v2/search/tail`) | Returns 501 | Expected | Cold storage is write-once-read-many; live tail makes no sense post-flush. Handled gracefully. |
 | **Span metrics auto-derive** | Not implemented | UX-degradation | Tempo emits derived RED metrics from spans; cold tier doesn't synthesize these. Workaround: use VT hot tier metrics over its retention period. |
 | **VT-internal `trace_id_idx_stream` index rows** | Dropped at insert | Expected | Replaced by our `_trace_idx` Parquet footer KV — see `internal/traceindex`. The parity check counts dropped rows so the discrepancy is visible, not invisible. |
