@@ -18,4 +18,11 @@ func TestParity_Fields(t *testing.T) {
 		{Name: "stream_ids", Endpoint: "/select/logsql/stream_ids", Params: map[string]string{"query": "*"}, Compare: NonEmpty},
 	}
 	RunParity(t, vlBaseURL, lhBaseURL, cases)
+	// field_names and stream_field_names exactly as hot: names, hits and order.
+	t.Run("field_names_exact", func(t *testing.T) {
+		for _, q := range []string{"*", `service.name:="api-gateway"`} {
+			assertFieldNamesExact(t, vlBaseURL, lhBaseURL, "/select/logsql/field_names", q, fullRangeParams())
+			assertFieldNamesExact(t, vlBaseURL, lhBaseURL, "/select/logsql/stream_field_names", q, fullRangeParams())
+		}
+	})
 }

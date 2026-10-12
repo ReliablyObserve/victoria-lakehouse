@@ -45,6 +45,12 @@ ENDPOINTS = {
 }
 WINDOWS = {"whole": "whole hours", "cut": "cut window", "narrow": "narrow 30 s window", "edge": "hour-edge window"}
 FILTERS = {"none": ("unfiltered", "*"), "svc": ("filter svc", 'service.name:="svc-a"')}
+# A span's service name is the field resource_attr:service.name on VictoriaTraces
+# (service.name is no field of a span there), and the field name needs quotes
+# because of the colon. Only the field_names cells spell it so: that endpoint's
+# answer is what the parquet-name alias rule changes; the field_values and
+# streams cells keep the spelling their rows have always had.
+TRACES_SVC_FILTER = '"resource_attr:service.name":="svc-a"'
 LAYOUTS = {"flushed": "flushed objects", "compacted": "compacted objects",
            "peer": "flushed objects + a peer's unflushed rows"}
 COUNTERS = ["s3_gets", "s3_bytes", "row_groups", "pages"]
@@ -86,6 +92,18 @@ def q(v):
     return json.dumps(v, ensure_ascii=True)
 
 
+# The field_names cells are exact because of the parity lock that compares the
+# rows' answer with hot VictoriaLogs/VictoriaTraces in every layer; an exact
+# field_names row names it (a differ row has nothing to name).
+FIELD_NAMES_LOCK = "tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers"
+
+
+def refs_for(endpoint, exact):
+    if exact and endpoint.endswith("field_names"):
+        return 'refs: { doc: "docs/perf/field-metadata-cells.md", tests: [%s] }' % q(FIELD_NAMES_LOCK)
+    return 'refs: { doc: "docs/perf/field-metadata-cells.md" }'
+
+
 def row_for(cell, recs, at, shape_recs=None):
     """shape_recs: every record of the cell's shape across S3 latencies — the
     counters are held per shape (the gate compares a run at any latency), so
@@ -94,6 +112,8 @@ def row_for(cell, recs, at, shape_recs=None):
     p = parse_cell(cell)
     surface, title, route, field = ENDPOINTS[p["ep"]]
     fdesc, query = FILTERS[p["filter"]]
+    if p["ep"] == "traces.field_names" and p["filter"] == "svc":
+        query = TRACES_SVC_FILTER
     rid = (f"{surface}.perf.{p['ep'].replace('traces.', '')}.pmeta_{'on' if p['pmeta'] == 'true' else 'off'}"
            f".layout_{p['layout']}.window_{p['window']}.filter_{p['filter']}.s3_{p['lat']}ms")
     full_title = (f"{title} — pmeta {'on' if p['pmeta'] == 'true' else 'off'}, {LAYOUTS[p['layout']]}, "
@@ -113,7 +133,7 @@ def row_for(cell, recs, at, shape_recs=None):
               f"upstream: {{ route: {q(route)} }}",
               f"request: {{ method: \"GET\", path: {q(route)}, params: {{ {params_s} }} }}",
               'compare: { type: "values-with-hits", options: { hits_tolerance: "0" } }',
-              'layers: ["perf"]', "pending: true", 'refs: { doc: "docs/perf/field-metadata-cells.md" }']
+              'layers: ["perf"]', "pending: true", refs_for(p["ep"], exact)]
     perf = [f"cell: {q(cell)}"]
     if exact:
         perf.append(f"budget: {{ p50_ms: {s['p50'] / 1e6:.3f}, p90_ms: {max(s['p90'], s['p50']) / 1e6:.3f}, valid: \"{s['exact']}/{s['n']}\" }}")

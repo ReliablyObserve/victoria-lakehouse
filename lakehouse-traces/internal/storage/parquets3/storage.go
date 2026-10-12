@@ -423,16 +423,6 @@ func (s *Storage) updateLabelIndex(f *parquet.File) {
 	s.updateLabelIndexImpl(f, true)
 }
 
-// updateLabelIndexNamesOnly registers field names (and MAP-key field names)
-// without attempting to extract DISTINCT VALUES for promoted columns. Use
-// this when the parquet.File was opened in a footer-only context (where
-// data-page reads return nothing or fall back to truncated column-index
-// stats — exactly how "notification-ser" first leaked into the label
-// index from GetFieldNames over hundreds of files).
-func (s *Storage) updateLabelIndexNamesOnly(f *parquet.File) {
-	s.updateLabelIndexImpl(f, false)
-}
-
 func (s *Storage) updateLabelIndexImpl(f *parquet.File, extractValues bool) {
 	// Derived from the shared dimensional label set so the Cardinality Explorer
 	// surfaces real cardinality for every dedicated dimension and can't drift
@@ -1020,7 +1010,11 @@ func (s *Storage) logRowsToDataBlock(scope tenantScope, site string, rows []sche
 // parquet name (e.g. `service.name`) and internal alias
 // (`resource_attr:service.name`) so a filter spelling either dialect
 // matches — mirroring the dual-emission in the file-scan path.
-func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []schema.TraceRow) *logstorage.DataBlock {
+func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []schema.TraceRow, fieldNames ...bool) *logstorage.DataBlock {
+	// A field_names enumeration lists the names VictoriaTraces stores a span
+	// under: the parquet-name aliases (service.name, http.method, ...) are
+	// filter conveniences of the other reads and are no field of a span on hot.
+	aliases := len(fieldNames) == 0 || !fieldNames[0]
 	rows = filterTraceRowsByTenant(scope, site, rows)
 	if len(rows) == 0 {
 		return nil
@@ -1052,7 +1046,9 @@ func (s *Storage) traceRowsToDataBlock(scope tenantScope, site string, rows []sc
 		if val == "" {
 			return
 		}
-		get(parquetName)[i] = val
+		if aliases {
+			get(parquetName)[i] = val
+		}
 		get(internalName)[i] = val
 	}
 

@@ -216,5 +216,7 @@ func TestParity_TracesExtended(t *testing.T) {
 		}
 		t.Logf("field_names_completeness: %d fields returned, checked %d required, missing %d",
 			len(vals), len(requiredFields), len(missing))
+		// Complete means hot's list with hot's hits, not only the required names.
+		assertFieldNamesExact(t, vtBaseURL, lhtBaseURL, "/select/logsql/field_names", "span_id:*", params)
 	})
 }

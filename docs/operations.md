@@ -569,7 +569,7 @@ belongs to the rewrite scheduler's normal retry path.
 - `lakehouse_manifest_retired_settled_total` — retired keys an accepted listing proved gone. This is the drain signal: on a node compacting faster than it refreshes the gauge above never reads zero even while draining perfectly, so alert on this counter standing still, not on the gauge being non-zero
 - `lakehouse_delete_tombstone_removed_markers_evicted_total` — removed-tombstone markers dropped by their TTL or cap (never while their S3 delete is owed)
 - `lakehouse_delete_compaction_rows_removed_total` / `lakehouse_delete_compaction_keys_reaped_total` — rows and source keys compaction reaped
-- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_names`, `field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`). Only tombstones acting on the request's own tenants count
+- `lakehouse_delete_fields_scan_fallback_total{endpoint=...}` — requests that gave up a fast path a tombstone cannot be applied to because one overlapped: metadata-only field enumeration (`field_values`, `streams`, `stream_ids`) and the pure-buffer aggregate path (`pure_buffer`). Only tombstones acting on the request's own tenants count
 - `lakehouse_delete_tenant_scope_skips_total{site="rewrite"}` — objects of another tenant a tombstone record named, left untouched and recorded clean; non-zero means a defect or a hand-edited record (alert `LakehouseDeleteTenantScopeViolation`)
 
 **Alert on** a sustained non-zero `lakehouse_delete_tombstone_persist_pending`
@@ -790,17 +790,11 @@ while a compacted file still holds its rows. Keys under a never-delete prefix
 | log/span query results | rows matching an active tombstone are filtered out |
 | aggregates over the unflushed window (`stats`, counts) | the pure-buffer fast path — the whole query, pipes included, run in the co-located buffer's engine — is skipped while a tombstone overlaps the window, because its aggregated result carries no row the tombstone filter could drop; the raw rows are filtered instead (`lakehouse_delete_fields_scan_fallback_total{endpoint="pure_buffer"}`) |
 | `field_values`, `streams`, `stream_ids` | a tombstoned row's values are not enumerated and its row is not counted in hits. The row scans read whole files, so they apply every tombstone overlapping the scanned files' rows, not only the query window. An object's label counts predate the delete, so an object a tombstone of its tenant reaches is scanned instead of answered from them until the tombstone retires — counted in `lakehouse_delete_fields_scan_fallback_total{endpoint}` |
-| `field_names` | names are still returned. On the logs binary hit **counts** are reported as unknown (`0`) whenever a tombstone overlaps the rows they were counted from — the whole of every counted file, which can extend past the query window — rather than counts that still include the deleted rows. The traces binary never reports per-field counts (every name carries `1`), so there is no count a tombstone could make wrong |
+| `field_names`, `stream_field_names` | a tombstoned row's fields are not listed and its row is not counted in hits, on both binaries: `field_names` reads the rows of the window (see "`field_names` reads the rows of its window" below) and the tombstone filter runs on them like on a query; `stream_field_names` counts the rows of the matching streams the same way |
 | compaction output | rows of tombstones eligible for physical removal are dropped; `hide` and in-window rows are carried forward |
 
 **Known bounds**, stated rather than papered over:
 
-- `field_names` can stay *over-inclusive* — a field carried only by deleted rows
-  still appears in the list until the rewrite replaces the file. Hit counts for
-  that window come from the Parquet column index, which is row-count metadata,
-  so applying a per-row predicate there would turn a footer walk into a full
-  scan of every candidate file. Reporting the counts as unknown is the honest
-  answer; the names settle once the background rewriter runs.
 - A tombstone whose range overlaps a file in a storage class the rewriter does
   not touch (`auto_rewrite_classes`, Glacier or IA by default) never retires:
   that file is skipped every pass and keeps the tombstone active, which is what
@@ -906,6 +900,124 @@ curl -X POST 'http://lakehouse:9428/delete/logsql/verify?query=service.name:="le
 ```
 
 Normal mode (default): runs the query through the normal read path — if results are empty, deletion is working. Deep mode (`mode=deep`): scans affected files directly for compliance auditing.
+
+## `field_names` reads the rows of its window
+
+`/select/logsql/field_names` answers like VictoriaLogs/VictoriaTraces: from the rows. A request reads every
+row of the window that the query's filter and the tenant scope select, in the insert buffer, the peers'
+buffers and the Parquet objects alike, and lists each field a row carries (a MAP column's keys, VictoriaTraces'
+own names such as `span_attr:*`, never a Parquet column name), credited with the matching rows of the stream
+blocks that list it. On the traces binary the spans an insert peer serves carry the promoted attributes under their
+Parquet names too (`service.name` next to `resource_attr:service.name`, `http.method` next to `span_attr:http.method`) so a
+filter spelling either matches. The aliases are no field of a span on hot (a filter on `service.name` matches no span
+there), so every `field_names` read (the plain-filter path and the pipe and subquery paths of a `field_names` call alike:
+the rule keys on the read being a `field_names` enumeration) asks the buffer bridge for VictoriaTraces' names only and never
+lists them for a peer's spans ([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504), the `field_names`
+part; the row-level part is not fixed: a row query, `field_values` and `streams` still see the aliases on a peer's spans).
+The objects still honour a Parquet-dialect filter in a `field_names` call
+([#505](https://github.com/ReliablyObserve/victoria-lakehouse/issues/505)). The Parquet footers cannot give that answer: they know
+the columns of an object, not the
+fields of its rows or the streams. `stream_field_names` is the tags of the matching streams, each credited with
+the rows of the streams that carry it, the walk `stream_field_values` does.
+
+### Cost and limits
+
+Measured (`BenchmarkGetFieldNames_ObjectReads`, benchstat n=8 interleaved, five 200 KiB objects, cold caches, mock S3,
+logs binary): S3 requests per call 5 to 10, bytes served 328 KB to 1,406 KB (+329 %), time 1.3 ms to 8.9 ms, allocations
+9.4 k to 356 k per call. On the proof stack (3,000 rows over 4 h, warm caches) a call takes 1.4 ms to 14 ms. These grow
+with the window's bytes, not with its object count. Tracked: [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482).
+On the field-metadata matrix (`docs/perf/field-metadata-cells.md`, counters measured on a mock S3) the compacted hour objects cost 9.0x the bytes of the footer answer (173 KB to 1.56 MB over two hours) and the traces binary, which answered from the first object's footer only, reads every object of the window (1 to 24 GETs, 95 KB to 2.29 MB over 24 flushed objects). Lakehouse is slower and reads more than before; the answer is the right one.
+
+**Against hot VictoriaLogs/VictoriaTraces** (measured by the independent review of the change on RustFS at 0 ms S3, warm p50, not re-measured by the author):
+
+| signal, window | hot | main (footer answer, wrong) | this change | this change / hot |
+|---|--:|--:|--:|--:|
+| logs, 240,000 rows, 1 h | 2.3 ms | 0.4 ms | 116 ms | about 50x |
+| logs, 240,000 rows, 6 h | 1.1 ms | 0.5 ms | 262 ms | about 240x |
+| traces, 60,000 spans, `span_id:*`, 1 h | 2.0 ms | 0.4 ms | 80 ms | about 40x |
+| traces, 60,000 spans, `span_id:*`, 6 h | 2.4 ms | 0.4 ms | 136 ms | about 57x |
+
+Lakehouse loses here, by one to two orders of magnitude against hot and roughly linearly in the rows of the window. Scale
+(assumed, not measured): nothing bounds the bytes one call reads (`query.max_rows` does not apply and
+`--lakehouse.query.max-files-per-query` defaults to 0), and a filter does not narrow the read (see below), so at 100 TB/day a
+7-day window would read hundreds of TB. The structural fix is a per-stream column-presence index (#482, an owner decision); a
+bound on the call waits for the owner's decision too.
+
+What it costs: the object reads of a `query=*` over the same window (all columns, every object overlapping the
+window), where the footer answer cost one ranged read of the footer per object. The per-query row ceiling
+(`query.max_rows`) does not apply, the live-bytes budget and the per-process decoder limit do. Keep Explore and
+Drilldown field pickers on short windows, or narrow the query with a filter; the answer for a large window is
+exact but not cheap. State kept per request is the columns of each stream in the window (about 150 bytes per
+stream at 40 columns, 256 Ki streams, then a block is credited on its own as upstream's block rule does).
+
+A filter selects rows, not objects: the columns of a stream are the union over every object of the stream in the window,
+also the objects none of whose rows match the filter, because on hot the stream is one block whose columns are all
+listed. An object or row group is therefore never skipped for the filter's sake (no file, bloom, statistics or
+push-down pruning in this read), so a filtered call costs as much as the unfiltered one; the hits count only the rows the
+filter keeps. The price of that, measured on a mock S3 (24 objects of 2,000 rows each, 0 ms latency, the previous head of
+the change against this one, warm p50): a call filtered on `trace_id:="..."` (bloom-prunable) 8 ms to 50 ms (6x), the
+unfiltered call and filters nothing prunes (`level:="..."`, an OR of two ids) unchanged at about 50 ms. The mock's S3
+reads did not change (24 GETs, 665,921 bytes in every case: an all-fields read downloads each object whole and the mock
+carries no bloom sidecars or statistics for the manifest to prune with); in production the file-level bloom and label
+pruning that this read no longer uses would also have skipped whole objects, so a filtered call now costs the window's N
+object reads (assumed, not measured). The answer before was the wrong one: it lost the columns of the pruned objects. A name no row of the answer credits is not listed. A query with pipes goes through upstream's own
+`field_names` pipe over the pipes' output and is not covered by this rule: it credits the blocks that reach it.
+
+**A filtered call costs as much as an unfiltered one (owner decision pending).** Because a filter cannot narrow the read,
+the insert buffer is asked for every row of the window (`FieldNamesBufferQuery`) and the filter is applied to the rows
+afterwards, and every object of the window is read. Measured by the independent review of the change on the insert buffer
+(150,000 buffered rows, a window held only by the buffer, warm p50, 0 ms S3): `batch:=rare` 16.8 ms against 0.6 ms before
+the change to the buffer read (f06b3c87, 28x faster) and 1.0 ms on hot; `level:=WARN` 17.1 ms against 3.1 ms and 0.7 ms on
+hot; `*` about 15 ms against about 15 ms and 0.8 ms on hot. Extrapolated (assumed, linear in rows): a 15 M-row buffer (5
+minutes at 50,000 rows/s) costs about 1.7 s per filtered call. On objects (measured on the mock above) 8 ms to 50 ms (6x) on
+a `trace_id` filter. Production estimate (assumed, not measured): a tenant at 1 TB/day raw, about 10x compression, 256 MiB
+objects, about 400 objects/day: a filtered 24 h call reads about 100 GB (about 3.3 G rows) where a pruned row query reads 1
+to 3 objects; 7 days reads about 700 GB; at 100 TB/day, 100x that. Options for the owner (nothing of them is implemented):
+
+| Option | Code (assumed) | Operations | Scale (assumed) |
+|---|---|---|---|
+| A. Accept and document | 0 LOC | no new knob; an expensive call stays one query away | cost is linear in the bytes of the window; no bound |
+| B. Two-phase read: a pruned filtered read gives the matching stream-days and hits, then only the objects and row groups carrying those streams are read, projecting `_stream_id`, definition levels and map-key leaves | about 300 to 500 LOC, one read path, about 10 tests | exact; a second pass that must tolerate compaction between the phases | gain depends on stream locality: best when the matching streams sit in few objects, no gain when every object holds every stream |
+| C. The per-(stream, day) column-presence facet of [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482) in pmeta | about 600 LOC plus the compaction merge and rebuild from the footers | exact and cheap; one more facet to keep rebuildable; also closes [#481](https://github.com/ReliablyObserve/victoria-lakehouse/issues/481) | one footer-sized read per object avoided; facet size grows with streams x days (to be sized before choosing) |
+
+### Known bounds
+
+Known bounds. Upstream credits a column with the rows of the *blocks* that list it, and Lakehouse approximates a block
+by the stream-day:
+
+- **A stream-day bigger than one hot block.** Hot cuts a block at 2 MiB of uncompressed rows even after merging (about
+  7,000 rows of 300 bytes). The answer is exact for a stream-day that fits in one hot block; a bigger one is several blocks
+  on hot and one block here, so a field only some rows carry is overcounted (measured by the independent review after
+  `POST /internal/force_merge`: 40,000 log rows in one stream, `rare` on one row: hot 6,971, Lakehouse 40,000; 20,000 spans:
+  hot 3,335, Lakehouse 20,000; names equal). Hot's block boundaries depend on its merge history, so chunking here would be
+  false precision. [#501](https://github.com/ReliablyObserve/victoria-lakehouse/issues/501).
+- **A window that cuts a stream's objects** cannot see the objects outside it, so on a field that only some batches or
+  spans of a stream carry (span events and links on traces, a field set by one batch on logs) the hits and, for a field the
+  window's objects never list, the name can differ from hot's, which counts the whole block, on both binaries
+  ([#481](https://github.com/ReliablyObserve/victoria-lakehouse/issues/481)). measured after this change on the parity stack: the seeded traces corpus differs in 25 to 26 of its 91 event and link fields in each of four 1-hour windows (for example `event:event_attr:attempt:0` hot 198, Lakehouse 37) and is equal over the whole range; the seeded logs corpus is equal in every window; a logs stream written as two batches an hour apart, the first carrying a field the second lacks, lists the field on hot in a window holding only the second batch (hot 3, Lakehouse not listed, with and without a filter on the second batch) and is equal in the other windows; traces attributes in that shape were equal.
+- **Hot's unmerged parts.** Rows that reached hot in separate insert requests are separate blocks until hot merges them
+  (how long that takes varies, from seconds to minutes or until a merge triggers), so until then hot's hits for a sparse
+  field depend on the batching and timing of the requests and can be lower than, or differ from, the merged value.
+  Lakehouse answers the merged value: the insert buffer, the peers' buffers and the objects of a stream-day are unioned,
+  so the answer for the same rows depends on the rows only, not on how the requests were batched, on flush timing or on
+  which layer holds a row (a stream whose first batch is already in an object and whose second batch is still in the
+  buffer is listed as the merged hot lists it: with the filter that selects only the buffered batch, the fields of the
+  object's batch are listed too). The remaining difference is hot's transient unmerged state
+  ([#500](https://github.com/ReliablyObserve/victoria-lakehouse/issues/500)).
+- **More than 262,144 streams in the window.** Every stream the counter observes takes one of the 262,144 slots, matching
+  the filter or not (the columns of a stream are observed before the filter), and which streams get a slot depends on the
+  order the file workers deliver their blocks. Past the limit the answer is not the stream-day union and is not
+  deterministic: the columns of a non-matching block of a stream without a slot are dropped (under a filter, a name carried
+  only by such blocks is lost), and a block of a stream without a slot is credited on its own, upstream's per-block rule,
+  so its hits for a sparse field can be lower than hot's. Two identical calls can differ past the limit.
+  `lakehouse_field_names_stream_cap_total` counts the blocks credited that way and one warning per 30 s names the limit.
+- **A `field_names` query that spells a Parquet column name** (`service.name:="x"`, `http.method:=GET`, traces) matches no span
+  on hot and answers an empty list; the objects honour that spelling as a filter convenience and list their names (and the
+  alias the query spells), while the spans an insert peer serves are not credited by it. A row query matches both layers
+  ([#505](https://github.com/ReliablyObserve/victoria-lakehouse/issues/505)).
+- **Errors inside a counting read.** `processOneFile` logs the per-file errors other than a missing object and drops
+  them, and the live-bytes budget can cancel the read without recording an error on the last file, so a counting read can
+  answer 200 with names missing (pre-existing in every row read; [#503](https://github.com/ReliablyObserve/victoria-lakehouse/issues/503)).
 
 ## Troubleshooting
 

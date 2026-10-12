@@ -270,6 +270,7 @@ func TestParity_Traces_LogsQL(t *testing.T) {
 		ref := fetch(t, vtBaseURL, "/select/logsql/field_names", params)
 		sut := fetch(t, lhtBaseURL, "/select/logsql/field_names", params)
 		compareParity(t, ParityCase{Compare: SetSuperset}, ref, sut)
+		assertFieldNamesExact(t, vtBaseURL, lhtBaseURL, "/select/logsql/field_names", "span_id:*", tracesFullRange())
 	})
 
 	t.Run("traces_field_values", func(t *testing.T) {
@@ -419,6 +420,7 @@ func TestParity_Traces_LogsQL(t *testing.T) {
 				t.Errorf("VT metadata field %q must NOT have span_attr: prefix, found %q", field, prefixed)
 			}
 		}
+		assertFieldNamesExact(t, vtBaseURL, lhtBaseURL, "/select/logsql/stream_field_names", "span_id:*", tracesFullRange())
 	})
 
 	// Span attributes must have span_attr: prefix.

@@ -124,6 +124,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: ["tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus"] }
 
 - id: vl.select.field_values.limit
   title: "/select/logsql/field_values — limit keeps top hits"
@@ -209,6 +210,7 @@
   compare: { type: exact-json }
   layers: [api]
   pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: ["tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus"] }
 
 - id: vl.select.stream_field_values.basic
   title: "/select/logsql/stream_field_values — stream field top values"
@@ -556,3 +558,102 @@
   pending: true
   refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket, internal/storage/parquets3/stream_field_values_layers_test.go#TestStreamFieldValues_ColdBufferAndBridgeAgree] }
   notes: "Upstream GetStreamFieldValues = field_values of _stream, then forEachStreamField: only the tags of the matching streams are listed, hits are the rows of each stream, sorted by hits then value, truncated at the limit with zeroed hits. Cold now does the same from the _stream column over the buffer, the peer bridge and the objects (schema.ParseStreamFields mirrors upstream parseStreamFields). Fixes #445."
+
+- id: vl.select.field_names.hits_per_stream_block
+  title: "/select/logsql/field_names — the fields of the rows, each credited with the matching rows of the stream blocks that list it"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/field_names_counter_test.go#TestFieldNamesCounter_UnionsTheBlocksOfAStream, internal/storage/field_names_counter_test.go#TestFieldNamesCounter_StreamCapFallsBackToPerBlock, internal/storage/field_names_counter_test.go#TestFieldNamesCounter_NothingInNothingOut, internal/storage/field_names_counter_test.go#TestFieldNamesCounter_KeepsNoBorrowedStrings, internal/storage/field_names_counter_test.go#TestFieldNamesCounter_BufferAndObjectsAreOneBlock, internal/storage/field_names_counter_test.go#TestFieldNamesCounter_DaysAreSeparateBlocks, internal/storage/field_names_counter_test.go#TestStreamKeyOf, internal/storage/field_names_counter_test.go#TestFieldNamesViaQuery_PlainFilter, internal/storage/field_names_counter_test.go#TestFieldNamesViaQuery_WithPipesUsesTheUpstreamPipe, internal/storage/field_names_counter_test.go#TestEmitFieldNamesStreamBlocks, internal/storage/field_names_counter_test.go#TestEmitFieldNamesStreamBlocks_SplitsAStreamAtUTCMidnight, internal/storage/field_names_counter_property_test.go#TestFieldNamesCounter_Property, internal/storage/field_names_counter_property_test.go#FuzzFieldNamesCounter, internal/storage/parquets3/field_names_exact_test.go#TestFieldNames_CreditsTheRowsOfEachStreamBlock, internal/storage/parquets3/field_names_exact_test.go#TestFieldNames_FilterSelectsRowsAfterTheColumnsAreKnown, internal/storage/parquets3/field_names_exact_test.go#TestFieldNames_AnswersAWindowHeldOnlyInTheLocalBuffer, internal/storage/parquets3/field_names_exact_test.go#TestFieldNames_MergesPeerBufferAndObjects, internal/storage/parquets3/field_names_exact_test.go#TestFieldNames_PeerBufferAndObjectsOfOneStreamAreOneBlock, internal/storage/parquets3/field_names_midnight_test.go#TestFieldNames_APeerStreamCrossingUTCMidnightIsOneBlockPerDay, internal/storage/parquets3/field_names_exact_test.go#TestFieldNames_DoNotDependOnTheObjectLayout, internal/storage/parquets3/field_names_exact_test.go#TestGetStreamFieldNames_CreditsTheRowsOfEachStream, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus, tests/parity/logs_fields_test.go#TestParity_Fields, tests/parity/logs_endpoints_test.go#TestParity_Endpoints, tests/parity/logs_response_test.go#TestParity_Response, tests/parity/logs_crossvalidation_extended_test.go#TestParity_CrossValidationExtended, internal/storage/parquets3/field_names_ceiling_test.go#TestRowCeilingOf_AppliesToRowQueriesOnly, internal/storage/parquets3/field_names_ceiling_test.go#TestRowFilterOf_FieldNamesKeepsTheTimeRange, internal/storage/parquets3/field_names_ceiling_test.go#TestFieldNames_IgnoresTheRowCeiling, internal/storage/field_names_observe_test.go#TestFieldNamesCounter_ObserveAddsColumnsAndNoRows, internal/storage/field_names_observe_test.go#TestObserveFieldNamesBlock_NeedsACounterInTheContext, internal/storage/field_names_observe_test.go#TestFieldNamesCounter_StreamCapTrippingIsCounted, internal/storage/field_names_observe_test.go#TestFieldNamesBufferQuery_HasNoRowFilter, internal/storage/field_names_observe_test.go#TestFieldNamesCounter_MatchesAnIndependentRowOracle, internal/storage/field_names_observe_test.go#FuzzFieldNamesCounterFilteredLayout, internal/storage/parquets3/field_names_filter_columns_test.go#TestFieldNames_FilterKeepsColumnsOfNonMatchingObjectsOfTheStream, internal/storage/parquets3/field_names_filter_columns_test.go#TestFieldNames_StreamWithoutMatchingRowsListsNoName, internal/storage/parquets3/field_names_filter_columns_test.go#TestFieldNames_FilterDoesNotSkipObjectsOrRowGroupsOfTheStream, internal/storage/parquets3/field_names_buffer_layers_test.go#TestFieldNames_LocalBufferAndObjectsOfOneStreamAreOneBlock, internal/storage/parquets3/field_names_buffer_layers_test.go#TestFieldNames_FilterKeepsColumnsOfNonMatchingPartsInTheLocalBuffer, internal/storage/parquets3/fields_tombstones_test.go#TestFieldNames_HitsExcludeTombstonedRows, internal/storage/parquets3/field_names_pruning_control_test.go#TestFieldNames_OnlyTheCountingReadOpensObjectsTheFilterExcludes, internal/storage/parquets3/field_names_pruning_control_test.go#TestFieldNames_OnlyTheCountingReadReadsRowGroupsTheFilterExcludes, internal/storage/parquets3/field_names_tombstone_columns_test.go#TestFieldNames_ColumnOfOnlyTombstonedRowsIsNotListed, internal/storage/parquets3/field_names_tombstone_columns_test.go#TestFieldNames_SparseColumnWhoseFirstSurvivingRowIsEmptyIsStillListed, internal/storage/field_names_observe_test.go#TestDropColumnsWithoutValues, internal/storage/parquets3/slot_fieldnames_endpoint_test.go#TestTier2_FieldNames_SlotRemapOnTheEndpoint, tests/parity/field_names_strict_parity_test.go#TestFieldNamesHitsTypeError_IsStrict, tests/parity/field_names_strict_parity_test.go#TestNumericHitsErrors] }
+  notes: "Issues 280, 378, 464. field_names reads the rows (insert buffer, peers, Parquet) and credits a field with the matching rows of the blocks that list it, as upstream pipe field_names does: a map key is a field, a Parquet column that is not a row field (account_id, project_id, the map columns) is not, a sparse field is credited with the rows of the streams that carry it (not with the rows that have a non-empty value: exception.type 610, not 612). The columns of a stream are the union over all its objects in the window, also those none of whose rows match the filter (no object or row group is skipped for the filter's sake), and the hits count the matching rows; blocks are kept apart per UTC day (a stream's rows of two UTC days are two blocks, also an insert peer's unflushed rows that cross midnight: measured on hot VictoriaLogs v1.53.0 after force_merge, one stream with three rows on day 1 and one just after midnight carrying the only trace_id: * credits trace_id with 1 row and a filter selecting the day-1 rows does not list it; TestFieldNames_APeerStreamCrossingUTCMidnightIsOneBlockPerDay), and the insert buffer, the peers' buffers and the objects of a stream-day are unioned (one block, as on hot once its parts have merged), so the answer for the same rows does not depend on flush timing or on the layer that holds them. That is hot's merged block for a stream-day that fits in one hot block (about 2 MiB of rows), which holds for the seeded corpus; a bigger stream-day is several blocks on hot (issue 501, row vl.select.field_names.stream_larger_than_a_block). Exact compare of names, hits and order in every layer (buffer, Parquet, compacted, restart), numeric and alias tenants, with and without filters (TestParity_FieldNames_Layers), and on the seeded corpus for every seeded tenant (TestParity_FieldNames_SeedCorpus). Known bound: a window that cuts a stream's objects cannot see the objects outside it (issue 481, rows vl.select.field_names.window_cuts_stream and vt.select.logsql_field_names.window_cuts_stream). A stream whose first batch carries a field the later ones lack, filtered to the later batch, is pinned in the buffer and across objects with hot force-merged (TestParity_FieldNames_Layers, the az / op3 stream), and so is a stream split across the insert buffer and objects (the buffer_over_objects layer: one batch in the buffer, the earlier ones objects, every filter compared with force-merged hot). A column only deleted rows carried is not listed (unit tests; measured on hot VictoriaLogs v1.53.0 started with -delete.enable: four rows of one stream, the two that carry onlyx deleted by a delete task: field_names no longer lists onlyx before or after force_merge, the other fields are credited with the two surviving rows; there is no parity cell for it because the parity stack's hot is started without -delete.enable). Known difference (issue 506): hot VictoriaLogs v1.53.0 keeps a blanked copy of a deleted row (_time, _stream, _stream_id only) that still matches *, so * counts and credits after a delete differ from Lakehouse, which drops the row (measured: 8 rows, one deleted, stats count() 8 on hot). Cost: the answer reads the rows of the window, not the footers, and a filter does not narrow the read (issue 482; measured 40 to 240 times hot's latency on a warm 1 to 6 hour window, see docs/operations.md). Hits that are block-granular on hot: issue 480 (still open for streams over one hot block)."
+
+- id: vl.select.field_names.buffer_only_window
+  title: "/select/logsql/field_names — a window held only in the insert buffer lists its fields"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/parquets3/field_names_exact_test.go#TestFieldNames_AnswersAWindowHeldOnlyInTheLocalBuffer, internal/storage/parquets3/field_names_exact_test.go#TestFieldNames_MergesPeerBufferAndObjects, internal/storage/parquets3/field_names_exact_test.go#TestFieldNames_PeerBufferAndObjectsOfOneStreamAreOneBlock, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, internal/storage/parquets3/field_names_buffer_layers_test.go#TestFieldNames_LocalBufferAndObjectsOfOneStreamAreOneBlock, internal/storage/parquets3/field_names_buffer_layers_test.go#TestFieldNames_FilterKeepsColumnsOfNonMatchingPartsInTheLocalBuffer] }
+  notes: "Issue 378. A window covered only by unflushed rows (local segments or an insert peer) used to answer no fields; it answers the fields and hits of those rows, exactly like hot (buffer layer of TestParity_FieldNames_Layers, both tenant forms)."
+
+- id: vl.select.stream_field_names.row_hits
+  title: "/select/logsql/stream_field_names — each stream tag is credited with the rows of the matching streams that carry it, in upstream's order"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.streams]
+  upstream: { route: /select/logsql/stream_field_names }
+  request: { method: GET, path: /select/logsql/stream_field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/storage/parquets3/field_names_exact_test.go#TestGetStreamFieldNames_CreditsTheRowsOfEachStream, tests/parity/field_names_layers_parity_test.go#TestParity_FieldNames_Layers, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] }
+  notes: "Issue 461. Answered from the streams the query matches (every layer) and their tags, summed per tag, sorted by hits then name: the walk stream_field_values does. It answered hits 1 per tag in registry order. Exact compare in every layer and tenant form, and on the seeded corpus."
+
+- id: vl.select.field_names.window_cuts_stream
+  title: "/select/logsql/field_names — in a window that cuts a stream's objects, a field only an outside batch carries is not listed (known gap)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Hot credits a column with the rows of the whole stored block that lists it; Lakehouse reads only the objects overlapping the window (issue 481). A field carried only by a batch of the stream outside the window is listed by hot with the window's rows and not listed by Lakehouse. Exact for windows that cover a stream's objects and for streams whose objects all carry the same fields (the seeded corpus). Fix needs a per-stream presence index (owner decision, issue 482)."
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [] }
+  notes: "Measured 2026-10-11 on a parity stack (hot VictoriaLogs v1.53.0 after POST /internal/force_merge): one stream written as two batches an hour apart in one UTC day, the first carrying onlya; window of the second hour only: hot onlya 3, Lakehouse not listed (gen and _msg equal at 3), with and without a filter on the second batch; the window of both hours and of the first hour only are equal. The seeded logs corpus is equal in four 1-hour windows and the whole range. Traces twin: vt.select.logsql_field_names.window_cuts_stream. Issue 481."
+
+- id: vl.select.field_names.stream_larger_than_a_block
+  title: "/select/logsql/field_names — a stream-day bigger than one hot block (about 2 MiB of rows) overcounts the hits of a sparse field (known gap; the traces twin is vt.select.logsql_field_names.stream_larger_than_a_block)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Hot cuts a block at 2 MiB of uncompressed rows even after it has merged all parts, so a big stream-day is several blocks and a field only some rows carry is credited with the rows of the blocks that list it; Lakehouse counts a stream-day as one block and credits the field with every row (issue 501). Names are equal; only the hits of a sparse field differ, for every stream-day over about 2 MiB. Hot's block boundaries depend on its merge history, so no chunking on our side is exact: the answer is exact for a stream-day that fits in one hot block and approximated by the whole stream-day otherwise."
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [] }
+  notes: "Measured 2026-10-11 on a parity stack (hot VictoriaLogs v1.53.0 after POST /internal/force_flush and /internal/force_merge, polled until vl_active_force_merges is 0): one stream of 40,000 rows of about 330 B in one request, field rare on one row: hot rare 9,756, Lakehouse 40,000 in the buffer and after the flush (an independent review measured hot 6,971). Names equal. Traces twin: vt.select.logsql_field_names.stream_larger_than_a_block. Issue 501."
+
+- id: vl.select.field_names.unmerged_parts
+  title: "/select/logsql/field_names — hits of a sparse field of rows that reached hot in separate requests depend on hot's unmerged part layout (known gap)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: differ
+  differ_note: "Hot credits a field with the rows of the stored blocks that list it, and rows of separate insert requests are separate blocks until hot merges them, so the hits depend on the batching and timing of the requests (issue 500). Lakehouse credits the merged value, which depends on the rows only (the insert buffer, the peers' buffers and the objects of a stream-day are unioned, so it does not depend on flush timing either). Names are equal; only sparse-field hits differ, and only until hot merges parts (how long that takes varies, issue 500)."
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/parity-and-gaps.md, tests: [] }
+  notes: "Measured 2026-10-11 on a parity compose stack (hot VictoriaLogs v1.53.0): four rows of one stream, one carrying lk and one sp, give lk 4 and sp 4 when sent in one request and 1 and 1 when sent in four (back to back or 0.6 s apart) right after the writes, while Lakehouse answers 4 and 4 in both; hot's answer to the four-request streams became 4 and 4 after about ten minutes in that run (parts merged), while an independent review saw batches written 25 s apart still split on hot after more than two minutes, converging only after POST /internal/force_merge: the time varies. The equality after a merge holds only for a stream-day that fits in one hot block (vl.select.field_names.stream_larger_than_a_block). Lakehouse unions the insert buffer, the peers' buffers and the objects of a stream-day (hot's merged state), whichever layer holds the rows, so its answer does not depend on flush timing; the buffer plus objects split is compared with force-merged hot in the last layer of TestParity_FieldNames_Layers (measured 2026-10-12 on a parity stack, hot VictoriaLogs v1.53.0: on the previous head all 12 subtests of that layer failed, for example onlya hot 16 and Lakehouse 12, onlyb hot 16 and Lakehouse 4; on this head they pass). Traces: vt.select.logsql_field_names.unmerged_parts. The parity fixture sends each batch in one request. Issue 500."

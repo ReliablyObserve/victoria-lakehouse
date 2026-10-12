@@ -5,6 +5,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/parquet-go/parquet-go"
 
@@ -28,10 +29,17 @@ type mapsThenScalars struct {
 
 func mapsThenScalarsFile(t *testing.T) []byte {
 	t.Helper()
+	return mapsThenScalarsFileAt(t, 0)
+}
+
+// mapsThenScalarsFileAt is the fixture with its three rows at base+1000,
+// base+2000 and base+3000 ns.
+func mapsThenScalarsFileAt(t *testing.T, base int64) []byte {
+	t.Helper()
 	rows := []mapsThenScalars{
-		{1000, "a", map[string]string{"rk": "rv1"}, map[string]string{"lk": "lv1"}, "INFO", "svc-a"},
-		{2000, "b", map[string]string{"rk": "rv2"}, map[string]string{"lk": "lv2"}, "ERROR", "svc-a"},
-		{3000, "c", nil, map[string]string{"lk": "lv3"}, "INFO", "svc-b"},
+		{base + 1000, "a", map[string]string{"rk": "rv1"}, map[string]string{"lk": "lv1"}, "INFO", "svc-a"},
+		{base + 2000, "b", map[string]string{"rk": "rv2"}, map[string]string{"lk": "lv2"}, "ERROR", "svc-a"},
+		{base + 3000, "c", nil, map[string]string{"lk": "lv3"}, "INFO", "svc-b"},
 	}
 	var buf bytes.Buffer
 	w := parquet.NewGenericWriter[mapsThenScalars](&buf)
@@ -73,32 +81,52 @@ func TestScanProjectedFieldValues_ScalarAfterMapsIsIndexedByLeaf(t *testing.T) {
 	}
 }
 
+// Twin of the scan test above for field_names, which now reads the rows
+// (storage.FieldNamesViaQuery over RunQuery) instead of the footers: the
+// scalar columns that follow the maps must be read from their own chunks, or the
+// rows carry another column's values. The level of the rows is the proof: the
+// filter picks the one ERROR row, so reading severity_text through a map's chunk
+// would match no row (or the wrong rows) and the hits would not be 1.
 func TestAccumulateFieldHits_ScalarAfterMapsIsIndexedByLeaf(t *testing.T) {
-	data := mapsThenScalarsFile(t)
-	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		t.Fatal(err)
+	mock := newMockS3Server()
+	defer mock.close()
+	s := testStorageWithS3(t, mock.url())
+	base := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC).UnixNano()
+	data := mapsThenScalarsFileAt(t, base)
+	key := "logs/dt=2026-06-09/hour=10/maps-names.parquet"
+	mock.putFile(key, data)
+	s.manifest.AddFile("dt=2026-06-09/hour=10", manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: 3, MinTimeNs: base + 1000, MaxTimeNs: base + 3000})
+
+	hits := func(query string) map[string]uint64 {
+		t.Helper()
+		got, err := s.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, query, base, base+4000))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return namesToHits(got)
 	}
-	s := testStorageWithS3(t, "http://127.0.0.1:1")
-	hits := map[string]uint64{}
-	s.accumulateFieldHits(f, hits, nil)
-	// Every scalar column has 3 non-null values. Read through the wrong chunk
-	// (a map's key or value leaf) the counts are the map entries, 2 and 2.
-	// The MAP columns are reported too, by the chunk of their own key leaf: two
-	// rows carry a resource attribute, all three a log attribute. A map read
-	// through the wrong chunk (another map's value leaf) gives another number.
-	for col, want := range map[string]uint64{"resource.attributes": 2, "log.attributes": 3} {
-		if hits[col] != want {
-			t.Errorf("%s: %d hits, want %d (all: %v)", col, hits[col], want, hits)
-		}
+	all := hits("*")
+	if all["level"] != 3 || all["service.name"] != 3 || all["_msg"] != 3 {
+		t.Errorf("level, service.name and _msg are set on all 3 rows, got %v", all)
 	}
-	for _, c := range []string{"body", "severity_text", "service.name"} {
-		name := c
-		if m := s.registry.ResolveFromParquet(c); m != nil {
-			name = m.InternalName
-		}
-		if hits[name] != 3 {
-			t.Errorf("%s: %d hits, want 3 (all: %v)", name, hits[name], hits)
-		}
+	// The rows carry no stream column, so they are one block: a map key some row
+	// has is listed and credited with every row of the block. A map read through
+	// another map's chunk would list the wrong keys or credit another number of
+	// rows (rk is set on two rows, lk on three, but both credit all three).
+	if all["rk"] != 3 || all["lk"] != 3 {
+		t.Errorf("rk/lk hits = %d/%d, want 3/3 (resource and log attribute keys of the one block): %v", all["rk"], all["lk"], all)
+	}
+	errRow := hits("level:=ERROR")
+	if errRow["_msg"] != 1 || errRow["service.name"] != 1 {
+		t.Errorf("level:=ERROR must match the one ERROR row, got %v", errRow)
+	}
+	// The ERROR row carries both keys, and the block lists them: credited with
+	// the one matching row each.
+	if errRow["rk"] != 1 || errRow["lk"] != 1 {
+		t.Errorf("level:=ERROR rk/lk hits = %d/%d, want 1/1: %v", errRow["rk"], errRow["lk"], errRow)
+	}
+	svcB := hits("service.name:=svc-b")
+	if svcB["_msg"] != 1 {
+		t.Errorf("service.name:=svc-b must match the one row of svc-b, got %v", svcB)
 	}
 }

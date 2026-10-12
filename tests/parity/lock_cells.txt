@@ -20,3 +20,14 @@ TestTenantParity_TenantCountsSumToTotal           2  # file total and byte total
 TestTenantParity_UnknownTenantReturnsEmpty        4  # two subtests x 2 cells; observed in parity run 37674171609
 TestTenantParity_DependenciesAPI_RespectsScope    2  # one cell per tenant graph; observed in parity run 37674171609
 TestTenantParity_TraceQLPerTenant                 2  # one cell per tenant search; observed in parity run 37674171609
+TestParity_FieldNames_Layers                    328  # 2 signals x 2 tenant forms x (9 buffer + 9 parquet + 10 compacted + 10 restart cases: 7 base + 2 shape cases, + 1 for the later objects; + 3 buffer_over_objects cases: field_names, the rows with the field, the rows of the newest batch) x 2 cells (names+hits, order); observed in a local parity run, CI run link in the PR
+TestParity_FieldNames_SeedCorpus                 56  # logs: 2 tenants x 4 queries x 2 endpoints x 2 cells; traces: 2 tenants x 3 queries x 2 endpoints x 2 cells
+TestFieldNamesHitsTypeError_IsStrict              6  # one cell per case; the package build tag and its TestMain (a wait of up to 5 minutes for the seeded stack) apply, so it does not run offline
+TestNumericHitsErrors                            6  # one cell per case of requireNumericHits (same package, same TestMain)
+TestParity_CrossValidationExtended                2  # field_names_parity: names + hits and order, the one exact field_names cell; observed in a local parity run of the stack
+TestParity_Endpoints                             17  # 13 cases + field_names and stream_field_names exact (2 cells each); observed in a local parity run of the stack
+TestParity_Fields                                18  # 10 cases + field_names and stream_field_names exact for 2 queries (2 cells each); observed in a local parity run of the stack
+TestParity_LogsQL_FieldNamesSuperset              4  # field_names and stream_field_names of span_id:* exact (2 cells each); observed in a local parity run of the stack
+TestParity_Response                              10  # observed in a local parity run of the stack
+TestParity_TracesExtended                        20  # observed in a local parity run of the stack
+TestParity_Traces_LogsQL                         19  # observed in a local parity run of the stack

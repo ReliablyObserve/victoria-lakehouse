@@ -101,6 +101,10 @@ func TestParity_Response(t *testing.T) {
 		RunParity(t, vlBaseURL, lhBaseURL, []ParityCase{pc})
 	})
 
+	t.Run("field_names_jsonl_exact", func(t *testing.T) {
+		assertFieldNamesExact(t, vlBaseURL, lhBaseURL, "/select/logsql/field_names", "*", fullRangeParams())
+	})
+
 	t.Run("field_values_jsonl", func(t *testing.T) {
 		pc := ParityCase{Name: "field_values_jsonl", Endpoint: "/select/logsql/field_values", Params: map[string]string{"query": "*", "field": "level"}, Compare: SetEqual}
 		RunParity(t, vlBaseURL, lhBaseURL, []ParityCase{pc})

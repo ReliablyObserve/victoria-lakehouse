@@ -164,6 +164,9 @@ func TestParity_LogsQL_FieldNamesSuperset(t *testing.T) {
 			t.Errorf("core field %q in hot label index but not cold", c)
 		}
 	}
+	// Beyond the core fields: the spans' field names, hits and order are hot's.
+	assertFieldNamesExact(t, vtBaseURL, lhtBaseURL, "/select/logsql/field_names", "span_id:*", last48h())
+	assertFieldNamesExact(t, vtBaseURL, lhtBaseURL, "/select/logsql/stream_field_names", "span_id:*", last48h())
 }
 
 func TestParity_LogsQL_CountConsistency_RecentWindow(t *testing.T) {

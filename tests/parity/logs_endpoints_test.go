@@ -87,4 +87,8 @@ func TestParity_Endpoints(t *testing.T) {
 		},
 	}
 	RunParity(t, vlBaseURL, lhBaseURL, cases)
+	t.Run("field_names_exact", func(t *testing.T) {
+		assertFieldNamesExact(t, vlBaseURL, lhBaseURL, "/select/logsql/field_names", "*", fullRangeParams())
+		assertFieldNamesExact(t, vlBaseURL, lhBaseURL, "/select/logsql/stream_field_names", "*", fullRangeParams())
+	})
 }

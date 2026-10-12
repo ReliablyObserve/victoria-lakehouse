@@ -40,7 +40,13 @@ level / `warmup` span only in 10:00–10:10); hour 11:00 is busy (150 distinct s
 **Cells** (per signal): endpoint (logs: `field_values level`, `field_values service.name`,
 `streams`, `field_names`; traces: `field_values name`, `field_values resource_attr:service.name`,
 `streams`, `field_names`) × pmeta {on, off} × layout × window × filter {none,
-`service.name:="svc-a"`} × S3 latency {0, 100 ms} = 384 cells per signal.
+`service.name:="svc-a"`} × S3 latency {0, 100 ms} = 384 cells per signal. The traces `field_names` cells spell the filter
+as hot VictoriaTraces knows it, `"resource_attr:service.name":="svc-a"` (the field a span has there; the alias rule changes
+that endpoint's answer only). The traces `field_values` and `streams` cells keep `service.name:="svc-a"`, which the
+objects honour as a filter convenience and hot VictoriaTraces does not match
+(`docs/parity-and-gaps.md`, "Intentional differences"): their exactness is Lakehouse's own filter
+behaviour against the generator's truth, not equality with hot. Hot-spelled `field_values` and `streams` cells would be new
+rows (an extension that needs owner review) and are not added.
 
 | layout | what it is |
 |---|---|
@@ -430,12 +436,78 @@ before #239 Lakehouse read the objects one by one. Steps 1–3 remove the struct
 steps 4–6 go past ClickHouse by not reading data at all for most objects, which is how disk
 VictoriaLogs answers (block headers carry the stream id).
 
+## `field_names` from the rows (#487)
+
+The truth of the traces `field_names` cells is computed from the generated spans (`fmtSpanNamesTruth`,
+`lakehouse-traces/internal/storage/parquets3/field_names_span_oracle_test.go`): the names VictoriaTraces lists for them,
+each credited with the matching spans of the stream-day blocks that list it, and not read back through the
+storage code under test. The names are those a hot VictoriaTraces v0.12.0 lists for an OTLP span of the generator's
+shape (**measured** on a hot instance: `_time`, `_stream`, `_stream_id`, `trace_id`, `span_id`, `name`, `duration`,
+`kind`, `status_code`, `start_time_unix_nano`, `resource_attr:service.name`, plus `_msg`, `end_time_unix_nano`,
+`flags` and `dropped_*_count`, which the generator's rows do not carry), and `service.name` is no field there: a filter
+`service.name:="svc-a"` matches no span on hot, the field is `"resource_attr:service.name"`. A row-path oracle had
+hidden that the unflushed spans of an insert peer listed a `service.name` alias
+([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504)); the enumeration now asks for
+VictoriaTraces' names only, and all 96 traces `field_names` cells are exact.
+
+`field_names` no longer answers from the footers or the catalog: it reads the rows of the window
+(`docs/operations.md`, "`field_names` reads the rows of its window"), so every one of its 192 cells
+(96 per signal) is now exact (they were `expect: differ`), and Lakehouse reads more to give the right
+answer. Counters below are **measured** (in-process mock S3, deterministic: a function of the files and
+the query), `old` = the registry rows on `main` before this change, `new` = this build; the p50 is
+**measured** on a shared developer host (Apple M-series, 18 cores, 2 iterations, 0 ms S3), indicative
+only. Unfiltered, pmeta off (pmeta on gives the same `new` counters; the old pmeta-on traces rows read
+0 objects because they answered from the catalog with wrong names and hits 1).
+
+| signal | layout | window | S3 GETs old to new | S3 bytes old to new | p50 new |
+|---|---|---|---|---|---|
+| logs | flushed (24 objects of about 72 KB) | whole | 24 to 24 | 1.72 MB to 1.72 MB | 12.8 ms |
+| logs | flushed | narrow (30 s) | 1 to 1 | 74 KB to 74 KB | 2.3 ms |
+| logs | compacted (2 hour objects) | whole | 2 to 4 | 173 KB to 1.56 MB (9.0x) | 21.3 ms |
+| logs | compacted | narrow | 1 to 2 | 90 KB to 807 KB (9.0x) | 9.9 ms |
+| traces | flushed | whole | 1 to 24 | 95 KB to 2.29 MB (24x) | 65.7 ms |
+| traces | flushed | narrow | 1 to 1 | 96 KB to 96 KB | 13.9 ms |
+| traces | compacted | whole | 2 to 4 | 869 KB to 2.20 MB (2.5x) | 168.9 ms |
+| traces | compacted | narrow | 2 to 2 | 871 KB to 1.11 MB (1.3x) | 62.9 ms |
+
+Lakehouse loses here: the old answer read one footer per object (logs) or the footer of the first object
+only (traces, the reason it was wrong), the new one reads the row groups the query needs. Flushed logs
+objects are smaller than the footer prefetch, so their footer read already was the whole object and the
+cost is unchanged; compacted objects, and traces objects (which carry the attribute maps), cost several
+times more bytes. The per-stream presence index that would give the footer cost back is the open option
+of [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482). The cost guard
+`BenchmarkGetFieldNames_ObjectReads` holds the object reads of a call.
+
+**Against hot (measured by the independent review of the change, RustFS, 0 ms S3, warm p50, not re-measured by the
+author).** The table above compares Lakehouse with its own earlier, wrong answer; against hot VictoriaLogs and
+VictoriaTraces the new answer costs:
+
+| signal, window | hot | main (footer answer, wrong) | this change | this change / hot |
+|---|--:|--:|--:|--:|
+| logs, 240,000 rows, 1 h | 2.3 ms | 0.4 ms | 116 ms | about 50x |
+| logs, 240,000 rows, 6 h | 1.1 ms | 0.5 ms | 262 ms | about 240x |
+| traces, 60,000 spans, `span_id:*`, 1 h | 2.0 ms | 0.4 ms | 80 ms | about 40x |
+| traces, 60,000 spans, `span_id:*`, 6 h | 2.4 ms | 0.4 ms | 136 ms | about 57x |
+
+Lakehouse loses by one to two orders of magnitude against hot, roughly linearly in the rows of the window. Scale
+(assumed, not measured): the read is not bounded in bytes and a filter does not narrow it (no object or row group is skipped
+for the filter's sake, so the filtered cells read what the unfiltered ones read), so at 100 TB/day a 7-day window would read
+hundreds of TB. The per-stream presence index of [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482)
+is the structural fix; bounding the call waits for the owner. The counters of the cells of a 0 ms run (both signals, 384 cells) are
+unchanged by the filter fix (`perf_rows.py check`: 384 cells measured, 0 failures): the `svc` filter of the matrix matches every object.
+
+Regenerating the rows: run the harness as in [Harness](#harness) (logs and traces, 0 ms and 100 ms), then
+`scripts/bench/field_metadata/perf_rows.py gen MATRIX.jsonl`; the 192 `field_names` rows were replaced by
+the generated ones, the other 576 rows keep their earlier measured budgets (their counters and expectations
+came out the same).
+
 ## Findings (not fixed here)
 
 1. **`field_names` is wrong on both signals.** Logs: lists all-null columns, ignores filter and
    window, depends on footer-cache state. Traces: pmeta on returns the catalog's Parquet keys
    (`account_id`, `project_id`, `service.name`, `span.name`) with hits 1; pmeta off returns all 48
    schema columns with hits 1; the answer is 11 fields × 48 000.
+   Fixed in #487, see above.
 2. **Buffered rows are named differently from flushed rows** on map attributes (`resource_attr:K`
    vs `K` on logs), Tier-2 slots (not emitted by the bridge) and traces promoted attributes. The
    logs bridge now carries `_stream_id`, `severity_number` and `scope.name`
@@ -463,6 +535,16 @@ VictoriaLogs answers (block headers carry the stream id).
    silently counted as the peer's whole answer, now the answer is dropped whole and counted in
    `lakehouse_buffer_bridge_errors_total{reason="decode"}`. A peer answering enumeration with
    (value, hits) pairs instead of rows keeps large unflushed windows inside the timeout.
+8. **The traces `field_names` cells are blind to stream grouping.** Every span of the generator carries the same
+   names, so a counter that groups by day alone instead of by stream and day (the mutation `blockKey` = day only)
+   leaves all 384 cells exact (sourced: the independent review). A name only one service's spans carry (a `custom.attr` span attribute on one in
+   sixteen spans of `svc-b`) makes the cells sensitive to it: measured in an isolated copy with that generator
+   change and the day-only counter, 36 of the 48 traces `field_names` shapes fail at 0 ms (for example
+   `span_attr:custom.attr=24000/1500`), and with the correct counter all 384 cells stay exact. It is not in the
+   harness because the extra attribute moves `s3_bytes` of 248 traces cells (about +0.8%, measured), which are
+   registry counters: re-baselining them is an owner decision. Until then the stream grouping is held by
+   `TestFmtSpanNamesTruth_CreditsStreamDayBlocks` (the oracle) and the counter's unit tests
+   (`TestFieldNamesCounter_*`, `TestTraceFieldNames_AreVictoriaTracesFieldsCreditedPerStream`).
 
 ## Deterministic counters
 
