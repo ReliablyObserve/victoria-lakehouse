@@ -80,12 +80,17 @@ func TestRowGroupSkipReasons_MatchCallSites(t *testing.T) {
 	}
 }
 
+// seriesAtStart is /metrics as it is when the package's own init functions have
+// run (a test file's init runs after the package's), before any test has created
+// a series by using it.
+var seriesAtStart = new(bytes.Buffer)
+
+func init() { WritePrometheus(seriesAtStart, false) }
+
 // The series that must stay 0 are on /metrics before anything has happened, so
 // increase() sees the first event.
 func TestMustStayZeroSeries_ExportedFromStart(t *testing.T) {
-	var buf bytes.Buffer
-	WritePrometheus(&buf, false)
-	out := buf.String()
+	out := seriesAtStart.String()
 	for _, stage := range BufferFlushErrorStages {
 		if series := fmt.Sprintf(`lakehouse_buffer_flush_errors_total{stage=%q}`, stage); !strings.Contains(out, series) {
 			t.Errorf("%s is not exported at start", series)

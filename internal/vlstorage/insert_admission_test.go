@@ -300,13 +300,18 @@ func TestInsertAdapter_SameStreamTwoTenantsOneBatch(t *testing.T) {
 	}
 }
 
+// seriesAtStart is /metrics as it is when the package's own init functions have
+// run (a test file's init runs after the package's), before any test has created
+// a series by using it.
+var seriesAtStart = func() *bytes.Buffer { return new(bytes.Buffer) }()
+
+func init() { metrics.WritePrometheus(seriesAtStart, false) }
+
 // lakehouse_buffer_flush_rows_dropped_total{reason="trace_shaped_stream"} is on
 // /metrics from process start, so increase() sees the first drop.
 func TestFlushRowsDroppedSeries_ExportedFromStart(t *testing.T) {
-	var buf bytes.Buffer
-	metrics.WritePrometheus(&buf, false)
 	series := `lakehouse_buffer_flush_rows_dropped_total{reason="` + ReasonTraceShapedStream + `"}`
-	if !strings.Contains(buf.String(), series) {
+	if !strings.Contains(seriesAtStart.String(), series) {
 		t.Errorf("%s is not exported at start", series)
 	}
 }

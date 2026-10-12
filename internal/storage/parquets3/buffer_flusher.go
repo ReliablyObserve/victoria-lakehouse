@@ -737,9 +737,6 @@ func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, te
 	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error),
 	rowCount func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error)) (tenantPlan, error) {
 	counts, err := secondCounts(ctx, g, tenant)
-	if err == nil {
-		err = ctx.Err() // a cancelled query returns what it had, without an error
-	}
 	if err != nil {
 		return tenantPlan{}, fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
 	}
@@ -749,7 +746,10 @@ func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, te
 	}
 	n, err := rowCount(ctx, g, tenant)
 	if err == nil {
-		err = ctx.Err() // checked before the comparison: a cancelled count is not a mismatch
+		// Checked before the comparison: a cancelled query returns what it had,
+		// without an error, in the plan's query as well as in this one, and a
+		// cancelled step is not a mismatch.
+		err = ctx.Err()
 	}
 	if err != nil {
 		return tenantPlan{}, fmt.Errorf("count tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)

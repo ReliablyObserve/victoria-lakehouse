@@ -279,14 +279,19 @@ func TestVTInsertAdapter_SameStreamTwoTenantsOneBatch(t *testing.T) {
 	}
 }
 
+// seriesAtStart is /metrics as it is when the package's own init functions have
+// run (a test file's init runs after the package's), before any test has created
+// a series by using it.
+var seriesAtStart = func() *bytes.Buffer { return new(bytes.Buffer) }()
+
+func init() { metrics.WritePrometheus(seriesAtStart, false) }
+
 // lakehouse_vt_internal_rows_dropped_total{kind=...} is on /metrics from process
 // start for every kind this binary counts, so increase() sees the first drop.
 func TestVTInternalDroppedSeries_ExportedFromStart(t *testing.T) {
-	var buf bytes.Buffer
-	metrics.WritePrometheus(&buf, false)
 	for _, kind := range []string{vtInternalKindTraceIDIdx, vtInternalKindTraceIDIdxBeforeEpoch, vtInternalKindTraceIDIdxCardinality} {
 		series := `lakehouse_vt_internal_rows_dropped_total{kind="` + kind + `"}`
-		if !strings.Contains(buf.String(), series) {
+		if !strings.Contains(seriesAtStart.String(), series) {
 			t.Errorf("%s is not exported at start", series)
 		}
 	}
