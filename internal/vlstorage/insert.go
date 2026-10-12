@@ -66,6 +66,11 @@ func FlushRowKeeper() func(accountID, projectID uint32, stream string) bool {
 	}
 }
 
+// noteCardinalityRefused counts and logs the rows of a stream refused for the
+// tenant's cardinality limit; a variable so the tests can see which tenant and
+// stream each refusal is attributed to.
+var noteCardinalityRefused = storage.NoteCardinalityRefused
+
 // ReasonTraceShapedStream is the reason label of
 // lakehouse_buffer_flush_rows_dropped_total for a trace-shaped stream.
 const ReasonTraceShapedStream = "trace_shaped_stream"
@@ -105,6 +110,16 @@ func (a *insertAdapter) MustAddRows(lr *logstorage.LogRows) {
 	}
 }
 
+// streamKey is what an admission decision is made for: a stream of one tenant.
+// Upstream's stream hash is computed from the stream tags alone, without the
+// tenant, and a batch can carry several tenants (/internal/insert and
+// /insert/multitenant/native), so the hash alone would let one tenant's verdict
+// (and its slot of the cardinality limit) stand for another's.
+type streamKey struct {
+	tenant logstorage.TenantID
+	hash   uint64
+}
+
 // admittedRows returns the rows of lr that the admission rule admits: lr itself
 // when it admits them all (the common case), nil when it admits none, otherwise
 // a copy (owned is then true and the caller releases it). The rule has two
@@ -122,8 +137,8 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 		traceShaped bool
 		rows        int
 	}
-	decided := map[uint64]verdict{}
-	var refused map[uint64]*refusal
+	decided := map[streamKey]verdict{}
+	var refused map[streamKey]*refusal
 	var st logstorage.StreamTags
 	dropped, total := 0, 0
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
@@ -133,7 +148,8 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 			storage.NoteBeforeEpoch(r)
 			return
 		}
-		v, ok := decided[streamHash]
+		key := streamKey{r.TenantID, streamHash}
+		v, ok := decided[key]
 		if !ok {
 			stream := ""
 			if r.StreamTagsCanonical != "" {
@@ -143,17 +159,17 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 				}
 			}
 			v.keep, v.traceShaped = keepStream(r.TenantID.AccountID, r.TenantID.ProjectID, stream)
-			decided[streamHash] = v
+			decided[key] = v
 			if !v.keep {
 				if refused == nil {
-					refused = map[uint64]*refusal{}
+					refused = map[streamKey]*refusal{}
 				}
-				refused[streamHash] = &refusal{tenant: r.TenantID, stream: stream, traceShaped: v.traceShaped}
+				refused[key] = &refusal{tenant: r.TenantID, stream: stream, traceShaped: v.traceShaped}
 			}
 		}
 		if !v.keep {
 			dropped++
-			refused[streamHash].rows++
+			refused[key].rows++
 		}
 	})
 	// Every refused row is counted, once per batch and reason.
@@ -161,7 +177,7 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 		if x.traceShaped {
 			metrics.LogsTraceShapedRowsDroppedAtIngest.Add(x.rows)
 		} else {
-			storage.NoteCardinalityRefused(x.tenant.AccountID, x.tenant.ProjectID, x.stream, x.rows)
+			noteCardinalityRefused(x.tenant.AccountID, x.tenant.ProjectID, x.stream, x.rows)
 		}
 	}
 	switch dropped {
@@ -172,7 +188,7 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 	}
 	cp := logstorage.GetLogRows(nil, nil, nil, nil, "")
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
-		if !storage.BeforeEpoch(r.Timestamp) && decided[streamHash].keep {
+		if !storage.BeforeEpoch(r.Timestamp) && decided[streamKey{r.TenantID, streamHash}].keep {
 			cp.MustAddInsertRow(r)
 		}
 	})
