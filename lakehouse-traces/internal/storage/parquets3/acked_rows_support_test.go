@@ -49,7 +49,7 @@ func ackFields(app, msg string) []logstorage.Field {
 func (e *segEnv) sendViaAdapter(tn logstorage.TenantID, rows []adapterRow) {
 	e.t.Helper()
 	vlstorage.SetInsertStorage(e.segs, filepath.Join(e.dir, "buffer"))
-	e.t.Cleanup(func() { vtinsertutil.SetLogRowsStorage(nil) })
+	e.t.Cleanup(func() { vtinsertutil.SetLogRowsStorage(discardRows{}) })
 	cp := &vtinsertutil.CommonParams{TenantID: tn, TimeFields: []string{"_time"}, StreamFields: []string{ackStreamField}}
 	lmp := cp.NewLogMessageProcessor("test", false)
 	for _, r := range rows {

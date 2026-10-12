@@ -187,6 +187,12 @@ the buffer, the drain and a restart (both modules): `TestPre1970Rows_AreRefusedA
 `TestPre1970Rows_PropertyEveryRowIsRefusedOrStoredOnce`,
 `TestAckedRows_NotRejudgedByAFreshCardinalityLimiter` (restart matrix),
 `TestAckedRows_FlushFilterNeverDropsOnCardinality`, `TestAckedRows_PropertyRandomRestartsAndLimits`.
+Against the real binaries (run by hand so far, CI wiring is #498):
+`scripts/ci/tests/cardinality_restart_test.sh` restarts `lakehouse-logs` and
+`lakehouse-traces` under a stream limit and reads the rows back after the drain
+(the code before the fix loses the acknowledged rows), and
+`scripts/ci/tests/pre1970_hot_compare_test.sh` sends the same rows dated 1965 to hot
+VictoriaLogs/VictoriaTraces (default retention and `100y`) and to the Lakehouse.
 The registry cells (`kind: durability`, one `_logs` and one `_traces` cell per
 fault; `make conformance-check` verifies that every test they cite exists, that
 the twins agree, that a loss-counted cell names a registered metric and that this

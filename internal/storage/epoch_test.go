@@ -33,3 +33,16 @@ func TestNoteBeforeEpoch_CountsTheRow(t *testing.T) {
 		t.Fatalf("lakehouse_insert_rows_dropped_total{reason=%q} rose by %d, want 2", ReasonTooSmallTimestamp, got)
 	}
 }
+
+// NoteCardinalityRefused counts the rows it is given, in one step, and counts
+// nothing for an empty batch.
+func TestNoteCardinalityRefused_CountsEveryRow(t *testing.T) {
+	before := metrics.InsertRowsDropped.Get(ReasonCardinalityLimit)
+	NoteCardinalityRefused(1, 2, `{app="over"}`, 7)
+	NoteCardinalityRefused(1, 2, `{app="over"}`, 0)
+	NoteCardinalityRefused(3, 4, `{app="other"}`, -3)
+	NoteCardinalityRefused(3, 4, `{app="other"}`, 1)
+	if got := metrics.InsertRowsDropped.Get(ReasonCardinalityLimit) - before; got != 8 {
+		t.Fatalf("lakehouse_insert_rows_dropped_total{reason=%q} rose by %d, want 8", ReasonCardinalityLimit, got)
+	}
+}

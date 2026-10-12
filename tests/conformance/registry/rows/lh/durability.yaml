@@ -148,6 +148,7 @@
       - internal/vlstorage/flush_keeper_test.go#TestFlushRowKeeper_IgnoresTheCardinalityGate
       - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
       - internal/vlstorage/insert_admission_test.go#TestFlushRowKeeper_CountsTheTraceShapedDrop
+      - internal/storage/epoch_test.go#TestNoteCardinalityRefused_CountsEveryRow
       - scripts/ci/tests/cardinality_restart_test.sh#cardinality_limit
   notes: "Fixes #389. The real binary is checked with a restart by scripts/ci/tests/cardinality_restart_test.sh (the code before the fix loses the acknowledged rows of stream a). Restart matrix (clean closes only): no restart, restart while the segment is active, restart after the seal, an upload failure in the middle of the drain then a restart; the fresh limiter admits other streams first. What the limiter admits is stated by a model in the test, not read back from the limiter; the rows the adapter really added to the buffer and the refusals it counted are compared to it on every request. A stream admitted before a restart can be refused after it and its new rows are counted in lakehouse_insert_rows_dropped_total{reason=\"cardinality_limit\"}: the known gap of https://github.com/ReliablyObserve/victoria-lakehouse/issues/485"
 
@@ -196,6 +197,7 @@
     tests:
       - internal/storage/parquets3/drain_invariant_test.go#TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover
       - internal/storage/parquets3/drain_invariant_test.go#TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment
+      - internal/storage/parquets3/drain_invariant_test.go#TestPlanSegment_ReadErrorsAreNotInvariantViolations
   notes: "The runtime check that would have stopped #388: the drain compares its plan with a count of every row of every tenant over all of int64 time before the first upload, and each group's rows with the plan. A mismatch is lakehouse_buffer_flush_errors_total{stage=\"invariant\"}, an error log, and the segment stays pending (it blocks the later segments until the volume's free-space floor answers 429)."
 
 - id: lh.durability.drain_plan_mismatch_traces
@@ -217,6 +219,7 @@
     tests:
       - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover
       - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment
+      - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestPlanSegment_ReadErrorsAreNotInvariantViolations
   notes: "Same check in the traces binary."
 
 - id: lh.durability.kill_between_upload_and_commit_logs

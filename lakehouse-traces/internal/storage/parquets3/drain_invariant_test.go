@@ -109,3 +109,45 @@ func TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment(t *testing.T) {
 		t.Fatalf("collect with a filter that drops everything: %d rows, %d filtered, err %v; want 0, 5, nil", len(rows), filtered, err)
 	}
 }
+
+// A segment that cannot be read is not a held segment: the plan reports the
+// read error (stage collect, retried after the back-off) and counts no invariant
+// violation, and a cancelled context stops the plan.
+func TestPlanSegment_ReadErrorsAreNotInvariantViolations(t *testing.T) {
+	e := newSegEnv(t)
+	e.ingest(segTenantA, hourAgo, 5)
+	g := e.seal()
+	f := e.flusher(1000)
+	before := invariantNow()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := f.planSegment(ctx, g); err == nil || errors.Is(err, errDrainInvariant) {
+		t.Fatalf("planSegment with a cancelled context returned %v, want the context error", err)
+	}
+
+	e.segs.Close() // the segments' storages are closed: every query fails
+	_, _, err := f.planSegment(context.Background(), g)
+	if err == nil || errors.Is(err, errDrainInvariant) {
+		t.Fatalf("planSegment on a closed segment returned %v, want a read error", err)
+	}
+	if got := invariantNow() - before; got != 0 {
+		t.Errorf("a read error counted %d invariant violations", got)
+	}
+	// The queries behind the plan fail the same way on a closed segment, and none
+	// of them is an invariant violation.
+	if _, err := tenantRowCount(context.Background(), g, segTenantA); err == nil || errors.Is(err, errDrainInvariant) {
+		t.Errorf("tenantRowCount on a closed segment returned %v, want a read error", err)
+	}
+	if _, err := tenantSecondCounts(context.Background(), g, segTenantA); err == nil || errors.Is(err, errDrainInvariant) {
+		t.Errorf("tenantSecondCounts on a closed segment returned %v, want a read error", err)
+	}
+	sl := flushSlice{partition: partitionFromNano(hourAgo.UnixNano()), start: hourAgo.UnixNano(), end: hourAgo.Add(time.Hour).UnixNano(), rows: 5}
+	if _, _, err := f.collectSlice(context.Background(), g, segTenantA, sl); err == nil || errors.Is(err, errDrainInvariant) {
+		t.Errorf("collectSlice on a closed segment returned %v, want a read error", err)
+	}
+	if got := invariantNow() - before; got != 0 {
+		t.Errorf("read errors counted %d invariant violations", got)
+	}
+	e.segs = nil // closed above; the cleanup must not close it twice
+}

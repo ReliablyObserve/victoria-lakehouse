@@ -686,6 +686,11 @@ func (f *BufferFlusher) planSegment(ctx context.Context, g *membuffer.Segment) (
 		metrics.BufferFlushErrors.Inc("collect")
 		return nil, nil, fmt.Errorf("list tenants: %w", err)
 	}
+	// A cancelled context can make the listing come back empty without an error;
+	// an empty plan is not a plan.
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	sort.Slice(tenants, func(i, j int) bool {
 		if tenants[i].AccountID != tenants[j].AccountID {
 			return tenants[i].AccountID < tenants[j].AccountID
