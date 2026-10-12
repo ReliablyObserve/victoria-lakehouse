@@ -840,7 +840,7 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 	}
 
 	// Plan every tenant's groups before anything is uploaded, and check that the
-	// plan covers every row the segment holds (see checkPlan): a segment that
+	// plan covers every row the segment holds (see planSegment): a segment that
 	// does not is stalled, with nothing of it written to the bucket.
 	plans, planErr, err := f.planSegment(ctx, g)
 	if err != nil {

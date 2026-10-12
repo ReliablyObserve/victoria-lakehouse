@@ -132,16 +132,6 @@ func spanRows(lr *logstorage.LogRows) int {
 	return n
 }
 
-// streamKey is what an admission decision is made for: a stream of one tenant.
-// Upstream's stream hash is computed from the stream tags alone, without the
-// tenant, and a batch can carry several tenants (/insert/multitenant/native), so
-// the hash alone would let one tenant's verdict (and its slot of the cardinality
-// limit) stand for another's.
-type streamKey struct {
-	tenant logstorage.TenantID
-	hash   uint64
-}
-
 // admittedRows returns the rows of lr that the admission rule admits: lr itself
 // when it admits them all (the common case), nil when it admits none, otherwise
 // a copy (owned is then true and the caller releases it). The rule has two
@@ -168,8 +158,16 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 		idx    bool // the stream of VictoriaTraces' trace_id_idx rows, not of spans
 		rows   int
 	}
-	var decided map[streamKey]bool // allocated when a gate is installed and a stream is first seen
-	var refused map[streamKey]*refusal
+	// Decisions are per tenant and stream: upstream's stream hash is computed
+	// from the stream tags alone, and a batch can carry several tenants
+	// (/insert/multitenant/native), so the hash alone would let one tenant's
+	// verdict, and its slot of the cardinality limit, stand for another's.
+	// Nothing is allocated until a gate is installed and a stream is first seen.
+	// One variable, so the closure below makes one allocation for both.
+	var adm struct {
+		decided storage.TenantStreamMap[bool]
+		refused storage.TenantStreamMap[*refusal]
+	}
 	var st logstorage.StreamTags
 	dropped, total := 0, 0
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
@@ -188,8 +186,7 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 		if globalCardinalityGate == nil {
 			return
 		}
-		key := streamKey{r.TenantID, streamHash}
-		keep, ok := decided[key]
+		keep, ok := adm.decided.Get(r.TenantID, streamHash)
 		if !ok {
 			stream := ""
 			if r.StreamTagsCanonical != "" {
@@ -199,30 +196,25 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 				}
 			}
 			keep = keepStream(r.TenantID.AccountID, r.TenantID.ProjectID, stream)
-			if decided == nil {
-				decided = map[streamKey]bool{}
-			}
-			decided[key] = keep
+			adm.decided.Set(r.TenantID, streamHash, keep)
 			if !keep {
-				if refused == nil {
-					refused = map[streamKey]*refusal{}
-				}
-				refused[key] = &refusal{tenant: r.TenantID, stream: stream, idx: isTraceIDIndexRow(r.StreamTagsCanonical)}
+				adm.refused.Set(r.TenantID, streamHash, &refusal{tenant: r.TenantID, stream: stream, idx: isTraceIDIndexRow(r.StreamTagsCanonical)})
 			}
 		}
 		if !keep {
 			dropped++
-			refused[key].rows++
+			x, _ := adm.refused.Get(r.TenantID, streamHash)
+			x.rows++
 		}
 	})
 	// Every row refused for the limit is counted, once per batch.
-	for _, x := range refused {
+	adm.refused.Each(func(x *refusal) {
 		if x.idx {
 			metrics.VTInternalRowsDropped.Add(vtInternalKindTraceIDIdxCardinality, x.rows)
 		} else {
 			noteCardinalityRefused(x.tenant.AccountID, x.tenant.ProjectID, x.stream, x.rows)
 		}
-	}
+	})
 	switch dropped {
 	case 0:
 		return lr, false
@@ -234,7 +226,7 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 		if storage.BeforeEpoch(r.Timestamp) {
 			return
 		}
-		if keep, ok := decided[streamKey{r.TenantID, streamHash}]; !ok || keep {
+		if keep, ok := adm.decided.Get(r.TenantID, streamHash); !ok || keep {
 			cp.MustAddInsertRow(r)
 		}
 	})
