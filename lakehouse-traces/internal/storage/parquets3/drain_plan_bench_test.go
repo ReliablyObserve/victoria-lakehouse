@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -61,6 +62,38 @@ func BenchmarkPlan(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				if _, err := tenantRowCount(context.Background(), g, tenant); err != nil {
 					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("tenantIDs-from-epoch/"+name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if _, err := g.GetTenantIDs(context.Background(), 0, math.MaxInt64); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("tenantIDs-all-time/"+name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if _, err := g.GetTenantIDs(context.Background(), math.MinInt64, math.MaxInt64); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("plan-as-before/"+name, func(b *testing.B) {
+			// the loop the drain ran before the check: the tenants from the epoch,
+			// each tenant's per-second counts cut into groups
+			f := &BufferFlusher{maxRows: 100000}
+			for i := 0; i < b.N; i++ {
+				tenants, err := g.GetTenantIDs(context.Background(), 0, math.MaxInt64)
+				if err != nil {
+					b.Fatal(err)
+				}
+				for _, tn := range tenants {
+					counts, err := tenantSecondCounts(context.Background(), g, tn)
+					if err != nil {
+						b.Fatal(err)
+					}
+					_ = planSlices(counts, f.maxRows)
 				}
 			}
 		})

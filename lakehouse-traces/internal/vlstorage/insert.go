@@ -145,14 +145,16 @@ func spanRows(lr *logstorage.LogRows) int {
 // refused index rows, which are not spans, in
 // lakehouse_vt_internal_rows_dropped_total.
 func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) {
-	type verdict struct {
-		keep    bool
-		tenant  logstorage.TenantID
-		stream  string
-		idx     bool // the stream of VictoriaTraces' trace_id_idx rows, not of spans
-		refused int  // rows of this stream in lr that were refused
+	// refusal collects what a stream refused for the limit needs for its counter
+	// and its log line; the map exists only when a stream is refused.
+	type refusal struct {
+		tenant logstorage.TenantID
+		stream string
+		idx    bool // the stream of VictoriaTraces' trace_id_idx rows, not of spans
+		rows   int
 	}
-	decided := map[uint64]*verdict{}
+	var decided map[uint64]bool // allocated when a gate is installed and a stream is first seen
+	var refused map[uint64]*refusal
 	var st logstorage.StreamTags
 	dropped, total := 0, 0
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
@@ -160,7 +162,7 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 		if storage.BeforeEpoch(r.Timestamp) {
 			dropped++
 			if isTraceIDIndexRow(r.StreamTagsCanonical) {
-				// An index row carries the span's start time. It is internal, not a
+				// An index row carries the trace's start time. It is internal, not a
 				// span: counted apart, so the span counters stay span counts.
 				metrics.VTInternalRowsDropped.Inc(vtInternalKindTraceIDIdxBeforeEpoch)
 			} else {
@@ -171,7 +173,7 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 		if globalCardinalityGate == nil {
 			return
 		}
-		v, ok := decided[streamHash]
+		keep, ok := decided[streamHash]
 		if !ok {
 			stream := ""
 			if r.StreamTagsCanonical != "" {
@@ -180,23 +182,29 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 					stream = st.String()
 				}
 			}
-			v = &verdict{tenant: r.TenantID, stream: stream, idx: isTraceIDIndexRow(r.StreamTagsCanonical)}
-			v.keep = keepStream(r.TenantID.AccountID, r.TenantID.ProjectID, stream)
-			decided[streamHash] = v
+			keep = keepStream(r.TenantID.AccountID, r.TenantID.ProjectID, stream)
+			if decided == nil {
+				decided = map[uint64]bool{}
+			}
+			decided[streamHash] = keep
+			if !keep {
+				if refused == nil {
+					refused = map[uint64]*refusal{}
+				}
+				refused[streamHash] = &refusal{tenant: r.TenantID, stream: stream, idx: isTraceIDIndexRow(r.StreamTagsCanonical)}
+			}
 		}
-		if !v.keep {
+		if !keep {
 			dropped++
-			v.refused++
+			refused[streamHash].rows++
 		}
 	})
 	// Every row refused for the limit is counted, once per batch.
-	for _, v := range decided {
-		switch {
-		case v.keep:
-		case v.idx:
-			metrics.VTInternalRowsDropped.Add(vtInternalKindTraceIDIdxCardinality, v.refused)
-		default:
-			storage.NoteCardinalityRefused(v.tenant.AccountID, v.tenant.ProjectID, v.stream, v.refused)
+	for _, x := range refused {
+		if x.idx {
+			metrics.VTInternalRowsDropped.Add(vtInternalKindTraceIDIdxCardinality, x.rows)
+		} else {
+			storage.NoteCardinalityRefused(x.tenant.AccountID, x.tenant.ProjectID, x.stream, x.rows)
 		}
 	}
 	switch dropped {
@@ -210,7 +218,7 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 		if storage.BeforeEpoch(r.Timestamp) {
 			return
 		}
-		if v := decided[streamHash]; v == nil || v.keep {
+		if keep, ok := decided[streamHash]; !ok || keep {
 			cp.MustAddInsertRow(r)
 		}
 	})

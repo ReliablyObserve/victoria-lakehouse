@@ -113,13 +113,17 @@ func (a *insertAdapter) MustAddRows(lr *logstorage.LogRows) {
 // keepStream decides the stream, once per stream of the batch. A refused row
 // does not take a slot of its tenant's cardinality limit.
 func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) {
-	type verdict struct {
-		keep, traceShaped bool
-		tenant            logstorage.TenantID
-		stream            string
-		refused           int // rows of this stream in lr that were refused
+	type verdict struct{ keep, traceShaped bool }
+	// refusal collects what a refused stream needs for its counter and its log
+	// line; the map exists only when a stream is refused.
+	type refusal struct {
+		tenant      logstorage.TenantID
+		stream      string
+		traceShaped bool
+		rows        int
 	}
-	decided := map[uint64]*verdict{}
+	decided := map[uint64]verdict{}
+	var refused map[uint64]*refusal
 	var st logstorage.StreamTags
 	dropped, total := 0, 0
 	lr.ForEachRow(func(streamHash uint64, r *logstorage.InsertRow) {
@@ -138,23 +142,26 @@ func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) 
 					stream = st.String()
 				}
 			}
-			v = &verdict{tenant: r.TenantID, stream: stream}
 			v.keep, v.traceShaped = keepStream(r.TenantID.AccountID, r.TenantID.ProjectID, stream)
 			decided[streamHash] = v
+			if !v.keep {
+				if refused == nil {
+					refused = map[uint64]*refusal{}
+				}
+				refused[streamHash] = &refusal{tenant: r.TenantID, stream: stream, traceShaped: v.traceShaped}
+			}
 		}
 		if !v.keep {
 			dropped++
-			v.refused++
+			refused[streamHash].rows++
 		}
 	})
 	// Every refused row is counted, once per batch and reason.
-	for _, v := range decided {
-		switch {
-		case v.keep:
-		case v.traceShaped:
-			metrics.LogsTraceShapedRowsDroppedAtIngest.Add(v.refused)
-		default:
-			storage.NoteCardinalityRefused(v.tenant.AccountID, v.tenant.ProjectID, v.stream, v.refused)
+	for _, x := range refused {
+		if x.traceShaped {
+			metrics.LogsTraceShapedRowsDroppedAtIngest.Add(x.rows)
+		} else {
+			storage.NoteCardinalityRefused(x.tenant.AccountID, x.tenant.ProjectID, x.stream, x.rows)
 		}
 	}
 	switch dropped {
