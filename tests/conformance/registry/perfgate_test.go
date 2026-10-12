@@ -290,3 +290,18 @@ func TestPerfRaiseReporting(t *testing.T) {
 		t.Error("Percent of a zero base is 0 (such a raise fails before it is listed)")
 	}
 }
+
+// A relative allowance exists for s3_bytes only: one more request, row group or page is more work however
+// large the counter already is (+1 of a million is 0.0001 %).
+func TestPerfBlockRule_OnlyBytesHaveAnAllowance(t *testing.T) {
+	base := newSpec()
+	base.gets, base.rowGroups, base.pages = 1000000, 1000000, 1000000
+	head := base
+	head.gets++
+	head.rowGroups++
+	head.pages++
+	v := ParityCheck(perfSnap(base.row(t, "r")), perfSnap(head.row(t, "r")), nil)
+	if len(v.PerfFailures) != 3 || len(v.PerfRaises) != 0 {
+		t.Fatalf("each of gets, row groups and pages fails: %+v", v)
+	}
+}

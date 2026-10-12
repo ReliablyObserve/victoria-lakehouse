@@ -170,6 +170,7 @@
     - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_NonNumbers
     - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_AddedAndDeletedRows
     - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_MixedPR
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_OnlyBytesHaveAnAllowance
     - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_RealRowsFile
     - tests/conformance/registry/perfgate_test.go#TestPerfRaiseReporting
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_LockMustBeRelatedAndExecuting
