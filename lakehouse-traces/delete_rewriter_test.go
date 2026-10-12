@@ -11,6 +11,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	lhdelete "github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/testutil"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
@@ -93,6 +94,8 @@ func TestNewDeleteRewriter_ReplacementKeepsBloomsAndTraceIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open replacement: %v", err)
 	}
+	// Every footer key-value of the replacement is UTF-8 (#340): Polars and DataFusion open it.
+	testutil.RequireFooterKVUTF8(t, data)
 	var idx string
 	for _, kv := range f.Metadata().KeyValueMetadata {
 		if kv.Key == traceindex.MetadataKey {
@@ -102,9 +105,10 @@ func TestNewDeleteRewriter_ReplacementKeepsBloomsAndTraceIndex(t *testing.T) {
 	if idx == "" {
 		t.Fatal("replacement has no _trace_idx footer index; trace-by-ID lookups lose their fast path")
 	}
-	entries, err := traceindex.Unmarshal([]byte(idx))
-	if err != nil {
-		t.Fatalf("replacement _trace_idx does not decode: %v", err)
+	// The footer value is base64 text (#340), decoded the way every reader does.
+	entries, ok := traceindex.FromMetadata(map[string]string{traceindex.MetadataKey: idx})
+	if !ok {
+		t.Fatalf("replacement _trace_idx does not decode as base64: %.40q", idx)
 	}
 	seen := map[string]bool{}
 	for _, e := range entries {
