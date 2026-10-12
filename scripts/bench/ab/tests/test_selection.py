@@ -1,6 +1,8 @@
 """selection.py: changed files -> registry items -> shape sets, and the --check gate."""
 import copy
 
+import pytest
+
 import abreg
 import selection
 
@@ -85,17 +87,40 @@ def problems(mutate):
     return selection.check(spec, rows, FEATS)
 
 
-def test_check_catches_each_kind_of_defect():
-    assert any("unknown registry id" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"][0].update(covers=["nope"])))
-    assert any("covers nothing" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"][0].update(covers=[])))
-    assert any("smoke outside" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"][0].update(smoke=True)))
-    assert any("unknown kind" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"][0].update(kind="mystery")))
-    assert any("unknown layer" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"][0].update(layers=["moon"])))
-    assert any("unknown range" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"][0].update(ranges=["3y"])))
-    assert any("defined twice" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"].append(dict(s["sets"]["enum"]["shapes"][0]))))
-    assert any("must mark at least one" in p for p in problems(lambda s: s["sets"]["control-logs"]["shapes"][0].update(smoke=False)))
-    assert any("control set 'control-traces' is missing" in p for p in problems(lambda s: s["sets"].pop("control-traces")))
-    assert any("unknown set" in p for p in problems(lambda s: s["areas"].update({"x/": ["ghost"]})))
-    assert any("cannot be selected" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"][0].update(covers=["vl.row.x"])))
-    assert any("unknown pick" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"][0].update(pick="ghost")))
-    assert any("no signal" in p for p in problems(lambda s: s["sets"]["enum"]["shapes"][0].pop("signal")))
+def _set_entry(s, **kw):
+    s["sets"]["enum"]["shapes"][0].update(kw)
+
+
+def _duplicate_shape(s):
+    s["sets"]["enum"]["shapes"].append(dict(s["sets"]["enum"]["shapes"][0]))
+
+
+def _drop_control_traces(s):
+    s["sets"].pop("control-traces")
+
+
+def _drop_signal(s):
+    s["sets"]["enum"]["shapes"][0].pop("signal")
+
+
+DEFECTS = [
+    ("unknown registry id", lambda s: _set_entry(s, covers=["nope"])),
+    ("covers nothing", lambda s: _set_entry(s, covers=[])),
+    ("smoke outside", lambda s: _set_entry(s, smoke=True)),
+    ("unknown kind", lambda s: _set_entry(s, kind="mystery")),
+    ("unknown layer", lambda s: _set_entry(s, layers=["moon"])),
+    ("unknown range", lambda s: _set_entry(s, ranges=["3y"])),
+    ("defined twice", _duplicate_shape),
+    ("must mark at least one", lambda s: s["sets"]["control-logs"]["shapes"][0].update(smoke=False)),
+    ("control set 'control-traces' is missing", _drop_control_traces),
+    ("unknown set", lambda s: s["areas"].update({"x/": ["ghost"]})),
+    ("cannot be selected", lambda s: _set_entry(s, covers=["vl.row.x"])),
+    ("unknown pick", lambda s: _set_entry(s, pick="ghost")),
+    ("no signal", _drop_signal),
+]
+
+
+@pytest.mark.parametrize("text,mutate", DEFECTS, ids=[d[0] for d in DEFECTS])
+def test_check_catches_each_kind_of_defect(text, mutate):
+    found = problems(mutate)
+    assert any(text in p for p in found), found

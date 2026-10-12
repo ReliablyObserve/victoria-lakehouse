@@ -25,6 +25,7 @@ Exit status: the larger of the two verdicts (comment.py documents the codes).
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import re
 import subprocess
@@ -92,7 +93,7 @@ def merge_raw(parts: list[dict]) -> dict:
 
 
 def run_cells(state: dict, spec: dict, cells: list[dict], runs: int) -> dict:
-    return measure.run_matrix(state, spec, cells, runs, log=lambda m: log(m)) if cells else {"rows": [], "s3": {}, "process": {}, "elapsed_s": 0}
+    return measure.run_matrix(state, spec, cells, runs, log=log) if cells else {"rows": [], "s3": {}, "process": {}, "elapsed_s": 0}
 
 
 def reload_state(out: str) -> dict:
@@ -122,7 +123,7 @@ def lh_mean(state: dict) -> float | None:
     end = state["layers"]["cold"]["end"]
     start = (measure.parse_ts(end) - measure.dt.timedelta(hours=1)).strftime(measure.FMT)
     req = measure.build_request(PROBE_SHAPE, state, "base", start, end, "numeric")
-    return latency.lh_s3_mean_ms(measure.base_url(state, "base", "logs"), lambda: measure.send(req), measure.PEER_KEY)
+    return latency.lh_s3_mean_ms(measure.base_url(state, "base", "logs"), functools.partial(measure.send, req), measure.PEER_KEY)
 
 
 def set_latency(ms: float, state: dict, mean_at_zero: float | None = None) -> dict:
@@ -310,7 +311,7 @@ def main(argv=None) -> int:
         return finish(out, perf_text, api_text, perf_v, api_v, meta)
     finally:
         if not a.keep_stack:
-            steps = ([("stack", lambda: stack.cmd_down(None))] if started else []) + [(f"tree {t}", (lambda t=t: stack.tree_remove(t))) for t in trees]
+            steps = ([("stack", functools.partial(stack.cmd_down, None))] if started else []) + [(f"tree {t}", functools.partial(stack.tree_remove, t)) for t in trees]
             for step, fn in steps:
                 try:
                     fn()

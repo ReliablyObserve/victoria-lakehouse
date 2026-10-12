@@ -64,7 +64,7 @@ def extract_scalar(body: str) -> str:
             try:
                 tot += int(v)
             except (TypeError, ValueError):
-                pass
+                pass  # a count that is not an integer adds nothing, as in run.sh extract_result
     return str(tot if has else n)
 
 
@@ -85,7 +85,7 @@ def extract_groupby(body: str) -> str:
         try:
             total += int(cnt)
         except (TypeError, ValueError):
-            pass
+            pass  # the group's count stays out of the total; the pair itself is still hashed
         pairs.append((str(key), str(cnt)))
     pairs.sort()
     joined = [k + "\x00" + v for k, v in pairs]
@@ -142,7 +142,7 @@ def extract_spans(body: str) -> str:
         try:
             tot += int(d.get("n"))
         except (TypeError, ValueError):
-            pass
+            pass  # a line without an integer n adds no spans, as in run.sh
     return f"spans={tot}"
 
 

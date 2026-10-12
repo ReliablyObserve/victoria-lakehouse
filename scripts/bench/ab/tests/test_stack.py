@@ -7,6 +7,11 @@ import abreg
 import stack
 from scripts.proof import stack as proof
 
+def read(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
 NOW = dt.datetime(2026, 10, 12, 15, 37, tzinfo=dt.timezone.utc)
 
 
@@ -75,19 +80,19 @@ def test_partitions_and_hours():
 
 
 def test_every_lakehouse_service_of_the_proof_compose_file_reads_the_overlay_variables_with_the_old_values_as_defaults():
-    text = open(proof.COMPOSE, encoding="utf-8").read()
+    text = read(proof.COMPOSE)
     assert text.count("${LH_S3_ENDPOINT:-http://s3:9000}") == 4
     assert text.count("${LH_MANIFEST_REFRESH:-5s}") == 4 and text.count("${LH_COMPACTION_INTERVAL:-2m}") == 4
 
 
 def test_overlay_adds_the_proxy_and_makes_every_lakehouse_wait_for_it():
     yaml = abreg.need_yaml()
-    doc = yaml.safe_load(open(stack.OVERLAY, encoding="utf-8"))
+    doc = yaml.safe_load(read(stack.OVERLAY))
     svc = doc["services"]
     assert "s3-latency" in svc and svc["s3-latency"]["healthcheck"]["test"][0] == "CMD"
     for name in ("lh-logs-base", "lh-traces-base", "lh-logs-pr", "lh-traces-pr"):
         assert svc[name]["depends_on"]["s3-latency"]["condition"] == "service_healthy"
-    proof_services = yaml.safe_load(open(proof.COMPOSE, encoding="utf-8"))["services"]
+    proof_services = yaml.safe_load(read(proof.COMPOSE))["services"]
     assert set(stack.SERVICES) <= set(proof_services) | {"s3-latency"}
     assert set(svc) <= set(proof_services) | {"s3-latency"}
 

@@ -73,13 +73,13 @@ def pick_values(state: dict) -> dict[str, str]:
     try:
         out["seed.trace_id"] = json.loads(env["body"].strip().splitlines()[0])["trace_id"]
     except (ValueError, KeyError, IndexError):
-        pass
+        pass  # no trace on the reference: the pick stays unset and the rows that need it are listed as not exercised
     env = client.send("POST", port(state, "ref", "logs") + "/select/logsql/query",
                       {"query": "* | sort by (_stream_id) | fields _stream_id | limit 1", "start": win["start"], "end": win["end"]}, hdr, timeout=TIMEOUT_S)
     try:
         out["seed.stream_id"] = json.loads(env["body"].strip().splitlines()[0])["_stream_id"]
     except (ValueError, KeyError, IndexError):
-        pass
+        pass  # no stream on the reference: likewise
     return out
 
 

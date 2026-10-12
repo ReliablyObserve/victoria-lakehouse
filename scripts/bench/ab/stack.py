@@ -341,7 +341,7 @@ def cmd_restart(a):  # pragma: no cover - drives docker
                     if r.status == 200:
                         break
             except (urllib.error.URLError, OSError):
-                pass
+                pass  # still restarting: retry until the deadline below
             if time.time() > deadline:
                 raise SystemExit(f"{key} did not become healthy after the restart")
             time.sleep(2)
