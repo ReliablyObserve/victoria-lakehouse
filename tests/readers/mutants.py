@@ -42,9 +42,10 @@ def m1(root):
     p = root + "/internal/schema/row.go"
     s = read(p)
     i = s.index("type TraceRow struct")
-    old = 'parquet:"status.code"'
+    # status.code is a nullable column (an absent code is a null, #274): the tag carries ",optional".
+    old = 'parquet:"status.code,optional"'
     j = s.index(old, i)
-    write(p, s[:j] + 'parquet:"status_code"' + s[j + len(old):])
+    write(p, s[:j] + 'parquet:"status_code,optional"' + s[j + len(old):])
 
 
 def m2(root):
