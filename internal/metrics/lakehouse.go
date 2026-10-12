@@ -436,8 +436,11 @@ var (
 	// segment a previous process was draining), upload (a group's PUT failed),
 	// marker (the segment's commit marker could not be written), commit
 	// (recording the segment as committed failed) and mark (a durable stored
-	// mark could not be written; the group is stored and committed anyway). All
-	// but mark are retried, with the same bytes, after a back-off.
+	// mark could not be written; the group is stored and committed anyway) and
+	// invariant (the drain's plan does not cover the rows the segment holds, or a
+	// group's rows differ from its plan: the segment is held, see
+	// BufferFlusher.invariantViolation). All but mark are retried, with the same
+	// bytes, after a back-off.
 	BufferFlushErrors = NewCounterVec("lakehouse_buffer_flush_errors_total", "stage")
 	// BufferSegments is the number of insert-buffer segments by state: active
 	// (taking writes, always 1), pending (sealed and not yet fully written to

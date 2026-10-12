@@ -17,13 +17,16 @@ import (
 // (app/vtinsert/opentelemetry: tsp.AddRow(int64(span.EndTimeUnixNano), ...)) and
 // writes, for every trace, a trace_id_idx row whose _time is the trace's START
 // time (app/vtinsert/insertutil/index_helper.go: lmp.AddRow(startTimestamp, ...)
-// with the first field, trace_id_idx_stream, as the stream). OTLP times are
-// unsigned: a value above 2^63 ns wraps to a negative int64.
+// with the first field, trace_id_idx_stream, as the stream). Over OTLP both times
+// are positive int64s (VictoriaTraces drops a span with a time above 2^63-1 ns
+// itself); through /insert/native a row can carry any timestamp and any
+// start_time_unix_nano field, so the two can differ in sign. The tests feed the
+// adapter such rows directly.
 //
 // The index rows are not spans. They have their own counters, so
 // lakehouse_insert_rows_dropped_total stays a count of spans.
 
-const wrappedStart = int64(-5_000_000_000) // an OTLP start time of 2^64 - 5e9 ns, as int64
+const wrappedStart = int64(-5_000_000_000) // a start time before the epoch (1969-12-31T23:59:55Z)
 
 // indexBatch builds the rows VictoriaTraces sends for one trace: a span (its
 // _time is the end time) and the trace's index row (its _time is the start
@@ -46,11 +49,11 @@ func indexBatch(svc, id string, startNs, endNs int64) *logstorage.LogRows {
 func idxDropped(kind string) uint64 { return metrics.VTInternalRowsDropped.Get(kind) }
 
 // A span whose end time is from the epoch on is admitted, and its index row,
-// stamped with a start time before the epoch (the wrapped OTLP value), is
+// stamped with a start time before the epoch, is
 // refused: it is counted apart (lakehouse_vt_internal_rows_dropped_total
 // {kind="trace_id_idx_before_epoch"}), not as a span, and lakehouse_insert_rows_total
 // counts the span only. The span itself is intact.
-func TestVTInsertAdapter_SpanWithAWrappedStartIsAdmittedButItsIndexRowIsRefused(t *testing.T) {
+func TestVTInsertAdapter_SpanWithAnIndexStartBeforeTheEpochIsAdmittedButItsIndexRowIsRefused(t *testing.T) {
 	SetCardinalityGate(nil)
 	buf := &recordingBuffer{}
 	a := &vtInsertAdapter{buf: buf, dir: "/d"}

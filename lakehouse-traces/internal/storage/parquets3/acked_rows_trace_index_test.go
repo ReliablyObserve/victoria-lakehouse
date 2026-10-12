@@ -46,10 +46,10 @@ func (e *segEnv) traceRows(id string) int {
 	return n
 }
 
-func TestPre1970Rows_SpanWithAWrappedStartIsFoundByTraceID(t *testing.T) {
+func TestPre1970Rows_SpanWithAnIndexStartBeforeTheEpochIsFoundByTraceID(t *testing.T) {
 	e := newSegEnv(t)
 	const msg = "wrapped-span"
-	wrappedStart := int64(-5_000_000_000) // OTLP start of 2^64 - 5e9 ns, as int64
+	wrappedStart := int64(-5_000_000_000) // a start time before the epoch
 	idxBefore := metrics.VTInternalRowsDropped.Get("trace_id_idx_before_epoch")
 	e.sendViaAdapter(segTenantA, []adapterRow{
 		{ts: hourAgo.UnixNano(), fields: ackFields("api", msg)},

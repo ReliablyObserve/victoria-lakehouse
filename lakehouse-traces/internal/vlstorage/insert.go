@@ -136,11 +136,14 @@ func spanRows(lr *logstorage.LogRows) int {
 // does not take a slot of its tenant's cardinality limit.
 //
 // VictoriaTraces stamps a span with its END time and the trace's trace_id_idx
-// row with the trace's START time; OTLP times are unsigned, so one above 2^63 ns
-// wraps to a negative _time. A span can therefore be admitted while its index
-// row is refused (and the reverse). Refused spans are counted in
-// lakehouse_insert_rows_dropped_total; refused index rows, which are not spans,
-// in lakehouse_vt_internal_rows_dropped_total.
+// row with the trace's START time. OTLP times are unsigned and VictoriaTraces
+// drops, before this adapter, a span whose start or end is above 2^63-1 ns (it
+// cannot index it), so over OTLP no row arrives with a negative _time; through
+// /insert/native the sender sets the timestamp and one can. A span can then be
+// admitted while its index row (stamped with a different time) is refused, or the
+// reverse. Refused spans are counted in lakehouse_insert_rows_dropped_total;
+// refused index rows, which are not spans, in
+// lakehouse_vt_internal_rows_dropped_total.
 func admittedRows(lr *logstorage.LogRows) (out *logstorage.LogRows, owned bool) {
 	type verdict struct {
 		keep    bool
