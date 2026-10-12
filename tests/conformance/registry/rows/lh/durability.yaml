@@ -153,7 +153,9 @@
       - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
       - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_SameStreamTwoTenantsOneBatch
       - internal/vlstorage/insert_admission_test.go#TestFlushRowsDroppedSeries_ExportedFromStart
+      - internal/vlstorage/insert_admission_test.go#TestFlushRowsDroppedSeries_Helper
       - internal/metrics/must_stay_zero_test.go#TestMustStayZeroSeries_ExportedFromStart
+      - internal/metrics/must_stay_zero_test.go#TestMustStayZeroSeries_Helper
       - internal/metrics/must_stay_zero_test.go#TestBufferFlushErrorStages_MatchCallSites
       - internal/storage/epoch_test.go#TestReasonConstants_AreListedInMetrics
       - internal/storage/tenant_stream_map_test.go#TestTenantStreamMap_ZeroValue
@@ -188,6 +190,7 @@
       - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
       - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInsertAdapter_SameStreamTwoTenantsOneBatch
       - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInternalDroppedSeries_ExportedFromStart
+      - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInternalDroppedSeries_Helper
       - lakehouse-traces/internal/vlstorage/insert_index_rows_test.go#TestVTInsertAdapter_IndexRowsRefusedForTheLimitAreCountedApart
       - scripts/ci/tests/cardinality_restart_test.sh#cardinality_limit
   notes: "Fixes #389 for the traces binary. Same restart matrix as logs. The trace_id_idx streams count against the limit too and are counted apart (lakehouse_vt_internal_rows_dropped_total{kind=\"trace_id_idx_cardinality_limit\"}). Remaining limit semantics: https://github.com/ReliablyObserve/victoria-lakehouse/issues/485. The real binary is checked with a restart by scripts/ci/tests/cardinality_restart_test.sh (the code before the fix loses the acknowledged rows). The admission decision is made per tenant AND stream, so one batch that mixes tenants (/internal/insert and /insert/multitenant/native; /insert/multitenant/native in traces) refuses the tenant at its limit and admits the one with room, in either row order, and each refusal is attributed to the tenant whose limit refused it. The series that must stay 0 (lakehouse_insert_rows_dropped_total, lakehouse_buffer_flush_errors_total and the signal-specific drop counters) are exported at 0 from process start."
