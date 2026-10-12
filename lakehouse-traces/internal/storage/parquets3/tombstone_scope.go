@@ -211,7 +211,7 @@ func (s *Storage) emitBridgeTraceRows(scope tenantScope, rows []schema.TraceRow,
 		return
 	}
 	if !sink.perTenant {
-		if db := s.traceRowsToDataBlock(scope, "bridge_traces", rows); db != nil && db.RowsCount() > 0 {
+		if db := s.traceRowsToDataBlock(scope, "bridge_traces", rows, fieldNames...); db != nil && db.RowsCount() > 0 {
 			writeBridgeBlock(sink.uniform, db, fieldNames)
 		}
 		return
@@ -220,7 +220,7 @@ func (s *Storage) emitBridgeTraceRows(scope tenantScope, rows []schema.TraceRow,
 		return logstorage.TenantID{AccountID: r.AccountID, ProjectID: r.ProjectID}
 	})
 	for _, tid := range order {
-		if db := s.traceRowsToDataBlock(scope, "bridge_traces", groups[tid]); db != nil && db.RowsCount() > 0 {
+		if db := s.traceRowsToDataBlock(scope, "bridge_traces", groups[tid], fieldNames...); db != nil && db.RowsCount() > 0 {
 			writeBridgeBlock(sink.forTenant(tid), db, fieldNames)
 		}
 	}
