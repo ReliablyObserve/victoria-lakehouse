@@ -103,6 +103,16 @@ type BufferFlusher struct {
 	nextTry    time.Time                    // back-off after a failed drain
 	backoff    time.Duration
 
+	// What the current drain attempt's checks found, for the stalled gauge (see
+	// drain). Only the flusher's goroutine touches them.
+	checkRan    bool // a plan or group check compared the plan with the segment
+	checkFailed bool // ... and one of them did not match
+
+	// secondCounts, when set, replaces the per-second query the plan is built
+	// from; a test sets it to build a plan that passes the plan check and then
+	// disagrees with the segment in a group. nil in production.
+	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error)
+
 	// The committed segments restored at load are held (membuffer HoldCommitted):
 	// none of them is retired until this process has applied a complete S3
 	// manifest refresh (ManifestRefreshed), because the manifest it started from
@@ -567,6 +577,7 @@ func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, 
 	// second clause is defensive: the conversion is one row to one row, so
 	// rows+filtered always equals seen today (an equivalent mutant); it stays to
 	// catch a conversion that ever drops a row.
+	f.checkRan = true
 	if int64(seen) != sl.rows || len(rows)+filtered != seen {
 		return nil, 0, f.invariantViolation(g, fmt.Sprintf("group %s slice %d of tenant %d:%d: the plan has %d rows, the segment returned %d, %d were converted and %d filtered",
 			sl.partition, sl.slice, tenant.AccountID, tenant.ProjectID, sl.rows, seen, len(rows), filtered))
@@ -687,7 +698,11 @@ type tenantPlan struct {
 // (errDrainInvariant). A tenant whose groups cannot be planned now is reported in
 // planErr: the other tenants are still written and the drain is retried.
 func (f *BufferFlusher) planSegment(ctx context.Context, g *membuffer.Segment) (plans []tenantPlan, planErr, err error) {
-	return f.planSegmentWith(ctx, g, tenantSecondCounts, tenantRowCount)
+	sc := f.secondCounts
+	if sc == nil {
+		sc = tenantSecondCounts
+	}
+	return f.planSegmentWith(ctx, g, sc, tenantRowCount)
 }
 
 // planSegmentWith is planSegment with its two per-tenant queries as parameters.
@@ -754,6 +769,7 @@ func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, te
 	if err != nil {
 		return tenantPlan{}, fmt.Errorf("count tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
 	}
+	f.checkRan = true
 	if n != tp.rows {
 		return tenantPlan{}, f.invariantViolation(g, fmt.Sprintf("tenant %d:%d: the plan covers %d rows, the segment holds %d", tenant.AccountID, tenant.ProjectID, tp.rows, n))
 	}
@@ -776,7 +792,7 @@ var drainInvariantLogger = logger.WithThrottler("drain_invariant", time.Minute)
 // context is never a mismatch (see collectSlice and planTenant).
 func (f *BufferFlusher) invariantViolation(g *membuffer.Segment, what string) error {
 	metrics.BufferFlushErrors.Inc("invariant")
-	metrics.BufferStalledSegments.Set(1)
+	f.checkFailed = true // drain publishes the gauge when the attempt ends
 	drainInvariantLogger.Errorf("buffer flusher: segment %d (%s) is stalled and will not be committed: %s; "+
 		"the segment stays in insert.buffer_dir and is planned again after the back-off, so a mismatch that does not repeat clears itself; "+
 		"one that repeats blocks the segments after it (lakehouse_buffer_stalled_segments, runbook: docs/durability.md#a-stalled-segment-runbook)",
@@ -819,7 +835,28 @@ func tenantRowCount(ctx context.Context, g *membuffer.Segment, tenant logstorage
 }
 
 // drain writes every group of g that is not settled yet and then commits g.
+//
+// It also publishes lakehouse_buffer_stalled_segments, once, when the attempt
+// ends, never in the middle of it: a plan or group check that failed in this
+// attempt sets 1; an attempt that completed its checks without a mismatch sets
+// 0, even if an upload then failed (the cause of the stall is gone, an outage
+// is another matter and has its own alerts); an attempt cut short by Stop, or
+// that failed before any check ran, leaves the gauge as it was. Writing 0 in the
+// middle of an attempt would flip a persistent group-level mismatch 0 -> 1 on
+// every attempt, and a scrape that saw the 0 would restart the alert's 15m.
 func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
+	f.checkRan, f.checkFailed = false, false
+	err := f.drainAttempt(ctx, g)
+	switch {
+	case f.checkFailed:
+		metrics.BufferStalledSegments.Set(1)
+	case err == nil, ctx.Err() == nil && f.checkRan:
+		metrics.BufferStalledSegments.Set(0)
+	}
+	return err
+}
+
+func (f *BufferFlusher) drainAttempt(ctx context.Context, g *membuffer.Segment) error {
 	started := time.Now()
 	switch {
 	case f.state.DrainingSeq != g.Seq():
@@ -841,7 +878,9 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 
 	// Plan every tenant's groups before anything is uploaded, and check that the
 	// plan covers every row the segment holds (see planSegment): a segment that
-	// does not is stalled, with nothing of it written to the bucket.
+	// does not is stalled, with nothing of it written to the bucket. The group
+	// check (collectSlice) runs later, inside writeGroup, after earlier groups
+	// of the same attempt were uploaded.
 	plans, planErr, err := f.planSegment(ctx, g)
 	if err != nil {
 		return err
@@ -885,7 +924,6 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 	_ = os.Remove(f.storedPath())
 	f.marksFor, f.marks, f.head = "", nil, false
 	f.segs.Commit(g, commitAt)
-	metrics.BufferStalledSegments.Set(0) // a mismatch that cleared on a retry ends here
 	metrics.BufferSegmentsCommitted.Inc()
 	metrics.InsertFlushTotal.Inc()
 	metrics.InsertFlushDuration.Observe(time.Since(started).Seconds())
