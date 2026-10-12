@@ -193,6 +193,7 @@
     - tests/conformance/cmd/testlinks/blobs_test.go#TestBlobReaderMatchesGitShow
     - tests/conformance/cmd/testlinks/blobs_test.go#TestBlobReaderFallsBackWhenTheBatchProcessDies
     - tests/conformance/cmd/testlinks/main_test.go#TestToolErrIsLogSafe
+    - tests/conformance/cmd/testlinks/main_test.go#TestRuleVerdictAndPerfSection
     - scripts/ci/tests/test_pr_classify_toolchain.py
     - scripts/ci/tests/test_pr_classify_critical.py
     - scripts/ci/tests/gate_local_test.sh

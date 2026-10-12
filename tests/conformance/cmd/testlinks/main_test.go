@@ -56,3 +56,45 @@ func TestWriteReportKeepsAPathWithColonWhole(t *testing.T) {
 		t.Errorf("details.md lacks %q:\n%s", want, raw)
 	}
 }
+
+func TestRuleVerdictAndPerfSection(t *testing.T) {
+	raise := func(row string, old, now int64) registry.PerfRaise {
+		return registry.PerfRaise{Row: row, File: "f.yaml", Field: "s3_bytes", Old: old, New: now}
+	}
+	cases := []struct {
+		name string
+		r    rule
+		want string
+	}{
+		{"bare", rule{}, "PASS"},
+		{"one lock file", rule{review: 1}, "PASS - 1 lock-affecting file needs review (listed below)"},
+		{"two lock files", rule{review: 2}, "PASS - 2 lock-affecting files need review (listed below)"},
+		{"one perf counter", rule{perf: []registry.PerfRaise{raise("a", 1000, 1001)}}, "PASS - 1 perf counter raised within 1.0 % (listed below)"},
+		{"two perf counters", rule{perf: []registry.PerfRaise{raise("a", 1000, 1001), raise("b", 1000, 1002)}}, "PASS - 2 perf counters raised within 1.0 % (listed below)"},
+		{"lock file and perf", rule{review: 1, perf: []registry.PerfRaise{raise("a", 1000, 1001), raise("b", 1000, 1002)}}, "PASS - 1 lock-affecting file needs review and 2 perf counters raised within 1.0 % (listed below)"},
+		{"locks files and perf", rule{review: 3, perf: []registry.PerfRaise{raise("a", 1000, 1001)}}, "PASS - 3 lock-affecting files need review and 1 perf counter raised within 1.0 % (listed below)"},
+		{"a failure wins over a listed raise", rule{fails: []string{"x"}, perf: []registry.PerfRaise{raise("a", 1000, 1001)}}, "FAIL"},
+		{"skipped", rule{skipped: "no"}, "n/a"},
+	}
+	for _, c := range cases {
+		if got := c.r.verdict(); got != c.want {
+			t.Errorf("%s: verdict %q, want %q", c.name, got, c.want)
+		}
+	}
+	if perfSection([]*rule{{}}) != "" {
+		t.Error("no raise, no section")
+	}
+	sec := perfSection([]*rule{{perf: []registry.PerfRaise{raise("a", 1000, 1001), raise("b|c", 1000, 1009), raise("a", 2000, 2001)}}})
+	for _, want := range []string{"3 counters of 2 rows", "Largest relative increase: +0.90 % (`b\\|c` s3_bytes, 1000 -> 1009)", "- `a` s3_bytes 1000 -> 1001 (+0.10 %)"} {
+		if !strings.Contains(sec, want) {
+			t.Errorf("section lacks %q:\n%s", want, sec)
+		}
+	}
+	var many []registry.PerfRaise
+	for i := 0; i < maxReportLines+5; i++ {
+		many = append(many, raise("r", 1000, 1001))
+	}
+	if !strings.Contains(perfSection([]*rule{{perf: many}}), "… and 5 more") {
+		t.Error("the section is capped and says how many are left")
+	}
+}
