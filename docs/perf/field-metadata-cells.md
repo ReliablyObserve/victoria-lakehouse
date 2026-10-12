@@ -40,7 +40,8 @@ level / `warmup` span only in 10:00–10:10); hour 11:00 is busy (150 distinct s
 **Cells** (per signal): endpoint (logs: `field_values level`, `field_values service.name`,
 `streams`, `field_names`; traces: `field_values name`, `field_values resource_attr:service.name`,
 `streams`, `field_names`) × pmeta {on, off} × layout × window × filter {none,
-`service.name:="svc-a"`} × S3 latency {0, 100 ms} = 384 cells per signal.
+`service.name:="svc-a"` (traces: `"resource_attr:service.name":="svc-a"`, the field a span has on VictoriaTraces)} ×
+S3 latency {0, 100 ms} = 384 cells per signal.
 
 | layout | what it is |
 |---|---|
@@ -431,6 +432,18 @@ steps 4–6 go past ClickHouse by not reading data at all for most objects, whic
 VictoriaLogs answers (block headers carry the stream id).
 
 ## `field_names` from the rows (#487)
+
+The truth of the traces `field_names` cells is computed from the generated spans (`fmtSpanNamesTruth`,
+`lakehouse-traces/internal/storage/parquets3/field_names_span_oracle_test.go`): the names VictoriaTraces lists for them,
+each credited with the matching spans of the stream-day blocks that list it, and not read back through the
+storage code under test. The names are those a hot VictoriaTraces v0.12.0 lists for an OTLP span of the generator's
+shape (**measured** on a hot instance: `_time`, `_stream`, `_stream_id`, `trace_id`, `span_id`, `name`, `duration`,
+`kind`, `status_code`, `start_time_unix_nano`, `resource_attr:service.name`, plus `_msg`, `end_time_unix_nano`,
+`flags` and `dropped_*_count`, which the generator's rows do not carry), and `service.name` is no field there: a filter
+`service.name:="svc-a"` matches no span on hot, the field is `"resource_attr:service.name"`. A row-path oracle had
+hidden that the unflushed spans of an insert peer listed a `service.name` alias
+([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504)); the enumeration now asks for
+VictoriaTraces' names only, and all 96 traces `field_names` cells are exact.
 
 `field_names` no longer answers from the footers or the catalog: it reads the rows of the window
 (`docs/operations.md`, "`field_names` reads the rows of its window"), so every one of its 192 cells

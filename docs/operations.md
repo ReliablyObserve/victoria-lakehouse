@@ -907,7 +907,13 @@ Normal mode (default): runs the query through the normal read path — if result
 row of the window that the query's filter and the tenant scope select, in the insert buffer, the peers'
 buffers and the Parquet objects alike, and lists each field a row carries (a MAP column's keys, VictoriaTraces'
 own names such as `span_attr:*`, never a Parquet column name), credited with the matching rows of the stream
-blocks that list it. The Parquet footers cannot give that answer: they know the columns of an object, not the
+blocks that list it. On the traces binary the spans an insert peer serves carry the promoted attributes under their
+Parquet names too (`service.name` next to `resource_attr:service.name`, `http.method` next to `span_attr:http.method`) so a
+filter spelling either matches. The aliases are no field of a span on hot (a filter on `service.name` matches no span
+there), so the enumeration asks the buffer bridge for VictoriaTraces' names only and never lists them for a peer's spans
+([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504)); a row query, `field_values` and `streams` still
+see the aliases. The Parquet footers cannot give that answer: they know
+the columns of an object, not the
 fields of its rows or the streams. `stream_field_names` is the tags of the matching streams, each credited with
 the rows of the streams that carry it, the walk `stream_field_values` does.
 
@@ -1002,10 +1008,10 @@ by the stream-day:
   only by such blocks is lost), and a block of a stream without a slot is credited on its own, upstream's per-block rule,
   so its hits for a sparse field can be lower than hot's. Two identical calls can differ past the limit.
   `lakehouse_field_names_stream_cap_total` counts the blocks credited that way and one warning per 30 s names the limit.
-- **Parquet-name aliases on the traces binary.** The spans an insert peer serves carry the promoted attributes under their
-  parquet names (`service.name`, `http.method`, ...) next to VictoriaTraces' names, for filters, and `field_names` lists them
-  although they are no field of a span on hot. With the buffer and the objects unioned their hits cover the whole stream-day
-  ([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504)). Only deployments with insert peers are affected.
+- **A `field_names` query that spells a Parquet column name** (`service.name:="x"`, `http.method:=GET`, traces) matches no span
+  on hot and answers an empty list; the objects honour that spelling as a filter convenience and list their names (and the
+  alias the query spells), while the spans an insert peer serves are not credited by it. A row query matches both layers
+  ([#505](https://github.com/ReliablyObserve/victoria-lakehouse/issues/505)).
 - **Errors inside a counting read.** `processOneFile` logs the per-file errors other than a missing object and drops
   them, and the live-bytes budget can cancel the read without recording an error on the last file, so a counting read can
   answer 200 with names missing (pre-existing in every row read; [#503](https://github.com/ReliablyObserve/victoria-lakehouse/issues/503)).
