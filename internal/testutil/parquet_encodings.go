@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/parquet-go/parquet-go"
-	"github.com/parquet-go/parquet-go/format"
 )
 
 // ColumnEncodings returns, per top-level leaf column, the encodings recorded in
@@ -29,7 +28,7 @@ func ColumnEncodings(tb testing.TB, data []byte) map[string][]string {
 		}
 		encs := make([]string, 0, len(c.MetaData.Encoding))
 		for _, e := range c.MetaData.Encoding {
-			encs = append(encs, format.Encoding(e).String())
+			encs = append(encs, e.String())
 		}
 		slices.Sort(encs)
 		out[c.MetaData.PathInSchema[0]] = encs
