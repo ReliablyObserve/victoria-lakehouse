@@ -784,8 +784,9 @@ var drainInvariantLogger = logger.WithThrottler("drain_invariant", time.Minute)
 
 // invariantViolation counts and logs a segment the drain refuses to commit and
 // returns the error that stalls it. The segment stays sealed on disk, pending,
-// and is planned again from scratch after the back-off; nothing of it is
-// committed, marked or removed. A mismatch that does not repeat clears on that
+// and is planned again from scratch after the back-off; it is not committed
+// or removed and gets no commit marker (a group-level mismatch can fire after
+// earlier groups of the segment were uploaded and marked as stored). A mismatch that does not repeat clears on that
 // retry; one that does repeat (a row the plan cannot reach, or a bug) blocks the
 // segments after it, since they are drained in order, until the disk floor
 // refuses inserts (429): the buffer never loses the rows silently. A cancelled
@@ -840,17 +841,21 @@ func tenantRowCount(ctx context.Context, g *membuffer.Segment, tenant logstorage
 // ends, never in the middle of it: a plan or group check that failed in this
 // attempt sets 1; an attempt that completed its checks without a mismatch sets
 // 0, even if an upload then failed (the cause of the stall is gone, an outage
-// is another matter and has its own alerts); an attempt cut short by Stop, or
-// that failed before any check ran, leaves the gauge as it was. Writing 0 in the
+// is another matter and has its own alerts); an attempt cut short by Stop (even
+// one whose checks had found a mismatch), or that failed before any check ran,
+// leaves the gauge as it was. Writing 0 in the
 // middle of an attempt would flip a persistent group-level mismatch 0 -> 1 on
 // every attempt, and a scrape that saw the 0 would restart the alert's 15m.
 func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 	f.checkRan, f.checkFailed = false, false
 	err := f.drainAttempt(ctx, g)
 	switch {
+	case err != nil && ctx.Err() != nil:
+		// Stop cut the attempt short: leave the gauge as it was, whatever the
+		// part of the attempt that ran found.
 	case f.checkFailed:
 		metrics.BufferStalledSegments.Set(1)
-	case err == nil, ctx.Err() == nil && f.checkRan:
+	case err == nil, f.checkRan:
 		metrics.BufferStalledSegments.Set(0)
 	}
 	return err

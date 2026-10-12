@@ -195,3 +195,32 @@ func TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan(t *testing.T) {
 		t.Fatalf("fixture: want the one group stored, got %v", e.storedDataKeys())
 	}
 }
+
+// Stop lands after a group check has failed (tenant A's group is stalled, and the
+// cancel comes while tenant B's group uploads): the attempt was cut short, so the
+// gauge is left as it was, even though a check had found a mismatch.
+func TestDrain_StopAfterAFailedCheckLeavesTheStalledGaugeAsItWas(t *testing.T) {
+	for _, was := range []int64{0, 1} {
+		e := newSegEnv(t)
+		e.ingest(segTenantA, hourAgo, 2)
+		e.ingest(segTenantA, hourAgo.Add(5*time.Second), 1)
+		e.ingest(segTenantB, hourAgo, 2)
+		g := e.seal()
+		f := e.flusher(2)
+		f.secondCounts = skewedSeconds(segTenantA)
+		ctx, cancel := context.WithCancel(context.Background())
+		e.hook.Store(func(string) { cancel() }) // tenant B's upload, after A's check failed
+		metrics.BufferStalledSegments.Set(was)
+		inv := invariantNow()
+		if err := f.drain(ctx, g); err == nil {
+			t.Fatal("a drain stopped mid-way returned nil")
+		}
+		if invariantNow() == inv {
+			t.Fatal("fixture: tenant A's group check did not fail")
+		}
+		if v := metrics.BufferStalledSegments.Get(); v != was {
+			t.Errorf("gauge was %d, a stop after a failed check left it at %d, want unchanged", was, v)
+		}
+		cancel()
+	}
+}

@@ -489,8 +489,8 @@ var (
 	// "invariant" stage of lakehouse_buffer_flush_errors_total), and 0 otherwise.
 	// The drain sets it once, when an attempt ends: 1 if a check failed in that
 	// attempt, 0 if every check that ran passed (even when an upload then failed:
-	// an outage is not a stall), unchanged when Stop cut the attempt short or no
-	// check ran; it is 0 when the segment commits. It is never written in the
+	// an outage is not a stall), unchanged when Stop cut the attempt short (even after
+	// a failed check) or no check ran; it is 0 when the segment commits. It is never written in the
 	// middle of an attempt. It is not BufferHeldSegments, which counts committed
 	// segments restored at start.
 	BufferStalledSegments = NewGauge("lakehouse_buffer_stalled_segments")

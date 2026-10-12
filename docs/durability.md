@@ -336,7 +336,8 @@ attempt**, so a mismatch that does not repeat clears on the next attempt.
 in the middle of one: it is 1 when a check failed in that attempt, 0 when every
 check that ran passed (also when an upload then failed: an object-store outage
 is not a stall and has its own alerts), unchanged when Stop cut the attempt
-short or when the attempt failed before any check ran, and 0 when the segment
+short (even if a check had already failed in it) or when the attempt failed
+before any check ran, and 0 when the segment
 commits. (Writing the 0 in the middle of an attempt would flip a repeating
 group-level mismatch from 0 to 1 on every attempt, and a scrape that saw the 0
 would restart the alert's 15 minutes.) Only a cause that
@@ -438,6 +439,7 @@ for the plan check: `TestDrain_StallsASegmentWithRowsThePlanDoesNotCover`,
 `TestDrain_StalledGaugeAfterTransientMismatchThenOutage`,
 `TestDrain_PersistentGroupMismatchKeepsTheGaugeAtOne`,
 `TestDrain_StopLeavesTheStalledGaugeAsItWas`,
+`TestDrain_StopAfterAFailedCheckLeavesTheStalledGaugeAsItWas`,
 `TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan`,
 `TestDrain_AttemptWithoutACheckLeavesTheStalledGaugeAsItWas`,
 `TestDrain_CancelDuringPlanCountsCollectOnce_TwoTenants`,

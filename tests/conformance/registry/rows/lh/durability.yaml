@@ -154,6 +154,7 @@
       - internal/vlstorage/flush_keeper_test.go#TestFlushRowKeeper_IgnoresTheCardinalityGate
       - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
       - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_SameStreamTwoTenantsOneBatch
+      - internal/vlstorage/insert_admission_cross_tenant_test.go#TestInsertAdapter_CrossTenantAdmissionBothOrders
       - internal/vlstorage/insert_admission_test.go#TestFlushRowsDroppedSeries_ExportedFromStart
       - internal/storage/epoch_test.go#TestReasonConstants_AreListedInMetrics
       - internal/storage/tenant_stream_map_test.go#TestTenantStreamMap_ZeroValue
@@ -188,6 +189,7 @@
       - lakehouse-traces/internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_PropertyRandomRestartsAndLimits
       - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
       - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInsertAdapter_SameStreamTwoTenantsOneBatch
+      - lakehouse-traces/internal/vlstorage/insert_admission_cross_tenant_test.go#TestVTInsertAdapter_CrossTenantAdmissionBothOrders
       - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInternalDroppedSeries_ExportedFromStart
       - lakehouse-traces/internal/vlstorage/insert_index_rows_test.go#TestVTInsertAdapter_IndexRowsRefusedForTheLimitAreCountedApart
       - scripts/ci/tests/cardinality_restart_test.sh#cardinality_limit
@@ -226,6 +228,7 @@
       - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeAfterTransientMismatchThenOutage
       - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_PersistentGroupMismatchKeepsTheGaugeAtOne
       - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StopLeavesTheStalledGaugeAsItWas
+      - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StopAfterAFailedCheckLeavesTheStalledGaugeAsItWas
       - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan
       - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_AttemptWithoutACheckLeavesTheStalledGaugeAsItWas
       - internal/storage/parquets3/drain_collect_once_test.go#TestDrain_CancelDuringPlanCountsCollectOnce_TwoTenants
@@ -269,6 +272,7 @@
       - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeAfterTransientMismatchThenOutage
       - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_PersistentGroupMismatchKeepsTheGaugeAtOne
       - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StopLeavesTheStalledGaugeAsItWas
+      - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StopAfterAFailedCheckLeavesTheStalledGaugeAsItWas
       - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan
       - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_AttemptWithoutACheckLeavesTheStalledGaugeAsItWas
       - lakehouse-traces/internal/storage/parquets3/drain_collect_once_test.go#TestDrain_CancelDuringPlanCountsCollectOnce_TwoTenants
