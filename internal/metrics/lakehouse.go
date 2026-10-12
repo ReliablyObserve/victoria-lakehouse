@@ -307,7 +307,24 @@ func init() {
 	// Same for the bridge's error reasons: an alert on a reason that has
 	// never fired must see a series at zero, not an absent one.
 	BufferBridgeErrors.Init(BufferBridgeErrorReasons...)
+	// The series that must stay 0 are exported at 0 from process start: a
+	// counter that appears with its first increment makes increase() and rate()
+	// miss that first event, which for these is the one that matters.
+	BufferFlushErrors.Init(BufferFlushErrorStages...)
+	InsertRowsDropped.Init(InsertRowsDroppedReasons...)
 }
+
+// BufferFlushErrorStages is every stage BufferFlushErrors is incremented with, on
+// both binaries. TestBufferFlushErrorStages_MatchCallSites keeps the list and the
+// call sites in step.
+var BufferFlushErrorStages = []string{"intent", "collect", "head", "upload", "marker", "commit", "mark", "invariant"}
+
+// InsertRowsDroppedReasons is every reason InsertRowsDropped is incremented with,
+// on both binaries (the constants are storage.ReasonTooSmallTimestamp and
+// storage.ReasonCardinalityLimit; TestReasonConstants_AreListedInMetrics keeps
+// them in step). The series of the signal-specific counters are exported at 0 by
+// each binary's own vlstorage package.
+var InsertRowsDroppedReasons = []string{"too_small_timestamp", "cardinality_limit"}
 
 // BufferBridgeErrorReasons is every reason BufferBridgeErrors is incremented
 // with.
@@ -436,8 +453,11 @@ var (
 	// segment a previous process was draining), upload (a group's PUT failed),
 	// marker (the segment's commit marker could not be written), commit
 	// (recording the segment as committed failed) and mark (a durable stored
-	// mark could not be written; the group is stored and committed anyway). All
-	// but mark are retried, with the same bytes, after a back-off.
+	// mark could not be written; the group is stored and committed anyway) and
+	// invariant (the drain's plan does not cover the rows the segment holds, or a
+	// group's rows differ from its plan: the segment is stalled, see
+	// BufferFlusher.invariantViolation). All but mark are retried, with the same
+	// bytes, after a back-off.
 	BufferFlushErrors = NewCounterVec("lakehouse_buffer_flush_errors_total", "stage")
 	// BufferSegments is the number of insert-buffer segments by state: active
 	// (taking writes, always 1), pending (sealed and not yet fully written to
@@ -463,6 +483,17 @@ var (
 	// stay served (possibly duplicated) and the segments keep their disk.
 	BufferHeldSegments  = NewGauge("lakehouse_buffer_held_segments")
 	BufferOldestHeldAge = NewGauge("lakehouse_buffer_oldest_held_age_seconds")
+	// BufferStalledSegments is 1 while the drain refuses to write the oldest
+	// pending segment because its plan check failed (the plan does not cover the
+	// rows the segment holds, or a group's rows differ from its plan: the
+	// "invariant" stage of lakehouse_buffer_flush_errors_total), and 0 otherwise.
+	// The drain sets it once, when an attempt ends: 1 if a check failed in that
+	// attempt, 0 if every check that ran passed (even when an upload then failed:
+	// an outage is not a stall), unchanged when Stop cut the attempt short (even after
+	// a failed check) or no check ran; it is 0 when the segment commits. It is never written in the
+	// middle of an attempt. It is not BufferHeldSegments, which counts committed
+	// segments restored at start.
+	BufferStalledSegments = NewGauge("lakehouse_buffer_stalled_segments")
 	// InsertFlushCommittedSeq is the sequence number of the newest segment fully
 	// written to object storage (every older one is too).
 	InsertFlushCommittedSeq = NewGauge("lakehouse_insert_flush_committed_segment")
@@ -479,6 +510,27 @@ var (
 	// is below its free-space floor. An unreachable object store refuses
 	// nothing: the rows wait in the buffer.
 	InsertRejected = NewCounterVec("lakehouse_insert_rejected_total", "reason")
+	// InsertRowsDropped counts rows the insert path dropped when they were added,
+	// by reason; the request that carried the row is still answered as a success,
+	// as upstream answers it when its storage drops a row. The row is not stored
+	// and is not in the buffer, so nothing the buffer holds is lost later.
+	// reason="too_small_timestamp" is a row whose _time is before the Unix epoch
+	// (upstream's name and wording: vl_rows_dropped_total{reason="too_small_timestamp"}),
+	// which the Parquet layout, the manifest and the drain cannot hold.
+	// reason="cardinality_limit" is a row of a stream the tenant's
+	// cardinality.max_streams limit does not admit; the limiter's set of streams
+	// is per process, so a restart can refuse a stream that was admitted before
+	// (#485). The traces binary counts spans only: its trace_id_idx rows are
+	// counted in lakehouse_vt_internal_rows_dropped_total.
+	InsertRowsDropped = NewCounterVec("lakehouse_insert_rows_dropped_total", "reason")
+	// BufferFlushRowsDropped counts rows the flusher left out of the Parquet
+	// objects of a drain although the buffer held them (acknowledged rows), by
+	// reason: reason="trace_shaped_stream" is a row of a stream that identifies
+	// trace spans, not logs (logs binary; the insert path refuses such rows too,
+	// so a buffer only holds them if the rule changed between writing and
+	// draining). A row counted here is also counted again if its group is
+	// collected again after a restart.
+	BufferFlushRowsDropped = NewCounterVec("lakehouse_buffer_flush_rows_dropped_total", "reason")
 	// InsertFlushTotal counts buffer segments written to object storage
 	// completely; InsertFlushErrorsTotal the drains that stopped on an error
 	// (they resume, with the same bytes, after a back-off); InsertFlushDuration

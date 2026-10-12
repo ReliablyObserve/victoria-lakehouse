@@ -190,6 +190,7 @@ a test that "fixes" one of them would be wrong.
 | Behavior | Hot | Cold | Why |
 |---|---|---|---|
 | Bare `service.name` on traces LogsQL | No such field; matches nothing | Answers from a promoted alias column | The Lakehouse traces schema promotes `service.name` alongside VT's `resource_attr:service.name` so Grafana/Tempo-shaped queries work without the prefix. Pinned by `TestParity_Traces_LogsQL/traces_service_name_is_lh_only_alias`, which asserts hot returns 0 and cold returns rows. |
+| Rows with `_time` before 1970 (logs: any ingest endpoint; traces: `/insert/native`, since over OTLP a time above 2^63-1 ns is dropped by VictoriaTraces itself, hot and Lakehouse alike) | Stored if `-retentionPeriod` covers the date; dropped at ingest otherwise (measured, VL v1.53.0 and VT v0.12.0: `scripts/ci/tests/pre1970_hot_compare_test.sh`) | Refused when added, counted in `lakehouse_insert_rows_dropped_total{reason="too_small_timestamp"}` | The Lakehouse time domain starts at the Unix epoch (partitions, manifest bounds, the drain's range). Refusing at ingest is where upstream drops a row outside its window; the alternative is storing negative times across every layer, tracked in #484. Registry: `lh.durability.pre1970_stored_logs` / `_traces` (differ), `lh.durability.pre1970_rows_*` (pass). |
 | Live tail (`/api/v2/search/tail`, `/select/logsql/tail`) | Streams | `501 Not Implemented` | Cold storage is write-once-read-many; there is nothing to tail after the flush. |
 
 ## Running the parity suite

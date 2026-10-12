@@ -1,0 +1,24 @@
+# The hot VictoriaLogs / VictoriaTraces instances scripts/ci/tests/pre1970_hot_compare_test.sh
+# compares the Lakehouse with: each upstream at its default -retentionPeriod and
+# at 100y. Use a throwaway project and ports that are free on your host:
+#   docker compose -p lhpre1970 -f scripts/ci/tests/pre1970_hot_compare.compose.yml up -d
+#   ... run the script ...
+#   docker compose -p lhpre1970 -f scripts/ci/tests/pre1970_hot_compare.compose.yml down -v
+# The images are the versions the repo pins (Makefile: VL_VERSION_LOGS, VT_VERSION).
+services:
+  vl-default:
+    image: victoriametrics/victoria-logs:v1.53.0
+    command: ["-storageDataPath=/data", "-httpListenAddr=:9428"]
+    ports: ["127.0.0.1:${HOT_VL_DEFAULT_PORT:-49100}:9428"]
+  vl-100y:
+    image: victoriametrics/victoria-logs:v1.53.0
+    command: ["-storageDataPath=/data", "-httpListenAddr=:9428", "-retentionPeriod=100y"]
+    ports: ["127.0.0.1:${HOT_VL_100Y_PORT:-49101}:9428"]
+  vt-default:
+    image: victoriametrics/victoria-traces:v0.12.0
+    command: ["-storageDataPath=/data", "-httpListenAddr=:10428"]
+    ports: ["127.0.0.1:${HOT_VT_DEFAULT_PORT:-49102}:10428"]
+  vt-100y:
+    image: victoriametrics/victoria-traces:v0.12.0
+    command: ["-storageDataPath=/data", "-httpListenAddr=:10428", "-retentionPeriod=100y"]
+    ports: ["127.0.0.1:${HOT_VT_100Y_PORT:-49103}:10428"]

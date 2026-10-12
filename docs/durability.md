@@ -83,36 +83,187 @@ VictoriaLogs/VictoriaTraces:
   receiving an ack for rows that were stored nowhere.
 - **What upstream drops at ingest, the Lakehouse drops too.** A row whose
   `_time` is more than 2 days in the future (`-futureRetention` of upstream) is
-  rejected by the storage with upstream's warning and counter. There is no limit
-  into the past (the buffer's retention is 100 years): backfilled rows of any
-  age are kept until they are written, and the Lakehouse's own retention then
-  applies to the objects.
-- **Admission.** The logs binary drops, before the buffer, the rows of
-  trace-shaped streams (span data sent to the logs endpoint:
-  `lakehouse_logs_trace_shaped_rows_dropped_at_ingest_total`) and of streams over
-  the tenant's cardinality limit. The traces binary applies the cardinality gate
-  only. VictoriaTraces' `trace_id_idx` rows stay in the buffer, as in hot
-  VictoriaTraces, and are dropped when the buffer is flushed (the `_trace_idx`
-  footer index replaces them; counted in
-  `lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}`).
-  `lakehouse_insert_rows_total` counts the rows admitted into the buffer.
+  rejected by the storage with upstream's warning (its counter is not exported
+  yet, #486). There is no limit into the past (the buffer's retention is 100
+  years): backfilled rows of any age from 1970 on are kept until they are
+  written, and the Lakehouse's own retention then applies to the objects.
+- **A row before the Unix epoch is refused when it is added.** The Lakehouse
+  time domain starts at 1970-01-01T00:00:00Z: Parquet partitions, the manifest's
+  time bounds and the drain's time range all start there. A row with a negative
+  `_time` (a date before 1970) is therefore dropped by the insert path, the same place and the
+  same way upstream drops a row outside its window: the request is answered as a
+  success, a throttled warning is logged (`skipping log entry with too small
+  timestamp=...`), and the row is counted in
+  `lakehouse_insert_rows_dropped_total{reason="too_small_timestamp"}`. The row
+  is never acknowledged into the buffer, so it cannot be lost later; it also
+  takes no slot of the tenant's cardinality limit. The epoch itself is stored.
+  In the traces binary such a span arrives through `/insert/native`; over OTLP
+  the times are unsigned, and VictoriaTraces itself drops, before the buffer, a
+  span whose start or end time is above 2^63-1 ns (it cannot index it: an error
+  log and `vt_traceid_index_push_error_total`), in hot VictoriaTraces and in the
+  Lakehouse alike.
+  Hot VictoriaLogs/VictoriaTraces drop such a row at the default retention and
+  store it when `-retentionPeriod` covers the date; that difference is tracked
+  in #484.
+- **Admission is decided once.** The logs binary drops, before the buffer, the
+  rows of trace-shaped streams (span data sent to the logs endpoint:
+  `lakehouse_logs_trace_shaped_rows_dropped_at_ingest_total`, per row) and the
+  rows of streams over the tenant's cardinality limit. The traces binary applies
+  the cardinality gate only. The decision is made once per stream **of a tenant**
+  in a batch, not once per stream hash: upstream's hash is computed from the
+  stream tags alone and one batch can carry several tenants (`/internal/insert`
+  and `/insert/multitenant/native` in the logs binary, `/insert/multitenant/native`
+  in the traces binary), so a tenant at its limit refuses its own rows of a stream
+  and a tenant with room keeps its rows of the same-named stream; each refusal is
+  counted and logged against the tenant whose limit refused it. A row refused for the limit is answered as a
+  success, like every row upstream drops, and is **not stored**: it is counted
+  per row in `lakehouse_insert_rows_dropped_total{reason="cardinality_limit"}`
+  and logged (throttled) with its stream and tenant. In the traces binary the
+  counter counts spans; VictoriaTraces' `trace_id_idx` rows, which are streams of
+  the limit too (`trace_id_idx_stream` has up to 1024 values per tenant), are
+  counted apart in `lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx_cardinality_limit"}`
+  (and `trace_id_idx_before_epoch` for an index row stamped, as VictoriaTraces
+  stamps it, with the trace's start time, which can be before the epoch while the
+  span, stamped with its end time, is not: the span is kept and found by trace
+  ID). Nothing is judged again when the buffer is flushed: the cardinality
+  limiter is per process and starts empty after a restart, so judging a
+  segment's rows by it at the drain dropped rows that had been admitted and
+  acknowledged (#389). What remains at the drain depends on the stream alone:
+  the logs binary does not write a trace-shaped stream (the insert path refuses
+  them too, so this applies only if the rule changed between the insert and the
+  drain; each row is counted in `lakehouse_buffer_flush_rows_dropped_total{reason="trace_shaped_stream"}`),
+  and VictoriaTraces' `trace_id_idx` rows, which stay in the buffer as in hot
+  VictoriaTraces, are dropped when the buffer is flushed (the `_trace_idx` footer
+  index replaces them; counted in `lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}`).
+  `lakehouse_insert_rows_total` counts the rows admitted into the buffer (spans,
+  in the traces binary); it is not exactly the rows the buffer keeps, because
+  upstream's storage still drops, inside the buffer, a row more than 2 days in
+  the future after the Lakehouse has counted it (#486). The limit's set of
+  streams is kept in the memory of one process, so after a restart a stream that
+  was admitted before can be refused, and its new rows are dropped and counted
+  while the rows acknowledged before the restart are still written (#485).
+**Cost of the admission loop (measured).** The loop that decides, per tenant
+and stream, whether a row is admitted runs once per batch in front of the
+insert buffer. Benchmarks: `BenchmarkInsertAdapter_Admission` and
+`BenchmarkInsertAdapter_MixedTenants` (`BenchmarkVTInsertAdapter_MixedTenants` in
+the traces module) in `internal/vlstorage` and `lakehouse-traces/internal/vlstorage`:
+100 rows, 10 streams (the mixed one 10 tenants), main against this branch, the
+two builds run interleaved. Two runs are given because the noise of each is
+10-20%: run A (`-count=6`, 200 000 iterations) and run C (8 interleaved runs of
+each build, 200 000 iterations, `benchstat`, p < 0.05 unless "n.s.").
+
+| Signal | Case | Run A, change vs main | Run C, µs per batch, main → branch |
+|---|---|---|---|
+| logs | no gate | n.s. (+2 allocs, +16% B/op) | 1.55 → 1.77 (+14%) |
+| logs | gate admits all | n.s. | 1.56 → 1.71 (+9%) |
+| logs | gate refuses half of the streams | +19% (89 vs 55 allocs) | 6.45 → 7.97 (+24%) |
+| logs | 10 tenants in the batch, gate refuses half | +41% (B/op +352%) | 6.49 → 9.42 (+45%; B/op +352%, allocs 55 → 119) |
+| traces | no gate | +27% (933 → 1185 ns) | 0.90 → 1.18 (+31%) |
+| traces | gate admits all | n.s. | 2.53 → 2.80 (+11%) |
+| traces | gate refuses half of the streams | +20% | 8.25 → 9.63 (+17%) |
+| traces | 10 tenants in the batch, gate refuses half | not run | 8.27 → 11.05 (+34%; B/op +175%) |
+
+Lakehouse is slower than main in every case of run C, by 9% to 45%, and run A
+found only some of them outside its noise. The largest absolute difference is
+about 3 µs per batch of 100 rows (the 10-tenant case). The causes: every refused
+row is now counted and logged (throttled) per tenant and stream, which main did
+not do at all (main dropped those rows silently); a batch that mixes tenants
+keeps one verdict map per tenant; and each row now passes the before-the-epoch
+check (a `_time` before 1970 is refused before the buffer, §2), which is the
+assumed cause (not isolated) of the 0.15 to 0.3 µs the no-gate and admit-all
+cases cost more. The insert
+buffer's own work on the same batch is measured by
+`BenchmarkInsertAdapter_IntoRealSegment`.
+
+`TenantStreamMap`, which holds the verdicts of a batch, keeps one plain map for
+the first tenant of the batch and a map per further tenant, so its memory is
+bounded by the batch (a batch cannot carry more tenants than rows), not by the
+number of tenants of the installation. The worst case is a batch of tenants with
+one stream each (`BenchmarkTenantStreamMap_ManyTenants`, 100 000 tenants,
+run A; the structure is also fuzzed against a pair-keyed map by
+`FuzzTenantStreamMap`): 9.2 ms, 24 MB and 200 000 allocations against 3.8 ms,
+7 MB and 530 allocations for a map keyed by the (tenant, stream) pair. A batch
+with that many tenants is not expected (assumed: a batch is one request, and a
+request carries few tenants); the one-tenant batch, the usual case, keeps a
+single plain map, as main did. The extra cost appears only with batches that mix
+tenants.
+
+**The guarantee, and what it does not cover.** Take a log row or a span that
+the insert path added to the buffer and that upstream's storage keeps (the rows
+counted in `lakehouse_insert_rows_total`, minus the exceptions listed below).
+After a clean restart of the process (the buffer is closed, as SIGTERM does),
+after an upload failure in the middle of a drain, or after a restart while its
+segment is active, sealed or part drained, that row reaches Parquet exactly once.
+A row before 1970 is refused before the buffer, so its `_time` does not make an
+acknowledged row unstorable. A drain commits a segment only after checking that
+its plan covers every row the segment holds (§2.1). The tests restart by closing
+the buffer; none of them kills the process.
+
+It does not cover:
+
+- **`kill -9` and power loss.** Upstream's flush window of up to about 11 s is
+  lost, as in hot VL/VT (see "Durable within upstream's window" above and the
+  durability matrix below). A segment that was already sealed is on disk and is
+  drained after the restart; a crash between an upload and the commit has no
+  test of its own yet (tracked as a gap, see the registry).
+- **Loss of the pod's disk** loses the undrained segments (§2.4).
+- **Rows the insert path does not hand to the buffer**, each counted and answered
+  as a success: a `_time` before 1970, a stream over the tenant's cardinality
+  limit (`lakehouse_insert_rows_dropped_total{reason=...}`), a trace-shaped
+  stream sent to the logs endpoint.
+- **Rows dropped inside upstream's storage**: a `_time` more than 2 days in the
+  future is counted in `lakehouse_insert_rows_total` and then dropped (#486), so
+  the counter is not exactly the rows the buffer keeps.
+- **VictoriaTraces `trace_id_idx` rows**, which are handed to the buffer and
+  dropped at the flush by design (counted).
+- **Streams over the limit after a restart** (#485): the limiter forgets its
+  streams, so a stream that was admitted before can be refused afterwards.
 
 Proof: `TestInsertAdapter_EveryAdmittedRowReachesTheBuffer`,
 `TestInsertAdapter_DropsTraceShapedAndOverLimitStreamsKeepsTheRest`,
 `TestInsertAdapter_CanWriteData`, `TestInsertAdapter_BufferPanicPropagates`,
-`TestInsertAdapter_RowsAreInTheSegments`, `TestLogsBuffer_FieldsNamedLikeTraceIndexRowsAreKept`
+`TestInsertAdapter_RowsAreInTheSegments`, `TestLogsBuffer_FieldsNamedLikeTraceIndexRowsAreKept`,
+`TestInsertAdapter_RefusesRowsBeforeTheEpoch`, `TestInsertAdapter_RefusedRowsTakeNoCardinalitySlot`,
+`TestInsertAdapter_BeforeEpochProperty`, `TestFlushRowKeeper_IgnoresTheCardinalityGate`
 (logs) and `TestVTInsertAdapter_EverySpanReachesTheBuffer`,
 `TestVTInsertAdapter_DropsOverLimitStreamsKeepsTheRest`,
 `TestVTInsertAdapter_CanWriteData`, `TestVTInsertAdapter_BufferPanicPropagates`,
-`TestVTInsertAdapter_DropsTraceIDIndexRow` (traces).
+`TestVTInsertAdapter_DropsTraceIDIndexRow`, `TestVTInsertAdapter_RefusesRowsBeforeTheEpoch`,
+`TestVTInsertAdapter_RefusedRowsTakeNoCardinalitySlot`,
+`TestVTInsertAdapter_BeforeEpochProperty`, `TestIngestPremise_OTLPTimesAboveInt64NeverReachTheBuffer`,
+`TestPre1970Rows_NativeInsertIsRefusedAtTheBuffer`, `TestVTInsertAdapter_SpanWithAnIndexStartBeforeTheEpochIsAdmittedButItsIndexRowIsRefused`,
+`TestVTInsertAdapter_IndexRowsRefusedForTheLimitAreCountedApart` (traces). The
+admission and copy loop is fuzzed (`FuzzAdmittedRows`) and checked against an
+independent rule (`TestInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit`
+and `TestVTInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit`). End to end through the adapter,
+the buffer, the drain and a restart (both modules): `TestPre1970Rows_AreRefusedAtTheBufferNotLostAtTheDrain`,
+`TestPre1970Rows_EpochEdgeAndAllRefusedBatch`, `TestPre1970Rows_AreNotReadableFromTheBuffer`,
+`TestPre1970Rows_PropertyEveryRowIsRefusedOrStoredOnce`,
+`TestAckedRows_NotRejudgedByAFreshCardinalityLimiter` (restart matrix),
+`TestAckedRows_FlushFilterNeverDropsOnCardinality`, `TestAckedRows_PropertyRandomRestartsAndLimits`.
+Against the real binaries (run by hand so far, CI wiring is #498):
+`scripts/ci/tests/cardinality_restart_test.sh` restarts `lakehouse-logs` and
+`lakehouse-traces` under a stream limit and reads the rows back after the drain
+(the code before the fix loses the acknowledged rows), and
+`scripts/ci/tests/pre1970_hot_compare_test.sh` sends the same rows dated 1965 to hot
+VictoriaLogs/VictoriaTraces (default retention and `100y`) and to the Lakehouse.
+The registry cells (`kind: durability`, one `_logs` and one `_traces` cell per
+fault; `make conformance-check` verifies that every test they cite exists, that
+the twins agree, that a loss-counted cell names a registered metric and that this
+document names every cell) are `lh.durability.pre1970_rows_*`,
+`lh.durability.pre1970_stored_*` (the known difference from hot VictoriaLogs/VictoriaTraces),
+`lh.durability.restart_cardinality_gate_*`, `lh.durability.drain_plan_mismatch_*`
+and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 
 ### 2.0 Durability matrix — what survives what
 
 | Event | What happens |
 |---|---|
 | **`kill -9` / power loss** | Rows older than upstream's flush window (about 11 s at worst) are in fsynced parts and are restored when the pod starts; the restarted flusher drains every segment it finds. Loss window = upstream's, as in hot VL/VT. |
+| **`kill -9` between a drain's upload and its commit** | Not proven by a test: the recovery code (stored marks, HEAD adoption, marker before commit, §2.1) exists, but no test kills the process at those steps. Known gap, #497 (`lh.durability.kill_between_upload_and_commit_*`). |
 | **Normal shutdown (SIGTERM)** | The flusher stops (a drain cut short resumes after the restart) and the buffer closes: upstream writes the in-memory rows of every segment to disk. Nothing is lost. The manifest snapshot is saved before and after the close. |
 | **Object store unreachable or slow** | Nothing is refused. Sealed segments wait on disk; each failed drain is retried with the same bytes after a back-off (1 s doubling to 30 s). Past the volume's free-space floor inserts get 429. |
+| **A segment whose rows the drain cannot all plan** | The segment is stalled (`lakehouse_buffer_stalled_segments` = 1) and not committed; the plan check uploads nothing, a group check can fire after earlier groups were uploaded (§2.1); an error is logged and `lakehouse_buffer_flush_errors_total{stage="invariant"}` rises (§2.1 and its runbook, `lh.durability.drain_plan_mismatch_*`); the plan is made again on every attempt, so a mismatch that does not repeat clears. Inserts continue until the buffer volume's floor answers 429. |
 | **Pod restarts while a segment drains** | The segment is found again; groups already stored are recognised (§3) and not sent again. |
 | **Pod loses its disk before a segment drained** | The rows of undrained segments are lost (§2.4). |
 | **Already-written data** | Immutable Parquet on S3; survives everything. |
@@ -159,6 +310,124 @@ attempt: the flusher never guesses. (HEAD needs `s3:ListBucket`, else S3 answers
 needs the read-after-write consistency S3 provides.) Every other group is
 collected from the segment and uploaded.
 
+**The drain checks its own plan.** Before a segment's first upload the flusher
+plans every tenant's groups and compares the plan with what the segment holds:
+the rows the plan covers (per-second counts over `[0, MaxInt64]`) against a
+count of every row of the tenant over the whole of int64 time, for every tenant
+the segment has rows for in that range. Each group is checked again when it is
+read: the rows the query returns must be the rows the plan promised, and each
+is written or counted as filtered out. If the numbers differ, the segment is
+**stalled** (not "held": `lakehouse_buffer_held_segments` is the committed
+segments restored at start): no marker is written, it is not committed or
+removed, an error is logged (`buffer flusher: segment N (...)
+is stalled and will not be committed ...`) and
+`lakehouse_buffer_flush_errors_total{stage="invariant"}` counts each attempt.
+What has been uploaded depends on which check fired. The **plan check** (the
+rows the plan covers against the count of the tenant's rows) runs for every
+tenant before the first upload of the attempt, so when it fires nothing of that
+attempt is uploaded. The **group check** runs when a group is read, inside the
+upload loop, so it can fire after earlier groups of the segment were uploaded
+(the objects are in the bucket and the manifest, with their stored marks, and
+no commit marker); the rest of that tenant's groups are not written in this
+attempt, and the other tenants' groups still are. The next attempt does not
+upload the stored groups again. The drain is retried after the usual back-off
+and the segment stays on disk; **the plan is made again from scratch on every
+attempt**, so a mismatch that does not repeat clears on the next attempt.
+
+`lakehouse_buffer_stalled_segments` is written once, when an attempt ends, never
+in the middle of one: it is 1 when a check failed in that attempt, 0 when every
+check that ran passed (also when an upload then failed: an object-store outage
+is not a stall and has its own alerts), unchanged when Stop cut the attempt
+short (even if a check had already failed in it) or when the attempt failed
+before any check ran, and 0 when the segment
+commits. (Writing the 0 in the middle of an attempt would flip a repeating
+group-level mismatch from 0 to 1 on every attempt, and a scrape that saw the 0
+would restart the alert's 15 minutes.) Only a cause that
+persists keeps the segment stalled: a row the plan cannot reach (a `_time`
+before 1970 in a segment written by a build older than the one that refuses such
+rows at the insert path) or a bug. A stalled segment holds back the segments
+after it, since they are drained in order, and the buffer fills until the
+volume's free-space floor answers 429: rows are not lost silently, but the
+ingest path stops, which is the price of a safety check. A drain cut short by
+Stop (SIGTERM) is not a mismatch: upstream's query returns partial or no rows on
+a cancelled context, so the check looks at the context first; a cancelled plan
+or collect is counted once under `stage="collect"` and never under `invariant`,
+and the drain resumes after the restart. This is the check that would have
+stopped #388, where the plan quietly covered fewer rows than the segment held
+and the segment was committed anyway. The cost of the check is one `stats
+count()` per tenant and segment on top of the per-second plan (measured in the
+benchmark of the PR that added it). The alerts are
+`LakehouseBufferDrainPlanMismatch` (any increase of `stage="invariant"`, a
+warning) and `LakehouseBufferSegmentStalled` (the gauge stays 1 for 15 minutes,
+critical).
+
+#### A stalled segment runbook
+
+Use this when `LakehouseBufferSegmentStalled` fires (or
+`LakehouseBufferDrainPlanMismatch` keeps firing). It lists only what can be done
+today.
+
+1. **Find the segment.** The error log line (throttled to one a minute) names the
+   segment sequence and nonce and says which check failed: the tenant and the
+   number of rows the plan covers against the number the segment holds, or the
+   group, its plan and what the query returned. The rows are in
+   `insert.buffer_dir/seg-<seq as 16 hex digits>-<nonce>`.
+2. **Tell a transient mismatch from a persistent one.** Watch
+   `lakehouse_buffer_stalled_segments` and the counter over two or three
+   back-offs (up to 30 s each). If the gauge returns to 0 and
+   `lakehouse_buffer_segments{state="pending"}` falls, it was transient and
+   nothing more is needed (a pod that was stopped mid-drain does not count: that
+   never raises the counter). The gauge is 1 while the latest attempt that ran
+   its checks failed one. An attempt in which every check that ran passed sets it
+   back to 0 even if the upload then failed, so an object-store outage does not
+   keep it at 1 (look at `stage="upload"` for that). An attempt that fails
+   before any check runs (the tenant list or every plan or count query fails)
+   or that Stop cuts short leaves the gauge as it was, so a 1 can also be a
+   stale 1. If it stays 1 over several back-offs **and**
+   `lakehouse_buffer_flush_errors_total{stage="invariant"}` keeps rising, the
+   cause persists. If it stays 1 while `stage="invariant"` does not rise, no
+   check has run since: look at `stage="collect"` and the error log first, and
+   do not go on to step 6.
+3. **Do not delete anything yet.** Nothing is lost while the segment is on disk,
+   and the rows are still served from the buffer. Keep inserts below the volume's
+   floor: if the volume is filling, grow it first (sizing: `operations/sizing.md`).
+4. **Keep a copy.** Copy the segment directory somewhere else (`cp -a`),
+   preferably with the pod stopped. That is a recommendation, not a proven
+   fault: the segment is sealed and immutable, so a copy taken while the pod
+   runs should be complete, but only a copy of a directory nobody is using is
+   known to be consistent. Report the log line and the copy's size.
+5. **Fix the cause, not the segment.** The log line gives the plan's count and
+   the segment's count for a tenant. The plan is made over `[0, MaxInt64]` and the
+   count over all time, so a segment count **larger** than the plan's points to
+   rows with a `_time` before 1970, which the plan cannot reach: the segment was
+   written by an older build, which is the cause, and this build cannot drain it
+   (the line does not say so; the check is only that the two counts differ). A
+   group whose query returned fewer or more rows than planned is a bug: file an
+   issue with the log line.
+6. **Last resort, and it loses data.** Only when step 2 showed that
+   `stage="invariant"` keeps rising, not for a gauge that is stuck at 1 without
+   it. Stop the pod, move the segment directory
+   out of `insert.buffer_dir`, start the pod. The segments after it are then
+   drained and the gauge returns to 0, but the stalled segment's rows are no
+   longer served, and the rows that are not in the bucket yet are never
+   written: **removing, deleting or moving away the segment directory loses
+   those rows** from the Lakehouse. Which rows are already in the bucket depends
+   on what ran before it stalled (§2.1): the plan check uploads nothing in the
+   attempt it stops, but earlier attempts may have uploaded groups; the group
+   check can fire after earlier groups were uploaded. Those objects are in S3
+   without a commit marker (ordinary objects that queries read). Moving the
+   directory back later does not recover the rest:
+   by then the segments after it have committed and the commit watermark is
+   past it, so it comes back as an already committed segment that is never
+   drained, is held, served from the buffer and then **deleted** (by the reaper,
+   once a complete manifest refresh has released the hold and its grace has
+   passed; `TestDrain_MovingAStalledSegmentAside`). **Never move your only copy
+   back**: the directory is deleted. Nothing re-imports a segment that was moved
+   aside; keep the copy from step 4 outside `insert.buffer_dir` for as long as
+   the rows matter. There is no supported override yet; an opt-in policy for a
+   stalled segment (`hold`, or `write-planned` with the unplanned rows counted as
+   lost) is proposed in issue #509.
+
 The dirty pmeta bundles (the bloom facet cannot be rebuilt from the manifest) are
 written after each drain and retried on every tick.
 
@@ -170,7 +439,30 @@ key was ever stored with two different byte sequences):
 `TestSegments_RandomFailuresUnderConcurrentIngestLoseNothing`,
 `TestSegments_GroupsAreBoundedInRows`, `TestPlanSlices`,
 `TestSegments_UnreadableStateStopsTheFlusher`, `TestSegments_TwoNodesNeverShareKeys`,
-`TestSegments_KeepFilter`, `TestBufferFlusher_PersistsThePmetaBundles`.
+`TestSegments_KeepFilter`, `TestBufferFlusher_PersistsThePmetaBundles`;
+for the plan check: `TestDrain_StallsASegmentWithRowsThePlanDoesNotCover`,
+`TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment`,
+`TestDrain_CancelledCollectIsNotAnInvariantViolation`,
+`TestDrain_CancelBetweenPlanAndCountIsNotAnInvariantViolation`,
+`TestDrain_CancelDuringPlanIsNotAnInvariantViolation`,
+`TestDrain_StopMidDrainIsNotAnInvariantViolation`,
+`TestDrain_CancelAtEveryStepNeverMovesInvariant`,
+`TestDrain_StalledGaugeClearsWhenTheSegmentCommits`,
+`TestDrain_StalledGaugeAfterTransientMismatchThenOutage`,
+`TestDrain_PersistentGroupMismatchKeepsTheGaugeAtOne`,
+`TestDrain_StopLeavesTheStalledGaugeAsItWas`,
+`TestDrain_StopAfterAFailedCheckLeavesTheStalledGaugeAsItWas`,
+`TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan`,
+`TestDrain_AttemptWithoutACheckLeavesTheStalledGaugeAsItWas`,
+`TestDrain_LaterAttemptWithoutACheckKeepsTheGaugeFromAnEarlierFailedCheck`,
+`TestDrain_CancelDuringPlanCountsCollectOnce_TwoTenants`,
+`TestDrain_StopMidDrainCountsCollectOnce_TwoTenants`,
+`TestDrain_MovingAStalledSegmentAside` and
+`TestDrain_HealthySegmentsAreNeverStalled` (a property test: random tenants
+including 0:0 and the largest ids, times at the epoch, 1 ns, second and hour
+edges, exact duplicates, several parts and random group sizes; in the traces
+module with the trace-ID index rows, some before the epoch, and the production
+keep filter).
 
 ### 2.2 Restart and the read handoff
 

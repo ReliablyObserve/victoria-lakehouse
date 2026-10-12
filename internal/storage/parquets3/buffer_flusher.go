@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -101,6 +102,16 @@ type BufferFlusher struct {
 	retry      map[string]*logGroupUpload // groups whose upload failed in this process, by key
 	nextTry    time.Time                  // back-off after a failed drain
 	backoff    time.Duration
+
+	// What the current drain attempt's checks found, for the stalled gauge (see
+	// drain). Only the flusher's goroutine touches them.
+	checkRan    bool // a plan or group check compared the plan with the segment
+	checkFailed bool // ... and one of them did not match
+
+	// secondCounts, when set, replaces the per-second query the plan is built
+	// from; a test sets it to build a plan that passes the plan check and then
+	// disagrees with the segment in a group. nil in production.
+	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error)
 
 	// The committed segments restored at load are held (membuffer HoldCommitted):
 	// none of them is retired until this process has applied a complete S3
@@ -525,31 +536,54 @@ func tenantSecondCounts(ctx context.Context, g *membuffer.Segment, tenant logsto
 	return out, err
 }
 
-// collectSlice reads one group's rows from g and applies the keep filter.
-func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) ([]schema.LogRow, error) {
+// collectSlice reads one group's rows from g and applies the keep filter. It
+// returns the rows to write and the number of rows the filter left out.
+func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) (rows []schema.LogRow, filtered int, err error) {
 	q, err := logstorage.ParseQueryAtTimestamp("*", sl.end)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	q = q.CloneWithTimeFilter(q.GetTimestamp(), sl.start, sl.end)
 	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{tenant}, q, false, nil)
 	// logstorage calls writeBlock from several goroutines.
 	var mu sync.Mutex
-	var rows []schema.LogRow
+	var seen int
 	err = g.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
 		local := make([]schema.LogRow, 0, db.RowsCount())
+		skipped := 0
 		for _, r := range vlstorage.DataBlockToLogRows(db, tenant) {
 			if f.keep != nil && !f.keep(r.AccountID, r.ProjectID, r.Stream) {
+				skipped++
 				continue
 			}
 			local = append(local, r)
 		}
 		mu.Lock()
 		rows = append(rows, local...)
+		filtered += skipped
+		seen += db.RowsCount()
 		mu.Unlock()
 	})
+	// Upstream's RunQuery returns nil, with partial or no rows, when the context
+	// is cancelled (a Stop): that is a cancelled step, not rows that went missing.
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	// The rows the query returned add up to the group the plan promised: a query
+	// that disagrees with the plan is not written as if nothing happened. The
+	// second clause is defensive: the conversion is one row to one row, so
+	// rows+filtered always equals seen today (an equivalent mutant); it stays to
+	// catch a conversion that ever drops a row.
+	f.checkRan = true // defensive: planTenant already set it for every tenant in plans (an equivalent mutant)
+	if int64(seen) != sl.rows || len(rows)+filtered != seen {
+		return nil, 0, f.invariantViolation(g, fmt.Sprintf("group %s slice %d of tenant %d:%d: the plan has %d rows, the segment returned %d, %d were converted and %d filtered",
+			sl.partition, sl.slice, tenant.AccountID, tenant.ProjectID, sl.rows, seen, len(rows), filtered))
+	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano })
-	return rows, err
+	return rows, filtered, nil
 }
 
 // Start runs the flusher until Stop. checkInterval is how often it checks
@@ -650,8 +684,184 @@ func (f *BufferFlusher) maybeSeal(now time.Time) {
 	}
 }
 
+// tenantPlan is the groups one tenant's rows of a segment are cut into.
+type tenantPlan struct {
+	tenant logstorage.TenantID
+	slices []flushSlice
+	rows   int64 // the rows the slices add up to
+}
+
+// planSegment cuts every tenant's rows of g into groups. It lists the tenants
+// over the whole of int64 time, not only from the Unix epoch, so that a row the
+// plan cannot reach (a _time before the epoch) is found, and it returns an error
+// that stalls the segment when the plan does not cover the rows the segment holds
+// (errDrainInvariant). A tenant whose groups cannot be planned now is reported in
+// planErr: the other tenants are still written and the drain is retried.
+func (f *BufferFlusher) planSegment(ctx context.Context, g *membuffer.Segment) (plans []tenantPlan, planErr, err error) {
+	sc := f.secondCounts
+	if sc == nil {
+		sc = tenantSecondCounts
+	}
+	return f.planSegmentWith(ctx, g, sc, tenantRowCount)
+}
+
+// planSegmentWith is planSegment with its two per-tenant queries as parameters.
+func (f *BufferFlusher) planSegmentWith(ctx context.Context, g *membuffer.Segment,
+	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error),
+	rowCount func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error)) (plans []tenantPlan, planErr, err error) {
+	tenants, err := g.GetTenantIDs(ctx, math.MinInt64, math.MaxInt64)
+	if err != nil {
+		metrics.BufferFlushErrors.Inc("collect")
+		return nil, nil, fmt.Errorf("list tenants: %w", err)
+	}
+	// A cancelled context can make the listing come back empty without an error;
+	// an empty plan is not a plan.
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	sort.Slice(tenants, func(i, j int) bool {
+		if tenants[i].AccountID != tenants[j].AccountID {
+			return tenants[i].AccountID < tenants[j].AccountID
+		}
+		return tenants[i].ProjectID < tenants[j].ProjectID
+	})
+	for _, tenant := range tenants {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		tp, err := f.planTenant(ctx, g, tenant, secondCounts, rowCount)
+		switch {
+		case err == nil:
+			plans = append(plans, tp)
+		case errors.Is(err, errDrainInvariant):
+			return nil, nil, err
+		default:
+			metrics.BufferFlushErrors.Inc("collect")
+			if planErr == nil {
+				planErr = err
+			}
+		}
+	}
+	return plans, planErr, nil
+}
+
+// planTenant cuts one tenant's rows of g into groups and checks the plan against
+// a count of all of the tenant's rows. The two queries are parameters so the
+// checks can be tested with queries that fail or disagree.
+func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID,
+	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error),
+	rowCount func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error)) (tenantPlan, error) {
+	counts, err := secondCounts(ctx, g, tenant)
+	if err != nil {
+		return tenantPlan{}, fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+	}
+	tp := tenantPlan{tenant: tenant, slices: planSlices(counts, f.maxRows)}
+	for _, n := range counts {
+		tp.rows += n
+	}
+	n, err := rowCount(ctx, g, tenant)
+	if err == nil {
+		// Checked before the comparison: a cancelled query returns what it had,
+		// without an error, in the plan's query as well as in this one, and a
+		// cancelled step is not a mismatch.
+		err = ctx.Err()
+	}
+	if err != nil {
+		return tenantPlan{}, fmt.Errorf("count tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+	}
+	f.checkRan = true
+	if n != tp.rows {
+		return tenantPlan{}, f.invariantViolation(g, fmt.Sprintf("tenant %d:%d: the plan covers %d rows, the segment holds %d", tenant.AccountID, tenant.ProjectID, tp.rows, n))
+	}
+	return tp, nil
+}
+
+// errDrainInvariant is wrapped by the error that stalls a segment whose drain
+// would commit without every row it holds being planned for Parquet.
+var errDrainInvariant = errors.New("drain invariant violated")
+
+var drainInvariantLogger = logger.WithThrottler("drain_invariant", time.Minute)
+
+// invariantViolation counts and logs a segment the drain refuses to commit and
+// returns the error that stalls it. The segment stays sealed on disk, pending,
+// and is planned again from scratch after the back-off; it is not committed
+// or removed and gets no commit marker (a group-level mismatch can fire after
+// earlier groups of the segment were uploaded and marked as stored). A mismatch that does not repeat clears on that
+// retry; one that does repeat (a row the plan cannot reach, or a bug) blocks the
+// segments after it, since they are drained in order, until the disk floor
+// refuses inserts (429): the buffer never loses the rows silently. A cancelled
+// context is never a mismatch (see collectSlice and planTenant).
+func (f *BufferFlusher) invariantViolation(g *membuffer.Segment, what string) error {
+	metrics.BufferFlushErrors.Inc("invariant")
+	f.checkFailed = true // drain publishes the gauge when the attempt ends
+	drainInvariantLogger.Errorf("buffer flusher: segment %d (%s) is stalled and will not be committed: %s; "+
+		"the segment stays in insert.buffer_dir and is planned again after the back-off, so a mismatch that does not repeat clears itself; "+
+		"one that repeats blocks the segments after it (lakehouse_buffer_stalled_segments, runbook: docs/durability.md#a-stalled-segment-runbook)",
+		g.Seq(), g.Nonce(), what)
+	return fmt.Errorf("segment %d: %w: %s", g.Seq(), errDrainInvariant, what)
+}
+
+// tenantRowCount returns the number of rows the tenant has in g over the whole
+// of int64 time (upstream `stats count()`), the count the drain's plan is
+// checked against: the plan itself is built from [0, MaxInt64] only.
+func tenantRowCount(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID) (int64, error) {
+	q, err := logstorage.ParseQueryAtTimestamp(`* | stats count() as n`, math.MaxInt64)
+	if err != nil {
+		return 0, err
+	}
+	q = q.CloneWithTimeFilter(q.GetTimestamp(), math.MinInt64, math.MaxInt64)
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{tenant}, q, false, nil)
+	var mu sync.Mutex
+	var total int64
+	var perr error
+	err = g.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range db.GetColumns(false) {
+			if c.Name == "n" {
+				for _, v := range c.Values {
+					n, err := strconv.ParseInt(v, 10, 64)
+					if err != nil {
+						perr = fmt.Errorf("row count: n %q: %w", v, err)
+					}
+					total += n
+				}
+			}
+		}
+	})
+	if err == nil {
+		err = perr
+	}
+	return total, err
+}
+
 // drain writes every group of g that is not settled yet and then commits g.
+//
+// It also publishes lakehouse_buffer_stalled_segments, once, when the attempt
+// ends, never in the middle of it: a plan or group check that failed in this
+// attempt sets 1; an attempt that completed its checks without a mismatch sets
+// 0, even if an upload then failed (the cause of the stall is gone, an outage
+// is another matter and has its own alerts); an attempt cut short by Stop (even
+// one whose checks had found a mismatch), or that failed before any check ran,
+// leaves the gauge as it was. Writing 0 in the
+// middle of an attempt would flip a persistent group-level mismatch 0 -> 1 on
+// every attempt, and a scrape that saw the 0 would restart the alert's 15m.
 func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
+	f.checkRan, f.checkFailed = false, false
+	err := f.drainAttempt(ctx, g)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		// Stop cut the attempt short: leave the gauge as it was, whatever the
+		// part of the attempt that ran found.
+	case f.checkFailed:
+		metrics.BufferStalledSegments.Set(1)
+	case err == nil, f.checkRan:
+		metrics.BufferStalledSegments.Set(0)
+	}
+	return err
+}
+
+func (f *BufferFlusher) drainAttempt(ctx context.Context, g *membuffer.Segment) error {
 	started := time.Now()
 	switch {
 	case f.state.DrainingSeq != g.Seq():
@@ -671,35 +881,25 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 		f.marksFor, f.marks, f.head, f.markSynced = g.Nonce(), f.loadMarks(g.Nonce()), true, false
 	}
 
-	tenants, err := g.GetTenantIDs(ctx, 0, math.MaxInt64)
+	// Plan every tenant's groups before anything is uploaded, and check that the
+	// plan covers every row the segment holds (see planSegment): a segment that
+	// does not is stalled, with nothing of it written to the bucket. The group
+	// check (collectSlice) runs later, inside writeGroup, after earlier groups
+	// of the same attempt were uploaded.
+	plans, planErr, err := f.planSegment(ctx, g)
 	if err != nil {
-		metrics.BufferFlushErrors.Inc("collect")
-		return fmt.Errorf("list tenants: %w", err)
+		return err
 	}
-	sort.Slice(tenants, func(i, j int) bool {
-		if tenants[i].AccountID != tenants[j].AccountID {
-			return tenants[i].AccountID < tenants[j].AccountID
-		}
-		return tenants[i].ProjectID < tenants[j].ProjectID
-	})
 	// A tenant whose group fails waits for the retry from that group on; the
 	// other tenants' groups are still written in this pass, so one tenant's
 	// failing bucket holds back the commit but not everyone's objects.
-	var firstErr error
-	for _, tenant := range tenants {
+	firstErr := planErr
+	for _, tp := range plans {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		counts, err := tenantSecondCounts(ctx, g, tenant)
-		if err != nil {
-			metrics.BufferFlushErrors.Inc("collect")
-			if firstErr == nil {
-				firstErr = fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
-			}
-			continue
-		}
-		for _, sl := range planSlices(counts, f.maxRows) {
-			if err := f.writeGroup(ctx, g, tenant, sl); err != nil {
+		for _, sl := range tp.slices {
+			if err := f.writeGroup(ctx, g, tp.tenant, sl); err != nil {
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -765,9 +965,11 @@ func (f *BufferFlusher) writeGroup(ctx context.Context, g *membuffer.Segment, te
 	if prev, ok := f.retry[key]; ok {
 		up = prev // the same bytes as the failed attempt
 	} else {
-		rows, err := f.collectSlice(ctx, g, tenant, sl)
+		rows, _, err := f.collectSlice(ctx, g, tenant, sl)
 		if err != nil {
-			metrics.BufferFlushErrors.Inc("collect")
+			if !errors.Is(err, errDrainInvariant) {
+				metrics.BufferFlushErrors.Inc("collect")
+			}
 			return fmt.Errorf("collect %s: %w", key, err)
 		}
 		if len(rows) == 0 {

@@ -123,6 +123,12 @@
   tests:
     - tests/conformance/drift_test.go#TestDrift_RealRegistry
     - tests/conformance/registry/rows_test.go#TestRows_LoadAndCounts
+    - tests/conformance/registry/schema_durability_test.go#TestDurability_ValidCells
+    - tests/conformance/registry/schema_durability_test.go#TestDurability_InvalidCells
+    - tests/conformance/registry/schema_durability_test.go#TestCheckDurability_Consistent
+    - tests/conformance/registry/schema_durability_test.go#TestCheckDurability_Rejects
+    - tests/conformance/registry/schema_durability_test.go#TestCheckDurability_MissingInputs
+    - tests/conformance/registry/schema_durability_test.go#TestDurability_RealRegistry
     - tests/conformance/inventory/inventory_test.go#TestExtract_RealDeps
     - tests/conformance/registry/testlinks_test.go#TestTestFuncs_OnlyRealTests
     - tests/conformance/registry/testlinks_test.go#TestIsLinkedTestFile

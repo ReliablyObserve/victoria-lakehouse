@@ -95,6 +95,9 @@ func TestBuildPlan_RealRepo(t *testing.T) {
 	if p.featureCount == 0 {
 		t.Error("the feature catalog is empty")
 	}
+	if len(p.durabilityFailures) != 0 {
+		t.Errorf("durability cell failures: %v", p.durabilityFailures)
+	}
 	if len(p.featureFailures) != 0 {
 		t.Errorf("feature gate failures: %v", p.featureFailures)
 	}

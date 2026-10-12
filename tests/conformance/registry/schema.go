@@ -31,6 +31,10 @@ const (
 	KindUI       Kind = "ui"
 	KindAdmin    Kind = "admin"
 	KindInternal Kind = "internal"
+	// KindDurability is a cell of the durability matrix: one fault shape, one
+	// write mode, one signal, with the guarantee that holds and the Go tests that
+	// prove it. It is backed by tests, not by an HTTP request and compare.
+	KindDurability Kind = "durability"
 
 	OriginNative     Origin = "native"
 	OriginLHShim     Origin = "lh-shim"
@@ -186,6 +190,45 @@ type Perf struct {
 	Counters *PerfCounters `yaml:"counters,omitempty"`
 }
 
+// Durability describes one cell of the durability matrix (kind=durability): the
+// fault, the write mode, the signal and the guarantees that hold after the
+// fault. A cell that is a known gap names its issue.
+type Durability struct {
+	Fault  string `yaml:"fault"`
+	Mode   string `yaml:"mode"`
+	Signal string `yaml:"signal"`
+	// Guarantees are values of DurabilityGuarantees.
+	Guarantees []string `yaml:"guarantees"`
+	// Metric is the counter that makes a loss visible; required with the
+	// guarantee loss-counted, and a name registered in internal/metrics.
+	Metric string `yaml:"metric,omitempty"`
+	// Gap is the issue link of a known gap; required when expect=differ.
+	Gap string `yaml:"gap,omitempty"`
+}
+
+// DurabilityModes, DurabilitySignals and DurabilityGuarantees are the values a
+// durability cell may take. The guarantees are the approved set of the design
+// (no-loss, no-duplicate, loss-counted, rejected-429, rejected-503): a row that
+// the insert path drops and answers as a success is loss-counted, with the
+// counter that counts it.
+var (
+	DurabilityModes      = map[string]bool{"buffer-flush": true}
+	DurabilitySignals    = map[string]bool{"logs": true, "traces": true}
+	DurabilityGuarantees = map[string]bool{"no-loss": true, "no-duplicate": true, "loss-counted": true, "rejected-429": true, "rejected-503": true}
+)
+
+var durabilityMetricRe = regexp.MustCompile(`^lakehouse_[a-z0-9_]+$`)
+
+// durabilityLossMetricRe is what the counter of a loss-counted cell is called: a
+// name that says it counts drops, losses or failures. A loss-counted cell naming
+// a general counter (lakehouse_insert_rows_total) would claim a loss is visible
+// when the counter says nothing about losses. The name is a lexical check: that
+// the code increments the counter on the loss is proved by the tests the cell
+// cites, not here.
+var durabilityLossMetricRe = regexp.MustCompile(`^lakehouse_[a-z0-9_]*(dropped|lost|errors)[a-z0-9_]*$`)
+
+var durabilityFaultRe = regexp.MustCompile(`^[a-z0-9_]+$`)
+
 var perfValidRe = regexp.MustCompile(`^[0-9]+/[1-9][0-9]*$`)
 
 type Row struct {
@@ -207,6 +250,7 @@ type Row struct {
 	Refs       *Refs             `yaml:"refs,omitempty"`
 	Notes      string            `yaml:"notes,omitempty"`
 	Perf       *Perf             `yaml:"perf,omitempty"`
+	Durability *Durability       `yaml:"durability,omitempty"`
 }
 
 type Registry struct {
@@ -248,7 +292,7 @@ func (r *Row) Validate() error {
 
 	// Kind validation
 	switch r.Kind {
-	case KindSelect, KindInsert, KindPipe, KindFilter, KindStats, KindTraceQL, KindFlag, KindUI, KindAdmin, KindInternal:
+	case KindSelect, KindInsert, KindPipe, KindFilter, KindStats, KindTraceQL, KindFlag, KindUI, KindAdmin, KindInternal, KindDurability:
 	default:
 		add("kind %q invalid", r.Kind)
 	}
@@ -297,7 +341,7 @@ func (r *Row) Validate() error {
 	// rules are Expect-specific.
 	switch r.Expect {
 	case ExpectPass, ExpectDiffer:
-		if len(r.Seed) == 0 && r.Kind != KindFlag {
+		if len(r.Seed) == 0 && r.Kind != KindFlag && r.Kind != KindDurability {
 			add("seed required when expect=%s", r.Expect)
 		}
 	case ExpectAbsent:
@@ -347,7 +391,7 @@ func (r *Row) Validate() error {
 	}
 
 	// Request validation
-	if r.Kind != KindUI && r.Kind != KindFlag && r.Request == nil {
+	if r.Kind != KindUI && r.Kind != KindFlag && r.Kind != KindDurability && r.Request == nil {
 		add("request required for kind=%s", r.Kind)
 	}
 	if r.Request != nil {
@@ -362,7 +406,14 @@ func (r *Row) Validate() error {
 	}
 
 	// Compare validation
-	if r.Compare == nil {
+	if r.Kind == KindDurability {
+		if r.Compare != nil {
+			add("compare not allowed for kind=durability (the cell is proved by its tests)")
+		}
+		if r.Request != nil {
+			add("request not allowed for kind=durability")
+		}
+	} else if r.Compare == nil {
 		add("compare required")
 	} else {
 		if !Comparators[r.Compare.Type] {
@@ -389,6 +440,67 @@ func (r *Row) Validate() error {
 	for _, layer := range r.Layers {
 		if !Layers[layer] {
 			add("layers: %q invalid", layer)
+		}
+	}
+
+	// Durability block: required on, and only on, kind=durability. The cell is
+	// proved by Go tests, so it names at least one; a known gap names its issue.
+	switch {
+	case r.Kind == KindDurability && r.Durability == nil:
+		add("durability block required for kind=durability")
+	case r.Kind != KindDurability && r.Durability != nil:
+		add("durability block only allowed for kind=durability")
+	case r.Durability != nil:
+		d := r.Durability
+		if !durabilityFaultRe.MatchString(d.Fault) {
+			add("durability.fault %q must match %s", d.Fault, durabilityFaultRe)
+		}
+		if !DurabilityModes[d.Mode] {
+			add("durability.mode %q invalid", d.Mode)
+		}
+		if !DurabilitySignals[d.Signal] {
+			add("durability.signal %q invalid", d.Signal)
+		}
+		if len(d.Guarantees) == 0 {
+			add("durability.guarantees required")
+		}
+		seen := map[string]bool{}
+		for _, g := range d.Guarantees {
+			switch {
+			case !DurabilityGuarantees[g]:
+				add("durability.guarantees: %q invalid", g)
+			case seen[g]:
+				add("durability.guarantees: %q repeated", g)
+			}
+			seen[g] = true
+		}
+		switch {
+		case seen["loss-counted"] && !durabilityMetricRe.MatchString(d.Metric):
+			add("durability.metric must name the counter (lakehouse_...) when guarantees has loss-counted, got %q", d.Metric)
+		case seen["loss-counted"] && !durabilityLossMetricRe.MatchString(d.Metric):
+			add("durability.metric %q is not a counter of drops, losses or failures: a loss-counted cell names a metric whose name contains dropped, lost or errors", d.Metric)
+		case !seen["loss-counted"] && d.Metric != "":
+			add("durability.metric only allowed with the guarantee loss-counted")
+		}
+		if r.Origin != OriginLHAddition {
+			add("durability cells are Lakehouse additions: origin must be lh-addition")
+		}
+		if r.Expect != ExpectPass && r.Expect != ExpectDiffer {
+			add("durability expect must be pass or differ, got %q", r.Expect)
+		}
+		if r.Expect == ExpectDiffer && !strings.HasPrefix(d.Gap, "https://github.com/") {
+			add("durability.gap must be an issue link when expect=differ (a known gap)")
+		}
+		if r.Expect == ExpectPass && d.Gap != "" {
+			add("durability.gap only allowed when expect=differ")
+		}
+		if r.Refs == nil || len(r.Refs.Tests) == 0 {
+			add("refs.tests required for kind=durability (a cell is proved by tests)")
+		}
+		// The signal in the id must be the cell's signal, so the logs/traces
+		// twins cannot be mixed up.
+		if !strings.HasSuffix(r.ID, "_"+d.Signal) {
+			add("durability id %q must end in _%s", r.ID, d.Signal)
 		}
 	}
 
