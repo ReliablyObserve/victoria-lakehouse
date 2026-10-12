@@ -41,17 +41,6 @@ type mockS3Server struct {
 	// bytes they returned, so benchmarks can report real S3 economics.
 	gets        atomic.Int64
 	bytesServed atomic.Int64
-
-	// reads counts the reads (full and ranged) of each object key, so a test can
-	// tell which objects a query opened.
-	reads map[string]int
-}
-
-// readObjects is the number of distinct objects that have been read.
-func (m *mockS3Server) readObjects() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.reads)
 }
 
 func newMockS3Server() *mockS3Server {
@@ -113,15 +102,9 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.mu.Lock()
+	m.mu.RLock()
 	data, ok := m.files[key]
-	if ok {
-		if m.reads == nil {
-			m.reads = make(map[string]int)
-		}
-		m.reads[key]++
-	}
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = fmt.Fprintf(w, `<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>`)

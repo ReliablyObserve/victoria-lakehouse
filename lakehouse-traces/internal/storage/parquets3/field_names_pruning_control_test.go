@@ -3,7 +3,10 @@ package parquets3
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,13 +30,44 @@ func skippedRowGroups() uint64 {
 	return n
 }
 
+// recordingS3 fronts a mock S3 server and records which Parquet objects were
+// read, so a test can tell which objects a query opened.
+type recordingS3 struct {
+	*httptest.Server
+	mu   sync.Mutex
+	keys map[string]struct{}
+}
+
+func newRecordingS3(t *testing.T) *recordingS3 {
+	t.Helper()
+	backend := newMockS3Server()
+	t.Cleanup(backend.close)
+	r := &recordingS3{keys: make(map[string]struct{})}
+	r.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, ".parquet") {
+			r.mu.Lock()
+			r.keys[req.URL.Path] = struct{}{}
+			r.mu.Unlock()
+		}
+		backend.handler(w, req)
+	}))
+	t.Cleanup(r.Close)
+	return r
+}
+
+// readObjects is the number of distinct Parquet objects that have been read.
+func (r *recordingS3) readObjects() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.keys)
+}
+
 // twoObjectStream is one stream in two objects whose operation name differs: the
 // filter name:="PUT-2" excludes the first object.
-func twoObjectStream(t *testing.T) (*Storage, *mockS3Server) {
+func twoObjectStream(t *testing.T) (*Storage, *recordingS3) {
 	t.Helper()
-	mock := newMockS3Server()
-	t.Cleanup(mock.close)
-	s := testStorageWithS3(t, mock.url())
+	mock := newRecordingS3(t)
+	s := testStorageWithS3(t, mock.URL)
 	s.cfg.Mode = config.ModeTraces
 	bw := NewBatchWriter(&s.cfg.Insert, s.pool, s.manifest, "logs/", config.ModeTraces)
 	a := fnSpan(1*time.Minute, "GET-1", "GET")
