@@ -33,7 +33,7 @@ MARKER = "<!-- lh-pr-quality -->"
 MODULES = {"root": "", "lakehouse-traces": "lakehouse-traces"}
 COVER_FLOOR = 90.0
 COVER_DROP = 0.2
-SKIP_DIRS = {"deps", "node_modules", ".git", ".claude", "vendor", "testdata"}
+SKIP_DIRS = {"deps", "node_modules", "vendor", "testdata"}  # and every dot-directory (.git, .claude, ...)
 TEST_RE = re.compile(r"^func (Test\w+)\(", re.M)
 FUZZ_RE = re.compile(r"^func (Fuzz\w+)\(", re.M)
 
@@ -45,7 +45,7 @@ def go_counts(tree: str) -> dict:
         tests = fuzz = files = 0
         targets = []
         for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not (not sub and d == "lakehouse-traces" and dirpath == base)]
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".") and not (not sub and d == "lakehouse-traces" and dirpath == base)]
             for fn in filenames:
                 if not fn.endswith("_test.go"):
                     continue

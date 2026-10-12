@@ -28,7 +28,8 @@ sys.path.insert(0, HERE)
 import abreg  # noqa: E402
 
 KNOWN_EXPECT = ("differ", "unsupported", "absent")
-NOT_A_DIFFERENCE = ("exact", "vacuous", "blocked", "arbitrary", "unusable", "harness-error", "nondeterministic")
+NOT_A_DIFFERENCE = ("exact", "vacuous", "blocked", "arbitrary", "unusable", "harness-error")
+SURFACE_SIGNAL = {"vl": "logs", "vt": "traces"}  # a registry row of vl/vt records a difference of that signal only; lh rows apply to both
 
 
 def row_tracking(row: dict, gaps: dict[str, list[int]]) -> dict:
@@ -54,17 +55,19 @@ def registry_gap_stats(rows: list[dict], gaps: dict[str, list[int]]) -> dict:
             "without_issue_ids": [k["row"] for k in no_issue]}
 
 
-def observed_from_perf(summary: dict, spec: dict) -> list[dict]:
-    """One observation per (shape, difference class) from the perf summary's cells."""
+def observed_from_perf(summary: dict, spec: dict, extra: dict | None = None) -> list[dict]:
+    """One observation per (shape, layer, difference class) from the perf summaries' cells (the 0 ms summary and the other S3 latency
+    profiles). The layer is part of the key: a difference on the compacted layer is not the difference recorded for the flushed one."""
     covers = {s["name"]: s.get("covers", []) for ss in spec["sets"].values() for s in ss["shapes"]}
     groups: dict[tuple, dict] = {}
-    for c in summary.get("cells", []):
-        if c["difference"] == "none":
-            continue
-        key = (c["shape"], c["difference"])
-        g = groups.setdefault(key, {"source": "perf", "what": c["shape"], "status": c["difference"], "covers": covers.get(c["shape"], []),
-                                    "where": [], "signal": c["signal"]})
-        g["where"].append(f"{c['layer']}/{c['range']}/{c['form']}")
+    for profile, sm in [("", summary)] + [(f"{p} ms", x) for p, x in (extra or {}).items()]:
+        for c in sm.get("cells", []):
+            if c["difference"] == "none":
+                continue
+            key = (c["shape"], c["layer"], c["difference"])
+            g = groups.setdefault(key, {"source": "perf", "what": f"{c['shape']} [{c['layer']}]", "status": c["difference"], "covers": covers.get(c["shape"], []),
+                                        "where": [], "signal": c["signal"]})
+            g["where"].append(f"{c['range']}/{c['form']}" + (f"/{profile}" if profile else ""))
     return list(groups.values())
 
 
@@ -74,8 +77,10 @@ def observed_from_api(matrix: dict) -> list[dict]:
         v = r["verdict"]
         if v in NOT_A_DIFFERENCE:
             continue  # proves nothing (arbitrary, vacuous, unusable, blocked) or is a failure of the run, not a difference
-        if v == "regressed":
+        if v == "regressed" or (v == "nondeterministic" and "regressed" in r.get("samples", [])):
             status = "new"
+        elif v == "nondeterministic":
+            status = "unstable"  # listed, not failing: the answer flips between samples, the PR was never the worse one
         elif v == "fixed":
             status = "fixed"
         elif (r.get("pr_score") or 0) >= 100 and (r.get("base_score") or 0) >= 100:
@@ -97,7 +102,8 @@ def join(observed: list[dict], rows: list[dict], gaps: dict[str, list[int]], req
     by_id = {r["id"]: r for r in rows}
     items = []
     for o in observed:
-        covered = [by_id[c] for c in o["covers"] if c in by_id]
+        covered = [by_id[c] for c in o["covers"] if c in by_id
+                   and SURFACE_SIGNAL.get(by_id[c].get("surface"), o["signal"]) in o["signal"].split("+")]
         known = [row_tracking(r, gaps) for r in covered if r["expect"] in KNOWN_EXPECT]
         item = dict(o)
         item["tracked_by"] = known
@@ -106,6 +112,8 @@ def join(observed: list[dict], rows: list[dict], gaps: dict[str, list[int]], req
             item["flip"] = [k["row"] for k in known]  # rows that can flip to pass with a lock
         elif o["status"] == "new":
             item["tracking"] = "new"  # introduced by the PR: fails whether or not a row exists for the base's difference
+        elif o["status"] == "unstable":
+            item["tracking"] = "unstable"
         elif known:
             item["tracking"] = "tracked" if all(k["issues"] for k in known) or not require_issue else "tracked-no-issue"
             item["no_issue"] = [k["row"] for k in known if not k["issues"]]
@@ -150,11 +158,11 @@ def render(known: dict, stats: dict | None = None, max_rows: int = 40) -> list[s
     if not items:
         lines += ["No difference from hot VictoriaLogs / VictoriaTraces in the cells and rows of this run."]
     else:
-        order = {"new": 0, "untracked": 1, "tracked-no-issue": 2, "tracked": 3, "fixed": 4}
+        order = {"new": 0, "untracked": 1, "tracked-no-issue": 2, "tracked": 3, "unstable": 4, "fixed": 5}
         items = sorted(items, key=lambda i: (order.get(i["tracking"], 9), i["source"], i["what"]))
         lines += ["| | where | difference | status | tracked as |", "|---|---|---|---|---|"]
         for it in items[:max_rows]:
-            icon = {"new": "NEW", "untracked": "UNTRACKED", "tracked-no-issue": "NO ISSUE", "tracked": "known", "fixed": "fixed"}[it["tracking"]]
+            icon = {"new": "NEW", "untracked": "UNTRACKED", "tracked-no-issue": "NO ISSUE", "tracked": "known", "unstable": "FLAKY", "fixed": "fixed"}[it["tracking"]]
             where = f"{it['source']} {it['signal']}"
             n = len(it["where"])
             cells = f" ({n} cell{'s' if n != 1 else ''})" if it["source"] == "perf" else ""
@@ -167,6 +175,9 @@ def render(known: dict, stats: dict | None = None, max_rows: int = 40) -> list[s
             elif it["tracking"] == "tracked-no-issue":
                 st = "**tracked without an issue (fails with --require-issue)**"
                 tr = tracked_text(it)
+            elif it["tracking"] == "unstable":
+                st = "answer flips between samples (listed, not failing: the PR was never the worse one)"
+                tr = "-"
             elif it["tracking"] == "fixed":
                 st = "fixed by this PR"
                 tr = ("row can flip to `expect: pass` with a lock: " + ", ".join(f"`{x}`" for x in it.get("flip", []))) if it.get("flip") else "no row recorded it"

@@ -58,12 +58,13 @@ base commit and from the PR. Grafana, the Jaeger UI and the proxies are not star
   and the toxic is read back (`latency.py`). A probe then times the same request through the proxy and directly to RustFS,
   interleaved, and fails the run when the measured added delay is off the injected one by more than max(10 ms, 25 %). A second
   check reads Lakehouse's own `lakehouse_s3_request_duration_seconds` around one cold query at 0 ms and at the injected value and
-  requires the mean to rise by at least the injected delay and at most 2.5 times it (on two runs of the same stack the mean rose by 85 ms and by
+  of each of the four Lakehouse processes (base and PR, logs and traces) and requires the mean to rise by at least 0.8 times the
+  injected delay and at most 2.5 times it (on two runs of the same stack the mean rose by 85 ms and by
   50 ms for 50 ms injected; the spread is not explained), which proves that Lakehouse's S3 traffic crosses the proxy (the original
   bug was a wrong path). This replaces the 2026-09 injector, which exec'd into a container of another compose project, ignored the failure and measured
-  nothing: its "20/50/100 ms" columns had no latency in them. Reproduction of the old behaviour:
-  `scripts/bench/with-s3-latency.sh 50 0 -- python3 scripts/bench/ab/latency.py probe --timing-only ...` prints "injected 50ms" and the probe
-  measures +0.2 ms.
+  nothing: its "20/50/100 ms" columns had no latency in them (the probe measured +0.2 ms to +0.6 ms while it printed "injected 50ms").
+  `scripts/inject-s3-latency.sh` and `scripts/bench/with-s3-latency.sh` now fail loudly when the container is missing (exit 2, the
+  wrapped command does not run); use `latency.py` for any other stack.
 - **Seed.** `cmd/datagen` with a fixed `--seed` and `--now`, six chunks per tenant over six hours, sent once to hot + base and once
   to the PR, so all three hold the same rows; tenants `0:0` and `1001:0` (also reached as the alias `acme-corp`: `X-Scope-OrgID` for
   Lakehouse, `AccountID: 1001` for hot, which has no aliases). Before anything is compared, scripts/proof's seed-equality gate
@@ -100,8 +101,9 @@ documented misses), identical to the cell's first valid result (else flapping), 
 reference window. A scalar count, a group-by (rows, total, hash of the pairs), field values (hash of value and hits), a scan (hash of
 the row keys), spans, or a canonical JSON hash for Jaeger, Tempo and TraceQL metrics. **An invalid answer is never a latency.**
 
-Jaeger and Tempo trace bodies order spans and processes by arrival, so a canonical hash of them against hot reports differences that are
-not differences; those shapes carry `vs_ref: false`, compare base with PR only, and the API matrix scores the traces structurally.
+Jaeger, Tempo search and OTLP trace answers are compared with `scripts.proof`'s decoders (spans keyed by trace and span id, processes
+resolved), so span order and `processID` labels are not differences. A shape whose hot answer differs between calls of one system (Tempo's
+tag list) carries `vs_ref: false` and compares base with PR only.
 Each comment reports the differences its own run found.
 
 **S3 cost.** From Lakehouse's `/metrics`: GETs (`lakehouse_s3_requests_total` for GET and GetObject), all non-write requests, and
@@ -114,12 +116,14 @@ the warm runs. The cold figure is the cold query's; the warm figure is the mean 
 | | rule |
 |---|---|
 | noise | a cell is `slower` or `faster` when the PR's warm p50 differs from the base's by more than max(15 %, 3 ms) |
-| re-measure | a cell that moved is measured again with 7 runs; only a move that holds is reported (marked with a footnote) |
+| re-measure | a cell that moved is measured again with 7 runs, on the same absolute windows (the seeded data is static, so fresh windows do not exist; the caches the first pass filled are warm); only a move that holds is reported (marked with a footnote). A new difference from hot seen in either pass stays |
 | `broken` | the base answered validly and the PR does not |
+| `unstable` | the PR gave an error, empty or flapping answer the base did not (any of its runs): fails the check, its remaining latencies prove nothing |
 | result vs hot | the validated answer of the PR (and of the base) is compared with hot's on the same window: same, differs, invalid |
 | new difference | the PR's answer differs from hot's **and** from the base's, or the base matched hot and the PR does not: fails the check |
-| S3 | more GETs or bytes than the base beyond max(10 %, 2 requests / 64 KiB) on a control shape fails the check even when latency is flat |
-| invalid run | a cell with no valid answer on base or PR, a cold run whose cache was not cleared, or a failed latency probe: exit 2 |
+| S3 | more GETs or bytes than the base beyond max(10 %, 2 requests / 64 KiB) on a control shape fails the check even when latency is flat; the comment names the metric and the phase (`more bytes (cold)`). Other shapes are listed only; `pr_smoke.py --gate-s3-all` (off by default, an owner decision) makes them fail too |
+| other profiles | the cells of the other S3 latency profiles (50 ms) fail the check like the 0 ms ones, and their differences are in the known-differences list |
+| invalid run | a cell with no valid answer on base or PR, hot VL/VT giving no valid answer (the result check cannot run: base and PR are compared with each other), a cold run whose cache was not cleared, or a failed latency probe: exit 2 |
 
 The comment shows the verdict first, then only the cells that moved, differ or cost more S3; everything within noise is one
 collapsed table. Cold timings, a component summary (ingest rows/s and spans/s, forced compaction, Lakehouse CPU-seconds and peak
@@ -138,11 +142,12 @@ the noise rule. Run it before trusting the thresholds on a new host, and record 
 `selection.py` maps changed files to shape sets without a hand-kept table: a shape's `covers` name registry rows and features, a
 feature names the tests that prove it (`internal/x/y_test.go#TestZ`) and the rows it owns, and the package directory of those tests
 is the code the shape is about. A changed non-test file under that directory selects the shape. `areas` in `shapes.json` is a coarse
-fallback for sets whose items name no test package. `go.mod`, `go.sum` and the Dockerfiles select the whole control sets; the harness
-itself selects the smoke subset; docs, tests, CI, charts, registry text and `deps/` select nothing.
+fallback for sets whose items name no test package. `go.mod` or `go.sum` of any module (`lakehouse-traces` too), the Makefile and the Dockerfiles select the whole control sets; any
+other file of `cmd/`, `internal/` and `lakehouse-traces/` that is not Go source (embedded configuration, UI assets) selects the smoke subset;
+the harness itself selects the smoke subset; docs, tests, CI, charts, registry text and `deps/` select nothing.
 
 `selection.py --check` (part of `make conformance-check`) fails on an unknown registry id, a shape that covers nothing, a smoke
-shape outside the control sets, an unknown layer, range, kind or pick, a duplicate name, and a shape no change can select.
+shape outside the control sets, an unknown layer, range, kind or pick, a duplicate name, a shape no change can select, and an `areas` prefix that does not exist in the repository.
 
 ## The API matrix
 
@@ -150,8 +155,13 @@ shape outside the control sets, an unknown layer, range, kind or pick, a duplica
 tenant headers; `api_matrix.py` sends it three times to hot, base and PR (rotating order) and scores the first round with
 `scripts/proof`'s metrics (status, error text, rows, values, series, traces, JSON schema); the other rounds classify (a verdict that
 flips is `nondeterministic`) and give the latency p50. Rows without a `hot` target and the `/lakehouse/api/v1/*` endpoints are
-Lakehouse-only: the PR is scored against the base. The check fails on `regressed`, `nondeterministic`, `harness-error` and on a
-status change from base to PR.
+Lakehouse-only: the PR is scored against the base. The check fails on `regressed`, `harness-error` and on a
+status change from base to PR. A row whose verdict flips between samples is listed (`FLAKY` in the known differences) and fails only when one
+sample had the PR worse than the base.
+
+**Scope of the matrix.** The window is the last hour of the cold layer, tenant `0:0`, one trace id picked from the reference; the
+`tenant_scope` rows (they need the isolation fixture) and the other layers are not covered by it. The perf shapes cover the compacted,
+buffer and after-restart layers and the alias and `1001:0` tenants for the queries they run; widening the matrix itself is future work.
 
 Rows that cannot be exercised read-only are **listed with the reason and counted, never dropped**: writes, deletes, drains and the
 cache clear; flags; rows that need a fixture the stack does not seed (edge-case logs, a second tenant for isolation, the
@@ -173,7 +183,10 @@ Every difference a run finds is classified, from the registry:
   fails the check: every difference needs an issue, a registry row and a line in the comment.
 - **fixed by the PR**: listed with the rows that can flip to `expect: pass` and get a lock.
 
-`--require-issue` additionally fails a tracked difference whose row cites no GitHub issue. The comment also states how many of the
+`--require-issue` additionally fails a tracked difference whose row cites no GitHub issue (an issue URL of a ReliablyObserve repository or a bare
+`#123`; a pull request link or an issue of another project does not count). A row tracks a difference of its own signal only (`vl` rows logs,
+`vt` rows traces) and a perf difference is keyed by shape, layer and signal; registry rows carry no data layer, so a row that covers the shape
+tracks it on every layer. The comment also states how many of the
 registry's known-difference rows cite an issue and how many do not.
 
 ## Quality report

@@ -10,11 +10,12 @@ covered items (and the rows those features list, one hop) sit in the file's pack
 Rules, per changed path:
   cmd/, internal/, lakehouse-traces/, patches/ (non-test code)   the shapes of the matching items, plus the
                                                                  control smoke subset
-  go.mod, go.sum, Dockerfile*, charts' images                    the whole control sets (the module graph and the
+  go.mod or go.sum of any module, Makefile, Dockerfile*           the whole control sets (the module graph and the
                                                                  build reach every query)
+  other files of cmd/, internal/, lakehouse-traces/ (assets)      the control smoke subset
   scripts/bench/ab, scripts/proof, the proof compose file        the control smoke subset (the harness itself)
   scripts/bench/ab/shapes.json                                   the shapes added or edited, plus smoke
-  *_test.go, docs, CI, registry text, website, everything else   nothing: the PR comment says "skipped"
+  *_test.go, docs, CI, charts, registry text, website, deps/     nothing: the PR comment says "skipped"
 
   selection.py --base origin/main              files from git diff base...HEAD
   selection.py --files internal/x/y.go ...     explicit file list
@@ -39,7 +40,6 @@ CONTROL = ("control-logs", "control-traces")
 API_TYPES = ("logsql", "jaeger", "tempo")
 PICKS = ("trace_id",)
 WINDOWS = ("start-end", "none", "micros", "end-ms")
-RUNTIME_ALL = ("go.mod", "go.sum")
 HARNESS = ("scripts/bench/ab/", "scripts/proof/", "deployment/docker/docker-compose-proof.yml", "deployment/docker/toxiproxy-proxies.json")
 RUNTIME_PREFIXES = ("cmd/", "internal/", "lakehouse-traces/", "patches/")
 
@@ -76,16 +76,26 @@ def shape_dirs(shape: dict, idx: dict) -> set[str]:
 
 
 def classify(path: str) -> str:
+    """ignored | shapes | harness | runtime | code | asset.
+
+    runtime: a build input of any module (go.mod or go.sum anywhere but under deps/, Makefile, Dockerfile*): the control sets.
+    code: Go source (and patches) of the runtime trees: the shapes of the matching items. asset: any other file of a runtime
+    tree (embedded configuration, UI files): nothing says which shapes it affects, so it runs the control smoke subset."""
+    base = os.path.basename(path)
     if path.endswith("_test.go") or "/testdata/" in path or path.startswith(("docs/", "website/", ".github/", "charts/", "tests/")):
         return "ignored"
     if path == "scripts/bench/ab/shapes.json":
         return "shapes"
     if path.startswith(HARNESS):
         return "harness"
-    if path in RUNTIME_ALL or os.path.basename(path).startswith("Dockerfile"):
+    if "/deps/" in path or path.startswith("deps/"):
+        return "ignored"
+    if base in ("go.mod", "go.sum") or base == "Makefile" or base.startswith("Dockerfile"):
         return "runtime"
-    if path.startswith(RUNTIME_PREFIXES) and not path.startswith("lakehouse-traces/deps/") and "/deps/" not in path:
-        return "code" if path.endswith(".go") or path.startswith("patches/") else "ignored"
+    if path.startswith(RUNTIME_PREFIXES):
+        if path.endswith(".go") or path.startswith("patches/"):
+            return "code"
+        return "ignored" if base.endswith((".md", ".txt")) else "asset"
     return "ignored"
 
 
@@ -119,7 +129,7 @@ def select(files: list[str], spec: dict, idx: dict, base: str | None = None, hea
             reasons.append(why)
 
     kinds = {f: classify(f) for f in files}
-    relevant = [f for f, k in kinds.items() if k != "ignored"]
+    relevant = [f for f, k in kinds.items() if k != "ignored"]  # code, asset, runtime, harness and shapes files all run the smoke subset
     smoke = [(s, sh) for s in CONTROL for sh in spec["sets"].get(s, {"shapes": []})["shapes"] if sh.get("smoke")]
     code = [f for f, k in kinds.items() if k == "code"]
     for set_name, sset in spec["sets"].items():
@@ -168,6 +178,8 @@ def check(spec: dict, rows: list[dict], features: list[dict]) -> list[str]:
         elif not any(s.get("smoke") for s in sset["shapes"]):
             problems.append(f"shapes.json: the control set '{need}' must mark at least one shape \"smoke\": true")
     for prefix, sets in spec.get("areas", {}).items():
+        if not os.path.exists(os.path.join(abreg.ROOT, prefix.rstrip("/"))):
+            problems.append(f"shapes.json: area '{prefix}' does not exist in the repository: a change there would select nothing")
         for s in sets:
             if s not in spec["sets"]:
                 problems.append(f"shapes.json: area '{prefix}' names the unknown set '{s}'")

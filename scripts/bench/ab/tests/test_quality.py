@@ -57,3 +57,10 @@ def test_report_says_not_collected_instead_of_zero():
     assert "Parity suite**: not collected" in text
     text, v = quality.render(snap(), snap(tests=9))
     assert v["exit"] == 1 and "RED" in text
+
+
+def test_dot_directories_are_skipped_whatever_their_name(tmp_path):
+    root = tree(tmp_path)
+    (tmp_path / ".cache" / "x").mkdir(parents=True)
+    (tmp_path / ".cache" / "x" / "c_test.go").write_text("func TestCached(t *testing.T) {}\n")
+    assert quality.go_counts(root)["root"]["tests"] == 3

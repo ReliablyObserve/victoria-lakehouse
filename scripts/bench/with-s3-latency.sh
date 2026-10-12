@@ -33,7 +33,11 @@ trap cleanup EXIT INT TERM
 # Start from a known-clean state, then inject for the run (unless mean=0).
 "$INJECT" clear >/dev/null 2>&1 || true
 if [ "$MEAN" -gt 0 ] 2>/dev/null; then
-  "$INJECT" "$MEAN" "$JITTER"
+  # a failed injection must stop the run: measuring without the latency and labelling it 20/50/100 ms is the 2026-09 bug
+  if ! "$INJECT" "$MEAN" "$JITTER"; then
+    echo "[with-s3-latency] the latency could not be injected; not running: $*" >&2
+    exit 2
+  fi
   echo "[with-s3-latency] injected ${MEAN}ms ± ${JITTER}ms for the duration of: $*"
 else
   echo "[with-s3-latency] mean=0 → pass-through (no added latency) for: $*"

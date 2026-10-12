@@ -9,7 +9,9 @@ fingerprint that says whether two systems answered the same thing:
   values        "rows=<n>;total=<sum of hits>;hash=<sha256 of the sorted (value, hits) pairs>"
   scan          "rows=<n>;hash=<sha256 of the sorted set of row keys>" (key `_msg`, or `trace_id:span_id`)
   spans         "spans=<n>" (trace by id)
-  json          "json=<sha256 of the canonical JSON>" (Jaeger, Tempo and TraceQL metrics bodies), volatile members dropped
+  json          "json=<sha256 of the canonical JSON>" (TraceQL metrics, stats and other JSON bodies), volatile members dropped
+  trace_jaeger, trace_otlp, tempo_search
+                "traces=<n>;spans=<n>;hash=<sha256>" of scripts.proof's decoded traces (spans keyed by trace and span id, processes resolved)
 
 tests/test_validate.py runs run.sh's own extract_result on the same fixtures and requires the same strings,
 so the two cannot drift. Empty answers are invalid except for kinds that may legitimately be empty (MISS_KINDS).
@@ -18,6 +20,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+if ROOT not in sys.path:  # scripts.proof is imported as a package from the repository root
+    sys.path.insert(0, ROOT)
+from scripts.proof.metrics.common import UnknownShape  # noqa: E402
+from scripts.proof.metrics.trace import decode_jaeger, decode_otlp, decode_tempo_search  # noqa: E402
 
 MISS_KINDS = ("trace_lookup",)  # run.sh MISS_QUERIES: a cross-signal lookup may find nothing
 SCAN_LIMIT = 1000  # run.sh SCAN_LIMIT
@@ -175,8 +186,37 @@ def extract_json(body: str) -> str:
     return "json=" + hashlib.sha256(json.dumps(_canon(_strip(obj)), sort_keys=True).encode()).hexdigest()
 
 
+def _traces_signature(decode, body: str) -> str:
+    """Structural signature of a trace answer with scripts.proof's decoders (upstream first: the look-alike JSON hash reported
+    differences that were only processID labels). Spans are keyed by trace and span id with their process resolved, so arrival
+    order and process numbering do not matter."""
+    raw = body.strip()
+    if not raw:
+        return "invalid:empty-body"
+    try:
+        decoded = decode(json.loads(raw))
+    except (ValueError, UnknownShape, AttributeError, TypeError):
+        return "invalid:parse-error"
+    spans = sum(len(v) for v in decoded.values())
+    digest = hashlib.sha256(json.dumps(decoded, sort_keys=True, default=str).encode()).hexdigest()
+    return f"traces={len(decoded)};spans={spans};hash={digest}"
+
+
+def extract_trace_jaeger(body: str) -> str:
+    return _traces_signature(decode_jaeger, body)
+
+
+def extract_trace_otlp(body: str) -> str:
+    return _traces_signature(decode_otlp, body)
+
+
+def extract_tempo_search(body: str) -> str:
+    return _traces_signature(decode_tempo_search, body)
+
+
 EXTRACTORS = {"scalar": extract_scalar, "groupby": extract_groupby, "values": extract_values, "scan": extract_scan,
-              "spans": extract_spans, "json": extract_json}
+              "spans": extract_spans, "json": extract_json, "trace_jaeger": extract_trace_jaeger, "trace_otlp": extract_trace_otlp,
+              "tempo_search": extract_tempo_search}
 # run.sh qkind -> our result kind, for the differential test
 RUNSH_KIND = {"count_total": "scalar", "fulltext": "scalar", "level_filter": "scalar", "multi_filter": "scalar", "negation": "scalar",
               "service_filter": "scalar", "slow_spans": "scalar", "span_name": "scalar", "count_by_service": "groupby",
@@ -190,7 +230,7 @@ def extract_result(kind: str, body: str) -> str:
 
 def result_is_empty(result: str) -> bool:
     """run.sh result_is_empty."""
-    return result in ("0", "rows=0", "spans=0") or result.startswith("rows=0;hash=")
+    return result in ("0", "rows=0", "spans=0") or result.startswith(("rows=0;hash=", "traces=0;"))
 
 
 def validate(kind: str, status: int, body: str, first_result: str | None = None, miss: bool = False,

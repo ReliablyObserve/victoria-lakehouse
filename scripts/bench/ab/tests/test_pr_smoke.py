@@ -52,3 +52,29 @@ def test_docs_only_pr_renders_skipped_comments_and_exits_zero(tmp_path, monkeypa
     monkeypatch.setattr(pr_smoke, "git", lambda *a: "a" * 40)
     rc = pr_smoke.main(["--out", str(tmp_path), "--base", "x", "--head", "y"])
     assert rc == 0 and "skipped" in (tmp_path / "perf-smoke.md").read_text() and "skipped" in (tmp_path / "api-matrix.md").read_text()
+
+
+def test_the_teardown_runs_when_the_build_fails_midway(tmp_path, monkeypatch):
+    """`started` is set before the build, so images and worktrees a failed build left behind are removed."""
+    downs, trees = [], []
+    monkeypatch.setattr(pr_smoke.selection, "changed_files", lambda b, h: ["internal/x/y.go"])
+    monkeypatch.setattr(pr_smoke, "git", lambda *a: "a" * 40)
+    monkeypatch.setattr(pr_smoke.stack, "tree_add", lambda ref, parent, name: trees.append(name) or str(tmp_path / name))
+    monkeypatch.setattr(pr_smoke.stack, "tree_remove", lambda t: downs.append(("tree", t)))
+    monkeypatch.setattr(pr_smoke.stack, "cmd_build", lambda a: (_ for _ in ()).throw(RuntimeError("docker build failed")))
+    monkeypatch.setattr(pr_smoke.stack, "cmd_down", lambda a: downs.append(("down", None)))
+    rc = pr_smoke.main(["--out", str(tmp_path / "out"), "--base", "x", "--head", "y"])
+    assert rc == 3 and ("down", None) in downs and len([d for d in downs if d[0] == "tree"]) == 2
+
+
+def test_the_latency_check_covers_all_four_lakehouse_processes(monkeypatch):
+    """Lakehouse's own S3 view must have risen on base-logs, base-traces, pr-logs and pr-traces, not on one of them."""
+    monkeypatch.setattr(pr_smoke.latency, "set_latency", lambda api, ms: ms)
+    monkeypatch.setattr(pr_smoke.latency, "probe", lambda d, p, ms: {"expect_ms": ms, "added_ms": ms, "ok": True})
+    monkeypatch.setattr(pr_smoke.stack, "api_url", lambda: "http://x")
+    zero = {"base-logs": 2.0, "base-traces": 2.0, "pr-logs": 2.0, "pr-traces": 2.0}
+    monkeypatch.setattr(pr_smoke, "lh_means", lambda st: {"base-logs": 52.0, "base-traces": 52.0, "pr-logs": 52.0, "pr-traces": 52.0})
+    assert pr_smoke.set_latency(50, {}, zero)["ok"] is True
+    monkeypatch.setattr(pr_smoke, "lh_means", lambda st: {"base-logs": 52.0, "base-traces": 52.0, "pr-logs": 52.0, "pr-traces": 3.0})  # one process bypasses the proxy
+    res = pr_smoke.set_latency(50, {}, zero)
+    assert res["ok"] is False and res["lh_view"]["pr-traces"]["ok"] is False and res["lh_view"]["pr-logs"]["ok"] is True

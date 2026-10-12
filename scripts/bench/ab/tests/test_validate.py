@@ -97,3 +97,35 @@ def test_json_kind_ignores_order_and_volatile_members():
     b = json.dumps({"data": [{"a": 2}, {"b": 1, "took": 99}]})
     assert validate.extract_result("json", a) == validate.extract_result("json", b)
     assert validate.extract_result("json", a) != validate.extract_result("json", json.dumps({"data": [{"a": 3}, {"b": 1}]}))
+
+
+def jaeger(order, labels):
+    procs = {labels[0]: {"serviceName": "a", "tags": []}, labels[1]: {"serviceName": "b", "tags": []}}
+    spans = [{"spanID": "s1", "operationName": "x", "processID": labels[0], "startTime": 1, "duration": 2, "tags": []},
+             {"spanID": "s2", "operationName": "y", "processID": labels[1], "startTime": 1, "duration": 2, "tags": []}]
+    return json.dumps({"data": [{"traceID": "t1", "processes": procs, "spans": [spans[i] for i in order]}]})
+
+
+def test_m8_trace_answers_are_compared_structurally_with_the_proof_decoders():
+    """Span order and processID labels are arrival artefacts, not differences; a changed span or a missing one is."""
+    a = validate.extract_result("trace_jaeger", jaeger((0, 1), ("p1", "p2")))
+    assert a == validate.extract_result("trace_jaeger", jaeger((1, 0), ("p9", "p3"))) and a.startswith("traces=1;spans=2;hash=")
+    changed = json.loads(jaeger((0, 1), ("p1", "p2")))
+    changed["data"][0]["spans"][0]["operationName"] = "other"
+    assert validate.extract_result("trace_jaeger", json.dumps(changed)) != a
+    dropped = json.loads(jaeger((0, 1), ("p1", "p2")))
+    dropped["data"][0]["spans"].pop()
+    assert validate.extract_result("trace_jaeger", json.dumps(dropped)) != a
+    assert validate.validate("trace_jaeger", 200, '{"data": []}')[1] == "empty result"
+    assert validate.validate("trace_jaeger", 200, "not json")[1] == "parse-error"
+    assert validate.validate("tempo_search", 200, '{"traces": []}')[0] is False
+    assert isinstance(validate.extract_result("trace_otlp", "{}"), str)  # an unknown OTLP shape is invalid or empty, never a crash
+
+
+def test_the_trace_shapes_of_shapes_json_use_the_structural_kinds():
+    import abreg
+    spec = abreg.load_json(abreg.SHAPES)
+    kinds = {sh["name"]: sh["kind"] for s in spec["sets"].values() for sh in s["shapes"]}
+    for name in ("jaeger trace_by_id", "jaeger search by_service", "jaeger search min_duration"):
+        assert kinds[name] == "trace_jaeger"
+    assert kinds["tempo v2 trace_by_id"] == "trace_otlp" and kinds["tempo search service"] == "tempo_search"

@@ -16,7 +16,10 @@ def obs(status, covers, source="perf", what="logs fv_service"):
 
 def test_issue_numbers_and_gap_ids_are_read_from_urls_and_hash_references():
     from abreg import gap_ids, issue_numbers
-    assert issue_numbers("see https://github.com/o/r/issues/452 and #458, not #A6 or #7") == [452, 458]
+    assert issue_numbers("see https://github.com/ReliablyObserve/victoria-lakehouse/issues/452 and #458, not #A6 or #7") == [452, 458]
+    # a pull request link and an issue of another project are not issues that track a Lakehouse difference
+    assert issue_numbers("https://github.com/ReliablyObserve/victoria-lakehouse/pull/9 https://github.com/VictoriaMetrics/VictoriaLogs/issues/100 (#100)") == []
+    assert issue_numbers("https://github.com/ReliablyObserve/loki-vl-proxy/issues/77") == [77]
     assert gap_ids("gap #A6 and #B2, issue #458") == ["A6", "B2"]
 
 
@@ -65,13 +68,38 @@ def test_registry_stats_count_rows_with_and_without_an_issue():
     assert "3 known differences" in known.stats_line(st)
 
 
-def test_observations_from_perf_cells_group_by_shape_and_class():
+def test_observations_from_perf_cells_group_by_shape_layer_and_class():
     summary = {"cells": [{"shape": "s", "difference": "pre-existing", "signal": "logs", "layer": "cold", "range": "1h", "form": "numeric"},
+                         {"shape": "s", "difference": "pre-existing", "signal": "logs", "layer": "cold", "range": "full", "form": "numeric"},
                          {"shape": "s", "difference": "pre-existing", "signal": "logs", "layer": "compacted", "range": "1h", "form": "numeric"},
                          {"shape": "s", "difference": "none", "signal": "logs", "layer": "buffer", "range": "1h", "form": "numeric"}]}
     spec = {"sets": {"x": {"shapes": [{"name": "s", "covers": ["vl.a.pass"]}]}}}
     o = known.observed_from_perf(summary, spec)
-    assert len(o) == 1 and o[0]["where"] == ["cold/1h/numeric", "compacted/1h/numeric"] and o[0]["covers"] == ["vl.a.pass"]
+    assert [(x["what"], x["where"]) for x in o] == [("s [cold]", ["1h/numeric", "full/numeric"]), ("s [compacted]", ["1h/numeric"])]
+    # the other S3 latency profiles are observed too, with their profile in `where`
+    more = known.observed_from_perf({"cells": []}, spec, {"50": summary})
+    assert more[0]["where"][0] == "1h/numeric/50 ms"
+
+
+def test_a_row_of_the_other_signal_does_not_track_a_difference():
+    rows = [{"id": "vt.a.differ", "surface": "vt", "expect": "differ", "differ_note": "https://github.com/ReliablyObserve/victoria-lakehouse/issues/9"},
+            {"id": "vl.a.pass", "surface": "vl", "expect": "pass"}]
+    o = obs("pre-existing", ["vt.a.differ", "vl.a.pass"])  # a logs shape covering a traces row
+    assert known.join([o], rows, {})["items"][0]["tracking"] == "untracked"
+    traces = dict(obs("pre-existing", ["vt.a.differ"]), signal="traces")
+    assert known.join([traces], rows, {})["items"][0]["tracking"] == "tracked"
+
+
+def test_a_flip_between_samples_is_listed_and_fails_only_when_a_sample_regressed():
+    m = {"results": [{"id": "a", "row": "r1", "surface": "vl-native", "path": "/p", "signal": "logs", "verdict": "nondeterministic", "samples": ["same", "fixed"],
+                      "pr_score": 90, "base_score": 100, "notes": []},
+                     {"id": "b", "row": "r2", "surface": "vl-native", "path": "/p", "signal": "logs", "verdict": "nondeterministic", "samples": ["same", "regressed"],
+                      "pr_score": 90, "base_score": 100, "notes": []}]}
+    o = {x["covers"][0]: x["status"] for x in known.observed_from_api(m)}
+    assert o == {"r1": "unstable", "r2": "new"}
+    k = known.join(known.observed_from_api(m), [], {})
+    assert {i["what"]: i["tracking"] for i in k["items"]} == {"r1": "unstable", "r2": "new"} and k["failing"] == 1
+    assert "FLAKY" in "\n".join(known.render(k))
 
 
 def test_observations_from_the_api_matrix_follow_the_verdict():

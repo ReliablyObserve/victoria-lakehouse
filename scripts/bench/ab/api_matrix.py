@@ -13,7 +13,8 @@ scored PR against base. Rows that cannot be exercised read-only are listed with 
 Verdicts are scripts.proof.metrics': exact, same, fixed, improved, regressed, nondeterministic, vacuous, blocked,
 harness-error. A row whose query ends in `limit N` keeps an arbitrary subset, so it is scored by membership: every row an
 answer returns must be a row of the unlimited reference answer (`evaluate_limited`). `facets` and Tempo's tag lists, which
-are samples, are reported as `arbitrary`. The check fails on regressed, nondeterministic and harness-error, and on a status change base -> PR.
+are samples, are reported as `arbitrary`. The check fails on regressed and harness-error, on a nondeterministic row only when one sample had the PR worse than the base
+(a flip the other way is listed, not failing), and on a status change base -> PR.
 """
 from __future__ import annotations
 
@@ -124,16 +125,20 @@ def canonical_rows(body: str) -> list[str]:
     return out
 
 
-def limited_facets(universe: set[str], total: int, ans: dict) -> FacetResult:
+def limited_facets(universe: set[str], total: int, ans: dict, ref_count: int) -> FacetResult:
     """A limited query keeps an arbitrary subset, so two correct systems answer different rows. What must hold is that every
-    row an answer returns belongs to the unlimited reference answer (the pipes did the same thing to it), and that an answer
-    is empty exactly when the reference is."""
+    row an answer returns belongs to the unlimited reference answer (the pipes did the same thing to it), that an answer is
+    empty exactly when the reference is, and that it returns as many rows as the reference's limited answer (a limit that keeps
+    10 of 5000 rows must keep 10, not 1)."""
     res = FacetResult()
     rows = canonical_rows(ans["body"]) if (ans.get("status") or 0) == 200 else []
     res.facets["status"] = 100.0 if ans.get("status") == 200 else 0.0
     inside = sum(1 for r in rows if r in universe)
     res.facets["membership"] = 100.0 if not rows else 100.0 * inside / len(rows)
     res.facets["emptiness"] = 100.0 if bool(rows) == bool(total) else 0.0
+    res.facets["cardinality"] = 100.0 if len(rows) == ref_count else 100.0 * min(len(rows), ref_count) / max(len(rows), ref_count)
+    if len(rows) != ref_count:
+        res.notes.append(f"{len(rows)} rows where the reference's limited answer has {ref_count}")
     if rows and inside < len(rows):
         res.notes.append(f"{len(rows) - inside} of {len(rows)} rows are not in the unlimited reference answer")
     res.details["rows"] = len(rows)
@@ -152,7 +157,8 @@ def evaluate_limited(state: dict, req: dict, answers: dict[str, dict], resamples
         return res
     verdicts = []
     for ans in [answers] + resamples:
-        b, p = limited_facets(universe, total, ans["base"]), limited_facets(universe, total, ans["pr"])
+        ref_count = len(canonical_rows(ans["ref"]["body"])) if (ans["ref"].get("status") or 0) == 200 else 0
+        b, p = limited_facets(universe, total, ans["base"], ref_count), limited_facets(universe, total, ans["pr"], ref_count)
         verdicts.append(classify(b, p))
         if ans is answers:
             res.base, res.pr = b, p

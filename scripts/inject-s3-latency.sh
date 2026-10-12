@@ -22,8 +22,15 @@ set -euo pipefail
 PROXY=${TOXIPROXY:-victoria-lakehouse-s3-latency-1}
 TOXIC=s3-latency
 
+# Fail loudly when the toxiproxy container is not there. This script used to run `docker exec` against a name that belongs to one
+# compose project and report success for any other stack (scripts/bench/ab/latency.py talks to the proxy's API and verifies the delay).
+if ! docker inspect "$PROXY" >/dev/null 2>&1; then
+  echo "inject-s3-latency: no container named '$PROXY'; set TOXIPROXY=<container> (docker ps) for the stack under test" >&2
+  exit 2
+fi
+
 if [[ "${1:-}" == "clear" ]]; then
-  docker exec "$PROXY" /toxiproxy-cli toxic remove --toxicName "$TOXIC" s3 2>/dev/null || true
+  docker exec "$PROXY" /toxiproxy-cli toxic remove --toxicName "$TOXIC" s3 2>/dev/null || true  # nothing to remove is fine
   echo "S3 latency injection cleared (pass-through restored)"
   exit 0
 fi

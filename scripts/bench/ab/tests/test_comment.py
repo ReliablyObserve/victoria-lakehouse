@@ -107,3 +107,30 @@ def test_formatting_helpers():
     assert comment.ms(5, "500") == "**500**" and comment.ratio(10, 5) == "2.0x" and comment.ratio(None, 5) == "-"
     assert comment.fmt_pair(10, 12) == "10 -> 12" and comment.fmt_pair(10, 10) == "10" and comment.fmt_pair(None, 3) == "-"
     assert comment.score(100.0) == "100%" and comment.score(99.999) == "100%" and comment.score(87.6) == "88%"
+
+
+def test_m1_the_other_latency_profiles_reach_the_verdict():
+    quiet = summary((K1, 10, 10, {}))
+    at50 = summary((K1, 10, 50, {"pr_result": "43"}))   # 5x slower and a new difference, only at 50 ms
+    text, v = comment.render_perf(quiet, SEL, META, known.join([], [], {}), None, {"50": at50})
+    assert v["exit"] == 1 and v["failing"]["slower"] == 1 and v["failing"]["new_difference"] == 1
+    assert "50 ms" in text.split("###")[1] and "### RED" in text.splitlines()[1]
+    ok, v = comment.render_perf(quiet, SEL, META, known.join([], [], {}), None, {"50": summary((K1, 10, 10, {}))})
+    assert v["exit"] == 0
+
+
+def test_the_known_differences_of_an_extra_profile_are_part_of_the_known_section():
+    spec = {"sets": {"control-logs": {"shapes": [{"name": "logs count_total", "covers": ["vl.x"]}]}}}
+    at50 = summary((K1, 10, 10, {"base_result": "41", "pr_result": "41"}))
+    obs = known.observed_from_perf(summary((K1, 10, 10, {})), spec, {"50": at50})
+    assert obs and obs[0]["where"][0].endswith("/50 ms")
+
+
+def test_the_s3_gate_on_every_shape_is_opt_in():
+    s3 = {"enumeration|logs field_names|cold|1h|numeric": {"base": {"cold": {"gets": 6, "requests": 6, "bytes": 1e6}, "warm_per_query": None},
+                                                            "pr": {"cold": {"gets": 6, "requests": 6, "bytes": 2e6}, "warm_per_query": None}}}
+    key = "enumeration|logs field_names|cold|1h|numeric"
+    s = report.summarize(raw(cell_rows(key, 10, 10, shape="logs field_names", set_="enumeration"), s3), "t")
+    assert comment.render_perf(s, SEL, META)[1]["exit"] == 0
+    text, v = comment.render_perf(s, SEL, META, gate_s3_all=True)
+    assert v["exit"] == 1 and "more bytes (cold)" in text

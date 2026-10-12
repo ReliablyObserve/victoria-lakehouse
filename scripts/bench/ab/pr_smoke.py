@@ -101,7 +101,8 @@ def reload_state(out: str) -> dict:
 
 
 def confirm(summary: dict, state: dict, spec: dict, cells_by_key: dict, args) -> dict:
-    """Measure again the cells the first pass called slower or faster, with more runs; only a move that holds is reported."""
+    """Measure again the cells the first pass called slower or faster, with more runs; only a move that holds is reported. The seeded
+    data is static, so the re-measure uses the same absolute windows as the first pass (the caches it filled are warm), not fresh ones."""
     moved = [cells_by_key[c["cell"]] for c in summary["cells"] if c["verdict"] in MOVED and c["cell"] in cells_by_key]
     if not moved:
         return summary
@@ -115,30 +116,37 @@ def profile_cells(spec: dict, cells: list[dict]) -> list[dict]:
     return [c for c in cells if c["set"] in CONTROL and c["shape"].get("smoke") and c["layer"] in ("cold", "compacted")]
 
 
-PROBE_SHAPE = {"name": "latency probe", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "level:ERROR | stats count() n"}
+PROBE_SHAPES = {"logs": {"name": "latency probe", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "level:ERROR | stats count() n"},
+                "traces": {"name": "latency probe", "signal": "traces", "api": "logsql", "kind": "scalar",
+                           "query": "span_id:* `resource_attr:service.name`:=\"api-gateway\" | stats count() n"}}
 
 
-def lh_mean(state: dict) -> float | None:
-    """Mean S3 request duration of one cold query on the base Lakehouse, from its own histogram."""
+def lh_means(state: dict) -> dict:
+    """Mean S3 request duration of one cold query on each of the four Lakehouse processes, from their own histograms."""
     end = state["layers"]["cold"]["end"]
     start = (measure.parse_ts(end) - measure.dt.timedelta(hours=1)).strftime(measure.FMT)
-    req = measure.build_request(PROBE_SHAPE, state, "base", start, end, "numeric")
-    return latency.lh_s3_mean_ms(measure.base_url(state, "base", "logs"), functools.partial(measure.send, req), measure.PEER_KEY)
+    out = {}
+    for target in ("base", "pr"):
+        for sig, shape in PROBE_SHAPES.items():
+            req = measure.build_request(shape, state, target, start, end, "numeric")
+            out[f"{target}-{sig}"] = latency.lh_s3_mean_ms(measure.base_url(state, target, sig), functools.partial(measure.send, req), measure.PEER_KEY)
+    return out
 
 
-def set_latency(ms: float, state: dict, mean_at_zero: float | None = None) -> dict:
-    """Inject `ms` and prove it twice: the probe through the proxy vs direct must measure it, and Lakehouse's own S3 request
-    duration must have risen by about as much (so its traffic really crosses the proxy). Else the run is invalid."""
+def set_latency(ms: float, state: dict, means_at_zero: dict | None = None) -> dict:
+    """Inject `ms` and prove it twice: the probe through the proxy vs direct must measure it, and the own S3 request duration of
+    each of the four Lakehouse processes must have risen by about as much (so all their traffic crosses the proxy). Else the run
+    is invalid."""
     api = stack.api_url()
     latency.set_latency(api, ms)
     ports = stack.extra_ports()
     res = latency.probe(f"http://127.0.0.1:{ports['ab-s3-direct']}/health", f"http://127.0.0.1:{ports['ab-s3-proxied']}/health", ms)
-    res["lh_mean_ms"] = lh_mean(state)
+    res["lh_mean_ms"] = lh_means(state)
     if ms > 0:
-        res["lh_view"] = latency.lh_view_ok(mean_at_zero, res["lh_mean_ms"], ms)
-        res["ok"] = res["ok"] and res["lh_view"]["ok"]
-    log(f"S3 latency {ms:g} ms: probe measured +{res['added_ms']} ms; Lakehouse's own S3 mean {res['lh_mean_ms']} ms "
-        f"({'ok' if res['ok'] else 'FAILED'})")
+        res["lh_view"] = {k: latency.lh_view_ok((means_at_zero or {}).get(k), v, ms) for k, v in res["lh_mean_ms"].items()}
+        res["ok"] = res["ok"] and all(v["ok"] for v in res["lh_view"].values())
+    shown = ", ".join(f"{k} {v:.0f}" if v is not None else f"{k} none" for k, v in res["lh_mean_ms"].items())
+    log(f"S3 latency {ms:g} ms: probe measured +{res['added_ms']} ms; Lakehouse's own S3 mean (ms): {shown} ({'ok' if res['ok'] else 'FAILED'})")
     return res
 
 
@@ -147,7 +155,7 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
     cells = measure.plan(spec, list(sel["sets"]), sel["sets"])
     by_key = {c["key"]: c for c in cells}
     log(f"{len(cells)} cells in {len(sel['sets'])} set(s)")
-    stack.cmd_up(ns)
+    stack.cmd_up(ns, reuse=args.reuse_stack)
     stack.cmd_seed(ns)
     stack.cmd_compact(ns)
     stack.cmd_hold(ns)
@@ -164,7 +172,7 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
                     f"tenant 1001:0 (alias acme-corp) {c.get('logs/numeric1001/cold')} and {c.get('traces/numeric1001/cold')}; buffer window {c.get('logs/numeric/buffer')} rows and "
                     f"{c.get('traces/numeric/buffer')} spans")
     probes = [set_latency(0.0, state)]
-    mean0 = probes[0]["lh_mean_ms"]
+    mean0 = probes[0]["lh_mean_ms"]  # per process
     pre = [c for c in cells if c["layer"] != "after-restart"]
     post = [c for c in cells if c["layer"] == "after-restart"]
     parts = [run_cells(state, spec, pre, args.runs)]
@@ -228,12 +236,12 @@ def render_all(out: str, result: dict, sel: dict, spec: dict, meta: dict, args) 
     rows = abreg.load_rows()
     gaps = abreg.gaps_doc_issues()
     # each comment reports the differences its own run found, so a perf check never fails on an API row and the reverse
-    known_perf = knownmod.join(knownmod.observed_from_perf(result["summary"], spec), rows, gaps, args.require_issue)
+    known_perf = knownmod.join(knownmod.observed_from_perf(result["summary"], spec, result["extra"]), rows, gaps, args.require_issue)
     known = knownmod.join(knownmod.observed_from_api(result["matrix"]), rows, gaps, args.require_issue)
     known["registry"] = known_perf["registry"] = meta["registry_gap_stats"] = knownmod.registry_gap_stats(rows, gaps)
     abreg.dump_json(os.path.join(out, "known-perf.json"), known_perf)
     abreg.dump_json(os.path.join(out, "known-api.json"), known)
-    perf_text, perf_v = comment.render_perf(result["summary"], sel, meta, known_perf, result["components"])
+    perf_text, perf_v = comment.render_perf(result["summary"], sel, meta, known_perf, result["components"], result["extra"], args.gate_s3_all)
     if result["extra"]:
         marker = "\n<sub>"
         i = perf_text.rfind(marker)
@@ -277,6 +285,8 @@ def main(argv=None) -> int:
     ap.add_argument("--skip-build", action="store_true", help="the images already exist (stack.py build)")
     ap.add_argument("--keep-stack", action="store_true", help="leave the stack and the trees (for a re-run)")
     ap.add_argument("--rerender", action="store_true", help="rebuild summaries, known differences and comments from the saved results in --out; measures nothing")
+    ap.add_argument("--gate-s3-all", action="store_true", help="more S3 GETs or bytes than the base fail the check on every shape, not only on the control sets (off by default: owner decision)")
+    ap.add_argument("--reuse-stack", action="store_true", help="use a stack of this project that is already running instead of refusing (it is also left up)")
     ap.add_argument("--require-issue", action="store_true", help="a known difference whose registry row cites no GitHub issue fails")
     a = ap.parse_args(argv)
     a.latencies = [float(x) for x in a.latencies.split(",") if x]
@@ -313,6 +323,7 @@ def main(argv=None) -> int:
         os.makedirs(parent, exist_ok=True)
         head_dir = a.head_dir or None
         base_dir = a.base_dir or None
+        started = True  # from here on a failure may leave images or worktrees behind: the teardown runs
         if not a.skip_build:
             if head_dir is None:
                 head_dir = stack.tree_add(meta["head"], parent, "head")
@@ -323,7 +334,6 @@ def main(argv=None) -> int:
                     trees.append(base_dir)
             log("building the images")
             stack.cmd_build(types.SimpleNamespace(base=base_dir, pr=head_dir))
-        started = True
         result = measure_all(a, sel, spec, out, meta)
         meta["elapsed_s"] = round(time.time() - t0)
         meta["host_load_end"] = ", ".join(f"{x:.1f}" for x in os.getloadavg())
@@ -337,7 +347,7 @@ def main(argv=None) -> int:
         return finish(out, perf_text, api_text, perf_v, api_v, meta)
     finally:
         if not a.keep_stack:
-            steps = ([("stack", functools.partial(stack.cmd_down, None))] if started else []) + [(f"tree {t}", functools.partial(stack.tree_remove, t)) for t in trees]
+            steps = ([("stack", functools.partial(stack.cmd_down, None))] if started and not a.reuse_stack else []) + [(f"tree {t}", functools.partial(stack.tree_remove, t)) for t in trees]
             for step, fn in steps:
                 try:
                     fn()

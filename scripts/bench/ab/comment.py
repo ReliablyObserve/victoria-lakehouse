@@ -26,8 +26,8 @@ import known as knownmod  # noqa: E402
 
 PERF_MARKER = "<!-- lh-perf-smoke -->"
 API_MARKER = "<!-- lh-api-matrix -->"
-ICON = {"broken": "BROKEN", "slower": "SLOWER", "fixed": "fixed", "faster": "faster", "same": "same", "n/a": "n/a"}
-ORDER = {"broken": 0, "slower": 1, "fixed": 2, "faster": 3, "same": 4, "n/a": 5}
+ICON = {"broken": "BROKEN", "unstable": "UNSTABLE", "slower": "SLOWER", "fixed": "fixed", "faster": "faster", "same": "same", "n/a": "n/a"}
+ORDER = {"broken": 0, "unstable": 1, "slower": 2, "fixed": 3, "faster": 4, "same": 5, "n/a": 6}
 LAYER_ORDER = {"cold": 0, "compacted": 1, "buffer": 2, "after-restart": 3}
 
 
@@ -79,19 +79,30 @@ def result_text(c: dict) -> str:
     return pr
 
 
-def failing_cells(summary: dict) -> dict:
+def failing_cells(summary: dict, gate_s3_all: bool = False) -> dict:
+    """The cells that fail the check. More S3 GETs or bytes fail on a control shape; with gate_s3_all (opt-in) on any shape."""
     cells = summary["cells"]
     return {
         "broken": [c for c in cells if c["verdict"] == "broken"],
+        "unstable": [c for c in cells if c["verdict"] == "unstable"],
         "slower": [c for c in cells if c["verdict"] == "slower"],
         "new_difference": [c for c in cells if c["difference"] == "new"],
-        "s3_more": [c for c in cells if c.get("control") and "more" in c["s3_verdict"].values()],
+        "s3_more": [c for c in cells if (c.get("control") or gate_s3_all) and "more" in c["s3_verdict"].values()],
     }
 
 
+def s3_flag(c: dict) -> str:
+    """What S3 cost changed and in which phase, e.g. 'more bytes (cold)', or '-'."""
+    parts = []
+    for phase in ("cold", "warm"):
+        for metric, how in (c.get("s3_why", {}).get(phase) or {}).items():
+            parts.append(f"{how} {'GETs' if metric == 'gets' else metric} ({phase})")
+    return "; ".join(parts) or "-"
+
+
 def perf_table(cells: list[dict]) -> list[str]:
-    head = ("| | signal | layer | shape | range | base p50 | PR p50 | change | VL/VT p50 | PR / VL/VT | S3 GETs cold | S3 GETs warm | S3 MB cold | result vs VL/VT |")
-    out = [head, "|---|---|---|---|---|--:|--:|--:|--:|--:|--:|--:|--:|---|"]
+    head = ("| | signal | layer | shape | range | base p50 | PR p50 | change | VL/VT p50 | PR / VL/VT | S3 GETs cold | S3 GETs warm | S3 MB cold | S3 cost change | result vs VL/VT |")
+    out = [head, "|---|---|---|---|---|--:|--:|--:|--:|--:|--:|--:|--:|---|---|"]
     for c in cells:
         p50 = c["p50"]
         gb, gp = s3_pair(c, "gets", "cold")
@@ -99,11 +110,10 @@ def perf_table(cells: list[dict]) -> list[str]:
         bb, bp = s3_pair(c, "bytes", "cold")
         mark = " ¹" if c.get("confirmed") else ""
         change = f"{c['change_pct']:+.0f}%" if c.get("change_pct") is not None else "-"
-        s3_flag = " (more)" if "more" in c["s3_verdict"].values() else ""
         out.append(f"| {ICON.get(c['verdict'], c['verdict'])} | {c['signal']} | {c['layer']} | {cell(c['shape'])} | {c['range']} | "
                    f"{ms(p50.get('base'), c['status'].get('base'))} | {ms(p50.get('pr'), c['status'].get('pr'))}{mark} | {change} | "
                    f"{ms(p50.get('ref'), c['status'].get('ref'))} | {ratio(p50.get('pr'), p50.get('ref'))} | "
-                   f"{fmt_pair(gb, gp, digits=0)}{s3_flag} | {fmt_pair(wb, wp, digits=1)} | {fmt_pair(bb, bp, 1e6, 2)} | {result_text(c)} |")
+                   f"{fmt_pair(gb, gp, digits=0)} | {fmt_pair(wb, wp, digits=1)} | {fmt_pair(bb, bp, 1e6, 2)} | {s3_flag(c)} | {result_text(c)} |")
     return out
 
 
@@ -140,7 +150,9 @@ def meta_stamp(meta: dict, summary: dict | None = None) -> str:
         bits.append("hot " + ", ".join(f"{k} {v}" for k, v in meta["versions"].items()))
     if meta.get("latency"):
         bits.append("S3 latency " + ", ".join(
-            f"{x['expect_ms']:g} ms (probe +{x['added_ms']:g} ms" + (f", Lakehouse's own S3 mean {x['lh_mean_ms']:.0f} ms" if x.get("lh_mean_ms") is not None else "")
+            f"{x['expect_ms']:g} ms (probe +{x['added_ms']:g} ms"
+            + (", Lakehouse's own S3 mean " + "/".join(f"{v:.0f}" for v in x["lh_mean_ms"].values() if v is not None) + " ms (base-logs/base-traces/pr-logs/pr-traces order may vary)"
+               if isinstance(x.get("lh_mean_ms"), dict) else "")
             + f", {'ok' if x['ok'] else 'FAILED'})" for x in meta["latency"]))
     if summary:
         bits.append(f"{summary.get('runs')} runs per target (first cold), warm p50; noise max({int(summary['noise'] * 100)}%, {summary['min_delta_ms']:g} ms)")
@@ -181,16 +193,31 @@ def why_lines(selection: dict) -> list[str]:
     return lines + ["", "</details>"]
 
 
-def render_perf(summary: dict | None, selection: dict, meta: dict, known: dict | None = None, components: dict | None = None) -> tuple[str, dict]:
+def with_profile(summary: dict, profile: str) -> list[dict]:
+    return [dict(c, profile=profile) for c in summary["cells"]]
+
+
+def where(c: dict) -> str:
+    return f"`{c['shape']}` ({c['layer']}/{c['range']}" + (f", {c['profile']}" if c.get("profile") else "") + ")"
+
+
+def render_perf(summary: dict | None, selection: dict, meta: dict, known: dict | None = None, components: dict | None = None,
+                extra: dict | None = None, gate_s3_all: bool = False) -> tuple[str, dict]:
+    """`extra` holds the summaries of the other S3 latency profiles ({"50": summary}): their cells fail the check like the 0 ms ones."""
     title = "Performance A/B vs main, against VictoriaLogs / VictoriaTraces"
     if summary is None:
         return skipped(selection, PERF_MARKER, title)
     cells = summary["cells"]
     counts = summary["verdicts"]
-    fails = failing_cells(summary)
-    invalid_cells = [c for c in cells if c["verdict"] == "n/a" and not c["n_valid"].get("base") and not c["n_valid"].get("pr")]
+    fails = failing_cells(summary, gate_s3_all)
+    other = [c for p, sm in (extra or {}).items() for c in with_profile(sm, f"{p} ms")]
+    for key, items in failing_cells({"cells": other}, gate_s3_all).items():
+        fails[key] = fails[key] + items
+    invalid_cells = [c for c in cells + other if c["verdict"] == "n/a" and not c["n_valid"].get("base") and not c["n_valid"].get("pr")]
+    ref_invalid = list(summary.get("ref_invalid", [])) + [c["cell"] for c in other if c.get("ref_invalid")]
+    uncleared = list(summary.get("cold_not_cleared", [])) + [x for sm in (extra or {}).values() for x in sm.get("cold_not_cleared", [])]
     probe_failed = [x for x in meta.get("latency", []) if not x.get("ok")]
-    invalid = bool(invalid_cells or summary.get("cold_not_cleared") or probe_failed)
+    invalid = bool(invalid_cells or uncleared or probe_failed or ref_invalid)
     known_failed = bool(known and known.get("failed"))
     failed = any(fails.values()) or known_failed
     diff_new = len(fails["new_difference"])
@@ -204,19 +231,23 @@ def render_perf(summary: dict | None, selection: dict, meta: dict, known: dict |
         head, state = "NEUTRAL Performance A/B: no change beyond noise", "passed"
     diffs = summary["differences"]
     same_ref = sum(1 for c in cells if c["vs_ref"]["pr"] == "same")
-    bits = [f"{counts[k]} {k}" for k in ("broken", "slower", "fixed", "faster", "same", "n/a") if counts.get(k)]
+    bits = [f"{counts[k]} {k}" for k in ("broken", "unstable", "slower", "fixed", "faster", "same", "n/a") if counts.get(k)]
     lines = [PERF_MARKER, f"### {head}", "",
              f"**{len(cells)} cells** (shape x layer x range x tenant form): " + ", ".join(bits) +
-             f". Results vs VL/VT: {same_ref} same, {diff_new} new difference(s), {diffs.get('pre-existing', 0)} pre-existing, {diffs.get('fixed', 0)} fixed. "
+             f". Results vs VL/VT: {same_ref} same, {diffs.get('new', 0)} new difference(s), {diffs.get('pre-existing', 0)} pre-existing, {diffs.get('fixed', 0)} fixed. "
              f"S3 cost: {summary['s3_flags']['more']} cell(s) need more GETs or bytes, {summary['s3_flags']['less']} fewer.", ""]
     for text, items in (("A confirmed regression", fails["slower"]), ("A cell that broke", fails["broken"]),
-                        ("More S3 GETs or bytes on a control shape", fails["s3_more"])):
+                        ("A cell where the PR gave an error, empty or flapping answer the base did not", fails["unstable"]),
+                        ("A new difference from hot, or from the base where hot cannot be compared", fails["new_difference"]),
+                        ("More S3 GETs or bytes" + ("" if gate_s3_all else " on a control shape"), fails["s3_more"])):
         if items:
-            lines.append(f"**{text}**: " + ", ".join(f"`{c['shape']}` ({c['layer']}/{c['range']})" for c in items[:8]) + (" ..." if len(items) > 8 else ""))
+            lines.append(f"**{text}**: " + ", ".join(where(c) for c in items[:8]) + (" ..." if len(items) > 8 else ""))
     if invalid_cells:
         lines.append("**No valid answer on base or PR** (a cell that proves nothing): " + ", ".join(f"`{c['cell']}`" for c in invalid_cells[:5]))
-    if summary.get("cold_not_cleared"):
-        lines.append("**The Lakehouse cache could not be cleared before a cold run** (the cold figure would be warm): " + ", ".join(f"`{x}`" for x in summary["cold_not_cleared"][:5]))
+    if uncleared:
+        lines.append("**The Lakehouse cache could not be cleared before a cold run** (the cold figure would be warm): " + ", ".join(f"`{x}`" for x in uncleared[:5]))
+    if ref_invalid:
+        lines.append("**Hot VictoriaLogs/VictoriaTraces gave no valid answer** (the result check cannot run for these cells): " + ", ".join(f"`{x}`" for x in ref_invalid[:5]))
     if probe_failed:
         lines.append("**The S3 latency probe failed**: the injected delay was not measured: " + ", ".join(f"{x['expect_ms']:g} ms (measured +{x['added_ms']:g} ms)" for x in probe_failed))
     if any(lines[-1:]):
@@ -249,7 +280,8 @@ def render_perf(summary: dict | None, selection: dict, meta: dict, known: dict |
     exit_code = 2 if invalid else (1 if failed else 0)
     verdict = {"state": state, "failed": failed or invalid, "exit": exit_code, "counts": counts, "differences": diffs,
                "s3_flags": summary["s3_flags"], "new_differences": diff_new, "cells": len(cells),
-               "known": (known or {}).get("counts", {}), "invalid_cells": [c["cell"] for c in invalid_cells]}
+               "known": (known or {}).get("counts", {}), "invalid_cells": [c["cell"] for c in invalid_cells], "ref_invalid": ref_invalid,
+               "failing": {k: len(v) for k, v in fails.items()}, "extra_profiles": {p: sm["verdicts"] for p, sm in (extra or {}).items()}}
     return "\n".join(lines) + "\n", verdict
 
 

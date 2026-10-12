@@ -51,6 +51,7 @@ SERVICES = ["s3", "s3-init", "s3-latency", "vl-ref", "vt-ref", "lh-logs-base", "
 LH_CONTAINER = {"base-logs": "lh-logs-base", "base-traces": "lh-traces-base", "pr-logs": "lh-logs-pr", "pr-traces": "lh-traces-pr"}
 # Ports of this overlay, past the last port scripts.proof allots (452).
 EXTRA_OFFSETS = {"ab-s3-direct": 460, "ab-s3-proxied": 461, "ab-toxi-api": 462}
+P.PORT_OFFSETS.update(EXTRA_OFFSETS)  # so the port blocks scripts.proof offers (allowed_bases) leave room for the overlay's ports too
 
 # Seed sized for timing. (name, account, project, seed, logs, traces) per tenant; the numbers are per chunk.
 HOURS_BACK = 6
@@ -218,8 +219,11 @@ def running() -> bool:  # pragma: no cover - runs docker
     return bool(out)
 
 
-def cmd_up(_a):  # pragma: no cover - drives docker
-    if not running():
+def cmd_up(_a, reuse: bool = False):  # pragma: no cover - drives docker
+    if running():
+        if not reuse:
+            raise SystemExit(f"a stack of project {PROJECT} is already running (another run's?): stack.py down first, use another AB_PROJECT, or pass --reuse-stack")
+    else:
         busy = P.busy_ports(published_ports().values())
         if busy:
             raise SystemExit(f"ports already in use on 127.0.0.1: {busy}; set PROOF_PORT_BASE or another AB_PROJECT")
@@ -277,6 +281,25 @@ def post_json(url: str, body: dict, headers: dict | None = None, timeout: float 
         return e.code, e.read().decode("utf-8", "replace")
 
 
+def body_int(body: str, key: str) -> int | None:
+    m = re.search(rf'"{key}"\s*:\s*(\d+)', body or "")
+    return int(m.group(1)) if m else None
+
+
+def recompact_problems(results: dict) -> list[str]:
+    """Hours (per target) whose forced compaction answered an error or merged nothing: 2xx, at least one output file, fewer than the inputs."""
+    problems = []
+    for target, hours in results.items():
+        for part, r in hours.items():
+            if not 200 <= int(r["status"]) < 300:
+                problems.append(f"{target} {part}: HTTP {r['status']} {str(r['body'])[:80]}")
+                continue
+            inp, out = body_int(r["body"], "input_files"), body_int(r["body"], "output_files")
+            if inp is None or out is None or out < 1 or out >= inp:
+                problems.append(f"{target} {part}: {inp} input and {out} output files")
+    return problems
+
+
 def cmd_compact(a):  # pragma: no cover - drives docker
     state = load_json(os.path.join(a.out, "state.json"))
     results = {}
@@ -290,6 +313,9 @@ def cmd_compact(a):  # pragma: no cover - drives docker
             log(f"recompact {key} {part}: {status} {body[:100]}")
     state["ab"]["recompact"] = results
     dump_json(os.path.join(a.out, "state.json"), state, indent=1)
+    problems = recompact_problems(results)
+    if problems:
+        raise RuntimeError("the forced compaction did not compact, so the compacted layer would be plain flushed data: " + "; ".join(problems[:4]))
 
 
 def buffer_counts(state: dict) -> dict:  # pragma: no cover - needs the stack

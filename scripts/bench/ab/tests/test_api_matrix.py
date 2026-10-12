@@ -111,7 +111,24 @@ def test_a_limited_query_is_scored_by_membership_in_the_unlimited_reference_answ
     bad = limited(universe, ["c", "d"], ["a", "zzz"])
     assert bad["verdict"] == "regressed" and bad["pr_worst"] == "membership" and api_matrix.failing(bad)
     gone = limited(universe, ["c", "d"], [])
-    assert gone["verdict"] == "regressed" and gone["pr_worst"] == "emptiness"
+    assert gone["verdict"] == "regressed" and gone["pr_worst"] in ("emptiness", "cardinality")
+
+
+def test_a_limit_that_keeps_fewer_rows_than_the_reference_does_is_a_regression():
+    """`* | limit 10` over many rows: base keeps 10, the PR keeps 1; every row is a member, so only cardinality catches it."""
+    universe = [f"m{i}" for i in range(50)]
+
+    def ref(method, path, headers, body):
+        return 200, rows_body(*(universe if "limit" not in path else universe[:10])), {}
+    ss = [Server(ref), Server(lambda *a: (200, rows_body(*universe[10:20]), {})), Server(lambda *a: (200, rows_body(*universe[:1]), {}))]
+    state = {"ports": {f"{t}-logs": s.port for t, s in zip(("ref", "base", "pr"), ss)}}
+    try:
+        r = api_matrix.run_request(state, req(kind="rows", compare="ndjson-multiset", path="/select/logsql/query",
+                                              params={"query": "* | limit 10"}, limit=(10, False)), 2)
+    finally:
+        for s in ss:
+            s.close()
+    assert r["verdict"] == "regressed" and r["pr_worst"] == "cardinality" and r["pr_score"] == 10.0 and r["base_score"] == 100.0
 
 
 def test_a_nondeterministic_row_fails_only_when_a_sample_had_the_pr_worse_than_the_base():

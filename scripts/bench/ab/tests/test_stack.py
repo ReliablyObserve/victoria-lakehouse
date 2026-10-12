@@ -28,7 +28,17 @@ def test_project_ports_are_distinct_free_of_other_stacks_and_below_the_ephemeral
 def test_extra_ports_follow_the_block_and_do_not_collide_with_the_proof_stack():
     extra = stack.extra_ports(45600)
     assert extra == {"ab-s3-direct": 46060, "ab-s3-proxied": 46061, "ab-toxi-api": 46062}
-    assert not set(extra.values()) & set(proof.make_ports("x", {"PROOF_PORT_BASE": "45600"}).values())
+    own = {k: v for k, v in proof.make_ports("x", {"PROOF_PORT_BASE": "45600"}).items() if not k.startswith("ab-")}
+    assert not set(extra.values()) & set(own.values())
+
+
+def test_the_port_block_leaves_room_for_the_overlay_ports():
+    """scripts.proof only offers bases whose block holds its own offsets; the overlay's (460..462) are part of the span."""
+    assert max(proof.PORT_OFFSETS.values()) >= max(stack.EXTRA_OFFSETS.values())
+    assert proof.port_base() in proof.allowed_bases()
+    for b in proof.allowed_bases():
+        assert b + max(stack.EXTRA_OFFSETS.values()) < proof.EPHEMERAL_FLOOR
+        assert not any(b <= hi and b + max(stack.EXTRA_OFFSETS.values()) >= lo for lo, hi in proof.RESERVED_PORTS)
 
 
 def test_state_has_the_four_layers_hour_aligned_and_a_widened_cold_window():
@@ -105,3 +115,21 @@ def test_images_removed_on_down_are_only_this_projects():
 def test_pinned_images_come_from_the_e2e_compose_file():
     assert stack.toxiproxy_image().startswith("ghcr.io/shopify/toxiproxy:")
     assert "@sha256:" in stack.e2e_pin(r"image:\s*(rustfs/rustfs:\S+)")
+
+
+def test_a_forced_compaction_that_merged_nothing_is_a_problem():
+    ok = {"base-logs": {"dt=a/hour=08": {"status": 200, "body": '{"bytes_written":5,"fenced_files":0,"input_files":8,"output_files":2,"output_lev'}}}
+    assert stack.recompact_problems(ok) == []
+    bad = {"base-logs": {"h1": {"status": 400, "body": "fewer than two compactable files"},
+                         "h2": {"status": 200, "body": '{"input_files":8,"output_files":8}'},
+                         "h3": {"status": 200, "body": '{"input_files":8,"output_files":0}'},
+                         "h4": {"status": 200, "body": "{}"}}}
+    problems = stack.recompact_problems(bad)
+    assert len(problems) == 4 and "HTTP 400" in problems[0]
+
+
+def test_a_running_stack_of_the_project_is_refused_unless_reuse_is_asked_for(monkeypatch):
+    import pytest
+    monkeypatch.setattr(stack, "running", lambda: True)
+    with pytest.raises(SystemExit, match="already running"):
+        stack.cmd_up(None)

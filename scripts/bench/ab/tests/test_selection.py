@@ -1,5 +1,6 @@
 """selection.py: changed files -> registry items -> shape sets, and the --check gate."""
 import copy
+import os
 
 import pytest
 
@@ -124,3 +125,38 @@ DEFECTS = [
 def test_check_catches_each_kind_of_defect(text, mutate):
     found = problems(mutate)
     assert any(text in p for p in found), found
+
+
+def test_m4_a_dependency_bump_in_the_traces_module_and_non_go_runtime_files_are_not_skipped():
+    for f in ("lakehouse-traces/go.mod", "lakehouse-traces/go.sum", "go.mod", "Makefile", "Dockerfile.traces"):
+        assert selection.classify(f) == "runtime", f
+        assert sel([f])["sets"].keys() == {"control-logs", "control-traces"}, f
+    assert selection.classify("internal/ui/vmui/index.html") == "asset"
+    assert selection.classify("internal/config/defaults.yaml") == "asset"
+    assert selection.classify("internal/config/README.md") == "ignored"
+    r = sel(["internal/ui/vmui/index.html"])
+    assert r["run"] and r["sets"] == {"control-logs": ["c1"], "control-traces": ["t1"]}
+    assert selection.classify("lakehouse-traces/deps/VictoriaLogs/go.mod") == "ignored"
+    assert selection.classify("charts/lakehouse/values.yaml") == "ignored"
+
+
+def test_m5_every_area_prefix_exists_and_the_trace_entry_points_select_the_trace_sets():
+    spec = abreg.load_json(abreg.SHAPES)
+    for prefix in spec["areas"]:
+        assert os.path.exists(os.path.join(abreg.ROOT, prefix.rstrip("/"))), prefix
+    idx = selection.build_index(abreg.load_rows(), abreg.load_features())
+    for f in ("lakehouse-traces/main.go", "lakehouse-traces/internal/selectapi/x.go", "lakehouse-traces/internal/vtstorage_adapter/x.go", "internal/traceindex/x.go"):
+        sets = selection.select([f], spec, idx)["sets"]
+        assert "trace-by-id" in sets, f
+    spec2 = copy.deepcopy(spec)
+    spec2["areas"]["lakehouse-traces/internal/ghost/"] = ["trace-by-id"]
+    assert any("does not exist" in p for p in selection.check(spec2, abreg.load_rows(), abreg.load_features()))
+
+
+def test_a_shape_that_hot_answers_differently_on_every_call_is_not_compared_with_hot():
+    import api_rows
+    spec = abreg.load_json(abreg.SHAPES)
+    for s in spec["sets"].values():
+        for sh in s["shapes"]:
+            if sh.get("path", "").endswith(api_rows.ARBITRARY_PATHS):
+                assert sh.get("vs_ref") is False, sh["name"]

@@ -82,16 +82,26 @@ def write_text(path: str, text: str) -> None:
         f.write(text)
 
 
-ISSUE_RE = re.compile(r"(?:issues|pull)/(\d+)|(?<![\w/])#(\d{2,})\b")
+ORG = "ReliablyObserve"
+# An issue of one of this organisation's repositories (a URL), or a bare `#123` (the repository's own convention). A pull request link
+# or an issue of another project (upstream VictoriaLogs, say) is not an issue that tracks a Lakehouse difference.
+ISSUE_URL_RE = re.compile(r"github\.com/([\w.-]+)/([\w.-]+)/issues/(\d+)")
+BARE_RE = re.compile(r"(?<![\w/])#(\d{2,})\b")
 GAP_ID_RE = re.compile(r"(?<![\w/])#([A-Z]\d+)\b")
 
 
 def issue_numbers(text: str) -> list[int]:
-    """GitHub issue or PR numbers cited in `text` as a URL or `#123` (gap ids such as `#A6` are not numbers)."""
+    """Issue numbers cited in `text`: URLs of repositories of the ReliablyObserve organisation, and bare `#123` unless the same text
+    names that number as an issue of another project (gap ids such as `#A6` are not numbers)."""
+    text = text or ""
+    foreign = {int(m.group(3)) for m in ISSUE_URL_RE.finditer(text) if m.group(1) != ORG}
     out = []
-    for m in ISSUE_RE.finditer(text or ""):
-        n = int(m.group(1) or m.group(2))
-        if n not in out:
+    for m in ISSUE_URL_RE.finditer(text):
+        if m.group(1) == ORG and int(m.group(3)) not in out:
+            out.append(int(m.group(3)))
+    for m in BARE_RE.finditer(text):
+        n = int(m.group(1))
+        if n not in out and n not in foreign:
             out.append(n)
     return out
 
