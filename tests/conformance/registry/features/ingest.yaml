@@ -30,10 +30,19 @@
   area: ingest
   readme_section: Write Path
   surfaces: [ingest, flag]
+  rows:
+    - lh.durability.pre1970_rows_logs
+    - lh.durability.pre1970_rows_traces
+    - lh.durability.pre1970_stored_logs
+    - lh.durability.pre1970_stored_traces
+    - lh.durability.restart_cardinality_gate_logs
+    - lh.durability.restart_cardinality_gate_traces
   tests:
     - internal/storage/parquets3/buffer_flusher_segments_test.go
     - internal/storage/parquets3/buffer_restart_test.go
     - internal/vlstorage/insert_adapter_test.go
+    - tests/conformance/registry/schema_durability_test.go#TestDurability_ValidCells
+    - tests/conformance/registry/schema_durability_test.go#TestDurability_InvalidCells
     - internal/manifest/segments_test.go
     - internal/compaction/scheduler_segments_test.go
     - internal/delete/scheduler_test.go#TestSchedulerRunOnce_WaitsForTheBufferSegmentOfAnObject

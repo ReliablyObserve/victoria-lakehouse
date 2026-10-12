@@ -83,28 +83,65 @@ VictoriaLogs/VictoriaTraces:
   receiving an ack for rows that were stored nowhere.
 - **What upstream drops at ingest, the Lakehouse drops too.** A row whose
   `_time` is more than 2 days in the future (`-futureRetention` of upstream) is
-  rejected by the storage with upstream's warning and counter. There is no limit
-  into the past (the buffer's retention is 100 years): backfilled rows of any
-  age are kept until they are written, and the Lakehouse's own retention then
-  applies to the objects.
-- **Admission.** The logs binary drops, before the buffer, the rows of
-  trace-shaped streams (span data sent to the logs endpoint:
+  rejected by the storage with upstream's warning (its counter is not exported
+  yet, #486). There is no limit into the past (the buffer's retention is 100
+  years): backfilled rows of any age from 1970 on are kept until they are
+  written, and the Lakehouse's own retention then applies to the objects.
+- **A row before the Unix epoch is refused when it is added.** The Lakehouse
+  time domain starts at 1970-01-01T00:00:00Z: Parquet partitions, the manifest's
+  time bounds and the drain's time range all start there. A row with a negative
+  `_time` (a date before 1970; for traces also an OTLP start time above 2^63 ns,
+  which wraps) is therefore dropped by the insert path, the same place and the
+  same way upstream drops a row outside its window: the request is answered as a
+  success, a throttled warning is logged (`skipping log entry with too small
+  timestamp=...`), and the row is counted in
+  `lakehouse_insert_rows_dropped_total{reason="too_small_timestamp"}`. The row
+  is never acknowledged into the buffer, so it cannot be lost later; it also
+  takes no slot of the tenant's cardinality limit. The epoch itself is stored.
+  Hot VictoriaLogs/VictoriaTraces drop such a row at the default retention and
+  store it when `-retentionPeriod` covers the date; that difference is tracked
+  in #484.
+- **Admission is decided once.** The logs binary drops, before the buffer, the
+  rows of trace-shaped streams (span data sent to the logs endpoint:
   `lakehouse_logs_trace_shaped_rows_dropped_at_ingest_total`) and of streams over
   the tenant's cardinality limit. The traces binary applies the cardinality gate
-  only. VictoriaTraces' `trace_id_idx` rows stay in the buffer, as in hot
-  VictoriaTraces, and are dropped when the buffer is flushed (the `_trace_idx`
-  footer index replaces them; counted in
-  `lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}`).
-  `lakehouse_insert_rows_total` counts the rows admitted into the buffer.
+  only. Nothing is judged again when the buffer is flushed: the cardinality
+  limiter is per process and starts empty after a restart, so judging a
+  segment's rows by it at the drain dropped rows that had been admitted and
+  acknowledged (#389). What remains at the drain depends on the stream alone: the
+  logs binary does not write a trace-shaped stream, and VictoriaTraces'
+  `trace_id_idx` rows, which stay in the buffer as in hot VictoriaTraces, are
+  dropped when the buffer is flushed (the `_trace_idx` footer index replaces
+  them; counted in `lakehouse_vt_internal_rows_dropped_total{kind="trace_id_idx"}`).
+  `lakehouse_insert_rows_total` counts the rows admitted into the buffer, so it
+  equals the rows the buffer was given. How the limit's set of streams behaves
+  across restarts and replicas is tracked in #485.
+
+**The guarantee.** Every row the insert path hands to the buffer reaches Parquet
+exactly once, whatever its `_time` (from 1970 on), its tenant or its stream, and
+whatever happens to the process: a restart while the segment is active, after
+the seal, or in the middle of the drain. Every row that cannot be stored is
+refused before it is acknowledged, and counted.
 
 Proof: `TestInsertAdapter_EveryAdmittedRowReachesTheBuffer`,
 `TestInsertAdapter_DropsTraceShapedAndOverLimitStreamsKeepsTheRest`,
 `TestInsertAdapter_CanWriteData`, `TestInsertAdapter_BufferPanicPropagates`,
-`TestInsertAdapter_RowsAreInTheSegments`, `TestLogsBuffer_FieldsNamedLikeTraceIndexRowsAreKept`
+`TestInsertAdapter_RowsAreInTheSegments`, `TestLogsBuffer_FieldsNamedLikeTraceIndexRowsAreKept`,
+`TestInsertAdapter_RefusesRowsBeforeTheEpoch`, `TestInsertAdapter_RefusedRowsTakeNoCardinalitySlot`,
+`TestInsertAdapter_BeforeEpochProperty`, `TestFlushRowKeeper_IgnoresTheCardinalityGate`
 (logs) and `TestVTInsertAdapter_EverySpanReachesTheBuffer`,
 `TestVTInsertAdapter_DropsOverLimitStreamsKeepsTheRest`,
 `TestVTInsertAdapter_CanWriteData`, `TestVTInsertAdapter_BufferPanicPropagates`,
-`TestVTInsertAdapter_DropsTraceIDIndexRow` (traces).
+`TestVTInsertAdapter_DropsTraceIDIndexRow`, `TestVTInsertAdapter_RefusesRowsBeforeTheEpoch`,
+`TestVTInsertAdapter_RefusedRowsTakeNoCardinalitySlot`,
+`TestVTInsertAdapter_BeforeEpochProperty` (traces). End to end through the adapter,
+the buffer, the drain and a restart (both modules): `TestPre1970Rows_AreRefusedAtTheBufferNotLostAtTheDrain`,
+`TestPre1970Rows_EpochEdgeAndAllRefusedBatch`, `TestPre1970Rows_AreNotReadableFromTheBuffer`,
+`TestPre1970Rows_PropertyEveryRowIsRefusedOrStoredOnce`,
+`TestAckedRows_NotRejudgedByAFreshCardinalityLimiter` (restart matrix),
+`TestAckedRows_FlushFilterNeverDropsOnCardinality`, `TestAckedRows_PropertyRandomRestartsAndLimits`.
+The registry cells are `lh.durability.pre1970_rows_*`, `lh.durability.pre1970_stored_*`
+(the known difference) and `lh.durability.restart_cardinality_gate_*`.
 
 ### 2.0 Durability matrix — what survives what
 

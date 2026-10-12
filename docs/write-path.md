@@ -154,6 +154,7 @@ Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a spec
 | Metric | Type | Description |
 |---|---|---|
 | `lakehouse_insert_rows_total` | Counter | Rows admitted into the buffer |
+| `lakehouse_insert_rows_dropped_total` | Counter (`reason`) | Rows refused before the buffer: `too_small_timestamp` = `_time` before 1970 |
 | `lakehouse_buffer_pending_rows` | Gauge | Rows in segments not yet committed to Parquet |
 | `lakehouse_buffer_segments` | Gauge | Segments by state (`active`, `pending`, `committed`, `retired`) |
 | `lakehouse_insert_flush_total` | Counter | Segment drains completed |

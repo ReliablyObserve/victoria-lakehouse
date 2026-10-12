@@ -115,6 +115,7 @@ graph LR
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `lakehouse_insert_rows_total` | Counter | | Rows admitted into the insert buffer (after the admission filter) |
+| `lakehouse_insert_rows_dropped_total` | Counter | `reason` | Rows the insert path refused instead of acknowledging into the buffer: `too_small_timestamp` is a row whose `_time` is before 1970-01-01T00:00:00Z, which the Parquet layout cannot hold (the request is still answered as a success, as upstream answers for a row outside its window) |
 | `lakehouse_buffer_pending_rows` | Gauge | | Rows in segments not yet fully written to object storage. Grows while object storage is slow or unreachable; the rows are safe on the buffer volume |
 | `lakehouse_buffer_segments` | Gauge | `state` | Insert-buffer segments: `active` (taking writes, always 1), `pending` (sealed, not yet fully written), `committed` (written, kept readable for the grace period), `retired` (past the grace; only queries that started before then still read it, and it is removed when the last of them ends) |
 | `lakehouse_buffer_segments_sealed_total` / `lakehouse_buffer_segments_committed_total` | Counter | | Segments sealed and fully written since the process started |
