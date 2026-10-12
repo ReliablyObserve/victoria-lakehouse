@@ -3119,7 +3119,7 @@
           "name": "start_time_unix_nano",
           "type": "INT64",
           "encodings": [
-            "PLAIN",
+            "DELTA_BINARY_PACKED",
             "RLE"
           ],
           "codecs": [
