@@ -231,3 +231,28 @@ func TestDurability_RealRegistry(t *testing.T) {
 		t.Fatalf("durability cells are inconsistent:\n  %s", strings.Join(errs, "\n  "))
 	}
 }
+
+// Repositories that are missing what the check reads: no document, no metrics
+// directory, and no cells at all.
+func TestCheckDurability_MissingInputs(t *testing.T) {
+	root := durabilityRepo(t, goodDoc)
+	if err := os.Remove(filepath.Join(root, "docs", "durability.md")); err != nil {
+		t.Fatal(err)
+	}
+	if errs := CheckDurability(twinRows(), root); !strings.Contains(strings.Join(errs, "\n"), "docs/durability.md") {
+		t.Errorf("a missing docs/durability.md reported %v", errs)
+	}
+
+	root = durabilityRepo(t, goodDoc)
+	if err := os.RemoveAll(filepath.Join(root, "internal", "metrics")); err != nil {
+		t.Fatal(err)
+	}
+	if errs := CheckDurability(twinRows(), root); !strings.Contains(strings.Join(errs, "\n"), "not registered in internal/metrics") {
+		t.Errorf("a missing metrics directory reported %v", errs)
+	}
+
+	// No cells: nothing to check, not even the document.
+	if errs := CheckDurability(&Registry{}, t.TempDir()); len(errs) != 0 {
+		t.Errorf("a registry without durability cells reported %v", errs)
+	}
+}

@@ -109,7 +109,7 @@ GO
 	wrapped=$(python3 -c 'print(2**64 - 5_000_000_000)') # an OTLP time above 2^63-1
 	for t in "${traces_targets[@]}"; do
 		kind="${t%%=*}"; url="${t#*=}"
-		h="$(printf '%s' "$kind$$" | md5 | cut -c1-26 2>/dev/null || printf '%s' "$kind$$" | md5sum | cut -c1-26)"
+		h="$(python3 -c 'import hashlib, sys; print(hashlib.md5(sys.argv[1].encode()).hexdigest()[:26])' "$kind$$")"
 		for spec in "old:$old_ns:aa$h" "ctl:$nowns:bb$h"; do
 			IFS=: read -r _ ts id <<<"$spec"
 			"$tmp/nativerow" "$ts" "${id}0000" | curl -s -o /dev/null -H 'Content-Type: application/octet-stream' -X POST --data-binary @- "$url/insert/native?version=v1"
@@ -129,7 +129,7 @@ PY
 	sleep "$HOT_WAIT_SECS"
 	for t in "${traces_targets[@]}"; do
 		kind="${t%%=*}"; url="${t#*=}"
-		h="$(printf '%s' "$kind$$" | md5 | cut -c1-26 2>/dev/null || printf '%s' "$kind$$" | md5sum | cut -c1-26)"
+		h="$(python3 -c 'import hashlib, sys; print(hashlib.md5(sys.argv[1].encode()).hexdigest()[:26])' "$kind$$")"
 		[ "$kind" = lh ] && sleep "$LH_WAIT_SECS"
 		out="$(curl -s "$url/select/logsql/query" --data-urlencode "query=trace_id:in(\"aa${h}0000\",\"bb${h}0000\",\"cc${h}0000\",\"dd${h}0000\") | fields trace_id" --data-urlencode 'start=1900-01-01T00:00:00Z' --data-urlencode 'end=2100-01-01T00:00:00Z' --data-urlencode 'disable_latency_offset=1')"
 		has() { if grep -q "$1${h}0000" <<<"$out"; then echo true; else echo false; fi; }

@@ -137,13 +137,16 @@ VictoriaLogs/VictoriaTraces:
   was admitted before can be refused, and its new rows are dropped and counted
   while the rows acknowledged before the restart are still written (#485).
 
-**The guarantee, and what it does not cover.** For a clean restart of the
-process (the buffer is closed, as SIGTERM does), for an upload failure in the
-middle of a drain, and for a restart while a segment is active, sealed or part
-drained, every row the insert path hands to the buffer reaches Parquet exactly
-once, whatever its tenant, its stream or its `_time`. A drain commits a segment
-only after checking that its plan covers every row the segment holds (§2.1).
-The tests restart by closing the buffer; none of them kills the process.
+**The guarantee, and what it does not cover.** Take a log row or a span that
+the insert path added to the buffer and that upstream's storage keeps (the rows
+counted in `lakehouse_insert_rows_total`, minus the exceptions listed below).
+After a clean restart of the process (the buffer is closed, as SIGTERM does),
+after an upload failure in the middle of a drain, or after a restart while its
+segment is active, sealed or part drained, that row reaches Parquet exactly once.
+A row before 1970 is refused before the buffer, so its `_time` does not make an
+acknowledged row unstorable. A drain commits a segment only after checking that
+its plan covers every row the segment holds (§2.1). The tests restart by closing
+the buffer; none of them kills the process.
 
 It does not cover:
 

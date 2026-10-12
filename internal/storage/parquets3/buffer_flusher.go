@@ -681,6 +681,13 @@ type tenantPlan struct {
 // (errDrainInvariant). A tenant whose groups cannot be planned now is reported in
 // planErr: the other tenants are still written and the drain is retried.
 func (f *BufferFlusher) planSegment(ctx context.Context, g *membuffer.Segment) (plans []tenantPlan, planErr, err error) {
+	return f.planSegmentWith(ctx, g, tenantSecondCounts, tenantRowCount)
+}
+
+// planSegmentWith is planSegment with its two per-tenant queries as parameters.
+func (f *BufferFlusher) planSegmentWith(ctx context.Context, g *membuffer.Segment,
+	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error),
+	rowCount func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error)) (plans []tenantPlan, planErr, err error) {
 	tenants, err := g.GetTenantIDs(ctx, math.MinInt64, math.MaxInt64)
 	if err != nil {
 		metrics.BufferFlushErrors.Inc("collect")
@@ -701,32 +708,44 @@ func (f *BufferFlusher) planSegment(ctx context.Context, g *membuffer.Segment) (
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		counts, err := tenantSecondCounts(ctx, g, tenant)
-		if err != nil {
+		tp, err := f.planTenant(ctx, g, tenant, secondCounts, rowCount)
+		switch {
+		case err == nil:
+			plans = append(plans, tp)
+		case errors.Is(err, errDrainInvariant):
+			return nil, nil, err
+		default:
 			metrics.BufferFlushErrors.Inc("collect")
 			if planErr == nil {
-				planErr = fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+				planErr = err
 			}
-			continue
 		}
-		tp := tenantPlan{tenant: tenant, slices: planSlices(counts, f.maxRows)}
-		for _, n := range counts {
-			tp.rows += n
-		}
-		n, err := tenantRowCount(ctx, g, tenant)
-		if err != nil {
-			metrics.BufferFlushErrors.Inc("collect")
-			if planErr == nil {
-				planErr = fmt.Errorf("count tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
-			}
-			continue
-		}
-		if n != tp.rows {
-			return nil, nil, f.invariantViolation(g, fmt.Sprintf("tenant %d:%d: the plan covers %d rows, the segment holds %d", tenant.AccountID, tenant.ProjectID, tp.rows, n))
-		}
-		plans = append(plans, tp)
 	}
 	return plans, planErr, nil
+}
+
+// planTenant cuts one tenant's rows of g into groups and checks the plan against
+// a count of all of the tenant's rows. The two queries are parameters so the
+// checks can be tested with queries that fail or disagree.
+func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID,
+	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error),
+	rowCount func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error)) (tenantPlan, error) {
+	counts, err := secondCounts(ctx, g, tenant)
+	if err != nil {
+		return tenantPlan{}, fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+	}
+	tp := tenantPlan{tenant: tenant, slices: planSlices(counts, f.maxRows)}
+	for _, n := range counts {
+		tp.rows += n
+	}
+	n, err := rowCount(ctx, g, tenant)
+	if err != nil {
+		return tenantPlan{}, fmt.Errorf("count tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+	}
+	if n != tp.rows {
+		return tenantPlan{}, f.invariantViolation(g, fmt.Sprintf("tenant %d:%d: the plan covers %d rows, the segment holds %d", tenant.AccountID, tenant.ProjectID, tp.rows, n))
+	}
+	return tp, nil
 }
 
 // errDrainInvariant is wrapped by the error that holds a segment whose drain
@@ -762,20 +781,18 @@ func tenantRowCount(ctx context.Context, g *membuffer.Segment, tenant logstorage
 	var total int64
 	var perr error
 	err = g.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
+		mu.Lock()
+		defer mu.Unlock()
 		for _, c := range db.GetColumns(false) {
-			if c.Name != "n" {
-				continue
-			}
-			mu.Lock()
-			for _, v := range c.Values {
-				n, err := strconv.ParseInt(v, 10, 64)
-				if err != nil {
-					perr = fmt.Errorf("row count: n %q: %w", v, err)
-					continue
+			if c.Name == "n" {
+				for _, v := range c.Values {
+					n, err := strconv.ParseInt(v, 10, 64)
+					if err != nil {
+						perr = fmt.Errorf("row count: n %q: %w", v, err)
+					}
+					total += n
 				}
-				total += n
 			}
-			mu.Unlock()
 		}
 	})
 	if err == nil {

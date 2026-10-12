@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
 // The drain checks, before anything is uploaded, that its plan covers every row
@@ -150,4 +153,94 @@ func TestPlanSegment_ReadErrorsAreNotInvariantViolations(t *testing.T) {
 		t.Errorf("read errors counted %d invariant violations", got)
 	}
 	e.segs = nil // closed above; the cleanup must not close it twice
+}
+
+// The per-tenant check, with queries that fail or disagree: a query error is a
+// plain error (retried), a count that differs from the plan holds the segment,
+// and a plan that matches is returned with its groups.
+func TestPlanTenant_Checks(t *testing.T) {
+	e := newSegEnv(t)
+	e.ingest(segTenantA, hourAgo, 5)
+	g := e.seal()
+	f := e.flusher(2) // at most 2 rows per group
+	hour := hourAgo.UnixNano()
+	counts := func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error) {
+		return map[int64]int64{hour: 2, hour + int64(time.Second): 3}, nil
+	}
+	count := func(n int64) func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error) {
+		return func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error) { return n, nil }
+	}
+	boom := errors.New("boom")
+	before := invariantNow()
+
+	tp, err := f.planTenant(context.Background(), g, segTenantA, counts, count(5))
+	if err != nil || tp.rows != 5 || len(tp.slices) < 2 {
+		t.Fatalf("a matching plan: %+v, err %v; want 5 rows in at least 2 groups", tp, err)
+	}
+	var sum int64
+	for _, sl := range tp.slices {
+		sum += sl.rows
+	}
+	if sum != 5 {
+		t.Errorf("the groups hold %d rows, want 5", sum)
+	}
+
+	if _, err := f.planTenant(context.Background(), g, segTenantA, counts, count(6)); !errors.Is(err, errDrainInvariant) {
+		t.Errorf("a count of 6 against a plan of 5 returned %v, want the invariant error", err)
+	}
+	if _, err := f.planTenant(context.Background(), g, segTenantA, counts, count(4)); !errors.Is(err, errDrainInvariant) {
+		t.Errorf("a count of 4 against a plan of 5 returned %v, want the invariant error", err)
+	}
+	failing := func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error) {
+		return nil, boom
+	}
+	if _, err := f.planTenant(context.Background(), g, segTenantA, failing, count(5)); !errors.Is(err, boom) || errors.Is(err, errDrainInvariant) {
+		t.Errorf("a failing per-second query returned %v, want its error and no invariant error", err)
+	}
+	failingCount := func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error) { return 0, boom }
+	if _, err := f.planTenant(context.Background(), g, segTenantA, counts, failingCount); !errors.Is(err, boom) || errors.Is(err, errDrainInvariant) {
+		t.Errorf("a failing count query returned %v, want its error and no invariant error", err)
+	}
+	if got := invariantNow() - before; got != 2 {
+		t.Errorf("invariant counter rose by %d, want 2 (the two mismatches)", got)
+	}
+}
+
+// A tenant whose queries fail does not hold the segment and does not keep the
+// others from being planned: the error is reported next to their plans, and the
+// drain retries after the back-off.
+func TestPlanSegment_AFailingTenantIsReportedNotHeld(t *testing.T) {
+	e := newSegEnv(t)
+	e.ingest(segTenantA, hourAgo, 3)
+	e.ingest(segTenantB, hourAgo, 4)
+	g := e.seal()
+	f := e.flusher(1000)
+	hour := hourAgo.UnixNano()
+	boom := errors.New("boom")
+	counts := func(_ context.Context, _ *membuffer.Segment, tn logstorage.TenantID) (map[int64]int64, error) {
+		if tn == segTenantA {
+			return nil, boom
+		}
+		return map[int64]int64{hour: 4}, nil
+	}
+	count := func(_ context.Context, _ *membuffer.Segment, tn logstorage.TenantID) (int64, error) { return 4, nil }
+	before := invariantNow()
+	plans, planErr, err := f.planSegmentWith(context.Background(), g, counts, count)
+	if err != nil {
+		t.Fatalf("planSegment returned %v, want the failing tenant reported in planErr", err)
+	}
+	if !errors.Is(planErr, boom) || errors.Is(planErr, errDrainInvariant) {
+		t.Errorf("planErr = %v, want the tenant's error", planErr)
+	}
+	if len(plans) != 1 || plans[0].tenant != segTenantB || plans[0].rows != 4 {
+		t.Errorf("plans = %+v, want only tenant B's plan of 4 rows", plans)
+	}
+	if got := invariantNow() - before; got != 0 {
+		t.Errorf("a failing query counted %d invariant violations", got)
+	}
+
+	// A mismatch of any tenant holds the segment, whoever else fails.
+	if _, _, err := f.planSegmentWith(context.Background(), g, counts, func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error) { return 5, nil }); !errors.Is(err, errDrainInvariant) {
+		t.Errorf("a mismatch returned %v, want the invariant error", err)
+	}
 }
