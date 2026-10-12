@@ -185,7 +185,7 @@ func TestFieldPresence_DeleteRewriteRecomputesFromTheSurvivors(t *testing.T) {
 	var rows []schema.TraceRow
 	for i := 0; i < 90; i++ {
 		r := schema.TraceRow{
-			TimestampUnixNano: int64(1_000_000 + i), StartTimeUnixNano: int64(1_000_000 + i), TraceID: fmt.Sprintf("trace-%02d", i), SpanID: fmt.Sprintf("s%d", i),
+			TimestampUnixNano: int64(1_000_000 + i), StartTimeUnixNano: schema.Int64Ptr(int64(1_000_000 + i)), TraceID: fmt.Sprintf("trace-%02d", i), SpanID: fmt.Sprintf("s%d", i),
 			Body: fmt.Sprintf("event %d", i), SpanName: "op", ServiceName: "keeper",
 			Stream: `{resource_attr:service.name="keeper"}`, StreamID: fmt.Sprintf("%048x", 1),
 		}

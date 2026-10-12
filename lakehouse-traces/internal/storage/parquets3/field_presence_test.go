@@ -53,16 +53,23 @@ func genPresenceTraceRows(rng *rand.Rand, n int) []schema.TraceRow {
 		ts := base.Add(time.Duration(rng.Intn(50)) * time.Minute).Add(time.Duration(i) * time.Millisecond).UnixNano()
 		r := schema.TraceRow{
 			TimestampUnixNano: ts,
-			StartTimeUnixNano: ts - int64(rng.Intn(1000)),
+			StartTimeUnixNano: schema.Int64Ptr(ts - int64(rng.Intn(1000))),
 			TraceID:           fmt.Sprintf("%032x", rng.Uint64()),
 			SpanID:            fmt.Sprintf("%016x", rng.Uint64()),
 			ParentSpanID:      pick(rng, "", "0000000000000001"),
 			SpanName:          pick(rng, "", "GET", "PUT"),
 			ServiceName:       pick(rng, "", "svc-a", "svc-b"),
-			DurationNs:        int64(rng.Intn(3)) * 1000,
-			StatusCode:        int32(rng.Intn(3)),
-			SpanKind:          int32(rng.Intn(3)),
+			DurationNs:        schema.Int64Ptr(int64(rng.Intn(3)) * 1000),
+			StatusCode:        schema.Int32Ptr(int32(rng.Intn(3))),
+			SpanKind:          schema.Int32Ptr(int32(rng.Intn(3))),
 			Body:              pick(rng, "", "msg"),
+		}
+		// nullable numeric columns a row never carried are absent (#274), not zero: the facet must not list them
+		if rng.Intn(3) == 0 {
+			r.StartTimeUnixNano, r.DurationNs = nil, nil
+		}
+		if rng.Intn(3) == 0 {
+			r.StatusCode, r.SpanKind = nil, nil
 		}
 		switch rng.Intn(5) {
 		case 0:

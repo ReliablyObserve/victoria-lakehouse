@@ -27,7 +27,7 @@ func TestFieldPresence_NamingGolden(t *testing.T) {
 		t.Fatalf("NamingVersion = %d, golden is for %d: update the golden list with it", fieldpresence.NamingVersion, goldenNaming)
 	}
 	logs := []schema.LogRow{{
-		TimestampUnixNano: 1_700_000_000_000_000_000, Body: "m", SeverityText: "INFO", SeverityNumber: 9, ServiceName: "svc", TraceID: "t", SpanID: "s",
+		TimestampUnixNano: 1_700_000_000_000_000_000, Body: "m", SeverityText: "INFO", SeverityNumber: schema.Int32Ptr(9), ServiceName: "svc", TraceID: "t", SpanID: "s",
 		K8sPodName: "pod", Stream: `{a="b"}`, StreamID: strings.Repeat("ab", 24), ScopeName: "scope", ContainerID: "c", ExceptionType: "E",
 		ResourceAttributes: map[string]string{"res.k": "v"}, LogAttributes: map[string]string{"log.k": "v", "empty": ""}, ScopeAttributes: map[string]string{"scope.k": "v"},
 	}}
@@ -100,7 +100,7 @@ func TestFieldPresence_PatternCacheOverflowIsExact(t *testing.T) {
 // Spans: the span event and link fields come from the JSON columns of the span.
 func TestFieldPresence_SpanRowsListTheirFields(t *testing.T) {
 	spans := []schema.TraceRow{{
-		TimestampUnixNano: 1_700_000_000_000_000_000, StartTimeUnixNano: 1, TraceID: "t", SpanID: "s", SpanName: "op", ServiceName: "svc", StreamID: strings.Repeat("cd", 24),
+		TimestampUnixNano: 1_700_000_000_000_000_000, StartTimeUnixNano: schema.Int64Ptr(1), TraceID: "t", SpanID: "s", SpanName: "op", ServiceName: "svc", StreamID: strings.Repeat("cd", 24),
 		SpanAttributes: map[string]string{"http.route": "/x"}, ResourceAttributes: map[string]string{"r.k": "v"},
 	}}
 	names := namesOfBuilder(t, presenceOfTraceRows(spans, nil))

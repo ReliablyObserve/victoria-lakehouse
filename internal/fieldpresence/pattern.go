@@ -9,7 +9,7 @@ import "github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 // the patterns; TestPatternCoversEveryStringColumn fails when a column is added
 // to a row type and not here.
 
-// LogPattern is the set of non-empty string columns of a row, one bit each.
+// LogPattern is the set of non-empty string columns and present (non-nil) nullable numeric columns of a row, one bit each.
 func LogPattern(r *schema.LogRow) (p uint64) {
 	if r.Body != "" {
 		p |= 1 << 0
@@ -124,6 +124,10 @@ func LogPattern(r *schema.LogRow) (p uint64) {
 	}
 	if r.DedS08 != "" {
 		p |= 1 << 37
+	}
+	// A nullable numeric column a row never carried is absent, not zero (#274): a field of its own.
+	if r.SeverityNumber != nil {
+		p |= 1 << 38
 	}
 	return p
 }
@@ -287,6 +291,19 @@ func tracePatternHigh(r *schema.TraceRow) (p uint64) {
 	}
 	if r.LinksJSON != "" {
 		p |= 1 << 50
+	}
+	// Nullable numeric columns a span never carried are absent, not zero (#274).
+	if r.StartTimeUnixNano != nil {
+		p |= 1 << 51
+	}
+	if r.DurationNs != nil {
+		p |= 1 << 52
+	}
+	if r.StatusCode != nil {
+		p |= 1 << 53
+	}
+	if r.SpanKind != nil {
+		p |= 1 << 54
 	}
 	return p
 }

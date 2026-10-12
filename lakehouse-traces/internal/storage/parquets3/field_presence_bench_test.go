@@ -22,7 +22,7 @@ func presenceBenchLogRows(n int) []schema.LogRow {
 		rows[i] = schema.LogRow{
 			TimestampUnixNano: base.Add(time.Duration(i) * time.Millisecond).UnixNano(),
 			Body:              fmt.Sprintf("GET /api/v1/items/%d status=200 dur=%dms", i, i%500),
-			SeverityText:      "INFO", SeverityNumber: 9,
+			SeverityText:      "INFO", SeverityNumber: schema.Int32Ptr(9),
 			ServiceName: fmt.Sprintf("svc-%d", s), TraceID: fmt.Sprintf("%032x", i), SpanID: fmt.Sprintf("%016x", i),
 			K8sNamespaceName: "prod", K8sPodName: fmt.Sprintf("pod-%d", s), K8sDeploymentName: "dep", K8sNodeName: "node-1",
 			DeployEnv: "prod", CloudRegion: "eu-1", HostName: fmt.Sprintf("host-%d", s%10),
@@ -43,9 +43,9 @@ func presenceBenchTraceRows(n, eventEvery int) []schema.TraceRow {
 		s := i % 100
 		ts := base.Add(time.Duration(i) * time.Millisecond).UnixNano()
 		rows[i] = schema.TraceRow{
-			TimestampUnixNano: ts, StartTimeUnixNano: ts - 1000, TraceID: fmt.Sprintf("%032x", i/8), SpanID: fmt.Sprintf("%016x", i),
+			TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts - 1000), TraceID: fmt.Sprintf("%032x", i/8), SpanID: fmt.Sprintf("%016x", i),
 			ParentSpanID: fmt.Sprintf("%016x", i/2), SpanName: "GET /items", ServiceName: fmt.Sprintf("svc-%d", s),
-			DurationNs: 1000 + int64(i%500), StatusCode: 1, SpanKind: 2, HTTPMethod: "GET", HTTPStatusCode: "200",
+			DurationNs: schema.Int64Ptr(1000 + int64(i%500)), StatusCode: schema.Int32Ptr(1), SpanKind: schema.Int32Ptr(2), HTTPMethod: "GET", HTTPStatusCode: "200",
 			Stream: fmt.Sprintf(`{resource_attr:service.name="svc-%d"}`, s), StreamID: fmt.Sprintf("%048x", s+1),
 			K8sNamespaceName: "prod", DeployEnv: "prod", CloudRegion: "eu-1", HostName: "h",
 			ResourceAttributes: presenceBenchAttrs("res", 3),

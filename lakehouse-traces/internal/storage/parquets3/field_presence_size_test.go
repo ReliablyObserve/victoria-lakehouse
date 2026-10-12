@@ -30,8 +30,8 @@ func presenceSizeSpans(rng *rand.Rand, n, streams, namesPerStream int) []schema.
 		}
 		ts := base.Add(time.Duration(i) * 100 * time.Millisecond).UnixNano()
 		rows[i] = schema.TraceRow{
-			TimestampUnixNano: ts, StartTimeUnixNano: ts - 1_000_000, TraceID: tid, SpanID: fmt.Sprintf("%016x", rng.Uint64()),
-			SpanName: fmt.Sprintf("op-%d", s%40), ServiceName: fmt.Sprintf("svc-%d", s), DurationNs: int64(1+rng.Intn(900)) * 1_000_000, SpanKind: 2,
+			TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts - 1_000_000), TraceID: tid, SpanID: fmt.Sprintf("%016x", rng.Uint64()),
+			SpanName: fmt.Sprintf("op-%d", s%40), ServiceName: fmt.Sprintf("svc-%d", s), DurationNs: schema.Int64Ptr(int64(1+rng.Intn(900)) * 1_000_000), SpanKind: schema.Int32Ptr(2),
 			Stream: fmt.Sprintf(`{resource_attr:service.name="svc-%d"}`, s), StreamID: presenceStreamID(s),
 			SpanAttributes: attrs,
 		}

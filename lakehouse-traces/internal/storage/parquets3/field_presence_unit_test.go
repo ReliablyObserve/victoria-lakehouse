@@ -24,8 +24,8 @@ func TestFieldPresence_NamingGolden(t *testing.T) {
 		t.Fatalf("NamingVersion = %d, golden is for %d: update the golden list with it", fieldpresence.NamingVersion, goldenNaming)
 	}
 	spans := []schema.TraceRow{{
-		TimestampUnixNano: 1_700_000_000_000_000_000, StartTimeUnixNano: 1, TraceID: "t", SpanID: "s", ParentSpanID: "p", SpanName: "op", ServiceName: "svc",
-		DurationNs: 5, StatusCode: 1, SpanKind: 2, HTTPMethod: "GET", Stream: `{a="b"}`, StreamID: strings.Repeat("ab", 24), URLFull: "http://x", ContainerID: "c",
+		TimestampUnixNano: 1_700_000_000_000_000_000, StartTimeUnixNano: schema.Int64Ptr(1), TraceID: "t", SpanID: "s", ParentSpanID: "p", SpanName: "op", ServiceName: "svc",
+		DurationNs: schema.Int64Ptr(5), StatusCode: schema.Int32Ptr(1), SpanKind: schema.Int32Ptr(2), HTTPMethod: "GET", Stream: `{a="b"}`, StreamID: strings.Repeat("ab", 24), URLFull: "http://x", ContainerID: "c",
 		Body: "m", ResourceAttributes: map[string]string{"r.k": "v"}, SpanAttributes: map[string]string{"s.k": "v", "empty": ""}, ScopeAttributes: map[string]string{"sc.k": "v"},
 		EventsJSON: `[{"event_name":"exc","event_attr:exception.type":"IOError"}]`, LinksJSON: `[{"link_span_id":"abc"}]`,
 	}}

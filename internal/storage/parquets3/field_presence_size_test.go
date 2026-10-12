@@ -26,7 +26,7 @@ func presenceSizeRows(rng *rand.Rand, n, streams, namesPerStream int) []schema.L
 		}
 		rows[i] = schema.LogRow{
 			TimestampUnixNano: base.Add(time.Duration(i) * 100 * time.Millisecond).UnixNano(), Body: fmt.Sprintf("line %d", rng.Intn(1e6)),
-			SeverityText: "INFO", SeverityNumber: 9, ServiceName: fmt.Sprintf("svc-%d", s), K8sNamespaceName: "prod",
+			SeverityText: "INFO", SeverityNumber: schema.Int32Ptr(9), ServiceName: fmt.Sprintf("svc-%d", s), K8sNamespaceName: "prod",
 			Stream: fmt.Sprintf(`{service.name="svc-%d"}`, s), StreamID: presenceStreamID(s),
 			LogAttributes: attrs,
 		}

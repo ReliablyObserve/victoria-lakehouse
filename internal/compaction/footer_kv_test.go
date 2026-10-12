@@ -174,7 +174,7 @@ func TestCompactor_TracesOutputCarriesEveryFooterKV(t *testing.T) {
 		var rows []schema.TraceRow
 		for i := 0; i < 30; i++ {
 			n := f*30 + i
-			rows = append(rows, schema.TraceRow{TimestampUnixNano: int64(1000 + n), StartTimeUnixNano: int64(1000 + n), TraceID: fmt.Sprintf("trace-%02d", n/2), SpanID: fmt.Sprintf("s%d", n), SpanName: "op", ServiceName: fmt.Sprintf("svc-%d", n%2), Body: fmt.Sprintf("span %d did work", n)})
+			rows = append(rows, schema.TraceRow{TimestampUnixNano: int64(1000 + n), StartTimeUnixNano: schema.Int64Ptr(int64(1000 + n)), TraceID: fmt.Sprintf("trace-%02d", n/2), SpanID: fmt.Sprintf("s%d", n), SpanName: "op", ServiceName: fmt.Sprintf("svc-%d", n%2), Body: fmt.Sprintf("span %d did work", n)})
 		}
 		data := makeTestTraceParquet(t, rows)
 		key := fmt.Sprintf("traces/dt=2026-05-04/hour=10/src-%d.parquet", f)

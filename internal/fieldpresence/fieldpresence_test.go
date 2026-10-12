@@ -340,7 +340,7 @@ func FuzzEncodeRoundTrip(f *testing.F) {
 	})
 }
 
-// TestPatternCoversEveryStringColumn fails when a string column is added to a row
+// TestPatternCoversEveryStringColumn fails when a string column (or a nullable numeric one, #274) is added to a row
 // type and not to its pattern function: the names of a row are computed once per
 // pattern, so a column the pattern does not read could hide a field.
 func TestPatternCoversEveryStringColumn(t *testing.T) {
@@ -350,11 +350,17 @@ func TestPatternCoversEveryStringColumn(t *testing.T) {
 		seen := map[uint64]string{}
 		for i := 0; i < typ.NumField(); i++ {
 			sf := typ.Field(i)
-			if sf.Type.Kind() != reflect.String {
+			isPtr := sf.Type.Kind() == reflect.Pointer && sf.Type.Elem().Kind() != reflect.Struct
+			if sf.Type.Kind() != reflect.String && !isPtr {
 				continue
 			}
 			v := reflect.New(typ).Elem()
-			v.Field(i).SetString("x")
+			if isPtr {
+				// a nullable numeric column (#274): present is not absent, whatever the value
+				v.Field(i).Set(reflect.New(sf.Type.Elem()))
+			} else {
+				v.Field(i).SetString("x")
+			}
 			p := pattern(v.Addr().Interface())
 			if p == base {
 				t.Errorf("%s.%s is not read by its pattern function", name, sf.Name)

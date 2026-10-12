@@ -53,8 +53,12 @@ func genPresenceLogRows(rng *rand.Rand, n int) []schema.LogRow {
 			TimestampUnixNano: base.Add(time.Duration(rng.Intn(50)) * time.Minute).Add(time.Duration(i) * time.Millisecond).UnixNano(),
 			Body:              pick(rng, "", "msg", "other message"),
 			SeverityText:      pick(rng, "", "INFO", "WARN"),
-			SeverityNumber:    int32(rng.Intn(3)) * 4,
+			SeverityNumber:    schema.Int32Ptr(int32(rng.Intn(3)) * 4),
 			ServiceName:       pick(rng, "", "svc-a", "svc-b"),
+		}
+		// a nullable column a row never carried is absent (#274), not zero: the facet must not list it
+		if rng.Intn(3) == 0 {
+			r.SeverityNumber = nil
 		}
 		switch rng.Intn(5) {
 		case 0: // no _stream_id: the counter falls back to _stream
