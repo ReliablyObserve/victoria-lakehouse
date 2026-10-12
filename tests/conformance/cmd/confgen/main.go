@@ -68,7 +68,11 @@ type plan struct {
 	files           []genFile
 	featureCount    int
 	featureFailures []string
-	featureSummary  string
+	// durabilityFailures are the problems registry.CheckDurability finds in the
+	// durability cells: a cited test that does not exist, a missing twin, an
+	// unregistered metric, a cell docs/durability.md does not name.
+	durabilityFailures []string
+	featureSummary     string
 }
 
 // buildPlan derives every generated document and the feature-gate verdict for
@@ -119,9 +123,10 @@ func buildPlan(root string) (*plan, error) {
 			{path: filepath.Join(root, report.FeaturesDocDir, "features.md"), want: []byte(featuresDoc.String()), accepts: featuresDoc.Accepts},
 			{path: readmePath, want: []byte(wantReadme)},
 		},
-		featureCount:    len(features.Features),
-		featureFailures: fd.HardFailures(),
-		featureSummary:  fd.Summary(),
+		featureCount:       len(features.Features),
+		featureFailures:    fd.HardFailures(),
+		durabilityFailures: registry.CheckDurability(reg, root),
+		featureSummary:     fd.Summary(),
 	}, nil
 }
 
@@ -184,11 +189,14 @@ func main() {
 			fmt.Println("feature catalog:", msg)
 		}
 		fmt.Printf("feature catalog: %d features, %s\n", p.featureCount, p.featureSummary)
+		for _, msg := range p.durabilityFailures {
+			fmt.Println("durability cells:", msg)
+		}
 
 		if stale {
 			fmt.Println("generated files are stale — run: make conformance-gen")
 		}
-		if stale || len(p.featureFailures) > 0 {
+		if stale || len(p.featureFailures) > 0 || len(p.durabilityFailures) > 0 {
 			os.Exit(1)
 		}
 	}

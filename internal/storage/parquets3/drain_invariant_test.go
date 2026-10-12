@@ -16,7 +16,7 @@ import (
 // Rows are added here straight to the buffer (e.ingest), past the insert
 // adapter, so the segment holds rows the plan cannot reach.
 
-var year1965 = time.Date(1965, 3, 1, 12, 0, 0, 0, time.UTC)
+func year1965() time.Time { return time.Date(1965, 3, 1, 12, 0, 0, 0, time.UTC) }
 
 func invariantNow() uint64 { return metrics.BufferFlushErrors.Get("invariant") }
 
@@ -26,12 +26,12 @@ func TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover(t *testing.T) {
 		fill func(e *segEnv)
 	}{
 		{"a tenant with rows before and after the epoch", func(e *segEnv) {
-			e.ingest(segTenantA, year1965, 5)
+			e.ingest(segTenantA, year1965(), 5)
 			e.ingest(segTenantA, hourAgo, 5)
 		}},
 		{"a second tenant with only rows before the epoch", func(e *segEnv) {
 			e.ingest(segTenantA, hourAgo, 5)
-			e.ingest(segTenantB, year1965, 3)
+			e.ingest(segTenantB, year1965(), 3)
 		}},
 	}
 	for _, c := range cases {

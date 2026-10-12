@@ -1,9 +1,17 @@
 # Durability cells (kind: durability): one fault shape x write mode x signal,
-# each with the guarantee that holds after the fault and the Go tests that prove
-# it. A cell is backed by tests, not by an HTTP request and compare. A known gap
-# is a cell with expect: differ and a durability.gap issue link. No registry
-# runner executes these cells yet (pending: true): their tests run in the unit
-# tier of CI, and the test-link gate requires every named test to exist.
+# each with the guarantees that hold after the fault and the Go tests that prove
+# them. A cell is backed by tests, not by an HTTP request and compare. A known gap
+# is a cell with expect: differ and a durability.gap issue link. Every fault has a
+# _logs and a _traces cell. No registry runner executes these cells yet (pending:
+# true): their tests run in the unit tier of CI.
+#
+# Checked by Row.Validate (the schema) and by registry.CheckDurability, which
+# `confgen -check` and `go test ./tests/conformance/registry` run: every refs.tests
+# entry must name a test that exists (path#TestName), a logs cell's unit tests live
+# outside lakehouse-traces/ and a traces cell's under it, the twin cells agree on
+# expect and guarantees, a loss-counted cell names a metric internal/metrics
+# registers, and docs/durability.md names every cell (or its family) and no cell
+# that does not exist.
 
 - id: lh.durability.pre1970_rows_logs
   title: "Logs: a row with _time before 1970 is refused when added and counted; no acknowledged row is lost at the drain"
@@ -18,7 +26,8 @@
     fault: pre1970_rows
     mode: buffer-flush
     signal: logs
-    guarantee: refused-counted
+    guarantees: [no-loss, no-duplicate, loss-counted]
+    metric: lakehouse_insert_rows_dropped_total
   refs:
     doc: docs/durability.md
     tests:
@@ -29,9 +38,11 @@
       - internal/vlstorage/insert_before_epoch_test.go#TestInsertAdapter_RefusesRowsBeforeTheEpoch
       - internal/vlstorage/insert_before_epoch_test.go#TestInsertAdapter_RefusedRowsTakeNoCardinalitySlot
       - internal/vlstorage/insert_before_epoch_test.go#TestInsertAdapter_BeforeEpochProperty
+      - internal/vlstorage/insert_admission_test.go#FuzzAdmittedRows
+      - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_AdmissionRandom
       - internal/storage/epoch_test.go#TestBeforeEpoch_Boundary
       - internal/storage/epoch_test.go#TestNoteBeforeEpoch_CountsTheRow
-  notes: "Fixes #388. Every row the insert adapter hands to the buffer is either refused when added (lakehouse_insert_rows_dropped_total{reason=\"too_small_timestamp\"}) or reaches Parquet exactly once, across restarts and partial drains."
+  notes: "Fixes #388. The buffer is read back with a query after every request: each row it holds reaches Parquet exactly once across clean restarts and partial drains; every row it does not hold is counted in lakehouse_insert_rows_dropped_total{reason=\"too_small_timestamp\"}. Scope: clean restarts; the tests never kill the process (#497)."
 
 - id: lh.durability.pre1970_rows_traces
   title: "Traces: a span with _time before 1970 is refused when added and counted; no acknowledged span is lost at the drain"
@@ -46,7 +57,8 @@
     fault: pre1970_rows
     mode: buffer-flush
     signal: traces
-    guarantee: refused-counted
+    guarantees: [no-loss, no-duplicate, loss-counted]
+    metric: lakehouse_insert_rows_dropped_total
   refs:
     doc: docs/durability.md
     tests:
@@ -54,10 +66,17 @@
       - lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go#TestPre1970Rows_EpochEdgeAndAllRefusedBatch
       - lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go#TestPre1970Rows_AreNotReadableFromTheBuffer
       - lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go#TestPre1970Rows_PropertyEveryRowIsRefusedOrStoredOnce
+      - lakehouse-traces/internal/storage/parquets3/acked_rows_trace_index_test.go#TestPre1970Rows_SpanWithAnIndexStartBeforeTheEpochIsFoundByTraceID
+      - lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go#TestIngestPremise_OTLPTimesAboveInt64NeverReachTheBuffer
+      - lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go#TestPre1970Rows_NativeInsertIsRefusedAtTheBuffer
       - lakehouse-traces/internal/vlstorage/insert_before_epoch_test.go#TestVTInsertAdapter_RefusesRowsBeforeTheEpoch
       - lakehouse-traces/internal/vlstorage/insert_before_epoch_test.go#TestVTInsertAdapter_RefusedRowsTakeNoCardinalitySlot
       - lakehouse-traces/internal/vlstorage/insert_before_epoch_test.go#TestVTInsertAdapter_BeforeEpochProperty
-  notes: "Fixes #388 for the traces binary. OTLP start times are unsigned: a value above 2^63 ns wraps to a negative _time and is refused the same way."
+      - lakehouse-traces/internal/vlstorage/insert_index_rows_test.go#TestVTInsertAdapter_SpanWithAnIndexStartBeforeTheEpochIsAdmittedButItsIndexRowIsRefused
+      - lakehouse-traces/internal/vlstorage/insert_index_rows_test.go#TestVTInsertAdapter_SpanWithAnEndBeforeTheEpochIsRefusedItsIndexRowIsNot
+      - lakehouse-traces/internal/vlstorage/insert_admission_test.go#FuzzAdmittedRows
+      - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInsertAdapter_AdmissionRandom
+  notes: "Fixes #388 for the traces binary. Over OTLP a negative _time never reaches the adapter: VictoriaTraces drops a span whose start or end time is above 2^63-1 ns itself (it cannot index it), in hot VT and in the Lakehouse alike (TestIngestPremise_OTLPTimesAboveInt64NeverReachTheBuffer); through /insert/native the sender sets the timestamp and the span is refused when added (TestPre1970Rows_NativeInsertIsRefusedAtTheBuffer). The trace_id_idx row carries the trace's start time: a span can be admitted while its index row is refused; the span is still found by trace ID and reaches Parquet once (lakehouse_vt_internal_rows_dropped_total{kind=\"trace_id_idx_before_epoch\"})."
 
 - id: lh.durability.pre1970_stored_logs
   title: "Logs: rows before 1970 are not stored, as hot VictoriaLogs with a retention that covers them would store them"
@@ -65,7 +84,7 @@
   kind: durability
   origin: lh-addition
   expect: differ
-  differ_note: "Known difference from hot VictoriaLogs with a -retentionPeriod that covers the date (for example 100y): hot VL stores and returns a 1965 row, Lakehouse refuses it when it is added, counted, because its time domain starts at the Unix epoch. With the default retention hot VL drops the row too."
+  differ_note: "Known difference from hot VictoriaLogs with a -retentionPeriod that covers the date (for example 100y): hot VL stores and returns a 1965 row, Lakehouse refuses it when it is added, counted, because its time domain starts at the Unix epoch. With the default retention hot VL drops the row too (measured with scripts/ci/tests/pre1970_hot_compare_test.sh against VictoriaLogs v1.53.0)."
   targets: [cold]
   layers: [chaos]
   pending: true
@@ -73,12 +92,14 @@
     fault: pre1970_stored
     mode: buffer-flush
     signal: logs
-    guarantee: refused-counted
+    guarantees: [loss-counted]
+    metric: lakehouse_insert_rows_dropped_total
     gap: https://github.com/ReliablyObserve/victoria-lakehouse/issues/484
   refs:
     doc: docs/parity-and-gaps.md
     tests:
       - internal/vlstorage/insert_before_epoch_test.go#TestInsertAdapter_RefusesRowsBeforeTheEpoch
+      - scripts/ci/tests/pre1970_hot_compare_test.sh#hot-100y
 
 - id: lh.durability.pre1970_stored_traces
   title: "Traces: spans before 1970 are not stored, as hot VictoriaTraces with a retention that covers them would store them"
@@ -86,7 +107,7 @@
   kind: durability
   origin: lh-addition
   expect: differ
-  differ_note: "Known difference from hot VictoriaTraces with a -retentionPeriod that covers the date: hot VT stores a span with a negative start time, Lakehouse refuses it when it is added, counted. OTLP start times are unsigned, so only a value above 2^63 ns reaches this."
+  differ_note: "Known difference from hot VictoriaTraces with a -retentionPeriod that covers the date (measured with scripts/ci/tests/pre1970_hot_compare_test.sh against VictoriaTraces v0.12.0): a span sent through /insert/native with a 1965 _time is stored and returned by hot VT at -retentionPeriod=100y and dropped at the default retention (vt_rows_dropped_total{reason=too_small_timestamp}); the Lakehouse refuses it when it is added, counted, whatever its retention. Over OTLP the times are unsigned and hot VT itself drops a span whose time is above 2^63-1 ns, as the Lakehouse does."
   targets: [cold]
   layers: [chaos]
   pending: true
@@ -94,12 +115,14 @@
     fault: pre1970_stored
     mode: buffer-flush
     signal: traces
-    guarantee: refused-counted
+    guarantees: [loss-counted]
+    metric: lakehouse_insert_rows_dropped_total
     gap: https://github.com/ReliablyObserve/victoria-lakehouse/issues/484
   refs:
     doc: docs/parity-and-gaps.md
     tests:
       - lakehouse-traces/internal/vlstorage/insert_before_epoch_test.go#TestVTInsertAdapter_RefusesRowsBeforeTheEpoch
+      - scripts/ci/tests/pre1970_hot_compare_test.sh#hot-100y
 
 - id: lh.durability.restart_cardinality_gate_logs
   title: "Logs: a row admitted under the tenant cardinality limit is never judged by the limit again; a restart does not drop acknowledged rows"
@@ -114,7 +137,8 @@
     fault: restart_cardinality_gate
     mode: buffer-flush
     signal: logs
-    guarantee: no-loss
+    guarantees: [no-loss, no-duplicate, loss-counted]
+    metric: lakehouse_insert_rows_dropped_total
   refs:
     doc: docs/durability.md
     tests:
@@ -122,7 +146,10 @@
       - internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_FlushFilterNeverDropsOnCardinality
       - internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_PropertyRandomRestartsAndLimits
       - internal/vlstorage/flush_keeper_test.go#TestFlushRowKeeper_IgnoresTheCardinalityGate
-  notes: "Fixes #389. Restart matrix: no restart, restart while the segment is active, restart after the seal, crash in the middle of the drain; the fresh limiter admits other streams first. Remaining limit semantics (per-process set, not shared between replicas): https://github.com/ReliablyObserve/victoria-lakehouse/issues/485"
+      - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
+      - internal/vlstorage/insert_admission_test.go#TestFlushRowKeeper_CountsTheTraceShapedDrop
+      - scripts/ci/tests/cardinality_restart_test.sh#cardinality_limit
+  notes: "Fixes #389. The real binary is checked with a restart by scripts/ci/tests/cardinality_restart_test.sh (the code before the fix loses the acknowledged rows of stream a). Restart matrix (clean closes only): no restart, restart while the segment is active, restart after the seal, an upload failure in the middle of the drain then a restart; the fresh limiter admits other streams first. What the limiter admits is stated by a model in the test, not read back from the limiter; the rows the adapter really added to the buffer and the refusals it counted are compared to it on every request. A stream admitted before a restart can be refused after it and its new rows are counted in lakehouse_insert_rows_dropped_total{reason=\"cardinality_limit\"}: the known gap of https://github.com/ReliablyObserve/victoria-lakehouse/issues/485"
 
 - id: lh.durability.restart_cardinality_gate_traces
   title: "Traces: a span admitted under the tenant cardinality limit is never judged by the limit again; a restart does not drop acknowledged spans"
@@ -137,11 +164,99 @@
     fault: restart_cardinality_gate
     mode: buffer-flush
     signal: traces
-    guarantee: no-loss
+    guarantees: [no-loss, no-duplicate, loss-counted]
+    metric: lakehouse_insert_rows_dropped_total
   refs:
     doc: docs/durability.md
     tests:
       - lakehouse-traces/internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_NotRejudgedByAFreshCardinalityLimiter
       - lakehouse-traces/internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_FlushFilterNeverDropsOnCardinality
       - lakehouse-traces/internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_PropertyRandomRestartsAndLimits
-  notes: "Fixes #389 for the traces binary. Same restart matrix as logs. Remaining limit semantics: https://github.com/ReliablyObserve/victoria-lakehouse/issues/485"
+      - lakehouse-traces/internal/vlstorage/insert_admission_test.go#TestVTInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
+      - lakehouse-traces/internal/vlstorage/insert_index_rows_test.go#TestVTInsertAdapter_IndexRowsRefusedForTheLimitAreCountedApart
+      - scripts/ci/tests/cardinality_restart_test.sh#cardinality_limit
+  notes: "Fixes #389 for the traces binary. Same restart matrix as logs. The trace_id_idx streams count against the limit too and are counted apart (lakehouse_vt_internal_rows_dropped_total{kind=\"trace_id_idx_cardinality_limit\"}). Remaining limit semantics: https://github.com/ReliablyObserve/victoria-lakehouse/issues/485. The real binary is checked with a restart by scripts/ci/tests/cardinality_restart_test.sh (the code before the fix loses the acknowledged rows)."
+
+- id: lh.durability.drain_plan_mismatch_logs
+  title: "Logs: a segment whose rows the drain's plan does not cover is held, not committed; nothing is uploaded for it"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: drain_plan_mismatch
+    mode: buffer-flush
+    signal: logs
+    guarantees: [no-loss]
+  refs:
+    doc: docs/durability.md
+    tests:
+      - internal/storage/parquets3/drain_invariant_test.go#TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover
+      - internal/storage/parquets3/drain_invariant_test.go#TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment
+  notes: "The runtime check that would have stopped #388: the drain compares its plan with a count of every row of every tenant over all of int64 time before the first upload, and each group's rows with the plan. A mismatch is lakehouse_buffer_flush_errors_total{stage=\"invariant\"}, an error log, and the segment stays pending (it blocks the later segments until the volume's free-space floor answers 429)."
+
+- id: lh.durability.drain_plan_mismatch_traces
+  title: "Traces: a segment whose spans the drain's plan does not cover is held, not committed; nothing is uploaded for it"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: drain_plan_mismatch
+    mode: buffer-flush
+    signal: traces
+    guarantees: [no-loss]
+  refs:
+    doc: docs/durability.md
+    tests:
+      - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover
+      - lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go#TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment
+  notes: "Same check in the traces binary."
+
+- id: lh.durability.kill_between_upload_and_commit_logs
+  title: "Logs: a kill of the process between a drain's upload and its commit loses no acknowledged row and duplicates none"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: differ
+  differ_note: "Not proven: the unit tests restart by closing the buffer, and the end-to-end kill -9 test kills at a random point, not between a drain's upload and its commit. The recovery code (stored marks, HEAD adoption, marker before commit) is described in docs/durability.md but its crash matrix has no test."
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: kill_between_upload_and_commit
+    mode: buffer-flush
+    signal: logs
+    guarantees: [no-loss, no-duplicate]
+    gap: https://github.com/ReliablyObserve/victoria-lakehouse/issues/497
+  refs:
+    doc: docs/durability.md
+    tests:
+      - tests/e2e/chaos_durability_test.go#TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow
+
+- id: lh.durability.kill_between_upload_and_commit_traces
+  title: "Traces: a kill of the process between a drain's upload and its commit loses no acknowledged span and duplicates none"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: differ
+  differ_note: "Not proven for the traces binary either, see the logs cell."
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: kill_between_upload_and_commit
+    mode: buffer-flush
+    signal: traces
+    guarantees: [no-loss, no-duplicate]
+    gap: https://github.com/ReliablyObserve/victoria-lakehouse/issues/497
+  refs:
+    doc: docs/durability.md
+    tests:
+      - tests/e2e/chaos_durability_traces_test.go#TestChaos_TracesKill9LosesNothingBeyondTheUpstreamWindow

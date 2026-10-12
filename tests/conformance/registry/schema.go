@@ -191,26 +191,33 @@ type Perf struct {
 }
 
 // Durability describes one cell of the durability matrix (kind=durability): the
-// fault, the write mode, the signal and the guarantee that holds after the
+// fault, the write mode, the signal and the guarantees that hold after the
 // fault. A cell that is a known gap names its issue.
 type Durability struct {
-	Fault     string `yaml:"fault"`
-	Mode      string `yaml:"mode"`
-	Signal    string `yaml:"signal"`
-	Guarantee string `yaml:"guarantee"`
+	Fault  string `yaml:"fault"`
+	Mode   string `yaml:"mode"`
+	Signal string `yaml:"signal"`
+	// Guarantees are values of DurabilityGuarantees.
+	Guarantees []string `yaml:"guarantees"`
+	// Metric is the counter that makes a loss visible; required with the
+	// guarantee loss-counted, and a name registered in internal/metrics.
+	Metric string `yaml:"metric,omitempty"`
 	// Gap is the issue link of a known gap; required when expect=differ.
 	Gap string `yaml:"gap,omitempty"`
 }
 
 // DurabilityModes, DurabilitySignals and DurabilityGuarantees are the values a
-// durability cell may take. "refused-counted" is the guarantee of a row the
-// insert path refuses instead of acknowledging: it is counted and never
-// acknowledged, so nothing acknowledged is lost.
+// durability cell may take. The guarantees are the approved set of the design
+// (no-loss, no-duplicate, loss-counted, rejected-429, rejected-503): a row that
+// the insert path drops and answers as a success is loss-counted, with the
+// counter that counts it.
 var (
 	DurabilityModes      = map[string]bool{"buffer-flush": true}
 	DurabilitySignals    = map[string]bool{"logs": true, "traces": true}
-	DurabilityGuarantees = map[string]bool{"no-loss": true, "no-duplicate": true, "refused-counted": true, "loss-counted": true}
+	DurabilityGuarantees = map[string]bool{"no-loss": true, "no-duplicate": true, "loss-counted": true, "rejected-429": true, "rejected-503": true}
 )
+
+var durabilityMetricRe = regexp.MustCompile(`^lakehouse_[a-z0-9_]+$`)
 
 var durabilityFaultRe = regexp.MustCompile(`^[a-z0-9_]+$`)
 
@@ -446,8 +453,24 @@ func (r *Row) Validate() error {
 		if !DurabilitySignals[d.Signal] {
 			add("durability.signal %q invalid", d.Signal)
 		}
-		if !DurabilityGuarantees[d.Guarantee] {
-			add("durability.guarantee %q invalid", d.Guarantee)
+		if len(d.Guarantees) == 0 {
+			add("durability.guarantees required")
+		}
+		seen := map[string]bool{}
+		for _, g := range d.Guarantees {
+			switch {
+			case !DurabilityGuarantees[g]:
+				add("durability.guarantees: %q invalid", g)
+			case seen[g]:
+				add("durability.guarantees: %q repeated", g)
+			}
+			seen[g] = true
+		}
+		switch {
+		case seen["loss-counted"] && !durabilityMetricRe.MatchString(d.Metric):
+			add("durability.metric must name the counter (lakehouse_...) when guarantees has loss-counted, got %q", d.Metric)
+		case !seen["loss-counted"] && d.Metric != "":
+			add("durability.metric only allowed with the guarantee loss-counted")
 		}
 		if r.Origin != OriginLHAddition {
 			add("durability cells are Lakehouse additions: origin must be lh-addition")

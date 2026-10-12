@@ -34,9 +34,11 @@ import (
 
 const cardinalityLimit = storage.ReasonCardinalityLimit
 
-// limits are the cardinality.max_streams overrides of the tests; a tenant
+// ackLimits are the cardinality.max_streams overrides of the tests; a tenant
 // without an entry has no limit.
-var ackLimits = map[logstorage.TenantID]int{segTenantA: 1, segTenantB: 2}
+func ackLimits() map[logstorage.TenantID]int {
+	return map[logstorage.TenantID]int{segTenantA: 1, segTenantB: 2}
+}
 
 func policyFor(t *testing.T, limits map[logstorage.TenantID]int) *tenant.PolicyRegistry {
 	t.Helper()
@@ -207,8 +209,8 @@ func TestAckedRows_NotRejudgedByAFreshCardinalityLimiter(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			defer vlstorage.SetCardinalityGate(nil)
 			e := newSegEnv(t)
-			policy := policyFor(t, ackLimits)
-			m := newLimitModel(ackLimits)
+			policy := policyFor(t, ackLimits())
+			m := newLimitModel(ackLimits())
 
 			// Process 1: stream a of tenant 1:2 and streams x, y of tenant 2:3
 			// are admitted and acknowledged; stream z of 2:3 is over its limit.
