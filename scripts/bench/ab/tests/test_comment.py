@@ -141,14 +141,38 @@ def test_n2_n3_flaky_and_vacuous_cells_are_listed_without_failing_and_a_few_hot_
     s["flaky"] = [K1]
     s["vacuous"] = [K2]
     text, v = comment.render_perf(s, SEL, META)
-    assert v["exit"] == 0 and "Flaky, not failing" in text and "empty on every target" in text and v["flaky"] == [K1]
+    assert v["exit"] == 0 and "FLAKY on base and PR" in text and "empty on every target" in text and v["flaky"] == [K1]
     few = dict(s, ref_invalid=[K1])
     text, v = comment.render_perf(few, SEL, META)
     assert v["exit"] == 0 and "asked twice" in text
 
 
+def ref_cells(n_logs, n_traces, bad_logs, bad_traces):
+    """summary cells of two signals, the first `bad_*` of each without a hot answer."""
+    cells = []
+    for sig, n, bad in (("logs", n_logs, bad_logs), ("traces", n_traces, bad_traces)):
+        for i in range(n):
+            c = summary((f"control-{sig}|{sig} count_total|cold|{i}h|numeric", 10, 10, {}))["cells"][0]
+            c.update(signal=sig, ref_invalid=i < bad)
+            cells.append(c)
+    return cells
+
+
 def test_n3_a_reference_that_is_broken_in_most_cells_invalidates_the_run():
-    cells = [summary((f"control-logs|logs count_total|cold|{i}h|numeric", 10, 10, {}))["cells"][0] for i in range(10)]
-    s = dict(summary((K1, 10, 10, {})), cells=cells, ref_invalid=[c["cell"] for c in cells[:5]])
+    cells = ref_cells(10, 0, 5, 0)
+    s = dict(summary((K1, 10, 10, {})), cells=cells, ref_invalid=[c["cell"] for c in cells if c["ref_invalid"]])
     text, v = comment.render_perf(s, SEL, META)
     assert v["exit"] == 2 and "reference stack is broken" in text
+
+
+def test_r2_the_share_of_cells_without_a_hot_answer_is_counted_per_signal_with_a_10_percent_limit():
+    """34 of 173 cells without a hot comparison used to pass; one signal can no longer hide behind the other."""
+    assert comment.REF_INVALID_SHARE == 0.10
+    assert comment.reference_broken(ref_cells(40, 40, 2, 2)) is False          # 2 of 40 in each: within max(2, 10 %)
+    assert comment.reference_broken(ref_cells(40, 40, 5, 0)) is True           # 5 of 40 logs cells: over 4
+    assert comment.reference_broken(ref_cells(100, 10, 0, 3)) is True          # 3 of 10 traces cells, though 3 of 110 overall
+    assert comment.reference_broken(ref_cells(173, 0, 17, 0)) is False and comment.reference_broken(ref_cells(173, 0, 18, 0)) is True
+    cells = ref_cells(10, 0, 2, 0)
+    s = dict(summary((K1, 10, 10, {})), cells=cells, ref_invalid=[c["cell"] for c in cells if c["ref_invalid"]])
+    text, v = comment.render_perf(s, SEL, META)
+    assert v["exit"] == 0 and "asked twice" in text and v["ref_invalid"]

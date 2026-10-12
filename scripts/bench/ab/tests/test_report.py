@@ -162,17 +162,55 @@ def test_s3_cost_names_the_metric_that_changed():
     assert comment.s3_flag(c) == "less GETs (cold); less requests (cold); more bytes (cold)"
 
 
-def test_n2_a_transient_pr_error_that_does_not_reproduce_is_flaky_not_failing_and_one_that_reproduces_still_fails():
+def test_n2_a_pr_error_that_reproduces_still_fails_and_one_that_does_not_is_not_a_clean_pass():
     first = report.summarize(raw(partial_rows("pr", (3,))), "t")           # 1 HTTP 500 in 6 PR requests
+    assert first["cells"][0]["verdict"] == "unstable"
+    again = report.summarize(raw(partial_rows("pr", (2, 5), runs=7)), "again")   # it happens again
+    merged = report.merge_confirm(first, again)
+    assert merged["cells"][0]["verdict"] == "unstable" and not merged["cells"][0].get("flaky") and merged["flaky"] == [] and merged["intermittent"] == []
+
+
+def test_flaky_policy_an_intermittent_failure_only_the_pr_has_fails_even_when_the_remeasure_is_clean():
+    """(5/6)^7 = 28 % of 1-in-6 failures pass a 7-run re-measure clean: a check that fails and then passes on retry is a finding."""
+    first = report.summarize(raw(partial_rows("pr", (3,))), "t")
+    clean = report.summarize(raw(cell_rows(K, 10, 10, runs=7)), "again")
+    merged = report.merge_confirm(first, clean)
+    c = merged["cells"][0]
+    assert c["flaky"] and c["flaky_scope"] == "pr" and c["intermittent"] and c["verdict"] == "unstable"
+    assert merged["intermittent"] == [K] and merged["flaky"] == [] and merged["verdicts"] == {"unstable": 1}
+    import comment
+    text, v = comment.render_perf(merged, {"changed": 1, "sets": {}, "why": {}}, {"base": "a" * 40, "head": "b" * 40})
+    assert v["exit"] == 1 and v["intermittent"] == [K] and "Intermittent failure introduced by the PR" in text
+
+
+def test_flaky_policy_a_cell_flaky_on_base_and_pr_is_a_listed_finding_that_needs_an_issue_and_does_not_fail():
+    rows = partial_rows("pr", (3, 4))
+    for r in rows:
+        if r["target"] == "base" and r["run"] == 1:
+            r.update(valid=False, reason="http 500", status=500, result="")     # the base failed once too (host noise)
+    first = report.summarize(raw(rows), "t")
     assert first["cells"][0]["verdict"] == "unstable"
     clean = report.summarize(raw(cell_rows(K, 10, 10, runs=7)), "again")
     merged = report.merge_confirm(first, clean)
     c = merged["cells"][0]
-    assert c["verdict"] == "same" and c["flaky"] and c["first_pass"] == "unstable" and merged["flaky"] == [K]
+    assert c["flaky_scope"] == "both" and not c.get("intermittent") and c["verdict"] == "same" and merged["flaky"] == [K] and merged["intermittent"] == []
+    import comment
+    import known
+    spec = {"sets": {"control-logs": {"shapes": [{"name": "logs count_total", "covers": ["vl.x"]}]}}}
+    k = known.join(known.observed_from_perf(merged, spec), [{"id": "vl.x", "expect": "pass"}], {})
+    assert [i["tracking"] for i in k["items"]] == ["flaky"] and k["failed"] is False
+    text, v = comment.render_perf(merged, {"changed": 1, "sets": {}, "why": {}}, {"base": "a" * 40, "head": "b" * 40}, k)
+    assert v["exit"] == 0 and "FLAKY on base and PR" in text and "needs an issue" in text
+
+
+def test_the_flaky_base_in_the_remeasure_pass_counts_too():
     first = report.summarize(raw(partial_rows("pr", (3,))), "t")
-    again = report.summarize(raw(partial_rows("pr", (2, 5), runs=7)), "again")   # it happens again
-    merged = report.merge_confirm(first, again)
-    assert merged["cells"][0]["verdict"] == "unstable" and not merged["cells"][0].get("flaky") and merged["flaky"] == []
+    again_rows = cell_rows(K, 10, 10, runs=7)
+    for r in again_rows:
+        if r["target"] == "base" and r["run"] == 2:
+            r.update(valid=False, reason="http 504", status=504, result="")
+    merged = report.merge_confirm(first, report.summarize(raw(again_rows), "again"))
+    assert merged["cells"][0]["flaky_scope"] == "both" and merged["cells"][0]["verdict"] != "unstable"
 
 
 def test_n3_a_shape_that_is_empty_on_every_target_is_vacuous_not_an_invalid_cell():
@@ -193,12 +231,10 @@ def test_window_shift_moves_the_end_earlier_inside_the_layer_and_is_ignored_on_a
     assert measure.window_for(st, "tiny", "full", ranges, 300) == ("2026-10-12T12:59:00Z", "2026-10-12T13:00:00Z")
 
 
-def test_a_sampled_shape_is_never_held_to_its_first_answer_and_never_compared():
-    """Found by the real A/A run: Tempo's tag list differs between calls of one system, so the flapping rule made A/A cells `new`."""
-    rows = cell_rows(K, 10, 10, base_result="41", pr_result="43")
-    c = report.summarize(raw(rows), "t", sample_skip=frozenset({"logs count_total"}))["cells"][0]
-    assert c["difference"] == "none" and c["vs_ref"] == {"base": "n/a", "pr": "n/a"} and c["verdict"] == "same"
-    spec = {"sets": {"s": {"shapes": [{"name": "a", "sample": True}, {"name": "b"}]}}}
-    assert report.sample_skip_from(spec) == frozenset({"a"})
-    out = report.apply_ref_skip(report.summarize(raw(rows), "t"), frozenset(), frozenset({"logs count_total"}))
-    assert out["differences"] == {"none": 1}
+def test_s1_base_equal_to_pr_passes_and_a_tag_list_that_differs_between_base_and_pr_is_new_while_hot_is_never_compared():
+    skip = frozenset({"logs count_total"})
+    same = report.summarize(raw(cell_rows(K, 10, 10, base_result="tags_scopes=2;hash=a", pr_result="tags_scopes=2;hash=a", ref_result="tags_scopes=3;hash=z")), "t",
+                            ref_skip=skip)["cells"][0]
+    assert same["difference"] == "none" and same["vs_ref"] == {"base": "n/a", "pr": "n/a"}
+    differ = report.summarize(raw(cell_rows(K, 10, 10, base_result="tags_scopes=2;hash=a", pr_result="tags_scopes=1;hash=b")), "t", ref_skip=skip)["cells"][0]
+    assert differ["difference"] == "new"

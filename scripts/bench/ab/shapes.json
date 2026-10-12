@@ -1,5 +1,5 @@
 {
-  "_comment": "`vs_ref: false` shapes are not compared with hot VL/VT: the answer is a sample that differs between calls of one system (Tempo's tag list), so only base against PR is compared. Trace answers (Jaeger, Tempo search, OTLP) are compared with scripts.proof's decoders (spans keyed by trace and span id, processes resolved). Shape sets of the PR perf smoke (scripts/bench/ab). A shape is one request template; a cell is shape x layer x range x tenant form. `covers` names registry row and feature ids (selection.py --check fails on an unknown id or an empty list). `smoke: true` shapes run on every runtime change (control sets only). `kind` picks the answer validator in validate.py. Windows are absolute and end at the layer's end (see stack.py make_state); `full` is the whole layer window.",
+  "_comment": "`vs_ref: false` shapes are not compared with hot VL/VT, only base against PR. `ref_varies: true` also exempts the hot side from the flapping rule: hot VictoriaTraces answers Tempo's tag list and tag values differently on identical calls (measured). Tag lists are compared by their scopes, tag values exactly; empty or wrong-shape answers are invalid. Trace answers (Jaeger, Tempo search, OTLP) are compared with scripts.proof's decoders (spans keyed by trace and span id, processes resolved). Shape sets of the PR perf smoke (scripts/bench/ab). A shape is one request template; a cell is shape x layer x range x tenant form. `covers` names registry row and feature ids (selection.py --check fails on an unknown id or an empty list). `smoke: true` shapes run on every runtime change (control sets only). `kind` picks the answer validator in validate.py. Windows are absolute and end at the layer's end (see stack.py make_state); `full` is the whole layer window.",
   "ranges": {"15m": 900, "1h": 3600, "full": null},
   "layers": {
     "cold": {"description": "flushed by the 5 s policy, not compacted: the newest 2 hours of the seeded window"},
@@ -197,9 +197,9 @@
          "covers": ["vt.tempo.search.service_name", "lh.feature.traces.tempo_api"]},
         {"name": "tempo search duration", "signal": "traces", "api": "tempo", "kind": "tempo_search", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ duration > 40ms }", "limit": "20"}, "window": "seconds",
          "covers": ["vt.tempo.search.duration_filter", "lh.feature.traces.tempo_api"]},
-        {"name": "tempo tags", "sample": true, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/search/tags", "window": "seconds",
+        {"name": "tempo tags", "vs_ref": false, "ref_varies": true, "signal": "traces", "api": "tempo", "kind": "tempo_tags", "method": "GET", "path": "/select/tempo/api/v2/search/tags", "window": "seconds",
          "covers": ["vt.tempo.v2_search_tags.basic", "lh.feature.traces.tempo_api"]},
-        {"name": "tempo tag values service", "sample": true, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/search/tag/resource.service.name/values", "window": "seconds",
+        {"name": "tempo tag values service", "vs_ref": false, "ref_varies": true, "signal": "traces", "api": "tempo", "kind": "tempo_tag_values", "method": "GET", "path": "/select/tempo/api/v2/search/tag/resource.service.name/values", "window": "seconds",
          "covers": ["vt.tempo.v2_search_tag_values.basic", "lh.feature.traces.tempo_api"]}
       ]
     },

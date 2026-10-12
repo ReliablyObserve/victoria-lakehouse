@@ -146,3 +146,27 @@ def test_traceql_metrics_ignore_float_noise_beyond_six_digits_but_not_a_real_dif
     import abreg
     kinds = {sh["name"]: sh["kind"] for s in abreg.load_json(abreg.SHAPES)["sets"].values() for sh in s["shapes"]}
     assert kinds["traceql rate"] == kinds["traceql rate by_service"] == kinds["traceql quantile"] == "series_tempo"
+
+
+TAGS = json.dumps({"scopes": [{"name": "intrinsic", "tags": ["name", "kind"]}, {"name": "resource", "tags": ["service.name"]}]})
+TAG_VALUES = json.dumps({"tagValues": [{"type": "string", "value": "a"}, {"type": "string", "value": "b"}]})
+
+
+def test_s1_empty_and_wrong_shape_tag_answers_are_invalid_not_a_pass():
+    for kind in ("tempo_tags", "tempo_tag_values"):
+        for body in ('{"tagNames":[]}', "{}", '{"unexpected":1}', '{"scopes":[]}', '{"tagValues":[]}', "", "[1,2", "null"):
+            ok, reason, _ = validate.validate(kind, 200, body)
+            assert ok is False, (kind, body, reason)
+    assert validate.validate("tempo_tags", 200, TAGS)[0] and validate.validate("tempo_tag_values", 200, TAG_VALUES)[0]
+    assert validate.validate("tempo_tags", 500, TAGS)[0] is False
+
+
+def test_s1_tag_lists_compare_by_scopes_and_tag_values_exactly():
+    more_tags = json.dumps({"scopes": [{"name": "intrinsic", "tags": ["name"]}, {"name": "resource", "tags": ["a", "b", "c"]}]})
+    assert validate.extract_result("tempo_tags", TAGS) == validate.extract_result("tempo_tags", more_tags)   # the tags inside a scope are a sample
+    no_resource = json.dumps({"scopes": [{"name": "intrinsic", "tags": ["name", "kind"]}]})
+    assert validate.extract_result("tempo_tags", TAGS) != validate.extract_result("tempo_tags", no_resource)
+    other = json.dumps({"tagValues": [{"type": "string", "value": "a"}]})
+    assert validate.extract_result("tempo_tag_values", TAG_VALUES) != validate.extract_result("tempo_tag_values", other)
+    assert validate.extract_result("tempo_tag_values", TAG_VALUES) == validate.extract_result(
+        "tempo_tag_values", json.dumps({"tagValues": list(reversed(json.loads(TAG_VALUES)["tagValues"]))}))

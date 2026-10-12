@@ -134,3 +134,26 @@ def test_a_limit_that_keeps_fewer_rows_than_the_reference_does_is_a_regression()
 def test_a_nondeterministic_row_fails_only_when_a_sample_had_the_pr_worse_than_the_base():
     assert api_matrix.failing({"verdict": "nondeterministic", "samples": ["same", "fixed", "exact"], "status_changed": False}) is False
     assert api_matrix.failing({"verdict": "nondeterministic", "samples": ["same", "regressed"], "status_changed": False}) is True
+
+
+TAG_LIST = json.dumps({"scopes": [{"name": "resource", "tags": ["service.name", "host.name"]}]})
+TAG_LIST_OTHER = json.dumps({"scopes": [{"name": "resource", "tags": ["service.name"]}]})
+
+
+def tag_row(ref, base, pr, status=(200, 200, 200)):
+    ss, st = servers(ref, base, pr, status)
+    ss2 = ss
+    try:
+        return api_matrix.run_request(st, req(kind="json", compare="exact-json", path="/select/tempo/api/v2/search/tags", shape_only=True, signal="logs"), 3)
+    finally:
+        for s in ss2:
+            s.close()
+
+
+def test_s1_a_tag_list_is_scored_by_status_shape_and_non_emptiness_not_by_content():
+    assert tag_row(TAG_LIST, TAG_LIST_OTHER, TAG_LIST_OTHER)["verdict"] == "exact"          # the tags inside differ: a sample
+    empty = tag_row(TAG_LIST, TAG_LIST, '{"scopes":[]}')
+    assert empty["verdict"] == "regressed" and empty["pr_worst"] == "non_empty" and api_matrix.failing(empty)
+    wrong = tag_row(TAG_LIST, TAG_LIST, '{"unexpected":1}')
+    assert wrong["verdict"] == "regressed" and wrong["pr_score"] == 0.0
+    assert api_matrix.failing(tag_row(TAG_LIST, TAG_LIST, "boom", status=(200, 200, 500)))

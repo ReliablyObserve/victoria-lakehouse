@@ -295,8 +295,9 @@ def run_cell(cell: dict, state: dict, spec: dict, runs: int, picks_cache: dict, 
         if t != "ref":
             settle.touch(keys[t])
         wr, wk = windows.get(t, (None, None))
-        sample = bool(shape.get("sample"))  # a sampled answer differs between calls: it is validated but never held to the first result
-        ok, reason, result = validate.validate(kind, env["status"], env["body"], first_result=None if sample else first[t], miss=False,
+        # hot's answer may vary between identical calls (`ref_varies`): it is validated, but not held to its first answer; Lakehouse always is
+        free = t == "ref" and bool(shape.get("ref_varies"))
+        ok, reason, result = validate.validate(kind, env["status"], env["body"], first_result=None if free else first[t], miss=False,
                                                window_rows=wr, window_keys=wk)
         truncated = kind == "scan" and wr is not None and wr > validate.SCAN_LIMIT
         if ok and truncated:

@@ -125,13 +125,18 @@ def random_pipe(params: dict) -> bool:
 
 
 # Sample- and tie-dependent by design: hot VictoriaTraces itself answers a different tag list on every call.
-ARBITRARY_PATHS = ("/facets", "/search/tags")
+ARBITRARY_PATHS = ("/facets",)
 
 
 def arbitrary_path(path: str) -> bool:
-    """Sample-dependent answers: facets, Tempo's tag list and tag values (measured on hot VictoriaTraces: 5 and 3 distinct answers in
-    6 and 8 identical calls, while Lakehouse answers the same every time)."""
-    return path.endswith(ARBITRARY_PATHS) or "/search/tag/" in path
+    """Answers that are samples of the data: VictoriaLogs' facets. Two correct systems answer differently; nothing about them is scored."""
+    return path.endswith(ARBITRARY_PATHS)
+
+
+def shape_only_path(path: str) -> bool:
+    """Tempo's tag list and tag values: hot VictoriaTraces answers a different list on identical calls (measured: 5 and 3 distinct answers in
+    6 and 8 calls, Lakehouse's tag list varied too), so the answers are scored by status and non-emptiness, not by their content."""
+    return path.endswith("/search/tags") or "/search/tag/" in path
 
 
 def tempo_seconds(path: str, params: dict) -> dict:
@@ -203,6 +208,7 @@ def translate_row(row: dict, values: dict[str, str]) -> list[dict]:
                     "params": tempo_seconds(resolved["path"], {a: str(b) for a, b in resolved["params"].items()}), "headers": resolved["headers"],
                     "limit": limit_of(resolved["params"], resolved["path"]),
                     "arbitrary": arbitrary_path(resolved["path"]) or random_pipe(resolved["params"]),
+                    "shape_only": shape_only_path(resolved["path"]),
                     "expect": row["expect"], "compare": row["compare"]["type"], "lh_only": lh_only,
                     "expect_error": row["compare"]["type"] in ("error", "status", "absent")})
     return out

@@ -28,7 +28,7 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 if ROOT not in sys.path:  # scripts.proof is imported as a package from the repository root
     sys.path.insert(0, ROOT)
 from scripts.proof.metrics.common import UnknownShape  # noqa: E402
-from scripts.proof.metrics.decode import decode_tempo_metrics  # noqa: E402
+from scripts.proof.metrics.decode import decode_tempo_metrics, decode_values  # noqa: E402
 from scripts.proof.metrics.trace import decode_jaeger, decode_otlp, decode_tempo_search  # noqa: E402
 
 MISS_KINDS = ("trace_lookup",)  # run.sh MISS_QUERIES: a cross-signal lookup may find nothing
@@ -215,6 +215,32 @@ def extract_tempo_search(body: str) -> str:
     return _traces_signature(decode_tempo_search, body)
 
 
+def extract_tempo_tags(body: str) -> str:
+    """Tempo's tag list: the scopes that carry at least one tag. The tags inside a scope are a sample (hot VictoriaTraces answers a different
+    list on identical calls, Lakehouse too), the scopes are not; an empty list or a body that is not a tag list is invalid."""
+    raw = body.strip()
+    if not raw:
+        return "invalid:empty-body"
+    try:
+        keys = decode_values(json.loads(raw))
+    except (ValueError, UnknownShape, AttributeError, TypeError):
+        return "invalid:parse-error"
+    scopes = sorted({k.split(".", 1)[0] for k in keys})
+    return f"tags_scopes={len(scopes)};hash={sha(scopes)}"
+
+
+def extract_tempo_tag_values(body: str) -> str:
+    """Tempo's tag values: the exact set (decoded with scripts.proof); empty or not a value list is invalid."""
+    raw = body.strip()
+    if not raw:
+        return "invalid:empty-body"
+    try:
+        values = sorted(decode_values(json.loads(raw)))
+    except (ValueError, UnknownShape, AttributeError, TypeError):
+        return "invalid:parse-error"
+    return f"tagvalues={len(values)};hash={sha(values)}"
+
+
 def _sig_digits(v, digits: int = 6) -> str:
     return "nan" if v is None or v != v else f"{v:.{digits - 1}e}"
 
@@ -236,7 +262,8 @@ def extract_series_tempo(body: str) -> str:
 
 EXTRACTORS = {"scalar": extract_scalar, "groupby": extract_groupby, "values": extract_values, "scan": extract_scan,
               "spans": extract_spans, "json": extract_json, "trace_jaeger": extract_trace_jaeger, "trace_otlp": extract_trace_otlp,
-              "tempo_search": extract_tempo_search, "series_tempo": extract_series_tempo}
+              "tempo_search": extract_tempo_search, "series_tempo": extract_series_tempo, "tempo_tags": extract_tempo_tags,
+              "tempo_tag_values": extract_tempo_tag_values}
 # run.sh qkind -> our result kind, for the differential test
 RUNSH_KIND = {"count_total": "scalar", "fulltext": "scalar", "level_filter": "scalar", "multi_filter": "scalar", "negation": "scalar",
               "service_filter": "scalar", "slow_spans": "scalar", "span_name": "scalar", "count_by_service": "groupby",
@@ -250,7 +277,7 @@ def extract_result(kind: str, body: str) -> str:
 
 def result_is_empty(result: str) -> bool:
     """run.sh result_is_empty."""
-    return result in ("0", "rows=0", "spans=0") or result.startswith(("rows=0;hash=", "traces=0;", "series=0;"))
+    return result in ("0", "rows=0", "spans=0") or result.startswith(("rows=0;hash=", "traces=0;", "series=0;", "tags_scopes=0;", "tagvalues=0;"))
 
 
 def validate(kind: str, status: int, body: str, first_result: str | None = None, miss: bool = False,

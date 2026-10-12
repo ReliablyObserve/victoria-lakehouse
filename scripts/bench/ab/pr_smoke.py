@@ -108,7 +108,7 @@ def confirm(summary: dict, state: dict, spec: dict, cells_by_key: dict, args) ->
     if not moved:
         return summary
     log(f"re-measuring {len(moved)} cell(s) the first pass moved")
-    again = report.summarize(run_cells(state, spec, moved, args.confirm_runs, measure.SHIFT_S), "confirm", args.noise, args.min_delta_ms, report.ref_skip_from(spec), report.sample_skip_from(spec))
+    again = report.summarize(run_cells(state, spec, moved, args.confirm_runs, measure.SHIFT_S), "confirm", args.noise, args.min_delta_ms, report.ref_skip_from(spec))
     return report.merge_confirm(summary, again)
 
 
@@ -184,7 +184,7 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
     raw = merge_raw(parts)
     raw.update(runs=args.runs, sets=list(sel["sets"]), state={k: state[k] for k in ("H", "layers", "project")})
     abreg.dump_json(os.path.join(out, "raw-0ms.json"), raw)
-    summary = report.summarize(raw, "pr-smoke 0 ms", args.noise, args.min_delta_ms, report.ref_skip_from(spec), report.sample_skip_from(spec))
+    summary = report.summarize(raw, "pr-smoke 0 ms", args.noise, args.min_delta_ms, report.ref_skip_from(spec))
     summary = confirm(summary, state, spec, by_key, args)
     abreg.dump_json(os.path.join(out, "summary-0ms.json"), summary)
     extra = {}
@@ -196,7 +196,7 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
         if sub:
             r = run_cells(state, spec, sub, args.runs)
             r.update(runs=args.runs, sets=list(sel["sets"]))
-            s = report.summarize(r, f"pr-smoke {ms_:g} ms", args.noise, args.min_delta_ms, report.ref_skip_from(spec), report.sample_skip_from(spec))
+            s = report.summarize(r, f"pr-smoke {ms_:g} ms", args.noise, args.min_delta_ms, report.ref_skip_from(spec))
             extra[f"{ms_:g}"] = confirm(s, state, spec, {c["key"]: c for c in sub}, args)
             abreg.dump_json(os.path.join(out, f"summary-{ms_:g}ms.json"), extra[f"{ms_:g}"])
     latency.clear(stack.api_url())
@@ -257,7 +257,7 @@ def rerender(out: str, args) -> int:
     meta = abreg.load_json(os.path.join(out, "meta.json"))
     sel = abreg.load_json(os.path.join(out, "selection.json"))
     # the saved summary already holds the re-measured cells; only the result-vs-hot fields are derived again
-    summary = report.apply_ref_skip(abreg.load_json(os.path.join(out, "summary-0ms.json")), report.ref_skip_from(spec), report.sample_skip_from(spec))
+    summary = report.apply_ref_skip(abreg.load_json(os.path.join(out, "summary-0ms.json")), report.ref_skip_from(spec))
     extra = {}
     for name in sorted(os.listdir(out)):
         m = re.fullmatch(r"summary-(\d+(?:\.\d+)?)ms\.json", name)
@@ -302,6 +302,7 @@ def main(argv=None) -> int:
     trees: list[str] = []
     result = None
     owns_stack = images = False
+    lock = stack.ProjectLock()
     try:
         head = a.head
         meta["head"] = git("rev-parse", head)
@@ -325,6 +326,7 @@ def main(argv=None) -> int:
         head_dir = a.head_dir or None
         base_dir = a.base_dir or None
         # refuse before anything is built or tagged when the project's stack is somebody else's; only after this passes is it ours to remove
+        lock.acquire()  # held until the teardown below: two runs cannot both pass the preflight and own the project
         owns_stack = not stack.preflight(a.reuse_stack)
         if not a.skip_build:
             images = True  # from here on a failure may leave images or worktrees behind: the teardown removes what this run made
@@ -363,6 +365,7 @@ def main(argv=None) -> int:
                     fn()
                 except Exception as e:  # noqa: BLE001 - teardown must go on
                     log(f"teardown {step} failed: {e}")
+        lock.release()
 
 
 if __name__ == "__main__":

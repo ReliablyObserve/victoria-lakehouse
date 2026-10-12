@@ -201,25 +201,32 @@ def test_tempo_shapes_send_unix_seconds_because_rfc3339_is_a_400_on_hot_and_lake
     assert measure.window_params("start-end", s, e) == {"start": s, "end": e}   # LogsQL keeps RFC3339
 
 
-def test_a_sample_shape_does_not_flap_when_its_answer_changes_between_calls(monkeypatch):
+def test_a_ref_varies_shape_exempts_only_the_hot_side_from_the_flapping_rule(monkeypatch):
+    """Hot VictoriaTraces answers Tempo's tag list differently on identical calls; Lakehouse must answer the same every time."""
     monkeypatch.setattr(measure, "SETTLE_S", 0.0)
-    answers = iter(['{"n":"1"}\n', '{"n":"2"}\n', '{"n":"3"}\n'] * 4)
 
     class Changing(FakeLakehouse):
+        def __init__(self):
+            self.n = 0
+            super().__init__()
+
         def handle(self, method, path, headers, body):
             if path.startswith(("/metrics", "/internal")):
                 return super().handle(method, path, headers, body)
-            return 200, next(answers), {}
-    ref, base, pr = Changing(), Changing(), Changing()
+            self.n += 1
+            return 200, f'{{"n":"{self.n}"}}\n', {}
+
+    class Steady(FakeLakehouse):
+        pass
+    ref, base, pr = Changing(), Steady(), Changing()   # the PR's answers change between calls: flapping
     try:
         st = state({"ref-logs": ref.port, "base-logs": base.port, "pr-logs": pr.port})
         cell = measure.plan(SPEC, ["control-logs"], {"control-logs": ["logs count_total"]})[0]
-        flapping, _ = measure.run_cell(cell, st, SPEC, 3, {})
-        assert any(r["reason"].startswith("flapping") for r in flapping)
-        answers = iter(['{"n":"1"}\n', '{"n":"2"}\n', '{"n":"3"}\n'] * 4)
-        cell["shape"] = dict(cell["shape"], sample=True)
-        sampled, _ = measure.run_cell(cell, st, SPEC, 3, {})
-        assert all(r["valid"] for r in sampled)
+        cell["shape"] = dict(cell["shape"], ref_varies=True)
+        rows, _ = measure.run_cell(cell, st, SPEC, 3, {})
+        assert all(r["valid"] for r in rows if r["target"] == "ref")
+        assert any(r["reason"].startswith("flapping") for r in rows if r["target"] == "pr")
+        assert all(r["valid"] for r in rows if r["target"] == "base")
     finally:
-        for s in (ref, base, pr):
-            s.close()
+        for x in (ref, base, pr):
+            x.close()

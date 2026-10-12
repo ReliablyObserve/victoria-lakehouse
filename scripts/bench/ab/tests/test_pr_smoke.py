@@ -119,4 +119,4 @@ def test_n2_unstable_cells_are_measured_again_too(monkeypatch):
     monkeypatch.setattr(pr_smoke, "run_cells", lambda st, sp, cells, runs, shift_s=0: calls.append(len(cells)) or raw(cell_rows(K, 10, 10, runs=runs)))
     args = type("A", (), {"confirm_runs": 7, "noise": 0.15, "min_delta_ms": 3.0})()
     out = pr_smoke.confirm(first, {}, {}, {K: {"key": K}}, args)
-    assert calls == [1] and out["cells"][0]["flaky"] and out["flaky"] == [K]
+    assert calls == [1] and out["cells"][0]["flaky"] and out["cells"][0]["intermittent"] and out["intermittent"] == [K]  # base was clean: the PR's

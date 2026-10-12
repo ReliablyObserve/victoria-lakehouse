@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -231,6 +233,34 @@ def running() -> bool:  # pragma: no cover - runs docker
     out = subprocess.run(["docker", "compose", "-p", PROJECT, *compose_files(), "ps", "-q"], capture_output=True, text=True,
                          env=dict(os.environ, **compose_env())).stdout.strip()
     return bool(out)
+
+
+class ProjectLock:
+    """A per-project advisory lock, held from the preflight to the end of the teardown, so two runs that both find the project free cannot both
+    own it (they would retag the same images and the first teardown would remove the other's stack). flock is released by the operating
+    system when the holder dies, so a stale lock file from a dead process does not wedge the next run."""
+
+    def __init__(self, project: str | None = None, directory: str | None = None):
+        self.path = os.path.join(directory or tempfile.gettempdir(), f"lh-ab-{project or PROJECT}.lock")
+        self.fd: int | None = None
+
+    def acquire(self) -> "ProjectLock":
+        fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise StackBusy(f"another run holds the lock of project {PROJECT} ({self.path}): wait for it, or use another AB_PROJECT") from None
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        self.fd = fd
+        return self
+
+    def release(self) -> None:
+        if self.fd is not None:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            os.close(self.fd)
+            self.fd = None
 
 
 class StackBusy(RuntimeError):
