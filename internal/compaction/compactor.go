@@ -18,10 +18,12 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/fieldpresence"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tokenbloom"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
@@ -900,6 +902,13 @@ func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel
 	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
 		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
 	}
+	// The body token bloom of every row group of the rows written here (the split
+	// parquet-go makes with MaxRowsPerRowGroup): row-group indexes are those of
+	// this file, never the inputs', so they are built from the sorted merge.
+	opts = append(opts, tokenbloom.RowGroupOptions(len(rows), rowGroupSize, func(i int) string { return rows[i].Body })...)
+	// The facet is recomputed from the rows written here, never merged from the
+	// inputs' (see internal/fieldpresence): it describes exactly these rows.
+	opts = append(opts, fieldpresence.LogsOptions(rows, activeSlotResolver.Mapping())...)
 	writer := parquet.NewGenericWriter[schema.LogRow](&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
@@ -938,6 +947,9 @@ func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionL
 	if idxData := traceindex.Marshal(traceindex.Compute(rows)); len(idxData) > 0 {
 		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, string(idxData)))
 	}
+
+	opts = append(opts, tokenbloom.RowGroupOptions(len(rows), rowGroupSize, func(i int) string { return rows[i].Body })...)
+	opts = append(opts, fieldpresence.TracesOptions(rows, activeSlotResolver.Mapping())...)
 
 	writer := schema.NewTraceWriter(&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {

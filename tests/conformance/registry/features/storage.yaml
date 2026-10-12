@@ -25,6 +25,35 @@
     metadata (the trace index, partition metadata) is carried in standard footer key-value
     metadata or in separate objects, so stripping Lakehouse never strips the data.
 
+- id: lh.feature.storage.field_presence_footer
+  title: Per-stream field-name presence in every object's footer
+  status: shipped
+  area: storage
+  surfaces: [storage]
+  rows: [lh.storage.field_presence.footer_kv, lh.storage.field_presence.names_match_read_path, lh.storage.field_presence.recomputed_by_compaction_and_delete, lh.compaction.keeps_footer_key_values]
+  tests:
+    - internal/storage/parquets3/field_presence_size_test.go#TestFieldPresence_FooterSize
+    - lakehouse-traces/internal/storage/parquets3/field_presence_size_test.go#TestFieldPresence_FooterSize
+    - internal/storage/parquets3/field_presence_external_test.go#TestFieldPresence_WritesObjectsForExternalReaders
+    - lakehouse-traces/internal/storage/parquets3/field_presence_external_test.go#TestFieldPresence_WritesObjectsForExternalReaders
+    - lakehouse-traces/internal/storage/parquets3/trace_by_id_cold_ab_test.go#TestTraceByIDColdAB
+  notes: >-
+    The three size, external-reader and trace-by-ID tests are measurement harnesses: they skip unless their environment
+    variable is set (FP_SIZE_OUT, FP_EXTERNAL_DIR, TBID_AB_OUT) and no CI job sets it; the proofs behind the numbers in
+    docs/perf/field-presence-footer.md were run by hand. Objects with the new key go through the production writers of the
+    parquet-readers CI matrix, which opens them with every engine.
+  docs:
+    - docs/open-parquet-format.md#the-lakehousefield_presence-entry
+    - docs/perf/field-presence-footer.md
+  changelog_bullets:
+    - 'Every object records which field names each stream carries (footer key `lakehouse.field_presence`, both binaries).'
+  highlight: >-
+    **Field presence in the footer**: every object records which field names each stream carries, readable from the footer alone and ignored by every other Parquet reader.
+  description: >-
+    Hot VictoriaLogs and VictoriaTraces list a field when some row of a block has a value for it. Every object now carries
+    that information per stream and UTC day, computed by the writers from the read path's own naming, so a later release can
+    answer field_names without decoding rows. It changes no answer today.
+
 - id: lh.feature.storage.manifest
   title: Partition manifest with label pruning
   status: shipped

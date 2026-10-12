@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/crosssignal"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/fieldpresence"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/lifecycle"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -517,6 +518,11 @@ func run(cfg *config.Config, addr string) {
 	// rows rather than letting unbounded stream cardinality leak
 	// through to the writer.
 	internalvlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(policy))
+
+	// Every object a writer produces (flush, compaction, delete rewrite) records
+	// which field names each stream carries, computed with this binary's own
+	// read-path row-to-field conversion.
+	fieldpresence.SetComputers(parquets3.FieldPresenceComputers())
 
 	// Tier-2 dedicated columns: build the custom-attribute slot resolver from
 	// config and install it on the ingest + writer/read paths. nil-safe when no

@@ -498,6 +498,7 @@ flag: 35/181 covered by at least one registry row.
 | `lh.cold.span_events_links_roundtrip_property` | Span events and links survive the JSON column, Parquet and decoding for random inputs | select | 🟡 declared, not yet executed |
 | `lh.compaction.fence_skips_unknown_columns_logs` | LH compaction leaves a logs object with a column it does not model alone: the object stays, the rest merges | admin | 🟡 declared, not yet executed |
 | `lh.compaction.fence_skips_unknown_columns_traces` | LH compaction leaves a traces object with a column it does not model alone: the object stays, the rest merges | admin | 🟡 declared, not yet executed |
+| `lh.compaction.keeps_footer_key_values` | A compacted or rewritten object carries every footer key a flush writes: body token blooms (indexed for the new file), slot binding, trace-id attestation, trace index, field presence | flag | 🧩 LH addition |
 | `lh.delete.fence_unknown_columns_logs` | LH delete rewrite defers a logs object with a column it does not model: the object and the tombstone stay | admin | 🟡 declared, not yet executed |
 | `lh.delete.fence_unknown_columns_traces` | LH delete rewrite defers a traces object with a column it does not model: the object and the tombstone stay | admin | 🟡 declared, not yet executed |
 | `lh.delete.hide_survives_crash` | LH hide-mode delete — suppression survives a non-graceful restart | admin | 🟡 declared, not yet executed |
@@ -550,6 +551,9 @@ flag: 35/181 covered by at least one registry row.
 | `lh.stats.compaction.schema` | LH stats compaction — recent compaction runs and efficiency hints | admin | 🟡 declared, not yet executed |
 | `lh.stats.fields.schema` | LH stats fields — per-field size/cardinality breakdown | admin | 🟡 declared, not yet executed |
 | `lh.stats.overview.schema` | LH stats overview — tier sizes, object counts, compaction backlog | admin | 🟡 declared, not yet executed |
+| `lh.storage.field_presence.footer_kv` | Every object a writer produces carries lakehouse.field_presence (v1, ASCII, at most 1 MiB, readable from the footer alone), or lakehouse.field_presence_over_cap=1 when it would not fit | flag | 🧩 LH addition |
+| `lh.storage.field_presence.names_match_read_path` | The field names in an object's lakehouse.field_presence are the names the cold read path's field_names lists for the same rows, per stream and UTC day (drift guard, both binaries) | flag | 🧩 LH addition |
+| `lh.storage.field_presence.recomputed_by_compaction_and_delete` | Compaction and a delete rewrite recompute the facet from the rows they write: it equals the union of the sources' facets, and a field only deleted rows carried is gone | flag | 🧩 LH addition |
 | `lh.tenant_scope.logs.alias_collision_rejected` | Logs — an alias that collides with an existing one is rejected with 409 | admin | 🟡 declared, not yet executed |
 | `lh.tenant_scope.logs.auto_registered_orgid` | Logs — an auto-registered OrgID gets a reserved-range ID and reads only its own rows | insert | 🟡 declared, not yet executed |
 | `lh.tenant_scope.logs.unknown_orgid_read` | Logs — a read with an unknown OrgID is empty and registers nothing | select | 🟡 declared, not yet executed |

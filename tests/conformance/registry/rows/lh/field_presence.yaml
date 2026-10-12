@@ -1,0 +1,115 @@
+# The field-presence footer entry (lakehouse.field_presence): which field names each stream carries in an object,
+# written by every writer and not read by anything yet (no answer changes). Format contracts of the on-S3 file,
+# so kind: flag rows (no request, no seed); the proof is the Go tests they link.
+
+- id: lh.storage.field_presence.footer_kv
+  title: "Every object a writer produces carries lakehouse.field_presence (v1, ASCII, at most 1 MiB, readable from the footer alone), or lakehouse.field_presence_over_cap=1 when it would not fit"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/open-parquet-format.md#the-lakehousefield_presence-entry
+    tests:
+      - internal/fieldpresence/fieldpresence_test.go#TestEncodeDecodeRoundTrip
+      - internal/fieldpresence/fieldpresence_test.go#TestEncodingIsDeterministic
+      - internal/fieldpresence/fieldpresence_test.go#TestStreamKey
+      - internal/fieldpresence/fieldpresence_test.go#TestDayOf
+      - internal/fieldpresence/fieldpresence_test.go#TestBuilderKeysRowsLikeTheCounter
+      - internal/fieldpresence/fieldpresence_test.go#TestBuilderGivesUpPastItsLimits
+      - internal/fieldpresence/fieldpresence_test.go#TestOverCapStoresNoFacetButTheMarker
+      - internal/fieldpresence/fieldpresence_test.go#TestFromFooterReadsTheFacetAlone
+      - internal/fieldpresence/fieldpresence_test.go#TestDecodeRejectsWhatItDoesNotKnow
+      - internal/fieldpresence/fieldpresence_test.go#TestUnmarshalHostilePayloads
+      - internal/fieldpresence/fieldpresence_test.go#FuzzDecode
+      - internal/fieldpresence/fieldpresence_test.go#FuzzUnmarshalPayload
+      - internal/fieldpresence/fieldpresence_test.go#FuzzEncodeRoundTrip
+      - internal/fieldpresence/fieldpresence_test.go#TestPatternCoversEveryStringColumn
+      - internal/fieldpresence/fieldpresence_test.go#TestComputersHookIsOptional
+      - internal/compaction/footer_kv_test.go#TestWriteLogs_OverCapObjectCarriesTheMarker
+      - internal/compaction/footer_kv_test.go#TestCompactor_NoFacetWithoutAComputer
+      - cmd/lakehouse-logs/field_presence_wiring_test.go#TestFieldPresence_RunInstallsTheComputers
+      - lakehouse-traces/field_presence_wiring_test.go#TestFieldPresence_RunInstallsTheComputers
+  notes: >-
+    Nothing reads the entry yet, so no answer changes; it is the input of a faster field_names. The value is
+    "v1:" + base64 of a zstd frame, so the footer stays valid UTF-8 (#340) and every Parquet reader ignores the key
+    (pyarrow, DuckDB, ClickHouse and Spark open the objects; an independent Python decoder reads the same facet).
+    Over 1 MiB the object carries only the marker and a reader must use the rows. Metrics:
+    lakehouse_field_presence_bytes, lakehouse_field_presence_over_cap_total, lakehouse_field_presence_build_duration_seconds.
+
+- id: lh.storage.field_presence.names_match_read_path
+  title: "The field names in an object's lakehouse.field_presence are the names the cold read path's field_names lists for the same rows, per stream and UTC day (drift guard, both binaries)"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/open-parquet-format.md#the-lakehousefield_presence-entry
+    tests:
+      - internal/storage/parquets3/field_presence_test.go#TestFieldPresence_MatchesTheReadPathsFieldNames
+      - internal/storage/parquets3/field_presence_test.go#TestFieldPresence_MatchesTheReadPathPerStreamDay
+      - lakehouse-traces/internal/storage/parquets3/field_presence_test.go#TestFieldPresence_MatchesTheReadPathsFieldNames
+      - lakehouse-traces/internal/storage/parquets3/field_presence_test.go#TestFieldPresence_MatchesTheReadPathPerStreamDay
+  notes: >-
+    Property test over random batches (empty values, attribute maps with reserved and scalar-column keys, Tier-2 slots
+    bound, unbound and bound to reserved names, rows without _stream_id, two UTC days, up to 60 streams, span events and
+    links): the facet folded per stream-day equals GetFieldNames over the same flushed objects, in aggregate (names and
+    hits) and stream-day by stream-day. The writer computes names once per pattern of non-empty columns with the read
+    path's row-to-field emitter, so a column added to a row type and not to the pattern fails
+    TestPatternCoversEveryStringColumn.
+
+- id: lh.storage.field_presence.recomputed_by_compaction_and_delete
+  title: "Compaction and a delete rewrite recompute the facet from the rows they write: it equals the union of the sources' facets, and a field only deleted rows carried is gone"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/open-parquet-format.md#the-lakehousefield_presence-entry
+    tests:
+      - internal/storage/parquets3/field_presence_lifecycle_test.go#TestFieldPresence_CompactedFacetEqualsTheUnionOfTheSources
+      - internal/storage/parquets3/field_presence_lifecycle_test.go#TestFieldPresence_DeleteRewriteRecomputesFromTheSurvivors
+      - lakehouse-traces/internal/storage/parquets3/field_presence_lifecycle_test.go#TestFieldPresence_CompactedFacetEqualsTheUnionOfTheSources
+      - lakehouse-traces/internal/storage/parquets3/field_presence_lifecycle_test.go#TestFieldPresence_DeleteRewriteRecomputesFromTheSurvivors
+      - internal/compaction/footer_kv_test.go#TestCompactor_LogsOutputCarriesEveryFooterKV
+      - internal/compaction/footer_kv_test.go#TestCompactor_TracesOutputCarriesEveryFooterKV
+      - cmd/lakehouse-logs/field_presence_wiring_test.go#TestNewDeleteRewriter_ReplacementCarriesARecomputedFieldPresence
+      - lakehouse-traces/field_presence_wiring_test.go#TestNewDeleteRewriter_ReplacementCarriesARecomputedFieldPresence
+  notes: >-
+    The facet is never merged: compaction and the delete rewriter write through the one compaction writer, which computes
+    it from the rows it writes. Parity is checked against the sources' flushed facets (union of names, sum of rows per
+    stream-day) over random batches in both modules.
+
+- id: lh.compaction.keeps_footer_key_values
+  title: "A compacted or rewritten object carries every footer key a flush writes: body token blooms (indexed for the new file), slot binding, trace-id attestation, trace index, field presence"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/open-parquet-format.md#footer-keyvalue-entries
+    tests:
+      - internal/storage/parquets3/field_presence_lifecycle_test.go#TestFooterKV_FlushAndCompactionWriteTheSameKeys
+      - lakehouse-traces/internal/storage/parquets3/field_presence_lifecycle_test.go#TestFooterKV_FlushAndCompactionWriteTheSameKeys
+      - internal/tokenbloom/tokenbloom_test.go#TestBloomRoundTripHasNoFalseNegatives
+      - internal/tokenbloom/tokenbloom_test.go#TestRowGroupOptionsIndexTheRowGroupsOfTheFileBeingWritten
+      - internal/tokenbloom/tokenbloom_test.go#TestRowGroupOptionsDegenerateInputs
+      - internal/tokenbloom/tokenbloom_test.go#TestUnmarshalRejectsTruncatedData
+  notes: >-
+    Closes #344: the compactor did not write the body token bloom the flush writer adds, so a compacted file could not skip
+    row groups on a body-word search. A flush and a compaction of the same rows must write the same footer keys with the
+    same values. The bloom of row group N is built from the rows of row group N of the file written, never copied from an input.
+    Consequence recorded in the reader coverage table: compacted logs objects now carry the non-UTF-8 entries every raw logs
+    object carries (#340).

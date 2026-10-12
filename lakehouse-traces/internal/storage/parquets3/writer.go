@@ -16,10 +16,12 @@ import (
 	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/fieldpresence"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tokenbloom"
 )
 
 // BatchWriter writes groups of rows as Parquet objects to S3 and registers each
@@ -469,23 +471,11 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
 		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
 	}
-	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
-		start := rgIdx * rowGroupSize
-		end := start + rowGroupSize
-		if end > len(rows) {
-			end = len(rows)
-		}
-		bodies := make([]string, 0, end-start)
-		for i := start; i < end; i++ {
-			if rows[i].Body != "" {
-				bodies = append(bodies, rows[i].Body)
-			}
-		}
-		if len(bodies) > 0 {
-			key, value := buildTokenBloomMetadata(bodies, rgIdx)
-			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
-		}
-	}
+	opts = append(opts, tokenbloom.RowGroupOptions(len(rows), rowGroupSize, func(i int) string { return rows[i].Body })...)
+
+	// Which field names each stream carries (see internal/fieldpresence): a
+	// field_names read of this object is answerable from the footer alone.
+	opts = append(opts, fieldpresence.Observe(presenceOfLogRows(rows, activeSlotResolver.Mapping()), "logs")...)
 
 	writer := parquet.NewGenericWriter[schema.LogRow](&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
@@ -523,23 +513,7 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
 		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
 	}
-	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
-		start := rgIdx * rowGroupSize
-		end := start + rowGroupSize
-		if end > len(rows) {
-			end = len(rows)
-		}
-		bodies := make([]string, 0, end-start)
-		for i := start; i < end; i++ {
-			if rows[i].Body != "" {
-				bodies = append(bodies, rows[i].Body)
-			}
-		}
-		if len(bodies) > 0 {
-			key, value := buildTokenBloomMetadata(bodies, rgIdx)
-			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
-		}
-	}
+	opts = append(opts, tokenbloom.RowGroupOptions(len(rows), rowGroupSize, func(i int) string { return rows[i].Body })...)
 
 	tidxStart := time.Now()
 	tidxEntries := computeTraceIndex(rows)
@@ -549,6 +523,8 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		metrics.WriterTraceIdxEntriesTotal.Add(len(tidxEntries))
 		metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())
 	}
+
+	opts = append(opts, fieldpresence.Observe(presenceOfTraceRows(rows, activeSlotResolver.Mapping()), "traces")...)
 
 	writer := schema.NewTraceWriter(&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {

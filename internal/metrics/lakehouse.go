@@ -350,6 +350,15 @@ var (
 	// deterministic: hits may be lower than hot storage's, and under a filter a
 	// name only the non-matching blocks of an untracked stream carry is lost.
 	FieldNamesStreamCap = NewCounter("lakehouse_field_names_stream_cap_total")
+	// FieldPresenceBytes is the size of the lakehouse.field_presence footer value
+	// of each object a writer produced (flush, compaction, delete rewrite), by
+	// signal. FieldPresenceOverCap counts the objects whose facet passed the 1 MiB
+	// cap and was left out for the over-cap marker (a reader then uses the rows).
+	// FieldPresenceBuildDuration is the wall-clock cost of computing and encoding
+	// the facet of one object.
+	FieldPresenceBytes         = NewHistogramVec("lakehouse_field_presence_bytes", []float64{1 << 10, 8 << 10, 64 << 10, 256 << 10, 1 << 20}, "signal")
+	FieldPresenceOverCap       = NewCounterVec("lakehouse_field_presence_over_cap_total", "signal")
+	FieldPresenceBuildDuration = NewHistogram("lakehouse_field_presence_build_duration_seconds", []float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1})
 	// CatalogFieldCardinality is the HLL-estimated distinct-count per high-card
 	// field — the cardinality-bomb early-warning (alert when an id-like field's
 	// count spikes) and a query-planning input.

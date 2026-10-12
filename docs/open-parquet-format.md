@@ -246,11 +246,42 @@ Lakehouse metadata that belongs to one file lives in standard Parquet footer key
 | Key | Written by | Value |
 |---|---|---|
 | `_trace_idx` | traces writers | the file's trace IDs with their time bounds |
-| `_bloom_body_rg_N` | flush writers | token bloom of row group N's message bodies |
+| `_bloom_body_rg_N` | all writers (flush, compaction, delete rewrite; one entry per row group that has a message body, indexed in the file that carries it) | token bloom of row group N's message bodies |
 | `lakehouse.dedicated_slots` | all writers, when slots are configured | the Tier-2 slot-to-attribute binding |
 | `lh.trace_id_hex` | all writers (flush, compaction, delete rewrite; both binaries) | ASCII `1` when every `trace_id` value in the file is lowercase hex (or empty), `0` otherwise; see [read-path.md](read-path.md#attested-lowercase-hex-trace_id-files-lhtrace_id_hex) |
+| `lakehouse.field_presence` | all writers (flush, compaction, delete rewrite; both binaries) | which field names each stream carries in this file, with its rows per UTC day: ASCII `v1:` + base64; see [the entry](#the-lakehousefield_presence-entry) |
+| `lakehouse.field_presence_over_cap` | all writers, only when the facet would pass 1 MiB | ASCII `1`; the file carries no `lakehouse.field_presence` |
 
-`lh.trace_id_hex` is plain ASCII, so the footer stays valid UTF-8 for every reader.
+`lh.trace_id_hex`, `lakehouse.field_presence` and `lakehouse.field_presence_over_cap` are plain ASCII, so they keep the footer valid UTF-8 for every reader.
+
+### The `lakehouse.field_presence` entry
+
+For every stream and UTC day of the rows in the file it records the number of rows and the set of VictoriaLogs/VictoriaTraces **field names** that have a value on at least one of them. A hot VictoriaLogs/VictoriaTraces block lists exactly that, and `field_names` credits each listed name with the rows of the blocks that list it. The file holds it in one place, readable from the footer alone (one tail read, no row decoded). Nothing reads it yet, so it changes no answer.
+
+The names are the ones a `field_names` read of the file lists, computed by the writer from the same naming the cold readers apply: the scalar columns through the row-to-field conversion of the read path (Tier-2 slots under the name bound in the same footer's `lakehouse.dedicated_slots`, unbound slots absent, dedicated and promoted columns, `event:*` and `link:*` for spans), every attribute key through the reader's MAP-key rule (`resource_attr:`/`span_attr:`/`scope_attr:` prefixes for spans, none for logs; a key spelling a scalar column or a reserved name is not a second field), and no Parquet column aliases. A name counts when its value is not empty (a number always counts). A stream is its `_stream_id`, else its `_stream`, else none; the day is the UTC day of `_time`.
+
+The value is `v1:` followed by the standard base64 of one zstd frame. The frame holds, in this order (integers are LEB128 varints):
+
+| Part | Content |
+|---|---|
+| naming version | `1`; a reader that does not know it treats the file as having no entry |
+| names | count, then each name as length and bytes, in byte order |
+| sets | count, then each distinct name set as its length and the ascending name indexes, delta-coded |
+| id prefix | length and bytes of the common prefix of all 24-byte stream ids (the tenant) |
+| entries | count, then per stream-day in (day, kind, key) order: the day (the first as a zigzag varint of days since 1970-01-01 UTC, then the delta to the previous day), the kind byte, the key, the row count, the index of its set |
+
+The kind byte and key: `i` is a 48-digit lowercase hex `_stream_id` (8-byte tenant + 16-byte hash) stored as its 24 raw bytes after the id prefix; `I` is any other `_stream_id` (length and bytes); `s` is a `_stream` of rows without a `_stream_id` (length and bytes); `n` rows with neither (empty key). The encoding is byte-reproducible: the same rows give the same bytes whatever the order they were added in.
+
+A file whose entry would pass 1 MiB carries no entry and `lakehouse.field_presence_over_cap` = `1` instead, so a reader knows to read its rows. Reading it with a standard tool:
+
+```python
+import base64, pyarrow.parquet as pq, zstandard
+kv = pq.ParquetFile("part.parquet").metadata.metadata  # bytes -> bytes
+value = kv[b"lakehouse.field_presence"].decode()       # "v1:..."
+payload = zstandard.ZstdDecompressor().decompressobj().decompress(base64.b64decode(value[3:]))
+```
+
+DuckDB shows the same bytes: `SELECT value FROM parquet_kv_metadata('part.parquet') WHERE key = 'lakehouse.field_presence'`. Footer growth and the cost of writing it are measured in [perf/field-presence-footer.md](perf/field-presence-footer.md). Compaction and a delete rewrite recompute the entry from the rows they write; they never merge the entries of the inputs, so a field only deleted rows carried disappears.
 
 ## Writer Library
 
@@ -966,8 +997,8 @@ Athena is Trino, so a tenant above 2^31 reads back negative whatever type you de
 | DuckDB | 1.5.6 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
 | pyarrow | 25.0.1 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
 | pandas | 2.3.3 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
-| Polars | 1.44.2 | partial (#340) | no (#340) | no (#340) | partial (#340) | partial (#340) | yes | `readers-inprocess` |
-| Apache DataFusion | 54.0.0 | partial (#340) | no (#340) | no (#340) | partial (#340) | partial (#340, engine caveat) | yes | `readers-inprocess` |
+| Polars | 1.44.2 | no (#340) | no (#340) | no (#340) | no (#340) | partial (#340) | yes | `readers-inprocess` |
+| Apache DataFusion | 54.0.0 | no (#340) | no (#340) | no (#340) | no (#340) | partial (#340, engine caveat) | yes | `readers-inprocess` |
 | ClickHouse | 25.8.33.6 | partial (#341) | partial (#341) | partial (#341) | partial (#341) | yes | yes | `readers-clickhouse` |
 | Trino | 476 | partial (#342) | partial (#342) | partial (#342) | partial (#342) | yes | yes | `readers-trino` |
 | Apache Spark | 4.0.0 | yes | yes | yes | yes | yes | yes | `readers-spark` |
@@ -979,8 +1010,8 @@ Athena is Trino, so a tenant above 2^31 reads back negative whatever type you de
 
 Known gaps behind the `no` and `partial` cells (each cell still runs in CI and must keep failing until its issue is fixed):
 
-- polars, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; Polars refuses a file that carries either. Every traces object and every raw logs object does; a compacted logs object only sometimes (compaction keeps the body token blooms of some files, #344)
-- datafusion, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; DataFusion (arrow-rs) refuses a file that carries either. Every traces object and every raw logs object does; a compacted logs object only sometimes (compaction keeps the body token blooms of some files, #344)
+- polars, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; Polars refuses a file that carries either. Every traces object and every logs object with a message body does, raw or compacted (compaction writes the body token blooms since #344)
+- datafusion, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; DataFusion (arrow-rs) refuses a file that carries either. Every traces object and every logs object with a message body does, raw or compacted (compaction writes the body token blooms since #344)
 - datafusion, engine caveat: needs an explicit schema. engine behaviour, not a Lakehouse defect: register_parquet infers the schema from every file footer before any partition filter applies, so one unreadable object in an unrelated partition fails the registration. Pass an explicit schema= to avoid the listing-time footer reads
 - clickhouse, [#341](https://github.com/ReliablyObserve/victoria-lakehouse/issues/341): equality filters on a bloom column need bloom push down off. split-block bloom filters whose size is not a power of two (96 bytes for 60 values, 160 after compaction) are written for every bloom column with enough distinct values; ClickHouse fails an equality filter on such a column. The workaround is input_format_parquet_bloom_filter_push_down = 0
 - trino, [#342](https://github.com/ReliablyObserve/victoria-lakehouse/issues/342): tenant IDs >= 2^31 need a mask. Trino reads UINT_32 account_id 3000000000 as -1294967296 and 4294967294 as -2

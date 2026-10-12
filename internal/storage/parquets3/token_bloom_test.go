@@ -77,11 +77,11 @@ func TestTokenBloomMarshalUnmarshal(t *testing.T) {
 	}
 
 	// Restored bloom must behave identically
-	if restored.k != bloom.k {
-		t.Errorf("k mismatch: got %d, want %d", restored.k, bloom.k)
+	if restored.K() != bloom.K() {
+		t.Errorf("k mismatch: got %d, want %d", restored.K(), bloom.K())
 	}
-	if len(restored.bits) != len(bloom.bits) {
-		t.Errorf("bits length mismatch: got %d, want %d", len(restored.bits), len(bloom.bits))
+	if restored.Words() != bloom.Words() {
+		t.Errorf("bits length mismatch: got %d, want %d", restored.Words(), bloom.Words())
 	}
 
 	for _, tok := range tokens {

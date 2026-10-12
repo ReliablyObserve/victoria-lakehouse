@@ -29,16 +29,16 @@ GAPS = [
      # dt= partitions the filter keeps: these queries meet those objects, not the whole cell
      "partition_pruned": ("dt_filter",),
      # where every object is affected (the doc table says `no` there, `partial` elsewhere)
-     "full": (("logs", "raw"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")),
+     "full": (("logs", "raw"), ("logs", "compacted"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")),
      "note": "the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; Polars refuses a file "
-             "that carries either. Every traces object and every raw logs object does; a compacted logs object only sometimes "
-             "(compaction keeps the body token blooms of some files, #344)"},
+             "that carries either. Every traces object and every logs object with a message body does, raw or compacted "
+             "(compaction writes the body token blooms since #344)"},
     {"id": "footer-kv-not-utf8/datafusion", "issue": ISSUES + "340", "engines": ("datafusion",), "footer": True,
      "layers": ("raw", "compacted", "pruned"), "label": "files with a non-UTF-8 footer value", "error": UTF8_ERR,
-     "full": (("logs", "raw"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")),
+     "full": (("logs", "raw"), ("logs", "compacted"), ("traces", "raw"), ("traces", "compacted"), ("traces", "pruned")),
      "note": "the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; DataFusion (arrow-rs) "
-             "refuses a file that carries either. Every traces object and every raw logs object does; a compacted logs object only "
-             "sometimes (compaction keeps the body token blooms of some files, #344)"},
+             "refuses a file that carries either. Every traces object and every logs object with a message body does, raw or "
+             "compacted (compaction writes the body token blooms since #344)"},
     {"id": "schema-inference-opens-every-file/datafusion", "issue": None, "engines": ("datafusion",),
      "signals": ("logs",), "layers": ("pruned",), "queries": ("dt_filter",), "label": "needs an explicit schema",
      "error": r"range start must not be greater than end|footer|magic number|not a valid parquet",
