@@ -656,7 +656,8 @@ and made the toolchain bump #491 unmergeable, with no way to turn it green; it i
   or ANY field changed other than `title`, `notes`, `description`, `highlight`, `differ_note`,
   `refs.doc`, more `refs.tests`, or `pending` going from true to false. That covers `compare`
   (type, options such as a tolerance, project), `request`, `targets`, `seed`, `layers`, `upstream`
-  and `pending` set to true. A test reference may be replaced only when a tests/parity lock was renamed or moved and the new
+  and `pending` set to true. The one exception is the `perf` block, which is decided per field (see
+  "Performance rows" below); A test reference may be replaced only when a tests/parity lock was renamed or moved and the new
   name has at least the old name's cell floor (any other reference, e2e or unit, may not be replaced);
 - changes a test file that a lock row references so it may stop running: any edit of the build
   constraint header (everything before the `package` clause, comments included), a newly added
@@ -690,6 +691,44 @@ and made the toolchain bump #491 unmergeable, with no way to turn it green; it i
 - deletes or moves the allowlist file, or changes the `--allowlist` argument of the parity workflow
   (the allowlist path is read from `.github/workflows/parity.yaml` at both revisions).
 There is no bypass for these; the owner merges a deliberate weakening with the administrator bypass.
+
+### Performance rows
+
+The perf rows (`rows/perf/field_metadata.yaml`) hold exact, deterministic counters (`s3_gets`, `s3_bytes`,
+`row_groups`, `pages`) measured on generated Parquet files, next to a latency budget (`p50_ms`, `p90_ms`,
+`valid`). Any change that alters the bytes of the generated files (a nullable column's definition levels, a new
+footer key, a different encoding) moves `s3_bytes` by a few bytes, so the `field-metadata-perf` job goes red until
+the rows are updated. Treating every change to a pass row's perf block as a weakened lock made "field-metadata-perf
+green" and "registry gate PASS" impossible together (#483 moved 744 rows by +17 to +385 bytes on `s3_bytes` only). The
+gate therefore decides a perf-block change of an `expect: pass` row by content, per field, against the **merge base**
+(owner rule 2026-10-12: performance must not go down):
+
+| change to a pass row's perf block | verdict |
+|---|---|
+| any counter or budget lower, or unchanged | free |
+| `s3_bytes` higher by at most 1.0 % (inclusive, integer arithmetic) | allowed and **listed** |
+| `s3_bytes` higher by more than 1.0 % | Rule 3 FAIL: "perf counter raised beyond 1.0 %" |
+| `s3_gets`, `row_groups` or `pages` higher by any amount | Rule 3 FAIL: more requests or more work is never file-layout noise |
+| `p50_ms` or `p90_ms` higher by any amount | Rule 3 FAIL: latency is noise-bound, not a structural counter |
+| `budget.valid` weaker (fewer iterations, or not exact in every iteration) | Rule 3 FAIL |
+| `cell`, `counters.path`, any other key of the perf block | Rule 3 FAIL: a different measurement (as every other field of a pass row) |
+| `expect`, `request`, `layers`, `compare`, `refs` removals | unchanged: Rule 3 FAIL, as above |
+| a new row | free |
+| a deleted pass row | Rule 3 FAIL |
+
+The rule runs per row and per field, so one regressed field fails the PR even when other rows only raise `s3_bytes`
+within the allowance. A row that fails is reported by its failures only. The allowed raises are never silent: the
+Rule 3 verdict reads "PASS - N perf counters raised within 1.0 % (listed below)" (and the report header with it),
+the log lists every one (`perf counter raised: <row id> <field> <old> -> <new> (+x.xx %)`), the Files tab gets one
+`::warning file=<rows file>::` annotation per row (at most 10, then "... and N more"), and the report has a section with
+the totals, the largest relative increase and the rows. **Limit:** the allowance is taken against main's current
+value, so a slow drift of +1.0 % per PR is possible; the gate does not track it, the owner's review of the listed
+raises (and the history of the rows file) is the control. A real increase the owner accepts is merged with the
+administrator bypass.
+
+When the generated files change, update the counters only (`s3_bytes`, `row_groups`, `pages` from a fresh
+`perf_rows.py` matrix) and keep the latency budgets as they are: a regenerated budget is a fresh, noisy measurement and
+any increase of it fails.
 
 **The ratchet holds the locks too.** `scripts/ci/parity_ratchet.py --registry
 tests/conformance/registry/rows` (the Parity Tests job) reads the rows with `expect: pass`, not

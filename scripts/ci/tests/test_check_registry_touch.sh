@@ -121,6 +121,11 @@ FIXTURE
 - {id: lh.row.prodlock, title: prodlock, expect: pass, compare: {type: exact-json}, request: {method: GET, path: /p}, refs: {tests: [internal/x/e_test.go#TestE]}}
 - {id: lh.row.vwh, title: vwh, expect: pass, compare: {type: values-with-hits, options: {hits_tolerance: "0"}}, request: {method: GET, path: /b}}
 ROWS
+    mkdir -p tests/conformance/registry/rows/perf
+    cat > tests/conformance/registry/rows/perf/field_metadata.yaml <<'ROWS'
+- { id: "perf.p1", title: "p1", expect: "pass", compare: { type: "values-with-hits", options: { hits_tolerance: "0" } }, request: { method: "GET", path: "/select/logsql/field_names", params: { query: "*" } }, layers: ["perf"], perf: { cell: "field_names/a", budget: { p50_ms: 18.5, p90_ms: 18.6, valid: "2/2" }, counters: { s3_gets: 4, s3_bytes: 1000000, row_groups: 6, pages: 494, path: "scan" } } }
+- { id: "perf.p2", title: "p2", expect: "pass", compare: { type: "values-with-hits", options: { hits_tolerance: "0" } }, request: { method: "GET", path: "/select/logsql/field_names", params: { query: "*" } }, layers: ["perf"], perf: { cell: "field_names/b", budget: { p50_ms: 10.5, p90_ms: 10.6, valid: "2/2" }, counters: { s3_gets: 2, s3_bytes: 500000, row_groups: 3, pages: 100, path: "scan" } } }
+ROWS
     printf -- '- id: lh.feature.storage.existing\n  title: existing\n' > tests/conformance/registry/features/storage.yaml
     git add -A
     git commit -q -m base
@@ -1513,6 +1518,35 @@ run_case "min-pass: lowering it is a Rule 3 failure" fail "min-pass:\` lowered f
 run_case "min-pass: raising it is free" ok "registry-touch check OK" minpass_raised
 run_case "min-pass: removing the directive is a Rule 3 failure" fail "the \`# min-pass: 341\` directive was removed" minpass_removed
 run_case "min-pass: an Arabic-Indic value is unreadable and refused" fail "unreadable min-pass value" minpass_unicode
+echo "== perf rows: a counter within 1.0 % is listed, a real regression fails =="
+PERF_ROWS=tests/conformance/registry/rows/perf/field_metadata.yaml
+perf_edit() { sedi "$1" "$PERF_ROWS"; }
+perf_bytes_small() { perf_edit 's/s3_bytes: 1000000/s3_bytes: 1000500/'; }
+perf_bytes_boundary() { perf_edit 's/s3_bytes: 1000000/s3_bytes: 1010000/'; }
+perf_bytes_over() { perf_edit 's/s3_bytes: 1000000/s3_bytes: 1010001/'; }
+perf_gets_up() { perf_edit 's/s3_gets: 4/s3_gets: 5/'; }
+perf_pages_up() { perf_edit 's/pages: 494/pages: 495/'; }
+perf_latency_up() { perf_edit 's/p50_ms: 18.5/p50_ms: 18.6/'; }
+perf_decrease() { perf_edit 's/s3_bytes: 1000000/s3_bytes: 900000/; s/pages: 494/pages: 400/; s/p90_ms: 18.6/p90_ms: 17/'; }
+perf_path_changed() { perf_edit 's/path: "scan"/path: "index"/'; }
+perf_mixed() { perf_bytes_small; perf_edit 's/s3_gets: 2/s3_gets: 3/'; }
+perf_many() { perf_edit 's/s3_bytes: 1000000/s3_bytes: 1000500/; s/s3_bytes: 500000/s3_bytes: 500100/'; }
+run_case "perf: s3_bytes +0.05 % is listed, not failed" ok "| Rule 3: parity fixes ship locks, locks are not weakened | PASS - 1 perf counter raised within 1.0 % (listed below) |" perf_bytes_small
+run_case "perf: ... with the row, the counter and the percentage in the log" ok "perf counter raised: perf.p1 s3_bytes 1000000 -> 1000500 (+0.05 %)" perf_bytes_small
+run_case "perf: ... an inline annotation for the Files tab pointing at the rows file" ok "::warning file=tests/conformance/registry/rows/perf/field_metadata.yaml::perf counter raised: perf.p1 s3_bytes 1000000 -> 1000500 (+0.05 %25)" perf_bytes_small
+run_case "perf: ... the report header says a person has to look" ok "## Registry gate: PASS - 1 perf counter raised within 1.0 % (listed below)" perf_bytes_small
+run_case "perf: ... and a report section with the largest relative increase" ok "Largest relative increase: +0.05 %" perf_bytes_small
+run_case "perf: exactly +1.0 % is listed (inclusive boundary)" ok "PASS - 1 perf counter raised within 1.0 %" perf_bytes_boundary
+run_case "perf: +1 byte over 1.0 % fails Rule 3" fail "| Rule 3: parity fixes ship locks, locks are not weakened | FAIL |" perf_bytes_over
+run_case "perf: ... and says why" fail "perf counter raised beyond 1.0 %: perf.p1 s3_bytes +1.0 % (1000000 -> 1010001)" perf_bytes_over
+run_case "perf: one more S3 GET fails Rule 3" fail "perf counter raised: perf.p1 s3_gets 4 -> 5" perf_gets_up
+run_case "perf: one more page fails Rule 3" fail "perf counter raised: perf.p1 pages 494 -> 495" perf_pages_up
+run_case "perf: a higher latency budget fails Rule 3" fail "perf budget raised: perf.p1 p50_ms 18.5 -> 18.6" perf_latency_up
+run_case "perf: lower bytes, pages and latency are free" ok "registry-touch check OK" perf_decrease
+absent_case "perf: ... and nothing is listed for them" "perf counter raised" perf_decrease
+run_case "perf: a changed answering path is a different measurement (Rule 3)" fail "pass row's perf.counters.path changed: perf.p1" perf_path_changed
+run_case "perf: one row within the allowance and one regressed row fail as a whole" fail "perf counter raised: perf.p2 s3_gets 2 -> 3" perf_mixed
+run_case "perf: two rows within the allowance count as two counters" ok "PASS - 2 perf counters raised within 1.0 % (listed below)" perf_many
 
 run_unreleased_bullet_case
 
