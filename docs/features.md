@@ -9,7 +9,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Area | ✅ covered by a test | 🟡 declared only | 🔧 in progress | 📝 planned | Total |
 |---|---|---|---|---|---|
 | Ingest | 8 | 0 | 0 | 0 | 8 |
-| Storage | 32 | 0 | 1 | 2 | 35 |
+| Storage | 34 | 0 | 1 | 2 | 37 |
 | Query | 16 | 1 | 0 | 1 | 18 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 7 | 0 | 0 | 1 | 8 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 1 | 0 | 15 |
 | Deploy | 5 | 0 | 0 | 0 | 5 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **151** | **1** | **2** | **8** | **162** |
+| **Total** | **153** | **1** | **2** | **8** | **164** |
 
 ## Coverage gaps
 
@@ -127,7 +127,7 @@ Lakehouse mounts the upstream `vlinsert` handlers instead of re-implementing the
 - Docs: `docs/write-path.md`, `docs/getting-started.md`
 - Changelog: `0.8.0`
 
-## Storage (35)
+## Storage (37)
 
 ### 📝 Cold-open round-trip elimination
 
@@ -152,6 +152,19 @@ Tier 1 promotes a fixed set of hot OTel attributes; Tier 2 lets an operator name
 - Docs: `docs/architecture/dedicated-columns.md#two-tiers`, `docs/benchmarks/dedicated-columns.md`
 - Changelog: `0.90.0`
 
+### ✅ Per-stream field-name presence in every object's footer
+
+`lh.feature.storage.field_presence_footer` · status: shipped · since: the release after v0.156.2 · surfaces: storage
+
+**Field presence in the footer**: every object records which field names each stream carries, readable from the footer alone and ignored by every other Parquet reader.
+
+Hot VictoriaLogs and VictoriaTraces list a field when some row of a block has a value for it. Every object now carries that information per stream and UTC day, computed by the writers from the read path's own naming, so a later release can answer field_names without decoding rows. It changes no answer today.
+
+- Verification: rows: `lh.storage.field_presence.footer_kv` (pass, executes), `lh.storage.field_presence.names_match_read_path` (pass, executes), `lh.storage.field_presence.recomputed_by_compaction_and_delete` (pass, executes), `lh.compaction.keeps_footer_key_values` (pass, executes) · tests: `internal/storage/parquets3/field_presence_size_test.go#TestFieldPresence_FooterSize`, `lakehouse-traces/internal/storage/parquets3/field_presence_size_test.go#TestFieldPresence_FooterSize`, `internal/storage/parquets3/field_presence_external_test.go#TestFieldPresence_WritesObjectsForExternalReaders`, `lakehouse-traces/internal/storage/parquets3/field_presence_external_test.go#TestFieldPresence_WritesObjectsForExternalReaders`, `lakehouse-traces/internal/storage/parquets3/trace_by_id_cold_ab_test.go#TestTraceByIDColdAB`
+- Docs: `docs/open-parquet-format.md#the-lakehousefield_presence-entry`, `docs/perf/field-presence-footer.md`
+- Changelog: the release after `0.156.2`
+- Note: The three size, external-reader and trace-by-ID tests are measurement harnesses: they skip unless their environment variable is set (FP_SIZE_OUT, FP_EXTERNAL_DIR, TBID_AB_OUT) and no CI job sets it; the proofs behind the numbers in docs/perf/field-presence-footer.md were run by hand. Objects with the new key go through the production writers of the parquet-readers CI matrix, which opens them with every engine.
+
 ### ✅ Per-field storage and metadata size accounting
 
 `lh.feature.storage.field_size_stats` · status: shipped · since: v0.100.0 · surfaces: api, storage
@@ -163,6 +176,18 @@ The size of every field — its column bytes on S3 and the metadata bytes it cos
 - Verification: rows: `lh.stats.fields.schema` (pass, pending) · tests: `internal/pmeta/metadata_bytes_by_field_test.go`, `internal/stats/api_fields_test.go`, `tests/e2e/stats_metadata_test.go#TestStatsOverviewMetadata`
 - Docs: `docs/tenant-stats.md`, `docs/architecture/field-value-catalog.md`
 - Changelog: `0.100.0`
+
+### ✅ One exact request for a cold footer read
+
+`lh.feature.storage.footer_tail` · status: shipped · surfaces: storage
+
+**Exact footer reads**: the manifest records how many bytes at the end of each object a footer read needs, so a cold read is one request of exactly that size.
+
+The footer prefetch used to read a fixed window (64 KiB to 640 KiB) and, when the footer was larger, read the window again and then the whole footer. Writers now record the exact length, and a footer read asks for those bytes in one request; an object without the record costs one extra request for only the part the window missed, and is recorded from its first read.
+
+- Verification: rows: `lh.storage.footer_tail.recorded_by_writers` (pass, executes), `lh.read.footer_exact_request` (pass, executes), `lh.manifest.footer_tail_carried` (pass, executes) · tests: `internal/parquetfooter/parquetfooter_test.go#TestRead_ExactHintIsOneRequestOfExactlyThatLength`, `lakehouse-traces/internal/storage/parquets3/trace_by_id_cold_ab_test.go#TestTraceByIDColdAB`
+- Docs: `docs/read-path.md#footer-reads-one-exact-request`, `docs/manifest-system.md#fileinfo`, `docs/perf/field-presence-footer.md`
+- Note: The trace-by-ID test is a measurement harness (skips unless TBID_AB_OUT is set); the A/B behind docs/perf/field-presence-footer.md was run by hand against main.
 
 ### ✅ S3 storage-class lifecycle tiering
 
