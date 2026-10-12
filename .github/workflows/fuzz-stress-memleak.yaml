@@ -211,6 +211,9 @@ jobs:
           - internal/pmeta:FuzzFieldCatalogDecode
           - internal/pmeta:FuzzFileMetaDecode
           - internal/pmeta:FuzzBloomFacetDecode
+          - internal/fieldpresence:FuzzDecode
+          - internal/fieldpresence:FuzzUnmarshalPayload
+          - internal/fieldpresence:FuzzEncodeRoundTrip
           - internal/pmeta:FuzzAddHighCardValues_RoundTrip
           - internal/peercache:FuzzRingLookup
           - internal/peercache:FuzzRingLookupAZ
