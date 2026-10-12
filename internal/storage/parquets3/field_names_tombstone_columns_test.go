@@ -50,3 +50,27 @@ func TestFieldNames_ColumnOfOnlyTombstonedRowsIsNotListed(t *testing.T) {
 		}
 	}
 }
+
+// A sparse column whose first surviving row is empty is still a column of the
+// block: only a column none of the surviving rows carries is dropped. One object
+// holds a deleted row with a trace id, a surviving row without one, and a
+// surviving row with one: trace_id stays listed and is credited with both
+// surviving rows of the stream.
+func TestFieldNames_SparseColumnWhoseFirstSurvivingRowIsEmptyIsStillListed(t *testing.T) {
+	s := fvcStorage(t, []schema.LogRow{
+		fnRow(1*time.Minute, "INFO", "t-del"), fvcRow(2*time.Minute, "INFO"), fnRow(3*time.Minute, "INFO", "t-keep"),
+	})
+	store := delete.NewTombstoneStore()
+	store.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}}, ID: "ts-sparse", Query: `trace_id:="t-del"`,
+		StartNs: fvcBase.UnixNano(), EndNs: fvcBase.Add(time.Hour).UnixNano(), Mode: "hide",
+	})
+	s.SetTombstoneStore(store)
+	got, err := s.GetFieldNames(context.Background(), nil, fnWindow(t, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := namesToHits(got); m["trace_id"] != 2 || m["_msg"] != 2 {
+		t.Errorf("trace_id/_msg hits = %d/%d, want 2/2 (both surviving rows of the stream): %v", m["trace_id"], m["_msg"], m)
+	}
+}

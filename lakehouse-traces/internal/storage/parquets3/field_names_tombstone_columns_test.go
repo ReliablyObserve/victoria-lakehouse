@@ -56,3 +56,26 @@ func TestTraceFieldNames_ColumnOfOnlyTombstonedSpansIsNotListed(t *testing.T) {
 		}
 	}
 }
+
+// A sparse column whose first surviving span is empty is still a column of the
+// block (see the logs twin): span_attr:custom.attr stays listed and is credited
+// with both surviving spans of the stream.
+func TestTraceFieldNames_SparseColumnWhoseFirstSurvivingSpanIsEmptyIsStillListed(t *testing.T) {
+	del := fnSpan(1*time.Minute, "GET", "x")
+	del.TraceID = "t-del"
+	keep := fnSpan(3*time.Minute, "GET", "y")
+	s := fvcStorage(t, []schema.TraceRow{del, fvcSpan(2*time.Minute, "GET"), keep})
+	store := delete.NewTombstoneStore()
+	store.Add(delete.Tombstone{
+		Tenants: []delete.TenantRef{{}}, ID: "ts-sparse", Query: `trace_id:="t-del"`,
+		StartNs: fvcBase.UnixNano(), EndNs: fvcBase.Add(time.Hour).UnixNano(), Mode: "hide",
+	})
+	s.SetTombstoneStore(store)
+	got, err := s.GetFieldNames(context.Background(), nil, fnWindow(t, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := namesToHits(got); m["span_attr:custom.attr"] != 2 || m["trace_id"] != 2 {
+		t.Errorf("span_attr:custom.attr/trace_id hits = %d/%d, want 2/2 (both surviving spans of the stream): %v", m["span_attr:custom.attr"], m["trace_id"], m)
+	}
+}

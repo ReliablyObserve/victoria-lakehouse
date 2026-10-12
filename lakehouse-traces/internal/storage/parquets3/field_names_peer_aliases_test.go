@@ -69,9 +69,32 @@ func TestTraceFieldNames_PeerSpansListNoParquetAliasNames(t *testing.T) {
 	}
 }
 
+// The rule keys on the read being a field_names enumeration, not on the plain
+// filter path: a field_names call whose query has pipes runs upstream's field_names
+// pipe over the same reads, and those list no alias of a peer's spans either.
+func TestTraceFieldNames_PipePathListsNoPeerAliasNames(t *testing.T) {
+	s := fvcStorage(t, []schema.TraceRow{aliasedSpan(1*time.Minute, "GET"), aliasedSpan(2*time.Minute, "GET")})
+	s.bufferBridge = fvcPeer(t, []schema.TraceRow{aliasedSpan(20*time.Minute, "GET"), aliasedSpan(21*time.Minute, "GET")})
+	for _, query := range []string{"* | limit 100", `"span_attr:http.method":=GET | limit 100`} {
+		got, err := s.GetFieldNames(context.Background(), nil, fnWindow(t, query))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := namesToHits(got)
+		for _, alias := range aliasNames() {
+			if _, listed := m[alias]; listed {
+				t.Errorf("%s: %s listed although it is no field of a span: %v", query, alias, m)
+			}
+		}
+		if m["resource_attr:service.name"] != 4 || m["span_attr:http.method"] != 4 {
+			t.Errorf("%s: resource_attr:service.name/span_attr:http.method hits = %d/%d, want 4/4: %v", query, m["resource_attr:service.name"], m["span_attr:http.method"], m)
+		}
+	}
+}
+
 // A field_names query that spells the Parquet dialect (service.name:=...,
 // http.method:=...) matches no span of an insert peer, as on hot VictoriaTraces,
-// where those are no fields: the counting read asks the bridge for VictoriaTraces'
+// where those are no fields: a field_names read asks the bridge for VictoriaTraces'
 // names only, so the peer's spans are not credited by it. Known difference
 // (#505): the objects honour that spelling as a filter convenience, so a
 // field_names query in the Parquet dialect still lists them (and the alias the
@@ -110,7 +133,7 @@ func TestTraceFieldNames_AParquetNameFilterMatchesNoPeerSpan(t *testing.T) {
 	}
 }
 
-// Negative control: only the counting read drops the aliases. A row read, the
+// Negative control: only a field_names read drops the aliases. A row read, the
 // values of a field and the streams of the same spans see them as before.
 func TestTracePeerSpans_OrdinaryReadsKeepTheParquetAliases(t *testing.T) {
 	s := fvcStorage(t, []schema.TraceRow{aliasedSpan(1*time.Minute, "GET")})

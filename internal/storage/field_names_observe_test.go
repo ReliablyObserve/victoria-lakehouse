@@ -346,6 +346,7 @@ func TestDropColumnsWithoutValues(t *testing.T) {
 	db.SetColumns([]logstorage.BlockColumn{
 		{Name: "a", Values: []string{"x", ""}},
 		{Name: "only_deleted", Values: []string{"", ""}},
+		{Name: "sparse", Values: []string{"", "x"}}, // empty in the first row only
 		{Name: "", Values: []string{"m", "m"}},
 	})
 	got := DropColumnsWithoutValues(db)
@@ -353,7 +354,7 @@ func TestDropColumnsWithoutValues(t *testing.T) {
 	for _, c := range got.GetColumns(false) {
 		names = append(names, c.Name)
 	}
-	if want := []string{"a", ""}; !reflect.DeepEqual(names, want) {
+	if want := []string{"a", "sparse", ""}; !reflect.DeepEqual(names, want) {
 		t.Errorf("columns = %q, want %q", names, want)
 	}
 	if got.RowsCount() != 2 {
