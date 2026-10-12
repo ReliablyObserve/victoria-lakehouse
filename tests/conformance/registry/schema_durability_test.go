@@ -61,6 +61,7 @@ func TestDurability_InvalidCells(t *testing.T) {
 		{"the old refused-counted value", func(r *Row) { r.Durability.Guarantees = []string{"refused-counted"} }, "invalid"},
 		{"repeated guarantee", func(r *Row) { r.Durability.Guarantees = []string{"no-loss", "no-loss", "loss-counted"} }, "repeated"},
 		{"loss-counted without a metric", func(r *Row) { r.Durability.Metric = "" }, "durability.metric must name the counter"},
+		{"loss-counted with a general counter", func(r *Row) { r.Durability.Metric = "lakehouse_insert_rows_total" }, "not a counter of drops, losses or failures"},
 		{"metric without loss-counted", func(r *Row) { r.Durability.Guarantees = []string{"no-loss"} }, "only allowed with the guarantee loss-counted"},
 		{"signal not in id", func(r *Row) { r.Durability.Signal = "traces" }, "must end in _traces"},
 		{"not an addition", func(r *Row) {
@@ -99,7 +100,8 @@ func durabilityRepo(t *testing.T, doc string) string {
 		}
 	}
 	write("internal/metrics/m.go", `package metrics
-var X = NewCounterVec("lakehouse_dropped_total", "reason")`)
+var X = NewCounterVec("lakehouse_dropped_total", "reason")
+var G = NewGauge("lakehouse_dropped_gauge")`)
 	write("internal/pkg/a_test.go", "package pkg\nfunc TestA(t *testing.T) {}\n")
 	write("lakehouse-traces/internal/pkg/a_test.go", "package pkg\nfunc TestA(t *testing.T) {}\n")
 	write("tests/e2e/chaos_x_test.go", "package e2e\nfunc TestChaosX(t *testing.T) {}\n")
@@ -191,6 +193,10 @@ func TestCheckDurability_Rejects(t *testing.T) {
 			r.Rows[1].Durability.Metric = ""
 			return goodDoc
 		}, "differ from its twin"},
+		{"a metric registered as a gauge", func(r *Registry) string {
+			r.Rows[0].Durability.Metric = "lakehouse_dropped_gauge"
+			return goodDoc
+		}, "as a counter (NewCounter"},
 		{"a metric that is not registered", func(r *Registry) string {
 			r.Rows[0].Durability.Metric = "lakehouse_nowhere_total"
 			return goodDoc

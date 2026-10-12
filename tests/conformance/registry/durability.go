@@ -22,7 +22,10 @@ import (
 //     lakehouse-traces/ and a traces cell's tests are, except an end-to-end test
 //     under tests/e2e, which may serve either signal when its file name says
 //     which (a file name containing "traces" is the traces binary's).
-//  3. A loss-counted cell names a metric that internal/metrics registers.
+//  3. A loss-counted cell names a metric that internal/metrics registers as a
+//     counter (NewCounter or NewCounterVec), and (in Row.Validate) whose name
+//     contains dropped, lost or errors. The name check is lexical: that the
+//     code increments the counter on the loss is proved by the cell's tests.
 //  4. docs/durability.md and the cells agree: every cell id appears in the
 //     document (exactly, or through a "lh.durability.<prefix>_*" family), and
 //     every lh.durability.* id the document names is a cell or a family of cells.
@@ -52,8 +55,8 @@ func CheckDurability(reg *Registry, repoRoot string) []string {
 				}
 			}
 		}
-		if d.Metric != "" && !strings.Contains(metricsSrc, `"`+d.Metric+`"`) {
-			errs = append(errs, fmt.Sprintf("%s: durability.metric %q is not registered in internal/metrics", id, d.Metric))
+		if d.Metric != "" && !metricCounterRegistered(metricsSrc, d.Metric) {
+			errs = append(errs, fmt.Sprintf("%s: durability.metric %q is not registered in internal/metrics as a counter (NewCounter or NewCounterVec)", id, d.Metric))
 		}
 		other := "traces"
 		if d.Signal == "traces" {
@@ -98,6 +101,13 @@ func twinPlacement(signal, ref string) string {
 		return "a logs cell's unit tests live outside lakehouse-traces/"
 	}
 	return ""
+}
+
+// metricCounterRegistered reports whether src registers name through NewCounter
+// or NewCounterVec: a gauge or histogram of that name does not make a loss
+// countable.
+func metricCounterRegistered(src, name string) bool {
+	return regexp.MustCompile(`NewCounter(?:Vec)?\(\s*` + regexp.QuoteMeta(`"`+name+`"`)).MatchString(src)
 }
 
 func readMetricsSource(repoRoot string) string {

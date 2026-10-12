@@ -219,6 +219,14 @@ var (
 
 var durabilityMetricRe = regexp.MustCompile(`^lakehouse_[a-z0-9_]+$`)
 
+// durabilityLossMetricRe is what the counter of a loss-counted cell is called: a
+// name that says it counts drops, losses or failures. A loss-counted cell naming
+// a general counter (lakehouse_insert_rows_total) would claim a loss is visible
+// when the counter says nothing about losses. The name is a lexical check: that
+// the code increments the counter on the loss is proved by the tests the cell
+// cites, not here.
+var durabilityLossMetricRe = regexp.MustCompile(`^lakehouse_[a-z0-9_]*(dropped|lost|errors)[a-z0-9_]*$`)
+
 var durabilityFaultRe = regexp.MustCompile(`^[a-z0-9_]+$`)
 
 var perfValidRe = regexp.MustCompile(`^[0-9]+/[1-9][0-9]*$`)
@@ -469,6 +477,8 @@ func (r *Row) Validate() error {
 		switch {
 		case seen["loss-counted"] && !durabilityMetricRe.MatchString(d.Metric):
 			add("durability.metric must name the counter (lakehouse_...) when guarantees has loss-counted, got %q", d.Metric)
+		case seen["loss-counted"] && !durabilityLossMetricRe.MatchString(d.Metric):
+			add("durability.metric %q is not a counter of drops, losses or failures: a loss-counted cell names a metric whose name contains dropped, lost or errors", d.Metric)
 		case !seen["loss-counted"] && d.Metric != "":
 			add("durability.metric only allowed with the guarantee loss-counted")
 		}

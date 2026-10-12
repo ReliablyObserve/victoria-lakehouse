@@ -109,7 +109,13 @@ VictoriaLogs/VictoriaTraces:
   rows of trace-shaped streams (span data sent to the logs endpoint:
   `lakehouse_logs_trace_shaped_rows_dropped_at_ingest_total`, per row) and the
   rows of streams over the tenant's cardinality limit. The traces binary applies
-  the cardinality gate only. A row refused for the limit is answered as a
+  the cardinality gate only. The decision is made once per stream **of a tenant**
+  in a batch, not once per stream hash: upstream's hash is computed from the
+  stream tags alone and one batch can carry several tenants (`/internal/insert`
+  and `/insert/multitenant/native` in the logs binary, `/insert/multitenant/native`
+  in the traces binary), so a tenant at its limit refuses its own rows of a stream
+  and a tenant with room keeps its rows of the same-named stream; each refusal is
+  counted and logged against the tenant whose limit refused it. A row refused for the limit is answered as a
   success, like every row upstream drops, and is **not stored**: it is counted
   per row in `lakehouse_insert_rows_dropped_total{reason="cardinality_limit"}`
   and logged (throttled) with its stream and tenant. In the traces binary the
@@ -212,7 +218,7 @@ and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 | **`kill -9` between a drain's upload and its commit** | Not proven by a test: the recovery code (stored marks, HEAD adoption, marker before commit, §2.1) exists, but no test kills the process at those steps. Known gap, #497 (`lh.durability.kill_between_upload_and_commit_*`). |
 | **Normal shutdown (SIGTERM)** | The flusher stops (a drain cut short resumes after the restart) and the buffer closes: upstream writes the in-memory rows of every segment to disk. Nothing is lost. The manifest snapshot is saved before and after the close. |
 | **Object store unreachable or slow** | Nothing is refused. Sealed segments wait on disk; each failed drain is retried with the same bytes after a back-off (1 s doubling to 30 s). Past the volume's free-space floor inserts get 429. |
-| **A segment whose rows the drain cannot all plan** | The segment is held, not committed, nothing of it is uploaded, an error is logged and `lakehouse_buffer_flush_errors_total{stage="invariant"}` rises (§2.1, `lh.durability.drain_plan_mismatch_*`). Inserts continue until the buffer volume's floor answers 429. |
+| **A segment whose rows the drain cannot all plan** | The segment is stalled (`lakehouse_buffer_stalled_segments` = 1), not committed, nothing of it is uploaded, an error is logged and `lakehouse_buffer_flush_errors_total{stage="invariant"}` rises (§2.1 and its runbook, `lh.durability.drain_plan_mismatch_*`); the plan is made again on every attempt, so a mismatch that does not repeat clears. Inserts continue until the buffer volume's floor answers 429. |
 | **Pod restarts while a segment drains** | The segment is found again; groups already stored are recognised (§3) and not sent again. |
 | **Pod loses its disk before a segment drained** | The rows of undrained segments are lost (§2.4). |
 | **Already-written data** | Immutable Parquet on S3; survives everything. |
@@ -266,19 +272,69 @@ count of every row of the tenant over the whole of int64 time, for every tenant
 the segment has rows for in that range. Each group is checked again when it is
 read: the rows the query returns must be the rows the plan promised, and each
 is written or counted as filtered out. If the numbers differ, the segment is
-**held**: nothing of it is uploaded, no marker is written, it is not committed or
-removed, an error is logged (`buffer flusher: segment N (...) is held ...`) and
-`lakehouse_buffer_flush_errors_total{stage="invariant"}` counts each attempt. The
-drain is retried after the usual back-off and the segment stays on disk. Segments
-are drained in order, so a held segment also holds back the ones after it, and
-the buffer fills until the volume's free-space floor answers 429: rows are not
-lost silently, but the ingest path stops, which is the price of a safety check.
-This is the check that would have stopped #388, where the plan quietly covered
-fewer rows than the segment held and the segment was committed anyway. An
-operator who sees the counter rise finds the segment number in the log, and the
-rows it holds are in `insert.buffer_dir/seg-<seq>-<nonce>`. The cost of the
-check is one `stats count()` per tenant and segment on top of the per-second
-plan (measured in the benchmark of the PR that added it).
+**stalled** (not "held": `lakehouse_buffer_held_segments` is the committed
+segments restored at start): nothing of it is uploaded, no marker is written, it
+is not committed or removed, an error is logged (`buffer flusher: segment N (...)
+is stalled and will not be committed ...`),
+`lakehouse_buffer_flush_errors_total{stage="invariant"}` counts each attempt and
+`lakehouse_buffer_stalled_segments` is 1. The drain is retried after the usual
+back-off and the segment stays on disk; **the plan is made again from scratch on
+every attempt**, so a mismatch that does not repeat clears on the next attempt
+and the gauge goes back to 0 when the segment commits. Only a cause that
+persists keeps the segment stalled: a row the plan cannot reach (a `_time`
+before 1970 in a segment written by a build older than the one that refuses such
+rows at the insert path) or a bug. A stalled segment holds back the segments
+after it, since they are drained in order, and the buffer fills until the
+volume's free-space floor answers 429: rows are not lost silently, but the
+ingest path stops, which is the price of a safety check. A drain cut short by
+Stop (SIGTERM) is not a mismatch: upstream's query returns partial or no rows on
+a cancelled context, so the check looks at the context first; a cancelled plan
+or collect is counted once under `stage="collect"` and never under `invariant`,
+and the drain resumes after the restart. This is the check that would have
+stopped #388, where the plan quietly covered fewer rows than the segment held
+and the segment was committed anyway. The cost of the check is one `stats
+count()` per tenant and segment on top of the per-second plan (measured in the
+benchmark of the PR that added it). The alerts are
+`LakehouseBufferDrainPlanMismatch` (any increase of `stage="invariant"`, a
+warning) and `LakehouseBufferSegmentStalled` (the gauge stays 1 for 15 minutes,
+critical).
+
+#### A stalled segment runbook
+
+Use this when `LakehouseBufferSegmentStalled` fires (or
+`LakehouseBufferDrainPlanMismatch` keeps firing). It lists only what can be done
+today.
+
+1. **Find the segment.** The error log line (throttled to one a minute) names the
+   segment sequence and nonce and says which check failed: the tenant and the
+   number of rows the plan covers against the number the segment holds, or the
+   group, its plan and what the query returned. The rows are in
+   `insert.buffer_dir/seg-<seq as 16 hex digits>-<nonce>`.
+2. **Tell a transient mismatch from a persistent one.** Watch
+   `lakehouse_buffer_stalled_segments` and the counter over two or three
+   back-offs (up to 30 s each). If the gauge returns to 0 and
+   `lakehouse_buffer_segments{state="pending"}` falls, it was transient and
+   nothing more is needed (a pod that was stopped mid-drain does not count: that
+   never raises the counter). If it stays 1, the cause persists.
+3. **Do not delete anything yet.** Nothing is lost while the segment is on disk,
+   and the rows are still served from the buffer. Keep inserts below the volume's
+   floor: if the volume is filling, grow it first (sizing: `operations/sizing.md`).
+4. **Keep a copy.** With the pod running or stopped, copy the segment directory
+   somewhere else (`cp -a`). Report the log line and the copy's size.
+5. **Fix the cause, not the segment.** If the log shows a count of rows before
+   1970 (the plan is made over `[0, MaxInt64]`, the count over all time), the
+   segment was written by an older build; that build is the cause, and the
+   segment cannot be drained by this one. If it shows a group whose query
+   returned fewer or more rows than planned, it is a bug: file an issue with the
+   log line.
+6. **Last resort, and it loses data.** Stop the pod, move the segment directory
+   out of `insert.buffer_dir`, start the pod. The drain continues with the next
+   segment and the stalled one's rows are no longer served or written: **removing
+   or deleting the segment directory loses every row of the segment** from the
+   Lakehouse. The copy from step 4 can be moved back into `insert.buffer_dir`
+   while the pod is stopped (segments are found again by their directory name),
+   for instance after a fixed build is deployed. Do not delete the copy until
+   the rows are accounted for.
 
 The dirty pmeta bundles (the bloom facet cannot be rebuilt from the manifest) are
 written after each drain and retried on every tick.
@@ -292,8 +348,19 @@ key was ever stored with two different byte sequences):
 `TestSegments_GroupsAreBoundedInRows`, `TestPlanSlices`,
 `TestSegments_UnreadableStateStopsTheFlusher`, `TestSegments_TwoNodesNeverShareKeys`,
 `TestSegments_KeepFilter`, `TestBufferFlusher_PersistsThePmetaBundles`;
-for the plan check: `TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover` and
-`TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment`.
+for the plan check: `TestDrain_StallsASegmentWithRowsThePlanDoesNotCover`,
+`TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment`,
+`TestDrain_CancelledCollectIsNotAnInvariantViolation`,
+`TestDrain_CancelBetweenPlanAndCountIsNotAnInvariantViolation`,
+`TestDrain_CancelDuringPlanIsNotAnInvariantViolation`,
+`TestDrain_StopMidDrainIsNotAnInvariantViolation`,
+`TestDrain_CancelAtEveryStepNeverMovesInvariant`,
+`TestDrain_StalledGaugeClearsWhenTheSegmentCommits` and
+`TestDrain_HealthySegmentsAreNeverStalled` (a property test: random tenants
+including 0:0 and the largest ids, times at the epoch, 1 ns, second and hour
+edges, exact duplicates, several parts and random group sizes; in the traces
+module with the trace-ID index rows, some before the epoch, and the production
+keep filter).
 
 ### 2.2 Restart and the read handoff
 
