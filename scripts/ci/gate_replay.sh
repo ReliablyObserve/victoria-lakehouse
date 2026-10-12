@@ -380,7 +380,10 @@ s = open(p, encoding="utf-8").read()
 line = '\tvlBaseURL  = envOrDefault("VL_BASE_URL", "http://localhost:39428")\n'
 assert line in s
 open(p, "w", encoding="utf-8").write(s.replace(line, "", 1))
-open("tests/parity/urls.go", "w", encoding="utf-8").write('package parity\n\nvar vlBaseURL = envOrDefault("VL_BASE_URL", "http://localhost:39428")\n')
+# the file it leaves is built under `parity` (a //go:build line): the new one carries it too, so this stays a pure move
+head = s.split("\n", 1)[0]
+build = head + "\n\n" if head.startswith("//go:build ") else ""
+open("tests/parity/urls.go", "w", encoding="utf-8").write(build + 'package parity\n\nvar vlBaseURL = envOrDefault("VL_BASE_URL", "http://localhost:39428")\n')
 PY
 }
 
