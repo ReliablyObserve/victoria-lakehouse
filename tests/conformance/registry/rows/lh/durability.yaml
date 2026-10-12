@@ -231,6 +231,7 @@
       - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StopAfterAFailedCheckLeavesTheStalledGaugeAsItWas
       - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan
       - internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_AttemptWithoutACheckLeavesTheStalledGaugeAsItWas
+      - internal/storage/parquets3/drain_stalled_gauge_nocheck_test.go#TestDrain_LaterAttemptWithoutACheckKeepsTheGaugeFromAnEarlierFailedCheck
       - internal/storage/parquets3/drain_collect_once_test.go#TestDrain_CancelDuringPlanCountsCollectOnce_TwoTenants
       - internal/storage/parquets3/drain_collect_once_test.go#TestDrain_StopMidDrainCountsCollectOnce_TwoTenants
       - internal/metrics/must_stay_zero_test.go#TestMustStayZeroSeries_ExportedFromStart
@@ -275,6 +276,7 @@
       - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StopAfterAFailedCheckLeavesTheStalledGaugeAsItWas
       - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan
       - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go#TestDrain_AttemptWithoutACheckLeavesTheStalledGaugeAsItWas
+      - lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_nocheck_test.go#TestDrain_LaterAttemptWithoutACheckKeepsTheGaugeFromAnEarlierFailedCheck
       - lakehouse-traces/internal/storage/parquets3/drain_collect_once_test.go#TestDrain_CancelDuringPlanCountsCollectOnce_TwoTenants
       - lakehouse-traces/internal/storage/parquets3/drain_collect_once_test.go#TestDrain_StopMidDrainCountsCollectOnce_TwoTenants
   notes: "Same check in the traces binary; the property test also draws VictoriaTraces trace_id_idx rows (some stamped before the epoch) and uses the production keep filter."

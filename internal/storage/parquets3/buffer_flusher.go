@@ -577,7 +577,7 @@ func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, 
 	// second clause is defensive: the conversion is one row to one row, so
 	// rows+filtered always equals seen today (an equivalent mutant); it stays to
 	// catch a conversion that ever drops a row.
-	f.checkRan = true
+	f.checkRan = true // defensive: planTenant already set it for every tenant in plans (an equivalent mutant)
 	if int64(seen) != sl.rows || len(rows)+filtered != seen {
 		return nil, 0, f.invariantViolation(g, fmt.Sprintf("group %s slice %d of tenant %d:%d: the plan has %d rows, the segment returned %d, %d were converted and %d filtered",
 			sl.partition, sl.slice, tenant.AccountID, tenant.ProjectID, sl.rows, seen, len(rows), filtered))

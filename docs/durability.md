@@ -377,11 +377,17 @@ today.
    back-offs (up to 30 s each). If the gauge returns to 0 and
    `lakehouse_buffer_segments{state="pending"}` falls, it was transient and
    nothing more is needed (a pod that was stopped mid-drain does not count: that
-   never raises the counter). The gauge is 1 only while the latest attempt failed
-   a check; an attempt that passed its checks sets it back to 0 even if the
-   upload then failed, so an object-store outage does not keep it at 1 (look at
-   `stage="upload"` for that). If it stays 1 over several back-offs, the cause
-   persists.
+   never raises the counter). The gauge is 1 while the latest attempt that ran
+   its checks failed one. An attempt in which every check that ran passed sets it
+   back to 0 even if the upload then failed, so an object-store outage does not
+   keep it at 1 (look at `stage="upload"` for that). An attempt that fails
+   before any check runs (the tenant list or every plan or count query fails)
+   or that Stop cuts short leaves the gauge as it was, so a 1 can also be a
+   stale 1. If it stays 1 over several back-offs **and**
+   `lakehouse_buffer_flush_errors_total{stage="invariant"}` keeps rising, the
+   cause persists. If it stays 1 while `stage="invariant"` does not rise, no
+   check has run since: look at `stage="collect"` and the error log first, and
+   do not go on to step 6.
 3. **Do not delete anything yet.** Nothing is lost while the segment is on disk,
    and the rows are still served from the buffer. Keep inserts below the volume's
    floor: if the volume is filling, grow it first (sizing: `operations/sizing.md`).
@@ -398,7 +404,9 @@ today.
    (the line does not say so; the check is only that the two counts differ). A
    group whose query returned fewer or more rows than planned is a bug: file an
    issue with the log line.
-6. **Last resort, and it loses data.** Stop the pod, move the segment directory
+6. **Last resort, and it loses data.** Only when step 2 showed that
+   `stage="invariant"` keeps rising, not for a gauge that is stuck at 1 without
+   it. Stop the pod, move the segment directory
    out of `insert.buffer_dir`, start the pod. The segments after it are then
    drained and the gauge returns to 0, but the stalled segment's rows are no
    longer served, and the rows that are not in the bucket yet are never
@@ -444,6 +452,7 @@ for the plan check: `TestDrain_StallsASegmentWithRowsThePlanDoesNotCover`,
 `TestDrain_StopAfterAFailedCheckLeavesTheStalledGaugeAsItWas`,
 `TestDrain_StalledGaugeClearsWhenOnlyThePlanCheckRan`,
 `TestDrain_AttemptWithoutACheckLeavesTheStalledGaugeAsItWas`,
+`TestDrain_LaterAttemptWithoutACheckKeepsTheGaugeFromAnEarlierFailedCheck`,
 `TestDrain_CancelDuringPlanCountsCollectOnce_TwoTenants`,
 `TestDrain_StopMidDrainCountsCollectOnce_TwoTenants`,
 `TestDrain_MovingAStalledSegmentAside` and
