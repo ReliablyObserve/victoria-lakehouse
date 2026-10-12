@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
@@ -216,6 +217,13 @@ func TestGenTraces_TruthMatchesTheFileWritten(t *testing.T) {
 	}
 	if truth.Signal != "traces" || truth.File != "traces.parquet" {
 		t.Errorf("truth names %s/%s", truth.Signal, truth.File)
+	}
+	// Spelled out here, not derived from the schema package: the gate must hold
+	// the optional start time to DELTA_BINARY_PACKED even if the writer's list is emptied.
+	for _, want := range []string{"timestamp_unix_nano", "start_time_unix_nano"} {
+		if !slices.Contains(truth.DeltaColumns, want) {
+			t.Errorf("traces delta columns %v lack %s", truth.DeltaColumns, want)
+		}
 	}
 	f, rows := readBack[schema.TraceRow](t, path)
 
