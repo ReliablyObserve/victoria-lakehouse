@@ -67,6 +67,17 @@ The table above uses small objects (2 MB), whose footers are already larger than
 
 At 10,000 streams per object the facet pushes a traces footer past the 640 KiB tail, so each object's footer needs a second read (the 2 extra GETs per object): a sequential round trip per cold query, +3 to 4 % latency here (below the 5 % that would have stopped this change, and consistent across rounds and latencies). Up to about 1,000 streams per object (the facet adds about 110 KB to a 480 KB footer, still inside 640 KiB) it does not. Raising `s3.footer_prefetch_bytes` removes the second read at the price of a larger tail per object; the facet is not read by this query, so keeping it out of the cached footer is the other option. Neither is done here.
 
+### Compacted objects, the layout a cold trace-by-ID mostly reads (measured)
+
+The same harness with `TBID_LAYOUT=compacted TBID_SPANS=17000 TBID_BODY_BYTES=1100`: the spans are written by the compaction writer (`compaction.WriteTraces`), objects of 19 MB with a footer of 460 KB on `main` (the 467 to 519 KB of a live L2 object). The branch adds two things to a compacted object: the facet and, since #344, the body token blooms the compactor did not write before (here 20 KB per object, from the filter size formula: 12.0 KB for the 10,000-row group and 8.4 KB for the 7,000-row one; the message bodies are single hex tokens, so real text would give a larger bloom). 4 interleaved rounds of 3 runs per latency, 192 of 192 answers valid.
+
+| Streams per object | Footer per object main → branch | GETs | Bytes | Latency, branch ÷ main at 0 / 20 / 50 / 100 ms (median of 4 round ratios; range of the ratios) |
+|--:|---|--:|--:|---|
+| 1,000 | 460 → 590 KB (+129 KB: about 109 KB facet, 20 KB blooms) | 55 / 55 | 0 | 1.023 / 1.021 / 1.045 / 1.039 (0.89 to 1.10) |
+| 10,000 | 460 → 775 KB (+314 KB: about 294 KB facet, 20 KB blooms) | 55 → 61 | +3.7 % | 0.951 / 1.024 / 0.998 / **1.069** (0.84 to 1.31; at 100 ms every round is at or above 1.03) |
+
+At 10,000 streams per compacted object the footer passes the 640 KiB tail (the live headroom above a 460 KB footer is about 180 KB), each object needs a second footer read (+2 GETs per object, one more sequential round trip per cold query), and at the highest injected latency (100 ms) the median is 6.9 % slower, above the 5 % the change was held to. At 1,000 streams per object the footer stays inside the tail, GETs and bytes are unchanged and the latency ratios sit inside the noise of this machine (1.02 to 1.05). The growth is almost all the facet; the token blooms of #344 are 20 KB of the 314 KB in this fixture.
+
 Reproduce: build `trace_by_id_cold_ab_test.go` into both trees (`go test -c`) and alternate the two binaries with `TBID_AB_OUT=… TBID_BUILD=main|branch TBID_ROUND=n TBID_STREAMS=… TBID_NAMES=… TBID_REPEATS=3` (the header of the test file lists the knobs).
 
 ## External readers (measured)

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/parquet-go/parquet-go"
 
@@ -268,4 +269,85 @@ func cellsHave(cells map[streamDayKey]*presenceCell, name string) bool {
 		}
 	}
 	return false
+}
+
+// Random tombstones, then a delete rewrite of every object: the rewritten
+// objects' facets are the facets a flush of the surviving rows writes, and those
+// are what the read path lists for them (the drift guard's oracle).
+func TestFieldPresence_RewrittenObjectsMatchTheReadPath(t *testing.T) {
+	installPresenceComputers(t)
+	queries := []string{`severity_text:="INFO"`, `service.name:="svc-a"`, `severity_text:="WARN"`, `service.name:="svc-b"`}
+	removed := int64(0)
+	for seed := int64(1); seed <= 8; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		rows := genPresenceLogRows(rng, 60+rng.Intn(120))
+		byHour := map[string][]schema.LogRow{}
+		for _, r := range rows {
+			p := partitionFromNano(r.TimestampUnixNano)
+			byHour[p] = append(byHour[p], r)
+		}
+		pool := &presenceMemPool{objects: map[string][]byte{}}
+		rw := lhdelete.NewRewriter(pool, "logs/", 40, "logs", lhdelete.WithParquetWriters(lhdelete.ParquetWriters{
+			Logs: compaction.WriteLogs, Traces: compaction.WriteTraces, CompressionLevel: 3,
+		}))
+		tomb := lhdelete.Tombstone{ID: "t", Query: queries[rng.Intn(len(queries))], StartNs: 0, EndNs: 1 << 62}
+		var facets []*fieldpresence.Facet
+		var survivorsBatches [][]schema.LogRow
+		n := 0
+		for _, b := range byHour {
+			res, err := writeLogsParquet(b, 40, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := fmt.Sprintf("logs/dt=2026-07-01/hour=23/src%d.parquet", n)
+			n++
+			pool.objects[key] = res.Data
+			out, err := rw.RewriteFile(context.Background(), key, []lhdelete.Tombstone{tomb})
+			if err != nil {
+				t.Fatal(err)
+			}
+			removed += out.RowsRemoved
+			data := res.Data
+			if out.NewKey != "" {
+				data = pool.objects[out.NewKey]
+			} else if out.RowsKept == 0 && out.RowsRemoved > 0 {
+				continue // everything was deleted: no object remains
+			}
+			f, overCap := facetOfParquet(t, data)
+			if f == nil || overCap {
+				t.Fatalf("seed %d: object has no facet", seed)
+			}
+			facets = append(facets, f)
+			surv := readRowsForTest[schema.LogRow](t, data)
+			survivorsBatches = append(survivorsBatches, surv)
+		}
+		if len(survivorsBatches) == 0 {
+			continue
+		}
+		s := fvcStorage(t, survivorsBatches...)
+		lo := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).UnixNano()
+		got, err := s.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, "*", lo, lo+int64(72*time.Hour)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := diffHits(namesToHits(got), presenceExpected(facets)); d != "" {
+			t.Errorf("seed %d (%s): a rewritten object's facet and field_names differ: %s", seed, tomb.Query, d)
+		}
+	}
+	if removed == 0 {
+		t.Fatal("no tombstone removed a row: the test proves nothing")
+	}
+}
+
+// readRowsForTest reads every row of a Parquet object.
+func readRowsForTest[T any](t *testing.T, data []byte) []T {
+	t.Helper()
+	r := parquet.NewGenericReader[T](bytes.NewReader(data))
+	defer func() { _ = r.Close() }()
+	rows := make([]T, r.NumRows())
+	n, err := r.Read(rows)
+	if err != nil && n != len(rows) {
+		t.Fatal(err)
+	}
+	return rows[:n]
 }

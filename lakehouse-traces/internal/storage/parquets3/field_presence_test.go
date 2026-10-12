@@ -32,10 +32,12 @@ func facetOfParquet(tb testing.TB, data []byte) (*fieldpresence.Facet, bool) {
 
 // presenceHostileKeys are attribute names the cold read path suppresses or
 // renames: bookkeeping columns, slot names, and names of scalar columns.
-var presenceHostileKeys = []string{
-	"account_id", "project_id", "ded_s01", "ded_s02", "level", "body", "_msg", "_time",
-	"_stream", "service.name", "span.name", "name", "http.method", "http.status_code", "db.system",
-	"timestamp_unix_nano", "trace_id", "k8s.pod.name", "parent", "child", "callCount",
+func presenceHostileKeys() []string {
+	return []string{
+		"account_id", "project_id", "ded_s01", "ded_s02", "level", "body", "_msg", "_time",
+		"_stream", "service.name", "span.name", "name", "http.method", "http.status_code", "db.system",
+		"timestamp_unix_nano", "trace_id", "k8s.pod.name", "parent", "child", "callCount",
+	}
 }
 
 // genPresenceTraceRows builds spans of random shapes over two UTC days.
@@ -99,7 +101,7 @@ func genPresenceTraceRows(rng *rand.Rand, n int) []schema.TraceRow {
 			for k := 0; k < 1+rng.Intn(3); k++ {
 				key := fmt.Sprintf("attr%d", rng.Intn(5))
 				if rng.Intn(4) == 0 {
-					key = presenceHostileKeys[rng.Intn(len(presenceHostileKeys))]
+					key = pickHostile(rng)
 				}
 				r.SpanAttributes[key] = pick(rng, "", "v1", "v2")
 			}
@@ -107,11 +109,11 @@ func genPresenceTraceRows(rng *rand.Rand, n int) []schema.TraceRow {
 		if rng.Intn(3) == 0 {
 			r.ResourceAttributes = map[string]string{fmt.Sprintf("res%d", rng.Intn(3)): "r"}
 			if rng.Intn(4) == 0 {
-				r.ResourceAttributes[presenceHostileKeys[rng.Intn(len(presenceHostileKeys))]] = "x"
+				r.ResourceAttributes[pickHostile(rng)] = "x"
 			}
 		}
 		if rng.Intn(6) == 0 {
-			r.ScopeAttributes = map[string]string{"scopeattr": "s", presenceHostileKeys[rng.Intn(len(presenceHostileKeys))]: "y"}
+			r.ScopeAttributes = map[string]string{"scopeattr": "s", pickHostile(rng): "y"}
 		}
 		rows = append(rows, r)
 	}
@@ -290,4 +292,9 @@ func TestFieldPresence_MatchesTheReadPathPerStreamDay(t *testing.T) {
 			}
 		}
 	}
+}
+
+func pickHostile(rng *rand.Rand) string {
+	k := presenceHostileKeys()
+	return k[rng.Intn(len(k))]
 }

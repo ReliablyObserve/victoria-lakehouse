@@ -239,6 +239,12 @@ func main() {
 }
 
 func run(cfg *config.Config, addr string) {
+	// Installed before anything can write: the flush path, the compaction
+	// scheduler, the tier sweeps and the delete rewriter all produce objects. Every
+	// object records which field names each stream carries, computed with this
+	// binary's own read-path row-to-field conversion.
+	fieldpresence.SetComputers(parquets3.FieldPresenceComputers())
+
 	sm := startup.NewManager(cfg.Startup.MinManifestFiles)
 
 	store, err := parquets3.New(cfg)
@@ -513,11 +519,6 @@ func run(cfg *config.Config, addr string) {
 	}
 
 	internalvlstorage.SetCardinalityGate(tenant.NewCardinalityLimiter(policy))
-
-	// Every object a writer produces (flush, compaction, delete rewrite) records
-	// which field names each stream carries, computed with this binary's own
-	// read-path row-to-field conversion.
-	fieldpresence.SetComputers(parquets3.FieldPresenceComputers())
 
 	// Tier-2 dedicated columns: build the custom-attribute slot resolver from
 	// config and install it on the ingest + writer/read paths.

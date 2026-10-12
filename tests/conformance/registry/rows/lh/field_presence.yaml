@@ -56,10 +56,19 @@
       - internal/storage/parquets3/field_presence_test.go#TestFieldPresence_MatchesTheReadPathPerStreamDay
       - lakehouse-traces/internal/storage/parquets3/field_presence_test.go#TestFieldPresence_MatchesTheReadPathsFieldNames
       - lakehouse-traces/internal/storage/parquets3/field_presence_test.go#TestFieldPresence_MatchesTheReadPathPerStreamDay
+      - internal/storage/parquets3/field_presence_lifecycle_test.go#TestFieldPresence_RewrittenObjectsMatchTheReadPath
+      - lakehouse-traces/internal/storage/parquets3/field_presence_lifecycle_test.go#TestFieldPresence_RewrittenObjectsMatchTheReadPath
+      - internal/storage/parquets3/field_presence_unit_test.go#TestFieldPresence_NamingGolden
+      - lakehouse-traces/internal/storage/parquets3/field_presence_unit_test.go#TestFieldPresence_NamingGolden
+      - internal/storage/parquets3/field_presence_unit_test.go#TestFieldPresence_DayOfAnyTimestamp
+      - lakehouse-traces/internal/storage/parquets3/field_presence_unit_test.go#TestFieldPresence_DayOfAnyTimestamp
+      - internal/storage/parquets3/field_presence_unit_test.go#TestFieldPresence_PatternCacheOverflowIsExact
+      - lakehouse-traces/internal/storage/parquets3/field_presence_unit_test.go#TestFieldPresence_PatternCacheOverflowIsExact
+      - internal/storage/parquets3/field_presence_unit_test.go#TestFieldPresence_SpanRowsListTheirFields
   notes: >-
     Property test over random batches (empty values, attribute maps with reserved and scalar-column keys, Tier-2 slots
     bound, unbound and bound to reserved names, rows without _stream_id, two UTC days, up to 60 streams, span events and
-    links): the facet folded per stream-day equals GetFieldNames over the same flushed objects, in aggregate (names and
+    links, then random tombstones and a delete rewrite of every object): the facet folded per stream-day equals GetFieldNames over the same flushed objects, in aggregate (names and
     hits) and stream-day by stream-day. The writer computes names once per pattern of non-empty columns with the read
     path's row-to-field emitter, so a column added to a row type and not to the pattern fails
     TestPatternCoversEveryStringColumn.

@@ -24,6 +24,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ import (
 	vlapp "github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/compaction"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -152,6 +154,18 @@ func TestTraceByIDColdAB(t *testing.T) {
 		res, err := writeTracesParquet(rows, 10000, 3)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if os.Getenv("TBID_LAYOUT") == "compacted" {
+			// The same spans as the compaction writer writes them: what a cold
+			// trace-by-ID mostly reads.
+			tbidInstallComputers()
+			merged := append([]schema.TraceRow(nil), rows...)
+			sort.SliceStable(merged, func(a, b int) bool { return merged[a].TimestampUnixNano < merged[b].TimestampUnixNano })
+			data, err := compaction.WriteTraces(merged, 10000, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res = &flushResult{Data: data, RawBytes: res.RawBytes, ColumnBytes: res.ColumnBytes}
 		}
 		key := fmt.Sprintf("traces/dt=2026-06-01/hour=%02d/f%03d.parquet", 10+i, i)
 		mock.Put("test-bucket", key, res.Data)
