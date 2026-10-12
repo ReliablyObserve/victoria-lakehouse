@@ -60,17 +60,22 @@ ROOT_MODULE_FILES = ("go.mod", "go.sum")
 # unless it is named below, with the reason it cannot change a stored or answered byte; a new module,
 # or one this table does not know, is critical until a reviewer decides otherwise here.
 #
+# NOT inert, on purpose (third review of the gate): golang.org/x/sync is the singleflight of
+# internal/s3reader/dedup.go, which hands ONE result to every concurrent cold read of the same range (a
+# bump can change which bytes concurrent readers share), and golang.org/x/sys/cpu is what parquet-go
+# consults to pick its SIMD encoders (a bump can change which encoder writes a page). Both can change
+# a stored or answered byte, so a bump of either needs registry coverage. golang.org/x/net stays inert.
+#
 # Every entry is an exact module path (go.mod and go.sum spell modules the same way), or a path
 # prefix ending in "/" for a family that is one project (the OpenTelemetry SDK). Evidence for the
-# entries that need it: `go list -deps -f '{{.ImportPath}} {{join .Imports " "}}'` in both modules
-# shows who imports a module; scripts/ci/tests/test_pr_classify_critical.py re-derives it.
+# entries that need it: scripts/ci/tests/test_pr_classify_critical.py scans the import lines of the
+# product's .go files with a regular expression (it does not run `go list -deps`, so it sees neither
+# build-tag-only imports nor generated files); when deciding a new entry, cross-check by hand with
+# `go list -deps -f '{{.ImportPath}} {{join .Imports " "}}'` in both modules.
 INERT_MODULES = {
     # test-only: linked into no binary
     "go.uber.org/goleak": "goroutine-leak detector, imported by tests only",
     "github.com/kr/text": "indirect of the test-only pretty printers, linked into no binary",
-    # runtime helpers with no data format
-    "golang.org/x/sync": "singleflight in internal/s3reader: request coalescing, no format",
-    "golang.org/x/sys": "syscall bindings and CPU feature detection (parquet-go, VictoriaMetrics lib/fs, otel resource detection)",
     "golang.org/x/oauth2": "the OAuth2 client-credentials token source of VictoriaMetrics lib/promauth (outbound auth headers)",
     # HTTP/2 transport: imported only through google.golang.org/grpc (the OTLP trace exporter client in
     # internal/telemetry, the tests/ingestmatrix client). net/http itself uses the copy vendored into
@@ -357,10 +362,14 @@ def golang_image_bump_only(base: str, head: str, line_re: "re.Pattern[str]") -> 
         bm, hm = line_re.match(b), line_re.match(h)
         if not bm or not hm or _image_shape(bm) != _image_shape(hm):
             return False
-        # a bump moves forward: neither the Go version nor the alpine release may go back
-        if _vtuple(hm.group("ver")) < _vtuple(bm.group("ver")):
-            return False
-        if bm.group("alpver") and _vtuple(hm.group("alpver")) < _vtuple(bm.group("alpver")):
+        # a bump moves forward: neither the Go version nor the alpine release may go back; a number
+        # that does not fit 31 bits is refused (the Go twin refuses it as well)
+        try:
+            if _vtuple(hm.group("ver")) < _vtuple(bm.group("ver")):
+                return False
+            if bm.group("alpver") and _vtuple(hm.group("alpver")) < _vtuple(bm.group("alpver")):
+                return False
+        except ValueError:
             return False
         changed = True
     return changed
@@ -370,10 +379,17 @@ def _is_directive(line: str) -> bool:
     return bool(GO_DIRECTIVE.match(line) or TOOLCHAIN_DIRECTIVE.match(line))
 
 
+VERSION_PART_MAX = 2**31 - 1  # the Go twin (registry.versionBefore) parses components as 31-bit numbers
+
+
 def _vtuple(version: str) -> tuple[int, ...]:
     """A dotted numeric version as a tuple padded to three parts: "1.27" == "1.27.0" < "1.27.1" and
-    "3.9" < "3.23" (numeric, not lexical). ASCII digits only: the callers' regexes guarantee it."""
+    "3.9" < "3.23" (numeric, not lexical). ASCII digits only: the callers' regexes guarantee it.
+    A component above 31 bits raises ValueError: the Go twin refuses it too, and an overflowing number
+    is never a bump (the callers treat the error as "not a bump")."""
     parts = [int(x) for x in version.split(".")]
+    if any(x > VERSION_PART_MAX for x in parts):
+        raise ValueError(f"version component out of range in {version!r}")
     return tuple(parts + [0] * (3 - len(parts)))
 
 
@@ -386,10 +402,13 @@ def _directives_not_older(base_lines: list[str], head_lines: list[str]) -> bool:
                 return _vtuple(x[len(prefix):])
         return None
 
-    b_go, h_go = pick(base_lines, GO_DIRECTIVE, "go "), pick(head_lines, GO_DIRECTIVE, "go ")
-    if b_go is None or h_go is None or h_go < b_go:
+    try:
+        b_go, h_go = pick(base_lines, GO_DIRECTIVE, "go "), pick(head_lines, GO_DIRECTIVE, "go ")
+        if b_go is None or h_go is None or h_go < b_go:
+            return False
+        b_tc, h_tc = pick(base_lines, TOOLCHAIN_DIRECTIVE, "toolchain go"), pick(head_lines, TOOLCHAIN_DIRECTIVE, "toolchain go")
+    except ValueError:  # a version component that overflows is never a bump
         return False
-    b_tc, h_tc = pick(base_lines, TOOLCHAIN_DIRECTIVE, "toolchain go"), pick(head_lines, TOOLCHAIN_DIRECTIVE, "toolchain go")
     if b_tc is not None and (h_tc is None or h_tc < b_tc):
         return False
     return True

@@ -353,6 +353,14 @@ class Classified(unittest.TestCase):
         got = self.classify({"Dockerfile.logs": DOCKERFILE.replace("golang:1.27.1-alpine3.23", "golang:1.10.0-alpine3.10")})
         self.assertEqual(got["exempt"], "toolchain-only")
 
+    def test_a_go_directive_that_overflows_is_never_a_bump(self):
+        # the Go twin parses components as 31-bit numbers and refuses more; Python used to accept any size
+        for head in ("go 1.27.99999999999999999999\n", "go 1.27.2147483648\n"):
+            with self.subTest(head):
+                got = self.classify({"go.mod": GO_MOD.replace("go 1.27.1\n", head)})
+                self.assertEqual(got["exempt"], "none")
+        self.assertEqual(self.classify({"go.mod": GO_MOD.replace("go 1.27.1\n", "go 1.27.2147483647\n")})["exempt"], "toolchain-only")
+
     def test_a_new_required_module_is_not_a_toolchain_bump(self):
         got = self.classify({**CHANGE_491, "go.mod": GO_MOD_491.replace("\n)\n", "\n\tgolang.org/x/sys v0.48.0\n)\n")})
         self.assertEqual(got["exempt"], "none")

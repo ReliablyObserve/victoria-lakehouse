@@ -812,6 +812,38 @@ class ParityDataBytesTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         decode_parity_data(raw, "f")
 
+    PARSE_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "parity_data_parse.json")
+
+    def test_parse_fixture_agrees_with_the_go_gate(self):
+        """Third review: the byte fixture above only classifies bytes. This one pins what each reader PARSES
+        from Unicode spaces, Unicode digits, tabs, trailing spaces, CRLF and duplicates. The Go twin
+        (registry.TestParityParse_SharedFixture) asserts its own column of the same file."""
+        with open(self.PARSE_FIXTURE, encoding="utf-8") as fh:
+            fx = json.load(fh)
+        self.assertGreaterEqual(len(fx["allowlist"]), 20)
+        self.assertGreaterEqual(len(fx["lock_cells"]), 15)
+        for kind, parse in (("allowlist", lambda t: sorted(parse_allowlist(t).entries)), ("lock_cells", parse_lock_cells)):
+            for c in fx[kind]:
+                with self.subTest(kind=kind, name=c["name"]):
+                    if c["python"] == "reject":
+                        with self.assertRaises(ValueError):
+                            parse(c["text"])
+                    else:
+                        self.assertEqual(parse(c["text"]), c["python"])
+                    # the invariant: two accepting readers return the same entries; a one-sided rejection
+                    # fails closed (the rejecting job or gate goes red)
+                    if c["python"] != "reject" and c["go"] != "reject":
+                        want = sorted(c["go"]) if kind == "allowlist" else c["go"]
+                        self.assertEqual(c["python"], want, "the two readers accept this input and disagree")
+
+    def test_min_pass_value_is_ascii_digits_only(self):
+        for value in ("+3", "3_41", "\u0663", "\u00b2", " ", "", "3 4", "-1", "1" * 16):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_allowlist(f"# min-pass: {value}\nTestA  # B1: reason\n")
+        self.assertEqual(parse_allowlist("# min-pass: 007\nTestA  # B1: r\n").min_pass, 7)
+        self.assertEqual(parse_allowlist("#min-pass:5\n").min_pass, 5)
+        self.assertEqual(parse_allowlist("### min-pass: 5\n").min_pass, 5)
+
     def test_the_smuggle_of_the_review_is_refused_by_both_parsers(self):
         for sep in ("\u2028", "\u2029", "\u0085", "\r", "\x0b", "\x0c", "\x1c"):
             smuggled = "# min-pass: 1\nTestA  # B1: reason" + sep + "TestSmuggled  # B9: reason\nTestB  # B2: reason\n"

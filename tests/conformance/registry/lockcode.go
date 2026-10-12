@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/build/constraint"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"path/filepath"
 	"regexp"
@@ -245,7 +247,7 @@ func declaresOnlyTests(path string, src []byte) (string, error) {
 var nativeSourceExt = map[string]bool{
 	".c": true, ".cc": true, ".cpp": true, ".cxx": true, ".h": true, ".hh": true, ".hpp": true, ".hxx": true,
 	".m": true, ".mm": true, ".s": true, ".S": true, ".sx": true, ".syso": true,
-	".f": true, ".f90": true, ".for": true, ".swig": true, ".swigcxx": true,
+	".f": true, ".F": true, ".f90": true, ".for": true, ".swig": true, ".swigcxx": true,
 }
 
 // goImport is one import of a Go file: its path, and whether it is a blank (`_`) or dot (`.`) import.
@@ -313,6 +315,25 @@ func stdlibImport(p string) bool {
 // Load-time code (init, called package-level vars) and cgo are hard failures elsewhere
 // (LockInitVarAdditions, LockCgoAdditions); this function only makes sure a person sees the files.
 func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles, baseTree, headTree TreeFiles) ([]string, error) {
+	list, err := LockCodeChangeList(baseRefs, headRefs, baseSrc, headSrc, baseList, headList, baseTree, headTree)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(list))
+	for _, c := range list {
+		out = append(out, c.String())
+	}
+	return out, nil
+}
+
+// LockChange is one file the gate lists for the reviewer, with the reason. A path may hold ": ", so the
+// two parts stay separate until they are printed.
+type LockChange struct{ Path, Reason string }
+
+func (c LockChange) String() string { return c.Path + ": " + c.Reason }
+
+// LockCodeChangeList is LockCodeChanges with the path and the reason kept apart.
+func LockCodeChangeList(baseRefs, headRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles, baseTree, headTree TreeFiles) ([]LockChange, error) {
 	why, err := LockCodeFiles(baseRefs, baseSrc, baseList)
 	if err != nil {
 		return nil, fmt.Errorf("at the merge base: %w", err)
@@ -430,9 +451,9 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 		}
 	}
 	sort.Strings(order)
-	out := make([]string, 0, len(order))
+	out := make([]LockChange, 0, len(order))
 	for _, f := range order {
-		out = append(out, fmt.Sprintf("%s: %s", f, strings.Join(reasons[f], "; ")))
+		out = append(out, LockChange{Path: f, Reason: strings.Join(reasons[f], "; ")})
 	}
 	return out, nil
 }
@@ -444,10 +465,19 @@ func LockCodeChanges(baseRefs, headRefs map[string]map[string]bool, baseSrc, hea
 // binary. A file that already imported "C" at the merge base is not new cgo. The repository has no cgo
 // in a lock package, so this stays quiet in practice.
 func LockCgoAdditions(baseRefs map[string]map[string]bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles) []string {
-	dirs := map[string]bool{}
-	for f := range baseRefs {
-		dirs[filepath.ToSlash(filepath.Dir(f))] = true
+	var out []string
+	for d := range LockDirs(baseRefs) {
+		for _, p := range cgoAdded(d, baseSrc, headSrc, headList, func(string) bool { return true }) {
+			out = append(out, p+`: imports "C" (cgo) in a package that holds a registry lock`)
+		}
 	}
+	sort.Strings(out)
+	return out
+}
+
+// cgoAdded lists the paths of the files of dir d (inScope picks them) that import "C" at head and did not
+// at the merge base.
+func cgoAdded(d string, baseSrc, headSrc func(string) []byte, headList PackageFiles, inScope func(string) bool) []string {
 	hasC := func(path string, src []byte) bool {
 		imps, _ := importsOf(path, src)
 		for _, im := range imps {
@@ -458,17 +488,25 @@ func LockCgoAdditions(baseRefs map[string]map[string]bool, baseSrc, headSrc func
 		return false
 	}
 	var out []string
-	for d := range dirs {
-		for _, p := range headList(d) {
-			hs := headSrc(p)
-			if hs == nil || bytes.Equal(baseSrc(p), hs) || !hasC(p, hs) || hasC(p, baseSrc(p)) {
-				continue
-			}
-			out = append(out, p+`: imports "C" (cgo) in a package that holds a registry lock`)
+	for _, p := range headList(d) {
+		hs := headSrc(p)
+		if !inScope(p) || hs == nil || bytes.Equal(baseSrc(p), hs) || !hasC(p, hs) || hasC(p, baseSrc(p)) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// LockDirs returns the directories that hold a lock test file.
+func LockDirs(refs ...map[string]map[string]bool) map[string]bool {
+	dirs := map[string]bool{}
+	for _, r := range refs {
+		for f := range r {
+			dirs[filepath.ToSlash(filepath.Dir(f))] = true
 		}
 	}
-	sort.Strings(out)
-	return out
+	return dirs
 }
 
 // predeclaredTypes are the identifiers a call expression can name without calling a function: a
@@ -535,39 +573,297 @@ func runsCodeAtLoad(e ast.Expr, imports map[string]string) bool {
 	return found
 }
 
+// declKey identifies one load-time declaration. display is what the report shows (the name and the
+// whitespace-normalised source); sig is everything that decides WHAT RUNS when the package loads:
+//
+//   - the exact token stream of the declaration (go/scanner: string and rune literals keep their exact
+//     bytes, so "a b" and "a  b" differ; only insignificant white space, comments and the automatic
+//     semicolons' spelling are normalised away);
+//   - the RESOLVED import path of every package qualifier the declaration uses (`schema.F` is
+//     `schema` the alias or package clause of which import path: moving the declaration into a file
+//     where `schema` names another package is a different declaration), and the dot-imported paths of
+//     the file (a dot import brings names in without a qualifier);
+//   - the file's build constraints (`//go:build`, `// +build`, and the GOOS/GOARCH file-name suffix):
+//     moving a declaration into or out of a constrained file changes whether it runs at all.
+//
+// A pure move or rename of the file therefore keeps the key; a move that changes what the code means
+// does not.
+type declKey struct{ display, sig string }
+
+// fileScope is what a file contributes to the key of every declaration in it.
+type fileScope struct {
+	imports     []fileImport
+	dotImports  []string
+	constraints string
+}
+
+type fileImport struct {
+	alias string // "" when the import has no explicit name
+	path  string
+}
+
+// pkgNames resolves the default name of an imported package. For a package of this repository the
+// name is its `package` clause, read from the revision's blobs: the author of the change chooses it, so
+// the last path element proves nothing (`tests/evil` may declare `package schema`). For any other
+// package the candidates are derived from the path (the name the go tool itself guesses for it).
+type pkgNames struct {
+	root  string // module path of the repository
+	src   func(string) []byte
+	list  PackageFiles
+	cache map[string][]string
+}
+
+// repoModule is the module path of this repository, used when go.mod cannot be read (the unit-test
+// trees have none). lakehouse-traces/ has its own go.mod but its module path extends the root one, so
+// one prefix maps both.
+const repoModule = "github.com/ReliablyObserve/victoria-lakehouse"
+
+func newPkgNames(src func(string) []byte, list PackageFiles) *pkgNames {
+	root := repoModule
+	for _, line := range strings.Split(string(src("go.mod")), "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[0] == "module" {
+			root = strings.Trim(f[1], "\"")
+			break
+		}
+	}
+	return &pkgNames{root: root, src: src, list: list, cache: map[string][]string{}}
+}
+
+// repoDir maps an import path of this repository to its directory ("" when it is not one).
+func (n *pkgNames) repoDir(importPath string) string {
+	if importPath == n.root {
+		return "."
+	}
+	if strings.HasPrefix(importPath, n.root+"/") {
+		return strings.TrimPrefix(importPath, n.root+"/")
+	}
+	return ""
+}
+
+// candidates are the local names an unaliased import of importPath can have.
+func (n *pkgNames) candidates(importPath string) []string {
+	if c, ok := n.cache[importPath]; ok {
+		return c
+	}
+	var out []string
+	if dir := n.repoDir(importPath); dir != "" {
+		for _, p := range n.list(dir) {
+			if strings.HasSuffix(p, "_test.go") {
+				continue
+			}
+			if f, err := parser.ParseFile(token.NewFileSet(), p, n.src(p), parser.PackageClauseOnly); err == nil {
+				out = append(out, f.Name.Name)
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		out = pathNames(importPath)
+	}
+	n.cache[importPath] = out
+	return out
+}
+
+// pathNames are the names a package path suggests: its last element, without a version suffix
+// element (/v2), a "go-" prefix, a "-go" suffix or a ".vN" / ".go" tail.
+func pathNames(importPath string) []string {
+	parts := strings.Split(importPath, "/")
+	last := parts[len(parts)-1]
+	if len(parts) > 1 && len(last) > 1 && last[0] == 'v' && strings.Trim(last[1:], "0123456789") == "" {
+		last = parts[len(parts)-2]
+	}
+	out := []string{last}
+	if i := strings.Index(last, "."); i > 0 {
+		out = append(out, last[:i])
+	}
+	out = append(out, strings.TrimSuffix(strings.TrimPrefix(last, "go-"), "-go"), strings.ReplaceAll(last, "-", "_"))
+	return out
+}
+
+// buildConstraints returns the normalised build constraints of a file: its //go:build and // +build
+// lines (before the package clause) and the implicit GOOS/GOARCH constraint of its name.
+func buildConstraints(path string, f *ast.File) string {
+	var out []string
+	for _, cg := range f.Comments {
+		if cg.Pos() >= f.Package {
+			break
+		}
+		for _, c := range cg.List {
+			if !constraint.IsGoBuild(c.Text) && !constraint.IsPlusBuild(c.Text) {
+				continue
+			}
+			if x, err := constraint.Parse(c.Text); err == nil {
+				out = append(out, x.String())
+			} else {
+				out = append(out, strings.TrimSpace(c.Text))
+			}
+		}
+	}
+	if sfx := fileNameConstraint(path); sfx != "" {
+		out = append(out, "file:"+sfx)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ";")
+}
+
+var knownOS = map[string]bool{"aix": true, "android": true, "darwin": true, "dragonfly": true, "freebsd": true, "hurd": true, "illumos": true, "ios": true, "js": true, "linux": true, "nacl": true, "netbsd": true, "openbsd": true, "plan9": true, "solaris": true, "wasip1": true, "windows": true, "zos": true}
+
+var knownArch = map[string]bool{"386": true, "amd64": true, "amd64p32": true, "arm": true, "armbe": true, "arm64": true, "arm64be": true, "loong64": true, "mips": true, "mipsle": true, "mips64": true, "mips64le": true, "mips64p32": true, "mips64p32le": true, "ppc": true, "ppc64": true, "ppc64le": true, "riscv": true, "riscv64": true, "s390": true, "s390x": true, "sparc": true, "sparc64": true, "wasm": true}
+
+// fileNameConstraint is the GOOS/GOARCH suffix of a file name the go tool treats as a build constraint
+// (`x_windows.go`, `x_linux_amd64_test.go`), "" when there is none. It follows go/build's rule: the part
+// before the first underscore is never a constraint.
+func fileNameConstraint(path string) string {
+	name := filepath.Base(path)
+	name, _, _ = strings.Cut(name, ".")
+	i := strings.Index(name, "_")
+	if i < 0 {
+		return ""
+	}
+	l := strings.Split(name[i:], "_")
+	if n := len(l); n > 0 && l[n-1] == "test" {
+		l = l[:n-1]
+	}
+	n := len(l)
+	switch {
+	case n >= 2 && knownOS[l[n-2]] && knownArch[l[n-1]]:
+		return l[n-2] + "_" + l[n-1]
+	case n >= 1 && (knownOS[l[n-1]] || knownArch[l[n-1]]):
+		return l[n-1]
+	}
+	return ""
+}
+
+// scopeOf collects the imports and the constraints of a parsed file.
+func scopeOf(path string, f *ast.File) fileScope {
+	sc := fileScope{constraints: buildConstraints(path, f)}
+	for _, im := range f.Imports {
+		p := strings.Trim(im.Path.Value, "\"`")
+		alias := ""
+		if im.Name != nil {
+			alias = im.Name.Name
+		}
+		if alias == "." {
+			sc.dotImports = append(sc.dotImports, p)
+			continue
+		}
+		sc.imports = append(sc.imports, fileImport{alias: alias, path: p})
+	}
+	sort.Strings(sc.dotImports)
+	return sc
+}
+
+// resolveQualifiers maps every package qualifier the node uses (`q` in `q.Name`) to the sorted list of
+// import paths of the file it can name, and spells the result as one string. A qualifier no import
+// names (a local variable, a field, an import this heuristic cannot name) is written `?q`.
+func (sc fileScope) resolveQualifiers(n ast.Node, names *pkgNames) string {
+	quals := map[string]bool{}
+	ast.Inspect(n, func(x ast.Node) bool {
+		if sel, ok := x.(*ast.SelectorExpr); ok {
+			if id, ok := sel.X.(*ast.Ident); ok {
+				quals[id.Name] = true
+			}
+		}
+		return true
+	})
+	var out []string
+	for q := range quals {
+		var paths []string
+		for _, im := range sc.imports {
+			if im.alias == "_" {
+				continue
+			}
+			if im.alias != "" {
+				if im.alias == q {
+					paths = append(paths, im.path)
+				}
+				continue
+			}
+			for _, c := range names.candidates(im.path) {
+				if c == q {
+					paths = append(paths, im.path)
+					break
+				}
+			}
+		}
+		sort.Strings(paths)
+		if len(paths) == 0 {
+			out = append(out, "?"+q)
+		} else {
+			out = append(out, q+"=>"+strings.Join(paths, ","))
+		}
+	}
+	sort.Strings(out)
+	return strings.Join(out, " ")
+}
+
+// tokenStream spells src as its Go token stream: identifiers and literals keep their exact text, every
+// other token its canonical spelling, comments and the white space between tokens are dropped, and an
+// automatic semicolon equals an explicit one.
+func tokenStream(src []byte) string {
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(src))
+	var s scanner.Scanner
+	s.Init(file, src, func(token.Position, string) {}, 0)
+	var sb strings.Builder
+	for {
+		_, tok, lit := s.Scan()
+		if tok == token.EOF {
+			break
+		}
+		switch tok {
+		case token.IDENT, token.INT, token.FLOAT, token.IMAG, token.CHAR, token.STRING, token.ILLEGAL:
+			sb.WriteString(lit)
+		case token.SEMICOLON:
+			sb.WriteString(";")
+		default:
+			sb.WriteString(tok.String())
+		}
+		sb.WriteByte(0x01)
+	}
+	return sb.String()
+}
+
 // loadTimeDecls returns what a Go file declares that runs code at package load, before any test:
-// the multiset of init() functions (keyed by the whitespace-normalised source of the body) and the
-// multiset of package-level vars whose initializer calls a function (keyed `name = initializer
-// source`). A literal table (`var cases = []T{{...}}`), a conversion or a var without an
-// initializer runs nothing and is not counted. TestMain is checked by TestMainChanges.
-func loadTimeDecls(path string, src []byte) (inits, vars map[string]int, err error) {
-	inits, vars = map[string]int{}, map[string]int{}
+// the multiset of init() functions and the multiset of package-level vars whose initializer calls a
+// function. Both are keyed by declKey (see there): a literal table (`var cases = []T{{...}}`), a
+// conversion or a var without an initializer runs nothing and is not counted. TestMain is checked by
+// TestMainChanges.
+func loadTimeDecls(path string, src []byte, names *pkgNames) (inits, vars map[declKey]int, err error) {
+	inits, vars = map[declKey]int{}, map[declKey]int{}
 	if src == nil {
 		return inits, vars, nil
 	}
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
+	f, err := parser.ParseFile(fset, path, src, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
 		return nil, nil, err
 	}
-	imports := map[string]string{} // local name -> import path
+	imports := map[string]string{} // local name -> import path, for the pure standard-library constructors
 	for _, im := range f.Imports {
-		path := strings.Trim(im.Path.Value, `"`+"`")
-		name := path[strings.LastIndex(path, "/")+1:]
+		ip := strings.Trim(im.Path.Value, `"`+"`")
+		name := ip[strings.LastIndex(ip, "/")+1:]
 		if im.Name != nil {
 			name = im.Name.Name
 		}
-		imports[name] = path
+		imports[name] = ip
+	}
+	sc := scopeOf(path, f)
+	sigOf := func(n ast.Node, text []byte) string {
+		return tokenStream(text) + "\x00" + sc.resolveQualifiers(n, names) + "\x00" + strings.Join(sc.dotImports, ",") + "\x00" + sc.constraints
 	}
 	for _, d := range f.Decls {
 		switch d := d.(type) {
 		case *ast.FuncDecl:
 			if d.Recv == nil && d.Name.Name == "init" {
 				body := ""
+				var sig string
 				if d.Body != nil {
-					body = string(src[fset.Position(d.Body.Pos()).Offset:fset.Position(d.Body.End()).Offset])
+					raw := src[fset.Position(d.Body.Pos()).Offset:fset.Position(d.Body.End()).Offset]
+					body = string(raw)
+					sig = sigOf(d.Body, raw)
 				}
-				inits["init() "+strings.Join(strings.Fields(body), " ")]++
+				inits[declKey{"init() " + strings.Join(strings.Fields(body), " "), sig}]++
 			}
 		case *ast.GenDecl:
 			if d.Tok != token.VAR {
@@ -588,8 +884,8 @@ func loadTimeDecls(path string, src []byte) (inits, vars map[string]int, err err
 					} else if len(vs.Names) > 0 {
 						name = vs.Names[0].Name // var a, b = f(): one call, several names
 					}
-					text := string(src[fset.Position(v.Pos()).Offset:fset.Position(v.End()).Offset])
-					vars[name+" = "+strings.Join(strings.Fields(text), " ")]++
+					raw := src[fset.Position(v.Pos()).Offset:fset.Position(v.End()).Offset]
+					vars[declKey{name + " = " + strings.Join(strings.Fields(string(raw)), " "), name + "\x02" + sigOf(v, raw)}]++
 				}
 			}
 		}
@@ -683,87 +979,114 @@ func LockInitVarAdditions(baseRefs map[string]map[string]bool, baseSrc, headSrc 
 			}
 		}
 		inScope := func(p string) bool { return pureTest || strings.HasSuffix(p, "_test.go") }
-		// the package's load-time declarations at the merge base, and the base file's own (for attribution)
-		type decls struct{ inits, vars map[string]int }
-		baseFile := map[string]decls{}
-		basePkgInits, basePkgVars := map[string]int{}, map[string]int{}
-		for _, p := range baseList(d) {
-			if !inScope(p) {
-				continue
-			}
-			bi, bv, err := loadTimeDecls(p, baseSrc(p))
-			if err != nil {
-				continue // a base that did not parse has nothing to compare: all of it is new
-			}
-			baseFile[p] = decls{bi, bv}
-			for k, c := range bi {
-				basePkgInits[k] += c
-			}
-			for k, c := range bv {
-				basePkgVars[k] += c
-			}
-		}
-		type headDecl struct {
-			path         string
-			inits, vars  map[string]int
-			changedBytes bool
-		}
-		var heads []headDecl
-		headPkgInits, headPkgVars := map[string]int{}, map[string]int{}
-		for _, p := range headList(d) {
-			if !inScope(p) {
-				continue
-			}
-			hs := headSrc(p)
-			if hs == nil {
-				continue
-			}
-			hi, hv, err := loadTimeDecls(p, hs)
-			if err != nil {
-				if !bytes.Equal(baseSrc(p), hs) {
-					out = append(out, p+": does not parse, so the locks of its package would not run")
-				}
-				continue
-			}
-			for k, c := range hi {
-				headPkgInits[k] += c
-			}
-			for k, c := range hv {
-				headPkgVars[k] += c
-			}
-			heads = append(heads, headDecl{p, hi, hv, !bytes.Equal(baseSrc(p), hs)})
-		}
-		for _, h := range heads {
-			if !h.changedBytes {
-				continue
-			}
-			bf := baseFile[h.path]
+		for _, a := range loadTimeAdditions(d, inScope, baseSrc, headSrc, baseList, headList) {
 			var added []string
-			n := 0
-			for k, c := range h.inits {
-				if gain := c - bf.inits[k]; gain > 0 && headPkgInits[k] > basePkgInits[k] {
-					n += min(gain, headPkgInits[k]-basePkgInits[k])
-				}
+			if a.inits > 0 {
+				added = append(added, fmt.Sprintf("%d new init() function(s)", a.inits))
 			}
-			if n > 0 {
-				added = append(added, fmt.Sprintf("%d new init() function(s)", n))
+			if len(a.vars) > 0 {
+				added = append(added, "package-level var whose initializer calls a function: "+strings.Join(a.vars, ", "))
 			}
-			var names []string
-			for k, c := range h.vars {
-				if c > bf.vars[k] && headPkgVars[k] > basePkgVars[k] {
-					names = append(names, k)
-				}
+			if a.broken {
+				out = append(out, a.path+": does not parse, so the locks of its package would not run")
+				continue
 			}
-			sort.Strings(names)
-			if len(names) > 0 {
-				added = append(added, "package-level var whose initializer calls a function: "+strings.Join(names, ", "))
-			}
-			if len(added) > 0 {
-				out = append(out, fmt.Sprintf("%s: adds %s to a package that holds a registry lock", h.path, strings.Join(added, " and ")))
-			}
+			out = append(out, fmt.Sprintf("%s: adds %s to a package that holds a registry lock", a.path, strings.Join(added, " and ")))
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// loadAddition is one file of a package that gains load-time declarations at head.
+type loadAddition struct {
+	path   string
+	inits  int      // new init() functions
+	vars   []string // new package-level vars whose initializer calls a function (display text)
+	broken bool     // the file changed and no longer parses
+}
+
+// loadTimeAdditions compares the load-time declarations of the files of one package directory
+// (inScope picks the files that count) as a MULTISET PER PACKAGE: a declaration moved to another file
+// or a renamed file adds nothing, a declaration with another key (another body, another initializer,
+// other import paths behind its qualifiers, another build constraint, one more copy) does. The files
+// reported are the files at head that gained a declaration the package has more of than at the merge
+// base.
+func loadTimeAdditions(d string, inScope func(p string) bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles) []loadAddition {
+	baseNames, headNames := newPkgNames(baseSrc, baseList), newPkgNames(headSrc, headList)
+	type decls struct{ inits, vars map[declKey]int }
+	baseFile := map[string]decls{}
+	basePkgInits, basePkgVars := map[declKey]int{}, map[declKey]int{}
+	for _, p := range baseList(d) {
+		if !inScope(p) {
+			continue
+		}
+		bi, bv, err := loadTimeDecls(p, baseSrc(p), baseNames)
+		if err != nil {
+			continue // a base that did not parse has nothing to compare: all of it is new
+		}
+		baseFile[p] = decls{bi, bv}
+		for k, c := range bi {
+			basePkgInits[k] += c
+		}
+		for k, c := range bv {
+			basePkgVars[k] += c
+		}
+	}
+	type headDecl struct {
+		path         string
+		inits, vars  map[declKey]int
+		changedBytes bool
+	}
+	var heads []headDecl
+	var out []loadAddition
+	headPkgInits, headPkgVars := map[declKey]int{}, map[declKey]int{}
+	for _, p := range headList(d) {
+		if !inScope(p) {
+			continue
+		}
+		hs := headSrc(p)
+		if hs == nil {
+			continue
+		}
+		hi, hv, err := loadTimeDecls(p, hs, headNames)
+		if err != nil {
+			if !bytes.Equal(baseSrc(p), hs) {
+				out = append(out, loadAddition{path: p, broken: true})
+			}
+			continue
+		}
+		for k, c := range hi {
+			headPkgInits[k] += c
+		}
+		for k, c := range hv {
+			headPkgVars[k] += c
+		}
+		heads = append(heads, headDecl{p, hi, hv, !bytes.Equal(baseSrc(p), hs)})
+	}
+	for _, h := range heads {
+		if !h.changedBytes {
+			continue
+		}
+		bf := baseFile[h.path]
+		a := loadAddition{path: h.path}
+		for k, c := range h.inits {
+			if gain := c - bf.inits[k]; gain > 0 && headPkgInits[k] > basePkgInits[k] {
+				a.inits += min(gain, headPkgInits[k]-basePkgInits[k])
+			}
+		}
+		seen := map[string]bool{}
+		for k, c := range h.vars {
+			if c > bf.vars[k] && headPkgVars[k] > basePkgVars[k] && !seen[k.display] {
+				seen[k.display] = true
+				a.vars = append(a.vars, k.display)
+			}
+		}
+		sort.Strings(a.vars)
+		if a.inits > 0 || len(a.vars) > 0 {
+			out = append(out, a)
+		}
+	}
 	return out
 }
 
@@ -803,7 +1126,9 @@ func GolangImageBumpOnly(base, head []byte) bool {
 			return false
 		}
 		// a bump moves forward: the Go version and the alpine release may not go back
-		if versionBefore(hm[2], bm[2]) || versionBefore(strings.TrimPrefix(hm[3], "-alpine"), strings.TrimPrefix(bm[3], "-alpine")) {
+		goBack, ok1 := versionBefore(hm[2], bm[2])
+		alpBack, ok2 := versionBefore(strings.TrimPrefix(hm[3], "-alpine"), strings.TrimPrefix(bm[3], "-alpine"))
+		if !ok1 || !ok2 || goBack || alpBack {
 			return false
 		}
 		changed = true
@@ -813,25 +1138,31 @@ func GolangImageBumpOnly(base, head []byte) bool {
 
 // versionBefore reports whether dotted version a is numerically older than b ("3.9" is older than
 // "3.23"; "1.27" is older than "1.27.1"). Both are digits and dots, as the line regexp guarantees; an
-// empty string (no alpine release) is never older than anything.
-func versionBefore(a, b string) bool {
+// empty string (no alpine release) is never older than anything. ok is false when a component does not
+// fit 31 bits: the Python twin refuses the same (_vtuple), so an overflowing number is never a bump.
+func versionBefore(a, b string) (before, ok bool) {
 	if a == "" || b == "" {
-		return false
+		return false, true
 	}
 	as, bs := strings.Split(a, "."), strings.Split(b, ".")
 	for i := 0; i < len(as) || i < len(bs); i++ {
-		var x, y int
+		var x, y uint64
+		var err error
 		if i < len(as) {
-			x, _ = strconv.Atoi(as[i])
+			if x, err = strconv.ParseUint(as[i], 10, 31); err != nil {
+				return false, false
+			}
 		}
 		if i < len(bs) {
-			y, _ = strconv.Atoi(bs[i])
+			if y, err = strconv.ParseUint(bs[i], 10, 31); err != nil {
+				return false, false
+			}
 		}
 		if x != y {
-			return x < y
+			return x < y, true
 		}
 	}
-	return false
+	return false, true
 }
 
 // hasUnreadableBytes reports whether b is not clean text: invalid UTF-8, a control byte other than
@@ -863,4 +1194,358 @@ func imageSuffixShape(suffix string) string {
 	default:
 		return "-alpineV"
 	}
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Symbolic links.
+//
+// The gate reads blobs, and `packageFiles` / `treeFiles` keep regular files only (git mode 100*). A
+// symlink is invisible to every lock rule above, yet `go test` compiles a symlinked .go file: a
+// `tests/e2e/zz_link.go -> ../../docs/zz.txt` whose target holds an init() that ends the binary with
+// success silences the locks and no rule would have listed it. So a symlink (or a submodule) that a PR
+// adds or changes is a hard failure wherever the go tool or a lock could read it.
+
+// DiffEntry is one path of `git diff --raw -z --no-renames`: its status letter and the git modes at the
+// two revisions (000000 for an absent side).
+type DiffEntry struct{ Path, Status, OldMode, NewMode string }
+
+// ParseDiffRaw parses the output of `git diff --raw -z --no-renames --no-abbrev`.
+func ParseDiffRaw(raw []byte) ([]DiffEntry, error) {
+	toks := strings.Split(string(raw), "\x00")
+	var out []DiffEntry
+	for i := 0; i < len(toks); i++ {
+		t := toks[i]
+		if t == "" {
+			continue
+		}
+		if !strings.HasPrefix(t, ":") {
+			return nil, fmt.Errorf("unexpected diff record %q", t)
+		}
+		f := strings.Fields(t[1:])
+		if len(f) != 5 || i+1 >= len(toks) || toks[i+1] == "" {
+			return nil, fmt.Errorf("unexpected diff record %q", t)
+		}
+		i++
+		out = append(out, DiffEntry{Path: toks[i], Status: f[4], OldMode: f[0], NewMode: f[1]})
+	}
+	return out, nil
+}
+
+// IsLinkEntry reports whether the entry puts a symbolic link or a submodule into the tree.
+func (e DiffEntry) IsLinkEntry() bool {
+	return e.Status != "D" && (e.NewMode == "120000" || e.NewMode == "160000")
+}
+
+// underAny reports whether path is one of dirs or lies below one. A runtime-config entry ending in "/"
+// names a directory, one without it a single file.
+func underAny(path string, dirs []string) bool {
+	for _, d := range dirs {
+		d = strings.TrimSuffix(d, "/")
+		if path == d || strings.HasPrefix(path, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// SymlinkProblems lists the symbolic links and submodules a PR adds or changes that the gate refuses:
+// any whose name is a .go file or a native source file (the go tool compiles those), and any under a
+// directory of dirs (the packages that hold a lock, the packages a lock package imports, the lock
+// suites' runtime configuration), whatever its name or target, because a lock rule reads blobs of
+// regular files and cannot see through a link. A link elsewhere (docs/) is free.
+func SymlinkProblems(entries []DiffEntry, dirs []string) []string {
+	var out []string
+	for _, e := range entries {
+		if !e.IsLinkEntry() {
+			continue
+		}
+		kind := "a symbolic link"
+		if e.NewMode == "160000" {
+			kind = "a submodule"
+		}
+		change := "added"
+		if e.OldMode != "000000" {
+			change = "changed to " + kind + " (it was a regular file or another link)"
+			if e.OldMode == "120000" && e.NewMode == "120000" {
+				change = "retargeted"
+			}
+		}
+		switch {
+		case strings.HasSuffix(e.Path, ".go"):
+			out = append(out, fmt.Sprintf("%s: %s %s: the go tool compiles a linked .go file and no lock rule can read it", e.Path, kind, change))
+		case nativeSourceExt[filepath.Ext(e.Path)]:
+			out = append(out, fmt.Sprintf("%s: %s %s: the go tool compiles a linked native source file and no lock rule can read it", e.Path, kind, change))
+		case underAny(e.Path, dirs):
+			out = append(out, fmt.Sprintf("%s: %s %s in a package that holds a registry lock, a package one imports, or the lock suites' configuration", e.Path, kind, change))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RuntimeConfigPaths are the lock suites' runtime configuration entries (see lockRuntimeConfig).
+func RuntimeConfigPaths() []string { return append([]string(nil), lockRuntimeConfig...) }
+
+// ---------------------------------------------------------------------------------------------------
+// Lock-adjacent packages.
+//
+// A lock package's test binary also links every package its test layer imports, and an init() or a
+// cgo constructor in one of them runs before any test: `tests/ingestmatrix` is imported by tests/e2e,
+// is no lock package and no product code, so none of the rules above looked at it. A lock-adjacent
+// package is an in-repo package whose NON-test files are linked into a lock package's test binary
+// through the lock package's test layer (its _test.go files; every .go file of a package under
+// tests/), followed through non-test files to lockAdjacentDepth. The set is computed at the merge base
+// AND at head, so a package a PR adds and imports from a lock test is covered from its first commit.
+//
+// Not covered, by design (tests/conformance/README.md lists them): the product files of the lock
+// packages themselves and what they import (the code under test; a registry content change is the only
+// control there), dynamic loading (plugins, go:linkname), and anything outside the repository's own
+// module path.
+
+// lockAdjacentDepth bounds how far the import search follows non-test files.
+const lockAdjacentDepth = 3
+
+// LockAdjacentDirs returns the lock-adjacent package directories at one revision, sorted. A lock
+// package itself is never adjacent (it has its own rules).
+func LockAdjacentDirs(lockDirs map[string]bool, src func(string) []byte, list PackageFiles) []string {
+	names := newPkgNames(src, list)
+	adj := map[string]bool{}
+	var frontier []string
+	visit := func(files []string, next *[]string) {
+		for _, p := range files {
+			imps, ok := importsOf(p, src(p))
+			if !ok {
+				continue
+			}
+			for _, im := range imps {
+				dir := names.repoDir(im.path)
+				if dir == "" || dir == "." || lockDirs[dir] || adj[dir] || len(list(dir)) == 0 {
+					continue
+				}
+				adj[dir] = true
+				*next = append(*next, dir)
+			}
+		}
+	}
+	for d := range lockDirs {
+		var files []string
+		for _, p := range list(d) {
+			if strings.HasPrefix(d+"/", "tests/") || strings.HasSuffix(p, "_test.go") {
+				files = append(files, p)
+			}
+		}
+		visit(files, &frontier)
+	}
+	for depth := 2; depth <= lockAdjacentDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, d := range frontier {
+			var files []string
+			for _, p := range list(d) {
+				if !strings.HasSuffix(p, "_test.go") {
+					files = append(files, p)
+				}
+			}
+			visit(files, &next)
+		}
+		frontier = next
+	}
+	out := make([]string, 0, len(adj))
+	for d := range adj {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// LockAdjacentUnion is the lock-adjacent packages at the merge base together with those at head.
+func LockAdjacentUnion(lockDirs map[string]bool, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, set := range [][]string{LockAdjacentDirs(lockDirs, baseSrc, baseList), LockAdjacentDirs(lockDirs, headSrc, headList)} {
+		for _, d := range set {
+			if !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// LockAdjacentChanges judges the lock-adjacent packages of a PR. hard are Rule 3 failures: an added
+// init() (it runs before any test and can end the test binary), a new import "C", and a new or changed
+// native source file. listed are files the reviewer must see: a new Go file in a test-support package
+// (under tests/), a package-level var whose initializer calls a function, a blank or dot import, an
+// import of a module outside this repository, and a changed file that no longer parses. The 15
+// product packages among them have no init() today (git history: never), so the init() rule costs no
+// legitimate change.
+func LockAdjacentChanges(adjacent []string, baseSrc, headSrc func(string) []byte, baseList, headList PackageFiles, baseTree, headTree TreeFiles) (hard []string, listed []LockChange) {
+	nonTest := func(p string) bool { return !strings.HasSuffix(p, "_test.go") }
+	headNames := newPkgNames(headSrc, headList)
+	for _, d := range adjacent {
+		support := strings.HasPrefix(d+"/", "tests/")
+		for _, a := range loadTimeAdditions(d, nonTest, baseSrc, headSrc, baseList, headList) {
+			switch {
+			case a.broken:
+				listed = append(listed, LockChange{a.path, "a file of a package a lock package imports no longer parses"})
+			default:
+				if a.inits > 0 {
+					hard = append(hard, fmt.Sprintf("%s: adds %d new init() function(s) to a package that a lock package imports", a.path, a.inits))
+				}
+				if len(a.vars) > 0 {
+					listed = append(listed, LockChange{a.path, "adds a package-level var whose initializer calls a function to a package that a lock package imports: " + strings.Join(a.vars, ", ")})
+				}
+			}
+		}
+		for _, p := range cgoAdded(d, baseSrc, headSrc, headList, nonTest) {
+			hard = append(hard, p+`: imports "C" (cgo) in a package that a lock package imports`)
+		}
+		inBase := map[string]bool{}
+		baseImports := map[string]bool{}
+		for _, p := range baseList(d) {
+			if !nonTest(p) {
+				continue
+			}
+			inBase[p] = true
+			if imps, ok := importsOf(p, baseSrc(p)); ok {
+				for _, im := range imps {
+					baseImports[im.path] = true
+				}
+			}
+		}
+		for _, p := range headList(d) {
+			hs := headSrc(p)
+			if !nonTest(p) || hs == nil {
+				continue
+			}
+			if support && !inBase[p] {
+				listed = append(listed, LockChange{p, "a new Go file in a test-support package that a lock package imports: it is linked into the lock package's test binary"})
+			}
+			if inBase[p] && bytes.Equal(baseSrc(p), hs) {
+				continue
+			}
+			imps, ok := importsOf(p, hs)
+			if !ok {
+				continue
+			}
+			var fresh []string
+			for _, im := range imps {
+				if im.path == "C" || stdlibImport(im.path) || baseImports[im.path] {
+					continue
+				}
+				dir := headNames.repoDir(im.path)
+				// an import between product packages is routine and its new package, if any, is itself
+				// adjacent; the shapes that hide code are a blank/dot import, a module outside the repository,
+				// and a test-support package
+				if !im.blank && dir != "" && !strings.HasPrefix(dir+"/", "tests/") {
+					continue
+				}
+				kind := "imports"
+				if im.blank {
+					kind = "blank-imports"
+				}
+				fresh = append(fresh, kind+" "+strconv.Quote(im.path))
+			}
+			if len(fresh) > 0 {
+				sort.Strings(fresh)
+				listed = append(listed, LockChange{p, strings.Join(fresh, ", ") + ", which no file of the package imported at the merge base, in a package that a lock package imports"})
+			}
+		}
+		baseNative := map[string]bool{}
+		for _, p := range baseTree(d + "/") {
+			baseNative[p] = true
+		}
+		for _, p := range headTree(d + "/") {
+			if filepath.ToSlash(filepath.Dir(p)) != d || !nativeSourceExt[filepath.Ext(p)] {
+				continue
+			}
+			if !baseNative[p] || !bytes.Equal(baseSrc(p), headSrc(p)) {
+				hard = append(hard, p+": a native source file (cgo, assembly or an object file) added or changed in a package that a lock package imports")
+			}
+		}
+	}
+	sort.Strings(hard)
+	sort.Slice(listed, func(i, j int) bool { return listed[i].Path < listed[j].Path })
+	return hard, listed
+}
+
+// MergeLockChanges unions two lists of listed files by path, joining the reasons.
+func MergeLockChanges(lists ...[]LockChange) []LockChange {
+	reasons := map[string][]string{}
+	var order []string
+	for _, l := range lists {
+		for _, c := range l {
+			if _, ok := reasons[c.Path]; !ok {
+				order = append(order, c.Path)
+			}
+			reasons[c.Path] = append(reasons[c.Path], c.Reason)
+		}
+	}
+	sort.Strings(order)
+	out := make([]LockChange, 0, len(order))
+	for _, p := range order {
+		out = append(out, LockChange{p, strings.Join(reasons[p], "; ")})
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------------------------------
+// min-pass.
+
+const minPassDirective = "min-pass:"
+
+// parseMinPass reads the `# min-pass: N` directive of the parity allowlist the way the Python ratchet
+// does (parity_ratchet.parse_allowlist: a comment line, leading '#' characters stripped, then white
+// space), except that the value must be ASCII digits only, which the ratchet requires too. present is
+// false when there is no directive; err is set for a duplicate or an unreadable value.
+func parseMinPass(src []byte) (n uint64, present bool, err error) {
+	for i, raw := range strings.Split(string(src), "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "#") {
+			continue
+		}
+		directive := strings.TrimSpace(strings.TrimLeft(line, "#"))
+		if !strings.HasPrefix(directive, minPassDirective) {
+			continue
+		}
+		if present {
+			return 0, true, fmt.Errorf("line %d: duplicate min-pass directive", i+1)
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(directive, minPassDirective))
+		ok := value != "" && len(value) <= 15
+		for _, r := range value {
+			if r < '0' || r > '9' {
+				ok = false
+			}
+		}
+		if !ok {
+			return 0, true, fmt.Errorf("line %d: unreadable min-pass value %q", i+1, value)
+		}
+		n, _ = strconv.ParseUint(value, 10, 64)
+		present = true
+	}
+	return n, present, nil
+}
+
+// MinPassProblems is the ratchet of the expected number of passing parity tests: the value of
+// `# min-pass: N` in the allowlist may grow, never shrink, and the directive may not disappear or become
+// unreadable. A base whose directive is unreadable has nothing to compare against.
+func MinPassProblems(allowlistPath string, baseSrc, headSrc []byte) []string {
+	if headSrc == nil {
+		return nil // a missing allowlist is reported elsewhere
+	}
+	b, bPresent, bErr := parseMinPass(baseSrc)
+	h, hPresent, hErr := parseMinPass(headSrc)
+	switch {
+	case hErr != nil:
+		return []string{fmt.Sprintf("%s: %v", allowlistPath, hErr)}
+	case bErr != nil || !bPresent:
+		return nil
+	case !hPresent:
+		return []string{fmt.Sprintf("%s: the `# min-pass: %d` directive was removed (that lowers the expected number of passing parity tests to none)", allowlistPath, b)}
+	case h < b:
+		return []string{fmt.Sprintf("%s: `# min-pass:` lowered from %d to %d; the expected number of passing parity tests may only grow", allowlistPath, b, h)}
+	}
+	return nil
 }

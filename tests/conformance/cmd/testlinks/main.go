@@ -233,7 +233,7 @@ const maxAnnotations = 10
 // maxReportLines bounds the offending lines the report quotes per failure group.
 const maxReportLines = 25
 
-func writeReport(dir string, rules []*rule, lockAffecting []string, summary string) error {
+func writeReport(dir string, rules []*rule, lockAffecting []registry.LockChange, summary string) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
@@ -285,8 +285,7 @@ func writeReport(dir string, rules []*rule, lockAffecting []string, summary stri
 	} else {
 		d.WriteString("These files belong to a package that holds a registry lock, or to the lock suites' runtime configuration. The gate lists them so the reviewer sees them; it does not block them.\n\n")
 		for _, l := range lockAffecting {
-			path, reason, _ := strings.Cut(l, ": ")
-			d.WriteString("- `" + registry.MDEscape(path) + "`: " + registry.MDEscape(reason) + "\n")
+			d.WriteString("- `" + registry.MDEscape(l.Path) + "`: " + registry.MDEscape(l.Reason) + "\n")
 		}
 		d.WriteString("\n")
 	}
@@ -369,6 +368,37 @@ func lockContentRules(r3 *rule, repo, base, head string, bs, hs registry.ParityS
 	}
 }
 
+// lockReachRules runs the hard rules that reach beyond the packages that hold a lock: a symbolic link
+// or submodule a PR adds where the go tool or a lock cannot be trusted to read it, the packages a lock
+// package imports (an init(), cgo or native code there runs before any test), and the expected-pass
+// count of the parity allowlist, which may not shrink. It returns the files the second kind asks a
+// reviewer to look at.
+func lockReachRules(r3 *rule, repo, base, head string, bs, hs registry.ParitySnapshot, show func(string) func(string) []byte, entries []registry.DiffEntry, allowlistPaths []string) []registry.LockChange {
+	baseList, headList := packageFiles(repo, base), packageFiles(repo, head)
+	lockDirs := registry.LockDirs(registry.LockTestRefs(bs.Rows), registry.LockTestRefs(hs.Rows))
+	adjacent := registry.LockAdjacentUnion(lockDirs, show(base), show(head), baseList, headList)
+	dirs := append(registry.RuntimeConfigPaths(), adjacent...)
+	for d := range lockDirs {
+		dirs = append(dirs, d)
+	}
+	if sl := registry.SymlinkProblems(entries, dirs); len(sl) > 0 {
+		r3.fail("this PR adds or changes a symbolic link (or submodule) where a lock or the go tool would read it", sl,
+			"replace the link with a regular file, or move it out of the packages that hold locks and the packages they import: `go test` compiles a linked .go file but no lock rule can read it, so it could silence the locks unseen")
+	}
+	hard, listed := registry.LockAdjacentChanges(adjacent, show(base), show(head), baseList, headList, treeFiles(repo, base), treeFiles(repo, head))
+	if len(hard) > 0 {
+		r3.fail("this PR adds init(), cgo or native code to a package that a lock package imports", hard,
+			"move the setup into a function the test calls and drop the cgo or native file: an init() or a C constructor in an imported package runs before any test of the lock package and can end its test binary with success")
+	}
+	if basePath, headPath := allowlistPaths[0], allowlistPaths[1]; basePath != "" && headPath != "" {
+		if mp := registry.MinPassProblems(headPath, show(base)(basePath), show(head)(headPath)); len(mp) > 0 {
+			r3.fail("this PR lowers or drops the expected number of passing parity tests", mp,
+				"keep `# min-pass: N` in the allowlist at least at its merge-base value: a fix raises it, nothing may lower it")
+		}
+	}
+	return listed
+}
+
 func run() int {
 	repo := flag.String("repo", ".", "repository root")
 	base := flag.String("base", "", "merge-base revision the PR is compared against")
@@ -413,6 +443,28 @@ func run() int {
 			changed = append(changed, f)
 		}
 	}
+	// The modes of the changed paths: a symlink (or submodule) is a hard failure in the packages locks
+	// live in (symlinkRules), and its blob is the link target, not Go: it must not reach the Go parsers.
+	rawOut, err := git(*repo, "diff", "--raw", "--no-renames", "--no-abbrev", "-z", *base, *head)
+	if err != nil {
+		return toolErr("git diff --raw:", err)
+	}
+	entries, err := registry.ParseDiffRaw(rawOut)
+	if err != nil {
+		return toolErr("git diff --raw:", err)
+	}
+	links := map[string]bool{}
+	for _, e := range entries {
+		if e.IsLinkEntry() {
+			links[e.Path] = true
+		}
+	}
+	var parseable []string
+	for _, f := range changed {
+		if !links[f] {
+			parseable = append(parseable, f)
+		}
+	}
 	// one persistent `git cat-file --batch` for every blob the gate reads (blobs.go)
 	blobs := newBlobReader(*repo)
 	defer blobs.Close()
@@ -423,7 +475,7 @@ func run() int {
 	if err != nil {
 		return toolErr("", err)
 	}
-	added, err := registry.DiffAddedTests(changed, show(*base), show(*head))
+	added, err := registry.DiffAddedTests(parseable, show(*base), show(*head))
 	if err != nil {
 		return toolErr("", err)
 	}
@@ -503,7 +555,7 @@ func run() int {
 	if err1 != nil || err2 != nil {
 		return toolErr("parity snapshot:", err1, err2)
 	}
-	modified, err := registry.ModifiedParityTests(changed, show(*base), show(*head))
+	modified, err := registry.ModifiedParityTests(parseable, show(*base), show(*head))
 	if err != nil {
 		return toolErr("", err)
 	}
@@ -525,21 +577,22 @@ func run() int {
 			"add the lock: an `expect: pass` row with an exact compare whose refs.tests names a tests/parity test this PR adds or modifies, plus its floor in tests/parity/lock_cells.txt (tests/conformance/README.md, 'Parity fixes ship locks')")
 	}
 	lockContentRules(r3, *repo, *base, *head, bs, hs, show, packageFiles(*repo, *base), packageFiles(*repo, *head), []string{basePath, headPath})
+	adjacentChanges := lockReachRules(r3, *repo, *base, *head, bs, hs, show, entries, []string{basePath, headPath})
 	// Lock-affecting files: every existing file of a package that holds a lock test, the
 	// lock suites' runtime config, and new files there that declare vars, init or TestMain.
 	// Informational: the report lists them for the required review; they do not fail.
-	lc, lerr := registry.LockCodeChanges(registry.LockTestRefs(bs.Rows), registry.LockTestRefs(hs.Rows),
+	lcOwn, lerr := registry.LockCodeChangeList(registry.LockTestRefs(bs.Rows), registry.LockTestRefs(hs.Rows),
 		show(*base), show(*head), packageFiles(*repo, *base), packageFiles(*repo, *head), treeFiles(*repo, *base), treeFiles(*repo, *head))
 	if lerr != nil {
 		return toolErr("lock code:", lerr)
 	}
+	lc := registry.MergeLockChanges(lcOwn, adjacentChanges)
 	if len(lc) > 0 {
 		fmt.Println("lock-affecting files in this PR (listed in the report, not a failure):")
 		var paths []string
 		for _, w := range lc {
-			fmt.Println("  " + registry.LogSafe(w))
-			p, _, _ := strings.Cut(w, ": ")
-			paths = append(paths, p)
+			fmt.Println("  " + registry.LogSafe(w.String()))
+			paths = append(paths, w.Path)
 		}
 		// inline in the PR's Files tab: the approval of the required reviewer is the control here
 		for _, a := range registry.WorkflowWarnings(paths, "lock-affecting file: the owner's approval is the control", maxAnnotations) {

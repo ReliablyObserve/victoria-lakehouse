@@ -1,0 +1,375 @@
+{
+ "comment": "Parse agreement of the two readers of the parity allowlist and tests/parity/lock_cells.txt: scripts/ci/parity_ratchet.py (parse_allowlist, parse_lock_cells; the runtime ratchet) and tests/conformance/registry (ParseAllowlist, ParseLockCells, ParityDataProblems; the registry gate). `python` and `go` are each reader's outcome: the parsed entries (allowlist: the test paths; lock cells: name -> floor) or \"reject\". Each reader's test asserts its OWN outcome; both tests assert the invariant: when both readers accept an input they return the same entries, and a one-sided rejection is allowed because it fails closed (a rejecting ratchet fails the parity job, a rejecting gate fails the pull request). The Go allowlist reader reports \"reject\" for the byte-level refusals of ParityDataProblems; it has no other error path.",
+ "allowlist": [
+  {
+   "name": "a plain entry",
+   "text": "# min-pass: 3\nTestA  # B1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "a tab before the separator",
+   "text": "TestA\t# B1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "a tab-separated reason after spaces",
+   "text": "TestA  #\tB1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "trailing spaces and a trailing tab",
+   "text": "TestA  # B1: reason   \t\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "a subtest path with a # suffix",
+   "text": "TestA/sub#01  # B1: reason\n",
+   "python": [
+    "TestA/sub#01"
+   ],
+   "go": [
+    "TestA/sub#01"
+   ]
+  },
+  {
+   "name": "a NBSP (U+00A0) before the separator",
+   "text": "TestA\u00a0# B1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "an em space (U+2003) before the separator",
+   "text": "TestA\u2003# B1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "an ideographic space (U+3000) before the separator",
+   "text": "TestA\u3000# B1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "a leading NBSP on an entry line",
+   "text": "\u00a0TestA  # B1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "a leading ideographic space on a comment line",
+   "text": "\u3000# a note\nTestA  # B1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "a line of only Unicode spaces is blank",
+   "text": "\u2003\u3000\nTestA  # B1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "a Unicode space INSIDE the name: Python refuses, Go reads the first word",
+   "text": "Test\u00a0A  # B1: reason\n",
+   "python": "reject",
+   "go": [
+    "Test"
+   ]
+  },
+  {
+   "name": "two words before the separator: Python refuses, Go reads the first",
+   "text": "TestA TestB  # B1: reason\n",
+   "python": "reject",
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "no space before the #: Python sees no reason and refuses, Go reads one word",
+   "text": "TestA#reason\n",
+   "python": "reject",
+   "go": [
+    "TestA#reason"
+   ]
+  },
+  {
+   "name": "an empty reason: Python refuses",
+   "text": "TestA  #\n",
+   "python": "reject",
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "a duplicate entry: Python refuses, Go keeps the set",
+   "text": "TestA  # B1: one\nTestA  # B2: two\n",
+   "python": "reject",
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "an Arabic-Indic digit in min-pass: Python refuses (ASCII digits only)",
+   "text": "# min-pass: \u0663\nTestA  # B1: reason\n",
+   "python": "reject",
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "a signed min-pass: Python refuses",
+   "text": "# min-pass: +3\nTestA  # B1: reason\n",
+   "python": "reject",
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "an underscore in min-pass: Python refuses",
+   "text": "# min-pass: 3_0\nTestA  # B1: reason\n",
+   "python": "reject",
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "two min-pass directives: Python refuses",
+   "text": "# min-pass: 3\n# min-pass: 4\nTestA  # B1: reason\n",
+   "python": "reject",
+   "go": [
+    "TestA"
+   ]
+  },
+  {
+   "name": "CRLF line endings: both refuse the bytes",
+   "text": "TestA  # B1: reason\r\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "a lone CR hides an entry from a line splitter: both refuse",
+   "text": "TestA  # B1: reason\rTestB  # B2: reason\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "a U+2028 hides an entry: both refuse",
+   "text": "TestA  # B1: reason\u2028TestB  # B2: reason\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "a NEL (U+0085): both refuse",
+   "text": "TestA  # B1: reason\u0085TestB  # B2: reason\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "a BOM: both refuse",
+   "text": "\ufeffTestA  # B1: reason\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "an empty file",
+   "text": "",
+   "python": [],
+   "go": []
+  },
+  {
+   "name": "only comments",
+   "text": "# one\n\n# two\n",
+   "python": [],
+   "go": []
+  }
+ ],
+ "lock_cells": [
+  {
+   "name": "a plain cell",
+   "text": "TestLock  3  # why\n",
+   "python": {
+    "TestLock": 3
+   },
+   "go": {
+    "TestLock": 3
+   }
+  },
+  {
+   "name": "a comment-only and blank lines",
+   "text": "# c\n\nTestLock 3\n",
+   "python": {
+    "TestLock": 3
+   },
+   "go": {
+    "TestLock": 3
+   }
+  },
+  {
+   "name": "tabs between the fields",
+   "text": "TestLock\t3\t# why\n",
+   "python": {
+    "TestLock": 3
+   },
+   "go": {
+    "TestLock": 3
+   }
+  },
+  {
+   "name": "a leading zero",
+   "text": "TestLock 03\n",
+   "python": {
+    "TestLock": 3
+   },
+   "go": {
+    "TestLock": 3
+   }
+  },
+  {
+   "name": "a NBSP between the fields",
+   "text": "TestLock\u00a03\n",
+   "python": {
+    "TestLock": 3
+   },
+   "go": {
+    "TestLock": 3
+   }
+  },
+  {
+   "name": "an em space and an ideographic space",
+   "text": "TestLock\u20033\nTestOther\u30002\n",
+   "python": {
+    "TestLock": 3,
+    "TestOther": 2
+   },
+   "go": {
+    "TestLock": 3,
+    "TestOther": 2
+   }
+  },
+  {
+   "name": "trailing spaces",
+   "text": "TestLock 3   \n",
+   "python": {
+    "TestLock": 3
+   },
+   "go": {
+    "TestLock": 3
+   }
+  },
+  {
+   "name": "an Arabic-Indic digit: Python's isdigit accepts it, Go's Atoi refuses",
+   "text": "TestLock \u0663\n",
+   "python": {
+    "TestLock": 3
+   },
+   "go": "reject"
+  },
+  {
+   "name": "a superscript digit: both refuse",
+   "text": "TestLock \u00b2\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "a plus sign: Go's Atoi accepts it, Python refuses",
+   "text": "TestLock +3\n",
+   "python": "reject",
+   "go": {
+    "TestLock": 3
+   }
+  },
+  {
+   "name": "a non-ASCII test name: Python's \\w accepts it, Go's pattern refuses",
+   "text": "Test\u00e9 3\n",
+   "python": {
+    "Test\u00e9": 3
+   },
+   "go": "reject"
+  },
+  {
+   "name": "a zero floor: both refuse",
+   "text": "TestLock 0\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "a duplicate: both refuse",
+   "text": "TestLock 3\nTestLock 4\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "three fields: both refuse",
+   "text": "TestLock 3 4\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "a name that is not a Test: both refuse",
+   "text": "Lock 3\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "CRLF: both refuse the bytes",
+   "text": "TestLock 3\r\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "a U+2028 hides a cell: both refuse the bytes",
+   "text": "TestLock 3\u2028TestSmuggled 1\n",
+   "python": "reject",
+   "go": "reject"
+  },
+  {
+   "name": "an empty file",
+   "text": "",
+   "python": {},
+   "go": {}
+  }
+ ]
+}

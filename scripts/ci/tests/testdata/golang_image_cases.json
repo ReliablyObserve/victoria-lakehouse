@@ -77,6 +77,11 @@
     {"name": "upgrade: only the alpine release moves up", "kind": "compose", "want": true, "base": "    image: golang:1.27.2-alpine3.23\n", "head": "    image: golang:1.27.2-alpine3.24\n"},
     {"name": "dockerfile downgrade: FROM golang goes back", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.2-alpine3.23 AS builder\n", "head": "FROM golang:1.21.0-alpine3.23 AS builder\n"},
     {"name": "dockerfile downgrade: alpine3.23 to alpine3.9", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.2-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.9 AS builder\n"},
-    {"name": "dockerfile upgrade: FROM golang moves up", "kind": "dockerfile", "want": true, "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.23 AS builder\n"}
+    {"name": "dockerfile upgrade: FROM golang moves up", "kind": "dockerfile", "want": true, "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.23 AS builder\n"},
+    {"name": "overflow: the head's Go patch number does not fit 31 bits (the Go twin read it as 0, Python as a huge bump)", "kind": "compose", "want": false, "base": "    image: golang:1.27.2\n", "head": "    image: golang:1.27.99999999999999999999\n"},
+    {"name": "overflow: the base's Go patch number does not fit 31 bits (the Go twin read it as 0)", "kind": "compose", "want": false, "base": "    image: golang:1.27.99999999999999999999\n", "head": "    image: golang:1.27.3\n"},
+    {"name": "overflow: the alpine release does not fit 31 bits", "kind": "compose", "want": false, "base": "    image: golang:1.27.2-alpine3.23\n", "head": "    image: golang:1.27.2-alpine3.99999999999999999999\n"},
+    {"name": "just inside 31 bits is still a number", "kind": "compose", "want": true, "base": "    image: golang:1.27.2\n", "head": "    image: golang:1.27.2147483647\n"},
+    {"name": "dockerfile overflow: FROM golang with a huge patch number", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.2-alpine3.23 AS builder\n", "head": "FROM golang:1.27.99999999999999999999-alpine3.23 AS builder\n"}
   ]
 }

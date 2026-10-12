@@ -11,7 +11,8 @@ that table honest:
   * no stale entry: every inert entry and every known-critical entry is still required by a go.mod;
   * no inert module is imported by the storage-shaping code (stream-id and trace-index hashes, schema,
     every Parquet reader and writer), and the inert modules the product imports directly are exactly the
-    ones listed in INERT_DIRECT_IMPORTS, with the packages that import them;
+    ones listed in INERT_DIRECT_IMPORTS, with the packages that import them (the scan reads import lines
+    with a regular expression; it is not `go list -deps`);
   * golang.org/x/net, the one inert module that looks risky, has no direct importer in this repository.
 """
 import glob
@@ -44,7 +45,6 @@ PRODUCT_GLOBS = ("internal/**/*.go", "cmd/**/*.go", "lakehouse-traces/*.go", "la
 # Inert modules (or prefixes) the product imports directly, and the directories allowed to import them.
 # A new importer of an inert module must be justified here: "inert" was decided for the importers below.
 INERT_DIRECT_IMPORTS = {
-    "golang.org/x/sync": ("internal/s3reader",),
     # spans around the select handlers and the storage wrappers, exported out of band by internal/telemetry
     "go.opentelemetry.io/otel": ("internal/telemetry", "internal/selectapi", "lakehouse-traces/internal/selectapi",
                                  "lakehouse-traces/internal/vlstorage"),
@@ -99,6 +99,8 @@ github.com/valyala/quicktemplate
 go.opentelemetry.io/auto/sdk
 go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
 go.opentelemetry.io/proto/otlp
+golang.org/x/sync
+golang.org/x/sys
 golang.org/x/text
 google.golang.org/genproto/googleapis/api
 google.golang.org/genproto/googleapis/rpc
@@ -184,12 +186,15 @@ class InvertedModuleList(unittest.TestCase):
                   "gopkg.in/yaml.v3", "github.com/google/uuid", "golang.org/x/text",
                   "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp", "go.opentelemetry.io/proto/otlp",
                   "github.com/felixge/httpsnoop", "github.com/never/heard-of-it", "github.com/klauspost/compress",
-                  "github.com/cespare/xxhash/v2", "golang.org/x/crypto", "go.opentelemetry.io/otelx"):
+                  "github.com/cespare/xxhash/v2", "golang.org/x/crypto", "go.opentelemetry.io/otelx",
+                  # the third review: singleflight shares one result among concurrent cold reads, x/sys/cpu
+                  # selects parquet-go's SIMD encoders
+                  "golang.org/x/sync", "golang.org/x/sys"):
             with self.subTest(m):
                 self.assertTrue(pc.is_critical(m))
 
     def test_inert_modules(self):
-        for m in ("golang.org/x/net", "golang.org/x/sys", "golang.org/x/sync", "golang.org/x/oauth2", "go.uber.org/goleak",
+        for m in ("golang.org/x/net", "golang.org/x/oauth2", "go.uber.org/goleak",
                   "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/sdk", "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"):
             with self.subTest(m):
                 self.assertFalse(pc.is_critical(m))
@@ -262,7 +267,8 @@ class ClassifiedBumps(unittest.TestCase):
 
     def test_a_bump_of_a_review_found_module_is_not_dependency_only(self):
         for mod in ("github.com/valyala/fastjson", "github.com/valyala/quicktemplate", "gopkg.in/yaml.v3", "golang.org/x/text",
-                    "github.com/google/uuid", "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"):
+                    "github.com/google/uuid", "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+                    "golang.org/x/sync", "golang.org/x/sys"):
             base = self.GO_MOD.format(a=mod, va="v1.0.0")
             head = self.GO_MOD.format(a=mod, va="v1.0.1")
             with self.subTest(mod):
@@ -279,7 +285,8 @@ class ClassifiedBumps(unittest.TestCase):
     def test_go_sum_lines_of_critical_modules_are_refused(self):
         base = "github.com/a/b v1.0.0 h1:aaa=\n"
         self.assertTrue(pc.go_sum_toolchain_only(base, base + "golang.org/x/net v0.60.0 h1:ccc=\n"))
-        for mod in ("github.com/valyala/fastjson", "gopkg.in/yaml.v3", "golang.org/x/text", "github.com/never/heard-of-it"):
+        for mod in ("github.com/valyala/fastjson", "gopkg.in/yaml.v3", "golang.org/x/text", "github.com/never/heard-of-it",
+                    "golang.org/x/sync", "golang.org/x/sys"):
             with self.subTest(mod):
                 self.assertFalse(pc.go_sum_toolchain_only(base, base + f"{mod} v1.0.1 h1:ccc=\n"))
                 self.assertFalse(pc.go_sum_toolchain_only(base, base + f"{mod} v1.0.1/go.mod h1:ccc=\n"))
