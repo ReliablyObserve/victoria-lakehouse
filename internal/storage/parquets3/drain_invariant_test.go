@@ -13,7 +13,7 @@ import (
 )
 
 // The drain checks, before anything is uploaded, that its plan covers every row
-// the segment holds over the whole of int64 time, and holds the segment when it
+// the segment holds over the whole of int64 time, and stalls the segment when it
 // does not. #388 was exactly a plan that quietly covered less than the segment
 // (the plan starts at the Unix epoch), and the segment was committed anyway.
 // Rows are added here straight to the buffer (e.ingest), past the insert
@@ -23,7 +23,7 @@ func year1965() time.Time { return time.Date(1965, 3, 1, 12, 0, 0, 0, time.UTC) 
 
 func invariantNow() uint64 { return metrics.BufferFlushErrors.Get("invariant") }
 
-func TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover(t *testing.T) {
+func TestDrain_StallsASegmentWithRowsThePlanDoesNotCover(t *testing.T) {
 	cases := []struct {
 		name string
 		fill func(e *segEnv)
@@ -53,17 +53,20 @@ func TestDrain_HoldsASegmentWithRowsThePlanDoesNotCover(t *testing.T) {
 			if got := invariantNow() - before; got != 2 {
 				t.Errorf("lakehouse_buffer_flush_errors_total{stage=invariant} rose by %d, want 2", got)
 			}
+			if v := metrics.BufferStalledSegments.Get(); v != 1 {
+				t.Errorf("lakehouse_buffer_stalled_segments = %d for a stalled segment, want 1", v)
+			}
 			if keys := e.storedDataKeys(); len(keys) != 0 {
-				t.Errorf("a held segment wrote objects to the bucket: %v", keys)
+				t.Errorf("a stalled segment wrote objects to the bucket: %v", keys)
 			}
 			if e.markerStored(g.Nonce()) {
-				t.Error("a held segment got its commit marker")
+				t.Error("a stalled segment got its commit marker")
 			}
 			if f.state.CommittedThroughSeq >= g.Seq() {
-				t.Errorf("a held segment was recorded as committed (through %d)", f.state.CommittedThroughSeq)
+				t.Errorf("a stalled segment was recorded as committed (through %d)", f.state.CommittedThroughSeq)
 			}
 			if p := e.segs.Pending(); len(p) != 1 || p[0] != g {
-				t.Errorf("the held segment is not the one pending segment: %d pending", len(p))
+				t.Errorf("the stalled segment is not the one pending segment: %d pending", len(p))
 			}
 		})
 	}
@@ -113,7 +116,7 @@ func TestCollectSlice_RefusesAPlanThatDoesNotMatchTheSegment(t *testing.T) {
 	}
 }
 
-// A segment that cannot be read is not a held segment: the plan reports the
+// A segment that cannot be read is not a stalled segment: the plan reports the
 // read error (stage collect, retried after the back-off) and counts no invariant
 // violation, and a cancelled context stops the plan.
 func TestPlanSegment_ReadErrorsAreNotInvariantViolations(t *testing.T) {
@@ -156,7 +159,7 @@ func TestPlanSegment_ReadErrorsAreNotInvariantViolations(t *testing.T) {
 }
 
 // The per-tenant check, with queries that fail or disagree: a query error is a
-// plain error (retried), a count that differs from the plan holds the segment,
+// plain error (retried), a count that differs from the plan stalls the segment,
 // and a plan that matches is returned with its groups.
 func TestPlanTenant_Checks(t *testing.T) {
 	e := newSegEnv(t)
@@ -206,10 +209,10 @@ func TestPlanTenant_Checks(t *testing.T) {
 	}
 }
 
-// A tenant whose queries fail does not hold the segment and does not keep the
+// A tenant whose queries fail does not stall the segment and does not keep the
 // others from being planned: the error is reported next to their plans, and the
 // drain retries after the back-off.
-func TestPlanSegment_AFailingTenantIsReportedNotHeld(t *testing.T) {
+func TestPlanSegment_AFailingTenantIsReportedNotStalled(t *testing.T) {
 	e := newSegEnv(t)
 	e.ingest(segTenantA, hourAgo, 3)
 	e.ingest(segTenantB, hourAgo, 4)
@@ -239,8 +242,25 @@ func TestPlanSegment_AFailingTenantIsReportedNotHeld(t *testing.T) {
 		t.Errorf("a failing query counted %d invariant violations", got)
 	}
 
-	// A mismatch of any tenant holds the segment, whoever else fails.
+	// A mismatch of any tenant stalls the segment, whoever else fails.
 	if _, _, err := f.planSegmentWith(context.Background(), g, counts, func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error) { return 5, nil }); !errors.Is(err, errDrainInvariant) {
 		t.Errorf("a mismatch returned %v, want the invariant error", err)
 	}
+}
+
+// The stalled gauge is not sticky: a mismatch that does not repeat clears on the
+// next attempt, and the gauge goes back to 0 when the segment commits.
+func TestDrain_StalledGaugeClearsWhenTheSegmentCommits(t *testing.T) {
+	e := newSegEnv(t)
+	e.ingest(segTenantA, hourAgo, 5)
+	g := e.seal()
+	f := e.flusher(1000)
+	metrics.BufferStalledSegments.Set(1) // as left by an earlier attempt that failed its plan check
+	if err := f.drain(context.Background(), g); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if v := metrics.BufferStalledSegments.Get(); v != 0 {
+		t.Errorf("lakehouse_buffer_stalled_segments = %d after the segment committed, want 0", v)
+	}
+	e.mustHaveExactly(5, "after the commit")
 }

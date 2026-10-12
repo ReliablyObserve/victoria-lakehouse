@@ -438,7 +438,7 @@ var (
 	// (recording the segment as committed failed) and mark (a durable stored
 	// mark could not be written; the group is stored and committed anyway) and
 	// invariant (the drain's plan does not cover the rows the segment holds, or a
-	// group's rows differ from its plan: the segment is held, see
+	// group's rows differ from its plan: the segment is stalled, see
 	// BufferFlusher.invariantViolation). All but mark are retried, with the same
 	// bytes, after a back-off.
 	BufferFlushErrors = NewCounterVec("lakehouse_buffer_flush_errors_total", "stage")
@@ -466,6 +466,14 @@ var (
 	// stay served (possibly duplicated) and the segments keep their disk.
 	BufferHeldSegments  = NewGauge("lakehouse_buffer_held_segments")
 	BufferOldestHeldAge = NewGauge("lakehouse_buffer_oldest_held_age_seconds")
+	// BufferStalledSegments is 1 while the drain refuses to write the oldest
+	// pending segment because its plan check failed (the plan does not cover the
+	// rows the segment holds, or a group's rows differ from its plan: the
+	// "invariant" stage of lakehouse_buffer_flush_errors_total), and 0 otherwise.
+	// It is set when the check fails and reset when the segment commits, so a
+	// mismatch that clears on the next attempt does not leave it up. It is not
+	// BufferHeldSegments, which counts committed segments restored at start.
+	BufferStalledSegments = NewGauge("lakehouse_buffer_stalled_segments")
 	// InsertFlushCommittedSeq is the sequence number of the newest segment fully
 	// written to object storage (every older one is too).
 	InsertFlushCommittedSeq = NewGauge("lakehouse_insert_flush_committed_segment")

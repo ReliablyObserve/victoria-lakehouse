@@ -554,13 +554,19 @@ func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, 
 		seen += db.RowsCount()
 		mu.Unlock()
 	})
+	// Upstream's RunQuery returns nil, with partial or no rows, when the context
+	// is cancelled (a Stop): that is a cancelled step, not rows that went missing.
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		return nil, 0, err
 	}
-	// Every row the query returned is either in rows or counted as filtered, and
-	// they add up to the group the plan promised: a row that went missing in the
-	// conversion, or a query that disagrees with the plan, is not written as if
-	// nothing happened.
+	// The rows the query returned add up to the group the plan promised: a query
+	// that disagrees with the plan is not written as if nothing happened. The
+	// second clause is defensive: the conversion is one row to one row, so
+	// rows+filtered always equals seen today (an equivalent mutant); it stays to
+	// catch a conversion that ever drops a row.
 	if int64(seen) != sl.rows || len(rows)+filtered != seen {
 		return nil, 0, f.invariantViolation(g, fmt.Sprintf("group %s slice %d of tenant %d:%d: the plan has %d rows, the segment returned %d, %d were converted and %d filtered",
 			sl.partition, sl.slice, tenant.AccountID, tenant.ProjectID, sl.rows, seen, len(rows), filtered))
@@ -677,7 +683,7 @@ type tenantPlan struct {
 // planSegment cuts every tenant's rows of g into groups. It lists the tenants
 // over the whole of int64 time, not only from the Unix epoch, so that a row the
 // plan cannot reach (a _time before the epoch) is found, and it returns an error
-// that holds the segment when the plan does not cover the rows the segment holds
+// that stalls the segment when the plan does not cover the rows the segment holds
 // (errDrainInvariant). A tenant whose groups cannot be planned now is reported in
 // planErr: the other tenants are still written and the drain is retried.
 func (f *BufferFlusher) planSegment(ctx context.Context, g *membuffer.Segment) (plans []tenantPlan, planErr, err error) {
@@ -731,6 +737,9 @@ func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, te
 	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error),
 	rowCount func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error)) (tenantPlan, error) {
 	counts, err := secondCounts(ctx, g, tenant)
+	if err == nil {
+		err = ctx.Err() // a cancelled query returns what it had, without an error
+	}
 	if err != nil {
 		return tenantPlan{}, fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
 	}
@@ -739,6 +748,9 @@ func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, te
 		tp.rows += n
 	}
 	n, err := rowCount(ctx, g, tenant)
+	if err == nil {
+		err = ctx.Err() // checked before the comparison: a cancelled count is not a mismatch
+	}
 	if err != nil {
 		return tenantPlan{}, fmt.Errorf("count tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
 	}
@@ -748,21 +760,26 @@ func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, te
 	return tp, nil
 }
 
-// errDrainInvariant is wrapped by the error that holds a segment whose drain
+// errDrainInvariant is wrapped by the error that stalls a segment whose drain
 // would commit without every row it holds being planned for Parquet.
 var errDrainInvariant = errors.New("drain invariant violated")
 
 var drainInvariantLogger = logger.WithThrottler("drain_invariant", time.Minute)
 
 // invariantViolation counts and logs a segment the drain refuses to commit and
-// returns the error that holds it. The segment stays sealed on disk, pending,
-// and is tried again after the back-off; nothing of it is committed, marked or
-// removed. Segments are drained in order, so the ones after it wait too, until
-// the disk floor refuses inserts (429): the buffer never loses the rows silently.
+// returns the error that stalls it. The segment stays sealed on disk, pending,
+// and is planned again from scratch after the back-off; nothing of it is
+// committed, marked or removed. A mismatch that does not repeat clears on that
+// retry; one that does repeat (a row the plan cannot reach, or a bug) blocks the
+// segments after it, since they are drained in order, until the disk floor
+// refuses inserts (429): the buffer never loses the rows silently. A cancelled
+// context is never a mismatch (see collectSlice and planTenant).
 func (f *BufferFlusher) invariantViolation(g *membuffer.Segment, what string) error {
 	metrics.BufferFlushErrors.Inc("invariant")
-	drainInvariantLogger.Errorf("buffer flusher: segment %d (%s) is held and will not be committed: %s; "+
-		"the segment stays in insert.buffer_dir and is retried, but a segment with rows the drain cannot reach blocks the ones after it",
+	metrics.BufferStalledSegments.Set(1)
+	drainInvariantLogger.Errorf("buffer flusher: segment %d (%s) is stalled and will not be committed: %s; "+
+		"the segment stays in insert.buffer_dir and is planned again after the back-off, so a mismatch that does not repeat clears itself; "+
+		"one that repeats blocks the segments after it (lakehouse_buffer_stalled_segments, runbook: docs/durability.md#a-stalled-segment-runbook)",
 		g.Seq(), g.Nonce(), what)
 	return fmt.Errorf("segment %d: %w: %s", g.Seq(), errDrainInvariant, what)
 }
@@ -824,7 +841,7 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 
 	// Plan every tenant's groups before anything is uploaded, and check that the
 	// plan covers every row the segment holds (see checkPlan): a segment that
-	// does not is held, with nothing of it written to the bucket.
+	// does not is stalled, with nothing of it written to the bucket.
 	plans, planErr, err := f.planSegment(ctx, g)
 	if err != nil {
 		return err
@@ -868,6 +885,7 @@ func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 	_ = os.Remove(f.storedPath())
 	f.marksFor, f.marks, f.head = "", nil, false
 	f.segs.Commit(g, commitAt)
+	metrics.BufferStalledSegments.Set(0) // a mismatch that cleared on a retry ends here
 	metrics.BufferSegmentsCommitted.Inc()
 	metrics.InsertFlushTotal.Inc()
 	metrics.InsertFlushDuration.Observe(time.Since(started).Seconds())
