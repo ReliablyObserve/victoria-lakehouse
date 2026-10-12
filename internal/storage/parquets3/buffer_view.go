@@ -144,11 +144,7 @@ func (s *Storage) serveBufferView(ctx context.Context, v *bufferView, startNs, e
 				}
 			}
 			qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{id}, qBuf, false, nil)
-			write := sink.forTenant(id)
-			if storage.IsFieldNamesCounter(ctx) {
-				write = storage.MarkFieldNamesBufferWriter(write)
-			}
-			if err := v.local.RunQuery(qctx, write); err != nil {
+			if err := v.local.RunQuery(qctx, sink.forTenant(id)); err != nil {
 				logger.Warnf("insert buffer query failed (the unflushed rows are missing from this answer): %s", err)
 			}
 		}
@@ -160,9 +156,9 @@ func (s *Storage) serveBufferView(ctx context.Context, v *bufferView, startNs, e
 	scope := scopeFor(ctx, tenantIDs)
 	switch s.cfg.Mode {
 	case config.ModeLogs:
-		s.emitBridgeLogRows(scope, rowsInWindow(v.logRows, startNs, endNs, func(r *schema.LogRow) int64 { return r.TimestampUnixNano }), sink, storage.IsFieldNamesQuery(ctx), storage.IsFieldNamesCounter(ctx))
+		s.emitBridgeLogRows(scope, rowsInWindow(v.logRows, startNs, endNs, func(r *schema.LogRow) int64 { return r.TimestampUnixNano }), sink, storage.IsFieldNamesQuery(ctx))
 	case config.ModeTraces:
-		s.emitBridgeTraceRows(scope, rowsInWindow(v.traceRows, startNs, endNs, func(r *schema.TraceRow) int64 { return r.TimestampUnixNano }), sink, storage.IsFieldNamesQuery(ctx), storage.IsFieldNamesCounter(ctx))
+		s.emitBridgeTraceRows(scope, rowsInWindow(v.traceRows, startNs, endNs, func(r *schema.TraceRow) int64 { return r.TimestampUnixNano }), sink, storage.IsFieldNamesQuery(ctx))
 	}
 }
 

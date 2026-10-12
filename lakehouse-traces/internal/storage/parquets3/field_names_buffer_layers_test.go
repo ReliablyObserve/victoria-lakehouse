@@ -13,9 +13,10 @@ import (
 )
 
 // One stream held in the local insert buffer AND in objects, each with a column
-// the other lacks: two blocks on hot storage (an unmerged in-memory part), so a
-// column is credited with the spans of its own layer.
-func TestTraceFieldNames_LocalBufferAndObjectsOfOneStreamAreTwoBlocks(t *testing.T) {
+// the other lacks. Hot storage merges the in-memory part into the stored ones, so
+// the stream is one block: the buffer and the objects are unioned per stream-day
+// and every column is credited with all of the stream's matching spans.
+func TestTraceFieldNames_LocalBufferAndObjectsOfOneStreamAreOneBlock(t *testing.T) {
 	base := time.Now().Truncate(time.Hour)
 	bs, err := membuffer.Open(membuffer.Config{Path: t.TempDir()})
 	if err != nil {
@@ -73,21 +74,26 @@ func TestTraceFieldNames_LocalBufferAndObjectsOfOneStreamAreTwoBlocks(t *testing
 		t.Fatal(err)
 	}
 	m := namesToHits(got)
-	want := map[string]uint64{"trace_id": 5, "_time": 5, "span_attr:bufonly": 2, "span_attr:custom.attr": 3}
+	want := map[string]uint64{"trace_id": 5, "_time": 5, "span_attr:bufonly": 5, "span_attr:custom.attr": 5}
 	for name, hits := range want {
 		if m[name] != hits {
-			t.Errorf("%s hits = %d, want %d: %v", name, m[name], hits, m)
+			t.Errorf("* %s hits = %d, want %d: %v", name, m[name], hits, m)
 		}
 	}
-	got, err = s.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, "trace_id:=to", base.UnixNano(), base.Add(time.Hour).UnixNano()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m = namesToHits(got); m["trace_id"] != 3 || m["span_attr:custom.attr"] != 3 {
-		t.Errorf("filtered trace_id/span_attr:custom.attr hits = %d/%d, want 3/3: %v", m["trace_id"], m["span_attr:custom.attr"], m)
-	}
-	if _, listed := m["span_attr:bufonly"]; listed {
-		t.Errorf("span_attr:bufonly listed although no matching span is in the buffer block: %v", m)
+	for _, tc := range []struct {
+		filter string
+		rows   uint64
+	}{{"trace_id:=to", 3}, {"trace_id:=tb", 2}} {
+		got, err = s.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, tc.filter, base.UnixNano(), base.Add(time.Hour).UnixNano()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m = namesToHits(got)
+		for _, name := range []string{"trace_id", "span_attr:bufonly", "span_attr:custom.attr"} {
+			if m[name] != tc.rows {
+				t.Errorf("%s: %s hits = %d, want %d: %v", tc.filter, name, m[name], tc.rows, m)
+			}
+		}
 	}
 }
 

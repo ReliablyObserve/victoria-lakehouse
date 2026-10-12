@@ -9,10 +9,9 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 )
 
-// fnModelBlock is a generated block: its group (layer, stream, day), its row
+// fnModelBlock is a generated block: its group (stream, day), its row
 // count and the columns it lists.
 type fnModelBlock struct {
-	buffer bool
 	stream string
 	day    string
 	rows   int
@@ -29,9 +28,6 @@ func (b fnModelBlock) block() *logstorage.DataBlock {
 	}
 	db := &logstorage.DataBlock{}
 	db.SetColumns(cols)
-	if b.buffer {
-		return MarkFieldNamesBufferBlock(db)
-	}
 	return db
 }
 
@@ -48,7 +44,7 @@ func genFnBlocks(r *rand.Rand) []fnModelBlock {
 	out := make([]fnModelBlock, n)
 	names := []string{"a", "b", "c", "d", "e", "f"}
 	for i := range out {
-		b := fnModelBlock{buffer: r.Intn(4) == 0, stream: fmt.Sprintf("s%d", r.Intn(5)), day: fmt.Sprintf("2026-10-0%d", 1+r.Intn(3)), rows: 1 + r.Intn(9)}
+		b := fnModelBlock{stream: fmt.Sprintf("s%d", r.Intn(5)), day: fmt.Sprintf("2026-10-0%d", 1+r.Intn(3)), rows: 1 + r.Intn(9)}
 		for _, c := range names {
 			if r.Intn(2) == 0 {
 				b.cols = append(b.cols, c)
@@ -59,8 +55,8 @@ func genFnBlocks(r *rand.Rand) []fnModelBlock {
 	return out
 }
 
-// fnReference is the rule written the plain way: group the blocks by (layer,
-// stream, day), take the union of each group's columns and credit every column
+// fnReference is the rule written the plain way: group the blocks by (stream,
+// day), take the union of each group's columns and credit every column
 // with the group's rows.
 func fnReference(blocks []fnModelBlock) map[string]uint64 {
 	type g struct {
@@ -69,7 +65,7 @@ func fnReference(blocks []fnModelBlock) map[string]uint64 {
 	}
 	groups := map[string]*g{}
 	for _, b := range blocks {
-		k := fmt.Sprintf("%v|%s|%s", b.buffer, b.stream, b.day)
+		k := b.stream + "|" + b.day
 		if groups[k] == nil {
 			groups[k] = &g{cols: map[string]bool{"_stream_id": true, "_time": true}}
 		}
@@ -146,7 +142,7 @@ func FuzzFieldNamesCounter(f *testing.F) {
 		var blocks []fnModelBlock
 		names := []string{"a", "b", "c", "d"}
 		for i := 0; i+3 < len(data) && len(blocks) < 64; i += 4 {
-			b := fnModelBlock{buffer: data[i]&1 == 1, stream: fmt.Sprintf("s%d", data[i]>>1&3), day: fmt.Sprintf("2026-10-0%d", 1+data[i+1]&1), rows: 1 + int(data[i+2]&7)}
+			b := fnModelBlock{stream: fmt.Sprintf("s%d", data[i]&3), day: fmt.Sprintf("2026-10-0%d", 1+data[i+1]&1), rows: 1 + int(data[i+2]&7)}
 			for j, c := range names {
 				if data[i+3]>>j&1 == 1 {
 					b.cols = append(b.cols, c)

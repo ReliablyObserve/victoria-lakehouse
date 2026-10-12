@@ -125,13 +125,12 @@ func containsAll(s string, parts ...string) bool {
 // --- an oracle that does not share the counter's rule -----------------------
 //
 // The oracle works on ROWS, the way hot storage's blocks come to be: every row
-// of a stream-day (and layer) belongs to one merged block, which lists a column
+// of a stream-day belongs to one merged block, which lists a column
 // when some row has a value for it; a field is credited with the block's rows
 // that pass the filter. The counter is fed the same rows cut into objects
 // (chunks) in any order, each chunk observed whole and then added filtered.
 
 type oracleRow struct {
-	buffer bool
 	stream int
 	day    int
 	cols   uint8 // bit set over fnOracleNames
@@ -140,7 +139,7 @@ type oracleRow struct {
 
 func fnOracleNames() []string { return []string{"a", "b", "c", "d"} }
 
-func (r oracleRow) group() string { return fmt.Sprintf("%v|%d|%d", r.buffer, r.stream, r.day) }
+func (r oracleRow) group() string { return fmt.Sprintf("%d|%d", r.stream, r.day) }
 
 // oracleHits is hot's merged-block answer over rows.
 func oracleHits(rows []oracleRow) map[string]uint64 {
@@ -216,9 +215,6 @@ func chunkBlocks(rows []oracleRow) (full, matching *logstorage.DataBlock) {
 		}
 		db := &logstorage.DataBlock{}
 		db.SetColumns(cols)
-		if rs[0].buffer {
-			return MarkFieldNamesBufferBlock(db)
-		}
 		return db
 	}
 	var m []oracleRow
@@ -235,7 +231,7 @@ func genOracleChunks(r *rand.Rand) (rows []oracleRow, chunks [][]oracleRow) {
 	var order []string
 	n := 1 + r.Intn(60)
 	for i := 0; i < n; i++ {
-		row := oracleRow{buffer: r.Intn(4) == 0, stream: r.Intn(3), day: r.Intn(2), cols: uint8(r.Intn(16)), match: r.Intn(3) != 0}
+		row := oracleRow{stream: r.Intn(3), day: r.Intn(2), cols: uint8(r.Intn(16)), match: r.Intn(3) != 0}
 		k := row.group()
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
@@ -320,7 +316,7 @@ func FuzzFieldNamesCounterFilteredLayout(f *testing.F) {
 		groups := map[string][]oracleRow{}
 		var order []string
 		for i := 0; i+2 < len(data) && len(rows) < 64; i += 3 {
-			row := oracleRow{buffer: data[i]&1 == 1, stream: int(data[i] >> 1 & 3), day: int(data[i+1] & 1), cols: data[i+2] & 15, match: data[i+1]&2 == 0}
+			row := oracleRow{stream: int(data[i] & 3), day: int(data[i+1] & 1), cols: data[i+2] & 15, match: data[i+1]&2 == 0}
 			k := row.group()
 			if _, ok := groups[k]; !ok {
 				order = append(order, k)
@@ -343,4 +339,29 @@ func FuzzFieldNamesCounterFilteredLayout(f *testing.F) {
 		checkOracle(t, "fuzz", rows, chunks, 1<<10)
 		checkOracle(t, "fuzz capped", rows, chunks, 1)
 	})
+}
+
+func TestDropColumnsWithoutValues(t *testing.T) {
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{
+		{Name: "a", Values: []string{"x", ""}},
+		{Name: "only_deleted", Values: []string{"", ""}},
+		{Name: "", Values: []string{"m", "m"}},
+	})
+	got := DropColumnsWithoutValues(db)
+	var names []string
+	for _, c := range got.GetColumns(false) {
+		names = append(names, c.Name)
+	}
+	if want := []string{"a", ""}; !reflect.DeepEqual(names, want) {
+		t.Errorf("columns = %q, want %q", names, want)
+	}
+	if got.RowsCount() != 2 {
+		t.Errorf("rows = %d, want 2", got.RowsCount())
+	}
+	// Nothing to drop: the same block comes back.
+	full := fnBlock("s1", 2, map[string]bool{"a": true})
+	if DropColumnsWithoutValues(full) != full {
+		t.Error("a block whose columns all have values is returned as is")
+	}
 }

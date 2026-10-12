@@ -202,19 +202,23 @@ func TestFieldNamesCounter_KeepsNoBorrowedStrings(t *testing.T) {
 	}
 }
 
-// A stream held both in the insert buffer and in objects is two blocks on hot
-// storage (an in-memory part is not merged into the stored ones yet): the
-// counter unions the blocks of a stream within a layer only.
-func TestFieldNamesCounter_BufferAndObjectsAreSeparateBlocks(t *testing.T) {
+// A stream held both in the insert buffer and in objects is one block once hot
+// storage has merged its parts: the counter unions the blocks of a stream-day
+// whichever layer served them, so the answer does not depend on flush timing.
+func TestFieldNamesCounter_BufferAndObjectsAreOneBlock(t *testing.T) {
 	c := newFieldNamesCounter(10)
-	c.add(0, fnBlock("s1", 3, map[string]bool{"a": true}))
-	c.add(0, MarkFieldNamesBufferBlock(fnBlock("s1", 2, map[string]bool{"a": true, "b": true})))
-	want := map[string]uint64{"_stream_id": 5, "a": 5, "b": 2}
+	c.add(0, fnBlock("s1", 3, map[string]bool{"a": true}))            // an object's rows
+	c.add(0, fnBlock("s1", 2, map[string]bool{"a": true, "b": true})) // the insert buffer's rows
+	want := map[string]uint64{"_stream_id": 5, "a": 5, "b": 5}
 	if got := fnHits(c.result()); !reflect.DeepEqual(got, want) {
 		t.Fatalf("hits = %v, want %v", got, want)
 	}
-	if MarkFieldNamesBufferBlock(nil) != nil {
-		t.Error("a nil block stays nil")
+	// The order the layers arrive in does not matter either.
+	r := newFieldNamesCounter(10)
+	r.add(0, fnBlock("s1", 2, map[string]bool{"a": true, "b": true}))
+	r.add(0, fnBlock("s1", 3, map[string]bool{"a": true}))
+	if got := fnHits(r.result()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("reversed: hits = %v, want %v", got, want)
 	}
 }
 

@@ -12,10 +12,11 @@ import (
 )
 
 // One stream held in the local insert buffer AND in objects, each with a column
-// the other lacks. The buffer's rows are an in-memory part that hot storage has
-// not merged into the stored blocks, so the stream is two blocks: each column is
-// credited with the rows of its own layer, the shared ones with all of them.
-func TestFieldNames_LocalBufferAndObjectsOfOneStreamAreTwoBlocks(t *testing.T) {
+// the other lacks. Hot storage merges the in-memory part into the stored ones, so
+// the stream is one block: the buffer and the objects are unioned per stream-day
+// and every column is credited with all of the stream's matching rows, whichever
+// layer the row or the column is in. The answer does not depend on flush timing.
+func TestFieldNames_LocalBufferAndObjectsOfOneStreamAreOneBlock(t *testing.T) {
 	base := time.Now().Truncate(time.Hour)
 	bs, err := membuffer.Open(membuffer.Config{Path: t.TempDir()})
 	if err != nil {
@@ -72,23 +73,29 @@ func TestFieldNames_LocalBufferAndObjectsOfOneStreamAreTwoBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := namesToHits(got)
-	want := map[string]uint64{"_msg": 5, "_time": 5, "bufonly": 2, "exception.type": 3}
+	want := map[string]uint64{"_msg": 5, "_time": 5, "bufonly": 5, "exception.type": 5}
 	for name, hits := range want {
 		if m[name] != hits {
-			t.Errorf("%s hits = %d, want %d: %v", name, m[name], hits, m)
+			t.Errorf("* %s hits = %d, want %d: %v", name, m[name], hits, m)
 		}
 	}
-	// A filter keeps both layers' columns: the object rows are the only matching
-	// ones, and the buffer's column still belongs to the stream's buffer block.
-	got, err = s.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, "exception.type:=E", base.UnixNano(), base.Add(time.Hour).UnixNano()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m = namesToHits(got); m["_msg"] != 3 || m["exception.type"] != 3 {
-		t.Errorf("filtered _msg/exception.type hits = %d/%d, want 3/3: %v", m["_msg"], m["exception.type"], m)
-	}
-	if _, listed := m["bufonly"]; listed {
-		t.Errorf("bufonly listed although no matching row is in the buffer block: %v", m)
+	// A filter selecting only the object's rows credits the stream's whole column
+	// set, the buffer's column included, with the matching rows; the filter that
+	// selects only the buffer's rows credits the object's column the same way.
+	for _, tc := range []struct {
+		filter string
+		rows   uint64
+	}{{"exception.type:=E", 3}, {"bufonly:=b", 2}} {
+		got, err = s.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, tc.filter, base.UnixNano(), base.Add(time.Hour).UnixNano()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m = namesToHits(got)
+		for _, name := range []string{"_msg", "bufonly", "exception.type"} {
+			if m[name] != tc.rows {
+				t.Errorf("%s: %s hits = %d, want %d: %v", tc.filter, name, m[name], tc.rows, m)
+			}
+		}
 	}
 }
 

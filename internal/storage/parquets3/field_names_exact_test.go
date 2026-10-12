@@ -215,10 +215,10 @@ func TestFieldNames_DoNotDependOnTheObjectLayout(t *testing.T) {
 	}
 }
 
-// The rows an insert peer holds are a block of their own: a field only they
-// carry credits the peer's rows of the stream, not the rows of the same stream
-// in objects (an unmerged in-memory part on hot storage).
-func TestFieldNames_BufferRowsAreTheirOwnBlock(t *testing.T) {
+// The rows an insert peer holds and the rows of the same stream in objects are
+// one block, as on hot storage once its parts are merged: a field only the
+// peer's rows carry credits every row of the stream-day, wherever it is held.
+func TestFieldNames_PeerBufferAndObjectsOfOneStreamAreOneBlock(t *testing.T) {
 	s := fvcStorage(t, []schema.LogRow{fvcRow(1*time.Minute, "INFO"), fvcRow(2*time.Minute, "INFO")})
 	s.bufferBridge = fvcPeer(t, []schema.LogRow{fnRow(20*time.Minute, "INFO", "t7"), fvcRow(21*time.Minute, "INFO")})
 	got, err := s.GetFieldNames(context.Background(), nil, fnWindow(t, "*"))
@@ -226,12 +226,16 @@ func TestFieldNames_BufferRowsAreTheirOwnBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := namesToHits(got)
-	if m["_msg"] != 4 || m["trace_id"] != 2 {
-		t.Errorf("_msg/trace_id hits = %d/%d, want 4/2: %v", m["_msg"], m["trace_id"], m)
+	if m["_msg"] != 4 || m["trace_id"] != 4 {
+		t.Errorf("_msg/trace_id hits = %d/%d, want 4/4: %v", m["_msg"], m["trace_id"], m)
 	}
-	for name := range m {
-		if len(name) > 0 && name[0] == 0 {
-			t.Errorf("internal marker column %q leaked into the answer", name)
-		}
+	// A filter that selects the rows without the field still credits them with
+	// the column the peer's other row brings to the stream-day.
+	got, err = s.GetFieldNames(context.Background(), nil, fnWindow(t, "-trace_id:*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m = namesToHits(got); m["_msg"] != 3 || m["trace_id"] != 3 {
+		t.Errorf("filtered _msg/trace_id hits = %d/%d, want 3/3: %v", m["_msg"], m["trace_id"], m)
 	}
 }
