@@ -12,27 +12,22 @@ import (
 	"testing"
 )
 
-// seriesHelperEnv makes TestMustStayZeroSeries_Helper print /metrics.
+// seriesHelperEnv makes TestMustStayZeroSeries_ExportedFromStart print /metrics.
 const seriesHelperEnv = "LH_METRICS_SERIES_HELPER"
-
-// TestMustStayZeroSeries_Helper runs only in the child process of
-// TestMustStayZeroSeries_ExportedFromStart: it prints /metrics as the package's
-// own init functions left it, before any other test has created a series by
-// using it.
-func TestMustStayZeroSeries_Helper(t *testing.T) {
-	if os.Getenv(seriesHelperEnv) == "" {
-		t.Skip("child process of TestMustStayZeroSeries_ExportedFromStart")
-	}
-	var buf bytes.Buffer
-	WritePrometheus(&buf, false)
-	fmt.Print("SERIES-BEGIN\n", buf.String(), "SERIES-END\n")
-}
 
 // The series that must stay 0 are on /metrics before anything has happened, so
 // increase() sees the first event. Read in a fresh process: in this one an
 // earlier test may have created a series by using it.
 func TestMustStayZeroSeries_ExportedFromStart(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=^TestMustStayZeroSeries_Helper$", "-test.count=1")
+	if os.Getenv(seriesHelperEnv) != "" {
+		// The child process: print /metrics as the package's init functions left
+		// it, before any other test has created a series by using it.
+		var buf bytes.Buffer
+		WritePrometheus(&buf, false)
+		fmt.Print("SERIES-BEGIN\n", buf.String(), "SERIES-END\n")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMustStayZeroSeries_ExportedFromStart$", "-test.count=1")
 	cmd.Env = append(os.Environ(), seriesHelperEnv+"=1")
 	raw, err := cmd.Output()
 	if err != nil {

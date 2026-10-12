@@ -14,8 +14,13 @@ type pairKey struct {
 	h uint64
 }
 
-var fuzzTenants = []logstorage.TenantID{{}, {AccountID: math.MaxUint32}, {ProjectID: math.MaxUint32}, {AccountID: math.MaxUint32, ProjectID: math.MaxUint32}, {AccountID: 1}, {ProjectID: 1}, {AccountID: 1, ProjectID: 1}}
-var fuzzHashes = []uint64{0, 1, math.MaxUint64, 1 << 63}
+// Functions, not package-level vars: this package holds a registry lock, and a
+// new file there may not declare one.
+func fuzzTenants() []logstorage.TenantID {
+	return []logstorage.TenantID{{}, {AccountID: math.MaxUint32}, {ProjectID: math.MaxUint32}, {AccountID: math.MaxUint32, ProjectID: math.MaxUint32}, {AccountID: 1}, {ProjectID: 1}, {AccountID: 1, ProjectID: 1}}
+}
+
+func fuzzHashes() []uint64 { return []uint64{0, 1, math.MaxUint64, 1 << 63} }
 
 func checkTenantStreamMap(t *testing.T, data []byte) {
 	var m TenantStreamMap[int]
@@ -26,9 +31,9 @@ func checkTenantStreamMap(t *testing.T, data []byte) {
 		if op&0x80 != 0 && i+9 < len(data) { // arbitrary tenant ids
 			tn = logstorage.TenantID{AccountID: binary.LittleEndian.Uint32(data[i+2:]), ProjectID: binary.LittleEndian.Uint32(data[i+6:])}
 		} else {
-			tn = fuzzTenants[int(sel)%len(fuzzTenants)]
+			tn = fuzzTenants()[int(sel)%len(fuzzTenants())]
 		}
-		h := fuzzHashes[int(sel>>4)%len(fuzzHashes)]
+		h := fuzzHashes()[int(sel>>4)%len(fuzzHashes())]
 		k := pairKey{tn, h}
 		if op&1 == 0 {
 			m.Set(tn, h, i)
@@ -46,8 +51,8 @@ func checkTenantStreamMap(t *testing.T, data []byte) {
 			t.Fatalf("final Get(%v,%x)=%d,%v want %d", k.t, k.h, got, ok, w)
 		}
 	}
-	for _, tn := range fuzzTenants {
-		for _, h := range fuzzHashes {
+	for _, tn := range fuzzTenants() {
+		for _, h := range fuzzHashes() {
 			_, ok := m.Get(tn, h)
 			if _, wok := want[pairKey{tn, h}]; ok != wok {
 				t.Fatalf("phantom/missing %v %x", tn, h)

@@ -281,23 +281,19 @@ func TestVTInsertAdapter_SameStreamTwoTenantsOneBatch(t *testing.T) {
 	}
 }
 
-// TestVTInternalDroppedSeries_Helper runs only in the child process of
-// TestVTInternalDroppedSeries_ExportedFromStart: it prints /metrics as the
-// package's init functions left it, before any test has created a series.
-func TestVTInternalDroppedSeries_Helper(t *testing.T) {
-	if os.Getenv("LH_VLSTORAGE_SERIES_HELPER") == "" {
-		t.Skip("child process of TestVTInternalDroppedSeries_ExportedFromStart")
-	}
-	var buf bytes.Buffer
-	metrics.WritePrometheus(&buf, false)
-	fmt.Print("SERIES-BEGIN\n", buf.String(), "SERIES-END\n")
-}
-
 // lakehouse_vt_internal_rows_dropped_total{kind=...} is on /metrics from process
 // start for every kind this binary counts, so increase() sees the first drop.
 // Read in a fresh process: here an earlier test may have created a series.
 func TestVTInternalDroppedSeries_ExportedFromStart(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=^TestVTInternalDroppedSeries_Helper$", "-test.count=1")
+	if os.Getenv("LH_VLSTORAGE_SERIES_HELPER") != "" {
+		// The child process: print /metrics as the package's init functions left
+		// it, before any other test has created a series by using it.
+		var buf bytes.Buffer
+		metrics.WritePrometheus(&buf, false)
+		fmt.Print("SERIES-BEGIN\n", buf.String(), "SERIES-END\n")
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestVTInternalDroppedSeries_ExportedFromStart$", "-test.count=1")
 	cmd.Env = append(os.Environ(), "LH_VLSTORAGE_SERIES_HELPER=1")
 	raw, err := cmd.Output()
 	if err != nil {
