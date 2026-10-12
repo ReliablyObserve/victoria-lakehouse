@@ -34,6 +34,17 @@ type mockS3Server struct {
 	mu    sync.RWMutex
 	files map[string][]byte // key -> file data
 	srv   *httptest.Server
+
+	// reads counts the reads (full and ranged) of each object key, so a test can
+	// tell which objects a query opened.
+	reads map[string]int
+}
+
+// readObjects is the number of distinct objects that have been read.
+func (m *mockS3Server) readObjects() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.reads)
 }
 
 func newMockS3Server() *mockS3Server {
@@ -94,9 +105,15 @@ func (m *mockS3Server) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.mu.RLock()
+	m.mu.Lock()
 	data, ok := m.files[key]
-	m.mu.RUnlock()
+	if ok {
+		if m.reads == nil {
+			m.reads = make(map[string]int)
+		}
+		m.reads[key]++
+	}
+	m.mu.Unlock()
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = fmt.Fprintf(w, `<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>`)
