@@ -263,12 +263,16 @@ func TestPre1970Rows_PropertyEveryRowIsRefusedOrStoredOnce(t *testing.T) {
 }
 
 // randomTime draws a _time from the places that matter: far before the epoch,
-// just before and after it, the distant past within the buffer's retention, and
-// recent.
+// decades before it, just before and after it, the distant past within the
+// buffer's retention, and recent.
 func randomTime(rng *rand.Rand) time.Time {
-	switch rng.Intn(6) {
+	switch rng.Intn(7) {
 	case 0:
+		// beyond the buffer's retention of 100 years: upstream's storage drops it itself
 		return time.Unix(0, -rng.Int63n(math.MaxInt64))
+	case 6:
+		// before the epoch and within the buffer's retention: stored by upstream's storage
+		return time.Unix(0, -rng.Int63n(int64(60*365*24*time.Hour)))
 	case 1:
 		return time.Unix(0, -rng.Int63n(int64(48*time.Hour)))
 	case 2:
