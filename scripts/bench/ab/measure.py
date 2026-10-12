@@ -79,6 +79,8 @@ def millis(ts: str) -> str:
 def window_params(mode: str, start: str, end: str) -> dict:
     if mode == "none":
         return {}
+    if mode == "seconds":  # Tempo's start and end are unix seconds (RFC3339 is a 400)
+        return {"start": str(int(parse_ts(start).timestamp())), "end": str(int(parse_ts(end).timestamp()))}
     if mode == "micros":
         return {"start": micros(start), "end": micros(end)}
     if mode == "end-ms":

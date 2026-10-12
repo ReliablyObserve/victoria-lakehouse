@@ -186,3 +186,16 @@ def test_n3_hot_stays_invalid_when_it_keeps_failing_and_an_empty_answer_is_not_r
     finally:
         for s in (ref, base, pr, empty):
             s.close()
+
+
+def test_tempo_shapes_send_unix_seconds_because_rfc3339_is_a_400_on_hot_and_lakehouse():
+    """Found by the first real run: every Tempo cell was invalid on all three targets (`cannot parse start timestamp`)."""
+    st = state({"ref-traces": 5})
+    s, e = "2026-10-12T12:00:00Z", "2026-10-12T13:00:00Z"
+    tempo = [sh for ss in SPEC["sets"].values() for sh in ss["shapes"] if sh.get("api") == "tempo" and sh.get("window", "start-end") != "none"]
+    assert len(tempo) >= 8
+    for sh in tempo:
+        assert sh["window"] == "seconds", sh["name"]
+        p = measure.build_request(sh, st, "ref", s, e, "numeric")["params"]
+        assert p["start"] == "1791806400" and p["end"] == "1791810000", sh["name"]
+    assert measure.window_params("start-end", s, e) == {"start": s, "end": e}   # LogsQL keeps RFC3339
