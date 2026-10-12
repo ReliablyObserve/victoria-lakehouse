@@ -65,7 +65,7 @@ These columns exist as top-level Parquet columns with their own column statistic
 | `timestamp_unix_nano` | `int64` | INT64 | No | Nanosecond epoch, always present |
 | `body` | `string` | BYTE_ARRAY | No | Full log message text |
 | `severity_text` | `string` | BYTE_ARRAY (DICT) | No | INFO, WARN, ERROR, DEBUG |
-| `severity_number` | `int32` | INT32 | No | OTEL severity number (5-17) |
+| `severity_number` | `*int32` | INT32 (OPTIONAL) | No | OTEL severity number (5-17); NULL when the row never carried the field, 0 only when it was sent as 0 |
 | `service.name` | `string` | BYTE_ARRAY (DICT) | Yes | Primary service identifier |
 | `k8s.namespace.name` | `string` | BYTE_ARRAY (DICT) | No | Kubernetes namespace |
 | `k8s.pod.name` | `string` | BYTE_ARRAY (DICT) | No | Kubernetes pod name |
@@ -100,16 +100,16 @@ The trace Parquet schema is defined as the `TraceRow` struct. It includes span-s
 | Parquet Column | Go Type | Parquet Type | Bloom Filter | Notes |
 |---|---|---|---|---|
 | `timestamp_unix_nano` | `int64` | INT64 | No | Span end time (nanoseconds) |
-| `start_time_unix_nano` | `int64` | INT64 | No | Span start time |
+| `start_time_unix_nano` | `*int64` | INT64 (OPTIONAL, DELTA_BINARY_PACKED) | No | Span start time; NULL when the row never carried it. Delta-encoded like `timestamp_unix_nano` (start time sits within the span's duration of the timestamp), so the column costs a few bits per span rather than 8 bytes. parquet-go cannot declare the encoding on a nullable struct field, so the writer attaches it to the schema node (`schema.NewTraceWriter`); flush, compaction and delete rewrite all use it |
 | `body` | `string` | BYTE_ARRAY (OPTIONAL) | Token bloom | Actual native `_msg`; absent in legacy objects |
 | `trace_id` | `string` | BYTE_ARRAY | Yes | Primary lookup key |
 | `span_id` | `string` | BYTE_ARRAY | No | Span identity |
 | `parent_span_id` | `string` | BYTE_ARRAY | No | Parent span for tree construction |
 | `span.name` | `string` | BYTE_ARRAY (DICT) | No | Operation name |
-| `span.kind` | `int32` | INT32 | No | CLIENT=1, SERVER=2, etc. |
-| `status.code` | `int32` | INT32 | No | 0=Unset, 1=OK, 2=Error |
+| `span.kind` | `*int32` | INT32 (OPTIONAL) | No | CLIENT=1, SERVER=2, etc.; NULL when absent |
+| `status.code` | `*int32` | INT32 (OPTIONAL) | No | 0=Unset, 1=OK, 2=Error; NULL when absent |
 | `status.message` | `string` | BYTE_ARRAY | No | Error details |
-| `duration_ns` | `int64` | INT64 | No | Span duration (nanoseconds) |
+| `duration_ns` | `*int64` | INT64 (OPTIONAL) | No | Span duration (nanoseconds); NULL when absent |
 | `service.name` | `string` | BYTE_ARRAY (DICT) | Yes | Service that produced the span |
 | `scope.name` | `string` | BYTE_ARRAY | No | Instrumentation library name |
 | `span.events_json` | `string` | BYTE_ARRAY (OPTIONAL, UTF-8) | No | The span's events as a JSON array; NULL when the span has none. See [Span events, links and scope attributes](#span-events-links-and-scope-attributes) |

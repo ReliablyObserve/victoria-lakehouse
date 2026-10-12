@@ -550,7 +550,7 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())
 	}
 
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
+	writer := schema.NewTraceWriter(&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
 	}

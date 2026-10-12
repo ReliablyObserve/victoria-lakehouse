@@ -93,9 +93,36 @@ func assertWriterOptions(t *testing.T, f *parquet.File, truth fileTruth) {
 		for _, col := range cols {
 			if _, ok := f.Schema().Lookup(col); !ok {
 				t.Errorf("%s: %s column %q is not in the written schema", truth.File, kind, col)
+				continue
+			}
+			// The footer must record the encoding the truth promises (a
+			// pointer column cannot carry the delta struct tag; the writer
+			// attaches it to the schema node, and this proves it landed).
+			want := "DELTA_BINARY_PACKED"
+			if kind == "dict" {
+				want = "RLE_DICTIONARY"
+			}
+			if !footerHasEncoding(f, col, want) {
+				t.Errorf("%s: column %q footer lacks %s", truth.File, col, want)
 			}
 		}
 	}
+}
+
+func footerHasEncoding(f *parquet.File, col, want string) bool {
+	for _, rg := range f.Metadata().RowGroups {
+		for _, c := range rg.Columns {
+			if len(c.MetaData.PathInSchema) != 1 || c.MetaData.PathInSchema[0] != col {
+				continue
+			}
+			for _, e := range c.MetaData.Encoding {
+				if e.String() == want {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // assertTruth compares the truth the generator reported with the one

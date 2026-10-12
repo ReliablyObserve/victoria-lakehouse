@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -381,7 +382,7 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 	}
 
 	var buf bytes.Buffer
-	w := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
+	w := schema.NewTraceWriter(&buf, opts...)
 	if _, err := w.Write(traceRows); err != nil {
 		return fileTruth{}, err
 	}
@@ -406,8 +407,11 @@ func genTraces(path string, n, rowGroupSize int) (fileTruth, error) {
 		DistinctCounts: map[string]int64{},
 		NullCounts:     map[string]int64{"start_time_unix_nano": 0, "duration_ns": 0, "status.code": 0, "span.kind": 0},
 		ZeroCounts:     map[string]int64{"status.code": 0},
-		DeltaColumns:   taggedColumns(reflect.TypeOf(schema.TraceRow{}), "delta"),
-		DictColumns:    taggedColumns(reflect.TypeOf(schema.TraceRow{}), "dict"),
+		// Optional (pointer) columns cannot carry the delta struct tag in
+		// parquet-go; schema.NewTraceWriter attaches the encoding to the schema
+		// node and lists those columns here so the gate keeps checking them.
+		DeltaColumns: mergeSorted(taggedColumns(reflect.TypeOf(schema.TraceRow{}), "delta"), schema.TraceWriterDeltaColumns()),
+		DictColumns:  taggedColumns(reflect.TypeOf(schema.TraceRow{}), "dict"),
 	}
 	distinct := map[string]map[string]struct{}{
 		"service.name": {},
@@ -536,6 +540,12 @@ func taggedColumns(t reflect.Type, option string) []string {
 	}
 	sort.Strings(cols)
 	return cols
+}
+
+func mergeSorted(a, b []string) []string {
+	out := append(append([]string{}, a...), b...)
+	sort.Strings(out)
+	return slices.Compact(out)
 }
 
 func hexID(rng *rand.Rand, nbytes int) string {

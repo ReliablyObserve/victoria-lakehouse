@@ -939,7 +939,7 @@ func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionL
 		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, string(idxData)))
 	}
 
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
+	writer := schema.NewTraceWriter(&buf, opts...)
 	if _, err := writer.Write(rows); err != nil {
 		return nil, err
 	}

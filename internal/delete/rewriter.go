@@ -497,7 +497,7 @@ func (r *Rewriter) filterTraceRows(data []byte, tombstones []Tombstone, result *
 
 	var buf bytes.Buffer
 	opts := append(r.writerOptions(data), schema.TraceIDHexOption(schema.TraceRowsTraceIDHex(kept)))
-	writer := parquet.NewGenericWriter[schema.TraceRow](&buf, opts...)
+	writer := schema.NewTraceWriter(&buf, opts...)
 	if _, err := writer.Write(kept); err != nil {
 		return nil, fmt.Errorf("write parquet: %w", err)
 	}
