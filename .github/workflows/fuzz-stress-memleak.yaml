@@ -214,6 +214,7 @@ jobs:
           - internal/fieldpresence:FuzzDecode
           - internal/fieldpresence:FuzzUnmarshalPayload
           - internal/fieldpresence:FuzzEncodeRoundTrip
+          - internal/parquetfooter:FuzzRead
           - internal/pmeta:FuzzAddHighCardValues_RoundTrip
           - internal/peercache:FuzzRingLookup
           - internal/peercache:FuzzRingLookupAZ

@@ -252,6 +252,7 @@ func TestFooterTail_ColdQueryReadsFewerFooterBytes(t *testing.T) {
 	if ansPlain != ansRec {
 		t.Fatalf("answers differ:\n%s\n%s", ansPlain, ansRec)
 	}
+	t.Logf("cold query footer-phase reads: unrecorded %d GETs %d bytes; recorded %d GETs %d bytes", nPlain, bPlain, nRec, bRec)
 	if nRec > nPlain || bRec >= bPlain {
 		t.Fatalf("recorded: %d GETs %d bytes; unrecorded: %d GETs %d bytes; want no more requests and fewer bytes", nRec, bRec, nPlain, bPlain)
 	}

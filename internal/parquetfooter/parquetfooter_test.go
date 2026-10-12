@@ -416,3 +416,45 @@ func TestRead_Budget(t *testing.T) {
 		}
 	})
 }
+
+// oldTwoParses is what the writers did before Inspect: one parse for the column
+// bytes and another for the bloom bytes, both decoding the page index.
+func oldTwoParses(data []byte) (int, int64) {
+	n := 0
+	var bloom int64
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err == nil {
+		for _, rg := range f.Metadata().RowGroups {
+			n += len(rg.Columns)
+		}
+	}
+	f2, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err == nil {
+		for _, rg := range f2.RowGroups() {
+			for _, cc := range rg.ColumnChunks() {
+				if bf := cc.BloomFilter(); bf != nil {
+					bloom += bf.Size()
+				}
+			}
+		}
+	}
+	return n, bloom
+}
+
+// BenchmarkInspect compares the single parse the writers do now with the two
+// parses they did before, on an object with many row groups and a large footer.
+func BenchmarkInspect(b *testing.B) {
+	obj := object(b, 60_000, 1_000, 200_000)
+	b.Run("one_parse", func(b *testing.B) {
+		b.SetBytes(int64(len(obj)))
+		for i := 0; i < b.N; i++ {
+			_ = Inspect(obj)
+		}
+	})
+	b.Run("two_parses_before", func(b *testing.B) {
+		b.SetBytes(int64(len(obj)))
+		for i := 0; i < b.N; i++ {
+			_, _ = oldTwoParses(obj)
+		}
+	})
+}
