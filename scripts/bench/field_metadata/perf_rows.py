@@ -45,6 +45,10 @@ ENDPOINTS = {
 }
 WINDOWS = {"whole": "whole hours", "cut": "cut window", "narrow": "narrow 30 s window", "edge": "hour-edge window"}
 FILTERS = {"none": ("unfiltered", "*"), "svc": ("filter svc", 'service.name:="svc-a"')}
+# A span's service name is the field resource_attr:service.name on VictoriaTraces
+# (service.name is no field of a span there), and the field name needs quotes
+# because of the colon.
+TRACES_SVC_FILTER = '"resource_attr:service.name":="svc-a"'
 LAYOUTS = {"flushed": "flushed objects", "compacted": "compacted objects",
            "peer": "flushed objects + a peer's unflushed rows"}
 COUNTERS = ["s3_gets", "s3_bytes", "row_groups", "pages"]
@@ -106,6 +110,8 @@ def row_for(cell, recs, at, shape_recs=None):
     p = parse_cell(cell)
     surface, title, route, field = ENDPOINTS[p["ep"]]
     fdesc, query = FILTERS[p["filter"]]
+    if surface == "vt" and p["filter"] == "svc":
+        query = TRACES_SVC_FILTER
     rid = (f"{surface}.perf.{p['ep'].replace('traces.', '')}.pmeta_{'on' if p['pmeta'] == 'true' else 'off'}"
            f".layout_{p['layout']}.window_{p['window']}.filter_{p['filter']}.s3_{p['lat']}ms")
     full_title = (f"{title} — pmeta {'on' if p['pmeta'] == 'true' else 'off'}, {LAYOUTS[p['layout']]}, "

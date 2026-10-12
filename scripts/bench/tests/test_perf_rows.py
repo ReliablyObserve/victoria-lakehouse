@@ -54,6 +54,18 @@ class PerfRowsTest(unittest.TestCase):
         self.assertIn('budget: { p50_ms: 2.000, p90_ms: 2.000, valid: "2/2" }', text)
         self.assertIn('path: "scan"', text)
 
+    def test_the_filtered_traces_request_is_spelled_as_hot_victoriatraces_knows_it(self):
+        """service.name is no field of a span on VictoriaTraces: its field is the
+        quoted resource_attr:service.name. The logs rows keep service.name."""
+        logs = "fv_service/pmeta=false/layout=flushed/window=cut/filter=svc/s3=0ms"
+        recs = [rec(TRACES), rec(TRACES), rec(logs), rec(logs)]
+        _, text = rows_from(recs)
+        rows = {line.split('id: "')[1].split('"')[0]: line for line in text.splitlines() if line.startswith("- {")}
+        vt = rows["vt.perf.streams.pmeta_on.layout_compacted.window_edge.filter_svc.s3_100ms"]
+        vl = rows["vl.perf.fv_service.pmeta_off.layout_flushed.window_cut.filter_svc.s3_0ms"]
+        self.assertIn('params: { query: "\\"resource_attr:service.name\\":=\\"svc-a\\"" }', vt)
+        self.assertIn('params: { query: "service.name:=\\"svc-a\\"", field: "service.name" }', vl)
+
     def test_a_differ_row_carries_a_note_and_no_budget(self):
         recs = [rec(FLUSHED, exact=False), rec(FLUSHED, exact=False)]
         _, text = rows_from(recs, at="#239")

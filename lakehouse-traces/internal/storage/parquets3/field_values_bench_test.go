@@ -33,9 +33,12 @@ import (
 // {flushed small files, compacted into one object per hour, flushed but the
 // last ten minutes still unflushed on a peer insert instance} × window {whole
 // hours, cut mid-hour, narrow, across the hour edge} × filter {none,
-// service.name:="svc-a"} × S3 first-byte latency {0, 100 ms}. field_names'
-// truth is the row path's (every non-empty field of every row in range); the
-// others' is the generator's. Every iteration starts
+// "resource_attr:service.name":="svc-a"} × S3 first-byte latency {0, 100 ms}.
+// The filter is spelled as a hot VictoriaTraces knows it: service.name is no field
+// of a span there, its field is resource_attr:service.name. Every cell's truth is
+// the generator's: for field_names fmtSpanNamesTruth, the names VictoriaTraces
+// lists for the generated spans, computed from the spans and not read back
+// through the storage code under test. Every iteration starts
 // with cold object caches and is validated against the generator's truth
 // (set_ok: exact value set; hits_ok: and exact hit counts).
 //
@@ -242,28 +245,6 @@ type fmtEnv struct {
 	names  map[string]map[string]uint64 // filter/window -> field_names truth
 }
 
-// fmtNamesOracle counts, per field, the rows in range carrying a non-empty
-// value, read through the row path (the answer field_names owes).
-func fmtNamesOracle(t *testing.T, s *Storage, filter string, w fmtWindow) map[string]uint64 {
-	var mu sync.Mutex
-	names := make(map[string]uint64)
-	err := s.RunQuery(context.Background(), nil, fmtQuery(t, filter, w), func(_ uint, db *logstorage.DataBlock) {
-		mu.Lock()
-		defer mu.Unlock()
-		for _, c := range db.GetColumns(false) {
-			for _, v := range c.Values {
-				if v != "" {
-					names[c.Name]++
-				}
-			}
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return names
-}
-
 func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 	t.Helper()
 	mock := newFmtS3()
@@ -329,7 +310,7 @@ func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 	e.names = make(map[string]map[string]uint64)
 	for _, w := range fmtWindows() {
 		for _, f := range []string{"none", "svc"} {
-			e.names[f+"/"+w.name] = fmtNamesOracle(t, s, f, w)
+			e.names[f+"/"+w.name] = fmtSpanNamesTruth(e.rows, f, w)
 		}
 	}
 	return e
@@ -338,7 +319,7 @@ func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 func fmtQuery(t *testing.T, filter string, w fmtWindow) *logstorage.Query {
 	expr := "*"
 	if filter == "svc" {
-		expr = `service.name:="` + fmtFilterSvc + `"`
+		expr = `"resource_attr:service.name":="` + fmtFilterSvc + `"`
 	}
 	q, err := logstorage.ParseQuery(expr)
 	if err != nil {
@@ -466,9 +447,6 @@ func TestFieldMetadataTraces_ExactInBothLayouts(t *testing.T) {
 	}
 	for _, e := range buildFmtEnvs(t) {
 		for _, ep := range fmtEndpoints {
-			if ep == "field_names" {
-				continue // not exact yet: measured by the matrix only
-			}
 			for _, w := range fmtWindows() {
 				for _, f := range []string{"none", "svc"} {
 					r := e.run(t, ep, f, w, 0)
