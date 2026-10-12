@@ -532,7 +532,7 @@ can wear the title an attacker would choose. The synthetic negatives include the
 `s_newlink_product_lockpkg`, `s_replace_lockfile`, `s_symlinked_test`, `s_symlink_dir`, `s_symlink_docs_only`), the moved-declaration rows
 (`m_alias_swap`, `m_alias_noalias`, `m_literal_whitespace`, `m_build_constraint`, `m_move_changed`, and the controls
 `m_pure_move_imports`, `m_pure_move_nearby`), the lock-adjacent rows (`x_ingestmatrix_init`, `x_ingestmatrix_newfile`,
-`x_product_adjacent_init`; `blank_import_hook` became a failure), `minpass_lowered`, `x_sync_bump`, `x_sys_bump` and
+`x_ingestmatrix_cgo`, `x_ingestmatrix_native`, `x_product_adjacent_init`; `blank_import_hook` became a failure), `minpass_lowered`, `minpass_removed`, `x_sync_bump`, `x_sys_bump` and
 `toolchain_overflow`. Cost
 (measured 2026-10-11 by the independent review; it varies with the runner): judging one large recorded pull request
 took 68 s (#483) and 79 s (#487) locally, one CI replay shard about 1:40, one gate job about 30 s; the gate jobs have a

@@ -1263,20 +1263,22 @@ func SymlinkProblems(entries []DiffEntry, dirs []string) []string {
 		if e.NewMode == "160000" {
 			kind = "a submodule"
 		}
-		change := "added"
-		if e.OldMode != "000000" {
-			change = "changed to " + kind + " (it was a regular file or another link)"
-			if e.OldMode == "120000" && e.NewMode == "120000" {
-				change = "retargeted"
-			}
+		what := kind + " added"
+		switch {
+		case e.OldMode == "120000" && e.NewMode == "120000":
+			what = "a symbolic link retargeted"
+		case strings.HasPrefix(e.OldMode, "100"):
+			what = "a regular file replaced by " + kind
+		case e.OldMode != "000000":
+			what = kind + " replacing another entry"
 		}
 		switch {
 		case strings.HasSuffix(e.Path, ".go"):
-			out = append(out, fmt.Sprintf("%s: %s %s: the go tool compiles a linked .go file and no lock rule can read it", e.Path, kind, change))
+			out = append(out, fmt.Sprintf("%s: %s: the go tool compiles a linked .go file and no lock rule can read it", e.Path, what))
 		case nativeSourceExt[filepath.Ext(e.Path)]:
-			out = append(out, fmt.Sprintf("%s: %s %s: the go tool compiles a linked native source file and no lock rule can read it", e.Path, kind, change))
+			out = append(out, fmt.Sprintf("%s: %s: the go tool compiles a linked native source file and no lock rule can read it", e.Path, what))
 		case underAny(e.Path, dirs):
-			out = append(out, fmt.Sprintf("%s: %s %s in a package that holds a registry lock, a package one imports, or the lock suites' configuration", e.Path, kind, change))
+			out = append(out, fmt.Sprintf("%s: %s in a package that holds a registry lock, a package one imports, or the lock suites' configuration", e.Path, what))
 		}
 	}
 	sort.Strings(out)
