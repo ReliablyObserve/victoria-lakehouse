@@ -25,6 +25,11 @@ set -u
 
 LH_WAIT_SECS="${LH_WAIT_SECS:-75}"
 HOT_WAIT_SECS="${HOT_WAIT_SECS:-25}"
+# Every target must answer its readiness endpoint before anything is sent to it
+# (/health for upstream, /ready for the Lakehouse): a request sent to a process
+# that is still starting is lost, and the control row then fails the check for a
+# reason that has nothing to do with the system under test.
+READY_WAIT_SECS="${READY_WAIT_SECS:-90}"
 fails=0
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -32,6 +37,17 @@ trap 'rm -rf "$tmp"' EXIT
 say() { printf '%-9s %-12s %-46s %s\n' "$1" "$2" "$3" "$4"; }
 check() { # signal kind name expected(bool) got(bool)
 	if [ "$4" = "$5" ]; then say "$1" "$2" "$3" "ok ($5)"; else say "$1" "$2" "$3" "FAIL: expected $4, got $5"; fails=$((fails + 1)); fi
+}
+wait_ready() { # kind url: waits for readiness, counts a failure when it never comes
+	local kind="$1" url="$2" path=/health i
+	[ "$kind" = lh ] && path=/ready
+	for ((i = 0; i < READY_WAIT_SECS; i++)); do
+		if [ "$(curl -s -o /dev/null -w '%{http_code}' "$url$path")" = 200 ]; then return 0; fi
+		sleep 1
+	done
+	say "$kind" "$kind" "ready within ${READY_WAIT_SECS}s ($url$path)" "FAIL: never answered 200"
+	fails=$((fails + 1))
+	return 1
 }
 metric() { # url name -> value or 0
 	curl -s "$1/metrics" | awk -v n="$2" 'index($0, n) == 1 { v = $NF } END { print (v == "" ? 0 : v) }'
@@ -44,6 +60,7 @@ for t in "${logs_targets[@]:-}"; do
 	[ -n "$t" ] || continue
 	kind="${t%%=*}"; url="${t#*=}"
 	tag="$kind-$$"
+	wait_ready "$kind" "$url" || continue
 	printf '{"_time":"1965-03-01T12:00:00Z","app":"%s","_msg":"old-1965"}\n{"_time":"%s","app":"%s","_msg":"control-now"}\n' "$tag" "$now" "$tag" |
 		curl -s -o /dev/null -H 'Content-Type: application/stream+json' -X POST --data-binary @- "$url/insert/jsonline?_stream_fields=app&_time_field=_time&_msg_field=_msg"
 done
@@ -110,6 +127,7 @@ GO
 	for t in "${traces_targets[@]}"; do
 		kind="${t%%=*}"; url="${t#*=}"
 		h="$(python3 -c 'import hashlib, sys; print(hashlib.md5(sys.argv[1].encode()).hexdigest()[:26])' "$kind$$")"
+		wait_ready "$kind" "$url" || continue
 		for spec in "old:$old_ns:aa$h" "ctl:$nowns:bb$h"; do
 			IFS=: read -r _ ts id <<<"$spec"
 			"$tmp/nativerow" "$ts" "${id}0000" | curl -s -o /dev/null -H 'Content-Type: application/octet-stream' -X POST --data-binary @- "$url/insert/native?version=v1"
