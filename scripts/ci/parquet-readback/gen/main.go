@@ -245,10 +245,9 @@ func genLogs(path string, n, rowGroupSize int) (fileTruth, error) {
 	}
 	for _, r := range logRows {
 		addInt("timestamp_unix_nano", r.TimestampUnixNano)
-		switch {
-		case r.SeverityNumber == nil:
+		if r.SeverityNumber == nil {
 			truth.NullCounts["severity_number"]++
-		default:
+		} else {
 			addInt("severity_number", int64(*r.SeverityNumber))
 			if *r.SeverityNumber == 0 {
 				truth.ZeroCounts["severity_number"]++
