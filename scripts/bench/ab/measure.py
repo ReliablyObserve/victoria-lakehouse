@@ -295,7 +295,8 @@ def run_cell(cell: dict, state: dict, spec: dict, runs: int, picks_cache: dict, 
         if t != "ref":
             settle.touch(keys[t])
         wr, wk = windows.get(t, (None, None))
-        ok, reason, result = validate.validate(kind, env["status"], env["body"], first_result=first[t], miss=False,
+        sample = bool(shape.get("sample"))  # a sampled answer differs between calls: it is validated but never held to the first result
+        ok, reason, result = validate.validate(kind, env["status"], env["body"], first_result=None if sample else first[t], miss=False,
                                                window_rows=wr, window_keys=wk)
         truncated = kind == "scan" and wr is not None and wr > validate.SCAN_LIMIT
         if ok and truncated:

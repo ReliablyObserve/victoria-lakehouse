@@ -159,4 +159,4 @@ def test_a_shape_that_hot_answers_differently_on_every_call_is_not_compared_with
     for s in spec["sets"].values():
         for sh in s["shapes"]:
             if api_rows.arbitrary_path(sh.get("path", "")):
-                assert sh.get("vs_ref") is False, sh["name"]
+                assert sh.get("sample") is True, sh["name"]

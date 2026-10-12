@@ -102,8 +102,9 @@ reference window. A scalar count, a group-by (rows, total, hash of the pairs), f
 the row keys), spans, or a canonical JSON hash for Jaeger, Tempo and TraceQL metrics. **An invalid answer is never a latency.**
 
 Jaeger, Tempo search and OTLP trace answers are compared with `scripts.proof`'s decoders (spans keyed by trace and span id, processes
-resolved), so span order and `processID` labels are not differences. A shape whose hot answer differs between calls of one system (Tempo's
-tag list) carries `vs_ref: false` and compares base with PR only.
+resolved), so span order and `processID` labels are not differences. A shape whose answer is a sample that differs between calls of one system, hot and Lakehouse alike (Tempo's tag list and tag values; measured), carries `sample: true`: it is timed and validated,
+and its answer is not compared (a `vs_ref: false` shape would compare base with PR only). Search shapes keep `limit 20` and are compared with hot by the
+exact set of traces: on the seeded data hot and Lakehouse return the same 20 of 700 to 958 matching traces on every call (measured).
 Each comment reports the differences its own run found.
 
 **S3 cost.** From Lakehouse's `/metrics`: GETs (`lakehouse_s3_requests_total` for GET and GetObject), all non-write requests, and

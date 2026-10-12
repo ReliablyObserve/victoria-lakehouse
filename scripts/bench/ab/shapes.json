@@ -197,9 +197,9 @@
          "covers": ["vt.tempo.search.service_name", "lh.feature.traces.tempo_api"]},
         {"name": "tempo search duration", "signal": "traces", "api": "tempo", "kind": "tempo_search", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ duration > 40ms }", "limit": "20"}, "window": "seconds",
          "covers": ["vt.tempo.search.duration_filter", "lh.feature.traces.tempo_api"]},
-        {"name": "tempo tags", "vs_ref": false, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/search/tags", "window": "seconds",
+        {"name": "tempo tags", "sample": true, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/search/tags", "window": "seconds",
          "covers": ["vt.tempo.v2_search_tags.basic", "lh.feature.traces.tempo_api"]},
-        {"name": "tempo tag values service", "vs_ref": false, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/search/tag/resource.service.name/values", "window": "seconds",
+        {"name": "tempo tag values service", "sample": true, "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/search/tag/resource.service.name/values", "window": "seconds",
          "covers": ["vt.tempo.v2_search_tag_values.basic", "lh.feature.traces.tempo_api"]}
       ]
     },

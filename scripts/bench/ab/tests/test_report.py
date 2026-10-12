@@ -191,3 +191,14 @@ def test_window_shift_moves_the_end_earlier_inside_the_layer_and_is_ignored_on_a
     assert measure.window_for(st, "cold", "full", ranges, 300) == ("2026-10-12T11:00:00Z", "2026-10-12T12:55:00Z")
     assert measure.window_for(st, "cold", "1h", ranges) == ("2026-10-12T12:00:00Z", "2026-10-12T13:00:00Z")
     assert measure.window_for(st, "tiny", "full", ranges, 300) == ("2026-10-12T12:59:00Z", "2026-10-12T13:00:00Z")
+
+
+def test_a_sampled_shape_is_never_held_to_its_first_answer_and_never_compared():
+    """Found by the real A/A run: Tempo's tag list differs between calls of one system, so the flapping rule made A/A cells `new`."""
+    rows = cell_rows(K, 10, 10, base_result="41", pr_result="43")
+    c = report.summarize(raw(rows), "t", sample_skip=frozenset({"logs count_total"}))["cells"][0]
+    assert c["difference"] == "none" and c["vs_ref"] == {"base": "n/a", "pr": "n/a"} and c["verdict"] == "same"
+    spec = {"sets": {"s": {"shapes": [{"name": "a", "sample": True}, {"name": "b"}]}}}
+    assert report.sample_skip_from(spec) == frozenset({"a"})
+    out = report.apply_ref_skip(report.summarize(raw(rows), "t"), frozenset(), frozenset({"logs count_total"}))
+    assert out["differences"] == {"none": 1}
