@@ -911,6 +911,8 @@ blocks that list it. The Parquet footers cannot give that answer: they know the 
 fields of its rows or the streams. `stream_field_names` is the tags of the matching streams, each credited with
 the rows of the streams that carry it, the walk `stream_field_values` does.
 
+### Cost and limits
+
 Measured (`BenchmarkGetFieldNames_ObjectReads`, benchstat n=8 interleaved, five 200 KiB objects, cold caches, mock S3,
 logs binary): S3 requests per call 5 to 10, bytes served 328 KB to 1,406 KB (+329 %), time 1.3 ms to 8.9 ms, allocations
 9.4 k to 356 k per call. On the proof stack (3,000 rows over 4 h, warm caches) a call takes 1.4 ms to 14 ms. These grow
@@ -952,6 +954,25 @@ pruning that this read no longer uses would also have skipped whole objects, so 
 object reads (assumed, not measured). The answer before was the wrong one: it lost the columns of the pruned objects. A name no row of the answer credits is not listed. A query with pipes goes through upstream's own
 `field_names` pipe over the pipes' output and is not covered by this rule: it credits the blocks that reach it.
 
+**A filtered call costs as much as an unfiltered one (owner decision pending).** Because a filter cannot narrow the read,
+the insert buffer is asked for every row of the window (`FieldNamesBufferQuery`) and the filter is applied to the rows
+afterwards, and every object of the window is read. Measured by the independent review of the change on the insert buffer
+(150,000 buffered rows, a window held only by the buffer, warm p50, 0 ms S3): `batch:=rare` 16.8 ms against 0.6 ms before
+the change to the buffer read (f06b3c87, 28x faster) and 1.0 ms on hot; `level:=WARN` 17.1 ms against 3.1 ms and 0.7 ms on
+hot; `*` about 15 ms against about 15 ms and 0.8 ms on hot. Extrapolated (assumed, linear in rows): a 15 M-row buffer (5
+minutes at 50,000 rows/s) costs about 1.7 s per filtered call. On objects (measured on the mock above) 8 ms to 50 ms (6x) on
+a `trace_id` filter. Production estimate (assumed, not measured): a tenant at 1 TB/day raw, about 10x compression, 256 MiB
+objects, about 400 objects/day: a filtered 24 h call reads about 100 GB (about 3.3 G rows) where a pruned row query reads 1
+to 3 objects; 7 days reads about 700 GB; at 100 TB/day, 100x that. Options for the owner (nothing of them is implemented):
+
+| Option | Code (assumed) | Operations | Scale (assumed) |
+|---|---|---|---|
+| A. Accept and document | 0 LOC | no new knob; an expensive call stays one query away | cost is linear in the bytes of the window; no bound |
+| B. Two-phase read: a pruned filtered read gives the matching stream-days and hits, then only the objects and row groups carrying those streams are read, projecting `_stream_id`, definition levels and map-key leaves | about 300 to 500 LOC, one read path, about 10 tests | exact; a second pass that must tolerate compaction between the phases | gain depends on stream locality: best when the matching streams sit in few objects, no gain when every object holds every stream |
+| C. The per-(stream, day) column-presence facet of [#482](https://github.com/ReliablyObserve/victoria-lakehouse/issues/482) in pmeta | about 600 LOC plus the compaction merge and rebuild from the footers | exact and cheap; one more facet to keep rebuildable; also closes [#481](https://github.com/ReliablyObserve/victoria-lakehouse/issues/481) | one footer-sized read per object avoided; facet size grows with streams x days (to be sized before choosing) |
+
+### Known bounds
+
 Known bounds. Upstream credits a column with the rows of the *blocks* that list it, and Lakehouse approximates a block
 by the stream-day:
 
@@ -966,15 +987,24 @@ by the stream-day:
   window's objects never list, the name can differ from hot's, which counts the whole block, on both binaries
   ([#481](https://github.com/ReliablyObserve/victoria-lakehouse/issues/481)). measured after this change on the parity stack: the seeded traces corpus differs in 25 to 26 of its 91 event and link fields in each of four 1-hour windows (for example `event:event_attr:attempt:0` hot 198, Lakehouse 37) and is equal over the whole range; the seeded logs corpus is equal in every window; a logs stream written as two batches an hour apart, the first carrying a field the second lacks, lists the field on hot in a window holding only the second batch (hot 3, Lakehouse not listed, with and without a filter on the second batch) and is equal in the other windows; traces attributes in that shape were equal.
 - **Hot's unmerged parts.** Rows that reached hot in separate insert requests are separate blocks until hot merges them
-  (how long that takes varies: minutes to many minutes), so hot's hits for a sparse field depend on the batching and timing;
-  Lakehouse answers the merged value ([#500](https://github.com/ReliablyObserve/victoria-lakehouse/issues/500)). The insert
-  buffer is kept apart from the objects of a stream (hot's state before a merge) while separate requests inside the buffer
-  are unioned (its state after one): a mixed model, equal to hot when the buffer and the objects list the same columns or
-  when hot has merged.
-- **More than 262,144 streams in the window.** Every stream of the window counts toward the limit, matching the filter or
-  not (the columns of a stream are observed before the filter). The counter then credits a block on its own, upstream's exact per-block
-  rule; its hits for a sparse field can be lower than hot's. `lakehouse_field_names_stream_cap_total` counts the blocks
-  credited that way and one warning per 30 s names the limit.
+  (how long that takes varies, from seconds to minutes or until a merge triggers), so until then hot's hits for a sparse
+  field depend on the batching and timing of the requests and can be lower than, or differ from, the merged value.
+  Lakehouse answers the merged value: the insert buffer, the peers' buffers and the objects of a stream-day are unioned,
+  so the answer for the same rows depends on the rows only, not on how the requests were batched, on flush timing or on
+  which layer holds a row (a stream whose first batch is already in an object and whose second batch is still in the
+  buffer is listed as the merged hot lists it: with the filter that selects only the buffered batch, the fields of the
+  object's batch are listed too). The remaining difference is hot's transient unmerged state
+  ([#500](https://github.com/ReliablyObserve/victoria-lakehouse/issues/500)).
+- **More than 262,144 streams in the window.** Every stream the counter observes takes one of the 262,144 slots, matching
+  the filter or not (the columns of a stream are observed before the filter), and which streams get a slot depends on the
+  order the file workers deliver their blocks. Past the limit the answer is not the stream-day union and is not
+  deterministic: the columns of a non-matching block of a stream without a slot are dropped (under a filter, a name carried
+  only by such blocks is lost), and a block of a stream without a slot is credited on its own, upstream's per-block rule,
+  so its hits for a sparse field can be lower than hot's. Two identical calls can differ past the limit.
+  `lakehouse_field_names_stream_cap_total` counts the blocks credited that way and one warning per 30 s names the limit.
+- **Errors inside a counting read.** `processOneFile` logs the per-file errors other than a missing object and drops
+  them, and the live-bytes budget can cancel the read without recording an error on the last file, so a counting read can
+  answer 200 with names missing (pre-existing in every row read; [#503](https://github.com/ReliablyObserve/victoria-lakehouse/issues/503)).
 
 ## Troubleshooting
 

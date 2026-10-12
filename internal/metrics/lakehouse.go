@@ -329,7 +329,9 @@ var (
 	CatalogResidentBytes = NewGauge("lakehouse_catalog_resident_bytes")
 	// FieldNamesStreamCap counts the blocks a field_names answer credited on
 	// their own because the window held more streams than the counter tracks;
-	// those streams' hits may be lower than hot storage's.
+	// past the limit the answer is not the stream-day union and is not
+	// deterministic: hits may be lower than hot storage's, and under a filter a
+	// name only the non-matching blocks of an untracked stream carry is lost.
 	FieldNamesStreamCap = NewCounter("lakehouse_field_names_stream_cap_total")
 	// CatalogFieldCardinality is the HLL-estimated distinct-count per high-card
 	// field — the cardinality-bomb early-warning (alert when an id-like field's
