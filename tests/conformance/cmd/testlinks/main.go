@@ -368,6 +368,32 @@ func lockContentRules(r3 *rule, repo, base, head string, bs, hs registry.ParityS
 	}
 }
 
+// diffEntries reads the git modes of the changed paths (a symlink or submodule is a hard failure in the
+// packages locks live in, see lockReachRules) and returns the changed paths a Go parser may read: a
+// linked path's blob is the link target, not Go, and must not reach the parsers.
+func diffEntries(repo, base, head string, changed []string) (entries []registry.DiffEntry, parseable []string, err error) {
+	rawOut, err := git(repo, "diff", "--raw", "--no-renames", "--no-abbrev", "-z", base, head)
+	if err != nil {
+		return nil, nil, err
+	}
+	entries, err = registry.ParseDiffRaw(rawOut)
+	if err != nil {
+		return nil, nil, err
+	}
+	links := map[string]bool{}
+	for _, e := range entries {
+		if e.IsLinkEntry() {
+			links[e.Path] = true
+		}
+	}
+	for _, f := range changed {
+		if !links[f] {
+			parseable = append(parseable, f)
+		}
+	}
+	return entries, parseable, nil
+}
+
 // lockReachRules runs the hard rules that reach beyond the packages that hold a lock: a symbolic link
 // or submodule a PR adds where the go tool or a lock cannot be trusted to read it, the packages a lock
 // package imports (an init(), cgo or native code there runs before any test), and the expected-pass
@@ -443,27 +469,9 @@ func run() int {
 			changed = append(changed, f)
 		}
 	}
-	// The modes of the changed paths: a symlink (or submodule) is a hard failure in the packages locks
-	// live in (symlinkRules), and its blob is the link target, not Go: it must not reach the Go parsers.
-	rawOut, err := git(*repo, "diff", "--raw", "--no-renames", "--no-abbrev", "-z", *base, *head)
+	entries, parseable, err := diffEntries(*repo, *base, *head, changed)
 	if err != nil {
 		return toolErr("git diff --raw:", err)
-	}
-	entries, err := registry.ParseDiffRaw(rawOut)
-	if err != nil {
-		return toolErr("git diff --raw:", err)
-	}
-	links := map[string]bool{}
-	for _, e := range entries {
-		if e.IsLinkEntry() {
-			links[e.Path] = true
-		}
-	}
-	var parseable []string
-	for _, f := range changed {
-		if !links[f] {
-			parseable = append(parseable, f)
-		}
 	}
 	// one persistent `git cat-file --batch` for every blob the gate reads (blobs.go)
 	blobs := newBlobReader(*repo)
