@@ -129,3 +129,20 @@ def test_the_trace_shapes_of_shapes_json_use_the_structural_kinds():
     for name in ("jaeger trace_by_id", "jaeger search by_service", "jaeger search min_duration"):
         assert kinds[name] == "trace_jaeger"
     assert kinds["tempo v2 trace_by_id"] == "trace_otlp" and kinds["tempo search service"] == "tempo_search"
+
+
+def tempo_series(value):
+    return json.dumps({"series": [{"labels": [{"key": "x", "value": {"stringValue": "a"}}],
+                                   "samples": [{"timestampMs": "1000", "value": value}, {"timestampMs": "2000", "value": 2.0}]}]})
+
+
+def test_traceql_metrics_ignore_float_noise_beyond_six_digits_but_not_a_real_difference():
+    """Found by the real A/A run: the same Lakehouse build answered TraceQL rates that differ in the last digits between calls."""
+    a = validate.extract_result("series_tempo", tempo_series(0.123456789))
+    assert a == validate.extract_result("series_tempo", tempo_series(0.123456781)) and a.startswith("series=1;points=2;hash=")
+    assert a != validate.extract_result("series_tempo", tempo_series(0.1235))
+    assert validate.validate("series_tempo", 200, '{"series": []}')[1] == "empty result"
+    assert validate.validate("series_tempo", 200, "nope")[1] == "parse-error"
+    import abreg
+    kinds = {sh["name"]: sh["kind"] for s in abreg.load_json(abreg.SHAPES)["sets"].values() for sh in s["shapes"]}
+    assert kinds["traceql rate"] == kinds["traceql rate by_service"] == kinds["traceql quantile"] == "series_tempo"

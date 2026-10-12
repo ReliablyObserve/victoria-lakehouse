@@ -28,6 +28,7 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 if ROOT not in sys.path:  # scripts.proof is imported as a package from the repository root
     sys.path.insert(0, ROOT)
 from scripts.proof.metrics.common import UnknownShape  # noqa: E402
+from scripts.proof.metrics.decode import decode_tempo_metrics  # noqa: E402
 from scripts.proof.metrics.trace import decode_jaeger, decode_otlp, decode_tempo_search  # noqa: E402
 
 MISS_KINDS = ("trace_lookup",)  # run.sh MISS_QUERIES: a cross-signal lookup may find nothing
@@ -214,9 +215,28 @@ def extract_tempo_search(body: str) -> str:
     return _traces_signature(decode_tempo_search, body)
 
 
+def _sig_digits(v, digits: int = 6) -> str:
+    return "nan" if v is None or v != v else f"{v:.{digits - 1}e}"
+
+
+def extract_series_tempo(body: str) -> str:
+    """TraceQL metrics: series keyed by label set, points by timestamp, values to 6 significant digits. Lakehouse sums floats in an order
+    that varies between calls (measured: A/A cells flapped in the last digits), which is no difference."""
+    raw = body.strip()
+    if not raw:
+        return "invalid:empty-body"
+    try:
+        series = decode_tempo_metrics(json.loads(raw))
+    except (ValueError, UnknownShape, AttributeError, TypeError):
+        return "invalid:parse-error"
+    canon = {k: {str(ts): _sig_digits(v) for ts, v in sorted(pts.items())} for k, pts in sorted(series.items())}
+    digest = hashlib.sha256(json.dumps(canon, sort_keys=True).encode()).hexdigest()
+    return f"series={len(canon)};points={sum(len(p) for p in canon.values())};hash={digest}"
+
+
 EXTRACTORS = {"scalar": extract_scalar, "groupby": extract_groupby, "values": extract_values, "scan": extract_scan,
               "spans": extract_spans, "json": extract_json, "trace_jaeger": extract_trace_jaeger, "trace_otlp": extract_trace_otlp,
-              "tempo_search": extract_tempo_search}
+              "tempo_search": extract_tempo_search, "series_tempo": extract_series_tempo}
 # run.sh qkind -> our result kind, for the differential test
 RUNSH_KIND = {"count_total": "scalar", "fulltext": "scalar", "level_filter": "scalar", "multi_filter": "scalar", "negation": "scalar",
               "service_filter": "scalar", "slow_spans": "scalar", "span_name": "scalar", "count_by_service": "groupby",
@@ -230,7 +250,7 @@ def extract_result(kind: str, body: str) -> str:
 
 def result_is_empty(result: str) -> bool:
     """run.sh result_is_empty."""
-    return result in ("0", "rows=0", "spans=0") or result.startswith(("rows=0;hash=", "traces=0;"))
+    return result in ("0", "rows=0", "spans=0") or result.startswith(("rows=0;hash=", "traces=0;", "series=0;"))
 
 
 def validate(kind: str, status: int, body: str, first_result: str | None = None, miss: bool = False,

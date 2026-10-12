@@ -208,11 +208,11 @@
       "layers": ["cold", "compacted"],
       "ranges": ["1h", "full"],
       "shapes": [
-        {"name": "traceql rate", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/metrics/query_range", "params": {"q": "{ } | rate()", "step": "300s"}, "window": "seconds",
+        {"name": "traceql rate", "signal": "traces", "api": "tempo", "kind": "series_tempo", "method": "GET", "path": "/select/tempo/api/metrics/query_range", "params": {"q": "{ } | rate()", "step": "300s"}, "window": "seconds",
          "covers": ["vt.traceql.rate.basic", "lh.feature.traces.span_metrics"]},
-        {"name": "traceql rate by_service", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/metrics/query_range", "params": {"q": "{ } | rate() by (resource.service.name)", "step": "300s"}, "window": "seconds",
+        {"name": "traceql rate by_service", "signal": "traces", "api": "tempo", "kind": "series_tempo", "method": "GET", "path": "/select/tempo/api/metrics/query_range", "params": {"q": "{ } | rate() by (resource.service.name)", "step": "300s"}, "window": "seconds",
          "covers": ["vt.traceql.rate.by_service", "lh.feature.traces.span_metrics"]},
-        {"name": "traceql quantile", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/metrics/query_range", "params": {"q": "{ } | quantile_over_time(duration, 0.9)", "step": "300s"}, "window": "seconds",
+        {"name": "traceql quantile", "signal": "traces", "api": "tempo", "kind": "series_tempo", "method": "GET", "path": "/select/tempo/api/metrics/query_range", "params": {"q": "{ } | quantile_over_time(duration, 0.9)", "step": "300s"}, "window": "seconds",
          "covers": ["vt.traceql.quantile_over_time.basic", "lh.feature.traces.span_metrics"]}
       ]
     },
