@@ -157,6 +157,20 @@ def summarize(raw: dict, label: str, noise: float = NOISE_REL, min_delta: float 
             "state": raw.get("state")}
 
 
+def apply_ref_skip(summary: dict, ref_skip: frozenset) -> dict:
+    """Re-derive the result-vs-hot fields of a saved summary for shapes that are compared base against PR only."""
+    for c in summary["cells"]:
+        if c["shape"] in ref_skip:
+            c["vs_ref"] = {"base": "n/a", "pr": "n/a"}
+            same_answer = c["result"].get("base") == c["result"].get("pr")
+            c["difference"] = "none" if same_answer or not (c["n_valid"].get("base") and c["n_valid"].get("pr")) else "new"
+    diffs: dict[str, int] = {}
+    for c in summary["cells"]:
+        diffs[c["difference"]] = diffs.get(c["difference"], 0) + 1
+    summary["differences"] = diffs
+    return summary
+
+
 def merge_confirm(summary: dict, again: dict) -> dict:
     """Replace the cells the first pass called slower or faster by the re-measure's cells (marked `confirmed`)."""
     redo = {c["cell"]: c for c in again["cells"]}

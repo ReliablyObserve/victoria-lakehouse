@@ -223,6 +223,42 @@ def finish(out: str, perf_text: str, api_text: str, perf_v: dict, api_v: dict, m
     return max(perf_v["exit"], api_v["exit"])
 
 
+def render_all(out: str, result: dict, sel: dict, spec: dict, meta: dict, args) -> int:
+    """Known differences, the two comments and their verdicts, from the results of a run (saved in --out, so --rerender can redo it)."""
+    rows = abreg.load_rows()
+    gaps = abreg.gaps_doc_issues()
+    # each comment reports the differences its own run found, so a perf check never fails on an API row and the reverse
+    known_perf = knownmod.join(knownmod.observed_from_perf(result["summary"], spec), rows, gaps, args.require_issue)
+    known = knownmod.join(knownmod.observed_from_api(result["matrix"]), rows, gaps, args.require_issue)
+    known["registry"] = known_perf["registry"] = meta["registry_gap_stats"] = knownmod.registry_gap_stats(rows, gaps)
+    abreg.dump_json(os.path.join(out, "known-perf.json"), known_perf)
+    abreg.dump_json(os.path.join(out, "known-api.json"), known)
+    perf_text, perf_v = comment.render_perf(result["summary"], sel, meta, known_perf, result["components"])
+    if result["extra"]:
+        marker = "\n<sub>"
+        i = perf_text.rfind(marker)
+        perf_text = perf_text[:i] + "\n".join(extra_profile_lines(result["extra"])) + "\n" + perf_text[i:]
+    api_text, api_v = comment.render_api(result["matrix"], sel, meta, known)
+    return finish(out, perf_text, api_text, perf_v, api_v, meta)
+
+
+def rerender(out: str, args) -> int:
+    """Rebuild summaries, known differences and comments from the saved raw results of an earlier run, without measuring."""
+    spec = abreg.load_json(abreg.SHAPES)
+    meta = abreg.load_json(os.path.join(out, "meta.json"))
+    sel = abreg.load_json(os.path.join(out, "selection.json"))
+    # the saved summary already holds the re-measured cells; only the result-vs-hot fields are derived again
+    summary = report.apply_ref_skip(abreg.load_json(os.path.join(out, "summary-0ms.json")), report.ref_skip_from(spec))
+    extra = {}
+    for name in sorted(os.listdir(out)):
+        m = re.fullmatch(r"summary-(\d+(?:\.\d+)?)ms\.json", name)
+        if m and float(m.group(1)) > 0:
+            extra[m.group(1)] = abreg.load_json(os.path.join(out, name))
+    result = {"summary": summary, "extra": extra, "matrix": abreg.load_json(os.path.join(out, "api-matrix.json")),
+              "components": abreg.load_json(os.path.join(out, "components.json"))}
+    return render_all(out, result, sel, spec, meta, args)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", default="", help="base git ref (default: merge-base of origin/main and the head)")
@@ -240,10 +276,13 @@ def main(argv=None) -> int:
     ap.add_argument("--same-build", action="store_true", help="A/A: the head build is also the base (the noise floor)")
     ap.add_argument("--skip-build", action="store_true", help="the images already exist (stack.py build)")
     ap.add_argument("--keep-stack", action="store_true", help="leave the stack and the trees (for a re-run)")
+    ap.add_argument("--rerender", action="store_true", help="rebuild summaries, known differences and comments from the saved results in --out; measures nothing")
     ap.add_argument("--require-issue", action="store_true", help="a known difference whose registry row cites no GitHub issue fails")
     a = ap.parse_args(argv)
     a.latencies = [float(x) for x in a.latencies.split(",") if x]
     out = os.path.abspath(a.out)
+    if a.rerender:
+        return rerender(out, a)
     os.makedirs(out, exist_ok=True)
     t0 = time.time()
     meta: dict = {"runs": a.runs, "confirm_runs": a.confirm_runs, "same_build": a.same_build, "versions": {}, "host_load": ", ".join(f"{x:.1f}" for x in os.getloadavg())}
@@ -288,21 +327,7 @@ def main(argv=None) -> int:
         result = measure_all(a, sel, spec, out, meta)
         meta["elapsed_s"] = round(time.time() - t0)
         meta["host_load_end"] = ", ".join(f"{x:.1f}" for x in os.getloadavg())
-        rows = abreg.load_rows()
-        gaps = abreg.gaps_doc_issues()
-        # each comment reports the differences its own run found, so a perf check never fails on an API row and the reverse
-        known_perf = knownmod.join(knownmod.observed_from_perf(result["summary"], spec), rows, gaps, a.require_issue)
-        known = knownmod.join(knownmod.observed_from_api(result["matrix"]), rows, gaps, a.require_issue)
-        known["registry"] = known_perf["registry"] = meta["registry_gap_stats"] = knownmod.registry_gap_stats(rows, gaps)
-        abreg.dump_json(os.path.join(out, "known-perf.json"), known_perf)
-        abreg.dump_json(os.path.join(out, "known-api.json"), known)
-        perf_text, perf_v = comment.render_perf(result["summary"], sel, meta, known_perf, result["components"])
-        if result["extra"]:
-            marker = "\n<sub>"
-            i = perf_text.rfind(marker)
-            perf_text = perf_text[:i] + "\n".join(extra_profile_lines(result["extra"])) + "\n" + perf_text[i:]
-        api_text, api_v = comment.render_api(result["matrix"], sel, meta, known)
-        return finish(out, perf_text, api_text, perf_v, api_v, meta)
+        return render_all(out, result, sel, spec, meta, a)
     except (Exception, SystemExit) as e:  # noqa: BLE001 - any failure must still produce the comments and exit 3
         traceback.print_exc()
         meta["elapsed_s"] = round(time.time() - t0)

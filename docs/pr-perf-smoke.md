@@ -58,8 +58,8 @@ base commit and from the PR. Grafana, the Jaeger UI and the proxies are not star
   and the toxic is read back (`latency.py`). A probe then times the same request through the proxy and directly to RustFS,
   interleaved, and fails the run when the measured added delay is off the injected one by more than max(10 ms, 25 %). A second
   check reads Lakehouse's own `lakehouse_s3_request_duration_seconds` around one cold query at 0 ms and at the injected value and
-  requires the mean to rise by at least the injected delay and at most 2.5 times it (requests queue on shared connections: +85 ms was
-  measured for 50 ms injected, while a query took one round trip), which proves that Lakehouse's S3 traffic crosses the proxy (the original
+  requires the mean to rise by at least the injected delay and at most 2.5 times it (on two runs of the same stack the mean rose by 85 ms and by
+  50 ms for 50 ms injected; the spread is not explained), which proves that Lakehouse's S3 traffic crosses the proxy (the original
   bug was a wrong path). This replaces the 2026-09 injector, which exec'd into a container of another compose project, ignored the failure and measured
   nothing: its "20/50/100 ms" columns had no latency in them. Reproduction of the old behaviour:
   `scripts/bench/with-s3-latency.sh 50 0 -- python3 scripts/bench/ab/latency.py probe --timing-only ...` prints "injected 50ms" and the probe

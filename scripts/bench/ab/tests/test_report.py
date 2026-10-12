@@ -87,3 +87,10 @@ def test_shapes_marked_vs_ref_false_compare_base_with_pr_only():
     assert c["difference"] == "new"  # not compared with hot, but the PR answers differently from the base
     spec = {"sets": {"s": {"shapes": [{"name": "a", "vs_ref": False}, {"name": "b"}]}}}
     assert report.ref_skip_from(spec) == frozenset({"a"})
+
+
+def test_apply_ref_skip_rederives_a_saved_summary():
+    s = report.summarize(raw(cell_rows(K, 10, 10, base_result="41", pr_result="41")), "t")
+    assert s["differences"] == {"pre-existing": 1}
+    out = report.apply_ref_skip(s, frozenset({"logs count_total"}))
+    assert out["differences"] == {"none": 1} and out["cells"][0]["vs_ref"]["pr"] == "n/a"

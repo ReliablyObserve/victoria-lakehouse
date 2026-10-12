@@ -243,7 +243,7 @@ def render_perf(summary: dict | None, selection: dict, meta: dict, known: dict |
     lines += component_lines(components) + [""] + process_lines(summary.get("process", {})) + ["", "</details>"]
     lines += why_lines(selection)
     if known is not None:
-        lines += [""] + knownmod.render(known, meta.get("registry_gap_stats"))
+        lines += [""] + knownmod.render(known, meta.get("registry_gap_stats") or known.get("registry"))
     lines += ["", "<sub>" + meta_stamp(meta, summary) + ". One fresh stack, targets interleaved per request, every answer validated "
               "(an invalid answer is never a latency). How to read and reproduce: `docs/pr-perf-smoke.md`.</sub>"]
     exit_code = 2 if invalid else (1 if failed else 0)
@@ -311,7 +311,7 @@ def render_api(matrix: dict | None, selection: dict, meta: dict, known: dict | N
     lines += ["", "</details>"]
     lines += why_lines(selection)
     if known is not None:
-        lines += [""] + knownmod.render(known, meta.get("registry_gap_stats"))
+        lines += [""] + knownmod.render(known, meta.get("registry_gap_stats") or known.get("registry"))
     stamp = meta_stamp(meta)
     lines += ["", "<sub>" + stamp + ". Verdicts and percentages are scripts/proof's (status, error text, rows, values, series, traces, schema; 100% only when exact). "
               "How to read and reproduce: `docs/pr-perf-smoke.md`.</sub>"]
