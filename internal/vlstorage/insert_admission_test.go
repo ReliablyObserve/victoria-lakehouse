@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -300,18 +302,30 @@ func TestInsertAdapter_SameStreamTwoTenantsOneBatch(t *testing.T) {
 	}
 }
 
-// seriesAtStart is /metrics as it is when the package's own init functions have
-// run (a test file's init runs after the package's), before any test has created
-// a series by using it.
-var seriesAtStart = func() *bytes.Buffer { return new(bytes.Buffer) }()
-
-func init() { metrics.WritePrometheus(seriesAtStart, false) }
+// TestFlushRowsDroppedSeries_Helper runs only in the child process of
+// TestFlushRowsDroppedSeries_ExportedFromStart: it prints /metrics as the
+// package's init functions left it, before any test has created a series.
+func TestFlushRowsDroppedSeries_Helper(t *testing.T) {
+	if os.Getenv("LH_VLSTORAGE_SERIES_HELPER") == "" {
+		t.Skip("child process of TestFlushRowsDroppedSeries_ExportedFromStart")
+	}
+	var buf bytes.Buffer
+	metrics.WritePrometheus(&buf, false)
+	fmt.Print("SERIES-BEGIN\n", buf.String(), "SERIES-END\n")
+}
 
 // lakehouse_buffer_flush_rows_dropped_total{reason="trace_shaped_stream"} is on
-// /metrics from process start, so increase() sees the first drop.
+// /metrics from process start, so increase() sees the first drop. Read in a
+// fresh process: here an earlier test may have created the series by using it.
 func TestFlushRowsDroppedSeries_ExportedFromStart(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFlushRowsDroppedSeries_Helper$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "LH_VLSTORAGE_SERIES_HELPER=1")
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("child process: %v", err)
+	}
 	series := `lakehouse_buffer_flush_rows_dropped_total{reason="` + ReasonTraceShapedStream + `"}`
-	if !strings.Contains(seriesAtStart.String(), series) {
+	if !strings.Contains(string(raw), series) {
 		t.Errorf("%s is not exported at start", series)
 	}
 }

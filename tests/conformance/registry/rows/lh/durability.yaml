@@ -153,8 +153,8 @@
       - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_CountsEveryRowRefusedForTheCardinalityLimit
       - internal/vlstorage/insert_admission_test.go#TestInsertAdapter_SameStreamTwoTenantsOneBatch
       - internal/vlstorage/insert_admission_test.go#TestFlushRowsDroppedSeries_ExportedFromStart
-      - internal/metrics/rowgroup_skip_reasons_test.go#TestMustStayZeroSeries_ExportedFromStart
-      - internal/metrics/rowgroup_skip_reasons_test.go#TestBufferFlushErrorStages_MatchCallSites
+      - internal/metrics/must_stay_zero_test.go#TestMustStayZeroSeries_ExportedFromStart
+      - internal/metrics/must_stay_zero_test.go#TestBufferFlushErrorStages_MatchCallSites
       - internal/storage/epoch_test.go#TestReasonConstants_AreListedInMetrics
       - internal/storage/tenant_stream_map_test.go#TestTenantStreamMap_ZeroValue
       - internal/storage/tenant_stream_map_test.go#TestTenantStreamMap_SameHashTwoTenants

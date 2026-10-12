@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -279,19 +281,31 @@ func TestVTInsertAdapter_SameStreamTwoTenantsOneBatch(t *testing.T) {
 	}
 }
 
-// seriesAtStart is /metrics as it is when the package's own init functions have
-// run (a test file's init runs after the package's), before any test has created
-// a series by using it.
-var seriesAtStart = func() *bytes.Buffer { return new(bytes.Buffer) }()
-
-func init() { metrics.WritePrometheus(seriesAtStart, false) }
+// TestVTInternalDroppedSeries_Helper runs only in the child process of
+// TestVTInternalDroppedSeries_ExportedFromStart: it prints /metrics as the
+// package's init functions left it, before any test has created a series.
+func TestVTInternalDroppedSeries_Helper(t *testing.T) {
+	if os.Getenv("LH_VLSTORAGE_SERIES_HELPER") == "" {
+		t.Skip("child process of TestVTInternalDroppedSeries_ExportedFromStart")
+	}
+	var buf bytes.Buffer
+	metrics.WritePrometheus(&buf, false)
+	fmt.Print("SERIES-BEGIN\n", buf.String(), "SERIES-END\n")
+}
 
 // lakehouse_vt_internal_rows_dropped_total{kind=...} is on /metrics from process
 // start for every kind this binary counts, so increase() sees the first drop.
+// Read in a fresh process: here an earlier test may have created a series.
 func TestVTInternalDroppedSeries_ExportedFromStart(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestVTInternalDroppedSeries_Helper$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "LH_VLSTORAGE_SERIES_HELPER=1")
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("child process: %v", err)
+	}
 	for _, kind := range []string{vtInternalKindTraceIDIdx, vtInternalKindTraceIDIdxBeforeEpoch, vtInternalKindTraceIDIdxCardinality} {
 		series := `lakehouse_vt_internal_rows_dropped_total{kind="` + kind + `"}`
-		if !strings.Contains(seriesAtStart.String(), series) {
+		if !strings.Contains(string(raw), series) {
 			t.Errorf("%s is not exported at start", series)
 		}
 	}
