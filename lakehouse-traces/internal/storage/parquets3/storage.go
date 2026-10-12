@@ -928,7 +928,7 @@ func (s *Storage) PrefetchFootersByKeys(ctx context.Context, keys []string, conc
 	if len(files) == 0 {
 		return
 	}
-	fetched := prefetchFooters(ctx, s.pool, files, s.footerCache, concurrency, s.footerPrefetchBytes())
+	fetched := prefetchFootersOpts(ctx, s.pool, files, s.footerCache, concurrency, s.footerPrefetchBytes(), prefetchOpts{learn: s.learnFooterTail})
 	logger.Infof("footer-cache snapshot prefetch: hydrated %d of %d snapshot keys (manifest matched %d)",
 		fetched, len(keys), len(files))
 }
@@ -1441,6 +1441,7 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 		var mu sync.Mutex
 		fetched := prefetchFootersOpts(ctx, s.pool, needEnrich, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{
 			fetchAll: true,
+			learn:    s.learnFooterTail,
 			visit: func(fi manifest.FileInfo, cached *CachedFooter) {
 				if s.enrichFromCachedFooter(fi, cached) {
 					mu.Lock()
@@ -1575,6 +1576,7 @@ func (s *Storage) loadFileMetadataFromDisk() int {
 		if entry.TraceIDHex {
 			s.manifest.MarkTraceIDHex(entry.Key)
 		}
+		s.manifest.SetFooterTail(entry.Key, entry.FooterTail)
 		if entry.RowCount > 0 {
 			s.manifest.EnrichFileMetadata(entry.Key, entry.RowCount, entry.MinTimeNs, entry.MaxTimeNs)
 			enriched++
@@ -1601,6 +1603,7 @@ func (s *Storage) saveFileMetadataToDisk() {
 				SchemaFingerprint: fi.SchemaFingerprint,
 				Labels:            fi.Labels,
 				TraceIDHex:        fi.TraceIDHex,
+				FooterTail:        fi.FooterTail,
 			})
 		}
 	}

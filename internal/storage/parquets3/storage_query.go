@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
@@ -369,7 +370,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// The prefetch is bounded by the footer-cache budget (it fetches no more
 	// footers than the cache holds, keeping the workers' own footer Puts from
 	// evicting them before use); the rest open their own footer on demand.
-	prefetchFootersOpts(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{reserve: fileWorkers})
+	prefetchFootersOpts(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{reserve: fileWorkers, learn: s.learnFooterTail})
 
 	queryID := fmt.Sprintf("q-%d", queryStart.UnixNano())
 
@@ -506,6 +507,13 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 	}
 	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, pruneQuery, s.registry, s.footerCache, s.footerPrefetchBytes()); skip {
 		return
+	}
+	if s.footerCache != nil && fi.FooterTail == 0 {
+		// The probe above may have just read this file's footer: record how long
+		// its tail is, so the next cold read is one exact request.
+		if cf, ok := s.footerCache.Get(fi.Key); ok {
+			s.learnFooterTail(fi, cf)
+		}
 	}
 	if s.checkFileBloom(ctx, fi, pruneQuery) {
 		return
@@ -879,24 +887,14 @@ func (s *Storage) openParquetFileInternal(ctx context.Context, fi manifest.FileI
 			// concurrent queries hitting the same cold file) then use range
 			// reads for only the needed columns instead of downloading the
 			// entire file. Unchanged legacy behavior (the rollback path).
-			offset := fi.Size - footerPrefetchTail(s.footerPrefetchBytes(), fi.Size)
-			if offset < 0 {
-				offset = 0
-			}
-			metrics.S3GetsByPhase.Inc("footer")
-			tail, err := s.pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, fi.Size-offset)
-			if err == nil && len(tail) >= 8 {
-				if footerLen, fErr := FooterLength(tail[len(tail)-8:]); fErr == nil {
-					totalFooterBytes := footerLen + 8
-					if totalFooterBytes <= len(tail) {
-						if cachedF, _, pErr := cacheFooterFromTail(ctx, dedupDownloader(s.pool), fi.Key, tail, offset, fi.Size); pErr == nil {
-							s.footerCache.Put(fi.Key, cachedF)
-							totalCols := len(cachedF.File.Root().Columns())
-							if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
-								if f, view, rErr := s.openProjectedParquet(ctx, fi, cachedF.File.Schema(), cachedF, usePlanned); rErr == nil {
-									return f, view, nil
-								}
-							}
+			if t, err := parquetfooter.Read(ctx, s.pool.DownloadRangeDedup, fi.Key, fi.Size, footerPrefetchTail(s.footerPrefetchBytes(), fi.Size), int64(fi.FooterTail), 0); err == nil {
+				if cachedF, _, pErr := cacheFooterFromTail(ctx, dedupDownloader(s.pool), fi.Key, t.Data, t.Off, fi.Size); pErr == nil {
+					s.footerCache.Put(fi.Key, cachedF)
+					s.learnFooterTail(fi, cachedF)
+					totalCols := len(cachedF.File.Root().Columns())
+					if shouldUseRangeRead(fi.Size, len(projectedCols), totalCols) {
+						if f, view, rErr := s.openProjectedParquet(ctx, fi, cachedF.File.Schema(), cachedF, usePlanned); rErr == nil {
+							return f, view, nil
 						}
 					}
 				}

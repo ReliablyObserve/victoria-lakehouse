@@ -21,6 +21,9 @@ type FileMeta struct {
 	Labels            map[string][]string `json:"lb,omitempty"`
 	// TraceIDHex mirrors FileInfo.TraceIDHex (the footer's lh.trace_id_hex).
 	TraceIDHex bool `json:"th,omitempty"`
+	// FooterTail mirrors FileInfo.FooterTail (the bytes at the end of the object
+	// a footer read needs).
+	FooterTail int32 `json:"ft,omitempty"`
 }
 
 type FileMetaSidecar struct {
@@ -58,6 +61,7 @@ func FileInfoToMeta(fi FileInfo) FileMeta {
 		SchemaFingerprint: fi.SchemaFingerprint,
 		Labels:            fi.Labels,
 		TraceIDHex:        fi.TraceIDHex,
+		FooterTail:        fi.FooterTail,
 	}
 }
 
@@ -93,6 +97,11 @@ func (fm FileMeta) ApplyTo(fi *FileInfo) {
 	// rewrite or a compaction writes a new key), so a recorded "1" is kept.
 	if !fi.TraceIDHex && fm.TraceIDHex {
 		fi.TraceIDHex = true
+	}
+	// Likewise the tail length: a value the manifest already has (written by
+	// this process, or re-learned from a footer read) is at least as good.
+	if fi.FooterTail == 0 && fm.FooterTail > 0 {
+		fi.FooterTail = fm.FooterTail
 	}
 }
 

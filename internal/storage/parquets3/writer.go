@@ -19,6 +19,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/fieldpresence"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tokenbloom"
@@ -265,7 +266,8 @@ func (w *BatchWriter) uploadLogGroup(ctx context.Context, up *logGroupUpload) er
 		MinTimeNs:         minTimeNs,
 		MaxTimeNs:         maxTimeNs,
 		RawBytes:          result.RawBytes,
-		BloomBytes:        footerBloomBytes(result.Data),
+		BloomBytes:        result.BloomBytes,
+		FooterTail:        result.FooterTail,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
 		LabelAggregates:   schema.ExtractLogLabelAggregates(rows),
@@ -404,7 +406,8 @@ func (w *BatchWriter) uploadTraceGroup(ctx context.Context, up *traceGroupUpload
 		MinTimeNs:         minTimeNs,
 		MaxTimeNs:         maxTimeNs,
 		RawBytes:          result.RawBytes,
-		BloomBytes:        footerBloomBytes(result.Data),
+		BloomBytes:        result.BloomBytes,
+		FooterTail:        result.FooterTail,
 		SchemaFingerprint: schemaFingerprint(w.mode),
 		Labels:            labels,
 		LabelAggregates:   schema.ExtractTraceLabelAggregates(rows),
@@ -458,39 +461,13 @@ type flushResult struct {
 	// name -> bytes, summed across row groups). Aggregated over the manifest's
 	// files it yields the per-field on-S3 storage footprint.
 	ColumnBytes map[string]int64
+	// BloomBytes and FooterTail are read from the same parse of the written
+	// footer as ColumnBytes (parquetfooter.Inspect).
+	BloomBytes int64
+	FooterTail int32
 	// TraceIDHex is what the file's footer attests under
 	// schema.TraceIDHexMetaKey: every trace_id value in it is lowercase hex.
 	TraceIDHex bool
-}
-
-// columnBytesFromFooter reads the just-written Parquet footer and returns the
-// total compressed bytes each top-level column occupies (summed across row
-// groups). Cheap: OpenFile parses only the footer already in memory; no column
-// data is read. Returns nil on any error so the flush degrades to "no per-column
-// sizes" rather than failing.
-func columnBytesFromFooter(data []byte) map[string]int64 {
-	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return nil
-	}
-	md := f.Metadata()
-	if md == nil || len(md.RowGroups) == 0 {
-		return nil
-	}
-	out := make(map[string]int64)
-	for i := range md.RowGroups {
-		for j := range md.RowGroups[i].Columns {
-			cm := md.RowGroups[i].Columns[j].MetaData
-			if len(cm.PathInSchema) == 0 {
-				continue
-			}
-			out[cm.PathInSchema[0]] += cm.TotalCompressedSize
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 func zstdLevel(level int) zstd.Level {
@@ -543,10 +520,13 @@ func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel i
 		return nil, err
 	}
 	logData := buf.Bytes()
+	footer := parquetfooter.Inspect(logData)
 	return &flushResult{
 		Data:        logData,
 		RawBytes:    estimateRawBytesLogs(rows),
-		ColumnBytes: columnBytesFromFooter(logData),
+		ColumnBytes: footer.ColumnBytes,
+		BloomBytes:  footer.BloomBytes,
+		FooterTail:  footer.Tail,
 		TraceIDHex:  traceIDHex,
 	}, nil
 }
@@ -592,10 +572,13 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		return nil, err
 	}
 	traceData := buf.Bytes()
+	footer := parquetfooter.Inspect(traceData)
 	return &flushResult{
 		Data:        traceData,
 		RawBytes:    estimateRawBytesTraces(rows),
-		ColumnBytes: columnBytesFromFooter(traceData),
+		ColumnBytes: footer.ColumnBytes,
+		BloomBytes:  footer.BloomBytes,
+		FooterTail:  footer.Tail,
 		TraceIDHex:  traceIDHex,
 	}, nil
 }

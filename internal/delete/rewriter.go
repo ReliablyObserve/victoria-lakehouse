@@ -13,6 +13,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -46,9 +47,11 @@ type RewriteResult struct {
 	MaxTimeNs int64
 	// RawBytes is the uncompressed footprint of the kept rows.
 	RawBytes int64
-	// BloomBytes / ColumnBytes are read back from the written footer.
+	// BloomBytes / ColumnBytes / FooterTail are read back from the written
+	// footer (parquetfooter.Inspect).
 	BloomBytes  int64
 	ColumnBytes map[string]int64
+	FooterTail  int32
 	// LabelAggregates is field -> value -> row count over the kept rows only.
 	LabelAggregates map[string]map[string]int64
 	// Labels is the per-field distinct value set over the kept rows — the set
@@ -239,8 +242,10 @@ func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombsto
 	}
 
 	result.BytesAfter = int64(len(newData))
-	result.BloomBytes = footerBloomBytes(newData)
-	result.ColumnBytes = columnBytesFromFooter(newData)
+	footer := parquetfooter.Inspect(newData)
+	result.BloomBytes = footer.BloomBytes
+	result.ColumnBytes = footer.ColumnBytes
+	result.FooterTail = footer.Tail
 	// Read back from the footer the replacement was written with, so the
 	// manifest records exactly what the object attests.
 	result.TraceIDHex = schema.FileTraceIDHex(newData)
@@ -300,54 +305,6 @@ func (r *Rewriter) Discard(ctx context.Context, result *RewriteResult) {
 // deleteObject deletes one object through the rewriter's pool.
 func (r *Rewriter) deleteObject(ctx context.Context, key string) error {
 	return r.pool.Delete(ctx, key)
-}
-
-// footerBloomBytes sums the encoded size of every column-chunk bloom filter in
-// the written file — the same measure the flush and compaction writers record,
-// so the manifest's bloom-cost accounting stays comparable across all three
-// producers. Best-effort: 0 when the footer can't be parsed.
-func footerBloomBytes(data []byte) int64 {
-	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return 0
-	}
-	var total int64
-	for _, rg := range f.RowGroups() {
-		for _, cc := range rg.ColumnChunks() {
-			if bf := cc.BloomFilter(); bf != nil {
-				total += bf.Size()
-			}
-		}
-	}
-	return total
-}
-
-// columnBytesFromFooter returns column name -> total compressed bytes, read
-// from the written footer. Mirrors the flush/compaction writers so per-field
-// storage accounting does not go blank the moment a file is rewritten.
-func columnBytesFromFooter(data []byte) map[string]int64 {
-	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return nil
-	}
-	md := f.Metadata()
-	if md == nil || len(md.RowGroups) == 0 {
-		return nil
-	}
-	out := make(map[string]int64)
-	for i := range md.RowGroups {
-		for j := range md.RowGroups[i].Columns {
-			cm := md.RowGroups[i].Columns[j].MetaData
-			if len(cm.PathInSchema) == 0 {
-				continue
-			}
-			out[cm.PathInSchema[0]] += cm.TotalCompressedSize
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 // sourceSlotMapping lifts the Tier-2 dedicated-slot name binding out of the

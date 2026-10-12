@@ -115,6 +115,17 @@ type FileInfo struct {
 	// and the pmeta file-meta facet, and re-learned from the footer when a file is
 	// opened. False means "not attested": the phrase is pruned by tokens only.
 	TraceIDHex bool `json:"trace_id_hex,omitempty"`
+	// FooterTail is the number of bytes at the end of the object a reader needs
+	// to have its whole footer and page-index stripe (parquetfooter.Info.Tail),
+	// recorded by the writer that produced the object and re-learned from the
+	// first footer read of an object that lacks it (a listing, an older
+	// snapshot). The footer read then asks for exactly these bytes in one ranged
+	// request instead of a fixed prefetch window (which is too small for a large
+	// footer, so it costs a second request, and too large for a small one).
+	// 0 means unknown: the read uses the window. The value is only a hint: a
+	// stale one is detected from the trailer and costs one extra request. Adjacent
+	// to TraceIDHex so the pair packs into one word.
+	FooterTail int32 `json:"footer_tail,omitempty"`
 }
 
 // ExactBounds returns the object's real time range, or (0, 0) while the manifest
@@ -2589,6 +2600,32 @@ func (m *Manifest) MarkTraceIDHex(key string) {
 		return
 	}
 	files[i].TraceIDHex = true
+}
+
+// SetFooterTail records the tail length (FileInfo.FooterTail) learned from a
+// footer read, for a file the manifest knew without it or knew differently. The
+// value describes the immutable object under key; n <= 0 is ignored. It does
+// not mark the snapshot dirty: a lost update is re-learned by the next footer
+// read of the file.
+func (m *Manifest) SetFooterTail(key string, n int32) {
+	if n <= 0 {
+		return
+	}
+	// Almost every call finds the value already recorded: check under the read
+	// lock, so the common case never takes the write lock (and never makes the
+	// partition copy a write after a snapshot capture costs).
+	m.mu.RLock()
+	cur, idx := m.findFileLocked(key)
+	same := idx >= 0 && cur[idx].FooterTail == n
+	m.mu.RUnlock()
+	if same || idx < 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if files, i := m.findFileForWriteLocked(key); i >= 0 {
+		files[i].FooterTail = n
+	}
 }
 
 // EnrichFileMetadata updates RowCount and time bounds for a file identified

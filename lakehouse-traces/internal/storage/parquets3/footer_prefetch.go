@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -33,15 +35,24 @@ const (
 // while the large compacted files that actually carry oversized footers
 // (traces L2: 467-519KB of trace-index KV on ~24MB objects → clamp 3MB)
 // get the full per-signal prefetch size. Same max(64KB, size/8) clamp
-// family as the coalescing-gap clamps. An under-fetch self-heals:
-// fetchFooterFile issues an exact second range read once the trailer
-// reveals the true footer length.
+// family as the coalescing-gap clamps. It is the window used when the manifest
+// has no recorded FooterTail for the object; an under-fetch self-heals:
+// parquetfooter.Read fetches only the missing head once the trailer reveals
+// the true footer length.
 func footerPrefetchTail(prefetchBytes, fileSize int64) int64 {
 	if sizeCap := max64(64<<10, fileSize/8); prefetchBytes > sizeCap {
 		return sizeCap
 	}
 	return prefetchBytes
 }
+
+// prefetchBudget is the most a footer PREFETCH spends on one object: the size
+// clamp of footerPrefetchTail, max(64 KiB, size/8), however large s3.footer_prefetch_bytes
+// is. A footer past it (an object that is mostly footer) is not probed ahead of
+// time; whatever query needs it reads it exactly when it opens the object. A
+// footer between the configured window and this budget is read whole, not
+// dropped after a wasted window read as before.
+func prefetchBudget(fileSize int64) int64 { return max64(64<<10, fileSize/8) }
 
 // pendingFooter is a parsed footer whose cache entry still references the
 // caller's buffer; own() turns it into an entry that owns exactly what is worth
@@ -166,39 +177,16 @@ func shouldSkipByFooter(
 		}
 	}
 
-	// Range-read the configured tail to get the parquet footer.
-	offset := fi.Size - footerPrefetchTail(prefetchBytes, fi.Size)
-	if offset < 0 {
-		offset = 0
-	}
-	length := fi.Size - offset
-
-	metrics.S3GetsByPhase.Inc("footer")
-	tail, err := pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, length)
+	// Read the end of the object that holds the footer: exactly the recorded
+	// FooterTail bytes (footer and page-index stripe, one request) when the
+	// manifest has them, else the configured window, with a second request for
+	// only the missing head of an oversize footer.
+	t, err := parquetfooter.Read(ctx, pool.DownloadRangeDedup, fi.Key, fi.Size, footerPrefetchTail(prefetchBytes, fi.Size), int64(fi.FooterTail), prefetchBudget(fi.Size))
 	if err != nil {
 		// Fall back to full download — don't fail the query.
 		return false, nil
 	}
-
-	// The tail must contain at least the 8-byte parquet suffix (footer length + magic).
-	if len(tail) < 8 {
-		return false, nil
-	}
-
-	// Read the footer length from the last 8 bytes.
-	footerLen, err := FooterLength(tail[len(tail)-8:])
-	if err != nil {
-		// Not a valid parquet file or bad magic — fall back.
-		return false, nil
-	}
-
-	// Determine how many bytes of footer we have in the tail.
-	// The full footer region is: footerLen bytes + 8 bytes suffix = footerLen+8 bytes from end.
-	totalFooterBytes := footerLen + 8
-	if totalFooterBytes > len(tail) {
-		// Footer is larger than what we fetched — fall back to full download.
-		return false, nil
-	}
+	tail, offset := t.Data, t.Off
 
 	// Parse the footer metadata.
 	pending, err := parseFooterRegion(fi.Key, tail, offset, fi.Size)
@@ -261,6 +249,9 @@ type prefetchOpts struct {
 	// fetchAll fetches every footer even past what the cache can hold; only
 	// what fits is kept (PutIfFits, no eviction). Without visit it has no use.
 	fetchAll bool
+	// learn, when set, is handed every footer the same way visit is, to record
+	// what the footer says about its object (the tail length, Storage.learnFooterTail).
+	learn func(fi manifest.FileInfo, cached *CachedFooter)
 }
 
 // estimatedEntryBytes is the charge assumed for a footer that has not been
@@ -298,6 +289,16 @@ func prefetchFootersOpts(ctx context.Context, pool *s3reader.ClientPool, files [
 		concurrency = 16
 	}
 
+	visit := o.visit
+	if o.learn != nil {
+		visit = func(fi manifest.FileInfo, cf *CachedFooter) {
+			o.learn(fi, cf)
+			if o.visit != nil {
+				o.visit(fi, cf)
+			}
+		}
+	}
+
 	var uncached []manifest.FileInfo
 	cachedInBatch := 0
 	for _, fi := range files {
@@ -306,8 +307,8 @@ func prefetchFootersOpts(ctx context.Context, pool *s3reader.ClientPool, files [
 		}
 		if cf, ok := footerCache.Get(fi.Key); ok {
 			cachedInBatch++
-			if o.visit != nil {
-				o.visit(fi, cf)
+			if visit != nil {
+				visit(fi, cf)
 			}
 		} else {
 			uncached = append(uncached, fi)
@@ -319,7 +320,7 @@ func prefetchFootersOpts(ctx context.Context, pool *s3reader.ClientPool, files [
 
 	var st prefetchStats
 	if o.fetchAll {
-		fetchFooterBatch(ctx, pool, uncached, footerCache, concurrency, prefetchBytes, o.visit, true, &st)
+		fetchFooterBatch(ctx, pool, uncached, footerCache, concurrency, prefetchBytes, visit, true, &st)
 	} else {
 		budget := footerCache.MaxBytes()
 		rest := uncached
@@ -335,7 +336,7 @@ func prefetchFootersOpts(ctx context.Context, pool *s3reader.ClientPool, files [
 				break
 			}
 			wave := min(int64(len(rest)), limit, int64(concurrency))
-			fetchFooterBatch(ctx, pool, rest[:wave], footerCache, concurrency, prefetchBytes, o.visit, false, &st)
+			fetchFooterBatch(ctx, pool, rest[:wave], footerCache, concurrency, prefetchBytes, visit, false, &st)
 			rest = rest[wave:]
 		}
 		if len(rest) > 0 {
@@ -384,39 +385,26 @@ func fetchFooterBatch(ctx context.Context, pool *s3reader.ClientPool, batch []ma
 				if ctx.Err() != nil {
 					return
 				}
-				offset := fi.Size - footerPrefetchTail(prefetchBytes, fi.Size)
-				if offset < 0 {
-					offset = 0
-				}
-				length := fi.Size - offset
-				metrics.S3GetsByPhase.Inc("footer")
-				tail, err := pool.DownloadRangeDedup(ctx, "footer", fi.Key, offset, length)
-				if err != nil || len(tail) < 8 {
-					mu.Lock()
-					st.dlErrors++
-					mu.Unlock()
-					continue
-				}
-				footerLen, err := FooterLength(tail[len(tail)-8:])
+				t, err := parquetfooter.Read(ctx, pool.DownloadRangeDedup, fi.Key, fi.Size, footerPrefetchTail(prefetchBytes, fi.Size), int64(fi.FooterTail), prefetchBudget(fi.Size))
 				if err != nil {
 					mu.Lock()
-					st.parseErrors++
+					switch {
+					case errors.Is(err, parquetfooter.ErrOverBudget):
+						st.tooBig++
+					case errors.Is(err, parquetfooter.ErrNotParquet):
+						st.parseErrors++
+					default:
+						st.dlErrors++
+					}
 					mu.Unlock()
 					continue
 				}
-				totalFooterBytes := footerLen + 8
-				if totalFooterBytes > len(tail) {
-					mu.Lock()
-					st.tooBig++
-					mu.Unlock()
-					continue
-				}
-				cached, _, err := cacheFooterFromTail(ctx, pool.DownloadRangeDedup, fi.Key, tail, offset, fi.Size)
+				cached, _, err := cacheFooterFromTail(ctx, pool.DownloadRangeDedup, fi.Key, t.Data, t.Off, fi.Size)
 				if err != nil {
 					mu.Lock()
 					st.parseErrors++
 					if st.parseErrors == 1 {
-						logger.Warnf("footer prefetch: first parse error: key=%s size=%d tail=%d err=%v", fi.Key, fi.Size, len(tail), err)
+						logger.Warnf("footer prefetch: first parse error: key=%s size=%d tail=%d err=%v", fi.Key, fi.Size, len(t.Data), err)
 					}
 					mu.Unlock()
 					continue

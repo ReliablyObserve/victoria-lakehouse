@@ -54,6 +54,29 @@
     that information per stream and UTC day, computed by the writers from the read path's own naming, so a later release can
     answer field_names without decoding rows. It changes no answer today.
 
+- id: lh.feature.storage.footer_tail
+  title: One exact request for a cold footer read
+  status: shipped
+  area: storage
+  surfaces: [storage]
+  rows: [lh.storage.footer_tail.recorded_by_writers, lh.read.footer_exact_request, lh.manifest.footer_tail_carried]
+  tests:
+    - internal/parquetfooter/parquetfooter_test.go#TestRead_ExactHintIsOneRequestOfExactlyThatLength
+    - lakehouse-traces/internal/storage/parquets3/trace_by_id_cold_ab_test.go#TestTraceByIDColdAB
+  notes: >-
+    The trace-by-ID test is a measurement harness (skips unless TBID_AB_OUT is set); the A/B behind
+    docs/perf/field-presence-footer.md was run by hand against main.
+  docs:
+    - docs/read-path.md#footer-reads-one-exact-request
+    - docs/manifest-system.md#fileinfo
+    - docs/perf/field-presence-footer.md
+  highlight: >-
+    **Exact footer reads**: the manifest records how many bytes at the end of each object a footer read needs, so a cold read is one request of exactly that size.
+  description: >-
+    The footer prefetch used to read a fixed window (64 KiB to 640 KiB) and, when the footer was larger, read the window
+    again and then the whole footer. Writers now record the exact length, and a footer read asks for those bytes in one request;
+    an object without the record costs one extra request for only the part the window missed, and is recorded from its first read.
+
 - id: lh.feature.storage.manifest
   title: Partition manifest with label pruning
   status: shipped

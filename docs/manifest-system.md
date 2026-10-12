@@ -52,8 +52,11 @@ FileInfo {
     SchemaFingerprint string              // Schema version hash
     CompactionLevel   int                 // Compaction pass count
     Labels            map[string][]string // Label values in file
+    FooterTail        int32               // Bytes at the end of the object a footer read needs (0 = unknown)
 }
 ```
+
+`FooterTail` is the number of bytes from the first page-index section (the ColumnIndex/OffsetIndex stripe) to the end of the object: the page index, the Thrift footer and the 8-byte trailer, which is everything a cold footer read needs. The flush, compaction and delete-rewrite writers measure it on the object they just wrote, in the same parse of the footer that gives `BloomBytes` and `ColumnBytes` (`internal/parquetfooter`, shared by both binaries), and the reader asks S3 for exactly those bytes in one ranged request. Without it (an object adopted from a listing, a snapshot from before the field) the read uses the prefetch window (`s3.footer_prefetch_bytes`, clamped by object size) and, when the footer turns out to be larger, one more request for only the part the window missed; the first footer read of such an object records its `FooterTail`, so the next cold read is exact. The value is only a hint: the trailer of what comes back says whether it was enough, a wrong or stale value costs one extra request and never a wrong footer, and an absurd one (above 128 MiB) is ignored. It is carried like `trace_id_hex`: the binary (gob) snapshot, which is additive in both directions (an older snapshot loads with 0, an older build ignores the field), the file-metadata sidecar (`ft`), the pmeta file-meta facet and the on-disk file-metadata cache.
 
 **Methods:**
 - `CompressionRatio()` — returns `RawBytes / Size`

@@ -325,6 +325,7 @@ type FileMetaEntry struct {
 	SchemaFingerprint string              `json:"sf,omitempty"`
 	Labels            map[string][]string `json:"lb,omitempty"`
 	TraceIDHex        bool                `json:"th,omitempty"`
+	FooterTail        int32               `json:"ft,omitempty"`
 }
 
 type FileMetadataCache struct {

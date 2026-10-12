@@ -15,6 +15,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 )
 
 // CachedFooter is one footer-cache entry: the parsed footer plus the raw tail
@@ -111,22 +112,25 @@ func (c *CachedFooter) needsPageIndex() bool {
 // pageIndexStripeStart returns the smallest ColumnIndex/OffsetIndex offset in
 // the footer metadata, or -1 when the file has no page index.
 func pageIndexStripeStart(f *parquet.File) int64 {
-	md := f.Metadata()
-	if md == nil {
-		return -1
+	return parquetfooter.StripeStart(f.Metadata())
+}
+
+// TailLen is the number of bytes at the end of the object a footer read needs to
+// have this entry's footer and its whole page-index stripe: what the manifest
+// records as FileInfo.FooterTail. It is derived from the parsed footer, so it is
+// right whether or not the entry's tail holds the stripe. 0 when unknown.
+func (c *CachedFooter) TailLen() int32 {
+	if c == nil || c.File == nil || c.FileSize <= 0 || c.footerSize <= 0 {
+		return 0
 	}
-	start := int64(-1)
-	for i := range md.RowGroups {
-		for j := range md.RowGroups[i].Columns {
-			c := &md.RowGroups[i].Columns[j]
-			for _, o := range [...]int64{c.ColumnIndexOffset, c.OffsetIndexOffset} {
-				if o > 0 && (start < 0 || o < start) {
-					start = o
-				}
-			}
-		}
+	start := c.FileSize - int64(c.footerSize)
+	if ps := pageIndexStripeStart(c.File); ps > 0 && ps < start {
+		start = ps
 	}
-	return start
+	if n := c.FileSize - start; n >= parquetfooter.TrailerLen && n <= parquetfooter.MaxHint {
+		return int32(n)
+	}
+	return 0
 }
 
 type footerEntry struct {
@@ -419,17 +423,8 @@ func footerTailOfObject(data []byte, f *parquet.File) ([]byte, error) {
 		return nil, fmt.Errorf("declared footer length %d exceeds the object (%d bytes)", footerLen, len(data))
 	}
 	start := int64(len(data) - total)
-	if md := f.Metadata(); md != nil {
-		for i := range md.RowGroups {
-			for j := range md.RowGroups[i].Columns {
-				c := &md.RowGroups[i].Columns[j]
-				for _, off := range [...]int64{c.ColumnIndexOffset, c.OffsetIndexOffset} {
-					if off > 0 && off < start {
-						start = off
-					}
-				}
-			}
-		}
+	if ps := pageIndexStripeStart(f); ps > 0 && ps < start {
+		start = ps
 	}
 	if start < 0 || start > int64(len(data)) {
 		start = int64(len(data) - total)

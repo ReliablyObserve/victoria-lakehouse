@@ -9,6 +9,7 @@ import (
 	"time"
 
 	lhmanifest "github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -148,11 +149,8 @@ func TestRewriter_CommitAndDiscardEdgePaths(t *testing.T) {
 
 func TestFooterHelpers_ToleratesUnreadableBytes(t *testing.T) {
 	junk := []byte("not a parquet file")
-	if got := footerBloomBytes(junk); got != 0 {
-		t.Errorf("footerBloomBytes(junk) = %d, want 0", got)
-	}
-	if got := columnBytesFromFooter(junk); got != nil {
-		t.Errorf("columnBytesFromFooter(junk) = %v, want nil", got)
+	if got := parquetfooter.Inspect(junk); got.BloomBytes != 0 || got.ColumnBytes != nil || got.Tail != 0 {
+		t.Errorf("Inspect(junk) = %+v, want the zero value", got)
 	}
 	if got := sourceSlotMapping(junk); got != nil {
 		t.Errorf("sourceSlotMapping(junk) = %v, want nil", got)

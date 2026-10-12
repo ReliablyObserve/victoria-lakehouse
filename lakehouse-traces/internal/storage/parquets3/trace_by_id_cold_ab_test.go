@@ -55,6 +55,7 @@ type tbidRecord struct {
 	Ns           int64   `json:"ns"`
 	Gets         int     `json:"gets"`
 	Bytes        int64   `json:"bytes"`
+	Chain        int     `json:"chain"` // longest chain of data GETs each starting after the previous ended: the round trips on the critical path
 	Spans        int     `json:"spans"`
 	WantSpans    int     `json:"want_spans"`
 	Valid        bool    `json:"valid"`
@@ -170,11 +171,15 @@ func TestTraceByIDColdAB(t *testing.T) {
 		key := fmt.Sprintf("traces/dt=2026-06-01/hour=%02d/f%03d.parquet", 10+i, i)
 		mock.Put("test-bucket", key, res.Data)
 		minT, maxT := schema.TraceRowTimeBounds(rows)
-		objs = append(objs, obj{part: partitionFromNano(rows[0].TimestampUnixNano), fi: manifest.FileInfo{
+		fi := manifest.FileInfo{
 			Key: key, Size: int64(len(res.Data)), RowCount: int64(len(rows)), MinTimeNs: minT, MaxTimeNs: maxT,
 			RawBytes: res.RawBytes, Labels: extractTraceLabels(rows), LabelAggregates: schema.ExtractTraceLabelAggregates(rows),
 			ColumnBytes: res.ColumnBytes,
-		}})
+		}
+		if os.Getenv("TBID_HINT") != "0" { // 0: a listing-adopted file, no recorded footer-tail length
+			tbidFooterHint(&fi, res.Data)
+		}
+		objs = append(objs, obj{part: partitionFromNano(rows[0].TimestampUnixNano), fi: fi})
 		objBytes += int64(len(res.Data))
 		d := res.Data
 		footerBytes += int64(uint32(d[len(d)-8]) | uint32(d[len(d)-7])<<8 | uint32(d[len(d)-6])<<16 | uint32(d[len(d)-5])<<24)
@@ -235,15 +240,20 @@ func TestTraceByIDColdAB(t *testing.T) {
 			}
 			var gets int
 			var bytesRead int64
+			var dataGets []countReq
 			for _, r := range mock.Reset() {
 				if strings.HasPrefix(r.Op, "GET") && r.Class == "data" {
+					dataGets = append(dataGets, r)
 					gets++
 					bytesRead += r.Out
+					if os.Getenv("TBID_DUMP") != "" && it == 0 {
+						fmt.Fprintf(os.Stderr, "GET lat=%dms %s out=%d\n", lat.Milliseconds(), r.Key, r.Out)
+					}
 				}
 			}
 			rec := tbidRecord{Build: os.Getenv("TBID_BUILD"), Round: os.Getenv("TBID_ROUND"), Streams: streams, NamesPerSpan: names,
 				Objects: nObjs, ObjectBytes: objBytes, FooterBytes: footerBytes, LatencyMs: lat.Milliseconds(), ProbeMs: probe,
-				Iter: it, Ns: ns, Gets: gets, Bytes: bytesRead, Spans: n, WantSpans: wantSpans, Valid: n == wantSpans && wantSpans > 0}
+				Iter: it, Ns: ns, Gets: gets, Bytes: bytesRead, Chain: chainOf(dataGets), Spans: n, WantSpans: wantSpans, Valid: n == wantSpans && wantSpans > 0}
 			if err := enc.Encode(rec); err != nil {
 				t.Fatal(err)
 			}

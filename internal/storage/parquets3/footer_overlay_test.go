@@ -14,6 +14,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 )
 
 // logsObject writes one production-shaped logs object and returns its bytes.
@@ -217,7 +218,7 @@ func TestFooterWriters_AllKeepPageIndex(t *testing.T) {
 		}
 	})
 	// A prefetch range too small for the footer forces the two-phase fetch. The
-	// exact-footer read looks pageIndexLookBehind bytes behind the footer, so the
+	// exact-footer read looks parquetfooter.LookBehind bytes behind the footer, so the
 	// stripe arrives with it: two GETs. With no look-behind the stripe needs its
 	// own GET: three. Either way the entry keeps the page index.
 	for _, tc := range []struct {
@@ -227,9 +228,9 @@ func TestFooterWriters_AllKeepPageIndex(t *testing.T) {
 	}{{"two-phase default look-behind", -1, 2}, {"two-phase look-behind", 32 << 10, 2}, {"two-phase no look-behind", 0, 3}} {
 		t.Run("fetchFooterFile "+tc.name, func(t *testing.T) {
 			if tc.look >= 0 { // -1 runs with the production default
-				old := pageIndexLookBehind
-				pageIndexLookBehind = tc.look
-				defer func() { pageIndexLookBehind = old }()
+				old := parquetfooter.LookBehind
+				parquetfooter.LookBehind = tc.look
+				defer func() { parquetfooter.LookBehind = old }()
 			}
 			fx := newColdFixture(t, 1, 9000, 3000, config.ProjectedFetchModePlanned)
 			fx.s.cfg.S3.FooterPrefetchBytes = 4096

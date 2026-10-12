@@ -2,7 +2,6 @@ package parquets3
 
 import (
 	"context"
-	"fmt"
 	"math"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -10,16 +9,10 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
-
-// pageIndexLookBehind is how far before an oversize footer the two-phase footer
-// fetch reads, to pick up the page-index stripe in the same request. Measured
-// stripe sizes are 3.4 KB (logs, flush-sized objects) and 6.4 KB (traces,
-// compacted objects); 32 KB leaves room for wide row-group counts. A larger
-// stripe falls back to one extra range GET.
-var pageIndexLookBehind = int64(32 << 10)
 
 // fetchFooterFile returns a metadata-only *parquet.File for fi. Prefers the
 // footer cache; on miss it does a small range read (~16 KB) instead of
@@ -68,70 +61,45 @@ func (s *Storage) fetchFooterEntry(ctx context.Context, fi manifest.FileInfo) (*
 // caller), DownloadRange stops with the caller's context.
 type rangeDownloader func(ctx context.Context, kind, key string, offset, length int64) ([]byte, error)
 
-// fetchFooterTail reads the footer of fi with a ranged read of the object's
-// tail (the whole object when it is smaller than the tail), then a second,
-// exact-length ranged read when the footer is larger than the tail (typical for
-// trace objects with a large `_trace_idx` key-value), parses it, and caches it.
-// It does not consult the cache and never downloads the whole object of a
-// large file. Shared by fetchFooterFile and the exact-bounds resolution.
+// fetchFooterTail reads the footer of fi with a ranged read of the end of the
+// object (parquetfooter.Read): exactly the recorded FooterTail bytes (footer and
+// page-index stripe) when the manifest has them, otherwise the prefetch window
+// followed, when the footer is larger (typical for trace objects with a large
+// `_trace_idx` key-value), by a read of only the missing head. It parses the
+// footer and caches it. It does not consult the cache and never downloads the
+// whole object of a large file. Shared by fetchFooterFile and the exact-bounds
+// resolution.
 func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl rangeDownloader) (*CachedFooter, *parquet.File, error) {
-	offset := fi.Size - footerPrefetchTail(s.footerPrefetchBytes(), fi.Size)
-	if offset < 0 {
-		offset = 0
-	}
-	length := fi.Size - offset
-	metrics.S3GetsByPhase.Inc("footer")
-	tail, err := dl(ctx, "footer", fi.Key, offset, length)
-	if err != nil {
-		return nil, nil, fmt.Errorf("download footer range: %w", err)
-	}
-	if len(tail) < 8 {
-		return nil, nil, fmt.Errorf("footer tail too short: %d bytes", len(tail))
-	}
-	footerLen, err := FooterLength(tail[len(tail)-8:])
+	t, err := parquetfooter.Read(ctx, parquetfooter.Downloader(dl), fi.Key, fi.Size, footerPrefetchTail(s.footerPrefetchBytes(), fi.Size), int64(fi.FooterTail), 0)
 	if err != nil {
 		return nil, nil, err
 	}
-	totalFooterBytes := footerLen + 8
-	tailOff := offset
-	if totalFooterBytes > len(tail) {
-		// Two-phase fetch: the prefetch tail wasn't large enough to
-		// hold the whole footer (typical for trace parquet files whose
-		// embedded `_trace_idx` key-value metadata can run multiple
-		// megabytes). We now know the exact footer size from the
-		// trailer we already read, so issue a single targeted range
-		// download. Previously we returned an error here, which
-		// cascaded into trace-by-ID fallback-to-full-scan and the
-		// observed 5-10 s Grafana timeouts.
-		footerOffset := fi.Size - int64(totalFooterBytes)
-		if footerOffset < 0 {
-			return nil, nil, fmt.Errorf("footer length implies negative offset: footer=%d file=%d", totalFooterBytes, fi.Size)
-		}
-		// Read pageIndexLookBehind bytes ahead of the footer in the same range:
-		// the page-index stripe sits right before it, so a stripe that fits
-		// the look-behind costs no third round trip.
-		fetchOff := footerOffset - min(footerOffset, pageIndexLookBehind)
-		metrics.S3GetsByPhase.Inc("footer")
-		bigTail, err := dl(ctx, "footer", fi.Key, fetchOff, fi.Size-fetchOff)
-		if err != nil {
-			return nil, nil, fmt.Errorf("download oversize footer range: %w", err)
-		}
-		if int64(len(bigTail)) < fi.Size-fetchOff {
-			return nil, nil, fmt.Errorf("oversize footer fetch short: got %d, want %d", len(bigTail), fi.Size-fetchOff)
-		}
-		tail, tailOff = bigTail, fetchOff
-	}
 	// cacheFooterFromTail keeps the page-index stripe with the footer (one
-	// extra range GET when the stripe lies before the fetched tail, as it does
-	// for a footer that did not fit the prefetch range).
-	cached, f, err := cacheFooterFromTail(ctx, dl, fi.Key, tail, tailOff, fi.Size)
+	// extra range GET when the stripe lies before the fetched tail, which a
+	// recorded FooterTail rules out).
+	cached, f, err := cacheFooterFromTail(ctx, dl, fi.Key, t.Data, t.Off, fi.Size)
 	if err != nil {
 		return nil, nil, err
 	}
 	if s.footerCache != nil {
 		s.footerCache.Put(fi.Key, cached)
 	}
+	s.learnFooterTail(fi, cached)
 	return cached, f, nil
+}
+
+// learnFooterTail records, in the manifest, how many bytes at the end of fi a
+// footer read needs (the span of the cached entry: page-index stripe and footer),
+// when the manifest has no value or a different one: an object adopted from a
+// listing, restored from an older snapshot, or whose recorded value was wrong.
+// The next cold read of the object is then one exact request.
+func (s *Storage) learnFooterTail(fi manifest.FileInfo, cached *CachedFooter) {
+	if s.manifest == nil || cached == nil {
+		return
+	}
+	if n := cached.TailLen(); n > 0 && n != fi.FooterTail {
+		s.manifest.SetFooterTail(fi.Key, n)
+	}
 }
 
 // GetFieldNames answers /select/logsql/field_names as VictoriaLogs does: the

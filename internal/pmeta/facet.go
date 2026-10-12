@@ -60,6 +60,9 @@ type FileContribution struct {
 	// TraceIDHex is the file's footer attestation that every trace_id value is
 	// lowercase hex (schema.TraceIDHexMetaKey), consumed by FacetFileMeta.
 	TraceIDHex bool
+	// FooterTail is FileInfo.FooterTail: the bytes at the end of the object a
+	// footer read needs, consumed by FacetFileMeta.
+	FooterTail int32
 }
 
 // Facet is the per-partition unit of metadata. One implementation per kind.

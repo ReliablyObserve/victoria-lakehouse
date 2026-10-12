@@ -1,0 +1,91 @@
+# The footer tail length (FileInfo.FooterTail): how many bytes at the end of an object a footer read needs, recorded by
+# every writer and used by the cold footer read to ask for exactly those bytes in one request. A read-path and manifest
+# contract with no request of its own, so kind: flag rows (no request, no seed); the proof is the Go tests they link.
+# No answer changes: the footer that comes back is the object's own whatever the recorded value is.
+
+- id: lh.storage.footer_tail.recorded_by_writers
+  title: "Every writer (flush, compaction, delete rewrite; both binaries) records FileInfo.FooterTail, the bytes from the first page-index section to the end of the object, measured on the object it wrote, in the one parse of the footer that also gives BloomBytes and ColumnBytes"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/manifest-system.md#fileinfo
+    tests:
+      - internal/parquetfooter/parquetfooter_test.go#TestInspect_TailIsPageIndexStripeThroughEOF
+      - internal/parquetfooter/parquetfooter_test.go#TestInspect_UnreadableIsZero
+      - internal/parquetfooter/parquetfooter_test.go#TestTailLen_Shapes
+      - internal/parquetfooter/parquetfooter_test.go#TestLength
+      - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_WritersRecordIt
+      - internal/storage/parquets3/footer_tail_test.go#TestSegments_DrainRecordsFooterTail
+      - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_WritersRecordIt
+      - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestSegments_DrainRecordsFooterTail
+      - internal/compaction/footer_tail_test.go#TestCompaction_RecordsFooterTail
+      - internal/delete/footer_tail_test.go#TestRewriteFile_RecordsFooterTail
+  notes: >-
+    The three writers used to open the object they had just written two or three times (column bytes, bloom bytes, trace
+    attestation); the column, bloom and tail figures now come from one parse that skips the page index. An unreadable
+    object records 0 (unknown), never a guess.
+
+- id: lh.read.footer_exact_request
+  title: "A cold footer read of an object whose manifest entry records FooterTail is one ranged request of exactly those bytes (footer and page-index stripe); without it the prefetch window is read and a larger footer costs one more request for only the missing head; a wrong value only costs a request and is corrected from the first read"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/read-path.md#footer-reads-one-exact-request
+    tests:
+      - internal/parquetfooter/parquetfooter_test.go#TestRead_ExactHintIsOneRequestOfExactlyThatLength
+      - internal/parquetfooter/parquetfooter_test.go#TestRead_NoHint
+      - internal/parquetfooter/parquetfooter_test.go#TestRead_HintValidation
+      - internal/parquetfooter/parquetfooter_test.go#TestRead_Errors
+      - internal/parquetfooter/parquetfooter_test.go#TestRead_Budget
+      - internal/parquetfooter/parquetfooter_test.go#FuzzRead
+      - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_ExactRecordedReadIsOneRequest
+      - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_PrefetchCachesFootersLargerThanTheWindow
+      - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_AnyRecordedValueIsHarmless
+      - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_PrefetchSkipsFootersOverTheBudget
+      - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_LearnedFromTheFirstRead
+      - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_ColdQueryReadsFewerFooterBytes
+      - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_ExactRecordedReadIsOneRequest
+      - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_AnyRecordedValueIsHarmless
+      - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_PrefetchSkipsFootersOverTheBudget
+      - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_LearnedFromTheFirstRead
+      - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_ColdQueryReadsFewerFooterBytes
+      - lakehouse-traces/internal/storage/parquets3/trace_by_id_cold_ab_test.go#TestTraceByIDColdAB
+  notes: >-
+    Before this, the batch footer prefetch dropped a footer larger than its window (3 requests per object: the discarded
+    prefetch window, the window again, the whole footer again) and the window itself was a fixed 64 KiB to 640 KiB whatever
+    the footer needed. TestTraceByIDColdAB is a measurement harness (skips unless TBID_AB_OUT is set); the numbers are in
+    docs/perf/field-presence-footer.md. The batch prefetch reads no footer above max(64 KiB, object size / 8) (an object that is mostly
+    footer is read by the query that needs it, exactly, when it opens it); the open path has no such limit. The lazy open of an object whose footer is not cached is unchanged.
+
+- id: lh.manifest.footer_tail_carried
+  title: "FooterTail rides the manifest snapshot (additive in both directions), the file-metadata sidecar, the pmeta file-meta facet and the on-disk file-metadata cache, like trace_id_hex"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/manifest-system.md#fileinfo
+    tests:
+      - internal/manifest/footer_tail_test.go#TestFooterTail_SnapshotRoundTripAndMark
+      - internal/manifest/footer_tail_test.go#TestFooterTail_SnapshotIsAdditive
+      - internal/manifest/footer_tail_test.go#TestFooterTail_SidecarCarriesIt
+      - internal/pmeta/facet_file_meta_footer_tail_test.go#TestFileMetaFacet_FooterTail
+      - internal/cache/persist_test.go#TestPersister_FileMetadataKeepsFooterTail
+      - internal/storage/parquets3/footer_tail_test.go#TestFooterTail_CarriedByTheMetadataStores
+      - lakehouse-traces/internal/storage/parquets3/footer_tail_test.go#TestFooterTail_CarriedByTheMetadataStores
+  notes: >-
+    No users yet, but the field is additive anyway: a snapshot written before it loads with 0 (unknown) and a build without
+    the field ignores it. A lost value is re-learned from the next footer read of the object.

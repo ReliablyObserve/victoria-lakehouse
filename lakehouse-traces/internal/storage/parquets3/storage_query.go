@@ -354,7 +354,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// footers than the cache holds, keeping the file workers' own footer Puts
 	// from evicting them before use); the rest read their own footer on demand
 	// (the trace_id narrowing below, then the worker's open).
-	prefetchFootersOpts(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{reserve: s.queryFileWorkers(len(files))})
+	prefetchFootersOpts(ctx, s.pool, files, s.footerCache, 0, s.footerPrefetchBytes(), prefetchOpts{reserve: s.queryFileWorkers(len(files)), learn: s.learnFooterTail})
 
 	// Deterministic trace_id narrowing — runs after bloom because the
 	// footer cache is now warm. For any file with a `_trace_idx`
@@ -493,6 +493,13 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 	}
 	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, pruneQuery, s.registry, s.footerCache, s.footerPrefetchBytes()); skip {
 		return
+	}
+	if s.footerCache != nil && fi.FooterTail == 0 {
+		// The probe above may have just read this file's footer: record how long
+		// its tail is, so the next cold read is one exact request.
+		if cf, ok := s.footerCache.Get(fi.Key); ok {
+			s.learnFooterTail(fi, cf)
+		}
 	}
 	if s.checkFileBloom(ctx, fi, pruneQuery) {
 		return

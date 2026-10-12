@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/fieldpresence"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetfooter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tokenbloom"
@@ -588,6 +589,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// rows, so registering it anyway would duplicate them next to whatever
 	// replaced the source (and bring back any rows a delete removed). The
 	// merge is abandoned instead and the next tick re-selects.
+	footer := parquetfooter.Inspect(outputData)
 	if !c.manifest.ReplaceFiles(partition, inputKeys, manifest.FileInfo{
 		Key:               outputKey,
 		Bucket:            g.Bucket,
@@ -596,12 +598,13 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		MinTimeNs:         minTime,
 		MaxTimeNs:         maxTime,
 		RawBytes:          inputRawBytes,
-		BloomBytes:        footerBloomBytes(outputData),
+		BloomBytes:        footer.BloomBytes,
+		FooterTail:        footer.Tail,
 		SchemaFingerprint: fp,
 		CompactionLevel:   outputLevel,
 		Labels:            mergedLabels,
 		LabelAggregates:   labelAggregates,
-		ColumnBytes:       columnBytesFromFooter(outputData),
+		ColumnBytes:       footer.ColumnBytes,
 		TraceIDHex:        traceIDHex,
 	}) {
 		metrics.CompactionPublishConflicts.Inc()
@@ -835,36 +838,6 @@ var activeSlotResolver *schema.SlotResolver
 
 // SetSlotResolver installs the Tier-2 slot resolver for the compactor.
 func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
-
-// columnBytesFromFooter returns total compressed bytes per top-level column from
-// a written Parquet file's footer (summed across row groups). Fills the compacted
-// output's FileInfo.ColumnBytes so per-field storage size stays correct through
-// compaction. Mirrors the flush writer's helper (this package intentionally keeps
-// its own writer copy). Returns nil on any error.
-func columnBytesFromFooter(data []byte) map[string]int64 {
-	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return nil
-	}
-	md := f.Metadata()
-	if md == nil || len(md.RowGroups) == 0 {
-		return nil
-	}
-	out := make(map[string]int64)
-	for i := range md.RowGroups {
-		for j := range md.RowGroups[i].Columns {
-			cm := md.RowGroups[i].Columns[j].MetaData
-			if len(cm.PathInSchema) == 0 {
-				continue
-			}
-			out[cm.PathInSchema[0]] += cm.TotalCompressedSize
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
 
 // WriteLogs writes rows exactly as a compaction output is written: zstd at the
 // given level, the SBBF column blooms for the configured bloom set (including

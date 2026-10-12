@@ -796,3 +796,27 @@ func TestPersister_FileMetadata_LargeDataset(t *testing.T) {
 		t.Errorf("last entry row_count = %d, want %d", loaded.Entries[n-1].RowCount, 1000+n-1)
 	}
 }
+
+// TestPersister_FileMetadataKeepsFooterTail: the on-disk file-metadata cache
+// carries FileInfo.FooterTail, and an entry written before the field existed
+// reads as 0 (unknown).
+func TestPersister_FileMetadataKeepsFooterTail(t *testing.T) {
+	p, err := NewPersister(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &FileMetadataCache{Entries: []FileMetaEntry{
+		{Key: "dt=2026-05-20/hour=11/a.parquet", RowCount: 1, FooterTail: 786_432},
+		{Key: "dt=2026-05-20/hour=11/b.parquet", RowCount: 1},
+	}}
+	if err := p.SaveFileMetadata(in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := p.LoadFileMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Entries) != 2 || out.Entries[0].FooterTail != 786_432 || out.Entries[1].FooterTail != 0 {
+		t.Fatalf("entries = %+v", out.Entries)
+	}
+}
