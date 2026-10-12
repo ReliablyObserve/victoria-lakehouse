@@ -120,3 +120,10 @@ syn_minpass_removed | synthetic | - | minpass_removed | replay | FAIL | Rule 3 |
 syn_x_sync_bump | synthetic | - | x_sync_bump | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/sync
 syn_x_sys_bump | synthetic | - | x_sys_bump | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/sys
 syn_toolchain_overflow | synthetic | - | toolchain_overflow | replay | FAIL | Rule 1 | - | fix(security): Go 1.27.99999999999999999999
+# The perf-counter rule: the perf block of an expect=pass row is decided per field against the merge base. A few bytes of
+# s3_bytes (<= 1.0 %) are listed with the row; more bytes, more GETs/row groups/pages or a higher latency budget fail Rule 3.
+syn_perf_bytes_small | synthetic | - | perf_bytes_small | replay | PASS | - | 1 perf counter raised within 1.0 % | test(perf): refresh the perf counters after a layout change [skip release]
+syn_perf_bytes_big | synthetic | - | perf_bytes_big | replay | FAIL | Rule 3 | perf counter raised beyond 1.0 % | test(perf): refresh the perf counters after a layout change [skip release]
+syn_perf_gets_up | synthetic | - | perf_gets_up | replay | FAIL | Rule 3 | perf counter raised: | test(perf): refresh the perf counters after a layout change [skip release]
+syn_perf_latency_up | synthetic | - | perf_latency_up | replay | FAIL | Rule 3 | perf budget raised: | test(perf): refresh the perf counters after a layout change [skip release]
+syn_perf_decrease | synthetic | - | perf_decrease | replay | PASS | - | - | test(perf): refresh the perf counters after a layout change [skip release]

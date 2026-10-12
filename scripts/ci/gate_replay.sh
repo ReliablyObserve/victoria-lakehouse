@@ -541,6 +541,39 @@ for path, pat in (("go.mod", r"^(go \d+\.\d+\.)\d+$"), ("Dockerfile.logs", r"(go
 PY2
 }
 
+# --- the perf-counter rule (a perf block of an expect=pass row is decided per field) ------------------
+# perf_edit <field> <python expression of the old number n>: rewrites <field> in the first expect=pass
+# perf row of the registry (counters are integers, latency budgets decimals).
+perf_edit() {
+  python3 - "$1" "$2" <<'PY'
+import re, sys
+field, expr = sys.argv[1], sys.argv[2]
+p = "tests/conformance/registry/rows/perf/field_metadata.yaml"
+lines = open(p, encoding="utf-8").read().split("\n")
+def fmt(v):
+    return str(int(v)) if float(v).is_integer() else str(round(v, 3))
+for i, l in enumerate(lines):
+    if 'expect: "pass"' in l and "s3_bytes:" in l:
+        n = re.sub(r"(\b" + field + r": )([0-9.]+)", lambda m: m.group(1) + fmt(eval(expr, {"n": float(m.group(2))})), l, count=1)
+        assert n != l, field
+        lines[i] = n
+        open(p, "w", encoding="utf-8").write("\n".join(lines))
+        raise SystemExit(0)
+raise SystemExit("no pass perf row")
+PY
+}
+
+# a few bytes of file layout: listed, not failed
+syn_perf_bytes_small() { perf_edit s3_bytes 'n + 100'; }
+# +5 %: the PR reads more bytes
+syn_perf_bytes_big() { perf_edit s3_bytes 'n * 1.05 // 1'; }
+# one more S3 GET
+syn_perf_gets_up() { perf_edit s3_gets 'n + 1'; }
+# a higher latency budget
+syn_perf_latency_up() { perf_edit p50_ms 'n + 1'; }
+# fewer bytes and a lower budget are free
+syn_perf_decrease() { perf_edit s3_bytes 'n - 100'; perf_edit p90_ms 'n - 0.01'; }
+
 # run_synthetic <name> <author> <title> <report> <log>: builds the case in a scratch clone and runs the gate.
 run_synthetic() {
   local name=$1 author=$2 title=$3 report=$4 log=$5 clone="$WORK/syn.$1" base

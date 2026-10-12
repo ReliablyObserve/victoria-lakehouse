@@ -163,6 +163,16 @@
     - tests/conformance/registry/canonical_test.go#TestLoaders_RejectNonCanonicalYAML
     - tests/conformance/registry/testlinks_test.go#TestLockFileWeakenings
     - tests/conformance/registry/paritygate_test.go#TestPassRowChanges_WholeRow
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_FromZeroCounters
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_RequiredCounterDisappears
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_PerfBlockAddedOrRemoved
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_NonNumbers
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_AddedAndDeletedRows
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_MixedPR
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_OnlyBytesHaveAnAllowance
+    - tests/conformance/registry/perfgate_test.go#TestPerfBlockRule_RealRowsFile
+    - tests/conformance/registry/perfgate_test.go#TestPerfRaiseReporting
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_LockMustBeRelatedAndExecuting
     - tests/conformance/registry/paritygate_test.go#TestModifiedParityTests_OnlyTheParitySuite
     - tests/conformance/registry/paritygate_test.go#TestSubstantiveChanges_ProseDoesNotCount
@@ -184,6 +194,7 @@
     - tests/conformance/cmd/testlinks/blobs_test.go#TestBlobReaderMatchesGitShow
     - tests/conformance/cmd/testlinks/blobs_test.go#TestBlobReaderFallsBackWhenTheBatchProcessDies
     - tests/conformance/cmd/testlinks/main_test.go#TestToolErrIsLogSafe
+    - tests/conformance/cmd/testlinks/main_test.go#TestRuleVerdictAndPerfSection
     - scripts/ci/tests/test_pr_classify_toolchain.py
     - scripts/ci/tests/test_pr_classify_critical.py
     - scripts/ci/tests/gate_local_test.sh

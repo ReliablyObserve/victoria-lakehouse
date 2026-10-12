@@ -548,6 +548,11 @@ came out the same).
 
 ## Deterministic counters
 
+Registry-gate rule (Rule 3, `tests/conformance/README.md`, "Performance rows"): against the merge base, lower or equal
+counters and budgets are free, `s3_bytes` up to +1.0 % is listed in the gate report, and any other increase (more bytes,
+GETs, row groups, pages or a higher latency budget) fails. After a change that moves the generated Parquet bytes, update
+the counters only and keep the latency budgets.
+
 The gate holds GETs, bytes, row groups and pages exactly: a cell whose counters differ from its
 row, up or down, or differ between two iterations fails (`perf_rows.py check`; until this change
 only an increase failed, so a drift downwards left stale rows behind). That requires them to be a

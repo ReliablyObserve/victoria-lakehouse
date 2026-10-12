@@ -29,6 +29,9 @@ import (
 // entry, or changes an expect=pass row in any way that could loosen it (the
 // row deleted, no longer pass, its compare type/options/project changed, or its
 // request changed).
+//
+// The one exception is the perf block of a pass row (perfgate.go): lower or equal counters and budgets are
+// free, an s3_bytes raise within 1.0 % is listed, any other increase fails.
 
 // RowLite is the part of a registry row the gate reads, plus the whole decoded
 // row for change detection.
@@ -40,6 +43,7 @@ type RowLite struct {
 	Request    any
 	Tests      []string
 	Whole      map[string]any
+	File       string // the rows file the row was read from (set by the caller; annotations point at it)
 }
 
 // exactEquivalent reports whether a compare block demands the same answer as
@@ -263,7 +267,7 @@ func normalizedRow(whole map[string]any) (fields map[string]any, tests map[strin
 // it check less. Allowed: prose, refs.doc, more refs.tests, and `pending`
 // going from true to false (the row starts executing). Everything else,
 // including targets, seed, layers, upstream, compare and request, is a
-// weakening. A test reference may be replaced only by a rename of a tests/parity
+// weakening, except the perf block, which comparePerf decides per field. A test reference may be replaced only by a rename of a tests/parity
 // lock whose cell floor the new name keeps (renamed returns the old names).
 func passRowChanges(b, h RowLite, baseFloors, headFloors map[string]int, headExists func(string) bool, baseFileTests func(string) []string) (out []string, renamed map[string]bool) {
 	renamed = map[string]bool{}
@@ -280,7 +284,8 @@ func passRowChanges(b, h RowLite, baseFloors, headFloors map[string]int, headExi
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if reflect.DeepEqual(bf[k], hf[k]) {
+		// the perf block is decided by content, per field (comparePerf)
+		if k == "perf" || reflect.DeepEqual(bf[k], hf[k]) {
 			continue
 		}
 		switch k {
@@ -347,6 +352,10 @@ type ParityVerdict struct {
 	Triggers   []string // why the PR is a parity fix
 	Problems   []string // a parity fix is missing its locks
 	Weakenings []string // a lock was weakened or an allowlist entry added
+	// PerfFailures: a pass row's perf counter or latency budget got worse beyond the allowance.
+	PerfFailures []string
+	// PerfRaises: s3_bytes counters raised within perfBytesAllowancePct; listed, not failed.
+	PerfRaises []PerfRaise
 }
 
 // ParityCheck compares two snapshots. modified is the set of "path#TestName"
@@ -394,6 +403,10 @@ func ParityCheck(base, head ParitySnapshot, modified map[string]bool) ParityVerd
 		default:
 			w, r := passRowChanges(b, h, base.Floors, head.Floors, head.RefExists, base.FileTests)
 			v.Weakenings = append(v.Weakenings, w...)
+			pd := comparePerf(id, h.File, b.Whole["perf"], h.Whole["perf"])
+			v.Weakenings = append(v.Weakenings, pd.Weak...)
+			v.PerfFailures = append(v.PerfFailures, pd.Regress...)
+			v.PerfRaises = append(v.PerfRaises, pd.Raises...)
 			for name := range r {
 				renamed[name] = true
 			}

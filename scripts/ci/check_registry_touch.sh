@@ -89,20 +89,30 @@ render_report() {
   echo "Preview locally: \`make registry-gate\` (your working tree's copy of this script; CI judges with the base branch's)."
 }
 
-# review_suffix: " - N lock-affecting files and M gate files need review (listed below)", or nothing.
+# review_suffix: " - N lock-affecting files and M gate files need review (listed below)", or nothing, plus
+# "and K perf counters raised within 1.0 %" when the PR raises s3_bytes counters within the allowance.
 # A bare PASS would hide that a person has to look: the pull request's required approval is the control
-# for these files.
+# for these files and for those raises.
 review_suffix() {
-  local n_lock=0 n_gate=0 parts=()
+  local n_lock=0 n_gate=0 n_perf=0 parts=() out=""
   [[ -f "$REPORT_DIR/review-count" ]] && n_lock=$(tr -dc '0-9' < "$REPORT_DIR/review-count")
+  [[ -f "$REPORT_DIR/perf-raised-count" ]] && n_perf=$(tr -dc '0-9' < "$REPORT_DIR/perf-raised-count")
   [[ -z "$GATE_TOUCHED" ]] || n_gate=$(grep -c . <<< "$GATE_TOUCHED")
   n_lock=${n_lock:-0}
+  n_perf=${n_perf:-0}
   [[ $n_lock -eq 0 ]] || parts+=("$n_lock lock-affecting file$([[ $n_lock -eq 1 ]] || echo s)")
   [[ $n_gate -eq 0 ]] || parts+=("$n_gate gate file$([[ $n_gate -eq 1 ]] || echo s)")
-  [[ ${#parts[@]} -gt 0 ]] || return 0
-  local joined=${parts[0]} total=$((n_lock + n_gate))
-  [[ ${#parts[@]} -lt 2 ]] || joined="${parts[0]} and ${parts[1]}"
-  printf ' - %s %s review (listed below)' "$joined" "$([[ $total -eq 1 ]] && echo needs || echo need)"
+  if [[ ${#parts[@]} -gt 0 ]]; then
+    local joined=${parts[0]} total=$((n_lock + n_gate))
+    [[ ${#parts[@]} -lt 2 ]] || joined="${parts[0]} and ${parts[1]}"
+    out=$(printf ' - %s %s review' "$joined" "$([[ $total -eq 1 ]] && echo needs || echo need)")
+  fi
+  if [[ $n_perf -gt 0 ]]; then
+    local perf
+    perf="$n_perf perf counter$([[ $n_perf -eq 1 ]] || echo s) raised within 1.0 %"
+    if [[ -n "$out" ]]; then out="$out and $perf"; else out=" - $perf"; fi
+  fi
+  [[ -z "$out" ]] || printf '%s (listed below)' "$out"
 }
 
 # gate_annotations: one inline `::warning file=...::` per changed gate file (at most 10, then one

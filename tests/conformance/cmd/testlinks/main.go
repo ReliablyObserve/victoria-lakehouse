@@ -11,7 +11,8 @@
 //
 //	Rule 1  a product change makes a real registry content change (-product is set);
 //	Rule 2  every added Test or Fuzz function is linked, no reference to a removed one is left;
-//	Rule 3  parity fixes ship locks, locks are never weakened.
+//	Rule 3  parity fixes ship locks, locks are never weakened; a pass row's perf counters and
+//	        budgets may not get worse (s3_bytes up to 1.0 % is listed, not failed).
 //
 // Edits of lock code (files whose change could alter what a lock compares) are not
 // failures: they are listed in the report, because the pull request's required
@@ -196,6 +197,17 @@ type rule struct {
 	fixes   []string // one line per failure group: how to fix it
 	lines   [][]string
 	review  int // files the verdict PASS hands to the required review (listed in the report)
+	// perf: s3_bytes counters the PR raises within the 1.0 % allowance (listed in the report)
+	perf []registry.PerfRaise
+}
+
+// perfPhrase is "N perf counter(s) raised within 1.0 %".
+func perfPhrase(n int) string {
+	noun := "counters"
+	if n == 1 {
+		noun = "counter"
+	}
+	return fmt.Sprintf("%d perf %s raised within 1.0 %%", n, noun)
 }
 
 func (r *rule) verdict() string {
@@ -204,10 +216,18 @@ func (r *rule) verdict() string {
 		return "FAIL"
 	case r.skipped != "":
 		return "n/a"
-	case r.review == 1:
+	case r.review == 1 && len(r.perf) == 0:
 		return "PASS - 1 lock-affecting file needs review (listed below)"
-	case r.review > 1:
+	case r.review > 1 && len(r.perf) == 0:
 		return fmt.Sprintf("PASS - %d lock-affecting files need review (listed below)", r.review)
+	case r.review == 0 && len(r.perf) > 0:
+		return fmt.Sprintf("PASS - %s (listed below)", perfPhrase(len(r.perf)))
+	case len(r.perf) > 0:
+		files := "files need"
+		if r.review == 1 {
+			files = "file needs"
+		}
+		return fmt.Sprintf("PASS - %d lock-affecting %s review and %s (listed below)", r.review, files, perfPhrase(len(r.perf)))
 	}
 	return "PASS"
 }
@@ -232,6 +252,45 @@ const maxAnnotations = 10
 
 // maxReportLines bounds the offending lines the report quotes per failure group.
 const maxReportLines = 25
+
+func perfCount(rules []*rule) int {
+	n := 0
+	for _, r := range rules {
+		n += len(r.perf)
+	}
+	return n
+}
+
+// perfSection lists the perf counters the PR raises within the allowance: totals, the largest relative
+// increase and the rows. The owner's review of this list is the control against slow drift.
+func perfSection(rules []*rule) string {
+	var all []registry.PerfRaise
+	for _, r := range rules {
+		all = append(all, r.perf...)
+	}
+	if len(all) == 0 {
+		return ""
+	}
+	rows := map[string]bool{}
+	for _, p := range all {
+		rows[p.Row] = true
+	}
+	var d strings.Builder
+	d.WriteString("### Performance counters raised within 1.0 % (informational, covered by the required review)\n\n")
+	fmt.Fprintf(&d, "%d counters of %d rows are higher than at the merge base, each by at most 1.0 %%. A real regression (a larger s3_bytes increase, more GETs, row groups or pages, a higher latency budget) fails Rule 3 instead; the review of this list is the control against slow drift.\n\n", len(all), len(rows))
+	if big, ok := registry.LargestPerfRaise(all); ok {
+		fmt.Fprintf(&d, "Largest relative increase: +%.2f %% (`%s` %s, %d -> %d).\n\n", big.Percent(), registry.MDEscape(big.Row), big.Field, big.Old, big.New)
+	}
+	for i, p := range all {
+		if i == maxReportLines {
+			fmt.Fprintf(&d, "- … and %d more (see the job log)\n", len(all)-maxReportLines)
+			break
+		}
+		fmt.Fprintf(&d, "- `%s` %s %d -> %d (+%.2f %%)\n", registry.MDEscape(p.Row), p.Field, p.Old, p.New, p.Percent())
+	}
+	d.WriteString("\n")
+	return d.String()
+}
 
 func writeReport(dir string, rules []*rule, lockAffecting []registry.LockChange, summary string) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -289,7 +348,11 @@ func writeReport(dir string, rules []*rule, lockAffecting []registry.LockChange,
 		}
 		d.WriteString("\n")
 	}
+	d.WriteString(perfSection(rules))
 	d.WriteString(summary + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "perf-raised-count"), []byte(fmt.Sprintf("%d\n", perfCount(rules))), 0o600); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(dir, "review-count"), []byte(fmt.Sprintf("%d\n", len(lockAffecting))), 0o600); err != nil {
 		return err
 	}
@@ -425,6 +488,26 @@ func lockReachRules(r3 *rule, repo, base, head string, bs, hs registry.ParitySna
 	return listed
 }
 
+// perfRules applies the perf-block rule to Rule 3: a pass row whose counter or latency budget got worse
+// fails; an s3_bytes raise within 1.0 % is printed as annotations and recorded for the report.
+func perfRules(r3 *rule, pv registry.ParityVerdict) {
+	if len(pv.PerfFailures) > 0 {
+		r3.fail("this PR makes a pass row's performance worse: a perf counter or latency budget is higher than at the merge base", pv.PerfFailures,
+			"restore the performance: the perf block of a pass row may only stay or improve, except s3_bytes, which may grow by at most 1.0 % (it is then listed, not failed). After a change that moves the generated Parquet bytes, update the counters only and keep the latency budgets as they are. If the increase is intended, the owner approves it by merging with an admin bypass (tests/conformance/README.md, 'Performance rows')")
+	}
+	if len(pv.PerfRaises) == 0 {
+		return
+	}
+	fmt.Printf("perf counters raised within 1.0 %% (listed in the report, not a failure): %d\n", len(pv.PerfRaises))
+	for _, p := range pv.PerfRaises {
+		fmt.Println("  " + registry.LogSafe(p.Line()+" ("+p.File+")"))
+	}
+	for _, a := range registry.PerfRaiseWarnings(pv.PerfRaises, maxAnnotations) {
+		fmt.Println(a)
+	}
+	r3.perf = pv.PerfRaises
+}
+
 func run() int {
 	repo := flag.String("repo", ".", "repository root")
 	base := flag.String("base", "", "merge-base revision the PR is compared against")
@@ -539,8 +622,13 @@ func run() int {
 		sn.Floors = floors
 		for _, f := range files {
 			if strings.HasSuffix(f, ".yaml") {
-				if err := registry.ParseRowsLenient(show(rev)(f), sn.Rows); err != nil {
+				fileRows := map[string]registry.RowLite{}
+				if err := registry.ParseRowsLenient(show(rev)(f), fileRows); err != nil {
 					return sn, fmt.Errorf("%s at %s: %w", f, rev, err)
+				}
+				for id, row := range fileRows {
+					row.File = f
+					sn.Rows[id] = row
 				}
 			}
 		}
@@ -573,6 +661,7 @@ func run() int {
 		r3.fail("this PR weakens a parity lock", pv.Weakenings,
 			"undo the weakening: keep the allowlist entry removed, keep every `expect: pass` row and its test references, keep every cell floor in tests/parity/lock_cells.txt (a renamed lock test keeps at least the old floor); a fix adds cells, it never lowers them")
 	}
+	perfRules(r3, pv)
 	if len(pv.Problems) > 0 {
 		var lines []string
 		for _, t := range pv.Triggers {
