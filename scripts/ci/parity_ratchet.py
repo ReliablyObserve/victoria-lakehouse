@@ -154,16 +154,17 @@ def parse_allowlist(text: str) -> Allowlist:
                         f"is on line {min_pass_line}) — keep exactly one"
                     )
                 value = directive[len(MIN_PASS_DIRECTIVE) :].strip()
-                try:
-                    min_pass = int(value)
-                except ValueError as exc:
+                # ASCII digits only (int() also takes "+3", "3_41" and Arabic-Indic digits): the Go
+                # gate (registry.MinPassProblems) reads the directive the same way
+                if re.fullmatch(r"-[0-9]+", value):
+                    raise ValueError(
+                        f"line {lineno}: min-pass must not be negative, got {value}"
+                    )
+                if not re.fullmatch(r"[0-9]{1,15}", value):
                     raise ValueError(
                         f"line {lineno}: invalid min-pass value {value!r}"
-                    ) from exc
-                if min_pass < 0:
-                    raise ValueError(
-                        f"line {lineno}: min-pass must not be negative, got {min_pass}"
                     )
+                min_pass = int(value)
                 result.min_pass = min_pass
                 min_pass_line = lineno
             continue

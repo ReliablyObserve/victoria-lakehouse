@@ -65,10 +65,11 @@ syn_init_exit | synthetic | - | init_exit | replay | FAIL | Rule 3 | - | test(pa
 syn_dependency_bump | synthetic | - | dependency_bump | replay | PASS | - | dependency-only | chore: tidy things
 # The hardening of issue #502 (second independent review of the gate). "old" means the gate of #499.
 # M-A: every new file of a lock package is listed (the old gate said "Lock-affecting files: none" for the first two and the third);
-# import "C" there is a hard Rule 3 failure.
+# import "C" there is a hard Rule 3 failure. The blank-import hook is a hard failure since the third review: the package a lock
+# test imports is lock-adjacent, and an init() there runs before any test (it was listed only).
 syn_warmup_test | synthetic | - | warmup_test | replay | PASS | - | tests/parity/aaa_warmup_test.go | test(parity): add a warm-up test
 syn_forged_transcript_exit | synthetic | - | forged_transcript_exit | replay | PASS | - | tests/parity/zz_forged_test.go | test(parity): add a transcript test
-syn_blank_import_hook | synthetic | - | blank_import_hook | replay | PASS | - | blank-imports | test(parity): add a hook
+syn_blank_import_hook | synthetic | - | blank_import_hook | replay | FAIL | Rule 3 | - | test(parity): add a hook
 syn_cgo_constructor | synthetic | - | cgo_constructor | replay | FAIL | Rule 3 | - | test(parity): add native helpers
 # M-B: a line separator hides an allowlist entry from the Go gate while the Python ratchet sees it; both refuse the bytes now.
 syn_allowlist_nel | synthetic | - | allowlist_nel | replay | FAIL | Rule 3 | - | test(parity): tidy the allowlist
@@ -84,3 +85,35 @@ syn_loadtime_file_rename | synthetic | - | loadtime_file_rename | replay | PASS 
 syn_path_with_newline | synthetic | - | path_with_newline | replay | FAIL | Changed paths,Rule 1 | - | fix(stats): register a route
 # files that shape the verdict are gate files: listed, never failed
 syn_gate_file_listing | synthetic | - | gate_file_listing | replay | PASS | - | Gate files changed | ci: note
+# The third review of the gate (follow-up of issue #502; "old" means the gate of #512).
+# MAJOR-1: a symlink is invisible to every lock rule, yet `go test` compiles a linked .go file. Added or changed links are hard
+# failures in the packages locks live in (and any .go or native-source link anywhere); a docs-only link stays a pass. A symlinked
+# _test.go used to end in a tool error (the link target is not Go); it is Rule 3 now.
+syn_s_newlink_e2e_nontest | synthetic | - | s_newlink_e2e_nontest | replay | FAIL | Rule 3 | tests/e2e/zz_link.go | test(e2e): add a helper
+syn_s_newlink_parity | synthetic | - | s_newlink_parity | replay | FAIL | Rule 3 | tests/parity/zz_link.go | test(parity): add a helper
+syn_s_newlink_product_lockpkg | synthetic | - | s_newlink_product_lockpkg | replay | FAIL | Rule 1,Rule 3 | internal/storage/parquets3/zz_link.go | test(parquets3): add a helper
+syn_s_replace_lockfile | synthetic | - | s_replace_lockfile | replay | FAIL | Rule 3 | tests/parity/helpers.go | test(parity): share the helpers
+syn_s_symlinked_test | synthetic | - | s_symlinked_test | replay | FAIL | Rule 3 | tests/parity/zz_link_test.go | test(parity): add a test
+syn_s_symlink_dir | synthetic | - | s_symlink_dir | replay | FAIL | Rule 3 | tests/e2e/zzdir | test(e2e): share the docs
+syn_s_symlink_docs_only | synthetic | - | s_symlink_docs_only | replay | PASS | - | - | docs: link the readme
+# MAJOR-2: a moved load-time declaration keeps its meaning. The old key was the declaration's source text with white space
+# collapsed: an alias for another package, white space inside a string literal and a moved //go:build constraint all passed as a
+# pure move. m_pure_move_* stay passes (listed); m_move_changed stays a failure.
+syn_m_alias_swap | synthetic | - | m_alias_swap | replay | FAIL | Rule 3 | - | test(parquets3): move the raw-bytes floor
+syn_m_alias_noalias | synthetic | - | m_alias_noalias | replay | FAIL | Rule 3 | - | test(parquets3): move the raw-bytes floor
+syn_m_pure_move_imports | synthetic | - | m_pure_move_imports | replay | PASS | - | internal/storage/parquets3/zz_moved_test.go | test(parquets3): move the raw-bytes floor
+syn_m_literal_whitespace | synthetic | - | m_literal_whitespace | replay | FAIL | Rule 3 | - | test(parity): move the tie rows
+syn_m_move_changed | synthetic | - | m_move_changed | replay | FAIL | Rule 3 | - | test(parity): move the tie rows
+syn_m_pure_move_nearby | synthetic | - | m_pure_move_nearby | replay | PASS | - | tests/parity/zz_nearby_test.go | test(parity): move the tie rows
+syn_m_build_constraint | synthetic | - | m_build_constraint | replay | FAIL | Rule 3 | - | test(e2e): move the auth org id
+# MAJOR-3: tests/ingestmatrix is imported by tests/e2e and is neither a lock package nor product code. An init() there (or in an
+# imported product package) is a hard failure; a new file in the test-support package is listed.
+syn_x_ingestmatrix_init | synthetic | - | x_ingestmatrix_init | replay | FAIL | Rule 3 | - | test(ingestmatrix): warm the matrix
+syn_x_ingestmatrix_newfile | synthetic | - | x_ingestmatrix_newfile | replay | PASS | - | tests/ingestmatrix/zz_extra.go | test(ingestmatrix): add a helper
+syn_x_product_adjacent_init | synthetic | - | x_product_adjacent_init | replay | FAIL | Rule 1,Rule 3 | - | fix(pmeta): warm the cache at load
+# min-pass may only grow; x/sync (singleflight shares one result among concurrent cold reads) and x/sys (CPU features select
+# parquet-go's encoders) can change a stored or answered byte; a toolchain version that overflows is never a bump
+syn_minpass_lowered | synthetic | - | minpass_lowered | replay | FAIL | Rule 3 | - | test(parity): trim the expected passes
+syn_x_sync_bump | synthetic | - | x_sync_bump | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/sync
+syn_x_sys_bump | synthetic | - | x_sys_bump | replay | FAIL | Rule 1 | - | build(deps): bump golang.org/x/sys
+syn_toolchain_overflow | synthetic | - | toolchain_overflow | replay | FAIL | Rule 1 | - | fix(security): Go 1.27.99999999999999999999

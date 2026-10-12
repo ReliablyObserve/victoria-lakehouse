@@ -3,6 +3,7 @@ package registry
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -563,6 +564,428 @@ func TestLockCgoAdditions(t *testing.T) {
 		}
 		if got := lockCgo(b, h); len(got) != c.want {
 			t.Errorf("%s: got %v, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// ---- third review of the gate ----------------------------------------------------------------------
+
+func cloneTree(tr tree, mod func(tree)) tree {
+	h := tree{}
+	for k, v := range tr {
+		h[k] = v
+	}
+	if mod != nil {
+		mod(h)
+	}
+	return h
+}
+
+// MAJOR-2: the key of a moved load-time declaration holds what decides what it runs.
+func TestLoadTimeKey_ResolvesWhatADeclarationMeans(t *testing.T) {
+	const real = "package parity\n\nimport schema \"example.com/real/schema\"\n\nvar fixed = schema.Estimate(1)\n"
+	const bare = "package parity\n\nimport \"example.com/real/schema\"\n\nvar fixed = schema.Estimate(1)\n"
+	mk := func(vars string) tree {
+		tr := parityTree()
+		tr["tests/parity/vars.go"] = vars
+		// a repository package whose clause (schema) is not the last element of its path
+		tr["tests/realpkg/r.go"] = "package schema\n\nfunc Estimate(int) int { return 1 }\n"
+		return tr
+	}
+	cases := []struct {
+		name string
+		base string
+		head func(tr tree)
+		want int
+		frag string
+	}{
+		{"a pure move with identical imports is free", real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = real
+		}, 0, ""},
+		{"a pure move with reformatting and a comment is free", "package parity\n\nvar x = f(1, 2)\n", func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "package parity\n\n// moved\nvar x = f(1,\n\t2) // note\n"
+		}, 0, ""},
+		{"alias swap: the alias now names another package", real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nimport schema \"example.com/evil/schema\"\n\nvar fixed = schema.Estimate(1)\n"
+		}, 1, "fixed = schema.Estimate(1)"},
+		{"alias swap with no alias: the package CLAUSE of a repository package is chosen by the author", bare, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/evilpkg/x.go"] = "package schema\n\nfunc Estimate(int) int { return 0 }\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/tests/evilpkg\"\n\nvar fixed = schema.Estimate(1)\n"
+		}, 1, "fixed = schema.Estimate(1)"},
+		{"two repository packages that both declare `package schema` are not the same package (the last path element names neither)", "package parity\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/tests/realpkg\"\n\nvar fixed = schema.Estimate(1)\n", func(tr tree) {
+			tr["tests/evilpkg/e.go"] = "package schema\n\nfunc Estimate(int) int { return 0 }\n"
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/tests/evilpkg\"\n\nvar fixed = schema.Estimate(1)\n"
+		}, 1, "fixed = schema.Estimate(1)"},
+		{"the same import path under another alias is a different spelling and is refused", real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nimport s \"example.com/real/schema\"\n\nvar fixed = s.Estimate(1)\n"
+		}, 1, "fixed = s.Estimate(1)"},
+		{"a dot import that names another package", "package parity\n\nimport . \"example.com/real/schema\"\n\nvar fixed = Estimate(1)\n", func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nimport . \"example.com/evil/schema\"\n\nvar fixed = Estimate(1)\n"
+		}, 1, "fixed = Estimate(1)"},
+		{"white space INSIDE a string literal is part of the key (strings.Fields used to collapse it)", "package parity\n\nvar s = strings.ToUpper(\"a b\")\n", func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nvar s = strings.ToUpper(\"a  b\")\n"
+		}, 1, "strings.ToUpper"},
+		{"a raw string with a tab is not a space", "package parity\n\nvar s = f(`a b`)\n", func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nvar s = f(`a\tb`)\n"
+		}, 1, "f("},
+		{"moved into a file with a //go:build line", real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "//go:build linux\n\n" + real
+		}, 1, "fixed"},
+		{"moved out of a constrained file into an unconstrained one", "//go:build e2e\n\n" + real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = real
+		}, 1, "fixed"},
+		{"moved between two files with the same constraint is free", "//go:build e2e\n\n" + real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "//go:build e2e\n\n" + real
+		}, 0, ""},
+		{"an equivalent //go:build spelling is the same constraint", "//go:build a && b\n\n" + real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "//go:build (a && b)\n\n" + real
+		}, 0, ""},
+		{"moved into a GOOS-suffixed file", real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved_windows.go"] = real
+		}, 1, "fixed"},
+		{"moved into a GOARCH-suffixed test file", real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved_linux_arm64_test.go"] = real
+		}, 1, "fixed"},
+		{"an init() whose body calls another package under the same alias", "package parity\n\nimport s \"example.com/real/schema\"\n\nfunc init() { s.Do() }\n", func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nimport s \"example.com/evil/schema\"\n\nfunc init() { s.Do() }\n"
+		}, 1, "1 new init()"},
+		{"a moved declaration that was changed on the way (the name-only mutant)", real, func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n"
+			tr["tests/parity/moved.go"] = "package parity\n\nimport schema \"example.com/real/schema\"\n\nvar fixed = schema.Estimate(2)\n"
+		}, 1, "fixed = schema.Estimate(2)"},
+	}
+	for _, c := range cases {
+		base := mk(c.base)
+		got := lockInitVar(base, cloneTree(base, c.head))
+		if len(got) != c.want {
+			t.Errorf("%s: got %d flagged %v, want %d", c.name, len(got), got, c.want)
+			continue
+		}
+		if c.frag != "" && !strings.Contains(strings.Join(got, "\n"), c.frag) {
+			t.Errorf("%s: %v lacks %q", c.name, got, c.frag)
+		}
+	}
+}
+
+func TestFileNameConstraint(t *testing.T) {
+	for path, want := range map[string]string{
+		"a/x.go": "", "a/x_test.go": "", "a/linux.go": "", "a/x_linux.go": "linux", "a/x_linux_test.go": "linux",
+		"a/x_linux_amd64.go": "linux_amd64", "a/x_amd64.go": "amd64", "a/x_windows_test.go": "windows",
+		"a/x_unknownos.go": "", "a/my_linuxish.go": "", "a/_linux.go": "linux",
+	} {
+		if got := fileNameConstraint(path); got != want {
+			t.Errorf("%s: got %q, want %q", path, got, want)
+		}
+	}
+}
+
+// MAJOR-1: a symlink, or a submodule, where a lock or the go tool would read it.
+func TestSymlinkProblems(t *testing.T) {
+	raw := func(recs ...string) []byte {
+		var b strings.Builder
+		for _, r := range recs {
+			i := strings.LastIndex(r, " ")
+			meta, path := r[:i], r[i+1:]
+			b.WriteString(":" + meta + "\x00" + path + "\x00")
+		}
+		return []byte(b.String())
+	}
+	const z = "0000000000000000000000000000000000000000"
+	rec := func(old, new, status, path string) string {
+		return old + " " + new + " " + z + " " + z + " " + status + " " + path
+	}
+	dirs := append(RuntimeConfigPaths(), "tests/e2e", "tests/parity", "internal/storage/parquets3", "tests/ingestmatrix")
+	cases := []struct {
+		name string
+		recs []string
+		want int
+		frag string
+	}{
+		{"a new .go symlink in tests/e2e", []string{rec("000000", "120000", "A", "tests/e2e/zz_link.go")}, 1, "tests/e2e/zz_link.go: a symbolic link added"},
+		{"a new .go symlink in tests/parity", []string{rec("000000", "120000", "A", "tests/parity/zz_link.go")}, 1, "tests/parity/zz_link.go"},
+		{"a new .go symlink in a product lock package", []string{rec("000000", "120000", "A", "internal/storage/parquets3/zz_link.go")}, 1, "the go tool compiles a linked .go file"},
+		{"a new symlink in a lock-adjacent package", []string{rec("000000", "120000", "A", "tests/ingestmatrix/zz.txt")}, 1, "tests/ingestmatrix/zz.txt"},
+		{"a regular lock file replaced by a symlink", []string{rec("100644", "120000", "T", "tests/parity/aaa_test.go")}, 1, "changed to a symbolic link"},
+		{"a symlinked _test.go", []string{rec("000000", "120000", "A", "tests/parity/zz_link_test.go")}, 1, "zz_link_test.go"},
+		{"a symlink to a directory under a lock dir", []string{rec("000000", "120000", "A", "tests/e2e/zzdir")}, 1, "tests/e2e/zzdir"},
+		{"a symlink in a subdirectory of a lock dir", []string{rec("000000", "120000", "A", "tests/e2e/testdata/link.json")}, 1, "testdata/link.json"},
+		{"a retargeted symlink", []string{rec("120000", "120000", "M", "tests/parity/l")}, 1, "retargeted"},
+		{"a submodule in a lock dir", []string{rec("000000", "160000", "A", "tests/e2e/sub")}, 1, "a submodule"},
+		{"a .go symlink anywhere", []string{rec("000000", "120000", "A", "docs/zz.go")}, 1, "docs/zz.go"},
+		{"a native-source symlink anywhere", []string{rec("000000", "120000", "A", "docs/zz.c"), rec("000000", "120000", "A", "docs/zz.F")}, 2, "native source"},
+		{"the lock suites' compose file replaced by a symlink", []string{rec("100644", "120000", "T", "deployment/docker/docker-compose-e2e.yml")}, 1, "docker-compose-e2e.yml"},
+		{"a docs-only symlink outside every lock dir is free", []string{rec("000000", "120000", "A", "docs/zz_link.md")}, 0, ""},
+		{"a symlink that is DELETED is free", []string{rec("120000", "000000", "D", "tests/e2e/old")}, 0, ""},
+		{"a symlink turned into a regular file is free here (the file is listed as a new one)", []string{rec("120000", "100644", "T", "tests/e2e/old.txt")}, 0, ""},
+		{"a regular file edit is not a link", []string{rec("100644", "100644", "M", "tests/e2e/a_test.go")}, 0, ""},
+		{"a path that only shares a prefix with a lock dir is free", []string{rec("000000", "120000", "A", "tests/e2e2/zz.txt")}, 0, ""},
+	}
+	for _, c := range cases {
+		entries, err := ParseDiffRaw(raw(c.recs...))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		got := SymlinkProblems(entries, dirs)
+		if len(got) != c.want {
+			t.Errorf("%s: got %d %v, want %d", c.name, len(got), got, c.want)
+			continue
+		}
+		if c.frag != "" && !strings.Contains(strings.Join(got, "\n"), c.frag) {
+			t.Errorf("%s: %v lacks %q", c.name, got, c.frag)
+		}
+	}
+	if _, err := ParseDiffRaw([]byte("garbage\x00")); err == nil {
+		t.Error("an unparseable record is an error")
+	}
+	if _, err := ParseDiffRaw([]byte(":100644 100644 a b M\x00")); err == nil {
+		t.Error("a record without a path is an error")
+	}
+}
+
+// MAJOR-3: packages a lock package imports.
+func TestLockAdjacent(t *testing.T) {
+	base := tree{
+		"tests/e2e/e2e_test.go":        "package e2e\n\nimport (\n\t\"testing\"\n\n\t\"github.com/ReliablyObserve/victoria-lakehouse/tests/ingestmatrix\"\n\t\"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta\"\n)\n\nfunc TestLock(t *testing.T) {}\n",
+		"tests/ingestmatrix/a.go":      "package ingestmatrix\n\nfunc A() {}\n",
+		"tests/ingestmatrix/b_test.go": "package ingestmatrix\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/internal/neverlinked\"\n",
+		"internal/pmeta/p.go":          "package pmeta\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/internal/deep\"\n\nfunc P() { deep.D() }\n",
+		"internal/deep/d.go":           "package deep\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/internal/deeper\"\n\nfunc D() { deeper.D() }\n",
+		"internal/deeper/d.go":         "package deeper\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/internal/deepest\"\n\nfunc D() { deepest.D() }\n",
+		"internal/deepest/d.go":        "package deepest\n\nfunc D() {}\n",
+		"internal/neverlinked/n.go":    "package neverlinked\n",
+		"internal/x/x_test.go":         "package x\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/internal/y\"\n\nfunc TestX(t *testing.T) {}\n",
+		"internal/x/impl.go":           "package x\n\nimport \"github.com/ReliablyObserve/victoria-lakehouse/internal/z\"\n",
+		"internal/y/y.go":              "package y\n",
+		"internal/z/z.go":              "package z\n",
+	}
+	refs := LockTestRefs(lockRows("tests/e2e/e2e_test.go#TestLock", "internal/x/x_test.go#TestX"))
+	lockDirs := LockDirs(refs)
+	got := LockAdjacentDirs(lockDirs, base.src, base.list)
+	want := "internal/deep internal/deeper internal/pmeta internal/y tests/ingestmatrix"
+	if strings.Join(got, " ") != want {
+		t.Errorf("adjacent dirs: got %v, want %s (depth 3 from the test layer; _test.go of an imported package and a lock package's own product imports are out)", got, want)
+	}
+	run := func(mod func(tree)) (hard []string, listed []LockChange) {
+		head := cloneTree(base, mod)
+		adj := LockAdjacentUnion(lockDirs, base.src, head.src, base.list, head.list)
+		return LockAdjacentChanges(adj, base.src, head.src, base.list, head.list, base.files, head.files)
+	}
+	cases := []struct {
+		name       string
+		mod        func(tree)
+		hard       string // fragment of the one hard failure ("" none)
+		listedFrag string // fragment of a listed reason ("" none)
+	}{
+		{"nothing changed", func(tree) {}, "", ""},
+		{"x_ingestmatrix_init: an init() added to an existing file", func(tr tree) { tr["tests/ingestmatrix/a.go"] += "\nfunc init() { os.Exit(0) }\n" }, "tests/ingestmatrix/a.go: adds 1 new init() function(s)", ""},
+		{"x_ingestmatrix_newfile: a new file there is listed", func(tr tree) { tr["tests/ingestmatrix/new.go"] = "package ingestmatrix\n\nfunc N() {}\n" }, "", "a new Go file in a test-support package"},
+		{"a new file with an init() there", func(tr tree) { tr["tests/ingestmatrix/new.go"] = "package ingestmatrix\n\nfunc init() {}\n" }, "tests/ingestmatrix/new.go: adds 1 new init()", "a new Go file"},
+		{"an init() in an imported PRODUCT package", func(tr tree) { tr["internal/pmeta/p.go"] += "\nfunc init() {}\n" }, "internal/pmeta/p.go: adds 1 new init()", ""},
+		{"an init() three imports deep", func(tr tree) { tr["internal/deeper/d.go"] += "\nfunc init() {}\n" }, "internal/deeper/d.go", ""},
+		{"an init() four imports deep is out of reach", func(tr tree) { tr["internal/deepest/d.go"] += "\nfunc init() {}\n" }, "", ""},
+		{"an init() in the _test.go of an imported package is never linked", func(tr tree) { tr["tests/ingestmatrix/b_test.go"] += "\nfunc init() {}\n" }, "", ""},
+		{"a new func-only file in an imported product package is free", func(tr tree) { tr["internal/pmeta/new.go"] = "package pmeta\n\nfunc Q() {}\n" }, "", ""},
+		{"a called var in an imported product package is listed, not failed", func(tr tree) { tr["internal/pmeta/new.go"] = "package pmeta\n\nvar V = f()\n" }, "", "initializer calls a function"},
+		{"a blank import in an imported package is listed", func(tr tree) {
+			tr["internal/pmeta/p.go"] = "package pmeta\n\nimport _ \"example.com/evil/hook\"\n\nfunc P() {}\n"
+		}, "", `blank-imports "example.com/evil/hook"`},
+		{"an ordinary import between product packages is free", func(tr tree) {
+			tr["internal/pmeta/p.go"] = "package pmeta\n\nimport (\n\t\"github.com/ReliablyObserve/victoria-lakehouse/internal/deep\"\n\t\"github.com/ReliablyObserve/victoria-lakehouse/internal/y\"\n)\n\nfunc P() { deep.D(); y.Y() }\n"
+		}, "", ""},
+		{"cgo in an imported package", func(tr tree) {
+			tr["tests/ingestmatrix/c.go"] = "package ingestmatrix\n\n/*\nvoid f(void) {}\n*/\nimport \"C\"\n"
+		}, `tests/ingestmatrix/c.go: imports "C"`, ""},
+		{"a new native source file in an imported package", func(tr tree) { tr["tests/ingestmatrix/c.s"] = "TEXT ·f(SB),0,$0\n" }, "c.s: a native source file", ""},
+		{"a changed native source file in an imported package", func(tr tree) { tr["tests/ingestmatrix/c.c"] = "int x;\n" }, "c.c: a native source file", ""},
+		{"a new package a lock test imports (blank import hook) is adjacent from its first commit", func(tr tree) {
+			tr["tests/hook/hook.go"] = "package hook\n\nimport \"os\"\n\nfunc init() { os.Exit(0) }\n"
+			tr["tests/e2e/zz_hook_test.go"] = "package e2e\n\nimport _ \"github.com/ReliablyObserve/victoria-lakehouse/tests/hook\"\n"
+		}, "tests/hook/hook.go: adds 1 new init()", "a new Go file in a test-support package"},
+		{"a file of an imported package that stops parsing is listed", func(tr tree) { tr["tests/ingestmatrix/a.go"] = "package ingestmatrix\n\nfunc (\n" }, "", "no longer parses"},
+		{"a package no lock package imports is free", func(tr tree) { tr["internal/neverlinked/n.go"] += "\nfunc init() {}\n" }, "", ""},
+		{"a lock package's own product import is out of reach (Rule 1 covers it)", func(tr tree) { tr["internal/z/z.go"] += "\nfunc init() {}\n" }, "", ""},
+	}
+	// native sources need a tree listing that includes non-Go files
+	for _, c := range cases {
+		hard, listed := run(c.mod)
+		if c.name == "a changed native source file in an imported package" {
+			// the base holds the file, the head changes it
+			b2 := cloneTree(base, func(tr tree) { tr["tests/ingestmatrix/c.c"] = "int y;\n" })
+			head := cloneTree(base, c.mod)
+			adj := LockAdjacentUnion(lockDirs, b2.src, head.src, b2.list, head.list)
+			hard, listed = LockAdjacentChanges(adj, b2.src, head.src, b2.list, head.list, b2.files, head.files)
+		}
+		if c.hard == "" && len(hard) != 0 {
+			t.Errorf("%s: unexpected hard failures %v", c.name, hard)
+		}
+		if c.hard != "" && !strings.Contains(strings.Join(hard, "\n"), c.hard) {
+			t.Errorf("%s: hard %v lacks %q", c.name, hard, c.hard)
+		}
+		var all []string
+		for _, l := range listed {
+			all = append(all, l.String())
+		}
+		if c.listedFrag == "" && c.hard == "" && len(listed) != 0 {
+			t.Errorf("%s: unexpected listing %v", c.name, all)
+		}
+		if c.listedFrag != "" && !strings.Contains(strings.Join(all, "\n"), c.listedFrag) {
+			t.Errorf("%s: listing %v lacks %q", c.name, all, c.listedFrag)
+		}
+	}
+}
+
+func TestLockCodeChangeList_KeepsPathAndReasonApart(t *testing.T) {
+	base := tree{"tests/parity/lock_test.go": parityTest, "tests/parity/a: b.go": "package parity\n"}
+	head := cloneTree(base, func(tr tree) { tr["tests/parity/a: b.go"] += "// x\n" })
+	refs := LockTestRefs(lockRows("tests/parity/lock_test.go#TestLock"))
+	got, err := LockCodeChangeList(refs, refs, base.src, head.src, base.list, head.list, base.files, head.files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "tests/parity/a: b.go" || strings.Contains(got[0].Reason, "b.go") {
+		t.Errorf("a path with \": \" must stay whole: %+v", got)
+	}
+}
+
+func TestMinPassProblems(t *testing.T) {
+	cases := []struct {
+		name       string
+		base, head string
+		want       string // fragment of the one problem, "" none
+	}{
+		{"unchanged", "# min-pass: 341\nTestA  # B1: r\n", "# min-pass: 341\nTestA  # B1: r\n", ""},
+		{"raised", "# min-pass: 341\n", "# min-pass: 342\n", ""},
+		{"lowered", "# min-pass: 341\n", "# min-pass: 340\n", "lowered from 341 to 340"},
+		{"lowered to zero", "# min-pass: 341\n", "# min-pass: 0\n", "lowered from 341 to 0"},
+		{"removed", "# min-pass: 341\nTestA  # B1: r\n", "TestA  # B1: r\n", "was removed"},
+		{"hidden behind more #", "# min-pass: 341\n", "### min-pass: 3\n", "lowered"},
+		{"written without a space", "# min-pass: 341\n", "#min-pass:3\n", "lowered"},
+		{"an Arabic-Indic digit value is unreadable", "# min-pass: 341\n", "# min-pass: ٣\n", "unreadable"},
+		{"a signed value is unreadable", "# min-pass: 341\n", "# min-pass: +400\n", "unreadable"},
+		{"an underscore value is unreadable", "# min-pass: 341\n", "# min-pass: 3_41\n", "unreadable"},
+		{"a duplicate directive", "# min-pass: 341\n", "# min-pass: 341\n# min-pass: 1\n", "duplicate"},
+		{"a mention in prose is not the directive", "# min-pass: 341\n", "# min-pass: 341\n# fewer than min-pass: 3 tests\n", ""},
+		{"an entry line is not a directive", "# min-pass: 341\n", "# min-pass: 341\nTestA  # min-pass: 3\n", ""},
+		{"no directive at the base: nothing to compare", "TestA  # B1: r\n", "# min-pass: 1\nTestA  # B1: r\n", ""},
+		{"an unreadable base: nothing to compare", "# min-pass: many\n", "# min-pass: 1\n", ""},
+		{"Unicode white space around the value is white space (as in Python)", "# min-pass: 341\n", "# min-pass: 340　\n", "lowered"},
+	}
+	for _, c := range cases {
+		got := MinPassProblems("tests/parity/known_failures.txt", []byte(c.base), []byte(c.head))
+		if c.want == "" && len(got) != 0 {
+			t.Errorf("%s: unexpected %v", c.name, got)
+		}
+		if c.want != "" && !strings.Contains(strings.Join(got, "\n"), c.want) {
+			t.Errorf("%s: %v lacks %q", c.name, got, c.want)
+		}
+	}
+	if got := MinPassProblems("f", []byte("# min-pass: 3\n"), nil); got != nil {
+		t.Errorf("a missing file is reported elsewhere: %v", got)
+	}
+}
+
+func TestVersionBefore_Overflow(t *testing.T) {
+	for _, c := range []struct {
+		a, b           string
+		before, wantOK bool
+	}{
+		{"1.27.2", "1.27.3", true, true}, {"1.27.3", "1.27.2", false, true}, {"1.27", "1.27.1", true, true}, {"", "1", false, true},
+		{"1.27.99999999999999999999", "1.27.2", false, false}, {"1.27.2", "1.27.99999999999999999999", false, false},
+		{"1.27.2147483648", "1.27.2", false, false}, {"1.27.2147483647", "1.27.2", false, true},
+	} {
+		before, ok := versionBefore(c.a, c.b)
+		if before != c.before || ok != c.wantOK {
+			t.Errorf("versionBefore(%q, %q) = %v, %v; want %v, %v", c.a, c.b, before, ok, c.before, c.wantOK)
+		}
+	}
+}
+
+// The Go column of scripts/ci/tests/testdata/parity_data_parse.json: what the gate reads from the parity
+// allowlist and the lock floors. The Python ratchet asserts its own column of the same file.
+func TestParityParse_SharedFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../../scripts/ci/tests/testdata/parity_data_parse.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type parseCase struct {
+		Name, Text string
+		Python, Go any
+	}
+	var fx struct {
+		Allowlist []parseCase `json:"allowlist"`
+		LockCells []parseCase `json:"lock_cells"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	fx2 := fx
+	if len(fx.Allowlist) < 20 || len(fx2.LockCells) < 15 {
+		t.Fatalf("the parse fixture has only %d allowlist and %d lock-cell cases", len(fx.Allowlist), len(fx2.LockCells))
+	}
+	asNames := func(v any) []string {
+		var out []string
+		for _, x := range v.([]any) {
+			out = append(out, x.(string))
+		}
+		sort.Strings(out)
+		return out
+	}
+	asCells := func(v any) map[string]int {
+		out := map[string]int{}
+		for k, x := range v.(map[string]any) {
+			out[k] = int(x.(float64))
+		}
+		return out
+	}
+	for _, c := range fx.Allowlist {
+		// the gate's reading of an allowlist: refuse unreadable bytes, then the first word of every entry line
+		var got []string
+		reject := len(ParityDataProblems([]string{"f"}, func(string) []byte { return nil }, func(string) []byte { return []byte(c.Text) })) > 0
+		if !reject {
+			for k := range ParseAllowlist([]byte(c.Text)) {
+				got = append(got, k)
+			}
+			sort.Strings(got)
+		}
+		if c.Go == "reject" {
+			if !reject {
+				t.Errorf("allowlist %q: the gate must refuse this input, it read %v", c.Name, got)
+			}
+		} else if reject || strings.Join(got, ",") != strings.Join(asNames(c.Go), ",") {
+			t.Errorf("allowlist %q: gate read %v (rejected: %v), fixture says %v", c.Name, got, reject, c.Go)
+		}
+		if c.Python != "reject" && c.Go != "reject" && strings.Join(asNames(c.Python), ",") != strings.Join(asNames(c.Go), ",") {
+			t.Errorf("allowlist %q: both readers accept this input and disagree", c.Name)
+		}
+	}
+	for _, c := range fx2.LockCells {
+		cells, perr := ParseLockCells([]byte(c.Text))
+		reject := perr != nil || len(ParityDataProblems([]string{"f"}, func(string) []byte { return nil }, func(string) []byte { return []byte(c.Text) })) > 0
+		if c.Go == "reject" {
+			if !reject {
+				t.Errorf("lock cells %q: the gate must refuse this input, it read %v", c.Name, cells)
+			}
+		} else if reject || !reflect.DeepEqual(cells, asCells(c.Go)) {
+			t.Errorf("lock cells %q: gate read %v (rejected: %v), fixture says %v", c.Name, cells, reject, c.Go)
+		}
+		if c.Python != "reject" && c.Go != "reject" && !reflect.DeepEqual(asCells(c.Python), asCells(c.Go)) {
+			t.Errorf("lock cells %q: both readers accept this input and disagree", c.Name)
 		}
 	}
 }
