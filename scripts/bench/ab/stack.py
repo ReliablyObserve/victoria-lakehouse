@@ -51,7 +51,6 @@ SERVICES = ["s3", "s3-init", "s3-latency", "vl-ref", "vt-ref", "lh-logs-base", "
 LH_CONTAINER = {"base-logs": "lh-logs-base", "base-traces": "lh-traces-base", "pr-logs": "lh-logs-pr", "pr-traces": "lh-traces-pr"}
 # Ports of this overlay, past the last port scripts.proof allots (452).
 EXTRA_OFFSETS = {"ab-s3-direct": 460, "ab-s3-proxied": 461, "ab-toxi-api": 462}
-P.PORT_OFFSETS.update(EXTRA_OFFSETS)  # so the port blocks scripts.proof offers (allowed_bases) leave room for the overlay's ports too
 
 # Seed sized for timing. (name, account, project, seed, logs, traces) per tenant; the numbers are per chunk.
 HOURS_BACK = 6
@@ -89,6 +88,19 @@ def e2e_pin(pattern: str) -> str:
 
 def toxiproxy_image() -> str:
     return e2e_pin(r"image:\s*(ghcr\.io/shopify/toxiproxy:\S+)")
+
+
+def allowed_bases() -> list[int]:
+    """scripts.proof's port bases, with the overlay's offsets (up to 462) counted in the span of a block."""
+    span = max(max(P.PORT_OFFSETS.values()), max(EXTRA_OFFSETS.values()))
+    return [b for b in range(24000, P.EPHEMERAL_FLOOR, 100)
+            if b + span < P.EPHEMERAL_FLOOR and not any(b <= hi and b + span >= lo for lo, hi in P.RESERVED_PORTS)]
+
+
+def check_block() -> None:
+    """The project's derived port block must leave room for the overlay's ports (an explicit PROOF_PORT_BASE is the caller's choice)."""
+    if not os.environ.get("PROOF_PORT_BASE") and P.port_base() not in allowed_bases():
+        raise SystemExit(f"the port block {P.port_base()} of project {PROJECT} has no room for the overlay's ports or meets a reserved range: set AB_PROJECT or PROOF_PORT_BASE")
 
 
 def extra_ports(base: int | None = None) -> dict[str, int]:
@@ -207,6 +219,7 @@ def cmd_build(a):  # pragma: no cover - drives docker
 
 # ------------------------------------------------------------------------------------------------ lifecycle
 def cmd_ports(_a):
+    check_block()
     ports = published_ports()
     busy = P.busy_ports(ports.values())
     print(json.dumps({"project": PROJECT, "base": P.port_base(), "ports": ports, "busy": busy}, indent=1))
@@ -224,6 +237,7 @@ def cmd_up(_a, reuse: bool = False):  # pragma: no cover - drives docker
         if not reuse:
             raise SystemExit(f"a stack of project {PROJECT} is already running (another run's?): stack.py down first, use another AB_PROJECT, or pass --reuse-stack")
     else:
+        check_block()
         busy = P.busy_ports(published_ports().values())
         if busy:
             raise SystemExit(f"ports already in use on 127.0.0.1: {busy}; set PROOF_PORT_BASE or another AB_PROJECT")

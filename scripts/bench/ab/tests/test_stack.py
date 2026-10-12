@@ -33,12 +33,15 @@ def test_extra_ports_follow_the_block_and_do_not_collide_with_the_proof_stack():
 
 
 def test_the_port_block_leaves_room_for_the_overlay_ports():
-    """scripts.proof only offers bases whose block holds its own offsets; the overlay's (460..462) are part of the span."""
-    assert max(proof.PORT_OFFSETS.values()) >= max(stack.EXTRA_OFFSETS.values())
-    assert proof.port_base() in proof.allowed_bases()
-    for b in proof.allowed_bases():
-        assert b + max(stack.EXTRA_OFFSETS.values()) < proof.EPHEMERAL_FLOOR
-        assert not any(b <= hi and b + max(stack.EXTRA_OFFSETS.values()) >= lo for lo, hi in proof.RESERVED_PORTS)
+    """scripts.proof offers bases whose block holds its own offsets (452); the overlay's (460..462) are part of the span here."""
+    top = max(stack.EXTRA_OFFSETS.values())
+    assert top > max(proof.PORT_OFFSETS.values())
+    bases = stack.allowed_bases()
+    assert bases and proof.port_base() in bases
+    for b in bases:
+        assert b + top < proof.EPHEMERAL_FLOOR
+        assert not any(b <= hi and b + top >= lo for lo, hi in proof.RESERVED_PORTS)
+    stack.check_block()
 
 
 def test_state_has_the_four_layers_hour_aligned_and_a_widened_cold_window():
