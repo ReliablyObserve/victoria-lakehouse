@@ -134,3 +134,21 @@ def test_the_s3_gate_on_every_shape_is_opt_in():
     assert comment.render_perf(s, SEL, META)[1]["exit"] == 0
     text, v = comment.render_perf(s, SEL, META, gate_s3_all=True)
     assert v["exit"] == 1 and "more bytes (cold)" in text
+
+
+def test_n2_n3_flaky_and_vacuous_cells_are_listed_without_failing_and_a_few_hot_gaps_do_not_invalidate_the_run():
+    s = summary((K1, 10, 10, {}), (K2, 10, 10, {}))
+    s["flaky"] = [K1]
+    s["vacuous"] = [K2]
+    text, v = comment.render_perf(s, SEL, META)
+    assert v["exit"] == 0 and "Flaky, not failing" in text and "empty on every target" in text and v["flaky"] == [K1]
+    few = dict(s, ref_invalid=[K1])
+    text, v = comment.render_perf(few, SEL, META)
+    assert v["exit"] == 0 and "asked twice" in text
+
+
+def test_n3_a_reference_that_is_broken_in_most_cells_invalidates_the_run():
+    cells = [summary((f"control-logs|logs count_total|cold|{i}h|numeric", 10, 10, {}))["cells"][0] for i in range(10)]
+    s = dict(summary((K1, 10, 10, {})), cells=cells, ref_invalid=[c["cell"] for c in cells[:5]])
+    text, v = comment.render_perf(s, SEL, META)
+    assert v["exit"] == 2 and "reference stack is broken" in text

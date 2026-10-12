@@ -116,14 +116,14 @@ the warm runs. The cold figure is the cold query's; the warm figure is the mean 
 | | rule |
 |---|---|
 | noise | a cell is `slower` or `faster` when the PR's warm p50 differs from the base's by more than max(15 %, 3 ms) |
-| re-measure | a cell that moved is measured again with 7 runs, on the same absolute windows (the seeded data is static, so fresh windows do not exist; the caches the first pass filled are warm); only a move that holds is reported (marked with a footnote). A new difference from hot seen in either pass stays |
+| re-measure | a cell the first pass called `slower`, `faster` or `unstable` is measured again with 7 runs, every window moved 5 minutes earlier inside its layer (the data is static, so this is the nearest thing to a fresh window; it does not time the caches the first pass filled); only a move or a problem that holds is reported (marked with a footnote). A new difference from hot seen in either pass stays. An `unstable` cell whose problem does not reproduce is listed as flaky and does not fail |
 | `broken` | the base answered validly and the PR does not |
-| `unstable` | the PR gave an error, empty or flapping answer the base did not (any of its runs): fails the check, its remaining latencies prove nothing |
+| `unstable` | the PR gave an error, empty or flapping answer the base did not (any of its runs): measured again; fails the check only if it reproduces, else listed as flaky |
 | result vs hot | the validated answer of the PR (and of the base) is compared with hot's on the same window: same, differs, invalid |
 | new difference | the PR's answer differs from hot's **and** from the base's, or the base matched hot and the PR does not: fails the check |
 | S3 | more GETs or bytes than the base beyond max(10 %, 2 requests / 64 KiB) on a control shape fails the check even when latency is flat; the comment names the metric and the phase (`more bytes (cold)`). Other shapes are listed only; `pr_smoke.py --gate-s3-all` (off by default, an owner decision) makes them fail too |
 | other profiles | the cells of the other S3 latency profiles (50 ms) fail the check like the 0 ms ones, and their differences are in the known-differences list |
-| invalid run | a cell with no valid answer on base or PR, hot VL/VT giving no valid answer (the result check cannot run: base and PR are compared with each other), a cold run whose cache was not cleared, or a failed latency probe: exit 2 |
+| invalid run | a cell with no valid answer on base or PR, hot VL/VT giving no valid answer in most cells (a few are asked twice, then listed and compared base against PR; a shape that is empty on every target is `vacuous` and measures nothing), a cold run whose cache was not cleared, or a failed latency probe: exit 2 |
 
 The comment shows the verdict first, then only the cells that moved, differ or cost more S3; everything within noise is one
 collapsed table. Cold timings, a component summary (ingest rows/s and spans/s, forced compaction, Lakehouse CPU-seconds and peak
@@ -183,8 +183,8 @@ Every difference a run finds is classified, from the registry:
   fails the check: every difference needs an issue, a registry row and a line in the comment.
 - **fixed by the PR**: listed with the rows that can flip to `expect: pass` and get a lock.
 
-`--require-issue` additionally fails a tracked difference whose row cites no GitHub issue (an issue URL of a ReliablyObserve repository or a bare
-`#123`; a pull request link or an issue of another project does not count). A row tracks a difference of its own signal only (`vl` rows logs,
+`--require-issue` additionally fails a tracked difference whose row cites no GitHub issue (the full URL of an issue of a ReliablyObserve repository, or `ReliablyObserve/victoria-lakehouse#123`; a bare `#123`, which may be an
+upstream issue, a pull request link or an issue of another project does not count). A row tracks a difference of its own signal only (`vl` rows logs,
 `vt` rows traces) and a perf difference is keyed by shape, layer and signal; registry rows carry no data layer, so a row that covers the shape
 tracks it on every layer. The comment also states how many of the
 registry's known-difference rows cite an issue and how many do not.

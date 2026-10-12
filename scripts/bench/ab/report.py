@@ -33,6 +33,7 @@ S3_REL = 0.10
 S3_FLOOR = {"gets": 2.0, "requests": 2.0, "bytes": 64 * 1024.0}
 CONTROL_SETS = ("control-logs", "control-traces")
 TARGETS = ("ref", "base", "pr")
+MOVED = ("slower", "faster", "unstable")  # first-pass verdicts that are measured again before they count
 
 
 def pct(values, p):
@@ -107,9 +108,11 @@ def cell_summary(key: str, rows: list[dict], s3: dict | None, noise: float, min_
             out["cold_cleared"][t] = all(cc)
     out["s3"] = s3 or {}
     ref_res = out["result"].get("ref")
+    # every target answered empty: a shape the seeded data does not feed, not a broken run (nothing is measured, nothing fails)
+    out["vacuous"] = all(out["n_valid"].get(t, 0) == 0 and out["invalid_reasons"].get(t) == ["empty result"] for t in TARGETS if t in out["n_valid"])
     ref_ok = out["n_valid"].get("ref", 0) > 0
     skip = first["shape"] in ref_skip
-    out["ref_invalid"] = not skip and not ref_ok
+    out["ref_invalid"] = not skip and not ref_ok and not out["vacuous"]
     # a shape that is not compared with hot, or whose hot answer is invalid, is compared base against PR
     out["vs_ref"] = {t: ("n/a" if skip or not ref_ok else parity(out["result"].get(t), ref_res)) for t in ("base", "pr")}
     b_ok, p_ok = out["n_valid"].get("base", 0) > 0, out["n_valid"].get("pr", 0) > 0
@@ -164,6 +167,8 @@ def recount(summary: dict) -> dict:
                            "less": sum(1 for c in cells if "less" in c["s3_verdict"].values())}
     summary["cold_not_cleared"] = sorted({c["cell"] for c in cells if c["cold_cleared"] and not all(c["cold_cleared"].values())})
     summary["ref_invalid"] = sorted(c["cell"] for c in cells if c.get("ref_invalid"))
+    summary["vacuous"] = sorted(c["cell"] for c in cells if c.get("vacuous"))
+    summary["flaky"] = sorted(c["cell"] for c in cells if c.get("flaky"))
     return summary
 
 
@@ -190,13 +195,17 @@ def apply_ref_skip(summary: dict, ref_skip: frozenset) -> dict:
 
 
 def merge_confirm(summary: dict, again: dict) -> dict:
-    """Replace the cells the first pass called slower or faster by the re-measure's cells (marked `confirmed`). A new difference
-    from the reference that either pass saw stays: re-measuring decides timing, it never clears a wrong answer."""
+    """Replace the cells the first pass called slower, faster or unstable by the re-measure's cells (marked `confirmed`). A new
+    difference from the reference that either pass saw stays: re-measuring decides timing, it never clears a wrong answer. An
+    `unstable` cell whose problem does not reproduce is kept as `flaky`: listed, not failing (one transient error is not a regression);
+    one that reproduces stays `unstable` and fails."""
     redo = {c["cell"]: c for c in again["cells"]}
-    moved = ("slower", "faster")
+    moved = MOVED
     for i, c in enumerate(summary["cells"]):
         if c["cell"] in redo and c["verdict"] in moved:
             new = dict(redo[c["cell"]], confirmed=True, first_pass=c["verdict"])
+            if c["verdict"] == "unstable" and new["verdict"] != "unstable":
+                new["flaky"] = True
             if c["difference"] == "new" and new["difference"] != "new":
                 new["difference"], new["first_pass_difference"] = "new", "new"
             summary["cells"][i] = new

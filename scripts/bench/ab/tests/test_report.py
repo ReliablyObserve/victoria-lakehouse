@@ -140,7 +140,8 @@ def test_m2_an_invalid_hot_answer_does_not_hide_a_pr_answer_that_changed():
     assert s["ref_invalid"] == [K]
     import comment
     text, v = comment.render_perf(s, {"changed": 1, "sets": {}, "why": {}}, {"base": "a" * 40, "head": "b" * 40})
-    assert v["exit"] == 2 and "no valid answer" in text and v["ref_invalid"] == [K]
+    # one such cell is listed and the PR/base difference fails; it does not invalidate the run (N3)
+    assert v["exit"] == 1 and "gave no valid answer" in text and v["ref_invalid"] == [K] and v["failing"]["new_difference"] == 1
 
 
 def test_m3_a_remeasure_cannot_erase_a_new_difference_and_the_totals_follow_the_cells():
@@ -159,3 +160,34 @@ def test_s3_cost_names_the_metric_that_changed():
     assert c["s3_why"]["cold"] == {"gets": "less", "requests": "less", "bytes": "more"}
     import comment
     assert comment.s3_flag(c) == "less GETs (cold); less requests (cold); more bytes (cold)"
+
+
+def test_n2_a_transient_pr_error_that_does_not_reproduce_is_flaky_not_failing_and_one_that_reproduces_still_fails():
+    first = report.summarize(raw(partial_rows("pr", (3,))), "t")           # 1 HTTP 500 in 6 PR requests
+    assert first["cells"][0]["verdict"] == "unstable"
+    clean = report.summarize(raw(cell_rows(K, 10, 10, runs=7)), "again")
+    merged = report.merge_confirm(first, clean)
+    c = merged["cells"][0]
+    assert c["verdict"] == "same" and c["flaky"] and c["first_pass"] == "unstable" and merged["flaky"] == [K]
+    first = report.summarize(raw(partial_rows("pr", (3,))), "t")
+    again = report.summarize(raw(partial_rows("pr", (2, 5), runs=7)), "again")   # it happens again
+    merged = report.merge_confirm(first, again)
+    assert merged["cells"][0]["verdict"] == "unstable" and not merged["cells"][0].get("flaky") and merged["flaky"] == []
+
+
+def test_n3_a_shape_that_is_empty_on_every_target_is_vacuous_not_an_invalid_cell():
+    rows = cell_rows(K, 10, 10)
+    for r in rows:
+        r.update(valid=False, reason="empty result", status=200, result="")
+    c = report.summarize(raw(rows), "t")["cells"][0]
+    assert c["vacuous"] is True and not c["ref_invalid"]
+
+
+def test_window_shift_moves_the_end_earlier_inside_the_layer_and_is_ignored_on_a_tiny_one():
+    import measure
+    st = {"layers": {"cold": {"start": "2026-10-12T11:00:00Z", "end": "2026-10-12T13:00:00Z"}, "tiny": {"start": "2026-10-12T12:59:00Z", "end": "2026-10-12T13:00:00Z"}}}
+    ranges = {"1h": 3600, "full": None}
+    assert measure.window_for(st, "cold", "1h", ranges, 300) == ("2026-10-12T11:55:00Z", "2026-10-12T12:55:00Z")
+    assert measure.window_for(st, "cold", "full", ranges, 300) == ("2026-10-12T11:00:00Z", "2026-10-12T12:55:00Z")
+    assert measure.window_for(st, "cold", "1h", ranges) == ("2026-10-12T12:00:00Z", "2026-10-12T13:00:00Z")
+    assert measure.window_for(st, "tiny", "full", ranges, 300) == ("2026-10-12T12:59:00Z", "2026-10-12T13:00:00Z")

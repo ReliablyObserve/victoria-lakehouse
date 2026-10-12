@@ -61,6 +61,7 @@ BUFFER_TENANTS = [("t0", "0", "0", 41, 1600, 400), ("t1001", "1001", "0", 42, 40
 COMPACTED_HOURS = 4  # the oldest hours of the cold window that are force-compacted; the newest ones stay as flushed
 COLD_HOURS = HOURS_BACK - COMPACTED_HOURS
 PEER_KEY = P.PEER_KEY
+EXIT_BUSY = 4  # the stack of this project belongs to another run: nothing was started, built or removed
 
 # While a layer is measured nothing may touch S3 in the background: the manifest is read once at startup and
 # the compaction scheduler is parked, so a per-query S3 delta is the query's. While seeding, the manifest
@@ -232,15 +233,27 @@ def running() -> bool:  # pragma: no cover - runs docker
     return bool(out)
 
 
-def cmd_up(_a, reuse: bool = False):  # pragma: no cover - drives docker
+class StackBusy(RuntimeError):
+    """A stack of this project is already running, or its ports are taken: it is somebody else's, and nothing here may touch it."""
+
+
+def preflight(reuse: bool = False) -> bool:
+    """Refuse before anything is built or tagged when the project's stack is not free. Returns True when an existing stack is reused
+    (then the caller owns nothing), False when the project is free."""
     if running():
         if not reuse:
-            raise SystemExit(f"a stack of project {PROJECT} is already running (another run's?): stack.py down first, use another AB_PROJECT, or pass --reuse-stack")
-    else:
-        check_block()
-        busy = P.busy_ports(published_ports().values())
-        if busy:
-            raise SystemExit(f"ports already in use on 127.0.0.1: {busy}; set PROOF_PORT_BASE or another AB_PROJECT")
+            raise StackBusy(f"a stack of project {PROJECT} is already running (another run's?): stack.py down first, use another AB_PROJECT, or pass --reuse-stack")
+        return True
+    check_block()
+    busy = P.busy_ports(published_ports().values())
+    if busy:
+        raise StackBusy(f"ports already in use on 127.0.0.1: {busy}; set PROOF_PORT_BASE or another AB_PROJECT")
+    return False
+
+
+def cmd_up(_a, reuse: bool = False, preflighted: bool = False):  # pragma: no cover - drives docker
+    if not preflighted:
+        preflight(reuse)
     set_phase("seed")
     compose("up", "-d", "--wait", "--wait-timeout", "240", *SERVICES)
     # the proxy must be a pass-through before anything is measured or seeded
@@ -407,10 +420,18 @@ def cmd_latency(a):  # pragma: no cover - drives docker
     return 0 if res["ok"] else 1
 
 
-def cmd_down(_a):  # pragma: no cover - drives docker
+def down_stack() -> None:  # pragma: no cover - drives docker
     compose("down", "-v", "--remove-orphans")
+
+
+def remove_images() -> None:  # pragma: no cover - drives docker
     for img in P.image_tags():  # exact tags this project builds, nothing else (the pulled RustFS/toxiproxy/mc images are shared)
         subprocess.run(["docker", "rmi", img], check=False)
+
+
+def cmd_down(_a):  # pragma: no cover - drives docker
+    down_stack()
+    remove_images()
 
 
 def main(argv=None):  # pragma: no cover - drives docker
@@ -427,7 +448,11 @@ def main(argv=None):  # pragma: no cover - drives docker
     lat.add_argument("action", choices=("set", "clear", "probe"))
     lat.add_argument("ms", nargs="?", default=0)
     a = ap.parse_args(argv)
-    rc = globals()["cmd_" + a.cmd](a)
+    try:
+        rc = globals()["cmd_" + a.cmd](a)
+    except StackBusy as e:
+        print(f"[ab-stack] {e}", file=sys.stderr)
+        return EXIT_BUSY
     return rc or 0
 
 

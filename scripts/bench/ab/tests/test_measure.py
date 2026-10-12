@@ -141,3 +141,48 @@ def test_a_cold_run_that_could_not_clear_its_cache_says_so_and_a_bad_answer_is_n
     finally:
         for s in (ref, base, pr):
             s.close()
+
+
+class FlakyHot(FakeLakehouse):
+    """hot: the first `bad` requests answer 500, then it is healthy."""
+
+    def __init__(self, bad, **kw):
+        self.bad = bad
+        super().__init__(**kw)
+
+    def handle(self, method, path, headers, body):
+        if not path.startswith(("/metrics", "/internal")) and self.bad > 0:
+            self.bad -= 1
+            return 500, "boom", {}
+        return super().handle(method, path, headers, body)
+
+
+def test_n3_hot_is_asked_once_more_when_it_gave_nothing_valid(monkeypatch):
+    monkeypatch.setattr(measure, "SETTLE_S", 0.0)
+    ref, base, pr = FlakyHot(bad=3), FakeLakehouse(), FakeLakehouse()   # 3 runs of the cell: every first-pass hot answer fails
+    try:
+        st = state({"ref-logs": ref.port, "base-logs": base.port, "pr-logs": pr.port})
+        cell = measure.plan(SPEC, ["control-logs"], {"control-logs": ["logs count_total"]})[0]
+        rows, _ = measure.run_cell(cell, st, SPEC, 3, {})
+        hot = [r for r in rows if r["target"] == "ref"]
+        assert len(hot) == 3 and all(r["valid"] and r["retried"] for r in hot)
+    finally:
+        for s in (ref, base, pr):
+            s.close()
+
+
+def test_n3_hot_stays_invalid_when_it_keeps_failing_and_an_empty_answer_is_not_retried(monkeypatch):
+    monkeypatch.setattr(measure, "SETTLE_S", 0.0)
+    ref, base, pr = FlakyHot(bad=99), FakeLakehouse(), FakeLakehouse()
+    empty = FakeLakehouse(answer="")
+    try:
+        st = state({"ref-logs": ref.port, "base-logs": base.port, "pr-logs": pr.port})
+        cell = measure.plan(SPEC, ["control-logs"], {"control-logs": ["logs count_total"]})[0]
+        rows, _ = measure.run_cell(cell, st, SPEC, 2, {})
+        assert not any(r["valid"] for r in rows if r["target"] == "ref") and all(r.get("retried") for r in rows if r["target"] == "ref")
+        st2 = state({"ref-logs": empty.port, "base-logs": base.port, "pr-logs": pr.port})
+        rows, _ = measure.run_cell(cell, st2, SPEC, 2, {})
+        assert not any(r.get("retried") for r in rows) and measure.cell_ref_needs_retry(rows) is False
+    finally:
+        for s in (ref, base, pr, empty):
+            s.close()

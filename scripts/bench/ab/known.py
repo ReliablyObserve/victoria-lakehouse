@@ -36,7 +36,7 @@ def row_tracking(row: dict, gaps: dict[str, list[int]]) -> dict:
     """What a registry row says about its difference: expect, issues (own text + the gap entry it names), gap ids, docs."""
     text = abreg.row_text(row)
     gids = abreg.gap_ids(text)
-    issues = abreg.issue_numbers(text)
+    issues = abreg.issue_refs(text)
     for g in gids:
         for n in gaps.get(g, []):
             if n not in issues:
@@ -133,8 +133,9 @@ def stats_line(stats: dict) -> str:
             f"({stats['without_issue_gap_id_only']} of those name a gap id of docs/parity-and-gaps.md only).")
 
 
-def issue_links(numbers: list[int], repo: str = "ReliablyObserve/victoria-lakehouse") -> str:
-    return ", ".join(f"[#{n}](https://github.com/{repo}/issues/{n})" for n in numbers)
+def issue_links(refs: list[str]) -> str:
+    """`repo#123` references as Markdown links to the issues."""
+    return ", ".join(f"[{r}](https://github.com/{abreg.ORG}/{r.split('#')[0]}/issues/{r.split('#')[1]})" for r in refs)
 
 
 def tracked_text(it: dict) -> str:

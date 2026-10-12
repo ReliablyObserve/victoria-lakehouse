@@ -134,5 +134,5 @@ def test_a_forced_compaction_that_merged_nothing_is_a_problem():
 def test_a_running_stack_of_the_project_is_refused_unless_reuse_is_asked_for(monkeypatch):
     import pytest
     monkeypatch.setattr(stack, "running", lambda: True)
-    with pytest.raises(SystemExit, match="already running"):
+    with pytest.raises(stack.StackBusy, match="already running"):
         stack.cmd_up(None)
