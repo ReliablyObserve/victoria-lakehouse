@@ -25,10 +25,11 @@ const forceMergeStartWait = 10 * time.Second
 // goroutine that raises the instance's active-merges gauge only when it runs, so
 // the wait has two phases: first (bounded by forceMergeStartWait) until the merge
 // is seen to have begun, that is the gauge is above zero or the instance's part
-// count changed, then until the gauge has been zero twice in a row. A merge that
-// never shows (no gauge, no change in the parts for the whole bound) is a hot
-// instance with nothing to merge, which is logged; a merge that does not finish
-// in 2 minutes fails the test.
+// count dropped (a rise is a flush or the service-graph task, not the merge),
+// then until the gauge has been zero twice in a row. A merge that never shows
+// (no gauge, no drop in the parts for the whole bound) is a hot instance with
+// nothing to merge, which is logged; a merge that does not finish in 2 minutes
+// fails the test.
 func forceMergeHot(t *testing.T, hot, mode string, at time.Time) {
 	t.Helper()
 	prefix := "vl"
@@ -42,13 +43,13 @@ func forceMergeHot(t *testing.T, hot, mode string, at time.Time) {
 
 	started := false
 	for deadline := time.Now().Add(forceMergeStartWait); !started && time.Now().Before(deadline); {
-		started = hotGaugeValue(t, hot, gauge) > 0 || hotPartCount(t, hot, prefix) != partsBefore
+		started = hotGaugeValue(t, hot, gauge) > 0 || hotPartCount(t, hot, prefix) < partsBefore
 		if !started {
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
 	if !started {
-		t.Logf("forceMergeHot(%s): no merge began within %s (parts %.0f before and after): hot had nothing to merge", hot, forceMergeStartWait, partsBefore)
+		t.Logf("forceMergeHot(%s): no merge began within %s (parts %.0f before, none fewer after): hot had nothing to merge", hot, forceMergeStartWait, partsBefore)
 	}
 
 	deadline := time.Now().Add(2 * time.Minute)

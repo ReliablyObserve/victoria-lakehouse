@@ -1002,6 +1002,10 @@ by the stream-day:
   only by such blocks is lost), and a block of a stream without a slot is credited on its own, upstream's per-block rule,
   so its hits for a sparse field can be lower than hot's. Two identical calls can differ past the limit.
   `lakehouse_field_names_stream_cap_total` counts the blocks credited that way and one warning per 30 s names the limit.
+- **Parquet-name aliases on the traces binary.** The spans an insert peer serves carry the promoted attributes under their
+  parquet names (`service.name`, `http.method`, ...) next to VictoriaTraces' names, for filters, and `field_names` lists them
+  although they are no field of a span on hot. With the buffer and the objects unioned their hits cover the whole stream-day
+  ([#504](https://github.com/ReliablyObserve/victoria-lakehouse/issues/504)). Only deployments with insert peers are affected.
 - **Errors inside a counting read.** `processOneFile` logs the per-file errors other than a missing object and drops
   them, and the live-bytes budget can cancel the read without recording an error on the last file, so a counting read can
   answer 200 with names missing (pre-existing in every row read; [#503](https://github.com/ReliablyObserve/victoria-lakehouse/issues/503)).
