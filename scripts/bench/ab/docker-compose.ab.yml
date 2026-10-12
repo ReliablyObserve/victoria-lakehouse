@@ -1,0 +1,53 @@
+# Overlay of deployment/docker/docker-compose-proof.yml for scripts/bench/ab (the PR perf smoke).
+#
+# It adds what the data-proof stack does not have: a toxiproxy between every Lakehouse and the S3 service, the
+# host ports the latency probe needs, and the ordering that makes Lakehouse wait for the proxy. The Lakehouse
+# services read their S3 endpoint, manifest refresh and compaction interval from LH_S3_ENDPOINT,
+# LH_MANIFEST_REFRESH and LH_COMPACTION_INTERVAL (variables the proof compose file defines defaults for), which
+# stack.py sets to http://s3-latency:9000 and, while a layer is measured, to values that keep the S3 counters
+# free of background work.
+#
+#   docker compose -p lh-ab -f deployment/docker/docker-compose-proof.yml -f scripts/bench/ab/docker-compose.ab.yml up -d ...
+#
+# Relative paths resolve against the first file's directory (deployment/docker).
+services:
+  s3:
+    ports:
+      # The S3 service itself, for the latency probe's "direct" leg.
+      - "127.0.0.1:${PORT_AB_S3_DIRECT}:9000"
+
+  s3-latency:
+    image: ${AB_TOXIPROXY_IMAGE}
+    command: ["-host=0.0.0.0", "-config=/etc/toxiproxy/proxies.json"]
+    volumes:
+      - ./toxiproxy-proxies.json:/etc/toxiproxy/proxies.json:ro
+    networks: [proof-net]
+    depends_on:
+      s3:
+        condition: service_healthy
+    ports:
+      # The same S3 service through the proxy (the probe's "proxied" leg) and the proxy's control API.
+      - "127.0.0.1:${PORT_AB_S3_PROXIED}:9000"
+      - "127.0.0.1:${PORT_AB_TOXI_API}:8474"
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  lh-logs-base:
+    depends_on:
+      s3-latency:
+        condition: service_healthy
+  lh-traces-base:
+    depends_on:
+      s3-latency:
+        condition: service_healthy
+  lh-logs-pr:
+    depends_on:
+      s3-latency:
+        condition: service_healthy
+  lh-traces-pr:
+    depends_on:
+      s3-latency:
+        condition: service_healthy

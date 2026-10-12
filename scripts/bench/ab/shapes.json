@@ -1,0 +1,247 @@
+{
+  "_comment": "Shape sets of the PR perf smoke (scripts/bench/ab). A shape is one request template; a cell is shape x layer x range x tenant form. `covers` names registry row and feature ids (selection.py --check fails on an unknown id or an empty list). `smoke: true` shapes run on every runtime change (control sets only). `kind` picks the answer validator in validate.py. Windows are absolute and end at the layer's end (see stack.py make_state); `full` is the whole layer window.",
+  "ranges": {"15m": 900, "1h": 3600, "full": null},
+  "layers": {
+    "cold": {"description": "flushed by the 5 s policy, not compacted: the newest 2 hours of the seeded window"},
+    "compacted": {"description": "the older 4 hours of the seeded window after a forced recompaction of every hour"},
+    "buffer": {"description": "rows ingested after the flush, still in the insert buffer"},
+    "after-restart": {"description": "the buffer window after the Lakehouse containers were restarted"}
+  },
+  "areas": {
+    "internal/compaction/": ["compaction"],
+    "internal/manifest/": ["control-logs", "control-traces", "compaction"],
+    "internal/buffer/": ["buffer-restart"],
+    "internal/insertbuf/": ["buffer-restart"],
+    "internal/s3reader/": ["control-logs", "control-traces"],
+    "internal/tenant/": ["tenancy"],
+    "internal/pmeta/": ["enumeration", "control-logs", "control-traces"],
+    "lakehouse-traces/internal/traces/": ["traces-jaeger", "traces-tempo", "trace-by-id", "traceql-metrics"],
+    "lakehouse-traces/internal/jaeger/": ["traces-jaeger", "trace-by-id"],
+    "lakehouse-traces/internal/tempo/": ["traces-tempo", "traceql-metrics", "trace-by-id"]
+  },
+  "sets": {
+    "control-logs": {
+      "description": "No-degradation set for the logs binary: always runs. The queries of scripts/bench/run.sh (count, filters, group-by, scan) on every layer.",
+      "layers": ["cold", "compacted", "buffer", "after-restart"],
+      "ranges": ["1h"],
+      "shapes": [
+        {"name": "logs count_total", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "* | stats count() n", "smoke": true,
+         "covers": ["vl.select.stats_query.basic", "lh.feature.query.count_pushdown"]},
+        {"name": "logs level_filter", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "level:ERROR | stats count() n", "smoke": true,
+         "covers": ["vl.select.query.wildcard", "lh.feature.query.logsql_filter_eval"]},
+        {"name": "logs fulltext", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "error | stats count() n",
+         "covers": ["vl.select.query.wildcard", "lh.feature.query.bloom_index"]},
+        {"name": "logs multi_filter", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "level:ERROR service.name:=\"api-gateway\" | stats count() n",
+         "covers": ["vl.select.query.wildcard", "lh.feature.query.logsql_filter_eval"]},
+        {"name": "logs negation", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "-level:INFO | stats count() n",
+         "covers": ["vl.select.query.wildcard", "lh.feature.query.logsql_filter_eval"]},
+        {"name": "logs count_by_service", "signal": "logs", "api": "logsql", "kind": "groupby", "query": "* | stats by (service.name) count()", "smoke": true,
+         "covers": ["vl.select.stats_query.basic", "lh.feature.query.column_projection"]},
+        {"name": "logs fv_service", "signal": "logs", "api": "logsql", "kind": "values", "path": "/select/logsql/field_values", "query": "*", "params": {"field": "service.name"}, "smoke": true,
+         "covers": ["vl.select.field_values.nolimit"]},
+        {"name": "logs scan", "signal": "logs", "api": "logsql", "kind": "scan", "query": "* | fields _msg, service.name | limit 1000",
+         "covers": ["vl.select.query.wildcard", "lh.feature.query.column_projection"]}
+      ]
+    },
+    "control-traces": {
+      "description": "No-degradation set for the traces binary: always runs. Span counts and filters over LogsQL, and trace by ID.",
+      "layers": ["cold", "compacted", "buffer", "after-restart"],
+      "ranges": ["1h"],
+      "shapes": [
+        {"name": "traces count_total", "signal": "traces", "api": "logsql", "kind": "scalar", "query": "span_id:* | stats count() n", "smoke": true,
+         "covers": ["vt.select.logsql_stats_query.basic", "lh.feature.query.count_pushdown"]},
+        {"name": "traces service_filter", "signal": "traces", "api": "logsql", "kind": "scalar", "query": "span_id:* `resource_attr:service.name`:=\"api-gateway\" | stats count() n", "smoke": true,
+         "covers": ["vt.select.logsql_query.wildcard", "lh.feature.query.logsql_filter_eval"]},
+        {"name": "traces count_by_service", "signal": "traces", "api": "logsql", "kind": "groupby", "query": "span_id:* | stats by (`resource_attr:service.name`) count() as n",
+         "covers": ["vt.select.logsql_stats_query.basic", "lh.feature.query.column_projection"]},
+        {"name": "traces fv_name", "signal": "traces", "api": "logsql", "kind": "values", "path": "/select/logsql/field_values", "query": "span_id:*", "params": {"field": "name"}, "smoke": true,
+         "covers": ["vt.select.logsql_field_values.basic"]},
+        {"name": "traces trace_by_id count", "signal": "traces", "api": "logsql", "kind": "spans", "query": "trace_id:={trace_id} | stats count() n", "pick": "trace_id", "smoke": true,
+         "covers": ["vt.select.logsql_query.wildcard", "lh.feature.traces.trace_by_id_fastpath"]},
+        {"name": "traces scan", "signal": "traces", "api": "logsql", "kind": "scan", "query": "span_id:* | fields trace_id, span_id, name | limit 1000",
+         "covers": ["vt.select.logsql_query.wildcard", "lh.feature.query.column_projection"]}
+      ]
+    },
+    "query-projection": {
+      "description": "Column projection and filter evaluation: the shapes the projection derivation (#273-style bugs) touches.",
+      "layers": ["cold", "compacted"],
+      "ranges": ["1h", "full"],
+      "shapes": [
+        {"name": "logs filtered_groupby", "signal": "logs", "api": "logsql", "kind": "groupby", "query": "error | stats by (level) count()",
+         "covers": ["vl.select.query.wildcard", "lh.feature.query.column_projection"]},
+        {"name": "logs fields_limit", "signal": "logs", "api": "logsql", "kind": "scan", "query": "service.name:=\"payment-service\" | fields _msg, level | limit 1000",
+         "covers": ["vl.select.query.wildcard", "lh.feature.query.column_projection"]},
+        {"name": "logs high_card trace_id", "signal": "logs", "api": "logsql", "kind": "groupby", "query": "trace_id:* | stats by (trace_id) count()",
+         "covers": ["vl.select.stats_query.basic", "lh.feature.query.column_projection"]},
+        {"name": "traces fields_limit", "signal": "traces", "api": "logsql", "kind": "scan", "query": "span_id:* | fields trace_id, span_id, name, `resource_attr:service.name`, duration | limit 1000",
+         "covers": ["vt.select.logsql_query.wildcard", "lh.feature.query.column_projection"]},
+        {"name": "traces slow_spans", "signal": "traces", "api": "logsql", "kind": "scalar", "query": "span_id:* duration:>50000000 | stats count() n",
+         "covers": ["vt.select.logsql_query.wildcard", "lh.feature.query.logsql_filter_eval"]}
+      ]
+    },
+    "stats": {
+      "description": "Stats pipes and the stats endpoints.",
+      "layers": ["cold", "compacted"],
+      "ranges": ["1h", "full"],
+      "shapes": [
+        {"name": "logs stats_by_level", "signal": "logs", "api": "logsql", "kind": "groupby", "query": "* | stats by (level) count() as n",
+         "covers": ["vl.select.stats_query.basic", "lh.feature.query.count_pushdown"]},
+        {"name": "logs stats_uniq_trace", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "trace_id:* | stats count_uniq(trace_id) n",
+         "covers": ["vl.select.stats_query.basic", "lh.feature.query.count_pushdown"]},
+        {"name": "logs stats_query_range", "signal": "logs", "api": "logsql", "kind": "json", "path": "/select/logsql/stats_query_range", "query": "* | stats count() as total", "params": {"step": "10m"}, "window": "start-end",
+         "covers": ["vl.select.stats_query_range.basic", "lh.feature.query.count_pushdown"]},
+        {"name": "traces stats_by_name", "signal": "traces", "api": "logsql", "kind": "groupby", "query": "span_id:* | stats by (name) count() as n",
+         "covers": ["vt.select.logsql_stats_query.basic", "lh.feature.query.count_pushdown"]},
+        {"name": "traces stats_query_range", "signal": "traces", "api": "logsql", "kind": "json", "path": "/select/logsql/stats_query_range", "query": "span_id:* | stats count() as total", "params": {"step": "10m"}, "window": "start-end",
+         "covers": ["vt.select.logsql_stats_query_range.basic", "lh.feature.query.count_pushdown"]}
+      ]
+    },
+    "enumeration": {
+      "description": "field_names, field_values, streams, stream_field_*: the dropdowns of Grafana, Drilldown and VMUI.",
+      "layers": ["cold", "compacted"],
+      "ranges": ["1h", "full"],
+      "shapes": [
+        {"name": "logs field_names", "signal": "logs", "api": "logsql", "kind": "json", "path": "/select/logsql/field_names", "query": "*",
+         "covers": ["vl.select.field_names.basic", "lh.feature.storage.pmeta"]},
+        {"name": "logs fv_level", "signal": "logs", "api": "logsql", "kind": "values", "path": "/select/logsql/field_values", "query": "*", "params": {"field": "level"},
+         "covers": ["vl.select.field_values.nolimit"]},
+        {"name": "logs streams", "signal": "logs", "api": "logsql", "kind": "values", "path": "/select/logsql/streams", "query": "*",
+         "covers": ["vl.select.streams.basic"]},
+        {"name": "logs stream_field_names", "signal": "logs", "api": "logsql", "kind": "json", "path": "/select/logsql/stream_field_names", "query": "*",
+         "covers": ["vl.select.stream_field_names.basic"]},
+        {"name": "logs stream_field_values", "signal": "logs", "api": "logsql", "kind": "values", "path": "/select/logsql/stream_field_values", "query": "*", "params": {"field": "service.name"},
+         "covers": ["vl.select.stream_field_values.basic"]},
+        {"name": "traces field_names", "signal": "traces", "api": "logsql", "kind": "json", "path": "/select/logsql/field_names", "query": "span_id:*",
+         "covers": ["vt.select.logsql_field_names.basic", "lh.feature.storage.pmeta"]},
+        {"name": "traces fv_service", "signal": "traces", "api": "logsql", "kind": "values", "path": "/select/logsql/field_values", "query": "span_id:*", "params": {"field": "resource_attr:service.name"},
+         "covers": ["vt.select.logsql_field_values.basic"]},
+        {"name": "traces streams", "signal": "traces", "api": "logsql", "kind": "values", "path": "/select/logsql/streams", "query": "span_id:*",
+         "covers": ["vt.select.logsql_streams.basic"]}
+      ]
+    },
+    "hits": {
+      "description": "The hits histogram behind Grafana's volume panels.",
+      "layers": ["cold", "compacted"],
+      "ranges": ["1h", "full"],
+      "shapes": [
+        {"name": "logs hits_1h", "signal": "logs", "api": "logsql", "kind": "json", "path": "/select/logsql/hits", "query": "*", "params": {"step": "1h"},
+         "covers": ["vl.select.hits.basic", "lh.cold.hits_bucket_counts_exact"]},
+        {"name": "logs hits_by_level", "signal": "logs", "api": "logsql", "kind": "json", "path": "/select/logsql/hits", "query": "*", "params": {"step": "10m", "field": "level"},
+         "covers": ["vl.select.hits.basic", "lh.cold.hits_bucket_counts_exact"]},
+        {"name": "traces hits_10m", "signal": "traces", "api": "logsql", "kind": "json", "path": "/select/logsql/hits", "query": "span_id:*", "params": {"step": "10m"},
+         "covers": ["vt.select.logsql_hits.basic", "lh.feature.query.count_pushdown"]}
+      ]
+    },
+    "buffer-restart": {
+      "description": "Rows still in the insert buffer, and the same rows after a restart: the buffer bridge and its recovery.",
+      "layers": ["buffer", "after-restart"],
+      "ranges": ["1h"],
+      "shapes": [
+        {"name": "logs buffer count", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "* | stats count() n",
+         "covers": ["lh.select.split.insert_buffer_visible_logs", "lh.select.restart.same_hour_buffer_visible_logs", "lh.feature.query.buffer_visible_after_restart"]},
+        {"name": "logs buffer by_service", "signal": "logs", "api": "logsql", "kind": "groupby", "query": "* | stats by (service.name) count()",
+         "covers": ["lh.select.split.insert_buffer_visible_logs", "lh.feature.ingest.buffer_query_bridge"]},
+        {"name": "logs buffer scan", "signal": "logs", "api": "logsql", "kind": "scan", "query": "* | fields _msg, service.name | limit 1000",
+         "covers": ["lh.select.restart.same_hour_buffer_visible_logs", "lh.feature.ingest.buffer_query_bridge"]},
+        {"name": "traces buffer count", "signal": "traces", "api": "logsql", "kind": "scalar", "query": "span_id:* | stats count() n",
+         "covers": ["lh.select.split.insert_buffer_visible_traces", "lh.select.restart.same_hour_buffer_visible_traces", "lh.feature.query.buffer_visible_after_restart"]},
+        {"name": "traces buffer by_service", "signal": "traces", "api": "logsql", "kind": "groupby", "query": "span_id:* | stats by (`resource_attr:service.name`) count() as n",
+         "covers": ["lh.select.split.insert_buffer_visible_traces", "lh.feature.ingest.buffer_query_bridge"]}
+      ]
+    },
+    "tenancy": {
+      "description": "Integer and string-alias tenants: the same questions as the control sets for tenant 1001:0 and its alias acme-corp.",
+      "layers": ["cold", "buffer"],
+      "ranges": ["1h"],
+      "shapes": [
+        {"name": "logs count numeric1001", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "* | stats count() n", "tenant": "numeric1001",
+         "covers": ["vl.select.query.tenant_scope.scoped.prefix", "lh.feature.tenancy.header_routing"]},
+        {"name": "logs count alias", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "* | stats count() n", "tenant": "alias",
+         "covers": ["vl.select.query.tenant_scope.scoped.prefix", "lh.tenant_scope.logs.auto_registered_orgid", "lh.feature.tenancy.aliases"]},
+        {"name": "logs by_service alias", "signal": "logs", "api": "logsql", "kind": "groupby", "query": "* | stats by (service.name) count()", "tenant": "alias",
+         "covers": ["vl.select.query.tenant_scope.scoped.prefix", "lh.feature.tenancy.aliases"]},
+        {"name": "traces count numeric1001", "signal": "traces", "api": "logsql", "kind": "scalar", "query": "span_id:* | stats count() n", "tenant": "numeric1001",
+         "covers": ["lh.tenant_scope.traces.auto_registered_orgid", "lh.feature.tenancy.header_routing"]},
+        {"name": "traces count alias", "signal": "traces", "api": "logsql", "kind": "scalar", "query": "span_id:* | stats count() n", "tenant": "alias",
+         "covers": ["lh.tenant_scope.traces.auto_registered_orgid", "lh.feature.tenancy.aliases"]}
+      ]
+    },
+    "traces-jaeger": {
+      "description": "The Jaeger API (services, operations, search, trace by ID).",
+      "layers": ["cold", "compacted"],
+      "ranges": ["1h", "full"],
+      "shapes": [
+        {"name": "jaeger services", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/services", "window": "none",
+         "covers": ["vt.jaeger.services.basic", "lh.feature.traces.jaeger_api"]},
+        {"name": "jaeger operations", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/services/api-gateway/operations", "window": "none",
+         "covers": ["vt.jaeger.operations.basic", "lh.feature.traces.jaeger_api"]},
+        {"name": "jaeger search by_service", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/traces", "params": {"service": "payment-service", "limit": "20"}, "window": "micros",
+         "covers": ["vt.jaeger.traces_search.by_service", "lh.feature.traces.jaeger_api"]},
+        {"name": "jaeger search min_duration", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/traces", "params": {"service": "payment-service", "minDuration": "40ms", "limit": "20"}, "window": "micros",
+         "covers": ["vt.jaeger.traces_search.min_duration", "lh.feature.traces.jaeger_api"]},
+        {"name": "jaeger dependencies", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/dependencies", "params": {"lookback": "21600000"}, "window": "end-ms",
+         "covers": ["vt.jaeger.dependencies.basic", "lh.feature.traces.dependency_preaggregation"]}
+      ]
+    },
+    "traces-tempo": {
+      "description": "The Tempo search API and tag endpoints.",
+      "layers": ["cold", "compacted"],
+      "ranges": ["1h", "full"],
+      "shapes": [
+        {"name": "tempo search empty", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ }", "limit": "20"}, "window": "start-end",
+         "covers": ["vt.tempo.search.empty_query", "lh.feature.traces.tempo_api"]},
+        {"name": "tempo search service", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ resource.service.name = \"payment-service\" }", "limit": "20"}, "window": "start-end",
+         "covers": ["vt.tempo.search.service_name", "lh.feature.traces.tempo_api"]},
+        {"name": "tempo search duration", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/search", "params": {"q": "{ duration > 40ms }", "limit": "20"}, "window": "start-end",
+         "covers": ["vt.tempo.search.duration_filter", "lh.feature.traces.tempo_api"]},
+        {"name": "tempo tags", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/search/tags", "window": "start-end",
+         "covers": ["vt.tempo.v2_search_tags.basic", "lh.feature.traces.tempo_api"]},
+        {"name": "tempo tag values service", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/search/tag/resource.service.name/values", "window": "start-end",
+         "covers": ["vt.tempo.v2_search_tag_values.basic", "lh.feature.traces.tempo_api"]}
+      ]
+    },
+    "traceql-metrics": {
+      "description": "TraceQL metrics over the Tempo query_range endpoint.",
+      "layers": ["cold", "compacted"],
+      "ranges": ["1h", "full"],
+      "shapes": [
+        {"name": "traceql rate", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/metrics/query_range", "params": {"q": "{ } | rate()", "step": "300s"}, "window": "start-end",
+         "covers": ["vt.traceql.rate.basic", "lh.feature.traces.span_metrics"]},
+        {"name": "traceql rate by_service", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/metrics/query_range", "params": {"q": "{ } | rate() by (resource.service.name)", "step": "300s"}, "window": "start-end",
+         "covers": ["vt.traceql.rate.by_service", "lh.feature.traces.span_metrics"]},
+        {"name": "traceql quantile", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/metrics/query_range", "params": {"q": "{ } | quantile_over_time(duration, 0.9)", "step": "300s"}, "window": "start-end",
+         "covers": ["vt.traceql.quantile_over_time.basic", "lh.feature.traces.span_metrics"]}
+      ]
+    },
+    "trace-by-id": {
+      "description": "Trace by ID through every API that serves it: the point lookup that dominates trace UX.",
+      "layers": ["cold", "compacted", "buffer"],
+      "ranges": ["full"],
+      "shapes": [
+        {"name": "jaeger trace_by_id", "signal": "traces", "api": "jaeger", "kind": "json", "method": "GET", "path": "/select/jaeger/api/traces/{trace_id}", "window": "none", "pick": "trace_id", "smoke": false,
+         "covers": ["vt.jaeger.traces_by_id.basic", "lh.feature.traces.trace_by_id_fastpath"]},
+        {"name": "tempo v2 trace_by_id", "signal": "traces", "api": "tempo", "kind": "json", "method": "GET", "path": "/select/tempo/api/v2/traces/{trace_id}", "window": "none", "pick": "trace_id",
+         "covers": ["vt.tempo.traces_v2.by_id", "lh.feature.traces.trace_by_id_fastpath"]},
+        {"name": "logsql trace_by_id spans", "signal": "traces", "api": "logsql", "kind": "scan", "query": "trace_id:={trace_id} | fields trace_id, span_id, name", "pick": "trace_id",
+         "covers": ["vt.select.logsql_query.wildcard", "lh.feature.traces.trace_by_id_fastpath", "lh.feature.traces.trace_index"]}
+      ]
+    },
+    "compaction": {
+      "description": "Compacted vs freshly flushed layers asked the same questions: exact answers, and compacted not slower.",
+      "layers": ["cold", "compacted"],
+      "ranges": ["full"],
+      "shapes": [
+        {"name": "logs compaction count", "signal": "logs", "api": "logsql", "kind": "scalar", "query": "* | stats count() n",
+         "covers": ["lh.feature.compaction.level_based", "lh.feature.compaction.hints_manual_trigger", "vl.select.stats_query.basic"]},
+        {"name": "logs compaction by_service", "signal": "logs", "api": "logsql", "kind": "groupby", "query": "* | stats by (service.name) count()",
+         "covers": ["lh.feature.compaction.level_based", "vl.select.stats_query.basic"]},
+        {"name": "logs compaction scan", "signal": "logs", "api": "logsql", "kind": "scan", "query": "* | fields _msg, service.name | limit 1000",
+         "covers": ["lh.feature.compaction.level_based", "vl.select.query.wildcard"]},
+        {"name": "traces compaction count", "signal": "traces", "api": "logsql", "kind": "scalar", "query": "span_id:* | stats count() n",
+         "covers": ["lh.feature.compaction.level_based", "vt.select.logsql_stats_query.basic"]},
+        {"name": "traces compaction by_service", "signal": "traces", "api": "logsql", "kind": "groupby", "query": "span_id:* | stats by (`resource_attr:service.name`) count() as n",
+         "covers": ["lh.feature.compaction.level_based", "vt.select.logsql_stats_query.basic"]}
+      ]
+    }
+  }
+}
