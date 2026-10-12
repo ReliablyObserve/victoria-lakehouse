@@ -66,6 +66,17 @@
     {"name": "dockerfile: a Unicode space after the image", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.23\u00a0AS builder\n"},
     {"name": "compose: an Arabic-Indic digit in the version", "kind": "compose", "want": false, "base": "    image: golang:1.27.1\n", "head": "    image: golang:1.27.\u0663\n"},
     {"name": "compose: a CR hides a line break", "kind": "compose", "want": false, "base": "    image: golang:1.27.1\n    command: x\n", "head": "    image: golang:1.27.2\r    command: x\n"},
-    {"name": "compose: a Unicode line separator after the bumped line", "kind": "compose", "want": false, "base": "    image: golang:1.27.1\n", "head": "    image: golang:1.27.2\u2028\n"}
+    {"name": "compose: a Unicode line separator after the bumped line", "kind": "compose", "want": false, "base": "    image: golang:1.27.1\n", "head": "    image: golang:1.27.2\u2028\n"},
+    {"name": "downgrade: the Go minor goes back (1.27.2 to 1.21.0)", "kind": "compose", "want": false, "base": "    image: golang:1.27.2\n", "head": "    image: golang:1.21.0\n"},
+    {"name": "downgrade: the Go patch goes back (1.27.2 to 1.27.1)", "kind": "compose", "want": false, "base": "    image: golang:1.27.2\n", "head": "    image: golang:1.27.1\n"},
+    {"name": "downgrade: a two-part tag goes back (1.27 to 1.21)", "kind": "compose", "want": false, "base": "    image: golang:1.27\n", "head": "    image: golang:1.21\n"},
+    {"name": "downgrade: the alpine release goes back numerically (3.23 to 3.9)", "kind": "compose", "want": false, "base": "    image: golang:1.27.2-alpine3.23\n", "head": "    image: golang:1.27.2-alpine3.9\n"},
+    {"name": "downgrade: the Go version rises but the alpine release falls", "kind": "compose", "want": false, "base": "    image: golang:1.27.1-alpine3.23\n", "head": "    image: golang:1.27.2-alpine3.22\n"},
+    {"name": "upgrade: 1.9.5 to 1.10.0 is numeric, not lexical", "kind": "compose", "want": true, "base": "    image: golang:1.9.5\n", "head": "    image: golang:1.10.0\n"},
+    {"name": "upgrade: alpine3.9 to alpine3.10 is numeric, not lexical", "kind": "compose", "want": true, "base": "    image: golang:1.27.2-alpine3.9\n", "head": "    image: golang:1.27.2-alpine3.10\n"},
+    {"name": "upgrade: only the alpine release moves up", "kind": "compose", "want": true, "base": "    image: golang:1.27.2-alpine3.23\n", "head": "    image: golang:1.27.2-alpine3.24\n"},
+    {"name": "dockerfile downgrade: FROM golang goes back", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.2-alpine3.23 AS builder\n", "head": "FROM golang:1.21.0-alpine3.23 AS builder\n"},
+    {"name": "dockerfile downgrade: alpine3.23 to alpine3.9", "kind": "dockerfile", "want": false, "base": "FROM golang:1.27.2-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.9 AS builder\n"},
+    {"name": "dockerfile upgrade: FROM golang moves up", "kind": "dockerfile", "want": true, "base": "FROM golang:1.27.1-alpine3.23 AS builder\n", "head": "FROM golang:1.27.2-alpine3.23 AS builder\n"}
   ]
 }

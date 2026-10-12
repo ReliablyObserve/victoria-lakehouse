@@ -63,3 +63,24 @@ syn_u2028_replace_dep | synthetic | - | u2028_replace_dep | replay | FAIL | Rule
 syn_init_exit | synthetic | - | init_exit | replay | FAIL | Rule 3 | - | test(parity): add an environment hook
 # dependency-only is decided from the diff, never from the title or commit subject.
 syn_dependency_bump | synthetic | - | dependency_bump | replay | PASS | - | dependency-only | chore: tidy things
+# The hardening of issue #502 (second independent review of the gate). "old" means the gate of #499.
+# M-A: every new file of a lock package is listed (the old gate said "Lock-affecting files: none" for the first two and the third);
+# import "C" there is a hard Rule 3 failure.
+syn_warmup_test | synthetic | - | warmup_test | replay | PASS | - | tests/parity/aaa_warmup_test.go | test(parity): add a warm-up test
+syn_forged_transcript_exit | synthetic | - | forged_transcript_exit | replay | PASS | - | tests/parity/zz_forged_test.go | test(parity): add a transcript test
+syn_blank_import_hook | synthetic | - | blank_import_hook | replay | PASS | - | blank-imports | test(parity): add a hook
+syn_cgo_constructor | synthetic | - | cgo_constructor | replay | FAIL | Rule 3 | - | test(parity): add native helpers
+# M-B: a line separator hides an allowlist entry from the Go gate while the Python ratchet sees it; both refuse the bytes now.
+syn_allowlist_nel | synthetic | - | allowlist_nel | replay | FAIL | Rule 3 | - | test(parity): tidy the allowlist
+# M-C: valyala/fastjson parses ingest JSON; every module not known to be inert is critical (the old gate: dependency-only).
+syn_fastjson_bump | synthetic | - | fastjson_bump | replay | FAIL | Rule 1 | - | build(deps): bump github.com/valyala/fastjson
+# minor 4 (a toolchain bump moves forward) and 6 (a newly required module is not a bump); the old gate accepted both
+syn_toolchain_downgrade | synthetic | - | toolchain_downgrade | replay | FAIL | Rule 1 | - | fix(security): Go 1.21.0
+syn_dependency_new_require | synthetic | - | dependency_new_require | replay | FAIL | Rule 1 | - | build(deps): add golang.org/x/crypto
+# minor 5: a pure move or rename of load-time declarations is listed, not failed (the old gate failed both with no bypass)
+syn_loadtime_var_move | synthetic | - | loadtime_var_move | replay | PASS | - | tests/parity/urls.go | test(parity): move the base URLs
+syn_loadtime_file_rename | synthetic | - | loadtime_file_rename | replay | PASS | - | tests/parity/harness_helpers.go | test(parity): rename the helpers file
+# minor 1: a path with a line break is a hard failure (the old gate raised no route signal for it)
+syn_path_with_newline | synthetic | - | path_with_newline | replay | FAIL | Changed paths,Rule 1 | - | fix(stats): register a route
+# files that shape the verdict are gate files: listed, never failed
+syn_gate_file_listing | synthetic | - | gate_file_listing | replay | PASS | - | Gate files changed | ci: note

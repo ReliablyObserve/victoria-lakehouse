@@ -396,23 +396,40 @@ commit message):
   `requirements*.txt` outside the product trees; in `go.mod` only `require` entries are added, removed
   or change version (no `replace`, `go`, `toolchain` or other directive); `go.sum` changes only
   well-formed hash lines of non-critical modules; a requirements file changes only package
-  requirement lines (no URLs, `-r`, `-e`, index options). A bump of a storage-critical module
-  (`github.com/VictoriaMetrics/*`, `github.com/parquet-go/*`, `github.com/aws/*`,
-  `github.com/cespare/xxhash*` and the codec and wire-format modules in
-  `CRITICAL_MODULE_PREFIXES`, quoted or not) is never dependency-only: it needs registry coverage. The
-  kind waives **Rule 1 only**; Rules 2 and 3 still run. (It used to read the commit subjects and the PR
-  title, which the author writes, and to skip Rules 1-3.) `test_pr_classify_critical.py` fails when a
-  module imported by the stream-id, trace-index, schema or Parquet code is missing from that list;
+  requirement lines (no URLs, `-r`, `-e`, index options). The set of required modules is equal at both
+  revisions (a newly added `require` is a new dependency, not a bump, and is refused like a removed
+  one). **Modules are critical unless they are known to be inert.** The first version of the gate listed
+  the critical modules and was one short more than once (`xxhash`, then `valyala/fastjson`,
+  `valyala/quicktemplate`, `gopkg.in/yaml.v3`, `google/uuid`, `golang.org/x/text`, ...), so
+  `INERT_MODULES` in `pr_classify.py` is an allowlist of the modules a bump of which cannot change a
+  stored or answered byte, each with its reason: test-only libraries (`go.uber.org/goleak`), runtime
+  helpers without a data format (`golang.org/x/sync`, `x/sys`, `x/oauth2`), the OpenTelemetry SDK and
+  its exporters (`go.opentelemetry.io/otel/...`, which trace the process and ship spans out of band), the
+  logging facade and retry timer behind them, and `golang.org/x/net`. `x/net` is inert because nothing in
+  this repository or in `deps/` imports it: it is reached only through `google.golang.org/grpc` (the OTLP
+  trace exporter client), and `net/http` uses the copy vendored into GOROOT; `test_pr_classify_critical.py`
+  re-checks that. NOT inert: `go.opentelemetry.io/proto/` (the OTLP wire format),
+  `go.opentelemetry.io/contrib/` and `httpsnoop` (they wrap every handler's `ResponseWriter`),
+  `golang.org/x/text`, `google/uuid`, `yaml.v3`, every `valyala/*` module, the codecs, the AWS SDK, parquet-go,
+  VictoriaMetrics/VictoriaLogs and `google.golang.org/*`. A module in neither list is critical, and the drift
+  test fails until a person classifies it. A bump of a critical module is never dependency-only: it needs
+  registry coverage. The kind waives **Rule 1 only**; Rules 2 and 3 still run. (It used to read the commit
+  subjects and the PR title, which the author writes, and to skip Rules 1-3.) The drift test also fails when
+  an inert module is imported by the stream-id, trace-index, schema or Parquet code, or by a package it was
+  not reviewed for;
 - `toolchain-only` PRs: a Go toolchain bump such as #491 (Go 1.27.1 to 1.27.2). Every changed file
   must be in this set and its diff must be nothing but versions: `go.mod` and
   `lakehouse-traces/go.mod` (the `go` and `toolchain` directive lines, and the version of `require`
-  entries, none of them a storage-critical module; same set of modules, every other line equal),
+  entries, none of them a critical module (see above); same set of modules, every other line equal),
   `go.work` (the `go` / `toolchain` lines), `go.sum` and `lakehouse-traces/go.sum` (well-formed hash
   lines, none for a storage-critical module), `Dockerfile`, `Dockerfile.logs`, `Dockerfile.traces` and
   `Dockerfile.datagen` (`FROM [--platform=...] golang:<version>[-alpine[<ver>]] [AS name]` lines whose
   version changes, the platform, the suffix shape and the stage name equal, every other line
   byte-identical, same line count) and `tests/parity/docker-compose.yml` (`image: golang:<version>`
-  lines, the same way). Plain non-product files may ride along: documentation and Markdown, CI
+  lines, the same way). **A bump moves forward**: the `go` and `toolchain` directives, the Go version of a
+  `golang:` image and its alpine release may not be older at head than at the merge base (compared
+  numerically: `alpine3.9` is older than `alpine3.23`), and a `toolchain` line may not be dropped; a
+  downgrade is a product change. Plain non-product files may ride along: documentation and Markdown, CI
   workflows and scripts that are not gate files. A different base image, an added flag, a changed env
   var, a changed `replace`, a storage-critical module bump, a test, a registry row, a parity lock or
   a gate file in the same PR make it a normal product change. The kind waives **Rule 1 only**: Rules 2
@@ -451,15 +468,27 @@ knowingly.
 
 **Reported, not failed.** The gate lists these in the report, because the owner's required approval
 covers them and a content check cannot judge them:
-- **Gate files:** any file directly under `scripts/ci/`, `.gitattributes`,
-  `tests/parity/lock_cells_test.go`, `cmd/testlinks`, `registry/{testlinks,paritygate,lockcode}.go`,
+- **Gate files:** any file under `scripts/ci/` (the gate's scripts, its tests, its fixtures and the replay table),
+  `.gitattributes`, `tests/parity/lock_cells_test.go`, `tests/parity/known_failures.txt` and
+  `tests/parity/lock_cells.txt` (the data the Go gate and the Python ratchet both read; a parity fix that adds
+  floors is therefore listed, not failed), `cmd/testlinks`, `registry/{testlinks,paritygate,lockcode,escape,canonical}.go`
+  (`escape.go` and `canonical.go` shape what the gate reads and prints), `.github/CODEOWNERS`,
   `.github/workflows/{conformance,registry-gate,registry-gate-base,gate-selftest,parity}.yaml` and
   `.github/release-metadata-approvers` (its deprecated name `.github/registry-exempt-approvers` is
   still read from a merge base that predates the rename, and is deleted one release later). `.github/CODEOWNERS` lists the owner for `.github/`,
   `scripts/ci/` and `tests/conformance/`. A PR that changes any of them is judged by the merge
-  base's copy of the gate, so it cannot loosen its own judge. `tests/parity/lock_cells.txt` is not a
-  gate file: a parity fix adds floors freely, and lowering or removing one is a Rule 3 failure.
-- **Lock-affecting files** (see "Lock packages" below).
+  base's copy of the gate, so it cannot loosen its own judge. Lowering or removing a floor in
+  `tests/parity/lock_cells.txt` is still a Rule 3 failure.
+- **Lock-affecting files** (see "Lock packages" below): every existing file of a lock package the PR edits or
+  deletes, **every new `.go` file there** (a test file that declares only funcs still runs inside the lock
+  package: a first-sorting `TestAAAWarmup` that repoints the shared base URLs makes every later lock compare
+  Lakehouse with itself, and a test that prints a forged transcript and exits does the same; no syntactic rule
+  can tell those from a legitimate new test, so the reviewer reads them), any file of the package that gains an
+  import of a package the package did not import at the merge base (a blank import runs that package's `init()`
+  before any test), every new native source file (`.c`, `.s`, `.syso` ...) in the package directory, and the
+  lock suites' runtime configuration.
+- **Not enforced, on purpose:** that an edited lock or helper still compares what it compared. The gate cannot
+  decide that from content; it makes sure a person looks.
 
 **Gate replay.** `make gate-replay` (`scripts/ci/gate_replay.sh`) replays the gate over recorded pull
 requests, pinned by sha, and over synthetic pull requests built in a scratch clone, and compares each
@@ -469,10 +498,17 @@ change, so a change that makes the gate accept what it must reject (or reject wh
 on real history. The table has exactly nine columns (a row with another count is an error; a literal `|`
 in a cell is written `\|`), and for a synthetic case the title column is also the commit subject, so a case
 can wear the title an attacker would choose. The synthetic negatives include the review's smuggles
-(`cr_fips`, `cr_replace_tc`, `cr_replace_dep`, `u2028_replace_dep`, `tc_unidigit`, `init_exit`). Cost
+(`cr_fips`, `cr_replace_tc`, `cr_replace_dep`, `u2028_replace_dep`, `tc_unidigit`, `init_exit`) and the shapes of the second review
+(issue #502): `warmup_test`, `forged_transcript_exit`, `blank_import_hook`, `cgo_constructor`, `allowlist_nel`, `fastjson_bump`,
+`toolchain_downgrade`, `dependency_new_require`, `loadtime_var_move`, `loadtime_file_rename`, `path_with_newline`,
+`gate_file_listing`. Cost
 (measured 2026-10-11 by the independent review; it varies with the runner): judging one large recorded pull request
 took 68 s (#483) and 79 s (#487) locally, one CI replay shard about 1:40, one gate job about 30 s; the gate jobs have a
-10 minute timeout and the replay jobs 40, and a timeout fails the check (closed). To record a new case, add a line to the table (the header of
+10 minute timeout and the replay jobs 40, and a timeout fails the check (closed). `testlinks` reads every blob through one
+persistent `git cat-file --batch` process (`cmd/testlinks/blobs.go`, cached per revision and path) instead of one `git show`
+per blob; a path with a line break, a non-blob object and any protocol surprise fall back to `git show`, so the answers
+are identical. Measured 2026-10-12 on a busy host (load average 20-40), the gate over the recorded pull requests with the
+old reader against the new one, the reports byte-identical: #483 338 s to 19 s, #487 276 s to 20 s, #491 215 s to 12 s. To record a new case, add a line to the table (the header of
 the script documents the columns); a fixed gate bug gets the pull request that exposed it.
 
 ### Parity fixes ship locks
@@ -534,8 +570,13 @@ verify, so editing it is free. **A lock package may not gain load-time code (har
 `var` whose initializer calls a function runs before any test and can end the test binary with success
 (`func init() { if os.Getenv("PARITY_LOCK_NONCE") != "" { os.Exit(0) } }`), silencing every lock of the
 package, so the gate fails a PR that adds one to a file of a lock package: a new file, or an existing file
-that now holds an `init()` or a called-var (per name and initializer text, `_` counted per occurrence) the
-merge base did not. In a pure test package that applies to every `.go` file, in a product package to
+that now holds an `init()` or a called-var the merge base did not. These declarations are compared as a
+**multiset per package**, not per file: an `init()` is keyed by its normalised body and a var by its name and
+initializer text (`_` counted per occurrence), so moving a declaration to another file of the package, or
+renaming the file that holds it, adds nothing (the files are still listed for the reviewer), while a new
+declaration (another body, another initializer, one more copy) fails wherever it sits. **cgo is load-time code
+too** (an `__attribute__((constructor))` in the preamble runs before `main`), so a lock package may not start
+importing `"C"` in any `.go` file, test or product, new or edited (hard, Rule 3). In a pure test package that applies to every `.go` file, in a product package to
 `_test.go` files (non-test files there are product code and free). A var whose initializer runs no code
 is free: a literal table (`var fvPropMaps = []fvPropMap{{...}}`, which #438 added), a conversion to a
 predeclared type, a pure builtin (`len`, `make` ...), a func literal that is not called, a bare
@@ -546,7 +587,8 @@ to a user-defined type, which looks like a call: wrap those in a function the te
 in place is listed as lock-affecting, not failed. A package that declares a top-level name shadowing a predeclared type or builtin (`func len(...)`) is refused,
 because it would turn the trusted `len(x)` into a call of that func. The check is syntactic; the required review
 covers what it cannot see. A new file that declares only funcs, consts and
-types is never listed, so a parity fix adds its tests in a NEW file. A lock a PR adds itself is not protected yet
+types is listed like every other new file of the package (informational: a parity fix adds its tests in a NEW
+file and the PR stays PASS, with the file named for the reviewer). A lock a PR adds itself is not protected yet
 (the merge base decides).
 Residual risk of the call-graph helper search (it names the reason a file is lock code, depth 4 inside the
 lock test's own package, product code excluded): it does not follow func values, calls into other packages, or
@@ -582,6 +624,13 @@ and made the toolchain bump #491 unmergeable, with no way to turn it green; it i
 - adds an `init()` function or a package-level `var` whose initializer calls a function to a file of a
   lock package (a new file or an existing one), or changes a `TestMain` there: load-time code that can
   silence the locks;
+- adds `import "C"` (cgo) to any `.go` file of a lock package;
+- leaves a control byte other than LF and TAB, a NEL, U+2028, U+2029, a BOM or invalid UTF-8 in the parity
+  allowlist or in `tests/parity/lock_cells.txt`. The Go gate splits these files on `\n`; Python's
+  `splitlines()` also splits on a lone CR, VT, FF, FS/GS/RS, NEL, U+2028 and U+2029, so a separator inside an existing
+  line hid a smuggled entry from the gate while the ratchet counted it. Both readers now refuse those bytes (the
+  ratchet reads bytes and splits on LF only; one fixture, `scripts/ci/tests/testdata/parity_data_bytes.json`, is
+  read by the Go and the Python tests);
 - lowers or removes a cell floor in `tests/parity/lock_cells.txt`;
 - deletes or moves the allowlist file, or changes the `--allowlist` argument of the parity workflow
   (the allowlist path is read from `.github/workflows/parity.yaml` at both revisions).
@@ -592,6 +641,10 @@ tests/conformance/registry/rows` (the Parity Tests job) reads the rows with `exp
 pending, exact-equivalent compare, and requires every `tests/parity/...#Test` they reference to
 report `pass` in the run: a skipped, missing or failing lock test fails the job whatever the test
 file says. Make the `parity` job a required check so a lock cannot go red or skip unnoticed.
+
+A changed path that contains a control character (a line break, a CR ...) is a hard failure of its own row
+("Changed paths"): the route, handler and feature-catalog checks read paths one per line and would not see
+`internal/stats/zz<LF>route.go`.
 
 Registry YAML is read the same way by the loader and the gate: one document per file (a `---` second
 document is rejected) and booleans spelled `true` or `false` only (`pending: yes` is rejected). The

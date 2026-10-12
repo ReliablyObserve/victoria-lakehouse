@@ -12,7 +12,7 @@ GO_MOD = """module x
 go 1.22
 
 require (
-\tgithub.com/a/b v1.0.0
+\tgolang.org/x/sync v1.0.0
 \tgithub.com/VictoriaMetrics/c v1.0.0
 \tgithub.com/parquet-go/parquet-go v0.20.0
 \tgithub.com/aws/aws-sdk-go-v2/service/s3 v1.0.0
@@ -98,18 +98,20 @@ class GoMod(unittest.TestCase):
         return pc.go_mod_dependency_only(GO_MOD, head)
 
     def test_plain_bump_is_dependency_only(self):
-        self.assertTrue(self.only(GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0")))
-        self.assertTrue(self.only(GO_MOD.replace("\n)\n", "\n\tgithub.com/d/e v1.0.0\n)\n")))
+        self.assertTrue(self.only(GO_MOD.replace("golang.org/x/sync v1.0.0", "golang.org/x/sync v1.1.0")))
+        # a newly required module is a new dependency, not a version bump: the set of modules must be equal
+        self.assertFalse(self.only(GO_MOD.replace("\n)\n", "\n\tgolang.org/x/sys v1.0.0\n)\n")))
+        self.assertFalse(self.only(GO_MOD.replace("\tgolang.org/x/sync v1.0.0\n", "")))
 
     def test_single_line_require(self):
-        base = "module x\n\ngo 1.22\n\nrequire github.com/a/b v1.0.0\n"
+        base = "module x\n\ngo 1.22\n\nrequire golang.org/x/sync v1.0.0\n"
         self.assertTrue(pc.go_mod_dependency_only(base, base.replace("v1.0.0", "v1.2.0")))
         crit = "module x\n\ngo 1.22\n\nrequire github.com/VictoriaMetrics/c v1.0.0\n"
         self.assertFalse(pc.go_mod_dependency_only(crit, crit.replace("v1.0.0", "v1.2.0")))
         self.assertFalse(pc.go_mod_dependency_only(base, base.replace("go 1.22", "go 1.23")))
 
     def test_other_directives_are_never_dependency_only(self):
-        for edit in (GO_MOD.replace("go 1.22", "go 1.23"), GO_MOD + "\nreplace github.com/a/b => github.com/evil/b v0.0.1\n",
+        for edit in (GO_MOD.replace("go 1.22", "go 1.23"), GO_MOD + "\nreplace golang.org/x/sync => github.com/evil/b v0.0.1\n",
                      GO_MOD + "\ntoolchain go1.99\n", GO_MOD.replace("module x", "module y")):
             self.assertFalse(self.only(edit))
 
@@ -126,7 +128,7 @@ class GoMod(unittest.TestCase):
         quoted = GO_MOD.replace("github.com/VictoriaMetrics/c v1.0.0", '"github.com/VictoriaMetrics/c" v1.0.0')
         self.assertFalse(pc.go_mod_dependency_only(quoted, quoted.replace('c" v1.0.0', 'c" v1.5.0')))
         self.assertEqual(pc.parse_go_mod(quoted)[0]["github.com/VictoriaMetrics/c"], "v1.0.0")
-        self.assertEqual(pc.parse_go_mod("module x\n\nrequire `github.com/a/b` v1.0.0\n")[0], {"github.com/a/b": "v1.0.0"})
+        self.assertEqual(pc.parse_go_mod("module x\n\nrequire `golang.org/x/sync` v1.0.0\n")[0], {"golang.org/x/sync": "v1.0.0"})
 
     def test_quoted_module_path_is_still_the_module(self):
         head = GO_MOD.replace("github.com/VictoriaMetrics/c v1.0.0", '"github.com/VictoriaMetrics/c" v1.5.0')
@@ -136,8 +138,8 @@ class GoMod(unittest.TestCase):
 class DependencyOnly(unittest.TestCase):
     """dependency_only decides from the content of every changed file, never from a subject."""
 
-    SUM = "github.com/a/b v1.0.0 h1:aaa=\ngithub.com/a/b v1.0.0/go.mod h1:bbb=\n"
-    SUM_BUMP = SUM + "github.com/a/b v1.1.0 h1:ccc=\ngithub.com/a/b v1.1.0/go.mod h1:ddd=\n"
+    SUM = "golang.org/x/sync v1.0.0 h1:aaa=\ngolang.org/x/sync v1.0.0/go.mod h1:bbb=\n"
+    SUM_BUMP = SUM + "golang.org/x/sync v1.1.0 h1:ccc=\ngolang.org/x/sync v1.1.0/go.mod h1:ddd=\n"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -172,7 +174,7 @@ class DependencyOnly(unittest.TestCase):
         self.git("commit", "-q", "--allow-empty", "-m", "build(deps): whatever the author calls it")
         return pc.dependency_only(list(files), self.base, "HEAD")
 
-    BUMP = {"go.mod": GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0"), "go.sum": SUM_BUMP}
+    BUMP = {"go.mod": GO_MOD.replace("golang.org/x/sync v1.0.0", "golang.org/x/sync v1.1.0"), "go.sum": SUM_BUMP}
 
     def test_bump_is_dependency_only(self):
         self.assertTrue(self.verdict(self.BUMP))
@@ -221,7 +223,7 @@ class DependencyOnly(unittest.TestCase):
 
     # --- the smuggles: a replace directive hidden behind a CR / U+2028 line break ---
 
-    REPLACE = "replace github.com/a/b => ./local\n"
+    REPLACE = "replace golang.org/x/sync => ./local\n"
 
     def test_cr_hides_a_replace_directive(self):
         base = GO_MOD + "\n" + self.REPLACE
@@ -232,7 +234,7 @@ class DependencyOnly(unittest.TestCase):
         for sep in ("\r", "\u2028", "\u2029", "\u0085", "\x0b", "\x0c", "\x1c"):
             with self.subTest(repr(sep)):
                 self.git("reset", "-q", "--hard", self.base)
-                head = GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0") + "\n// local tree" + sep + self.REPLACE
+                head = GO_MOD.replace("golang.org/x/sync v1.0.0", "golang.org/x/sync v1.1.0") + "\n// local tree" + sep + self.REPLACE
                 self.assertFalse(self.verdict({"go.mod": head}))
 
     def test_a_whole_file_with_crlf_is_rejected(self):
@@ -241,12 +243,12 @@ class DependencyOnly(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "crlf base")
         self.base = self.git("rev-parse", "HEAD").strip()
-        self.assertFalse(self.verdict({"go.mod": crlf.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0")}))
+        self.assertFalse(self.verdict({"go.mod": crlf.replace("golang.org/x/sync v1.0.0", "golang.org/x/sync v1.1.0")}))
 
     def test_a_non_ascii_changed_line_and_invalid_utf8_are_rejected(self):
-        self.assertFalse(self.verdict({"go.mod": GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0 // caf\u00e9")}))
+        self.assertFalse(self.verdict({"go.mod": GO_MOD.replace("golang.org/x/sync v1.0.0", "golang.org/x/sync v1.1.0 // caf\u00e9")}))
         self.git("reset", "-q", "--hard", self.base)
-        self.assertFalse(self.verdict({"go.mod": GO_MOD.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0").encode() + b"\xff\n"}))
+        self.assertFalse(self.verdict({"go.mod": GO_MOD.replace("golang.org/x/sync v1.0.0", "golang.org/x/sync v1.1.0").encode() + b"\xff\n"}))
 
     def test_an_unchanged_non_ascii_comment_is_fine(self):
         base = GO_MOD.replace("module x", "// the commit \u2014 pinned\nmodule x")
@@ -254,7 +256,7 @@ class DependencyOnly(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "base2")
         self.base = self.git("rev-parse", "HEAD").strip()
-        self.assertTrue(self.verdict({"go.mod": base.replace("github.com/a/b v1.0.0", "github.com/a/b v1.1.0")}))
+        self.assertTrue(self.verdict({"go.mod": base.replace("golang.org/x/sync v1.0.0", "golang.org/x/sync v1.1.0")}))
 
 
 if __name__ == "__main__":
