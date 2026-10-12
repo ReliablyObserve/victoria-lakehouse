@@ -40,6 +40,24 @@ func git(repo string, args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
+// toolErr reports a tool error (exit 2). The message can hold author-controlled text (a registry
+// file or a test file named `x\n::warning title=...::PASS`): it goes through LogSafe, so no author
+// can forge a workflow command or a log line from a path.
+func toolErr(prefix string, errs ...error) int {
+	var parts []string
+	for _, e := range errs {
+		if e != nil {
+			parts = append(parts, e.Error())
+		}
+	}
+	msg := strings.TrimPrefix(registry.LogSafe(strings.Join(parts, " ")), "- ")
+	if prefix != "" {
+		msg = prefix + " " + msg
+	}
+	fmt.Fprintln(os.Stderr, "testlinks:", msg)
+	return 2
+}
+
 const (
 	lockCellsPath = "tests/parity/lock_cells.txt"
 	rowsDir       = "tests/conformance/registry/rows"
@@ -279,6 +297,78 @@ func writeReport(dir string, rules []*rule, lockAffecting []string, summary stri
 	return os.WriteFile(filepath.Join(dir, "details.md"), []byte(d.String()), 0o600)
 }
 
+// lockContentRules runs the hard content rules for the packages that hold a registry lock (Rule 3):
+// a lock's test file keeps running, no TestMain change, no new load-time code, no cgo, and the parity data
+// files are read the same way by every reader.
+func lockContentRules(r3 *rule, repo, base, head string, bs, hs registry.ParitySnapshot, show func(string) func(string) []byte, baseList, headList registry.PackageFiles, allowlistPaths []string) {
+	// A lock's test file must keep running: no changed build constraint, no new Skip.
+	lockFiles := map[string]bool{}
+	for _, snapRows := range []map[string]registry.RowLite{bs.Rows, hs.Rows} {
+		for _, r := range snapRows {
+			if r.Exact() {
+				for _, t := range r.Tests {
+					lockFiles[strings.SplitN(t, "#", 2)[0]] = true
+				}
+			}
+		}
+	}
+	var lockList []string
+	for f := range lockFiles {
+		lockList = append(lockList, f)
+	}
+	if lw := registry.LockFileWeakenings(lockList, show(base), show(head)); len(lw) > 0 {
+		r3.fail("this PR changes a test file that a registry lock references so that it may stop running", lw,
+			"remove the new t.Skip / build-constraint edit from the lock's test file, or move the test out of the lock's file")
+	}
+	// A TestMain that exits early silences every test of its package: the packages that
+	// hold a lock may not change theirs.
+	var mainFiles []string
+	dirs := map[string]bool{}
+	for _, f := range lockList {
+		dirs[filepath.ToSlash(filepath.Dir(f))] = true
+	}
+	for d := range dirs {
+		for _, rev := range []string{base, head} {
+			files, err := listFiles(repo, rev, d+"/")
+			if err != nil {
+				continue // a missing directory has no TestMain
+			}
+			for _, f := range files {
+				if filepath.ToSlash(filepath.Dir(f)) == d {
+					mainFiles = append(mainFiles, f)
+				}
+			}
+		}
+	}
+	if tm := registry.TestMainChanges(mainFiles, show(base), show(head)); len(tm) > 0 {
+		r3.fail("this PR changes the TestMain of a package that holds a registry lock", tm,
+			"revert the TestMain change: a TestMain that can exit early silences every test of its package, locks included")
+	}
+	// Load-time code: a lock package may not gain an init() or a package-level var (it runs before
+	// any test and can exit, skip or repoint shared state). A content rule, hard like TestMain.
+	refs := registry.LockTestRefs(bs.Rows)
+	if iv := registry.LockInitVarAdditions(refs, show(base), show(head), baseList, headList); len(iv) > 0 {
+		r3.fail("this PR adds init() or a package-level var to a package that holds a registry lock", iv,
+			"move the setup into the test function or a helper func the test calls: a package-level var initializer and init() run before every test of the package, can call os.Exit and can repoint shared state, which would silence the locks")
+	}
+	// cgo is load-time code too (a C constructor runs before main) and no parser rule above sees it.
+	if cg := registry.LockCgoAdditions(refs, show(base), show(head), baseList, headList); len(cg) > 0 {
+		r3.fail("this PR adds cgo (import \"C\") to a package that holds a registry lock", cg,
+			"remove the cgo: a C constructor in a lock package runs before any test and can end the test binary with success; keep native code out of the packages that hold locks")
+	}
+	// The parity data files are read line by line by Go (this gate) and by Python (the runtime ratchet).
+	var data []string
+	for _, p := range allowlistPaths {
+		if p != "" {
+			data = append(data, p)
+		}
+	}
+	if bad := registry.ParityDataProblems(append(data, lockCellsPath), show(base), show(head)); len(bad) > 0 {
+		r3.fail("this PR leaves bytes in the parity allowlist or the lock floors that two readers split differently", bad,
+			"remove the control character, line separator (U+0085, U+2028, U+2029), BOM or invalid UTF-8: only LF separates lines and a TAB is the only other control byte allowed in these files")
+	}
+}
+
 func run() int {
 	repo := flag.String("repo", ".", "repository root")
 	base := flag.String("base", "", "merge-base revision the PR is compared against")
@@ -293,13 +383,11 @@ func run() int {
 			filepath.Join(*repo, "tests/conformance/registry/rows"),
 			filepath.Join(*repo, "tests/conformance/registry/features"))
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "testlinks:", err)
-			return 2
+			return toolErr("", err)
 		}
 		total, un, err := registry.UnlinkedTests(*repo, refs)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "testlinks:", err)
-			return 2
+			return toolErr("", err)
 		}
 		pkgs := map[string]int{}
 		for _, t := range un {
@@ -310,16 +398,14 @@ func run() int {
 		return 0
 	}
 	if *base == "" {
-		fmt.Fprintln(os.Stderr, "testlinks: -base is required")
-		return 2
+		return toolErr("-base is required")
 	}
 
 	// NUL-separated: git prints a path with a space unquoted and a non-ASCII path in octal quotes, so
 	// splitting the plain output on white space would lose the first and quote the second
 	out, err := git(*repo, "diff", "--no-renames", "--name-only", "-z", *base, *head)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "testlinks: git diff:", err)
-		return 2
+		return toolErr("git diff:", err)
 	}
 	var changed []string
 	for _, f := range strings.Split(string(out), "\x00") {
@@ -327,6 +413,7 @@ func run() int {
 			changed = append(changed, f)
 		}
 	}
+	// one persistent `git cat-file --batch` for every blob the gate reads (blobs.go)
 	blobs := newBlobReader(*repo)
 	defer blobs.Close()
 	show := func(rev string) func(string) []byte {
@@ -334,13 +421,11 @@ func run() int {
 	}
 	refs, err := headRefs(*repo, *head, show)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "testlinks:", err)
-		return 2
+		return toolErr("", err)
 	}
 	added, err := registry.DiffAddedTests(changed, show(*base), show(*head))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "testlinks:", err)
-		return 2
+		return toolErr("", err)
 	}
 	r1 := &rule{id: "Rule 1", title: "a product change changes the registry"}
 	r2 := &rule{id: "Rule 2", title: "new tests are linked, no stale references"}
@@ -416,13 +501,11 @@ func run() int {
 		return names
 	}
 	if err1 != nil || err2 != nil {
-		fmt.Fprintln(os.Stderr, "testlinks: parity snapshot:", err1, err2)
-		return 2
+		return toolErr("parity snapshot:", err1, err2)
 	}
 	modified, err := registry.ModifiedParityTests(changed, show(*base), show(*head))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "testlinks:", err)
-		return 2
+		return toolErr("", err)
 	}
 	pv := registry.ParityCheck(bs, hs, modified)
 	pv.Weakenings = append(weakened, pv.Weakenings...)
@@ -441,63 +524,14 @@ func run() int {
 		r3.fail("this is a parity-fix PR but it does not ship its locks", lines,
 			"add the lock: an `expect: pass` row with an exact compare whose refs.tests names a tests/parity test this PR adds or modifies, plus its floor in tests/parity/lock_cells.txt (tests/conformance/README.md, 'Parity fixes ship locks')")
 	}
-	// A lock's test file must keep running: no changed build constraint, no new Skip.
-	lockFiles := map[string]bool{}
-	for _, snapRows := range []map[string]registry.RowLite{bs.Rows, hs.Rows} {
-		for _, r := range snapRows {
-			if r.Exact() {
-				for _, t := range r.Tests {
-					lockFiles[strings.SplitN(t, "#", 2)[0]] = true
-				}
-			}
-		}
-	}
-	var lockList []string
-	for f := range lockFiles {
-		lockList = append(lockList, f)
-	}
-	if lw := registry.LockFileWeakenings(lockList, show(*base), show(*head)); len(lw) > 0 {
-		r3.fail("this PR changes a test file that a registry lock references so that it may stop running", lw,
-			"remove the new t.Skip / build-constraint edit from the lock's test file, or move the test out of the lock's file")
-	}
-	// A TestMain that exits early silences every test of its package: the packages that
-	// hold a lock may not change theirs.
-	var mainFiles []string
-	dirs := map[string]bool{}
-	for _, f := range lockList {
-		dirs[filepath.ToSlash(filepath.Dir(f))] = true
-	}
-	for d := range dirs {
-		for _, rev := range []string{*base, *head} {
-			files, err := listFiles(*repo, rev, d+"/")
-			if err != nil {
-				continue // a missing directory has no TestMain
-			}
-			for _, f := range files {
-				if filepath.ToSlash(filepath.Dir(f)) == d {
-					mainFiles = append(mainFiles, f)
-				}
-			}
-		}
-	}
-	if tm := registry.TestMainChanges(mainFiles, show(*base), show(*head)); len(tm) > 0 {
-		r3.fail("this PR changes the TestMain of a package that holds a registry lock", tm,
-			"revert the TestMain change: a TestMain that can exit early silences every test of its package, locks included")
-	}
-	// Load-time code: a lock package may not gain an init() or a package-level var (it runs before
-	// any test and can exit, skip or repoint shared state). A content rule, hard like TestMain.
-	if iv := registry.LockInitVarAdditions(registry.LockTestRefs(bs.Rows), show(*base), show(*head), packageFiles(*repo, *base), packageFiles(*repo, *head)); len(iv) > 0 {
-		r3.fail("this PR adds init() or a package-level var to a package that holds a registry lock", iv,
-			"move the setup into the test function or a helper func the test calls: a package-level var initializer and init() run before every test of the package, can call os.Exit and can repoint shared state, which would silence the locks")
-	}
+	lockContentRules(r3, *repo, *base, *head, bs, hs, show, packageFiles(*repo, *base), packageFiles(*repo, *head), []string{basePath, headPath})
 	// Lock-affecting files: every existing file of a package that holds a lock test, the
 	// lock suites' runtime config, and new files there that declare vars, init or TestMain.
 	// Informational: the report lists them for the required review; they do not fail.
 	lc, lerr := registry.LockCodeChanges(registry.LockTestRefs(bs.Rows), registry.LockTestRefs(hs.Rows),
 		show(*base), show(*head), packageFiles(*repo, *base), packageFiles(*repo, *head), treeFiles(*repo, *base), treeFiles(*repo, *head))
 	if lerr != nil {
-		fmt.Fprintln(os.Stderr, "testlinks: lock code:", lerr)
-		return 2
+		return toolErr("lock code:", lerr)
 	}
 	if len(lc) > 0 {
 		fmt.Println("lock-affecting files in this PR (listed in the report, not a failure):")
@@ -514,8 +548,7 @@ func run() int {
 	}
 	summary, substantive, err := registryChanges(*repo, *base, *head, show)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "testlinks: registry summary:", err)
-		return 2
+		return toolErr("registry summary:", err)
 	}
 	fmt.Print(summary)
 	if *product != "" {
@@ -535,8 +568,7 @@ func run() int {
 	r3.review = len(lc)
 	if *reportDir != "" {
 		if err := writeReport(*reportDir, []*rule{r1, r2, r3}, lc, summary); err != nil {
-			fmt.Fprintln(os.Stderr, "testlinks: report:", err)
-			return 2
+			return toolErr("report:", err)
 		}
 	}
 	if len(r1.fails)+len(r2.fails)+len(r3.fails) > 0 {

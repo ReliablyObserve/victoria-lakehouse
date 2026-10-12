@@ -155,9 +155,31 @@ func TestLockCodeChanges(t *testing.T) {
 	}), 1, "other_test.go")
 	check("a comment in an unrelated file of the package still counts", edit(func(h tree) { h["tests/parity/unrelated.go"] += "// x\n" }), 1, "unrelated.go")
 	check("a file beyond the call depth still counts: the whole package is gated", edit(func(h tree) { h["tests/parity/deepest.go"] += "// x\n" }), 1, "deepest.go")
-	check("a NEW test in a NEW file is free", edit(func(h tree) {
+	check("a NEW test in a NEW file is listed: a func-only test file still runs inside the lock package", edit(func(h tree) {
 		h["tests/parity/new_test.go"] = "package parity\n\nfunc TestNew(t *testing.T) { RunParity(t) }\n\nfunc helperNew() {}\n\nconst k = 1\n\ntype T struct{}\n"
-	}), 0, "")
+	}), 1, "tests/parity/new_test.go: a new Go file in a package that holds a registry lock")
+	// M-A of the second review: shapes that were neither failed nor listed
+	check("M-A1: a warm-up test that repoints the shared base URLs", edit(func(h tree) {
+		h["tests/parity/aaa_warmup_test.go"] = "package parity\n\nfunc TestAAAWarmup(t *testing.T) {\n\tvlBaseURL = lhBaseURL\n\tvtBaseURL = lhtBaseURL\n}\n"
+	}), 1, "tests/parity/aaa_warmup_test.go: a new Go file")
+	check("M-A2: a test that prints a forged transcript and exits with success", edit(func(h tree) {
+		h["tests/parity/zz_forged_test.go"] = "package parity\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"syscall\"\n)\n\nfunc TestForged(t *testing.T) {\n\tfmt.Println(\"lock-cells\", os.Getenv(\"PARITY_LOCK_NONCE\"), \"TestLock 50\")\n\tsyscall.Exit(0)\n}\n"
+	}), 1, "tests/parity/zz_forged_test.go")
+	check("M-A3: a blank import of a new package is listed on the file and names the import", edit(func(h tree) {
+		h["tests/parity/zz_hook_test.go"] = "package parity\n\nimport _ \"github.com/ReliablyObserve/victoria-lakehouse/tests/parityhook\"\n"
+	}), 1, `blank-imports "github.com/ReliablyObserve/victoria-lakehouse/tests/parityhook"`)
+	check("M-A3b: a new non-stdlib import added to an EXISTING file is named, next to the existing-file reason", edit(func(h tree) {
+		h["tests/parity/unrelated.go"] = "package parity\n\nimport \"example.com/evil/hook\"\n\nfunc unrelated() { hook.Run() }\n"
+	}), 1, `imports "example.com/evil/hook"`)
+	check("M-A3c: an import some file of the package already had at the merge base is not new", edit(func(h tree) {
+		base["tests/parity/imports_base.go"] = "package parity\n\nimport \"example.com/known/lib\"\n\nvar _ = lib.X\n"
+		h["tests/parity/imports_base.go"] = base["tests/parity/imports_base.go"]
+		h["tests/parity/new_use_test.go"] = "package parity\n\nimport \"example.com/known/lib\"\n\nfunc TestUse(t *testing.T) { _ = lib.X }\n"
+	}), 1, "a new Go file")
+	delete(base, "tests/parity/imports_base.go")
+	check("M-A4: a new C source file in the lock package directory", edit(func(h tree) { h["tests/parity/ctor.c"] = "void __attribute__((constructor)) f(void) {}\n" }), 1, "ctor.c: a new native source file")
+	check("M-A4b: a prebuilt .syso object", edit(func(h tree) { h["tests/parity/hook.syso"] = "\x00" }), 1, "hook.syso")
+	check("a new testdata file is not a native source", edit(func(h tree) { h["tests/parity/testdata/data.json"] = "{}" }), 0, "")
 	check("G1: a new file with a package-level var initializer", edit(func(h tree) {
 		h["tests/parity/zz_env_test.go"] = "package parity\n\nvar _ = func() int { lhBaseURL = vlBaseURL; return 0 }()\n"
 	}), 1, "declares a package-level var")
@@ -237,9 +259,21 @@ func TestLockCodeChanges_ProductLockPackage(t *testing.T) {
 	}
 	head = cp()
 	head["internal/p/new_test.go"] = "package p\n\nfunc TestNew(t *testing.T) {}\n\nfunc helper() {}\n"
-	if got := run(head); len(got) != 0 {
-		t.Errorf("a new func-only test file is free: %v", got)
+	if got := run(head); len(got) != 1 || !strings.Contains(got[0], "internal/p/new_test.go") {
+		t.Errorf("a new func-only test file of a lock package is listed: %v", got)
 	}
+	head = cp()
+	head["internal/p/new.go"] = "package p\n\nimport _ \"example.com/evil/hook\"\n\nfunc G() {}\n"
+	if got := run(head); len(got) != 1 || !strings.Contains(got[0], `blank-imports "example.com/evil/hook"`) {
+		t.Errorf("a product file of a lock package that blank-imports a package nobody imported before is listed: %v", got)
+	}
+	head = cp()
+	head["internal/p/new.go"] = "package p\n\nimport \"fmt\"\n\nfunc G() { fmt.Println() }\n"
+	if got := run(head); len(got) != 0 {
+		t.Errorf("a product file that imports only the standard library is free: %v", got)
+	}
+	head = cp()
+	head["internal/p/new_test.go"] = "package p\n\nfunc TestNew(t *testing.T) {}\n\nfunc helper() {}\n"
 	head["internal/p/new_test.go"] = "package p\n\nvar V = 1\n"
 	if got := run(head); len(got) != 1 {
 		t.Errorf("a new test file with a package var is gated: %v", got)
@@ -422,6 +456,33 @@ func TestLockInitVarAdditions(t *testing.T) {
 		{"a local var inside a func is free", newFile("func f() { var x = g(); _ = x }\n"), 0, ""},
 		{"a method named init is not init()", newFile("type T struct{}\n\nfunc (T) init() {}\n"), 0, ""},
 		{"a new file that does not parse", newFile("func (\n"), 1, "does not parse"},
+		// minor 5: load-time declarations are a multiset per package, so a pure move or rename is not an addition
+		{"a call-var moved to a NEW file is a pure move", cp(func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1}\n\nfunc init() {}\n"
+			tr["tests/parity/vars_moved.go"] = "package parity\n\nvar _ = compute()\n"
+		}), 0, ""},
+		{"the file holding the load-time declarations is renamed", cp(func(tr tree) {
+			tr["tests/parity/renamed.go"] = tr["tests/parity/vars.go"]
+			delete(tr, "tests/parity/vars.go")
+		}), 0, ""},
+		{"a var and an init() moved to a new file together", cp(func(tr tree) {
+			tr["tests/parity/moved.go"] = "package parity\n\nvar _ = compute()\n\nfunc init() {}\n"
+			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1}\n"
+		}), 0, ""},
+		{"an init() deleted from one file and a DIFFERENT init() added in a new one is an addition", cp(func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1}\n\nvar _ = compute()\n"
+			tr["tests/parity/zz_env_test.go"] = "package parity\n\nfunc init() { os.Exit(0) }\n"
+		}), 1, "tests/parity/zz_env_test.go: adds 1 new init() function(s)"},
+		{"a call-var moved AND changed on the way is an addition", cp(func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1}\n\nfunc init() {}\n"
+			tr["tests/parity/vars_moved.go"] = "package parity\n\nvar _ = compute2()\n"
+		}), 1, "_ = compute2()"},
+		{"one more copy of an existing call-var in a new file is an addition", cp(func(tr tree) {
+			tr["tests/parity/vars_copy.go"] = "package parity\n\nvar _ = compute()\n"
+		}), 1, "tests/parity/vars_copy.go"},
+		{"an init() with a different body in the same file is an addition", cp(func(tr tree) {
+			tr["tests/parity/vars.go"] = "package parity\n\nvar cases = []int{1}\n\nvar _ = compute()\n\nfunc init() { os.Exit(0) }\n"
+		}), 1, "1 new init()"},
 		{"a product package: a new non-test file with init and call-var is product code", cp(func(tr tree) {
 			tr["internal/p/new.go"] = "package p\n\nvar V = f()\n\nfunc init() {}\n"
 		}), 0, ""},
@@ -448,5 +509,55 @@ func TestLockInitVarAdditions_ShadowAlreadyAtBase(t *testing.T) {
 	tr["tests/parity/old_shadow.go"] = "package parity\n\nfunc len(x any) int { return 0 }\n"
 	if got := lockInitVar(tr, tr); len(got) != 0 {
 		t.Errorf("unchanged tree: %v", got)
+	}
+}
+
+func lockCgo(baseTree, headTree tree) []string {
+	refs := LockTestRefs(lockRows("tests/parity/lock_test.go#TestLock", "internal/p/p_test.go#TestP"))
+	return LockCgoAdditions(refs, baseTree.src, headTree.src, baseTree.list, headTree.list)
+}
+
+// import "C" in a package that holds a lock is load-time code a parser-level rule cannot see (a C
+// constructor runs before main): a hard failure, for any .go file of the package, product files included.
+func TestLockCgoAdditions(t *testing.T) {
+	base := func() tree {
+		tr := parityTree()
+		tr["internal/p/p_test.go"] = "package p\n\nfunc TestP(t *testing.T) {}\n"
+		tr["internal/p/p.go"] = "package p\n\nfunc F() {}\n"
+		return tr
+	}
+	cp := func(mod func(tr tree)) tree { tr := base(); mod(tr); return tr }
+	cgo := "package parity\n\n/*\nvoid __attribute__((constructor)) boot(void) { _exit(0); }\n*/\nimport \"C\"\n"
+	cases := []struct {
+		name string
+		head tree
+		want int
+	}{
+		{"nothing changed", base(), 0},
+		{"a new non-test file with import C in a pure test package", cp(func(tr tree) { tr["tests/parity/zz_cgo.go"] = cgo }), 1},
+		{"a new test file with import C", cp(func(tr tree) { tr["tests/parity/zz_cgo_test.go"] = cgo }), 1},
+		{"import C added to an existing file", cp(func(tr tree) { tr["tests/parity/unrelated.go"] = cgo }), 1},
+		{"import C in a grouped import", cp(func(tr tree) {
+			tr["tests/parity/zz.go"] = "package parity\n\n// #include <stdlib.h>\nimport (\n\t\"C\"\n\t\"fmt\"\n)\n"
+		}), 1},
+		{"a product file of a lock package", cp(func(tr tree) { tr["internal/p/cgo.go"] = "package p\n\nimport \"C\"\n" }), 1},
+		{"a package that holds no lock", cp(func(tr tree) { tr["tests/other/cgo.go"] = "package other\n\nimport \"C\"\n" }), 0},
+		{"a file that already imported C at the merge base is not new cgo", nil, 0},
+		{"an alias is no way around it", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\nimport c \"C\"\n" }), 1},
+		{"a string mentioning import C is not an import", cp(func(tr tree) { tr["tests/parity/zz.go"] = "package parity\n\nvar s = `import \"C\"`\n" }), 0},
+	}
+	for _, c := range cases {
+		b, h := base(), c.head
+		if h == nil { // a base that already had cgo
+			b["tests/parity/legacy_cgo.go"] = "package parity\n\nimport \"C\"\n"
+			h = tree{}
+			for k, v := range b {
+				h[k] = v
+			}
+			h["tests/parity/legacy_cgo.go"] += "\nfunc more() {}\n"
+		}
+		if got := lockCgo(b, h); len(got) != c.want {
+			t.Errorf("%s: got %v, want %d", c.name, got, c.want)
+		}
 	}
 }
