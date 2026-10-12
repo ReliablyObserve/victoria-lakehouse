@@ -176,6 +176,34 @@ func TestEmitFieldNamesStreamBlocks(t *testing.T) {
 	EmitFieldNamesStreamBlocks(nil, func(*logstorage.DataBlock) { t.Fatal("nil block emitted") })
 }
 
+// A stream's rows of two UTC days are two blocks (upstream never mixes two day
+// partitions in a block): a column only the later day's row has is not carried
+// by the earlier day's block.
+func TestEmitFieldNamesStreamBlocks_SplitsAStreamAtUTCMidnight(t *testing.T) {
+	db := &logstorage.DataBlock{}
+	db.SetColumns([]logstorage.BlockColumn{
+		{Name: "_stream_id", Values: []string{"s1", "s1", "s1", "s2"}},
+		{Name: "_time", Values: []string{"2026-07-01T23:58:00Z", "2026-07-01T23:59:00Z", "2026-07-02T00:01:00Z", "2026-07-02T00:02:00Z"}},
+		{Name: "late", Values: []string{"", "", "x", ""}},
+	})
+	var got []map[string]int
+	EmitFieldNamesStreamBlocks(db, func(b *logstorage.DataBlock) {
+		m := map[string]int{}
+		for _, c := range b.GetColumns(false) {
+			m[c.Name] = len(c.Values)
+		}
+		got = append(got, m)
+	})
+	want := []map[string]int{
+		{"_stream_id": 2, "_time": 2},            // s1, 2026-07-01
+		{"_stream_id": 1, "_time": 1, "late": 1}, // s1, 2026-07-02
+		{"_stream_id": 1, "_time": 1},            // s2, 2026-07-02
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("blocks = %v, want %v", got, want)
+	}
+}
+
 // The insert buffer hands out blocks whose names and values point into memory
 // it reuses once the callback returns: the counter keeps its own copies.
 func TestFieldNamesCounter_KeepsNoBorrowedStrings(t *testing.T) {

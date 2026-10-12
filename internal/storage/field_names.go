@@ -398,33 +398,42 @@ func valuesWithHitsOfBlock(db *logstorage.DataBlock) []logstorage.ValueWithHits 
 // column with every matching row of the block. A Parquet row group mixes
 // streams, so db is split per stream (_stream_id, else _stream) and each part
 // keeps only the columns some row of the stream has a value for. Rows keep their
-// order within the stream.
+// order within the stream. A stream's rows of two UTC days are two blocks, as in
+// upstream (a block never spans two day partitions): a peer's unflushed rows can
+// cross midnight, and blockKey/utcDayOf key a whole block on its first row's day,
+// so one block of both days would credit the later day's names to the earlier day.
 func EmitFieldNamesStreamBlocks(db *logstorage.DataBlock, emit func(*logstorage.DataBlock)) {
 	if db == nil || db.RowsCount() == 0 {
 		return
 	}
 	cols := db.GetColumns(false)
-	var ids, streams []string
+	var ids, streams, times []string
 	for _, c := range cols {
 		switch c.Name {
 		case "_stream_id":
 			ids = c.Values
 		case "_stream":
 			streams = c.Values
+		case "_time":
+			times = c.Values
 		}
 	}
 	type streamKey struct {
 		kind  byte
 		value string
+		day   string // the row's UTC day (YYYY-MM-DD), "" when it has no readable _time
 	}
 	index := make(map[streamKey]int)
 	var groups [][]int
 	for row := 0; row < db.RowsCount(); row++ {
 		key := streamKey{}
 		if row < len(ids) && ids[row] != "" {
-			key = streamKey{1, ids[row]}
+			key = streamKey{kind: 1, value: ids[row]}
 		} else if row < len(streams) && streams[row] != "" {
-			key = streamKey{2, streams[row]}
+			key = streamKey{kind: 2, value: streams[row]}
+		}
+		if row < len(times) && len(times[row]) >= 10 {
+			key.day = times[row][:10]
 		}
 		i, ok := index[key]
 		if !ok {
