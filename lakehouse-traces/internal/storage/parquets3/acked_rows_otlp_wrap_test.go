@@ -33,7 +33,7 @@ func otlpSpanTimes(traceID string, start, end uint64) string {
 }
 
 func TestIngestPremise_OTLPTimesAboveInt64NeverReachTheBuffer(t *testing.T) {
-	startIndexWorkers.Do(insertutil.MustStartIndexWorker)
+	startQuietIndexWorkers()
 	e := newSegEnv(t)
 	vlstorage.SetInsertStorage(e.segs, e.dir)
 	t.Cleanup(func() { insertutil.SetLogRowsStorage(discardRows{}) })
@@ -90,7 +90,7 @@ func TestIngestPremise_OTLPTimesAboveInt64NeverReachTheBuffer(t *testing.T) {
 // sender sets the row's timestamp as an int64. The insert adapter refuses it,
 // counts it as a span, and a span from the epoch on is added.
 func TestPre1970Rows_NativeInsertIsRefusedAtTheBuffer(t *testing.T) {
-	startIndexWorkers.Do(insertutil.MustStartIndexWorker)
+	startQuietIndexWorkers()
 	e := newSegEnv(t)
 	vlstorage.SetInsertStorage(e.segs, e.dir)
 	t.Cleanup(func() { insertutil.SetLogRowsStorage(discardRows{}) })

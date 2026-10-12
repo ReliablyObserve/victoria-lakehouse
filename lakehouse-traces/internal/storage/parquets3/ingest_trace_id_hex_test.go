@@ -129,7 +129,7 @@ func (discardRows) IsLocalStorage() bool            { return true }
 var startIndexWorkers sync.Once
 
 func TestIngestPremise_NonHexTraceIDsAreNotAttested(t *testing.T) {
-	startIndexWorkers.Do(insertutil.MustStartIndexWorker)
+	startQuietIndexWorkers()
 	e := newSegEnv(t)
 	vlstorage.SetInsertStorage(e.segs, e.dir)
 	t.Cleanup(func() { insertutil.SetLogRowsStorage(discardRows{}) })

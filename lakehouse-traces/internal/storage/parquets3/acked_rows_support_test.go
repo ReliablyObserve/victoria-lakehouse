@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"flag"
 	"math"
 	"path/filepath"
 	"sync"
@@ -99,4 +100,19 @@ func (e *segEnv) bufferMsgs() map[string]int {
 		}
 	}
 	return out
+}
+
+// startQuietIndexWorkers starts VictoriaTraces' trace-id index workers once per
+// test binary, with a flush interval no test run reaches. The workers read the
+// process-wide log-rows storage when they flush, and every test that installs
+// its own buffer writes it, so a worker that flushes in the middle of a test run
+// is a data race that upstream's single set-at-startup never meets. A test that
+// wants the index rows builds them itself.
+func startQuietIndexWorkers() {
+	startIndexWorkers.Do(func() {
+		if err := flag.Set("insert.indexFlushInterval", "24h"); err != nil {
+			panic("set insert.indexFlushInterval: " + err.Error())
+		}
+		vtinsertutil.MustStartIndexWorker()
+	})
 }
