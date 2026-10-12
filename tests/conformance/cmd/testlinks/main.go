@@ -327,14 +327,10 @@ func run() int {
 			changed = append(changed, f)
 		}
 	}
+	blobs := newBlobReader(*repo)
+	defer blobs.Close()
 	show := func(rev string) func(string) []byte {
-		return func(p string) []byte {
-			b, err := git(*repo, "show", rev+":"+p)
-			if err != nil {
-				return nil
-			}
-			return b
-		}
+		return func(p string) []byte { return blobs.Show(rev, p) }
 	}
 	refs, err := headRefs(*repo, *head, show)
 	if err != nil {
