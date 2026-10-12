@@ -232,6 +232,7 @@ jobs:
           - internal/vlstorage:FuzzRepromoteLogRow
           - internal/vlstorage:FuzzDataBlockToLogRows
           - internal/vlstorage:FuzzAdmittedRows
+          - internal/storage:FuzzTenantStreamMap
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

@@ -1,9 +1,12 @@
 package metrics
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The "must stay 0" series of the drain's plan check has alerts: any increase of
@@ -37,4 +40,37 @@ func TestAlerts_DrainPlanMismatchAndStalledSegment(t *testing.T) {
 	if s.Labels["severity"] != "critical" {
 		t.Errorf("severity = %q, want critical", s.Labels["severity"])
 	}
+}
+
+// increase() extrapolates, so {{ $value }} would print a count such as 1.03; the
+// description prints a whole number.
+func TestAlerts_DrainPlanMismatchPrintsAWholeNumber(t *testing.T) {
+	b, err := os.ReadFile("../../alerts/alerts-lakehouse.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Groups []struct {
+			Rules []struct {
+				Alert       string            `yaml:"alert"`
+				Annotations map[string]string `yaml:"annotations"`
+			} `yaml:"rules"`
+		} `yaml:"groups"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range doc.Groups {
+		for _, r := range g.Rules {
+			if r.Alert != "LakehouseBufferDrainPlanMismatch" {
+				continue
+			}
+			d := r.Annotations["description"]
+			if strings.Contains(d, "{{ $value }}") || !strings.Contains(d, `printf "%.0f" $value`) {
+				t.Errorf("description %q prints the extrapolated increase() value; want printf \"%%.0f\" $value", d)
+			}
+			return
+		}
+	}
+	t.Fatal("alert LakehouseBufferDrainPlanMismatch is missing from alerts/alerts-lakehouse.yml")
 }

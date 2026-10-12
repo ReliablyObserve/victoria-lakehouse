@@ -185,7 +185,7 @@ groups:
           severity: warning
         annotations:
           summary: "The buffer drain's plan did not match the rows of a segment"
-          description: "{{ $labels.instance }} refused to write an insert-buffer segment {{ $value }} time(s) in the last 15 minutes because the drain's plan did not cover the rows the segment holds, or a group's rows differed from its plan (lakehouse_buffer_flush_errors_total{stage=\"invariant\"}, which must stay 0). Nothing is lost: the segment stays on the pod's disk and is planned again after a back-off, so a mismatch that does not repeat clears itself. If lakehouse_buffer_stalled_segments stays 1, see LakehouseBufferSegmentStalled and the runbook in docs/durability.md#a-stalled-segment-runbook."
+          description: "{{ $labels.instance }} refused to write an insert-buffer segment {{ printf \"%.0f\" $value }} time(s) in the last 15 minutes because the drain's plan did not cover the rows the segment holds, or a group's rows differed from its plan (lakehouse_buffer_flush_errors_total{stage=\"invariant\"}, which must stay 0). Nothing is lost: the segment stays on the pod's disk and is planned again after a back-off, so a mismatch that does not repeat clears itself. If lakehouse_buffer_stalled_segments stays 1, see LakehouseBufferSegmentStalled and the runbook in docs/durability.md#a-stalled-segment-runbook."
 
       - alert: LakehouseBufferSegmentStalled
         expr: lakehouse_buffer_stalled_segments > 0
@@ -194,7 +194,7 @@ groups:
           severity: critical
         annotations:
           summary: "An insert-buffer segment has been refused for 15 minutes because its rows do not match the drain's plan"
-          description: "{{ $labels.instance }} keeps refusing to write its oldest pending segment (lakehouse_buffer_stalled_segments = 1; the error log line 'is stalled and will not be committed' names the segment). The segments after it wait too, and the buffer volume fills until inserts are refused with 429. The cause that persists is a row the plan cannot reach (a _time before 1970 in a segment written by an older build) or a bug. Follow the runbook in docs/durability.md#a-stalled-segment-runbook; deleting the segment directory loses every row of the segment."
+          description: "{{ $labels.instance }} keeps refusing to write its oldest pending segment (lakehouse_buffer_stalled_segments = 1; the error log line 'is stalled and will not be committed' names the segment). The segments after it wait too, and the buffer volume fills until inserts are refused with 429. The cause that persists is a row the plan cannot reach (a _time before 1970 in a segment written by an older build) or a bug. Follow the runbook in docs/durability.md#a-stalled-segment-runbook; deleting or moving away the segment directory loses the rows of the segment that are not in the bucket yet."
 
       - alert: LakehouseInsertRefusedDiskFloor
         expr: sum by (instance) (increase(lakehouse_insert_rejected_total{reason="read_only"}[5m])) > 0
