@@ -54,16 +54,21 @@ class PerfRowsTest(unittest.TestCase):
         self.assertIn('budget: { p50_ms: 2.000, p90_ms: 2.000, valid: "2/2" }', text)
         self.assertIn('path: "scan"', text)
 
-    def test_the_filtered_traces_request_is_spelled_as_hot_victoriatraces_knows_it(self):
-        """service.name is no field of a span on VictoriaTraces: its field is the
-        quoted resource_attr:service.name. The logs rows keep service.name."""
+    def test_only_the_traces_field_names_request_is_spelled_as_hot_victoriatraces_knows_it(self):
+        """The alias rule changes field_names' answer only, so only the traces
+        field_names rows spell the service filter as the quoted
+        resource_attr:service.name; the traces streams and field_values rows and
+        the logs rows keep service.name:= as on main."""
+        names = "traces.field_names/pmeta=true/layout=compacted/window=edge/filter=svc/s3=100ms"
         logs = "fv_service/pmeta=false/layout=flushed/window=cut/filter=svc/s3=0ms"
-        recs = [rec(TRACES), rec(TRACES), rec(logs), rec(logs)]
+        recs = [rec(TRACES), rec(TRACES), rec(names), rec(names), rec(logs), rec(logs)]
         _, text = rows_from(recs)
         rows = {line.split('id: "')[1].split('"')[0]: line for line in text.splitlines() if line.startswith("- {")}
-        vt = rows["vt.perf.streams.pmeta_on.layout_compacted.window_edge.filter_svc.s3_100ms"]
+        vt_names = rows["vt.perf.field_names.pmeta_on.layout_compacted.window_edge.filter_svc.s3_100ms"]
+        vt_streams = rows["vt.perf.streams.pmeta_on.layout_compacted.window_edge.filter_svc.s3_100ms"]
         vl = rows["vl.perf.fv_service.pmeta_off.layout_flushed.window_cut.filter_svc.s3_0ms"]
-        self.assertIn('params: { query: "\\"resource_attr:service.name\\":=\\"svc-a\\"" }', vt)
+        self.assertIn('params: { query: "\\"resource_attr:service.name\\":=\\"svc-a\\"" }', vt_names)
+        self.assertIn('params: { query: "service.name:=\\"svc-a\\"" }', vt_streams)
         self.assertIn('params: { query: "service.name:=\\"svc-a\\"", field: "service.name" }', vl)
 
     def test_a_differ_row_carries_a_note_and_no_budget(self):

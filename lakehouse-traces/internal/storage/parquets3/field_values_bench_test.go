@@ -304,7 +304,7 @@ func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 	whole := fmtWindows()[0]
 	e.files = len(s.manifest.GetFilesForRange(whole.lo, whole.hi))
 	// Seed the label index the way production does: a first query opens files.
-	if err := s.RunQuery(context.Background(), nil, fmtQuery(t, "none", whole), func(uint, *logstorage.DataBlock) {}); err != nil {
+	if err := s.RunQuery(context.Background(), nil, fmtQuery(t, "field_names", "none", whole), func(uint, *logstorage.DataBlock) {}); err != nil {
 		t.Fatal(err)
 	}
 	e.names = make(map[string]map[string]uint64)
@@ -316,10 +316,17 @@ func buildFmtEnv(t *testing.T, layout string, pmetaOn bool) *fmtEnv {
 	return e
 }
 
-func fmtQuery(t *testing.T, filter string, w fmtWindow) *logstorage.Query {
+// fmtQuery builds the cell's query. The svc filter is spelled as hot
+// VictoriaTraces knows it ("resource_attr:service.name") only for field_names,
+// the endpoint whose answer the alias rule changes; the field_values and streams
+// cells keep the spelling their registry rows have always had.
+func fmtQuery(t *testing.T, endpoint, filter string, w fmtWindow) *logstorage.Query {
 	expr := "*"
 	if filter == "svc" {
-		expr = `"resource_attr:service.name":="` + fmtFilterSvc + `"`
+		expr = `service.name:="` + fmtFilterSvc + `"`
+		if endpoint == "field_names" {
+			expr = `"resource_attr:service.name":="` + fmtFilterSvc + `"`
+		}
 	}
 	q, err := logstorage.ParseQuery(expr)
 	if err != nil {
@@ -355,7 +362,7 @@ func (e *fmtEnv) run(t *testing.T, endpoint, filter string, w fmtWindow, latency
 	s := e.s
 	s.memCache = cache.NewLRU(64 * 1024 * 1024)
 	s.footerCache = NewFooterCache(0)
-	q := fmtQuery(t, filter, w)
+	q := fmtQuery(t, endpoint, filter, w)
 	e.mock.gets.Store(0)
 	e.mock.bytesServed.Store(0)
 	e.mock.latency.Store(int64(latency))

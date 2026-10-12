@@ -83,6 +83,9 @@ func TestFmtSpanNamesTruth_CoversEveryFieldTheGeneratorSets(t *testing.T) {
 // The oracle credits a name with the matching spans of the blocks that list it:
 // a block is a stream-day, it lists what any span of it has in the window (also a
 // span the filter does not select), a block without a matching span lists nothing.
+// Stream C has no trace id on any span: on the first day it shares with stream A,
+// trace_id must not be credited to its matching span (a grouping by day alone
+// would credit it).
 func TestFmtSpanNamesTruth_CreditsStreamDayBlocks(t *testing.T) {
 	w := fmtWindow{lo: fmtBase.UnixNano(), hi: fmtBase.Add(30 * time.Hour).UnixNano()}
 	span := func(stream, svc string, at time.Duration, traceID string) schema.TraceRow {
@@ -95,22 +98,24 @@ func TestFmtSpanNamesTruth_CreditsStreamDayBlocks(t *testing.T) {
 	rows := []schema.TraceRow{
 		span("A", "svc-a", 1*time.Minute, "t1"), span("A", "other", 2*time.Minute, ""), // trace_id only on a span the filter does not select
 		span("B", "other", 3*time.Minute, "t3"), // a block without a matching span
+		span("C", "svc-a", 4*time.Minute, ""),   // a matching span of a stream without trace ids
 		span("A", "svc-a", 25*time.Hour, ""),    // the next day: its own block, no trace_id
 	}
 	got := fmtSpanNamesTruth(rows, "svc", w)
-	// Day 1 of A: 1 matching span, lists trace_id; day 2 of A: 1 matching span, no trace_id.
+	// Day 1 of A: 1 matching span, lists trace_id; day 1 of C: 1 matching span,
+	// no trace_id; day 2 of A: 1 matching span, no trace_id.
 	if got["trace_id"] != 1 {
-		t.Errorf("trace_id = %d, want 1 (the block of the first day lists it, the second day's does not)", got["trace_id"])
+		t.Errorf("trace_id = %d, want 1 (only A's first-day block lists it)", got["trace_id"])
 	}
-	if got["span_id"] != 2 || got["_time"] != 2 {
-		t.Errorf("span_id/_time = %d/%d, want 2/2 (a matching span of each day): %v", got["span_id"], got["_time"], got)
+	if got["span_id"] != 3 || got["_time"] != 3 {
+		t.Errorf("span_id/_time = %d/%d, want 3/3 (a matching span in each of the three blocks): %v", got["span_id"], got["_time"], got)
 	}
-	if got := fmtSpanNamesTruth(rows, "none", w); got["span_id"] != 4 || got["trace_id"] != 3 {
-		t.Errorf("unfiltered span_id/trace_id = %d/%d, want 4/3: %v", got["span_id"], got["trace_id"], got)
+	if got := fmtSpanNamesTruth(rows, "none", w); got["span_id"] != 5 || got["trace_id"] != 3 {
+		t.Errorf("unfiltered span_id/trace_id = %d/%d, want 5/3 (A's first day and B list trace_id): %v", got["span_id"], got["trace_id"], got)
 	}
-	narrow := fmtWindow{lo: fmtBase.Add(2*time.Minute + 1).UnixNano(), hi: fmtBase.Add(10 * time.Minute).UnixNano()}
+	narrow := fmtWindow{lo: fmtBase.Add(2*time.Minute + 1).UnixNano(), hi: fmtBase.Add(3*time.Minute + time.Second).UnixNano()}
 	if got := sortedNames(fmtSpanNamesTruth(rows, "svc", narrow)); len(got) != 0 {
-		t.Errorf("no matching span in the window, names listed: %v", got)
+		t.Errorf("only a span the filter does not select is in the window, names listed: %v", got)
 	}
 }
 
@@ -136,7 +141,7 @@ func TestTraceFieldNames_PeerLayoutsEqualTheOracleAndTheFlushedLayout(t *testing
 	for _, filter := range []string{"none", "svc"} {
 		want := fmtSpanNamesTruth(all, filter, w)
 		for name, s := range layouts {
-			vals, err := s.GetFieldNames(context.Background(), nil, fmtQuery(t, filter, w))
+			vals, err := s.GetFieldNames(context.Background(), nil, fmtQuery(t, "field_names", filter, w))
 			if err != nil {
 				t.Fatal(err)
 			}
