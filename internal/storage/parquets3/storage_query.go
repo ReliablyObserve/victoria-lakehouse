@@ -69,9 +69,15 @@ func rowCeilingOf(ctx context.Context, maxRows int64) int64 {
 // storage.ObserveFieldNamesBlock). The rows the filter keeps reach the counter.
 func (s *Storage) preFilterFieldNames(ctx context.Context, db *logstorage.DataBlock, tss []tombstone, filter *logstorage.Filter) *logstorage.DataBlock {
 	if len(tss) > 0 {
+		rows := db.RowsCount()
 		db = suppressTombstonedRows(db, tss)
 		if db == nil || db.RowsCount() == 0 {
 			return nil
+		}
+		if db.RowsCount() < rows {
+			// A column only the deleted rows carried is no longer one of the
+			// block's columns (hot storage rewrites its parts without them).
+			db = storage.DropColumnsWithoutValues(db)
 		}
 	}
 	if s.cfg != nil && s.cfg.Mode == config.ModeLogs {
