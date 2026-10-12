@@ -46,3 +46,17 @@ func TestNoteCardinalityRefused_CountsEveryRow(t *testing.T) {
 		t.Fatalf("lakehouse_insert_rows_dropped_total{reason=%q} rose by %d, want 8", ReasonCardinalityLimit, got)
 	}
 }
+
+// The reason constants are the series lakehouse_insert_rows_dropped_total exports
+// at 0 from process start (metrics.InsertRowsDroppedReasons).
+func TestReasonConstants_AreListedInMetrics(t *testing.T) {
+	want := map[string]bool{ReasonTooSmallTimestamp: true, ReasonCardinalityLimit: true}
+	if len(metrics.InsertRowsDroppedReasons) != len(want) {
+		t.Fatalf("metrics.InsertRowsDroppedReasons = %v, want exactly %v", metrics.InsertRowsDroppedReasons, want)
+	}
+	for _, r := range metrics.InsertRowsDroppedReasons {
+		if !want[r] {
+			t.Errorf("metrics.InsertRowsDroppedReasons lists %q, which no constant names", r)
+		}
+	}
+}

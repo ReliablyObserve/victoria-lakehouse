@@ -71,6 +71,11 @@ func FlushRowKeeper() func(accountID, projectID uint32, stream string) bool {
 // stream each refusal is attributed to.
 var noteCardinalityRefused = storage.NoteCardinalityRefused
 
+func init() {
+	// Exported at 0 from process start, so increase() sees the first drop.
+	metrics.BufferFlushRowsDropped.Init(ReasonTraceShapedStream)
+}
+
 // ReasonTraceShapedStream is the reason label of
 // lakehouse_buffer_flush_rows_dropped_total for a trace-shaped stream.
 const ReasonTraceShapedStream = "trace_shaped_stream"

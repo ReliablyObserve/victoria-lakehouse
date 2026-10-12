@@ -1,6 +1,7 @@
 package vlstorage
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"math/rand"
@@ -275,5 +276,18 @@ func TestVTInsertAdapter_SameStreamTwoTenantsOneBatch(t *testing.T) {
 				t.Errorf("the gate was asked %d times (%v), want once per tenant", len(gate.askedKeys), gate.askedKeys)
 			}
 		})
+	}
+}
+
+// lakehouse_vt_internal_rows_dropped_total{kind=...} is on /metrics from process
+// start for every kind this binary counts, so increase() sees the first drop.
+func TestVTInternalDroppedSeries_ExportedFromStart(t *testing.T) {
+	var buf bytes.Buffer
+	metrics.WritePrometheus(&buf, false)
+	for _, kind := range []string{vtInternalKindTraceIDIdx, vtInternalKindTraceIDIdxBeforeEpoch, vtInternalKindTraceIDIdxCardinality} {
+		series := `lakehouse_vt_internal_rows_dropped_total{kind="` + kind + `"}`
+		if !strings.Contains(buf.String(), series) {
+			t.Errorf("%s is not exported at start", series)
+		}
 	}
 }

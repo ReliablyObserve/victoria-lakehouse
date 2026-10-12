@@ -30,6 +30,11 @@ const (
 	vtInternalKindTraceIDIdxCardinality = "trace_id_idx_cardinality_limit"
 )
 
+func init() {
+	// Exported at 0 from process start, so increase() sees the first drop.
+	metrics.VTInternalRowsDropped.Init(vtInternalKindTraceIDIdx, vtInternalKindTraceIDIdxBeforeEpoch, vtInternalKindTraceIDIdxCardinality)
+}
+
 // TenantCardinalityGate gates rows by per-tenant cardinality limits.
 // Implemented by *tenant.CardinalityLimiter; declared here as an
 // interface to keep this package's imports narrow.

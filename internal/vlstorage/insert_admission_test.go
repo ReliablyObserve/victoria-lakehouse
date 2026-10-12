@@ -1,6 +1,7 @@
 package vlstorage
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"math/rand"
@@ -296,5 +297,16 @@ func TestInsertAdapter_SameStreamTwoTenantsOneBatch(t *testing.T) {
 				t.Errorf("the gate was asked %d times (%v), want once per tenant", len(gate.askedKeys), gate.askedKeys)
 			}
 		})
+	}
+}
+
+// lakehouse_buffer_flush_rows_dropped_total{reason="trace_shaped_stream"} is on
+// /metrics from process start, so increase() sees the first drop.
+func TestFlushRowsDroppedSeries_ExportedFromStart(t *testing.T) {
+	var buf bytes.Buffer
+	metrics.WritePrometheus(&buf, false)
+	series := `lakehouse_buffer_flush_rows_dropped_total{reason="` + ReasonTraceShapedStream + `"}`
+	if !strings.Contains(buf.String(), series) {
+		t.Errorf("%s is not exported at start", series)
 	}
 }

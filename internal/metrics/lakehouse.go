@@ -307,7 +307,24 @@ func init() {
 	// Same for the bridge's error reasons: an alert on a reason that has
 	// never fired must see a series at zero, not an absent one.
 	BufferBridgeErrors.Init(BufferBridgeErrorReasons...)
+	// The series that must stay 0 are exported at 0 from process start: a
+	// counter that appears with its first increment makes increase() and rate()
+	// miss that first event, which for these is the one that matters.
+	BufferFlushErrors.Init(BufferFlushErrorStages...)
+	InsertRowsDropped.Init(InsertRowsDroppedReasons...)
 }
+
+// BufferFlushErrorStages is every stage BufferFlushErrors is incremented with, on
+// both binaries. TestBufferFlushErrorStages_MatchCallSites keeps the list and the
+// call sites in step.
+var BufferFlushErrorStages = []string{"intent", "collect", "head", "upload", "marker", "commit", "mark", "invariant"}
+
+// InsertRowsDroppedReasons is every reason InsertRowsDropped is incremented with,
+// on both binaries (the constants are storage.ReasonTooSmallTimestamp and
+// storage.ReasonCardinalityLimit; TestReasonConstants_AreListedInMetrics keeps
+// them in step). The series of the signal-specific counters are exported at 0 by
+// each binary's own vlstorage package.
+var InsertRowsDroppedReasons = []string{"too_small_timestamp", "cardinality_limit"}
 
 // BufferBridgeErrorReasons is every reason BufferBridgeErrors is incremented
 // with.
