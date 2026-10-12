@@ -80,7 +80,9 @@ def test_lakehouse_s3_histogram_view():
     assert latency.mean_ms((2.5, 10), (3.5, 20)) == pytest.approx(100.0)
     assert latency.mean_ms((1, 5), (1, 5)) is None
     assert latency.lh_view_ok(5.0, 56.0, 50)["ok"] is True
-    assert latency.lh_view_ok(5.0, 8.0, 50)["ok"] is False
+    assert latency.lh_view_ok(5.0, 90.0, 50)["ok"] is True      # queueing on shared connections: measured +85 ms for 50 ms
+    assert latency.lh_view_ok(5.0, 8.0, 50)["ok"] is False      # the traffic does not cross the proxy
+    assert latency.lh_view_ok(5.0, 200.0, 50)["ok"] is False    # far more than the injected delay
     assert latency.lh_view_ok(None, 56.0, 50)["ok"] is False
 
 
