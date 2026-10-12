@@ -115,7 +115,7 @@ RELEASE_BOT = "github-actions[bot]"
 GATE_FILES_RE = re.compile(
     r"^(scripts/ci/|\.gitattributes$|tests/parity/lock_cells_test\.go$|tests/conformance/cmd/testlinks/"
     r"|tests/parity/(known_failures|lock_cells)\.txt$"
-    r"|tests/conformance/registry/(testlinks|paritygate|lockcode|escape|canonical)\.go"
+    r"|tests/conformance/registry/(testlinks|paritygate|perfgate|lockcode|escape|canonical)\.go"
     r"|\.github/CODEOWNERS$"
     r"|\.github/workflows/(conformance|registry-gate|registry-gate-base|gate-selftest|parity)\.yaml"
     r"|\.github/(registry-exempt-approvers|release-metadata-approvers))"

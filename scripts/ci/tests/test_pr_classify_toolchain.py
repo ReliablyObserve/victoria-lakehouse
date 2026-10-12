@@ -370,6 +370,7 @@ class Classified(unittest.TestCase):
     def test_files_that_shape_the_verdict_are_listed_as_gate_files(self):
         for path in ("tests/parity/known_failures.txt", "tests/parity/lock_cells.txt", ".github/CODEOWNERS",
                      "tests/conformance/registry/escape.go", "tests/conformance/registry/canonical.go",
+                     "tests/conformance/registry/perfgate.go",
                      "scripts/ci/tests/test_x.py", "scripts/ci/tests/testdata/cases.json", "scripts/ci/gate_replay.sh"):
             with self.subTest(path):
                 self.assertTrue(pc.GATE_FILES_RE.match(path), path)
