@@ -19,6 +19,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
@@ -539,9 +540,18 @@ func tenantSecondCounts(ctx context.Context, g *membuffer.Segment, tenant logsto
 // collectSlice reads one group's rows from g and applies the keep filter. It
 // returns the rows to write and the number of rows the filter left out.
 func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) (rows []schema.TraceRow, filtered int, err error) {
+	rows, _, filtered, err = f.collectSliceIdx(ctx, g, tenant, sl)
+	return rows, filtered, err
+}
+
+// collectSliceIdx is collectSlice that also returns the group's trace_id_idx rows
+// (VictoriaTraces' index stream), which the span object does not hold: they are
+// counted in filtered, so the drain's row check still adds up, and stored in an
+// object of their own when tracesidx.Enabled.
+func (f *BufferFlusher) collectSliceIdx(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) (rows []schema.TraceRow, idx []tracesidx.Row, filtered int, err error) {
 	q, err := logstorage.ParseQueryAtTimestamp("*", sl.end)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	q = q.CloneWithTimeFilter(q.GetTimestamp(), sl.start, sl.end)
 	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{tenant}, q, false, nil)
@@ -558,8 +568,13 @@ func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, 
 			}
 			local = append(local, r)
 		}
+		var localIdx []tracesidx.Row
+		if tracesidx.Enabled {
+			localIdx = vlstorage.IdxRowsOf(db)
+		}
 		mu.Lock()
 		rows = append(rows, local...)
+		idx = append(idx, localIdx...)
 		filtered += skipped
 		seen += db.RowsCount()
 		mu.Unlock()
@@ -570,7 +585,7 @@ func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, 
 		err = ctx.Err()
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	// The rows the query returned add up to the group the plan promised: a query
 	// that disagrees with the plan is not written as if nothing happened. The
@@ -579,11 +594,11 @@ func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, 
 	// catch a conversion that ever drops a row.
 	f.checkRan = true // defensive: planTenant already set it for every tenant in plans (an equivalent mutant)
 	if int64(seen) != sl.rows || len(rows)+filtered != seen {
-		return nil, 0, f.invariantViolation(g, fmt.Sprintf("group %s slice %d of tenant %d:%d: the plan has %d rows, the segment returned %d, %d were converted and %d filtered",
+		return nil, nil, 0, f.invariantViolation(g, fmt.Sprintf("group %s slice %d of tenant %d:%d: the plan has %d rows, the segment returned %d, %d were converted and %d filtered",
 			sl.partition, sl.slice, tenant.AccountID, tenant.ProjectID, sl.rows, seen, len(rows), filtered))
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].TimestampUnixNano < rows[j].TimestampUnixNano })
-	return rows, filtered, nil
+	return rows, idx, filtered, nil
 }
 
 // Start runs the flusher until Stop. checkInterval is how often it checks
@@ -965,19 +980,34 @@ func (f *BufferFlusher) writeGroup(ctx context.Context, g *membuffer.Segment, te
 	if prev, ok := f.retry[key]; ok {
 		up = prev // the same bytes as the failed attempt
 	} else {
-		rows, _, err := f.collectSlice(ctx, g, tenant, sl)
+		rows, idx, _, err := f.collectSliceIdx(ctx, g, tenant, sl)
 		if err != nil {
 			if !errors.Is(err, errDrainInvariant) {
 				metrics.BufferFlushErrors.Inc("collect")
 			}
 			return fmt.Errorf("collect %s: %w", key, err)
 		}
-		if len(rows) == 0 {
+		if len(rows) == 0 && len(idx) == 0 {
 			return nil // every row dropped by the keep filter
 		}
-		up.rows = rows
+		up.rows, up.idxRows = rows, idx
 	}
 	up.onStored = func(string) { f.markStored(ref) }
+	// The trace_id_idx object first (see traceGroupUpload.idxRows), then the span
+	// object, whose "stored" mark settles the group; a group with no spans is
+	// settled by the idx object.
+	if len(up.idxRows) > 0 {
+		if err := f.writer.uploadIdxGroup(ctx, up); err != nil {
+			f.retry[key] = up
+			metrics.BufferFlushErrors.Inc("upload")
+			return fmt.Errorf("upload %s: %w", up.idxKey, err)
+		}
+		if len(up.rows) == 0 {
+			f.markStored(ref)
+			delete(f.retry, key)
+			return nil
+		}
+	}
 	if err := f.writer.uploadTraceGroup(ctx, up); err != nil {
 		f.retry[key] = up
 		metrics.BufferFlushErrors.Inc("upload")

@@ -83,6 +83,7 @@ func makeTraceIndexQuery(t *testing.T, traceID string, bucket uint64) *logstorag
 }
 
 func TestAdapter_TraceIndexFastpath_Hit(t *testing.T) {
+	skipWhenIdxTable(t)
 	store := &fastpathStore{startNs: 1_000_000_000, endNs: 2_500_000_000, found: true}
 	a := &Adapter{store: store}
 

@@ -264,6 +264,23 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	runHookBetweenViewAndList()
 	files := s.filesForScope("query", startNs, endNs, scope)
 	files = view.exclude(files)
+
+	// VictoriaTraces' trace_id_idx rows are a table of their own (internal/tracesidx).
+	// A query reads them when its filter can match one: the stage-1 trace lookup, the
+	// TraceQL duration join, and every query that does not need a span-only field
+	// (`*`, field and stream enumeration), as it does on hot VictoriaTraces.
+	var idxFiles []manifest.FileInfo
+	if route := s.idxRouteOf(ctx, queryStr); route != routeSpansOnly {
+		idxFiles = view.exclude(s.idxFilesForScope("query", startNs, endNs, scope))
+		if route == routeIdxOnly {
+			files = nil
+		}
+	}
+	// finish is what ends every path below: the idx objects, then the insert buffer.
+	finish := func() {
+		s.scanIdxObjects(ctx, idxFiles, startNs, endNs, queryStr, &rowsEmitted, maxRows, sink)
+		s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
+	}
 	if len(files) == 0 {
 		// Pure-buffer window: no cold-tier file covers it, so the WHOLE answer
 		// is the co-located logstorage buffer. Push the FULL query (aggregation
@@ -280,7 +297,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// (A field_names count needs nothing special here: the counter keys the
 		// buffer's blocks by stream and UTC day like the blocks of any other layer,
 		// and nothing but the buffer is read.)
-		if s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, filteredWriteBlock) {
+		if len(idxFiles) == 0 && s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, filteredWriteBlock) {
 			return nil
 		}
 		// No cold-tier files cover the requested window, but the in-flight
@@ -288,7 +305,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// parquet (Jaeger's GetTrace narrow-window lookup against trace_ids
 		// just observed in the previous search step is the canonical case).
 		// Falling through here keeps the buffer query in the flow.
-		s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
+		finish()
 		return nil
 	}
 
@@ -318,7 +335,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
+			finish()
 			return nil
 		}
 		files = remaining
@@ -335,7 +352,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
-			s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
+			finish()
 			return nil
 		}
 		files = remaining
@@ -346,7 +363,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 
 	if len(files) == 0 {
-		s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
+		finish()
 		return nil
 	}
 
@@ -373,7 +390,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if (len(tids) > 0 || len(hexPhrases) > 0) && !noFooterBloomFrom(ctx) {
 		files = s.filterFilesByTraceIdx(ctx, files, tids, hexPhrases)
 		if len(files) == 0 {
-			s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
+			finish()
 			return nil
 		}
 	}
@@ -437,7 +454,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		}
 	}
 
-	s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
+	finish()
 
 	return nil
 }

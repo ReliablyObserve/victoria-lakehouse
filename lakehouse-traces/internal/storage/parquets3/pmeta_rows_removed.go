@@ -4,6 +4,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // PmetaOnRewritten folds a published delete rewrite into the pmeta facets. It
@@ -47,6 +48,9 @@ func (s *Storage) PmetaRebuildCatalogValues(keys []string) {
 	byPart := make(map[string][]manifest.FileInfo, len(parts))
 	for _, files := range s.manifest.AllFiles() {
 		for _, fi := range files {
+			if tracesidx.IsKey(fi.Key) {
+				continue // the trace_id_idx table has no pmeta facets
+			}
 			if tp := manifest.ExtractTenantPartition(fi.Key); parts[tp] {
 				byPart[tp] = append(byPart[tp], fi)
 			}

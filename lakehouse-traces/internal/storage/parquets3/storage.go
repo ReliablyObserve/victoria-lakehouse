@@ -30,6 +30,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
@@ -56,6 +57,7 @@ type Storage struct {
 	bufferFlusher     *BufferFlusher
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
+	idxLoc            *tracesidx.Locator // parsed footers of trace_id_idx objects (internal/tracesidx)
 	bloomIdx          *bloomindex.Index
 	bloomCache        *bloomindex.BloomCache
 	footerCache       *FooterCache
@@ -269,6 +271,7 @@ func New(cfg *config.Config) (*Storage, error) {
 		writer:            bw,
 		bufferBridge:      bb,
 		smartCache:        sc,
+		idxLoc:            tracesidx.NewLocator(1024),
 		bloomIdx:          bloomindex.New(),
 		bloomCache:        bc,
 		footerCache:       fc,
@@ -1426,7 +1429,7 @@ func (s *Storage) WarmMetadata(ctx context.Context) {
 	files := s.manifest.GetFilesForRange(0, 1<<62)
 	var needEnrich []manifest.FileInfo
 	for _, fi := range files {
-		if fi.RowCount == 0 {
+		if fi.RowCount == 0 && !tracesidx.IsKey(fi.Key) {
 			needEnrich = append(needEnrich, fi)
 		}
 	}

@@ -42,6 +42,7 @@ func (s *raceFastpathStore) RunQuery(_ context.Context, _ []logstorage.TenantID,
 // so the store's RunQuery gets called once per goroutine. The race
 // detector must stay clean.
 func TestRace_ConcurrentTraceByID_Miss(t *testing.T) {
+	skipWhenIdxTable(t)
 	store := &raceFastpathStore{found: false}
 	a := &Adapter{store: store}
 	q := makeTraceIndexQuery(t, "missing-from-footer", 11)

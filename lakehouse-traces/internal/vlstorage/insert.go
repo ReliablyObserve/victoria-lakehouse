@@ -14,6 +14,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // vtInternalKindTraceIDIdx is the "kind" label of metrics.VTInternalRowsDropped
@@ -74,7 +75,11 @@ func keepStream(accountID, projectID uint32, stream string) bool {
 func FlushRowKeeper() func(accountID, projectID uint32, stream string) bool {
 	return func(_, _ uint32, stream string) bool {
 		if isTraceIDIndexRow(stream) {
-			metrics.VTInternalRowsDropped.Inc(vtInternalKindTraceIDIdx)
+			// With the idx table on, the flusher stores these rows in an object of
+			// their own (IdxRowsOf); they only leave the span object.
+			if !tracesidx.Enabled {
+				metrics.VTInternalRowsDropped.Inc(vtInternalKindTraceIDIdx)
+			}
 			return false
 		}
 		return true

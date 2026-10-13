@@ -35,6 +35,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/telemetry"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/selectapi"
@@ -395,6 +396,10 @@ func run(cfg *config.Config, addr string) {
 	// `<tenant>/logs/` and the log parquets' columns leak into
 	// the traces side's `field_names` and Grafana drilldown.
 	store.Manifest().SetSignalSuffix("traces/")
+	if tracesidx.Enabled {
+		// The trace_id_idx table lives in "<tenant>/traces_idx/": list it as well.
+		store.Manifest().SetExtraSignalSuffixes(tracesidx.Signal + "/")
+	}
 
 	// --- Tenant stats ---
 	registry := stats.NewTenantRegistry(hostname())

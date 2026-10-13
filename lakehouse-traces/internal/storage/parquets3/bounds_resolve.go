@@ -13,6 +13,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // Resolving the exact time range of an object the manifest only knows from the
@@ -340,7 +341,7 @@ func (s *Storage) enrichRecentInferredBounds(ctx context.Context) int {
 	startNs := now.Add(-recentInferredWindow).UnixNano()
 	var todo []manifest.FileInfo
 	for _, fi := range s.manifest.GetFilesForRange(startNs, now.UnixNano()) {
-		if fi.BoundsInferred {
+		if fi.BoundsInferred && !tracesidx.IsKey(fi.Key) {
 			todo = append(todo, fi)
 		}
 	}

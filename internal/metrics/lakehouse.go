@@ -558,6 +558,15 @@ var (
 	// index — every miss is a full span-scan trace-by-ID.
 	TraceIndexLookups = NewCounterVec("lakehouse_trace_index_lookups_total", "result")
 
+	// The trace_id_idx table (internal/tracesidx): VictoriaTraces' own index rows
+	// stored in Parquet. TraceIdxRowsFlushed counts the rows written by flushes;
+	// TraceIdxRangeReads counts the ranged reads of lookups by kind (footer, index,
+	// page, bloom) and tier (memory, disk, peer, s3) as read="<kind>_<tier>",
+	// TraceIdxRangeBytes their bytes.
+	TraceIdxRowsFlushed = NewCounter("lakehouse_trace_idx_rows_flushed_total")
+	TraceIdxRangeReads  = NewCounterVec("lakehouse_trace_idx_range_reads_total", "read")
+	TraceIdxRangeBytes  = NewCounterVec("lakehouse_trace_idx_range_bytes_total", "read")
+
 	// TraceIdxPreFilterFiles records the file-narrowing efficiency of
 	// filterFilesByTraceIdx (the pre-filter that runs after the bloom
 	// narrowing on every trace_id:in(...) query). `result` is:

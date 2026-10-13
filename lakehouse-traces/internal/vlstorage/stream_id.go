@@ -1,7 +1,10 @@
 package vlstorage
 
 import (
+	"strconv"
+
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 	"github.com/cespare/xxhash/v2"
 )
 
@@ -53,4 +56,19 @@ func formatHexUint64(dst []byte, n uint64) {
 		dst[i] = hexChars[n&0xf]
 		n >>= 4
 	}
+}
+
+// StreamIDFor is computeStreamID for callers outside the package: the `_stream_id`
+// VictoriaLogs derives for a tenant's stream with these canonical stream tags.
+func StreamIDFor(tenantID logstorage.TenantID, streamTagsCanonical string) string {
+	return computeStreamID(tenantID, streamTagsCanonical)
+}
+
+// IdxStream returns the `_stream` text and the canonical stream tags of VictoriaTraces'
+// trace_id_idx stream number n, with upstream's own StreamTags code.
+func IdxStream(n int32) (text, canonical string) {
+	st := logstorage.GetStreamTags()
+	defer logstorage.PutStreamTags(st)
+	st.Add(otelpb.TraceIDIndexStreamName, strconv.Itoa(int(n)))
+	return st.String(), string(st.MarshalCanonical(nil))
 }

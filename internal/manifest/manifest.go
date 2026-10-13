@@ -290,6 +290,9 @@ type Manifest struct {
 	// detected_fields. Empty when no template is in use (legacy
 	// full-bucket path) — same behaviour as before.
 	signalSuffix string
+	// extraSignalSuffixes are further per-tenant prefixes the refresh LISTs next to
+	// signalSuffix (the traces binary adds "traces_idx/": the trace_id_idx table).
+	extraSignalSuffixes []string
 
 	// tenantBuckets lists the dedicated buckets of bucket-per-tenant tenants
 	// (an s3.bucket override) and the key prefix their objects use there. The
@@ -666,6 +669,24 @@ func (m *Manifest) SetSignalSuffix(suffix string) {
 	m.signalSuffix = suffix
 }
 
+// SetExtraSignalSuffixes names further per-tenant prefixes ("traces_idx/") the
+// tenant-scoped refresh and the dedicated-bucket listing LIST next to the signal
+// suffix. Their objects join the same partitions; the kind of an object is read from
+// its key.
+func (m *Manifest) SetExtraSignalSuffixes(suffixes ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.extraSignalSuffixes = append([]string(nil), suffixes...)
+}
+
+// signalSuffixesLocked returns signalSuffix followed by the extra suffixes. Caller holds m.mu.
+func (m *Manifest) signalSuffixesLocked() []string {
+	if m.signalSuffix == "" {
+		return []string{""} // the whole tenant prefix is listed already
+	}
+	return append([]string{m.signalSuffix}, m.extraSignalSuffixes...)
+}
+
 // refreshFullBucket enumerates every key under listPrefix (or the
 // entire bucket when listPrefix=="") and builds a fresh file map. Used
 // by the legacy single-prefix path and as a fallback when tenant
@@ -687,7 +708,7 @@ func (m *Manifest) refreshFullBucket(ctx context.Context, client *s3.Client, lis
 func (m *Manifest) listTenantBuckets(ctx context.Context, client *s3.Client, files map[string][]FileInfo) (int, int64, error) {
 	m.mu.RLock()
 	buckets := append([]TenantBucket(nil), m.tenantBuckets...)
-	suffix := m.signalSuffix
+	suffixes := m.signalSuffixesLocked()
 	m.mu.RUnlock()
 	if len(buckets) == 0 {
 		return 0, 0, nil
@@ -715,7 +736,9 @@ func (m *Manifest) listTenantBuckets(ctx context.Context, client *s3.Client, fil
 		if tb.Bucket == "" || tb.Bucket == m.bucket || tb.Prefix == "" {
 			continue
 		}
-		listings = append(listings, bucketListing{bucket: tb.Bucket, listPrefix: tb.Prefix + suffix})
+		for _, suffix := range suffixes {
+			listings = append(listings, bucketListing{bucket: tb.Bucket, listPrefix: tb.Prefix + suffix})
+		}
 	}
 	if len(listings) == 0 {
 		return 0, 0, nil
@@ -881,11 +904,18 @@ func (m *Manifest) refreshTenantScopedPartial(ctx context.Context, client *s3.Cl
 	// "traces/" — this keeps a logs pod from LISTing trace parquets
 	// (and vice versa) at PB scale.
 	m.mu.RLock()
-	signalSuffix := m.signalSuffix
+	suffixes := m.signalSuffixesLocked()
 	m.mu.RUnlock()
+	var listPrefixes []string
+	for _, tp := range tenantPrefixes {
+		for _, suffix := range suffixes {
+			listPrefixes = append(listPrefixes, tp+suffix)
+		}
+	}
+	resCh = make(chan tenantResult, len(listPrefixes))
 
 	scheduled := 0
-	for _, tp := range tenantPrefixes {
+	for _, listPrefix := range listPrefixes {
 		select {
 		case sem <- struct{}{}:
 		case <-innerCtx.Done():
@@ -896,7 +926,6 @@ func (m *Manifest) refreshTenantScopedPartial(ctx context.Context, client *s3.Cl
 			scheduled++
 			continue
 		}
-		listPrefix := tp + signalSuffix
 		go func(prefix string) {
 			defer func() { <-sem }()
 			f, tf, tb, err := m.refreshFullBucket(innerCtx, client, prefix)
@@ -1229,6 +1258,22 @@ func (m *Manifest) RefreshFromS3(ctx context.Context, client *s3.Client) error {
 			return err
 		}
 		files = f
+		// A static prefix that ends in the signal suffix ("traces/") has its extra
+		// signals ("traces_idx/") next to it, not under it.
+		m.mu.RLock()
+		sig, extras := m.signalSuffix, append([]string(nil), m.extraSignalSuffixes...)
+		m.mu.RUnlock()
+		if base, ok := strings.CutSuffix(m.prefix, sig); ok && sig != "" {
+			for _, extra := range extras {
+				xf, _, _, xerr := m.refreshFullBucket(ctx, client, base+extra)
+				if xerr != nil {
+					return xerr
+				}
+				for partition, pf := range xf {
+					files[partition] = append(files[partition], pf...)
+				}
+			}
+		}
 	}
 
 	// Bucket-per-tenant: add each dedicated bucket's objects into files. A failed

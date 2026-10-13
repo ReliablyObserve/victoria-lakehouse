@@ -85,6 +85,7 @@ func TestAdapter_UserLogsQLWithTraceIDIdxIsNotHijacked(t *testing.T) {
 // What VT really issues keeps the fast path (and, on a miss, the span-scan
 // rewrite), with or without the time filter, for a hex and an odd trace ID.
 func TestAdapter_VTIssuedLookupKeepsFastPath(t *testing.T) {
+	skipWhenIdxTable(t)
 	for _, withTime := range []bool{false, true} {
 		for _, id := range []string{"0123456789abcdef0123456789abcdef", "trace-with-dashes_1"} {
 			t.Run(id, func(t *testing.T) {
@@ -106,6 +107,7 @@ func TestAdapter_VTIssuedLookupKeepsFastPath(t *testing.T) {
 }
 
 func TestAdapter_VTIssuedLookupMissRewritesToSpanScan(t *testing.T) {
+	skipWhenIdxTable(t)
 	var seen string
 	store := &fastpathStore{found: false, runQuery: func(q *logstorage.Query) { seen = q.String() }}
 	a := &Adapter{store: store}

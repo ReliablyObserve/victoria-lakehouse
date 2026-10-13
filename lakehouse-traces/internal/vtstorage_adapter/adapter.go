@@ -12,6 +12,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/hiddenfields"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 var _ vtstorage.ExternalStorage = (*Adapter)(nil)
@@ -71,7 +72,12 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// definitive-miss short-circuit at this level made Jaeger
 	// trace-by-id return 0 for traces that demonstrably had spans
 	// in the cold parquet.)
-	if lookup, ok := a.store.(traceIndexLookup); ok {
+	//
+	// With the trace_id_idx table on (tracesidx.Enabled) none of the three shortcuts
+	// below applies: the index rows are stored, so VictoriaTraces' own stage-1 query,
+	// the Tempo duration search and the TraceQL duration join run unchanged on the
+	// storage's normal read path.
+	if lookup, ok := a.store.(traceIndexLookup); ok && !tracesidx.Enabled {
 		if traceID, isLookup := traceIndexLookupTraceID(qctx.Query); isLookup && traceID != "" {
 			startNs, endNs, found, _ := lookup.LookupTraceIndex(qctx.Context, qctx.TenantIDs, traceID)
 			if found {
@@ -109,7 +115,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 	// via parseFilterFromQuery (Clone + DropAllPipes), so passing the full
 	// query here is safe — pipes only inform column projection planning.
 
-	if rewritten, ok := rewriteTraceIndexQuery(qctx.Query); ok {
+	if rewritten, ok := rewriteTraceIndexQuery(qctx.Query); ok && !tracesidx.Enabled {
 		newQctx := qctx.WithQuery(rewritten)
 		searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {
 			return a.store.RunQuery(qctx.Context, qctx.TenantIDs, q, hiddenfields.WrapWriteBlock(wb, qctx.HiddenFieldsFilters))
@@ -117,7 +123,7 @@ func (a *Adapter) RunQuery(qctx *logstorage.QueryContext, writeBlock logstorage.
 		return logstorage.RunQueryExternalWithSubqueries(newQctx, searchFn, a.RunQuery, writeBlock)
 	}
 
-	if rewritten, ok := stripTraceIndexStream(qctx.Query); ok {
+	if rewritten, ok := stripTraceIndexStream(qctx.Query); ok && !tracesidx.Enabled {
 		newQctx := qctx.WithQuery(rewritten)
 		if logstorage.QueryHasPipes(rewritten) || logstorage.QueryHasFilterSubqueries(rewritten) {
 			searchFn := func(q *logstorage.Query, wb logstorage.WriteDataBlockFunc) error {

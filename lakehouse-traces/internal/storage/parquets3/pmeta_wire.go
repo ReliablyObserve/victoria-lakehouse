@@ -14,6 +14,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // poolObjectStore adapts s3reader.ClientPool to pmeta.ObjectStore so partition
@@ -317,6 +318,9 @@ func (s *Storage) WarmCatalog(ctx context.Context) {
 			return
 		}
 		for _, fi := range files {
+			if tracesidx.IsKey(fi.Key) {
+				continue // the trace_id_idx table has no pmeta facets
+			}
 			// Replay, not flush: manifest-derived content is already durable, so
 			// it must NOT mark bundles dirty (a dirty mark here re-PUT every
 			// partition bundle on the first flush after every restart). Key the
@@ -360,7 +364,7 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 	for _, files := range s.manifest.AllFiles() {
 		for _, fi := range files {
 			tp := manifest.ExtractTenantPartition(fi.Key)
-			if tp == "" {
+			if tp == "" || tracesidx.IsKey(fi.Key) {
 				continue
 			}
 			filesByTP[tp] = append(filesByTP[tp], fi)
@@ -419,6 +423,9 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string, 
 		return
 	}
 	for _, fi := range added {
+		if tracesidx.IsKey(fi.Key) {
+			continue // the trace_id_idx table has no pmeta facets
+		}
 		var truncated []string
 		for field, vals := range fi.Labels {
 			if len(vals) >= maxLabelsPerField {
@@ -441,6 +448,9 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string, 
 	}
 	byPart := make(map[string][]string)
 	for _, k := range removed {
+		if tracesidx.IsKey(k) {
+			continue
+		}
 		p := manifest.ExtractTenantPartition(k)
 		byPart[p] = append(byPart[p], k)
 	}

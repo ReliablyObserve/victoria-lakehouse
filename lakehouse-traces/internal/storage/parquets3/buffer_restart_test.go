@@ -15,6 +15,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,9 @@ type restartEnv struct {
 	// loadNow, when set, is the clock the restarted flusher loads at (a pod
 	// that was down for a while); nil means time.Now.
 	loadNow func() time.Time
+	// tenanted lays objects out as the production template does:
+	// <account>/<project>/traces/dt=.../hour=.../ (and traces_idx/ for the idx table).
+	tenanted bool
 }
 
 func newRestartEnv(t *testing.T) *restartEnv {
@@ -55,12 +59,35 @@ func newRestartEnv(t *testing.T) *restartEnv {
 // faults or counts reads).
 func newRestartEnvWith(t *testing.T, mock *mockS3Server) *restartEnv {
 	t.Helper()
-	e := &restartEnv{t: t, mock: mock, dir: t.TempDir(), written: map[string]uint64{}}
+	return newRestartEnvOpts(t, mock, false)
+}
+
+// newTenantRestartEnv is newRestartEnv with the production tenant prefix template.
+func newTenantRestartEnv(t *testing.T) *restartEnv {
+	t.Helper()
+	return newRestartEnvOpts(t, newMockS3Server(), true)
+}
+
+func newRestartEnvOpts(t *testing.T, mock *mockS3Server, tenanted bool) *restartEnv {
+	t.Helper()
+	e := &restartEnv{t: t, mock: mock, dir: t.TempDir(), written: map[string]uint64{}, tenanted: tenanted}
 	t.Cleanup(e.mock.close)
 	e.snapshot = filepath.Join(e.dir, "manifest.snapshot")
-	e.boot(manifest.New("test-bucket", "traces/"))
+	e.boot(e.newManifest())
 	t.Cleanup(func() { e.segs.Close() })
 	return e
+}
+
+// newTestManifest is the traces binary's manifest: spans under "traces/", the
+// trace_id_idx table next to it.
+func (e *restartEnv) newManifest() *manifest.Manifest {
+	m := manifest.New("test-bucket", "traces/")
+	m.SetSignalSuffix("traces/")
+	m.SetExtraSignalSuffixes("traces_idx/")
+	if e.tenanted {
+		m.SetPrefixTemplate("{AccountID}/{ProjectID}/")
+	}
+	return m
 }
 
 // boot starts a pod over the surviving directory and bucket with manifest m.
@@ -69,6 +96,9 @@ func (e *restartEnv) boot(m *manifest.Manifest) {
 	s := testStorageWithS3(e.t, e.mock.url())
 	s.manifest = m
 	e.bw = NewBatchWriter(testInsertConfig(), s.pool, s.manifest, "traces/", config.ModeTraces)
+	if e.tenanted {
+		e.bw.SetTenantPrefix(func(a, p uint32) string { return fmt.Sprintf("%d/%d/traces/", a, p) })
+	}
 	s.writer = e.bw
 	segs, err := membuffer.OpenSegments(membuffer.Config{Path: filepath.Join(e.dir, "buffer")})
 	if err != nil {
@@ -77,7 +107,7 @@ func (e *restartEnv) boot(m *manifest.Manifest) {
 	s.cfg.Mode = config.ModeTraces // as the traces binary runs
 	s.localBuffer = segs
 	e.s, e.segs = s, segs
-	e.f = newBufferFlusher(e.bw, segs, filepath.Join(e.dir, "buffer"), nil, BufferFlusherConfig{
+	e.f = newBufferFlusher(e.bw, segs, filepath.Join(e.dir, "buffer"), vlstorage.FlushRowKeeper(), BufferFlusherConfig{
 		TargetBytes: 1000 * estBytesPerTraceRow, MaxAge: time.Hour, Grace: time.Minute})
 	now := time.Now()
 	if e.loadNow != nil {
@@ -151,7 +181,7 @@ func (e *restartEnv) restart(snapshotBefore, snapshotAfter, drain bool) {
 		}
 	}
 	e.segs.Close()
-	m := manifest.New("test-bucket", "traces/")
+	m := e.newManifest()
 	if snapshotBefore || snapshotAfter {
 		if err := m.LoadFrom(e.snapshot); err != nil {
 			e.t.Fatal(err)

@@ -21,6 +21,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
@@ -169,7 +170,7 @@ func (e *segEnv) storedMsgs() map[string]int {
 	e.u.mu.Lock()
 	objs := map[string][]byte{}
 	for k, d := range e.u.data {
-		if !e.u.gone[k] {
+		if !e.u.gone[k] && !tracesidx.IsKey(k) { // the trace_id_idx table's objects are not spans
 			objs[k] = d
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // tenantScope is the resolved read scope of a single request.
@@ -136,7 +137,51 @@ func (s *Storage) filesForTenants(ctx context.Context, site string, startNs, end
 	return s.filesForScope(site, startNs, endNs, scopeFor(ctx, tenantIDs))
 }
 
+// filesForScope lists the SPAN objects of the scope in the range. The trace_id_idx
+// table's objects (tracesidx.IsKey) live in the same manifest but are a different
+// table: they are listed by idxFilesForScope and never reach a span scan.
 func (s *Storage) filesForScope(site string, startNs, endNs int64, scope tenantScope) []manifest.FileInfo {
+	return withoutIdxObjects(s.filesForScopeAllKinds(site, startNs, endNs, scope))
+}
+
+// idxFilesForScope lists the trace_id_idx objects of the scope in the range, with the
+// same tenant guard as the span objects.
+func (s *Storage) idxFilesForScope(site string, startNs, endNs int64, scope tenantScope) []manifest.FileInfo {
+	if !tracesidx.Enabled {
+		return nil
+	}
+	all := s.filesForScopeAllKinds(site, startNs, endNs, scope)
+	out := all[:0:0]
+	for _, fi := range all {
+		if tracesidx.IsKey(fi.Key) {
+			out = append(out, fi)
+		}
+	}
+	return out
+}
+
+// withoutIdxObjects drops the trace_id_idx objects from files (a copy only when
+// there is something to drop).
+func withoutIdxObjects(files []manifest.FileInfo) []manifest.FileInfo {
+	n := 0
+	for i := range files {
+		if tracesidx.IsKey(files[i].Key) {
+			n++
+		}
+	}
+	if n == 0 {
+		return files
+	}
+	out := make([]manifest.FileInfo, 0, len(files)-n)
+	for i := range files {
+		if !tracesidx.IsKey(files[i].Key) {
+			out = append(out, files[i])
+		}
+	}
+	return out
+}
+
+func (s *Storage) filesForScopeAllKinds(site string, startNs, endNs int64, scope tenantScope) []manifest.FileInfo {
 	if scope.all {
 		// Cross-tenant read (validated global-read caller). No narrowing, and
 		// nothing for the guard to check.

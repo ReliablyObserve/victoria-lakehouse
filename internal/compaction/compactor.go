@@ -23,6 +23,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
 
@@ -359,7 +360,7 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		}
 		// Forward fence: an object with a column this code does not model
 		// would lose it in the merge. Leave it where it is.
-		if unknown := schema.UnknownColumns(data, string(c.mode)); len(unknown) > 0 {
+		if unknown := schema.UnknownColumns(data, string(c.mode)); !tracesidx.IsKey(f.Key) && len(unknown) > 0 {
 			if fenceLog.Mark(fenceKey(f)) {
 				metrics.SkippedUnknownColumns(string(c.mode), "compact").Inc()
 				logger.Warnf("compaction skips an object with columns this version does not know, so a merge would drop them; key=%s, columns=%v", f.Key, unknown)
@@ -478,6 +479,29 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		}
 
 	case config.ModeTraces:
+		if tracesidx.IsKey(g.Files[0].Key) {
+			// The trace_id_idx table: merge-sorted and re-encoded by the one function
+			// the flush uses, with the same row-group, page and bloom layout.
+			merged, err := c.mergeIdxFiles(allData)
+			if err != nil {
+				return nil, err
+			}
+			var dropped int
+			merged, dropped, appliedTombstones = dropTombstonedIdxRows(c.tombstones, merged, now, c.tombstoneDelay, c.keyScope(inputKeys))
+			if dropped > 0 {
+				survivors = &survivorMeta{rawBytes: int64(len(merged)) * tracesidx.RawBytesPerRow}
+			}
+			rowsMerged = int64(len(merged))
+			if rowsMerged > 0 {
+				var info tracesidx.Info
+				outputData, info, err = tracesidx.Marshal(merged, levelForOutput)
+				if err != nil {
+					return nil, fmt.Errorf("write compacted trace_id_idx: %w", err)
+				}
+				minTime, maxTime = info.MinTime, info.MaxTime
+			}
+			break
+		}
 		merged, err := c.mergeTraceFiles(allData)
 		if err != nil {
 			return nil, err

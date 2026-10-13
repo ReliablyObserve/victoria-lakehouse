@@ -20,6 +20,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // BatchWriter writes groups of rows as Parquet objects to S3 and registers each
@@ -284,6 +285,16 @@ type traceGroupUpload struct {
 	// group: a stored object is always committed at once. The buffer flusher
 	// uses it for a best-effort "stored" mark.
 	onStored func(key string)
+
+	// The group's trace_id_idx rows (internal/tracesidx), stored as an object of
+	// their own next to the span object, under the same <nonce>-<slice> name. The
+	// flusher stores them first: a group is settled by its span object, so a crash
+	// between the two re-sends the idx object (same key, same bytes) and never
+	// leaves spans without it.
+	idxRows []tracesidx.Row
+	idxKey  string
+	idxData []byte
+	idxInfo tracesidx.Info
 }
 
 // assignTraceKey fixes the group's object key (once) and returns it.

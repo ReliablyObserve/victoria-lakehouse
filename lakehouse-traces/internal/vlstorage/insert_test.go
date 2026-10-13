@@ -10,6 +10,7 @@ import (
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
@@ -285,8 +286,14 @@ func TestVTInsertAdapter_DropsTraceIDIndexRow(t *testing.T) {
 	if keep(0, 0, `{`+otelpb.TraceIDIndexStreamName+`="42"}`) {
 		t.Fatal("the flush filter kept a trace_id_idx row")
 	}
-	if d := metrics.VTInternalRowsDropped.Get(vtInternalKindTraceIDIdx) - before; d != 1 {
-		t.Errorf("lakehouse_vt_internal_rows_dropped_total{kind=trace_id_idx} rose by %d, want 1", d)
+	// With the trace_id_idx table on the row leaves the span object but is stored in
+	// the idx table, so it is not "dropped"; without it the footer entry replaces it.
+	wantDropped := int64(1)
+	if tracesidx.Enabled {
+		wantDropped = 0
+	}
+	if d := metrics.VTInternalRowsDropped.Get(vtInternalKindTraceIDIdx) - before; int64(d) != wantDropped {
+		t.Errorf("lakehouse_vt_internal_rows_dropped_total{kind=trace_id_idx} rose by %d, want %d", d, wantDropped)
 	}
 	if !keep(0, 0, `{resource_attr:service.name="api"}`) {
 		t.Fatal("the flush filter dropped a span stream")

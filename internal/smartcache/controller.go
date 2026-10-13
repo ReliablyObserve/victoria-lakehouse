@@ -383,3 +383,69 @@ func (c *Controller) DeprioritizeByTraceIDs(traceIDs []string) int {
 	}
 	return deprioritized
 }
+
+// GetRange is Get for a byte range of an object: the tiers (memory, the disk of the
+// node that owns the key, the owner over the peer ring) are tried in order and fetch
+// reads the range from the object store only when none has it. key names the range
+// ("<object key>#<offset>+<length>"). It returns the tier that answered: "memory",
+// "disk", "peer" or "s3".
+//
+// Ranges are small (footers, page-index slices, data pages of the trace_id_idx table)
+// and hot, so a non-owner also keeps what it fetched on its own disk: the owner has not
+// necessarily read the same range, and a miss on the owner would cost a second S3 read
+// per node otherwise. Concurrent readers of one range share one fetch.
+func (c *Controller) GetRange(ctx context.Context, key string, fetch func(context.Context) ([]byte, error)) ([]byte, string, error) {
+	if data, ok := c.l1.Get(key); ok {
+		c.metadata.RecordAccess(key)
+		return data, "memory", nil
+	}
+	if c.l2 != nil {
+		if data, ok := c.l2.Get(key); ok {
+			c.metadata.RecordAccess(key)
+			c.l1.Put(key, data)
+			return data, "disk", nil
+		}
+	}
+	if peer, isLocal := c.lookupOwner(key); !isLocal && c.peerFetcher != nil {
+		if data, found, err := c.peerFetcher.Fetch(ctx, peer, key); err == nil && found {
+			c.l1.Put(key, data)
+			if c.l2 != nil {
+				_ = c.l2.Put(key, data)
+			}
+			return data, "peer", nil
+		}
+	}
+	data, err := c.singleflightFn(key, func() ([]byte, error) { return fetch(ctx) })
+	if err != nil {
+		return nil, "", err
+	}
+	c.l1.PutNoCopy(key, data)
+	if c.l2 != nil {
+		_ = c.l2.Put(key, data)
+		now := time.Now()
+		c.metadata.Set(key, EntryMeta{CreatedAt: now, LastAccess: now, AccessCount: 1, AccessWindowStart: now, Signal: c.signal, Size: int64(len(data))})
+	}
+	return data, "s3", nil
+}
+
+// singleflightFn is singleflightDownload for an arbitrary fetch function.
+func (c *Controller) singleflightFn(key string, fn func() ([]byte, error)) ([]byte, error) {
+	c.sfMu.Lock()
+	if call, ok := c.sfInFlight[key]; ok {
+		c.sfMu.Unlock()
+		call.wg.Wait()
+		return call.val, call.err
+	}
+	call := &sfCall{}
+	call.wg.Add(1)
+	c.sfInFlight[key] = call
+	c.sfMu.Unlock()
+
+	call.val, call.err = fn()
+	call.wg.Done()
+
+	c.sfMu.Lock()
+	delete(c.sfInFlight, key)
+	c.sfMu.Unlock()
+	return call.val, call.err
+}

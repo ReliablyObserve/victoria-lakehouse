@@ -312,6 +312,7 @@ func TestRunQuery_NonEnumeratingQueryHasNoAllFieldsHint(t *testing.T) {
 // query with the selector but no pipes goes straight to store.RunQuery
 // with the rewritten query.
 func TestRunQuery_StripPathWithoutPipes(t *testing.T) {
+	skipWhenIdxTable(t)
 	mock := &mockStorage{}
 	a := newTestAdapter(mock)
 

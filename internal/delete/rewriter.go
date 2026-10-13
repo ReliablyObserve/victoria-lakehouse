@@ -14,6 +14,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // RewriterPool abstracts S3 operations needed by the Rewriter.
@@ -211,7 +212,8 @@ func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombsto
 	// Forward fence: an object with a column this code does not model would
 	// lose it in the rewrite. Fail the rewrite instead: the tombstone stays
 	// pending (its rows stay hidden by it) and the object is left untouched.
-	if unknown := schema.UnknownColumns(data, signal); len(unknown) > 0 {
+	isIdx := tracesidx.IsKey(key) // the trace_id_idx table: not a span object, no span columns
+	if unknown := schema.UnknownColumns(data, signal); !isIdx && len(unknown) > 0 {
 		if fenceLog.Mark(key) {
 			metrics.SkippedUnknownColumns(signal, "delete_rewrite").Inc()
 			logger.Warnf("delete rewrite skips an object with columns this version does not know, so a rewrite would drop them; key=%s, columns=%v", key, unknown)
@@ -220,8 +222,10 @@ func (r *Rewriter) Prepare(ctx context.Context, key string, tombstones []Tombsto
 	}
 
 	var newData []byte
-	switch r.mode {
-	case "traces":
+	switch {
+	case isIdx:
+		newData, err = r.filterIdxRows(data, tombstones, result)
+	case r.mode == "traces":
 		newData, err = r.filterTraceRows(data, tombstones, result)
 	default:
 		newData, err = r.filterLogRows(data, tombstones, result)
@@ -505,6 +509,42 @@ func (r *Rewriter) filterTraceRows(data []byte, tombstones []Tombstone, result *
 		return nil, fmt.Errorf("close parquet writer: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// filterIdxRows is filterTraceRows for an object of the trace_id_idx table: the same
+// tombstone predicate, evaluated on the fields VictoriaLogs sees for an index row, and
+// the survivors written by the one function the flush and the compaction use.
+func (r *Rewriter) filterIdxRows(data []byte, tombstones []Tombstone, result *RewriteResult) ([]byte, error) {
+	rows, err := tracesidx.ReadAll(data)
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]tracesidx.Row, 0, len(rows))
+	for i := range rows {
+		fields := IdxRowFields(&rows[i])
+		matched := false
+		for j := range tombstones {
+			if tombstones[j].MatchesFields(fields, rows[i].Time) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			kept = append(kept, rows[i])
+		}
+	}
+	result.RowsRemoved = int64(len(rows)) - int64(len(kept))
+	result.RowsKept = int64(len(kept))
+	if result.RowsRemoved == 0 || len(kept) == 0 {
+		return nil, nil
+	}
+	out, info, err := tracesidx.Marshal(kept, r.writers.CompressionLevel)
+	if err != nil {
+		return nil, err
+	}
+	result.MinTimeNs, result.MaxTimeNs = info.MinTime, info.MaxTime
+	result.RawBytes = int64(len(kept)) * tracesidx.RawBytesPerRow
+	return out, nil
 }
 
 func matchesAny(fields map[string]string, ts int64, tombstones []Tombstone) bool {

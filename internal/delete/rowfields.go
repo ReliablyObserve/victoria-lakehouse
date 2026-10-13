@@ -1,9 +1,14 @@
 package delete
 
 import (
+	"fmt"
+	"strconv"
+	"time"
+
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // LogRowFields renders a LogRow as the []logstorage.Field shape VL filters
@@ -20,6 +25,22 @@ func LogRowFields(row *schema.LogRow) []logstorage.Field {
 func TraceRowFields(row *schema.TraceRow) []logstorage.Field {
 	m := traceRowToMap(row)
 	return fieldsFromMap(m)
+}
+
+// IdxRowFields renders a trace_id_idx row as the fields VictoriaLogs sees for it:
+// upstream's field names, _stream and _msg. _stream_id is left out: it depends on the
+// tenant, and a tombstone is applied to objects of its own tenant only.
+func IdxRowFields(row *tracesidx.Row) []logstorage.Field {
+	return []logstorage.Field{
+		{Name: "_time", Value: time.Unix(0, row.Time).UTC().Format(time.RFC3339Nano)},
+		{Name: "_stream", Value: fmt.Sprintf(tracesidx.StreamTagsFmt, row.Stream)},
+		{Name: "_msg", Value: tracesidx.MessageValue},
+		{Name: tracesidx.StreamField, Value: strconv.Itoa(int(row.Stream))},
+		{Name: tracesidx.IDField, Value: row.TraceID},
+		{Name: tracesidx.StartField, Value: strconv.FormatInt(row.Start, 10)},
+		{Name: tracesidx.EndField, Value: strconv.FormatInt(row.End, 10)},
+		{Name: tracesidx.DurationField, Value: strconv.FormatInt(row.Duration, 10)},
+	}
 }
 
 func fieldsFromMap(m map[string]string) []logstorage.Field {
