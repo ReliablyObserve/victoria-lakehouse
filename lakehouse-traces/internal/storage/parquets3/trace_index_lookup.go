@@ -10,6 +10,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
 // traceIndexLookupParallelism caps the number of concurrent
@@ -156,16 +157,11 @@ func findTraceIDInFooterMeta(meta *format.FileMetaData, traceID string) (TraceIn
 		if kv.Key != traceIndexMetadataKey {
 			continue
 		}
-		entries, ok := traceIndexFromMetadata(map[string]string{traceIndexMetadataKey: kv.Value})
-		if !ok {
+		e, found, ok := traceindex.Find(kv.Value, traceID)
+		if !ok || !found {
 			return TraceIndexEntry{}, false, nil
 		}
-		for _, e := range entries {
-			if e.TraceID == traceID {
-				return e, true, nil
-			}
-		}
-		return TraceIndexEntry{}, false, nil
+		return e, true, nil
 	}
 	return TraceIndexEntry{}, false, nil
 }

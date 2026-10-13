@@ -9,12 +9,13 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
-// traceIndexMetadataKey is the footer KV key; its value is standard base64 of
-// marshalTraceIndex (see internal/footerkv), never the raw bytes.
+// traceIndexMetadataKey is the footer KV key; its value is base64 of a zstd
+// frame holding marshalTraceIndex (see traceindex.MetadataValue), never the raw
+// bytes.
 const traceIndexMetadataKey = "_trace_idx"
 const traceIndexVersion byte = 1
 
@@ -155,7 +156,7 @@ func traceIndexFromMetadata(metadata map[string]string) ([]TraceIndexEntry, bool
 	if !ok {
 		return nil, false
 	}
-	raw, ok := footerkv.Decode(val)
+	raw, ok := traceindex.DecodeMetadataValue(val)
 	if !ok {
 		return nil, false
 	}

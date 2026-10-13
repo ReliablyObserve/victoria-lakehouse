@@ -212,7 +212,7 @@ jobs:
       # key-value metadata as UTF-8 and refuse a file with raw bytes in it (#340).
       # The versions are the ones of the reader matrix (tests/readers/requirements.txt).
       - name: Install readers
-        run: pip install pyarrow duckdb polars==1.44.2 datafusion==54.0.0
+        run: pip install pyarrow duckdb polars==1.44.2 datafusion==54.0.0 zstandard==0.25.0
 
       # The truth verify.py holds both engines to must itself match the
       # files written: read back with parquet-go and recomputed.

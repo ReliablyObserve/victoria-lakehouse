@@ -3,8 +3,8 @@ package parquets3
 import (
 	"testing"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
 func TestComputeTraceIndex(t *testing.T) {
@@ -101,7 +101,7 @@ func TestTraceIndexFromMetadata(t *testing.T) {
 		{TraceID: "t1", Partition: 10, StartNs: 100, EndNs: 200},
 	}
 	data := marshalTraceIndex(entries)
-	meta := map[string]string{traceIndexMetadataKey: footerkv.Encode(data)}
+	meta := map[string]string{traceIndexMetadataKey: traceindex.EncodeMetadataPayload(data)}
 
 	got, ok := traceIndexFromMetadata(meta)
 	if !ok {

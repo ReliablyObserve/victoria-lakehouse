@@ -231,6 +231,8 @@ jobs:
           - internal/traceindex:FuzzRoundTripIndex
           - internal/traceindex:FuzzFromMetadata
           - internal/footerkv:FuzzDecode
+          - internal/footerkv:FuzzDecodeCompressed
+          - internal/traceindex:FuzzWalkAgreesWithUnmarshal
           - internal/storage/parquets3:FuzzFooterKVReaders
           - internal/vlstorage:FuzzRepromoteLogRow
           - internal/vlstorage:FuzzDataBlockToLogRows

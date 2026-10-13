@@ -1,8 +1,13 @@
 package traceindex
 
 import (
+	"bytes"
+	"reflect"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -240,38 +245,99 @@ func TestCompute_SortedAndMarshalStable(t *testing.T) {
 	}
 }
 
-// The footer value is standard base64 (ASCII) of Marshal, so Arrow-rs readers
-// that validate key_value_metadata as UTF-8 open the file (issue #340).
-func TestMetadataValue_IsASCIIBase64OfMarshal(t *testing.T) {
-	entries := []Entry{{TraceID: "t1", Partition: 10, StartNs: 100, EndNs: 200}, {TraceID: "t2", Partition: 0xffff, StartNs: -1, EndNs: 1 << 62}}
+// The footer value is base64 (ASCII) of a zstd frame holding Marshal, so Arrow-rs
+// readers that validate key_value_metadata as UTF-8 open the file (issue #340)
+// and the index is smaller than its raw bytes.
+func TestMetadataValue_IsASCIIBase64OfZstdOfMarshal(t *testing.T) {
+	entries := benchEntries("random128", 2000)
 	v := MetadataValue(entries)
 	for i := 0; i < len(v); i++ {
 		if v[i] < 0x20 || v[i] >= 0x80 {
 			t.Fatalf("non-ASCII byte %#x at %d", v[i], i)
 		}
 	}
+	raw, ok := footerkv.DecodeCompressed(v)
+	if !ok || !bytes.Equal(raw, Marshal(entries)) {
+		t.Fatalf("value is not base64(zstd(Marshal)): ok=%v", ok)
+	}
+	if len(v) >= len(raw) {
+		t.Errorf("footer value %d bytes is not smaller than the raw index %d", len(v), len(raw))
+	}
 	got, ok := FromMetadata(map[string]string{MetadataKey: v})
-	if !ok || len(got) != 2 || got[1].EndNs != 1<<62 {
-		t.Fatalf("round trip: ok=%v %+v", ok, got)
+	if !ok || len(got) != 2000 || got[1999].EndNs != entries[1999].EndNs {
+		t.Fatalf("round trip: ok=%v n=%d", ok, len(got))
 	}
 }
 
-// No dual-format reader: the former raw encoding, truncation and junk read as
-// "no index" (ok=false), never an error and never a panic.
-func TestFromMetadata_NotBase64IsAbsent(t *testing.T) {
+// No dual-format reader: the former raw encoding, plain base64 (the first form
+// of this fix), a zstd frame that is not base64, truncation and junk read as "no
+// index" (ok=false), never an error and never a panic.
+func TestFromMetadata_OtherFormsAreAbsent(t *testing.T) {
 	entries := []Entry{{TraceID: "t1", Partition: 10, StartNs: 100, EndNs: 200}}
 	good := MetadataValue(entries)
+	zframe, _ := footerkv.Decode(good)
 	for name, v := range map[string]string{
 		"raw marshal bytes": string(Marshal(entries)),
+		"plain base64":      footerkv.Encode(Marshal(entries)),
+		"raw zstd frame":    string(zframe),
 		"truncated":         good[:len(good)-6],
 		"junk":              "\x01\xff\xfe",
 		"empty":             "",
-		"short payload":     good[:8],
+		"short payload":     EncodeMetadataPayload(Marshal(entries)[:3]),
+		"not an index":      EncodeMetadataPayload([]byte("hello world, this is not an index")),
 	} {
 		if e, ok := FromMetadata(map[string]string{MetadataKey: v}); ok {
 			t.Errorf("%s: decoded %+v, want absent", name, e)
 		}
+		if _, ok := ContainsAny(v, map[string]bool{"t1": true}); ok {
+			t.Errorf("%s: ContainsAny read it", name)
+		}
+		if _, _, ok := Find(v, "t1"); ok {
+			t.Errorf("%s: Find read it", name)
+		}
 	}
+}
+
+func TestContainsAnyAndFind(t *testing.T) {
+	entries := []Entry{{TraceID: "a", Partition: 1, StartNs: 10, EndNs: 20}, {TraceID: "b", Partition: 2, StartNs: 30, EndNs: 40}}
+	v := MetadataValue(entries)
+	if hit, ok := ContainsAny(v, map[string]bool{"x": true, "b": true}); !ok || !hit {
+		t.Errorf("ContainsAny(b) = %v, %v", hit, ok)
+	}
+	if hit, ok := ContainsAny(v, map[string]bool{"x": true}); !ok || hit {
+		t.Errorf("ContainsAny(x) = %v, %v", hit, ok)
+	}
+	if e, found, ok := Find(v, "b"); !ok || !found || e != (Entry{TraceID: "b", Partition: 2, StartNs: 30, EndNs: 40}) {
+		t.Errorf("Find(b) = %+v %v %v", e, found, ok)
+	}
+	if _, found, ok := Find(v, "zz"); !ok || found {
+		t.Errorf("Find(zz) found=%v ok=%v", found, ok)
+	}
+	// A truncated payload is rejected even when the ID sits before the cut.
+	cut := EncodeMetadataPayload(Marshal(entries)[:len(Marshal(entries))-3])
+	if _, _, ok := Find(cut, "a"); ok {
+		t.Error("Find read a truncated index")
+	}
+}
+
+// walk (the allocation-free reader of the query path) and Unmarshal accept and
+// reject exactly the same payloads and agree on every entry.
+func FuzzWalkAgreesWithUnmarshal(f *testing.F) {
+	f.Add(Marshal(benchEntries("random128", 5)))
+	f.Add(Marshal(nil))
+	f.Add([]byte{1, 2, 0, 0, 0, 5, 0})
+	f.Add([]byte{1, 0xff, 0xff, 0xff, 0x7f})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		want, err := Unmarshal(data)
+		var got []Entry
+		werr := walk(data, func(id []byte, e Entry) { e.TraceID = string(id); got = append(got, e) })
+		if (err == nil) != (werr == nil) {
+			t.Fatalf("Unmarshal err=%v, walk err=%v", err, werr)
+		}
+		if err == nil && len(want)+len(got) > 0 && !reflect.DeepEqual(want, got) {
+			t.Fatalf("entries differ: %v vs %v", want, got)
+		}
+	})
 }
 
 func FuzzFromMetadata(f *testing.F) {
@@ -279,7 +345,12 @@ func FuzzFromMetadata(f *testing.F) {
 	f.Add("")
 	f.Add("\x01\x05\x00\x00\x00")
 	f.Add("AQAAAAA=")
+	f.Add(footerkv.Encode(Marshal([]Entry{{TraceID: "t1"}})))
+	bomb, _ := zstd.NewWriter(nil)
+	f.Add(footerkv.Encode(bomb.EncodeAll(make([]byte, footerkv.MaxDecodedBytes+(1<<20)), nil)))
 	f.Fuzz(func(t *testing.T, v string) {
 		_, _ = FromMetadata(map[string]string{MetadataKey: v}) // must not panic or over-allocate
+		_, _ = ContainsAny(v, map[string]bool{"t1": true})
+		_, _, _ = Find(v, "t1")
 	})
 }

@@ -14,6 +14,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/golang/snappy v1.0.0
 	github.com/google/uuid v1.6.0
+	github.com/klauspost/compress v1.20.0
 	github.com/parquet-go/parquet-go v0.32.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0
 	go.opentelemetry.io/otel v1.46.0
@@ -50,7 +51,6 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/parquet-go/bitpack v1.0.0 // indirect
 	github.com/parquet-go/jsonlite v1.0.0 // indirect

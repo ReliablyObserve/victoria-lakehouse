@@ -27,7 +27,7 @@ writer options) with BOTH pyarrow and duckdb and asserts:
      footer key-value metadata as UTF-8 and refuse a file whose
      `_trace_idx` / `_bloom_body_rg_N` entries hold raw bytes (#340), so this
      is the check that would have caught it; every footer key-value is also
-     asserted to be valid UTF-8 directly, and the trace index to be base64.
+     asserted to be valid UTF-8 directly, and the trace index to be base64 of a zstd frame.
 
 Any failure exits non-zero with a per-check report. Every parquet encoding
 change ships behind this gate.
@@ -45,6 +45,7 @@ import duckdb
 import polars as pl
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+import zstandard
 
 FAILURES = []
 
@@ -311,11 +312,12 @@ def verify_footer_kv(path: str, truth: dict) -> None:
         check(raw is not None, "traces file carries the _trace_idx footer key-value")
         if raw is not None:
             try:
-                payload = base64.b64decode(raw, validate=True)
+                frame = base64.b64decode(raw, validate=True)
+                payload = zstandard.ZstdDecompressor().decompressobj().decompress(frame)
                 ok = len(payload) >= 5 and payload[0] == 1
-            except ValueError:
+            except (ValueError, zstandard.ZstdError):
                 ok = False
-            check(ok, "_trace_idx is standard base64 of a version-1 trace index")
+            check(ok, "_trace_idx is standard base64 of a zstd frame holding a version-1 trace index")
 
 
 def verify_polars(path: str, truth: dict) -> None:

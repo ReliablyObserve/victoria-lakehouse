@@ -5,7 +5,7 @@ import (
 
 	"github.com/parquet-go/parquet-go/format"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
 func TestFindTraceIDInFooterMeta_Hit(t *testing.T) {
@@ -15,7 +15,7 @@ func TestFindTraceIDInFooterMeta_Hit(t *testing.T) {
 	}
 	meta := &format.FileMetaData{
 		KeyValueMetadata: []format.KeyValue{
-			{Key: traceIndexMetadataKey, Value: footerkv.Encode(marshalTraceIndex(entries))},
+			{Key: traceIndexMetadataKey, Value: traceindex.EncodeMetadataPayload(marshalTraceIndex(entries))},
 		},
 	}
 
@@ -37,7 +37,7 @@ func TestFindTraceIDInFooterMeta_NotInFile(t *testing.T) {
 	}
 	meta := &format.FileMetaData{
 		KeyValueMetadata: []format.KeyValue{
-			{Key: traceIndexMetadataKey, Value: footerkv.Encode(marshalTraceIndex(entries))},
+			{Key: traceIndexMetadataKey, Value: traceindex.EncodeMetadataPayload(marshalTraceIndex(entries))},
 		},
 	}
 	_, ok, err := findTraceIDInFooterMeta(meta, "trace-missing")
@@ -134,7 +134,7 @@ func TestTraceIdxKeepFile_IndexHit(t *testing.T) {
 	}
 	meta := &format.FileMetaData{
 		KeyValueMetadata: []format.KeyValue{
-			{Key: traceIndexMetadataKey, Value: footerkv.Encode(marshalTraceIndex(entries))},
+			{Key: traceIndexMetadataKey, Value: traceindex.EncodeMetadataPayload(marshalTraceIndex(entries))},
 		},
 	}
 	if !traceIdxKeepFile(meta, map[string]bool{"trace-b": true}) {
@@ -158,7 +158,7 @@ func TestTraceIdxKeepFile_IndexMiss(t *testing.T) {
 	}
 	meta := &format.FileMetaData{
 		KeyValueMetadata: []format.KeyValue{
-			{Key: traceIndexMetadataKey, Value: footerkv.Encode(marshalTraceIndex(entries))},
+			{Key: traceIndexMetadataKey, Value: traceindex.EncodeMetadataPayload(marshalTraceIndex(entries))},
 		},
 	}
 	if traceIdxKeepFile(meta, map[string]bool{"trace-z": true}) {

@@ -34,8 +34,9 @@ import (
 // `_` prefix marks it as an LH-internal extension; standard Parquet
 // readers (duckdb, pyarrow, polars, datafusion, parquet-tools) see it as an
 // opaque KV pair and pass over it — the file remains 100% spec-compliant. The
-// value is standard base64 of the Marshal payload (see MetadataValue), because
-// the thrift KeyValue.value is a string that Arrow-rs readers validate as UTF-8.
+// value is base64 of a zstd frame holding the Marshal payload (see MetadataValue),
+// because the thrift KeyValue.value is a string that Arrow-rs readers validate
+// as UTF-8.
 const MetadataKey = "_trace_idx"
 
 // Version identifies the marshal format; bumped on any wire change.
@@ -115,6 +116,9 @@ func Partition(traceID string) uint16 {
 	return uint16(xxhash.Sum64(tb[:]) % PartitionCount)
 }
 
+// maxEntries caps the entry count a payload may claim (see Unmarshal).
+const maxEntries = 1 << 20
+
 // Marshal encodes index entries to binary.
 //
 // Wire format:
@@ -169,7 +173,6 @@ func Unmarshal(data []byte) ([]Entry, error) {
 	// above any realistic _trace_idx footer (a single parquet
 	// partition typically lists 10 k–100 k traces) while bounding
 	// the worst-case allocation to ~32 MB.
-	const maxEntries = 1 << 20
 	if count > maxEntries {
 		return nil, fmt.Errorf("trace index count too large: %d (max %d)", count, maxEntries)
 	}
@@ -203,15 +206,30 @@ func Unmarshal(data []byte) ([]Entry, error) {
 }
 
 // MetadataValue is the footer key_value_metadata value for entries: the
-// Marshal payload as standard base64 (ASCII, so every Parquet reader opens the
-// file). Every writer must store this, never the raw Marshal bytes.
+// Marshal payload as one zstd frame in standard base64 (ASCII, so every Parquet
+// reader opens the file, and smaller than the raw bytes: hex trace IDs and
+// nanosecond times compress well). Every writer must store this, never the raw
+// Marshal bytes and never plain base64.
 func MetadataValue(entries []Entry) string {
-	return footerkv.Encode(Marshal(entries))
+	return EncodeMetadataPayload(Marshal(entries))
+}
+
+// EncodeMetadataPayload is MetadataValue for a payload that is already
+// marshaled (the flush writer keeps its own copy of the codec types).
+func EncodeMetadataPayload(marshaled []byte) string {
+	return footerkv.EncodeCompressed(marshaled)
+}
+
+// DecodeMetadataValue reverses MetadataValue's encoding into the Marshal payload.
+// ok is false for anything else (not base64, not zstd, over the size bound).
+func DecodeMetadataValue(val string) ([]byte, bool) {
+	return footerkv.DecodeCompressed(val)
 }
 
 // FromMetadata pulls and decodes an index out of a Parquet KV metadata
 // map. Returns ok=false on absence or any decode failure (a value that is not
-// valid base64, or a corrupted or truncated payload, is silently treated as
+// base64 of a zstd frame, over the decoded size bound, or a corrupted or
+// truncated payload, is silently treated as
 // "no index" rather than an error: a single bad file must not break a lookup
 // other files can answer).
 func FromMetadata(metadata map[string]string) ([]Entry, bool) {
@@ -219,7 +237,7 @@ func FromMetadata(metadata map[string]string) ([]Entry, bool) {
 	if !ok {
 		return nil, false
 	}
-	raw, ok := footerkv.Decode(val)
+	raw, ok := DecodeMetadataValue(val)
 	if !ok {
 		return nil, false
 	}
@@ -228,6 +246,91 @@ func FromMetadata(metadata map[string]string) ([]Entry, bool) {
 		return nil, false
 	}
 	return entries, true
+}
+
+// walk validates a Marshal payload by the rules of Unmarshal and calls fn for
+// every entry, with the trace ID as a sub-slice of data (no copy, no
+// allocation). It is the read path of the query code, which asks "does this file
+// list one of these IDs" thousands of times per query and must not build 10 000
+// strings per file to answer it. A payload Unmarshal rejects is rejected here
+// before fn is called for any entry (TestWalkAgreesWithUnmarshal pins that).
+func walk(data []byte, fn func(id []byte, e Entry)) error {
+	if len(data) < 5 {
+		return fmt.Errorf("trace index too short: %d bytes", len(data))
+	}
+	if data[0] != Version {
+		return fmt.Errorf("unknown trace index version: %d", data[0])
+	}
+	count := int(binary.LittleEndian.Uint32(data[1:5]))
+	if count > maxEntries {
+		return fmt.Errorf("trace index count too large: %d (max %d)", count, maxEntries)
+	}
+	// First pass: validate the whole layout, so a truncated payload reports an
+	// error even when the entry looked for sits before the truncation.
+	off := 5
+	for i := 0; i < count; i++ {
+		if off+2 > len(data) {
+			return fmt.Errorf("trace index truncated at entry %d", i)
+		}
+		tidLen := int(binary.LittleEndian.Uint16(data[off : off+2]))
+		off += 2
+		if off+tidLen+2+8+8 > len(data) {
+			return fmt.Errorf("trace index truncated at entry %d", i)
+		}
+		off += tidLen + 2 + 8 + 8
+	}
+	off = 5
+	for i := 0; i < count; i++ {
+		tidLen := int(binary.LittleEndian.Uint16(data[off : off+2]))
+		off += 2
+		id := data[off : off+tidLen]
+		off += tidLen
+		partition := binary.LittleEndian.Uint16(data[off : off+2])
+		off += 2
+		startNs := int64(binary.LittleEndian.Uint64(data[off : off+8]))
+		off += 8
+		endNs := int64(binary.LittleEndian.Uint64(data[off : off+8]))
+		off += 8
+		fn(id, Entry{Partition: partition, StartNs: startNs, EndNs: endNs})
+	}
+	return nil
+}
+
+// ContainsAny reports whether the footer value val lists at least one of the
+// trace IDs in ids. ok is false when val is not a decodable index (not base64,
+// not zstd, over the size bound, corrupt or truncated): the caller then keeps
+// the file, as for a missing index. It allocates the decoded payload only.
+func ContainsAny(val string, ids map[string]bool) (hit, ok bool) {
+	raw, ok := DecodeMetadataValue(val)
+	if !ok {
+		return false, false
+	}
+	if err := walk(raw, func(id []byte, _ Entry) {
+		if !hit && ids[string(id)] {
+			hit = true
+		}
+	}); err != nil {
+		return false, false
+	}
+	return hit, true
+}
+
+// Find returns the entry of traceID in the footer value val (found is false
+// when val lists no such ID). ok is false when val is not a decodable index.
+func Find(val, traceID string) (entry Entry, found, ok bool) {
+	raw, ok := DecodeMetadataValue(val)
+	if !ok {
+		return Entry{}, false, false
+	}
+	if err := walk(raw, func(id []byte, e Entry) {
+		if !found && string(id) == traceID {
+			e.TraceID = traceID
+			entry, found = e, true
+		}
+	}); err != nil {
+		return Entry{}, false, false
+	}
+	return entry, found, true
 }
 
 // LookupFields returns the VT-compatible field strings for a trace ID.

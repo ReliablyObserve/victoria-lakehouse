@@ -10,8 +10,8 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
 // writeParquetWithTraceIndex builds a parquet file in memory whose footer
@@ -38,7 +38,7 @@ func writeParquetWithTraceIndex(t *testing.T, entries []TraceIndexEntry, extraRo
 	var buf bytes.Buffer
 	w := parquet.NewGenericWriter[logRow](&buf,
 		parquet.Compression(&parquet.Uncompressed),
-		parquet.KeyValueMetadata(traceIndexMetadataKey, footerkv.Encode(marshalTraceIndex(entries))),
+		parquet.KeyValueMetadata(traceIndexMetadataKey, traceindex.EncodeMetadataPayload(marshalTraceIndex(entries))),
 	)
 	if _, err := w.Write(rows); err != nil {
 		t.Fatal(err)

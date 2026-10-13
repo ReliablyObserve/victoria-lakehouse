@@ -25,6 +25,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
 func sortFilesByCacheAffinity(files []manifest.FileInfo, cachedKeys map[string]bool) {
@@ -824,14 +825,14 @@ func traceIdxClassifyFile(meta *format.FileMetaData, tidSet map[string]bool) str
 		if kv.Key != traceIndexMetadataKey {
 			continue
 		}
-		entries, ok := traceIndexFromMetadata(map[string]string{traceIndexMetadataKey: kv.Value})
+		// ContainsAny decodes the value and scans it without building the
+		// entries: the pre-filter visits every candidate file of a query.
+		hit, ok := traceindex.ContainsAny(kv.Value, tidSet)
 		if !ok {
 			return "kept_error" // corrupted index — preserve, count as error
 		}
-		for _, e := range entries {
-			if tidSet[e.TraceID] {
-				return "kept_match"
-			}
+		if hit {
+			return "kept_match"
 		}
 		return "dropped"
 	}
@@ -862,16 +863,11 @@ func traceIdxKeepFile(meta *format.FileMetaData, tidSet map[string]bool) bool {
 		if kv.Key != traceIndexMetadataKey {
 			continue
 		}
-		entries, ok := traceIndexFromMetadata(map[string]string{traceIndexMetadataKey: kv.Value})
+		hit, ok := traceindex.ContainsAny(kv.Value, tidSet)
 		if !ok {
 			return true
 		}
-		for _, e := range entries {
-			if tidSet[e.TraceID] {
-				return true
-			}
-		}
-		return false
+		return hit
 	}
 	return true
 }

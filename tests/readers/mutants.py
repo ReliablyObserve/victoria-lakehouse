@@ -93,12 +93,12 @@ def h1b(root):
 
 
 def mf(root):
-    """Both traces writers store the `_trace_idx` footer value as raw bytes again (#340): Polars and DataFusion refuse
+    """Both traces writers store the `_trace_idx` footer value as raw bytes again, not base64 of zstd (#340): Polars and DataFusion refuse
     every traces object, and the fixture's own footer check (truth.py assert-footer) must catch it first."""
     for w in TRACES_WRITERS:
-        patch(root + "/" + w, "parquet.KeyValueMetadata(traceIndexMetadataKey, footerkv.Encode(idxData))",
+        patch(root + "/" + w, "parquet.KeyValueMetadata(traceIndexMetadataKey, traceindex.EncodeMetadataPayload(idxData))",
               "parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData))")
-        patch(root + "/" + w, '\t"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"\n', '')
+        patch(root + "/" + w, '\t"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"\n', '')
 
 
 def mg(root):

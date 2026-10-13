@@ -8,6 +8,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/testutil"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
 func footerKVTestLogRows(n int) []schema.LogRow {
@@ -130,17 +131,18 @@ func TestFooterKVNotBase64IsAbsent(t *testing.T) {
 
 	idx := marshalTraceIndex([]TraceIndexEntry{{TraceID: "t1", Partition: 1, StartNs: 1, EndNs: 2}})
 	for name, v := range map[string]string{
-		"raw index bytes": string(idx),
-		"truncated":       footerkv.Encode(idx)[:20],
-		"junk":            "\x01\x02\xff",
-		"empty":           "",
-		"short payload":   footerkv.Encode(idx[:3]),
+		"raw index bytes":              string(idx),
+		"plain base64 (no zstd frame)": footerkv.Encode(idx),
+		"truncated":                    traceindex.EncodeMetadataPayload(idx)[:20],
+		"junk":                         "\x01\x02\xff",
+		"empty":                        "",
+		"short payload":                traceindex.EncodeMetadataPayload(idx[:3]),
 	} {
 		if e, ok := traceIndexFromMetadata(map[string]string{traceIndexMetadataKey: v}); ok {
 			t.Errorf("trace index %s: decoded %v, want absent", name, e)
 		}
 	}
-	if _, ok := traceIndexFromMetadata(map[string]string{traceIndexMetadataKey: footerkv.Encode(idx)}); !ok {
+	if _, ok := traceIndexFromMetadata(map[string]string{traceIndexMetadataKey: traceindex.EncodeMetadataPayload(idx)}); !ok {
 		t.Fatal("control: base64 trace index must decode")
 	}
 }
@@ -148,7 +150,7 @@ func TestFooterKVNotBase64IsAbsent(t *testing.T) {
 func FuzzFooterKVReaders(f *testing.F) {
 	_, bloom := buildTokenBloomMetadata([]string{"alpha beta gamma"}, 0)
 	f.Add(bloom)
-	f.Add(footerkv.Encode(marshalTraceIndex([]TraceIndexEntry{{TraceID: "t1", Partition: 1, StartNs: 1, EndNs: 2}})))
+	f.Add(traceindex.EncodeMetadataPayload(marshalTraceIndex([]TraceIndexEntry{{TraceID: "t1", Partition: 1, StartNs: 1, EndNs: 2}})))
 	f.Add("")
 	f.Add("\x01\x05\x00\x00\x00")
 	f.Add("AAAAAAAA")

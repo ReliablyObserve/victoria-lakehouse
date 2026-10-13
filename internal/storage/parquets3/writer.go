@@ -16,11 +16,11 @@ import (
 	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/footerkv"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
 // StatsCallback is called after each successful file flush with the
@@ -603,7 +603,7 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 	tidxStart := time.Now()
 	tidxEntries := computeTraceIndex(rows)
 	if idxData := marshalTraceIndex(tidxEntries); len(idxData) > 0 {
-		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, footerkv.Encode(idxData)))
+		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, traceindex.EncodeMetadataPayload(idxData)))
 		metrics.WriterTraceIdxBuildsTotal.Inc()
 		metrics.WriterTraceIdxEntriesTotal.Add(len(tidxEntries))
 		metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())
