@@ -10,9 +10,10 @@ import "github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
 const (
 	// defaultFooterPrefetchBytes (s3.footer_prefetch_bytes = 0) — traces.
 	// EVERY live traces compacted-L2 footer measured 467-519KB before #340
-	// (the trace index lives in footer key-value metadata, stored as base64
-	// since #340, which makes it 33 % and the footer about 30 % larger:
-	// measured 197356 -> 255147 bytes for 3.3k traces), so the previous shared
+	// (the trace index lives in footer key-value metadata; since #340 it is
+	// base64 of a zstd frame, which keeps the footer at 0.83-0.93 of that:
+	// measured on 1k-12k-trace objects, plain base64 would have been 1.3x), so the
+	// previous shared
 	// 64KB constant could never hold one: footer prefetch hit too_big,
 	// the inline fetch failed, and traces-L2 projected reads ALWAYS fell
 	// back to full downloads (fallback{reason="no-footer"}). 640KB fits
@@ -52,7 +53,7 @@ const (
 	// the machine or the container limit by default), clamped to
 	// [32 MiB, 2 GiB]. The cache is bounded by resident bytes; an entry is the
 	// raw tail (footer + page-index stripe) plus the decoded metadata, about
-	// ~1 MiB for traces (the _trace_idx key-value made every compacted footer 470-520 KB, measured before it was stored as base64 in #340, which adds about 30 %). The percentage scales the cache with the pod, the floor keeps a
+	// ~1 MiB for traces (the _trace_idx key-value made every compacted footer 470-520 KB, measured before #340; the index is base64 of zstd now, 7 to 17 % smaller). The percentage scales the cache with the pod, the floor keeps a
 	// small pod useful, the ceiling stops one cache from owning a large heap
 	// (the working set of a hot query window is far smaller than that).
 	footerBudgetPercent = 20

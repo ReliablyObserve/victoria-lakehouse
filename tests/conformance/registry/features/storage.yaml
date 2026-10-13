@@ -64,14 +64,16 @@
     CI job (Polars and DataFusion over files built with the production writer options). Mutants MF and MG of
     the reader mutation proof restore the raw encoding and must turn the fixture red.
   highlight: >-
-    **Footer key-values are valid UTF-8**: the trace-ID index (`_trace_idx`) and the per-row-group body token blooms (`_bloom_body_rg_N`) are stored as base64 text, so Polars, DataFusion and every other reader that validates the Parquet footer opens Lakehouse files.
+    **Footer key-values are valid UTF-8**: the trace-ID index (`_trace_idx`) and the per-row-group body token blooms (`_bloom_body_rg_N`) are stored as base64 text (the trace index as base64 of a zstd frame, the bloom as plain base64), so Polars, DataFusion and every other reader that validates the Parquet footer opens Lakehouse files.
   description: >-
     The Parquet footer key_value_metadata value is a string, and Arrow-rs based engines (Polars, DataFusion,
     InfluxDB 3, Databend) refuse a file whose footer holds invalid UTF-8. Both binary Lakehouse entries are
-    standard base64 on every write path (flush, compaction, delete rewrite; both binaries) and decoded on every
-    read path; a value that is not valid base64 reads as an absent entry and never prunes. The tests assert the
+    base64 text on every write path (flush, compaction, delete rewrite; both binaries) and decoded on every
+    read path: the trace index is base64 of a zstd frame (bounded to 64 MiB decoded), the bloom plain base64
+    because its bits do not compress; a value that does not decode in its entry's form reads as an absent entry
+    and never prunes. The tests assert the
     property over every footer entry of flushed, compacted and delete-rewritten objects, so a future entry that
-    stores raw bytes fails a test instead of an external reader. The cost is 4/3 of the two values.
+    stores raw bytes fails a test instead of an external reader. Cost: the bloom value grows by 4/3 (logs read paths +1.3 to +1.4 % S3 bytes in the field-metadata cells); the trace index shrinks to 0.8 to 0.9 of its raw size.
 
 - id: lh.feature.storage.manifest
   title: Partition manifest with label pruning

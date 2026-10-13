@@ -294,7 +294,7 @@ hit rate as high as possible without blowing the memory budget".
 |---|---|---|---:|
 | **pmeta bloom facet** (persisted in the partition `_pmeta.bundle`) | `extractLogBloomValues(rows)` + the pmeta `catalogObserver` | File-level skip in `filterFilesByBloomIndex`; legacy `.bloom`/`_bloom.bin` sidecars stay readable for pre-pmeta data | ~16 KiB |
 | **Per-row-group bloom (in footer)** | `parquet.SplitBlockFilter(10, …)` | `bloomFilterSkip` per row group | ~5 % of file |
-| **`_trace_idx` KV** (traces only) | `computeTraceIndex(rows)` + `marshalTraceIndex` | `filterFilesByTraceIdx`, `LookupTraceIndex` | ~69 B per trace as base64 (52 B binary, measured; ~69 KB / 1 000 traces) |
+| **`_trace_idx` KV** (traces only) | `computeTraceIndex(rows)` + `marshalTraceIndex` | `filterFilesByTraceIdx`, `LookupTraceIndex` | ~47 B per trace as base64 of zstd (52 B binary; measured on random 128-bit IDs, 0.90x; sorted-ID shapes 0.81x) |
 | **Token-bloom KV per row group** | `extractSearchTokens` + bloom build during compaction | `tokenBloomSkip` | ~2 % of file |
 | **ColumnStats on `FileInfo`** | populated on flush from parquet column index | `filterByLabelIndex`, `rowGroupMatchesFilter` | ~40 B (cached) |
 | **Labels on `FileInfo`** | `extractLogLabels` / `extractTraceLabels` + compactor `mergeFileLabels` (`be8c126`) | Inverted label index; survives compaction now | ~200 B (in manifest) |

@@ -29,7 +29,7 @@ actual `lakehouse_*` metrics in steady state.
 > after a query decoded it, about
 > 0.2 MB for a flush-sized logs object, about 1.2-1.5 MB for a
 > 10 MB compacted logs object with token blooms and about 1.3-1.9 MB
-> for a traces L2 object with `_trace_idx` (measured before the index was stored as base64, #340, which makes the footer about 30 % larger; see
+> for a traces L2 object with `_trace_idx` (measured before #340; the index is base64 of a zstd frame since then, which makes the footer 7 to 17 % smaller; see
 > [read path](../read-path.md#footer-cache-and-zero-get-open)). The
 > cache holds as many footers as fit.
 >
