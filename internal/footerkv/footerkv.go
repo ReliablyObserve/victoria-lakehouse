@@ -59,8 +59,14 @@ var (
 	decoder atomic.Pointer[zstd.Decoder]
 )
 
-// level is the zstd level of EncodeCompressed.
-var level = zstd.SpeedDefault
+// level is the zstd level of EncodeCompressed, chosen by measurement on trace
+// indexes of 1k to 12k traces from the repository's generators
+// (BenchmarkLevels, and the footer sizes in the PR that introduced it): the
+// fastest level encodes in half the CPU of the default level (1.5 ms against
+// 3.0 ms for a 9.5k-trace index) and its footer is within 5 % of the default
+// level's, smaller on random 128-bit IDs and larger on SHA-256 derived ones. The
+// decoder does not care which level wrote the frame.
+var level = zstd.SpeedFastest
 
 func getEncoder() *zstd.Encoder {
 	if e := encoder.Load(); e != nil {

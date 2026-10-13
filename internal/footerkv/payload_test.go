@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	mrand "math/rand"
+	"sort"
 )
 
 // indexLikePayload is n entries in the layout of the trace index: a 16-bit ID
@@ -15,11 +16,19 @@ func indexLikePayload(n int) []byte {
 	b[0] = 1
 	binary.LittleEndian.PutUint32(b[1:], uint32(n))
 	now := int64(1_760_000_000_000_000_000)
-	for i := 0; i < n; i++ {
+	// traceindex.Compute emits the entries sorted by trace ID, which is what makes
+	// the shared hex prefixes compress; a benchmark on unsorted IDs would overstate
+	// the cost of this footer value.
+	ids := make([]string, n)
+	for i := range ids {
 		var id [16]byte
 		_, _ = rand.Read(id[:])
+		ids[i] = hex.EncodeToString(id[:])
+	}
+	sort.Strings(ids)
+	for i := 0; i < n; i++ {
 		b = binary.LittleEndian.AppendUint16(b, 32)
-		b = append(b, hex.EncodeToString(id[:])...)
+		b = append(b, ids[i]...)
 		b = binary.LittleEndian.AppendUint16(b, uint16(rng.Intn(1024)))
 		start := now - int64(rng.Intn(3600))*1_000_000_000 - int64(rng.Intn(1_000_000_000))
 		b = binary.LittleEndian.AppendUint64(b, uint64(start))

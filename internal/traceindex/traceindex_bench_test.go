@@ -98,3 +98,56 @@ func BenchmarkUnmarshalRaw(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkLookup is what one file visit of a trace-by-ID query costs now: decode
+// the footer value and ask whether it lists the ID (ContainsAny) or fetch its
+// entry (Find). BenchmarkLookupFormerRaw is the same question answered the way
+// the code did before the value was compressed: Unmarshal the raw bytes into
+// entries and loop over them.
+func BenchmarkLookup(b *testing.B) {
+	for _, shape := range benchShapes {
+		for _, n := range benchSizes {
+			entries := benchEntries(shape, n)
+			val := MetadataValue(entries)
+			ids := map[string]bool{"absent-id": true}
+			b.Run(fmt.Sprintf("ContainsAny/%s/%d", shape, n), func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					if _, ok := ContainsAny(val, ids); !ok {
+						b.Fatal()
+					}
+				}
+			})
+			b.Run(fmt.Sprintf("Find/%s/%d", shape, n), func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					if _, _, ok := Find(val, entries[n/2].TraceID); !ok {
+						b.Fatal()
+					}
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkLookupFormerRaw(b *testing.B) {
+	for _, shape := range benchShapes {
+		for _, n := range benchSizes {
+			raw := Marshal(benchEntries(shape, n))
+			b.Run(fmt.Sprintf("ContainsAny/%s/%d", shape, n), func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					got, err := Unmarshal(raw)
+					if err != nil {
+						b.Fatal(err)
+					}
+					for _, e := range got {
+						if e.TraceID == "absent-id" {
+							b.Fatal()
+						}
+					}
+				}
+			})
+		}
+	}
+}
