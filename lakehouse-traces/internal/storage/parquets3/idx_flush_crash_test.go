@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -195,7 +196,18 @@ func TestIdxFlush_IdxOnlyGroup(t *testing.T) {
 	start := idxHour().Add(59*time.Minute + 59*time.Second)
 	id := e.sendTrace(segTenantA, "w", start, start.Add(3*time.Second)) // span in the next hour
 	e.seal()
+	// First an attempt that stops before the commit (the segment marker fails): the idx-only
+	// group's "stored" mark must already be on disk.
+	var failMarker atomic.Bool
+	failMarker.Store(true)
+	e.failFn.Store(func(key string) bool { return failMarker.Load() && strings.Contains(key, "_segments") })
 	f := e.flusher(1000)
+	e.drainAll(f)
+	marks, err := os.ReadFile(f.storedPath())
+	if err != nil || strings.Count(string(marks), "\n") < 1 {
+		t.Fatalf("the stored marks %q (%v) do not list the groups of the interrupted drain", marks, err)
+	}
+	failMarker.Store(false)
 	e.drainAll(f)
 	if len(e.segs.Pending()) != 0 {
 		t.Fatal("the segment was not committed")

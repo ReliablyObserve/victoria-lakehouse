@@ -173,3 +173,37 @@ func TestWarmAbsentLookupReadsNothing(t *testing.T) {
 		t.Fatalf("%.1f%% of absent lookups read from the object, want about 1%%", 100*rate)
 	}
 }
+
+// Without cached filters the row-group fences alone keep a lookup of an id outside the
+// object's range from reading anything once the footer is cached.
+func TestFencesAloneRuleOutIdsOutsideTheRange(t *testing.T) {
+	smallGroups(t, 500)
+	rows := randRows(rand.New(rand.NewSource(8)), 3000)
+	data, info, err := Marshal(append([]Row(nil), rows...), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := NewLocator(1)
+	src := newCountSource("fence", data)
+	if _, _, err := loc.Lookup(context.Background(), src, rows[0].TraceID, WantAll); err != nil {
+		t.Fatal(err)
+	}
+	e, _, _ := loc.open(context.Background(), src)
+	e.filters = nil // only the fences
+	before := src.reads
+	for _, id := range []string{"", "0", info.MaxID + "0", "ffffffffffffffffffffffffffffffffffff", info.MinID[:len(info.MinID)-1]} {
+		if info.MinID[:len(info.MinID)-1] == id && id >= info.MinID {
+			continue
+		}
+		got, st, err := loc.Lookup(context.Background(), src, id, WantAll)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("id %q: %v %v", id, got, err)
+		}
+		if st.RowGroups != 0 {
+			t.Fatalf("id %q outside [%s, %s] consulted %d row groups", id, info.MinID, info.MaxID, st.RowGroups)
+		}
+	}
+	if src.reads != before {
+		t.Fatalf("%d reads for ids outside the fences", src.reads-before)
+	}
+}

@@ -266,3 +266,36 @@ func TestIdxTable_EnumerationsCountIndexRows(t *testing.T) {
 	e.reap()
 	check("objects only")
 }
+
+// idxRouteOfQuery decides which tables a query reads. A wrong "spans only" would hide
+// index rows, so it is given only for filters that cannot match one; anything with a
+// NOT, an OR or an `if (...)` reads both.
+func TestIdxTable_RouteOfQuery(t *testing.T) {
+	if !tracesidx.Enabled {
+		t.Skip("the trace_id_idx table is off")
+	}
+	s := testStorageWithS3(t, "http://127.0.0.1:1")
+	for _, tc := range []struct {
+		q       string
+		unknown bool
+		want    idxRoute
+	}{
+		{`{trace_id_idx_stream="12"} AND trace_id_idx:="x"`, false, routeIdxOnly},
+		{`_time:5m {trace_id_idx_stream!=""} AND duration:>5`, false, routeIdxOnly},
+		{`{trace_id_idx_stream!=""} | stats count()`, false, routeIdxOnly},
+		{`{trace_id_idx_stream!=""} OR {resource_attr:service.name="a"}`, true, routeBoth},
+		{`{resource_attr:service.name="a"}`, false, routeSpansOnly},
+		{`trace_id:="abc"`, false, routeSpansOnly},
+		{`trace_id:="abc" | fields span_id`, false, routeSpansOnly},
+		{`*`, false, routeBoth},
+		{`error`, false, routeBoth},
+		{`NOT trace_id:="abc"`, true, routeBoth},
+		{`trace_id:="abc" OR trace_id_idx:="abc"`, true, routeBoth},
+		{`_time:1h`, false, routeBoth},
+		{`duration:>5`, false, routeBoth},
+	} {
+		if got := s.idxRouteOfQuery(tc.q, tc.unknown); got != tc.want {
+			t.Errorf("%q (unknown=%v): route %d, want %d", tc.q, tc.unknown, got, tc.want)
+		}
+	}
+}
