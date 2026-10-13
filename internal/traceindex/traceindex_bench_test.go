@@ -151,3 +151,20 @@ func BenchmarkLookupFormerRaw(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkWalkDecoded is the part of a lookup that remains when the decoded
+// payload is already in memory (what a decoded-index cache in the footer cache
+// would leave): the validating scan alone.
+func BenchmarkWalkDecoded(b *testing.B) {
+	for _, n := range []int{8000, 9500, 10000} {
+		raw := Marshal(benchEntries("random128", n))
+		b.Run(fmt.Sprintf("random128/%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if err := walk(raw, func([]byte, Entry) {}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
