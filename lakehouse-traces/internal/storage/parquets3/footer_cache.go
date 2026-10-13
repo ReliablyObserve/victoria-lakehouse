@@ -57,8 +57,8 @@ type CachedFooter struct {
 // element, map slot).
 const (
 	retainedMetadataFactor = 2.25
-	chunkGraphBytes        = 1100
-	cachedFooterOverhead   = 27 << 10
+	chunkGraphBytes        = 1150
+	cachedFooterOverhead   = 28 << 10
 )
 
 // Weight is the number of resident bytes the entry is charged against the
