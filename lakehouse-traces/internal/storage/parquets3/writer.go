@@ -552,13 +552,17 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 		}
 	}
 
-	tidxStart := time.Now()
-	tidxEntries := computeTraceIndex(rows)
-	if idxData := marshalTraceIndex(tidxEntries); len(idxData) > 0 {
-		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData)))
-		metrics.WriterTraceIdxBuildsTotal.Inc()
-		metrics.WriterTraceIdxEntriesTotal.Add(len(tidxEntries))
-		metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())
+	// The per-file `_trace_idx` footer entry is what the trace_id_idx table replaces:
+	// with the table on (tracesidx.Enabled) it is not written.
+	if !tracesidx.Enabled {
+		tidxStart := time.Now()
+		tidxEntries := computeTraceIndex(rows)
+		if idxData := marshalTraceIndex(tidxEntries); len(idxData) > 0 {
+			opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData)))
+			metrics.WriterTraceIdxBuildsTotal.Inc()
+			metrics.WriterTraceIdxEntriesTotal.Add(len(tidxEntries))
+			metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())
+		}
 	}
 
 	writer := schema.NewTraceWriter(&buf, opts...)

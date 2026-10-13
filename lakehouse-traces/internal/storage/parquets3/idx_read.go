@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,10 +45,16 @@ var spanStreamQueryRe = regexp.MustCompile(`^(?:_time:\S+ )?\{`)
 // filter's shape unknown (noFooterBloomFrom), so only the cost-neutral answer (both
 // tables) is given for it.
 func (s *Storage) idxRouteOf(ctx context.Context, queryStr string) idxRoute {
+	return s.idxRouteOfQuery(queryStr, noFooterBloomFrom(ctx))
+}
+
+// idxRouteOfQuery is idxRouteOf for a caller that has no read context (the field and
+// stream enumerations); unknownShape is true for a NOT, an OR or an `if (...)`.
+func (s *Storage) idxRouteOfQuery(queryStr string, unknownShape bool) idxRoute {
 	if !tracesidx.Enabled {
 		return routeSpansOnly
 	}
-	if noFooterBloomFrom(ctx) {
+	if unknownShape {
 		return routeBoth
 	}
 	if idxStreamQueryRe.MatchString(queryStr) {
@@ -58,12 +65,15 @@ func (s *Storage) idxRouteOf(ctx context.Context, queryStr string) idxRoute {
 	}
 	// An index row has none of the span fields: a positive exact filter on one of
 	// them (the same predicates the file-level bloom prunes on) cannot match it.
+	f := parseFilterFromQueryStr(queryStr)
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
 			continue
 		}
-		if len(extractFilterValuesAST(queryStr, col.InternalName)) > 0 || len(extractFilterValuesAST(queryStr, col.ParquetColumn)) > 0 {
-			return routeSpansOnly
+		if f != nil {
+			if len(FilterExtractFieldValues(f, col.InternalName)) > 0 || len(FilterExtractFieldValues(f, col.ParquetColumn)) > 0 {
+				return routeSpansOnly
+			}
 		}
 	}
 	return routeBoth
@@ -356,4 +366,31 @@ func (s *Storage) readIdxObject(ctx context.Context, fi manifest.FileInfo, ids [
 		out = append(out, rows...)
 	}
 	return out, nil
+}
+
+// collectIdxValues adds the trace_id_idx objects' rows to a field or stream enumeration,
+// as hot VictoriaTraces counts its index rows in field_values, streams and stream_ids:
+// through the request's filter and tombstones, a row without the field under "" when
+// the request counts the empty value.
+func (s *Storage) collectIdxValues(ctx context.Context, r fieldValuesRequest, seen map[string]uint64) {
+	if r.query == nil || r.field == "" || !tracesidx.Enabled {
+		return
+	}
+	scope := scopeFor(ctx, r.tenantIDs)
+	files := r.view.exclude(s.idxFilesForScope(r.op, r.startNs, r.endNs, scope))
+	if len(files) == 0 {
+		return
+	}
+	queryStr := r.query.String()
+	unknown := FilterContainsNotOr(r.filter) || strings.Contains(queryStr, " if (")
+	if s.idxRouteOfQuery(queryStr, unknown) == routeSpansOnly {
+		return
+	}
+	var mu sync.Mutex
+	count := func(tss []tombstone) logstorage.WriteDataBlockFunc {
+		return newFieldValueCounterOpts(r.field, r.filter, tss, &mu, seen, r.emptyBucket)
+	}
+	sink := newTombstoneSink(scope, r.tombstones, r.parse, s.AccountOnlyTenantKeys(), count)
+	var emitted atomic.Int64
+	s.scanIdxObjects(withNoFooterBloom(ctx, unknown), files, r.startNs, r.endNs, queryStr, &emitted, 0, sink)
 }

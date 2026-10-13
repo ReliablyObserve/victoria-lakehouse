@@ -3027,7 +3027,6 @@
         "_bloom_body_rg_0",
         "_bloom_body_rg_1",
         "_bloom_body_rg_2",
-        "_trace_idx",
         "lh.trace_id_hex"
       ],
       "time_column": "timestamp_unix_nano",

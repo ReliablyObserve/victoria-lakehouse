@@ -13,6 +13,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -322,8 +323,10 @@ func TestPhrasePruning_AttestedFilesPrune(t *testing.T) {
 	if got := keys(s.filterFilesByBloomIndex(slices.Clone(files), absent)); !slices.Equal(got, other) {
 		t.Errorf("bloom pre-filter kept %v, want only the unattested files %v", got, other)
 	}
-	if got := keys(s.filterFilesByTraceIdx(ctx, slices.Clone(files), nil, extractHexTraceIDPhrasesAST(absent))); !slices.Equal(got, other) {
-		t.Errorf("_trace_idx kept %v, want only the unattested files %v", got, other)
+	if !tracesidx.Enabled { // the span objects carry no _trace_idx footer entry with the trace_id_idx table on
+		if got := keys(s.filterFilesByTraceIdx(ctx, slices.Clone(files), nil, extractHexTraceIDPhrasesAST(absent))); !slices.Equal(got, other) {
+			t.Errorf("_trace_idx kept %v, want only the unattested files %v", got, other)
+		}
 	}
 	if got := keys(s.filterFilesByTraceIdx(ctx, slices.Clone(files), extractFilterValuesAST(absent, "trace_id"), nil)); len(got) != len(files) {
 		t.Errorf("_trace_idx with no exact id kept %d files, want all %d", len(got), len(files))

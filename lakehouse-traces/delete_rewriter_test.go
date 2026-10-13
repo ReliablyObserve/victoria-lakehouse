@@ -12,6 +12,7 @@ import (
 	lhdelete "github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // memPool is the smallest RewriterPool: an in-memory bucket.
@@ -98,6 +99,14 @@ func TestNewDeleteRewriter_ReplacementKeepsBloomsAndTraceIndex(t *testing.T) {
 		if kv.Key == traceindex.MetadataKey {
 			idx = kv.Value
 		}
+	}
+	if tracesidx.Enabled {
+		// The trace_id_idx table holds the bounds; a rewritten span object has no
+		// footer entry (TestIdxDelete_* covers the table's own rewrite).
+		if idx != "" {
+			t.Fatal("replacement carries a _trace_idx footer entry although the trace_id_idx table is on")
+		}
+		return
 	}
 	if idx == "" {
 		t.Fatal("replacement has no _trace_idx footer index; trace-by-ID lookups lose their fast path")

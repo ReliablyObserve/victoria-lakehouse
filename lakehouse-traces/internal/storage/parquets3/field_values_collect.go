@@ -89,6 +89,7 @@ func (s *Storage) collectFieldValues(ctx context.Context, files []manifest.FileI
 			return nil, err
 		}
 	}
+	s.collectIdxValues(ctx, r, seen)
 	s.collectBufferedValues(ctx, r.view, r, seen)
 	return seen, ctx.Err()
 }

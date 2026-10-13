@@ -14,6 +14,10 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
+// rowsPerGroup is RowsPerGroup; a variable only so a test can cut small objects into many
+// row groups.
+var rowsPerGroup = RowsPerGroup
+
 // Info describes a written object. The flush and the compaction both fill it from
 // the same function, which is what the golden test compares.
 type Info struct {
@@ -48,19 +52,6 @@ func Sort(rows []Row) {
 	})
 }
 
-// ndvFilter is the standard split-block bloom filter sized by the distinct values
-// of the row group being written instead of its row count, rounded up to a power of
-// two (the filter then reads in every engine, including Arrow C++ and so
-// ClickHouse, and a unique-id column wastes nothing). The writer is told the
-// distinct ratio of each row group before it writes it.
-type ndvFilter struct {
-	parquet.BloomFilterColumn
-	distinct int64
-}
-
-// Size is called by parquet-go with the number of values of the row group.
-func (f *ndvFilter) Size(numValues int64) int { return FilterBytes(minInt64(f.distinct, numValues)) }
-
 // FilterBytes is the size of the split-block filter for n distinct values: 10.5
 // bits per value, in 32-byte blocks, a power of two blocks.
 func FilterBytes(n int64) int {
@@ -78,14 +69,17 @@ func minInt64(a, b int64) int64 {
 	return b
 }
 
-// writerOptions are the options every writer of the table uses.
-func writerOptions(f *ndvFilter, level int) []parquet.WriterOption {
+// writerOptions are the options every writer of the table uses. There is no bloom filter
+// among them: the library's writer sizes a filter from the row count with a bits-per-value
+// that cannot give a power of two, and a filter type of its own gets a header without the
+// algorithm (measured, parquet-go v0.32.0: a strict reader refuses it). The filters are
+// built from the distinct ids and added by addFilters.
+func writerOptions(level int) []parquet.WriterOption {
 	return []parquet.WriterOption{
-		parquet.MaxRowsPerRowGroup(RowsPerGroup),
+		parquet.MaxRowsPerRowGroup(int64(rowsPerGroup)),
 		parquet.PageBufferSize(PageBytes),
 		parquet.ColumnIndexSizeLimit(func([]string) int { return ColumnIndexLimit }),
 		parquet.Compression(&zstd.Codec{Level: zstdLevel(level)}),
-		parquet.BloomFilters(f),
 		parquet.KeyValueMetadata(FormatKey, FormatValue),
 		schema.ParquetCreatedBy(),
 	}
@@ -110,9 +104,8 @@ func zstdLevel(level int) zstd.Level {
 // compaction call this one function, so their objects have the same structure.
 func Marshal(rows []Row, compressionLevel int) ([]byte, Info, error) {
 	Sort(rows)
-	f := &ndvFilter{BloomFilterColumn: parquet.SplitBlockFilter(10, IDField), distinct: 1}
 	var buf bytes.Buffer
-	w := parquet.NewGenericWriter[Row](&buf, writerOptions(f, compressionLevel)...)
+	w := parquet.NewGenericWriter[Row](&buf, writerOptions(compressionLevel)...)
 	info := Info{Rows: int64(len(rows))}
 	if len(rows) > 0 {
 		info.MinID, info.MaxID, info.MinTime, info.MaxTime = rows[0].TraceID, rows[len(rows)-1].TraceID, rows[0].Time, rows[0].Time
@@ -121,10 +114,9 @@ func Marshal(rows []Row, compressionLevel int) ([]byte, Info, error) {
 		info.MinTime = min(info.MinTime, rows[i].Time)
 		info.MaxTime = max(info.MaxTime, rows[i].Time)
 	}
-	for lo := 0; lo < len(rows); lo += RowsPerGroup {
-		hi := min(lo+RowsPerGroup, len(rows))
+	for lo := 0; lo < len(rows); lo += rowsPerGroup {
+		hi := min(lo+rowsPerGroup, len(rows))
 		d := distinctIDs(rows[lo:hi])
-		f.distinct = d
 		info.Distinct += d
 		if _, err := w.Write(rows[lo:hi]); err != nil {
 			return nil, Info{}, fmt.Errorf("tracesidx: write rows: %w", err)
@@ -138,7 +130,11 @@ func Marshal(rows []Row, compressionLevel int) ([]byte, Info, error) {
 	if err := w.Close(); err != nil {
 		return nil, Info{}, fmt.Errorf("tracesidx: close: %w", err)
 	}
-	return buf.Bytes(), info, nil
+	out, err := addFilters(buf.Bytes(), rows, rowsPerGroup)
+	if err != nil {
+		return nil, Info{}, err
+	}
+	return out, info, nil
 }
 
 // distinctIDs counts the distinct trace ids of rows sorted by id.

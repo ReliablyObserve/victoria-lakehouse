@@ -959,8 +959,12 @@ func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionL
 	// the original writer in lakehouse-traces/.../parquets3/writer.go,
 	// so a query can't tell whether the file was freshly flushed or
 	// later compacted.
-	if idxData := traceindex.Marshal(traceindex.Compute(rows)); len(idxData) > 0 {
-		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, string(idxData)))
+	// With the trace_id_idx table on (tracesidx.Enabled) the entry is not written: the
+	// table holds the same bounds as rows.
+	if !tracesidx.Enabled {
+		if idxData := traceindex.Marshal(traceindex.Compute(rows)); len(idxData) > 0 {
+			opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, string(idxData)))
+		}
 	}
 
 	writer := schema.NewTraceWriter(&buf, opts...)

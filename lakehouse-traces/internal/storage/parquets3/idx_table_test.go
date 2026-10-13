@@ -213,3 +213,56 @@ func TestIdxTable_TenantIsolation(t *testing.T) {
 		}
 	}
 }
+
+// Field and stream enumerations count the index rows as hot VictoriaTraces does: a
+// field no index row has gets them under the empty value, the index stream shows up in
+// streams, and field_values of an index field lists its values.
+func TestIdxTable_EnumerationsCountIndexRows(t *testing.T) {
+	if !tracesidx.Enabled {
+		t.Skip("the trace_id_idx table is off")
+	}
+	e := newRestartEnv(t)
+	tenant := logstorage.TenantID{}
+	ids := e.ingestTraces(tenant, 20, rwHour.Add(5*time.Minute))
+	from, to := rwWindow()
+	check := func(when string) {
+		t.Helper()
+		ctx := context.Background()
+		vals, err := e.s.GetFieldValues(ctx, nil, e.window("*", from, to), "name", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]uint64{}
+		for _, v := range vals {
+			got[v.Value] = v.Hits
+		}
+		if got["op"] != 40 || got[""] != 20 {
+			t.Errorf("%s: field_values name = %v, want op=40 and the 20 index rows under the empty value", when, got)
+		}
+		streams, err := e.s.GetStreams(ctx, nil, e.window("*", from, to), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var idxHits uint64
+		for _, v := range streams {
+			if strings.Contains(v.Value, otelpb.TraceIDIndexStreamName) {
+				idxHits += v.Hits
+			}
+		}
+		if idxHits != 20 {
+			t.Errorf("%s: the index streams hold %d rows, want 20 (%v)", when, idxHits, streams)
+		}
+		st, err := e.s.GetFieldValues(ctx, nil, e.window("{"+otelpb.TraceIDIndexStreamName+`=~".+"}`, from, to), otelpb.TraceIDIndexFieldName, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(st) != len(ids) {
+			t.Errorf("%s: field_values trace_id_idx lists %d ids, want %d", when, len(st), len(ids))
+		}
+	}
+	check("buffer")
+	e.flush()
+	check("committed")
+	e.reap()
+	check("objects only")
+}

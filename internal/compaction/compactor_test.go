@@ -14,6 +14,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 func makeTestParquet(t *testing.T, rows []schema.LogRow) []byte {
@@ -500,6 +501,14 @@ func TestCompactor_PreservesTraceIndexFooter(t *testing.T) {
 			idxBlob = kv.Value
 			break
 		}
+	}
+	if tracesidx.Enabled {
+		// The trace_id_idx table carries the bounds (TestIdxCompaction_*): the span
+		// object no longer holds the per-file footer entry.
+		if idxBlob != "" {
+			t.Fatalf("compacted span file carries a %q entry although the trace_id_idx table is on", traceindex.MetadataKey)
+		}
+		return
 	}
 	if idxBlob == "" {
 		t.Fatalf("compacted file is missing %q KV metadata — trace-by-ID fast path will miss on this file", traceindex.MetadataKey)

@@ -116,3 +116,7 @@ func TestDuplicateIDsAndTiesAcrossPages(t *testing.T) {
 		t.Fatalf("got %d rows, want 701", len(got))
 	}
 }
+
+func checkBloom(data []byte, rows []Row) error {
+	return checkBloomImpl(data, rows)
+}

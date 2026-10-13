@@ -25,6 +25,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 func sortFilesByCacheAffinity(files []manifest.FileInfo, cachedKeys map[string]bool) {
@@ -270,10 +271,14 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// TraceQL duration join, and every query that does not need a span-only field
 	// (`*`, field and stream enumeration), as it does on hot VictoriaTraces.
 	var idxFiles []manifest.FileInfo
-	if route := s.idxRouteOf(ctx, queryStr); route != routeSpansOnly {
-		idxFiles = view.exclude(s.idxFilesForScope("query", startNs, endNs, scope))
-		if route == routeIdxOnly {
-			files = nil
+	if tracesidx.Enabled {
+		if idxFiles = view.exclude(s.idxFilesForScope("query", startNs, endNs, scope)); len(idxFiles) > 0 {
+			switch s.idxRouteOf(ctx, queryStr) {
+			case routeSpansOnly:
+				idxFiles = nil
+			case routeIdxOnly:
+				files = nil
+			}
 		}
 	}
 	// finish is what ends every path below: the idx objects, then the insert buffer.
@@ -387,7 +392,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// whose footer attests lowercase-hex trace ids (filterFilesByTraceIdx).
 	tids := extractFilterValuesAST(queryStr, "trace_id")
 	hexPhrases := extractHexTraceIDPhrasesAST(queryStr)
-	if (len(tids) > 0 || len(hexPhrases) > 0) && !noFooterBloomFrom(ctx) {
+	if (len(tids) > 0 || len(hexPhrases) > 0) && !noFooterBloomFrom(ctx) && !tracesidx.Enabled {
 		files = s.filterFilesByTraceIdx(ctx, files, tids, hexPhrases)
 		if len(files) == 0 {
 			finish()
