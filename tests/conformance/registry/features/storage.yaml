@@ -34,8 +34,15 @@
     - internal/footerkv/footerkv_test.go#TestRoundTrip
     - internal/footerkv/footerkv_test.go#TestDecodeRejects
     - internal/footerkv/footerkv_test.go#FuzzDecode
-    - internal/traceindex/traceindex_test.go#TestMetadataValue_IsASCIIBase64OfMarshal
-    - internal/traceindex/traceindex_test.go#TestFromMetadata_NotBase64IsAbsent
+    - internal/footerkv/footerkv_test.go#TestCompressedRoundTrip
+    - internal/footerkv/footerkv_test.go#TestCompressedIsSmallerForIndexLikePayloadsAndNotForBloomBits
+    - internal/footerkv/footerkv_test.go#TestDecodeCompressedRejects
+    - internal/footerkv/footerkv_test.go#TestDecodeCompressedBombIsRefusedWithoutAllocatingIt
+    - internal/footerkv/footerkv_test.go#FuzzDecodeCompressed
+    - internal/traceindex/traceindex_test.go#TestMetadataValue_IsASCIIBase64OfZstdOfMarshal
+    - internal/traceindex/traceindex_test.go#TestFromMetadata_OtherFormsAreAbsent
+    - internal/traceindex/traceindex_test.go#TestContainsAnyAndFind
+    - internal/traceindex/traceindex_test.go#FuzzWalkAgreesWithUnmarshal
     - internal/traceindex/traceindex_test.go#FuzzFromMetadata
     - internal/storage/parquets3/footer_kv_utf8_test.go#TestFlushedLogsFooterKVAllUTF8
     - internal/storage/parquets3/footer_kv_utf8_test.go#TestFlushedTracesFooterKVAllUTF8
