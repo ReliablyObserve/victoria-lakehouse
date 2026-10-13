@@ -7,9 +7,12 @@ package parity
 // field_names and stream_field_names exactly like hot VictoriaLogs and
 // VictoriaTraces: the same names, the same hits, the same order, for every
 // seeded tenant, with no filter and with filters (issues 280, 269, 461, 464).
-// Traces are asked for spans (span_id:*) and for everything (`*`): hot
-// VictoriaTraces also lists the fields of its trace index rows under `*`, and
-// Lakehouse stores the same rows (internal/tracesidx, issue 458).
+// Traces are asked for spans (span_id:*) and for the trace index rows
+// ({trace_id_idx_stream=~".+"}): hot VictoriaTraces lists the fields of its index
+// rows under `*` too, and Lakehouse stores the same rows (internal/tracesidx, issue
+// 458). `*` itself is not compared here: it also matches the service-graph rows,
+// which hot (-servicegraph.taskInterval=30s) and Lakehouse (1m) write on their own
+// schedules, so their hits are a function of the run's timing (issue 479).
 
 import (
 	"fmt"
@@ -50,7 +53,7 @@ func TestParity_FieldNames_SeedCorpus(t *testing.T) {
 	})
 	t.Run("traces", func(t *testing.T) {
 		for _, te := range requireSeededTenants(t) {
-			for _, q := range []string{"span_id:*", "span_id:* `resource_attr:service.name`:=\"api-gateway\"", "span_id:* name:*GET*", "*"} {
+			for _, q := range []string{"span_id:*", "span_id:* `resource_attr:service.name`:=\"api-gateway\"", "span_id:* name:*GET*", `{trace_id_idx_stream=~".+"}`} {
 				for _, ep := range endpoints {
 					t.Run(fmt.Sprintf("%s/%s/%s", te.AccountID, ep[len("/select/logsql/"):], url.QueryEscape(q)), func(t *testing.T) {
 						fieldNamesSeedPair(t, vtBaseURL, lhtBaseURL, ep, q, te, false)
