@@ -193,8 +193,11 @@ func TestIdxTable_TenantIsolation(t *testing.T) {
 	e.reap()
 	from, to := rwWindow()
 	for _, id := range idsA {
-		if len(e.rows(a, stage1(id), from, to)) != 1 {
+		rowsA := e.rows(a, stage1(id), from, to)
+		if len(rowsA) != 1 {
 			t.Errorf("tenant A does not see its own trace %s", id)
+		} else if sid := rowsA[0]["_stream_id"]; !strings.HasPrefix(sid, "0000000100000000") {
+			t.Errorf("the _stream_id %q of tenant 1:0's index row does not carry the tenant", sid)
 		}
 		if got := e.rows(b, stage1(id), from, to); len(got) != 0 {
 			t.Errorf("tenant B sees tenant A's index row %s: %v", id, got)

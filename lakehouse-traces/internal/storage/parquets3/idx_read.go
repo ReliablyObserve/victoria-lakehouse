@@ -166,6 +166,17 @@ func (s *Storage) rangeThroughTiers(ctx context.Context, key string, fetch func(
 	return d, "s3", nil
 }
 
+// idxTenant is the numeric tenant of an idx object's rows (it goes into the derived
+// _stream_id). A request scoped to one tenant reads only that tenant's objects, so the
+// request's own (numeric) tenant is right even when the keys carry an alias; any wider
+// scope reads the tenant from each key.
+func (s *Storage) idxTenant(scope tenantScope, tenants []logstorage.TenantID, key string) logstorage.TenantID {
+	if scope.single() && len(tenants) == 1 {
+		return tenants[0]
+	}
+	return s.tenantOfKey(key)
+}
+
 // tenantOfKey is the tenant an idx object belongs to (the numeric form of its key).
 func (s *Storage) tenantOfKey(key string) logstorage.TenantID {
 	var t logstorage.TenantID
@@ -276,7 +287,7 @@ const idxObjectsSmall = 128 << 10
 // query's filter, through sink (which applies the row filter and the tombstones). With
 // an exact trace id in the query each object is asked for that id only (Locator); any
 // other query reads the whole object.
-func (s *Storage) scanIdxObjects(ctx context.Context, files []manifest.FileInfo, startNs, endNs int64, queryStr string, rowsEmitted *atomic.Int64, maxRows int64, sink *tombstoneSink) {
+func (s *Storage) scanIdxObjects(ctx context.Context, scope tenantScope, tenants []logstorage.TenantID, files []manifest.FileInfo, startNs, endNs int64, queryStr string, rowsEmitted *atomic.Int64, maxRows int64, sink *tombstoneSink) {
 	if len(files) == 0 {
 		return
 	}
@@ -322,7 +333,7 @@ func (s *Storage) scanIdxObjects(ctx context.Context, files []manifest.FileInfo,
 				const blockRows = 8192
 				for lo := 0; lo < len(kept); lo += blockRows {
 					hi := min(lo+blockRows, len(kept))
-					sink.forKey(fi.Key)(0, idxBlock(s.tenantOfKey(fi.Key), kept[lo:hi], want, streams))
+					sink.forKey(fi.Key)(0, idxBlock(s.idxTenant(scope, tenants, fi.Key), kept[lo:hi], want, streams))
 				}
 			}
 		}()
@@ -404,5 +415,5 @@ func (s *Storage) collectIdxValues(ctx context.Context, r fieldValuesRequest, se
 	}
 	sink := newTombstoneSink(scope, r.tombstones, r.parse, s.AccountOnlyTenantKeys(), count)
 	var emitted atomic.Int64
-	s.scanIdxObjects(withNoFooterBloom(ctx, unknown), files, r.startNs, r.endNs, queryStr, &emitted, 0, sink)
+	s.scanIdxObjects(withNoFooterBloom(ctx, unknown), scope, r.tenantIDs, files, r.startNs, r.endNs, queryStr, &emitted, 0, sink)
 }

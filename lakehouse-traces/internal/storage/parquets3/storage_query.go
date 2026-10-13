@@ -283,7 +283,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	}
 	// finish is what ends every path below: the idx objects, then the insert buffer.
 	finish := func() {
-		s.scanIdxObjects(ctx, idxFiles, startNs, endNs, queryStr, &rowsEmitted, maxRows, sink)
+		s.scanIdxObjects(ctx, scope, tenantIDs, idxFiles, startNs, endNs, queryStr, &rowsEmitted, maxRows, sink)
 		s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 	}
 	if len(files) == 0 {
