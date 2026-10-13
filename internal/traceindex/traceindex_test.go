@@ -313,6 +313,12 @@ func TestContainsAnyAndFind(t *testing.T) {
 	if _, found, ok := Find(v, "zz"); !ok || found {
 		t.Errorf("Find(zz) found=%v ok=%v", found, ok)
 	}
+	// A payload that ends exactly after the first of two announced entries.
+	two := Marshal(entries)
+	whole := 5 + 2 + len("a") + 2 + 8 + 8
+	if _, _, ok := Find(EncodeMetadataPayload(two[:whole]), "a"); ok {
+		t.Error("Find read an index with a missing entry")
+	}
 	// A truncated payload is rejected even when the ID sits before the cut.
 	cut := EncodeMetadataPayload(Marshal(entries)[:len(Marshal(entries))-3])
 	if _, _, ok := Find(cut, "a"); ok {

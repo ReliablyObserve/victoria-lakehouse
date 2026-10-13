@@ -39,6 +39,7 @@
     - internal/footerkv/footerkv_test.go#TestDecodeCompressedRejects
     - internal/footerkv/footerkv_test.go#TestDecodeCompressedBombIsRefusedWithoutAllocatingIt
     - internal/footerkv/footerkv_test.go#FuzzDecodeCompressed
+    - internal/footerkv/footerkv_test.go#TestCodecFirstUseRace
     - internal/traceindex/traceindex_test.go#TestMetadataValue_IsASCIIBase64OfZstdOfMarshal
     - internal/traceindex/traceindex_test.go#TestFromMetadata_OtherFormsAreAbsent
     - internal/traceindex/traceindex_test.go#TestContainsAnyAndFind

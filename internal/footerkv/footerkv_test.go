@@ -5,6 +5,7 @@ import (
 	crand "crypto/rand"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
@@ -178,4 +179,24 @@ func FuzzDecodeCompressed(f *testing.F) {
 			t.Fatalf("decoded %d bytes", len(raw))
 		}
 	})
+}
+
+// The shared encoder and decoder are created on first use; goroutines racing
+// there all end up with a working one.
+func TestCodecFirstUseRace(t *testing.T) {
+	encoder.Store(nil)
+	decoder.Store(nil)
+	raw := indexLikePayload(50)
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, ok := DecodeCompressed(EncodeCompressed(raw))
+			if !ok || !bytes.Equal(got, raw) {
+				t.Error("round trip failed under first-use contention")
+			}
+		}()
+	}
+	wg.Wait()
 }
