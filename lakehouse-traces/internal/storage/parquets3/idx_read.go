@@ -34,12 +34,13 @@ const (
 )
 
 // idxStreamQueryRe matches a query that starts with a selector of VictoriaTraces'
-// index stream: `{trace_id_idx_stream="N"} AND trace_id_idx:=...` (trace-by-ID, stage
+// index stream (after any number of time filters: the select handler adds its own
+// latency-offset bound to the caller's range): `{trace_id_idx_stream="N"} AND trace_id_idx:=...` (trace-by-ID, stage
 // 1) and `{trace_id_idx_stream!=""} AND duration:>... ` (the TraceQL duration join).
-var idxStreamQueryRe = regexp.MustCompile(`^(?:_time:\S+ )?\{` + tracesidx.StreamField)
+var idxStreamQueryRe = regexp.MustCompile(`^(?:_time:\S+ )*\{` + tracesidx.StreamField)
 
 // spanStreamQueryRe matches a query that starts with a stream selector.
-var spanStreamQueryRe = regexp.MustCompile(`^(?:_time:\S+ )?\{`)
+var spanStreamQueryRe = regexp.MustCompile(`^(?:_time:\S+ )*\{`)
 
 // idxRouteOf classifies queryStr. A NOT, an OR or an `if (...)` anywhere makes the
 // filter's shape unknown (noFooterBloomFrom), so only the cost-neutral answer (both

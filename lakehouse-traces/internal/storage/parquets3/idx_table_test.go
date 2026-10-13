@@ -283,6 +283,9 @@ func TestIdxTable_RouteOfQuery(t *testing.T) {
 	}{
 		{`{trace_id_idx_stream="12"} AND trace_id_idx:="x"`, false, routeIdxOnly},
 		{`_time:5m {trace_id_idx_stream!=""} AND duration:>5`, false, routeIdxOnly},
+		// what the select handler really hands the storage: its latency-offset bound, then the caller's range
+		{`_time:[1677-09-21T00:12:43.145224192Z,2026-10-13T20:00:00.016284169Z] _time:[2026-10-13T16:00:00.000000000Z,2026-10-13T17:59:59.999999999Z] {trace_id_idx_stream="897"} trace_id_idx:=5f7b21a43158a0b98328f82988d59fb7`, false, routeIdxOnly},
+		{`_time:[1677-09-21T00:12:43.145224192Z,2026-10-13T20:00:00.016284169Z] _time:[2026-10-13T16:00:00.000000000Z,2026-10-13T17:59:59.999999999Z] {resource_attr:service.name="a"} trace_id:=x`, false, routeSpansOnly},
 		{`{trace_id_idx_stream!=""} | stats count()`, false, routeIdxOnly},
 		{`{trace_id_idx_stream!=""} OR {resource_attr:service.name="a"}`, true, routeBoth},
 		{`{resource_attr:service.name="a"}`, false, routeSpansOnly},
