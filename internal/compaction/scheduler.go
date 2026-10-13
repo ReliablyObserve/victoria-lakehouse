@@ -115,7 +115,7 @@ func recompactionLevel(files []manifest.FileInfo, currentFP string) (int, bool) 
 		if f.CompactionLevel > maxLevel {
 			maxLevel = f.CompactionLevel
 		}
-		if currentFP != "" && f.SchemaFingerprint != currentFP {
+		if f.StaleAgainst(currentFP) {
 			stale = true
 		}
 	}

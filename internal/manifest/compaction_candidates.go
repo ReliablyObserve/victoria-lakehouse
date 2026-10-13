@@ -3,6 +3,8 @@ package manifest
 import (
 	"sort"
 	"strings"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // Estimated per-byte storage gains used to PRIORITIZE recompaction work (highest
@@ -132,7 +134,7 @@ func (m *Manifest) ComputeCompactionStats(currentFP string, zstdForLevel func(le
 			if f.CompactionLevel > maxLevel {
 				maxLevel = f.CompactionLevel
 			}
-			if currentFP != "" && f.SchemaFingerprint != currentFP {
+			if f.StaleAgainst(currentFP) {
 				stale++
 				staleBytes += f.Size
 			}
@@ -300,4 +302,13 @@ func fragmentedGroups(files []FileInfo) (bool, int64) {
 		}
 	}
 	return fragmented, bytes
+}
+
+// StaleAgainst reports whether the file was written under a schema fingerprint other
+// than currentFP (empty disables the check). The trace_id_idx objects have a fixed
+// layout of their own, not the span schema the fingerprint describes, so they are
+// never stale: counting them as stale would put every idx object on the compaction
+// work-list for a re-promotion that does not apply to them.
+func (f *FileInfo) StaleAgainst(currentFP string) bool {
+	return currentFP != "" && f.SchemaFingerprint != currentFP && !tracesidx.IsKey(f.Key)
 }

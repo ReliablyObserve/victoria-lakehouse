@@ -105,4 +105,6 @@ Spark and ClickHouse (see the proof in the pull request).
   membership summary (the pmeta layer) is the planned fix and is not part of the spike.
 - The buffer bridge between insert and select pods carries span rows only, so with insert peers the unflushed index rows of a peer are not
   served by a select pod; the objects are.
+- The compaction statistics (`/lakehouse/api/v1/stats/compaction`) count the idx objects in their file and byte totals and group them
+  per signal like every object, but never as stale-schema files: the fingerprint describes the span schema.
 - The path is the traces binary's; the logs binary and its objects are unchanged (`TestLogsObjectBytesUnchangedByTheIdxTable`).

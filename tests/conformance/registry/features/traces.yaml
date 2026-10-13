@@ -349,6 +349,8 @@
     - lakehouse-traces/internal/vlstorage/idx_rows_test.go#TestIdxRowsOf_NothingToReturn
     - lakehouse-traces/internal/vlstorage/idx_rows_test.go#TestStreamValueOf
     - lakehouse-traces/internal/vlstorage/idx_rows_test.go#TestIdxStreamAndStreamIDFor
+    - internal/manifest/idx_stale_test.go#TestIdxObjectsAreNeverStale
+    - internal/compaction/planner_test.go#TestRecompactionLevel_IdxObjectsAreNeverStale
     - internal/tracesidx/coverage_test.go#TestKeyHelpers
     - internal/tracesidx/coverage_test.go#TestMarshalLevelsAndEmpty
     - internal/tracesidx/coverage_test.go#TestValidateThriftCases

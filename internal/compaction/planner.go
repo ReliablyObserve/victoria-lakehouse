@@ -285,7 +285,7 @@ func (p *LevelPolicy) planHint(files []manifest.FileInfo, currentFP string, frag
 	sel := p.SelectFiles(files, lvl, MajoritySchemaFingerprint(files, lvl))
 	stale := false
 	for _, f := range sel {
-		if currentFP != "" && f.SchemaFingerprint != currentFP {
+		if f.StaleAgainst(currentFP) {
 			stale = true
 			break
 		}

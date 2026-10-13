@@ -413,3 +413,22 @@ func TestPlanGroup_ThresholdsNeedTwoSelectedFiles(t *testing.T) {
 		}
 	}
 }
+
+// An idx object has the layout of its own table, so the stale-schema heal never
+// picks it (the heal merges whatever the size or age): two idx objects at the same
+// level plan nothing from the hint path, while two span objects with an old
+// fingerprint do.
+func TestRecompactionLevel_IdxObjectsAreNeverStale(t *testing.T) {
+	idx := []manifest.FileInfo{pf("0/0/traces_idx/dt=x/hour=00/a", 0, 10, ""), pf("0/0/traces_idx/dt=x/hour=00/b", 0, 10, "")}
+	if lvl, needs := recompactionLevel(idx, "fp"); needs {
+		t.Errorf("idx objects wanted a hint compaction at level %d", lvl)
+	}
+	spans := []manifest.FileInfo{pf("0/0/traces/dt=x/hour=00/a", 0, 10, "old"), pf("0/0/traces/dt=x/hour=00/b", 0, 10, "old")}
+	if _, needs := recompactionLevel(spans, "fp"); !needs {
+		t.Error("control: stale span objects must want a hint compaction")
+	}
+	p := unitPolicy()
+	if _, _, _, ok := p.planHint(idx, "fp", true); ok {
+		t.Error("planHint planned a merge of idx objects for staleness")
+	}
+}
