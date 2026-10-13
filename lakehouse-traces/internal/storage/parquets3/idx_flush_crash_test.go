@@ -204,8 +204,8 @@ func TestIdxFlush_IdxOnlyGroup(t *testing.T) {
 	f := e.flusher(1000)
 	e.drainAll(f)
 	marks, err := os.ReadFile(f.storedPath())
-	if err != nil || strings.Count(string(marks), "\n") < 1 {
-		t.Fatalf("the stored marks %q (%v) do not list the groups of the interrupted drain", marks, err)
+	if err != nil || strings.Count(string(marks), "\n") != 2 {
+		t.Fatalf("the stored marks %q (%v) do not list both groups (the idx-only one and the span-only one) of the interrupted drain", marks, err)
 	}
 	failMarker.Store(false)
 	e.drainAll(f)
