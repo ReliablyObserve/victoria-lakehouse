@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -67,6 +68,9 @@ func (s *Storage) idxRouteOfQuery(queryStr string, unknownShape bool) idxRoute {
 	// An index row has none of the span fields: a positive exact filter on one of
 	// them (the same predicates the file-level bloom prunes on) cannot match it.
 	f := parseFilterFromQueryStr(queryStr)
+	if requiresSpanField(f) {
+		return routeSpansOnly
+	}
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
 			continue
@@ -416,4 +420,45 @@ func (s *Storage) collectIdxValues(ctx context.Context, r fieldValuesRequest, se
 	sink := newTombstoneSink(scope, r.tombstones, r.parse, s.AccountOnlyTenantKeys(), count)
 	var emitted atomic.Int64
 	s.scanIdxObjects(withNoFooterBloom(ctx, unknown), scope, r.tenantIDs, files, r.startNs, r.endNs, queryStr, &emitted, 0, sink)
+}
+
+// idxRowFieldNames are the fields an index row has (VictoriaTraces writes only these).
+var idxRowFieldNames = map[string]struct{}{
+	"_time": {}, "_stream": {}, "_stream_id": {}, "_msg": {},
+	tracesidx.StreamField: {}, tracesidx.IDField: {}, tracesidx.StartField: {}, tracesidx.EndField: {}, tracesidx.DurationField: {},
+}
+
+// requiresSpanField reports whether the AND-chain of f contains `field:*` (the field is
+// not empty) on a field an index row does not have: such a filter cannot match an index
+// row, so the query does not need the table. It is the shape of the span queries of the
+// dashboards and of VictoriaTraces' own (`span_id:*`).
+func requiresSpanField(f *logstorage.Filter) bool {
+	if f == nil {
+		return false
+	}
+	found := false
+	var visit func(v reflect.Value)
+	visit = func(v reflect.Value) {
+		v = derefValue(v)
+		switch astTypeName(v) {
+		case astTypeAnd:
+			filters := v.FieldByName("filters")
+			if filters.IsValid() && filters.Kind() == reflect.Slice {
+				for i := 0; i < filters.Len(); i++ {
+					visit(filters.Index(i))
+				}
+			}
+		case astTypeGeneric:
+			name := stringField(v, "fieldName")
+			if _, ok := idxRowFieldNames[name]; ok || name == "" {
+				return
+			}
+			inner := derefValue(v.FieldByName("f"))
+			if astTypeName(inner) == astTypePrefix && stringField(inner, "prefix") == "" {
+				found = true
+			}
+		}
+	}
+	visit(filterInner(f))
+	return found
 }

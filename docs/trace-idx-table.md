@@ -55,7 +55,7 @@ rejects; the writer therefore writes the object without a filter and adds the fi
 header (`numBytes`, `SPLIT_BLOCK`, `XXHASH`, `UNCOMPRESSED`) and the footer's `bloom_filter_offset` / `bloom_filter_length`
 (`internal/tracesidx/bloom.go`). The long-term fix is a parquet-go change.
 
-The footer carries one ASCII entry, `lh.trace_id_idx.format`, naming the layout version, the sort key and the sizes.
+The footer carries one ASCII entry, `lh.trace_idx.format`, naming the layout version, the sort key and the sizes.
 
 ## Write path
 
@@ -75,8 +75,8 @@ default asks for: the objects carry no labels, so no per-label rule can match th
 ## Read path
 
 A query is routed by its filter: a selector of the index stream (`{trace_id_idx_stream...}`, the stage-1 query and the heatmap) reads the
-table only; a selector of another stream or a positive exact filter on a span-only field (`trace_id:=X`, `service.name:=Y`: what the file
-bloom prunes on) reads spans only; anything else, including `*`, a NOT or an OR, reads both. The route decides cost only: VictoriaLogs'
+table only; a selector of another stream, a positive exact filter on a span-only field (`trace_id:=X`, `service.name:=Y`: what the file
+bloom prunes on) or `field:*` on a field an index row does not have (`span_id:*`) reads spans only; anything else, including `*`, a NOT or an OR, reads both. The route decides cost only: VictoriaLogs'
 filter runs on every row that is read. `field_values`, `streams` and `stream_ids` add the table to their span scan, so the empty bucket of a
 span field holds the index rows, as on hot.
 

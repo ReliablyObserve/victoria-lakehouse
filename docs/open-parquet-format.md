@@ -248,7 +248,7 @@ Lakehouse metadata that belongs to one file lives in standard Parquet footer key
 | Key | Written by | Value |
 |---|---|---|
 | `_trace_idx` | traces writers, only while the trace_id_idx table is off | the file's trace IDs with their time bounds |
-| `lh.trace_id_idx.format` | the trace_id_idx table's writer | ASCII: the layout version, the sort key and the row-group and page sizes ([trace-idx-table.md](trace-idx-table.md)) |
+| `lh.trace_idx.format` | the trace_id_idx table's writer | ASCII: the layout version, the sort key and the row-group and page sizes ([trace-idx-table.md](trace-idx-table.md)) |
 | `_bloom_body_rg_N` | flush writers | token bloom of row group N's message bodies |
 | `lakehouse.dedicated_slots` | all writers, when slots are configured | the Tier-2 slot-to-attribute binding |
 | `lh.trace_id_hex` | all writers (flush, compaction, delete rewrite; both binaries) | ASCII `1` when every `trace_id` value in the file is lowercase hex (or empty), `0` otherwise; see [read-path.md](read-path.md#attested-lowercase-hex-trace_id-files-lhtrace_id_hex) |

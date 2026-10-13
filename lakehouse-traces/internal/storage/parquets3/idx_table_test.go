@@ -300,6 +300,17 @@ func TestIdxTable_RouteOfQuery(t *testing.T) {
 		{`trace_id:="abc" OR trace_id_idx:="abc"`, true, routeBoth},
 		{`_time:1h`, false, routeBoth},
 		{`duration:>5`, false, routeBoth},
+		// "the field is not empty" on a span-only field cannot match an index row
+		{"span_id:* | stats count() n", false, routeSpansOnly},
+		{"span_id:* `resource_attr:service.name`:~\"a.*\" | stats by (name) count()", false, routeSpansOnly},
+		{"span_id:* duration:>50000000 | stats count() n", false, routeSpansOnly},
+		{"span_id:* | fields trace_id, span_id, name | limit 1000", false, routeSpansOnly},
+		// ... but not on a field an index row has, nor under a NOT or an OR
+		{`trace_id_idx:* | stats count()`, false, routeBoth},
+		{`duration:*`, false, routeBoth},
+		{`_msg:*`, false, routeBoth},
+		{`NOT span_id:*`, true, routeBoth},
+		{`span_id:* OR trace_id_idx:*`, true, routeBoth},
 	} {
 		if got := s.idxRouteOfQuery(tc.q, tc.unknown); got != tc.want {
 			t.Errorf("%q (unknown=%v): route %d, want %d", tc.q, tc.unknown, got, tc.want)
