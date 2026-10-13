@@ -13,6 +13,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
@@ -297,5 +298,49 @@ func TestIdxTable_RouteOfQuery(t *testing.T) {
 		if got := s.idxRouteOfQuery(tc.q, tc.unknown); got != tc.want {
 			t.Errorf("%q (unknown=%v): route %d, want %d", tc.q, tc.unknown, got, tc.want)
 		}
+	}
+}
+
+// The reads of a trace lookup do not grow with the number of idx objects once their
+// footers and filters are cached: the first lookup after a restart reads each object once,
+// a lookup of another id reads only what the filters let through (about 1 % per object)
+// plus the object that holds the id.
+func TestIdxTable_LookupReadsStayFlatAcrossObjects(t *testing.T) {
+	if !tracesidx.Enabled {
+		t.Skip("the trace_id_idx table is off")
+	}
+	e := newRestartEnv(t)
+	tenant := logstorage.TenantID{}
+	var ids []string
+	for g := 0; g < 12; g++ { // twelve flush groups of one hour: twelve idx objects
+		ids = append(ids, e.ingestTraces(tenant, 6, rwHour.Add(time.Duration(g)*time.Minute))...)
+		e.flush()
+	}
+	e.reap()
+	from, to := rwWindow()
+	gets := func() int { return int(metrics.S3RequestsTotal.Get("GetObject")) }
+	// first lookup: every object once
+	before := gets()
+	if len(e.rows(tenant, stage1(ids[3]), from, to)) != 1 {
+		t.Fatal("stage 1 missed")
+	}
+	first := gets() - before
+	// later lookups, memory and disk tiers emptied (as the harness's cold step does)
+	var later int
+	for i := 10; i < 60; i += 5 {
+		id := ids[i]
+		e.s.ClearCaches()
+		before = gets()
+		if len(e.rows(tenant, stage1(id), from, to)) != 1 {
+			t.Fatal("stage 1 missed")
+		}
+		later += gets() - before
+	}
+	t.Logf("first lookup: %d GETs for 12 objects; %d lookups later: %d GETs", first, 10, later)
+	if first > 12+2 {
+		t.Errorf("the first lookup made %d GETs for 12 objects", first)
+	}
+	if per := float64(later) / 10; per > 3.5 {
+		t.Errorf("a later lookup made %.1f GETs on average: objects that cannot hold the id were read again", per)
 	}
 }

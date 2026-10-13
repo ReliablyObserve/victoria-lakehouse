@@ -45,11 +45,13 @@ type fvEmptyCase struct {
 	// answer as many values, all with zero hits. stream_field_values does not go
 	// through that pipe (it sorts and truncates), so its limit cases are exact.
 	pastLimit bool
-	// ignoreEmpty drops the empty-value bucket from both answers before the
-	// comparison: hot VictoriaTraces counts its trace index rows (one per trace,
-	// no span attributes) under `*`, which Lakehouse drops at flush (issue 458).
-	// Every other value and its hits are compared exactly.
-	ignoreEmpty bool
+	// waitIdx makes the case wait until hot VictoriaTraces has written the trace
+	// index rows of the traces the case wrote (one per trace, 20 to 40 s after the
+	// spans): a case that counts the index rows (`*`, a filter on their fields)
+	// compares exactly only from then on. Lakehouse stores the same rows
+	// (internal/tracesidx), so the empty bucket and the index fields are compared
+	// exactly like every other value.
+	waitIdx bool
 }
 
 // waitRowsVisible returns once base answers query for the tenant form with
@@ -80,7 +82,7 @@ func runFvEmptyCases(t *testing.T, hot, cold string, f tenantForm, from, to time
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			params := url.Values{
-				"query": {strings.ReplaceAll(c.query, "@F", filter)}, "field": {c.field}, "disable_latency_offset": {"true"},
+				"query": {strings.ReplaceAll(strings.ReplaceAll(c.query, "@I", idxFilter(filter)), "@F", filter)}, "field": {c.field}, "disable_latency_offset": {"true"},
 				"start": {fmt.Sprintf("%d", from.UnixNano())},
 				"end":   {fmt.Sprintf("%d", to.UnixNano())},
 			}
@@ -88,6 +90,9 @@ func runFvEmptyCases(t *testing.T, hot, cold string, f tenantForm, from, to time
 				params.Set(k, v)
 			}
 			path := "/select/logsql/" + c.endpoint
+			if c.waitIdx {
+				waitIdxRows(t, hot, f, from, to, strings.Count(filter, ",")+1)
+			}
 			ref := getWith(t, hot, path, params, f.header(false))
 			sut := getWith(t, cold, path, params, f.header(true))
 			if c.pastLimit {
@@ -108,9 +113,6 @@ func runFvEmptyCases(t *testing.T, hot, cold string, f tenantForm, from, to time
 				}
 				reportLockCells(t, 1) // one cell per compared answer (floor in lock_cells.txt)
 				return
-			}
-			if c.ignoreEmpty {
-				ref, sut = withoutEmptyBucket(t, ref), withoutEmptyBucket(t, sut)
 			}
 			compareFieldValues(t, c.name, ref, sut, c.allowEmpty)
 		})
@@ -336,7 +338,19 @@ func TestParity_FieldValues_EmptyBucket(t *testing.T) {
 			{name: "stream_field_values_non_stream_field", endpoint: "stream_field_values", query: q, field: "span_attr:sa", allowEmpty: true},
 			{name: "stream_field_values_limit1_exact", endpoint: "stream_field_values", query: q, field: "name", extra: map[string]string{"limit": "1"}},
 			{name: "stream_field_values_filter_limit_exact", endpoint: "stream_field_values", query: q, field: "name", extra: map[string]string{"filter": "op", "limit": "1"}},
-			{name: "field_values_star_query", endpoint: "field_values", query: "*", field: "span_attr:sa", ignoreEmpty: true},
+			// The trace index rows (VictoriaTraces' trace_id_idx_stream, one per trace) are counted
+			// by every query that matches them: under `*` they are the empty bucket of a span
+			// field, and their own fields are values of the index stream. Exact, hits included.
+			{name: "field_values_star_query", endpoint: "field_values", query: "*", field: "span_attr:sa", waitIdx: true},
+			{name: "field_values_star_query_name", endpoint: "field_values", query: "*", field: "name", waitIdx: true},
+			{name: "idx_field_values_trace_id_idx", endpoint: "field_values", query: "@I", field: "trace_id_idx", waitIdx: true},
+			{name: "idx_field_values_duration", endpoint: "field_values", query: "@I", field: "duration", waitIdx: true},
+			{name: "idx_field_values_start_time", endpoint: "field_values", query: "@I", field: "start_time", waitIdx: true},
+			{name: "idx_field_values_end_time", endpoint: "field_values", query: "@I", field: "end_time", waitIdx: true},
+			{name: "idx_field_values_stream", endpoint: "field_values", query: "@I", field: "trace_id_idx_stream", waitIdx: true},
+			{name: "idx_stream_field_values_stream", endpoint: "stream_field_values", query: "@I", field: "trace_id_idx_stream", waitIdx: true},
+			{name: "idx_streams", endpoint: "streams", query: "@I", field: "", waitIdx: true},
+			{name: "idx_stream_ids", endpoint: "stream_ids", query: "@I", field: "", waitIdx: true},
 		}
 		runFvEmptyLayers(t, c)
 	})
@@ -368,21 +382,31 @@ func pushOTLPSpanAttrsAs(t *testing.T, base string, hdr http.Header, traceID, sp
 	post(t, base+"/insert/opentelemetry/v1/traces", "application/json", body, hdr)
 }
 
-// withoutEmptyBucket returns a field_values answer without its empty-value entry.
-func withoutEmptyBucket(t *testing.T, r fetchResult) fetchResult {
+
+// idxFilter selects the trace index rows of the traces a case wrote: the filter of the
+// case is `trace_id:in(a,b,c)`, the rows carry the same ids as trace_id_idx.
+func idxFilter(filter string) string {
+	return strings.Replace(filter, "trace_id:in(", "trace_id_idx:in(", 1)
+}
+
+// waitIdxRows returns once hot VictoriaTraces holds the want trace index rows of the tenant
+// form in the window (its index worker flushes them 20 to 40 s after the spans).
+func waitIdxRows(t *testing.T, hot string, f tenantForm, from, to time.Time, want int) {
 	t.Helper()
-	obj, err := parseJSON(r.Body)
-	if err != nil || r.StatusCode != http.StatusOK {
-		return r
+	params := url.Values{
+		"query": {`{trace_id_idx_stream=~".+"} | stats count() n`}, "disable_latency_offset": {"true"},
+		"start": {fmt.Sprintf("%d", from.UnixNano())},
+		"end":   {fmt.Sprintf("%d", to.UnixNano())},
 	}
-	var kept []any
-	for _, e := range asSlice(obj["values"]) {
-		if m, _ := e.(map[string]any); m != nil && m["value"] == "" {
-			continue
+	deadline := time.Now().Add(120 * time.Second)
+	for {
+		r := getWith(t, hot, "/select/logsql/query", params, f.header(false))
+		if r.StatusCode == http.StatusOK && strings.Contains(string(r.Body), fmt.Sprintf(`"n":"%d"`, want)) {
+			return
 		}
-		kept = append(kept, e)
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: the %d trace index rows of tenant %s never appeared (last answer %s)", hot, want, f.name, r.Body)
+		}
+		time.Sleep(2 * time.Second)
 	}
-	obj["values"] = kept
-	b, _ := json.Marshal(obj)
-	return fetchResult{StatusCode: r.StatusCode, Body: b}
 }

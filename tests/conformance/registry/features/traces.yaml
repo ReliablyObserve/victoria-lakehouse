@@ -345,6 +345,19 @@
     - lakehouse-traces/internal/storage/parquets3/idx_flush_crash_test.go#TestIdxFlush_IdxUploadFailureAndRestart
     - lakehouse-traces/internal/storage/parquets3/idx_flush_crash_test.go#TestIdxFlush_CrashBetweenIdxAndSpanObjects
     - lakehouse-traces/internal/storage/parquets3/idx_flush_crash_test.go#TestIdxFlush_IdxOnlyGroup
+    - internal/tracesidx/coverage_test.go#TestKeyHelpers
+    - internal/tracesidx/coverage_test.go#TestMarshalLevelsAndEmpty
+    - internal/tracesidx/coverage_test.go#TestValidateThriftCases
+    - internal/tracesidx/coverage_test.go#TestValidateThriftNestedContainers
+    - internal/tracesidx/coverage_test.go#TestLocatorErrorPaths
+    - internal/tracesidx/coverage_test.go#TestLocatorFetchLimitsAndPageChecks
+    - internal/tracesidx/coverage_test.go#TestLocatorIgnoresForeignFilters
+    - internal/tracesidx/coverage_test.go#TestLoadFiltersRefusesWhatItDoesNotKnow
+    - internal/tracesidx/coverage_test.go#TestOverlayErrors
+    - internal/tracesidx/property_test.go#TestFencesAloneRuleOutIdsOutsideTheRange
+    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_RouteOfQuery
+    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_LookupReadsStayFlatAcrossObjects
+    - lakehouse-traces/internal/vtstorage_adapter/idx_table_test.go#TestIdxTable_AdapterTakesNoShortcut
   docs:
     - docs/trace-idx-table.md
     - docs/open-parquet-format.md
