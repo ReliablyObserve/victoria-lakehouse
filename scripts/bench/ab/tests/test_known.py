@@ -7,31 +7,35 @@ ROWS = [
     {"id": "vl.a.noissue", "expect": "unsupported", "differ_note": "by design", "refs": {}},
     {"id": "vl.a.pass", "expect": "pass", "refs": {}},
 ]
-GAPS = {"B2": [280, 378]}
+GAPS = {"B2": ["victoria-lakehouse#280", "victoria-lakehouse#378"]}
 
 
 def obs(status, covers, source="perf", what="logs fv_service"):
     return {"source": source, "what": what, "status": status, "covers": covers, "where": ["cold/1h/numeric"], "signal": "logs"}
 
 
-def test_issue_numbers_and_gap_ids_are_read_from_urls_and_hash_references():
-    from abreg import gap_ids, issue_numbers
-    assert issue_numbers("see https://github.com/ReliablyObserve/victoria-lakehouse/issues/452 and #458, not #A6 or #7") == [452, 458]
-    # a pull request link and an issue of another project are not issues that track a Lakehouse difference
-    assert issue_numbers("https://github.com/ReliablyObserve/victoria-lakehouse/pull/9 https://github.com/VictoriaMetrics/VictoriaLogs/issues/100 (#100)") == []
-    assert issue_numbers("https://github.com/ReliablyObserve/loki-vl-proxy/issues/77") == [77]
+def test_only_issues_of_reliablyobserve_repositories_by_url_or_with_the_repository_prefix_count():
+    from abreg import gap_ids, issue_refs
+    text = ("see https://github.com/ReliablyObserve/victoria-lakehouse/issues/452 and ReliablyObserve/loki-vl-proxy#77, "
+            "not a bare #458, not #A6")
+    assert issue_refs(text) == ["victoria-lakehouse#452", "loki-vl-proxy#77"]
+    # a bare number may be an upstream VictoriaLogs issue; a pull request link and another organisation's issue are not tracking issues
+    assert issue_refs("#458 and (#100)") == []
+    assert issue_refs("https://github.com/ReliablyObserve/victoria-lakehouse/pull/9") == []
+    assert issue_refs("https://github.com/VictoriaMetrics/VictoriaLogs/issues/100") == []
+    assert issue_refs("xReliablyObserve/victoria-lakehouse#5") == []
     assert gap_ids("gap #A6 and #B2, issue #458") == ["A6", "B2"]
 
 
 def test_a_pre_existing_difference_with_a_row_and_an_issue_is_tracked():
     k = known.join([obs("pre-existing", ["vl.a.issue"])], ROWS, GAPS)
     it = k["items"][0]
-    assert it["tracking"] == "tracked" and it["tracked_by"][0]["issues"] == [452] and k["failed"] is False
+    assert it["tracking"] == "tracked" and it["tracked_by"][0]["issues"] == ["victoria-lakehouse#452"] and k["failed"] is False
 
 
 def test_a_gap_id_resolves_to_the_issues_of_its_entry_in_the_gaps_doc():
     k = known.join([obs("pre-existing", ["vl.a.gap"])], ROWS, GAPS)
-    assert k["items"][0]["tracked_by"][0]["issues"] == [280, 378] and k["items"][0]["tracking"] == "tracked"
+    assert k["items"][0]["tracked_by"][0]["issues"] == ["victoria-lakehouse#280", "victoria-lakehouse#378"] and k["items"][0]["tracking"] == "tracked"
 
 
 def test_a_difference_on_a_row_that_says_pass_is_untracked_and_fails():
@@ -112,3 +116,13 @@ def test_observations_from_the_api_matrix_follow_the_verdict():
         {"id": "f", "row": "r6", "surface": "vl-native", "path": "/p", "signal": "logs", "verdict": "improved", "pr_score": 60, "base_score": 50, "notes": []}]}
     o = {x["covers"][0]: x["status"] for x in known.observed_from_api(m)}
     assert o == {"r1": "new", "r2": "pre-existing", "r3": "fixed", "r6": "pre-existing"}  # exact and arbitrary are not differences
+
+
+def test_documented_limit_a_covered_row_tracks_the_shape_on_every_layer():
+    """Registry rows carry no data layer, so a `differ` row in a shape's `covers` tracks that shape's difference on whichever layer it shows
+    (docs/pr-perf-smoke.md, Known differences). The items are still split by layer, so the comment says where it was seen."""
+    rows = [{"id": "vl.a.issue", "surface": "vl", "expect": "differ", "differ_note": "ReliablyObserve/victoria-lakehouse#9"}]
+    spec = {"sets": {"x": {"shapes": [{"name": "s", "covers": ["vl.a.issue"]}]}}}
+    cells = [{"shape": "s", "difference": "pre-existing", "signal": "logs", "layer": lay, "range": "1h", "form": "numeric"} for lay in ("cold", "compacted")]
+    k = known.join(known.observed_from_perf({"cells": cells}, spec), rows, {})
+    assert sorted(i["what"] for i in k["items"]) == ["s [cold]", "s [compacted]"] and {i["tracking"] for i in k["items"]} == {"tracked"}

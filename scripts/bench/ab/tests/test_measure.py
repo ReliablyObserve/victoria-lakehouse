@@ -141,3 +141,92 @@ def test_a_cold_run_that_could_not_clear_its_cache_says_so_and_a_bad_answer_is_n
     finally:
         for s in (ref, base, pr):
             s.close()
+
+
+class FlakyHot(FakeLakehouse):
+    """hot: the first `bad` requests answer 500, then it is healthy."""
+
+    def __init__(self, bad, **kw):
+        self.bad = bad
+        super().__init__(**kw)
+
+    def handle(self, method, path, headers, body):
+        if not path.startswith(("/metrics", "/internal")) and self.bad > 0:
+            self.bad -= 1
+            return 500, "boom", {}
+        return super().handle(method, path, headers, body)
+
+
+def test_n3_hot_is_asked_once_more_when_it_gave_nothing_valid(monkeypatch):
+    monkeypatch.setattr(measure, "SETTLE_S", 0.0)
+    ref, base, pr = FlakyHot(bad=3), FakeLakehouse(), FakeLakehouse()   # 3 runs of the cell: every first-pass hot answer fails
+    try:
+        st = state({"ref-logs": ref.port, "base-logs": base.port, "pr-logs": pr.port})
+        cell = measure.plan(SPEC, ["control-logs"], {"control-logs": ["logs count_total"]})[0]
+        rows, _ = measure.run_cell(cell, st, SPEC, 3, {})
+        hot = [r for r in rows if r["target"] == "ref"]
+        assert len(hot) == 3 and all(r["valid"] and r["retried"] for r in hot)
+    finally:
+        for s in (ref, base, pr):
+            s.close()
+
+
+def test_n3_hot_stays_invalid_when_it_keeps_failing_and_an_empty_answer_is_not_retried(monkeypatch):
+    monkeypatch.setattr(measure, "SETTLE_S", 0.0)
+    ref, base, pr = FlakyHot(bad=99), FakeLakehouse(), FakeLakehouse()
+    empty = FakeLakehouse(answer="")
+    try:
+        st = state({"ref-logs": ref.port, "base-logs": base.port, "pr-logs": pr.port})
+        cell = measure.plan(SPEC, ["control-logs"], {"control-logs": ["logs count_total"]})[0]
+        rows, _ = measure.run_cell(cell, st, SPEC, 2, {})
+        assert not any(r["valid"] for r in rows if r["target"] == "ref") and all(r.get("retried") for r in rows if r["target"] == "ref")
+        st2 = state({"ref-logs": empty.port, "base-logs": base.port, "pr-logs": pr.port})
+        rows, _ = measure.run_cell(cell, st2, SPEC, 2, {})
+        assert not any(r.get("retried") for r in rows) and measure.cell_ref_needs_retry(rows) is False
+    finally:
+        for s in (ref, base, pr, empty):
+            s.close()
+
+
+def test_tempo_shapes_send_unix_seconds_because_rfc3339_is_a_400_on_hot_and_lakehouse():
+    """Found by the first real run: every Tempo cell was invalid on all three targets (`cannot parse start timestamp`)."""
+    st = state({"ref-traces": 5})
+    s, e = "2026-10-12T12:00:00Z", "2026-10-12T13:00:00Z"
+    tempo = [sh for ss in SPEC["sets"].values() for sh in ss["shapes"] if sh.get("api") == "tempo" and sh.get("window", "start-end") != "none"]
+    assert len(tempo) >= 8
+    for sh in tempo:
+        assert sh["window"] == "seconds", sh["name"]
+        p = measure.build_request(sh, st, "ref", s, e, "numeric")["params"]
+        assert p["start"] == "1791806400" and p["end"] == "1791810000", sh["name"]
+    assert measure.window_params("start-end", s, e) == {"start": s, "end": e}   # LogsQL keeps RFC3339
+
+
+def test_a_ref_varies_shape_exempts_only_the_hot_side_from_the_flapping_rule(monkeypatch):
+    """Hot VictoriaTraces answers Tempo's tag list differently on identical calls; Lakehouse must answer the same every time."""
+    monkeypatch.setattr(measure, "SETTLE_S", 0.0)
+
+    class Changing(FakeLakehouse):
+        def __init__(self):
+            self.n = 0
+            super().__init__()
+
+        def handle(self, method, path, headers, body):
+            if path.startswith(("/metrics", "/internal")):
+                return super().handle(method, path, headers, body)
+            self.n += 1
+            return 200, f'{{"n":"{self.n}"}}\n', {}
+
+    class Steady(FakeLakehouse):
+        pass
+    ref, base, pr = Changing(), Steady(), Changing()   # the PR's answers change between calls: flapping
+    try:
+        st = state({"ref-logs": ref.port, "base-logs": base.port, "pr-logs": pr.port})
+        cell = measure.plan(SPEC, ["control-logs"], {"control-logs": ["logs count_total"]})[0]
+        cell["shape"] = dict(cell["shape"], ref_varies=True)
+        rows, _ = measure.run_cell(cell, st, SPEC, 3, {})
+        assert all(r["valid"] for r in rows if r["target"] == "ref")
+        assert any(r["reason"].startswith("flapping") for r in rows if r["target"] == "pr")
+        assert all(r["valid"] for r in rows if r["target"] == "base")
+    finally:
+        for x in (ref, base, pr):
+            x.close()

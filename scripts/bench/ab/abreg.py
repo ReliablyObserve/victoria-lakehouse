@@ -83,27 +83,22 @@ def write_text(path: str, text: str) -> None:
 
 
 ORG = "ReliablyObserve"
-# An issue of one of this organisation's repositories (a URL), or a bare `#123` (the repository's own convention). A pull request link
-# or an issue of another project (upstream VictoriaLogs, say) is not an issue that tracks a Lakehouse difference.
-ISSUE_URL_RE = re.compile(r"github\.com/([\w.-]+)/([\w.-]+)/issues/(\d+)")
-BARE_RE = re.compile(r"(?<![\w/])#(\d{2,})\b")
+# What counts as an issue that tracks a difference: the full URL of an issue of a repository of this organisation, or the repository-prefixed
+# reference `ReliablyObserve/victoria-lakehouse#123`. A bare `#123` (it may be an upstream VictoriaLogs issue), a pull request link and an
+# issue of another organisation do not count.
+ISSUE_URL_RE = re.compile(r"github\.com/ReliablyObserve/([\w.-]+)/issues/(\d+)")
+ISSUE_REF_RE = re.compile(r"(?<![\w/.-])ReliablyObserve/([\w.-]+)#(\d+)\b")
 GAP_ID_RE = re.compile(r"(?<![\w/])#([A-Z]\d+)\b")
 
 
-def issue_numbers(text: str) -> list[int]:
-    """Issue numbers cited in `text`: URLs of repositories of the ReliablyObserve organisation, and bare `#123` unless the same text
-    names that number as an issue of another project (gap ids such as `#A6` are not numbers)."""
-    text = text or ""
-    foreign = {int(m.group(3)) for m in ISSUE_URL_RE.finditer(text) if m.group(1) != ORG}
-    out = []
-    for m in ISSUE_URL_RE.finditer(text):
-        if m.group(1) == ORG and int(m.group(3)) not in out:
-            out.append(int(m.group(3)))
-    for m in BARE_RE.finditer(text):
-        n = int(m.group(1))
-        if n not in out and n not in foreign:
-            out.append(n)
-    return out
+def issue_refs(text: str) -> list[str]:
+    """Issues of ReliablyObserve repositories cited in `text`, as `repo#number` (in the order they appear)."""
+    found = []
+    for m in sorted(list(ISSUE_URL_RE.finditer(text or "")) + list(ISSUE_REF_RE.finditer(text or "")), key=lambda m: m.start()):
+        ref = f"{m.group(1)}#{m.group(2)}"
+        if ref not in found:
+            found.append(ref)
+    return found
 
 
 def gap_ids(text: str) -> list[str]:
@@ -116,8 +111,8 @@ def row_text(row: dict) -> str:
     return " ".join(str(x) for x in (row.get("differ_note"), row.get("notes"), row.get("title"), json.dumps(refs, default=str)) if x)
 
 
-def gaps_doc_issues(root: str = ROOT) -> dict[str, list[int]]:
-    """Gap id (`A6`, `B2`) -> issue numbers cited in the section of docs/parity-and-gaps.md that names it.
+def gaps_doc_issues(root: str = ROOT) -> dict[str, list[str]]:
+    """Gap id (`A6`, `B2`) -> issue references (`repo#number`) cited in the section of docs/parity-and-gaps.md that names it.
 
     A section starts at a line that mentions the id (heading, table row or list item) and runs to the next
     line that mentions a different gap id; this is deliberately loose, it only has to find the issue links.
@@ -128,16 +123,16 @@ def gaps_doc_issues(root: str = ROOT) -> dict[str, list[int]]:
     with open(path, encoding="utf-8") as f:
         lines = f.read().splitlines()
     ids_re = re.compile(r"(?<![\w/#])([A-Z]\d{1,2})(?![\w])")
-    out: dict[str, list[int]] = {}
+    out: dict[str, list[str]] = {}
     for i, line in enumerate(lines):
         for gid in set(ids_re.findall(line)):
             if not line.lstrip().startswith(("#", "|", "-", "*", "1", "2", "3", "4", "5", "6", "7", "8", "9")):
                 continue
-            nums = issue_numbers(line)
+            nums = issue_refs(line)
             for j in range(i + 1, min(i + 6, len(lines))):
                 if ids_re.search(lines[j]) and set(ids_re.findall(lines[j])) - {gid}:
                     break
-                nums += issue_numbers(lines[j])
+                nums += issue_refs(lines[j])
             out.setdefault(gid, [])
             for n in nums:
                 if n not in out[gid]:

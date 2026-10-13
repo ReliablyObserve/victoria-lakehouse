@@ -26,6 +26,7 @@ import known as knownmod  # noqa: E402
 
 PERF_MARKER = "<!-- lh-perf-smoke -->"
 API_MARKER = "<!-- lh-api-matrix -->"
+REF_INVALID_SHARE = 0.10  # more than this share of a signal's cells (and more than 2) without a hot answer: the reference stack is broken
 ICON = {"broken": "BROKEN", "unstable": "UNSTABLE", "slower": "SLOWER", "fixed": "fixed", "faster": "faster", "same": "same", "n/a": "n/a"}
 ORDER = {"broken": 0, "unstable": 1, "slower": 2, "fixed": 3, "faster": 4, "same": 5, "n/a": 6}
 LAYER_ORDER = {"cold": 0, "compacted": 1, "buffer": 2, "after-restart": 3}
@@ -193,6 +194,16 @@ def why_lines(selection: dict) -> list[str]:
     return lines + ["", "</details>"]
 
 
+def reference_broken(cells: list[dict]) -> bool:
+    """Hot gave no valid answer in more than max(2, 10 %) of the cells of a signal, counted for logs and traces separately: that reference
+    stack is broken, the run is invalid. Fewer such cells are listed and keep the base-against-PR check."""
+    for sig in {c["signal"] for c in cells}:
+        of_sig = [c for c in cells if c["signal"] == sig]
+        if sum(1 for c in of_sig if c.get("ref_invalid")) > max(2, REF_INVALID_SHARE * len(of_sig)):
+            return True
+    return False
+
+
 def with_profile(summary: dict, profile: str) -> list[dict]:
     return [dict(c, profile=profile) for c in summary["cells"]]
 
@@ -213,11 +224,17 @@ def render_perf(summary: dict | None, selection: dict, meta: dict, known: dict |
     other = [c for p, sm in (extra or {}).items() for c in with_profile(sm, f"{p} ms")]
     for key, items in failing_cells({"cells": other}, gate_s3_all).items():
         fails[key] = fails[key] + items
-    invalid_cells = [c for c in cells + other if c["verdict"] == "n/a" and not c["n_valid"].get("base") and not c["n_valid"].get("pr")]
+    invalid_cells = [c for c in cells + other if c["verdict"] == "n/a" and not c["n_valid"].get("base") and not c["n_valid"].get("pr") and not c.get("vacuous")]
     ref_invalid = list(summary.get("ref_invalid", [])) + [c["cell"] for c in other if c.get("ref_invalid")]
+    # a few cells without a hot answer are listed (base and PR are compared with each other there); only a broken reference stack, where
+    # many cells have none, invalidates the run
+    ref_broken = reference_broken(cells + other)
+    vacuous = list(summary.get("vacuous", [])) + [c["cell"] for c in other if c.get("vacuous")]
+    flaky = list(summary.get("flaky", [])) + [c["cell"] for c in other if c.get("flaky_scope") == "both"]
+    intermittent = list(summary.get("intermittent", [])) + [c["cell"] for c in other if c.get("intermittent")]
     uncleared = list(summary.get("cold_not_cleared", [])) + [x for sm in (extra or {}).values() for x in sm.get("cold_not_cleared", [])]
     probe_failed = [x for x in meta.get("latency", []) if not x.get("ok")]
-    invalid = bool(invalid_cells or uncleared or probe_failed or ref_invalid)
+    invalid = bool(invalid_cells or uncleared or probe_failed or ref_broken)
     known_failed = bool(known and known.get("failed"))
     failed = any(fails.values()) or known_failed
     diff_new = len(fails["new_difference"])
@@ -247,7 +264,17 @@ def render_perf(summary: dict | None, selection: dict, meta: dict, known: dict |
     if uncleared:
         lines.append("**The Lakehouse cache could not be cleared before a cold run** (the cold figure would be warm): " + ", ".join(f"`{x}`" for x in uncleared[:5]))
     if ref_invalid:
-        lines.append("**Hot VictoriaLogs/VictoriaTraces gave no valid answer** (the result check cannot run for these cells): " + ", ".join(f"`{x}`" for x in ref_invalid[:5]))
+        lines.append(("**Hot VictoriaLogs/VictoriaTraces gave no valid answer in most cells: the reference stack is broken**" if ref_broken else
+                      "**Hot VictoriaLogs/VictoriaTraces gave no valid answer** (asked twice; base and PR are compared with each other for these cells)")
+                     + ": " + ", ".join(f"`{x}`" for x in ref_invalid[:5]) + (" ..." if len(ref_invalid) > 5 else ""))
+    if intermittent:
+        lines.append("**Intermittent failure introduced by the PR** (it did not reproduce on the re-measure, but the base was clean in both passes; a check that "
+                     "fails and then passes on retry is a finding): " + ", ".join(f"`{x}`" for x in intermittent[:5]))
+    if flaky:
+        lines.append("**FLAKY on base and PR** (host noise: both had failing requests; listed, needs an issue, does not fail by itself): "
+                     + ", ".join(f"`{x}`" for x in flaky[:5]))
+    if vacuous:
+        lines.append(f"{len(vacuous)} cell(s) are empty on every target (a shape the seeded data does not feed): they measure nothing.")
     if probe_failed:
         lines.append("**The S3 latency probe failed**: the injected delay was not measured: " + ", ".join(f"{x['expect_ms']:g} ms (measured +{x['added_ms']:g} ms)" for x in probe_failed))
     if any(lines[-1:]):
@@ -280,7 +307,7 @@ def render_perf(summary: dict | None, selection: dict, meta: dict, known: dict |
     exit_code = 2 if invalid else (1 if failed else 0)
     verdict = {"state": state, "failed": failed or invalid, "exit": exit_code, "counts": counts, "differences": diffs,
                "s3_flags": summary["s3_flags"], "new_differences": diff_new, "cells": len(cells),
-               "known": (known or {}).get("counts", {}), "invalid_cells": [c["cell"] for c in invalid_cells], "ref_invalid": ref_invalid,
+               "known": (known or {}).get("counts", {}), "invalid_cells": [c["cell"] for c in invalid_cells], "ref_invalid": ref_invalid, "flaky": flaky, "intermittent": intermittent, "vacuous": vacuous,
                "failing": {k: len(v) for k, v in fails.items()}, "extra_profiles": {p: sm["verdicts"] for p, sm in (extra or {}).items()}}
     return "\n".join(lines) + "\n", verdict
 

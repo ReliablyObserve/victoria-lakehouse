@@ -48,7 +48,7 @@ import selection  # noqa: E402
 import stack  # noqa: E402
 
 CONTROL = selection.CONTROL
-MOVED = ("slower", "faster")
+MOVED = report.MOVED
 
 
 def log(msg: str) -> None:
@@ -92,8 +92,8 @@ def merge_raw(parts: list[dict]) -> dict:
     return out
 
 
-def run_cells(state: dict, spec: dict, cells: list[dict], runs: int) -> dict:
-    return measure.run_matrix(state, spec, cells, runs, log=log) if cells else {"rows": [], "s3": {}, "process": {}, "elapsed_s": 0}
+def run_cells(state: dict, spec: dict, cells: list[dict], runs: int, shift_s: int = 0) -> dict:
+    return measure.run_matrix(state, spec, cells, runs, log=log, shift_s=shift_s) if cells else {"rows": [], "s3": {}, "process": {}, "elapsed_s": 0}
 
 
 def reload_state(out: str) -> dict:
@@ -101,13 +101,14 @@ def reload_state(out: str) -> dict:
 
 
 def confirm(summary: dict, state: dict, spec: dict, cells_by_key: dict, args) -> dict:
-    """Measure again the cells the first pass called slower or faster, with more runs; only a move that holds is reported. The seeded
-    data is static, so the re-measure uses the same absolute windows as the first pass (the caches it filled are warm), not fresh ones."""
+    """Measure again the cells the first pass called slower, faster or unstable, with more runs and every window moved measure.SHIFT_S
+    earlier (the seeded data is static; a shifted window is the nearest thing to a fresh one, and it does not time the caches the first
+    pass filled). Only a move or a problem that holds is reported: a transient error is listed as flaky."""
     moved = [cells_by_key[c["cell"]] for c in summary["cells"] if c["verdict"] in MOVED and c["cell"] in cells_by_key]
     if not moved:
         return summary
     log(f"re-measuring {len(moved)} cell(s) the first pass moved")
-    again = report.summarize(run_cells(state, spec, moved, args.confirm_runs), "confirm", args.noise, args.min_delta_ms, report.ref_skip_from(spec))
+    again = report.summarize(run_cells(state, spec, moved, args.confirm_runs, measure.SHIFT_S), "confirm", args.noise, args.min_delta_ms, report.ref_skip_from(spec))
     return report.merge_confirm(summary, again)
 
 
@@ -155,7 +156,7 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
     cells = measure.plan(spec, list(sel["sets"]), sel["sets"])
     by_key = {c["key"]: c for c in cells}
     log(f"{len(cells)} cells in {len(sel['sets'])} set(s)")
-    stack.cmd_up(ns, reuse=args.reuse_stack)
+    stack.cmd_up(ns, reuse=args.reuse_stack, preflighted=True)
     stack.cmd_seed(ns)
     stack.cmd_compact(ns)
     stack.cmd_hold(ns)
@@ -300,7 +301,8 @@ def main(argv=None) -> int:
     spec = abreg.load_json(abreg.SHAPES)
     trees: list[str] = []
     result = None
-    started = False
+    owns_stack = images = False
+    lock = stack.ProjectLock()
     try:
         head = a.head
         meta["head"] = git("rev-parse", head)
@@ -323,8 +325,11 @@ def main(argv=None) -> int:
         os.makedirs(parent, exist_ok=True)
         head_dir = a.head_dir or None
         base_dir = a.base_dir or None
-        started = True  # from here on a failure may leave images or worktrees behind: the teardown runs
+        # refuse before anything is built or tagged when the project's stack is somebody else's; only after this passes is it ours to remove
+        lock.acquire()  # held until the teardown below: two runs cannot both pass the preflight and own the project
+        owns_stack = not stack.preflight(a.reuse_stack)
         if not a.skip_build:
+            images = True  # from here on a failure may leave images or worktrees behind: the teardown removes what this run made
             if head_dir is None:
                 head_dir = stack.tree_add(meta["head"], parent, "head")
                 trees.append(head_dir)
@@ -338,6 +343,12 @@ def main(argv=None) -> int:
         meta["elapsed_s"] = round(time.time() - t0)
         meta["host_load_end"] = ", ".join(f"{x:.1f}" for x in os.getloadavg())
         return render_all(out, result, sel, spec, meta, a)
+    except stack.StackBusy as e:
+        reason = f"StackBusy: {e}"
+        perf_text, perf_v = comment.errored(sel, meta, reason, comment.PERF_MARKER, "Performance A/B vs main, against VictoriaLogs / VictoriaTraces")
+        api_text, api_v = comment.errored(sel, meta, reason, comment.API_MARKER, "API endpoints: Lakehouse base vs PR vs VictoriaLogs / VictoriaTraces")
+        perf_v["exit"] = api_v["exit"] = stack.EXIT_BUSY
+        return finish(out, perf_text, api_text, perf_v, api_v, meta)
     except (Exception, SystemExit) as e:  # noqa: BLE001 - any failure must still produce the comments and exit 3
         traceback.print_exc()
         meta["elapsed_s"] = round(time.time() - t0)
@@ -347,12 +358,14 @@ def main(argv=None) -> int:
         return finish(out, perf_text, api_text, perf_v, api_v, meta)
     finally:
         if not a.keep_stack:
-            steps = ([("stack", functools.partial(stack.cmd_down, None))] if started and not a.reuse_stack else []) + [(f"tree {t}", functools.partial(stack.tree_remove, t)) for t in trees]
+            steps = ([("stack", stack.down_stack)] if owns_stack else []) + ([("images", stack.remove_images)] if images and owns_stack else []) \
+                + [(f"tree {t}", functools.partial(stack.tree_remove, t)) for t in trees]
             for step, fn in steps:
                 try:
                     fn()
                 except Exception as e:  # noqa: BLE001 - teardown must go on
                     log(f"teardown {step} failed: {e}")
+        lock.release()
 
 
 if __name__ == "__main__":

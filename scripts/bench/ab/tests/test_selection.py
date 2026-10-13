@@ -158,5 +158,7 @@ def test_a_shape_that_hot_answers_differently_on_every_call_is_not_compared_with
     spec = abreg.load_json(abreg.SHAPES)
     for s in spec["sets"].values():
         for sh in s["shapes"]:
-            if sh.get("path", "").endswith(api_rows.ARBITRARY_PATHS):
+            if api_rows.shape_only_path(sh.get("path", "")):
+                assert sh.get("vs_ref") is False and sh.get("ref_varies") is True, sh["name"]
+            if api_rows.arbitrary_path(sh.get("path", "")):
                 assert sh.get("vs_ref") is False, sh["name"]
