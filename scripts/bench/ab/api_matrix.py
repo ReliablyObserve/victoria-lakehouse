@@ -12,8 +12,7 @@ scored PR against base. Rows that cannot be exercised read-only are listed with 
 
 Verdicts are scripts.proof.metrics': exact, same, fixed, improved, regressed, nondeterministic, vacuous, blocked,
 harness-error. A row whose query ends in `limit N` keeps an arbitrary subset, so it is scored by membership: every row an
-answer returns must be a row of the unlimited reference answer (`evaluate_limited`). `facets` and Tempo's tag lists, which
-are samples, are reported as `arbitrary`. The check fails on regressed and harness-error, on a nondeterministic row only when one sample had the PR worse than the base
+answer returns must be a row of the unlimited reference answer (`evaluate_limited`). `facets` is reported as `arbitrary`; Tempo's tag list and tag values (samples) are scored by status, shape and non-emptiness. The check fails on regressed and harness-error, on a nondeterministic row only when one sample had the PR worse than the base
 (a flip the other way is listed, not failing), and on a status change base -> PR.
 """
 from __future__ import annotations
@@ -30,7 +29,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import abreg  # noqa: E402
 import api_rows  # noqa: E402
-from scripts.proof.metrics.cases import evaluate_case  # noqa: E402
+from scripts.proof.metrics.cases import evaluate_case
+from scripts.proof.metrics.common import UnknownShape
+from scripts.proof.metrics.decode import decode_values  # noqa: E402
 from scripts.proof.metrics.common import FacetResult, SURFACE_SIGNAL  # noqa: E402
 from scripts.proof.metrics.generic import evaluate_status  # noqa: E402
 from scripts.proof.metrics.verdict import FAILING, CaseResult, classify, classify_samples  # noqa: E402
@@ -167,6 +168,42 @@ def evaluate_limited(state: dict, req: dict, answers: dict[str, dict], resamples
     return res
 
 
+def value_count(ans: dict) -> int | None:
+    """How many tags or values a Tempo tag answer lists; None when it is not a 200 or not a tag/value list."""
+    if (ans.get("status") or 0) != 200:
+        return None
+    try:
+        return len(decode_values(json.loads(ans["body"])))
+    except (ValueError, UnknownShape, AttributeError, TypeError):
+        return None
+
+
+def shape_facets(ref: dict, ans: dict) -> FacetResult:
+    """Scored by status, shape and non-emptiness: the content of a sampled answer proves nothing."""
+    res = FacetResult()
+    res.facets["status"] = 100.0 if ans.get("status") == ref.get("status") else 0.0
+    n, r = value_count(ans), value_count(ref)
+    res.facets["shape"] = 100.0 if (n is None) == (r is None) else 0.0
+    res.facets["non_empty"] = 100.0 if bool(n) == bool(r) else 0.0
+    if res.facets["non_empty"] < 100:
+        res.notes.append(f"{n} entries where the reference lists {r}")
+    return res
+
+
+def evaluate_shape_only(req: dict, answers: dict[str, dict], resamples: list[dict[str, dict]]) -> CaseResult:
+    res = CaseResult(id=f"{req['surface']}/{req['id']}", row=req["row"], surface=req["surface"], signal=SURFACE_SIGNAL[req["surface"]], endpoint=req["path"],
+                     verdict="harness-error")
+    verdicts = []
+    for ans in [answers] + resamples:
+        b, p = shape_facets(ans["ref"], ans["base"]), shape_facets(ans["ref"], ans["pr"])
+        verdicts.append(classify(b, p))
+        if ans is answers:
+            res.base, res.pr = b, p
+    res.samples = verdicts
+    res.verdict = classify_samples(verdicts)
+    return res
+
+
 def p50(values: list[float]) -> float | None:
     return round(statistics.median(values), 2) if values else None
 
@@ -191,6 +228,8 @@ def run_request(state: dict, req: dict, rounds: int) -> dict:
     lim = req.get("limit")
     if lim is not None and req["kind"] == "rows" and not req["lh_only"] and not req.get("arbitrary"):
         result = evaluate_limited(state, req, first, rest)  # scored by membership in the unlimited reference answer
+    elif req.get("shape_only") and not req["lh_only"]:
+        result = evaluate_shape_only(req, first, rest)  # a sampled answer: status, shape and non-emptiness only
     else:
         result = evaluate(req, first, rest)
     verdict = result.verdict

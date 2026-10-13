@@ -51,11 +51,17 @@ def parse_ts(s: str) -> dt.datetime:
     return dt.datetime.strptime(s, FMT).replace(tzinfo=dt.timezone.utc)
 
 
-def window_for(state: dict, layer: str, rng: str, ranges: dict) -> tuple[str, str]:
-    """(start, end) of a range in a layer; the range ends where the layer ends and never starts before it."""
+SHIFT_S = 300  # a re-measure moves every window this much earlier, so it does not time the caches the first pass filled
+
+
+def window_for(state: dict, layer: str, rng: str, ranges: dict, shift_s: int = 0) -> tuple[str, str]:
+    """(start, end) of a range in a layer; the range ends where the layer ends (`shift_s` earlier for a re-measure) and never starts
+    before it. A shift that would leave less than a tenth of the window is ignored."""
     win = state["layers"][layer]
     end = parse_ts(win["end"])
     start = parse_ts(win["start"])
+    if shift_s and (end - start).total_seconds() > shift_s * 10:
+        end -= dt.timedelta(seconds=shift_s)
     secs = ranges.get(rng)
     if secs is not None:
         start = max(start, end - dt.timedelta(seconds=secs))
@@ -73,6 +79,8 @@ def millis(ts: str) -> str:
 def window_params(mode: str, start: str, end: str) -> dict:
     if mode == "none":
         return {}
+    if mode == "seconds":  # Tempo's start and end are unix seconds (RFC3339 is a 400)
+        return {"start": str(int(parse_ts(start).timestamp())), "end": str(int(parse_ts(end).timestamp()))}
     if mode == "micros":
         return {"start": micros(start), "end": micros(end)}
     if mode == "end-ms":
@@ -246,8 +254,14 @@ def s3_per_query(delta: dict | None, n: int) -> dict | None:
     return {k: round(delta[k] / n, 2) for k in S3_KEYS}
 
 
+def cell_ref_needs_retry(rows: list[dict]) -> bool:
+    """Hot has no valid answer for the cell for a reason other than an empty one (an empty answer is a shape the data does not feed)."""
+    ref = [r for r in rows if r["target"] == "ref"]
+    return bool(ref) and not any(r["valid"] for r in ref) and any(r["reason"] != "empty result" for r in ref)
+
+
 def run_cell(cell: dict, state: dict, spec: dict, runs: int, picks_cache: dict, settle: Settle | None = None, targets=TARGETS,
-             lh_cold_clear: bool = True) -> tuple[list[dict], dict]:
+             lh_cold_clear: bool = True, shift_s: int = 0) -> tuple[list[dict], dict]:
     """All requests of one cell: `runs` per target, the first cold. Returns (raw rows, S3 accounting).
 
     The S3 counters are read per phase, not per request: once before the cold run, once after it, once after
@@ -256,7 +270,7 @@ def run_cell(cell: dict, state: dict, spec: dict, runs: int, picks_cache: dict, 
     """
     settle = settle or Settle()
     shape = cell["shape"]
-    start, end = window_for(state, cell["layer"], cell["range"], spec["ranges"])
+    start, end = window_for(state, cell["layer"], cell["range"], spec["ranges"], shift_s)
     picks = resolve_pick(state, cell, picks_cache, start, end)
     kind = shape["kind"]
     lh_targets = [t for t in targets if t != "ref"]
@@ -281,7 +295,9 @@ def run_cell(cell: dict, state: dict, spec: dict, runs: int, picks_cache: dict, 
         if t != "ref":
             settle.touch(keys[t])
         wr, wk = windows.get(t, (None, None))
-        ok, reason, result = validate.validate(kind, env["status"], env["body"], first_result=first[t], miss=False,
+        # hot's answer may vary between identical calls (`ref_varies`): it is validated, but not held to its first answer; Lakehouse always is
+        free = t == "ref" and bool(shape.get("ref_varies"))
+        ok, reason, result = validate.validate(kind, env["status"], env["body"], first_result=None if free else first[t], miss=False,
                                                window_rows=wr, window_keys=wk)
         truncated = kind == "scan" and wr is not None and wr > validate.SCAN_LIMIT
         if ok and truncated:
@@ -310,6 +326,14 @@ def run_cell(cell: dict, state: dict, spec: dict, runs: int, picks_cache: dict, 
     snap1 = {t: settle.scrape(keys[t], urls[t]) for t in lh_targets}
     phase(range(1, runs))
     snap2 = {t: settle.scrape(keys[t], urls[t]) for t in lh_targets}
+    if "ref" in targets and cell_ref_needs_retry(rows):
+        # hot gave nothing valid (a transient error): ask it once more before the cell is reported as having no reference
+        rows[:] = [r for r in rows if r["target"] != "ref"]
+        first["ref"] = None
+        for run in range(runs):
+            row = one(run, "ref")
+            row["retried"] = True
+            rows.append(row)
     s3 = {t: {"cold": s3_delta(snap0[t], snap1[t]), "warm_per_query": s3_per_query(s3_delta(snap1[t], snap2[t]), runs - 1)} for t in lh_targets}
     return rows, {"s3": s3, "snapshots": snap2}
 
@@ -318,7 +342,7 @@ def lh_urls(state: dict) -> dict[str, str]:
     return {f"{t}-{s}": base_url(state, t, s) for t in ("base", "pr") for s in ("logs", "traces")}
 
 
-def run_matrix(state: dict, spec: dict, cells: list[dict], runs: int, log=lambda m: None) -> dict:
+def run_matrix(state: dict, spec: dict, cells: list[dict], runs: int, log=lambda m: None, shift_s: int = 0) -> dict:
     """Run the cells; returns {"rows", "s3": {cell: {target: ...}}, "process": {target: cpu/rss}, "elapsed_s"}."""
     t0 = time.time()
     urls = lh_urls(state)
@@ -327,7 +351,7 @@ def run_matrix(state: dict, spec: dict, cells: list[dict], runs: int, log=lambda
     peak_rss = {k: (v or {}).get("rss") or 0.0 for k, v in before.items()}
     rows, s3, picks_cache = [], {}, {}
     for i, cell in enumerate(cells):
-        r, acct = run_cell(cell, state, spec, runs, picks_cache, settle)
+        r, acct = run_cell(cell, state, spec, runs, picks_cache, settle, shift_s=shift_s)
         rows += r
         s3[cell["key"]] = acct["s3"]
         for t, snap in acct["snapshots"].items():

@@ -35,13 +35,13 @@ def test_confirm_measures_again_only_what_moved(monkeypatch):
     first = report.summarize(raw(cell_rows(K, 10, 25)), "t")
     calls = []
 
-    def fake_run(state, spec, cells, runs):
-        calls.append((len(cells), runs))
+    def fake_run(state, spec, cells, runs, shift_s=0):
+        calls.append((len(cells), runs, shift_s))
         return raw(cell_rows(K, 10, 10, runs=runs))
     monkeypatch.setattr(pr_smoke, "run_cells", fake_run)
     args = type("A", (), {"confirm_runs": 7, "noise": 0.15, "min_delta_ms": 3.0})()
     out = pr_smoke.confirm(first, {}, {}, {K: {"key": K}}, args)
-    assert calls == [(1, 7)] and out["cells"][0]["verdict"] == "same" and out["cells"][0]["confirmed"]
+    assert calls == [(1, 7, pr_smoke.measure.SHIFT_S)] and out["cells"][0]["verdict"] == "same" and out["cells"][0]["confirmed"]
     calls.clear()
     quiet = report.summarize(raw(cell_rows(K, 10, 10)), "t")
     assert pr_smoke.confirm(quiet, {}, {}, {K: {"key": K}}, args) is quiet and calls == []
@@ -54,17 +54,45 @@ def test_docs_only_pr_renders_skipped_comments_and_exits_zero(tmp_path, monkeypa
     assert rc == 0 and "skipped" in (tmp_path / "perf-smoke.md").read_text() and "skipped" in (tmp_path / "api-matrix.md").read_text()
 
 
-def test_the_teardown_runs_when_the_build_fails_midway(tmp_path, monkeypatch):
-    """`started` is set before the build, so images and worktrees a failed build left behind are removed."""
-    downs, trees = [], []
-    monkeypatch.setattr(pr_smoke.selection, "changed_files", lambda b, h: ["internal/x/y.go"])
-    monkeypatch.setattr(pr_smoke, "git", lambda *a: "a" * 40)
-    monkeypatch.setattr(pr_smoke.stack, "tree_add", lambda ref, parent, name: trees.append(name) or str(tmp_path / name))
-    monkeypatch.setattr(pr_smoke.stack, "tree_remove", lambda t: downs.append(("tree", t)))
-    monkeypatch.setattr(pr_smoke.stack, "cmd_build", lambda a: (_ for _ in ()).throw(RuntimeError("docker build failed")))
-    monkeypatch.setattr(pr_smoke.stack, "cmd_down", lambda a: downs.append(("down", None)))
+class Recorder:
+    """Stands in for the docker-driving parts of stack.py and records what a run did to the project's stack, images and trees."""
+
+    def __init__(self, monkeypatch, tmp_path, running, build_fails=False):
+        self.calls = []
+        st = pr_smoke.stack
+        monkeypatch.setattr(pr_smoke.selection, "changed_files", lambda b, h: ["internal/x/y.go"])
+        monkeypatch.setattr(pr_smoke, "git", lambda *a: "a" * 40)
+        monkeypatch.setattr(st, "running", lambda: running)
+        monkeypatch.setattr(st, "check_block", lambda: None)
+        monkeypatch.setattr(st.P, "busy_ports", lambda ports: [])
+        monkeypatch.setattr(st, "tree_add", lambda ref, parent, name: self.calls.append(("tree_add", name)) or str(tmp_path / name))
+        monkeypatch.setattr(st, "tree_remove", lambda t: self.calls.append(("tree_remove", t)))
+        monkeypatch.setattr(st, "cmd_build", lambda a: self.calls.append(("build",)) or (_ for _ in ()).throw(RuntimeError("docker build failed")) if build_fails else self.calls.append(("build",)))
+        monkeypatch.setattr(st, "down_stack", lambda: self.calls.append(("down_stack",)))
+        monkeypatch.setattr(st, "remove_images", lambda: self.calls.append(("remove_images",)))
+        monkeypatch.setattr(pr_smoke, "measure_all", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stopped for the test")))
+
+    def names(self):
+        return [c[0] for c in self.calls]
+
+
+def test_n1_a_second_run_refuses_a_running_stack_before_building_and_touches_nothing(tmp_path, monkeypatch):
+    """Another run's stack: no build (no retag of the lh-ab image tags), no tree, no `compose down`, no image removal, a distinct exit code."""
+    rec = Recorder(monkeypatch, tmp_path, running=True)
     rc = pr_smoke.main(["--out", str(tmp_path / "out"), "--base", "x", "--head", "y"])
-    assert rc == 3 and ("down", None) in downs and len([d for d in downs if d[0] == "tree"]) == 2
+    assert rc == pr_smoke.stack.EXIT_BUSY == 4 and rec.calls == []
+    assert "StackBusy" in (tmp_path / "out" / "perf-smoke.md").read_text()
+
+
+def test_n1_a_reused_stack_is_never_torn_down_and_a_free_one_is_torn_down_with_its_images_when_the_build_fails(tmp_path, monkeypatch):
+    rec = Recorder(monkeypatch, tmp_path / "a", running=True)
+    (tmp_path / "a").mkdir()
+    assert pr_smoke.main(["--out", str(tmp_path / "out-a"), "--base", "x", "--head", "y", "--reuse-stack"]) == 3
+    assert "down_stack" not in rec.names() and "remove_images" not in rec.names()
+    (tmp_path / "b").mkdir()
+    rec = Recorder(monkeypatch, tmp_path / "b", running=False, build_fails=True)
+    assert pr_smoke.main(["--out", str(tmp_path / "out-b"), "--base", "x", "--head", "y"]) == 3
+    assert "down_stack" in rec.names() and "remove_images" in rec.names() and rec.names().count("tree_remove") == 2
 
 
 def test_the_latency_check_covers_all_four_lakehouse_processes(monkeypatch):
@@ -78,3 +106,17 @@ def test_the_latency_check_covers_all_four_lakehouse_processes(monkeypatch):
     monkeypatch.setattr(pr_smoke, "lh_means", lambda st: {"base-logs": 52.0, "base-traces": 52.0, "pr-logs": 52.0, "pr-traces": 3.0})  # one process bypasses the proxy
     res = pr_smoke.set_latency(50, {}, zero)
     assert res["ok"] is False and res["lh_view"]["pr-traces"]["ok"] is False and res["lh_view"]["pr-logs"]["ok"] is True
+
+
+def test_n2_unstable_cells_are_measured_again_too(monkeypatch):
+    rows = cell_rows(K, 10, 10)
+    for r in rows:
+        if r["target"] == "pr" and r["run"] == 3:
+            r.update(valid=False, reason="http 504", status=504, result="")
+    first = report.summarize(raw(rows), "t")
+    assert first["cells"][0]["verdict"] == "unstable"
+    calls = []
+    monkeypatch.setattr(pr_smoke, "run_cells", lambda st, sp, cells, runs, shift_s=0: calls.append(len(cells)) or raw(cell_rows(K, 10, 10, runs=runs)))
+    args = type("A", (), {"confirm_runs": 7, "noise": 0.15, "min_delta_ms": 3.0})()
+    out = pr_smoke.confirm(first, {}, {}, {K: {"key": K}}, args)
+    assert calls == [1] and out["cells"][0]["flaky"] and out["cells"][0]["intermittent"] and out["intermittent"] == [K]  # base was clean: the PR's

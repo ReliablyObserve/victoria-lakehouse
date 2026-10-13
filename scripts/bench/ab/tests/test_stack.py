@@ -134,5 +134,51 @@ def test_a_forced_compaction_that_merged_nothing_is_a_problem():
 def test_a_running_stack_of_the_project_is_refused_unless_reuse_is_asked_for(monkeypatch):
     import pytest
     monkeypatch.setattr(stack, "running", lambda: True)
-    with pytest.raises(SystemExit, match="already running"):
+    with pytest.raises(stack.StackBusy, match="already running"):
         stack.cmd_up(None)
+
+
+def test_r1_two_runs_cannot_both_hold_the_project_lock(tmp_path):
+    import pytest
+    first = stack.ProjectLock("lh-ab-test", str(tmp_path)).acquire()
+    second = stack.ProjectLock("lh-ab-test", str(tmp_path))
+    with pytest.raises(stack.StackBusy, match="holds the lock"):
+        second.acquire()
+    first.release()
+    second.acquire().release()      # free again once the first run is over
+    stack.ProjectLock("another-project", str(tmp_path)).acquire().release()   # projects do not block each other
+
+
+def test_r1_a_lock_file_left_by_a_dead_process_does_not_wedge_the_next_run(tmp_path):
+    import subprocess
+    import sys
+    code = ("import sys, os; sys.path.insert(0, %r); import stack; stack.ProjectLock('lh-ab-test', %r).acquire(); os._exit(0)" % (stack.HERE, str(tmp_path)))
+    assert subprocess.run([sys.executable, "-c", code], timeout=60).returncode == 0       # dies holding the lock, the file stays behind
+    lock = stack.ProjectLock("lh-ab-test", str(tmp_path))
+    assert os.path.exists(lock.path)
+    lock.acquire().release()
+
+
+def test_r1_the_run_holds_the_lock_from_the_preflight_to_the_teardown_and_a_second_run_gets_exit_4(tmp_path, monkeypatch):
+    import pr_smoke
+    calls = []
+    real = stack.ProjectLock
+    monkeypatch.setattr(pr_smoke.stack, "ProjectLock", lambda *a, **k: real("lh-ab-test", str(tmp_path)))
+    monkeypatch.setattr(stack, "running", lambda: False)
+    monkeypatch.setattr(stack, "check_block", lambda: None)
+    monkeypatch.setattr(stack.P, "busy_ports", lambda ports: [])
+    monkeypatch.setattr(pr_smoke.selection, "changed_files", lambda b, h: ["internal/x/y.go"])
+    monkeypatch.setattr(pr_smoke, "git", lambda *a: "a" * 40)
+    monkeypatch.setattr(stack, "cmd_build", lambda a: None)
+    monkeypatch.setattr(stack, "down_stack", lambda: calls.append("down"))
+    monkeypatch.setattr(stack, "remove_images", lambda: calls.append("rmi"))
+
+    def measure_all(*a, **k):
+        # while the first run works, a second one is refused (exit 4) and tears nothing down
+        assert pr_smoke.main(["--out", str(tmp_path / "second"), "--base", "x", "--head", "y", "--skip-build"]) == stack.EXIT_BUSY
+        assert calls == []
+        raise RuntimeError("stop")
+    monkeypatch.setattr(pr_smoke, "measure_all", measure_all)
+    assert pr_smoke.main(["--out", str(tmp_path / "first"), "--base", "x", "--head", "y"]) == 3
+    assert calls == ["down", "rmi"]
+    real("lh-ab-test", str(tmp_path)).acquire().release()      # the first run released the lock at the end

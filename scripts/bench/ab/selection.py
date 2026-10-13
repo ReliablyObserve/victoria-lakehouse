@@ -39,7 +39,7 @@ import abreg  # noqa: E402
 CONTROL = ("control-logs", "control-traces")
 API_TYPES = ("logsql", "jaeger", "tempo")
 PICKS = ("trace_id",)
-WINDOWS = ("start-end", "none", "micros", "end-ms")
+WINDOWS = ("start-end", "seconds", "none", "micros", "end-ms")
 HARNESS = ("scripts/bench/ab/", "scripts/proof/", "deployment/docker/docker-compose-proof.yml", "deployment/docker/toxiproxy-proxies.json")
 RUNTIME_PREFIXES = ("cmd/", "internal/", "lakehouse-traces/", "patches/")
 

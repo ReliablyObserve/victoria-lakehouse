@@ -41,7 +41,10 @@ verdicts: 0 passed or skipped, 1 a regression or a new difference, 2 the run is 
 
 `pr_smoke.py` creates detached worktrees of the base and the head under `--out/trees` and removes them again with a plain
 `git worktree remove` (never `--force`); a tree that is not clean is left and reported. `--base-dir`/`--head-dir` use trees you
-already have, `--skip-build` reuses existing images, `--keep-stack` leaves the stack up for a second run. The compose project is
+already have, `--skip-build` reuses existing images, `--keep-stack` leaves the stack up for a second run. A run holds a per-project lock (a `flock` on `lh-ab-<project>.lock` in the temp
+directory) from the preflight to the end of the teardown: a second run that cannot take it, or that finds the stack running, exits 4 without building, retagging or removing
+anything; the operating system releases the lock when its holder dies, so a stale file does not wedge the next run. `--reuse-stack` uses a running stack and leaves it up, but
+it still builds and retags the `lh-ab-*` images unless `--skip-build` is given (as requested). The compose project is
 `lh-ab`; `stack.py down` removes its containers, volumes and the images it built, by exact tag, and nothing else.
 
 ## The stack
@@ -102,8 +105,12 @@ reference window. A scalar count, a group-by (rows, total, hash of the pairs), f
 the row keys), spans, or a canonical JSON hash for Jaeger, Tempo and TraceQL metrics. **An invalid answer is never a latency.**
 
 Jaeger, Tempo search and OTLP trace answers are compared with `scripts.proof`'s decoders (spans keyed by trace and span id, processes
-resolved), so span order and `processID` labels are not differences. A shape whose hot answer differs between calls of one system (Tempo's
-tag list) carries `vs_ref: false` and compares base with PR only.
+resolved), so span order and `processID` labels are not differences. Tempo's tag list and tag values are samples on hot (it answers differently on identical calls; measured). Their shapes carry `vs_ref: false` (hot is not compared;
+base is compared with PR, and the normal flapping rule applies to the Lakehouse side) and `ref_varies: true` (hot is also exempt from the flapping rule). The tag list
+is compared by the scopes that carry tags, the tag values exactly, both decoded with `scripts.proof`; an empty answer, a body that is not a tag list or an
+HTTP error is invalid on every target, so a broken answer that still returns 200 fails. In the API matrix the same paths are scored by status, shape and
+non-emptiness (`facets` alone is `arbitrary`). Search shapes keep `limit 20` and are compared with hot by the
+exact set of traces: on the seeded data hot and Lakehouse return the same 20 of 700 to 958 matching traces on every call (measured).
 Each comment reports the differences its own run found.
 
 **S3 cost.** From Lakehouse's `/metrics`: GETs (`lakehouse_s3_requests_total` for GET and GetObject), all non-write requests, and
@@ -116,19 +123,24 @@ the warm runs. The cold figure is the cold query's; the warm figure is the mean 
 | | rule |
 |---|---|
 | noise | a cell is `slower` or `faster` when the PR's warm p50 differs from the base's by more than max(15 %, 3 ms) |
-| re-measure | a cell that moved is measured again with 7 runs, on the same absolute windows (the seeded data is static, so fresh windows do not exist; the caches the first pass filled are warm); only a move that holds is reported (marked with a footnote). A new difference from hot seen in either pass stays |
+| re-measure | a cell the first pass called `slower`, `faster` or `unstable` is measured again with 7 runs, every window moved 5 minutes earlier inside its layer (the data is static, so this is the nearest thing to a fresh window; it does not time the caches the first pass filled); only a move or a problem that holds is reported (marked with a footnote). A new difference from hot seen in either pass stays. See *Flaky policy* below |
 | `broken` | the base answered validly and the PR does not |
-| `unstable` | the PR gave an error, empty or flapping answer the base did not (any of its runs): fails the check, its remaining latencies prove nothing |
+| `unstable` | the PR gave an error, empty or flapping answer the base did not (any of its runs): measured again; fails if it reproduces; if it does not, see *Flaky policy* |
 | result vs hot | the validated answer of the PR (and of the base) is compared with hot's on the same window: same, differs, invalid |
 | new difference | the PR's answer differs from hot's **and** from the base's, or the base matched hot and the PR does not: fails the check |
 | S3 | more GETs or bytes than the base beyond max(10 %, 2 requests / 64 KiB) on a control shape fails the check even when latency is flat; the comment names the metric and the phase (`more bytes (cold)`). Other shapes are listed only; `pr_smoke.py --gate-s3-all` (off by default, an owner decision) makes them fail too |
 | other profiles | the cells of the other S3 latency profiles (50 ms) fail the check like the 0 ms ones, and their differences are in the known-differences list |
-| invalid run | a cell with no valid answer on base or PR, hot VL/VT giving no valid answer (the result check cannot run: base and PR are compared with each other), a cold run whose cache was not cleared, or a failed latency probe: exit 2 |
+| invalid run | a cell with no valid answer on base or PR, hot VL/VT giving no valid answer in more than max(2, 10 %) of the cells of a signal, logs and traces counted separately (fewer are asked twice, then listed and compared base against PR; a shape that is empty on every target is `vacuous` and measures nothing), a cold run whose cache was not cleared, or a failed latency probe: exit 2 |
 
 The comment shows the verdict first, then only the cells that moved, differ or cost more S3; everything within noise is one
 collapsed table. Cold timings, a component summary (ingest rows/s and spans/s, forced compaction, Lakehouse CPU-seconds and peak
 RSS, base vs PR and hot), the touched-area selection and the run metadata are collapsed sections. A second S3 latency profile
 (`--latencies 0,50`) runs the control smoke shapes on the flushed layers and is a collapsed section of the same comment.
+
+**Flaky policy.** A check that fails and then passes on retry is a finding, never retried away. A PR that fails 1 request in 6 passes a 7-run re-measure clean
+28 % of the time ((5/6)^7; 48 % at 1 in 10), so a clean re-measure does not clear an `unstable` cell: if the base was clean in both passes the intermittent failure is the PR's
+and the cell **fails** (the comment says so); if the base had failing requests in either pass, the cell is flaky on both (host noise): it is listed as a FLAKY finding in
+*Known differences and gaps*, needs an issue like an untracked difference, and does not fail by itself. A failure that reproduces on the re-measure always fails.
 
 **Budget.** The smoke is meant to finish within 30 minutes on `ubuntu-latest`: two image builds (cached), the seed (about
 2 minutes), the 0 ms profile always, and the 50 ms profile on the control smoke shapes only. Selection keeps it small: a
@@ -168,7 +180,7 @@ cache clear; flags; rows that need a fixture the stack does not seed (edge-case 
 field-metadata generators, the ingest matrix); streaming endpoints (`tail`); binary answers. A row whose query ends in `limit N` keeps an arbitrary subset
 of the matching rows, so two correct systems answer different rows: it is scored by membership (every row an answer returns must
 be a row of the unlimited reference answer, and an answer is empty exactly when the reference is). Rows that prove nothing about the
-PR are listed apart: `arbitrary` (`facets`, Tempo's tag lists and `sample`, which are samples by definition), `vacuous` (empty on every target) and `unusable` (hot itself rejects the request the registry row
+PR are listed apart: `arbitrary` (`facets` and `sample N`, which are samples by definition), `vacuous` (empty on every target) and `unusable` (hot itself rejects the request the registry row
 declares: the row needs fixing).
 
 ## Known differences and gaps
@@ -183,8 +195,8 @@ Every difference a run finds is classified, from the registry:
   fails the check: every difference needs an issue, a registry row and a line in the comment.
 - **fixed by the PR**: listed with the rows that can flip to `expect: pass` and get a lock.
 
-`--require-issue` additionally fails a tracked difference whose row cites no GitHub issue (an issue URL of a ReliablyObserve repository or a bare
-`#123`; a pull request link or an issue of another project does not count). A row tracks a difference of its own signal only (`vl` rows logs,
+`--require-issue` additionally fails a tracked difference whose row cites no GitHub issue (the full URL of an issue of a ReliablyObserve repository, or `ReliablyObserve/victoria-lakehouse#123`; a bare `#123`, which may be an
+upstream issue, a pull request link or an issue of another project does not count). A row tracks a difference of its own signal only (`vl` rows logs,
 `vt` rows traces) and a perf difference is keyed by shape, layer and signal; registry rows carry no data layer, so a row that covers the shape
 tracks it on every layer. The comment also states how many of the
 registry's known-difference rows cite an issue and how many do not.
