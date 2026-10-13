@@ -382,7 +382,6 @@ func pushOTLPSpanAttrsAs(t *testing.T, base string, hdr http.Header, traceID, sp
 	post(t, base+"/insert/opentelemetry/v1/traces", "application/json", body, hdr)
 }
 
-
 // idxFilter selects the trace index rows of the traces a case wrote: the filter of the
 // case is `trace_id:in(a,b,c)`, the rows carry the same ids as trace_id_idx.
 func idxFilter(filter string) string {
