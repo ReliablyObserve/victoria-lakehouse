@@ -23,7 +23,7 @@ import (
 // once", and per group, "a group's spans never become visible without the group's
 // index rows" (the index object is stored first, the span object settles the group).
 
-var idxHour = time.Date(2026, 10, 1, 7, 0, 0, 0, time.UTC)
+func idxHour() time.Time { return time.Date(2026, 10, 1, 7, 0, 0, 0, time.UTC) }
 
 // idxRowFields are the fields of one trace_id_idx row, as the index worker sends them.
 func idxRowFields(id string, start, end int64) []logstorage.Field {
@@ -78,7 +78,7 @@ func TestIdxFlush_RowsReachParquetExactlyOnce(t *testing.T) {
 	e.keepIdx()
 	ids := map[string]bool{}
 	for i := 0; i < 30; i++ {
-		start := idxHour.Add(time.Duration(i) * 7 * time.Minute) // spans over several hours
+		start := idxHour().Add(time.Duration(i) * 7 * time.Minute) // spans over several hours
 		ids[e.sendTrace(segTenantA, fmt.Sprintf("a%d", i), start, start.Add(time.Second))] = true
 		ids[e.sendTrace(segTenantB, fmt.Sprintf("b%d", i), start, start.Add(2*time.Second))] = true
 	}
@@ -104,7 +104,7 @@ func TestIdxFlush_RowsReachParquetExactlyOnce(t *testing.T) {
 func TestIdxFlush_SpanUploadFailsAfterIdxUpload(t *testing.T) {
 	e := newSegEnv(t)
 	e.keepIdx()
-	e.sendTrace(segTenantA, "x", idxHour.Add(time.Minute), idxHour.Add(2*time.Minute))
+	e.sendTrace(segTenantA, "x", idxHour().Add(time.Minute), idxHour().Add(2*time.Minute))
 	e.seal()
 	var failSpans atomic.Bool
 	failSpans.Store(true)
@@ -137,7 +137,7 @@ func TestIdxFlush_IdxUploadFailureAndRestart(t *testing.T) {
 		t.Run(fmt.Sprintf("restart=%v", restart), func(t *testing.T) {
 			e := newSegEnv(t)
 			e.keepIdx()
-			id := e.sendTrace(segTenantA, "y", idxHour.Add(time.Minute), idxHour.Add(2*time.Minute))
+			id := e.sendTrace(segTenantA, "y", idxHour().Add(time.Minute), idxHour().Add(2*time.Minute))
 			e.seal()
 			var failIdx atomic.Bool
 			failIdx.Store(true)
@@ -169,7 +169,7 @@ func TestIdxFlush_IdxUploadFailureAndRestart(t *testing.T) {
 func TestIdxFlush_CrashBetweenIdxAndSpanObjects(t *testing.T) {
 	e := newSegEnv(t)
 	e.keepIdx()
-	id := e.sendTrace(segTenantA, "z", idxHour.Add(time.Minute), idxHour.Add(2*time.Minute))
+	id := e.sendTrace(segTenantA, "z", idxHour().Add(time.Minute), idxHour().Add(2*time.Minute))
 	e.seal()
 	// The "crash": the span PUT fails, then the process restarts with a new manifest.
 	e.failFn.Store(func(key string) bool { return !tracesidx.IsKey(key) && !strings.Contains(key, "_segments") })
@@ -192,7 +192,7 @@ func TestIdxFlush_CrashBetweenIdxAndSpanObjects(t *testing.T) {
 func TestIdxFlush_IdxOnlyGroup(t *testing.T) {
 	e := newSegEnv(t)
 	e.keepIdx()
-	start := idxHour.Add(59*time.Minute + 59*time.Second)
+	start := idxHour().Add(59*time.Minute + 59*time.Second)
 	id := e.sendTrace(segTenantA, "w", start, start.Add(3*time.Second)) // span in the next hour
 	e.seal()
 	f := e.flusher(1000)

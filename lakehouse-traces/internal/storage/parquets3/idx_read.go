@@ -331,19 +331,18 @@ func (s *Storage) scanIdxObjects(ctx context.Context, files []manifest.FileInfo,
 
 // readIdxObject returns the rows of one idx object: those of the given ids, or all.
 func (s *Storage) readIdxObject(ctx context.Context, fi manifest.FileInfo, ids []string, want tracesidx.Want) ([]tracesidx.Row, error) {
-	var src tracesidx.Source
-	if len(ids) == 0 || fi.Size <= idxObjectsSmall {
-		// One GET for the whole object, through the file cache tiers.
-		data, err := s.getFileData(ctx, fi.Key, fi.Size)
+	if len(ids) == 0 {
+		data, err := s.getFileData(ctx, fi.Key, fi.Size) // one GET for the whole object, through the file cache tiers
 		if err != nil {
 			return nil, err
 		}
-		if len(ids) == 0 {
-			return tracesidx.ReadAll(data)
-		}
-		src = &bytesSource{key: fi.Key, data: data}
-	} else {
-		src = &idxSource{s: s, fi: fi}
+		return tracesidx.ReadAll(data)
+	}
+	var src tracesidx.Source = &idxSource{s: s, fi: fi}
+	if fi.Size <= idxObjectsSmall {
+		// A small object is read whole, in one GET, the first time a range of it is
+		// needed (never when the cached footer and filters already rule the id out).
+		src = &wholeObjectSource{s: s, fi: fi}
 	}
 	var out []tracesidx.Row
 	for _, id := range ids {
@@ -357,19 +356,27 @@ func (s *Storage) readIdxObject(ctx context.Context, fi manifest.FileInfo, ids [
 	return out, nil
 }
 
-// bytesSource serves ranges from an object held in memory (a small object read whole).
-type bytesSource struct {
-	key  string
+// wholeObjectSource serves ranges of a small object from one whole-object read, made
+// on the first range asked for and cached by the file tiers.
+type wholeObjectSource struct {
+	s    *Storage
+	fi   manifest.FileInfo
+	once sync.Once
 	data []byte
+	err  error
 }
 
-func (b *bytesSource) Key() string { return b.key }
-func (b *bytesSource) Size() int64 { return int64(len(b.data)) }
-func (b *bytesSource) ReadRange(_ context.Context, _ tracesidx.ReadKind, off, n int64) ([]byte, error) {
-	if off < 0 || n < 0 || off+n > int64(len(b.data)) {
-		return nil, fmt.Errorf("range %d+%d outside the %d-byte object", off, n, len(b.data))
+func (w *wholeObjectSource) Key() string { return w.fi.Key }
+func (w *wholeObjectSource) Size() int64 { return w.fi.Size }
+func (w *wholeObjectSource) ReadRange(ctx context.Context, _ tracesidx.ReadKind, off, n int64) ([]byte, error) {
+	w.once.Do(func() { w.data, w.err = w.s.getFileData(ctx, w.fi.Key, w.fi.Size) })
+	if w.err != nil {
+		return nil, w.err
 	}
-	return b.data[off : off+n], nil
+	if off < 0 || n < 0 || off+n > int64(len(w.data)) {
+		return nil, fmt.Errorf("range %d+%d outside the %d-byte object", off, n, len(w.data))
+	}
+	return w.data[off : off+n], nil
 }
 
 // collectIdxValues adds the trace_id_idx objects' rows to a field or stream enumeration,

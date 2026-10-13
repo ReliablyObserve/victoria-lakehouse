@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
@@ -192,6 +193,18 @@ func (m *Manager) SetOnFileRemoved(fn func(partition, key string)) {
 // When multiple rules match, the longest (most conservative) TTL wins.
 // When no rules match, the default TTL is returned.
 func (m *Manager) ResolveTTL(fi manifest.FileInfo) time.Duration {
+	if tracesidx.IsKey(fi.Key) {
+		// A trace_id_idx object has no labels, so no rule can match it, yet a trace
+		// whose spans a rule keeps must stay findable: the table keeps the longest
+		// period any rule (or the default) asks for.
+		ttl := m.defaultTTL
+		for _, rule := range m.parsedRules {
+			if rule.keep > ttl {
+				ttl = rule.keep
+			}
+		}
+		return ttl
+	}
 	var matched bool
 	var longest time.Duration
 

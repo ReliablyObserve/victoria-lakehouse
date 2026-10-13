@@ -170,12 +170,11 @@
   notes: "Upstream GetStreamFieldValues = field_values of _stream, then forEachStreamField: only the tags of the matching streams are listed, hits are the rows of each stream, sorted by hits then value, truncated at the limit with zeroed hits. Cold now does the same from the _stream column over the buffer, the peer bridge and the objects (schema.ParseStreamFields mirrors upstream parseStreamFields). Fixes #445."
 
 - id: vt.select.logsql_field_values.index_rows_empty_bucket
-  title: "/select/logsql/field_values — hot VictoriaTraces counts its trace index rows in every query that matches them (*, negated filters), once its index has flushed; Lakehouse drops them at flush (known gap)"
+  title: "/select/logsql/field_values — the trace index rows are counted in every query that matches them (*, negated filters), in the empty bucket of a span field, as on hot VictoriaTraces"
   surface: vt
   kind: select
   origin: native
-  expect: differ
-  differ_note: "Hot VictoriaTraces writes one trace_id_idx row per trace 20-40 s after ingestion (-insert.indexFlushInterval=20s); the Lakehouse buffer keeps those rows and its flush drops them. Any flushed layer differs once hot's index has flushed, for every query that matches the rows (*, negated filters, stats count()), not only the empty bucket; span_id:* and every non-empty value match. Tracked in issue 458 (exact fix estimated at 250-400 LOC plus a pmeta field, approximate at boundaries)."
+  expect: pass
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /select/logsql/field_values }
@@ -183,7 +182,8 @@
   compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
   layers: [api]
   pending: true
-  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+  refs: { doc: docs/trace-idx-table.md, tests: [lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_EnumerationsCountIndexRows, tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+  notes: "The trace_id_idx rows are objects of their own table; field_values, streams and stream_ids add them to the span objects and the buffer (collectIdxValues), so the empty bucket of a span field and the index stream values equal hot. Closes issue 458."
 
 - id: vt.select.logsql_field_names.vt_field_names
   title: "/select/logsql/field_names — spans are listed under VictoriaTraces' own field names with the hits of their stream blocks"
@@ -218,12 +218,11 @@
   notes: "Issue 461 on the traces binary: name and resource_attr:service.name with the number of spans of the matching streams, in upstream's order."
 
 - id: vt.select.logsql_field_names.index_rows
-  title: "/select/logsql/field_names — hot VictoriaTraces also lists the fields and rows of its trace index rows under * (known gap)"
+  title: "/select/logsql/field_names — the fields and rows of the trace index rows are listed under * like hot VictoriaTraces"
   surface: vt
   kind: select
   origin: native
-  expect: differ
-  differ_note: "Hot lists the trace index rows (issue 458); Lakehouse does not store them. Flips to pass with issue 458."
+  expect: pass
   targets: [hot, cold]
   seed: [traces.base]
   upstream: { route: /select/logsql/field_names }
@@ -231,8 +230,8 @@
   compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
   layers: [api]
   pending: true
-  refs: { doc: docs/parity-and-gaps.md, tests: [tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] }
-  notes: "Hot VictoriaTraces writes one trace_id_idx row per trace (fields trace_id_idx, trace_id_idx_stream, start_time, end_time) and counts them in every query that matches them, such as *; Lakehouse drops those rows at flush (issue 458). The span fields themselves are exact: ask for span_id:* (vt.select.logsql_field_names.vt_field_names)."
+  refs: { doc: docs/trace-idx-table.md, tests: [lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_Stage1AndStarAtEveryLayer, lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_EnumerationsCountIndexRows, tests/parity/field_names_seed_parity_test.go#TestParity_FieldNames_SeedCorpus] }
+  notes: "Hot VictoriaTraces writes one trace_id_idx row per trace (fields trace_id_idx, trace_id_idx_stream, start_time, end_time, duration) and counts them in every query that matches them, such as *. Lakehouse stores those rows in the trace_id_idx table (internal/tracesidx, <tenant>/traces_idx/) and reads them for every query whose filter can match one, so the names and hits of the index fields equal hot at every layer (measured on the lh-t6 stack: cold, compacted, buffer and after-restart, tenants 0 and 1001). Closes the index-row part of issues 458 and 277."
 
 - id: vt.select.logsql_field_names.window_cuts_stream
   title: "/select/logsql/field_names — in a window that cuts a stream's objects, hits of a field only some spans carry (events, links) and the names no object of the window lists can differ from hot (known gap)"
@@ -284,3 +283,35 @@
   pending: true
   refs: { doc: docs/parity-and-gaps.md, tests: [] }
   notes: "Measured 2026-10-11 on a parity compose stack (hot VictoriaTraces v0.12.0): the same four spans give span_attr:other 2 when sent in one OTLP request and 1 when sent in four, while Lakehouse answers 2 in both. The parity fixture (TestParity_FieldNames_Layers) sends each batch in one request. Logs: vl.select.field_names.unmerged_parts. Issue 500."
+
+- id: vt.select.logsql_query.trace_id_idx_rows
+  title: "/select/logsql/query — the trace index rows (VictoriaTraces' trace_id_idx_stream) export row for row like hot"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: '{trace_id_idx_stream=~".+"}', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/trace-idx-table.md, tests: [lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_Stage1AndStarAtEveryLayer, lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_TablesStaySeparate, internal/tracesidx/tracesidx_test.go#TestMarshalLocateRandom] }
+  notes: "Every field of every row (_time, _stream, _stream_id, _msg, trace_id_idx_stream, trace_id_idx, start_time, end_time, duration) equals hot's, because the rows are the ones upstream's index worker wrote, stored in the trace_id_idx table and read back with _stream and _stream_id derived by upstream's own StreamTags and stream-id rules. Measured on the lh-t6 stack: 7,500 rows (tenants 0 and 1001) identical in the cold and compacted layers; before, 0 rows (issue 277)."
+
+- id: vt.select.logsql_query.trace_id_idx_heatmap
+  title: "/select/logsql/query — the VTUI duration heatmap query over the trace index rows equals hot"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: /select/logsql/query }
+  request: { method: GET, path: /select/logsql/query, params: { query: '{trace_id_idx_stream!=""} | math max(duration/1000, 0.5) as us, floor(ln(us)/ln(10) + 0.000000001) as decade, max(min(2*decade + min(floor(us/(10^decade)/3 + 0.000000001), 1) + 1, 19), 0) as band | stats by (_time:300000000000ns offset 0ns, band) count() as count', start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: ndjson-multiset }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/trace-idx-table.md, tests: [lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_Stage1AndStarAtEveryLayer, lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_TablesStaySeparate] }
+  notes: "The query VTUI's trace explorer sends for its duration heatmap (app/vmui TracesHeatmap/heatmapQuery.ts). It reads the index rows only, so before the trace_id_idx table it returned no rows (issue 265). Measured: 144 buckets equal to hot on the cold window, 96 on the compacted one."
