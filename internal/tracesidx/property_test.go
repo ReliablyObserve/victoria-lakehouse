@@ -142,3 +142,34 @@ func TestBloomFilterSizeAndMembership(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// With the footer cached, a lookup of an id an object does not hold reads nothing from
+// that object (its cached bloom filter rules it out), and a lookup of a stored id reads
+// the same few ranges whatever the size of the object.
+func TestWarmAbsentLookupReadsNothing(t *testing.T) {
+	rng := rand.New(rand.NewSource(12))
+	rows := randRows(rng, 20000)
+	data, _, err := Marshal(append([]Row(nil), rows...), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := NewLocator(4)
+	src := newCountSource("w", data)
+	if _, _, err := loc.Lookup(context.Background(), src, rows[0].TraceID, WantAll); err != nil {
+		t.Fatal(err)
+	}
+	fp, probes := 0, 2000
+	for i := 0; i < probes; i++ {
+		before := src.reads
+		got, _, err := loc.Lookup(context.Background(), src, fmt.Sprintf("absent-%d", i), WantAll)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("absent id: %v %v", got, err)
+		}
+		if src.reads != before {
+			fp++
+		}
+	}
+	if rate := float64(fp) / float64(probes); rate > 0.03 {
+		t.Fatalf("%.1f%% of absent lookups read from the object, want about 1%%", 100*rate)
+	}
+}

@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"github.com/parquet-go/parquet-go"
+	"github.com/parquet-go/parquet-go/bloom"
+	"github.com/parquet-go/parquet-go/encoding/thrift"
 	"github.com/parquet-go/parquet-go/format"
 )
 
@@ -71,6 +73,11 @@ const (
 	maxPageBytes     = 16 << 20
 	maxRowGroups     = 1 << 20
 	indexCoalesceGap = 4 << 10
+
+	// maxCachedBloomBytes is the most filter bytes one object may keep in memory with its
+	// footer. A larger object (more than about 200k distinct ids per group, or many
+	// groups) answers a lookup from the fences and the page index alone.
+	maxCachedBloomBytes = 256 << 10
 )
 
 // ErrNotIdxObject is returned for an object that is not a trace_id_idx table.
@@ -83,6 +90,7 @@ type LookupStats struct {
 	RowGroups  int // row groups whose id range holds the key
 	PagesRead  int
 	FooterRead bool
+	BloomSkips int // row groups ruled out by their cached bloom filter
 }
 
 type objectEntry struct {
@@ -92,6 +100,12 @@ type objectEntry struct {
 	cols  map[string]int
 	idMin [][]byte // per row group: min/max trace_id_idx, the fences
 	idMax [][]byte
+	// filters holds, per row group, the bits of its bloom filter when the object's
+	// filters are small enough to keep (nil otherwise). It is read from the object
+	// with the footer, one extra ranged read, and answers "this id is not in this row
+	// group" without any further read: the membership summary that keeps a lookup
+	// across many small objects from reading each of them.
+	filters []bloom.SplitBlockFilter
 }
 
 // Locator finds the rows of one trace id in an idx object by reading only the
@@ -201,6 +215,9 @@ func (l *Locator) open(ctx context.Context, src Source) (*objectEntry, *LookupSt
 	if err != nil {
 		return nil, st, err
 	}
+	if err := l.loadFilters(ctx, src, e, ov, st); err != nil {
+		return nil, st, err
+	}
 	l.store(src.Key(), e)
 	return e, st, nil
 }
@@ -251,6 +268,10 @@ func (l *Locator) Lookup(ctx context.Context, src Source, id string, want Want) 
 	var rows []Row
 	for rg := range e.meta.RowGroups {
 		if len(e.idMin[rg]) == 0 || id < string(e.idMin[rg]) || id > string(e.idMax[rg]) {
+			continue
+		}
+		if !e.mayContain(rg, id) {
+			st.BloomSkips++
 			continue
 		}
 		st.RowGroups++
@@ -598,4 +619,78 @@ func (o *overlay) ReadAt(p []byte, off int64) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("tracesidx: unplanned read of %d bytes at %d", len(p), off)
+}
+
+// bloomHeader is the Thrift header addFilters writes in front of a filter of size bytes.
+func bloomHeader(size int) []byte {
+	h := format.BloomFilterHeader{NumBytes: int32(size)}
+	h.Algorithm.Value = &format.SplitBlockAlgorithm{}
+	h.Hash.Value = &format.XxHash{}
+	h.Compression.Value = &format.BloomFilterUncompressed{}
+	b, _ := thrift.Marshal(&thrift.CompactProtocol{}, &h)
+	return b
+}
+
+// loadFilters keeps the bloom filters of the object's row groups when they are small:
+// all of them are read in one ranged read (they lie together just before the footer, so
+// the footer's own tail read has usually fetched them already). A filter that does not
+// have the layout this package writes (a foreign writer's) is ignored: the lookup then
+// uses the fences and the page index, which are standard.
+func (l *Locator) loadFilters(ctx context.Context, src Source, e *objectEntry, ov *overlay, st *LookupStats) error {
+	idCol := e.cols[IDField]
+	lo, hi, total := int64(-1), int64(0), int64(0)
+	for g := range e.meta.RowGroups {
+		md := e.meta.RowGroups[g].Columns[idCol].MetaData
+		if md.BloomFilterOffset <= 0 || md.BloomFilterLength <= 0 || md.BloomFilterOffset+int64(md.BloomFilterLength) > e.size {
+			return nil
+		}
+		if lo < 0 || md.BloomFilterOffset < lo {
+			lo = md.BloomFilterOffset
+		}
+		hi = max(hi, md.BloomFilterOffset+int64(md.BloomFilterLength))
+		total += int64(md.BloomFilterLength)
+	}
+	if lo < 0 || total > maxCachedBloomBytes || hi-lo > 2*maxCachedBloomBytes {
+		return nil
+	}
+	if _, ok := ov.slice(lo, hi-lo); !ok {
+		b, err := src.ReadRange(ctx, KindBloom, lo, hi-lo)
+		if err != nil {
+			return fmt.Errorf("tracesidx: read filters of %s: %w", src.Key(), err)
+		}
+		if int64(len(b)) != hi-lo {
+			return fmt.Errorf("tracesidx: short filter read")
+		}
+		st.Reads++
+		st.Bytes += int64(len(b))
+		ov.add(lo, b)
+	}
+	filters := make([]bloom.SplitBlockFilter, len(e.meta.RowGroups))
+	for g := range e.meta.RowGroups {
+		md := e.meta.RowGroups[g].Columns[idCol].MetaData
+		sec, ok := ov.slice(md.BloomFilterOffset, int64(md.BloomFilterLength))
+		if !ok {
+			return nil
+		}
+		// header + a power-of-two bitset of 32-byte blocks
+		size := 32
+		for size*2 <= len(sec) {
+			size *= 2
+		}
+		hdr := bloomHeader(size)
+		if len(sec) != len(hdr)+size || !bytes.Equal(sec[:len(hdr)], hdr) {
+			return nil
+		}
+		filters[g] = bloom.MakeSplitBlockFilter(append([]byte(nil), sec[len(hdr):]...))
+	}
+	e.filters = filters
+	return nil
+}
+
+// mayContain reports whether row group g can hold id; true when its filter is not kept.
+func (e *objectEntry) mayContain(g int, id string) bool {
+	if e.filters == nil || e.filters[g] == nil {
+		return true
+	}
+	return e.filters[g].Check(bloom.XXH64{}.Sum64([]byte(id)))
 }

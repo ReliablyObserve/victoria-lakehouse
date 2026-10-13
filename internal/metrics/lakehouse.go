@@ -564,8 +564,11 @@ var (
 	// page, bloom) and tier (memory, disk, peer, s3) as read="<kind>_<tier>",
 	// TraceIdxRangeBytes their bytes.
 	TraceIdxRowsFlushed = NewCounter("lakehouse_trace_idx_rows_flushed_total")
-	TraceIdxRangeReads  = NewCounterVec("lakehouse_trace_idx_range_reads_total", "read")
-	TraceIdxRangeBytes  = NewCounterVec("lakehouse_trace_idx_range_bytes_total", "read")
+	// TraceIdxLookupBloomSkips counts the row groups a lookup ruled out with the bloom
+	// filter cached with the object's footer, without reading anything.
+	TraceIdxLookupBloomSkips = NewCounter("lakehouse_trace_idx_lookup_bloom_skips_total")
+	TraceIdxRangeReads       = NewCounterVec("lakehouse_trace_idx_range_reads_total", "read")
+	TraceIdxRangeBytes       = NewCounterVec("lakehouse_trace_idx_range_bytes_total", "read")
 
 	// TraceIdxPreFilterFiles records the file-narrowing efficiency of
 	// filterFilesByTraceIdx (the pre-filter that runs after the bloom

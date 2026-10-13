@@ -84,18 +84,24 @@ const (
 
 // Row is one trace_id_idx row. The Parquet column names are upstream's field
 // names, so an engine reading the table sees VictoriaTraces' own fields.
+//
+// Encodings are PLAIN on purpose (measured with Apache Spark 4.0.0, its vectorized
+// reader): the library's default for strings, DELTA_LENGTH_BYTE_ARRAY, fails to read
+// once a page holds about 10,000 values, and DELTA_BINARY_PACKED integers with a page
+// index returned wrong values in a point lookup. PLAIN costs about 6 bytes per row more
+// than delta-coded integers (49 against 43 B/row, measured) and every engine reads it.
 type Row struct {
 	// Time is the row's _time in Unix nanoseconds: the trace's start time.
-	Time int64 `parquet:"_time,delta"`
+	Time int64 `parquet:"_time"`
 	// Stream is the value of the trace_id_idx_stream stream tag: xxhash64(id) % 1024.
 	Stream int32 `parquet:"trace_id_idx_stream"`
 	// TraceID is the trace_id_idx field.
-	TraceID string `parquet:"trace_id_idx"`
+	TraceID string `parquet:"trace_id_idx,plain"`
 	// Start, End and Duration are the start_time, end_time and duration fields
 	// (decimal nanoseconds in the row export).
-	Start    int64 `parquet:"start_time,delta"`
-	End      int64 `parquet:"end_time,delta"`
-	Duration int64 `parquet:"duration,delta"`
+	Start    int64 `parquet:"start_time"`
+	End      int64 `parquet:"end_time"`
+	Duration int64 `parquet:"duration"`
 }
 
 // StreamOf returns upstream's stream value for a trace id.

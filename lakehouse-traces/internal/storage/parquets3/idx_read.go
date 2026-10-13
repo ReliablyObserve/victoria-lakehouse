@@ -331,41 +331,45 @@ func (s *Storage) scanIdxObjects(ctx context.Context, files []manifest.FileInfo,
 
 // readIdxObject returns the rows of one idx object: those of the given ids, or all.
 func (s *Storage) readIdxObject(ctx context.Context, fi manifest.FileInfo, ids []string, want tracesidx.Want) ([]tracesidx.Row, error) {
+	var src tracesidx.Source
 	if len(ids) == 0 || fi.Size <= idxObjectsSmall {
+		// One GET for the whole object, through the file cache tiers.
 		data, err := s.getFileData(ctx, fi.Key, fi.Size)
 		if err != nil {
 			return nil, err
 		}
-		rows, err := tracesidx.ReadAll(data)
-		if err != nil {
-			return nil, err
-		}
 		if len(ids) == 0 {
-			return rows, nil
+			return tracesidx.ReadAll(data)
 		}
-		set := make(map[string]struct{}, len(ids))
-		for _, id := range ids {
-			set[id] = struct{}{}
-		}
-		kept := rows[:0]
-		for _, r := range rows {
-			if _, ok := set[r.TraceID]; ok {
-				kept = append(kept, r)
-			}
-		}
-		return kept, nil
+		src = &bytesSource{key: fi.Key, data: data}
+	} else {
+		src = &idxSource{s: s, fi: fi}
 	}
-	src := &idxSource{s: s, fi: fi}
 	var out []tracesidx.Row
 	for _, id := range ids {
-		rows, st, err := s.idxLoc.Lookup(ctx, src, id, want)
+		rows, st, err := s.locator().Lookup(ctx, src, id, want)
 		if err != nil {
 			return nil, err
 		}
-		_ = st
+		metrics.TraceIdxLookupBloomSkips.Add(st.BloomSkips)
 		out = append(out, rows...)
 	}
 	return out, nil
+}
+
+// bytesSource serves ranges from an object held in memory (a small object read whole).
+type bytesSource struct {
+	key  string
+	data []byte
+}
+
+func (b *bytesSource) Key() string { return b.key }
+func (b *bytesSource) Size() int64 { return int64(len(b.data)) }
+func (b *bytesSource) ReadRange(_ context.Context, _ tracesidx.ReadKind, off, n int64) ([]byte, error) {
+	if off < 0 || n < 0 || off+n > int64(len(b.data)) {
+		return nil, fmt.Errorf("range %d+%d outside the %d-byte object", off, n, len(b.data))
+	}
+	return b.data[off : off+n], nil
 }
 
 // collectIdxValues adds the trace_id_idx objects' rows to a field or stream enumeration,

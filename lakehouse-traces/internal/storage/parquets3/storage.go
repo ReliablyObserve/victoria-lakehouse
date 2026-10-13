@@ -57,6 +57,7 @@ type Storage struct {
 	bufferFlusher     *BufferFlusher
 	tombstones        *delete.TombstoneStore
 	smartCache        *smartcache.Controller
+	idxLocOnce        sync.Once
 	idxLoc            *tracesidx.Locator // parsed footers of trace_id_idx objects (internal/tracesidx)
 	bloomIdx          *bloomindex.Index
 	bloomCache        *bloomindex.BloomCache
@@ -271,7 +272,6 @@ func New(cfg *config.Config) (*Storage, error) {
 		writer:            bw,
 		bufferBridge:      bb,
 		smartCache:        sc,
-		idxLoc:            tracesidx.NewLocator(1024),
 		bloomIdx:          bloomindex.New(),
 		bloomCache:        bc,
 		footerCache:       fc,
@@ -1709,4 +1709,15 @@ func (a *s3Adapter) Download(ctx context.Context, key string) ([]byte, error) {
 		}
 	}
 	return a.pool.Download(ctx, key)
+}
+
+// locator returns the Locator of trace_id_idx objects (parsed footers and cached bloom
+// filters), created on first use.
+func (s *Storage) locator() *tracesidx.Locator {
+	s.idxLocOnce.Do(func() {
+		if s.idxLoc == nil {
+			s.idxLoc = tracesidx.NewLocator(1024)
+		}
+	})
+	return s.idxLoc
 }
