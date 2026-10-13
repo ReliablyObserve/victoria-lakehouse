@@ -472,7 +472,7 @@ func pageRows(pages []pageRef, p int, groupRows int64) int64 {
 // readPage reads n values of a column chunk starting at row, from pages already in ov.
 func readPage(chunk *parquet.FileColumnChunk, ov *overlay, row, n int64) ([]parquet.Value, error) {
 	pg := chunk.PagesFrom(ov)
-	defer pg.Close()
+	defer func() { _ = pg.Close() }()
 	if err := pg.SeekToRow(row); err != nil {
 		return nil, fmt.Errorf("tracesidx: seek to row %d: %w", row, err)
 	}

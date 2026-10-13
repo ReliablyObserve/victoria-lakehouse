@@ -107,9 +107,6 @@ func TestScaleManyObjects(t *testing.T) {
 					}
 				}
 			}
-			if round == 0 {
-				// forget nothing: round 1 has every footer cached; round 0 had them cold only on first sight
-			}
 		}
 		t.Logf("F=%d objects of %d rows: reads per lookup first pass (footers cold for the first id) avg %.1f, second pass (footers cached) avg %.1f; bytes %.0f / %.0f",
 			f, total/f, float64(cold)/float64(len(ids)), float64(warm)/float64(len(ids)), float64(coldB)/float64(len(ids)), float64(warmB)/float64(len(ids)))

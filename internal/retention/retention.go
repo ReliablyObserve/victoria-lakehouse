@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // Config holds the retention policy configuration.

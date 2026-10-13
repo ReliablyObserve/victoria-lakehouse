@@ -62,13 +62,6 @@ func FilterBytes(n int64) int {
 	return (1 << bits.Len(uint(blocks-1))) * 32
 }
 
-func minInt64(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // writerOptions are the options every writer of the table uses. There is no bloom filter
 // among them: the library's writer sizes a filter from the row count with a bits-per-value
 // that cannot give a power of two, and a filter type of its own gets a header without the
@@ -155,7 +148,7 @@ func ReadAll(data []byte) ([]Row, error) {
 		return nil, fmt.Errorf("tracesidx: open: %w", err)
 	}
 	r := parquet.NewGenericReader[Row](f)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	out := make([]Row, 0, f.NumRows())
 	buf := make([]Row, 4096)
 	for {
