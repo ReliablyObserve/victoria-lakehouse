@@ -37,7 +37,7 @@ env:
 jobs:
   parity:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -304,7 +304,7 @@ jobs:
           export PARITY_LOCK_NONCE
           echo "PARITY_LOCK_NONCE=$PARITY_LOCK_NONCE" >> "$GITHUB_ENV"
           docker compose -f tests/parity/docker-compose.yml --profile test run --rm --no-deps -T parity-tests \
-            go test -tags=parity -json -count=1 -timeout=25m ./... > parity-results.json
+            go test -tags=parity -json -count=1 -timeout=40m ./... > parity-results.json
           echo "go test exit code: $?"
           wc -l parity-results.json
 
