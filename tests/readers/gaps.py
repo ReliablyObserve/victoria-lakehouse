@@ -40,7 +40,7 @@ GAPS = [
              "refuses a file that carries either. Every traces object and every raw logs object does; a compacted logs object only "
              "sometimes (compaction keeps the body token blooms of some files, #344)"},
     {"id": "schema-inference-opens-every-file/datafusion", "issue": None, "engines": ("datafusion",),
-     "signals": ("logs",), "layers": ("pruned",), "queries": ("dt_filter",), "label": "needs an explicit schema",
+     "signals": ("logs", "traces"), "layers": ("pruned",), "queries": ("dt_filter",), "label": "needs an explicit schema",
      "error": r"range start must not be greater than end|footer|magic number|not a valid parquet",
      "note": "engine behaviour, not a Lakehouse defect: register_parquet infers the schema from every file footer "
              "before any partition filter applies, so one unreadable object in an unrelated partition fails the "
