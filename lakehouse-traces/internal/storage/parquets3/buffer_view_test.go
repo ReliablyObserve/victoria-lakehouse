@@ -13,8 +13,8 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 

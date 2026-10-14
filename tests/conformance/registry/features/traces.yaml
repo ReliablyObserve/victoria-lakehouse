@@ -350,6 +350,7 @@
     - lakehouse-traces/internal/vlstorage/idx_rows_test.go#TestStreamValueOf
     - lakehouse-traces/internal/vlstorage/idx_rows_test.go#TestIdxStreamAndStreamIDFor
     - internal/manifest/idx_stale_test.go#TestIdxObjectsAreNeverStale
+    - lakehouse-traces/internal/storage/parquets3/span_byid_scale_test.go#TestSpanByIDReads_MultiRowGroupFile
     - lakehouse-traces/internal/storage/parquets3/buffer_view_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles
     - internal/storage/parquets3/buffer_view_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles
     - internal/pmeta/facet_id_summary_test.go#TestIDSummary_MayContain
