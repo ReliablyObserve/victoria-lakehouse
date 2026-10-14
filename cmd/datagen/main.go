@@ -46,6 +46,23 @@ var (
 // (initial seed-batch keeps the historical spread for backfill).
 var continuousSpreadSec int
 
+// spanWindowStart and spanWindow, when spanWindow > 0, confine every generated trace and
+// uncorrelated log row to [spanWindowStart, spanWindowStart+spanWindow). A seed made of
+// consecutive small windows, each sent and flushed before the next, reproduces the
+// arrival order of production (spans reach the store within seconds of their start time,
+// so each flushed file covers a short stretch of span time); the default seed shotguns
+// every batch across the whole range, the adversarial case in which every file of an
+// hour overlaps in time.
+var (
+	spanWindowStart time.Time
+	spanWindow      time.Duration
+)
+
+// windowedTime returns a random instant of the span window.
+func windowedTime(rng *mrand.Rand) time.Time {
+	return spanWindowStart.Add(time.Duration(rng.Int63n(int64(spanWindow))))
+}
+
 // httpClient bounds every push so a slow/hung endpoint (e.g. LH cold blocking on
 // injected S3 latency) can't stall the whole batch indefinitely. Without a
 // timeout, http.DefaultClient waits forever, the 6s ticker falls behind, and
@@ -84,6 +101,8 @@ func main() {
 	projectID := flag.String("project-id", "0", "tenant ProjectID header")
 	orgID := flag.String("org-id", "", "string tenant ID via X-Scope-OrgID header (overrides account-id/project-id)")
 	seed := flag.Int64("seed", 0, "seed of the row generator and of the generated trace/span IDs (0 = random, the default)")
+	spanStartFlag := flag.String("span-start", "", "RFC3339 start of the window the generated trace and log timestamps are drawn from (with --span-window)")
+	spanWindowFlag := flag.Duration("span-window", 0, "length of the timestamp window starting at --span-start (0 = spread over --hours-back)")
 	nowFlag := flag.String("now", "", "RFC3339 instant the generated timestamps are relative to (default: the current time)")
 	manifestPath := flag.String("manifest", "", "write the writer-side truth of this run (computed from the generated rows before they are sent) to this JSON file")
 	manifestName := flag.String("manifest-name", "", "tenant name recorded in the manifest")
@@ -100,6 +119,13 @@ func main() {
 		anchor = t.UTC()
 	}
 	runSeed, runManifest, runManifestName = *seed, *manifestPath, *manifestName
+	if *spanWindowFlag > 0 {
+		t, err := time.Parse(time.RFC3339Nano, *spanStartFlag)
+		if err != nil {
+			log.Fatalf("--span-start: %v", err)
+		}
+		spanWindowStart, spanWindow = t.UTC(), *spanWindowFlag
+	}
 
 	// At least one destination of EITHER signal. Requiring a logs endpoint
 	// specifically made a traces-only seed impossible, which is exactly what
@@ -340,6 +366,9 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 			// shotgunned across the full last hour.
 			baseTime = now.Add(-time.Duration(rng.Intn(continuousSpreadSec)) * time.Second)
 		}
+		if spanWindow > 0 {
+			baseTime = windowedTime(rng)
+		}
 		traceID := randomHex(32)
 		// Build an RPC call-chain across services so span pairs encode real
 		// cross-service edges: each hop is CLIENT(kind=3) in svc[i] linked to
@@ -574,6 +603,9 @@ func generateBatch(logsCount, tracesCount, hoursBack int, vlEndpoint, vtEndpoint
 				// Continuous mode: cluster on real-time so successive
 				// batches form a steady stream.
 				ts = now.Add(-time.Duration(rng.Intn(continuousSpreadSec)) * time.Second)
+			}
+			if spanWindow > 0 {
+				ts = windowedTime(rng)
 			}
 			svc = services[rng.Intn(len(services))]
 			ns = namespaces[rng.Intn(len(namespaces))]

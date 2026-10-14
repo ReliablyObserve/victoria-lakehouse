@@ -145,7 +145,7 @@ def make_state(now: dt.datetime | None = None) -> dict:
             "tenants": {"numeric": [{"account": a, "project": p} for _, a, p, *_ in TENANTS], "alias": {"acme-corp": "1001:0"}}}
 
 
-def datagen_cmd(now: str, hours_back: int, tenant, hot: bool, lh: str | None) -> list[str]:
+def datagen_cmd(now: str, hours_back: int, tenant, hot: bool, lh: str | None, extra: list[str] | None = None) -> list[str]:
     _, acct, proj, seed, logs, traces = tenant
     cmd = ["docker", "run", "--rm", "--network", NETWORK, DATAGEN, f"--logs={logs}", f"--traces={traces}",
            f"--hours-back={hours_back}", f"--seed={seed}", f"--now={now}", f"--account-id={acct}", f"--project-id={proj}"]
@@ -153,7 +153,7 @@ def datagen_cmd(now: str, hours_back: int, tenant, hot: bool, lh: str | None) ->
         cmd += ["--vl-endpoint=http://vl-ref:9428", "--vt-endpoint=http://vt-ref:10428"]
     if lh:
         cmd += [f"--lh-logs-endpoint=http://lh-logs-{lh}:9428", f"--lh-traces-endpoint=http://lh-traces-{lh}:10428"]
-    return cmd
+    return cmd + list(extra or [])
 
 
 def http_json(url: str, headers: dict | None = None, timeout: float = 30):

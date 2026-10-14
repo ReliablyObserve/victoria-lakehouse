@@ -280,6 +280,16 @@ func (fc *FooterCache) publishLocked() {
 	metrics.FooterCacheBytes.Set(fc.bytes)
 }
 
+// Clear drops every cached footer (benchmark and proof harness: a really cold read).
+func (fc *FooterCache) Clear() {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.items = make(map[string]*footerEntry)
+	fc.lru.Init()
+	fc.bytes = 0
+	fc.publishLocked()
+}
+
 // Bytes returns the resident bytes currently charged to the cache.
 func (fc *FooterCache) Bytes() int64 {
 	fc.mu.RLock()

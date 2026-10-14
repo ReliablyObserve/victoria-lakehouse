@@ -162,6 +162,14 @@ func (l *Locator) store(key string, e *objectEntry) {
 	l.files[key] = e
 }
 
+// Clear drops every cached footer (harness: a really cold lookup).
+func (l *Locator) Clear() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.files = make(map[string]*objectEntry)
+	l.order = nil
+}
+
 // Forget drops an object's cached footer (the object was replaced or removed).
 func (l *Locator) Forget(key string) {
 	l.mu.Lock()

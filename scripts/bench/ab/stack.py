@@ -183,7 +183,38 @@ def make_state(now: dt.datetime | None = None) -> dict:
 
 
 
+SEED_MODE = os.environ.get("AB_SEED_MODE", "shotgun")  # "shotgun": the original seed; "sliced": production-like arrival order
+COLD_WINDOW_MIN = 1  # sliced seed: minutes of span time per datagen run in the cold layer (one flushed file each)
+COMPACTED_WINDOW_MIN = 20  # ... and in the compacted layer (merged afterwards, so the arrival grain does not matter)
+
+
+def seed_plan_sliced(state: dict) -> list[dict]:
+    """Production-like seed: consecutive windows of span time, each sent and flushed before the next, so spans reach the store
+    within seconds of their start time and every flushed file covers a short stretch of span time (the cold layer: one minute).
+    The volume per hour equals the shotgun seed's: its per-hour counts are TENANTS' counts per chunk x CHUNKS / HOURS_BACK / ...
+    i.e. the logs and traces numbers of TENANTS are per hour here."""
+    h = dt.datetime.strptime(state["H"], "%Y-%m-%dT%H:%M:%SZ")
+    plan, i = [], 0
+    t = h - dt.timedelta(hours=HOURS_BACK)
+    while t < h:
+        minutes = COLD_WINDOW_MIN if t >= h - dt.timedelta(hours=COLD_HOURS) else COMPACTED_WINDOW_MIN
+        for name, acct, proj, seed, logs, traces in TENANTS:
+            scale = minutes / 60
+            tenant = (name, acct, proj, seed * 1000 + i, max(3, round(logs * scale)), max(3, round(traces * scale)))
+            extra = [f"--span-start={t:%Y-%m-%dT%H:%M:%SZ}", f"--span-window={minutes}m"]
+            plan.append({"chunk": i, "tenant": tenant, "hours_back": 1, "now": state["H"], "extra": extra})
+        t += dt.timedelta(minutes=minutes)
+        i += 1
+    return plan
+
+
 def seed_plan(state: dict) -> list[dict]:
+    if SEED_MODE == "sliced":
+        return seed_plan_sliced(state)
+    return seed_plan_shotgun(state)
+
+
+def seed_plan_shotgun(state: dict) -> list[dict]:
     """The datagen invocations of the cold window: per tenant CHUNKS chunks, each a distinct seed, each sent once to
     hot + base and once to the PR with the same seed and --now, so all three hold the same rows."""
     plan = []
@@ -294,7 +325,7 @@ def cmd_up(_a, reuse: bool = False, preflighted: bool = False):  # pragma: no co
 
 
 def hot_and_base(state: dict, item: dict, with_pr: bool) -> None:  # pragma: no cover - drives docker
-    cmd = P.datagen_cmd(item["now"], item["hours_back"], item["tenant"], hot=not with_pr, lh="pr" if with_pr else "base")
+    cmd = P.datagen_cmd(item["now"], item["hours_back"], item["tenant"], hot=not with_pr, lh="pr" if with_pr else "base", extra=item.get("extra"))
     sh(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

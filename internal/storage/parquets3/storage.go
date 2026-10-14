@@ -729,7 +729,7 @@ func extractDistinctFromStats(f *parquet.File, colIdx int) []string {
 	return result
 }
 
-// ClearCaches clears the L1 memory cache and L2 disk cache (if present).
+// ClearCaches clears the L1 memory cache, the L2 disk cache (if present), the footer cache and (traces) the idx locator.
 // Useful for benchmarking to ensure cold-start query performance.
 func (s *Storage) ClearCaches() {
 	s.memCache.Clear()
@@ -737,6 +737,9 @@ func (s *Storage) ClearCaches() {
 		if err := s.diskCache.Clear(); err != nil {
 			logger.Warnf("disk cache clear failed: %s", err)
 		}
+	}
+	if s.footerCache != nil {
+		s.footerCache.Clear()
 	}
 	logger.Infof("caches cleared")
 }
