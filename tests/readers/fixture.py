@@ -21,6 +21,13 @@ def parquet_keys(fs, bucket):
     return sorted(k for k in fs.find(bucket) if k.endswith(".parquet"))
 
 
+def signal_keys(keys, prefix, sig):
+    """The objects whose rows `* | stats count()` counts for one tenant and signal. Traces count the trace_id_idx rows
+    too, as hot VictoriaTraces does; they live in the tenant's traces_idx table next to the span objects."""
+    tables = (sig, sig + "_idx") if sig == "traces" else (sig,)
+    return [k for k in keys if any(k.startswith("obs-archive/%s/%s/" % (prefix, tb)) for tb in tables)]
+
+
 def rows_in(fs, keys):
     total = 0
     for k in keys:
@@ -81,7 +88,7 @@ def wait_flushed(timeout=1200):
         keys = parquet_keys(fs, "obs-archive")
         bad = []
         for (prefix, sig), n in want.items():
-            ks = [k for k in keys if k.startswith("obs-archive/%s/%s/" % (prefix, sig))]
+            ks = signal_keys(keys, prefix, sig)
             got = rows_in(fs, ks)
             if got != n:
                 bad.append((prefix, sig, got, n))
@@ -244,7 +251,7 @@ def verify_compacted():
     want = lh_counts()
     bad = []
     for (prefix, sig), n in want.items():
-        ks = [k for k in keys if k.startswith("obs-archive/%s/%s/" % (prefix, sig))]
+        ks = signal_keys(keys, prefix, sig)
         compacted = [k for k in ks if "/compacted-" in k]
         got = rows_in(fs, ks)
         lone = [v[0] for v in raw.get((prefix, sig), {}).values() if len(v) == 1]

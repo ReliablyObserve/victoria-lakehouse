@@ -39,13 +39,16 @@ func recompactHourPartition(t *testing.T, base string, at time.Time, minInputs i
 		resp, err := httpClient.Post(base+"/lakehouse/compaction/recompact", "application/json", bytes.NewReader(body))
 		if err == nil {
 			var out struct {
-				InputFiles  int `json:"input_files"`
-				OutputFiles int `json:"output_files"`
+				InputFiles    int `json:"input_files"`
+				OutputFiles   int `json:"output_files"`
+				IdxInputFiles int `json:"idx_input_files"`
 			}
 			raw := readAllOrEmpty(resp)
 			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK && json.Unmarshal(raw, &out) == nil && out.InputFiles >= minInputs {
-				t.Logf("recompacted %s: %d objects into %d", part, out.InputFiles, out.OutputFiles)
+			// minInputs counts the span (or log) objects: the trace_id_idx objects of a tenant merge in the same call
+			// and may be released by the segment guard before the span objects of the same batch.
+			if resp.StatusCode == http.StatusOK && json.Unmarshal(raw, &out) == nil && out.InputFiles-out.IdxInputFiles >= minInputs {
+				t.Logf("recompacted %s: %d objects into %d (%d of them trace_id_idx)", part, out.InputFiles, out.OutputFiles, out.IdxInputFiles)
 				return
 			}
 			last = fmt.Sprintf("%d %s", resp.StatusCode, strings.TrimSpace(string(raw)))

@@ -28,6 +28,7 @@ package parity
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -37,6 +38,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 type extrasTenant struct{ account, project string }
@@ -259,19 +263,26 @@ func compareExtrasTrace(t *testing.T, tn extrasTenant, id string, withTraceAPIs 
 // tenantFiles returns how many objects the cold manifest holds for account:project.
 func tenantFiles(t *testing.T, account, project string) int64 {
 	t.Helper()
-	r := fetch(t, lhtBaseURL, "/lakehouse/api/v1/tenants", nil)
-	var d struct {
-		Tenants []tenantSummary `json:"tenants"`
-	}
-	if r.StatusCode != http.StatusOK || json.Unmarshal(r.Body, &d) != nil {
-		return -1
-	}
-	for _, te := range d.Tenants {
-		if te.AccountID == account && te.ProjectID == project {
-			return te.TotalFiles
+	// Span objects only, listed from S3: the tenant's trace_id_idx objects sit next to them
+	// (<tenant>/traces_idx/) and belong to the tenants API's file totals, but the layer
+	// proofs of this test are about the span objects.
+	prefix := fmt.Sprintf("%s/%s/traces/", account, project)
+	var n int64
+	pg := s3.NewListObjectsV2Paginator(parityS3(), &s3.ListObjectsV2Input{
+		Bucket: aws.String(envOrDefault("PARITY_S3_BUCKET", "parity-bucket")), Prefix: aws.String(prefix)})
+	for pg.HasMorePages() {
+		page, err := pg.NextPage(context.Background())
+		if err != nil {
+			t.Logf("list %s: %v", prefix, err)
+			return -1
+		}
+		for _, o := range page.Contents {
+			if strings.HasSuffix(aws.ToString(o.Key), ".parquet") {
+				n++
+			}
 		}
 	}
-	return -1
+	return n
 }
 
 // recompactPartition merges the tenant files of the partition holding at with

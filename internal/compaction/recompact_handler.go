@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
 // RecompactRequest is the body of POST /lakehouse/compaction/recompact.
@@ -58,15 +60,28 @@ func RecompactHandler(sched *Scheduler) http.HandlerFunc {
 		}
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"partition":     req.Partition,
-			"output_level":  result.OutputLevel,
-			"input_files":   len(result.InputFiles),
-			"output_files":  len(result.OutputFiles),
-			"rows_merged":   result.RowsMerged,
-			"bytes_written": result.BytesWritten,
-			"fenced_files":  len(result.FencedFiles), // left alone: columns this version does not know
+			"partition":        req.Partition,
+			"output_level":     result.OutputLevel,
+			"input_files":      len(result.InputFiles),
+			"output_files":     len(result.OutputFiles),
+			"idx_input_files":  countIdxKeys(result.InputFiles), // the trace_id_idx objects among them (traces binary)
+			"idx_output_files": countIdxKeys(result.OutputFiles),
+			"rows_merged":      result.RowsMerged,
+			"bytes_written":    result.BytesWritten,
+			"fenced_files":     len(result.FencedFiles), // left alone: columns this version does not know
 		})
 		logger.Infof("recompact API: partition=%s level=%d → output_level=%d rows=%d",
 			req.Partition, req.Level, result.OutputLevel, result.RowsMerged)
 	}
+}
+
+// countIdxKeys counts the trace_id_idx objects among keys.
+func countIdxKeys(keys []string) int {
+	n := 0
+	for _, k := range keys {
+		if tracesidx.IsKey(k) {
+			n++
+		}
+	}
+	return n
 }
