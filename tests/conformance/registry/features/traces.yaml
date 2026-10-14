@@ -407,6 +407,8 @@
     - internal/tracesidx/summary_test.go#TestSummarizeCopiesTheFooter
     - internal/tracesidx/summary_test.go#TestSummarizeRefusesWhatIsNotAnIdxObject
     - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_PmetaSummaryAnswersMembership
+    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestTraceByID_RequestsDoNotGrowWithObjects
+    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestSiblingTenantPartition
     - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_TraceIDQueryKeepsItsTimeBound
   docs:
     - docs/trace-idx-table.md

@@ -484,3 +484,62 @@ func TestIdxTable_PmetaSummaryAnswersMembership(t *testing.T) {
 		t.Errorf("%d summaries were learned after the bundles were loaded, want 0", got)
 	}
 }
+
+// A trace-by-ID lookup as VictoriaTraces runs it (stage 1: the index row; stage 2: the spans of
+// the trace in the exact [start, end] the index row gave, by a trace_id phrase) makes a number
+// of S3 requests that does not grow with the number of objects of the window: the object that
+// holds the index row, the span object that holds the spans and its footer. Process-cold (every
+// in-process data cache and the footer cache and idx locator emptied), 24 flush groups of one hour.
+func TestTraceByID_RequestsDoNotGrowWithObjects(t *testing.T) {
+	if !tracesidx.Enabled {
+		t.Skip("the trace_id_idx table is off")
+	}
+	e := newRestartEnv(t)
+	cfg := config.PmetaConfig{Enabled: true}
+	cs := newCatalogStore(cfg, "traces/")
+	e.s.catalog, e.s.cfg.Pmeta = cs, cfg
+	e.bw.catalogObserver = &catalogObserver{store: cs, pool: e.s.pool}
+	tenant := logstorage.TenantID{}
+	var ids []string
+	for g := 0; g < 24; g++ {
+		ids = append(ids, e.ingestTraces(tenant, 6, rwHour.Add(time.Duration(g)*2*time.Minute))...)
+		e.flush()
+	}
+	e.reap()
+	from, to := rwWindow()
+	gets := func() int { return int(metrics.S3RequestsTotal.Get("GetObject")) }
+	var total int
+	const lookups = 20
+	for i := 0; i < lookups; i++ {
+		id := ids[(i*5+2)%len(ids)]
+		e.s.ClearCaches()
+		before := gets()
+		rows := e.rows(tenant, stage1(id), from, to)
+		if len(rows) != 1 {
+			t.Fatalf("stage 1 missed %s", id)
+		}
+		start, _ := strconv.ParseInt(rows[0]["start_time"], 10, 64)
+		end, _ := strconv.ParseInt(rows[0]["end_time"], 10, 64)
+		spans := e.rows(tenant, fmt.Sprintf("trace_id: %q", id), time.Unix(0, start), time.Unix(0, end+1))
+		if len(spans) != 2 {
+			t.Fatalf("stage 2 of %s returned %d spans, want 2", id, len(spans))
+		}
+		total += gets() - before
+	}
+	per := float64(total) / lookups
+	t.Logf("%.1f S3 requests per trace-by-ID lookup over 24 flush groups (cold caches)", per)
+	if per > 3 {
+		t.Errorf("a trace-by-ID lookup made %.1f requests on average, want at most 3 (the idx object that holds the row and the span object; measured 2.0)", per)
+	}
+}
+
+func TestSiblingTenantPartition(t *testing.T) {
+	for in, want := range map[string]string{
+		"0/0/traces/dt=2026-10-14/hour=09":        "0/0/traces_idx/dt=2026-10-14/hour=09",
+		"1001/7/traces_idx/dt=2026-10-14/hour=09": "1001/7/traces/dt=2026-10-14/hour=09",
+	} {
+		if got := siblingTenantPartition(in); got != want {
+			t.Errorf("siblingTenantPartition(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
