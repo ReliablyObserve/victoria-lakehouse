@@ -673,7 +673,8 @@ func (r *matrixRun) refreshObjects(t *testing.T) {
 					wantPrefix := fmt.Sprintf("%d/%d/%s/", state.p.Tenant.Account, state.p.Tenant.Project, r.sig)
 					// The tenant's trace_id_idx table carries the trace id by design (the marker is one).
 					idxPrefix := fmt.Sprintf("%d/%d/%s_idx/", state.p.Tenant.Account, state.p.Tenant.Project, r.sig)
-					if !strings.HasPrefix(key, wantPrefix) && !(r.sig == im.Traces && strings.HasPrefix(key, idxPrefix)) {
+					inTable := strings.HasPrefix(key, wantPrefix) || (r.sig == im.Traces && strings.HasPrefix(key, idxPrefix))
+					if !inTable {
 						t.Fatalf("marker %s copied into foreign prefix %s, want %s", state.p.Marker, key, wantPrefix)
 					}
 				}
