@@ -266,21 +266,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	files := s.filesForScope("query", startNs, endNs, scope)
 	files = view.exclude(files)
 
-	// VictoriaTraces' trace_id_idx rows are a table of their own (internal/tracesidx).
-	// A query reads them when its filter can match one: the stage-1 trace lookup, the
-	// TraceQL duration join, and every query that does not need a span-only field
-	// (`*`, field and stream enumeration), as it does on hot VictoriaTraces.
-	var idxFiles []manifest.FileInfo
-	if tracesidx.Enabled {
-		if idxFiles = view.exclude(s.idxFilesForScope("query", startNs, endNs, scope)); len(idxFiles) > 0 {
-			switch s.idxRouteOf(ctx, queryStr) {
-			case routeSpansOnly:
-				idxFiles = nil
-			case routeIdxOnly:
-				files = nil
-			}
-		}
-	}
+	idxFiles, files := s.planIdxRead(ctx, view, queryStr, startNs, endNs, scope, files)
 	// finish is what ends every path below: the idx objects, then the insert buffer.
 	finish := func() {
 		s.scanIdxObjects(ctx, scope, tenantIDs, idxFiles, startNs, endNs, queryStr, &rowsEmitted, maxRows, sink)
@@ -302,7 +288,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		// (A field_names count needs nothing special here: the counter keys the
 		// buffer's blocks by stream and UTC day like the blocks of any other layer,
 		// and nothing but the buffer is read.)
-		if len(idxFiles) == 0 && s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, filteredWriteBlock) {
+		if s.servePureBufferUnlessIdx(ctx, view, q, tenantIDs, hasTombstones, idxFiles, filteredWriteBlock) {
 			return nil
 		}
 		// No cold-tier files cover the requested window, but the in-flight
@@ -392,7 +378,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// whose footer attests lowercase-hex trace ids (filterFilesByTraceIdx).
 	tids := extractFilterValuesAST(queryStr, "trace_id")
 	hexPhrases := extractHexTraceIDPhrasesAST(queryStr)
-	if (len(tids) > 0 || len(hexPhrases) > 0) && !noFooterBloomFrom(ctx) && !tracesidx.Enabled {
+	if (len(tids) > 0 || len(hexPhrases) > 0) && footerTraceIdxPruneOn(ctx) {
 		files = s.filterFilesByTraceIdx(ctx, files, tids, hexPhrases)
 		if len(files) == 0 {
 			finish()
@@ -923,7 +909,13 @@ func (s *Storage) windowInsideHotBoundary(startNs, endNs int64) bool {
 }
 
 func widenTraceIDQueryToNow(q *logstorage.Query, startNs, endNs int64) (*logstorage.Query, int64) {
-	if q == nil || !queryFiltersTraceID(q.String()) {
+	// With the trace_id_idx table the stage-1 lookup returns the trace's exact [start, end]
+	// (as on hot VictoriaTraces) and the span query is bounded by it: widening to now would
+	// put every span object after the trace's start into the plan, which is what the
+	// per-file `_trace_idx` footer entry (retired with the table) used to prune. The rows
+	// the widening served are the ones younger than the idx rows' end, which hot does not
+	// return either.
+	if tracesidx.Enabled || q == nil || !queryFiltersTraceID(q.String()) {
 		return q, endNs
 	}
 	if nowNs := time.Now().UnixNano(); nowNs > endNs {
@@ -3087,4 +3079,43 @@ func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, sta
 // Every builder of raw-row blocks calls it last.
 func orderColumnsLikeUpstream(db *logstorage.DataBlock) {
 	storage.OrderColumnsLikeUpstream(db)
+}
+
+// planIdxRead decides what a query reads of VictoriaTraces' trace_id_idx table
+// (internal/tracesidx) and of the span objects. A query reads the table when its filter
+// can match an index row: the stage-1 trace lookup, the TraceQL duration join, and every
+// query that does not need a span-only field (`*`, field and stream enumeration), as on
+// hot VictoriaTraces. It returns the idx objects to read and the span objects left.
+func (s *Storage) planIdxRead(ctx context.Context, view *bufferView, queryStr string, startNs, endNs int64, scope tenantScope, files []manifest.FileInfo) (idxFiles, spanFiles []manifest.FileInfo) {
+	if !tracesidx.Enabled {
+		return nil, files
+	}
+	idxFiles = view.exclude(s.idxFilesForScope("query", startNs, endNs, scope))
+	if len(idxFiles) == 0 {
+		return nil, files
+	}
+	switch s.idxRouteOf(ctx, queryStr) {
+	case routeSpansOnly:
+		return nil, files
+	case routeIdxOnly:
+		return idxFiles, nil
+	}
+	return idxFiles, files
+}
+
+// footerTraceIdxPruneOn reports whether the per-file `_trace_idx` footer entry may prune
+// span files. With the trace_id_idx table on, the entry is not written and the stage-1
+// lookup of the table replaces it.
+func footerTraceIdxPruneOn(ctx context.Context) bool {
+	return !noFooterBloomFrom(ctx) && !tracesidx.Enabled
+}
+
+// servePureBufferUnlessIdx is servePureBufferQuery for a query that may also read the
+// trace_id_idx table: the buffer's own engine knows nothing of that table, so such a
+// query is served through the bridge like every other layer.
+func (s *Storage) servePureBufferUnlessIdx(ctx context.Context, view *bufferView, q *logstorage.Query, tenantIDs []logstorage.TenantID, hasTombstones bool, idxFiles []manifest.FileInfo, writeBlock logstorage.WriteDataBlockFunc) bool {
+	if len(idxFiles) > 0 {
+		return false
+	}
+	return s.servePureBufferQuery(ctx, view, q, tenantIDs, hasTombstones, writeBlock)
 }
