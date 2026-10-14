@@ -232,6 +232,8 @@ jobs:
           - internal/vlstorage:FuzzRepromoteLogRow
           - internal/vlstorage:FuzzDataBlockToLogRows
           - internal/vlstorage:FuzzAdmittedRows
+          - internal/tracesidx:FuzzValidateThrift
+          - internal/tracesidx:FuzzLocatorHostileObject
           - internal/storage:FuzzTenantStreamMap
     steps:
       - uses: actions/checkout@v7
