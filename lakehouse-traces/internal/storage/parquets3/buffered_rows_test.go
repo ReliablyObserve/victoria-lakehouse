@@ -42,7 +42,7 @@ func TestBufferedRows_LocalBufferPerSegment(t *testing.T) {
 	now := time.Now().UnixNano()
 	addBufferedRows(segs, now, 0, 6)
 	addBufferedRows(segs, now, 1, 3)
-	// VictoriaTraces' trace_id_idx rows: in the buffer, never written by the flush.
+	// VictoriaTraces' trace_id_idx rows: in the buffer, and written by the flush to the index table.
 	lr := logstorage.GetLogRows([]string{"trace_id_idx_stream"}, nil, nil, nil, "")
 	for i := 0; i < 5; i++ {
 		lr.MustAdd(logstorage.TenantID{}, now+int64(i), []logstorage.Field{
@@ -75,8 +75,8 @@ func TestBufferedRows_LocalBufferPerSegment(t *testing.T) {
 	for _, g := range rep.Segments {
 		byNonce[g.Nonce] = g
 	}
-	if g := byNonce[sealed.Nonce()]; g.Rows != 14 || !g.Committed || g.Dropped != 5 {
-		t.Errorf("sealed segment = %+v, want 14 rows of which 5 dropped by the flush, committed", g)
+	if g := byNonce[sealed.Nonce()]; g.Rows != 14 || !g.Committed || g.Dropped != 0 {
+		t.Errorf("sealed segment = %+v, want 14 rows, none dropped by the flush (the index rows are written to the index table), committed", g)
 	}
 	for n, g := range byNonce {
 		if n != sealed.Nonce() && (g.Rows != 2 || g.Committed || g.Dropped != 0) {

@@ -261,6 +261,18 @@ def verify_compacted():
               % ("%s/%s" % (prefix, sig), len(ks), len(compacted), len(lone), needs_merge, got, n))
         if (needs_merge and not compacted) or lone_rewritten or got != n:
             bad.append((prefix, sig, len(compacted), len(lone_rewritten), got, n))
+        if sig == "traces":
+            # The trace_id_idx table is a group of its own with its own flush times (the index rows come a little
+            # after their spans), so it becomes compactable later than the span objects: wait for it as well.
+            idx_ks = [k for k in keys if k.startswith("obs-archive/%s/traces_idx/" % prefix)]
+            idx_compacted = [k for k in idx_ks if "/compacted-" in k]
+            idx_lone = [v[0] for v in raw.get((prefix, "traces_idx"), {}).values() if len(v) == 1]
+            idx_lone_rewritten = [k for k in idx_lone if k not in archive_rel]
+            idx_needs_merge = (prefix, "traces_idx") in mergeable
+            print("compacted layer %-22s files=%-3d compacted=%-3d lone=%-3d mergeable=%-5s"
+                  % ("%s/traces_idx" % prefix, len(idx_ks), len(idx_compacted), len(idx_lone), idx_needs_merge))
+            if (idx_needs_merge and not idx_compacted) or idx_lone_rewritten:
+                bad.append((prefix, "traces_idx", len(idx_compacted), len(idx_lone_rewritten), 0, 0))
     if bad:
         sys.exit("compacted layer is not complete and consistent (prefix, signal, compacted, lone rewritten, rows, lakehouse): %s" % bad)
 

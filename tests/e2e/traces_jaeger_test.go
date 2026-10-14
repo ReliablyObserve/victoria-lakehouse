@@ -4,9 +4,36 @@ package e2e
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"testing"
+	"time"
 )
+
+// waitJaegerTraceFindable waits until the Jaeger trace-by-ID endpoint knows the
+// trace. The newest trace of a search is listed from its spans as soon as they
+// are buffered, but, as on VictoriaTraces itself, a by-ID lookup needs the
+// trace_id_idx rows, which VictoriaTraces' index worker emits a little after the
+// spans; the lookup answers 404 until then. A test that reads the newest trace by
+// ID waits for that instead of racing it.
+func waitJaegerTraceFindable(t *testing.T, traceID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		resp, err := http.Get(tracesBaseURL + "/api/traces/" + traceID) //nolint:gosec,noctx // fixed local test URL
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Logf("trace %s is still not findable by ID after 2 minutes", traceID)
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
 
 func TestJaeger_Services(t *testing.T) {
 	body := httpGetBody(t, tracesBaseURL, "/api/services", nil)
@@ -319,6 +346,7 @@ func TestJaeger_TraceDetail_ParentRefs(t *testing.T) {
 		t.Skip("no traces available")
 	}
 
+	waitJaegerTraceFindable(t, traceID)
 	detailBody := httpGetBody(t, tracesBaseURL, "/api/traces/"+traceID, nil)
 	detailResp := assertJaegerResponse(t, detailBody)
 	detailData := detailResp["data"].([]any)
@@ -551,5 +579,8 @@ func getAnyTraceID(t *testing.T) string {
 
 	first := dataArr[0].(map[string]any)
 	traceID, _ := first["traceID"].(string)
+	if traceID != "" {
+		waitJaegerTraceFindable(t, traceID)
+	}
 	return traceID
 }

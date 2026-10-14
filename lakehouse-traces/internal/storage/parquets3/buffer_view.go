@@ -17,6 +17,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
@@ -253,7 +254,7 @@ func (s *Storage) BufferedRows(ctx context.Context, startNs, endNs int64) (buffe
 	if s.useLocalBuffer() {
 		snap := s.localBuffer.Snapshot()
 		defer snap.Release()
-		segs, err := snap.SegmentRowsInWindow(ctx, startNs, endNs, flushDroppedFilter)
+		segs, err := snap.SegmentRowsInWindow(ctx, startNs, endNs, flushDroppedFilter())
 		rep := buffer.WindowReport{Nonces: snap.Nonces(), Segments: make([]buffer.SegmentRows, 0, len(segs))}
 		for _, g := range segs {
 			rep.Rows += g.Rows
@@ -281,8 +282,16 @@ func (s *Storage) BufferedRows(ctx context.Context, startNs, endNs int64) (buffe
 	return rep, errors.Join(errs...)
 }
 
-// flushDroppedFilter selects the rows the flusher drops instead of writing:
-// VictoriaTraces' trace_id_idx rows (vlstorage.FlushRowKeeper). Hot VictoriaTraces
-// also returns them for unflushed data, so a live segment's buffered rows exceed
-// the rows of its committed objects by exactly these.
-var flushDroppedFilter = "{" + otelpb.TraceIDIndexStreamName + `=~".+"}`
+// flushDroppedFilter selects the rows the flusher drops instead of writing.
+// With the index table (tracesidx.Enabled) there are none: VictoriaTraces'
+// trace_id_idx rows are written to Parquet, so a committed segment's buffered
+// rows equal the rows of its objects (span and index objects). Without it the
+// index rows are dropped by the flush (vlstorage.FlushRowKeeper) and hot
+// VictoriaTraces also returns them for unflushed data, so a live segment's
+// buffered rows exceed the rows of its committed objects by exactly these.
+func flushDroppedFilter() string {
+	if tracesidx.Enabled {
+		return ""
+	}
+	return "{" + otelpb.TraceIDIndexStreamName + `=~".+"}`
+}
