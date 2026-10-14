@@ -400,6 +400,14 @@ func (s *Storage) Close() error {
 		s.localBuffer.Close()
 		logger.Infof("insert buffer closed")
 	}
+	// The pmeta bundles a compaction (or the flusher's last drain) left dirty are written on the
+	// flusher's ticks; a restart within one tick of them would leave the stored bundle as it was
+	// before, so the last write happens here, once the flusher has stopped.
+	if s.writer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		s.writer.persistCatalog(ctx)
+		cancel()
+	}
 	if s.persister != nil {
 		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
 			logger.Warnf("failed to persist label index: %s", err)

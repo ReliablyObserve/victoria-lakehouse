@@ -13,6 +13,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
@@ -406,4 +407,40 @@ func TestBufferView_RetiredSegmentHeldByALongQuery(t *testing.T) {
 		t.Fatalf("reap after the long query removed %d, want the retired segment", n)
 	}
 	e.exact("retired segment removed")
+}
+
+// A bundle a compaction left dirty reaches the bucket when the process is closed: the flusher
+// persists it on a tick, and a restart within one tick of a compaction used to leave the stored
+// bundle as it was before (the merged-away files listed, the compacted file missing, so the
+// compacted file came back without its metadata).
+func TestStorageClose_PersistsTheDirtyPmetaBundles(t *testing.T) {
+	e := newViewEnv(t)
+	cs := newCatalogStore(config.PmetaConfig{Enabled: true}, "traces/")
+	e.s.catalog = cs
+	e.s.cfg.Pmeta = config.PmetaConfig{Enabled: true}
+	e.s.writer.catalogObserver = &catalogObserver{store: cs, pool: e.s.pool}
+	bundles := func() int {
+		e.srv.mu.RLock()
+		defer e.srv.mu.RUnlock()
+		n := 0
+		for k := range e.srv.files {
+			if strings.Contains(k, "_pmeta") {
+				n++
+			}
+		}
+		return n
+	}
+	// what PmetaOnCompacted does: the replacement's contribution in, the merged-away file out
+	cs.OnFileFlush(pmeta.FileContribution{Partition: "t/dt=2026-10-14/hour=10", FileKey: "t/dt=2026-10-14/hour=10/compacted-L1-x.parquet", RowCount: 5, MinTimeNs: 1, MaxTimeNs: 2})
+	cs.RemoveFiles("t/dt=2026-10-14/hour=10", []string{"t/dt=2026-10-14/hour=10/a.parquet"})
+	if bundles() != 0 {
+		t.Fatal("a bundle reached the bucket before anything persisted it")
+	}
+	e.s.localBuffer = nil // the env closes its segments itself
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if bundles() == 0 {
+		t.Fatal("Close left the dirty pmeta bundle unwritten: a restart right after a compaction loses it")
+	}
 }
