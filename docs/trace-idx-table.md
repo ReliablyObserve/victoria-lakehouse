@@ -98,11 +98,34 @@ exact id (`*`, the duration join, the heatmap) reads each object whole.
 Every object is plain Parquet; `trace_id_idx = '<id>'` uses the bloom filter and the zone maps in DuckDB, pyarrow, Polars, DataFusion,
 Spark and ClickHouse (see the proof in the pull request).
 
+## The membership summary in pmeta
+
+A lookup of an id must not cost a request per object. pmeta keeps, per object of the table, a summary (`FacetIDSummary`, kind 7, in
+the partition's bundle `<tenant>/traces_idx/dt=/hour=/_pmeta.bundle`): for each row group its row count, the smallest and largest id
+(the fences), the time bounds of its rows and a copy of its bloom filter's bits. They are copies of what the object's own footer
+holds, so the facet is a cache of the Parquet objects, which stay the source of truth.
+
+- **Built** at flush from the bytes just written (`tracesidx.Summarize`, about 10 microseconds for a 5,000-row object) and after a
+  compaction from the output's footer and filters (at most three small ranged reads).
+- **Used** by every lookup that names an id: the objects whose summary rules the id out (fences or filter) are not read at all; an
+  object without a summary, and a partition without the facet, are never skipped.
+- **Rebuilt**: a lookup that reads an object whose summary is missing records it from the footer it has just read
+  (`lakehouse_trace_idx_summary_learned_total`), so a lost or unknown bundle costs one pass of lookups over the objects, nothing more.
+  A bundle is written on the flusher's ticks and when the process is closed.
+- **Bounded**: the bundles load lazily with the other facets (one GET per partition at start-up) and follow the shared eviction
+  policy; the decoder refuses any length larger than the bytes that follow it (`FuzzIDSummaryDecode`).
+- **Cost**: about 2.1 bytes of summary per index row at 250,000 rows per group (the filter is 10.5 bits per distinct id rounded up to a
+  power of two); measured resident bytes are in the pull request.
+
+The summary is the answer of the table's lookups only. The span objects keep the facets they have (the file-level bloom,
+`FacetBloom`, answers "which span files can hold this trace"); a second per-row-group copy of the span objects' bloom filters was
+measured and not built (the by-ID read of a large span object is dominated by the data reads of the row groups that match, and the
+filters sit next to each row group's data, so rebuilding a copy takes one ranged read per row group).
+
 ## Known limits of the spike
 
-- An id lookup across many small objects of one hour costs a first read per object (footer and filters) in each process; after that, only
-  the objects whose filter passes (about 1 % per object) cost reads. Compaction bounds the number of objects per hour. A persistent
-  membership summary (the pmeta layer) is the planned fix and is not part of the spike.
+- With the bundles lost, the first lookups read every object once (one request each) and record their summaries; compaction bounds the
+  number of objects per hour.
 - The buffer bridge between insert and select pods carries span rows only, so with insert peers the unflushed index rows of a peer are not
   served by a select pod; the objects are.
 - The compaction statistics (`/lakehouse/api/v1/stats/compaction`) count the idx objects in their file and byte totals and group them

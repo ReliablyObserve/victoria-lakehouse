@@ -21,22 +21,25 @@ def answers(signal, tenant, p):
     d0 = datetime.strptime(p["dt"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     d1 = d0 + timedelta(days=1)
     svc = "service.name" if signal == "logs" else '"resource_attr:service.name"'
+    # The writer-side truth counts spans. `*` also counts VictoriaTraces' trace_id_idx rows on the traces
+    # binary (as hot does), so the traces queries select the spans with span_id:*.
+    star = "*" if signal == "logs" else "span_id:*"
     if signal == "logs":
         ff = 'level:=ERROR service.name:=api-gateway | stats count() c'
         mf = 'format:=nginx | stats count() c'
     else:
         ff = '"resource_attr:service.name":=api-gateway status_code:=2 | stats count() c'
         mf = '"span_attr:rpc.system":=grpc | stats count() c'
-    mm = lib.lh_query(signal, tenant, "* | stats min(_time) mn, max(_time) mx")[0]
+    mm = lib.lh_query(signal, tenant, star + " | stats min(_time) mn, max(_time) mx")[0]
     a = {
-        "count": q("* | stats count() c"),
+        "count": q(star + " | stats count() c"),
         "by_service": {r["service.name" if signal == "logs" else "resource_attr:service.name"]: int(r["c"])
-                       for r in lib.lh_query(signal, tenant, "* | stats by (%s) count() c" % svc)},
+                       for r in lib.lh_query(signal, tenant, "%s | stats by (%s) count() c" % (star, svc))},
         "field_filter": q(ff),
-        "time_range": q("_time:[%s,%s) | stats count() c" % (t0, t1)),
+        "time_range": q("_time:[%s,%s) %s | stats count() c" % (t0, t1, star if signal == "traces" else "")),
         "map_filter": q(mf),
         "trace_by_id": q("trace_id:=%s | stats count() c" % p["trace_id"]),
-        "dt_filter": q("_time:[%sT00:00:00Z,%sT00:00:00Z) | stats count() c" % (d0.strftime("%Y-%m-%d"), d1.strftime("%Y-%m-%d"))),
+        "dt_filter": q("_time:[%sT00:00:00Z,%sT00:00:00Z) %s | stats count() c" % (d0.strftime("%Y-%m-%d"), d1.strftime("%Y-%m-%d"), star if signal == "traces" else "")),
         "ts_bounds": [lib.parse_rfc3339_ns(mm["mn"]), lib.parse_rfc3339_ns(mm["mx"])],
         "utc_check": 0,
         "tenant": [[tenant["account"], tenant["project"]]],

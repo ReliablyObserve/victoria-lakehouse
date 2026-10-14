@@ -137,7 +137,7 @@ func TestMultitenancy_S3NoUnprefixedData(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 var hivePartitionRe = regexp.MustCompile(
-	`^\d+/\d+/(logs|traces)/dt=\d{4}-\d{2}-\d{2}/hour=\d{2}/[a-f0-9]+(-\d+)?\.parquet$`,
+	`^\d+/\d+/(logs|traces|traces_idx)/dt=\d{4}-\d{2}-\d{2}/hour=\d{2}/[a-f0-9]+(-\d+)?\.parquet$`,
 )
 
 // tenantPrefixRe matches the first path element pair of every object a tenant
@@ -157,7 +157,7 @@ func isOwnMetadata(key string) bool {
 // foreignPmetaRe matches the _pmeta.bundle sidecars written under the default
 // tenant's prefix on behalf of every tenant, tenant path repeated.
 // KNOWN GAP #307: they belong under the owning tenant's prefix.
-var foreignPmetaRe = regexp.MustCompile(`^0/0/(logs|traces)/\d+/\d+/(logs|traces)/.*_pmeta\.bundle$`)
+var foreignPmetaRe = regexp.MustCompile(`^0/0/(logs|traces)/\d+/\d+/(logs|traces|traces_idx)/.*_pmeta\.bundle$`)
 
 // parquetKeys returns the Parquet objects among keys.
 func parquetKeys(keys []string) []string {

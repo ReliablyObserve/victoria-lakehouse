@@ -67,19 +67,10 @@ func (s *Storage) idxRouteOfQuery(queryStr string, unknownShape bool) idxRoute {
 	}
 	// An index row has none of the span fields: a positive exact filter on one of
 	// them (the same predicates the file-level bloom prunes on) cannot match it.
-	f := parseFilterFromQueryStr(queryStr)
-	if requiresSpanField(f) {
+	// An index row has none of the span fields: a filter that needs a non-empty value of
+	// one of them (an exact value, a phrase, a prefix, `field:*`) cannot match an index row.
+	if requiresSpanField(parseFilterFromQueryStr(queryStr)) {
 		return routeSpansOnly
-	}
-	for _, col := range s.registry.PromotedColumns() {
-		if !col.HasBloom {
-			continue
-		}
-		if f != nil {
-			if len(FilterExtractFieldValues(f, col.InternalName)) > 0 || len(FilterExtractFieldValues(f, col.ParquetColumn)) > 0 {
-				return routeSpansOnly
-			}
-		}
 	}
 	return routeBoth
 }
@@ -497,10 +488,12 @@ var idxRowFieldNames = map[string]struct{}{
 	tracesidx.StreamField: {}, tracesidx.IDField: {}, tracesidx.StartField: {}, tracesidx.EndField: {}, tracesidx.DurationField: {},
 }
 
-// requiresSpanField reports whether the AND-chain of f contains `field:*` (the field is
-// not empty) on a field an index row does not have: such a filter cannot match an index
-// row, so the query does not need the table. It is the shape of the span queries of the
-// dashboards and of VictoriaTraces' own (`span_id:*`).
+// requiresSpanField reports whether the AND-chain of f contains a filter that needs a
+// non-empty value (`field:*`, `field:=x`, `field:"x"`, `field:in(a,b)`, `field:x*`,
+// `field:~...` is not one: a regexp may match the empty value) on a field an index row
+// does not have: such a filter cannot match an index row, so the query does not need
+// the table. It is the shape of the span queries of the dashboards and of
+// VictoriaTraces' own (`span_id:*`, and stage 2 of a trace lookup: `trace_id: "X"`).
 func requiresSpanField(f *logstorage.Filter) bool {
 	if f == nil {
 		return false
@@ -522,12 +515,46 @@ func requiresSpanField(f *logstorage.Filter) bool {
 			if _, ok := idxRowFieldNames[name]; ok || name == "" {
 				return
 			}
-			inner := derefValue(v.FieldByName("f"))
-			if astTypeName(inner) == astTypePrefix && stringField(inner, "prefix") == "" {
+			if cannotMatchAbsentField(derefValue(v.FieldByName("f"))) {
 				found = true
 			}
 		}
 	}
 	visit(filterInner(f))
 	return found
+}
+
+// cannotMatchAbsentField reports whether a field filter is false for a row that lacks the
+// field (the empty value): a non-empty exact value, phrase, prefix or substring, a prefix
+// of any length (`field:*` is the prefix filter with an empty prefix: the field is not
+// empty), or an `in` list without the empty value.
+func cannotMatchAbsentField(f reflect.Value) bool {
+	switch astTypeName(f) {
+	case astTypePrefix:
+		return true
+	case astTypePhrase:
+		return stringField(f, "phrase") != ""
+	case astTypeExact:
+		return stringField(f, "value") != ""
+	case "filterExactPrefix":
+		return stringField(f, "prefix") != ""
+	case "filterSubstring":
+		return stringField(f, "substring") != ""
+	case astTypeIn:
+		vs := derefValue(f.FieldByName("values"))
+		if !vs.IsValid() || vs.Kind() != reflect.Struct {
+			return false
+		}
+		arr := vs.FieldByName("values")
+		if !arr.IsValid() || arr.Kind() != reflect.Slice || arr.Len() == 0 {
+			return false
+		}
+		for i := 0; i < arr.Len(); i++ {
+			if arr.Index(i).String() == "" {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }

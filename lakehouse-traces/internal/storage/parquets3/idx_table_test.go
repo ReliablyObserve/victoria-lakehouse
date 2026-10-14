@@ -307,6 +307,13 @@ func TestIdxTable_RouteOfQuery(t *testing.T) {
 		{"span_id:* `resource_attr:service.name`:~\"a.*\" | stats by (name) count()", false, routeSpansOnly},
 		{"span_id:* duration:>50000000 | stats count() n", false, routeSpansOnly},
 		{"span_id:* | fields trace_id, span_id, name | limit 1000", false, routeSpansOnly},
+		// stage 2 of a trace lookup (a phrase), an in list, a prefix, a substring
+		{`trace_id: "0123456789abcdef0123456789abcdef"`, false, routeSpansOnly},
+		{"trace_id:in(a,b) | stats count()", false, routeSpansOnly},
+		{"trace_id:abc*", false, routeSpansOnly},
+		{"name:~\"a.*\"", false, routeBoth}, // a regexp may match the empty value
+		{`trace_id:in("",b)`, false, routeBoth},
+		{`trace_id:=""`, false, routeBoth},
 		// ... but not on a field an index row has, nor under a NOT or an OR
 		{`trace_id_idx:* | stats count()`, false, routeBoth},
 		{`duration:*`, false, routeBoth},

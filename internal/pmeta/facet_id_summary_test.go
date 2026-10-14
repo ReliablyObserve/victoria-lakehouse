@@ -188,3 +188,100 @@ func TestIDSummary_DecodeRefusesLies(t *testing.T) {
 		}
 	}
 }
+
+func TestIDSummary_StoreHelpersAndErrors(t *testing.T) {
+	s := idStore()
+	// nothing to put: no-ops, no panic
+	s.PutIDSummary("", "k", &IDFile{})
+	s.PutIDSummary("p", "", &IDFile{})
+	s.PutIDSummary("p", "k", nil)
+	if s.HasIDSummary("p", "k") {
+		t.Error("a refused put left an entry")
+	}
+	if f, g, b := s.IDSummaryStats("nope"); f != 0 || g != 0 || b != 0 {
+		t.Errorf("stats of a missing partition: %d %d %d", f, g, b)
+	}
+	// a store without the facet registered ignores the put
+	bare := NewStore()
+	bare.PutIDSummary("p", "k", &IDFile{Rows: 1})
+	if bare.HasIDSummary("p", "k") {
+		t.Error("an unregistered facet took a summary")
+	}
+	// PutIDSummary creates the facet on demand and marks the bundle dirty
+	sum, ids := summaryFor("a", 50, 50)
+	s.PutIDSummary("p", "a", sum)
+	if !s.HasIDSummary("p", "a") || !s.Bundle("p").Dirty() {
+		t.Error("PutIDSummary did not record the summary and mark the bundle dirty")
+	}
+	if k, ok := s.IDSummaryMayContain("p", []string{"a"}, ids[3]); !ok || len(k) != 1 {
+		t.Errorf("%v %v", k, ok)
+	}
+	f, _ := s.Get("p", FacetIDSummary)
+	if f.Kind() != FacetIDSummary || f.EstimateBytes() < 256 {
+		t.Errorf("kind %d, estimate %d", f.Kind(), f.EstimateBytes())
+	}
+	// Decode merges into the facet and refuses garbage
+	var buf bytes.Buffer
+	if err := f.Encode(&buf); err != nil {
+		t.Fatal(err)
+	}
+	other := NewIDSummaryFactory()("p")
+	if err := other.Decode(bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Decode(bytes.NewReader([]byte{9, 9, 9})); err == nil {
+		t.Error("garbage decoded")
+	}
+	// a facet of another kind is not an id summary
+	if _, ok := (&Store{}).IDSummaryMayContain("x", nil, "y"); ok {
+		t.Error("an empty store answered")
+	}
+}
+
+func TestIDSummary_DecodeBounds(t *testing.T) {
+	good := func() []byte {
+		s, _ := summaryFor("g", 10, 10)
+		facet := NewIDSummaryFactory()("p").(*idSummaryFacet)
+		facet.Merge(FileContribution{FileKey: "k", IDSummary: s})
+		var b bytes.Buffer
+		_ = facet.Encode(&b)
+		return b.Bytes()
+	}
+	// wrong version
+	b := good()
+	b[0] = 2
+	if _, err := decodeIDSummary(b); err == nil {
+		t.Error("version 2 accepted")
+	}
+	// trailing bytes
+	if _, err := decodeIDSummary(append(good(), 0)); err == nil {
+		t.Error("trailing bytes accepted")
+	}
+	// a filter whose declared length is not a multiple of 32
+	for _, cut := range []int{1, 2, 5} {
+		g := good()
+		if _, err := decodeIDSummary(g[:len(g)-cut]); err == nil {
+			t.Errorf("truncated by %d accepted", cut)
+		}
+	}
+	// declared sizes beyond the bounds
+	huge := []byte{idSummaryVersion}
+	huge = binaryUvarint(huge, uint64(idSummaryMaxFiles)+1)
+	if _, err := decodeIDSummary(huge); err == nil {
+		t.Error("too many files accepted")
+	}
+	// the same key twice: the last wins, no error
+	s, _ := summaryFor("g", 10, 10)
+	facet := NewIDSummaryFactory()("p").(*idSummaryFacet)
+	facet.Merge(FileContribution{FileKey: "k", IDSummary: s})
+	facet.Merge(FileContribution{FileKey: "k", IDSummary: s})
+	if len(facet.byKey) != 1 {
+		t.Error("a key merged twice is two entries")
+	}
+}
+
+func binaryUvarint(b []byte, v uint64) []byte {
+	var buf bytes.Buffer
+	putUvarint(&buf, v)
+	return append(b, buf.Bytes()...)
+}
