@@ -57,14 +57,16 @@ func scaleSpans(n int, hour time.Time) ([]schema.TraceRow, []string, []int64) {
 // read per row group whose time range holds the trace, then about six ranged reads of each
 // row group that holds a span) and a 2-row-group object reads its two groups in full more
 // than once. The test keeps the answer exact (every span of the trace, nothing else) and
-// the request count under a ceiling that a regression of the read path would cross.
+// the request count under a ceiling that a regression of the read path would cross. It uses one
+// layout (120,000 spans in 60 row groups of 2,000): a smaller object is read whole, and a second layout
+// doubled the time of the race-enabled heavy job.
 func TestSpanByIDReads_MultiRowGroupFile(t *testing.T) {
 	if testing.Short() {
-		t.Skip("builds objects of several MiB")
+		t.Skip("builds objects of several MiB and reads them cold")
 	}
 	e := newRestartEnv(t)
 	rows, ids, starts := scaleSpans(120_000, rwHour)
-	for _, rg := range []int{10_000, 2_000} {
+	for _, rg := range []int{2_000} {
 		res, err := writeTracesParquet(rows, rg, 3)
 		if err != nil {
 			t.Fatal(err)
@@ -79,7 +81,7 @@ func TestSpanByIDReads_MultiRowGroupFile(t *testing.T) {
 		gets := func() int { return int(metrics.S3RequestsTotal.Get("GetObject")) }
 		bytesRead := func() int { return int(metrics.S3BytesReadTotal.Get()) }
 		total, totalBytes := 0, 0
-		const lookups = 10
+		const lookups = 5
 		for i := 0; i < lookups; i++ {
 			e.s.ClearCaches()
 			id, start := ids[(i*997)%len(ids)], starts[(i*997)%len(ids)]

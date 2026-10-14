@@ -271,8 +271,16 @@ def verify_compacted():
             idx_needs_merge = (prefix, "traces_idx") in mergeable
             print("compacted layer %-22s files=%-3d compacted=%-3d lone=%-3d mergeable=%-5s"
                   % ("%s/traces_idx" % prefix, len(idx_ks), len(idx_compacted), len(idx_lone), idx_needs_merge))
-            if (idx_needs_merge and not idx_compacted) or idx_lone_rewritten:
-                bad.append((prefix, "traces_idx", len(idx_compacted), len(idx_lone_rewritten), 0, 0))
+            # Every partition that held two or more raw index objects is down to one object: the scans that
+            # follow must have nothing left to merge (the first scan does not always take every partition).
+            idx_unmerged = []
+            for part, rel in raw.get((prefix, "traces_idx"), {}).items():
+                if len(rel) >= 2:
+                    left = [k for k in idx_ks if "/%s/" % part in k]
+                    if len(left) > 1:
+                        idx_unmerged.append(part)
+            if (idx_needs_merge and not idx_compacted) or idx_lone_rewritten or idx_unmerged:
+                bad.append((prefix, "traces_idx", len(idx_compacted), len(idx_lone_rewritten), len(idx_unmerged), 0))
     if bad:
         sys.exit("compacted layer is not complete and consistent (prefix, signal, compacted, lone rewritten, rows, lakehouse): %s" % bad)
 
