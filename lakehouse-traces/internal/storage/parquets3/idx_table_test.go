@@ -14,6 +14,7 @@ import (
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
@@ -187,7 +188,19 @@ func TestIdxTable_TenantIsolation(t *testing.T) {
 	if !tracesidx.Enabled {
 		t.Skip("the trace_id_idx table is off")
 	}
+	for _, withPmeta := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pmeta=%v", withPmeta), func(t *testing.T) { idxTenantIsolation(t, withPmeta) })
+	}
+}
+
+func idxTenantIsolation(t *testing.T, withPmeta bool) {
 	e := newTenantRestartEnv(t)
+	if withPmeta { // the summaries are per tenant partition: one tenant's never answers for another's objects
+		cfg := config.PmetaConfig{Enabled: true}
+		cs := newCatalogStore(cfg, "traces/")
+		e.s.catalog, e.s.cfg.Pmeta = cs, cfg
+		e.bw.catalogObserver = &catalogObserver{store: cs, pool: e.s.pool}
+	}
 	a, b := logstorage.TenantID{AccountID: 1}, logstorage.TenantID{AccountID: 2, ProjectID: 3}
 	idsA := e.ingestTraces(a, 4, rwHour.Add(time.Minute))
 	idsB := e.ingestTraces(b, 4, rwHour.Add(2*time.Minute))
@@ -540,6 +553,54 @@ func TestSiblingTenantPartition(t *testing.T) {
 	} {
 		if got := siblingTenantPartition(in); got != want {
 			t.Errorf("siblingTenantPartition(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Two writers of one partition each write the partition's bundle, the later PUT replacing the
+// earlier one (the bundle has one key): the objects the loser summarised have no summary any more.
+// That costs the shortcut, never the answer: an object without a summary is read, and the read
+// records its summary again.
+func TestIdxTable_BundleOverwrittenByAnotherWriterLosesOnlyTheShortcut(t *testing.T) {
+	if !tracesidx.Enabled {
+		t.Skip("the trace_id_idx table is off")
+	}
+	e := newRestartEnv(t)
+	cfg := config.PmetaConfig{Enabled: true}
+	cs := newCatalogStore(cfg, "traces/")
+	e.s.catalog, e.s.cfg.Pmeta = cs, cfg
+	e.bw.catalogObserver = &catalogObserver{store: cs, pool: e.s.pool}
+	tenant := logstorage.TenantID{}
+	var ids []string
+	for g := 0; g < 12; g++ {
+		ids = append(ids, e.ingestTraces(tenant, 4, rwHour.Add(time.Duration(g)*time.Minute))...)
+		e.flush()
+	}
+	e.reap()
+	// the other writer's bundle: it knows only the last six objects
+	var lost []string
+	for _, fi := range e.objects() {
+		if tracesidx.IsKey(fi.Key) && len(lost) < 6 {
+			lost = append(lost, fi.Key)
+		}
+	}
+	tp := manifest.ExtractTenantPartition(lost[0])
+	cs.RemoveFiles(tp, lost)
+	if _, err := cs.PersistDirty(context.Background(), poolObjectStore{e.s.pool}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := newCatalogStore(cfg, "traces/")
+	e.s.catalog, e.bw.catalogObserver = fresh, &catalogObserver{store: fresh, pool: e.s.pool}
+	e.s.WarmCatalogFromS3(context.Background())
+	from, to := rwWindow()
+	for _, id := range ids { // every id is found, whichever bundle knows its object
+		if len(e.rows(tenant, stage1(id), from, to)) != 1 {
+			t.Fatalf("stage 1 missed %s", id)
+		}
+	}
+	for _, k := range lost {
+		if !fresh.HasIDSummary(tp, k) {
+			t.Errorf("the read of %s did not record its summary again", k)
 		}
 	}
 }
