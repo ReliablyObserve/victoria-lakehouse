@@ -352,20 +352,6 @@
     - internal/manifest/idx_stale_test.go#TestIdxObjectsAreNeverStale
     - internal/compaction/idx_force_test.go#TestScan_SecondScanDoesNothing_WithIdxObjects
     - internal/compaction/idx_force_test.go#TestScan_IdxObjectsOfDifferentFingerprintsMergeAtOnce
-    - lakehouse-traces/internal/storage/parquets3/span_byid_scale_test.go#TestSpanByIDReads_MultiRowGroupFile
-    - lakehouse-traces/internal/storage/parquets3/buffer_view_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles
-    - internal/storage/parquets3/buffer_view_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles
-    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_MayContain
-    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_EncodeDecodeRoundTripAndTheBundle
-    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_RemoveAbsorbAndEmpty
-    - internal/pmeta/facet_id_summary_test.go#FuzzIDSummaryDecode
-    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_DecodeRefusesLies
-    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_StoreHelpersAndErrors
-    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_DecodeBounds
-    - internal/tracesidx/summary_test.go#TestSummarizeCopiesTheFooter
-    - internal/tracesidx/summary_test.go#TestSummarizeRefusesWhatIsNotAnIdxObject
-    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_PmetaSummaryAnswersMembership
-    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_TraceIDQueryKeepsItsTimeBound
     - internal/smartcache/get_range_test.go#TestGetRange_TiersInOrder
     - internal/smartcache/get_range_test.go#TestGetRange_PeerOwnerThenS3Fallback
     - internal/smartcache/get_range_test.go#TestGetRange_NoDiskTierAndFetchError
@@ -401,3 +387,37 @@
     filter, read with a lookup that costs a handful of ranged reads whatever its size, compacted by
     the same writer the flush uses, and readable by DuckDB, pyarrow, Polars, DataFusion, Spark and
     ClickHouse.
+
+- id: lh.feature.traces.idx_pmeta_summary
+  title: A pmeta membership summary of every trace_id_idx object (a lookup reads the objects that can hold the id)
+  status: shipped
+  area: traces
+  surfaces: [api, storage]
+  tests:
+    - lakehouse-traces/internal/storage/parquets3/span_byid_scale_test.go#TestSpanByIDReads_MultiRowGroupFile
+    - lakehouse-traces/internal/storage/parquets3/buffer_view_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles
+    - internal/storage/parquets3/buffer_view_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_MayContain
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_EncodeDecodeRoundTripAndTheBundle
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_RemoveAbsorbAndEmpty
+    - internal/pmeta/facet_id_summary_test.go#FuzzIDSummaryDecode
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_DecodeRefusesLies
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_StoreHelpersAndErrors
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_DecodeBounds
+    - internal/tracesidx/summary_test.go#TestSummarizeCopiesTheFooter
+    - internal/tracesidx/summary_test.go#TestSummarizeRefusesWhatIsNotAnIdxObject
+    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_PmetaSummaryAnswersMembership
+    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_TraceIDQueryKeepsItsTimeBound
+  docs:
+    - docs/trace-idx-table.md
+  highlight: >-
+    **Trace-by-ID reads only the index objects that can hold the trace**: pmeta keeps a small summary of every trace index object (id fences, time bounds, bloom filter), so a lookup costs one request instead of one per object, cold or after a restart.
+  description: >-
+    Each object of the trace_id_idx table has a summary in pmeta (the id fences, the time bounds and a copy
+    of the bloom filter of every row group; `FacetIDSummary`, saved with the partition bundle and rebuilt
+    from the footers), built at flush and at compaction. A lookup of an id (stage 1 of trace-by-ID) reads
+    only the objects whose summary cannot rule the id out, with no read for the others, with every in-process
+    cache empty and right after a restart; the bundles are written when the process closes. A trace_id
+    query is bounded by the exact [start, end] of the idx rows (no widening to now) and the span queries of a
+    trace lookup do not read the table. Measured request counts per lookup, main against this build, are
+    in the pull request and in docs/trace-idx-table.md.
