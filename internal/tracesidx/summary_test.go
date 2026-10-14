@@ -85,3 +85,39 @@ func TestSummarizeRefusesWhatIsNotAnIdxObject(t *testing.T) {
 		t.Error("nothing was summarised")
 	}
 }
+
+// BenchmarkSummarize is the cost the flush adds for the membership summary of an object it has just
+// written (5,000 rows, the idx object of a 30,000-span group), next to BenchmarkMarshal.
+func BenchmarkSummarize(b *testing.B) {
+	rows := make([]Row, 5000)
+	for i := range rows {
+		id := fmt.Sprintf("%032x", uint64(i)*2654435761)
+		rows[i] = Row{Time: int64(i), Stream: StreamOf(id), TraceID: id, Start: int64(i), End: int64(i) + 5, Duration: 5}
+	}
+	data, _, err := Marshal(append([]Row(nil), rows...), 3)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := Summarize(data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMarshal(b *testing.B) {
+	rows := make([]Row, 5000)
+	for i := range rows {
+		id := fmt.Sprintf("%032x", uint64(i)*2654435761)
+		rows[i] = Row{Time: int64(i), Stream: StreamOf(id), TraceID: id, Start: int64(i), End: int64(i) + 5, Duration: 5}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := Marshal(append([]Row(nil), rows...), 3); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
