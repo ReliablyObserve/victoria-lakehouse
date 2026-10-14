@@ -49,7 +49,7 @@ func (p *LevelPolicy) Eligible(files []manifest.FileInfo, partitionTime time.Tim
 func (p *LevelPolicy) SelectFiles(files []manifest.FileInfo, level int, schemaFP string) []manifest.FileInfo {
 	var selected []manifest.FileInfo
 	for _, f := range files {
-		if f.CompactionLevel == level && f.SchemaFingerprint == schemaFP {
+		if f.CompactionLevel == level && f.PlanFingerprint() == schemaFP {
 			selected = append(selected, f)
 		}
 	}

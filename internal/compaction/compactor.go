@@ -158,10 +158,10 @@ func (c *Compactor) Compact(ctx context.Context, partition string, files []manif
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no files to compact")
 	}
-	fp := files[0].SchemaFingerprint
+	fp := files[0].PlanFingerprint()
 	for _, f := range files[1:] {
-		if f.SchemaFingerprint != fp {
-			return nil, fmt.Errorf("schema fingerprint mismatch: %s vs %s", fp, f.SchemaFingerprint)
+		if f.PlanFingerprint() != fp {
+			return nil, fmt.Errorf("schema fingerprint mismatch: %s vs %s", fp, f.PlanFingerprint())
 		}
 	}
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -111,5 +112,80 @@ func TestRecompactHandler_ReportsIdxObjectsSeparately(t *testing.T) {
 	}
 	if out.InputFiles != 5 || out.IdxInputFiles != 3 || out.OutputFiles != 2 || out.IdxOutputFiles != 1 {
 		t.Fatalf("answer %+v, want 5 inputs (3 idx) and 2 outputs (1 idx)", out)
+	}
+}
+
+// With the trace_id_idx objects next to the span objects, a scan that has done all the work
+// there is leaves nothing to do: every group (the spans and the idx objects of every tenant) is
+// planned on its own, and a compacted idx object is never planned again alone (the storage-health
+// cell of the readers fixture: "scans after convergence must be no-ops").
+func TestScan_SecondScanDoesNothing_WithIdxObjects(t *testing.T) {
+	w := newPlanWorld(t, config.ModeTraces)
+	now := time.Now()
+	for i, tenant := range []string{"1001/0", "1002/0", "1003/7"} {
+		for _, fp := range []string{planFP, ""} { // flushed (the span schema's fingerprint) and listing-adopted (none)
+			w.add(tenant, partitionAt(now.Add(-72*time.Hour)), 1, 2, 3, nil)
+			w.addIdx(tenant, partitionAt(now.Add(-72*time.Hour)), 1, 2, 3, fp)
+			w.add(tenant, partitionAt(now.Add(-50*time.Hour)), 0, 3+i, 3, nil)
+			w.addIdx(tenant, partitionAt(now.Add(-50*time.Hour)), 0, 3+i, 3, fp)
+			w.add(tenant, partitionAt(now.Add(-3*time.Hour)), 0, 10, 3, nil)
+			w.addIdx(tenant, partitionAt(now.Add(-3*time.Hour)), 0, 10, 3, fp)
+			w.add(tenant, partitionAt(now.Add(-2*time.Hour)), 1, 1, 3, nil)
+			w.addIdx(tenant, partitionAt(now.Add(-2*time.Hour)), 1, 1, 3, fp)
+		}
+	}
+	sched := w.shippedScheduler()
+	rows := w.rows()
+	for scan := 0; scan < 50; scan++ {
+		n, err := sched.Scan(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+	if got := w.rows(); got != rows {
+		t.Fatalf("rows not conserved: %d -> %d", rows, got)
+	}
+	for scan := 1; scan <= 3; scan++ {
+		n, err := sched.Scan(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			var keys []string
+			for _, files := range w.m.AllFiles() {
+				for _, f := range files {
+					keys = append(keys, f.Key)
+				}
+			}
+			sort.Strings(keys)
+			t.Fatalf("scan %d after convergence: compactions=%d, want 0; objects: %v", scan, n, keys)
+		}
+	}
+}
+
+// The idx objects of a group are merged together whatever fingerprint the manifest records for
+// them: an object the flush wrote (it records the writer's fingerprint) and one adopted from a
+// listing (none) are the same kind of object, so one scan merges them into one output instead of
+// one output per fingerprint that a later scan merges again (the readers fixture's "scans after
+// convergence must be no-ops").
+func TestScan_IdxObjectsOfDifferentFingerprintsMergeAtOnce(t *testing.T) {
+	w := newPlanWorld(t, config.ModeTraces)
+	p := partitionAt(time.Now().Add(-50 * time.Hour))
+	w.addIdx("1001/0", p, 0, 2, 3, planFP)
+	w.addIdx("1001/0", p, 0, 2, 3, "")
+	sched := w.shippedScheduler()
+	n, err := sched.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := w.keys(p)
+	if n != 1 || len(live) != 1 {
+		t.Fatalf("first scan: %d compactions, live objects %v; want 1 compaction and one object", n, live)
+	}
+	if n, err := sched.Scan(context.Background()); err != nil || n != 0 {
+		t.Fatalf("second scan: %d compactions (%v), want 0", n, err)
 	}
 }

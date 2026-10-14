@@ -260,7 +260,7 @@ func (p *LevelPolicy) planGroup(files []manifest.FileInfo, pt, now time.Time, cu
 		var sel []manifest.FileInfo
 		top := 0
 		for _, f := range small {
-			if f.SchemaFingerprint == fp {
+			if f.PlanFingerprint() == fp {
 				sel = append(sel, f)
 				if f.CompactionLevel > top {
 					top = f.CompactionLevel
@@ -372,7 +372,7 @@ func majorityFingerprint(files []manifest.FileInfo, currentFP string, keep func(
 	counts := make(map[string]int)
 	for _, f := range files {
 		if keep(f) {
-			counts[f.SchemaFingerprint]++
+			counts[f.PlanFingerprint()]++
 		}
 	}
 	var best string

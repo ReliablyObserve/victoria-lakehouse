@@ -55,14 +55,14 @@ func (w *BatchWriter) uploadIdxGroup(ctx context.Context, up *traceGroupUpload) 
 	metrics.InsertBytesUploaded.Add(len(up.idxData))
 	rows := int64(len(up.idxRows))
 	fi := manifest.FileInfo{
-		Key:               key,
-		Bucket:            bucket,
-		Size:              int64(len(up.idxData)),
-		RowCount:          rows,
-		MinTimeNs:         up.idxInfo.MinTime,
-		MaxTimeNs:         up.idxInfo.MaxTime,
-		RawBytes:          rows * tracesidx.RawBytesPerRow,
-		SchemaFingerprint: schemaFingerprint(w.mode),
+		Key:       key,
+		Bucket:    bucket,
+		Size:      int64(len(up.idxData)),
+		RowCount:  rows,
+		MinTimeNs: up.idxInfo.MinTime,
+		MaxTimeNs: up.idxInfo.MaxTime,
+		RawBytes:  rows * tracesidx.RawBytesPerRow,
+		// no SchemaFingerprint: the table has a layout of its own, and compaction plans every idx object as one kind
 	}
 	if !w.manifest.AddFileUnlessRetired(up.partition, fi) {
 		w.manifest.Retire(key, "", true)

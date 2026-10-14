@@ -304,6 +304,18 @@ func fragmentedGroups(files []FileInfo) (bool, int64) {
 	return fragmented, bytes
 }
 
+// PlanFingerprint is the schema fingerprint compaction groups and selects files by. The
+// trace_id_idx objects have a layout of their own (no span schema to fingerprint): the flush
+// records the writer's fingerprint on them and an object adopted from a listing has none, so
+// grouping by the recorded value would split one group's objects into two sets that are merged
+// one after the other. Every idx object plans as the same kind.
+func (f *FileInfo) PlanFingerprint() string {
+	if tracesidx.IsKey(f.Key) {
+		return ""
+	}
+	return f.SchemaFingerprint
+}
+
 // StaleAgainst reports whether the file was written under a schema fingerprint other
 // than currentFP (empty disables the check). The trace_id_idx objects have a fixed
 // layout of their own, not the span schema the fingerprint describes, so they are
