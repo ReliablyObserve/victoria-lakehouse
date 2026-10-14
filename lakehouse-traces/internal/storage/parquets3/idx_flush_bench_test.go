@@ -46,10 +46,10 @@ func BenchmarkFlushGroupWrite(b *testing.B) {
 		}
 		total = len(r.Data)
 		if tracesidx.Enabled {
-			b.StopTimer()
-			cp := append([]tracesidx.Row(nil), idx...)
-			b.StartTimer()
-			data, _, err := tracesidx.Marshal(cp, 3)
+			// The flush hands Marshal a slice of its own (the rows of the group), so the copy is part of the
+			// work. (Stopping and starting the timer per iteration reads the memory statistics each time,
+			// a stop-the-world that skews the timing of a 40 ms operation.)
+			data, _, err := tracesidx.Marshal(append([]tracesidx.Row(nil), idx...), 3)
 			if err != nil {
 				b.Fatal(err)
 			}
