@@ -71,6 +71,13 @@ func (w *BatchWriter) uploadIdxGroup(ctx context.Context, up *traceGroupUpload) 
 	}
 	w.totalBytes.Add(int64(len(up.idxData)))
 	metrics.TraceIdxRowsFlushed.Add(int(rows))
+	// The object's membership summary (fences, time bounds, bloom filter) goes to pmeta: the
+	// lookups of the table skip the object, without a read, for an id it cannot hold.
+	if sum, err := tracesidx.Summarize(up.idxData); err == nil {
+		w.catalogObserver.OnIdxFlush(key, sum)
+	} else {
+		logger.Warnf("trace_id_idx summary of %s: %s", key, err)
+	}
 	logger.Infof("flushed trace_id_idx partition; partition=%s, tenant=%d:%d, rows=%d, bytes=%d, key=%s",
 		up.partition, up.accountID, up.projectID, rows, len(up.idxData), key)
 	return nil

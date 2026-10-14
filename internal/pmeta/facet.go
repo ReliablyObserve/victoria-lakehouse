@@ -28,6 +28,8 @@ const (
 	FacetColumnStats  FacetKind = 4 // per-field min/max/null (was manifest column stats)
 	FacetFieldCatalog FacetKind = 5 // dropdown value catalog: dict + bitmaps + HLL (new)
 	FacetTraceIdx     FacetKind = 6 // VIRTUAL: backed by the Parquet footer KV, not bundle bytes
+	// FacetIDSummary = 7 (facet_id_summary.go): per-file, per-row-group id fences, time bounds and
+	// a copy of the Parquet bloom filter, rebuilt from the file footers.
 )
 
 // FileContribution is the per-file delta handed to every facet at flush time so
@@ -60,6 +62,9 @@ type FileContribution struct {
 	// TraceIDHex is the file's footer attestation that every trace_id value is
 	// lowercase hex (schema.TraceIDHexMetaKey), consumed by FacetFileMeta.
 	TraceIDHex bool
+	// IDSummary: the file's id membership summary (fences, time bounds and bloom filter
+	// copies per row group), consumed by FacetIDSummary. Nil for files that have none.
+	IDSummary *IDFile
 }
 
 // Facet is the per-partition unit of metadata. One implementation per kind.

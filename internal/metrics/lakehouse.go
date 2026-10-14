@@ -567,8 +567,13 @@ var (
 	// TraceIdxLookupBloomSkips counts the row groups a lookup ruled out with the bloom
 	// filter cached with the object's footer, without reading anything.
 	TraceIdxLookupBloomSkips = NewCounter("lakehouse_trace_idx_lookup_bloom_skips_total")
-	TraceIdxRangeReads       = NewCounterVec("lakehouse_trace_idx_range_reads_total", "read")
-	TraceIdxRangeBytes       = NewCounterVec("lakehouse_trace_idx_range_bytes_total", "read")
+	// TraceIdxSummarySkips counts the trace_id_idx objects a lookup skipped without a read
+	// because their pmeta summary (fences, bloom filter) ruled the id out; TraceIdxSummaryLearned
+	// the summaries recorded from a footer read for an object that had none (rebuild).
+	TraceIdxSummarySkips   = NewCounter("lakehouse_trace_idx_summary_skips_total")
+	TraceIdxSummaryLearned = NewCounter("lakehouse_trace_idx_summary_learned_total")
+	TraceIdxRangeReads     = NewCounterVec("lakehouse_trace_idx_range_reads_total", "read")
+	TraceIdxRangeBytes     = NewCounterVec("lakehouse_trace_idx_range_bytes_total", "read")
 
 	// TraceIdxPreFilterFiles records the file-narrowing efficiency of
 	// filterFilesByTraceIdx (the pre-filter that runs after the bloom

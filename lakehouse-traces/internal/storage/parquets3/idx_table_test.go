@@ -13,7 +13,9 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tracesidx"
 )
 
@@ -346,7 +348,12 @@ func TestIdxTable_LookupReadsStayFlatAcrossObjects(t *testing.T) {
 	var later int
 	for i := 10; i < 60; i += 5 {
 		id := ids[i]
-		e.s.ClearCaches()
+		// the data tiers only: the locator keeps the parsed footers and filters, which is what
+		// keeps these lookups flat (ClearCaches would drop it too, as a restarted process has)
+		e.s.memCache.Clear()
+		if e.s.diskCache != nil {
+			_ = e.s.diskCache.Clear()
+		}
 		before = gets()
 		if len(e.rows(tenant, stage1(id), from, to)) != 1 {
 			t.Fatal("stage 1 missed")
@@ -359,5 +366,114 @@ func TestIdxTable_LookupReadsStayFlatAcrossObjects(t *testing.T) {
 	}
 	if per := float64(later) / 10; per > 3.5 {
 		t.Errorf("a later lookup made %.1f GETs on average: objects that cannot hold the id were read again", per)
+	}
+}
+
+// The stage-2 span query of a trace lookup is bounded by the trace's exact [start, end]
+// that the stage-1 lookup of the idx table returned (as on hot VictoriaTraces), and the
+// storage plans the span objects of that window only: widening a trace_id query to
+// "now" would put every span object after the trace's start into the plan.
+func TestIdxTable_TraceIDQueryKeepsItsTimeBound(t *testing.T) {
+	if !tracesidx.Enabled {
+		t.Skip("the trace_id_idx table is off")
+	}
+	start := time.Now().Add(-6 * time.Hour).Truncate(time.Second)
+	end := start.Add(90 * time.Millisecond)
+	q, err := logstorage.ParseQueryAtTimestamp(`trace_id:="0123456789abcdef0123456789abcdef"`, end.UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = q.CloneWithTimeFilter(end.UnixNano(), start.UnixNano(), end.UnixNano())
+	gotQ, gotEnd := widenTraceIDQueryToNow(q, start.UnixNano(), end.UnixNano())
+	if gotEnd != end.UnixNano() {
+		t.Errorf("upper bound widened from %d to %d", end.UnixNano(), gotEnd)
+	}
+	if s, e := gotQ.GetFilterTimeRange(); s != start.UnixNano() || e != end.UnixNano() {
+		t.Errorf("the query's own time range became [%d, %d], want [%d, %d]", s, e, start.UnixNano(), end.UnixNano())
+	}
+}
+
+// pmeta holds a summary of every idx object (fences and a copy of its bloom filter), so a
+// lookup of an id reads the objects that can hold it and no others, with every in-process
+// cache emptied (the first lookup after a restart is no different):
+//   - from the summaries the flush recorded;
+//   - after the bundles were lost: the lookups that touch an object recreate its summary
+//     from the footer they read, one pass over the objects, then the lookups are flat again;
+//   - after a restart: the summaries come back with their bundles, one GET per partition.
+func TestIdxTable_PmetaSummaryAnswersMembership(t *testing.T) {
+	if !tracesidx.Enabled {
+		t.Skip("the trace_id_idx table is off")
+	}
+	e := newRestartEnv(t)
+	cfg := config.PmetaConfig{Enabled: true}
+	install := func(cs *pmeta.Store) {
+		e.s.catalog = cs
+		e.s.cfg.Pmeta = cfg
+		e.bw.catalogObserver = &catalogObserver{store: cs, pool: e.s.pool}
+	}
+	install(newCatalogStore(cfg, "traces/"))
+	tenant := logstorage.TenantID{}
+	var ids []string
+	const objects = 16
+	for g := 0; g < objects; g++ {
+		ids = append(ids, e.ingestTraces(tenant, 6, rwHour.Add(time.Duration(g)*time.Minute))...)
+		e.flush()
+	}
+	e.reap()
+	from, to := rwWindow()
+	gets := func() int { return int(metrics.S3RequestsTotal.Get("GetObject")) }
+	skips := func() int { return int(metrics.TraceIdxSummarySkips.Get()) }
+	lookups := func(n int) (perLookup float64) {
+		t.Helper()
+		total := 0
+		for i := 0; i < n; i++ {
+			id := ids[(i*7+3)%len(ids)]
+			e.s.ClearCaches() // memory and disk tiers, footer cache and the idx locator
+			before := gets()
+			if len(e.rows(tenant, stage1(id), from, to)) != 1 {
+				t.Fatalf("stage 1 missed %s", id)
+			}
+			total += gets() - before
+		}
+		return float64(total) / float64(n)
+	}
+
+	if per := lookups(20); per > 2.5 {
+		t.Errorf("with the flush's summaries a lookup made %.1f GETs on average, want about one (the object that holds the id)", per)
+	}
+	if skips() == 0 {
+		t.Error("no object was skipped through its summary")
+	}
+
+	// the bundles are lost: a pass of lookups recreates the summaries
+	install(newCatalogStore(cfg, "traces/"))
+	learned := int(metrics.TraceIdxSummaryLearned.Get())
+	before := gets()
+	e.s.ClearCaches()
+	if len(e.rows(tenant, stage1(ids[5]), from, to)) != 1 {
+		t.Fatal("stage 1 missed")
+	}
+	if first := gets() - before; first < objects {
+		t.Errorf("without summaries the first lookup made %d GETs for %d objects: it must read them (and learn them)", first, objects)
+	}
+	if got := int(metrics.TraceIdxSummaryLearned.Get()) - learned; got < objects {
+		t.Errorf("%d summaries learned, want %d", got, objects)
+	}
+	if per := lookups(20); per > 2.5 {
+		t.Errorf("after learning a lookup made %.1f GETs on average", per)
+	}
+
+	// restart: the persisted bundles are loaded, nothing is learned
+	if n, err := e.s.catalog.PersistDirty(context.Background(), poolObjectStore{e.s.pool}); err != nil || n == 0 {
+		t.Fatalf("persist: %d bundles, %v", n, err)
+	}
+	install(newCatalogStore(cfg, "traces/"))
+	e.s.WarmCatalogFromS3(context.Background())
+	learned = int(metrics.TraceIdxSummaryLearned.Get())
+	if per := lookups(20); per > 2.5 {
+		t.Errorf("after a restart a lookup made %.1f GETs on average", per)
+	}
+	if got := int(metrics.TraceIdxSummaryLearned.Get()) - learned; got != 0 {
+		t.Errorf("%d summaries were learned after the bundles were loaded, want 0", got)
 	}
 }

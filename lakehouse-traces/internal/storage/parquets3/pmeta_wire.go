@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -84,8 +85,9 @@ func newCatalogStore(cfg config.PmetaConfig, prefix string) *pmeta.Store {
 	s.SetDict(dict) // include the interned strings in ResidentBytes
 	s.Register(pmeta.FacetFieldCatalog,
 		pmeta.NewFieldCatalogFactoryCapped(dict, threshold, effectiveSketchFields(cfg.AlwaysSketchFields)))
-	s.Register(pmeta.FacetFileMeta, pmeta.NewFileMetaFactory()) // dual-write of _file_metadata.json
-	s.Register(pmeta.FacetBloom, pmeta.NewBloomFactory(0.01))   // dual-write of _bloom.bin (same fpRate)
+	s.Register(pmeta.FacetFileMeta, pmeta.NewFileMetaFactory())   // dual-write of _file_metadata.json
+	s.Register(pmeta.FacetBloom, pmeta.NewBloomFactory(0.01))     // dual-write of _bloom.bin (same fpRate)
+	s.Register(pmeta.FacetIDSummary, pmeta.NewIDSummaryFactory()) // the trace_id_idx objects' membership summary
 	return s
 }
 
@@ -109,6 +111,14 @@ func (o *catalogObserver) persistDirty(ctx context.Context) {
 		return
 	}
 	_, _ = o.store.PersistDirty(ctx, poolObjectStore{o.pool})
+}
+
+// OnIdxFlush records a freshly written trace_id_idx object's membership summary. Nil-safe.
+func (o *catalogObserver) OnIdxFlush(key string, sum *tracesidx.Summary) {
+	if o == nil || o.store == nil || sum == nil {
+		return
+	}
+	o.store.PutIDSummary(manifest.ExtractTenantPartition(key), key, idFileOf(sum))
 }
 
 func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, labels, bloomValues map[string][]string) {
@@ -364,7 +374,7 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 	for _, files := range s.manifest.AllFiles() {
 		for _, fi := range files {
 			tp := manifest.ExtractTenantPartition(fi.Key)
-			if tp == "" || tracesidx.IsKey(fi.Key) {
+			if tp == "" {
 				continue
 			}
 			filesByTP[tp] = append(filesByTP[tp], fi)
@@ -391,6 +401,12 @@ func (s *Storage) WarmCatalogFromS3(ctx context.Context) {
 	}
 	for _, p := range rebuild {
 		files := filesByTP[p]
+		if len(files) > 0 && tracesidx.IsKey(files[0].Key) {
+			// The trace_id_idx summaries come back by themselves: a lookup that reads an
+			// object whose summary is missing records it (learnIDSummary), from the footer
+			// it has just read.
+			continue
+		}
 		cs := make([]pmeta.FileContribution, 0, len(files))
 		for _, fi := range files {
 			exMin, exMax := fi.ExactBounds()
@@ -424,7 +440,12 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string, 
 	}
 	for _, fi := range added {
 		if tracesidx.IsKey(fi.Key) {
-			continue // the trace_id_idx table has no pmeta facets
+			// The trace_id_idx table has no labels or blooms; its summary is read from the
+			// output's footer (at most three small ranged reads).
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			s.learnIDSummary(ctx, fi, s.idxSourceFor(fi))
+			cancel()
+			continue
 		}
 		var truncated []string
 		for field, vals := range fi.Labels {
@@ -448,10 +469,7 @@ func (s *Storage) PmetaOnCompacted(added []manifest.FileInfo, removed []string, 
 	}
 	byPart := make(map[string][]string)
 	for _, k := range removed {
-		if tracesidx.IsKey(k) {
-			continue
-		}
-		p := manifest.ExtractTenantPartition(k)
+		p := manifest.ExtractTenantPartition(k) // the idx objects too: their summaries go with them
 		byPart[p] = append(byPart[p], k)
 	}
 	for p, keys := range byPart {
@@ -473,12 +491,16 @@ func (s *Storage) PmetaOnFileExpired(partition, key string) {
 	tp := manifest.ExtractTenantPartition(key)
 	s.catalog.RemoveFiles(tp, []string{key})
 	if len(s.manifest.FilesForPartition(partition)) == 0 {
-		s.catalog.Remove(tp)
-		if s.pool != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := s.pool.Delete(ctx, s.catalog.BundleKey(tp)); err != nil {
-				logger.Warnf("pmeta: delete expired bundle %s: %v", tp, err)
+		// The span objects and the trace_id_idx objects of a tenant keep one bundle each; the
+		// last object to expire (the idx table's, which outlives the spans) takes both.
+		for _, p := range []string{tp, siblingTenantPartition(tp)} {
+			s.catalog.Remove(p)
+			if s.pool != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if err := s.pool.Delete(ctx, s.catalog.BundleKey(p)); err != nil {
+					logger.Warnf("pmeta: delete expired bundle %s: %v", p, err)
+				}
+				cancel()
 			}
 		}
 	}
@@ -498,4 +520,32 @@ func (s *Storage) refuseEnumeration(field string) bool {
 		}
 	}
 	return false
+}
+
+// siblingTenantPartition maps a tenant partition of the span objects to the one of the
+// tenant's trace_id_idx objects and back: "<tenant>/traces/dt=../hour=.." <-> "<tenant>/traces_idx/dt=../hour=..".
+func siblingTenantPartition(tp string) string {
+	if strings.Contains(tp, "/"+tracesidx.Signal+"/") {
+		return strings.Replace(tp, "/"+tracesidx.Signal+"/", "/traces/", 1)
+	}
+	return strings.Replace(tp, "/traces/", "/"+tracesidx.Signal+"/", 1)
+}
+
+// PmetaPutIdxSummary records the membership summary of a trace_id_idx object in pmeta (the
+// flush and the compaction have just written it): the lookups of the table then skip the
+// object without a read when its fences or bloom filter rule the id out.
+func (s *Storage) PmetaPutIdxSummary(key string, sum *tracesidx.Summary) {
+	if s.catalog == nil || sum == nil {
+		return
+	}
+	s.catalog.PutIDSummary(manifest.ExtractTenantPartition(key), key, idFileOf(sum))
+}
+
+// idFileOf converts a tracesidx summary into the pmeta facet's form.
+func idFileOf(sum *tracesidx.Summary) *pmeta.IDFile {
+	out := &pmeta.IDFile{Rows: sum.Rows, Groups: make([]pmeta.IDGroup, len(sum.Groups))}
+	for i, g := range sum.Groups {
+		out.Groups[i] = pmeta.IDGroup{Rows: g.Rows, MinID: g.MinID, MaxID: g.MaxID, MinTime: g.MinTime, MaxTime: g.MaxTime, Filter: g.Filter}
+	}
+	return out
 }

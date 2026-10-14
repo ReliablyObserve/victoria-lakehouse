@@ -300,6 +300,13 @@ func (s *Storage) scanIdxObjects(ctx context.Context, scope tenantScope, tenants
 		ids = extractFilterValuesAST(queryStr, tracesidx.IDField)
 	}
 	want := idxWant(neededFieldsFrom(ctx))
+	if len(ids) > 0 {
+		// pmeta answers "can this object hold this id" for every object of a partition from
+		// memory; only the objects it cannot rule out are read.
+		if files = s.pruneIdxBySummary(files, ids); len(files) == 0 {
+			return
+		}
+	}
 	workers := min(max(s.queryFileWorkers(len(files)), 1), len(files))
 	ch := make(chan manifest.FileInfo, len(files))
 	for _, fi := range files {
@@ -354,12 +361,7 @@ func (s *Storage) readIdxObject(ctx context.Context, fi manifest.FileInfo, ids [
 		}
 		return tracesidx.ReadAll(data)
 	}
-	var src tracesidx.Source = &idxSource{s: s, fi: fi}
-	if fi.Size <= idxObjectsSmall {
-		// A small object is read whole, in one GET, the first time a range of it is
-		// needed (never when the cached footer and filters already rule the id out).
-		src = &wholeObjectSource{s: s, fi: fi}
-	}
+	src := s.idxSourceFor(fi)
 	var out []tracesidx.Row
 	for _, id := range ids {
 		rows, st, err := s.locator().Lookup(ctx, src, id, want)
@@ -369,7 +371,74 @@ func (s *Storage) readIdxObject(ctx context.Context, fi manifest.FileInfo, ids [
 		metrics.TraceIdxLookupBloomSkips.Add(st.BloomSkips)
 		out = append(out, rows...)
 	}
+	s.learnIDSummary(ctx, fi, src)
 	return out, nil
+}
+
+// idxSourceFor is the ranged reader of an idx object. A small object is read whole, in one
+// GET, the first time a range of it is needed (never when the cached footer and filters
+// already rule the id out).
+func (s *Storage) idxSourceFor(fi manifest.FileInfo) tracesidx.Source {
+	if fi.Size <= idxObjectsSmall {
+		return &wholeObjectSource{s: s, fi: fi}
+	}
+	return &idxSource{s: s, fi: fi}
+}
+
+// pruneIdxBySummary drops the objects whose pmeta summary rules out every id. An object
+// without a summary, and a partition without the facet, are kept: no summary is never a
+// reason to skip an object.
+func (s *Storage) pruneIdxBySummary(files []manifest.FileInfo, ids []string) []manifest.FileInfo {
+	if s.catalog == nil || len(files) == 0 {
+		return files
+	}
+	byPart := make(map[string][]string, 4)
+	for _, fi := range files {
+		p := manifest.ExtractTenantPartition(fi.Key)
+		byPart[p] = append(byPart[p], fi.Key)
+	}
+	keep := make(map[string]bool, len(files))
+	for p, keys := range byPart {
+		for _, id := range ids {
+			kept, ok := s.catalog.IDSummaryMayContain(p, keys, id)
+			if !ok {
+				kept = keys
+			}
+			for _, k := range kept {
+				keep[k] = true
+			}
+		}
+	}
+	if len(keep) == len(files) {
+		return files
+	}
+	out := make([]manifest.FileInfo, 0, len(keep))
+	for _, fi := range files {
+		if keep[fi.Key] {
+			out = append(out, fi)
+		}
+	}
+	metrics.TraceIdxSummarySkips.Add(len(files) - len(out))
+	return out
+}
+
+// learnIDSummary records the summary of an object that has none, from the footer (and the
+// small bloom filters) the locator has just read: the rebuild of a lost bundle needs no pass
+// of its own, the lookups that touch an object recreate its summary.
+func (s *Storage) learnIDSummary(ctx context.Context, fi manifest.FileInfo, src tracesidx.Source) {
+	if s.catalog == nil {
+		return
+	}
+	tp := manifest.ExtractTenantPartition(fi.Key)
+	if tp == "" || s.catalog.HasIDSummary(tp, fi.Key) {
+		return
+	}
+	sum, err := s.locator().Summary(ctx, src)
+	if err != nil {
+		return
+	}
+	s.catalog.PutIDSummary(tp, fi.Key, idFileOf(sum))
+	metrics.TraceIdxSummaryLearned.Inc()
 }
 
 // wholeObjectSource serves ranges of a small object from one whole-object read, made

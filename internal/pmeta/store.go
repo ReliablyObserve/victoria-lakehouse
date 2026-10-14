@@ -252,6 +252,11 @@ func (s *Store) RemoveFiles(partition string, keys []string) {
 			bf.removeFiles(keys)
 		}
 	}
+	if fc, ok := b.Get(FacetIDSummary); ok {
+		if sf, ok := fc.(*idSummaryFacet); ok {
+			sf.removeFiles(keys)
+		}
+	}
 	b.markDirty()
 }
 
