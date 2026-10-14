@@ -350,6 +350,22 @@
     - lakehouse-traces/internal/vlstorage/idx_rows_test.go#TestStreamValueOf
     - lakehouse-traces/internal/vlstorage/idx_rows_test.go#TestIdxStreamAndStreamIDFor
     - internal/manifest/idx_stale_test.go#TestIdxObjectsAreNeverStale
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_MayContain
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_EncodeDecodeRoundTripAndTheBundle
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_RemoveAbsorbAndEmpty
+    - internal/pmeta/facet_id_summary_test.go#FuzzIDSummaryDecode
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_DecodeRefusesLies
+    - internal/tracesidx/summary_test.go#TestSummarizeCopiesTheFooter
+    - internal/tracesidx/summary_test.go#TestSummarizeRefusesWhatIsNotAnIdxObject
+    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_PmetaSummaryAnswersMembership
+    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_TraceIDQueryKeepsItsTimeBound
+    - internal/smartcache/get_range_test.go#TestGetRange_TiersInOrder
+    - internal/smartcache/get_range_test.go#TestGetRange_PeerOwnerThenS3Fallback
+    - internal/smartcache/get_range_test.go#TestGetRange_NoDiskTierAndFetchError
+    - internal/smartcache/get_range_test.go#TestGetRange_ConcurrentReadersShareOneFetch
+    - internal/smartcache/get_range_test.go#TestBudgetedL1_PutNoCopyStoresTheBuffer
+    - internal/compaction/idx_force_test.go#TestForceCompactPartition_SpanAndIdxObjectsMergeEachOnTheirOwn
+    - internal/compaction/idx_force_test.go#TestRecompactHandler_ReportsIdxObjectsSeparately
     - internal/compaction/planner_test.go#TestRecompactionLevel_IdxObjectsAreNeverStale
     - internal/tracesidx/coverage_test.go#TestKeyHelpers
     - internal/tracesidx/coverage_test.go#TestMarshalLevelsAndEmpty
