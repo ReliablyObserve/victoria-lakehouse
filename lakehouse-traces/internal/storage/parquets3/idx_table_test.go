@@ -550,6 +550,11 @@ func TestSiblingTenantPartition(t *testing.T) {
 	for in, want := range map[string]string{
 		"0/0/traces/dt=2026-10-14/hour=09":        "0/0/traces_idx/dt=2026-10-14/hour=09",
 		"1001/7/traces_idx/dt=2026-10-14/hour=09": "1001/7/traces/dt=2026-10-14/hour=09",
+		// the {OrgID} layout of string tenants, and an OrgID that is itself a table name
+		"acme/traces/dt=2026-10-14/hour=09":           "acme/traces_idx/dt=2026-10-14/hour=09",
+		"acme/traces_idx/dt=2026-10-14/hour=09":       "acme/traces/dt=2026-10-14/hour=09",
+		"traces_idx/traces/dt=2026-10-14/hour=09":     "traces_idx/traces_idx/dt=2026-10-14/hour=09",
+		"traces_idx/traces_idx/dt=2026-10-14/hour=09": "traces_idx/traces/dt=2026-10-14/hour=09",
 	} {
 		if got := siblingTenantPartition(in); got != want {
 			t.Errorf("siblingTenantPartition(%q) = %q, want %q", in, got, want)
@@ -632,6 +637,44 @@ func TestIdxTable_TraceSpansOnTheUpperBound(t *testing.T) {
 			}
 			if n != 2 {
 				t.Errorf("%s: trace %d: %d spans in [start, end] with the spans' _time == end, want 2", when, i, n)
+			}
+		}
+	}
+	check("buffer")
+	e.flush()
+	e.reap()
+	check("parquet")
+}
+
+// The idx rows are read inclusive at both ends of the range, like every VictoriaLogs range: the
+// stage-1 query of a trace lookup can ask for exactly the instant of the row.
+func TestIdxTable_Stage1RangeEndsAreInclusive(t *testing.T) {
+	if !tracesidx.Enabled {
+		t.Skip("the trace_id_idx table is off")
+	}
+	e := newRestartEnv(t)
+	tenant := logstorage.TenantID{}
+	ids := e.ingestTraces(tenant, 3, rwHour.Add(time.Minute)) // not on the hour boundary: a partition that starts exactly at the range end is a separate (manifest) edge
+	check := func(when string) {
+		t.Helper()
+		from, to := rwWindow()
+		for _, id := range ids {
+			rows := e.rows(tenant, stage1(id), from, to)
+			if len(rows) != 1 {
+				t.Fatalf("%s: %d idx rows for %s over the whole window, want 1", when, len(rows), id)
+			}
+			at, err := time.Parse(time.RFC3339Nano, rows[0]["_time"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := e.rows(tenant, stage1(id), at, at); len(got) != 1 {
+				t.Errorf("%s: %d idx rows for %s in [t, t], want 1", when, len(got), id)
+			}
+			if got := e.rows(tenant, stage1(id), at.Add(-time.Hour), at); len(got) != 1 {
+				t.Errorf("%s: %d idx rows for %s in a range ending at t, want 1", when, len(got), id)
+			}
+			if got := e.rows(tenant, stage1(id), at.Add(time.Nanosecond), at.Add(time.Hour)); len(got) != 0 {
+				t.Errorf("%s: %d idx rows for %s in a range starting after t, want 0", when, len(got), id)
 			}
 		}
 	}

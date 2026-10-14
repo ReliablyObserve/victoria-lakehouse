@@ -41,6 +41,8 @@
     - lakehouse-traces/internal/storage/parquets3/filter_fuzz_test.go
     - internal/storage/parquets3/time_only_filter_test.go
     - lakehouse-traces/internal/storage/parquets3/time_only_filter_test.go
+    - internal/storage/parquets3/range_end_inclusive_test.go#TestRunQuery_RowAtTheRangeEndIsRead
+    - lakehouse-traces/internal/storage/parquets3/row_group_time_range_test.go
   docs:
     - docs/storage-flow.md
     - docs/read-path.md

@@ -122,8 +122,31 @@ The summary is the answer of the table's lookups only. The span objects keep the
 measured and not built (the by-ID read of a large span object is dominated by the data reads of the row groups that match, and the
 filters sit next to each row group's data, so rebuilding a copy takes one ranged read per row group).
 
+## Measured requests of a lookup
+
+Measured on one stack (RustFS as S3, hot VictoriaTraces as reference), restart-cold: `docker restart` before every lookup, then the S3
+requests of the lookup alone (GetObject count and KiB), 6 ids per cell, tenant 0, 0 ms added S3 latency. "Main" is the build before the
+table, whose by-ID lookups are answered from the `_trace_idx` footer entry of every span file.
+
+| seed | layer | query | main | this build |
+|---|---|---|---|---|
+| time order (60 flush files per hour of about 54 s) | cold | stage 1 | 120.0 / 4,854 | 1.0 / 3 |
+| | cold | Tempo v2 by-ID | 120.2 / 4,865 | 2.0 / 42 |
+| | compacted | stage 1 | 4.0 / 2,805 | 1.0 / 45 |
+| | compacted | Tempo v2 by-ID | 121.0 / 5,554 | 2.7 / 734 |
+| | buffer | Tempo v2 by-ID | 120.0 / 4,854 | 0.0 / 0 |
+| every flush file covers the whole hour (6 per hour) | cold | stage 1 | 12.0 / 1,837 | 1.0 / 8 |
+| | cold | Tempo v2 by-ID | 1.2 / 162 | 3.0 / 220 |
+| | compacted | Tempo v2 by-ID | 1.0 / 713 | 2.5 / 734 |
+| | buffer | Tempo v2 by-ID | 0.0 / 0 | 0.2 / 2 |
+
+Compacted-layer by-ID rows include the stage-1 query over VictoriaTraces' 24-hour windows. A lookup opens 1.0 to 1.2 span objects in
+every layer. On the second seed the table costs one request more than main (the page of the id; main finds the trace's bounds in the
+footers it re-fetched at start-up, which is 36.8 requests at start-up against 40.4 here).
+
 ## Known limits of the spike
 
+- At 100 TB/day an hour object has thousands of row groups; the filter copy is kept up to 256 KiB per object, so for big objects the summary has fences only and a stage-1 window reads one bloom range of each (estimate, not measured).
 - With the bundles lost, the first lookups read every object once (one request each) and record their summaries; compaction bounds the
   number of objects per hour.
 - The buffer bridge between insert and select pods carries span rows only, so with insert peers the unflushed index rows of a peer are not

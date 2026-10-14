@@ -20,12 +20,10 @@ func waitJaegerTraceFindable(t *testing.T, traceID string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
-		resp, err := http.Get(tracesBaseURL + "/api/traces/" + traceID) //nolint:gosec,noctx // fixed local test URL
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return
-			}
+		resp := httpGetAllowStatus(t, tracesBaseURL, "/api/traces/"+traceID, nil, http.StatusOK, http.StatusNotFound)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Logf("trace %s is still not findable by ID after 2 minutes", traceID)

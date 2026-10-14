@@ -412,6 +412,8 @@
     - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_BundleOverwrittenByAnotherWriterLosesOnlyTheShortcut
     - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_TraceIDQueryKeepsItsTimeBound
     - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_TraceSpansOnTheUpperBound
+    - lakehouse-traces/internal/storage/parquets3/idx_table_test.go#TestIdxTable_Stage1RangeEndsAreInclusive
+    - internal/pmeta/facet_id_summary_test.go#TestIDSummary_PartitionsOfBothTenantForms
     - lakehouse-traces/internal/storage/parquets3/coverage_medium_test.go#TestMedium_rowGroupMatchesTimeRange
     - internal/storage/parquets3/coverage_medium_test.go#TestMedium_rowGroupMatchesTimeRange
   docs:

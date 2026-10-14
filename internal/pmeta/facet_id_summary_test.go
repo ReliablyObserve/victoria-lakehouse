@@ -285,3 +285,49 @@ func binaryUvarint(b []byte, v uint64) []byte {
 	putUvarint(&buf, v)
 	return append(b, buf.Bytes()...)
 }
+
+// The summary is kept per tenant partition, a plain string: the numeric layout
+// ("{AccountID}/{ProjectID}/traces_idx/dt=/hour=") and the {OrgID} layout of string tenants
+// ("acme/traces_idx/dt=/hour=", or an OrgID that is itself a table name) never share or leak
+// a summary, and removing the objects of one leaves the other.
+func TestIDSummary_PartitionsOfBothTenantForms(t *testing.T) {
+	s := idStore()
+	parts := []string{
+		"1001/7/traces_idx/dt=2026-10-14/hour=09",
+		"acme/traces_idx/dt=2026-10-14/hour=09",
+		"traces_idx/traces_idx/dt=2026-10-14/hour=09",
+	}
+	var ids [][]string
+	for i, p := range parts {
+		sum, in := summaryFor(fmt.Sprintf("tenant%d", i), 40, 40)
+		s.PutIDSummary(p, p+"/o.parquet", sum)
+		ids = append(ids, in)
+	}
+	for i, p := range parts {
+		if k, ok := s.IDSummaryMayContain(p, []string{p + "/o.parquet"}, ids[i][3]); !ok || len(k) != 1 {
+			t.Errorf("%s: its own id is not kept: %v %v", p, k, ok)
+		}
+		for j, q := range parts {
+			if i == j {
+				continue
+			}
+			// an object the partition has no summary of is never ruled out (it is read) ...
+			if k, ok := s.IDSummaryMayContain(p, []string{q + "/o.parquet"}, ids[j][3]); !ok || len(k) != 1 {
+				t.Errorf("%s ruled out the unknown object of %s: %v %v", p, q, k, ok)
+			}
+			// ... and another tenant's trace id is ruled out of this tenant's own object
+			if k, ok := s.IDSummaryMayContain(p, []string{p + "/o.parquet"}, ids[j][3]); !ok || len(k) != 0 {
+				t.Errorf("%s keeps its object for a trace of %s: %v %v", p, q, k, ok)
+			}
+		}
+	}
+	s.RemoveFiles(parts[1], []string{parts[1] + "/o.parquet"})
+	if s.HasIDSummary(parts[1], parts[1]+"/o.parquet") {
+		t.Error("the removed object still has a summary")
+	}
+	for _, p := range []string{parts[0], parts[2]} {
+		if !s.HasIDSummary(p, p+"/o.parquet") {
+			t.Errorf("%s lost its summary when another tenant's object was removed", p)
+		}
+	}
+}
