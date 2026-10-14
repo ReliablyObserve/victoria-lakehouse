@@ -376,10 +376,11 @@ func TestMedium_rowGroupMatchesTimeRange(t *testing.T) {
 		{"overlapping range", 500, 3500, true},
 		{"exact boundaries", 1000, 3001, true},
 		{"range starts after max", 3001, 5000, false},
-		{"range ends before min", 0, 1000, false},
+		{"range ends before min", 0, 500, false},
 		{"range at max boundary", 3000, 4000, true},
 		{"range at min boundary", 0, 1001, true},
-		{"range ends at min (exclusive end)", 0, 1000, false},
+		{"range ends at min (inclusive end: the row at 1000 matches)", 0, 1000, true},
+		{"range ends just before min", 0, 999, false},
 		{"single point inside", 2000, 2001, true},
 	}
 

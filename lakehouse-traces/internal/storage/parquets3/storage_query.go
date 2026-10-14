@@ -2838,7 +2838,9 @@ func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs 
 	// TestRowGroupMatchesTimeRange_OutOfOrderPages in this package.
 	rgMin, rgMax := columnIndexTimeBounds(idx)
 
-	return rgMax >= startNs && rgMin < endNs
+	// endNs is inclusive, like VictoriaLogs' _time filter: a row exactly at endNs matches.
+	// (A trace lookup's span query ends at the trace's last span.)
+	return rgMax >= startNs && rgMin <= endNs
 }
 
 func findColumnIndex(root *parquet.Column, name string) int {

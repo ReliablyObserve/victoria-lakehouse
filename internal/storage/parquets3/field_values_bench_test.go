@@ -439,10 +439,7 @@ type fmWindow struct {
 func fmWindows() []fmWindow {
 	return []fmWindow{
 		{"whole", fmBase.UnixNano(), fmBase.Add(2*time.Hour).UnixNano() - 1},
-		// Bounds sit between rows (rows are 150 ms apart): the row oracle's
-		// row-group time pruning is end-exclusive (rgMin < endNs in
-		// rowGroupMatchesTimeRange), so a row exactly at endNs that starts a
-		// row group would be missing from the oracle but not from the scan.
+		// Bounds sit between rows (rows are 150 ms apart).
 		{"cut", fmBase.Add(30*time.Minute + 75*time.Millisecond).UnixNano(), fmBase.Add(90*time.Minute + 75*time.Millisecond).UnixNano()},
 		// 30 s inside one flush slot: cuts one flushed file, and one compacted
 		// object, of which it needs a sliver (a small call on a big object).

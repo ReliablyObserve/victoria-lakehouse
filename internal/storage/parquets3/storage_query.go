@@ -3012,7 +3012,8 @@ func rowGroupMatchesTimeRange(rg parquet.RowGroup, tsColIdx int, startNs, endNs 
 	// (lakehouse-traces/internal/storage/parquets3/storage_query.go).
 	rgMin, rgMax := columnIndexTimeBounds(idx)
 
-	return rgMax >= startNs && rgMin < endNs
+	// endNs is inclusive, like VictoriaLogs' _time filter: a row exactly at endNs matches.
+	return rgMax >= startNs && rgMin <= endNs
 }
 
 func findColumnIndex(root *parquet.Column, name string) int {

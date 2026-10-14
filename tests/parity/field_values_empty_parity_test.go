@@ -45,7 +45,7 @@ type fvEmptyCase struct {
 	// answer as many values, all with zero hits. stream_field_values does not go
 	// through that pipe (it sorts and truncates), so its limit cases are exact.
 	pastLimit bool
-	// waitIdx makes the case wait until hot VictoriaTraces has written the trace
+	// waitIdx makes the case wait until hot VictoriaTraces and Lakehouse have written the trace
 	// index rows of the traces the case wrote (one per trace, 20 to 40 s after the
 	// spans): a case that counts the index rows (`*`, a filter on their fields)
 	// compares exactly only from then on. Lakehouse stores the same rows
@@ -91,7 +91,8 @@ func runFvEmptyCases(t *testing.T, hot, cold string, f tenantForm, from, to time
 			}
 			path := "/select/logsql/" + c.endpoint
 			if c.waitIdx {
-				waitIdxRows(t, hot, f, from, to, strings.Count(filter, ",")+1)
+				waitIdxRows(t, hot, false, f, from, to, strings.Count(filter, ",")+1)
+				waitIdxRows(t, cold, true, f, from, to, strings.Count(filter, ",")+1)
 			}
 			ref := getWith(t, hot, path, params, f.header(false))
 			sut := getWith(t, cold, path, params, f.header(true))
@@ -388,9 +389,10 @@ func idxFilter(filter string) string {
 	return strings.Replace(filter, "trace_id:in(", "trace_id_idx:in(", 1)
 }
 
-// waitIdxRows returns once hot VictoriaTraces holds the want trace index rows of the tenant
-// form in the window (its index worker flushes them 20 to 40 s after the spans).
-func waitIdxRows(t *testing.T, hot string, f tenantForm, from, to time.Time, want int) {
+// waitIdxRows returns once the service at base (hot VictoriaTraces, or Lakehouse when cold
+// is true) holds the want trace index rows of the tenant form in the window (each side's
+// index worker flushes them 20 to 40 s after the spans, on its own clock).
+func waitIdxRows(t *testing.T, base string, cold bool, f tenantForm, from, to time.Time, want int) {
 	t.Helper()
 	params := url.Values{
 		"query": {`{trace_id_idx_stream=~".+"} | stats count() n`}, "disable_latency_offset": {"true"},
@@ -399,12 +401,12 @@ func waitIdxRows(t *testing.T, hot string, f tenantForm, from, to time.Time, wan
 	}
 	deadline := time.Now().Add(120 * time.Second)
 	for {
-		r := getWith(t, hot, "/select/logsql/query", params, f.header(false))
+		r := getWith(t, base, "/select/logsql/query", params, f.header(cold))
 		if r.StatusCode == http.StatusOK && strings.Contains(string(r.Body), fmt.Sprintf(`"n":"%d"`, want)) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s: the %d trace index rows of tenant %s never appeared (last answer %s)", hot, want, f.name, r.Body)
+			t.Fatalf("%s: the %d trace index rows of tenant %s never appeared (last answer %s)", base, want, f.name, r.Body)
 		}
 		time.Sleep(2 * time.Second)
 	}

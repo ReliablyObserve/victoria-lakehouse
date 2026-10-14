@@ -604,3 +604,39 @@ func TestIdxTable_BundleOverwrittenByAnotherWriterLosesOnlyTheShortcut(t *testin
 		}
 	}
 }
+
+// The span query of VictoriaTraces' trace lookup is bounded by the index row's [start, end],
+// inclusive at both ends, and the spans' _time is their end: the last span of a trace sits
+// exactly on the upper bound. Every layer must return it.
+func TestIdxTable_TraceSpansOnTheUpperBound(t *testing.T) {
+	if !tracesidx.Enabled {
+		t.Skip("the trace_id_idx table is off")
+	}
+	e := newRestartEnv(t)
+	tenant := logstorage.TenantID{}
+	ids := e.ingestTraces(tenant, 4, rwHour)
+	check := func(when string) {
+		t.Helper()
+		for i, id := range ids {
+			s := rwHour.Add(time.Duration(i) * time.Second)
+			end := s.Add(time.Duration(40+i) * time.Millisecond)
+			q := mustParseQueryWithTime(t, fmt.Sprintf("trace_id: %q", id), s.UnixNano(), end.UnixNano())
+			var n int
+			var mu sync.Mutex
+			if err := e.s.RunQuery(context.Background(), []logstorage.TenantID{tenant}, q, func(_ uint, db *logstorage.DataBlock) {
+				mu.Lock()
+				n += db.RowsCount()
+				mu.Unlock()
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if n != 2 {
+				t.Errorf("%s: trace %d: %d spans in [start, end] with the spans' _time == end, want 2", when, i, n)
+			}
+		}
+	}
+	check("buffer")
+	e.flush()
+	e.reap()
+	check("parquet")
+}

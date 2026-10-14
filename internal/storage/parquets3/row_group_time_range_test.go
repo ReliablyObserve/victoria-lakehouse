@@ -122,6 +122,7 @@ func TestRowGroupMatchesTimeRange_OutOfOrderPages(t *testing.T) {
 		{"window entirely above true MAX", 5001, 9999, false},
 		{"window touching true MAX boundary", 5000, 6000, true},
 		{"window touching true MIN boundary (exclusive end)", 0, 1001, true},
+		{"window ending exactly at true MIN (inclusive end)", 0, 1000, true},
 	}
 
 	for _, tt := range tests {
