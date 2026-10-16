@@ -38,6 +38,7 @@
     - internal/storage/parquets3/range_end_inclusive_test.go
     - internal/storage/parquets3/range_end_http_test.go
     - lakehouse-traces/internal/storage/parquets3/range_end_inclusive_test.go
+    - tests/parity/traces_timerange_test.go#TestParity_Traces_TimeRange
     - internal/manifest/range_end_inclusive_test.go
     - internal/selectapi/time_range_params_test.go
     - lakehouse-traces/internal/selectapi/time_range_params_test.go

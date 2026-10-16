@@ -206,6 +206,7 @@
       - internal/storage/parquets3/range_end_http_test.go#TestHTTPRange_BoundaryNanosecondsAreExactOnParquet
       - internal/storage/parquets3/range_end_http_test.go#TestHTTPRange_RowAtTheFirstNanosecondOfAnHourIsRead
       - internal/storage/parquets3/range_end_inclusive_test.go#TestRangeEnds_AreInclusiveOnEveryLayerAndSurface
+      - internal/storage/parquets3/range_end_inclusive_test.go#TestRangeEnds_AreInclusiveOnCompactedObjectsAndAfterRestart
       - internal/storage/parquets3/range_end_inclusive_test.go#TestRowGroupPruning_EdgesAgreeWithBruteForce
       - internal/storage/parquets3/coverage_medium_test.go#TestMedium_rowGroupMatchesTimeRange
       - internal/manifest/range_end_inclusive_test.go#TestGetFilesForRange_AHourStartingAtTheRangeEndIsRead

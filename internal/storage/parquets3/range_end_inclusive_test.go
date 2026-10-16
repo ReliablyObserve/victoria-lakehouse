@@ -89,6 +89,43 @@ func TestRangeEnds_AreInclusiveOnEveryLayerAndSurface(t *testing.T) {
 	e.checkRangeEnds("parquet", rows)
 }
 
+// The same windows on a compacted object (the three rows were flushed as three objects of one
+// hour and merged into one compacted-L1 object with one large row group), and after a restart
+// that learns the object from a manifest snapshot and from the bucket listing alone (time bounds
+// inferred from the partition, not recorded).
+func TestRangeEnds_AreInclusiveOnCompactedObjectsAndAfterRestart(t *testing.T) {
+	rows := rangeEndTimes()
+	e := newRestartEnv(t)
+	for _, r := range rows {
+		e.ingest("info", r)
+		e.flush()
+	}
+	commit := time.Now()
+	markers := e.segmentMarkers(commit)
+	var inputs []string
+	for _, f := range e.objects() {
+		inputs = append(inputs, f.Key)
+	}
+	if n := e.compactSegmentObjects(markers, 2*time.Minute, commit.Add(10*time.Minute)); n < 2 {
+		t.Fatalf("compaction merged %d objects, want the three segment objects", n)
+	}
+	e.reap()
+	e.checkRangeEnds("compacted", rows)
+
+	e.restart(true, true, false)
+	e.checkRangeEnds("compacted, after a restart from a snapshot", rows)
+
+	// The merged-away objects are reclaimed by the retention of retired objects; the bucket
+	// listing of a pod that starts afterwards holds the compacted object only.
+	e.mock.mu.Lock()
+	for _, k := range inputs {
+		delete(e.mock.files, k)
+	}
+	e.mock.mu.Unlock()
+	e.restart(false, false, false)
+	e.checkRangeEnds("compacted, after a restart from the bucket listing", rows)
+}
+
 // Row groups and a window: the pruning decision agrees with the brute-force one at every edge.
 // The window is [start, end], both inclusive. rowGroupMatchesTimeRange may keep a row group
 // that holds no row in the window (it only sees the minimum and maximum), but it must keep
