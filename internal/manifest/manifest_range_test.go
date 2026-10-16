@@ -22,7 +22,9 @@ func TestGetFilesForRange_BinarySearchCorrectness(t *testing.T) {
 	start := base.Add(50 * time.Hour)
 	end := start.Add(3 * time.Hour)
 	startNs := start.UnixNano()
-	endNs := end.UnixNano()
+	// The end of a range is inclusive: the hour that starts at `end` is not part of a window that
+	// ends one nanosecond before it.
+	endNs := end.UnixNano() - 1
 
 	files := m.GetFilesForRange(startNs, endNs)
 

@@ -32,9 +32,15 @@
   area: query
   readme_section: Read Path
   surfaces: [storage]
-  rows: [lh.query.half_open_time_range]
+  rows: [lh.query.half_open_time_range, vl.select.stats_query.time_range_bounds, vt.select.logsql_stats_query.time_range_bounds, lh.shim.time_params_ms]
   tests:
     - internal/storage/parquets3/filter_test.go
+    - internal/storage/parquets3/range_end_inclusive_test.go
+    - internal/storage/parquets3/range_end_http_test.go
+    - lakehouse-traces/internal/storage/parquets3/range_end_inclusive_test.go
+    - internal/manifest/range_end_inclusive_test.go
+    - internal/selectapi/time_range_params_test.go
+    - lakehouse-traces/internal/selectapi/time_range_params_test.go
     - lakehouse-traces/internal/storage/parquets3/filter_test.go
     - lakehouse-traces/internal/storage/parquets3/filter_parity_test.go
     - internal/storage/parquets3/free_text_filter_test.go

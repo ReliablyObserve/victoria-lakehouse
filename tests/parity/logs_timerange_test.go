@@ -42,7 +42,7 @@ func TestParity_TimeRange(t *testing.T) {
 			"query": "* | stats count() rows",
 			"start": fmt.Sprintf("%d", dataStart.UnixMilli()),
 			"end":   fmt.Sprintf("%d", now.UnixMilli()),
-		}, Compare: CountTolerance, Tolerance: 0.01}
+		}, Compare: CountEqual}
 		params := buildParams(pc, nil)
 		ref := fetch(t, vlBaseURL, pc.Endpoint, params)
 		sut := fetch(t, lhBaseURL, pc.Endpoint, params)
@@ -161,6 +161,52 @@ func TestParity_TimeRange(t *testing.T) {
 			"query": "* | stats count() rows",
 			"start": fmt.Sprintf("%d", oldest),
 			"end":   fmt.Sprintf("%d", oldest+1),
+		}, Compare: CountEqual}
+		params := buildParams(pc, nil)
+		ref := fetch(t, vlBaseURL, pc.Endpoint, params)
+		sut := fetch(t, lhBaseURL, pc.Endpoint, params)
+		compareParity(t, pc, ref, sut)
+	})
+
+	// The same instants in every unit the request accepts: an integer argument is read as
+	// seconds, milliseconds, microseconds or nanoseconds by its magnitude, to the unit's own
+	// precision, so a window of one millisecond (or microsecond) holding the oldest row
+	// counts the same rows on both tiers. The cold tier used to cut a millisecond argument
+	// to seconds and a nanosecond or microsecond one to microseconds.
+	t.Run("unit_window_ms", func(t *testing.T) {
+		ms := oldestSeededRow(t) / 1e6
+		pc := ParityCase{Name: "unit_window_ms", Endpoint: statsEndpoint(), Params: map[string]string{
+			"query": "* | stats count() rows",
+			"start": fmt.Sprintf("%d", ms),
+			"end":   fmt.Sprintf("%d", ms+1),
+		}, Compare: CountEqual}
+		params := buildParams(pc, nil)
+		ref := fetch(t, vlBaseURL, pc.Endpoint, params)
+		sut := fetch(t, lhBaseURL, pc.Endpoint, params)
+		compareParity(t, pc, ref, sut)
+	})
+
+	t.Run("unit_window_us", func(t *testing.T) {
+		us := oldestSeededRow(t) / 1e3
+		pc := ParityCase{Name: "unit_window_us", Endpoint: statsEndpoint(), Params: map[string]string{
+			"query": "* | stats count() rows",
+			"start": fmt.Sprintf("%d", us),
+			"end":   fmt.Sprintf("%d", us+1),
+		}, Compare: CountEqual}
+		params := buildParams(pc, nil)
+		ref := fetch(t, vlBaseURL, pc.Endpoint, params)
+		sut := fetch(t, lhBaseURL, pc.Endpoint, params)
+		compareParity(t, pc, ref, sut)
+	})
+
+	// The newest seeded row is the last row of the last row group of its object: a window that
+	// ends one nanosecond after it holds it, as does the window that starts on it.
+	t.Run("boundary_ns_newest_row", func(t *testing.T) {
+		newest := referenceRowTime(t, seedWindowParams(), "* | sort by (_time) desc | limit 1").UnixNano()
+		pc := ParityCase{Name: "boundary_ns_newest_row", Endpoint: statsEndpoint(), Params: map[string]string{
+			"query": "* | stats count() rows",
+			"start": fmt.Sprintf("%d", newest),
+			"end":   fmt.Sprintf("%d", newest+1),
 		}, Compare: CountEqual}
 		params := buildParams(pc, nil)
 		ref := fetch(t, vlBaseURL, pc.Endpoint, params)

@@ -173,11 +173,12 @@ func timeOnly(sortFields []string) bool {
 }
 
 // tieWindowBefore/tieWindowAfter widen the re-read window around the tie.
-// Divergence B7 makes the cold tier drop a row when the request's end bound
-// falls in the same microsecond as the row (measured: end = T+1..T+500ns
-// returns nothing, end past the next whole microsecond returns the row), so
+// Divergence B7 (resolved) made the cold tier drop a row when the request's
+// end bound fell in the same microsecond as the row (measured: end = T+1..T+500ns
+// returned nothing, end past the next whole microsecond returned the row), so
 // the window reaches two microseconds past the tie; keysAt then keeps only the
-// rows at exactly the tie. B7 itself is asserted by its own test.
+// rows at exactly the tie. The margin is kept: it costs nothing and the harness
+// test pins it. B7 itself is asserted by TestParity_TimeRange.
 const (
 	tieWindowBefore = time.Microsecond
 	tieWindowAfter  = 2 * time.Microsecond

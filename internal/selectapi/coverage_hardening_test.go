@@ -98,39 +98,6 @@ func TestWrapVL_SlowQueryWithTenantHeaders(t *testing.T) {
 	}
 }
 
-// TestNormalizeTimeParams_TimeKey exercises the "time" key normalization branch.
-func TestNormalizeTimeParams_TimeKey(t *testing.T) {
-	req := httptest.NewRequest("GET", "/test?time=1779224481316&query=*", nil)
-	normalizeTimeParams(req)
-
-	if got := req.FormValue("time"); got != "1779224481" {
-		t.Errorf("time = %q, want %q", got, "1779224481")
-	}
-}
-
-// TestNormalizeTimeParams_NoChange exercises the branch where values are under 1e12.
-func TestNormalizeTimeParams_NoChange(t *testing.T) {
-	req := httptest.NewRequest("GET", "/test?start=1000&end=2000&query=*", nil)
-	normalizeTimeParams(req)
-
-	if got := req.FormValue("start"); got != "1000" {
-		t.Errorf("start = %q, want %q", got, "1000")
-	}
-	if got := req.FormValue("end"); got != "2000" {
-		t.Errorf("end = %q, want %q", got, "2000")
-	}
-}
-
-// TestNormalizeTimeParams_EmptyParams exercises the empty key branch.
-func TestNormalizeTimeParams_EmptyParams(t *testing.T) {
-	req := httptest.NewRequest("GET", "/test?query=*", nil)
-	normalizeTimeParams(req)
-	// Should not panic or alter anything.
-	if got := req.FormValue("start"); got != "" {
-		t.Errorf("start = %q, want empty", got)
-	}
-}
-
 // TestHandleJaegerSearch_WithOperationAndDuration exercises the operation and
 // duration filter branches in handleJaegerSearch.
 func TestHandleJaegerSearch_WithOperationAndDuration(t *testing.T) {

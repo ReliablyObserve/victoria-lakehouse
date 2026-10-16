@@ -56,7 +56,7 @@ func TestManifest_LargePartitionCount(t *testing.T) {
 	// A narrow range covering exactly the first 3 partitions (hours 0-2 of day 0)
 	// should return only 3 files.
 	queryStart := base.UnixNano()
-	queryEnd := base.Add(3 * time.Hour).UnixNano()
+	queryEnd := base.Add(3*time.Hour).UnixNano() - 1 // the end is inclusive
 
 	files := m.GetFilesForRange(queryStart, queryEnd)
 	if len(files) != 3 {
@@ -173,7 +173,7 @@ func TestManifest_GetFilesForRange_Efficiency(t *testing.T) {
 	queryEnd := queryStart.Add(10 * time.Hour)
 
 	start := time.Now()
-	files := m.GetFilesForRange(queryStart.UnixNano(), queryEnd.UnixNano())
+	files := m.GetFilesForRange(queryStart.UnixNano(), queryEnd.UnixNano()-1) // the end is inclusive
 	elapsed := time.Since(start)
 
 	if elapsed > 50*time.Millisecond {

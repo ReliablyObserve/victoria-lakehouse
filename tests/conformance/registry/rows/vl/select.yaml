@@ -9,7 +9,8 @@
 #   {{seed.start_ms}} / {{seed.cold_end_ms}} — the same window as raw millisecond-epoch
 #                                               integers, for endpoints/params that parse
 #                                               that form (e.g. the LH shim's start/end
-#                                               in lh.shim.time_params_ms; VT's
+#                                               in lh.shim.time_params_ms, which hot
+#                                               reads the same way; VT's
 #                                               dependencies endTs param, which
 #                                               strconv.ParseInt + time.UnixMilli's).
 #   {{seed.start_us}} / {{seed.cold_end_us}} — the same window as raw microsecond-epoch
@@ -182,6 +183,34 @@
   compare: { type: count }
   layers: [api]
   pending: true
+
+- id: vl.select.stats_query.time_range_bounds
+  title: "/select/logsql/stats_query — the window is [start, end) to the nanosecond and in every unit, on cold (B7, #527)"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "* | stats count() as total", time: "{{seed.cold_end}}", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/parity-and-gaps.md
+    tests:
+      - tests/parity/logs_timerange_test.go#TestParity_TimeRange
+      - internal/selectapi/time_range_params_test.go#TestWrapVL_TimeRangeReachesTheStorageAtTheArgumentsPrecision
+      - internal/selectapi/time_range_params_test.go#TestWrapVL_LeavesTheTimeArgumentsAlone
+      - internal/storage/parquets3/range_end_http_test.go#TestHTTPRange_BoundaryNanosecondsAreExactOnParquet
+      - internal/storage/parquets3/range_end_http_test.go#TestHTTPRange_RowAtTheFirstNanosecondOfAnHourIsRead
+      - internal/storage/parquets3/range_end_inclusive_test.go#TestRangeEnds_AreInclusiveOnEveryLayerAndSurface
+      - internal/storage/parquets3/range_end_inclusive_test.go#TestRowGroupPruning_EdgesAgreeWithBruteForce
+      - internal/storage/parquets3/coverage_medium_test.go#TestMedium_rowGroupMatchesTimeRange
+      - internal/manifest/range_end_inclusive_test.go#TestGetFilesForRange_AHourStartingAtTheRangeEndIsRead
+      - internal/manifest/range_end_inclusive_test.go#TestRangeWalk_EdgesAgreeWithBruteForce
+  notes: "The request window is [start, end): the HTTP end argument is exclusive and the upstream handler subtracts one nanosecond, so the storage always receives an inclusive end. The cold tier cut start/end to the precision of a unit one step coarser than the argument (the select handler divided an integer above 1e12 by 1000: nanoseconds became microseconds, milliseconds became seconds), compared the end exclusively when pruning row groups (rgMin < end) and stopped the partition walk at a partition starting on the end. The seeded request here cannot express a nanosecond boundary (the runner has only the seed window placeholders), so it only checks the cold count over the seed window; the boundary cases are the cited tests, TestParity_TimeRange on the stack. Stays pending."
 
 - id: vl.select.stats_query_range.basic
   title: "/select/logsql/stats_query_range — ranged stats series"

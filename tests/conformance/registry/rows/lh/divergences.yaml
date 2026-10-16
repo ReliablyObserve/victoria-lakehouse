@@ -41,12 +41,11 @@
   # TestColdReads_QueryVLCannotPrintBack in the feature's tests instead.
 
 - id: lh.shim.time_params_ms
-  title: "Time params accept milliseconds in addition to RFC3339/relative"
+  title: "Time params accept s/ms/us/ns integers in addition to RFC3339/relative, exactly as hot"
   surface: lh
   kind: select
   origin: lh-shim
-  expect: differ
-  differ_note: "The LH shim also accepts start/end as raw millisecond-epoch integers (matching Tempo's convention); hot VL/VT only accept RFC3339 or relative durations. Documented, not a bug — see docs/parity-and-gaps.md."
+  expect: pass
   targets: [hot, cold]
   seed: [logs.base]
   upstream: { route: /select/logsql/query }
@@ -54,6 +53,14 @@
   compare: { type: ndjson-multiset, project: [_time, _msg] }
   layers: [api]
   pending: true
+  refs:
+    doc: docs/parity-and-gaps.md
+    tests:
+      - tests/parity/logs_timerange_test.go#TestParity_TimeRange
+      - internal/selectapi/time_range_params_test.go#TestWrapVL_TimeRangeReachesTheStorageAtTheArgumentsPrecision
+      - internal/selectapi/time_range_params_test.go#TestWrapVL_LeavesTheTimeArgumentsAlone
+      - lakehouse-traces/internal/selectapi/time_range_params_test.go#TestWrapVL_LeavesTheTimeArgumentsAlone
+  notes: "Was a shim that divided an integer start/end/time above 1e12 by 1000 before upstream read it, on the belief that hot VictoriaLogs/VictoriaTraces accept only RFC3339 or relative durations. They accept an integer as seconds, milliseconds, microseconds or nanoseconds by its magnitude (timeutil.TryParseUnixTimestamp), exactly, so the shim only cut the precision (a nanosecond bound to microseconds, a millisecond bound to seconds). It is removed; the arguments reach upstream untouched and the answer equals hot's. Stays pending."
 
 - id: lh.cold.count_exact_above_1m_rows
   title: "count() over files with more than 1M rows is exact on cold"

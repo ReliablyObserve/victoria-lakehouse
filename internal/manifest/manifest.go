@@ -1805,7 +1805,9 @@ func (m *Manifest) filesInAccumRangeLocked(a *tenantAccum, startNs, endNs int64,
 	var result []FileInfo
 	for i := idx; i < len(m.sortedPartitions); i++ {
 		p := &m.sortedPartitions[i]
-		if !p.start.Before(end) {
+		// The end is inclusive: a partition that starts exactly at it holds
+		// rows at it (a partition owns [start, end of its hour)).
+		if p.start.After(end) {
 			break
 		}
 		if a.partitions[p.key] <= 0 {
@@ -1897,8 +1899,9 @@ func (m *Manifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 	var result []FileInfo
 	for i := idx; i < len(m.sortedPartitions); i++ {
 		p := &m.sortedPartitions[i]
-		// Stop once partition start is at or after query end.
-		if !p.start.Before(end) {
+		// Stop once the partition starts after the query end. The end is
+		// inclusive: a partition that starts exactly at it holds rows at it.
+		if p.start.After(end) {
 			break
 		}
 		for _, fi := range m.files[p.key] {
