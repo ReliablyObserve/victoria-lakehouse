@@ -243,6 +243,39 @@ func TestScheduler_StartStop(t *testing.T) {
 	sched.Stop()
 }
 
+// TestScheduler_ConcurrentDrainAndStop: the shutdown stops the scheduler before
+// the storage closes and main's deferred stop is the backstop, so two callers can
+// drain and stop it at the same time (the second waits on the same in-flight work
+// and both reach Stop together). No caller may panic on a second close.
+func TestScheduler_ConcurrentDrainAndStop(t *testing.T) {
+	for round := 0; round < 300; round++ {
+		pool := newMockPool()
+		m := manifest.New("test-bucket", "logs/")
+		sched := NewScheduler(SchedulerConfig{
+			Manifest: m, Pool: pool, Ownership: soleOwnerResolver(), Policy: NewLevelPolicy(10, 20, 0),
+			Prefix: "logs/", Mode: config.ModeLogs, Interval: 5 * time.Millisecond,
+			MaxConcurrent: 1, RowGroupSize: 1000, CompressionLevel: 1,
+			DrainTimeout: time.Second,
+		})
+		if round%2 == 0 {
+			sched.Start()
+		}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				sched.Drain()
+				sched.Stop()
+			}()
+		}
+		close(start)
+		wg.Wait()
+	}
+}
+
 // TestScheduler_DefaultsApplied: zero Interval/MaxConcurrent gets
 // 5m/1.
 func TestScheduler_DefaultsApplied(t *testing.T) {

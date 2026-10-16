@@ -259,6 +259,7 @@
     - lakehouse-traces/shutdown_snapshot_test.go#TestRunShutdown_StopsCompactionBeforeClosingTheStorage
     - lakehouse-traces/shutdown_snapshot_test.go#TestStopCompactionBounded
     - internal/compaction/orphan_sweep_test.go#TestOrphanSweep_StopIsIdempotent
+    - internal/compaction/scheduler_test.go#TestScheduler_ConcurrentDrainAndStop
   docs:
     - docs/architecture/metadata-consolidation.md
     - docs/architecture/field-value-catalog.md

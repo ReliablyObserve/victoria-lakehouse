@@ -169,8 +169,9 @@ type Scheduler struct {
 	segmentLister  SegmentMarkerLister
 	segmentProtect time.Duration
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 
 	// Drain state (spec §11.1)
 	draining  atomic.Bool
@@ -281,12 +282,9 @@ func (s *Scheduler) Start() {
 // Stop signals the background goroutine to stop and waits for it.
 // Stop is idempotent.
 func (s *Scheduler) Stop() {
-	select {
-	case <-s.stopCh:
-		// already stopped
-	default:
-		close(s.stopCh)
-	}
+	// Two callers may stop the scheduler at once: the shutdown stops it before
+	// the storage closes (bounded wait) and main's deferred stop is the backstop.
+	s.stopOnce.Do(func() { close(s.stopCh) })
 	s.wg.Wait()
 }
 
