@@ -931,6 +931,20 @@ On SIGTERM the insert pod:
    `persist_timeout`) so the next start warms instantly instead of re-listing S3.
 3. Stops the **flusher** (a drain cut short resumes after the restart) and closes
    the insert buffer: upstream writes the in-memory rows of every segment to disk.
+   Shortly before the close (after the tombstone drain of step 4) the **compaction**
+   is drained and stopped (waiting at most
+   `persist_timeout`; the chart's preStop `/lakehouse/drain` has normally drained it
+   already), so the close sees its last pmeta contribution. The close then writes the
+   **pmeta partition bundles** still marked dirty (one PUT each; the flusher persists
+   them on its ticks, so without this a restart within one tick of a compaction would
+   load the bundle stored before it: the merged-away files listed, the compacted file
+   missing). That write is bounded by `persist_timeout` for all bundles together, so an
+   unreachable object store cannot hold the shutdown past it; a bundle that cannot be
+   written is logged and does not keep the others from being written. What is not
+   covered: a compaction still running when its drain bound passes, and any bundle whose
+   write failed, leave the bundle as it was stored (the next start does not compare a
+   loaded bundle with the manifest, so the compacted file has no entry until its
+   partition is rebuilt).
 4. Drains any tombstone S3 write a transient failure left owed. This is a
    backstop, not the durability mechanism — tombstones were already written
    through on every change.

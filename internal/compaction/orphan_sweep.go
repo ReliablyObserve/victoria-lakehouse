@@ -116,8 +116,9 @@ type OrphanSweepConfig struct {
 type OrphanSweep struct {
 	cfg OrphanSweepConfig
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // NewOrphanSweep validates cfg and returns a ready-to-Start sweep.
@@ -150,7 +151,7 @@ func (o *OrphanSweep) Start() {
 
 // Stop signals both loops to exit and blocks until they do.
 func (o *OrphanSweep) Stop() {
-	close(o.stopCh)
+	o.stopOnce.Do(func() { close(o.stopCh) })
 	o.wg.Wait()
 }
 

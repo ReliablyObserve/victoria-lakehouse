@@ -234,12 +234,31 @@
   status: shipped
   area: storage
   surfaces: [storage, flag]
+  rows: [lh.select.restart.pmeta_after_compaction_logs, lh.select.restart.pmeta_after_compaction_traces]
   tests:
     - internal/pmeta/bundle_test.go
     - internal/pmeta/facet_field_catalog_test.go
     - internal/storage/parquets3/pmeta_integration_test.go
     - internal/storage/parquets3/pmeta_wire_test.go
     - lakehouse-traces/internal/storage/parquets3/pmeta_integration_test.go
+    - internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles
+    - internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_RestartAfterCompactionKeepsTheCompactedFile
+    - internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_PmetaWriteIsIdempotent
+    - internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_PmetaWriteIsBoundedWhenTheObjectStoreHangs
+    - internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_AFailingBundleDoesNotLoseTheOthers
+    - internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_WithoutCatalogOrWriter
+    - lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles
+    - lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_RestartAfterCompactionKeepsTheCompactedFile
+    - lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_PmetaWriteIsIdempotent
+    - lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_PmetaWriteIsBoundedWhenTheObjectStoreHangs
+    - lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_AFailingBundleDoesNotLoseTheOthers
+    - lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_WithoutCatalogOrWriter
+    - internal/pmeta/store_surface_test.go#TestPersistDirtyAll_OneFailureDoesNotStopTheOthers
+    - cmd/lakehouse-logs/shutdown_snapshot_test.go#TestRunShutdown_StopsCompactionBeforeClosingTheStorage
+    - cmd/lakehouse-logs/shutdown_snapshot_test.go#TestStopCompactionBounded
+    - lakehouse-traces/shutdown_snapshot_test.go#TestRunShutdown_StopsCompactionBeforeClosingTheStorage
+    - lakehouse-traces/shutdown_snapshot_test.go#TestStopCompactionBounded
+    - internal/compaction/orphan_sweep_test.go#TestOrphanSweep_StopIsIdempotent
   docs:
     - docs/architecture/metadata-consolidation.md
     - docs/architecture/field-value-catalog.md

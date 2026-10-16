@@ -182,3 +182,72 @@ func TestRunShutdown_PersistsManifestBeforeAndAfterClose(t *testing.T) {
 		t.Errorf("runShutdown calls store.Close() directly (call #%d): the final flush would not be followed by a manifest persist", i)
 	}
 }
+
+// The compaction drains before the storage closes: a compaction that finishes
+// after Close has written the pmeta bundles leaves its bundle dirty with nothing
+// left to write it. The first manifest persist and the Stop() calls stay ahead.
+func TestRunShutdown_StopsCompactionBeforeClosingTheStorage(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		fd, ok := n.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != "runShutdown" {
+			return true
+		}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch fn := call.Fun.(type) {
+			case *ast.Ident:
+				order = append(order, fn.Name)
+			case *ast.SelectorExpr:
+				if x, ok := fn.X.(*ast.Ident); ok {
+					order = append(order, x.Name+"."+fn.Sel.Name)
+				}
+			}
+			return true
+		})
+		return false
+	})
+	idx := func(name string) int {
+		for i, n := range order {
+			if n == name {
+				return i
+			}
+		}
+		return -1
+	}
+	first, stop, comp, closeAndPersist := idx("persistManifestSnapshot"), idx("vlinsert.Stop"), idx("stopCompactionBounded"), idx("closeStoreAndPersistManifest")
+	if first < 0 || stop < 0 || comp < 0 || closeAndPersist < 0 {
+		t.Fatalf("runShutdown calls %v: want persistManifestSnapshot, vlinsert.Stop, stopCompactionBounded and closeStoreAndPersistManifest", order)
+	}
+	if first >= stop || stop >= comp || comp >= closeAndPersist {
+		t.Errorf("runShutdown order = %v: want the first manifest persist, the Stop() calls, the compaction stop, then close+persist", order)
+	}
+}
+
+// stopCompactionBounded waits for the stop it is given, but not longer than its
+// bound: a drain that outlasts the budget must not hold back the storage close.
+func TestStopCompactionBounded(t *testing.T) {
+	stopCompactionBounded(nil, time.Second) // no compaction configured
+
+	ran := false
+	stopCompactionBounded(func() { ran = true }, time.Second)
+	if !ran {
+		t.Error("the stop did not run")
+	}
+
+	release := make(chan struct{})
+	defer close(release)
+	start := time.Now()
+	stopCompactionBounded(func() { <-release }, 100*time.Millisecond)
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("stopCompactionBounded waited %v for a drain that never ends, want about 100ms", took)
+	}
+}

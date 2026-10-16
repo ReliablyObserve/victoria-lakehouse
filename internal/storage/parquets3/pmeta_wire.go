@@ -108,6 +108,24 @@ func (o *catalogObserver) persistDirty(ctx context.Context) {
 	_, _ = o.store.PersistDirty(ctx, poolObjectStore{o.pool})
 }
 
+// persistDirtyFinal is the last write before the process exits: every dirty
+// bundle gets its PUT, one failing partition does not keep the others from
+// being written, and each failure is logged (there is no next cycle to retry
+// in). ctx bounds the whole write, so an unreachable object store cannot hold
+// the shutdown past it.
+func (o *catalogObserver) persistDirtyFinal(ctx context.Context) {
+	if o == nil || o.store == nil || o.pool == nil {
+		return
+	}
+	n, errs := o.store.PersistDirtyAll(ctx, poolObjectStore{o.pool})
+	for _, err := range errs {
+		logger.Warnf("pmeta bundle not persisted at close: %s", err)
+	}
+	if n > 0 || len(errs) > 0 {
+		logger.Infof("pmeta bundles persisted at close; written=%d failed=%d", n, len(errs))
+	}
+}
+
 func (o *catalogObserver) OnFileFlush(partition string, fi manifest.FileInfo, labels, bloomValues map[string][]string) {
 	if o == nil || o.store == nil {
 		return

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -45,23 +46,53 @@ func (s *Store) PersistDirty(ctx context.Context, os ObjectStore) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return n, err
 		}
-		b := s.Bundle(p)
-		// Snapshot the generation BEFORE encoding: contributions that arrive
-		// while the encode/PUT is in flight bump gen past this snapshot, so the
-		// bundle stays dirty and they persist next cycle (no lost update).
-		g := b.snapshotGen()
-		var buf bytes.Buffer
-		if err := b.Encode(&buf); err != nil {
+		if err := s.persistPartition(ctx, os, p); err != nil {
 			return n, err
 		}
-		if err := os.PutObject(ctx, s.bundleKey(p), buf.Bytes()); err != nil {
-			return n, err
-		}
-		b.setPersistedSize(int64(buf.Len()))
-		b.persisted(g)
 		n++
 	}
 	return n, nil
+}
+
+// PersistDirtyAll is PersistDirty for the last write before the process exits:
+// a partition whose PUT fails does not keep the others from being written (there
+// is no next cycle to retry them in). It returns the number persisted and the
+// failed partitions' errors; a cancelled ctx stops it and is reported as the
+// last error.
+func (s *Store) PersistDirtyAll(ctx context.Context, os ObjectStore) (int, []error) {
+	n := 0
+	var errs []error
+	for _, p := range s.DirtyPartitions() {
+		if err := ctx.Err(); err != nil {
+			return n, append(errs, err)
+		}
+		if err := s.persistPartition(ctx, os, p); err != nil {
+			errs = append(errs, fmt.Errorf("partition %q: %w", p, err))
+			continue
+		}
+		n++
+	}
+	return n, errs
+}
+
+// persistPartition encodes and PUTs one partition's bundle, clearing its dirty
+// flag when the PUT succeeded.
+func (s *Store) persistPartition(ctx context.Context, os ObjectStore, p string) error {
+	b := s.Bundle(p)
+	// Snapshot the generation BEFORE encoding: contributions that arrive
+	// while the encode/PUT is in flight bump gen past this snapshot, so the
+	// bundle stays dirty and they persist next cycle (no lost update).
+	g := b.snapshotGen()
+	var buf bytes.Buffer
+	if err := b.Encode(&buf); err != nil {
+		return err
+	}
+	if err := os.PutObject(ctx, s.bundleKey(p), buf.Bytes()); err != nil {
+		return err
+	}
+	b.setPersistedSize(int64(buf.Len()))
+	b.persisted(g)
+	return nil
 }
 
 // WarmResult reports the outcome of a WarmPartitions sweep.

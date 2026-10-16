@@ -173,3 +173,46 @@ func TestEncode_WriterErrorsPropagate(t *testing.T) {
 		}
 	}
 }
+
+// partFailStore fails the PUT of one partition's bundle only.
+type partFailStore struct{ bad string }
+
+func (f *partFailStore) GetObject(ctx context.Context, key string) ([]byte, error) {
+	return nil, ErrNotFound
+}
+func (f *partFailStore) PutObject(ctx context.Context, key string, data []byte) error {
+	if strings.Contains(key, f.bad) {
+		return errors.New("synthetic PUT failure")
+	}
+	return nil
+}
+
+// PersistDirtyAll is the shutdown write: a partition whose PUT fails costs only
+// its own bundle, which stays dirty; the others are written.
+func TestPersistDirtyAll_OneFailureDoesNotStopTheOthers(t *testing.T) {
+	s := newTestStore()
+	s.SetPrefix("logs/")
+	for _, p := range []string{"pa", "pb", "pc"} {
+		s.OnFileFlush(contrib(p, "f", "svc"))
+	}
+	n, errs := s.PersistDirtyAll(context.Background(), &partFailStore{bad: "pb"})
+	if n != 2 || len(errs) != 1 || !strings.Contains(errs[0].Error(), `"pb"`) {
+		t.Fatalf("PersistDirtyAll = (%d, %v), want (2, one error naming pb)", n, errs)
+	}
+	if got := s.DirtyPartitions(); len(got) != 1 || got[0] != "pb" {
+		t.Fatalf("dirty after the write = %v, want only pb", got)
+	}
+	if n, errs := s.PersistDirtyAll(context.Background(), &partFailStore{bad: "\x00"}); n != 1 || len(errs) != 0 {
+		t.Fatalf("second pass = (%d, %v), want (1, none)", n, errs)
+	}
+	// Nothing dirty: nothing written, no error. A cancelled ctx stops the pass.
+	if n, errs := s.PersistDirtyAll(context.Background(), &partFailStore{bad: "\x00"}); n != 0 || len(errs) != 0 {
+		t.Fatalf("clean pass = (%d, %v), want (0, none)", n, errs)
+	}
+	s.OnFileFlush(contrib("pd", "f", "svc"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if n, errs := s.PersistDirtyAll(ctx, &partFailStore{bad: "\x00"}); n != 0 || len(errs) != 1 {
+		t.Fatalf("cancelled pass = (%d, %v), want (0, ctx error)", n, errs)
+	}
+}
