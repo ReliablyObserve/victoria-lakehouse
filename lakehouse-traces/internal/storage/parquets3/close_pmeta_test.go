@@ -194,6 +194,34 @@ func TestStorageClose_AFailingBundleDoesNotLoseTheOthers(t *testing.T) {
 	}
 }
 
+// A contribution that arrives while the bundle is being written (a compaction finishing during the
+// shutdown) is not in the bytes written, so its partition stays dirty and the write does not report
+// it as stored: the dirty flag is cleared only up to the generation the encode saw.
+func TestStorageClose_ContributionDuringThePutStaysDirty(t *testing.T) {
+	e := closeEnv(t)
+	var once atomic.Bool
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "_pmeta") && once.CompareAndSwap(false, true) {
+			e.s.catalog.OnFileFlush(closeContribution(closePartA, "arrives-during-the-put.parquet"))
+		}
+		e.srv.handler(w, r)
+	}))
+	t.Cleanup(stub.Close)
+	e.s.pool = testPool(t, stub.URL)
+	e.s.writer.catalogObserver.pool = e.s.pool
+	e.s.catalog.OnFileFlush(closeContribution(closePartA, "a.parquet"))
+
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !once.Load() {
+		t.Fatal("the bundle was not written")
+	}
+	if got := e.s.catalog.DirtyPartitions(); len(got) != 1 || got[0] != closePartA {
+		t.Errorf("dirty partitions after a Close with a contribution in flight = %v, want [%s]", got, closePartA)
+	}
+}
+
 // A Storage with no catalog (pmeta off) or no writer closes without touching the object store.
 func TestStorageClose_WithoutCatalogOrWriter(t *testing.T) {
 	e := newViewEnv(t)

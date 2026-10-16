@@ -69,3 +69,20 @@ func TestValidateShutdown_ExceedsBudget(t *testing.T) {
 		t.Error("expected error when shutdown phases exceed budget")
 	}
 }
+
+// One default for an unset persist_timeout: the binaries' runShutdown and the storage's Close
+// both take their bound from here.
+func TestEffectivePersistTimeout(t *testing.T) {
+	if got := (ShutdownConfig{}).EffectivePersistTimeout(); got != DefaultPersistTimeout {
+		t.Errorf("unset = %v, want %v", got, DefaultPersistTimeout)
+	}
+	if got := (ShutdownConfig{PersistTimeout: -time.Second}).EffectivePersistTimeout(); got != DefaultPersistTimeout {
+		t.Errorf("negative = %v, want %v", got, DefaultPersistTimeout)
+	}
+	if got := (ShutdownConfig{PersistTimeout: 7 * time.Second}).EffectivePersistTimeout(); got != 7*time.Second {
+		t.Errorf("set = %v, want 7s", got)
+	}
+	if DefaultPersistTimeout != 30*time.Second {
+		t.Errorf("DefaultPersistTimeout = %v, the documented 30s", DefaultPersistTimeout)
+	}
+}

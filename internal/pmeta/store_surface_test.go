@@ -195,24 +195,101 @@ func TestPersistDirtyAll_OneFailureDoesNotStopTheOthers(t *testing.T) {
 	for _, p := range []string{"pa", "pb", "pc"} {
 		s.OnFileFlush(contrib(p, "f", "svc"))
 	}
-	n, errs := s.PersistDirtyAll(context.Background(), &partFailStore{bad: "pb"})
-	if n != 2 || len(errs) != 1 || !strings.Contains(errs[0].Error(), `"pb"`) {
-		t.Fatalf("PersistDirtyAll = (%d, %v), want (2, one error naming pb)", n, errs)
+	n, errs, untried := s.PersistDirtyAll(context.Background(), &partFailStore{bad: "pb"})
+	if n != 2 || len(errs) != 1 || !strings.Contains(errs[0].Error(), `"pb"`) || len(untried) != 0 {
+		t.Fatalf("PersistDirtyAll = (%d, %v, %v), want (2, one error naming pb, none untried)", n, errs, untried)
 	}
 	if got := s.DirtyPartitions(); len(got) != 1 || got[0] != "pb" {
 		t.Fatalf("dirty after the write = %v, want only pb", got)
 	}
-	if n, errs := s.PersistDirtyAll(context.Background(), &partFailStore{bad: "\x00"}); n != 1 || len(errs) != 0 {
-		t.Fatalf("second pass = (%d, %v), want (1, none)", n, errs)
+	if n, errs, untried := s.PersistDirtyAll(context.Background(), &partFailStore{bad: "\x00"}); n != 1 || len(errs) != 0 || len(untried) != 0 {
+		t.Fatalf("second pass = (%d, %v, %v), want (1, none, none)", n, errs, untried)
 	}
-	// Nothing dirty: nothing written, no error. A cancelled ctx stops the pass.
-	if n, errs := s.PersistDirtyAll(context.Background(), &partFailStore{bad: "\x00"}); n != 0 || len(errs) != 0 {
-		t.Fatalf("clean pass = (%d, %v), want (0, none)", n, errs)
+	// Nothing dirty: nothing written, no error.
+	if n, errs, untried := s.PersistDirtyAll(context.Background(), &partFailStore{bad: "\x00"}); n != 0 || len(errs) != 0 || len(untried) != 0 {
+		t.Fatalf("clean pass = (%d, %v, %v), want nothing", n, errs, untried)
 	}
-	s.OnFileFlush(contrib("pd", "f", "svc"))
+}
+
+// cancelAfterStore cancels the context when the n-th PUT has been made.
+type cancelAfterStore struct {
+	n      int
+	puts   int
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterStore) GetObject(context.Context, string) ([]byte, error) {
+	return nil, ErrNotFound
+}
+func (c *cancelAfterStore) PutObject(context.Context, string, []byte) error {
+	c.puts++
+	if c.puts == c.n {
+		c.cancel()
+	}
+	return nil
+}
+
+// When the bound ends the pass, every bundle it did not try is reported by name, so a caller's
+// count of what was not written is not short by the partitions after the cut.
+func TestPersistDirtyAll_ReportsTheBundlesTheBoundCut(t *testing.T) {
+	s := newTestStore()
+	s.SetPrefix("logs/")
+	for _, p := range []string{"pa", "pb", "pc", "pd"} {
+		s.OnFileFlush(contrib(p, "f", "svc"))
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if n, errs := s.PersistDirtyAll(ctx, &partFailStore{bad: "\x00"}); n != 0 || len(errs) != 1 {
-		t.Fatalf("cancelled pass = (%d, %v), want (0, ctx error)", n, errs)
+	defer cancel()
+	n, errs, untried := s.PersistDirtyAll(ctx, &cancelAfterStore{n: 2, cancel: cancel})
+	if n != 2 || len(errs) != 0 || len(untried) != 2 || untried[0] != "pc" || untried[1] != "pd" {
+		t.Fatalf("PersistDirtyAll = (%d, %v, %v), want (2, none, [pc pd])", n, errs, untried)
+	}
+	if got := s.DirtyPartitions(); len(got) != 2 {
+		t.Fatalf("dirty after the cut = %v, want the two untried", got)
+	}
+	// An already ended context tries nothing and reports every dirty bundle.
+	n, _, untried = s.PersistDirtyAll(ctx, &cancelAfterStore{n: 99, cancel: cancel})
+	if n != 0 || len(untried) != 2 {
+		t.Fatalf("with an ended context: written %d, untried %v, want 0 and both", n, untried)
+	}
+}
+
+// midPutStore makes a new contribution to a partition while its bundle is being written.
+type midPutStore struct {
+	s    *Store
+	once bool
+}
+
+func (m *midPutStore) GetObject(context.Context, string) ([]byte, error) { return nil, ErrNotFound }
+func (m *midPutStore) PutObject(context.Context, string, []byte) error {
+	if !m.once {
+		m.once = true
+		m.s.OnFileFlush(contrib("pa", "arrives-during-the-put", "svc2"))
+	}
+	return nil
+}
+
+// A contribution that arrives while a bundle is being written is not in the bytes written, so the
+// partition must stay dirty: the dirty flag is cleared only up to the generation the encode saw.
+// Clearing up to the current generation instead loses the update at the next restart.
+func TestPersist_ContributionDuringThePutKeepsThePartitionDirty(t *testing.T) {
+	for name, persist := range map[string]func(*Store, ObjectStore){
+		"PersistDirty": func(s *Store, os ObjectStore) { _, _ = s.PersistDirty(context.Background(), os) },
+		"PersistDirtyAll": func(s *Store, os ObjectStore) {
+			_, _, _ = s.PersistDirtyAll(context.Background(), os)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newTestStore()
+			s.SetPrefix("logs/")
+			s.OnFileFlush(contrib("pa", "f", "svc"))
+			persist(s, &midPutStore{s: s})
+			if got := s.DirtyPartitions(); len(got) != 1 || got[0] != "pa" {
+				t.Fatalf("dirty after a PUT with a contribution in flight = %v, want [pa]", got)
+			}
+			persist(s, &failingStore{}) // the next write carries it and clears the flag
+			if got := s.DirtyPartitions(); len(got) != 0 {
+				t.Fatalf("dirty after the next write = %v, want none", got)
+			}
+		})
 	}
 }

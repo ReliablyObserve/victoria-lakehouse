@@ -931,20 +931,25 @@ On SIGTERM the insert pod:
    `persist_timeout`) so the next start warms instantly instead of re-listing S3.
 3. Stops the **flusher** (a drain cut short resumes after the restart) and closes
    the insert buffer: upstream writes the in-memory rows of every segment to disk.
-   Shortly before the close (after the tombstone drain of step 4) the **compaction**
-   is drained and stopped (waiting at most
-   `persist_timeout`; the chart's preStop `/lakehouse/drain` has normally drained it
-   already), so the close sees its last pmeta contribution. The close then writes the
-   **pmeta partition bundles** still marked dirty (one PUT each; the flusher persists
-   them on its ticks, so without this a restart within one tick of a compaction would
-   load the bundle stored before it: the merged-away files listed, the compacted file
-   missing). That write is bounded by `persist_timeout` for all bundles together, so an
-   unreachable object store cannot hold the shutdown past it; a bundle that cannot be
-   written is logged and does not keep the others from being written. What is not
-   covered: a compaction still running when its drain bound passes, and any bundle whose
-   write failed, leave the bundle as it was stored (the next start does not compare a
-   loaded bundle with the manifest, so the compacted file has no entry until its
-   partition is rebuilt).
+   The **compaction** is told to drain and stop right after the HTTP server stops, in
+   the background, and is waited for just before the close (at most `persist_timeout`
+   counted from the moment it was told to stop, so the snapshot, tombstone and stats
+   steps are time it already had). The scheduler's own drain waits up to 90 s for a
+   compaction in flight; nothing drained it earlier: the chart's preStop hook posts to
+   `/internal/lifecycle/drain`, which answers 500 "no orchestrator" in both binaries and
+   drains nothing (the compaction drain endpoint is `/lakehouse/drain`, which the hook
+   does not call). The close then sees the compaction's last pmeta contribution and
+   writes the **pmeta partition bundles** still marked dirty (one PUT each; the flusher
+   persists them on its ticks, so without this a restart within one tick of a compaction
+   would load the bundle stored before it: the merged-away files listed, the compacted
+   file missing). That write is bounded by `persist_timeout` for all bundles together, so
+   an unreachable object store cannot hold the shutdown past it; a bundle that cannot be
+   written is logged and does not keep the others from being written, and a bundle the
+   bound cut off is counted and named in the log (`untried=`). What is not covered: a
+   compaction still running when its wait ends, and any bundle whose write failed or was
+   cut off, leave the bundle as it was stored (the next start does not compare a loaded
+   bundle with the manifest, so the compacted file has no entry until its partition is
+   rebuilt).
 4. Drains any tombstone S3 write a transient failure left owed. This is a
    backstop, not the durability mechanism — tombstones were already written
    through on every change.
@@ -952,6 +957,20 @@ On SIGTERM the insert pod:
    cannot contain the objects the flusher wrote while the `Stop()` calls ran; the
    second lets the next boot start with their exact time bounds instead of
    bounds inferred from the S3 listing (see §2.2).
+
+**Shutdown budget** (reasoned from the code and the chart defaults, not measured: preStop sleep 5 s, `-http.shutdownDelay` 5 s, `max_graceful_duration` 7 s, `persist_timeout` 10 s, `terminationGracePeriodSeconds` 60). Only the steps that wait on S3 can reach their bound; the manifest and footer snapshots go to local disk.
+
+| When every S3-bound step hits its bound | Before the pmeta write | With the pmeta write, compaction waited for in series | With the compaction stopped in the background (this design) |
+|---|---|---|---|
+| SIGTERM seen | 5 s | 5 s | 5 s |
+| HTTP server stopped | 17 s | 17 s | 17 s |
+| tombstones, then the stats snapshot | 37 s | 37 s | 37 s |
+| compaction wait | - | 47 s | 37 s (its 10 s ran from 17 s) |
+| pmeta bundles written, storage closed | 37 s | 57 s | 47 s |
+
+The close takes about 20 s longer in the worst case than before the pmeta write if the compaction is waited for in series, and 10 s longer with the background stop; the margin left in the 60 s grace is 3 s and 13 s. With S3 reachable the added time is one PUT per dirty partition. `config.ValidateShutdown` sums `delay + flush_timeout + persist_timeout + release_timeout` once and has no production caller; it does not model these steps.
+
+**Known gap: the bundle key is written blind.** A bundle is a plain PUT to a fixed key per partition, so two pods that both hold contributions for a partition overwrite each other (last writer wins), and a pmeta write at close makes the same PUT one more flusher tick would have made, no more. The fix is per-peer bundle shards merged on read; it is not implemented.
 
 Readiness holds `/ready` at `503`/`204` until disk recovery plus the
 `MinManifestFiles` gate pass on the next boot.

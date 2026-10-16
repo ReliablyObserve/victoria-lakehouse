@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -56,23 +57,23 @@ func (s *Store) PersistDirty(ctx context.Context, os ObjectStore) (int, error) {
 
 // PersistDirtyAll is PersistDirty for the last write before the process exits:
 // a partition whose PUT fails does not keep the others from being written (there
-// is no next cycle to retry them in). It returns the number persisted and the
-// failed partitions' errors; a cancelled ctx stops it and is reported as the
-// last error.
-func (s *Store) PersistDirtyAll(ctx context.Context, os ObjectStore) (int, []error) {
-	n := 0
-	var errs []error
-	for _, p := range s.DirtyPartitions() {
-		if err := ctx.Err(); err != nil {
-			return n, append(errs, err)
+// is no next cycle to retry them in). It returns the number persisted, one error
+// per partition whose write failed, and the partitions it did not try because ctx
+// ended first (sorted), so a caller can report every bundle that was not written.
+func (s *Store) PersistDirtyAll(ctx context.Context, os ObjectStore) (written int, errs []error, untried []string) {
+	parts := s.DirtyPartitions()
+	sort.Strings(parts)
+	for i, p := range parts {
+		if ctx.Err() != nil {
+			return written, errs, parts[i:]
 		}
 		if err := s.persistPartition(ctx, os, p); err != nil {
 			errs = append(errs, fmt.Errorf("partition %q: %w", p, err))
 			continue
 		}
-		n++
+		written++
 	}
-	return n, errs
+	return written, errs, nil
 }
 
 // persistPartition encodes and PUTs one partition's bundle, clearing its dirty

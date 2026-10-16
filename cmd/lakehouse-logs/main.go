@@ -623,13 +623,16 @@ func runShutdown(
 		logger.Errorf("HTTP server shutdown error: %s", err)
 	}
 
+	// The compaction starts draining now, in the background, and is waited for
+	// just before the storage closes: a compaction that finishes after Close has
+	// written the pmeta bundles would leave its bundle dirty with nothing left to
+	// write it. The drain overlaps the snapshot, tombstone and stats steps below.
+	compStop := startCompactionStop(stopCompaction)
+
 	// Persist the manifest snapshot FIRST, before the long-running
 	// .Stop() calls. See lakehouse-traces/main.go for the full
 	// rationale — same pattern, same timeout bound, same logging.
-	persistTimeout := cfg.Shutdown.PersistTimeout
-	if persistTimeout <= 0 {
-		persistTimeout = 30 * time.Second
-	}
+	persistTimeout := cfg.Shutdown.EffectivePersistTimeout()
 	persistManifestSnapshot(store, manifestSnapshotPath(cfg), persistTimeout, "shutdown")
 
 	// Footer-cache snapshot — small (a few bytes per key) and fast.
@@ -682,10 +685,8 @@ func runShutdown(
 		}
 	}
 
-	// Compaction drains before the storage closes: a compaction that finishes
-	// after Close has written the pmeta bundles would leave its bundle dirty
-	// with nothing left to write it.
-	stopCompactionBounded(stopCompaction, persistTimeout)
+	// Wait for the compaction to stop (bounded), then close.
+	compStop.wait(persistTimeout)
 
 	// Close stops the flusher and closes the insert buffer; the snapshot
 	// persisted at the top of this function cannot contain what the flusher
@@ -695,26 +696,49 @@ func runShutdown(
 	logger.Infof("lakehouse-logs stopped")
 }
 
-// stopCompactionBounded drains and stops the compaction scheduler, waiting at
-// most timeout for it: the scheduler's own drain may wait much longer (90 s by
-// default) for a compaction in flight, which must not hold back the close of the
-// storage past the shutdown budget. On the bound the shutdown goes on with the
-// compaction still running; the deferred stop in run() is the backstop, and a
-// compaction that finishes after the storage closed leaves its pmeta bundle as
-// it was stored. Mirror of the other binary's helper.
-func stopCompactionBounded(stop func(), timeout time.Duration) {
+// compactionStop is the compaction scheduler's drain and stop running in the
+// background; wait collects it with a bound. The scheduler's own drain may wait
+// much longer (90 s by default) for a compaction in flight, which must not hold
+// back the close of the storage past the shutdown budget. On the bound the
+// shutdown goes on with the compaction still running; the deferred stop in run()
+// is the backstop, and a compaction that finishes after the storage closed leaves
+// its pmeta bundle as it was stored. Mirror of the other binary's type.
+type compactionStop struct {
+	done    chan struct{}
+	started time.Time
+}
+
+// startCompactionStop runs stop (nil: nothing to stop) in the background.
+func startCompactionStop(stop func()) *compactionStop {
+	c := &compactionStop{done: make(chan struct{}), started: time.Now()}
 	if stop == nil {
-		return
+		close(c.done)
+		return c
 	}
-	done := make(chan struct{})
 	go func() {
 		stop()
-		close(done)
+		close(c.done)
 	}()
+	return c
+}
+
+// wait returns once the stop has finished, or when timeout has passed since it
+// started, whichever comes first.
+func (c *compactionStop) wait(timeout time.Duration) {
+	remaining := timeout - time.Since(c.started)
+	if remaining < 0 {
+		remaining = 0
+	}
+	t := time.NewTimer(remaining)
+	defer t.Stop()
 	select {
-	case <-done:
-	case <-time.After(timeout):
-		logger.Warnf("compaction did not drain within %v; closing the storage with it still running", timeout)
+	case <-c.done:
+	case <-t.C:
+		select {
+		case <-c.done:
+		default:
+			logger.Warnf("compaction did not drain within %v; closing the storage with it still running", timeout)
+		}
 	}
 }
 

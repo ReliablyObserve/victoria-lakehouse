@@ -590,7 +590,7 @@
     },
     "shutdown.persist_timeout": {
       "name": "PersistTimeout",
-      "doc": "PersistTimeout bounds writing the manifest, footer-cache and stats snapshots during shutdown; 0 means 30s. It is also the bound of the last write of the dirty pmeta bundles when the storage closes (0 means 10s there); each of these writes has the bound to itself."
+      "doc": "PersistTimeout bounds writing the manifest, footer-cache and stats snapshots during shutdown; 0 means 30s. It is also the bound of the last write of the dirty pmeta bundles when the storage closes and of the wait for the compaction to stop before the close; each of these steps has the bound to itself."
     },
     "shutdown.release_timeout": {
       "name": "ReleaseTimeout",

@@ -424,10 +424,6 @@ func (s *Storage) Close() error {
 	return nil
 }
 
-// defaultClosePersistTimeout bounds the pmeta write at Close when the shutdown config sets none; it
-// is the default of shutdown.persist_timeout.
-const defaultClosePersistTimeout = 10 * time.Second
-
 // persistCatalogAtClose writes the dirty pmeta bundles, bounded by shutdown.persist_timeout (the
 // budget the manifest, tombstone and stats writes of the shutdown use): with the object store
 // unreachable the write gives up at that bound and the bundles stay as they were stored. It never
@@ -437,9 +433,9 @@ func (s *Storage) persistCatalogAtClose() {
 	if s.writer == nil {
 		return
 	}
-	timeout := defaultClosePersistTimeout
-	if s.cfg != nil && s.cfg.Shutdown.PersistTimeout > 0 {
-		timeout = s.cfg.Shutdown.PersistTimeout
+	timeout := config.DefaultPersistTimeout
+	if s.cfg != nil {
+		timeout = s.cfg.Shutdown.EffectivePersistTimeout()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
