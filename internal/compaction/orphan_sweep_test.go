@@ -839,3 +839,19 @@ func TestOrphanSweep_TierA_Concurrent_Safe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Stop is idempotent: the binaries stop the compaction before the storage closes
+// and keep the deferred stop of run() as a backstop, so it runs twice.
+func TestOrphanSweep_StopIsIdempotent(t *testing.T) {
+	pool := newListingPool()
+	m := manifest.New("bkt", "logs/")
+	r := NewOwnershipResolver("self", staticPeers("self"))
+	sweep := NewOrphanSweep(OrphanSweepConfig{
+		Manifest: m, Pool: pool, Ownership: r, Policy: NewLevelPolicy(10, 20, 0),
+		Lister: pool, Prefix: "logs/", Mode: config.ModeLogs,
+		Interval: 50 * time.Millisecond, TierBInterval: 100 * time.Millisecond, OrphanTTL: time.Hour,
+	})
+	sweep.Start()
+	sweep.Stop()
+	sweep.Stop() // a second close(stopCh) would panic
+}

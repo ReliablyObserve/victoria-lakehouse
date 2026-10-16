@@ -470,6 +470,11 @@ func (s *Storage) Close() error {
 		s.localBuffer.Close()
 		logger.Infof("insert buffer closed")
 	}
+	// The pmeta bundles a compaction (or the flusher's last drain) left dirty are written on the
+	// flusher's ticks; a restart within one tick of them would leave the stored bundle as it was
+	// before (the merged-away files listed, the compacted file missing), so the last write happens
+	// here, once the flusher has stopped.
+	s.persistCatalogAtClose()
 	if s.persister != nil {
 		if err := s.persister.SaveLabelIndex(s.labelIndex); err != nil {
 			logger.Warnf("failed to persist label index: %s", err)
@@ -478,6 +483,28 @@ func (s *Storage) Close() error {
 		}
 	}
 	return nil
+}
+
+// defaultClosePersistTimeout bounds the pmeta write at Close when the shutdown config sets none; it
+// is the default of shutdown.persist_timeout.
+const defaultClosePersistTimeout = 10 * time.Second
+
+// persistCatalogAtClose writes the dirty pmeta bundles, bounded by shutdown.persist_timeout (the
+// budget the manifest, tombstone and stats writes of the shutdown use): with the object store
+// unreachable the write gives up at that bound and the bundles stay as they were stored. It never
+// fails the close and takes nothing but the catalog's own locks,
+// so a compaction that finishes while it runs only leaves its newer contribution dirty.
+func (s *Storage) persistCatalogAtClose() {
+	if s.writer == nil {
+		return
+	}
+	timeout := defaultClosePersistTimeout
+	if s.cfg != nil && s.cfg.Shutdown.PersistTimeout > 0 {
+		timeout = s.cfg.Shutdown.PersistTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	s.writer.persistCatalogFinal(ctx)
 }
 
 func (s *Storage) updateLabelIndex(f *parquet.File) {

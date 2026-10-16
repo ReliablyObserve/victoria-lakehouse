@@ -658,3 +658,33 @@
   refs: { doc: docs/read-path.md, tests: [lakehouse-traces/internal/storage/parquets3/buffer_bridge_auth_test.go, tests/e2e/buffer_query_auth_test.go] }
   notes: "The traces binary's twin of the logs row. #383: the bridge sends Authorization: Bearer <peer.auth_key> on every request to every insert pod and per-tenant sub-request, so a select pod with auth on answers every unflushed row (5000 of 5000 in TestBridgeAuth_SelectPodSeesEveryUnflushedRowWithPeerKey; before: 0, with 200). A peer that refuses the key is counted as lakehouse_buffer_bridge_errors_total{reason=\"auth\"} (LakehouseBufferBridgeAuthRefused). Live: the split stack of the PR proof (two insert pods, one select pod, both signals, key on) and the e2e TestBufferQueryAuth_TenantIsolationAndSelectSeesUnflushedRows with LH_PEER_AUTH_KEY. SCHEMA LIMIT: the runner has one node per signal and no key, so this row can only express the cold-side request. Stays pending."
 
+
+- id: lh.select.restart.pmeta_after_compaction_logs
+  title: "LH cold read after a graceful restart right after a compaction — the compacted file keeps its pmeta entry and the merged-away files lose theirs (logs)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs: { doc: docs/durability.md, tests: [internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_RestartAfterCompactionKeepsTheCompactedFile, internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles, cmd/lakehouse-logs/shutdown_snapshot_test.go#TestRunShutdown_StopsCompactionBeforeClosingTheStorage] }
+  notes: "Compact an hour, then stop the pod gracefully before the flusher's next tick: the pmeta bundle stored at the restart must list the compacted file and not the files it replaced (storage Close writes the dirty bundles after the compaction was drained). Rows were never at risk: the effect is on the metadata the planner and the field catalog read, so the request here only checks the cold rows are all returned; the metadata assertions are the cited tests. A compaction still running when the drain bound passes, or a bundle whose PUT failed, leaves the bundle as stored (docs/durability.md section 4). Stays pending."
+
+- id: lh.select.restart.pmeta_after_compaction_traces
+  title: "LH cold read after a graceful restart right after a compaction — the compacted file keeps its pmeta entry and the merged-away files lose theirs (traces)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs: { doc: docs/durability.md, tests: [lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_RestartAfterCompactionKeepsTheCompactedFile, lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_PersistsTheDirtyPmetaBundles, lakehouse-traces/shutdown_snapshot_test.go#TestRunShutdown_StopsCompactionBeforeClosingTheStorage] }
+  notes: "Compact an hour, then stop the pod gracefully before the flusher's next tick: the pmeta bundle stored at the restart must list the compacted file and not the files it replaced (storage Close writes the dirty bundles after the compaction was drained). Rows were never at risk: the effect is on the metadata the planner and the field catalog read, so the request here only checks the cold rows are all returned; the metadata assertions are the cited tests. A compaction still running when the drain bound passes, or a bundle whose PUT failed, leaves the bundle as stored (docs/durability.md section 4). Stays pending."

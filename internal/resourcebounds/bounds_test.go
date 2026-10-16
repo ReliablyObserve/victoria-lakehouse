@@ -311,8 +311,8 @@ func TestAcquire_PreservesLegacyFileBudgetSemantics(t *testing.T) {
 		queued <- e
 	}()
 	select {
-	case <-queued:
-		t.Fatal("small Acquire admitted while outlier in flight")
+	case e := <-queued:
+		t.Fatalf("small Acquire admitted while outlier in flight (err: %v)", e)
 	case <-time.After(50 * time.Millisecond):
 		// expected — queued behind outlier
 	}

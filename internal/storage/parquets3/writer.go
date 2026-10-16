@@ -717,6 +717,14 @@ func (w *BatchWriter) persistCatalog(ctx context.Context) {
 	}
 }
 
+// persistCatalogFinal writes every dirty pmeta bundle once, for the shutdown:
+// see catalogObserver.persistDirtyFinal.
+func (w *BatchWriter) persistCatalogFinal(ctx context.Context) {
+	if w != nil && w.catalogObserver != nil {
+		w.catalogObserver.persistDirtyFinal(ctx)
+	}
+}
+
 // SetMarkerPool overrides where segment markers are written (tests); by
 // default they go to the writer's default bucket, where compaction lists them.
 func (w *BatchWriter) SetMarkerPool(p PoolWriter) {

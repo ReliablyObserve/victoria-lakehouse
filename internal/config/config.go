@@ -724,7 +724,9 @@ type ShutdownConfig struct {
 	// FlushTimeout bounds flushing buffered rows to S3 during shutdown.
 	FlushTimeout time.Duration `yaml:"flush_timeout"`
 	// PersistTimeout bounds writing the manifest, footer-cache and stats
-	// snapshots during shutdown; 0 means 30s.
+	// snapshots during shutdown; 0 means 30s. It is also the bound of the
+	// last write of the dirty pmeta bundles when the storage closes (0 means
+	// 10s there); each of these writes has the bound to itself.
 	PersistTimeout time.Duration `yaml:"persist_timeout"`
 	// ReleaseTimeout bounds notifying peers during shutdown.
 	ReleaseTimeout time.Duration `yaml:"release_timeout"`

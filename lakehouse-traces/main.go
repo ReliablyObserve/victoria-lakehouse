@@ -586,7 +586,7 @@ func run(cfg *config.Config, addr string) {
 	sig := procutil.WaitForSigterm()
 	logger.Infof("shutdown signal received; signal=%v", sig)
 
-	runShutdown(cfg, addr, store, rewriteSched, tombstoneStore, registry)
+	runShutdown(cfg, addr, store, rewriteSched, tombstoneStore, registry, stopCompaction)
 }
 
 // runShutdown drains the lakehouse-traces pod in the order required for
@@ -602,6 +602,7 @@ func runShutdown(
 	rewriteSched *delete.RewriteScheduler,
 	tombstoneStore *delete.TombstoneStore,
 	registry *stats.TenantRegistry,
+	stopCompaction func(),
 ) {
 	if err := httpserver.Stop([]string{addr}); err != nil {
 		logger.Errorf("HTTP server shutdown error: %s", err)
@@ -668,12 +669,40 @@ func runShutdown(
 		}
 	}
 
+	// Compaction drains before the storage closes: a compaction that finishes
+	// after Close has written the pmeta bundles would leave its bundle dirty
+	// with nothing left to write it.
+	stopCompactionBounded(stopCompaction, persistTimeout)
+
 	// Close stops the flusher and closes the insert buffer; the snapshot
 	// persisted at the top of this function cannot contain what the flusher
 	// wrote while the Stop() calls above ran, so persist again.
 	closeStoreAndPersistManifest(store, manifestSnapshotPath(cfg), persistTimeout)
 
 	logger.Infof("lakehouse-traces stopped")
+}
+
+// stopCompactionBounded drains and stops the compaction scheduler, waiting at
+// most timeout for it: the scheduler's own drain may wait much longer (90 s by
+// default) for a compaction in flight, which must not hold back the close of the
+// storage past the shutdown budget. On the bound the shutdown goes on with the
+// compaction still running; the deferred stop in run() is the backstop, and a
+// compaction that finishes after the storage closed leaves its pmeta bundle as
+// it was stored. Mirror of the other binary's helper.
+func stopCompactionBounded(stop func(), timeout time.Duration) {
+	if stop == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		logger.Warnf("compaction did not drain within %v; closing the storage with it still running", timeout)
+	}
 }
 
 // closeStoreAndPersistManifest closes the storage (the flusher stops, the insert
