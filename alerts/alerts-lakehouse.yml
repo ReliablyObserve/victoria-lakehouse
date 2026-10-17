@@ -141,6 +141,26 @@ groups:
           summary: "High peer cache error rate"
           description: "Peer cache error rate is {{ $value | humanizePercentage }}. Check network connectivity between pods."
 
+      - alert: LakehouseRingSelfUnresolved
+        # Only the compaction ring: every pod that runs maintenance is expected in it.
+        # The peer-cache ring is not alerted on, because a pod outside the peer
+        # headless service (for example an insert pod when that service is the select
+        # headless service) is correctly not in it. A pod that is not ready is not listed
+        # by its headless service and has its own alert (LakehouseNotReady).
+        expr: lakehouse_ring_self_resolved{ring="compaction"} == 0 and on (instance) lakehouse_ready == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A Lakehouse pod does not recognise itself in the compaction ring"
+          description: >-
+            Pod {{ $labels.instance }} found no single entry for itself in the discovered compaction ring,
+            so it compacts no partition and sweeps no orphans (the other writers cover its share). The
+            pod's log line "compaction ring: this pod ... is not listed" or "is ambiguous" says which.
+            Set POD_IP / POD_IPS (the chart does) or check that the headless service
+            (select.insert_headless_service, or discovery.peer_headless_service when it is not set)
+            lists the pod by its IP or its StatefulSet hostname on the pod's listen port.
+
       - alert: LakehouseTenantScopeViolation
         expr: sum by (site) (increase(lakehouse_tenant_scope_violations_total[5m])) > 0
         for: 0m

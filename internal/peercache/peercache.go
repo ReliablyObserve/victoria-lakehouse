@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/selfaddr"
 )
 
 type PeerCache struct {
@@ -51,6 +53,11 @@ func NewWithStabilize(selfAddr, authKey string, timeout time.Duration, maxConns 
 	pc.rcm = newRingChangeManager(stabilizeDuration)
 	return pc
 }
+
+// SetSelfEnv replaces what the cache's ring knows about this pod (tests; the
+// process's own environment is used otherwise). The next peer update resolves
+// with it.
+func (pc *PeerCache) SetSelfEnv(env selfaddr.Env) { pc.ring.SetSelfEnv(env) }
 
 func (pc *PeerCache) UpdatePeers(peers []string) {
 	oldMembers := pc.ring.Members()

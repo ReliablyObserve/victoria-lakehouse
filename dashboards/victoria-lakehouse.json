@@ -938,6 +938,32 @@
           "legendFormat": "objects skipped (1h) {{signal}} {{op}}"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 127 },
+      "id": 92,
+      "title": "Ring Membership",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 1, "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 128 },
+      "id": 93,
+      "title": "Does Each Pod Find Itself In The Ring",
+      "description": "1 when the pod found exactly one entry for itself in the discovered member list of the ring (compaction ownership, peer cache), by its IP, its StatefulSet hostname, a dashed-IP name or a DNS answer on its listen port. 0 means none or several match: the pod owns nothing in that ring (no compaction, no orphan sweep) or fetches its own cache keys from its peers. in_peers is 1 only when that entry is also in the set the ring hashes over (not draining, in the AZ subset). Set POD_IP / POD_IPS or check the headless service. A peercache 0 is normal for a pod that is not behind the peer headless service. The alert is LakehouseRingSelfUnresolved (compaction ring only).",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "lakehouse_ring_self_resolved{instance=~\"$instance\"}",
+          "legendFormat": "resolved {{instance}} {{ring}}"
+        },
+        {
+          "expr": "lakehouse_ring_self_in_peers{instance=~\"$instance\"}",
+          "legendFormat": "in peers {{instance}} {{ring}}"
+        }
+      ]
     }
   ],
   "schemaVersion": 39,

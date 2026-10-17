@@ -472,10 +472,16 @@ It runs the **same merge path** as a scheduled compaction (synchronously) and ho
 
 ### Ownership Troubleshooting
 
-**A partition is never compacted.** Check `lakehouse_compaction_ownership_empty_peers_total`
-(the pod saw an empty peer set) and `lakehouse_compaction_ownership_self_in_peers` (should
-be 1: the pod is part of its own ring). A pod missing from peer discovery
-(`discovery.peer_headless_service`) cannot own partitions other pods expect it to.
+**A partition is never compacted.** Check `lakehouse_ring_self_resolved{ring="compaction"}`
+on each writer pod: 0 means the pod could not find itself in the discovered ring and owns
+nothing (alert `LakehouseRingSelfUnresolved`; the pod's log says whether no member or several
+matched it). A pod finds itself by its listen port plus its IP (`POD_IP` / `POD_IPS`, set by
+the chart, and the interface addresses), its hostname (`POD_NAME`, the StatefulSet pod name),
+a dashed-IP DNS name or a DNS lookup of the member name; the discovered list must hold the
+pod under one of those forms. Also check `lakehouse_compaction_ownership_empty_peers_total`
+(the pod saw an empty peer set). A pod missing from peer discovery
+(`discovery.peer_headless_service`, `select.insert_headless_service`) cannot own partitions
+other pods expect it to. See [roles](architecture/roles.md#how-a-pod-finds-itself-in-the-ring).
 
 **Two pods compact the same partition.** `lakehouse_compaction_dual_ownership_total`
 increases while the ring changes (scaling, restarts, DNS lag);

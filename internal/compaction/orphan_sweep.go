@@ -261,7 +261,7 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 		if len(ranked) < 2 {
 			continue
 		}
-		if ranked[1] != o.cfg.Ownership.Self {
+		if self, ok := o.cfg.Ownership.SelfMember(); !ok || ranked[1] != self {
 			continue
 		}
 		primary := ranked[0]
@@ -357,15 +357,17 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	selfIdx := -1
-	for i, p := range peers {
-		if p == o.cfg.Ownership.Self {
-			selfIdx = i
-			break
+	if self, ok := o.cfg.Ownership.SelfMember(); ok {
+		for i, p := range peers {
+			if p == self {
+				selfIdx = i
+				break
+			}
 		}
 	}
 	if selfIdx < 0 {
-		// Self is not in the peer set — same case as ownership.go's
-		// "stale self" gauge; skip work and let the operator alert.
+		// This pod is not identified in the peer set (see selfaddr): skip the
+		// work and let lakehouse_ring_self_resolved alert the operator.
 		metrics.CompactionOrphansSkipped.Inc("self_not_in_peers")
 		return 0, nil
 	}

@@ -58,12 +58,39 @@ A test pins the list: `TestMaintenanceInventory_EveryS3WriterIsGated` fails when
 - **S3 requests.** Writers: unchanged. Select pods: the maintenance PUT, COPY and DELETE requests stop; reads are unchanged.
 - **Deletes taken by a select pod.** The tombstone is written to S3 (and retried until it lands) and hides the rows on every pod that loads it, but a pod loads tombstones only when it starts. Before this change the select pod that took the delete also rewrote the objects, which made the delete visible on every pod through the manifest; now no pod rewrites until a writer pod has loaded the tombstone, and other select pods keep returning the deleted rows until they restart. Single-role `all` deployments are unaffected. This is tracked in [#594](https://github.com/ReliablyObserve/victoria-lakehouse/issues/594).
 
+## How a pod finds itself in the ring
+
+A pod listens on `:9428` (`:10428` for traces) and service discovery lists the pods behind a headless service as `IP:port` (A records) or `hostname:port` (SRV records of a StatefulSet, or dashed-IP names such as `10-1-2-3.svc...`). The two never compare equal, and compaction ownership and the peer cache both need to know which entry is this pod. They ask `internal/selfaddr`, which accepts a member when its port is the listen port and one of these holds:
+
+1. the member is the listen address exactly (a pod alone in its ring);
+2. the member's host is an IP literal that is one of this pod's addresses (IPv4 or IPv6, zones stripped): `POD_IP`, `POD_IPS` and the interface addresses, loopback excluded;
+3. the first DNS label of the member's host is the first label of this pod's hostname (`POD_NAME`, then `os.Hostname()`): the StatefulSet SRV form `lh-logs-insert-0.<svc>.<ns>.svc.cluster.local`;
+4. the first label is a dashed IP of this pod (`10-1-2-3`, `fd00--5`);
+5. only when none of 1 to 4 matched anything: the member's hostname resolves, from a cache refreshed in the background (2 s timeout, at most 8 lookups in flight, reused for a minute), to one of this pod's addresses.
+
+Exactly one matching member is this pod; none or several leave it unresolved. Interface addresses and hostnames are re-read once a minute, a decision for an unchanged list is reused for 5 s, and no step touches the network on the query or ownership path.
+
+**An unresolved pod owns nothing.** With a non-empty discovered ring and no single entry for itself, a pod compacts no partition, runs no orphan sweep and never adds its listen address to the list as an extra member (adding it is what left partitions without an owner or with several). In the peer cache an unresolved pod keeps asking its peers for every key, including its own. A pod not yet in DNS owns nothing and the other writers cover its share. The pod logs why, once per change. A pod with no discovery at all (no writer list and no peers) is alone in its ring and owns everything.
+
+| Metric | Meaning |
+|---|---|
+| `lakehouse_ring_self_resolved{ring}` | 1 when exactly one entry is this pod, 0 when none or several match. `ring` is `compaction` or `peercache`. |
+| `lakehouse_ring_self_in_peers{ring}` | 1 when that entry is also in the set the ring hashes over; 0 for a pod that resolved but is draining or outside the AZ subset, and 0 whenever it did not resolve. |
+
+Alert `LakehouseRingSelfUnresolved` fires when `lakehouse_ring_self_resolved{ring="compaction"}` is 0 on a ready pod for 5 minutes (not for the peer-cache ring: a pod that is not behind the peer headless service, for example an insert pod when that service is the select headless service, is correctly not in it and reads 0 there). What to set: the chart injects `POD_NAME`, `POD_IP` and `POD_IPS` through the downward API; a hand-written manifest should do the same, and the headless service must list the pod on its listen port.
+
+Measured on 672 partitions (8 tenants x 84 days), each of W writers listening on `:9428`, discovery listing them as StatefulSet hostnames, IPs, dashed-IP names or IPv6 (the scheduler's ownership only, `TestOwnership_EveryForm_ExactlyOneOwner`): before, 48 to 52% of the partitions had no owner with one writer, and with 2, 3 and 8 writers 66%, 75% and 88% had none while 32%, 25% and 12% were owned by every writer at once; after, 0% and 0% for every form and W.
+
 ## Known gaps
 
-- Several insert pods that see different peers can still compact the same partition (the rule that prevents it is a separate piece of work, tracked in issue 311). This page and the role gate make sure select pods are not among them.
+- Several insert pods that see different peers (a ring change, DNS lag) can still compact the same partition (the rule that prevents it is a separate piece of work, tracked in issue 311). This page and the role gate make sure select pods are not among them.
+- The orphan sweep's Tier A lets the secondary owner of a partition take it when the secondary has no attempt time for it, and attempt times are kept per pod, so with a healthy, agreeing ring the secondary can still merge a partition the primary is merging. This was already the case before the self-address fix (it ran on every writer for the partitions the listen address ranked second); it is not changed here. Tracked in [#602](https://github.com/ReliablyObserve/victoria-lakehouse/issues/602).
 - Tombstones are loaded at start only, so a delete taken by a select pod reaches the other pods, and the rewrite, only after a restart ([#594](https://github.com/ReliablyObserve/victoria-lakehouse/issues/594)).
 - The stats snapshot is written by writer pods from their registry. A select pod's query counters (`last_query_at`) reach it only through stats gossip, so without peer gossip a select pod's last-query time is not persisted.
-- Several insert pods still share a self-address problem: each pod adds its own listen address (`:9428`) to the ring next to the address discovery returns for it, so partitions that hash to that entry are compacted by every insert pod. That, and the rest of 311, is unchanged here.
+- Other places that compare the listen address with discovered addresses were not changed: [#603](https://github.com/ReliablyObserve/victoria-lakehouse/issues/603).
+- The same-AZ subset of the compaction ring intersects the peer ring's members with the writer list by exact string. When the two headless services list a pod in different forms (an IP in one, a hostname in the other) the intersection is empty, the pod falls back to the full writer list, and AZ stratification is silently off. [#603](https://github.com/ReliablyObserve/victoria-lakehouse/issues/603).
+- A dual-stack headless service can list one pod twice (its IPv4 and its IPv6 address, both on the listen port). Both entries match the pod, so it is reported as ambiguous and owns nothing in that ring (`lakehouse_ring_self_resolved` 0, alert `LakehouseRingSelfUnresolved`); list one address family, or use the StatefulSet SRV form. Not tested on a real dual-stack cluster.
+- Not verified against a real cluster: the exact SRV answers of CoreDNS for a StatefulSet headless service, and its dashed IPv6 pod names. The rules above accept the documented forms (hostname first label, dashed IPv4, dashed IPv6 in the compressed and expanded forms); a form they do not accept leaves the pod unresolved, which is reported by the gauge and the alert.
 - A select pod keeps the pmeta entries of files that other pods compacted or expired until it restarts (RAM only, no effect on answers; [#595](https://github.com/ReliablyObserve/victoria-lakehouse/issues/595)).
 
 ## Tests

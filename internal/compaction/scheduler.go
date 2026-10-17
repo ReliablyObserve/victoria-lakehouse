@@ -474,7 +474,6 @@ func (s *Scheduler) Scan(ctx context.Context) (int, error) {
 		return true
 	})
 	metrics.CompactionPartitionsOwned.Set(int64(owned))
-	metrics.CompactionOwnershipSelfInPeers.Set(s.ownership.SelfInPeersGauge())
 	for reason, n := range frozen {
 		metrics.CompactionFrozenFiles.Set(reason, int64(n))
 	}

@@ -537,6 +537,21 @@ else
   echo "  FAIL  both keys refused for another reason:"; sed 's/^/         /' /tmp/helm_test_err; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
 fi
 
+# A pod finds itself in the discovered ring by its IP and its name (the listen
+# address is not what service discovery lists): every Lakehouse pod of both
+# signals gets POD_NAME, POD_IP and POD_IPS from the downward API.
+echo ""
+echo "--- Pod identity for the ring ---"
+for var_path in "POD_NAME:metadata.name" "POD_IP:status.podIP" "POD_IPS:status.podIPs"; do
+  var="${var_path%%:*}"; path="${var_path#*:}"
+  n_pods="$(helm template test-release "${CHART_DIR}" --set "traces.enabled=true" 2>/dev/null | grep -A3 "name: ${var}\$" | grep -c "fieldPath: ${path}\$" || true)"
+  if [[ "${n_pods}" == "4" ]]; then
+    echo "  PASS  ${var} (${path}) reaches all four StatefulSets"; PASSED=$((PASSED + 1))
+  else
+    echo "  FAIL  ${var} (${path}) reaches ${n_pods} StatefulSet(s), want 4"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------

@@ -37,3 +37,76 @@
     tests:
       - lakehouse-traces/maintenance_gate_test.go
       - lakehouse-traces/maintenance_inventory_test.go
+
+# Ring self-address: a pod listens on :9428 and discovery lists it by IP or
+# hostname, so it finds its own entry in the discovered member list with
+# internal/selfaddr (port + IP, StatefulSet hostname, dashed-IP name or DNS). A pod
+# that does not find itself owns nothing and never adds its listen address.
+# Semantics: docs/architecture/roles.md#how-a-pod-finds-itself-in-the-ring.
+
+- id: lh.flag.ring_self_resolution.logs
+  title: "Logs — every writer listening on :9428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one compaction owner for 1, 2, 3 and 8 writers; a pod that is not in the ring owns nothing and never adds its listen address; with the orphan sweep stopped (#602), two writers and two selects over one bucket compact every partition once and store every row once"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/architecture/roles.md
+    tests:
+      - cmd/lakehouse-logs/ring_self_test.go
+      - cmd/lakehouse-logs/ring_multiinstance_test.go
+      - internal/selfaddr/selfaddr_test.go
+      - internal/selfaddr/fuzz_test.go
+      - internal/selfaddr/env_test.go
+      - internal/selfaddr/tracker_test.go
+      - internal/compaction/ownership_self_test.go
+      - internal/peercache/ring_self_test.go
+      - internal/smartcache/ring_self_test.go
+
+- id: lh.flag.ring_self_resolution.traces
+  title: "Traces — every writer listening on :10428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one compaction owner for 1, 2, 3 and 8 writers; a pod that is not in the ring owns nothing and never adds its listen address; with the orphan sweep stopped (#602), two writers and two selects over one bucket compact every partition once and store every span once"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/architecture/roles.md
+    tests:
+      - lakehouse-traces/ring_self_test.go
+      - lakehouse-traces/ring_multiinstance_test.go
+
+- id: lh.flag.ring_self_resolved_gauge
+  title: "Metrics — lakehouse_ring_self_resolved{ring} is 1 only when exactly one discovered member is the pod and lakehouse_ring_self_in_peers{ring} is 1 only when that member is in the set the ring hashes over, for the compaction and peercache rings, in both binaries; the old unlabeled lakehouse_compaction_ownership_self_in_peers is gone"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/observability.md
+    tests:
+      - internal/metrics/ring_self_test.go
+      - internal/selfaddr/tracker_test.go
+
+- id: lh.flag.ring_self_unresolved_alert
+  title: "Alerts — LakehouseRingSelfUnresolved fires when lakehouse_ring_self_resolved is 0 for 5 minutes, and the chart gives every pod of both signals POD_NAME, POD_IP and POD_IPS from the downward API"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/observability.md
+    tests:
+      - internal/metrics/ring_self_test.go
+      - charts/victoria-lakehouse/test_templates.sh
