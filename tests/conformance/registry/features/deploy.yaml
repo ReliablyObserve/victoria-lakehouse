@@ -111,6 +111,9 @@
   status: shipped
   area: deploy
   surfaces: [flag, storage]
+  rows:
+    - lh.flag.role_select_runs_no_maintenance.logs
+    - lh.flag.role_select_runs_no_maintenance.traces
   tests:
     - internal/config/config_test.go#TestRunsMaintenance_OnlyWriterRoles
     - cmd/lakehouse-logs/maintenance_gate_test.go#TestRunsMaintenance_ByRole

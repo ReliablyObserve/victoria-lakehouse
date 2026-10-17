@@ -1,0 +1,39 @@
+# LH-addition role semantics: what each --lakehouse.role may write to the bucket.
+# kind: flag rows need no `request` and no `seed`.
+#
+# Rule: only the roles all and insert run the background jobs that write to S3 or
+# to state shared between pods (compaction and its orphan sweep, delete rewrites,
+# retention, the stats snapshots and sidecar, the legacy pmeta cleanup, the traces
+# label-index upload). A select pod starts none of them whatever its config says
+# (compaction is on by default) and issues no PUT, COPY or DELETE for maintenance.
+# Semantics: docs/architecture/roles.md.
+
+- id: lh.flag.role_select_runs_no_maintenance.logs
+  title: "Logs — a select pod starts no compaction, orphan sweep, delete rewrite, retention or stats snapshot even with compaction.enabled, and writes nothing to the bucket; one insert pod and two select pods over one bucket store every row once"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/architecture/roles.md
+    tests:
+      - cmd/lakehouse-logs/maintenance_gate_test.go
+      - cmd/lakehouse-logs/maintenance_inventory_test.go
+
+- id: lh.flag.role_select_runs_no_maintenance.traces
+  title: "Traces — a select pod starts no compaction, orphan sweep, delete rewrite, retention, stats snapshot or label-index upload even with compaction.enabled, and writes nothing to the bucket; one insert pod and two select pods over one bucket store every span once"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/architecture/roles.md
+    tests:
+      - lakehouse-traces/maintenance_gate_test.go
+      - lakehouse-traces/maintenance_inventory_test.go
