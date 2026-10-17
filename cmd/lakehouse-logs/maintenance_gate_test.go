@@ -688,9 +688,9 @@ func TestSelectRole_ShutdownWritesNothing(t *testing.T) {
 			addr := l.Addr().String()
 			_ = l.Close()
 			httpserver.Serve([]string{addr}, func(w http.ResponseWriter, r *http.Request) bool { return false }, httpserver.ServeOptions{})
-			for i := 0; i < 100; i++ { // Serve starts the listener in a goroutine
-				if c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
-					_ = c.Close()
+			for i := 0; i < 200; i++ { // Serve starts the server in a goroutine: wait until it answers
+				if resp, err := http.Get("http://" + addr + "/health"); err == nil {
+					_ = resp.Body.Close()
 					break
 				}
 				time.Sleep(20 * time.Millisecond)
