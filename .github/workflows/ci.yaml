@@ -14,6 +14,9 @@ env:
   VL_COMMIT_TRACES: c945d2949e98
   VT_VERSION: v0.12.0
   GOWORK: "off"
+  # The linter is pinned: a moving "latest" turned every PR red on an untouched file when v2.15.0 appeared
+  # (#582). Bump it in a PR that also fixes what the new version reports.
+  GOLANGCI_LINT_VERSION: v2.14.0
 
 jobs:
   deps:
@@ -583,14 +586,14 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: ./internal/... ./cmd/...
           skip-cache: true
 
       # The e2e package needs its build tag and the vendored VictoriaLogs tree (restored above).
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --build-tags e2e,chaos ./tests/ingestmatrix/... ./tests/e2e/... ./tests/conformance/...
           skip-cache: true
           # tests/ has older findings (errcheck on Sscanf, gocyclo on Row.Validate); only
@@ -601,7 +604,7 @@ jobs:
       # above never compiles; lint them too, with the same only-new-issues rule.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --build-tags parity,chaos ./tests/parity/...
           skip-cache: true
           only-new-issues: true
@@ -626,7 +629,7 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           working-directory: lakehouse-traces
           # The action's restored analysis cache (keyed off the base branch)
           # goes stale when a PR changes go.sum — staticcheck then loses
@@ -640,7 +643,7 @@ jobs:
       # the day one is added, only for what a PR adds.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           working-directory: lakehouse-traces
           args: --build-tags parity,chaos,e2e ./...
           skip-cache: true
