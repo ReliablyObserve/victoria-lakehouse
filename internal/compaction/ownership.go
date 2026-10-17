@@ -10,6 +10,7 @@
 package compaction
 
 import (
+	"net"
 	"sort"
 	"sync/atomic"
 
@@ -35,6 +36,13 @@ type OwnershipResolver struct {
 	// implementation must be cheap and concurrency-safe (peercache's
 	// Members() satisfies both).
 	Peers func() []string
+
+	// ResolveSelf, when non-nil, names this pod's entry in the peer set it is
+	// given. The pod knows its listen address (":9428"), discovery returns the
+	// pod's IP and port ("10.0.1.5:9428"): without this the two never match, the
+	// pod hashes as an extra member next to its own entry, and every pod claims the
+	// partitions that member wins. Nil: Self is compared as it is.
+	ResolveSelf func(peers []string) string
 
 	// SameAZPeers, when non-nil, returns the subset of peers in the
 	// same AZ as Self. When nil, AZ stratification is disabled and
@@ -237,7 +245,8 @@ func (r *OwnershipResolver) OwnsPartition(partition string) bool {
 	}
 
 	peers := r.peersForOwnership()
-	r.recordSelfInPeers(peers)
+	self := r.SelfIn(peers)
+	r.recordSelfInPeers(peers, self)
 
 	if len(peers) == 0 {
 		return false
@@ -246,7 +255,17 @@ func (r *OwnershipResolver) OwnsPartition(partition string) bool {
 	if len(owners) == 0 {
 		return false
 	}
-	return owners[0] == r.Self
+	return owners[0] == self
+}
+
+// SelfIn returns this pod's entry in peers (see ResolveSelf), or Self.
+func (r *OwnershipResolver) SelfIn(peers []string) string {
+	if r.ResolveSelf != nil {
+		if s := r.ResolveSelf(peers); s != "" {
+			return s
+		}
+	}
+	return r.Self
 }
 
 // OwnerOf returns the primary owner peer for the given partition, or
@@ -328,12 +347,61 @@ func (r *OwnershipResolver) rankFromPeers(partition string, peers []string) []st
 // recordSelfInPeers ticks the SelfInPeers gauge to 1 when Self appears
 // in the (already filtered) peer list, 0 otherwise. Called from every
 // OwnsPartition decision so the gauge tracks the current ground truth.
-func (r *OwnershipResolver) recordSelfInPeers(peers []string) {
+func (r *OwnershipResolver) recordSelfInPeers(peers []string, self string) {
 	for _, p := range peers {
-		if p == r.Self {
+		if p == self {
 			r.selfInPeers.Store(1)
 			return
 		}
 	}
 	r.selfInPeers.Store(0)
+}
+
+// LocalIPs lists the IP addresses of this host's interfaces (loopback excluded).
+func LocalIPs() []string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() {
+			out = append(out, ipn.IP.String())
+		}
+	}
+	return out
+}
+
+// SelfMember returns this pod's entry in members. addr is the pod's listen
+// address (":9428") and discovery lists pods by IP and port ("10.0.1.5:9428"), so
+// the entry is found by port and by an IP that belongs to this host. It returns
+// addr itself when members holds it, the single matching member otherwise, and ""
+// when none matches or several do (a host with more than one address in the ring
+// cannot tell which is it). localIPs is LocalIPs, replaceable in tests.
+func SelfMember(addr string, members []string, localIPs func() []string) string {
+	for _, m := range members {
+		if m == addr {
+			return m
+		}
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || localIPs == nil {
+		return ""
+	}
+	local := map[string]bool{}
+	for _, ip := range localIPs() {
+		local[ip] = true
+	}
+	found := ""
+	for _, m := range members {
+		h, p, err := net.SplitHostPort(m)
+		if err != nil || p != port || !local[h] {
+			continue
+		}
+		if found != "" {
+			return ""
+		}
+		found = m
+	}
+	return found
 }

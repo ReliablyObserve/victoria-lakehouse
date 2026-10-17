@@ -25,6 +25,10 @@ type pendingOp uint8
 const (
 	pendingUpsert pendingOp = iota + 1
 	pendingDelete
+	// pendingRetire is the write of a retired record (Retired=true) over the
+	// tombstone's object; once it lands the entry becomes a pendingDelete that
+	// waits for the retire grace period.
+	pendingRetire
 )
 
 // pendingEntry is one owed write and the store version that owed it. The
@@ -35,6 +39,10 @@ const (
 type pendingEntry struct {
 	op  pendingOp
 	ver uint64
+	// notBefore, set on a pendingDelete that follows a retire, holds the delete
+	// back until the retire grace has passed. Such an entry is deferred, not owed:
+	// it does not count in the pending gauge or in FlushPending's result.
+	notBefore time.Time
 }
 
 // ErrNotDurable reports that a tombstone change has not reached every durable
@@ -70,6 +78,10 @@ type tombstonePersistence struct {
 
 	mu      sync.Mutex
 	pending map[string]pendingEntry
+	// retired holds the retired record of each id with a pendingRetire write.
+	retired map[string]Tombstone
+	// grace is the retire grace period (see TombstoneStore.retireGrace).
+	grace time.Duration
 	// diskVer / s3Ver are the newest store version each target is known to
 	// hold, per tombstone id.
 	diskVer map[string]uint64
@@ -83,6 +95,7 @@ func newTombstonePersistence(cfg PersistenceConfig) *tombstonePersistence {
 		pool:    cfg.Pool,
 		prefix:  normalizeTombstonePrefix(cfg.Prefix),
 		pending: make(map[string]pendingEntry),
+		retired: make(map[string]Tombstone),
 		diskVer: make(map[string]uint64),
 		s3Ver:   make(map[string]uint64),
 	}
@@ -236,7 +249,20 @@ func (s *TombstoneStore) PendingS3Writes() int {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return len(p.pending)
+	return dueLocked(p.pending, time.Now())
+}
+
+// dueLocked counts the owed writes: every entry except a delete still waiting for
+// the retire grace. Caller holds p.mu.
+func dueLocked(pending map[string]pendingEntry, now time.Time) int {
+	n := 0
+	for _, e := range pending {
+		if e.op == pendingDelete && now.Before(e.notBefore) {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // FlushPending retries every durable write still owed to S3. Called from the
@@ -276,12 +302,29 @@ func (s *TombstoneStore) flushPending(ctx context.Context, p *tombstonePersisten
 	}
 	p.mu.Unlock()
 
+	now := time.Now()
 	for id, e := range todo {
 		var err error
 		written := e.ver
 		switch e.op {
 		case pendingDelete:
+			if now.Before(e.notBefore) {
+				continue // retired; the object stays until the grace has passed
+			}
 			err = p.pool.Delete(ctx, p.keyFor(id))
+		case pendingRetire:
+			p.mu.Lock()
+			rec, ok := p.retired[id]
+			p.mu.Unlock()
+			if !ok {
+				err = p.pool.Delete(ctx, p.keyFor(id))
+				break
+			}
+			var data []byte
+			data, err = json.Marshal(rec)
+			if err == nil {
+				err = p.pool.Upload(ctx, p.keyFor(id), data)
+			}
 		default:
 			// Re-read the live record: a later mutation may have landed
 			// between queueing and flushing, and the newest state is the one
@@ -313,13 +356,23 @@ func (s *TombstoneStore) flushPending(ctx context.Context, p *tombstonePersisten
 		// this upload ran queued a newer entry that still needs writing.
 		if cur, ok := p.pending[id]; ok && cur.op == e.op && cur.ver <= written {
 			delete(p.pending, id)
+			if e.op == pendingRetire {
+				if rec, ok := p.retired[id]; ok {
+					// The retired record is in S3: the object itself goes once
+					// every pod that reloads has had time to read it.
+					p.pending[id] = pendingEntry{op: pendingDelete, ver: cur.ver, notBefore: rec.RetiredAt.Add(p.grace)}
+					delete(p.retired, id)
+				}
+			}
 		}
 		p.mu.Unlock()
 	}
 
 	p.mu.Lock()
-	remaining := len(p.pending)
+	remaining := dueLocked(p.pending, time.Now())
+	deferred := len(p.pending) - remaining
 	p.mu.Unlock()
+	metrics.DeleteTombstoneRetiredDeferred.Set(int64(deferred))
 	metrics.DeleteTombstonePersistPending.Set(int64(remaining))
 	return remaining
 }

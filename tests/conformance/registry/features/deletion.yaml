@@ -208,6 +208,51 @@
     immediate and total from every read path, while the bytes leave on the lifecycle schedule
     unless physical deletion is explicitly demanded.
 
+- id: lh.feature.deletion.tombstone_reload
+  title: Deletes reach every pod without a restart
+  status: shipped
+  area: deletion
+  surfaces: [storage, flag]
+  rows:
+    - lh.flag.delete_tombstone_reload_interval
+  tests:
+    - internal/delete/tombstone_reload_test.go#TestReload_AddsADeleteTakenElsewhere_WritingNothing
+    - internal/delete/tombstone_reload_test.go#TestReload_MergesProgressMadeElsewhere
+    - internal/delete/tombstone_reload_test.go#TestReload_RetiredRecordDropsTheTombstoneAndASurvivingObjectIsNotResurrected
+    - internal/delete/tombstone_reload_test.go#TestReload_UnDeletePropagates
+    - internal/delete/tombstone_reload_test.go#TestReload_FailedListingDropsNothing
+    - internal/delete/tombstone_reload_test.go#TestReload_KeepsWhatIsNotYetInS3
+    - internal/delete/tombstone_reload_test.go#TestReload_RetiredRecordKeepsATombstoneWithAnUnfinishedRewrite
+    - internal/delete/tombstone_reload_test.go#TestReload_ReaperDeletesAnOldRetiredObject
+    - internal/delete/tombstone_reload_test.go#TestRewriteScheduler_RewritesOnlyOwnedPartitions
+    - internal/compaction/ownership_self_test.go#TestSelfMember
+    - internal/compaction/ownership_self_test.go#TestOwnership_ResolveSelfGivesEveryPartitionOneOwner
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_SelectTakesTheDelete_WriterRewrites_OtherSelectSeesIt
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_UnDeletePropagatesToReaders
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_FailedDeleteDoesNotResurrect
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_DuringARewriteIssuesNoPuts
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_TwoWritersRewriteOnceEach
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_SelectTakesTheDelete_WriterRewrites_OtherSelectSeesIt
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_UnDeletePropagatesToReaders
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_FailedDeleteDoesNotResurrect
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_DuringARewriteIssuesNoPuts
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_TwoWritersRewriteOnceEach
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestRun_StartsTheTombstoneLoopsOnEveryNode
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestCompactionOwnership_SelfIsItsDiscoveredAddress
+    - lakehouse-traces/maintenance_gate_test.go#TestRun_StartsTheTombstoneLoopsOnEveryNode
+    - lakehouse-traces/maintenance_gate_test.go#TestCompactionOwnership_SelfIsItsDiscoveredAddress
+  docs:
+    - docs/deletion-strategy.md
+    - docs/architecture/roles.md
+  highlight: >-
+    **Deletes reach every pod**: every pod re-reads the tombstone objects each minute (read-only), so a delete taken by one pod is enforced everywhere and rewritten by the writer that owns the partition, and an un-delete takes effect everywhere without a restart.
+  description: >-
+    A delete is taken by whichever pod gets the request, which with split roles is always a
+    select pod, and the tombstone used to be read from S3 at start only. The reload makes it
+    visible to every pod; removal is a retired record first and an object delete after a grace,
+    so a failed delete cannot bring a tombstone back; rewrites are limited per partition to the
+    pod that owns it on the writers-only ring, which is also the pod that compacts it.
+
 - id: lh.feature.deletion.leftovers_api
   title: Leftovers API — what an instance still owes
   status: shipped

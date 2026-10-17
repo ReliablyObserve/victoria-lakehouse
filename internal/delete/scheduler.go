@@ -12,8 +12,21 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
+// PartitionOwner decides which pod rewrites the objects of a partition. It is
+// the resolver compaction uses, so one pod owns a partition for both: with every
+// writer holding every tombstone (they reload them), an ungated rewrite would
+// have each writer replace the same object. OwnsPartition takes the manifest
+// partition ("dt=YYYY-MM-DD/hour=HH").
+type PartitionOwner interface {
+	OwnsPartition(partition string) bool
+}
+
 // RewriteSchedulerConfig holds the configuration for a RewriteScheduler.
 type RewriteSchedulerConfig struct {
+	// Ownership, when set, limits this scheduler to the partitions its pod owns.
+	// Nil rewrites every partition (a single writer).
+	Ownership PartitionOwner
+
 	Store          *TombstoneStore
 	Rewriter       *Rewriter
 	Detector       *StorageClassDetector
@@ -60,10 +73,11 @@ type objectExister interface {
 // RewriteScheduler periodically processes pending tombstones by rewriting
 // affected Parquet files to permanently remove deleted rows.
 type RewriteScheduler struct {
-	store    *TombstoneStore
-	rewriter *Rewriter
-	detector *StorageClassDetector
-	manifest ManifestUpdater
+	ownership PartitionOwner
+	store     *TombstoneStore
+	rewriter  *Rewriter
+	detector  *StorageClassDetector
+	manifest  ManifestUpdater
 	// keyTenant attributes an object key to its tenant, the way the read path
 	// does, so a tenant-scoped tombstone is only ever applied to its tenants'
 	// objects.
@@ -168,6 +182,7 @@ func NewRewriteScheduler(cfg RewriteSchedulerConfig) *RewriteScheduler {
 	}
 
 	return &RewriteScheduler{
+		ownership:      cfg.Ownership,
 		store:          cfg.Store,
 		rewriter:       cfg.Rewriter,
 		detector:       cfg.Detector,
@@ -203,6 +218,14 @@ func (s *RewriteScheduler) Start(interval time.Duration) {
 // Stop signals the background loop to exit.
 func (s *RewriteScheduler) Stop() {
 	close(s.stopCh)
+}
+
+// owns reports whether this pod rewrites the object at key.
+func (s *RewriteScheduler) owns(key string) bool {
+	if s.ownership == nil {
+		return true
+	}
+	return s.ownership.OwnsPartition(manifest.ExtractPartition(key))
 }
 
 // RunOnce processes all eligible active tombstones, rewriting affected files.
@@ -294,6 +317,12 @@ func (s *RewriteScheduler) processTombstone(ctx context.Context, now time.Time, 
 		// tenant), so reaching here means a record was edited by hand or
 		// written by a defect: the object holds none of this tombstone's rows
 		// by definition, so it is recorded clean instead of rewritten.
+		// Another writer owns this object's partition: it rewrites it, and this
+		// pod learns the outcome when it next reloads the tombstone.
+		if !s.owns(key) {
+			metrics.DeleteRewriteDeferred.Inc("not_owner")
+			continue
+		}
 		if !ts.AppliesToKey(s.keyTenant, key) {
 			metrics.DeleteTenantScopeSkips.Inc("rewrite")
 			logger.Errorf("tenant-scoped tombstone lists another tenant's object; not rewriting it; tombstone=%s, tenants=%v, key=%s", id, ts.Tenants, key)

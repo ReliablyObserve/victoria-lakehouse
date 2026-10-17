@@ -151,6 +151,9 @@ var tenantPrefixRe = regexp.MustCompile(`^\d+/\d+/`)
 // markers) and the label index.
 func isOwnMetadata(key string) bool {
 	return strings.Contains(key, "/_meta/") || strings.Contains(key, "/_segments/") ||
+		// A removed tombstone leaves a retired record in the bucket for ten reload
+		// intervals before its object is deleted.
+		strings.Contains(key, "/_tombstones/") ||
 		strings.HasSuffix(key, "/_label_index.json")
 }
 

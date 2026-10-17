@@ -485,6 +485,7 @@ Controls the delete API, tombstones and file rewrites.
 | `delete.rewrite_batch_size` | int | `50` | set |  | max-performance: `100`; max-cost-savings: `25`; dev: `5` | **Not read.** The number of files per rewrite batch. |
 | `delete.rewrite_delay` | duration | `1h` | set |  | max-performance: `30m`; max-cost-savings: `6h`; dev: `10s` | The wait after a tombstone before files are rewritten, so tombstones batch. |
 | `delete.rewrite_max_concurrent` | int | `2` | set |  |  | The number of concurrent rewrite workers. |
+| `delete.tombstone_reload_interval` | duration | `1m` | set |  |  | How often every pod re-reads the tombstone objects in S3, so a delete taken by one pod is enforced on all of them and rewritten by a writer without a restart. |
 | `delete.verify_interval` | duration | `6h` | set |  | max-durability: `1h`; max-cost-savings: `24h` | How often completed deletes are verified again. |
 
 ### `discovery`

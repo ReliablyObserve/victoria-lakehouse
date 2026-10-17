@@ -332,6 +332,14 @@ groups:
           summary: "The tombstone store could not be read from S3"
           description: "This instance started without the S3 copy of the tombstone store. Deletes made on other nodes are NOT enforced here (their rows are visible in queries), and every interrupted rewrite stays unresolved until the read succeeds. It is retried every minute; check S3 read permissions for the _tombstones/ prefix. GET /delete/logsql/leftovers reports s3_restore_pending and what is outstanding."
 
+      - alert: LakehouseTombstoneReloadFailing
+        expr: sum by (instance) (increase(lakehouse_delete_tombstone_reload_total{result!="ok"}[30m])) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "This instance cannot re-read the tombstone objects from S3"
+          description: "{{ $value }} tombstone reloads failed in 30 minutes (lakehouse_delete_tombstone_reload_total by result). Until a reload succeeds this instance does not learn of deletes (or un-deletes) made on other nodes since its last good read, and a writer does not rewrite them. Check S3 list and read permissions for the _tombstones/ prefix; delete.tombstone_reload_interval sets the cadence."
+
       - alert: LakehouseTombstoneRecordNotDurable
         expr: increase(lakehouse_delete_tombstone_not_durable_total[30m]) > 0
         labels:

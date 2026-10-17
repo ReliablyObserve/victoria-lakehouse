@@ -172,6 +172,10 @@
       "name": "RewriteMaxConcurrent",
       "doc": "RewriteMaxConcurrent is the number of concurrent rewrite workers."
     },
+    "delete.tombstone_reload_interval": {
+      "name": "TombstoneReloadInterval",
+      "doc": "TombstoneReloadInterval is how often every pod re-reads the tombstone objects in S3, so a delete taken by one pod is enforced on all of them and rewritten by a writer without a restart. A negative value turns the reload off (a pod then learns of tombstones only at start). Each reload is one LIST of the tombstone prefix plus a GET per changed object, per pod: at 1 minute, 100 pods issue 4.32 million LISTs a month (about $21.6 at $0.005 per 1,000). A retired tombstone's object is deleted 10 intervals after it is retired."
+    },
     "delete.verify_interval": {
       "name": "VerifyInterval",
       "doc": "VerifyInterval is how often completed deletes are verified again."
