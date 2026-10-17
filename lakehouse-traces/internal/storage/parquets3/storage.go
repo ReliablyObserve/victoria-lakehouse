@@ -35,18 +35,18 @@ import (
 )
 
 type Storage struct {
-	cfg       *config.Config
+	cfg *config.Config
 	// writerPeers is the set of pods that run background maintenance (the
 	// insert pods), resolved from select.insert_headless_service on those pods.
 	// Compaction ownership hashes over it, not over the whole peer ring, so a
 	// select pod that shares the ring never owns (and never compacts) a partition.
 	writerPeers atomic.Pointer[[]string]
-	pool      *s3reader.ClientPool
-	manifest  *manifest.Manifest
-	registry  *schema.Registry
-	memCache  *cache.LRU
-	diskCache *cache.DiskCache
-	sfGroup   *cache.Group
+	pool        *s3reader.ClientPool
+	manifest    *manifest.Manifest
+	registry    *schema.Registry
+	memCache    *cache.LRU
+	diskCache   *cache.DiskCache
+	sfGroup     *cache.Group
 	// inferredBounds is the negative cache and the in-flight set of the exact-
 	// bounds resolution (bounds_resolve.go); the zero value is ready to use.
 	inferredBounds    boundsResolver
