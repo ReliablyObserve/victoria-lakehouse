@@ -250,8 +250,9 @@ func (r *OwnershipResolver) filterDraining(in []string) []string {
 // Behaviour:
 //   - Empty peer set (DNS down at startup): returns nil. Callers treat
 //     this as "nobody owns anything" and skip work.
-//   - Single peer: returns [self] (or [otherPeer] if Self isn't in the
-//     ring — the unexpected case that the SelfInPeers gauge catches).
+//   - Single peer: returns that peer, whether or not it is this pod (a pod
+//     that is not identified in the list is reported by the
+//     lakehouse_ring_self_resolved gauge, and OwnsPartition is false for it).
 //   - Hash collision (vanishingly rare with 64-bit xxhash): break the
 //     tie by lex-comparing peer strings so the ordering is deterministic
 //     across the cluster.
@@ -288,10 +289,11 @@ func (r *OwnershipResolver) RankedOwners(partition string) []string {
 //   - while the ring is stabilizing (spec §3.1 cases 3 and 22);
 //   - when the peer set is empty (edge case 10);
 //   - when this pod is not the highest-weight ranked owner;
-//   - when self is missing from the peer set entirely (SelfInPeers gauge
-//     captures the misconfiguration).
+//   - when this pod is not identified as exactly one member of the peer set
+//     (lakehouse_ring_self_resolved is 0), or is identified but filtered out
+//     of the set it hashes over (draining, outside the AZ subset).
 //
-// Updates the SelfInPeers gauge as a side effect on every call.
+// Updates the ring self gauges when the decision changes.
 func (r *OwnershipResolver) OwnsPartition(partition string) bool {
 	if r.Stabilizing != nil && r.Stabilizing() {
 		return false
