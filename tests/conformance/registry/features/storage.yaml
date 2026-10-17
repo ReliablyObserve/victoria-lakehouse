@@ -254,10 +254,15 @@
     - lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_AFailingBundleDoesNotLoseTheOthers
     - lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_WithoutCatalogOrWriter
     - internal/pmeta/store_surface_test.go#TestPersistDirtyAll_OneFailureDoesNotStopTheOthers
+    - internal/pmeta/store_surface_test.go#TestPersistDirtyAll_ReportsTheBundlesTheBoundCut
+    - internal/pmeta/store_surface_test.go#TestPersist_ContributionDuringThePutKeepsThePartitionDirty
+    - internal/config/shutdown_test.go#TestEffectivePersistTimeout
+    - internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_ContributionDuringThePutStaysDirty
+    - lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go#TestStorageClose_ContributionDuringThePutStaysDirty
     - cmd/lakehouse-logs/shutdown_snapshot_test.go#TestRunShutdown_StopsCompactionBeforeClosingTheStorage
-    - cmd/lakehouse-logs/shutdown_snapshot_test.go#TestStopCompactionBounded
+    - cmd/lakehouse-logs/shutdown_snapshot_test.go#TestCompactionStop_WaitIsBoundedFromTheStart
     - lakehouse-traces/shutdown_snapshot_test.go#TestRunShutdown_StopsCompactionBeforeClosingTheStorage
-    - lakehouse-traces/shutdown_snapshot_test.go#TestStopCompactionBounded
+    - lakehouse-traces/shutdown_snapshot_test.go#TestCompactionStop_WaitIsBoundedFromTheStart
     - internal/compaction/orphan_sweep_test.go#TestOrphanSweep_StopIsIdempotent
     - internal/compaction/scheduler_test.go#TestScheduler_ConcurrentDrainAndStop
   docs:

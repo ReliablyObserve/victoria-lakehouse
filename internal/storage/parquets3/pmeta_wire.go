@@ -117,12 +117,19 @@ func (o *catalogObserver) persistDirtyFinal(ctx context.Context) {
 	if o == nil || o.store == nil || o.pool == nil {
 		return
 	}
-	n, errs := o.store.PersistDirtyAll(ctx, poolObjectStore{o.pool})
+	n, errs, untried := o.store.PersistDirtyAll(ctx, poolObjectStore{o.pool})
 	for _, err := range errs {
 		logger.Warnf("pmeta bundle not persisted at close: %s", err)
 	}
-	if n > 0 || len(errs) > 0 {
-		logger.Infof("pmeta bundles persisted at close; written=%d failed=%d", n, len(errs))
+	if len(untried) > 0 {
+		names := untried
+		if len(names) > 5 {
+			names = names[:5]
+		}
+		logger.Warnf("pmeta bundles not persisted at close, the bound ended first; untried=%d first=%v", len(untried), names)
+	}
+	if n > 0 || len(errs) > 0 || len(untried) > 0 {
+		logger.Infof("pmeta bundles persisted at close; written=%d failed=%d untried=%d", n, len(errs), len(untried))
 	}
 }
 

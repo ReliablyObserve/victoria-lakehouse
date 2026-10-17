@@ -188,9 +188,10 @@ func TestRunShutdown_PersistsManifestBeforeAndAfterClose(t *testing.T) {
 	}
 }
 
-// The compaction drains before the storage closes: a compaction that finishes
-// after Close has written the pmeta bundles leaves its bundle dirty with nothing
-// left to write it. The first manifest persist and the Stop() calls stay ahead.
+// The compaction starts draining right after the HTTP server stops (in the background, so the
+// drain overlaps the snapshot, tombstone and stats steps) and is waited for just before the
+// storage closes: a compaction that finishes after Close has written the pmeta bundles leaves
+// its bundle dirty with nothing left to write it.
 func TestRunShutdown_StopsCompactionBeforeClosingTheStorage(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "main.go", nil, 0)
@@ -228,31 +229,42 @@ func TestRunShutdown_StopsCompactionBeforeClosingTheStorage(t *testing.T) {
 		}
 		return -1
 	}
-	first, stop, comp, closeAndPersist := idx("persistManifestSnapshot"), idx("vtinsert.Stop"), idx("stopCompactionBounded"), idx("closeStoreAndPersistManifest")
-	if first < 0 || stop < 0 || comp < 0 || closeAndPersist < 0 {
-		t.Fatalf("runShutdown calls %v: want persistManifestSnapshot, vtinsert.Stop, stopCompactionBounded and closeStoreAndPersistManifest", order)
+	httpStop, start, firstPersist, insStop, wait, closeAndPersist := idx("httpserver.Stop"), idx("startCompactionStop"), idx("persistManifestSnapshot"), idx("vtinsert.Stop"), idx("compStop.wait"), idx("closeStoreAndPersistManifest")
+	if httpStop < 0 || start < 0 || firstPersist < 0 || insStop < 0 || wait < 0 || closeAndPersist < 0 {
+		t.Fatalf("runShutdown calls %v: want httpserver.Stop, startCompactionStop, persistManifestSnapshot, vtinsert.Stop, compStop.wait and closeStoreAndPersistManifest", order)
 	}
-	if first >= stop || stop >= comp || comp >= closeAndPersist {
-		t.Errorf("runShutdown order = %v: want the first manifest persist, the Stop() calls, the compaction stop, then close+persist", order)
+	if httpStop >= start || start >= firstPersist || firstPersist >= insStop || insStop >= wait || wait >= closeAndPersist {
+		t.Errorf("runShutdown order = %v: want the HTTP stop, the background compaction stop, the first manifest persist, the Stop() calls, the wait for the compaction, then close+persist", order)
 	}
 }
 
-// stopCompactionBounded waits for the stop it is given, but not longer than its
-// bound: a drain that outlasts the budget must not hold back the storage close.
-func TestStopCompactionBounded(t *testing.T) {
-	stopCompactionBounded(nil, time.Second) // no compaction configured
+// The compaction stop runs in the background and is waited for with a bound counted from its
+// start: a drain that outlasts the budget must not hold back the storage close, and the time the
+// other shutdown steps took counts as time the drain already had.
+func TestCompactionStop_WaitIsBoundedFromTheStart(t *testing.T) {
+	startCompactionStop(nil).wait(time.Second) // no compaction configured
 
-	ran := false
-	stopCompactionBounded(func() { ran = true }, time.Second)
-	if !ran {
-		t.Error("the stop did not run")
+	ran := make(chan struct{})
+	c := startCompactionStop(func() { close(ran) })
+	c.wait(time.Second)
+	select {
+	case <-ran:
+	default:
+		t.Error("the stop did not finish before wait returned")
 	}
 
 	release := make(chan struct{})
 	defer close(release)
+	c = startCompactionStop(func() { <-release })
+	time.Sleep(150 * time.Millisecond) // the other shutdown steps
 	start := time.Now()
-	stopCompactionBounded(func() { <-release }, 100*time.Millisecond)
-	if took := time.Since(start); took > 3*time.Second {
-		t.Errorf("stopCompactionBounded waited %v for a drain that never ends, want about 100ms", took)
+	c.wait(200 * time.Millisecond)
+	if took := time.Since(start); took > 120*time.Millisecond {
+		t.Errorf("wait took %v after 150ms of overlap with a 200ms bound, want about 50ms", took)
+	}
+	start = time.Now()
+	c.wait(100 * time.Millisecond) // the bound has passed already: no wait at all
+	if took := time.Since(start); took > 50*time.Millisecond {
+		t.Errorf("wait took %v with the bound already passed, want none", took)
 	}
 }

@@ -725,8 +725,9 @@ type ShutdownConfig struct {
 	FlushTimeout time.Duration `yaml:"flush_timeout"`
 	// PersistTimeout bounds writing the manifest, footer-cache and stats
 	// snapshots during shutdown; 0 means 30s. It is also the bound of the
-	// last write of the dirty pmeta bundles when the storage closes (0 means
-	// 10s there); each of these writes has the bound to itself.
+	// last write of the dirty pmeta bundles when the storage closes and of the
+	// wait for the compaction to stop before the close; each of these steps has
+	// the bound to itself.
 	PersistTimeout time.Duration `yaml:"persist_timeout"`
 	// ReleaseTimeout bounds notifying peers during shutdown.
 	ReleaseTimeout time.Duration `yaml:"release_timeout"`
@@ -1957,6 +1958,20 @@ func validateTenantPrefixTemplate(tmpl string) error {
 		return fmt.Errorf("--lakehouse.tenant.prefix-template %q carries a placeholder the writer does not expand (only {AccountID} and {ProjectID} are expanded): %s", tmpl, guidance)
 	}
 	return nil
+}
+
+// DefaultPersistTimeout is the bound of a shutdown persist step when
+// shutdown.persist_timeout is unset (0).
+const DefaultPersistTimeout = 30 * time.Second
+
+// EffectivePersistTimeout is PersistTimeout, or DefaultPersistTimeout when it is
+// unset: the one default every shutdown persist step (the binaries' runShutdown
+// and the storage's Close) uses.
+func (s ShutdownConfig) EffectivePersistTimeout() time.Duration {
+	if s.PersistTimeout <= 0 {
+		return DefaultPersistTimeout
+	}
+	return s.PersistTimeout
 }
 
 func (c *Config) ValidateShutdown(terminationGracePeriod time.Duration) error {
