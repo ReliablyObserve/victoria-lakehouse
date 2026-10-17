@@ -193,9 +193,11 @@ Alert: `LakehouseS3CircuitBreakerOpen`.
 
 ### Compaction on or off
 
-Compaction is on by default in both binaries. Every pod runs the scheduler, and
-highest-random-weight (HRW) ownership over the live peer set assigns each partition to
-exactly one pod, so no leader election is involved. Tune it in the config file:
+Compaction is on by default in both binaries. Every pod that writes data (role `all` or `insert`)
+runs the scheduler, and highest-random-weight (HRW) ownership over the live peer set assigns each
+partition to exactly one of them, so no leader election is involved. A `select` pod never compacts,
+whatever `compaction.enabled` says: it logs one INFO line and starts no scheduler
+([roles](architecture/roles.md)). Tune it in the config file:
 
 ```yaml
 lakehouse:

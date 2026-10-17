@@ -448,35 +448,15 @@ func run(cfg *config.Config, addr string) {
 
 	costCalc := stats.NewCostCalculator(cfg.Stats.S3PricePerGB, cfg.Stats.S3RequestPrices)
 
-	rewriter := newDeleteRewriter(store.Pool(), cfg, "logs")
-
-	var rewriteSched *delete.RewriteScheduler
-	if cfg.Delete.Enabled {
-		rewriteSched = delete.NewRewriteScheduler(delete.RewriteSchedulerConfig{
-			Store:          tombstoneStore,
-			Rewriter:       rewriter,
-			Detector:       detector,
-			RewriteDelay:   cfg.Delete.RewriteDelay,
-			AllowedClasses: cfg.Delete.AutoRewriteClasses,
-			MaxConcurrent:  cfg.Delete.RewriteMaxConcurrent,
-			// Without this the rewriter deletes files the manifest still
-			// points at and publishes replacements the manifest has never
-			// heard of; the scheduler refuses to rewrite at all when it is nil.
-			Manifest:    store.Manifest(),
-			OnPublished: rewritePublishHook(store, pusher),
-			// A key absent from the manifest is reaped only once a HEAD finds
-			// no object (or the manifest retired it): a listing can miss an
-			// object, and reaping it would bring deleted rows back (#418).
-			ObjectExists: store.Pool().Exists,
-		})
-		rewriteSched.SetSegmentGuard(store.Pool(), cfg.AutoPrefix(), 2*bufferGrace(cfg))
-		rewriteSched.Start(cfg.Delete.VerifyInterval)
-		logger.Infof("delete rewrite scheduler started; rewrite_delay=%v, verify_interval=%v",
-			cfg.Delete.RewriteDelay, cfg.Delete.VerifyInterval)
-	}
+	rewriteSched := startDeleteRewrite(cfg, store, pusher, tombstoneStore, detector)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
+
+	// Every node retries the tombstone writes S3 rejected: the rewrite scheduler's
+	// pass does it only every verify interval (6 h by default), and a select pod
+	// runs no scheduler at all.
+	startTombstoneWriteRetry(cfg, tombstoneStore, stopCh)
 
 	if cancel := startTenantAliasSync(cfg, store, resolver, addr); cancel != nil {
 		defer cancel()
@@ -502,14 +482,8 @@ func run(cfg *config.Config, addr string) {
 
 	// Retention manager: append synthesized rules from per-tenant
 	// overrides to the global rules list, then start the eviction loop.
-	if cfg.Retention.Enabled {
-		retentionMgr, err := buildRetentionManager(cfg, store, policy, "logs")
-		if err != nil {
-			logger.Fatalf("retention manager init failed: %s", err)
-		}
-		retentionCtx, retentionCancel := context.WithCancel(context.Background())
-		go retentionMgr.Start(retentionCtx)
-		defer retentionCancel()
+	if stopRetention := startRetention(cfg, store, policy); stopRetention != nil {
+		defer stopRetention()
 	}
 
 	// Per-tenant cardinality limiter — gates streams at the insert
@@ -605,6 +579,86 @@ func run(cfg *config.Config, addr string) {
 	runShutdown(cfg, addr, store, rewriteSched, tombstoneStore, registry, stopCompaction)
 }
 
+// startDeleteRewrite starts the scheduler that rewrites objects to remove
+// tombstoned rows and then deletes the superseded object. Extracted from run()
+// so the wiring can be tested. It returns nil when deletes are disabled.
+func startDeleteRewrite(cfg *config.Config, store *parquets3.Storage, pusher *manifest.Pusher, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector) *delete.RewriteScheduler {
+	if !cfg.Delete.Enabled || !maintenanceAllowed(cfg, "the delete rewrite scheduler") {
+		return nil
+	}
+	rewriter := newDeleteRewriter(store.Pool(), cfg, "logs")
+	rewriteSched := delete.NewRewriteScheduler(delete.RewriteSchedulerConfig{
+		Store:          tombstoneStore,
+		Rewriter:       rewriter,
+		Detector:       detector,
+		RewriteDelay:   cfg.Delete.RewriteDelay,
+		AllowedClasses: cfg.Delete.AutoRewriteClasses,
+		MaxConcurrent:  cfg.Delete.RewriteMaxConcurrent,
+		// Without this the rewriter deletes files the manifest still
+		// points at and publishes replacements the manifest has never
+		// heard of; the scheduler refuses to rewrite at all when it is nil.
+		Manifest:    store.Manifest(),
+		OnPublished: rewritePublishHook(store, pusher),
+		// A key absent from the manifest is reaped only once a HEAD finds
+		// no object (or the manifest retired it): a listing can miss an
+		// object, and reaping it would bring deleted rows back (#418).
+		ObjectExists: store.Pool().Exists,
+	})
+	rewriteSched.SetSegmentGuard(store.Pool(), cfg.AutoPrefix(), 2*bufferGrace(cfg))
+	rewriteSched.Start(cfg.Delete.VerifyInterval)
+	logger.Infof("delete rewrite scheduler started; rewrite_delay=%v, verify_interval=%v",
+		cfg.Delete.RewriteDelay, cfg.Delete.VerifyInterval)
+	return rewriteSched
+}
+
+// startRetention builds the retention manager and starts its eviction loop. It
+// returns the function that stops the loop, or nil when retention is disabled.
+// Extracted from run() so the wiring can be tested.
+func startRetention(cfg *config.Config, store *parquets3.Storage, policy *tenant.PolicyRegistry) func() {
+	if !cfg.Retention.Enabled || !maintenanceAllowed(cfg, "retention") {
+		return nil
+	}
+	retentionMgr, err := buildRetentionManager(cfg, store, policy, "logs")
+	if err != nil {
+		logger.Fatalf("retention manager init failed: %s", err)
+	}
+	retentionCtx, retentionCancel := context.WithCancel(context.Background())
+	go retentionMgr.Start(retentionCtx)
+	return retentionCancel
+}
+
+// startTombstoneWriteRetry drains, on a timer, the tombstone durability writes
+// S3 rejected, on a node that runs no delete rewrite scheduler (whose pass does
+// it otherwise). A select pod takes the delete requests but never rewrites, so
+// without this a transient PUT failure would leave the tombstone on that pod's
+// disk alone until shutdown, and a lost volume would lose the delete for the
+// whole fleet. It only writes what a request on this pod owes.
+func startTombstoneWriteRetry(cfg *config.Config, ts *delete.TombstoneStore, stopCh <-chan struct{}) {
+	// Once a minute, like the restore retry; the verify interval (6 h by default)
+	// when it is shorter.
+	every := time.Minute
+	if v := cfg.Delete.VerifyInterval; v > 0 && v < every {
+		every = v
+	}
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				ctx, cancel := context.WithTimeout(context.Background(), every)
+				if ts.S3RestorePending() {
+					ts.RetryS3Restore(ctx)
+				}
+				ts.FlushPending(ctx)
+				cancel()
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+}
+
 // runShutdown drains the lakehouse-logs pod in the order required for
 // honest /ready on the next boot. Mirror of lakehouse-traces/main.go's
 // runShutdown — per feedback_logs_traces_module_parity these two blocks
@@ -649,8 +703,14 @@ func runShutdown(
 		}
 	}
 
-	vlinsert.Stop()
-	internalselect.Stop()
+	// Only the roles that started them stop them: vlinsert.Stop closes channels
+	// vlinsert.Init creates, and panics on a select pod ("close of nil channel").
+	if cfg.InsertEnabled() {
+		vlinsert.Stop()
+	}
+	if cfg.SelectEnabled() {
+		internalselect.Stop()
+	}
 
 	if rewriteSched != nil {
 		rewriteSched.Stop()
@@ -669,7 +729,7 @@ func runShutdown(
 	tsCancel()
 
 	// Final stats snapshot on shutdown — bounded too.
-	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
+	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" && cfg.RunsMaintenance() {
 		snapshotBucket := cfg.Stats.MetaBucket
 		if snapshotBucket == "" {
 			snapshotBucket = cfg.S3.Bucket
@@ -810,6 +870,87 @@ func rewritePublishHook(store *parquets3.Storage, pusher *manifest.Pusher) func(
 	}
 }
 
+// maintenanceAllowed reports whether this process may run the named background
+// job, and says once, at INFO, when it may not although the config asks for it.
+// A select pod only reads: every job that writes to S3 or mutates state shared
+// between pods (compaction and its orphan sweep, delete rewrites, retention, the
+// stats snapshots and sidecar, the pmeta cleanup) runs on the roles all and
+// insert only, so a select replica can never rewrite the objects an insert pod
+// compacts (#311). config.RunsMaintenance is the single predicate.
+func maintenanceAllowed(cfg *config.Config, job string) bool {
+	if cfg.RunsMaintenance() {
+		return true
+	}
+	logger.Infof("%s not started: role=%s only reads, and only the roles all and insert run background maintenance", job, cfg.Role)
+	return false
+}
+
+// newCompactionOwnership builds the compaction ownership resolver. The ring is
+// the writer pods (writers, resolved from select.insert_headless_service) when
+// they are known: every pod of the shared peer ring would otherwise be a
+// candidate owner, and a select pod that owns a partition never compacts it, so
+// that share of the partitions (a third with two selects and one insert) would
+// never be compacted. Without a writer list it falls back to the peer ring, or to
+// this pod alone. Extracted from setupCompaction so the ring can be tested.
+func newCompactionOwnership(addr string, peerCache *peercache.PeerCache, writers func() []string) *compaction.OwnershipResolver {
+	withSelf := func(members []string) []string {
+		for _, m := range members {
+			if m == addr {
+				return members
+			}
+		}
+		out := make([]string, 0, len(members)+1)
+		out = append(out, members...)
+		return append(out, addr)
+	}
+	// Single-pod / pre-discovery fallback: peercache.Members() returns an empty
+	// slice when discovery hasn't populated the ring yet (or when the pod runs
+	// alone with no peers configured). Including addr guarantees the single-pod
+	// case trivially owns 100% of partitions while still letting the peercache add
+	// real peers as they come online.
+	ownership := compaction.NewOwnershipResolver(addr, func() []string {
+		if writers != nil {
+			if w := writers(); len(w) > 0 {
+				return withSelf(w)
+			}
+		}
+		if peerCache == nil {
+			return []string{addr}
+		}
+		members := peerCache.Members()
+		if len(members) == 0 {
+			return []string{addr}
+		}
+		return withSelf(members)
+	})
+	if peerCache != nil {
+		ownership.SameAZPeers = func() []string {
+			same := peerCache.SameAZMembers()
+			if writers == nil {
+				return same
+			}
+			w := writers()
+			if len(w) == 0 {
+				return same
+			}
+			in := make(map[string]bool, len(w))
+			for _, m := range w {
+				in[m] = true
+			}
+			out := make([]string, 0, len(same))
+			for _, m := range same {
+				if in[m] {
+					out = append(out, m)
+				}
+			}
+			return out
+		}
+		ownership.Stabilizing = peerCache.IsStabilizing
+		ownership.IsDraining = peerCache.IsDraining
+	}
+	return ownership
+}
+
 // setupCompaction wires the election-free compaction scheduler + orphan
 // sweeper for one module. Returns (scheduler, sweep, stop) where stop is
 // nil when compaction is disabled. Extracted from run() to keep the
@@ -824,7 +965,7 @@ func setupCompaction(
 	tombstoneStore *delete.TombstoneStore,
 	detector *delete.StorageClassDetector,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
-	if !cfg.Compaction.Enabled {
+	if !cfg.Compaction.Enabled || !maintenanceAllowed(cfg, "compaction and the orphan sweep") {
 		return nil, nil, nil
 	}
 
@@ -839,37 +980,10 @@ func setupCompaction(
 	// match what discovery returns for this pod or HRW silently picks
 	// the wrong primary — see CompactionOwnershipSelfInPeers alert.
 	peerCache := store.PeerCache()
-	// Single-pod / pre-discovery fallback: peercache.Members() returns
-	// an empty slice when discovery hasn't populated the ring yet (or
-	// when the pod runs alone with no peers configured). Without
-	// including `addr` here HRW returns no owner for any partition and
-	// compaction never runs (lakehouse_compaction_runs_total stays at
-	// 0 forever — confirmed via e2e compose, where peer_ring_members
-	// = 0 in single-pod mode). Including self guarantees the single-pod
-	// case trivially owns 100% of partitions while still letting the
-	// peercache add real peers as they come online.
-	ownership := compaction.NewOwnershipResolver(addr, func() []string {
-		if peerCache == nil {
-			return []string{addr}
-		}
-		members := peerCache.Members()
-		if len(members) == 0 {
-			return []string{addr}
-		}
-		for _, m := range members {
-			if m == addr {
-				return members
-			}
-		}
-		out := make([]string, 0, len(members)+1)
-		out = append(out, members...)
-		out = append(out, addr)
-		return out
-	})
-	if peerCache != nil {
-		ownership.SameAZPeers = peerCache.SameAZMembers
-		ownership.Stabilizing = peerCache.IsStabilizing
-		ownership.IsDraining = peerCache.IsDraining
+	ownership := newCompactionOwnership(addr, peerCache, store.WriterPeers)
+	if cfg.Discovery.PeerHeadlessService != "" && cfg.Select.InsertHeadlessService == "" {
+		logger.Warnf("compaction ownership hashes over the whole peer ring because select.insert_headless_service is not set; " +
+			"select pods in that ring own partitions that nothing compacts. Set it to the insert pods' headless service (the chart does)")
 	}
 
 	s3Pool := &s3PoolAdapter{pool: store.Pool()}
@@ -1176,7 +1290,7 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 
 	go func() {
-		if cfg.Stats.SnapshotPrefix == "" {
+		if cfg.Stats.SnapshotPrefix == "" || !maintenanceAllowed(cfg, "the stats snapshot writes") {
 			return
 		}
 		snapshotBucket := cfg.Stats.MetaBucket
@@ -1612,6 +1726,40 @@ func parseTenantPrefix(prefix string) (uint32, uint32, bool) {
 	return uint32(acct), uint32(proj), true
 }
 
+// resolveInterruptedRewrites finishes the delete rewrites a previous run of THIS
+// process left unfinished. Only a pod that runs maintenance can have any: its
+// records (Prepared, Published) are written back to the shared tombstone objects
+// with a blind PUT, so a select pod that restored a writer's live Prepared record
+// from the bucket would "undo" a rewrite that is still running and retire the
+// writer's replacement. A select pod never rewrites, so it resolves nothing.
+func resolveInterruptedRewrites(cfg *config.Config, ts *delete.TombstoneStore, m delete.ManifestUpdater) int {
+	if !cfg.RunsMaintenance() {
+		return 0
+	}
+	return delete.ResolveInterruptedRewrites(ts, m)
+}
+
+// saveStatsAggregate writes the size-stats aggregate sidecar that lets the
+// next start serve sizes before its own warm-up has finished. Extracted from
+// runStartup so the wiring can be tested.
+func saveStatsAggregate(ctx context.Context, cfg *config.Config, store *parquets3.Storage, statsAgg *stats.StatsAggregate) {
+	if !cfg.RunsMaintenance() {
+		return
+	}
+	if err := statsAgg.SaveToS3(ctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err != nil {
+		logger.Warnf("failed to persist stats-aggregate sidecar: %s", err)
+	}
+}
+
+// cleanupLegacyPmeta runs the one-time cleanup of the orphaned global pmeta
+// bundles (idempotent through a marker object). Extracted from runStartup so
+// the wiring can be tested.
+func cleanupLegacyPmeta(ctx context.Context, cfg *config.Config, store *parquets3.Storage) {
+	if cfg.Pmeta.Enabled && cfg.RunsMaintenance() {
+		store.CleanupLegacyGlobalBundles(ctx, cfg.AutoPrefix())
+	}
+}
+
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string, statsAgg *stats.StatsAggregate) {
 	// Set before the first refresh: LakehouseManifestNoCompleteRefresh reads
 	// it during warm-up too (a 0 here would shrink its budget to 15 minutes).
@@ -1635,7 +1783,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	// manifest's view, so the refresh neither adopts an unpublished replacement
 	// next to its source nor re-adopts a source whose replacement was
 	// published. The objects themselves are settled by the rewrite scheduler.
-	if n := delete.ResolveInterruptedRewrites(store.TombstoneStore(), store.Manifest()); n > 0 {
+	if n := resolveInterruptedRewrites(cfg, store.TombstoneStore(), store.Manifest()); n > 0 {
 		logger.Infof("interrupted rewrites resolved at startup; count=%d", n)
 	}
 	// Now the two halves can be compared. Findings are reported, not repaired:
@@ -1683,9 +1831,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			// change-observer; this one sweep populates it on startup.
 			if statsAgg != nil {
 				statsAgg.Recompute(store.Manifest().AllFiles())
-				if err := statsAgg.SaveToS3(ctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err != nil {
-					logger.Warnf("failed to persist stats-aggregate sidecar: %s", err)
-				}
+				saveStatsAggregate(ctx, cfg, store, statsAgg)
 				statsAgg.SetMetaS3(store.PmetaPersistedBytes())
 			}
 
@@ -1699,9 +1845,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			// bundles left by the move to tenant-scoped partitions. The new
 			// tenant bundles are rebuilt above by the warm self-heal, so the
 			// old globals are safe to delete. Idempotent via a marker object.
-			if cfg.Pmeta.Enabled {
-				store.CleanupLegacyGlobalBundles(ctx, cfg.AutoPrefix())
-			}
+			cleanupLegacyPmeta(ctx, cfg, store)
 
 			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
 				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1794,7 +1938,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				// that bypassed the per-file change observer.
 				if statsAgg != nil {
 					statsAgg.Recompute(m.AllFiles())
-					_ = statsAgg.SaveToS3(rctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix)
+					saveStatsAggregate(rctx, cfg, store, statsAgg)
 					statsAgg.SetMetaS3(store.PmetaPersistedBytes())
 				}
 				// Refresh this node's gossiped metadata footprint each tick

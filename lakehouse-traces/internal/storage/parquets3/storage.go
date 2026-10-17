@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -34,13 +35,18 @@ import (
 )
 
 type Storage struct {
-	cfg       *config.Config
-	pool      *s3reader.ClientPool
-	manifest  *manifest.Manifest
-	registry  *schema.Registry
-	memCache  *cache.LRU
-	diskCache *cache.DiskCache
-	sfGroup   *cache.Group
+	cfg *config.Config
+	// writerPeers is the set of pods that run background maintenance (the
+	// insert pods), resolved from select.insert_headless_service on those pods.
+	// Compaction ownership hashes over it, not over the whole peer ring, so a
+	// select pod that shares the ring never owns (and never compacts) a partition.
+	writerPeers atomic.Pointer[[]string]
+	pool        *s3reader.ClientPool
+	manifest    *manifest.Manifest
+	registry    *schema.Registry
+	memCache    *cache.LRU
+	diskCache   *cache.DiskCache
+	sfGroup     *cache.Group
 	// inferredBounds is the negative cache and the in-flight set of the exact-
 	// bounds resolution (bounds_resolve.go); the zero value is ready to use.
 	inferredBounds    boundsResolver
@@ -411,8 +417,9 @@ func (s *Storage) Close() error {
 	}
 	// Final upload to S3 on graceful shutdown so the next pod start (on
 	// any node) can recover the index without rebuilding from parquet
-	// reads. Independent of the local-disk persister above.
-	if s.labelIndex != nil && s.labelIndex.Len() > 0 {
+	// reads. Independent of the local-disk persister above. Only the roles
+	// that run maintenance write it: a select pod never writes to S3.
+	if s.cfg != nil && s.cfg.RunsMaintenance() && s.labelIndex != nil && s.labelIndex.Len() > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := s.PersistLabelIndexToS3(ctx); err != nil {
@@ -774,6 +781,22 @@ func (s *Storage) SchemaRegistry() *schema.Registry {
 
 func (s *Storage) Discovery() *discovery.Discovery {
 	return s.discovery
+}
+
+// WriterPeers returns the insert pods resolved from
+// select.insert_headless_service, or nil when it is not set or not resolved
+// yet. Only pods that run maintenance resolve it.
+func (s *Storage) WriterPeers() []string {
+	if p := s.writerPeers.Load(); p != nil {
+		return append([]string(nil), *p...)
+	}
+	return nil
+}
+
+// SetWriterPeers replaces the resolved insert pods (discovery refresh and tests).
+func (s *Storage) SetWriterPeers(peers []string) {
+	cp := append([]string(nil), peers...)
+	s.writerPeers.Store(&cp)
 }
 
 func (s *Storage) PeerCache() *peercache.PeerCache {
@@ -1228,6 +1251,16 @@ func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 			}
 		}
 	}
+	// A pod that runs maintenance resolves the writer pods alone: compaction
+	// ownership hashes over them, so a select pod in the shared peer ring owns
+	// nothing. A failed lookup keeps the previous set.
+	if svc := s.cfg.Select.InsertHeadlessService; svc != "" && s.cfg.RunsMaintenance() {
+		if eps, err := s.discovery.ResolveService(ctx, svc); err != nil {
+			logger.Warnf("discover writer pods (%s): %s", svc, err)
+		} else {
+			s.SetWriterPeers(eps)
+		}
+	}
 	// A select pod of a split deployment reaches the insert pods' unflushed
 	// rows through select.insert_headless_service; the peer ring above is the
 	// bridge's source only when that is not set.
@@ -1296,7 +1329,7 @@ func (s *Storage) RefreshManifest(ctx context.Context) error {
 	// persister keeps doing its job on graceful shutdown; this gives us
 	// cluster-wide recovery for pods that come up on a different node
 	// (no local volume) and for crash scenarios where shutdown didn't run.
-	if s.cfg.InsertEnabled() && s.labelIndex.Len() > 0 {
+	if s.cfg.RunsMaintenance() && s.labelIndex.Len() > 0 {
 		if err := s.PersistLabelIndexToS3(ctx); err != nil {
 			logger.Warnf("label index S3 persist failed: %s", err)
 		}

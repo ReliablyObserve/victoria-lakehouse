@@ -24,6 +24,7 @@ const sidebars: SidebarsConfig = {
       label: 'Architecture Deep Dives',
       items: [
         'architecture-overview',
+        'architecture/roles',
         'architecture/metadata-consolidation',
         'architecture/field-value-catalog',
         'architecture/metadata-and-s3-optimization',

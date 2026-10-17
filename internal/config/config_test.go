@@ -386,6 +386,24 @@ func TestDefaultInsertConfig(t *testing.T) {
 	}
 }
 
+// Only the roles that write data run the background jobs that write to S3 or
+// to state shared between pods; a select pod never does (#311).
+func TestRunsMaintenance_OnlyWriterRoles(t *testing.T) {
+	for _, tt := range []struct {
+		role Role
+		want bool
+	}{{RoleAll, true}, {RoleInsert, true}, {RoleSelect, false}} {
+		cfg := Default()
+		cfg.Role = tt.role
+		if got := cfg.RunsMaintenance(); got != tt.want {
+			t.Errorf("role=%q RunsMaintenance() = %v, want %v", tt.role, got, tt.want)
+		}
+		if got := cfg.RunsMaintenance(); got != cfg.InsertEnabled() {
+			t.Errorf("role=%q RunsMaintenance() = %v differs from InsertEnabled() = %v", tt.role, got, cfg.InsertEnabled())
+		}
+	}
+}
+
 func TestInsertEnabled(t *testing.T) {
 	tests := []struct {
 		role       Role

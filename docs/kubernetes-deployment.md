@@ -227,6 +227,8 @@ lakehouseConfig:
     timeout: 10s
 ```
 
+Compaction ownership hashes over the insert pods only, resolved from `select.insert_headless_service` (the chart sets it for every pod of a signal). Set it in a hand-written config too: without it the ownership ring is the whole peer ring, a warning is logged, and the partitions that a select pod in that ring would own are never compacted. Select pods never compact ([roles](architecture/roles.md)).
+
 ### Compaction
 
 ```yaml

@@ -105,3 +105,49 @@
     Ingest scales with traffic, query scales with users, and they fail differently. Running the
     same binary in a role lets a deployment separate them — different replica counts, different
     profiles, different resources — without a second artifact to build and ship.
+
+- id: lh.feature.deploy.select_never_writes
+  title: Select pods never write or compact
+  status: shipped
+  area: deploy
+  surfaces: [flag, storage]
+  rows:
+    - lh.flag.role_select_runs_no_maintenance.logs
+    - lh.flag.role_select_runs_no_maintenance.traces
+  tests:
+    - internal/config/config_test.go#TestRunsMaintenance_OnlyWriterRoles
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestMaintenanceJobs_StartedByRole
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestSelectRole_WritesNothingToTheBucket
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestSelectRole_RetriesAFailedTombstoneWrite
+    - cmd/lakehouse-logs/maintenance_inventory_test.go#TestMaintenanceInventory_EveryS3WriterIsGated
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestCompactionOwnership_RingIsTheWritersOnly
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestResolveInterruptedRewrites_OnlyWhereRewritesRun
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestSelectRole_ShutdownWritesNothing
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestRun_StartsTheTombstoneWriteRetryOnEveryNode
+    - cmd/lakehouse-logs/maintenance_inventory_test.go#TestMaintenanceInventory_InternalPackagesWriters
+    - lakehouse-traces/maintenance_gate_test.go#TestMaintenanceJobs_StartedByRole
+    - lakehouse-traces/maintenance_gate_test.go#TestSelectRole_WritesNothingToTheBucket
+    - lakehouse-traces/maintenance_gate_test.go#TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts
+    - lakehouse-traces/maintenance_gate_test.go#TestSelectRole_RetriesAFailedTombstoneWrite
+    - lakehouse-traces/maintenance_inventory_test.go#TestMaintenanceInventory_EveryS3WriterIsGated
+    - lakehouse-traces/maintenance_gate_test.go#TestCompactionOwnership_RingIsTheWritersOnly
+    - lakehouse-traces/maintenance_gate_test.go#TestResolveInterruptedRewrites_OnlyWhereRewritesRun
+    - lakehouse-traces/maintenance_gate_test.go#TestSelectRole_ShutdownWritesNothing
+    - lakehouse-traces/maintenance_gate_test.go#TestRun_StartsTheTombstoneWriteRetryOnEveryNode
+    - lakehouse-traces/maintenance_inventory_test.go#TestMaintenanceInventory_InternalPackagesWriters
+  docs:
+    - docs/architecture/roles.md
+    - docs/operations.md
+  highlight: >-
+    **Select pods only read**: compaction, the orphan sweep, delete rewrites, retention and the stats snapshots run on the `insert` and `all` roles only, so a select replica can never rewrite objects another pod serves or compacts.
+  description: >-
+    Compaction is on by default and used to start on every role, so each select replica
+    compacted the partitions its hash-ring position owned, and the rows were stored two to
+    four times. One predicate, config.RunsMaintenance, now gates every background job that
+    writes to S3 or to state shared between pods; a select pod with compaction enabled starts
+    none of them and says so once at INFO. Request-driven writes (tombstone files, the
+    conditional alias registry) stay where the request lands, and the tombstone write retry runs
+    on every node without a rewrite scheduler. Known gaps: a delete taken by a select pod reaches
+    the other pods only after a restart (issue 594); pmeta entries of files other pods removed stay
+    in a select pod's RAM (issue 595).

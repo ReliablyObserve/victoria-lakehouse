@@ -19,9 +19,9 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
 | Ops | 14 | 0 | 2 | 0 | 16 |
-| Deploy | 5 | 0 | 0 | 0 | 5 |
+| Deploy | 6 | 0 | 0 | 0 | 6 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **151** | **1** | **3** | **8** | **163** |
+| **Total** | **152** | **1** | **3** | **8** | **164** |
 
 ## Coverage gaps
 
@@ -1819,7 +1819,7 @@ The matrix is the operational counterpart of the registry: it records what has a
 - Docs: `tests/verification/matrix.md`, `docs/parity-and-gaps.md`
 - Changelog: `0.37.1`
 
-## Deploy (5)
+## Deploy (6)
 
 ### ✅ AZ detection and AZ-aware routing
 
@@ -1878,6 +1878,17 @@ Ingest scales with traffic, query scales with users, and they fail differently. 
 - Verification: tests: `internal/config/config_test.go#TestValidate_InvalidRole`, `internal/config/config_test.go#TestValidate_EmptyRoleDefaultsToAll`, `internal/storage/parquets3/storage_query_test.go#TestRunQuery_HotBoundary_InsertRoleSuppresses`, `internal/storage/parquets3/coverage_final_push_test.go#TestNew_SelectOnly`, `tests/e2e/settings_verification_test.go#TestSetting_Role_InsertEnabled`
 - Docs: `docs/kubernetes-deployment.md`, `docs/deployment-architecture.md`
 - Changelog: `0.8.0`
+
+### ✅ Select pods never write or compact
+
+`lh.feature.deploy.select_never_writes` · status: shipped · surfaces: flag, storage
+
+**Select pods only read**: compaction, the orphan sweep, delete rewrites, retention and the stats snapshots run on the `insert` and `all` roles only, so a select replica can never rewrite objects another pod serves or compacts.
+
+Compaction is on by default and used to start on every role, so each select replica compacted the partitions its hash-ring position owned, and the rows were stored two to four times. One predicate, config.RunsMaintenance, now gates every background job that writes to S3 or to state shared between pods; a select pod with compaction enabled starts none of them and says so once at INFO. Request-driven writes (tombstone files, the conditional alias registry) stay where the request lands, and the tombstone write retry runs on every node without a rewrite scheduler. Known gaps: a delete taken by a select pod reaches the other pods only after a restart (issue 594); pmeta entries of files other pods removed stay in a select pod's RAM (issue 595).
+
+- Verification: rows: `lh.flag.role_select_runs_no_maintenance.logs` (pass, executes), `lh.flag.role_select_runs_no_maintenance.traces` (pass, executes) · tests: `internal/config/config_test.go#TestRunsMaintenance_OnlyWriterRoles`, `cmd/lakehouse-logs/maintenance_gate_test.go#TestMaintenanceJobs_StartedByRole`, `cmd/lakehouse-logs/maintenance_gate_test.go#TestSelectRole_WritesNothingToTheBucket`, `cmd/lakehouse-logs/maintenance_gate_test.go#TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts`, `cmd/lakehouse-logs/maintenance_gate_test.go#TestSelectRole_RetriesAFailedTombstoneWrite`, `cmd/lakehouse-logs/maintenance_inventory_test.go#TestMaintenanceInventory_EveryS3WriterIsGated`, `cmd/lakehouse-logs/maintenance_gate_test.go#TestCompactionOwnership_RingIsTheWritersOnly`, `cmd/lakehouse-logs/maintenance_gate_test.go#TestResolveInterruptedRewrites_OnlyWhereRewritesRun`, `cmd/lakehouse-logs/maintenance_gate_test.go#TestSelectRole_ShutdownWritesNothing`, `cmd/lakehouse-logs/maintenance_gate_test.go#TestRun_StartsTheTombstoneWriteRetryOnEveryNode`, `cmd/lakehouse-logs/maintenance_inventory_test.go#TestMaintenanceInventory_InternalPackagesWriters`, `lakehouse-traces/maintenance_gate_test.go#TestMaintenanceJobs_StartedByRole`, `lakehouse-traces/maintenance_gate_test.go#TestSelectRole_WritesNothingToTheBucket`, `lakehouse-traces/maintenance_gate_test.go#TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts`, `lakehouse-traces/maintenance_gate_test.go#TestSelectRole_RetriesAFailedTombstoneWrite`, `lakehouse-traces/maintenance_inventory_test.go#TestMaintenanceInventory_EveryS3WriterIsGated`, `lakehouse-traces/maintenance_gate_test.go#TestCompactionOwnership_RingIsTheWritersOnly`, `lakehouse-traces/maintenance_gate_test.go#TestResolveInterruptedRewrites_OnlyWhereRewritesRun`, `lakehouse-traces/maintenance_gate_test.go#TestSelectRole_ShutdownWritesNothing`, `lakehouse-traces/maintenance_gate_test.go#TestRun_StartsTheTombstoneWriteRetryOnEveryNode`, `lakehouse-traces/maintenance_inventory_test.go#TestMaintenanceInventory_InternalPackagesWriters`
+- Docs: `docs/architecture/roles.md`, `docs/operations.md`
 
 ## Security (5)
 
