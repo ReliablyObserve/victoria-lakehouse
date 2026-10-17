@@ -132,7 +132,7 @@ flowchart TD
 
 **Seal triggers:**
 - **Age:** `insert.buffer_flush_interval` (default 5m)
-- **Size:** about `insert.target_file_size` (default 128 MB) of rows while fewer than 64 segments are pending
+- **Size:** about `insert.target_file_size` (default 128 MB) of rows while fewer than 64 segments are pending; the size is an estimate of rows × 512 B, so 262,144 rows at the 128MB default; written objects are smaller after Parquet compression
 - **Shutdown:** the flusher stops and the buffer closes; the next start drains what is left
 
 ### Parquet Writing

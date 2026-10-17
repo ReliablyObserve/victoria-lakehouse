@@ -112,8 +112,8 @@ export default function LokiTempoAlternative() {
                   <td>Native Loki + Tempo datasources</td>
                 </tr>
                 <tr>
-                  <td><strong>Glacier tiering</strong></td>
-                  <td>Yes (S3 lifecycle, cost-aware deletion)</td>
+                  <td><strong>Cold-class tiering</strong></td>
+                  <td>Optional (S3 lifecycle rules you configure; tombstone deletes avoid retrieval fees)</td>
                   <td>No (compaction breaks lifecycle)</td>
                 </tr>
               </tbody>
@@ -181,7 +181,7 @@ export default function LokiTempoAlternative() {
               <li>Need open format for analytics (DuckDB, Spark, Trino)</li>
               <li>Unified logs + traces in one system</li>
               <li>Apache 2.0 license requirement</li>
-              <li>Glacier tiering for 3yr+ compliance</li>
+              <li>Optional cold-class tiering for 3yr+ retention</li>
               <li>VictoriaMetrics ecosystem (VM, VL, VT)</li>
             </ul>
           </div>
