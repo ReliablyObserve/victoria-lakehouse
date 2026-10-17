@@ -172,6 +172,9 @@ func (s *RewriteScheduler) resumeRewrites(ctx context.Context, id string) {
 		return
 	}
 	for _, key := range sortedSupersededKeys(ts) {
+		if !s.owns(key) {
+			continue // another writer's record: it settles it
+		}
 		if !s.store.claimKey(key) {
 			continue // a rewrite in this process owns it
 		}

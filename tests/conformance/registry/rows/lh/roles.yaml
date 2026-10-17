@@ -37,3 +37,19 @@
     tests:
       - lakehouse-traces/maintenance_gate_test.go
       - lakehouse-traces/maintenance_inventory_test.go
+
+- id: lh.flag.delete_tombstone_reload_interval
+  title: "LH delete.tombstone_reload_interval — how often every pod re-reads the tombstone objects in S3 (default 1m, negative turns it off); one LIST per interval per pod, a retired tombstone's object is deleted after 10 intervals"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/tombstone_reload_test.go
+      - cmd/lakehouse-logs/tombstone_reload_test.go
+      - lakehouse-traces/tombstone_reload_test.go

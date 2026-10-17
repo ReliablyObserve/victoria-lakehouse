@@ -651,6 +651,10 @@ lakehouseConfig:
     force_glacier_header: X-Force-Glacier-Delete
     # -- Interval for continuous deletion verification.
     verify_interval: 6h
+    # -- How often every pod re-reads the tombstone objects in S3 (negative: never).
+    #    One LIST per interval per pod; a retired tombstone's object is deleted
+    #    after 10 intervals.
+    tombstone_reload_interval: 1m
     # -- S3 lifecycle rules for delete cost estimation.
     lifecycle_rules: []
 

@@ -294,6 +294,10 @@ func run(cfg *config.Config, addr string) {
 	// 5 min) the holder is always populated, so the closure
 	// returns real overrides instead of nil-no-op.
 	tombstoneStore := delete.NewTombstoneStore()
+	// Pods that run maintenance own the delete of a retired tombstone's object; a
+	// retired record stays in S3 for 10 reload intervals so every pod reads it.
+	tombstoneStore.SetReaper(cfg.RunsMaintenance())
+	tombstoneStore.SetRetireGrace(tombstoneRetireGrace(cfg))
 	tombstonePersistence := delete.PersistenceConfig{
 		Dir:    cfg.Delete.PersistPath,
 		Pool:   &s3PoolAdapter{pool: store.Pool()},
@@ -448,7 +452,7 @@ func run(cfg *config.Config, addr string) {
 
 	costCalc := stats.NewCostCalculator(cfg.Stats.S3PricePerGB, cfg.Stats.S3RequestPrices)
 
-	rewriteSched := startDeleteRewrite(cfg, store, pusher, tombstoneStore, detector)
+	rewriteSched := startDeleteRewrite(cfg, store, pusher, tombstoneStore, detector, addr)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -457,6 +461,7 @@ func run(cfg *config.Config, addr string) {
 	// pass does it only every verify interval (6 h by default), and a select pod
 	// runs no scheduler at all.
 	startTombstoneWriteRetry(cfg, tombstoneStore, stopCh)
+	startTombstoneReload(cfg, tombstoneStore, stopCh)
 
 	if cancel := startTenantAliasSync(cfg, store, resolver, addr); cancel != nil {
 		defer cancel()
@@ -582,14 +587,17 @@ func run(cfg *config.Config, addr string) {
 // startDeleteRewrite starts the scheduler that rewrites objects to remove
 // tombstoned rows and then deletes the superseded object. Extracted from run()
 // so the wiring can be tested. It returns nil when deletes are disabled.
-func startDeleteRewrite(cfg *config.Config, store *parquets3.Storage, pusher *manifest.Pusher, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector) *delete.RewriteScheduler {
+func startDeleteRewrite(cfg *config.Config, store *parquets3.Storage, pusher *manifest.Pusher, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector, addr string) *delete.RewriteScheduler {
 	if !cfg.Delete.Enabled || !maintenanceAllowed(cfg, "the delete rewrite scheduler") {
 		return nil
 	}
 	rewriter := newDeleteRewriter(store.Pool(), cfg, "logs")
 	rewriteSched := delete.NewRewriteScheduler(delete.RewriteSchedulerConfig{
-		Store:          tombstoneStore,
-		Rewriter:       rewriter,
+		Store:    tombstoneStore,
+		Rewriter: rewriter,
+		// Every writer holds every tombstone (they reload them), so the pod that
+		// compacts a partition is the one that rewrites its objects.
+		Ownership:      newCompactionOwnership(addr, store.PeerCache(), store.WriterPeers),
 		Detector:       detector,
 		RewriteDelay:   cfg.Delete.RewriteDelay,
 		AllowedClasses: cfg.Delete.AutoRewriteClasses,
@@ -625,6 +633,46 @@ func startRetention(cfg *config.Config, store *parquets3.Storage, policy *tenant
 	retentionCtx, retentionCancel := context.WithCancel(context.Background())
 	go retentionMgr.Start(retentionCtx)
 	return retentionCancel
+}
+
+// tombstoneRetireGrace is how long a retired tombstone's record stays in S3
+// before its object is deleted: 10 reload intervals, so every pod that reloads
+// reads the retirement first. Zero when the reload is off (nobody reloads).
+func tombstoneRetireGrace(cfg *config.Config) time.Duration {
+	if cfg.Delete.TombstoneReloadInterval <= 0 {
+		return 0
+	}
+	return 10 * cfg.Delete.TombstoneReloadInterval
+}
+
+// startTombstoneReload re-reads the tombstone objects on every node, every
+// delete.tombstone_reload_interval. A delete taken by any pod (a select pod takes
+// them all) is then enforced everywhere and rewritten by the writer that owns the
+// partition, without a restart; an un-delete takes effect everywhere too. The
+// reload only reads: see delete.TombstoneStore.ReloadFromS3.
+func startTombstoneReload(cfg *config.Config, ts *delete.TombstoneStore, stopCh <-chan struct{}) {
+	every := cfg.Delete.TombstoneReloadInterval
+	if every <= 0 {
+		return
+	}
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				ctx, cancel := context.WithTimeout(context.Background(), every)
+				if res, err := ts.ReloadFromS3(ctx); err != nil {
+					logger.Warnf("tombstone reload: %s", err)
+				} else if res.Added+res.Updated+res.Retired+res.Dropped > 0 {
+					logger.Infof("tombstone reload: added=%d updated=%d retired=%d dropped=%d", res.Added, res.Updated, res.Retired, res.Dropped)
+				}
+				cancel()
+			case <-stopCh:
+				return
+			}
+		}
+	}()
 }
 
 // startTombstoneWriteRetry drains, on a timer, the tombstone durability writes
@@ -894,10 +942,11 @@ func maintenanceAllowed(cfg *config.Config, job string) bool {
 // this pod alone. Extracted from setupCompaction so the ring can be tested.
 func newCompactionOwnership(addr string, peerCache *peercache.PeerCache, writers func() []string) *compaction.OwnershipResolver {
 	withSelf := func(members []string) []string {
-		for _, m := range members {
-			if m == addr {
-				return members
-			}
+		// This pod is already in the ring under the address discovery gave it
+		// (its IP and port), whatever it calls itself: a second entry for it would
+		// make every pod claim the partitions that entry wins.
+		if compaction.SelfMember(addr, members, compaction.LocalIPs) != "" {
+			return members
 		}
 		out := make([]string, 0, len(members)+1)
 		out = append(out, members...)
@@ -923,6 +972,7 @@ func newCompactionOwnership(addr string, peerCache *peercache.PeerCache, writers
 		}
 		return withSelf(members)
 	})
+	ownership.ResolveSelf = func(peers []string) string { return compaction.SelfMember(addr, peers, compaction.LocalIPs) }
 	if peerCache != nil {
 		ownership.SameAZPeers = func() []string {
 			same := peerCache.SameAZMembers()
@@ -2489,6 +2539,28 @@ func (a *s3PoolAdapter) List(ctx context.Context, prefix string) ([]string, erro
 
 // HeadObject implements compaction.S3Lister. Used by Tier B orphan
 // sweep to read LastModified for the OrphanTTL gate.
+// ListETags lists the keys under prefix with their ETags, for the tombstone
+// reload (which fetches only the objects that changed).
+func (a *s3PoolAdapter) ListETags(ctx context.Context, prefix string) (map[string]string, error) {
+	client := a.pool.S3Client()
+	bucket := a.pool.Bucket()
+	out := map[string]string{}
+	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, obj := range page.Contents {
+			out[aws.ToString(obj.Key)] = aws.ToString(obj.ETag)
+		}
+	}
+	return out, nil
+}
+
 func (a *s3PoolAdapter) HeadObject(ctx context.Context, key string) (int64, time.Time, error) {
 	client := a.pool.S3Client()
 	bucket := a.pool.Bucket()

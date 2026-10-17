@@ -259,6 +259,26 @@ POST /delete/{logsql|tracessql}/verify
 
 Confirms that deleted data is no longer visible through queries. Returns verification status and affected file count.
 
+## Tombstones across pods: reload, retirement and rewrite ownership
+
+A delete is taken by whichever pod receives the request, and with split roles that is a select pod. The tombstone is one object per id under `<prefix>_tombstones/` in the bucket, and every pod reads those objects:
+
+- **At start** (restore), as before.
+- **Every `delete.tombstone_reload_interval` (default 1 minute) while running** (reload). A reload lists the prefix, fetches only the objects whose ETag changed, and merges them the way a restore does: a delete taken elsewhere is enforced at once, progress made elsewhere (keys reaped, rewrites recorded) is merged in, and an un-delete or a completed delete takes effect. **A reload never writes**: no PUT, no DELETE. A negative interval turns it off (a pod then learns of tombstones only at start).
+
+**Removal is two steps, so a reload cannot be fooled.** Removing a tombstone (an un-delete, or the retirement of a fully rewritten one) first overwrites its object with a *retired* record (`Retired: true`, `RetiredAt`), and deletes the object only after a grace period of 10 reload intervals. A pod that reloads or restarts inside the grace reads "retired" and does not adopt the tombstone; a DELETE that fails leaves the retired record, never an active one, so the tombstone cannot come back on another pod. Pods that run maintenance delete retired objects whose grace is over, including ones another pod could not delete. With the reload off, the grace is 0 and the object is deleted at once.
+
+Three more rules keep a reload from doing harm:
+- An id that is absent from a **complete** listing is dropped only if this pod had seen its object, has no write of its own pending for it, and has no unfinished rewrite of it. A listing that failed anywhere drops nothing.
+- A retired record never drops a tombstone this pod has an unfinished rewrite of: the rewrite's records are the only trace of a replacement object.
+- A record older than a local removal marker is ignored.
+
+**Rewrite ownership.** Because every writer now holds every tombstone, a rewrite is limited per partition to the pod that owns it on the writers-only hash ring compaction uses (`select.insert_headless_service`), so two writers never replace the same object. A writer that does not own a partition learns the outcome from the next reload. A single writer owns everything.
+
+**Cost** (sourced prices: LIST $0.005 per 1,000 requests, us-east-1; the interval is assumed): each pod issues one LIST of the tombstone prefix per interval plus a GET per changed object. At 1 minute, 100 pods issue 4.32 million LISTs a month, about $21.6; at 5 minutes, about $4.3. Set the interval for the number of pods and the delay you accept between a delete on one pod and its enforcement on another: that delay is at most one interval plus the time the other pod takes to refresh its manifest.
+
+Known limits: two writers can still PUT the same tombstone object at the same time (last writer wins). Rewrite records are per source key and owned by one writer, and the reload merges everything back in, but a record lost this way is recovered through the "key already superseded" path rather than from the record. An un-delete taken on a pod that has not reloaded yet can race with a rewrite that is already running on another pod; a pod that has an unfinished rewrite keeps the tombstone (see the rules above).
+
 ## Query-Time Tombstone Evaluation
 
 Tombstones are evaluated during the normal read path:

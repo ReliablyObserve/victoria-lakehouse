@@ -744,6 +744,18 @@
         {
           "expr": "increase(lakehouse_delete_startup_inconsistencies_total{instance=~\"$instance\", kind=\"s3_restore_failed\"}[1h])",
           "legendFormat": "startup restore failures (1h)"
+        },
+        {
+          "expr": "sum by (result) (increase(lakehouse_delete_tombstone_reload_total{instance=~\"$instance\"}[1h]))",
+          "legendFormat": "tombstone reload {{result}} (1h)"
+        },
+        {
+          "expr": "sum by (kind) (increase(lakehouse_delete_tombstone_reload_records_total{instance=~\"$instance\"}[1h]))",
+          "legendFormat": "reloaded {{kind}} (1h)"
+        },
+        {
+          "expr": "lakehouse_delete_tombstone_retired_deferred{instance=~\"$instance\"}",
+          "legendFormat": "retired objects waiting for their delete"
         }
       ]
     },

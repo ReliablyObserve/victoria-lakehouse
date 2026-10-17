@@ -1139,6 +1139,14 @@ type DeleteConfig struct {
 	ForceGlacierHeader string `yaml:"force_glacier_header"`
 	// VerifyInterval is how often completed deletes are verified again.
 	VerifyInterval time.Duration `yaml:"verify_interval"`
+	// TombstoneReloadInterval is how often every pod re-reads the tombstone
+	// objects in S3, so a delete taken by one pod is enforced on all of them and
+	// rewritten by a writer without a restart. A negative value turns the reload
+	// off (a pod then learns of tombstones only at start). Each reload is one LIST of the
+	// tombstone prefix plus a GET per changed object, per pod: at 1 minute, 100
+	// pods issue 4.32 million LISTs a month (about $21.6 at $0.005 per 1,000).
+	// A retired tombstone's object is deleted 10 intervals after it is retired.
+	TombstoneReloadInterval time.Duration `yaml:"tombstone_reload_interval"`
 	// LifecycleRules are the bucket lifecycle rules used to predict storage
 	// classes for delete cost estimates.
 	LifecycleRules []LifecycleRuleConfig `yaml:"lifecycle_rules"`
@@ -1415,16 +1423,17 @@ func Default() *Config {
 		},
 
 		Delete: DeleteConfig{
-			Enabled:              true,
-			DefaultMode:          "auto",
-			AutoRewriteClasses:   []string{"STANDARD"},
-			RewriteDelay:         time.Hour,
-			RewriteBatchSize:     50,
-			RewriteMaxConcurrent: 2,
-			PersistPath:          "/data/lakehouse/tombstones",
-			CostWarningThreshold: 10.0,
-			ForceGlacierHeader:   "X-Force-Glacier-Delete",
-			VerifyInterval:       6 * time.Hour,
+			Enabled:                 true,
+			DefaultMode:             "auto",
+			AutoRewriteClasses:      []string{"STANDARD"},
+			RewriteDelay:            time.Hour,
+			RewriteBatchSize:        50,
+			RewriteMaxConcurrent:    2,
+			PersistPath:             "/data/lakehouse/tombstones",
+			CostWarningThreshold:    10.0,
+			ForceGlacierHeader:      "X-Force-Glacier-Delete",
+			VerifyInterval:          6 * time.Hour,
+			TombstoneReloadInterval: time.Minute,
 		},
 
 		GC: GCConfig{
@@ -2643,6 +2652,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	}
 	if overlay.Delete.VerifyInterval > 0 {
 		base.Delete.VerifyInterval = overlay.Delete.VerifyInterval
+	}
+	if overlay.Delete.TombstoneReloadInterval != 0 {
+		base.Delete.TombstoneReloadInterval = overlay.Delete.TombstoneReloadInterval
 	}
 	if len(overlay.Delete.LifecycleRules) > 0 {
 		base.Delete.LifecycleRules = overlay.Delete.LifecycleRules

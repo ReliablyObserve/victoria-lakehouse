@@ -1069,6 +1069,18 @@ var (
 	// only the deletes it found locally and resolves no interrupted rewrite —
 	// the state the restore-failed alert fires on.
 	DeleteTombstoneRestorePending = NewGauge("lakehouse_delete_tombstone_restore_pending")
+	// DeleteTombstoneReload counts the read-only reloads of the tombstone
+	// objects by result: ok, list_failed (nothing was applied or dropped), and
+	// fetch_failed (some record could not be read; the rest was applied).
+	DeleteTombstoneReload = NewCounterVec("lakehouse_delete_tombstone_reload_total", "result")
+	// DeleteTombstoneReloadRecords counts the records a reload applied by kind:
+	// added (a delete taken elsewhere), updated (progress made elsewhere),
+	// retired (an un-delete or a completed delete) and dropped (the object
+	// vanished from a complete listing).
+	DeleteTombstoneReloadRecords = NewCounterVec("lakehouse_delete_tombstone_reload_records_total", "kind")
+	// DeleteTombstoneRetiredDeferred is the number of retired tombstone objects
+	// whose delete waits for the grace period.
+	DeleteTombstoneRetiredDeferred = NewGauge("lakehouse_delete_tombstone_retired_deferred")
 	// DeleteRewriteDeferred counts rewrite work postponed rather than done, by
 	// reason: the manifest has not listed the bucket yet (unlisted), the
 	// tombstone store is incomplete (restore_pending), a record is not

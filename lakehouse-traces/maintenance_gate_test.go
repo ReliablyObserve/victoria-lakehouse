@@ -105,6 +105,25 @@ func newPod(t *testing.T, cfg *config.Config) *parquets3.Storage {
 	return store
 }
 
+// hourBase is the first row's time of the hour partition `age` ago, fixed for the
+// process so a test can name the rows it seeded (and an hour boundary crossed
+// while the test runs does not move them).
+func hourBase(age time.Duration) time.Time {
+	hourBaseMu.Lock()
+	defer hourBaseMu.Unlock()
+	if b, ok := hourBases[age]; ok {
+		return b
+	}
+	b := time.Now().Add(-age).Truncate(time.Hour).Add(10 * time.Minute)
+	hourBases[age] = b
+	return b
+}
+
+var (
+	hourBaseMu sync.Mutex
+	hourBases  = map[time.Duration]time.Time{}
+)
+
 // seedGroup is a number of small objects flushed into the hour partition `age` ago.
 type seedGroup struct {
 	files int
@@ -135,7 +154,7 @@ func seedFlushes(t *testing.T, store *parquets3.Storage, cfg *config.Config, row
 	files := len(ages)
 	rows := 0
 	for f := 0; f < files; f++ {
-		base := time.Now().Add(-ages[f]).Truncate(time.Hour).Add(10 * time.Minute)
+		base := hourBase(ages[f])
 		lr := logstorage.GetLogRows([]string{"resource_attr:service.name"}, nil, nil, nil, "")
 		for r := 0; r < rowsEach; r++ {
 			lr.MustAdd(logstorage.TenantID{}, base.Add(time.Duration(f*rowsEach+r)*time.Second).UnixNano(), []logstorage.Field{
@@ -225,7 +244,7 @@ func startAllJobs(t *testing.T, cfg *config.Config, store *parquets3.Storage) *s
 	j := &startedJobs{statsCancel: make(chan struct{})}
 	sched, sweep, stopCompaction := setupCompaction(cfg, store, nil, ":9428", &holder, tombstones, detector)
 	j.compaction = sched != nil || sweep != nil || stopCompaction != nil
-	rewrite := startDeleteRewrite(cfg, store, nil, tombstones, detector)
+	rewrite := startDeleteRewrite(cfg, store, nil, tombstones, detector, ":9428")
 	j.deleteRew = rewrite != nil
 	stopRetention := startRetention(cfg, store, policy)
 	j.retention = stopRetention != nil
@@ -540,7 +559,7 @@ func TestSelectRole_RetriesAFailedTombstoneWrite(t *testing.T) {
 		t.Fatal("the failed PUT left no pending write; the test proves nothing")
 	}
 
-	if rewrite := startDeleteRewrite(cfg, store, nil, ts, newStorageClassDetector(cfg)); rewrite != nil {
+	if rewrite := startDeleteRewrite(cfg, store, nil, ts, newStorageClassDetector(cfg), ":9428"); rewrite != nil {
 		rewrite.Stop()
 		t.Fatal("a select pod started the delete rewrite scheduler")
 	}
@@ -726,12 +745,12 @@ func TestSelectRole_ShutdownWritesNothing(t *testing.T) {
 // run() starts the tombstone write retry on every node, as a top-level statement:
 // a condition around it would leave a class of nodes (a select pod) with only the
 // rewrite scheduler's six-hourly pass, or none.
-func TestRun_StartsTheTombstoneWriteRetryOnEveryNode(t *testing.T) {
+func TestRun_StartsTheTombstoneLoopsOnEveryNode(t *testing.T) {
 	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	found := map[string]bool{}
 	for _, d := range f.Decls {
 		fd, ok := d.(*ast.FuncDecl)
 		if !ok || fd.Name.Name != "run" {
@@ -740,14 +759,46 @@ func TestRun_StartsTheTombstoneWriteRetryOnEveryNode(t *testing.T) {
 		for _, st := range fd.Body.List {
 			if es, ok := st.(*ast.ExprStmt); ok {
 				if call, ok := es.X.(*ast.CallExpr); ok {
-					if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "startTombstoneWriteRetry" {
-						found = true
+					if id, ok := call.Fun.(*ast.Ident); ok {
+						found[id.Name] = true
 					}
 				}
 			}
 		}
 	}
-	if !found {
-		t.Fatal("run() has no top-level call to startTombstoneWriteRetry")
+	for _, want := range []string{"startTombstoneWriteRetry", "startTombstoneReload"} {
+		if !found[want] {
+			t.Errorf("run() has no top-level call to %s", want)
+		}
+	}
+}
+
+// The ring entry of a pod is the address discovery gave it (its IP and port), not
+// the ":9428" it calls itself: two writers over the discovered addresses split every
+// partition between them, none is claimed twice.
+func TestCompactionOwnership_SelfIsItsDiscoveredAddress(t *testing.T) {
+	var ip4 string
+	for _, ip := range compaction.LocalIPs() {
+		if net.ParseIP(ip).To4() != nil {
+			ip4 = ip
+			break
+		}
+	}
+	if ip4 == "" {
+		t.Skip("this host has no non-loopback IPv4 address to stand for the pod")
+	}
+	me := ip4 + ":9428"
+	other := "10.255.255.1:9428"
+	writers := func() []string { return []string{me, other} }
+	var partitions []string
+	for d := 1; d <= 20; d++ {
+		for h := 0; h < 10; h++ {
+			partitions = append(partitions, fmt.Sprintf("dt=2026-10-%02d/hour=%02d", d, h))
+		}
+	}
+	mine := ownedBy(newCompactionOwnership(":9428", nil, writers), partitions)
+	theirs := ownedBy(newCompactionOwnership(other, nil, writers), partitions)
+	if mine == 0 || theirs == 0 || mine+theirs != len(partitions) {
+		t.Fatalf("this pod owns %d and the other %d of %d partitions, want a split that covers each once", mine, theirs, len(partitions))
 	}
 }

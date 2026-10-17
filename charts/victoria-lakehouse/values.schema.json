@@ -21,6 +21,16 @@
         "profile": {
           "$ref": "#/$defs/profileEnum"
         },
+        "delete": {
+          "type": "object",
+          "properties": {
+            "tombstone_reload_interval": {
+              "type": "string",
+              "default": "1m",
+              "description": "How often every pod re-reads the tombstone objects in S3 (a Go duration; negative turns it off). One LIST per interval per pod; a retired tombstone's object is deleted after 10 intervals."
+            }
+          }
+        },
         "s3": {
           "type": "object",
           "properties": {

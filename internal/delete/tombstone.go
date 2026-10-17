@@ -41,6 +41,14 @@ type Tombstone struct {
 	Reaped map[string]bool
 	Mode   string // "hide"|"permanent"|"auto"
 
+	// Retired marks the record of a tombstone that was removed (an un-delete, or
+	// a delete whose every key was rewritten). It is written to the tombstone's
+	// object BEFORE the object is deleted and kept for the retire grace period, so
+	// a pod that reloads or restores meanwhile reads "removed" instead of finding
+	// an old active record and a failed delete can never bring the tombstone back.
+	Retired   bool      `json:",omitempty"`
+	RetiredAt time.Time `json:",omitempty"`
+
 	// Clean lists LIVE files verified to hold none of this tombstone's rows: a
 	// rewrite's replacement, or a compaction output that filtered them. Kept
 	// apart from Reaped so "handled" never reads as "gone": a clean file is
@@ -266,6 +274,18 @@ type TombstoneStore struct {
 	// persistence was enabled; EnablePersistence queues their deletes.
 	staleS3 map[string]bool
 
+	// seenS3 is id -> the ETag of the object version this store last applied
+	// (a restore or a reload). A reload fetches only objects whose ETag
+	// changed, and drops an id it had seen once the object is gone from a
+	// complete listing.
+	seenS3 map[string]string
+	// reaper is set on the pods that run maintenance: they owe the delete of a
+	// retired tombstone's object once the grace period has passed.
+	reaper bool
+	// retireGrace is how long a retired record stays in S3 before its object is
+	// deleted. Zero deletes at once (no reloading pod can be misled).
+	retireGrace time.Duration
+
 	// vers counts the changes made to each tombstone id. It is what the
 	// durable-target bookkeeping compares against, so an acknowledgement names
 	// a specific state rather than "some write succeeded". Survives removal:
@@ -365,6 +385,7 @@ func NewTombstoneStore() *TombstoneStore {
 	return &TombstoneStore{
 		tombstones: make(map[string]Tombstone),
 		vers:       make(map[string]uint64),
+		seenS3:     make(map[string]string),
 	}
 }
 
@@ -385,6 +406,7 @@ type PersistenceConfig struct {
 func (s *TombstoneStore) EnablePersistence(cfg PersistenceConfig) {
 	s.mu.Lock()
 	s.persist = newTombstonePersistence(cfg)
+	s.persist.grace = s.retireGrace
 	if s.restoreCfg.Pool == nil && cfg.Pool != nil {
 		s.restoreCfg = cfg
 	}
@@ -545,7 +567,7 @@ func (s *TombstoneStore) Remove(id string) {
 	s.mu.Unlock()
 	s.updateActiveGauges()
 	metrics.DeleteRewritesUnfinished.Set(int64(s.UnfinishedRewrites()))
-	s.persistChange(p, id, pendingDelete, ver)
+	s.persistRemoval(p, old, had, id, ver)
 }
 
 // TryRemove is the un-delete: it removes the tombstone unless one of its
@@ -571,7 +593,7 @@ func (s *TombstoneStore) TryRemove(id string) error {
 	p := s.persist
 	s.mu.Unlock()
 	s.updateActiveGauges()
-	s.persistChange(p, id, pendingDelete, ver)
+	s.persistRemoval(p, ts, true, id, ver)
 	return nil
 }
 
@@ -604,7 +626,7 @@ func (s *TombstoneStore) Complete(id string) bool {
 	if observer != nil {
 		observer(ts)
 	}
-	s.persistChange(p, id, pendingDelete, ver)
+	s.persistRemoval(p, ts, true, id, ver)
 	return true
 }
 
@@ -793,9 +815,23 @@ func (s *TombstoneStore) SyncToS3(ctx context.Context, pool S3Pool, _ /*bucket*/
 func (s *TombstoneStore) LoadFromS3(ctx context.Context, pool S3Pool, _ /*bucket*/ string, prefix string) error {
 	keyPrefix := normalizeTombstonePrefix(prefix)
 
-	keys, err := pool.List(ctx, keyPrefix)
-	if err != nil {
-		return fmt.Errorf("list tombstones: %w", err)
+	var keys []string
+	var etags map[string]string
+	if l, ok := pool.(S3ETagLister); ok {
+		m, err := l.ListETags(ctx, keyPrefix)
+		if err != nil {
+			return fmt.Errorf("list tombstones: %w", err)
+		}
+		etags = m
+		for k := range m {
+			keys = append(keys, k)
+		}
+	} else {
+		ks, err := pool.List(ctx, keyPrefix)
+		if err != nil {
+			return fmt.Errorf("list tombstones: %w", err)
+		}
+		keys = ks
 	}
 
 	if len(keys) == 0 {
@@ -803,6 +839,7 @@ func (s *TombstoneStore) LoadFromS3(ctx context.Context, pool S3Pool, _ /*bucket
 	}
 
 	loaded := make([]Tombstone, 0, len(keys))
+	tags := make(map[string]string, len(keys))
 	var skipped int
 	for _, key := range keys {
 		data, err := pool.Download(ctx, key)
@@ -820,11 +857,21 @@ func (s *TombstoneStore) LoadFromS3(ctx context.Context, pool S3Pool, _ /*bucket
 		}
 
 		loaded = append(loaded, ts)
+		tags[ts.ID] = etags[key]
 	}
 
 	s.mu.Lock()
 	var stale []string
+	now := time.Now()
 	for _, ts := range loaded {
+		// A retired record is a removal, not a tombstone: it is applied as one
+		// (and, on a pod that reaps, its object is deleted once the grace is over).
+		if ts.Retired {
+			var res ReloadResult
+			s.applyReloadedLocked(ts, tags[ts.ID], now, &res)
+			continue
+		}
+		s.seenS3[ts.ID] = tags[ts.ID]
 		// A copy older than a removal marker is what a crash left behind
 		// before the removal's S3 delete was retried: not a tombstone.
 		if s.supersededByMarkerLocked(ts) {

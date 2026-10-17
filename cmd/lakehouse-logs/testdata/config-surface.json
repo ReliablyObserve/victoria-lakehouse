@@ -45,6 +45,7 @@
     {"key":"delete.rewrite_batch_size","type":"int","default":50,"file":"set"},
     {"key":"delete.rewrite_delay","type":"duration","default":"1h","file":"set"},
     {"key":"delete.rewrite_max_concurrent","type":"int","default":2,"file":"set"},
+    {"key":"delete.tombstone_reload_interval","type":"duration","default":"1m","file":"set"},
     {"key":"delete.verify_interval","type":"duration","default":"6h","file":"set"},
     {"key":"discovery.headless_service","type":"string","default":"","file":"set"},
     {"key":"discovery.partition_auth_key","type":"string","default":"","file":"set"},

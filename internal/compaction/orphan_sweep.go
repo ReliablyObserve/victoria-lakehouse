@@ -261,7 +261,7 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 		if len(ranked) < 2 {
 			continue
 		}
-		if ranked[1] != o.cfg.Ownership.Self {
+		if ranked[1] != o.cfg.Ownership.SelfIn(ranked) {
 			continue
 		}
 		primary := ranked[0]
@@ -358,7 +358,7 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 	}
 	selfIdx := -1
 	for i, p := range peers {
-		if p == o.cfg.Ownership.Self {
+		if p == o.cfg.Ownership.SelfIn(peers) {
 			selfIdx = i
 			break
 		}

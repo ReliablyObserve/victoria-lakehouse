@@ -30,6 +30,13 @@ type fakeReq struct {
 	Start, End     time.Time
 }
 
+// fakeFaults are the injected faults of a bucket, shared by its endpoints.
+type fakeFaults struct {
+	holdDel atomic.Int64 // ns a DELETE of a .parquet object waits before it is applied
+	failPut atomic.Value // string: a PUT of a key containing it answers 500 while it is set
+	failDel atomic.Value // string: a DELETE of a key containing it answers 500 while it is set
+}
+
 type fakeS3 struct {
 	mu       *sync.Mutex
 	objs     map[string][]byte    // "bucket/key" -> data
@@ -38,15 +45,14 @@ type fakeS3 struct {
 	log      []fakeReq
 	srv      *httptest.Server
 	latency  atomic.Int64 // ns
-	holdDel  atomic.Int64 // ns a DELETE of a .parquet object waits before it is applied
-	failPut  atomic.Value // string: a PUT of a key containing it answers 500 while it is set
+	f        *fakeFaults  // faults shared by every endpoint onto the same bucket
 	inflight atomic.Int64
 	peak     atomic.Int64
 	upSeq    atomic.Int64
 }
 
 func newFakeS3() *fakeS3 {
-	m := &fakeS3{mu: new(sync.Mutex), objs: map[string][]byte{}, mods: map[string]time.Time{}, uploads: map[string]map[int][]byte{}}
+	m := &fakeS3{f: &fakeFaults{}, mu: new(sync.Mutex), objs: map[string][]byte{}, mods: map[string]time.Time{}, uploads: map[string]map[int][]byte{}}
 	m.srv = httptest.NewServer(http.HandlerFunc(m.handle))
 	return m
 }
@@ -54,7 +60,7 @@ func newFakeS3() *fakeS3 {
 // newFakeS3On returns a second endpoint over the SAME objects as other, with its
 // own request log: one bucket, several pods, each pod counted on its own.
 func newFakeS3On(other *fakeS3) *fakeS3 {
-	m := &fakeS3{mu: other.mu, objs: other.objs, mods: other.mods, uploads: other.uploads}
+	m := &fakeS3{f: other.f, mu: other.mu, objs: other.objs, mods: other.mods, uploads: other.uploads}
 	m.srv = httptest.NewServer(http.HandlerFunc(m.handle))
 	return m
 }
@@ -84,12 +90,24 @@ func (m *fakeS3) AgePrefix(substr string, d time.Duration) {
 	m.mu.Unlock()
 }
 
+// get returns an object by bucket and key.
+func (m *fakeS3) get(bucket, key string) ([]byte, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.objs[bucket+"/"+key]
+	return d, ok
+}
+
+// FailDeletes makes every DELETE of a key that contains substr answer 500 until it is
+// called again with an empty string.
+func (m *fakeS3) FailDeletes(substr string) { m.f.failDel.Store(substr) }
+
 // FailPuts makes every PUT of a key that contains substr answer 500 until it is
 // called again with an empty string.
-func (m *fakeS3) FailPuts(substr string) { m.failPut.Store(substr) }
+func (m *fakeS3) FailPuts(substr string) { m.f.failPut.Store(substr) }
 
 // HoldDeletes makes a DELETE of a .parquet object wait d before it is applied.
-func (m *fakeS3) HoldDeletes(d time.Duration) { m.holdDel.Store(int64(d)) }
+func (m *fakeS3) HoldDeletes(d time.Duration) { m.f.holdDel.Store(int64(d)) }
 
 // Put seeds an object without counting it.
 func (m *fakeS3) Put(bucket, key string, data []byte) {
@@ -165,8 +183,12 @@ func (m *fakeS3) handle(w http.ResponseWriter, r *http.Request) {
 	rec := fakeReq{Key: key, Class: classify(key), In: int64(len(body)), Start: start}
 	var status int
 	var out int64
-	if s, _ := m.failPut.Load().(string); r.Method == http.MethodPut && s != "" && strings.Contains(key, s) {
+	if s, _ := m.f.failPut.Load().(string); r.Method == http.MethodPut && s != "" && strings.Contains(key, s) {
 		rec.Op = "PUT"
+		w.WriteHeader(500)
+		status = 500
+	} else if s, _ := m.f.failDel.Load().(string); r.Method == http.MethodDelete && s != "" && strings.Contains(key, s) {
+		rec.Op = "DELETE"
 		w.WriteHeader(500)
 		status = 500
 	} else {
@@ -282,7 +304,7 @@ func (m *fakeS3) serve(w http.ResponseWriter, r *http.Request, bucket, key strin
 		return 200, 0
 	case r.Method == http.MethodDelete:
 		rec.Op = "DELETE"
-		if d := time.Duration(m.holdDel.Load()); d > 0 && strings.HasSuffix(key, ".parquet") {
+		if d := time.Duration(m.f.holdDel.Load()); d > 0 && strings.HasSuffix(key, ".parquet") {
 			time.Sleep(d)
 		}
 		m.mu.Lock()
@@ -377,6 +399,7 @@ func (m *fakeS3) list(w http.ResponseWriter, bucket string, q url.Values) (int, 
 	var keys []string
 	sizes := map[string]int{}
 	modified := map[string]time.Time{}
+	tags := map[string]string{}
 	for k, d := range m.objs {
 		if !strings.HasPrefix(k, bucket+"/") {
 			continue
@@ -386,6 +409,7 @@ func (m *fakeS3) list(w http.ResponseWriter, bucket string, q url.Values) (int, 
 			keys = append(keys, kk)
 			sizes[kk] = len(d)
 			modified[kk] = m.mods[k]
+			tags[kk] = etagOf(d)
 		}
 	}
 	m.mu.Unlock()
@@ -424,7 +448,7 @@ func (m *fakeS3) list(w http.ResponseWriter, bucket string, q url.Values) (int, 
 			truncated = true
 			break
 		}
-		fmt.Fprintf(&b, "<Contents><Key>%s</Key><Size>%d</Size><ETag>\"x\"</ETag><LastModified>%s</LastModified><StorageClass>STANDARD</StorageClass></Contents>", xmlEsc(k), sizes[k], modified[k].UTC().Format(time.RFC3339))
+		fmt.Fprintf(&b, "<Contents><Key>%s</Key><Size>%d</Size><ETag>%s</ETag><LastModified>%s</LastModified><StorageClass>STANDARD</StorageClass></Contents>", xmlEsc(k), sizes[k], strings.ReplaceAll(tags[k], `"`, "&quot;"), modified[k].UTC().Format(time.RFC3339))
 		n++
 		last = k
 	}
