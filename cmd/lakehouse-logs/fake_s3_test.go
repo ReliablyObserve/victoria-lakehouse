@@ -152,7 +152,15 @@ func (m *fakeS3) handle(w http.ResponseWriter, r *http.Request) {
 	key, _ = url.PathUnescape(key)
 	q := r.URL.Query()
 	rec := fakeReq{Key: key, Class: classify(key), In: int64(len(body)), Start: start}
-	status, out := m.serve(w, r, bucket, key, q, body, &rec)
+	var status int
+	var out int64
+	if s, _ := m.failPut.Load().(string); r.Method == http.MethodPut && s != "" && strings.Contains(key, s) {
+		rec.Op = "PUT"
+		w.WriteHeader(500)
+		status = 500
+	} else {
+		status, out = m.serve(w, r, bucket, key, q, body, &rec)
+	}
 	rec.Status, rec.Out, rec.End = status, out, time.Now()
 	m.record(rec)
 }
@@ -225,10 +233,6 @@ func (m *fakeS3) serve(w http.ResponseWriter, r *http.Request, bucket, key strin
 		return 204, 0
 	case r.Method == http.MethodPut:
 		rec.Op = "PUT"
-		if s, _ := m.failPut.Load().(string); s != "" && strings.Contains(key, s) {
-			w.WriteHeader(500)
-			return 500, 0
-		}
 		if r.Header.Get("x-amz-copy-source") != "" {
 			rec.Op = "COPY"
 			src, _ := url.PathUnescape(strings.TrimPrefix(r.Header.Get("x-amz-copy-source"), "/"))
