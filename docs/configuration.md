@@ -923,7 +923,7 @@ lakehouse:
     push_compression: true
     snapshot_interval: 5m
     metrics_cardinality_limit: 100
-    s3_lifecycle_rules:
+    s3_lifecycle_rules:   # EXAMPLE only: the default is empty (every object stays STANDARD); cold classes charge per GB read and per early deletion
       - transition_days: 30
         storage_class: STANDARD_IA
       - transition_days: 90

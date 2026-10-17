@@ -13,10 +13,11 @@ This page explains **why** Lakehouse costs what it costs on AWS, line by line, a
 - Every system is deployed for production HA.
 - **Lakehouse CPU is assumed**: the same per-MB/s rule ClickHouse publishes for its own sizing, until Lakehouse's is measured.
 - Loki and Tempo sizing comes from Grafana's published guides.
+- **Every Lakehouse figure is on S3 Standard unless it says "example ladder".** Lakehouse's default is S3 Standard with no transitions. Cold classes (Standard-IA, Glacier Instant Retrieval) are cheaper to store but charge per GB read, per early deletion and per transition: read [Cost and cold storage classes: read this first](cost-estimates.md#cost-and-cold-storage-classes-read-this-first) before using any ladder number.
 
 ## 1. AWS list prices used
 
-Fetched 2026-10-01 from AWS's public price feed, us-east-1.
+Compute and EBS prices fetched 2026-10-01 from AWS's public price feed, us-east-1; S3 prices re-read 2026-10-17 (below).
 
 **Compute (EC2 on-demand, Linux)**
 
@@ -39,21 +40,23 @@ The small-scale model prices compute per vCPU at the m7g rate ($0.0408 per vCPU-
 
 **Object storage (S3)**
 
-| Storage class | $ per GB-month | Retrieval | Notes |
-|---|---:|---:|---|
-| S3 Standard, first 50 TB | 0.023 | free | |
-| S3 Standard, next 450 TB | 0.022 | free | |
-| S3 Standard, over 500 TB | 0.021 | free | |
-| S3 Standard-IA | 0.0125 | $0.01 per GB | 30-day minimum storage duration |
-| S3 Glacier Instant Retrieval | 0.004 | $0.03 per GB | millisecond GETs; 90-day minimum |
-| S3 Glacier Flexible Retrieval | 0.0036 | restore first | not queryable in place |
-| S3 Glacier Deep Archive | 0.00099 | restore first | archive only |
+| Storage class | $ per GB-month | Retrieval | GET per 1,000 | Notes |
+|---|---:|---:|---:|---|
+| **S3 Standard, first 50 TB (the default)** | 0.023 | free | $0.0004 | no minimum duration |
+| S3 Standard, next 450 TB | 0.022 | free | $0.0004 | |
+| S3 Standard, over 500 TB | 0.021 | free | $0.0004 | |
+| S3 Standard-IA | 0.0125 | $0.01 per GB | $0.001 | 30-day minimum storage duration, early deletion billed pro rata; 128 KB minimum billable size |
+| S3 Glacier Instant Retrieval | 0.004 | $0.03 per GB | $0.01 | millisecond GETs; 90-day minimum, early deletion billed pro rata; 128 KB minimum billable size |
+| S3 Glacier Flexible Retrieval | 0.0036 | restore first | restore first | 90-day minimum; not queryable in place |
+| S3 Glacier Deep Archive | 0.00099 | restore first | restore first | 180-day minimum; archive only |
+
+S3 prices (sourced): AWS price feed, us-east-1, publication 2026-10-15, read 2026-10-17 (`https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/current/us-east-1/index.json`, `https://aws.amazon.com/s3/pricing/`). Minimum durations and the 128 KB rule: AWS S3 documentation (storage classes and lifecycle transition considerations), checked 2026-10-17. Compute and EBS rows above were fetched 2026-10-01.
 
 | S3 request | Price |
 |---|---|
 | PUT, COPY, POST, LIST (Standard) | $0.005 per 1,000 |
 | GET and others (Standard) | $0.0004 per 1,000 |
-| Lifecycle transition into Glacier Instant Retrieval | $0.02 per 1,000 objects |
+| Lifecycle transition into Standard-IA / Glacier Instant Retrieval | $0.01 / $0.02 per 1,000 objects |
 | Data between S3 and EC2 in the same region | free |
 
 **Network**
@@ -102,7 +105,7 @@ Compression decides how many bytes each system stores per raw byte ingested. The
 | System | Effective compression (60/40 mix) | Stored per raw TB | Copies paid for | Medium | **$ per raw TB per month kept** |
 |---|---:|---:|---:|---|---:|
 | **Lakehouse** | **7.1x** (logs 6.1x, traces 9.4x, measured) | 141 GB | **1** | S3 Standard | **$3.24** |
-| Lakehouse + lifecycle to Glacier Instant Retrieval | 7.1x | 141 GB | 1 | S3 Glacier IR | $0.56 (+ $0.03 per GB read back) |
+| *Example only:* Lakehouse with every byte in Glacier Instant Retrieval | 7.1x | 141 GB | 1 | S3 Glacier IR | $0.56 at zero reads; each GB read adds $0.03, so it costs more than Standard once about 63% of the bytes are read in a month; 90-day minimum |
 | Loki + Tempo | 4.35x (logs ~4x, traces ~5x, typical) | 230 GB | 1 | S3 Standard | $5.29 |
 | ClickHouse tiered (data older than 7 days) | 12x (vendor guide) | 83 GB | 2 (no supported shared copy) | S3 Standard | $3.83 |
 | ClickHouse on EBS / first 7 days | 12x | 83 GB | 2, plus 25% free-space headroom | EBS gp3 | $16.67 |
@@ -165,7 +168,7 @@ Monthly, mid estimate, from `python3 scripts/cost/cost_model.py`.
 | VL/VT HA | 1.5 | Every write goes to two independent clusters. |
 | Loki + Tempo | 2.5 | Replication factor 3: two extra copies of every write cross AZs; Tempo's Kafka is RF3. |
 
-**S3 requests** are small for everyone. Lakehouse writes about 64 MB objects, so 1 TB/day raw (141 GB stored) is about 2,200 PUTs a day ($0.33 a month). Loki's ~1.5 MB chunks need about 40x more PUTs per stored byte. The model counts one write per stored object plus a fixed 200,000 GETs a day for every system. Compaction rewrites are not counted for any system.
+**S3 requests** are small for everyone. The model **assumes** a 64 MB average Lakehouse object, so 1 TB/day raw (141 GB stored) is about 2,200 PUTs a day ($0.33 a month). That is an assumption, not a measurement: the flush seal is by estimated row count, real objects are smaller today (one measured synthetic segment became a 12 MiB object), and at 12 MiB the same data is about 11,200 PUTs a day ($1.68 a month). See [Object size](cost-estimates.md#cost-and-cold-storage-classes-read-this-first). Loki's ~1.5 MB chunks need about 40x more PUTs per stored byte. The model counts one write per stored object plus a fixed 200,000 GETs a day for every system. Compaction rewrites are not counted for any system.
 
 ## 5. Scaling: linear, and two knobs
 
@@ -176,7 +179,7 @@ From `python3 scripts/cost/cost_model_scale.py`: whole r7g.8xlarge / m7g.8xlarge
 | 100 TB | 9 insert + 17 select + 3 compaction | $28k | 5.1 PB | **$142k** | 158 r7g.8xlarge + Kafka 28 × m7g.8xlarge | $445k |
 | 500 TB | 40 insert + 79 select + 13 compaction | $126k | 25.7 PB | **$697k** | 785 r7g.8xlarge + Kafka 139 × m7g.8xlarge | $2,214k |
 
-**Lakehouse is not ready at these sizes yet**: every replica holds the full file manifest, and metadata grows with file count, which at 64 MB files is about 80 million files a year at 100 TB/day. These rows show the cost once that work is done ([limits](cost-estimates.md#where-lakehouse-wins-and-where-it-does-not)).
+**Lakehouse is not ready at these sizes yet**: every replica holds the full file manifest, and metadata grows with file count, which at an assumed 64 MB average object is about 80 million files a year at 100 TB/day (more if real objects are smaller). These rows show the cost once that work is done ([limits](cost-estimates.md#where-lakehouse-wins-and-where-it-does-not)).
 
 Why the Lakehouse column is a straight line:
 - **Two independent knobs.** Ingest rate sets the insert (and compaction) pod count, about 8 insert pods per 100 TB/day at the assumed rule. Query load sets the select pod count. Retention sets only the S3 line. None of these affects the others.
@@ -186,36 +189,47 @@ Why the Lakehouse column is a straight line:
   - VL/VT on EBS grows nodes with retention, because every node's disk fills.
   - Loki and Tempo scale ingesters behind replication factor 3 and Kafka partitions.
 - **Autoscaling is plain HPA.** Select pods are stateless; scale them on query load and to zero-ish off-hours. A select pod restart costs a cache warm-up, not a data recovery.
-- **Retention is a single S3 lifecycle rule.** Lengthening retention adds S3 bytes and nothing else. Moving older objects to Glacier Instant Retrieval cuts that line by about 83% while staying queryable (at $0.03 per GB read back).
-  - Lakehouse's large objects make transitions cheap: about 16,000 objects per stored TB, so about $0.31 per TB transitioned.
+- **Retention is a single S3 lifecycle rule.** Lengthening retention adds S3 bytes and nothing else (on Standard, the default). Optionally, an example ladder moves older objects to a cheaper class; Glacier Instant Retrieval stores at $0.004 against $0.023 per GB-month (83% less) and stays queryable, but at $0.03 per GB read back, so that saving holds only while the cold data is rarely read ([break-even](cost-estimates.md#break-even-when-a-cold-class-stops-paying)).
+  - Transition fees follow the object count. At the assumed 64 MB average object that is about 15,600 objects per stored TB, about $0.31 per TB moved into Glacier IR; at 12 MiB (the one measured synthetic object) about 79,500 objects, $1.59 per TB.
   - Loki's 1.5 MB chunks need about 670,000 objects per TB, about $13 per TB.
-  - Objects must stay 90 days in Glacier IR (30 in Standard-IA) before compaction rewrites them, or AWS bills the remainder.
+  - Objects must stay 90 days in Glacier IR (30 in Standard-IA) before compaction or a delete rewrites them, or AWS bills the remainder. Lakehouse freezes tiered objects against compaction for that reason.
 
-## 6. Long retention: let the data get cheaper as it ages
+## 6. Long retention: Standard by default, cold-class ladders as an option
 
-Lakehouse objects are large, immutable and compacted, so S3 lifecycle rules can move them to cheaper storage classes as they age while they stay queryable:
+Lakehouse objects are large, immutable and compacted, so you *can* add S3 lifecycle rules that move older ones to cheaper storage classes while they stay queryable. Lakehouse does not do this for you: the default is S3 Standard and the rule lists are empty. An example ladder would be:
 - S3 Standard for the first 30 days.
 - Standard-IA until day 90.
 - Glacier Instant Retrieval after that.
 
-Lakehouse mirrors those rules (globally or per tenant) so its cost stats and deletes know where each object lives, and deletes on cold classes never trigger retrieval fees. The full calculator for 1–500 TB/day and 30 days to 7 years, plus an archive policy with Deep Archive, is in [Cost Estimates](cost-estimates.md#long-term-retention-and-s3-storage-class-tiering) (`python3 scripts/cost/cost_tiering.py`).
+If you configure rules, Lakehouse mirrors them (globally or per tenant) so its cost stats and deletes know where each object lives, and deletes on cold classes are tombstones that never trigger retrieval fees. The full calculator for 1–500 TB/day and 30 days to 7 years, with the read-retrieval, early-deletion and request terms put back by hand, is in [Cost Estimates](cost-estimates.md#long-term-retention-and-s3-storage-class-tiering) (`python3 scripts/cost/cost_tiering.py` prints the storage and request part only).
 
-Storage + compute + cross-AZ network + requests. Lakehouse uses the all-queryable policy (Standard 30d → Standard-IA → Glacier IR at 90d); Loki + Tempo is shown on S3 Standard and with the same lifecycle; VL/VT HA keeps two EBS copies (no tiering on EBS). Compute for Loki + Tempo and VL/VT is taken from scripts/cost/cost_model.py at 10 TB/day.
+All columns: storage + compute + cross-AZ network + requests, 10 TB/day raw, from `scripts/cost/cost_tiering.py` (banded Standard prices). Loki + Tempo compute and VL/VT compute are taken from `scripts/cost/cost_model.py` at 10 TB/day. The headline 1-year Lakehouse figure in section 4 ($14,504, `cost_model.py`) prices Standard at a flat $0.023; the banded 1-year Standard figure here is $13,973.
 
-| 10 TB/day, retention | Lakehouse + lifecycle | Loki + Tempo, S3 Standard | Loki + Tempo + same lifecycle | VL/VT HA on EBS |
-|---|---:|---:|---:|---:|
-| 30 days | **$3,644** | $23,268 | $23,268 | $7,924 |
-| 90 days | **$4,707** | $26,304 | $25,010 | $16,724 |
-| 1 year | **$6,271** | $39,830 | $27,574 | $57,057 |
-| 3 years | **$10,385** | $75,089 | $34,290 | $164k |
-| 7 years | **$18,615** | $146k | $47,722 | $378k |
+**Standard against Standard (the like-for-like comparison, all assumed or sourced as above):**
+
+| 10 TB/day, retention | Lakehouse, S3 Standard | Loki + Tempo, S3 Standard | VL/VT HA on EBS |
+|---|---:|---:|---:|
+| 30 days | **$3,644** | $23,268 | $7,924 |
+| 90 days | **$5,512** | $26,304 | $16,724 |
+| 1 year | **$13,973** | $39,830 | $57,057 |
+| 3 years | **$35,575** | $75,089 | $164k |
+| 7 years | **$78,779** | $146k | $378k |
+
+**Example ladder (Standard 30 d, Standard-IA to day 90, Glacier IR after), with reads included.** ρ is the fraction of the cold bytes read from S3 per month and is **assumed**; the right-hand pair puts Loki + Tempo on the same ladder at the same ρ.
+
+| 10 TB/day, retention | Lakehouse ρ = 0 | Lakehouse ρ = 0.01 | Lakehouse ρ = 0.1 | Loki + Tempo ρ = 0.01 | Loki + Tempo ρ = 0.1 |
+|---|---:|---:|---:|---:|---:|
+| 30 days (no tiering) | $3,644 | $3,644 | $3,644 | $23,268 | $23,268 |
+| 90 days | $4,707 | $4,716 | $4,793 | $25,024 | $25,149 |
+| 1 year | $6,271 | $6,400 | $7,566 | $27,785 | $29,688 |
+| 3 years | $10,385 | $10,836 | $14,893 | $35,026 | $41,648 |
+| 7 years | $18,615 | $19,708 | $29,547 | $49,506 | $65,566 |
 
 At 10 TB/day:
-- **3 years:** Lakehouse with lifecycle costs about **$10.4k a month in total**, against $75k for Loki + Tempo on S3 Standard and $164k for VL/VT HA on EBS.
-- **1 year:** the policy cuts Lakehouse's storage line by about 68% (from $11.3k to $3.6k a month).
-- **7 years:** it cuts it by about 79% (from $76k to $16k).
-
-Reading Standard-IA or Glacier IR data costs $0.01 or $0.03 per GB read, on top of the figures above.
+- **3 years on Standard:** Lakehouse costs about **$35.6k a month in total**, against $75.1k for Loki + Tempo on S3 Standard and $164k for VL/VT HA on EBS.
+- **3 years on the example ladder at ρ = 0.1:** $14.9k against $41.6k for Loki + Tempo on the same ladder. At ρ = 0 the ladder is $10.4k.
+- **The ladder is not free money:** against Lakehouse on Standard it saves 46% of the all-in total at 1 year and 58% at 3 years when 10% of the cold bytes are read each month, and it loses once about 55–60% of them are (at ρ = 1, 1-year cost is $19,224 against $13,973 on Standard).
+- **Ladder rules to respect:** keep retention at 180 days or more (or the Glacier IR hop pays early deletion), and do not rewrite objects after they move.
 
 ## 7. What these numbers do not say
 
@@ -226,4 +240,6 @@ Reading Standard-IA or Glacier IR data costs $0.01 or $0.03 per GB read, on top 
   - Extra EBS IOPS or throughput.
   - Compaction request costs.
   - Egress to the internet.
+  - For cold-class ladders: restore charges for Glacier Flexible Retrieval and Deep Archive, rewrite (delete or compaction) retrieval, and any read fraction other than the ρ stated next to a figure.
+- **Object sizes are assumed.** Request and transition counts use a 64 MB average object; the flush seal is by estimated rows, real objects are smaller today, and no production object-size distribution has been measured here.
 - **A single-replica ClickHouse on S3 is cheaper** than Lakehouse at long retention, because it compresses better, but it has no compute HA. See [Cost Estimates](cost-estimates.md).

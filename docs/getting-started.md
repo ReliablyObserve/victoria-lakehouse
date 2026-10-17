@@ -40,8 +40,8 @@ graph TD
     I1["JSON / Loki / ES Bulk<br/>OTLP / Syslog / Fluentd<br/>Logstash / Datadog / Journald"] -->|"11+ formats"| W["insert buffer<br/>(durable, no WAL)"]
     W -->|periodic flush| P[Parquet + ZSTD]
     P -->|PutObject| S3[(S3 Standard)]
-    S3 -->|lifecycle| IA[S3 Infrequent Access]
-    IA -->|lifecycle| GL[Glacier Deep Archive]
+    S3 -.->|"optional rule you add"| IA[S3 Infrequent Access]
+    IA -.->|"optional rule you add"| GL[Glacier Deep Archive]
     end
 
     subgraph "Query Path"
