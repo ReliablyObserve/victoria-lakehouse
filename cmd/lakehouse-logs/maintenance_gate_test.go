@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -78,6 +79,7 @@ func podConfig(t *testing.T, role config.Role, endpoint string) *config.Config {
 	cfg.Stats.SnapshotInterval = 50 * time.Millisecond
 	cfg.Stats.PushInterval = time.Hour
 	cfg.Pmeta.Enabled = true
+	cfg.Tenant.AliasSyncInterval = 50 * time.Millisecond
 	return cfg
 }
 
@@ -130,7 +132,7 @@ func seedFlushes(t *testing.T, store *parquets3.Storage, cfg *config.Config, fil
 }
 
 // queryAll runs a query over every row of the seeded window on the pod.
-func queryAll(t *testing.T, store *parquets3.Storage) {
+func queryAll(t *testing.T, store *parquets3.Storage) int {
 	t.Helper()
 	q, err := logstorage.ParseQuery("*")
 	if err != nil {
@@ -146,9 +148,7 @@ func queryAll(t *testing.T, store *parquets3.Storage) {
 	}); err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if rows == 0 {
-		t.Fatal("the query returned no rows: the check on the pod's requests proves nothing")
-	}
+	return rows
 }
 
 // bucketRows counts the rows of every Parquet object in the bucket, and the
@@ -202,6 +202,22 @@ func startAllJobs(t *testing.T, cfg *config.Config, store *parquets3.Storage) *s
 	stopRetention := startRetention(cfg, store, policy)
 	j.retention = stopRetention != nil
 	startStatsLoops(cfg, store, registry, resolver, ":9428", j.statsCancel)
+	// The alias registry's periodic sync (conditional PUTs, only for an alias
+	// that was registered on this pod) and the tombstone write retry, as run()
+	// starts them.
+	aliasReg, err := tenant.NewRegistry(resolver, tenant.RegistryConfig{
+		Pool:        store.Pool(),
+		Key:         cfg.AutoPrefix() + "_meta/tenant-aliases.json",
+		Range:       tenant.AutoRange{Min: cfg.Tenant.AutoRegisterMinID, Max: cfg.Tenant.AutoRegisterMaxID},
+		DataTenants: store.DataTenantAccountIDs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startTenantAliasPersist(cfg, aliasReg, j.statsCancel)
+	if rewrite == nil {
+		startTombstoneWriteRetry(cfg, tombstones, j.statsCancel)
+	}
 
 	var once sync.Once
 	j.stop = func() {
@@ -279,30 +295,42 @@ func TestSelectRole_WritesNothingToTheBucket(t *testing.T) {
 
 	// The pod under test has its own endpoint onto the bucket, so the seeding
 	// pod's flusher ticks (an insert pod, which does write) are not counted.
+	// Two starts of the same pod (a restart), each with the start-up warm-ups
+	// of runStartup, the jobs of run(), a query and a close; every request of
+	// both is counted.
 	run := func(role config.Role) []fakeReq {
 		ep := newFakeS3On(s3)
 		defer ep.Close()
 		cfg := podConfig(t, role, ep.URL())
-		store := newPod(t, cfg)
-		ep.Reset() // the start (manifest refresh, label index), the query and the close are all counted
-		if err := store.RefreshManifest(context.Background()); err != nil {
-			t.Fatalf("refresh: %v", err)
-		}
-		if store.Manifest().TotalFiles() == 0 {
-			t.Fatal("the pod sees no objects to maintain")
-		}
-		j := startAllJobs(t, cfg, store)
-		queryAll(t, store)
-		// The shutdown and warm-up writes of the stats aggregate and the pmeta
-		// cleanup, as run()/runStartup() make them.
-		agg := stats.NewStatsAggregate()
-		agg.Recompute(store.Manifest().AllFiles())
-		saveStatsAggregate(context.Background(), cfg, store, agg)
-		cleanupLegacyPmeta(context.Background(), cfg, store)
-		time.Sleep(800 * time.Millisecond)
-		j.stop()
-		if err := store.Close(); err != nil {
-			t.Fatalf("close: %v", err)
+		ep.Reset()
+		ctx := context.Background()
+		for start := 0; start < 2; start++ {
+			store := newPod(t, cfg)
+			if err := store.RefreshManifest(ctx); err != nil {
+				t.Fatalf("refresh: %v", err)
+			}
+			if store.Manifest().TotalFiles() == 0 {
+				t.Fatal("the pod sees no objects to maintain")
+			}
+			store.WarmLabelIndex(ctx)
+			store.WarmCatalogFromS3(ctx)
+			store.WarmMetadata(ctx)
+			store.WarmCatalog(ctx)
+			j := startAllJobs(t, cfg, store)
+			if got := queryAll(t, store); got == 0 {
+				t.Fatal("the query returned no rows: the check on the pod's requests proves nothing")
+			}
+			// The warm-up writes of the stats aggregate and the pmeta cleanup,
+			// as runStartup() makes them.
+			agg := stats.NewStatsAggregate()
+			agg.Recompute(store.Manifest().AllFiles())
+			saveStatsAggregate(ctx, cfg, store, agg)
+			cleanupLegacyPmeta(ctx, cfg, store)
+			time.Sleep(500 * time.Millisecond)
+			j.stop()
+			if err := store.Close(); err != nil {
+				t.Fatalf("close: %v", err)
+			}
 		}
 		return bucketWrites(ep.Requests())
 	}
@@ -430,11 +458,71 @@ func TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts(t *testing.T) {
 	if w := bucketWrites(pods[0].s3.Requests()); len(w) == 0 {
 		t.Error("the insert pod did not compact; the check above proves nothing")
 	}
+	// The readers see every row once: a refresh, then a query on each select pod.
+	for _, p := range pods[1:] {
+		if err := p.store.RefreshManifest(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := queryAll(t, p.store); got != wantRows {
+			t.Errorf("a query on %s returns %d rows, want %d (every row once)", p.name, got, wantRows)
+		}
+	}
 	rows, objects := bucketRows(t, bucket)
 	if rows != int64(wantRows) {
 		t.Errorf("the bucket holds %d rows in %d objects, want %d rows once (compaction must not duplicate rows)", rows, objects, wantRows)
 	}
 	if objects != 1 {
 		t.Errorf("the bucket holds %d objects after compaction, want 1", objects)
+	}
+}
+
+// A select pod takes the delete requests and never rewrites, so nothing but the
+// tombstone write retry stands between a transient PUT failure and a delete
+// that lives on that pod's disk alone (a lost volume would lose it for the
+// fleet). The retry runs on every node without a rewrite scheduler.
+func TestSelectRole_RetriesAFailedTombstoneWrite(t *testing.T) {
+	s3 := newFakeS3()
+	defer s3.Close()
+	cfg := podConfig(t, config.RoleSelect, s3.URL())
+	store := newPod(t, cfg)
+
+	ts := delete.NewTombstoneStore()
+	ts.EnablePersistence(delete.PersistenceConfig{
+		Dir:    t.TempDir(),
+		Pool:   &s3PoolAdapter{pool: store.Pool()},
+		Prefix: cfg.AutoPrefix(),
+	})
+	s3.FailPuts("tombstone-under-test")
+	ts.Add(delete.Tombstone{ID: "tombstone-under-test", Query: "*", CreatedAt: time.Now(), Mode: "hide"})
+	if ts.PendingS3Writes() == 0 {
+		t.Fatal("the failed PUT left no pending write; the test proves nothing")
+	}
+
+	if rewrite := startDeleteRewrite(cfg, store, nil, ts, newStorageClassDetector(cfg)); rewrite != nil {
+		rewrite.Stop()
+		t.Fatal("a select pod started the delete rewrite scheduler")
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	startTombstoneWriteRetry(cfg, ts, stop)
+
+	s3.FailPuts("") // the bucket recovers
+	deadline := time.Now().Add(10 * time.Second)
+	for ts.PendingS3Writes() > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := ts.PendingS3Writes(); n != 0 {
+		t.Fatalf("%d tombstone writes are still pending after the bucket recovered: the select pod does not retry them", n)
+	}
+	found := false
+	s3.mu.Lock()
+	for k := range s3.objs {
+		if strings.Contains(k, "tombstone-under-test") {
+			found = true
+		}
+	}
+	s3.mu.Unlock()
+	if !found {
+		t.Fatal("the tombstone object never reached the bucket")
 	}
 }

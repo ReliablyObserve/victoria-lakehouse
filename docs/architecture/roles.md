@@ -23,7 +23,7 @@ Compaction merges small objects into one, uploads the result and deletes the sou
 
 ## Which jobs are gated
 
-Both binaries; line numbers are in `cmd/lakehouse-logs/main.go` (the traces binary mirrors them in `lakehouse-traces/main.go`).
+Both binaries (`cmd/lakehouse-logs/main.go` and `lakehouse-traces/main.go`).
 
 | Job | Writes | Where | Role gate |
 |---|---|---|---|
@@ -42,9 +42,10 @@ Not gated, because they are driven by one request and are safe from any pod:
 | Write | Why it stays on select |
 |---|---|
 | Tombstone files (`tombstone_persist.go`) | Written when a delete request arrives (upstream's delete API runs on select pods). One object per tombstone id, so two pods never write the same key. |
+| Tombstone write retry (`startTombstoneWriteRetry`) | Runs on every node that has no delete rewrite scheduler, once a minute: a select pod takes the delete requests, so a PUT that S3 rejected must still be retried there, or the delete would live on that pod's disk alone. |
 | Tenant alias registry (`internal/tenant/registry.go`) | Allocated when a request carries a new org id; conditional PUT with `If-Match`, so concurrent pods never overwrite each other. |
 | `POST /lakehouse/api/v1/admin/tenant/migrate` | An explicit, authenticated operator action. |
-| `POST /lakehouse/compaction/recompact`, `/lakehouse/drain` | They need the scheduler; on a select pod they answer 503. |
+| `POST /lakehouse/compaction/recompact`, `/lakehouse/drain` | They need the scheduler; **on a select pod they now answer 503** ("compaction not enabled"), as they do on any pod with compaction off. |
 
 Read-only jobs stay on select: manifest refresh, peer discovery, the caches, stats gossip over HTTP, and loading the stats snapshot and the aggregate sidecar at start.
 
@@ -54,16 +55,19 @@ A test pins the list: `TestMaintenanceInventory_EveryS3WriterIsGated` fails when
 
 - **Several insert pods, several select pods.** Only the insert (or `all`) pods compact, each partition by its HRW owner. Adding or removing select pods changes nothing about what is written, and no select pod issues a PUT or DELETE for maintenance.
 - **S3 requests.** Writers: unchanged. Select pods: the maintenance PUT, COPY and DELETE requests stop; reads are unchanged.
-- **Tombstones created through a select pod.** They are stored in S3 and hide rows on every pod that loads them. A pod loads tombstones when it starts, so the delete rewrite of such a tombstone runs on an insert pod once that pod has loaded it; a periodic reload on writer pods is a follow-up (see the known gaps below).
+- **Deletes taken by a select pod.** The tombstone is written to S3 (and retried until it lands) and hides the rows on every pod that loads it, but a pod loads tombstones only when it starts. Before this change the select pod that took the delete also rewrote the objects, which made the delete visible on every pod through the manifest; now no pod rewrites until a writer pod has loaded the tombstone, and other select pods keep returning the deleted rows until they restart. Single-role `all` deployments are unaffected. This is tracked in [#594](https://github.com/ReliablyObserve/victoria-lakehouse/issues/594).
 
 ## Known gaps
 
 - Several insert pods that see different peers can still compact the same partition (the rule that prevents it is a separate piece of work, tracked in issue 311). This page and the role gate make sure select pods are not among them.
-- Writer pods load tombstones at start only, so a tombstone created on a select pod is rewritten after the next writer restart; until then it hides rows but its objects are not rewritten.
+- Tombstones are loaded at start only, so a delete taken by a select pod reaches the other pods, and the rewrite, only after a restart ([#594](https://github.com/ReliablyObserve/victoria-lakehouse/issues/594)).
+- A select pod keeps the pmeta entries of files that other pods compacted or expired until it restarts (RAM only, no effect on answers; [#595](https://github.com/ReliablyObserve/victoria-lakehouse/issues/595)).
 
 ## Tests
 
 `cmd/lakehouse-logs/maintenance_gate_test.go` and `lakehouse-traces/maintenance_gate_test.go`:
 - a table over the roles and the jobs (a select pod starts none, `insert` and `all` start all of them);
 - the real main-package start-up functions for `role=select` with every job enabled: no scheduler, sweep or rewriter, and not one PUT, COPY or DELETE reaches the bucket (the same scenario on an insert pod does write, so the silence is the gate);
-- one insert pod and two select pods over one bucket with compaction enabled on all three: only the insert pod writes, and the bucket holds every row exactly once (before the gate it held every row three times).
+- two starts of a select pod (a restart), with the start-up warm-ups, a query and a close: every request is counted and none is a PUT, COPY or DELETE;
+- one insert pod and two select pods over one bucket with compaction enabled on all three: only the insert pod writes, the bucket holds every row exactly once (before the gate it held every row three times), and a query on each select pod returns every row once;
+- a select pod whose tombstone PUT fails sees it in the bucket after the bucket recovers.

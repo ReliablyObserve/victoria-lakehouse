@@ -445,6 +445,12 @@ func run(cfg *config.Config, addr string) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
+	// Without a rewrite scheduler (a select pod, or deletes disabled) nothing
+	// else retries a tombstone write S3 rejected.
+	if rewriteSched == nil {
+		startTombstoneWriteRetry(cfg, tombstoneStore, stopCh)
+	}
+
 	if cfg.Stats.Enabled {
 		startStatsLoops(cfg, store, registry, resolver, addr, stopCh)
 	}
@@ -604,6 +610,38 @@ func startRetention(cfg *config.Config, store *parquets3.Storage, policy *tenant
 	retentionCtx, retentionCancel := context.WithCancel(context.Background())
 	go retentionMgr.Start(retentionCtx)
 	return retentionCancel
+}
+
+// startTombstoneWriteRetry drains, on a timer, the tombstone durability writes
+// S3 rejected, on a node that runs no delete rewrite scheduler (whose pass does
+// it otherwise). A select pod takes the delete requests but never rewrites, so
+// without this a transient PUT failure would leave the tombstone on that pod's
+// disk alone until shutdown, and a lost volume would lose the delete for the
+// whole fleet. It only writes what a request on this pod owes.
+func startTombstoneWriteRetry(cfg *config.Config, ts *delete.TombstoneStore, stopCh <-chan struct{}) {
+	// Once a minute, like the restore retry; the verify interval (6 h by default)
+	// when it is shorter.
+	every := time.Minute
+	if v := cfg.Delete.VerifyInterval; v > 0 && v < every {
+		every = v
+	}
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				ctx, cancel := context.WithTimeout(context.Background(), every)
+				if ts.S3RestorePending() {
+					ts.RetryS3Restore(ctx)
+				}
+				ts.FlushPending(ctx)
+				cancel()
+			case <-stopCh:
+				return
+			}
+		}
+	}()
 }
 
 // runShutdown drains the lakehouse-traces pod in the order required for

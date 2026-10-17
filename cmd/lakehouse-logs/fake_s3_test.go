@@ -39,6 +39,7 @@ type fakeS3 struct {
 	srv      *httptest.Server
 	latency  atomic.Int64 // ns
 	holdDel  atomic.Int64 // ns a DELETE of a .parquet object waits before it is applied
+	failPut  atomic.Value // string: a PUT of a key containing it answers 500 while it is set
 	inflight atomic.Int64
 	peak     atomic.Int64
 	upSeq    atomic.Int64
@@ -71,6 +72,10 @@ func (m *fakeS3) Age(d time.Duration) {
 	}
 	m.mu.Unlock()
 }
+
+// FailPuts makes every PUT of a key that contains substr answer 500 until it is
+// called again with an empty string.
+func (m *fakeS3) FailPuts(substr string) { m.failPut.Store(substr) }
 
 // HoldDeletes makes a DELETE of a .parquet object wait d before it is applied.
 func (m *fakeS3) HoldDeletes(d time.Duration) { m.holdDel.Store(int64(d)) }
@@ -220,6 +225,10 @@ func (m *fakeS3) serve(w http.ResponseWriter, r *http.Request, bucket, key strin
 		return 204, 0
 	case r.Method == http.MethodPut:
 		rec.Op = "PUT"
+		if s, _ := m.failPut.Load().(string); s != "" && strings.Contains(key, s) {
+			w.WriteHeader(500)
+			return 500, 0
+		}
 		if r.Header.Get("x-amz-copy-source") != "" {
 			rec.Op = "COPY"
 			src, _ := url.PathUnescape(strings.TrimPrefix(r.Header.Get("x-amz-copy-source"), "/"))
