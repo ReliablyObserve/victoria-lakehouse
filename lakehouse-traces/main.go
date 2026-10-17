@@ -30,6 +30,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/retention"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/selfaddr"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/startup"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/stats"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
@@ -330,7 +331,7 @@ func run(cfg *config.Config, addr string) {
 	detector := newStorageClassDetector(cfg)
 
 	var tenantPolicyHolder *tenant.PolicyRegistry
-	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder, tombstoneStore, detector)
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, pusher, addr, &tenantPolicyHolder, tombstoneStore, detector, selfaddr.SharedSystemEnv())
 	if stopCompaction != nil {
 		defer stopCompaction()
 	}
@@ -879,37 +880,31 @@ func maintenanceAllowed(cfg *config.Config, job string) bool {
 // that share of the partitions (a third with two selects and one insert) would
 // never be compacted. Without a writer list it falls back to the peer ring, or to
 // this pod alone. Extracted from setupCompaction so the ring can be tested.
-func newCompactionOwnership(addr string, peerCache *peercache.PeerCache, writers func() []string) *compaction.OwnershipResolver {
-	withSelf := func(members []string) []string {
-		for _, m := range members {
-			if m == addr {
-				return members
-			}
-		}
-		out := make([]string, 0, len(members)+1)
-		out = append(out, members...)
-		return append(out, addr)
-	}
-	// Single-pod / pre-discovery fallback: peercache.Members() returns an empty
-	// slice when discovery hasn't populated the ring yet (or when the pod runs
-	// alone with no peers configured). Including addr guarantees the single-pod
-	// case trivially owns 100% of partitions while still letting the peercache add
-	// real peers as they come online.
+//
+// The ring is the list exactly as discovery returned it. addr is the listen
+// address (":10428"), discovery lists the pods by IP or hostname, and the resolver
+// finds the member that is this pod with env (internal/selfaddr). The listen
+// address is never added to a discovered list: a pod that is not found in it
+// owns nothing, where adding it made the pod an extra member that left a share
+// of the partitions ownerless and another share owned by every writer.
+func newCompactionOwnership(addr string, peerCache *peercache.PeerCache, writers func() []string, env selfaddr.Env) *compaction.OwnershipResolver {
+	// Single-pod fallback: no writer list and nothing in the peer ring (no
+	// discovery configured, or none resolved yet) means this pod is alone and
+	// owns every partition.
 	ownership := compaction.NewOwnershipResolver(addr, func() []string {
 		if writers != nil {
 			if w := writers(); len(w) > 0 {
-				return withSelf(w)
+				return w
 			}
 		}
-		if peerCache == nil {
-			return []string{addr}
+		if peerCache != nil {
+			if members := peerCache.Members(); len(members) > 0 {
+				return members
+			}
 		}
-		members := peerCache.Members()
-		if len(members) == 0 {
-			return []string{addr}
-		}
-		return withSelf(members)
+		return []string{addr}
 	})
+	ownership.Env = env
 	if peerCache != nil {
 		ownership.SameAZPeers = func() []string {
 			same := peerCache.SameAZMembers()
@@ -950,6 +945,7 @@ func setupCompaction(
 	tenantPolicyHolder **tenant.PolicyRegistry,
 	tombstoneStore *delete.TombstoneStore,
 	detector *delete.StorageClassDetector,
+	selfEnv selfaddr.Env,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
 	if !cfg.Compaction.Enabled || !maintenanceAllowed(cfg, "compaction and the orphan sweep") {
 		return nil, nil, nil
@@ -963,7 +959,7 @@ func setupCompaction(
 	policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
 
 	peerCache := store.PeerCache()
-	ownership := newCompactionOwnership(addr, peerCache, store.WriterPeers)
+	ownership := newCompactionOwnership(addr, peerCache, store.WriterPeers, selfEnv)
 	if cfg.Discovery.PeerHeadlessService != "" && cfg.Select.InsertHeadlessService == "" {
 		logger.Warnf("compaction ownership hashes over the whole peer ring because select.insert_headless_service is not set; " +
 			"select pods in that ring own partitions that nothing compacts. Set it to the insert pods' headless service (the chart does)")

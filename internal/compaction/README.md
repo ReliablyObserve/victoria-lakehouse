@@ -129,7 +129,7 @@ func (r *OwnershipResolver) TertiaryOwner(partition string) string
 
 // Observability:
 func (r *OwnershipResolver) IsStabilizing() bool
-func (r *OwnershipResolver) SelfInPeersGauge() int64
+func (r *OwnershipResolver) SelfInPeersGauge() int64 // lakehouse_ring_self_in_peers{ring="compaction"}
 ```
 
 `OwnsPartition` returns `false` while the ring is stabilizing (peer set
@@ -242,22 +242,21 @@ scan), `fault_matrix_test.go`, `concurrency_test.go`, and `wa_sim_test.go` (env-
 failure). `OwnsPartition` returns `false` unconditionally — no pod
 claims anything. The next peer-cache refresh restores the list.
 
-**Diagnostic:** `lakehouse_compaction_ownership_self_in_peers` gauge
+**Diagnostic:** `lakehouse_ring_self_in_peers{ring="compaction"}` gauge
 goes to 0 cluster-wide; `lakehouse_compaction_partitions_owned` sums to
 0 across all pods.
 
 ### 4.2 Self not in peer list
 
-A common operator misconfiguration: pod-A's `Self` string (the value it
-hashes against in HRW) does not match the address pod-B sees in
-discovery. pod-A computes HRW against itself but the result is never
-the "highest weight" peer because pod-A's actual identity (as seen by
-others) doesn't exist in its own peer list.
+A pod listens on `:9428` while discovery lists it by IP or hostname. The
+resolver finds the member that is this pod (`internal/selfaddr`: port plus
+IP, hostname, dashed-IP name or DNS). A pod that cannot be found, or matches
+several members, owns nothing and never adds its listen address to the ring.
 
-**Diagnostic:** `lakehouse_compaction_ownership_self_in_peers` gauge
-reads 0 *for this specific pod* while other pods read 1. The
-`compaction_self_in_peers` startup check logs a `WARN` at boot if
-detected. See spec §8.1 R1.
+**Diagnostic:** `lakehouse_ring_self_resolved{ring="compaction"}` (and
+`lakehouse_ring_self_in_peers`) read 0 *for this specific pod* while other pods
+read 1, and the pod logs `compaction ring: this pod ... is not listed` or
+`... is ambiguous` once per change. Alert `LakehouseRingSelfUnresolved`.
 
 ### 4.3 Ring flap / stabilization
 

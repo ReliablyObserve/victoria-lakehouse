@@ -11,9 +11,11 @@ package compaction
 
 import (
 	"sort"
-	"sync/atomic"
+	"sync"
 
 	"github.com/cespare/xxhash/v2"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/selfaddr"
 )
 
 // OwnershipResolver decides which pod owns which compaction partition
@@ -22,13 +24,18 @@ import (
 // the Peers / Stabilizing / IsDraining callbacks (which the embedder
 // must make concurrency-safe — peercache already is).
 type OwnershipResolver struct {
-	// Self is this pod's address as it appears in the peer list
-	// (typically cfg.ListenAddr verbatim, e.g. ":9428" or
-	// "10.0.1.42:9428"). If Self does not match what peers see in
-	// discovery, HRW silently picks the "wrong self" and this pod
-	// never owns anything — the SelfInPeers gauge is meant to surface
-	// that misconfiguration loudly. See spec §2.1.2 and §8.1 R1.
+	// Self is this pod's listen address (":9428", "0.0.0.0:9428",
+	// "10.0.1.42:9428"). Discovery lists the pods by IP or by hostname, so Self
+	// is not looked up in the peer list as it is: internal/selfaddr finds the
+	// member that is this pod (by IP, hostname, dashed-IP name or DNS). A pod
+	// that cannot be found owns nothing, and the lakehouse_ring_self_resolved
+	// gauge says so.
 	Self string
+
+	// Env is what selfaddr knows about this pod (its addresses and hostnames).
+	// The zero value means the process's own (selfaddr.SharedSystemEnv); tests
+	// inject theirs.
+	Env selfaddr.Env
 
 	// Peers returns the current full peer set. Called on every
 	// ownership decision so ring updates are picked up immediately;
@@ -59,11 +66,10 @@ type OwnershipResolver struct {
 	// deterministic, collision-engineerable hashes. Default xxhash.
 	hashFn func(string) uint64
 
-	// SelfInPeers is a 0/1 gauge updated on every ownership decision.
-	// When this pod is missing from its own peer set the value drops
-	// to 0 — operators page on `lakehouse_compaction_ownership_self_in_peers
-	// == 0 for 5m`. See spec §6.1.
-	selfInPeers atomic.Int64
+	// tracker resolves this pod in the peer list, once per list, and publishes
+	// lakehouse_ring_self_resolved / lakehouse_ring_self_in_peers.
+	trackerOnce sync.Once
+	tracker     *selfaddr.Tracker
 }
 
 // NewOwnershipResolver constructs a resolver with the default xxhash
@@ -99,10 +105,26 @@ func (r *OwnershipResolver) hashFor() func(string) uint64 {
 	return r.hashFn
 }
 
-// SelfInPeersGauge returns the most recent self-in-peers result as a
-// 0/1 int. Wiring helper for the metrics layer; callers can wrap this
-// in a metrics.NewGaugeFunc.
-func (r *OwnershipResolver) SelfInPeersGauge() int64 { return r.selfInPeers.Load() }
+// selfTracker returns the resolver's selfaddr.Tracker, built on first use from
+// Self and Env.
+func (r *OwnershipResolver) selfTracker() *selfaddr.Tracker {
+	r.trackerOnce.Do(func() {
+		env := r.Env
+		if env.IPs == nil && env.Hostnames == nil && env.LookupHost == nil {
+			env = selfaddr.SharedSystemEnv()
+		}
+		r.tracker = selfaddr.NewTracker("compaction", r.Self, env)
+	})
+	return r.tracker
+}
+
+// SelfInPeersGauge is lakehouse_ring_self_in_peers{ring="compaction"} as 0/1: 1
+// only when this pod was identified as exactly one member of the peer list and
+// that member is in the set ownership hashes over.
+func (r *OwnershipResolver) SelfInPeersGauge() int64 { return r.selfTracker().InPeers() }
+
+// SelfResolvedGauge is lakehouse_ring_self_resolved{ring="compaction"} as 0/1.
+func (r *OwnershipResolver) SelfResolvedGauge() int64 { return r.selfTracker().Resolved() }
 
 // hrwWeight combines peer and partition with a single xxh64 call. We
 // concatenate with a unit-separator byte (0x1F) that cannot appear in
@@ -143,11 +165,50 @@ type peerWeight struct {
 // Returns nil when no live peer is available — caller treats that as
 // "nobody can own anything right now" and skips work (edge case 10).
 func (r *OwnershipResolver) peersForOwnership() []string {
-	rawAll := []string{}
-	if r.Peers != nil {
-		rawAll = r.Peers()
-	}
+	return r.effectivePeers(r.rawPeers())
+}
 
+// rawPeers is the peer list exactly as discovery returned it.
+func (r *OwnershipResolver) rawPeers() []string {
+	if r.Peers == nil {
+		return nil
+	}
+	return r.Peers()
+}
+
+// view is one consistent look at the ring: the set ownership hashes over, this
+// pod's member in it, and whether this pod may own anything. The pod is found
+// in the raw list (a draining pod is still itself), and may own only if that
+// member is in the set. A pod that cannot be identified owns nothing: it never
+// invents a member for itself, which is what made partitions ownerless or
+// owned by several writers when the listen address was added to the list.
+func (r *OwnershipResolver) view() (peers []string, self string, owns bool) {
+	raw := r.rawPeers()
+	tr := r.selfTracker()
+	res := tr.Resolve(raw)
+	peers = r.effectivePeers(raw)
+	if res.OK() {
+		self = res.Self
+		for _, p := range peers {
+			if p == self {
+				owns = true
+				break
+			}
+		}
+	}
+	tr.SetInPeers(owns)
+	return peers, self, owns
+}
+
+// SelfMember is this pod's entry in the peer list, and false when the pod is
+// not in the set ownership hashes over (not identified, ambiguous, draining).
+func (r *OwnershipResolver) SelfMember() (string, bool) {
+	_, self, owns := r.view()
+	return self, owns
+}
+
+// effectivePeers applies the draining and AZ filters to raw.
+func (r *OwnershipResolver) effectivePeers(rawAll []string) []string {
 	all := r.filterDraining(rawAll)
 
 	if r.SameAZPeers != nil {
@@ -236,17 +297,15 @@ func (r *OwnershipResolver) OwnsPartition(partition string) bool {
 		return false
 	}
 
-	peers := r.peersForOwnership()
-	r.recordSelfInPeers(peers)
-
-	if len(peers) == 0 {
+	peers, self, owns := r.view()
+	if len(peers) == 0 || !owns {
 		return false
 	}
 	owners := r.rankFromPeers(partition, peers)
 	if len(owners) == 0 {
 		return false
 	}
-	return owners[0] == r.Self
+	return owners[0] == self
 }
 
 // OwnerOf returns the primary owner peer for the given partition, or
@@ -323,17 +382,4 @@ func (r *OwnershipResolver) rankFromPeers(partition string, peers []string) []st
 		out[i] = rw.peer
 	}
 	return out
-}
-
-// recordSelfInPeers ticks the SelfInPeers gauge to 1 when Self appears
-// in the (already filtered) peer list, 0 otherwise. Called from every
-// OwnsPartition decision so the gauge tracks the current ground truth.
-func (r *OwnershipResolver) recordSelfInPeers(peers []string) {
-	for _, p := range peers {
-		if p == r.Self {
-			r.selfInPeers.Store(1)
-			return
-		}
-	}
-	r.selfInPeers.Store(0)
 }

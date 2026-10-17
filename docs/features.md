@@ -19,9 +19,9 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
 | Ops | 14 | 0 | 2 | 0 | 16 |
-| Deploy | 6 | 0 | 0 | 0 | 6 |
+| Deploy | 7 | 0 | 0 | 0 | 7 |
 | Security | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **152** | **1** | **3** | **8** | **164** |
+| **Total** | **153** | **1** | **3** | **8** | **165** |
 
 ## Coverage gaps
 
@@ -1819,7 +1819,7 @@ The matrix is the operational counterpart of the registry: it records what has a
 - Docs: `tests/verification/matrix.md`, `docs/parity-and-gaps.md`
 - Changelog: `0.37.1`
 
-## Deploy (6)
+## Deploy (7)
 
 ### ✅ AZ detection and AZ-aware routing
 
@@ -1866,6 +1866,17 @@ The chart encodes the operational rules that keep a stateful cold tier safe unde
 - Docs: `docs/kubernetes-deployment.md`
 - Changelog: `0.10.0`, `0.37.1`
 - Note: CI runs the linked chart template and exact image-reference tests, strict `helm lint`, and the Helm drift check (`scripts/ci/helmdrift`).
+
+### ✅ A pod finds itself in the discovered ring
+
+`lh.feature.deploy.ring_self_resolution` · status: shipped · surfaces: flag, storage
+
+**Pods find themselves in the ring**: compaction ownership and the peer cache recognise a pod's own entry in the discovered member list by IP, StatefulSet hostname or dashed-IP name, so every partition has exactly one compaction owner whether the headless service lists IPs or hostnames.
+
+A pod listens on :9428 and service discovery lists it as an IP or a hostname, which never compared equal, so the pod added its listen address to the ring as an extra member: with several writers, 66 to 88% of the partitions had no scheduler owner and 12 to 32% had one in every writer. internal/selfaddr matches the list against the pod's addresses (POD_IP, POD_IPS, interfaces), hostname (POD_NAME) and a cached DNS lookup; a pod it cannot identify owns nothing and never invents a member. Gauges lakehouse_ring_self_resolved and lakehouse_ring_self_in_peers and the alert LakehouseRingSelfUnresolved say when a pod is not found. Known gaps: the orphan sweep's Tier A secondary can still merge a partition the primary is merging (issue 602); other places compare the listen address by string (issue 603).
+
+- Verification: rows: `lh.flag.ring_self_resolution.logs` (pass, executes), `lh.flag.ring_self_resolution.traces` (pass, executes), `lh.flag.ring_self_resolved_gauge` (pass, executes), `lh.flag.ring_self_unresolved_alert` (pass, executes) · tests: `cmd/lakehouse-logs/ring_self_test.go#TestOwnership_EveryForm_ExactlyOneOwner`, `cmd/lakehouse-logs/ring_self_test.go#TestNewCompactionOwnership_NeverAppendsListenAddr`, `cmd/lakehouse-logs/ring_self_test.go#TestNewCompactionOwnership_SinglePodNoDiscovery_OwnsAll`, `cmd/lakehouse-logs/ring_self_test.go#TestOwnership_RollingRestart_NewIP_ReResolves`, `cmd/lakehouse-logs/ring_multiinstance_test.go#TestMultiInstance_TwoWritersTwoSelects_EveryPartitionCompactedByExactlyOneWriter`, `lakehouse-traces/ring_self_test.go#TestOwnership_EveryForm_ExactlyOneOwner`, `lakehouse-traces/ring_self_test.go#TestNewCompactionOwnership_NeverAppendsListenAddr`, `lakehouse-traces/ring_self_test.go#TestNewCompactionOwnership_SinglePodNoDiscovery_OwnsAll`, `lakehouse-traces/ring_self_test.go#TestOwnership_RollingRestart_NewIP_ReResolves`, `lakehouse-traces/ring_multiinstance_test.go#TestMultiInstance_TwoWritersTwoSelects_EveryPartitionCompactedByExactlyOneWriter`, `internal/selfaddr/selfaddr_test.go#TestSelfaddr_Forms`, `internal/selfaddr/fuzz_test.go#FuzzSelfaddrResolve`, `internal/compaction/ownership_self_test.go#TestOwnership_SelfUnresolved_OwnsNothing_GaugeZero`, `internal/peercache/ring_self_test.go#TestPeercacheRing_IsSelf_Hostname`, `internal/metrics/ring_self_test.go#TestAlerts_RingSelfUnresolved`, `charts/victoria-lakehouse/test_templates.sh`
+- Docs: `docs/architecture/roles.md`, `docs/kubernetes-deployment.md`, `docs/observability.md`
 
 ### ✅ Insert and select role separation
 

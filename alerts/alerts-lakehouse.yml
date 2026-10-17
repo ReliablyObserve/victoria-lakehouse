@@ -141,6 +141,21 @@ groups:
           summary: "High peer cache error rate"
           description: "Peer cache error rate is {{ $value | humanizePercentage }}. Check network connectivity between pods."
 
+      - alert: LakehouseRingSelfUnresolved
+        expr: lakehouse_ring_self_resolved == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A Lakehouse pod does not recognise itself in the {{ $labels.ring }} ring"
+          description: >-
+            Pod {{ $labels.instance }} found no single entry for itself in the discovered {{ $labels.ring }} ring,
+            so it owns nothing in it: for ring="compaction" it compacts no partition and sweeps no orphans (its
+            partitions are left to the other writers), for ring="peercache" it fetches its own cache keys from its
+            peers. The log line "ring: this pod ... is not listed" or "is ambiguous" says which. Set POD_IP / POD_IPS
+            (the chart does) or check that the headless service (discovery.peer_headless_service,
+            select.insert_headless_service) lists the pod by its IP or its StatefulSet hostname on the pod's listen port.
+
       - alert: LakehouseTenantScopeViolation
         expr: sum by (site) (increase(lakehouse_tenant_scope_violations_total[5m])) > 0
         for: 0m

@@ -151,3 +151,49 @@
     on every node without a rewrite scheduler. Known gaps: a delete taken by a select pod reaches
     the other pods only after a restart (issue 594); pmeta entries of files other pods removed stay
     in a select pod's RAM (issue 595).
+
+
+- id: lh.feature.deploy.ring_self_resolution
+  title: A pod finds itself in the discovered ring
+  status: shipped
+  area: deploy
+  surfaces: [flag, storage]
+  rows:
+    - lh.flag.ring_self_resolution.logs
+    - lh.flag.ring_self_resolution.traces
+    - lh.flag.ring_self_resolved_gauge
+    - lh.flag.ring_self_unresolved_alert
+  tests:
+    - cmd/lakehouse-logs/ring_self_test.go#TestOwnership_EveryForm_ExactlyOneOwner
+    - cmd/lakehouse-logs/ring_self_test.go#TestNewCompactionOwnership_NeverAppendsListenAddr
+    - cmd/lakehouse-logs/ring_self_test.go#TestNewCompactionOwnership_SinglePodNoDiscovery_OwnsAll
+    - cmd/lakehouse-logs/ring_self_test.go#TestOwnership_RollingRestart_NewIP_ReResolves
+    - cmd/lakehouse-logs/ring_multiinstance_test.go#TestMultiInstance_TwoWritersTwoSelects_EveryPartitionCompactedByExactlyOneWriter
+    - lakehouse-traces/ring_self_test.go#TestOwnership_EveryForm_ExactlyOneOwner
+    - lakehouse-traces/ring_self_test.go#TestNewCompactionOwnership_NeverAppendsListenAddr
+    - lakehouse-traces/ring_self_test.go#TestNewCompactionOwnership_SinglePodNoDiscovery_OwnsAll
+    - lakehouse-traces/ring_self_test.go#TestOwnership_RollingRestart_NewIP_ReResolves
+    - lakehouse-traces/ring_multiinstance_test.go#TestMultiInstance_TwoWritersTwoSelects_EveryPartitionCompactedByExactlyOneWriter
+    - internal/selfaddr/selfaddr_test.go#TestSelfaddr_Forms
+    - internal/selfaddr/fuzz_test.go#FuzzSelfaddrResolve
+    - internal/compaction/ownership_self_test.go#TestOwnership_SelfUnresolved_OwnsNothing_GaugeZero
+    - internal/peercache/ring_self_test.go#TestPeercacheRing_IsSelf_Hostname
+    - internal/metrics/ring_self_test.go#TestAlerts_RingSelfUnresolved
+    - charts/victoria-lakehouse/test_templates.sh
+  docs:
+    - docs/architecture/roles.md
+    - docs/kubernetes-deployment.md
+    - docs/observability.md
+  highlight: >-
+    **Pods find themselves in the ring**: compaction ownership and the peer cache recognise a pod's own entry in the discovered member list by IP, StatefulSet hostname or dashed-IP name, so every partition has exactly one compaction owner whether the headless service lists IPs or hostnames.
+  description: >-
+    A pod listens on :9428 and service discovery lists it as an IP or a hostname, which never
+    compared equal, so the pod added its listen address to the ring as an extra member: with
+    several writers, 66 to 88% of the partitions had no scheduler owner and 12 to 32% had one
+    in every writer. internal/selfaddr matches the list against the pod's addresses (POD_IP,
+    POD_IPS, interfaces), hostname (POD_NAME) and a cached DNS lookup; a pod it cannot identify
+    owns nothing and never invents a member. Gauges lakehouse_ring_self_resolved and
+    lakehouse_ring_self_in_peers and the alert LakehouseRingSelfUnresolved say when a pod is not
+    found. Known gaps: the orphan sweep's Tier A secondary can still merge a partition the
+    primary is merging (issue 602); other places compare the listen address by string
+    (issue 603).
