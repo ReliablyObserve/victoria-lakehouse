@@ -451,6 +451,9 @@ func TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts(t *testing.T) {
 		if _, n := bucketRows(t, bucket); n == 1 {
 			break
 		}
+		// The flusher commits a segment (writes its marker) a moment after the
+		// object lands, so the last marker can appear after the aging above.
+		bucket.AgePrefix("_segments/", time.Hour)
 		time.Sleep(50 * time.Millisecond)
 	}
 	time.Sleep(1200 * time.Millisecond) // any late publish of another pod would land here
@@ -477,7 +480,15 @@ func TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts(t *testing.T) {
 		t.Errorf("the bucket holds %d rows in %d objects, want %d rows once (compaction must not duplicate rows)", rows, objects, wantRows)
 	}
 	if objects != 1 {
-		t.Errorf("the bucket holds %d objects after compaction, want 1", objects)
+		bucket.mu.Lock()
+		var keys []string
+		for k := range bucket.objs {
+			if strings.HasSuffix(k, ".parquet") {
+				keys = append(keys, k)
+			}
+		}
+		bucket.mu.Unlock()
+		t.Errorf("the bucket holds %d objects after compaction, want 1: %v", objects, keys)
 	}
 }
 

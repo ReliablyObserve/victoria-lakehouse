@@ -73,6 +73,17 @@ func (m *fakeS3) Age(d time.Duration) {
 	m.mu.Unlock()
 }
 
+// AgePrefix makes every object whose key contains substr d older, as listed.
+func (m *fakeS3) AgePrefix(substr string, d time.Duration) {
+	m.mu.Lock()
+	for k := range m.mods {
+		if strings.Contains(k, substr) {
+			m.mods[k] = m.mods[k].Add(-d)
+		}
+	}
+	m.mu.Unlock()
+}
+
 // FailPuts makes every PUT of a key that contains substr answer 500 until it is
 // called again with an empty string.
 func (m *fakeS3) FailPuts(substr string) { m.failPut.Store(substr) }
