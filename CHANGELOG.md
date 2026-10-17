@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.156.4] - 2026-10-17
+
 ### Fixed
 
 - **Shutdown: the compaction stops in the background from the top of the shutdown, and `docs/durability.md` no longer says the chart's preStop hook drained it.** The close of the storage writes the dirty pmeta bundles (#578), but the compaction was stopped by `main`'s deferred call after the close and nothing drained it earlier: the chart's preStop hook posts to `/internal/lifecycle/drain`, which answers 500 "no orchestrator" in both binaries and drains nothing (the compaction drain route is `/lakehouse/drain`). Both binaries now start the compaction drain right after the HTTP server stops and wait for it, at most `shutdown.persist_timeout` counted from its start, just before the close, so it overlaps the snapshot, tombstone and stats steps (worst case, reasoned, with S3 unreachable: the close ends at about 47 s of the 60 s grace instead of 57 s with a wait in series). A bundle write that the bound cuts off is counted and named in the log (`untried=`) instead of being missed by the `failed=` count, and a contribution that arrives while a bundle is being written keeps its partition dirty (a test now pins the generation guard that does this). One default (30 s) for an unset `shutdown.persist_timeout` in `runShutdown` and in the close (the close used 10 s). `docs/durability.md` section 4 gains the shutdown-budget table and records the blind bundle PUT (last writer wins across pods) as a known gap.
