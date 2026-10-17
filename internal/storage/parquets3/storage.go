@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -36,6 +37,11 @@ import (
 
 type Storage struct {
 	cfg       *config.Config
+	// writerPeers is the set of pods that run background maintenance (the
+	// insert pods), resolved from select.insert_headless_service on those pods.
+	// Compaction ownership hashes over it, not over the whole peer ring, so a
+	// select pod that shares the ring never owns (and never compacts) a partition.
+	writerPeers atomic.Pointer[[]string]
 	pool      *s3reader.ClientPool
 	manifest  *manifest.Manifest
 	registry  *schema.Registry
@@ -836,6 +842,22 @@ func (s *Storage) Discovery() *discovery.Discovery {
 	return s.discovery
 }
 
+// WriterPeers returns the insert pods resolved from
+// select.insert_headless_service, or nil when it is not set or not resolved
+// yet. Only pods that run maintenance resolve it.
+func (s *Storage) WriterPeers() []string {
+	if p := s.writerPeers.Load(); p != nil {
+		return append([]string(nil), *p...)
+	}
+	return nil
+}
+
+// SetWriterPeers replaces the resolved insert pods (discovery refresh and tests).
+func (s *Storage) SetWriterPeers(peers []string) {
+	cp := append([]string(nil), peers...)
+	s.writerPeers.Store(&cp)
+}
+
 func (s *Storage) PeerCache() *peercache.PeerCache {
 	return s.peerCache
 }
@@ -1313,6 +1335,16 @@ func (s *Storage) RefreshDiscovery(ctx context.Context) error {
 			if s.bufferBridge != nil && s.cfg.Select.InsertHeadlessService == "" {
 				s.bufferBridge.SetEndpoints(peers)
 			}
+		}
+	}
+	// A pod that runs maintenance resolves the writer pods alone: compaction
+	// ownership hashes over them, so a select pod in the shared peer ring owns
+	// nothing. A failed lookup keeps the previous set.
+	if svc := s.cfg.Select.InsertHeadlessService; svc != "" && s.cfg.RunsMaintenance() {
+		if eps, err := s.discovery.ResolveService(ctx, svc); err != nil {
+			logger.Warnf("discover writer pods (%s): %s", svc, err)
+		} else {
+			s.SetWriterPeers(eps)
 		}
 	}
 	// A select pod of a split deployment reaches the insert pods' unflushed

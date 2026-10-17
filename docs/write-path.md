@@ -167,7 +167,7 @@ Per-tenant overrides (see the Multi-tenancy doc) replace the schedule for a spec
 After initial flush, small files are merged by the background compactor:
 
 - **Level policy** (planned per tenant and partition, the unit compaction merges): once a tenant holds `compaction.min_files_l0` L0 files in a partition older than `compaction.min_age`, they merge into an L1 file; `compaction.min_files_l1` L1 files merge into L2; once the partition is `compaction.daily_rollup_age` old, all the tenant's files in it under 32 MiB merge into one, whatever their level. A single file is never rewritten, so a settled partition costs no work (issue #343)
-- **Ownership**: every pod runs the scheduler and HRW ownership assigns each partition to exactly one pod
+- **Ownership**: every pod that writes data (role `all` or `insert`) runs the scheduler, and HRW ownership over those pods (the insert headless service, `select.insert_headless_service`) assigns each partition to exactly one of them; select pods never compact ([roles](architecture/roles.md))
 - **Safe for S3-IA/Glacier**: objects whose storage class (taken from each bucket listing refresh, no extra request) is not STANDARD / INTELLIGENT_TIERING, partitions older than the first mirrored lifecycle transition minus 48 h, and, for tenants with no lifecycle rule, partitions older than `compaction.size_merge_max_age` (7 days) are not rewritten by size merges (`lakehouse_compaction_frozen_files{reason}`); see [Operations — Lifecycle freeze](operations.md#lifecycle-freeze-tiered-objects-are-not-rewritten)
 - **Manifest-atomic**: old files removed from manifest only after new merged file is registered
 

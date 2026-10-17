@@ -453,11 +453,10 @@ func run(cfg *config.Config, addr string) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	// Without a rewrite scheduler (a select pod, or deletes disabled) nothing
-	// else retries a tombstone write S3 rejected.
-	if rewriteSched == nil {
-		startTombstoneWriteRetry(cfg, tombstoneStore, stopCh)
-	}
+	// Every node retries the tombstone writes S3 rejected: the rewrite scheduler's
+	// pass does it only every verify interval (6 h by default), and a select pod
+	// runs no scheduler at all.
+	startTombstoneWriteRetry(cfg, tombstoneStore, stopCh)
 
 	if cancel := startTenantAliasSync(cfg, store, resolver, addr); cancel != nil {
 		defer cancel()
@@ -704,8 +703,14 @@ func runShutdown(
 		}
 	}
 
-	vlinsert.Stop()
-	internalselect.Stop()
+	// Only the roles that started them stop them: vlinsert.Stop closes channels
+	// vlinsert.Init creates, and panics on a select pod ("close of nil channel").
+	if cfg.InsertEnabled() {
+		vlinsert.Stop()
+	}
+	if cfg.SelectEnabled() {
+		internalselect.Stop()
+	}
 
 	if rewriteSched != nil {
 		rewriteSched.Stop()
@@ -880,6 +885,72 @@ func maintenanceAllowed(cfg *config.Config, job string) bool {
 	return false
 }
 
+// newCompactionOwnership builds the compaction ownership resolver. The ring is
+// the writer pods (writers, resolved from select.insert_headless_service) when
+// they are known: every pod of the shared peer ring would otherwise be a
+// candidate owner, and a select pod that owns a partition never compacts it, so
+// that share of the partitions (a third with two selects and one insert) would
+// never be compacted. Without a writer list it falls back to the peer ring, or to
+// this pod alone. Extracted from setupCompaction so the ring can be tested.
+func newCompactionOwnership(addr string, peerCache *peercache.PeerCache, writers func() []string) *compaction.OwnershipResolver {
+	withSelf := func(members []string) []string {
+		for _, m := range members {
+			if m == addr {
+				return members
+			}
+		}
+		out := make([]string, 0, len(members)+1)
+		out = append(out, members...)
+		return append(out, addr)
+	}
+	// Single-pod / pre-discovery fallback: peercache.Members() returns an empty
+	// slice when discovery hasn't populated the ring yet (or when the pod runs
+	// alone with no peers configured). Including addr guarantees the single-pod
+	// case trivially owns 100% of partitions while still letting the peercache add
+	// real peers as they come online.
+	ownership := compaction.NewOwnershipResolver(addr, func() []string {
+		if writers != nil {
+			if w := writers(); len(w) > 0 {
+				return withSelf(w)
+			}
+		}
+		if peerCache == nil {
+			return []string{addr}
+		}
+		members := peerCache.Members()
+		if len(members) == 0 {
+			return []string{addr}
+		}
+		return withSelf(members)
+	})
+	if peerCache != nil {
+		ownership.SameAZPeers = func() []string {
+			same := peerCache.SameAZMembers()
+			if writers == nil {
+				return same
+			}
+			w := writers()
+			if len(w) == 0 {
+				return same
+			}
+			in := make(map[string]bool, len(w))
+			for _, m := range w {
+				in[m] = true
+			}
+			out := make([]string, 0, len(same))
+			for _, m := range same {
+				if in[m] {
+					out = append(out, m)
+				}
+			}
+			return out
+		}
+		ownership.Stabilizing = peerCache.IsStabilizing
+		ownership.IsDraining = peerCache.IsDraining
+	}
+	return ownership
+}
+
 // setupCompaction wires the election-free compaction scheduler + orphan
 // sweeper for one module. Returns (scheduler, sweep, stop) where stop is
 // nil when compaction is disabled. Extracted from run() to keep the
@@ -909,37 +980,10 @@ func setupCompaction(
 	// match what discovery returns for this pod or HRW silently picks
 	// the wrong primary — see CompactionOwnershipSelfInPeers alert.
 	peerCache := store.PeerCache()
-	// Single-pod / pre-discovery fallback: peercache.Members() returns
-	// an empty slice when discovery hasn't populated the ring yet (or
-	// when the pod runs alone with no peers configured). Without
-	// including `addr` here HRW returns no owner for any partition and
-	// compaction never runs (lakehouse_compaction_runs_total stays at
-	// 0 forever — confirmed via e2e compose, where peer_ring_members
-	// = 0 in single-pod mode). Including self guarantees the single-pod
-	// case trivially owns 100% of partitions while still letting the
-	// peercache add real peers as they come online.
-	ownership := compaction.NewOwnershipResolver(addr, func() []string {
-		if peerCache == nil {
-			return []string{addr}
-		}
-		members := peerCache.Members()
-		if len(members) == 0 {
-			return []string{addr}
-		}
-		for _, m := range members {
-			if m == addr {
-				return members
-			}
-		}
-		out := make([]string, 0, len(members)+1)
-		out = append(out, members...)
-		out = append(out, addr)
-		return out
-	})
-	if peerCache != nil {
-		ownership.SameAZPeers = peerCache.SameAZMembers
-		ownership.Stabilizing = peerCache.IsStabilizing
-		ownership.IsDraining = peerCache.IsDraining
+	ownership := newCompactionOwnership(addr, peerCache, store.WriterPeers)
+	if cfg.Discovery.PeerHeadlessService != "" && cfg.Select.InsertHeadlessService == "" {
+		logger.Warnf("compaction ownership hashes over the whole peer ring because select.insert_headless_service is not set; " +
+			"select pods in that ring own partitions that nothing compacts. Set it to the insert pods' headless service (the chart does)")
 	}
 
 	s3Pool := &s3PoolAdapter{pool: store.Pool()}
@@ -1682,6 +1726,19 @@ func parseTenantPrefix(prefix string) (uint32, uint32, bool) {
 	return uint32(acct), uint32(proj), true
 }
 
+// resolveInterruptedRewrites finishes the delete rewrites a previous run of THIS
+// process left unfinished. Only a pod that runs maintenance can have any: its
+// records (Prepared, Published) are written back to the shared tombstone objects
+// with a blind PUT, so a select pod that restored a writer's live Prepared record
+// from the bucket would "undo" a rewrite that is still running and retire the
+// writer's replacement. A select pod never rewrites, so it resolves nothing.
+func resolveInterruptedRewrites(cfg *config.Config, ts *delete.TombstoneStore, m delete.ManifestUpdater) int {
+	if !cfg.RunsMaintenance() {
+		return 0
+	}
+	return delete.ResolveInterruptedRewrites(ts, m)
+}
+
 // saveStatsAggregate writes the size-stats aggregate sidecar that lets the
 // next start serve sizes before its own warm-up has finished. Extracted from
 // runStartup so the wiring can be tested.
@@ -1726,7 +1783,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 	// manifest's view, so the refresh neither adopts an unpublished replacement
 	// next to its source nor re-adopts a source whose replacement was
 	// published. The objects themselves are settled by the rewrite scheduler.
-	if n := delete.ResolveInterruptedRewrites(store.TombstoneStore(), store.Manifest()); n > 0 {
+	if n := resolveInterruptedRewrites(cfg, store.TombstoneStore(), store.Manifest()); n > 0 {
 		logger.Infof("interrupted rewrites resolved at startup; count=%d", n)
 	}
 	// Now the two halves can be compared. Findings are reported, not repaired:
