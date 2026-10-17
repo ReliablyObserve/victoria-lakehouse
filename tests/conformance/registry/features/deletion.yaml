@@ -216,10 +216,27 @@
   rows:
     - lh.flag.delete_tombstone_reload_interval
   tests:
-    - internal/delete/tombstone_reload_test.go
-    - internal/compaction/ownership_self_test.go
-    - cmd/lakehouse-logs/tombstone_reload_test.go
-    - lakehouse-traces/tombstone_reload_test.go
+    - internal/delete/tombstone_reload_test.go#TestReload_AddsADeleteTakenElsewhere_WritingNothing
+    - internal/delete/tombstone_reload_test.go#TestReload_MergesProgressMadeElsewhere
+    - internal/delete/tombstone_reload_test.go#TestReload_RetiredRecordDropsTheTombstoneAndASurvivingObjectIsNotResurrected
+    - internal/delete/tombstone_reload_test.go#TestReload_UnDeletePropagates
+    - internal/delete/tombstone_reload_test.go#TestReload_FailedListingDropsNothing
+    - internal/delete/tombstone_reload_test.go#TestReload_KeepsWhatIsNotYetInS3
+    - internal/delete/tombstone_reload_test.go#TestReload_RetiredRecordKeepsATombstoneWithAnUnfinishedRewrite
+    - internal/delete/tombstone_reload_test.go#TestReload_ReaperDeletesAnOldRetiredObject
+    - internal/delete/tombstone_reload_test.go#TestRewriteScheduler_RewritesOnlyOwnedPartitions
+    - internal/compaction/ownership_self_test.go#TestSelfMember
+    - internal/compaction/ownership_self_test.go#TestOwnership_ResolveSelfGivesEveryPartitionOneOwner
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_SelectTakesTheDelete_WriterRewrites_OtherSelectSeesIt
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_UnDeletePropagatesToReaders
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_FailedDeleteDoesNotResurrect
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_DuringARewriteIssuesNoPuts
+    - cmd/lakehouse-logs/tombstone_reload_test.go#TestTombstoneReload_TwoWritersRewriteOnceEach
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_SelectTakesTheDelete_WriterRewrites_OtherSelectSeesIt
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_UnDeletePropagatesToReaders
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_FailedDeleteDoesNotResurrect
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_DuringARewriteIssuesNoPuts
+    - lakehouse-traces/tombstone_reload_test.go#TestTombstoneReload_TwoWritersRewriteOnceEach
     - cmd/lakehouse-logs/maintenance_gate_test.go#TestRun_StartsTheTombstoneLoopsOnEveryNode
     - cmd/lakehouse-logs/maintenance_gate_test.go#TestCompactionOwnership_SelfIsItsDiscoveredAddress
     - lakehouse-traces/maintenance_gate_test.go#TestRun_StartsTheTombstoneLoopsOnEveryNode
