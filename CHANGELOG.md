@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cost model: `scripts/cost/cost_tiering.py` prices S3 Standard in the bands the AWS feed states (first 51,200 GB, then up to 512,000 GB) instead of 50,000 / 450,000 GB cumulative, and prints every long-retention table the cost pages quote, including the Standard policy and the read terms (retrieval, GET price difference, early deletion) at read fractions 0, 0.01, 0.1 and 1.** The cost and README pages now say S3 Standard is the default with no transitions, label every cold-class ladder as an example, state the 71 KiB production median object size and its consequence for the 128 KB cold-class minimum, and the Standard 1-year Lakehouse total reads $14,036 (was $13,973 with the wrong bands). Docs and tooling only; no binary changes.
+
 ## [0.156.5] - 2026-10-17
 
 ### Fixed
