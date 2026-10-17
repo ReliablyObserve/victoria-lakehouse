@@ -411,8 +411,9 @@ func (s *Storage) Close() error {
 	}
 	// Final upload to S3 on graceful shutdown so the next pod start (on
 	// any node) can recover the index without rebuilding from parquet
-	// reads. Independent of the local-disk persister above.
-	if s.labelIndex != nil && s.labelIndex.Len() > 0 {
+	// reads. Independent of the local-disk persister above. Only the roles
+	// that run maintenance write it: a select pod never writes to S3.
+	if s.cfg != nil && s.cfg.RunsMaintenance() && s.labelIndex != nil && s.labelIndex.Len() > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := s.PersistLabelIndexToS3(ctx); err != nil {
@@ -1296,7 +1297,7 @@ func (s *Storage) RefreshManifest(ctx context.Context) error {
 	// persister keeps doing its job on graceful shutdown; this gives us
 	// cluster-wide recovery for pods that come up on a different node
 	// (no local volume) and for crash scenarios where shutdown didn't run.
-	if s.cfg.InsertEnabled() && s.labelIndex.Len() > 0 {
+	if s.cfg.RunsMaintenance() && s.labelIndex.Len() > 0 {
 		if err := s.PersistLabelIndexToS3(ctx); err != nil {
 			logger.Warnf("label index S3 persist failed: %s", err)
 		}

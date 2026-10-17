@@ -586,8 +586,9 @@ lakehouseConfig:
   # Compaction — Background Parquet file merging (election-free, HRW-owned)
   # ---------------------------------------------------------------------------
   compaction:
-    # -- Enable background compaction. Every pod runs the scheduler; HRW
-    #    ownership assigns partitions to exactly one pod (no leader election).
+    # -- Enable background compaction. Every insert (or all-role) pod runs the
+    #    scheduler; HRW ownership assigns partitions to exactly one of them (no
+    #    leader election). Select pods never compact, whatever this says.
     enabled: true
     # -- Compaction scan interval.
     interval: 5m

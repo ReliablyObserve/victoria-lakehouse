@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Select pods never write to the bucket: compaction, the orphan sweep, delete rewrites, retention, the stats snapshots and the stats-aggregate sidecar, the legacy pmeta cleanup and the traces label-index upload run on the roles `all` and `insert` only (#311).** Compaction is on by default and `setupCompaction` checked only `compaction.enabled`, so every select replica joined the compaction ring and compacted the partitions it owned: each pod uploaded its own merged object before any pod deleted the sources, and the bucket held every row two to four times. Retention, delete rewrites and the snapshots had the same gap. One predicate, `config.RunsMaintenance()` (true for `all` and `insert`), now gates every such job in both binaries; a select pod with `compaction.enabled: true` starts no scheduler and logs one INFO line per skipped job, and reads (manifest refresh, caches, gossip, loading the snapshots) are unchanged. Request-driven writes stay on select (tombstone files, the conditional alias registry, the explicit tenant-migrate action). With one insert pod and two select pods over one bucket and compaction enabled on all three, the buckets used to hold 90 rows in 3 objects for 30 rows written; they now hold 30 rows in 1 object, and the select pods issue no PUT or DELETE. Not covered: several insert pods that see different peers can still compact the same partition (the rest of #311), and a tombstone created on a select pod is rewritten only after a writer pod loads it at its next start. New `docs/architecture/roles.md` lists every gated and ungated writer.
+
 ## [0.156.5] - 2026-10-17
 
 ### Fixed

@@ -524,8 +524,9 @@ curl http://localhost:9428/metrics
 
 Compaction is on by default: it merges small L0 flush files into larger L1/L2 files, which
 improves query performance over time by reducing file count and improving row-group
-density. Every pod runs the scheduler, and HRW ownership assigns each partition to exactly
-one pod — no leader election, no RBAC. Tune the thresholds in the config file, or the scan
+density. Every pod that writes data (role `all` or `insert`) runs the scheduler, and HRW
+ownership assigns each partition to exactly one of them — no leader election, no RBAC. A
+`select` pod never compacts ([roles](architecture/roles.md)). Tune the thresholds in the config file, or the scan
 interval with `--lakehouse.compaction.interval`.
 
 See [Operations — Compaction](operations.md#compaction) for thresholds, monitoring, and troubleshooting.

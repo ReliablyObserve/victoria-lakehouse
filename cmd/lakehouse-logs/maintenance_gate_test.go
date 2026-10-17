@@ -255,8 +255,12 @@ func TestSelectRole_WritesNothingToTheBucket(t *testing.T) {
 	seeder := newPod(t, seedCfg)
 	seedFlushes(t, seeder, seedCfg, 4, 5)
 
+	// The pod under test has its own endpoint onto the bucket, so the seeding
+	// pod's flusher ticks (an insert pod, which does write) are not counted.
 	run := func(role config.Role) []fakeReq {
-		cfg := podConfig(t, role, s3.URL())
+		ep := newFakeS3On(s3)
+		defer ep.Close()
+		cfg := podConfig(t, role, ep.URL())
 		store := newPod(t, cfg)
 		if err := store.RefreshManifest(context.Background()); err != nil {
 			t.Fatalf("refresh: %v", err)
@@ -264,7 +268,7 @@ func TestSelectRole_WritesNothingToTheBucket(t *testing.T) {
 		if store.Manifest().TotalFiles() == 0 {
 			t.Fatal("the pod sees no objects to maintain")
 		}
-		s3.Reset()
+		ep.Reset()
 		j := startAllJobs(t, cfg, store)
 		// The shutdown and warm-up writes of the stats aggregate and the pmeta
 		// cleanup, as run()/runStartup() make them.
@@ -274,7 +278,7 @@ func TestSelectRole_WritesNothingToTheBucket(t *testing.T) {
 		cleanupLegacyPmeta(context.Background(), cfg, store)
 		time.Sleep(800 * time.Millisecond)
 		j.stop()
-		return bucketWrites(s3.Requests())
+		return bucketWrites(ep.Requests())
 	}
 
 	if w := run(config.RoleSelect); len(w) != 0 {
@@ -292,12 +296,14 @@ func TestSelectRole_WritesNothingToTheBucket(t *testing.T) {
 	seedCfgB := podConfig(t, config.RoleInsert, s3b.URL())
 	seederB := newPod(t, seedCfgB)
 	seedFlushes(t, seederB, seedCfgB, 4, 5)
-	cfg := podConfig(t, config.RoleInsert, s3b.URL())
+	epB := newFakeS3On(s3b)
+	defer epB.Close()
+	cfg := podConfig(t, config.RoleInsert, epB.URL())
 	store := newPod(t, cfg)
 	if err := store.RefreshManifest(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	s3b.Reset()
+	epB.Reset()
 	j := startAllJobs(t, cfg, store)
 	agg := stats.NewStatsAggregate()
 	agg.Recompute(store.Manifest().AllFiles())
@@ -305,7 +311,7 @@ func TestSelectRole_WritesNothingToTheBucket(t *testing.T) {
 	time.Sleep(800 * time.Millisecond)
 	j.stop()
 	got := map[string]bool{}
-	for _, r := range bucketWrites(s3b.Requests()) {
+	for _, r := range bucketWrites(epB.Requests()) {
 		got[classify(r.Key)] = true
 	}
 	for _, want := range []string{"data", "sidecar"} {

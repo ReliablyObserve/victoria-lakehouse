@@ -562,7 +562,7 @@ func run(cfg *config.Config, addr string) {
 // tombstoned rows and then deletes the superseded object. Extracted from run()
 // so the wiring can be tested. It returns nil when deletes are disabled.
 func startDeleteRewrite(cfg *config.Config, store *parquets3.Storage, pusher *manifest.Pusher, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector) *delete.RewriteScheduler {
-	if !cfg.Delete.Enabled {
+	if !cfg.Delete.Enabled || !maintenanceAllowed(cfg, "the delete rewrite scheduler") {
 		return nil
 	}
 	rewriter := newDeleteRewriter(store.Pool(), cfg, "traces")
@@ -594,7 +594,7 @@ func startDeleteRewrite(cfg *config.Config, store *parquets3.Storage, pusher *ma
 // returns the function that stops the loop, or nil when retention is disabled.
 // Extracted from run() so the wiring can be tested.
 func startRetention(cfg *config.Config, store *parquets3.Storage, policy *tenant.PolicyRegistry) func() {
-	if !cfg.Retention.Enabled {
+	if !cfg.Retention.Enabled || !maintenanceAllowed(cfg, "retention") {
 		return nil
 	}
 	retentionMgr, err := buildRetentionManager(cfg, store, policy, "traces")
@@ -673,7 +673,7 @@ func runShutdown(
 
 	// Final stats snapshot on shutdown — bounded too so it can't
 	// extend shutdown past the grace window.
-	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" {
+	if cfg.Stats.Enabled && cfg.Stats.SnapshotPrefix != "" && cfg.RunsMaintenance() {
 		snapshotBucket := cfg.Stats.MetaBucket
 		if snapshotBucket == "" {
 			snapshotBucket = cfg.S3.Bucket
@@ -814,6 +814,21 @@ func rewritePublishHook(store *parquets3.Storage, pusher *manifest.Pusher) func(
 	}
 }
 
+// maintenanceAllowed reports whether this process may run the named background
+// job, and says once, at INFO, when it may not although the config asks for it.
+// A select pod only reads: every job that writes to S3 or mutates state shared
+// between pods (compaction and its orphan sweep, delete rewrites, retention, the
+// stats snapshots and sidecar, the pmeta cleanup) runs on the roles all and
+// insert only, so a select replica can never rewrite the objects an insert pod
+// compacts (#311). config.RunsMaintenance is the single predicate.
+func maintenanceAllowed(cfg *config.Config, job string) bool {
+	if cfg.RunsMaintenance() {
+		return true
+	}
+	logger.Infof("%s not started: role=%s only reads, and only the roles all and insert run background maintenance", job, cfg.Role)
+	return false
+}
+
 // setupCompaction wires the election-free compaction scheduler + orphan
 // sweeper for the traces module. Mirror of cmd/lakehouse-logs/main.go's
 // setupCompaction — per feedback_logs_traces_module_parity these two
@@ -827,7 +842,7 @@ func setupCompaction(
 	tombstoneStore *delete.TombstoneStore,
 	detector *delete.StorageClassDetector,
 ) (*compaction.Scheduler, *compaction.OrphanSweep, func()) {
-	if !cfg.Compaction.Enabled {
+	if !cfg.Compaction.Enabled || !maintenanceAllowed(cfg, "compaction and the orphan sweep") {
 		return nil, nil, nil
 	}
 
@@ -1163,7 +1178,7 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 	}()
 
 	go func() {
-		if cfg.Stats.SnapshotPrefix == "" {
+		if cfg.Stats.SnapshotPrefix == "" || !maintenanceAllowed(cfg, "the stats snapshot writes") {
 			return
 		}
 		snapshotKey := cfg.AutoPrefix() + cfg.Stats.SnapshotPrefix + "/snapshot.json"
@@ -1601,6 +1616,9 @@ func manifestSnapshotPath(cfg *config.Config) string {
 // next start serve sizes before its own warm-up has finished. Extracted from
 // runStartup so the wiring can be tested.
 func saveStatsAggregate(ctx context.Context, cfg *config.Config, store *parquets3.Storage, statsAgg *stats.StatsAggregate) {
+	if !cfg.RunsMaintenance() {
+		return
+	}
 	if err := statsAgg.SaveToS3(ctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err != nil {
 		logger.Warnf("failed to persist stats-aggregate sidecar: %s", err)
 	}
@@ -1610,7 +1628,7 @@ func saveStatsAggregate(ctx context.Context, cfg *config.Config, store *parquets
 // bundles (idempotent through a marker object). Extracted from runStartup so
 // the wiring can be tested.
 func cleanupLegacyPmeta(ctx context.Context, cfg *config.Config, store *parquets3.Storage) {
-	if cfg.Pmeta.Enabled {
+	if cfg.Pmeta.Enabled && cfg.RunsMaintenance() {
 		store.CleanupLegacyGlobalBundles(ctx, cfg.AutoPrefix())
 	}
 }
