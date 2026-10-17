@@ -321,17 +321,21 @@ syn_cgo_constructor() {
 }
 
 # allowlist_nel (M-B): a U+2028 inside an existing allowlist line hides a smuggled entry from the Go gate
-# (it splits on LF) while the Python ratchet's splitlines() saw it.
+# (it splits on LF) while the Python ratchet's splitlines() saw it. The host line is the first entry; once
+# every divergence is fixed and the list holds no entry, it is the first plain comment line (not the
+# `# min-pass:` directive). The Go gate sees neither host change as an added entry, so only its byte check
+# can catch the entry that splitlines() sees.
 syn_allowlist_nel() {
   python3 - <<'PY'
 p = "tests/parity/known_failures.txt"
 lines = open(p, encoding="utf-8", newline="").read().split("\n")
-for i, ln in enumerate(lines):
-    if ln.strip() and not ln.lstrip().startswith("#"):
-        lines[i] = ln + " TestParity_Smuggled  # B9: smuggled behind a line separator"
-        break
-else:
-    raise SystemExit("no allowlist entry to hide behind")
+smuggled = " \u2028TestParity_Smuggled  # B9: smuggled behind a line separator"
+host = next((i for i, ln in enumerate(lines) if ln.strip() and not ln.lstrip().startswith("#")), None)
+if host is None:
+    host = next((i for i, ln in enumerate(lines) if ln.lstrip().startswith("#") and "min-pass" not in ln and ln.strip() != "#"), None)
+if host is None:
+    raise SystemExit("no allowlist line to hide behind")
+lines[host] = lines[host] + smuggled
 open(p, "w", encoding="utf-8", newline="").write("\n".join(lines))
 PY
 }
