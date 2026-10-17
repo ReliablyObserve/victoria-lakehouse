@@ -123,34 +123,3 @@ func TestMemLeak_TracesHandler_TailNoopCycles(t *testing.T) {
 			heapBefore/1024, heapAfter/1024, cycles)
 	}
 }
-
-func TestMemLeak_TracesHandler_NormalizeTimeParams(t *testing.T) {
-	runtime.GC()
-	runtime.GC()
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	heapBefore := m.HeapInuse
-
-	const cycles = 500
-	for c := 0; c < cycles; c++ {
-		// Grafana-style millisecond timestamps
-		req := httptest.NewRequest(http.MethodGet, "/select/logsql/query?start=1700000000000&end=1700003600000", nil)
-		normalizeTimeParams(req)
-	}
-
-	runtime.GC()
-	runtime.GC()
-	time.Sleep(10 * time.Millisecond)
-	runtime.ReadMemStats(&m)
-	heapAfter := m.HeapInuse
-
-	t.Logf("Traces normalizeTimeParams: heap_before=%dKB, heap_after=%dKB",
-		heapBefore/1024, heapAfter/1024)
-
-	// Form parsing per request: 3MB max
-	maxGrowth := uint64(3 * 1024 * 1024)
-	if heapAfter > heapBefore+maxGrowth {
-		t.Errorf("Possible memory leak: heap grew from %dKB to %dKB after %d normalize cycles",
-			heapBefore/1024, heapAfter/1024, cycles)
-	}
-}

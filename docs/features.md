@@ -648,7 +648,7 @@ Upstream's live tail streams from the hot ingestion path. Rather than emulate it
 
 Filters that Parquet statistics cannot decide are evaluated on the decoded rows before they are handed to the engine, so cold results match what the hot engine would have returned. The row filter is taken straight from the parsed query, so a time-only query (any range form, including half-open) runs no per-row filter and never re-parses query text, and a query VictoriaLogs cannot print back is answered rather than crashing the process. Parity and fuzz tests compare the cold evaluator against the upstream semantics.
 
-- Verification: rows: `lh.query.half_open_time_range` (pass, pending) · tests: `internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_parity_test.go`, `internal/storage/parquets3/free_text_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_fuzz_test.go`, `internal/storage/parquets3/time_only_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/time_only_filter_test.go` · bench: `level_filter`, `multi_filter`, `negation`, `fulltext`
+- Verification: rows: `lh.query.half_open_time_range` (pass, pending), `vl.select.stats_query.time_range_bounds` (pass, pending), `vt.select.logsql_stats_query.time_range_bounds` (pass, pending), `lh.shim.time_params_ms` (pass, pending) · tests: `internal/storage/parquets3/filter_test.go`, `internal/storage/parquets3/range_end_inclusive_test.go`, `internal/storage/parquets3/range_end_http_test.go`, `lakehouse-traces/internal/storage/parquets3/range_end_inclusive_test.go`, `tests/parity/traces_timerange_test.go#TestParity_Traces_TimeRange`, `internal/manifest/range_end_inclusive_test.go`, `internal/selectapi/time_range_params_test.go`, `lakehouse-traces/internal/selectapi/time_range_params_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_parity_test.go`, `internal/storage/parquets3/free_text_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/filter_fuzz_test.go`, `internal/storage/parquets3/time_only_filter_test.go`, `lakehouse-traces/internal/storage/parquets3/time_only_filter_test.go` · bench: `level_filter`, `multi_filter`, `negation`, `fulltext`
 - Docs: `docs/storage-flow.md`, `docs/read-path.md`
 - Changelog: `0.18.1`
 
@@ -1212,11 +1212,11 @@ A Grafana installation can point one Tempo datasource at hot VT and another at t
 
 `lh.feature.traces.tempo_search_shim` · status: shipped · since: v0.37.3 · surfaces: api
 
-**Tempo search shim**: Grafana's tag-style search parameters and its millisecond time units are normalized into the TraceQL and nanosecond forms the engine expects, so the Tempo explore UI works without asking users to change their queries.
+**Tempo search shim**: Grafana's tag-style search parameters are normalized into the TraceQL form the engine expects, so the Tempo explore UI works without asking users to change their queries.
 
-Grafana sends searches that upstream VT would reject or interpret differently — an empty `q`, scope-prefixed tags, millisecond `start`/`end`. The shim's exact divergences are declared as registry rows so they are documented behavior, not accidental drift.
+Grafana sends searches that upstream VT would reject or interpret differently — an empty `q`, scope-prefixed tags. The shim's exact divergences are declared as registry rows so they are documented behavior, not accidental drift.
 
-- Verification: rows: `lh.shim.tempo_search_empty_q` (pass, pending), `lh.shim.time_params_ms` (differ, pending) · tests: `lakehouse-traces/internal/selectapi/handler_test.go#TestNormalizeTempoSearchParams`, `lakehouse-traces/internal/selectapi/handler_test.go#TestTempoTagsToTraceQL`, `lakehouse-traces/internal/selectapi/handler_test.go#TestNormalizeTimeParams`
+- Verification: rows: `lh.shim.tempo_search_empty_q` (pass, pending) · tests: `lakehouse-traces/internal/selectapi/handler_test.go#TestNormalizeTempoSearchParams`, `lakehouse-traces/internal/selectapi/handler_test.go#TestTempoTagsToTraceQL`
 - Docs: `docs/parity-and-gaps.md`
 
 ### ✅ Trace-by-id fast path and Loki-to-Tempo drilldown

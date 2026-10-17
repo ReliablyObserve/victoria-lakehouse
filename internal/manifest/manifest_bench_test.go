@@ -39,7 +39,7 @@ func BenchmarkGetFilesForRange_1Hour(b *testing.B) {
 	}
 
 	startNs := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC).UnixNano()
-	endNs := time.Date(2026, 5, 15, 11, 0, 0, 0, time.UTC).UnixNano()
+	endNs := time.Date(2026, 5, 15, 11, 0, 0, 0, time.UTC).UnixNano() - 1 // the end is inclusive: one hour
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -60,7 +60,7 @@ func BenchmarkGetFilesForRange_24Hours(b *testing.B) {
 	}
 
 	startNs := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC).UnixNano()
-	endNs := time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC).UnixNano()
+	endNs := time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC).UnixNano() - 1 // the end is inclusive: 24 hours
 
 	b.ReportAllocs()
 	b.ResetTimer()

@@ -90,7 +90,7 @@ func TestGetFilesForRangeTenant_NarrowTimeRange(t *testing.T) {
 
 	// Query covering only 2026-06-02 and 2026-06-03.
 	startNs := mustParse("dt=2026-06-02/hour=00").UnixNano()
-	endNs := mustParse("dt=2026-06-04/hour=00").UnixNano()
+	endNs := mustParse("dt=2026-06-04/hour=00").UnixNano() - 1 // the end is inclusive
 
 	got := m.GetFilesForRangeTenant(startNs, endNs, "5", "0")
 	if len(got) != 2 {

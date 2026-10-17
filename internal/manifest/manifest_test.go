@@ -628,8 +628,9 @@ func TestManifest_GetRowCountForRange(t *testing.T) {
 		MinTimeNs: may1h12.UnixNano(), MaxTimeNs: may1h12.Add(30 * time.Minute).UnixNano(),
 	})
 
-	// Range covering hours 10-11 should return 800 rows
-	total := m.GetRowCountForRange(may1h10.UnixNano(), may1h12.UnixNano())
+	// Range covering hours 10-11 should return 800 rows (the end is inclusive: one
+	// nanosecond before hour 12)
+	total := m.GetRowCountForRange(may1h10.UnixNano(), may1h12.UnixNano()-1)
 	if total != 800 {
 		t.Errorf("row count for 10-12 range = %d, want 800", total)
 	}
@@ -638,6 +639,12 @@ func TestManifest_GetRowCountForRange(t *testing.T) {
 	total = m.GetRowCountForRange(may1h10.UnixNano(), may1h12.Add(time.Hour).UnixNano())
 	if total != 1200 {
 		t.Errorf("row count for full range = %d, want 1200", total)
+	}
+
+	// The end is inclusive: a range ending exactly at the first nanosecond of hour 12 counts it.
+	total = m.GetRowCountForRange(may1h10.UnixNano(), may1h12.UnixNano())
+	if total != 1200 {
+		t.Errorf("row count for a range ending at the start of hour 12 = %d, want 1200", total)
 	}
 }
 
@@ -662,7 +669,7 @@ func TestManifest_GetRowCountsByPartition(t *testing.T) {
 		Key: "logs/dt=2026-05-01/hour=12/d.parquet", Size: 3000, RowCount: 600,
 	})
 
-	buckets := m.GetRowCountsByPartition(may1h10.UnixNano(), may1h11.Add(time.Hour).UnixNano())
+	buckets := m.GetRowCountsByPartition(may1h10.UnixNano(), may1h11.Add(time.Hour).UnixNano()-1)
 	if len(buckets) != 2 {
 		t.Fatalf("expected 2 buckets (hour=12 excluded), got %d", len(buckets))
 	}
@@ -671,6 +678,12 @@ func TestManifest_GetRowCountsByPartition(t *testing.T) {
 	}
 	if buckets[1].RowCount != 400 {
 		t.Errorf("bucket[1] rows = %d, want 400", buckets[1].RowCount)
+	}
+
+	// The end is inclusive: a range ending exactly at the first nanosecond of hour 12 counts it.
+	buckets = m.GetRowCountsByPartition(may1h10.UnixNano(), may1h11.Add(time.Hour).UnixNano())
+	if len(buckets) != 3 || buckets[2].RowCount != 600 {
+		t.Errorf("a range ending at the start of hour 12 = %+v, want three buckets, the last with 600 rows", buckets)
 	}
 }
 

@@ -123,37 +123,6 @@ func TestMemLeak_Handler_TailNoopRequestCycles(t *testing.T) {
 	}
 }
 
-func TestMemLeak_Handler_NormalizeTimeParams(t *testing.T) {
-	runtime.GC()
-	runtime.GC()
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	heapBefore := m.HeapInuse
-
-	const cycles = 500
-	for c := 0; c < cycles; c++ {
-		// Simulate Grafana millisecond timestamps
-		req := httptest.NewRequest(http.MethodGet, "/select/logsql/query?start=1700000000000&end=1700003600000", nil)
-		normalizeTimeParams(req)
-	}
-
-	runtime.GC()
-	runtime.GC()
-	time.Sleep(10 * time.Millisecond)
-	runtime.ReadMemStats(&m)
-	heapAfter := m.HeapInuse
-
-	t.Logf("normalizeTimeParams: heap_before=%dKB, heap_after=%dKB",
-		heapBefore/1024, heapAfter/1024)
-
-	// Request form parsing: 3MB max
-	maxGrowth := uint64(3 * 1024 * 1024)
-	if heapAfter > heapBefore+maxGrowth {
-		t.Errorf("Possible memory leak: heap grew from %dKB to %dKB after %d normalize cycles",
-			heapBefore/1024, heapAfter/1024, cycles)
-	}
-}
-
 func TestMemLeak_Handler_SemaphoreCycles(t *testing.T) {
 	cfg := config.Default()
 	cfg.Mode = config.ModeLogs

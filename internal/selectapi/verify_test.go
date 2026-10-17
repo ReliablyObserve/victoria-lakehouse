@@ -89,26 +89,6 @@ func TestVerify_Tail_Returns501(t *testing.T) {
 	}
 }
 
-// TestVerify_NormalizeTimeParams_MillisToSeconds verifies that millisecond-epoch
-// timestamps (>1e12) are correctly converted to seconds so VL handles them.
-func TestVerify_NormalizeTimeParams_MillisToSeconds(t *testing.T) {
-	msStart := "1779224481316"
-	msEnd := "1779231681365"
-	wantStart := "1779224481"
-	wantEnd := "1779231681"
-
-	req := httptest.NewRequest("GET",
-		"/select/logsql/hits?query=*&start="+msStart+"&end="+msEnd, nil)
-	normalizeTimeParams(req)
-
-	if got := req.FormValue("start"); got != wantStart {
-		t.Errorf("start: got %q, want %q", got, wantStart)
-	}
-	if got := req.FormValue("end"); got != wantEnd {
-		t.Errorf("end: got %q, want %q", got, wantEnd)
-	}
-}
-
 // TestVerify_ConcurrencyLimiter_Rejects verifies that when MaxConcurrent=1,
 // a second concurrent request receives a 429 Too Many Requests response.
 func TestVerify_ConcurrencyLimiter_Rejects(t *testing.T) {

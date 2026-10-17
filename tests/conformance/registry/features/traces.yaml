@@ -144,18 +144,17 @@
   since: v0.37.3
   area: traces
   surfaces: [api]
-  rows: [lh.shim.tempo_search_empty_q, lh.shim.time_params_ms]
+  rows: [lh.shim.tempo_search_empty_q]
   tests:
     - lakehouse-traces/internal/selectapi/handler_test.go#TestNormalizeTempoSearchParams
     - lakehouse-traces/internal/selectapi/handler_test.go#TestTempoTagsToTraceQL
-    - lakehouse-traces/internal/selectapi/handler_test.go#TestNormalizeTimeParams
   docs:
     - docs/parity-and-gaps.md
   highlight: >-
-    **Tempo search shim**: Grafana's tag-style search parameters and its millisecond time units are normalized into the TraceQL and nanosecond forms the engine expects, so the Tempo explore UI works without asking users to change their queries.
+    **Tempo search shim**: Grafana's tag-style search parameters are normalized into the TraceQL form the engine expects, so the Tempo explore UI works without asking users to change their queries.
   description: >-
     Grafana sends searches that upstream VT would reject or interpret differently — an empty `q`,
-    scope-prefixed tags, millisecond `start`/`end`. The shim's exact divergences are declared as
+    scope-prefixed tags. The shim's exact divergences are declared as
     registry rows so they are documented behavior, not accidental drift.
 
 - id: lh.feature.traces.vt_internal_rows

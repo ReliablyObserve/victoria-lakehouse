@@ -38,8 +38,9 @@ func (m *Manifest) GetPartitionStats() map[string]PartitionStats {
 }
 
 // GetRowCountForRange returns the total row count across all partitions whose
-// time range overlaps [startNs, endNs). Uses the same binary search pattern
-// as GetFilesForRange.
+// time range overlaps [startNs, endNs]; the end is inclusive, as in
+// GetFilesForRange, so a partition that starts exactly at endNs counts. Uses the
+// same binary search pattern as GetFilesForRange. It has no caller outside tests.
 func (m *Manifest) GetRowCountForRange(startNs, endNs int64) int64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -55,8 +56,9 @@ func (m *Manifest) GetRowCountForRange(startNs, endNs int64) int64 {
 	var total int64
 	for i := idx; i < len(m.sortedPartitions); i++ {
 		p := &m.sortedPartitions[i]
-		// Stop once partition start is at or after query end.
-		if !p.start.Before(end) {
+		// Stop once the partition starts after the query end (inclusive: a
+		// partition that starts exactly at it holds rows at it).
+		if p.start.After(end) {
 			break
 		}
 		for _, fi := range m.files[p.key] {
@@ -67,9 +69,10 @@ func (m *Manifest) GetRowCountForRange(startNs, endNs int64) int64 {
 }
 
 // GetRowCountsByPartition returns per-partition row counts with time bounds for
-// all partitions whose time range overlaps [startNs, endNs). Results are
-// returned in ascending start-time order. Used by hits/histogram queries to
-// avoid S3 file reads.
+// all partitions whose time range overlaps [startNs, endNs]; the end is
+// inclusive, as in GetFilesForRange. Results are returned in ascending
+// start-time order. It has no caller outside tests: a hits query that wants to
+// avoid S3 reads would use it, but none does yet.
 func (m *Manifest) GetRowCountsByPartition(startNs, endNs int64) []PartitionRowCount {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -85,8 +88,9 @@ func (m *Manifest) GetRowCountsByPartition(startNs, endNs int64) []PartitionRowC
 	var result []PartitionRowCount
 	for i := idx; i < len(m.sortedPartitions); i++ {
 		p := &m.sortedPartitions[i]
-		// Stop once partition start is at or after query end.
-		if !p.start.Before(end) {
+		// Stop once the partition starts after the query end (inclusive: a
+		// partition that starts exactly at it holds rows at it).
+		if p.start.After(end) {
 			break
 		}
 		var rowCount int64

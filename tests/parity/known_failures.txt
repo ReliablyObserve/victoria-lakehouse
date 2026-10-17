@@ -43,9 +43,3 @@
 # cold answers look scoped, which is why the logs test waits for the flushed
 # state before asserting.) These flip to pass when the tenant-scoping fix
 # lands, and the ratchet then forces this whole group to be deleted.
-
-# --- B7: a row group starting on the query's last nanosecond is skipped -----
-# The HTTP end bound is exclusive; the upstream handler turns it into an
-# inclusive bound, and cold row-group pruning then compares it exclusively
-# again (rgMin < endNs), dropping rows that sit exactly on it.
-TestParity_TimeRange/boundary_ns_start_inclusive  # B7: [oldest, oldest+1ns) reads the oldest row on hot, nothing on cold

@@ -33,3 +33,5 @@ TestParity_TracesExtended                        20  # observed in a local parit
 TestParity_Traces_LogsQL                         19  # observed in a local parity run of the stack
 TestParity_SeverityNumber_Absent                106  # (3 + 3 + 6 + 9 rows + 8 checks) x 2 tenant forms in the restart-attempt-1 case; observed in a local parity run, #274
 TestParity_ServiceGraph_RowsCarryNoSpanNumerics  40  # 20 edge rows (the query limit) on each of the two tiers; observed in a local parity run, #274 traces side
+TestParity_TimeRange                           14  # B7: 11 window cases (ns, s and ms epochs, missing start/end, future, zero width, 1 min, full, the two oldest-row boundaries) + ms and us windows on the oldest row + the newest row boundary; counted from the cases, CI run link in the PR
+TestParity_Traces_TimeRange                     6  # B7 on spans: boundary_ns, boundary_ns_start_inclusive, boundary_ns_newest_span, unit_window_ms, unit_window_us, ms_epoch_seed_window; counted from the cases, CI run link in the PR
