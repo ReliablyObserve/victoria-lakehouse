@@ -180,6 +180,29 @@
     - internal/peercache/ring_self_test.go#TestPeercacheRing_IsSelf_Hostname
     - internal/metrics/ring_self_test.go#TestAlerts_RingSelfUnresolved
     - charts/victoria-lakehouse/test_templates.sh
+    - internal/compaction/ownership_self_test.go#TestOrphanSweep_TierA_SecondaryFoundByIP
+    - internal/compaction/ownership_self_test.go#TestOrphanSweep_TierB_UnresolvedSelf_DoesNothing
+    - internal/compaction/ownership_self_test.go#TestOwnership_DrainingSelf_ResolvedButNotInPeers
+    - internal/compaction/ownership_self_test.go#TestOwnership_ListenAddrAndHostnameMembers_OneOwnerEach
+    - internal/compaction/ownership_self_test.go#TestOwnership_SinglePodNoDiscovery_OwnsAll
+    - internal/compaction/ownership_self_test.go#TestOwnership_ZeroEnvIsTheSystemEnv
+    - internal/metrics/ring_self_test.go#TestRingSelfGauges_ExportedPerRing
+    - internal/peercache/ring_self_test.go#TestPeercacheRing_EmptyRing_IsSelf
+    - internal/peercache/ring_self_test.go#TestPeercacheRing_IsSelf_IPAndZones
+    - internal/peercache/ring_self_test.go#TestPeercacheRing_SelfUnresolved_NeverLocal
+    - internal/selfaddr/env_test.go#TestSystemEnv_AddressesAndNames
+    - internal/selfaddr/env_test.go#TestSystemEnv_CachedForAMinute
+    - internal/selfaddr/env_test.go#TestSystemEnv_CacheEviction
+    - internal/selfaddr/env_test.go#TestSystemEnv_LookupFailureKeepsTheLastAnswer
+    - internal/selfaddr/env_test.go#TestSystemEnv_LookupHostIsAsyncAndCached
+    - internal/selfaddr/env_test.go#TestSystemEnv_LookupIsBounded
+    - internal/selfaddr/env_test.go#TestSystemEnv_RealProcess
+    - internal/selfaddr/env_test.go#TestSystemEnv_SourceErrors
+    - internal/selfaddr/selfaddr_test.go#TestSelfaddr_DashedAddr
+    - internal/selfaddr/selfaddr_test.go#TestSelfaddr_DNSRule
+    - internal/selfaddr/selfaddr_test.go#TestSelfaddr_ResultReasons
+    - internal/selfaddr/tracker_test.go#TestTracker_LogsOncePerChange
+    - internal/selfaddr/tracker_test.go#TestTracker_ResolvesMemoisesAndReportsGauges
   docs:
     - docs/architecture/roles.md
     - docs/kubernetes-deployment.md
