@@ -134,6 +134,28 @@ func seedFlushes(t *testing.T, store *parquets3.Storage, cfg *config.Config, fil
 	return rows
 }
 
+// queryAll runs a query over every row of the seeded window on the pod.
+func queryAll(t *testing.T, store *parquets3.Storage) {
+	t.Helper()
+	q, err := logstorage.ParseQuery("*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.AddTimeFilter(time.Now().Add(-96*time.Hour).UnixNano(), time.Now().UnixNano())
+	var mu sync.Mutex
+	rows := 0
+	if err := store.RunQuery(context.Background(), nil, q, func(_ uint, db *logstorage.DataBlock) {
+		mu.Lock()
+		rows += db.RowsCount()
+		mu.Unlock()
+	}); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows == 0 {
+		t.Fatal("the query returned no rows: the check on the pod's requests proves nothing")
+	}
+}
+
 // bucketRows counts the rows of every Parquet object in the bucket, and the
 // objects.
 func bucketRows(t *testing.T, s3 *fakeS3) (rows int64, objects int) {
@@ -267,14 +289,15 @@ func TestSelectRole_WritesNothingToTheBucket(t *testing.T) {
 		defer ep.Close()
 		cfg := podConfig(t, role, ep.URL())
 		store := newPod(t, cfg)
+		ep.Reset() // the start (manifest refresh, label index), the query and the close are all counted
 		if err := store.RefreshManifest(context.Background()); err != nil {
 			t.Fatalf("refresh: %v", err)
 		}
 		if store.Manifest().TotalFiles() == 0 {
 			t.Fatal("the pod sees no objects to maintain")
 		}
-		ep.Reset()
 		j := startAllJobs(t, cfg, store)
+		queryAll(t, store)
 		// The shutdown and warm-up writes of the stats aggregate and the pmeta
 		// cleanup, as run()/runStartup() make them.
 		agg := stats.NewStatsAggregate()
@@ -283,6 +306,9 @@ func TestSelectRole_WritesNothingToTheBucket(t *testing.T) {
 		cleanupLegacyPmeta(context.Background(), cfg, store)
 		time.Sleep(800 * time.Millisecond)
 		j.stop()
+		if err := store.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
 		return bucketWrites(ep.Requests())
 	}
 
