@@ -19,7 +19,7 @@
 **The long-term home for logs and traces that is cheap, fast and open at the same time, so you don't have to pick two.**
 
 - 💰 **Lowest-cost HA option we modelled from 0.1 to 10 TB/day.** One copy on S3 behind stateless nodes: 53–84% cheaper than Loki + Tempo and 19–45% cheaper than HA tiered ClickHouse, at AWS list prices ([cost model](docs/cost-estimates.md); Lakehouse CPU is assumed until measured).
-- 🧊 **S3 Standard by default, cold classes optional.** Objects are written to S3 Standard and nothing is transitioned unless you add lifecycle rules (the rule lists are empty by default). If you do, Lakehouse mirrors them per tenant and keeps deletes tombstone-only, so deletes do not trigger retrieval fees. Standard-IA and Glacier Instant Retrieval stay queryable but charge per GB read, per early deletion (30/90-day minimums) and per transition, so they only pay when cold data is rarely read: at 10 TB/day and 3 years, 10% of the cold bytes read per month, the example ladder is 58% cheaper than Standard; at 100% read it is dearer ([break-even and worked example](docs/cost-estimates.md#cost-and-cold-storage-classes-read-this-first), [tiering calculator](docs/cost-estimates.md#long-term-retention-and-s3-storage-class-tiering)).
+- 🧊 **S3 Standard by default, cold classes optional.** Objects are written to S3 Standard and nothing is transitioned unless you add lifecycle rules (the rule lists are empty by default). If you do, you also copy the same rules into Lakehouse's config (globally or per tenant); nothing reads the bucket's lifecycle configuration, and the config copy is what its cost estimates and delete decisions use. Deletes stay tombstone-only, so they do not trigger retrieval fees. Standard-IA and Glacier Instant Retrieval stay queryable but charge per GB read, per early deletion (30/90-day minimums) and per transition, so they only pay when cold data is rarely read: at 10 TB/day and 3 years, 10% of the cold bytes read per month, the example ladder is 58% cheaper than Standard; at 100% read it is dearer ([break-even and worked example](docs/cost-estimates.md#cost-and-cold-storage-classes-read-this-first), [tiering calculator](docs/cost-estimates.md#long-term-retention-and-s3-storage-class-tiering)).
 - 📈 **Scales in a straight line with two knobs.** Stateless insert and select pods over one S3 copy: ingest sets the insert pods, query load sets the select pods, and retention only grows S3. There are no shards to rebalance, no replicas to resync and no disks to grow ([scaling](docs/cost-comparison.md#5-scaling-linear-and-two-knobs)).
 - ⚡ **Fast reads over Parquet.** Median p95 of **8.5 ms for logs and 7.7 ms for traces**: within about 2× of VictoriaLogs/VictoriaTraces on local SSD, which set the bar for speed, and **10–13× faster than ClickHouse** reading the same Parquet files ([Performance](#performance): small dataset, local S3-compatible server, warm cache; numbers with real S3 latency are being re-measured).
 - 📥 **Ingest from anything VictoriaLogs and VictoriaTraces accept**: OTLP, Loki push, Elasticsearch bulk, Splunk HEC, Datadog, journald, syslog, JSON lines and the native VL/VT protocols, through the upstream handlers themselves.
@@ -193,15 +193,15 @@ Monthly AWS list price for a production HA setup, logs and traces together, 1-ye
 | 1 TB | **$1.5k** | $2.0k | $2.1k | $3.1k | $5.7k | $15.9k |
 | 10 TB | **$14.5k** | $17.9k | $21.0k | $41.2k | $57.1k | $157.0k |
 
-**Long retention, Standard (the default) against an optional example ladder**: 10 TB/day, total monthly cost (storage, compute, network, requests), from `scripts/cost/cost_tiering.py` plus hand-added read terms ([derivation](docs/cost-estimates.md#totals-including-reads-standard-against-the-example-ladder)). The example ladder keeps 30 days on S3 Standard, then Standard-IA, then Glacier Instant Retrieval from day 90, queryable throughout. **It is not the default and you must configure it.** ρ is the fraction of cold bytes read per month, an assumed input.
+**Long retention, Standard (the default) against an optional example ladder**: 10 TB/day, total monthly cost (storage, compute, network, requests), from `scripts/cost/cost_tiering.py` ([derivation](docs/cost-estimates.md#totals-including-reads-standard-against-the-example-ladder)). The example ladder keeps 30 days on S3 Standard, then Standard-IA, then Glacier Instant Retrieval from day 90, queryable throughout. **It is not the default and you must configure it.** ρ is the fraction of cold bytes read per month, an assumed input.
 
 | Retention | Lakehouse on Standard (default) | Lakehouse, example ladder, ρ = 0.1 | Loki + Tempo on Standard | Loki + Tempo, same ladder, ρ = 0.1 | VL/VT HA on EBS |
 |---|---:|---:|---:|---:|---:|
-| 1 year | **$14.0k** | $7.6k | $39.8k | $29.7k | $57.1k |
-| 3 years | **$35.6k** | $14.9k | $75.1k | $41.6k | $164k |
+| 1 year | **$14.0k** | $7.6k | $39.9k | $29.7k | $57.1k |
+| 3 years | **$35.6k** | $14.9k | $75.2k | $41.6k | $164k |
 | 7 years | **$78.8k** | $29.5k | $146k | $65.6k | $378k |
 
-The ladder column includes read retrieval and GET prices at ρ = 0.1; at ρ = 0 it is $6.3k, $10.4k and $18.6k. A cold class is cheaper to store and dearer to use: Glacier IR costs more than Standard once about 63% of its bytes are read in a month, bills 90 days even for objects deleted sooner, and charges per transition. The 1-year Standard figure is $14.0k here (banded storage prices) and $14.5k in the table above (flat $0.023): same model family, different storage pricing.
+The ladder column includes read retrieval and GET prices at ρ = 0.1; at ρ = 0 it is $6.3k, $10.4k and $18.6k. A cold class is cheaper to store and dearer to use: Glacier IR costs more than Standard once about 63% of its bytes are read in a month, bills 90 days even for objects deleted sooner, and charges per transition. The 1-year Standard figure is $14.0k here (banded storage prices) and $14.5k in the table above (flat $0.023, 3.2% higher): same model family, different storage pricing.
 
 Where Lakehouse loses:
 - A single-replica ClickHouse on S3 is cheaper ($9.6k at 10 TB/day, 1 year) because it compresses better, but it has no compute HA.
@@ -731,7 +731,7 @@ lakehouse:
     snapshot_interval: 5m            # S3 snapshot persistence
     metrics_cardinality_limit: 100   # max tenant label values (0=disable)
     cardinality_warning_threshold: 10000
-    s3_lifecycle_rules:              # EXAMPLE only, mirrors rules you set on the bucket; default is empty (all STANDARD)
+    s3_lifecycle_rules:              # EXAMPLE only, a copy you make of the rules you set on the bucket; default is empty (all STANDARD)
       - transition_days: 30
         storage_class: STANDARD_IA
       - transition_days: 90

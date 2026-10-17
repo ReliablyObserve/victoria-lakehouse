@@ -11,7 +11,7 @@ const FeatureList: FeatureItem[] = [
     title: '60-96% Cost Reduction',
     description: (
       <>
-        S3 Standard at $0.023/GB vs EBS at $0.08-0.15/GB. Glacier tiering at $0.004/GB for compliance retention. At 1 PB/month, save $614K/year vs Loki/Tempo.
+        S3 Standard at $0.023/GB vs EBS at $0.08-0.15/GB. Optional Glacier Instant Retrieval at $0.004/GB (read fees apply) for compliance retention. At 1 PB/month, save $614K/year vs Loki/Tempo.
       </>
     ),
   },

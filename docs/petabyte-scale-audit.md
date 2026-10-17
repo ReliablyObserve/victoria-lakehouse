@@ -286,7 +286,7 @@ because Parquet compresses, written objects are smaller than the 128 MiB the
 setting suggests, and a tenant or hour with few rows in a segment gets a small
 object.
 
-The resulting object size distribution is **not measured** in this repository.
+The full object size distribution is **not measured** in this repository; the one production figure published is a median of about 71 KiB at low volume ([field-metadata test cells](perf/field-metadata-cells.md), issue 281).
 Compaction merges the small ones afterwards.
 
 **Planned:** target *compressed* size with a measured bytes-per-row, and

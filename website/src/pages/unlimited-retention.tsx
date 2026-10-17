@@ -4,14 +4,14 @@ import Link from '@docusaurus/Link';
 export default function UnlimitedRetention() {
   return (
     <Layout
-      title="Unlimited Log and Trace Retention — S3 Glacier Tiering for Compliance"
-      description="Store years of logs and traces on S3 with Victoria Lakehouse. Glacier Deep Archive at $0.004/GB/month. SOC 2, ISO 27001, HIPAA, GDPR compliance-ready. Queryable with LogsQL, Jaeger, Tempo, DuckDB, ClickHouse, Spark, Trino. 90% cheaper than EBS at 2-year retention.">
+      title="Unlimited Log and Trace Retention — Years of Retention on S3"
+      description="Store years of logs and traces on S3 with Victoria Lakehouse. S3 Standard by default; optional Glacier Instant Retrieval at $0.004/GB/month (read fees apply). SOC 2, ISO 27001, HIPAA, GDPR compliance-ready. Queryable with LogsQL, Jaeger, Tempo, DuckDB, ClickHouse, Spark, Trino. 90% cheaper than EBS at 2-year retention.">
       <header className="hero hero--primary" style={{padding: '3rem 0', textAlign: 'center'}}>
         <div className="container">
           <h1 className="hero__title">Unlimited Retention</h1>
           <p className="hero__subtitle" style={{maxWidth: 700, margin: '0 auto'}}>
             Keep years of logs and traces on S3. Compliance-ready, queryable,
-            at a fraction of EBS cost. Glacier Deep Archive at $0.004/GB/month.
+            at a fraction of EBS cost. S3 Standard by default; optional Glacier Instant Retrieval at $0.004/GB/month, with a per-GB read fee.
           </p>
         </div>
       </header>
@@ -33,8 +33,8 @@ export default function UnlimitedRetention() {
           <div className="col col--6">
             <h2>The Solution</h2>
             <p style={{fontSize: '1.1rem', lineHeight: 1.7}}>
-              Keep 1&ndash;3 months hot on VL/VT EBS, everything else on S3 with
-              automatic lifecycle tiering. vlselect/vtselect fans out to both
+              Keep 1&ndash;3 months hot on VL/VT EBS, everything else on S3 (Standard by default;
+              optional lifecycle rules you configure). vlselect/vtselect fans out to both
               tiers transparently &mdash; queries spanning hot and cold data work
               automatically.
             </p>
@@ -88,9 +88,9 @@ export default function UnlimitedRetention() {
                 <tr>
                   <td><strong>Archive</strong></td>
                   <td>1&ndash;7+ years</td>
-                  <td>S3 Glacier Deep Archive</td>
+                  <td>S3 Glacier Deep Archive (optional)</td>
                   <td>Hours (restore first)</td>
-                  <td>$0.004</td>
+                  <td>$0.00099 (list price, unverified)</td>
                   <td>After restore</td>
                 </tr>
               </tbody>
@@ -108,7 +108,7 @@ export default function UnlimitedRetention() {
           <div className="col col--4">
             <div className="cost-metric" style={{textAlign: 'center', height: '100%'}}>
               <strong style={{fontSize: '2rem', display: 'block', marginBottom: '0.5rem'}}>$0.004</strong>
-              per GB/month on Glacier Deep Archive
+              per GB/month on Glacier Instant Retrieval (optional, queryable, $0.03/GB read)
             </div>
           </div>
           <div className="col col--4">

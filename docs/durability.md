@@ -980,7 +980,7 @@ Readiness holds `/ready` at `503`/`204` until disk recovery plus the
 ## 5. Maintaining big S3 files
 
 Small objects are expensive on object stores (per-request cost, read
-amplification). Two mechanisms push cold-tier Parquet towards the 128 MB target (a target: the flush seal counts rows at an assumed 512 B each, so written objects are smaller than 128 MB, and no production size distribution has been measured):
+amplification). Two mechanisms push cold-tier Parquet towards the 128 MB target (a target: the flush seal counts rows at an assumed 512 B each, so written objects are smaller than 128 MB; the production median is about 71 KiB at low volume, see the [cost page](cost-estimates.md#cost-and-cold-storage-classes-read-this-first)):
 
 - **Size-aware segments.** A segment is sealed `buffer_flush_interval` after its first row, or
   earlier once it holds about `target_file_size` of rows while fewer than 64
