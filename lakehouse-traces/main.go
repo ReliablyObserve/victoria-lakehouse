@@ -1597,6 +1597,24 @@ func manifestSnapshotPath(cfg *config.Config) string {
 	return filepath.Join(cfg.Manifest.PersistPath, "manifest-snapshot.json")
 }
 
+// saveStatsAggregate writes the size-stats aggregate sidecar that lets the
+// next start serve sizes before its own warm-up has finished. Extracted from
+// runStartup so the wiring can be tested.
+func saveStatsAggregate(ctx context.Context, cfg *config.Config, store *parquets3.Storage, statsAgg *stats.StatsAggregate) {
+	if err := statsAgg.SaveToS3(ctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err != nil {
+		logger.Warnf("failed to persist stats-aggregate sidecar: %s", err)
+	}
+}
+
+// cleanupLegacyPmeta runs the one-time cleanup of the orphaned global pmeta
+// bundles (idempotent through a marker object). Extracted from runStartup so
+// the wiring can be tested.
+func cleanupLegacyPmeta(ctx context.Context, cfg *config.Config, store *parquets3.Storage) {
+	if cfg.Pmeta.Enabled {
+		store.CleanupLegacyGlobalBundles(ctx, cfg.AutoPrefix())
+	}
+}
+
 func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, tenantKey string, statsAgg *stats.StatsAggregate) {
 	// Set before the first refresh: LakehouseManifestNoCompleteRefresh reads
 	// it during warm-up too (a 0 here would shrink its budget to 15 minutes).
@@ -1676,9 +1694,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			// change-observer; this one sweep populates it on startup.
 			if statsAgg != nil {
 				statsAgg.Recompute(store.Manifest().AllFiles())
-				if err := statsAgg.SaveToS3(ctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix); err != nil {
-					logger.Warnf("failed to persist stats-aggregate sidecar: %s", err)
-				}
+				saveStatsAggregate(ctx, cfg, store, statsAgg)
 				statsAgg.SetMetaS3(store.PmetaPersistedBytes())
 			}
 
@@ -1692,9 +1708,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 			// bundles left by the move to tenant-scoped partitions. The new
 			// tenant bundles are rebuilt above by the warm self-heal, so the
 			// old globals are safe to delete. Idempotent via a marker object.
-			if cfg.Pmeta.Enabled {
-				store.CleanupLegacyGlobalBundles(ctx, cfg.AutoPrefix())
-			}
+			cleanupLegacyPmeta(ctx, cfg, store)
 
 			if cfg.Cache.WarmupPartitions > 0 || cfg.Cache.WarmupMaxFiles > 0 {
 				warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1799,7 +1813,7 @@ func runStartup(sm *startup.Manager, cfg *config.Config, store *parquets3.Storag
 				// that bypassed the per-file change observer.
 				if statsAgg != nil {
 					statsAgg.Recompute(m.AllFiles())
-					_ = statsAgg.SaveToS3(rctx, store.Pool(), cfg.AutoPrefix()+stats.AggregateSidecarKeySuffix)
+					saveStatsAggregate(rctx, cfg, store, statsAgg)
 					statsAgg.SetMetaS3(store.PmetaPersistedBytes())
 				}
 				// Refresh this node's gossiped metadata footprint each tick
