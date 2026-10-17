@@ -30,8 +30,9 @@ func TestRingSelfGauges_ExportedPerRing(t *testing.T) {
 	}
 }
 
-// The alert on a pod that does not find itself exists, is a warning, waits at
-// least five minutes and reads the resolved gauge.
+// The alert on a pod that does not find itself in the compaction ring exists, is a
+// warning, waits at least five minutes, ignores pods that are not ready and reads
+// the resolved gauge.
 func TestAlerts_RingSelfUnresolved(t *testing.T) {
 	b, err := os.ReadFile("../../alerts/alerts-lakehouse.yml")
 	if err != nil {
@@ -62,8 +63,14 @@ func TestAlerts_RingSelfUnresolved(t *testing.T) {
 			if r.Labels["severity"] != "warning" {
 				t.Errorf("severity = %q, want warning", r.Labels["severity"])
 			}
-			if !strings.Contains(r.Expr, "lakehouse_ring_self_resolved") || !strings.Contains(r.Expr, "== 0") {
-				t.Errorf("expr %q does not fire on lakehouse_ring_self_resolved == 0", r.Expr)
+			if !strings.Contains(r.Expr, `lakehouse_ring_self_resolved{ring="compaction"}`) || !strings.Contains(r.Expr, "== 0") {
+				t.Errorf("expr %q does not fire on lakehouse_ring_self_resolved{ring=\"compaction\"} == 0", r.Expr)
+			}
+			if strings.Contains(r.Expr, "peercache") {
+				t.Errorf("expr %q alerts on the peer-cache ring, which a pod outside the peer service is correctly not in", r.Expr)
+			}
+			if !strings.Contains(r.Expr, "lakehouse_ready == 1") {
+				t.Errorf("expr %q does not exclude pods that are not ready", r.Expr)
 			}
 			return
 		}

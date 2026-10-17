@@ -77,7 +77,7 @@ Exactly one matching member is this pod; none or several leave it unresolved. In
 | `lakehouse_ring_self_resolved{ring}` | 1 when exactly one entry is this pod, 0 when none or several match. `ring` is `compaction` or `peercache`. |
 | `lakehouse_ring_self_in_peers{ring}` | 1 when that entry is also in the set the ring hashes over; 0 for a pod that resolved but is draining or outside the AZ subset, and 0 whenever it did not resolve. |
 
-Alert `LakehouseRingSelfUnresolved` fires when `lakehouse_ring_self_resolved` is 0 for 5 minutes. What to set: the chart injects `POD_NAME`, `POD_IP` and `POD_IPS` through the downward API; a hand-written manifest should do the same, and the headless service must list the pod on its listen port.
+Alert `LakehouseRingSelfUnresolved` fires when `lakehouse_ring_self_resolved{ring="compaction"}` is 0 on a ready pod for 5 minutes (not for the peer-cache ring: a pod that is not behind the peer headless service, for example an insert pod when that service is the select headless service, is correctly not in it and reads 0 there). What to set: the chart injects `POD_NAME`, `POD_IP` and `POD_IPS` through the downward API; a hand-written manifest should do the same, and the headless service must list the pod on its listen port.
 
 Measured on 672 partitions (8 tenants x 84 days), each of W writers listening on `:9428`, discovery listing them as StatefulSet hostnames, IPs, dashed-IP names or IPv6 (the scheduler's ownership only, `TestOwnership_EveryForm_ExactlyOneOwner`): before, 48 to 52% of the partitions had no owner with one writer, and with 2, 3 and 8 writers 66%, 75% and 88% had none while 32%, 25% and 12% were owned by every writer at once; after, 0% and 0% for every form and W.
 

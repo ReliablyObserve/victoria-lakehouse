@@ -45,7 +45,7 @@
 # Semantics: docs/architecture/roles.md#how-a-pod-finds-itself-in-the-ring.
 
 - id: lh.flag.ring_self_resolution.logs
-  title: "Logs — every writer listening on :9428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one compaction owner for 1, 2, 3 and 8 writers; a pod that is not in the ring owns nothing and never adds its listen address; two writers and two selects over one bucket compact every partition once and store every row once"
+  title: "Logs — every writer listening on :9428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one compaction owner for 1, 2, 3 and 8 writers; a pod that is not in the ring owns nothing and never adds its listen address; with the orphan sweep stopped (#602), two writers and two selects over one bucket compact every partition once and store every row once"
   surface: lh
   kind: flag
   origin: lh-addition
@@ -64,9 +64,10 @@
       - internal/selfaddr/tracker_test.go
       - internal/compaction/ownership_self_test.go
       - internal/peercache/ring_self_test.go
+      - internal/smartcache/ring_self_test.go
 
 - id: lh.flag.ring_self_resolution.traces
-  title: "Traces — every writer listening on :10428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one compaction owner for 1, 2, 3 and 8 writers; a pod that is not in the ring owns nothing and never adds its listen address; two writers and two selects over one bucket compact every partition once and store every span once"
+  title: "Traces — every writer listening on :10428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one compaction owner for 1, 2, 3 and 8 writers; a pod that is not in the ring owns nothing and never adds its listen address; with the orphan sweep stopped (#602), two writers and two selects over one bucket compact every partition once and store every span once"
   surface: lh
   kind: flag
   origin: lh-addition

@@ -216,8 +216,19 @@ func TestSystemEnv_CacheEviction(t *testing.T) {
 	if _, ok := s.dns["new.test"]; !ok || len(s.dns) > 2 {
 		t.Errorf("idle names were not evicted: %d entries", len(s.dns))
 	}
-	// A result arriving for a name that was evicted is dropped.
+	// The background lookup that call started finishes before the next step.
+	waitFor(t, "the lookup of new.test", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return !s.dns["new.test"].inflight
+	})
+	// A result arriving for a name that was evicted is dropped (fetch releases a
+	// semaphore token its caller took).
+	s.sem <- struct{}{}
 	s.fetch("gone.test")
+	if _, ok := s.dns["gone.test"]; ok {
+		t.Error("a result for an evicted name was cached")
+	}
 }
 
 func TestSystemEnv_RealProcess(t *testing.T) {
