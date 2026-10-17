@@ -310,6 +310,16 @@ func (c *Config) SelectEnabled() bool {
 	return c.Role == RoleAll || c.Role == RoleSelect
 }
 
+// RunsMaintenance reports whether this process may run the background jobs that
+// write to S3 or mutate state shared between pods: compaction and its orphan
+// sweep, delete rewrites, retention, and the stats and label-index snapshots.
+// Only the roles that write data (all, insert) do; a select pod only reads, so
+// two select pods, or a select pod and an insert pod, never both rewrite the
+// same objects (#311). It is the one predicate every such job is gated on.
+func (c *Config) RunsMaintenance() bool {
+	return c.InsertEnabled()
+}
+
 // SelectConfig controls how select pods read rows not yet flushed to S3.
 type SelectConfig struct {
 	// BufferQueryEnabled queries the insert pods for rows not yet flushed to

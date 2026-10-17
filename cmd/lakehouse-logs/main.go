@@ -448,32 +448,7 @@ func run(cfg *config.Config, addr string) {
 
 	costCalc := stats.NewCostCalculator(cfg.Stats.S3PricePerGB, cfg.Stats.S3RequestPrices)
 
-	rewriter := newDeleteRewriter(store.Pool(), cfg, "logs")
-
-	var rewriteSched *delete.RewriteScheduler
-	if cfg.Delete.Enabled {
-		rewriteSched = delete.NewRewriteScheduler(delete.RewriteSchedulerConfig{
-			Store:          tombstoneStore,
-			Rewriter:       rewriter,
-			Detector:       detector,
-			RewriteDelay:   cfg.Delete.RewriteDelay,
-			AllowedClasses: cfg.Delete.AutoRewriteClasses,
-			MaxConcurrent:  cfg.Delete.RewriteMaxConcurrent,
-			// Without this the rewriter deletes files the manifest still
-			// points at and publishes replacements the manifest has never
-			// heard of; the scheduler refuses to rewrite at all when it is nil.
-			Manifest:    store.Manifest(),
-			OnPublished: rewritePublishHook(store, pusher),
-			// A key absent from the manifest is reaped only once a HEAD finds
-			// no object (or the manifest retired it): a listing can miss an
-			// object, and reaping it would bring deleted rows back (#418).
-			ObjectExists: store.Pool().Exists,
-		})
-		rewriteSched.SetSegmentGuard(store.Pool(), cfg.AutoPrefix(), 2*bufferGrace(cfg))
-		rewriteSched.Start(cfg.Delete.VerifyInterval)
-		logger.Infof("delete rewrite scheduler started; rewrite_delay=%v, verify_interval=%v",
-			cfg.Delete.RewriteDelay, cfg.Delete.VerifyInterval)
-	}
+	rewriteSched := startDeleteRewrite(cfg, store, pusher, tombstoneStore, detector)
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -502,14 +477,8 @@ func run(cfg *config.Config, addr string) {
 
 	// Retention manager: append synthesized rules from per-tenant
 	// overrides to the global rules list, then start the eviction loop.
-	if cfg.Retention.Enabled {
-		retentionMgr, err := buildRetentionManager(cfg, store, policy, "logs")
-		if err != nil {
-			logger.Fatalf("retention manager init failed: %s", err)
-		}
-		retentionCtx, retentionCancel := context.WithCancel(context.Background())
-		go retentionMgr.Start(retentionCtx)
-		defer retentionCancel()
+	if stopRetention := startRetention(cfg, store, policy); stopRetention != nil {
+		defer stopRetention()
 	}
 
 	// Per-tenant cardinality limiter — gates streams at the insert
@@ -603,6 +572,54 @@ func run(cfg *config.Config, addr string) {
 	logger.Infof("shutdown signal received; signal=%v", sig)
 
 	runShutdown(cfg, addr, store, rewriteSched, tombstoneStore, registry, stopCompaction)
+}
+
+// startDeleteRewrite starts the scheduler that rewrites objects to remove
+// tombstoned rows and then deletes the superseded object. Extracted from run()
+// so the wiring can be tested. It returns nil when deletes are disabled.
+func startDeleteRewrite(cfg *config.Config, store *parquets3.Storage, pusher *manifest.Pusher, tombstoneStore *delete.TombstoneStore, detector *delete.StorageClassDetector) *delete.RewriteScheduler {
+	if !cfg.Delete.Enabled {
+		return nil
+	}
+	rewriter := newDeleteRewriter(store.Pool(), cfg, "logs")
+	rewriteSched := delete.NewRewriteScheduler(delete.RewriteSchedulerConfig{
+		Store:          tombstoneStore,
+		Rewriter:       rewriter,
+		Detector:       detector,
+		RewriteDelay:   cfg.Delete.RewriteDelay,
+		AllowedClasses: cfg.Delete.AutoRewriteClasses,
+		MaxConcurrent:  cfg.Delete.RewriteMaxConcurrent,
+		// Without this the rewriter deletes files the manifest still
+		// points at and publishes replacements the manifest has never
+		// heard of; the scheduler refuses to rewrite at all when it is nil.
+		Manifest:    store.Manifest(),
+		OnPublished: rewritePublishHook(store, pusher),
+		// A key absent from the manifest is reaped only once a HEAD finds
+		// no object (or the manifest retired it): a listing can miss an
+		// object, and reaping it would bring deleted rows back (#418).
+		ObjectExists: store.Pool().Exists,
+	})
+	rewriteSched.SetSegmentGuard(store.Pool(), cfg.AutoPrefix(), 2*bufferGrace(cfg))
+	rewriteSched.Start(cfg.Delete.VerifyInterval)
+	logger.Infof("delete rewrite scheduler started; rewrite_delay=%v, verify_interval=%v",
+		cfg.Delete.RewriteDelay, cfg.Delete.VerifyInterval)
+	return rewriteSched
+}
+
+// startRetention builds the retention manager and starts its eviction loop. It
+// returns the function that stops the loop, or nil when retention is disabled.
+// Extracted from run() so the wiring can be tested.
+func startRetention(cfg *config.Config, store *parquets3.Storage, policy *tenant.PolicyRegistry) func() {
+	if !cfg.Retention.Enabled {
+		return nil
+	}
+	retentionMgr, err := buildRetentionManager(cfg, store, policy, "logs")
+	if err != nil {
+		logger.Fatalf("retention manager init failed: %s", err)
+	}
+	retentionCtx, retentionCancel := context.WithCancel(context.Background())
+	go retentionMgr.Start(retentionCtx)
+	return retentionCancel
 }
 
 // runShutdown drains the lakehouse-logs pod in the order required for
