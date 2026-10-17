@@ -25,7 +25,7 @@ flowchart LR
 |---|---|---|---|---|
 | Hot | EBS gp3 (multi-AZ) | 30 days | <10ms | $0.08-0.24/GB |
 | Cold | S3 Standard | 1-3 years | 50-500ms | $0.023/GB |
-| Archive | S3 Glacier | 3+ years | minutes-hours | $0.004/GB |
+| Archive (optional; not the default, which is S3 Standard) | Glacier Instant Retrieval ($0.004/GB-month, ms reads, $0.03/GB read, 90-day minimum) or Deep Archive ($0.00099/GB-month, restore first, 180-day minimum) | 3+ years | ms (Instant Retrieval) or hours (Deep Archive) | see [cold storage classes](cost-estimates.md#cost-and-cold-storage-classes-read-this-first) |
 
 **Query experience**: Users query Grafana normally. vlselect/vtselect fans out to both hot vlstorage and cold lakehouse-select. The hot boundary auto-discovery ensures lakehouse returns empty for recent data (0ms), and only processes queries for data outside the hot tier's range.
 

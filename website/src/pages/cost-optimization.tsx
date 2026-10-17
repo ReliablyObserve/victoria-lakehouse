@@ -5,7 +5,7 @@ export default function CostOptimization() {
   return (
     <Layout
       title="Cost Optimization — Reduce Observability Storage Costs by 60-96% with S3 Parquet"
-      description="Victoria Lakehouse reduces observability storage costs by 60-96% vs all-EBS. S3 is 3-6x cheaper per GB. Glacier tiering drops to $0.004/GB. VL/VT 47-70x compression combined with Parquet columnar format. Detailed cost calculator for 250 GB/day to 1 PB/month.">
+      description="Victoria Lakehouse reduces observability storage costs by 60-96% vs all-EBS. S3 is 3-6x cheaper per GB. Optional Glacier Instant Retrieval stores at $0.004/GB (read fees apply). VL/VT 47-70x compression combined with Parquet columnar format. Detailed cost calculator for 250 GB/day to 1 PB/month.">
       <header className="hero hero--primary" style={{padding: '3rem 0', textAlign: 'center'}}>
         <div className="container">
           <h1 className="hero__title">Cost Optimization</h1>
@@ -39,7 +39,7 @@ export default function CostOptimization() {
           <div className="col col--3">
             <div className="cost-metric" style={{textAlign: 'center', height: '100%'}}>
               <strong style={{fontSize: '2.5rem', display: 'block', marginBottom: '0.5rem'}}>$0.004</strong>
-              per GB/month on Glacier
+              per GB/month on Glacier Instant Retrieval (optional, $0.03/GB read)
             </div>
           </div>
         </div>
@@ -56,7 +56,7 @@ export default function CostOptimization() {
               VL/VT's 47&ndash;70x compression makes EBS-only cheapest for short retention.
               Lakehouse adds value through <strong>open Parquet format</strong> (9+ analytics engines),{' '}
               <strong>S3 11-nines durability</strong>, <strong>disaster recovery</strong>,
-              and <strong>Glacier tiering</strong> for 3yr+ compliance retention.
+              and optional <strong>cold-class tiering</strong> for 3yr+ retention.
             </p>
           </div>
         </div>
@@ -68,7 +68,7 @@ export default function CostOptimization() {
               <li><strong>3&ndash;6x cheaper per GB</strong> &mdash; S3 Standard $0.023/GB vs EBS $0.08&ndash;0.15/GB</li>
               <li><strong>Multi-AZ included</strong> &mdash; 11 nines durability across AZs at no extra cost</li>
               <li><strong>No IOPS provisioning</strong> &mdash; no EBS volume sizing, snapshot management, or AZ replication</li>
-              <li><strong>Lifecycle tiers</strong> &mdash; auto-tier to IA ($0.0125/GB) or Glacier ($0.004/GB)</li>
+              <li><strong>Optional lifecycle tiers</strong> &mdash; you configure S3 lifecycle rules to move to IA ($0.0125/GB) or Glacier IR ($0.004/GB); read fees and minimum durations apply</li>
               <li><strong>Columnar compression</strong> &mdash; Parquet + ZSTD achieves 6&ndash;9x compression on logs</li>
               <li><strong>L2 disk cache</strong> &mdash; $4&ndash;16/month of local EBS cache avoids repeated S3 GETs</li>
             </ul>
@@ -116,10 +116,10 @@ export default function CostOptimization() {
                 </tr>
                 <tr>
                   <td><strong>Archive</strong></td>
-                  <td>S3 Glacier Deep Archive</td>
+                  <td>S3 Glacier Instant Retrieval (optional)</td>
                   <td>3+ years</td>
-                  <td>Minutes&ndash;hours</td>
-                  <td>$0.004</td>
+                  <td>Milliseconds</td>
+                  <td>$0.004 (+ $0.03/GB read)</td>
                   <td>Legal hold, regulatory</td>
                 </tr>
               </tbody>
@@ -168,7 +168,7 @@ export default function CostOptimization() {
             <h2>Cost-Aware Deletion</h2>
             <p style={{fontSize: '1.1rem', lineHeight: 1.7}}>
               Victoria Lakehouse supports VL-compatible delete APIs with intelligent storage-class awareness.
-              Three deletion modes prevent accidental Glacier retrieval fees ($40&ndash;120/file):
+              Three deletion modes prevent accidental cold-class retrieval fees (Glacier Instant Retrieval charges $0.03 per GB read plus any early-deletion remainder):
             </p>
             <ul style={{fontSize: '1.05rem', lineHeight: '2'}}>
               <li><strong>Hide (Tombstone)</strong> &mdash; instant, $0, data invisible to queries immediately</li>

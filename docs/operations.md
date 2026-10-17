@@ -71,7 +71,7 @@ When running separate insert and select pods:
 ### Flush Pipeline
 
 - **Age seal**: a segment is sealed `insert.buffer_flush_interval` (default 5m) after its first row and then drained completely to Parquet.
-- **Size seal**: earlier, once the segment holds about `insert.target_file_size` (default 128MB) of rows while fewer than 64 segments are pending.
+- **Size seal**: earlier, once the segment holds about `insert.target_file_size` (default 128MB) of rows while fewer than 64 segments are pending. The size is an estimate of rows × 512 B, so 262,144 rows at the 128MB default; written objects are smaller after Parquet compression.
 - **Graceful shutdown**: the flusher stops and the buffer closes (upstream persists every segment); the next start drains what is left.
 
 ## Graceful Shutdown

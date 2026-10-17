@@ -71,7 +71,7 @@ lakehouse:
 
 **Seal triggers (either fires):**
 - Age: the segment has been open `buffer_flush_interval`.
-- Size: the segment holds about `target_file_size` of rows while fewer than 64 segments are pending.
+- Size: the segment holds about `target_file_size` of rows while fewer than 64 segments are pending. The size is an estimate of rows × 512 B, so 262,144 rows at the 128MB default; written objects are smaller after Parquet compression.
 - Shutdown: the flusher stops, the buffer closes (upstream persists every segment) and the next start drains what is left.
 
 A sealed segment is written whole, per tenant, in objects of at most `target_file_size`, so memory is bounded by one object, not by the segment.

@@ -980,18 +980,19 @@ Readiness holds `/ready` at `503`/`204` until disk recovery plus the
 ## 5. Maintaining big S3 files
 
 Small objects are expensive on object stores (per-request cost, read
-amplification). Two mechanisms keep cold-tier Parquet near the 128 MB target:
+amplification). Two mechanisms push cold-tier Parquet towards the 128 MB target (a target: the flush seal counts rows at an assumed 512 B each, so written objects are smaller than 128 MB; the production median is about 71 KiB at low volume, see the [cost page](cost-estimates.md#cost-and-cold-storage-classes-read-this-first)):
 
 - **Size-aware segments.** A segment is sealed `buffer_flush_interval` after its first row, or
   earlier once it holds about `target_file_size` of rows while fewer than 64
   segments wait (past that, only age seals, so an outage builds a few large
   segments rather than many small ones). It is then cut into objects of at most
-  `target_file_size`. High ingest produces big objects directly; the tick cadence
+  `target_file_size` (by estimated rows, as above). High ingest produces big objects directly; the tick cadence
   is *not* the flush cadence.
 - **Compaction.** A background compactor merges the inevitable small level-0
-  objects (low-traffic segments) up through L1→L2 into 128 MB+ objects, applying
-  progressively stronger zstd at each level. Once a file reaches target size it
-  is never rewritten, so S3-IA/Glacier lifecycle transitions are safe.
+  objects (low-traffic segments) up through L1→L2 towards the target size, applying
+  progressively stronger zstd at each level. Lifecycle transitions are optional and off by
+  default; when rules are configured, compaction freezes objects whose transition is due
+  or done ([operations](operations.md#lifecycle-freeze-tiered-objects-are-not-rewritten)), so it does not pay retrieval or early-deletion fees.
 
 Net write amplification stays ~1× for most data (no separate WAL copy; only
 small-file compaction adds a small, amortized overhead).

@@ -341,7 +341,7 @@ lakehouse:
         ingest:
           max_bytes_per_sec: 5242880  # 5 MiB/s token bucket
           max_rows_per_sec:  10000
-        lifecycle:                  # per-tenant S3 transitions (shadows global rules)
+        lifecycle:                  # EXAMPLE only, per-tenant S3 transitions (shadow global rules); default is none (all STANDARD)
           - { transition_days: 7,  storage_class: ONEZONE_IA }
           - { transition_days: 60, storage_class: GLACIER }
         s3:

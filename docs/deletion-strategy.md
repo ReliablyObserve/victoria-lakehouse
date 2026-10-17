@@ -18,7 +18,7 @@ Both modes share the same tombstone store, scheduler, storage-class detection, a
 
 ## Problem
 
-Deleting records from Parquet files on S3 is inherently expensive because Parquet is immutable — you must read the file, filter out deleted rows, and write a new file. On S3 Glacier, this means retrieval fees ($0.03-$0.09/GB) plus rewrite costs. At scale, naive deletion of a single record from a 2-year-old Glacier file could cost more than storing it for another decade.
+Deleting records from Parquet files on S3 is inherently expensive because Parquet is immutable — you must read the file, filter out deleted rows, and write a new file. On a cold S3 class, this means retrieval fees (sourced, us-east-1: $0.01 per GB in Standard-IA, $0.03 per GB in Glacier Instant Retrieval; Glacier Flexible Retrieval and Deep Archive must be restored first) plus a PUT, plus an early-deletion charge if the object is inside the class's minimum duration (30 d Standard-IA, 90 d Glacier IR, 180 d Deep Archive), plus a new minimum-duration clock for the rewritten object. The default storage class is S3 Standard, where none of these retrieval or early-deletion charges apply; the tombstone-only behaviour below matters once you add lifecycle transitions ([cold storage classes](cost-estimates.md#cost-and-cold-storage-classes-read-this-first)). Rewriting one TB held in Glacier IR costs at least $30 of retrieval alone.
 
 Victoria Lakehouse supports VL/VT-compatible delete APIs with the same LogsQL query syntax — but implements them intelligently at the storage layer based on the S3 storage class of the underlying data.
 
@@ -207,6 +207,8 @@ Response:
 }
 ```
 
+The bytes and `rewrite_cost` values in this example are illustrative and are not derived from the prices above (at $0.03 per GB, 450 MB read back from Glacier IR is about $0.01 of retrieval). Run the endpoint on your own data for real numbers.
+
 ### Tombstone Management
 
 ```
@@ -304,7 +306,7 @@ lakehouse:
 |---|---|---|---|---|
 | **Delete single record** | **$0** (instant) | $0.001 (1 file rewrite) | Not supported | Not supported (whole trace only) |
 | **Delete by query (1K matches)** | **$0** (instant) | $0.05 (batch rewrite) | Not supported | N/A |
-| **Delete from Glacier** | **$0** (tombstone only) | $40-120 (retrieval + rewrite) | N/A | N/A |
+| **Delete from Glacier IR** | **$0** (tombstone only) | at least $30 per TB rewritten (retrieval at $0.03 per GB) plus early deletion inside the 90-day minimum, plus the PUT (computed from AWS list prices) | N/A | N/A |
 | **GDPR "right to erasure"** | **$0** immediate (tombstone satisfies GDPR) | Optional physical delete for compliance | Export + reimport (manual) | Not supported at record level |
 | **Retention-based expiry** | S3 Lifecycle (free) | S3 Lifecycle (free) | Compactor retention (CPU cost) | Compactor (CPU cost) |
 

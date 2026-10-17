@@ -198,8 +198,8 @@ function ComparisonHighlight() {
               <div className={styles.statValue}>60&ndash;96%</div>
               <div className={styles.statLabel}>cost reduction</div>
               <p>
-                S3 is 3&ndash;6x cheaper per GB. Glacier tiering for 3yr+ retention
-                drops to $0.004/GB/month.
+                S3 is 3&ndash;6x cheaper per GB. Optional Glacier Instant Retrieval for 3yr+ retention
+                is $0.004/GB/month plus a $0.03/GB read fee.
               </p>
             </div>
           </div>
