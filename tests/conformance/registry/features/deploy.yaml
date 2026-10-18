@@ -181,6 +181,9 @@
     - internal/compaction/ownership_self_test.go#TestOwnership_SelfUnresolved_OwnsNothing_GaugeZero
     - internal/peercache/ring_self_test.go#TestPeercacheRing_IsSelf_Hostname
     - internal/smartcache/ring_self_test.go#TestController_OwnKeysCauseNoSelfHTTP
+    - internal/selfaddr/env_test.go#TestSystemEnv_EvictionKeepsInflightEntries
+    - internal/selfaddr/env_test.go#TestSystemEnv_HungResolverDoesNotPinTheSlots
+    - internal/selfaddr/env_test.go#TestSystemEnv_RefreshDoesNotRewriteAReturnedSlice
     - internal/metrics/ring_self_test.go#TestAlerts_RingSelfUnresolved
     - internal/metrics/ring_self_test.go#TestAlerts_NoWriterInCompactionRing
     - charts/victoria-lakehouse/test_templates.sh
