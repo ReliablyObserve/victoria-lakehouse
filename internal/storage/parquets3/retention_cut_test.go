@@ -1,7 +1,6 @@
 package parquets3
 
 import (
-	"net/http"
 	"testing"
 	"time"
 
@@ -15,9 +14,10 @@ import (
 //
 // A query never plans a file past its retention, although the retention loop may
 // not have deleted it yet. The cut is the same predicate as the eviction
-// (internal/retention.Policy: age of the file's newest row > TTL) judged by the
-// object store's clock. The fixture's rows were written at tsNow(); each test
-// moves the store clock, so the result does not depend on the host's date.
+// (internal/retention.Policy: upstream's day floor for a TTL of a day or more,
+// an exact age for a shorter one). The fixture's rows were written at tsNow();
+// each test sets the clock the cut reads, so the result does not depend on the
+// host's date.
 
 func mustRetention(t *testing.T, cfg retention.Config) *retention.Policy {
 	t.Helper()
@@ -28,30 +28,18 @@ func mustRetention(t *testing.T, cfg retention.Config) *retention.Policy {
 	return p
 }
 
-// cutFx moves the object store's clock for the queries of one fixture. The mock
-// S3 answers carry the real Date, which would move the clock back to today on the
-// first object read, so every query re-applies the chosen time first.
-type cutFx struct {
-	f  *tsFixture
-	at time.Time
+// cutNow sets the clock the cut reads (the same injectable clock the startup
+// pass uses) for the rest of the test.
+func cutNow(t *testing.T, at time.Time) {
+	t.Helper()
+	prev := nowFn
+	nowFn = func() time.Time { return at }
+	t.Cleanup(func() { nowFn = prev })
 }
 
-func (c *cutFx) observe() {
-	c.f.s.Pool().StoreClock().Observe(c.at.UTC().Format(http.TimeFormat))
-}
-
-// now makes the store clock read at (to the second) for the queries that follow.
-func (c *cutFx) now(at time.Time) {
-	c.at = at
-	c.observe()
-}
-
-// rows is the number of rows a query of the tenants (or a global read) returns.
-func (c *cutFx) rows(tenants []logstorage.TenantID, global bool) int {
-	if !c.at.IsZero() {
-		c.observe()
-	}
-	n, _ := c.f.runQuery(c.f.ctx(global), tenants, "*")
+// rowsOf is the number of rows a query of the tenants (or a global read) returns.
+func rowsOf(f *tsFixture, tenants []logstorage.TenantID, global bool) int {
+	n, _ := f.runQuery(f.ctx(global), tenants, "*")
 	return n
 }
 
@@ -75,54 +63,58 @@ func putLabelled(f *tsFixture, account, project, key, service string, n int) {
 }
 
 // Failing first: before the cut a file past its retention was read until the
-// eviction loop got to it; a file inside it is read before and after.
+// eviction loop got to it; a file inside it is read before and after. The
+// fixture's rows were written on 2026-05-10 14:30 UTC.
 func TestRetentionCut_PlansExcludeExpiredFiles(t *testing.T) {
 	f := newTenantScopeFixture(t)
-	c := &cutFx{f: f}
 	all := f.expectedRows(nil, true)
 	if all == 0 {
 		t.Fatal("fixture has no rows")
 	}
-	ttl := 30 * 24 * time.Hour
 	f.s.SetRetentionPolicy(mustRetention(t, retention.Config{Enabled: true, Default: "30d"}))
 
-	c.now(tsNow().Add(ttl - time.Hour))
-	if got := c.rows(nil, true); got != all {
+	cutNow(t, tsNow().Add(29*24*time.Hour))
+	if got := rowsOf(f, nil, true); got != all {
 		t.Fatalf("a file inside its retention: %d rows, want %d", got, all)
 	}
-	c.now(tsNow().Add(ttl + time.Hour))
-	if got := c.rows(nil, true); got != 0 {
+	cutNow(t, tsNow().Add(31*24*time.Hour+12*time.Hour))
+	if got := rowsOf(f, nil, true); got != 0 {
 		t.Fatalf("a file past its retention was read: %d rows, want 0", got)
 	}
 
-	// No policy, and a disabled policy, cut nothing, whatever the age.
+	// No policy, a disabled policy and a 100-year keep cut nothing, whatever the age.
 	for name, p := range map[string]*retention.Policy{
 		"no policy":       nil,
 		"retention off":   mustRetention(t, retention.Config{}),
 		"a 100-year keep": mustRetention(t, retention.Config{Enabled: true, Default: "36500d"}),
 	} {
 		f.s.SetRetentionPolicy(p)
-		if got := c.rows(nil, true); got != all {
+		if got := rowsOf(f, nil, true); got != all {
 			t.Fatalf("%s: %d rows, want %d", name, got, all)
 		}
 	}
 }
 
-// The boundary is the eviction's: kept while the newest row is at most TTL old,
-// cut once it is older. The store's Date header has a one-second resolution, so
-// the probes sit a few seconds either side.
-func TestRetentionCut_BoundaryAtTheTTL(t *testing.T) {
+// The boundary is upstream's day floor: a file stays until the day of its newest
+// row is before the day of now-TTL, so it is not hidden up to 23 hours early. With
+// a 48h TTL and rows from 2026-05-10 14:30, the floor day is May 10 for every
+// "now" through May 12 23:59:59, and May 11 from May 13 00:00:00.
+func TestRetentionCut_DayFloorBoundary(t *testing.T) {
 	f := newTenantScopeFixture(t)
-	c := &cutFx{f: f}
 	all := f.expectedRows(nil, true)
 	f.s.SetRetentionPolicy(mustRetention(t, retention.Config{Enabled: true, Default: "48h"}))
-	c.now(tsNow().Add(48*time.Hour - 5*time.Second))
-	if got := c.rows(nil, true); got != all {
-		t.Fatalf("5s before the TTL: %d rows, want %d", got, all)
+
+	cutNow(t, tsNow().Add(48*time.Hour+5*time.Hour)) // 5h past the TTL by the clock, same floor day
+	if got := rowsOf(f, nil, true); got != all {
+		t.Fatalf("5h past the TTL but inside the day floor: %d rows, want %d (the exact rule would have cut it)", got, all)
 	}
-	c.now(tsNow().Add(48*time.Hour + 5*time.Second))
-	if got := c.rows(nil, true); got != 0 {
-		t.Fatalf("5s after the TTL: %d rows, want 0", got)
+	cutNow(t, time.Date(2026, 5, 12, 23, 59, 59, 0, time.UTC))
+	if got := rowsOf(f, nil, true); got != all {
+		t.Fatalf("one second before the floor moves: %d rows, want %d", got, all)
+	}
+	cutNow(t, time.Date(2026, 5, 13, 0, 0, 1, 0, time.UTC))
+	if got := rowsOf(f, nil, true); got != 0 {
+		t.Fatalf("one second after the floor moved past the file's day: %d rows, want 0", got)
 	}
 }
 
@@ -131,8 +123,6 @@ func TestRetentionCut_BoundaryAtTheTTL(t *testing.T) {
 // are cut while another's, and the default's, are not.
 func TestRetentionCut_PerTenantRetention(t *testing.T) {
 	f := newEmptyTenantScopeFixture(t, tsLayoutPrefix, "{AccountID}/{ProjectID}/")
-	c := &cutFx{f: f}
-	now := tsNow()
 	putLabelled(f, "0", "0", "0/0/logs/"+tsPartition+"/a.parquet", "svc-default", 3)
 	putLabelled(f, "1001", "0", "1001/0/logs/"+tsPartition+"/b.parquet", "svc-short", 5)
 	putLabelled(f, "2002", "7", "2002/7/logs/"+tsPartition+"/c.parquet", "svc-long", 2)
@@ -146,67 +136,64 @@ func TestRetentionCut_PerTenantRetention(t *testing.T) {
 	t1001 := []logstorage.TenantID{{AccountID: 1001}}
 	t2002 := []logstorage.TenantID{{AccountID: 2002, ProjectID: 7}}
 	t00 := []logstorage.TenantID{{}}
+	now := tsNow()
 
-	c.now(now.Add(3 * 24 * time.Hour)) // inside every retention
-	if a, b, c := c.rows(t1001, false), c.rows(t2002, false), c.rows(t00, false); a != 5 || b != 2 || c != 3 {
+	cutNow(t, now.Add(3*24*time.Hour)) // inside every retention
+	if a, b, c := rowsOf(f, t1001, false), rowsOf(f, t2002, false), rowsOf(f, t00, false); a != 5 || b != 2 || c != 3 {
 		t.Fatalf("at 3 days every tenant should still be readable: 1001=%d (want 5), 2002:7=%d (want 2), 0:0=%d (want 3)", a, b, c)
 	}
-	c.now(now.Add(10 * 24 * time.Hour)) // past 1001's 7 days only
-	if got := c.rows(t1001, false); got != 0 {
+	cutNow(t, now.Add(10*24*time.Hour)) // past 1001's 7 days only
+	if got := rowsOf(f, t1001, false); got != 0 {
 		t.Fatalf("tenant 1001 (7d) at 10 days: %d rows, want 0", got)
 	}
-	if c.rows(t2002, false) != 2 || c.rows(t00, false) != 3 {
+	if rowsOf(f, t2002, false) != 2 || rowsOf(f, t00, false) != 3 {
 		t.Fatal("tenant 1001's retention cut another tenant's files")
 	}
-	if got := c.rows(nil, true); got != 5 {
+	if got := rowsOf(f, nil, true); got != 5 {
 		t.Fatalf("global read at 10 days: %d rows, want 5 (default + 2002)", got)
 	}
-	c.now(now.Add(40 * 24 * time.Hour)) // past the 30d default as well
-	if c.rows(t00, false) != 0 || c.rows(t2002, false) != 2 {
+	cutNow(t, now.Add(40*24*time.Hour)) // past the 30d default as well
+	if rowsOf(f, t00, false) != 0 || rowsOf(f, t2002, false) != 2 {
 		t.Fatal("at 40 days the default tenant should be cut and the 90d tenant kept")
 	}
-	c.now(now.Add(100 * 24 * time.Hour))
-	if got := c.rows(nil, true); got != 0 {
+	cutNow(t, now.Add(100*24*time.Hour))
+	if got := rowsOf(f, nil, true); got != 0 {
 		t.Fatalf("at 100 days: %d rows, want 0", got)
 	}
 }
 
-// A keep of zero expires everything it matches at once (what eviction does), and
-// only that tenant's files.
+// A keep of zero (below a day: an exact rule, a Lakehouse extension) expires
+// everything it matches at once, and only that tenant's files.
 func TestRetentionCut_ZeroKeepCutsOnlyItsRule(t *testing.T) {
 	f := newEmptyTenantScopeFixture(t, tsLayoutPrefix, "{AccountID}/{ProjectID}/")
-	c := &cutFx{f: f}
 	putLabelled(f, "1001", "0", "1001/0/logs/"+tsPartition+"/z.parquet", "svc-zero", 4)
 	putLabelled(f, "0", "0", "0/0/logs/"+tsPartition+"/o.parquet", "svc-other", 3)
 
 	f.s.SetRetentionPolicy(mustRetention(t, retention.Config{Enabled: true, Default: "30d", Rules: []retention.Rule{
 		{Match: map[string]string{"account_id": "1001", "project_id": "0"}, Keep: "0s"},
 	}}))
-	c.now(tsNow().Add(time.Minute))
-	if got := c.rows([]logstorage.TenantID{{AccountID: 1001}}, false); got != 0 {
+	cutNow(t, tsNow().Add(time.Minute))
+	if got := rowsOf(f, []logstorage.TenantID{{AccountID: 1001}}, false); got != 0 {
 		t.Fatalf("a zero keep left %d rows readable", got)
 	}
-	if got := c.rows([]logstorage.TenantID{{}}, false); got != 3 {
+	if got := rowsOf(f, []logstorage.TenantID{{}}, false); got != 3 {
 		t.Fatalf("another tenant lost rows to a zero keep: %d, want 3", got)
 	}
 }
 
-// The cut judges file ages by the object store's clock, the one the eviction
-// uses, not by the pod's own: a pod whose clock is off must not plan a file that
-// the pods whose clocks are right have stopped serving.
-func TestRetentionCut_UsesTheStoreClock(t *testing.T) {
+// The cut reads the injected clock, not the host's: the same plan is cut or not
+// by the time the test says it is.
+func TestRetentionCut_UsesTheInjectedClock(t *testing.T) {
 	f := newTenantScopeFixture(t)
-	c := &cutFx{f: f}
 	all := f.expectedRows(nil, true)
 	f.s.SetRetentionPolicy(mustRetention(t, retention.Config{Enabled: true, Default: "200d"}))
-	c.now(tsNow().Add(100 * 24 * time.Hour))
-	if got := c.rows(nil, true); got != all {
+	cutNow(t, tsNow().Add(100*24*time.Hour))
+	if got := rowsOf(f, nil, true); got != all {
 		t.Fatalf("with a 200 day retention and 100 day old data: %d rows, want %d", got, all)
 	}
-	// Whatever the host's clock says, the store's clock decides.
-	c.now(tsNow().Add(300 * 24 * time.Hour))
-	if got := c.rows(nil, true); got != 0 {
-		t.Fatalf("with the store's clock 300 days ahead the cut returned %d rows, want 0: it judged by the pod's own clock", got)
+	cutNow(t, tsNow().Add(300*24*time.Hour))
+	if got := rowsOf(f, nil, true); got != 0 {
+		t.Fatalf("with the clock 300 days ahead the cut returned %d rows, want 0", got)
 	}
 }
 
@@ -234,6 +221,7 @@ func BenchmarkCutRetention(b *testing.B) {
 	b.Run("33600_files_none_expired", func(b *testing.B) {
 		files := mk(33600, time.Hour)
 		b.ReportAllocs()
+		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_ = s.cutRetention(files)
 		}
@@ -241,6 +229,7 @@ func BenchmarkCutRetention(b *testing.B) {
 	b.Run("33600_files_all_expired", func(b *testing.B) {
 		files := mk(33600, 90*24*time.Hour)
 		b.ReportAllocs()
+		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			_ = s.cutRetention(files)
 		}

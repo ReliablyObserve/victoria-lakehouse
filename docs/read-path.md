@@ -101,7 +101,9 @@ manifest.HasDataForRange(startNs, endNs) -> bool
 
 Each `FileInfo` contains the S3 key, file size, and label values extracted during flush.
 
-The plan is then cut at the retention horizon: when retention is enabled, a file whose newest row is older than its retention (the same predicate, `retention.Policy`, and the same object-store clock the eviction loop uses, tenant overrides included) is not planned, even if the eviction loop, which runs on the `insert` and `all` roles only, has not deleted it yet. Every role cuts; a select pod therefore never serves data past its retention.
+The plan is then cut at the retention horizon. When retention is enabled, a file past its retention is not planned, even if the eviction loop (which runs on the `insert` and `all` roles only) has not deleted it yet; every role cuts, so a select pod never serves a file past its retention. The predicate (`retention.Policy`, one object shared by the eviction and the cut, tenant overrides and rules included) is upstream VictoriaLogs/VictoriaTraces' day rule for a TTL of a day or more: a file is cut once the UTC day of its newest row is before the day of `now - TTL` (`getMinAllowedDay`), so nothing is hidden up to 23 hours early. For a TTL below a day (a Lakehouse extension; upstream's minimum is one day) it is exact: the newest row is older than the TTL.
+
+What the cut does not touch: buffered (unflushed) rows are served whatever their age (ingest-side timestamp bounds are a separate topic, see #484); the tenant list (`/select/tenant_ids`) and the stats and admin APIs report what is stored, so a tenant whose only files are past retention stays listed until the eviction loop has run (#619); and raising a retention makes files that were hidden but not yet deleted visible again. An alias-keyed tenant retention that resolves after start applies, to the eviction and the cut alike, after the next restart.
 
 ### Level 2b: Trace ID Cache Shortcut (traces module)
 

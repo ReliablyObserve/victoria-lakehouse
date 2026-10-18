@@ -11,7 +11,8 @@ import (
 // is kept and whether it has expired. The retention manager deletes the files it
 // calls expired; the read path hides the same files from queries before they are
 // deleted, so a lagging eviction can never show data past its retention. One
-// predicate serves both, which keeps them from drifting.
+// predicate (and, in the binaries, one Policy object) serves both, which keeps
+// them from drifting.
 type Policy struct {
 	enabled    bool
 	defaultTTL time.Duration
@@ -74,8 +75,32 @@ func (p *Policy) ResolveTTL(fi manifest.FileInfo) time.Duration {
 	return longest
 }
 
-// Expired reports whether the file is past its retention at now: its newest row
-// is older than its TTL. A disabled policy expires nothing.
+// nsPerDay is the length of a partition day.
+const nsPerDay = int64(24 * time.Hour)
+
+// dayOf is the UTC day number of a timestamp (floor division, so a negative
+// timestamp is in the day before the epoch).
+func dayOf(ns int64) int64 {
+	d := ns / nsPerDay
+	if ns%nsPerDay < 0 {
+		d--
+	}
+	return d
+}
+
+// Expired reports whether the file is past its retention at now.
+//
+// For a TTL of a day or more this is upstream VictoriaLogs/VictoriaTraces' rule,
+// which drops whole day partitions: the file's newest row is in a day that is
+// before the day of now-TTL (upstream: storage.go getMinAllowedDay,
+// `day < (now - retention) / nsPerDay`; its minimum retention is one day). The
+// day floor keeps a file until its whole last day is outside the retention, so
+// nothing is hidden up to 23 hours early.
+//
+// For a TTL below a day (a Lakehouse extension: upstream cannot go below one
+// day) the rule is exact: the newest row is older than the TTL.
+//
+// A disabled policy expires nothing.
 func (p *Policy) Expired(fi manifest.FileInfo, now time.Time) bool {
 	if !p.Enabled() {
 		return false
@@ -86,7 +111,14 @@ func (p *Policy) Expired(fi manifest.FileInfo, now time.Time) bool {
 	if age <= p.minTTL {
 		return false
 	}
-	return age > p.ResolveTTL(fi)
+	ttl := p.ResolveTTL(fi)
+	if age <= ttl {
+		return false
+	}
+	if ttl < 24*time.Hour {
+		return true
+	}
+	return dayOf(fi.MaxTimeNs) < dayOf(now.UnixNano()-ttl.Nanoseconds())
 }
 
 // matchRule checks if a file matches all fields in a rule.

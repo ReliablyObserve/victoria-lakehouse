@@ -5,7 +5,6 @@ import (
 	"math"
 	"sort"
 	"strconv"
-	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -141,22 +140,22 @@ func (s *Storage) filesForScope(site string, startNs, endNs int64, scope tenantS
 }
 
 // cutRetention drops the files that are past their retention from a plan. The
-// retention loop deletes them on its own schedule, which can lag; until it has,
-// no query shows data older than its retention, the way upstream drops a
-// partition at the boundary. internal/retention.Policy is the one predicate the
-// eviction and this cut share.
+// retention loop deletes them on its own schedule, which can lag (and runs only on
+// the insert and all roles); until it has, no query shows a file past its
+// retention, the way upstream drops a day partition at the boundary.
+// retention.Policy is the one predicate the eviction and this cut share, and the
+// binaries hand both the same Policy object.
+//
+// Not cut: buffered (unflushed) rows, which Lakehouse accepts whatever their age;
+// the tenant list (/select/tenant_ids) and the stats and admin APIs, which report
+// what is stored. Raising the retention makes files that were hidden but not yet
+// deleted visible again.
 func (s *Storage) cutRetention(files []manifest.FileInfo) []manifest.FileInfo {
 	p := s.retention.Load()
 	if !p.Enabled() || len(files) == 0 {
 		return files
 	}
-	// The object store's clock, the one eviction uses: a pod whose own clock is
-	// off must not plan a file the others have stopped serving (or stop serving
-	// one they still do).
-	now := time.Now()
-	if s.pool != nil {
-		now = s.pool.StoreNow()
-	}
+	now := nowFn()
 	// A plan with nothing expired (the common case) is returned as is, with no
 	// copy; the first expired file starts the filtered copy.
 	first := -1
@@ -181,6 +180,9 @@ func (s *Storage) cutRetention(files []manifest.FileInfo) []manifest.FileInfo {
 // SetRetentionPolicy installs the retention policy reads are cut at. Nil or a
 // disabled policy cuts nothing.
 func (s *Storage) SetRetentionPolicy(p *retention.Policy) { s.retention.Store(p) }
+
+// RetentionPolicy is the policy reads are cut at (nil when none is installed).
+func (s *Storage) RetentionPolicy() *retention.Policy { return s.retention.Load() }
 
 func (s *Storage) filesForScopeUncut(site string, startNs, endNs int64, scope tenantScope) []manifest.FileInfo {
 	if scope.all {

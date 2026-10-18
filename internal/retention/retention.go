@@ -45,16 +45,15 @@ type parsedRule struct {
 
 // Manager manages retention policy enforcement.
 type Manager struct {
-	cfg           Config
 	manifest      ManifestAccessor
 	deleter       FileDeleter
 	logger        *slog.Logger
 	bucket        string
-	defaultTTL    time.Duration
 	checkInterval time.Duration
-	parsedRules   []parsedRule
-	policy        *Policy
-	nowFunc       func() time.Time // for testing
+	// policy is the one predicate that says which files are past their retention.
+	// The read path's cut uses the same object.
+	policy  *Policy
+	nowFunc func() time.Time // for testing
 
 	// onFileRemoved, when set, is invoked after an expired file is deleted and
 	// removed from the manifest — the pmeta facet-cleanup hook.
@@ -67,15 +66,6 @@ func New(cfg Config, mf ManifestAccessor, deleter FileDeleter, bucket string, lo
 	if err != nil {
 		return nil, fmt.Errorf("parse default retention %q: %w", cfg.Default, err)
 	}
-
-	checkInterval, err := parseDuration(cfg.CheckInterval)
-	if err != nil {
-		return nil, fmt.Errorf("parse check_interval %q: %w", cfg.CheckInterval, err)
-	}
-	if checkInterval <= 0 {
-		return nil, fmt.Errorf("check_interval must be positive, got %v", checkInterval)
-	}
-
 	var rules []parsedRule
 	for i, r := range cfg.Rules {
 		keep, err := parseDuration(r.Keep)
@@ -85,37 +75,47 @@ func New(cfg Config, mf ManifestAccessor, deleter FileDeleter, bucket string, lo
 		if len(r.Match) == 0 {
 			return nil, fmt.Errorf("rule[%d]: match must have at least one field", i)
 		}
-		rules = append(rules, parsedRule{
-			match: r.Match,
-			keep:  keep,
-		})
+		rules = append(rules, parsedRule{match: r.Match, keep: keep})
 	}
+	return NewWithPolicy(newPolicy(cfg.Enabled, defaultTTL, rules), cfg.CheckInterval, mf, deleter, bucket, logger)
+}
 
+// NewWithPolicy creates a Manager that enforces an existing policy. The binaries
+// build one Policy at start and give the same object to the manager and to the
+// storage's read cut, so what is deleted and what is hidden cannot differ.
+func NewWithPolicy(policy *Policy, checkInterval string, mf ManifestAccessor, deleter FileDeleter, bucket string, logger *slog.Logger) (*Manager, error) {
+	interval, err := parseDuration(checkInterval)
+	if err != nil {
+		return nil, fmt.Errorf("parse check_interval %q: %w", checkInterval, err)
+	}
+	if interval <= 0 {
+		return nil, fmt.Errorf("check_interval must be positive, got %v", interval)
+	}
 	return &Manager{
-		cfg:           cfg,
 		manifest:      mf,
 		deleter:       deleter,
 		logger:        logger,
 		bucket:        bucket,
-		defaultTTL:    defaultTTL,
-		checkInterval: checkInterval,
-		parsedRules:   rules,
-		policy:        newPolicy(cfg.Enabled, defaultTTL, rules),
+		checkInterval: interval,
+		policy:        policy,
 		nowFunc:       time.Now,
 	}, nil
 }
 
+// Policy is the predicate the manager deletes by.
+func (m *Manager) Policy() *Policy { return m.policy }
+
 // Start runs the retention check loop in the background until ctx is cancelled.
 func (m *Manager) Start(ctx context.Context) {
-	if !m.cfg.Enabled {
+	if !m.policy.Enabled() {
 		m.logger.Info("retention manager disabled")
 		return
 	}
 
 	m.logger.Info("retention manager started",
-		"default_ttl", m.defaultTTL,
+		"default_ttl", m.policy.defaultTTL,
 		"check_interval", m.checkInterval,
-		"rules", len(m.parsedRules),
+		"rules", len(m.policy.rules),
 	)
 
 	ticker := time.NewTicker(m.checkInterval)
@@ -152,10 +152,9 @@ func (m *Manager) RunOnce(ctx context.Context) (int, error) {
 			default:
 			}
 
-			ttl := m.ResolveTTL(fi)
-			age := m.fileAge(fi, now)
-
-			if age > ttl {
+			if m.policy.Expired(fi, now) {
+				ttl := m.policy.ResolveTTL(fi)
+				age := m.fileAge(fi, now)
 				if err := m.deleter.DeleteObject(ctx, m.bucket, fi.Key); err != nil {
 					m.logger.Error("failed to delete expired file",
 						"key", fi.Key,
@@ -184,11 +183,6 @@ func (m *Manager) RunOnce(ctx context.Context) (int, error) {
 
 	return deleted, nil
 }
-
-// SetClock replaces the clock the eviction judges file ages against. The binaries
-// pass the object store's clock, the one the read cut uses, so the two agree
-// whatever a pod's own clock says.
-func (m *Manager) SetClock(now func() time.Time) { m.nowFunc = now }
 
 // SetOnFileRemoved installs the per-file removal hook (pmeta facet cleanup).
 func (m *Manager) SetOnFileRemoved(fn func(partition, key string)) {
