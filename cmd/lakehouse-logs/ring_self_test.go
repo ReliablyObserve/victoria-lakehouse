@@ -120,6 +120,61 @@ func TestOwnership_EveryForm_ExactlyOneOwner(t *testing.T) {
 			}
 		}
 	}
+	checkZonesExactlyOneOwner(t)
+}
+
+// zonedOwnerShares is ringOwnerShares for writers that run the peer cache with
+// availability zones, the way a balanced profile does (peer.az_aware): azs zones
+// of perAZ writers each, every pod with its own PeerCache. Compaction does not
+// care where a pod runs, so a zone must not shrink the ring a pod hashes over:
+// a partition has one owner among all the writers, not one per zone.
+func zonedOwnerShares(t *testing.T, azs, perAZ int, azAware bool) (ownerless, multi float64) {
+	t.Helper()
+	w := azs * perAZ
+	members := ringMembers("sts-srv", w)
+	zones := map[string]string{}
+	for i, m := range members {
+		zones[m] = fmt.Sprintf("az-%d", i/perAZ)
+	}
+	var pods []func(string) bool
+	for i := 0; i < w; i++ {
+		pc := peercache.NewWithStabilize(":9428", "k", time.Second, 1, time.Millisecond)
+		pc.SetSelfEnv(podEnv("sts-srv", i))
+		if azAware {
+			pc.UpdatePeersWithZones(zones, fmt.Sprintf("az-%d", i/perAZ))
+		} else {
+			pc.UpdatePeers(members)
+		}
+		own := newCompactionOwnership(":9428", pc, func() []string { return members }, podEnv("sts-srv", i))
+		pods = append(pods, own.OwnsPartition)
+	}
+	time.Sleep(20 * time.Millisecond) // the ring's stabilization window
+	return shares(ownerCounts(ringPartitions(), pods))
+}
+
+// checkZonesExactlyOneOwner: zones do not change who owns a partition: 2 zones x 2 writers and 3 zones x 1
+// writer (the shape of the shipped cluster compose), AZ-aware or not, still give
+// every partition exactly one owner.
+func checkZonesExactlyOneOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		azs, perAZ int
+		azAware    bool
+	}{
+		{"2 zones x 2 writers, az_aware", 2, 2, true},
+		{"2 zones x 2 writers, not az_aware", 2, 2, false},
+		{"3 zones x 1 writer, az_aware", 3, 1, true},
+		{"3 zones x 1 writer, not az_aware", 3, 1, false},
+		{"1 zone x 3 writers, az_aware", 1, 3, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ownerless, multi := zonedOwnerShares(t, tc.azs, tc.perAZ, tc.azAware)
+			t.Logf("ownerless %.1f%%, owned by several writers %.1f%%", 100*ownerless, 100*multi)
+			if ownerless != 0 || multi != 0 {
+				t.Errorf("%.1f%% of 672 partitions have no owner and %.1f%% are owned by several writers, want 0 and 0", 100*ownerless, 100*multi)
+			}
+		})
+	}
 }
 
 // The listen address is never added to a discovered list: a pod that is not in
