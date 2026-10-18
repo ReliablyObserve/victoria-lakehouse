@@ -12,97 +12,11 @@ import (
 
 func TestParity_CrossValidation(t *testing.T) {
 	t.Run("sum_per_service_equals_total", func(t *testing.T) {
-		services := []string{"api-gateway", "user-service", "order-service", "payment-service", "notification-service"}
-
-		for _, label := range []struct {
-			name    string
-			baseURL string
-		}{
-			{"VL", vlBaseURL},
-			{"LH", lhBaseURL},
-		} {
-			t.Run(label.name, func(t *testing.T) {
-				// Get total count
-				params := fullRangeParams()
-				params.Set("query", "* | stats count() rows")
-				totalRes := fetch(t, label.baseURL, statsEndpoint(), params)
-				if totalRes.StatusCode != 200 {
-					t.Fatalf("total query returned status %d: %s", totalRes.StatusCode, string(totalRes.Body))
-				}
-				totalCount, err := extractVectorCount(totalRes.Body)
-				if err != nil {
-					t.Fatalf("extractVectorCount for total: %v", err)
-				}
-
-				// Sum per-service counts
-				var sumPerService float64
-				for _, svc := range services {
-					p := fullRangeParams()
-					p.Set("query", fmt.Sprintf(`service.name:="%s" | stats count() rows`, svc))
-					res := fetch(t, label.baseURL, statsEndpoint(), p)
-					if res.StatusCode != 200 {
-						t.Fatalf("service %s query returned status %d: %s", svc, res.StatusCode, string(res.Body))
-					}
-					cnt, err := extractVectorCount(res.Body)
-					if err != nil {
-						t.Fatalf("extractVectorCount for service %s: %v", svc, err)
-					}
-					sumPerService += cnt
-				}
-
-				if totalCount != sumPerService {
-					t.Errorf("sum of per-service counts (%v) != total count (%v)", sumPerService, totalCount)
-				}
-				t.Logf("total=%v sum_per_service=%v", totalCount, sumPerService)
-			})
-		}
+		sumPerLabelEqualsTotal(t, "service.name", "service", []string{"api-gateway", "user-service", "order-service", "payment-service", "notification-service"})
 	})
 
 	t.Run("sum_per_level_equals_total", func(t *testing.T) {
-		levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
-
-		for _, label := range []struct {
-			name    string
-			baseURL string
-		}{
-			{"VL", vlBaseURL},
-			{"LH", lhBaseURL},
-		} {
-			t.Run(label.name, func(t *testing.T) {
-				// Get total count
-				params := fullRangeParams()
-				params.Set("query", "* | stats count() rows")
-				totalRes := fetch(t, label.baseURL, statsEndpoint(), params)
-				if totalRes.StatusCode != 200 {
-					t.Fatalf("total query returned status %d: %s", totalRes.StatusCode, string(totalRes.Body))
-				}
-				totalCount, err := extractVectorCount(totalRes.Body)
-				if err != nil {
-					t.Fatalf("extractVectorCount for total: %v", err)
-				}
-
-				// Sum per-level counts
-				var sumPerLevel float64
-				for _, lvl := range levels {
-					p := fullRangeParams()
-					p.Set("query", fmt.Sprintf(`level:="%s" | stats count() rows`, lvl))
-					res := fetch(t, label.baseURL, statsEndpoint(), p)
-					if res.StatusCode != 200 {
-						t.Fatalf("level %s query returned status %d: %s", lvl, res.StatusCode, string(res.Body))
-					}
-					cnt, err := extractVectorCount(res.Body)
-					if err != nil {
-						t.Fatalf("extractVectorCount for level %s: %v", lvl, err)
-					}
-					sumPerLevel += cnt
-				}
-
-				if totalCount != sumPerLevel {
-					t.Errorf("sum of per-level counts (%v) != total count (%v)", sumPerLevel, totalCount)
-				}
-				t.Logf("total=%v sum_per_level=%v", totalCount, sumPerLevel)
-			})
-		}
+		sumPerLabelEqualsTotal(t, "level", "level", []string{"INFO", "WARN", "ERROR", "DEBUG"})
 	})
 
 	t.Run("not_filter_complement", func(t *testing.T) {
@@ -395,4 +309,50 @@ func TestParity_CrossValidation(t *testing.T) {
 			})
 		}
 	})
+}
+
+// sumPerLabelEqualsTotal checks, on VL and on LH, that the counts of the rows
+// with each of the values of field add up to the count of all rows.
+func sumPerLabelEqualsTotal(t *testing.T, field, what string, values []string) {
+	t.Helper()
+	for _, label := range []struct {
+		name    string
+		baseURL string
+	}{
+		{"VL", vlBaseURL},
+		{"LH", lhBaseURL},
+	} {
+		t.Run(label.name, func(t *testing.T) {
+			params := fullRangeParams()
+			params.Set("query", "* | stats count() rows")
+			totalRes := fetch(t, label.baseURL, statsEndpoint(), params)
+			if totalRes.StatusCode != 200 {
+				t.Fatalf("total query returned status %d: %s", totalRes.StatusCode, string(totalRes.Body))
+			}
+			totalCount, err := extractVectorCount(totalRes.Body)
+			if err != nil {
+				t.Fatalf("extractVectorCount for total: %v", err)
+			}
+
+			var sum float64
+			for _, v := range values {
+				p := fullRangeParams()
+				p.Set("query", fmt.Sprintf(`%s:="%s" | stats count() rows`, field, v))
+				res := fetch(t, label.baseURL, statsEndpoint(), p)
+				if res.StatusCode != 200 {
+					t.Fatalf("%s %s query returned status %d: %s", what, v, res.StatusCode, string(res.Body))
+				}
+				cnt, err := extractVectorCount(res.Body)
+				if err != nil {
+					t.Fatalf("extractVectorCount for %s %s: %v", what, v, err)
+				}
+				sum += cnt
+			}
+
+			if totalCount != sum {
+				t.Errorf("sum of per-%s counts (%v) != total count (%v)", what, sum, totalCount)
+			}
+			t.Logf("total=%v sum_per_%s=%v", totalCount, what, sum)
+		})
+	}
 }

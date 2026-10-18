@@ -62,10 +62,8 @@ func rangeParams(dur time.Duration) url.Values {
 
 func buildParams(pc ParityCase, base url.Values) url.Values {
 	params := url.Values{}
-	if base != nil {
-		for k, v := range base {
-			params[k] = v
-		}
+	for k, v := range base {
+		params[k] = v
 	}
 	for k, v := range pc.Params {
 		params.Set(k, v)

@@ -68,8 +68,8 @@ func TestParity_Traces_Jaeger(t *testing.T) {
 		ref := fetch(t, vtBaseURL, "/select/jaeger/api/traces", params)
 		sut := fetch(t, lhtBaseURL, "/select/jaeger/api/traces", params)
 		var refResp, sutResp map[string]any
-		json.Unmarshal(ref.Body, &refResp)
-		json.Unmarshal(sut.Body, &sutResp)
+		_ = json.Unmarshal(ref.Body, &refResp)
+		_ = json.Unmarshal(sut.Body, &sutResp)
 		refData, _ := refResp["data"].([]any)
 		sutData, _ := sutResp["data"].([]any)
 		if len(refData) > 5 {
