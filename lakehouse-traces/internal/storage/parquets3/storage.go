@@ -28,6 +28,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/retention"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
@@ -61,6 +62,7 @@ type Storage struct {
 	localBuffer       LocalBuffer
 	bufferFlusher     *BufferFlusher
 	tombstones        *delete.TombstoneStore
+	retention         atomic.Pointer[retention.Policy]
 	smartCache        *smartcache.Controller
 	bloomIdx          *bloomindex.Index
 	bloomCache        *bloomindex.BloomCache

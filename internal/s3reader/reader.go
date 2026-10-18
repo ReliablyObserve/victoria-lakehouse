@@ -115,6 +115,10 @@ type ClientPool struct {
 	bucket string
 	router BucketRouterFunc
 
+	// clock is the object store's clock as its Date response headers report it.
+	// Shared by every WithBucket clone.
+	clock *StoreClock
+
 	// sf deduplicates concurrent metadata GETs (footers, .bloom sidecars,
 	// pmeta bundles) — see dedup.go. Keys are object keys; a pool clone
 	// (WithBucket) gets its own group so identical keys in different
@@ -155,7 +159,7 @@ func (p *ClientPool) WithBucket(bucket string) *ClientPool {
 	if bucket == "" || bucket == p.bucket {
 		return p
 	}
-	return &ClientPool{client: p.client, bucket: bucket}
+	return &ClientPool{client: p.client, bucket: bucket, clock: p.clock}
 }
 
 func NewClientPool(ctx context.Context, cfg *config.S3Config) (*ClientPool, error) {
@@ -192,7 +196,8 @@ func NewClientPool(ctx context.Context, cfg *config.S3Config) (*ClientPool, erro
 		return nil, fmt.Errorf("load AWS config: %w", err)
 	}
 
-	s3Opts := []func(*s3.Options){}
+	clock := &StoreClock{}
+	s3Opts := []func(*s3.Options){clock.install}
 	if cfg.Endpoint != "" {
 		s3Opts = append(s3Opts, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
@@ -205,6 +210,7 @@ func NewClientPool(ctx context.Context, cfg *config.S3Config) (*ClientPool, erro
 	return &ClientPool{
 		client: client,
 		bucket: cfg.Bucket,
+		clock:  clock,
 	}, nil
 }
 

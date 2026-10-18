@@ -1062,3 +1062,27 @@ func TestExtra_DotSegmentKeys(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------- STORE CLOCK ----
+
+// TestProd_StoreClock checks what the retention read cut and the retention
+// eviction rely on: the store answers with a Date header, so the pool learns the
+// store's clock and file ages are judged by it, not by a pod's own clock. A store
+// that sends none is reported as a failure, not skipped: every pod would then
+// fall back to its own clock and the pods could disagree about which files are
+// past their retention.
+func TestProd_StoreClock(t *testing.T) {
+	setup(t)
+	ctx := ctxT(t)
+	if _, err := pool.Exists(ctx, pfx(t)+"clock-probe"); err != nil {
+		t.Fatalf("probe request: %v", err)
+	}
+	if !pool.StoreClockKnown() {
+		t.Fatal("the store sent no Date header: the retention cut and eviction would judge file ages by each pod's own clock")
+	}
+	skew := time.Until(pool.StoreNow())
+	if skew < -30*time.Second || skew > 30*time.Second {
+		t.Errorf("the store's clock is %v from the host's", skew)
+	}
+	t.Logf("store clock vs host: %v", skew)
+}

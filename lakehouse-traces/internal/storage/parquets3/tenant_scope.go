@@ -5,12 +5,14 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/retention"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
@@ -137,6 +139,52 @@ func (s *Storage) filesForTenants(ctx context.Context, site string, startNs, end
 }
 
 func (s *Storage) filesForScope(site string, startNs, endNs int64, scope tenantScope) []manifest.FileInfo {
+	return s.cutRetention(s.filesForScopeUncut(site, startNs, endNs, scope))
+}
+
+// cutRetention drops the files that are past their retention from a plan. The
+// retention loop deletes them on its own schedule, which can lag; until it has,
+// no query shows data older than its retention, the way upstream drops a
+// partition at the boundary. internal/retention.Policy is the one predicate the
+// eviction and this cut share.
+func (s *Storage) cutRetention(files []manifest.FileInfo) []manifest.FileInfo {
+	p := s.retention.Load()
+	if !p.Enabled() || len(files) == 0 {
+		return files
+	}
+	// The object store's clock, the one eviction uses: a pod whose own clock is
+	// off must not plan a file the others have stopped serving (or stop serving
+	// one they still do).
+	now := time.Now()
+	if s.pool != nil {
+		now = s.pool.StoreNow()
+	}
+	// A plan with nothing expired (the common case) is returned as is, with no
+	// copy; the first expired file starts the filtered copy.
+	first := -1
+	for i := range files {
+		if p.Expired(files[i], now) {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		return files
+	}
+	out := append(files[:0:0], files[:first]...)
+	for i := first + 1; i < len(files); i++ {
+		if !p.Expired(files[i], now) {
+			out = append(out, files[i])
+		}
+	}
+	return out
+}
+
+// SetRetentionPolicy installs the retention policy reads are cut at. Nil or a
+// disabled policy cuts nothing.
+func (s *Storage) SetRetentionPolicy(p *retention.Policy) { s.retention.Store(p) }
+
+func (s *Storage) filesForScopeUncut(site string, startNs, endNs int64, scope tenantScope) []manifest.FileInfo {
 	if scope.all {
 		// Cross-tenant read (validated global-read caller). No narrowing, and
 		// nothing for the guard to check.

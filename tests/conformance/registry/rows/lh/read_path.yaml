@@ -36,3 +36,43 @@
       - internal/storage/parquets3/footer_overlay_test.go
       - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go
       - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go
+
+- id: lh.query.retention_cut
+  title: "A query never plans a file that is past its retention, although the retention loop may not have deleted it yet (one predicate, retention.Policy, for the eviction loop and the read cut)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - internal/retention/policy_test.go#TestPolicy_Basics
+      - internal/retention/policy_test.go#TestPolicy_AgreesWithTheEvictionLoop
+      - internal/retention/policy_test.go#TestPolicy_Boundaries
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_PlansExcludeExpiredFiles
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_BoundaryAtTheTTL
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_PerTenantRetention
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_ZeroKeepCutsOnlyItsRule
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_UsesTheStoreClock
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_PlansExcludeExpiredFiles
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_BoundaryAtTheTTL
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_PerTenantRetention
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_ZeroKeepCutsOnlyItsRule
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_UsesTheStoreClock
+      - cmd/lakehouse-logs/retention_policy_test.go#TestRetentionPolicy_AgreesWithTheEvictionManager
+      - cmd/lakehouse-logs/retention_policy_test.go#TestRetentionPolicy_RejectsAnInvalidConfig
+      - lakehouse-traces/retention_policy_test.go#TestRetentionPolicy_AgreesWithTheEvictionManager
+      - lakehouse-traces/retention_policy_test.go#TestRetentionPolicy_RejectsAnInvalidConfig
+      - internal/s3reader/storeclock_test.go#TestStoreClock_ObserveIgnoresWhatItCannotParse
+      - internal/s3reader/storeclock_test.go#TestStoreClock_FollowsTheStoreAndAdvances
+      - internal/s3reader/storeclock_test.go#TestClientPool_StoreClockAccessors
+      - internal/s3reader/storeclock_test.go#TestClientPool_NoDateHeaderLeavesTheClockUnknown
+      - internal/s3reader/storeclock_test.go#TestClientPool_LearnsTheStoreClockFromResponses
+      - tests/s3compat/s3compat_test.go#TestProd_StoreClock
+  notes: "Upstream drops a partition at the retention boundary. Lakehouse's eviction loop deletes files on its own schedule (and only on the insert and all roles), so before this cut a file past retention stayed readable until the loop reached it, and a select pod could serve it indefinitely. DIRECTION: this changes results for data older than the retention that eviction has not yet removed; it moves the answer toward upstream's. The cut and the eviction are built from one retentionConfig at start; an alias-keyed tenant override that resolves after start applies to neither until a restart."

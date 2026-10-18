@@ -542,6 +542,7 @@ flag: 35/181 covered by at least one registry row.
 | `lh.lifecycle.ring.schema` | LH lifecycle ring — hash-ring membership and shard ownership | admin | 🟡 declared, not yet executed |
 | `lh.manifest.partitions.schema` | LH manifest partitions — partition listing | admin | 🟡 declared, not yet executed |
 | `lh.manifest.range.schema` | LH manifest range — partition manifest lookup over a time window | admin | 🟡 declared, not yet executed |
+| `lh.query.retention_cut` | A query never plans a file that is past its retention, although the retention loop may not have deleted it yet (one predicate, retention.Policy, for the eviction loop and the read cut) | select | 🟡 declared, not yet executed |
 | `lh.ready.status` | LH ready — readiness probe | internal | 🟡 declared, not yet executed |
 | `lh.select.manifest.incomplete_listing_deletes_nothing_logs` | LH cold read after an incomplete manifest listing (a skipped tenant, a truncated LIST) — nothing is deleted, no deleted row returns, no retirement is forgotten (logs) | select | 🟡 declared, not yet executed |
 | `lh.select.manifest.incomplete_listing_deletes_nothing_traces` | LH cold read after an incomplete manifest listing (a skipped tenant, a truncated LIST) — nothing is deleted, no deleted row returns, no retirement is forgotten (traces) | select | 🟡 declared, not yet executed |

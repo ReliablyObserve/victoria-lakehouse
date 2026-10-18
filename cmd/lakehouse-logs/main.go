@@ -483,6 +483,15 @@ func run(cfg *config.Config, addr string) {
 
 	// Retention manager: append synthesized rules from per-tenant
 	// overrides to the global rules list, then start the eviction loop.
+	// Every role cuts its reads at the retention horizon (a file past its
+	// retention is not planned, although the eviction loop, which only the
+	// maintenance roles run, may not have deleted it yet).
+	if rp, err := retentionPolicy(cfg, policy); err != nil {
+		logger.Fatalf("retention policy invalid: %s", err)
+	} else {
+		store.SetRetentionPolicy(rp)
+	}
+
 	if stopRetention := startRetention(cfg, store, policy); stopRetention != nil {
 		defer stopRetention()
 	}
@@ -2348,7 +2357,12 @@ func parseTenantFromS3Key(key string) (uint32, uint32, bool) {
 // labels (the labels Phase 1 + the label extractor embed on every
 // Parquet manifest entry), so the existing rules engine handles
 // per-tenant TTL resolution with no special casing.
-func buildRetentionManager(cfg *config.Config, store *parquets3.Storage, policy *tenant.PolicyRegistry, mode string) (*retention.Manager, error) {
+// retentionConfig is the retention config with the tenant overrides' keep
+// durations appended as rules (the longest matching rule wins). The eviction loop
+// and the read path's retention cut are both built from it, once at start, so
+// they judge every file by the same rules. (An alias-keyed override that
+// resolves after start applies to neither until the next restart.)
+func retentionConfig(cfg *config.Config, policy *tenant.PolicyRegistry) retention.Config {
 	rules := make([]retention.Rule, 0, len(cfg.Retention.Rules))
 	for _, r := range cfg.Retention.Rules {
 		rules = append(rules, retention.Rule{Match: r.Match, Keep: r.Keep})
@@ -2363,12 +2377,22 @@ func buildRetentionManager(cfg *config.Config, store *parquets3.Storage, policy 
 	}
 	rules = append(rules, retention.SynthesizeRules(tenantEntries)...)
 
-	retCfg := retention.Config{
+	return retention.Config{
 		Enabled:       cfg.Retention.Enabled,
 		Default:       cfg.Retention.Default,
 		CheckInterval: cfg.Retention.CheckInterval,
 		Rules:         rules,
 	}
+}
+
+// retentionPolicy is the pod's retention policy, the predicate shared by the
+// eviction loop and the read path's cut. A disabled policy when retention is off.
+func retentionPolicy(cfg *config.Config, policy *tenant.PolicyRegistry) (*retention.Policy, error) {
+	return retention.NewPolicy(retentionConfig(cfg, policy))
+}
+
+func buildRetentionManager(cfg *config.Config, store *parquets3.Storage, policy *tenant.PolicyRegistry, mode string) (*retention.Manager, error) {
+	retCfg := retentionConfig(cfg, policy)
 	deleter := &poolDeleter{pool: store.Pool()}
 	slogLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	mgr, err := retention.New(retCfg, store.Manifest(), deleter, cfg.S3.Bucket, slogLogger.With("component", "retention", "mode", mode))
@@ -2378,6 +2402,8 @@ func buildRetentionManager(cfg *config.Config, store *parquets3.Storage, policy 
 	// pmeta facet cleanup: expired files leave the facets; a fully-expired
 	// partition's bundle is evicted from RAM and its S3 object deleted.
 	mgr.SetOnFileRemoved(store.PmetaOnFileExpired)
+	// Judge file ages by the object store's clock, the one the read cut uses.
+	mgr.SetClock(store.Pool().StoreNow)
 	return mgr, nil
 }
 

@@ -53,6 +53,7 @@ type Manager struct {
 	defaultTTL    time.Duration
 	checkInterval time.Duration
 	parsedRules   []parsedRule
+	policy        *Policy
 	nowFunc       func() time.Time // for testing
 
 	// onFileRemoved, when set, is invoked after an expired file is deleted and
@@ -99,6 +100,7 @@ func New(cfg Config, mf ManifestAccessor, deleter FileDeleter, bucket string, lo
 		defaultTTL:    defaultTTL,
 		checkInterval: checkInterval,
 		parsedRules:   rules,
+		policy:        newPolicy(cfg.Enabled, defaultTTL, rules),
 		nowFunc:       time.Now,
 	}, nil
 }
@@ -183,6 +185,11 @@ func (m *Manager) RunOnce(ctx context.Context) (int, error) {
 	return deleted, nil
 }
 
+// SetClock replaces the clock the eviction judges file ages against. The binaries
+// pass the object store's clock, the one the read cut uses, so the two agree
+// whatever a pod's own clock says.
+func (m *Manager) SetClock(now func() time.Time) { m.nowFunc = now }
+
 // SetOnFileRemoved installs the per-file removal hook (pmeta facet cleanup).
 func (m *Manager) SetOnFileRemoved(fn func(partition, key string)) {
 	m.onFileRemoved = fn
@@ -192,48 +199,12 @@ func (m *Manager) SetOnFileRemoved(fn func(partition, key string)) {
 // When multiple rules match, the longest (most conservative) TTL wins.
 // When no rules match, the default TTL is returned.
 func (m *Manager) ResolveTTL(fi manifest.FileInfo) time.Duration {
-	var matched bool
-	var longest time.Duration
-
-	for _, rule := range m.parsedRules {
-		if m.matchRule(fi, rule) {
-			if !matched || rule.keep > longest {
-				longest = rule.keep
-				matched = true
-			}
-		}
-	}
-
-	if !matched {
-		return m.defaultTTL
-	}
-	return longest
+	return m.policy.ResolveTTL(fi)
 }
 
 // matchRule checks if a file matches all fields in a rule.
 func (m *Manager) matchRule(fi manifest.FileInfo, rule parsedRule) bool {
-	if fi.Labels == nil {
-		return false
-	}
-
-	for field, pattern := range rule.match {
-		values, exists := fi.Labels[field]
-		if !exists {
-			return false
-		}
-
-		if isGlob(pattern) {
-			if !matchAnyGlob(values, pattern) {
-				return false
-			}
-		} else {
-			if !containsExact(values, pattern) {
-				return false
-			}
-		}
-	}
-
-	return true
+	return matchRule(fi, rule)
 }
 
 // fileAge computes how old a file is based on MaxTimeNs.

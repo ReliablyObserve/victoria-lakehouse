@@ -443,7 +443,7 @@ Trino 476 reads logs and traces through the Hive connector (file metastore) as e
 
 Retention deletes what is past its window and keeps the manifest honest about it. Per-tenant retention overrides shadow the global window so one tenant's compliance requirement does not dictate the fleet's.
 
-- Verification: tests: `internal/retention/retention_test.go`, `internal/retention/coverage_hardening_test.go`, `internal/retention/tenant_rules_test.go#TestSynthesizeRules_AppliedByResolveTTL`, `internal/tenant/retention_adapter_test.go#TestPolicyRegistry_RetentionEntries_RoundtripsThroughSynthesizer`, `tests/e2e/smoke_components_test.go#TestSmoke_Retention_ConfigLoaded`
+- Verification: rows: `lh.query.retention_cut` (pass, pending) · tests: `internal/retention/retention_test.go`, `internal/retention/coverage_hardening_test.go`, `internal/retention/tenant_rules_test.go#TestSynthesizeRules_AppliedByResolveTTL`, `internal/tenant/retention_adapter_test.go#TestPolicyRegistry_RetentionEntries_RoundtripsThroughSynthesizer`, `tests/e2e/smoke_components_test.go#TestSmoke_Retention_ConfigLoaded`
 - Docs: `docs/configuration.md`, `docs/deletion-strategy.md`
 
 ### ✅ Row-group geometry and statistics pruning

@@ -101,6 +101,8 @@ manifest.HasDataForRange(startNs, endNs) -> bool
 
 Each `FileInfo` contains the S3 key, file size, and label values extracted during flush.
 
+The plan is then cut at the retention horizon: when retention is enabled, a file whose newest row is older than its retention (the same predicate, `retention.Policy`, and the same object-store clock the eviction loop uses, tenant overrides included) is not planned, even if the eviction loop, which runs on the `insert` and `all` roles only, has not deleted it yet. Every role cuts; a select pod therefore never serves data past its retention.
+
 ### Level 2b: Trace ID Cache Shortcut (traces module)
 
 For exact `trace_id` lookups, the smart cache maintains a reverse index (trace ID → file keys). If the index knows which files contain the trace, the file set is narrowed immediately — bypassing bloom and label checks.
