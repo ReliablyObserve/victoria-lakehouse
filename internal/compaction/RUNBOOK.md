@@ -46,67 +46,59 @@ bound; query latency degrades; alerting fires on
 - **Owner stuck:** `kubectl rollout restart statefulset/<lakehouse>`.
   HRW redistributes within one tick after the pod comes back.
 - **All pods say "not owner" for the affected partition:** see §2 —
-  the partition is unowned because Self is not in any peer list. Check
-  `lakehouse_compaction_ownership_self_in_peers` per pod.
+  the partition is unowned because the pod that should own it cannot find itself in
+  the peer list. Check `lakehouse_ring_self_resolved{ring="compaction"}` per pod.
 
 ### 1.1 "Only one pod is doing all the work"
 
 In a multi-pod cluster, this is symptomatic of one of:
 
-- **Mis-set `Self` strings.** Other pods may be present in the peer
-  list but with addresses that don't match what they themselves
-  publish. Confirm: on each pod, `curl localhost:9428/-/peers` and
-  compare with what the suspect pod sees. The Self values must match
-  what peers see.
+- **A pod that does not find itself in the list** (see §2): it owns
+  nothing, so the pods that do find themselves take its share.
 - **`IsDraining` callback misconfigured.** If every peer is reported
   as `draining=true` to the resolver, only `self` survives the filter.
   Check `lakehouse_compaction_draining` per pod — if it's stuck at 1
   on a non-terminating pod, the drain handler was misfired.
-- **AZ stratification artifact.** In a 1-pod-per-AZ deployment with AZ
-  stratification on, each pod's same-AZ peer list is `{self}` — all
-  partitions land on `self`. This is correct behaviour (no other
-  same-AZ peers to load-balance with), not a bug.
+- **Availability zones do not matter.** Ownership hashes over the whole writer list on every pod, so a pod's zone neither shrinks its ring nor moves a partition. If partitions have one owner per zone, a build still wires a per-zone subset into ownership (it must not).
 
 ---
 
-## 2. "Pod claims `self_in_peers` is 0"
+## 2. "Pod claims `self_resolved` is 0"
 
-**Symptom:** `lakehouse_compaction_ownership_self_in_peers` reads 0
-for a specific pod (and that pod has no work — see §1).
+**Symptom:** `lakehouse_ring_self_resolved{ring="compaction"}` (or
+`lakehouse_ring_self_in_peers`) reads 0 for a specific pod, and that pod has no
+work (see §1). Alert `LakehouseRingSelfUnresolved`.
 
 ### Root cause
 
-The HRW computation requires the pod's own identity string (`Self`)
-to be present in the peer list returned by `Peers()`. If discovery
-publishes a different address (e.g. pod IP vs hostname), HRW always
-picks a "wrong-self" peer and this pod compacts nothing.
+The pod listens on `:9428` while discovery lists the pods by IP or hostname, so
+the pod finds itself by matching the list against what it knows about itself
+(`internal/selfaddr`): the listen port plus its IP (`POD_IP`, `POD_IPS`, the
+interface addresses), its hostname (`POD_NAME`, the StatefulSet pod name, the
+first DNS label of an SRV target), a dashed-IP name (`10-1-2-3.svc...`) or a DNS
+lookup of the member name. Zero matches or several leave it unresolved, and an
+unresolved pod owns nothing (it never adds its listen address to the ring).
 
 ### Checks
 
-1. **What is `Self`?** Look in pod startup logs:
+1. **What did the pod decide?** The pod logs once per change:
    ```
-   compaction: HRW ownership initialized; self=10.0.5.3:9428 peers=...
+   compaction ring: this pod (listen :9428) is not listed among 3 discovered members [...]
+   compaction ring: this pod (listen :9428) is ambiguous (2 members match it) among ...
    ```
-2. **What address do peers publish for this pod?** From a different
-   pod:
-   ```
-   curl localhost:9428/-/peers
-   ```
-   The address shown for THIS pod must match `Self` exactly (including
-   port).
+2. **What does discovery list?** The members are in that log line; compare with the
+   pod's IPs (`kubectl get pod -o wide`) and name.
 
 ### Fixes
 
-- **`Self` shows `0.0.0.0:9428`:** the embedder is sending the listen
-  address instead of the pod IP. Fix by injecting `POD_IP` via downward
-  API and concatenating with the port at startup. See spec §8.1 R1
-  mitigation.
-- **`Self` shows hostname but peers publish IP:** standardise on one
-  form across discovery and main.go. The convention in Lakehouse is
-  IP:port (peer-cache stores IPs).
-- **Self correct, but peers don't list it:** peer-cache hasn't refreshed
-  yet (give it 10 s) or the K8s endpoints controller is broken (check
-  `kubectl get endpoints`).
+- **No `POD_IP` / `POD_IPS`** (a hand-written manifest): add the downward-API env
+  vars the chart sets (`status.podIP`, `status.podIPs`).
+- **The list holds a name or IP the pod cannot recognise** (a service that
+  resolves to a different network, a port other than the listen port): list the
+  pods by the address they listen on, or fix the headless service port.
+- **Ambiguous** (two members match, for example a service that lists a pod twice
+  under different names): fix the service so each pod appears once.
+- **Not listed yet:** the pod is not ready, or DNS lags (give it a minute).
 
 ---
 

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/selfaddr"
 )
 
 type PeerCache struct {
@@ -51,6 +53,11 @@ func NewWithStabilize(selfAddr, authKey string, timeout time.Duration, maxConns 
 	pc.rcm = newRingChangeManager(stabilizeDuration)
 	return pc
 }
+
+// SetSelfEnv replaces what the cache's ring knows about this pod (tests; the
+// process's own environment is used otherwise). The next peer update resolves
+// with it.
+func (pc *PeerCache) SetSelfEnv(env selfaddr.Env) { pc.ring.SetSelfEnv(env) }
 
 func (pc *PeerCache) UpdatePeers(peers []string) {
 	oldMembers := pc.ring.Members()
@@ -149,13 +156,6 @@ func (pc *PeerCache) Stats() Stats {
 
 func (pc *PeerCache) Members() []string {
 	return pc.ring.Members()
-}
-
-// SameAZMembers returns the subset of members in the same AZ as self.
-// Degrades to all members when zone info is unavailable. Used by the
-// compaction OwnershipResolver for AZ-stratified HRW (spec §12.1).
-func (pc *PeerCache) SameAZMembers() []string {
-	return pc.ring.SameAZMembers()
 }
 
 // HasZoneInfo reports whether the ring carries AZ labels for its peers.

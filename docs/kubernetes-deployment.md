@@ -242,7 +242,12 @@ lakehouseConfig:
 ```
 
 Every insert pod runs the compaction scheduler; HRW ownership assigns each partition to
-exactly one pod, so the chart needs no Lease objects or RBAC for it. Setting
+exactly one pod, so the chart needs no Lease objects or RBAC for it. Each pod finds its own
+entry in the discovered list by its IP (`POD_IP` / `POD_IPS`, which the chart sets from the
+downward API) or its StatefulSet hostname (`POD_NAME`), so it works whether the headless
+service lists IPs or hostnames; a pod that cannot find itself owns nothing and raises
+`lakehouse_ring_self_resolved{ring="compaction"}` 0 and the `LakehouseRingSelfUnresolved` alert. A hand-written
+manifest should set the same env vars ([roles](architecture/roles.md#how-a-pod-finds-itself-in-the-ring)). Setting
 `enabled: false` does not turn compaction off — see
 [Configuration — Compaction on or off](configuration.md#compaction-on-or-off).
 

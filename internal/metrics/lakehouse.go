@@ -870,7 +870,7 @@ var (
 //
 // Spec §6.1: Ownership / HRW metrics. The PartitionsOwned gauge is the
 // load-bearing observability invariant — sum across cluster must equal
-// lakehouse_storage_partitions_total. OwnershipSelfInPeers pages
+// lakehouse_storage_partitions_total. RingSelfResolved pages
 // operators when 0 for 5m. DeferredStabilizing counts how often the
 // scheduler skipped a tick because of ring instability; the
 // SweepDeferredStabilizing counterpart is per-tier (label="tier_a"|"tier_b").
@@ -894,6 +894,15 @@ var (
 // for terminationGracePeriodSeconds tuning. DeferredRingThrash counts
 // rate-gate trips (spec §11.4).
 var (
+	// RingSelfResolved is 1 when this pod found itself, by exactly one entry, in
+	// the member list of a ring (ring="compaction" or "peercache"): 0 means the
+	// listen address could not be matched to a discovered member, or matched
+	// several, and the pod owns nothing in that ring. RingSelfInPeers is 1 when
+	// that entry is also in the set the ring hashes over (not draining). Both are
+	// absent until the ring has been looked at.
+	RingSelfResolved = NewGaugeVec("lakehouse_ring_self_resolved", "ring")
+	RingSelfInPeers  = NewGaugeVec("lakehouse_ring_self_in_peers", "ring")
+
 	CompactionPartitionsOwned = NewGauge("lakehouse_compaction_partitions_owned")
 	// CompactionFrozenFiles: files in owned partitions the last scan kept out
 	// of compaction, by reason (storage_class: recorded or cached class is not
@@ -902,7 +911,6 @@ var (
 	// CompactionScanBudgetExhausted counts scans that stopped starting merges
 	// because they reached the scan budget (the scan interval by default).
 	CompactionScanBudgetExhausted      = NewCounter("lakehouse_compaction_scan_budget_exhausted_total")
-	CompactionOwnershipSelfInPeers     = NewGauge("lakehouse_compaction_ownership_self_in_peers")
 	CompactionDeferredStabilizing      = NewCounter("lakehouse_compaction_deferred_stabilizing_total")
 	CompactionSweepDeferredStabilizing = NewCounterVec("lakehouse_compaction_sweep_deferred_stabilizing_total", "tier")
 	CompactionOwnershipEmptyPeers      = NewCounter("lakehouse_compaction_ownership_empty_peers_total")

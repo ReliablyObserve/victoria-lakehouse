@@ -4,6 +4,8 @@ import (
 	"hash/crc32"
 	"sort"
 	"sync"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/selfaddr"
 )
 
 const defaultVnodes = 150
@@ -15,6 +17,8 @@ type Ring struct {
 	ring        map[uint32]string
 	members     map[string]bool
 	selfAddr    string
+	self        *selfaddr.Tracker
+	selfMember  string // the member that is this pod; empty while it is not identified
 	sameAZRing  map[uint32]string
 	sameAZKeys  []uint32
 	hasZoneInfo bool
@@ -29,13 +33,44 @@ func NewRing(selfAddr string, vnodes int) *Ring {
 		ring:       make(map[uint32]string),
 		members:    make(map[string]bool),
 		selfAddr:   selfAddr,
+		self:       selfaddr.NewTracker("peercache", selfAddr, selfaddr.SharedSystemEnv()),
 		sameAZRing: make(map[uint32]string),
 	}
 }
 
-func (r *Ring) Set(peers []string) {
+// SetSelfEnv replaces what the ring knows about this pod (tests; production
+// uses the process's own). The next Set resolves with it.
+func (r *Ring) SetSelfEnv(env selfaddr.Env) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.self = selfaddr.NewTracker("peercache", r.selfAddr, env)
+	r.selfMember = ""
+}
+
+// resolveSelf finds this pod among peers. selfAddr is the pod's listen address
+// (":9428") and discovery lists pods by IP or hostname, so a plain comparison
+// would never say "this key is mine" and the pod would fetch its own keys over
+// HTTP. A pod that is not identified keeps asking its peers, which is slower
+// but always right. Called without r.mu held (it takes no network time).
+func (r *Ring) resolveSelf(peers []string) string {
+	r.mu.RLock()
+	tr := r.self
+	r.mu.RUnlock()
+	res := tr.Resolve(peers)
+	tr.SetInPeers(res.OK())
+	if res.OK() {
+		return res.Self
+	}
+	return ""
+}
+
+func (r *Ring) isSelf(peer string) bool { return peer != "" && peer == r.selfMember }
+
+func (r *Ring) Set(peers []string) {
+	self := r.resolveSelf(peers)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.selfMember = self
 
 	r.ring = make(map[uint32]string)
 	r.members = make(map[string]bool)
@@ -68,7 +103,7 @@ func (r *Ring) Lookup(key string) (peer string, isLocal bool) {
 	}
 
 	peer = r.ring[r.keys[idx]]
-	return peer, peer == r.selfAddr
+	return peer, r.isSelf(peer)
 }
 
 func (r *Ring) Members() []string {
@@ -90,8 +125,15 @@ func (r *Ring) MemberCount() int {
 }
 
 func (r *Ring) SetWithZones(peerZones map[string]string, selfZone string) {
+	peers := make([]string, 0, len(peerZones))
+	for peer := range peerZones {
+		peers = append(peers, peer)
+	}
+	sort.Strings(peers)
+	self := r.resolveSelf(peers)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.selfMember = self
 
 	r.ring = make(map[uint32]string)
 	r.members = make(map[string]bool)
@@ -133,7 +175,7 @@ func (r *Ring) LookupAZ(key string) (peer string, isLocal bool, isSameAZ bool) {
 			idx = 0
 		}
 		peer = r.ring[r.keys[idx]]
-		return peer, peer == r.selfAddr, true
+		return peer, r.isSelf(peer), true
 	}
 
 	h := crc32.ChecksumIEEE([]byte(key))
@@ -142,39 +184,7 @@ func (r *Ring) LookupAZ(key string) (peer string, isLocal bool, isSameAZ bool) {
 		idx = 0
 	}
 	peer = r.sameAZRing[r.sameAZKeys[idx]]
-	return peer, peer == r.selfAddr, true
-}
-
-// SameAZMembers returns the subset of members in the same AZ as self.
-// Returns the full member list when zone info is unavailable (treating
-// every peer as same-AZ so consumers degrade safely). The returned
-// slice is freshly allocated and sorted; safe to mutate.
-//
-// Used by internal/compaction.OwnershipResolver for AZ-stratified HRW
-// (spec §12.1).
-func (r *Ring) SameAZMembers() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if !r.hasZoneInfo {
-		out := make([]string, 0, len(r.members))
-		for m := range r.members {
-			out = append(out, m)
-		}
-		sort.Strings(out)
-		return out
-	}
-
-	seen := make(map[string]struct{}, len(r.sameAZRing))
-	for _, peer := range r.sameAZRing {
-		seen[peer] = struct{}{}
-	}
-	out := make([]string, 0, len(seen))
-	for peer := range seen {
-		out = append(out, peer)
-	}
-	sort.Strings(out)
-	return out
+	return peer, r.isSelf(peer), true
 }
 
 // HasZoneInfo reports whether the ring was populated with zone data.

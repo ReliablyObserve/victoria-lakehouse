@@ -221,6 +221,7 @@ jobs:
           - internal/config:FuzzValidate
           - internal/config:FuzzValidateAZMode
           - internal/discovery:FuzzSplitHostPort
+          - internal/selfaddr:FuzzSelfaddrResolve
           - internal/azdetect:FuzzDetect_EnvVar
           - internal/azdetect:FuzzDetectAWSIMDS_Response
           - internal/azdetect:FuzzDetectGCPMetadata_Response
