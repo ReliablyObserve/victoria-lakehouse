@@ -20,8 +20,8 @@ runs continuously on every pod (no leader election — see §1).
 │  (ownership.go)  │ │ (scheduler.go)│ │ (orphan_sweep.go) │ │(drain_handler) │
 │                  │ │               │ │                   │ │                │
 │ HRW ranking over │ │ Tick-driven   │ │  Tier A: stale    │ │ POST /lakehouse│
-│ peer cache; AZ-  │ │ Scan() loop;  │ │  partitions       │ │ /drain →       │
-│ stratified,      │ │ fair-share +  │ │  Tier B: S3 prefix│ │ Scheduler.Drain│
+│ peer cache (the  │ │ Scan() loop;  │ │  partitions       │ │ /drain →       │
+│ whole list),     │ │ fair-share +  │ │  Tier B: S3 prefix│ │ Scheduler.Drain│
 │ draining filter, │ │ ownership +   │ │  hash + 3-step    │ │  (waits for in-│
 │ stabilize gate.  │ │ ring-thrash   │ │  safety gate.     │ │  flight, emits │
 │                  │ │ rate limit.   │ │                   │ │  X-Lakehouse-  │
@@ -118,7 +118,6 @@ func (r *OwnershipResolver) WithHashFunc(h func(string) uint64) *OwnershipResolv
 // Configurable callbacks (assign after construction):
 r.Stabilizing = func() bool { ... } // optional
 r.IsDraining = func(peer string) bool { ... } // optional
-r.SameAZPeers = func() []string { ... } // optional; nil = all peers
 
 // Core decisions:
 func (r *OwnershipResolver) OwnsPartition(partition string) bool
@@ -364,7 +363,7 @@ library swap. Two constraints already found and recorded in the benchmark:
 
 | Code surface | Spec section |
 |---|---|
-| `ownership.go` HRW + AZ stratification | §2.1, §12.1 |
+| `ownership.go` HRW over the whole writer list | §2.1 |
 | `ownership.go` stabilization gate | §3.1 cases 3 + 22 |
 | `orphan_sweep.go` Tier A (staleness) | §2.4.1 |
 | `orphan_sweep.go` Tier B (S3 prefix hash) | §2.4.2, §3.7 |

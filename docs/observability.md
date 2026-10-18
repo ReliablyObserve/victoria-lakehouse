@@ -69,8 +69,8 @@ graph LR
 | `lakehouse_peer_requests_total` | Counter | `op`, `peer` | Requests to peers |
 | `lakehouse_peer_hits_total` | Counter | `peer` | Peer cache hits |
 | `lakehouse_peer_ring_members` | Gauge | | Fleet size |
-| `lakehouse_ring_self_resolved` | Gauge | `ring` (`compaction`, `peercache`) | 1 when the pod found exactly one entry for itself in the discovered member list of that ring (by its IP, its StatefulSet hostname, a dashed-IP name or a DNS answer, on its listen port); 0 when none or several match. A pod at 0 owns nothing in that ring: it compacts no partition and sweeps no orphans (`compaction`), or fetches its own cache keys from its peers (`peercache`). Absent until the ring has been seen with at least one member. 0 is normal for `peercache` on a pod that is not behind the peer headless service (for example an insert pod when that service is the select headless service). Alert `LakehouseRingSelfUnresolved` (compaction ring only) |
-| `lakehouse_ring_self_in_peers` | Gauge | `ring` | 1 when the entry found above is also in the set the ring hashes over (it is 0 for a pod that resolved but is draining or outside the AZ subset, and 0 whenever `lakehouse_ring_self_resolved` is 0). Replaces `lakehouse_compaction_ownership_self_in_peers`, which read 1 even for an unresolved pod because the listen address was appended to the list |
+| `lakehouse_ring_self_resolved` | Gauge | `ring` (`compaction`, `peercache`) | 1 when the pod found exactly one entry for itself in the discovered member list of that ring (by its IP, its StatefulSet hostname, a dashed-IP name or a DNS answer, on its listen port); 0 when none or several match. A pod at 0 owns nothing in that ring: it compacts no partition and sweeps no orphans (`compaction`), or fetches its own cache keys from its peers (`peercache`). Absent until the ring has been looked at; an empty discovered list reads 0. 0 is normal for `peercache` on a pod that is not behind the peer headless service (for example an insert pod when that service is the select headless service). Alert `LakehouseRingSelfUnresolved` (compaction ring only) |
+| `lakehouse_ring_self_in_peers` | Gauge | `ring` | 1 when the entry found above is also in the set the ring hashes over (it is 0 for a pod that resolved but is draining, and 0 whenever `lakehouse_ring_self_resolved` is 0). Replaces `lakehouse_compaction_ownership_self_in_peers`, which read 1 even for an unresolved pod because the listen address was appended to the list |
 | `lakehouse_peer_bytes_transferred_total` | Counter | `direction` | Network bytes |
 
 ### Manifest & Discovery Metrics
@@ -320,6 +320,7 @@ Shipped in `alerts/alerts-lakehouse.yml`:
 | `LakehouseDiscoveryFailed` | critical | No storage nodes found for 10m |
 | `LakehouseS3ThrottleSustained` | warning | Sustained S3 throttling for 5m |
 | `LakehousePeerDown` | warning | High peer error rate for 5m |
+| `LakehouseNoWriterInCompactionRing` | critical | `sum(lakehouse_ring_self_resolved{ring="compaction"})` over the ready pods is 0 for 10m: no pod is in the compaction ring, so nothing is compacted |
 | `LakehouseRingSelfUnresolved` | warning | `lakehouse_ring_self_resolved{ring="compaction"} == 0` on a ready pod for 5m: the pod does not recognise itself in the discovered compaction ring and owns nothing in it; set `POD_IP` / `POD_IPS` or check the headless service. The peer-cache ring is not alerted on: a pod outside the peer headless service is correctly not in it |
 | `LakehouseTenantScopeViolation` | critical | Any `lakehouse_tenant_scope_violations_total` increase in 5m |
 | `LakehouseTenantBucketListFailing` | critical | A tenant's dedicated bucket failed to list for 10m (`lakehouse_manifest_tenant_bucket_list_errors_total`) |

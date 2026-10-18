@@ -45,7 +45,7 @@
 # Semantics: docs/architecture/roles.md#how-a-pod-finds-itself-in-the-ring.
 
 - id: lh.flag.ring_self_resolution.logs
-  title: "Logs — every writer listening on :9428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one compaction owner for 1, 2, 3 and 8 writers; a pod that is not in the ring owns nothing and never adds its listen address; with the orphan sweep stopped (#602), two writers and two selects over one bucket compact every partition once and store every row once"
+  title: "Logs — every writer listening on :9428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one scheduler owner for 1, 2, 3 and 8 writers and for 2 zones x 2 writers and 3 zones x 1 writer, az_aware or not; a pod that is not in the ring, or that knows no peers while discovery is configured, owns nothing and never adds its listen address; with the orphan sweep stopped (#602), two writers and two selects over one bucket compact every partition once and store every row once (the sweep's Tier A can still merge a partition twice)"
   surface: lh
   kind: flag
   origin: lh-addition
@@ -67,7 +67,7 @@
       - internal/smartcache/ring_self_test.go
 
 - id: lh.flag.ring_self_resolution.traces
-  title: "Traces — every writer listening on :10428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one compaction owner for 1, 2, 3 and 8 writers; a pod that is not in the ring owns nothing and never adds its listen address; with the orphan sweep stopped (#602), two writers and two selects over one bucket compact every partition once and store every span once"
+  title: "Traces — every writer listening on :10428 finds its own entry in the discovered ring (IPv4, IPv6, StatefulSet hostname, dashed IPv4 and IPv6) so each of 672 partitions has exactly one scheduler owner for 1, 2, 3 and 8 writers and for 2 zones x 2 writers and 3 zones x 1 writer, az_aware or not; a pod that is not in the ring, or that knows no peers while discovery is configured, owns nothing and never adds its listen address; with the orphan sweep stopped (#602), two writers and two selects over one bucket compact every partition once and store every span once (the sweep's Tier A can still merge a partition twice)"
   surface: lh
   kind: flag
   origin: lh-addition
@@ -97,7 +97,7 @@
       - internal/selfaddr/tracker_test.go
 
 - id: lh.flag.ring_self_unresolved_alert
-  title: "Alerts — LakehouseRingSelfUnresolved fires when lakehouse_ring_self_resolved is 0 for 5 minutes, and the chart gives every pod of both signals POD_NAME, POD_IP and POD_IPS from the downward API"
+  title: "Alerts — LakehouseRingSelfUnresolved fires when a ready pod reports lakehouse_ring_self_resolved{ring=compaction} 0 for 5 minutes (compaction ring only, not the peer-cache ring), LakehouseNoWriterInCompactionRing pages when every ready writer does for 10 minutes, and the chart gives every pod of both signals POD_NAME, POD_IP and POD_IPS from the downward API"
   surface: lh
   kind: flag
   origin: lh-addition

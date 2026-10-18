@@ -761,6 +761,18 @@ func (s *Scheduler) OwnsPartition(partition string) bool {
 	return s.ownership.OwnsPartition(partition)
 }
 
+// InRing reports whether this pod is identified as exactly one member of the
+// compaction ring and is in the set ownership hashes over (true when ownership
+// is unset — single-node). False means the pod owns nothing, whatever the
+// partition; lakehouse_ring_self_resolved says why.
+func (s *Scheduler) InRing() bool {
+	if s.ownership == nil {
+		return true
+	}
+	_, ok := s.ownership.SelfMember()
+	return ok
+}
+
 // OwnerOf returns the HRW owner peer of the partition ("" when ownership is unset).
 func (s *Scheduler) OwnerOf(partition string) string {
 	if s.ownership == nil {

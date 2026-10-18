@@ -3,6 +3,7 @@ package selfaddr
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -150,11 +151,22 @@ func TestSystemEnv_LookupHostIsAsyncAndCached(t *testing.T) {
 	if got := env.LookupHost("a.test"); got[0] != netip.MustParseAddr("10.0.0.9") {
 		t.Errorf("LookupHost = %v, want 10.0.0.9 (unmapped)", got)
 	}
+	// Inside the TTL no further lookup starts, however often it is asked.
+	for i := 0; i < 50; i++ {
+		env.LookupHost("a.test")
+	}
+	time.Sleep(20 * time.Millisecond)
 	if n := f.lookups.Load(); n != 1 {
 		t.Errorf("%d lookups for one name inside the TTL, want 1", n)
 	}
+	f.advance(dnsTTL - time.Second)
+	env.LookupHost("a.test")
+	time.Sleep(20 * time.Millisecond)
+	if n := f.lookups.Load(); n != 1 {
+		t.Errorf("%d lookups just before the TTL ends, want 1", n)
+	}
 	// After the TTL it refreshes, still returning the old answer meanwhile.
-	f.advance(2 * time.Minute)
+	f.advance(2 * time.Second)
 	f.mu.Lock()
 	f.answer["a.test"] = []netip.Addr{netip.MustParseAddr("10.0.0.10")}
 	f.mu.Unlock()
@@ -250,4 +262,81 @@ func TestSystemEnv_RealProcess(t *testing.T) {
 		t.Errorf("LookupHost blocked for %v", time.Since(start))
 	}
 	waitFor(t, "localhost to resolve", func() bool { return len(env.LookupHost("localhost")) > 0 })
+}
+
+// A slice LookupHost returned stays what it was while the entry refreshes: the
+// refresh builds a new slice instead of rewriting the one a caller holds.
+func TestSystemEnv_RefreshDoesNotRewriteAReturnedSlice(t *testing.T) {
+	f := &fakeSrc{now: time.Unix(1000, 0), env: map[string]string{}, answer: map[string][]netip.Addr{"a.test": {netip.MustParseAddr("10.0.0.9")}}}
+	env := newSystemEnv(f.source())
+	env.LookupHost("a.test")
+	waitFor(t, "first answer", func() bool { return len(env.LookupHost("a.test")) == 1 })
+	held := env.LookupHost("a.test")
+
+	f.advance(2 * dnsTTL)
+	f.mu.Lock()
+	f.answer["a.test"] = []netip.Addr{netip.MustParseAddr("10.0.0.10")}
+	f.mu.Unlock()
+	// Readers keep reading the held slice while the refresh lands.
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = held[0].String()
+					env.LookupHost("a.test")
+				}
+			}
+		}()
+	}
+	waitFor(t, "the refresh", func() bool {
+		g := env.LookupHost("a.test")
+		return len(g) == 1 && g[0] == netip.MustParseAddr("10.0.0.10")
+	})
+	close(stop)
+	wg.Wait()
+	if held[0] != netip.MustParseAddr("10.0.0.9") {
+		t.Errorf("the slice a caller held now reads %v: the refresh rewrote it in place", held[0])
+	}
+}
+
+// A resolver that never answers cannot pin every lookup slot: each lookup is cut
+// at its timeout, so other names are looked up afterwards.
+func TestSystemEnv_HungResolverDoesNotPinTheSlots(t *testing.T) {
+	f := &fakeSrc{now: time.Unix(1000, 0), env: map[string]string{}, gate: make(chan struct{})} // never closed
+	src := f.source()
+	src.timeout = 30 * time.Millisecond
+	env := newSystemEnv(src)
+	for i := 0; i < 3*dnsParallel; i++ {
+		env.LookupHost(fmt.Sprintf("h%02d.test", i))
+	}
+	// The first dnsParallel lookups hang until their timeout; the rest start once slots free up.
+	waitFor(t, "lookups beyond the slot count to start", func() bool {
+		for i := 0; i < 3*dnsParallel; i++ {
+			env.LookupHost(fmt.Sprintf("h%02d.test", i))
+		}
+		return f.lookups.Load() > dnsParallel
+	})
+}
+
+// A name whose lookup is in flight is not evicted as idle.
+func TestSystemEnv_EvictionKeepsInflightEntries(t *testing.T) {
+	f := &fakeSrc{now: time.Unix(1000, 0), env: map[string]string{}}
+	s := &sysEnv{src: f.source(), dns: map[string]*dnsEntry{}, sem: make(chan struct{}, dnsParallel)}
+	old := f.now.Add(-2 * dnsIdle)
+	s.dns["busy.test"] = &dnsEntry{used: old, inflight: true}
+	s.dns["idle.test"] = &dnsEntry{used: old}
+	s.evictLocked(f.now)
+	if _, ok := s.dns["busy.test"]; !ok {
+		t.Error("an entry with a lookup in flight was evicted")
+	}
+	if _, ok := s.dns["idle.test"]; ok {
+		t.Error("an idle entry was kept")
+	}
 }

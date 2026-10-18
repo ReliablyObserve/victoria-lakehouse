@@ -28,6 +28,10 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
 )
 
+// orphanSweepEnv switches the orphan sweep on for this test (see #602). Unset, the
+// sweep is stopped and the test covers the scheduler's ownership only.
+const orphanSweepEnv = "LAKEHOUSE_TEST_ORPHAN_SWEEP"
+
 var hourPartition = regexp.MustCompile(`dt=[^/]+/hour=[^/]+`)
 
 // queryKeys is every row of the seeded window on the pod, by the field that
@@ -149,8 +153,11 @@ func TestMultiInstance_TwoWritersTwoSelects_EveryPartitionCompactedByExactlyOneW
 		// attempt time for (attempt times are per pod), so with a healthy ring it
 		// still merges a partition the primary is merging: that is a separate
 		// defect (#602), listed in the gaps (docs/architecture/roles.md) and not
-		// covered here.
-		if sweep != nil && os.Getenv("SWEEP") != "on" {
+		// covered here. To see it, run this test with LAKEHOUSE_TEST_ORPHAN_SWEEP=on:
+		// the sweep keeps running, and the test then fails on partitions merged twice
+		// until #602 is fixed (measured: 2 of 8 partitions, with and without the
+		// ring fix).
+		if sweep != nil && os.Getenv(orphanSweepEnv) != "on" {
 			sweep.Stop()
 		}
 		if stop != nil {

@@ -898,8 +898,8 @@ var (
 	// the member list of a ring (ring="compaction" or "peercache"): 0 means the
 	// listen address could not be matched to a discovered member, or matched
 	// several, and the pod owns nothing in that ring. RingSelfInPeers is 1 when
-	// that entry is also in the set the ring hashes over (not draining, in the
-	// AZ subset). Both are absent until the ring has been looked at.
+	// that entry is also in the set the ring hashes over (not draining). Both are
+	// absent until the ring has been looked at.
 	RingSelfResolved = NewGaugeVec("lakehouse_ring_self_resolved", "ring")
 	RingSelfInPeers  = NewGaugeVec("lakehouse_ring_self_in_peers", "ring")
 

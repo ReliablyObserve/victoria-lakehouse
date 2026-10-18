@@ -24,8 +24,8 @@ const memoTTL = 5 * time.Second
 //	lakehouse_ring_self_resolved{ring}  1 when exactly one member is this pod.
 //	lakehouse_ring_self_in_peers{ring}  1 when that member is also in the set
 //	                                    the ring hashes over (SetInPeers); a pod
-//	                                    that is draining or outside the AZ
-//	                                    subset resolves but is not in the set.
+//	                                    that is draining resolves but is not
+//	                                    in the set.
 type Tracker struct {
 	ring   string
 	listen string
@@ -85,12 +85,9 @@ func (t *Tracker) Resolved() int64 { return t.resolved.Load() }
 func (t *Tracker) InPeers() int64 { return max(t.inPeers.Load(), 0) }
 
 // report publishes the gauge and logs when the decision changed. An empty list
-// (nothing discovered yet) says nothing about this pod and publishes nothing.
-// Called with t.mu held.
+// (nothing discovered, DNS failed) is reported like an unresolved pod: the pod
+// does not know its peers, so it is not in the ring. Called with t.mu held.
 func (t *Tracker) report(res Result) {
-	if res.Members == 0 {
-		return
-	}
 	v := int64(0)
 	if res.OK() {
 		v = 1
@@ -103,13 +100,16 @@ func (t *Tracker) report(res Result) {
 		return
 	}
 	t.logged = state
-	if res.OK() {
+	switch {
+	case res.OK():
 		logger.Infof("%s ring: this pod (listen %s) is %s among %d members", t.ring, t.listen, res.Self, res.Members)
-		return
+	case res.Members == 0:
+		logger.Warnf("%s ring: no members discovered (nothing is listed yet, or the lookup failed), so this pod (listen %s) owns nothing in this ring until the list is back", t.ring, t.listen)
+	default:
+		logger.Warnf("%s ring: this pod (listen %s) is %s among %d discovered members %s, so it owns nothing in this ring until it is found; "+
+			"set POD_IP / POD_IPS (the chart does) or check that the headless service lists this pod by an address or name it can recognise",
+			t.ring, t.listen, describe(res), res.Members, sample(t.members))
 	}
-	logger.Warnf("%s ring: this pod (listen %s) is %s among %d discovered members %s, so it owns nothing in this ring until it is found; "+
-		"set POD_IP / POD_IPS (the chart does) or check that the headless service lists this pod by an address or name it can recognise",
-		t.ring, t.listen, describe(res), res.Members, sample(t.members))
 }
 
 func describe(res Result) string {

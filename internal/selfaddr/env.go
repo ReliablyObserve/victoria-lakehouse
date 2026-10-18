@@ -32,6 +32,8 @@ type sysSource struct {
 	interfaces func() ([]net.Addr, error)
 	lookup     func(ctx context.Context, host string) ([]netip.Addr, error)
 	now        func() time.Time
+	// timeout bounds one background lookup; 0 means dnsTimeout.
+	timeout time.Duration
 }
 
 func realSource() sysSource {
@@ -182,7 +184,11 @@ func (s *sysEnv) lookupHost(host string) []netip.Addr {
 }
 
 func (s *sysEnv) fetch(host string) {
-	ctx, cancel := context.WithTimeout(context.Background(), dnsTimeout)
+	timeout := s.src.timeout
+	if timeout <= 0 {
+		timeout = dnsTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	addrs, err := s.src.lookup(ctx, host)
 	cancel()
 	<-s.sem

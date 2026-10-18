@@ -284,11 +284,11 @@ output MUST match what VL produces for the same `_stream` labels.
 | Matrix row | Surface | Test / probe | Expected | Status |
 |---|---|---|---|---|
 | EF1 | HRW ownership | `TestOwnership_OwnsPartition_TableDriven` | exactly one owner per partition | PASS |
-| EF2 | HRW ownership | `TestOwnership_AZ_SameAZWins` | same-AZ peer always wins when alive | PASS |
-| EF3 | HRW ownership | `TestOwnership_AZ_FallbackWhenAZEmpty` | falls back to all peers when same-AZ empty | PASS |
+| EF2 | HRW ownership | `TestOwnership_EveryForm_ExactlyOneOwner` (zones cases) | availability zones do not shrink the ring: one owner per partition for 2 zones x 2 writers and 3 zones x 1 writer | PASS |
+| EF3 | HRW ownership | `TestNewCompactionOwnership_DiscoveryConfiguredButEmpty_OwnsNothing` | a pod that knows no peers while discovery is configured owns nothing | PASS |
 | EF4 | HRW ownership | `TestOwnership_AllDraining_FallbackEmpty` | empty owners when every peer is draining | PASS |
 | EF5 | HRW ownership | `TestOwnership_StaleSelf_Suppressed` | refuses ownership when Self not in peers | PASS |
-| EF6 | HRW ownership | `TestOwnership_SelfInPeers_TicksOne` | `self_in_peers` gauge ticks 1 when present | PASS |
+| EF6 | HRW ownership | `TestOwnership_SelfInPeers_TicksOne` | `lakehouse_ring_self_in_peers` gauge ticks 1 when present | PASS |
 | EF7 | HRW ownership | `TestOwnership_DrainingPeer_Excluded` | draining peer never appears in ranked owners | PASS |
 | EF8 | HRW ownership | `TestOwnership_Concurrent_RaceFree` | `-race` clean under 100 goroutines | PASS |
 | EF9 | HRW ownership | `TestOwnership_AddRemovePeer_OnlyMinorRedistribution` | < 1/N partitions move on add/remove | PASS |

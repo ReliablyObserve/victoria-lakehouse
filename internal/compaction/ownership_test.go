@@ -315,55 +315,6 @@ func TestOwnership_DrainingPeer_Excluded(t *testing.T) {
 	}
 }
 
-// TestOwnership_AZ_SameAZWins covers spec §12.1: when SameAZPeers is
-// available with at least one live member, HRW runs only over that
-// subset.
-//
-// Negative-control proof: returning the full peer list unconditionally
-// from peersForOwnership would let some partitions land on cross-AZ
-// peers; this test asserts every partition stays in the AZ.
-func TestOwnership_AZ_SameAZWins(t *testing.T) {
-	allPeers := []string{"az1-a", "az1-b", "az2-c", "az2-d"}
-	az1Peers := []string{"az1-a", "az1-b"}
-
-	r := NewOwnershipResolver("az1-a", staticPeers(allPeers...))
-	r.SameAZPeers = staticPeers(az1Peers...)
-
-	for i := 0; i < 100; i++ {
-		owner := r.OwnerOf(generatePartition(i))
-		if owner != "az1-a" && owner != "az1-b" {
-			t.Fatalf("partition %d: owner %q outside az1", i, owner)
-		}
-	}
-}
-
-// TestOwnership_AZ_FallbackWhenAZEmpty covers the spec §12.1 fallback:
-// when same-AZ filter leaves nothing alive, drop the AZ constraint
-// and use the full peer set.
-//
-// Negative-control proof: returning early on an empty az subset
-// (rather than falling through) would refuse to own anything and
-// every partition would go unhandled. This test asserts ownership
-// remains across the cluster.
-func TestOwnership_AZ_FallbackWhenAZEmpty(t *testing.T) {
-	allPeers := []string{"az1-a", "az2-c", "az2-d"}
-	r := NewOwnershipResolver("az1-a", staticPeers(allPeers...))
-	r.SameAZPeers = staticPeers("az1-a") // only self in AZ
-	r.IsDraining = func(p string) bool { return p == "az1-a" }
-
-	owners := map[string]int{}
-	for i := 0; i < 60; i++ {
-		owners[r.OwnerOf(generatePartition(i))]++
-	}
-
-	if _, ok := owners["az1-a"]; ok {
-		t.Fatal("draining az1-a was chosen as owner")
-	}
-	if owners["az2-c"]+owners["az2-d"] != 60 {
-		t.Fatalf("fallback to cross-AZ peers failed: got %v", owners)
-	}
-}
-
 // TestOwnership_AllDraining_FallbackEmpty covers the worst-case path:
 // every peer is draining → peersForOwnership returns empty → ownership
 // refuses (consistent with edge case 10).

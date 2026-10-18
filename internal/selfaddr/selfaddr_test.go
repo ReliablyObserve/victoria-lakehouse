@@ -38,6 +38,8 @@ func TestSelfaddr_Forms(t *testing.T) {
 		{"wildcard host 0.0.0.0", "0.0.0.0:9428", v4, Env{IPs: ips("10.1.2.3")}, "10.1.2.3:9428", "matched"},
 		{"wildcard host [::]", "[::]:9428", v4, Env{IPs: ips("10.1.2.3")}, "10.1.2.3:9428", "matched"},
 		{"listen host is the pod ip", "10.1.2.4:9428", v4, Env{}, "10.1.2.4:9428", "matched"},
+		{"listen host is the pod ip, member written differently", "10.1.2.4:9428", []string{"[::ffff:10.1.2.4]:9428", "10.1.2.5:9428"}, Env{}, "[::ffff:10.1.2.4]:9428", "matched"},
+		{"listen host is a specific ip other than the member", "10.1.2.9:9428", v4, Env{}, "", "not_listed"},
 		{"ipv6 literal member", ":9428", []string{"[fd00::5]:9428", "[fd00::6]:9428"}, Env{IPs: ips("fd00::6")}, "[fd00::6]:9428", "matched"},
 		{"ipv6 written differently", ":9428", []string{"[fd00:0:0:0:0:0:0:5]:9428", "[fd00::6]:9428"}, Env{IPs: ips("fd00::5")}, "[fd00:0:0:0:0:0:0:5]:9428", "matched"},
 		{"ipv6 zone in the member", ":9428", []string{"[fe80::1%eth0]:9428", "[fe80::2%eth0]:9428"}, Env{IPs: ips("fe80::2")}, "[fe80::2%eth0]:9428", "matched"},

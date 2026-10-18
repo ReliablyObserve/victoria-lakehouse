@@ -103,7 +103,7 @@ func ringOwnerShares(form string, w int) (ownerless, multi float64) {
 	members := ringMembers(form, w)
 	var pods []func(string) bool
 	for i := 0; i < w; i++ {
-		own := newCompactionOwnership(":10428", nil, func() []string { return members }, podEnv(form, i))
+		own := newCompactionOwnership(":10428", nil, func() []string { return members }, podEnv(form, i), true)
 		pods = append(pods, own.OwnsPartition)
 	}
 	return shares(ownerCounts(ringPartitions(), pods))
@@ -145,7 +145,7 @@ func zonedOwnerShares(t *testing.T, azs, perAZ int, azAware bool) (ownerless, mu
 		} else {
 			pc.UpdatePeers(members)
 		}
-		own := newCompactionOwnership(":10428", pc, func() []string { return members }, podEnv("sts-srv", i))
+		own := newCompactionOwnership(":10428", pc, func() []string { return members }, podEnv("sts-srv", i), true)
 		pods = append(pods, own.OwnsPartition)
 	}
 	time.Sleep(20 * time.Millisecond) // the ring's stabilization window
@@ -187,7 +187,7 @@ func TestNewCompactionOwnership_NeverAppendsListenAddr(t *testing.T) {
 		Hostnames: func() []string { return []string{"lh-traces-insert-9"} },
 		IPs:       func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("10.9.9.9")} },
 	}
-	own := newCompactionOwnership(":10428", nil, func() []string { return members }, stranger)
+	own := newCompactionOwnership(":10428", nil, func() []string { return members }, stranger, true)
 	for _, p := range ringPartitions() {
 		if own.OwnsPartition(p) {
 			t.Fatalf("a pod that is not in the discovered ring owns %s; it must own nothing", p)
@@ -209,7 +209,7 @@ func TestNewCompactionOwnership_NeverAppendsListenAddr(t *testing.T) {
 	pc := peercache.NewWithStabilize(":10428", "k", time.Second, 1, time.Millisecond)
 	pc.UpdatePeers(members)
 	time.Sleep(15 * time.Millisecond)
-	viaPeers := newCompactionOwnership(":10428", pc, nil, stranger)
+	viaPeers := newCompactionOwnership(":10428", pc, nil, stranger, true)
 	for _, p := range ringPartitions() {
 		if viaPeers.OwnsPartition(p) {
 			t.Fatalf("a pod that is not in the peer ring owns %s", p)
@@ -217,16 +217,20 @@ func TestNewCompactionOwnership_NeverAppendsListenAddr(t *testing.T) {
 	}
 }
 
-// A pod with no discovery at all is alone and owns everything.
+// A pod with no discovery configured at all is alone and owns everything. With
+// discovery configured and nothing listed (DNS failed, the headless service lists
+// nobody yet) it does not know its peers: it owns nothing and reports it, because
+// falling back to "alone" would make every pod of a fleet own every partition
+// during a DNS outage.
 func TestNewCompactionOwnership_SinglePodNoDiscovery_OwnsAll(t *testing.T) {
 	for name, own := range map[string]func() bool{
-		"no writers, no peer cache": func() bool {
-			o := newCompactionOwnership(":10428", nil, nil, selfaddr.Env{})
+		"no writers, no peer cache, no discovery": func() bool {
+			o := newCompactionOwnership(":10428", nil, nil, selfaddr.Env{}, false)
 			return ownsAll(o.OwnsPartition)
 		},
-		"empty writer list and empty peer ring": func() bool {
+		"a peer cache without peers, no discovery": func() bool {
 			pc := peercache.NewWithStabilize(":10428", "k", time.Second, 1, time.Millisecond)
-			o := newCompactionOwnership(":10428", pc, func() []string { return nil }, selfaddr.Env{})
+			o := newCompactionOwnership(":10428", pc, func() []string { return nil }, selfaddr.Env{}, false)
 			return ownsAll(o.OwnsPartition)
 		},
 	} {
@@ -234,6 +238,47 @@ func TestNewCompactionOwnership_SinglePodNoDiscovery_OwnsAll(t *testing.T) {
 			t.Errorf("%s: the only pod does not own every partition", name)
 		}
 	}
+}
+
+func TestNewCompactionOwnership_DiscoveryConfiguredButEmpty_OwnsNothing(t *testing.T) {
+	pc := peercache.NewWithStabilize(":10428", "k", time.Second, 1, time.Millisecond)
+	for name, o := range map[string]func() bool{
+		"empty writer list and empty peer ring": func() bool {
+			own := newCompactionOwnership(":10428", pc, func() []string { return nil }, selfaddr.Env{}, true)
+			return anyOwned(own.OwnsPartition)
+		},
+		"no writer list and no peer cache": func() bool {
+			own := newCompactionOwnership(":10428", nil, nil, selfaddr.Env{}, true)
+			return anyOwned(own.OwnsPartition)
+		},
+	} {
+		if o() {
+			t.Errorf("%s: a pod that knows no peers owns a partition", name)
+		}
+	}
+	own := newCompactionOwnership(":10428", pc, func() []string { return nil }, selfaddr.Env{}, true)
+	own.OwnsPartition("0/0/traces/dt=2026-10-01/hour=00")
+	if got := own.SelfResolvedGauge(); got != 0 {
+		t.Errorf("lakehouse_ring_self_resolved = %d for an empty discovered list, want 0 (the alert must see it)", got)
+	}
+	if got := own.SelfInPeersGauge(); got != 0 {
+		t.Errorf("lakehouse_ring_self_in_peers = %d for an empty discovered list, want 0", got)
+	}
+	// The list comes back: the pod owns its share again.
+	members := ringMembers("sts-srv", 1)
+	back := newCompactionOwnership(":10428", nil, func() []string { return members }, podEnv("sts-srv", 0), true)
+	if !ownsAll(back.OwnsPartition) {
+		t.Error("the only writer does not own everything once the list is back")
+	}
+}
+
+func anyOwned(owns func(string) bool) bool {
+	for _, p := range ringPartitions() {
+		if owns(p) {
+			return true
+		}
+	}
+	return false
 }
 
 func ownsAll(owns func(string) bool) bool {
@@ -276,7 +321,7 @@ func TestOwnership_RollingRestart_NewIP_ReResolves(t *testing.T) {
 				return []netip.Addr{netip.MustParseAddr(podIP[i])}
 			},
 		}
-		pods = append(pods, newCompactionOwnership(":10428", nil, list, env).OwnsPartition)
+		pods = append(pods, newCompactionOwnership(":10428", nil, list, env, true).OwnsPartition)
 	}
 	parts := ringPartitions()
 	check := func(stage string, wantOwnerless bool) {

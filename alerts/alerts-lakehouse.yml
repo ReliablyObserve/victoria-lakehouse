@@ -161,6 +161,23 @@ groups:
             (select.insert_headless_service, or discovery.peer_headless_service when it is not set)
             lists the pod by its IP or its StatefulSet hostname on the pod's listen port.
 
+      - alert: LakehouseNoWriterInCompactionRing
+        # Every ready pod that runs maintenance reports it is not in the compaction
+        # ring: nothing compacts anywhere (DNS outage, wrong headless service, a
+        # rollout that changed every pod's address form). No data when no pod
+        # reports, or none is ready.
+        expr: sum(lakehouse_ring_self_resolved{ring="compaction"} and on (instance) (lakehouse_ready == 1)) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No Lakehouse pod is in the compaction ring: nothing is being compacted"
+          description: >-
+            Every ready pod that runs compaction reports lakehouse_ring_self_resolved{ring="compaction"} 0 for 10
+            minutes, so no partition has an owner and small objects pile up. Check that the headless service
+            (select.insert_headless_service, or discovery.peer_headless_service) resolves and lists the pods,
+            and the pods' log lines "compaction ring: ..." for the reason.
+
       - alert: LakehouseTenantScopeViolation
         expr: sum by (site) (increase(lakehouse_tenant_scope_violations_total[5m])) > 0
         for: 0m

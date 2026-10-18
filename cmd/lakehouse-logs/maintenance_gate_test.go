@@ -597,7 +597,7 @@ func TestCompactionOwnership_RingIsTheWritersOnly(t *testing.T) {
 
 	pc := newRing("sel0:9428", "sel1:9428", "ins0:9428")
 	writers := func() []string { return []string{"ins0:9428"} }
-	own := newCompactionOwnership("ins0:9428", pc, writers, selfaddr.Env{})
+	own := newCompactionOwnership("ins0:9428", pc, writers, selfaddr.Env{}, true)
 	if got := ownedBy(own, partitions); got != len(partitions) {
 		t.Fatalf("the only writer owns %d of %d partitions with two select pods in the ring, want all", got, len(partitions))
 	}
@@ -610,7 +610,7 @@ func TestCompactionOwnership_RingIsTheWritersOnly(t *testing.T) {
 
 	// Without a writer list the ring is the whole peer ring and a share of the
 	// partitions belongs to select pods: this is the gap the writer list closes.
-	whole := newCompactionOwnership("ins0:9428", newRing("sel0:9428", "sel1:9428", "ins0:9428"), nil, selfaddr.Env{})
+	whole := newCompactionOwnership("ins0:9428", newRing("sel0:9428", "sel1:9428", "ins0:9428"), nil, selfaddr.Env{}, true)
 	if got := ownedBy(whole, partitions); got == 0 || got == len(partitions) {
 		t.Fatalf("with the whole ring the insert pod owns %d of %d partitions, want a share (the premise of the test)", got, len(partitions))
 	}
@@ -619,8 +619,8 @@ func TestCompactionOwnership_RingIsTheWritersOnly(t *testing.T) {
 	// among the writers.
 	pc2 := newRing("sel0:9428", "sel1:9428", "ins0:9428", "ins1:9428")
 	two := func() []string { return []string{"ins0:9428", "ins1:9428"} }
-	a := ownedBy(newCompactionOwnership("ins0:9428", pc2, two, selfaddr.Env{}), partitions)
-	b := ownedBy(newCompactionOwnership("ins1:9428", pc2, two, selfaddr.Env{}), partitions)
+	a := ownedBy(newCompactionOwnership("ins0:9428", pc2, two, selfaddr.Env{}, true), partitions)
+	b := ownedBy(newCompactionOwnership("ins1:9428", pc2, two, selfaddr.Env{}, true), partitions)
 	if a == 0 || b == 0 || a+b != len(partitions) {
 		t.Fatalf("two writers own %d + %d of %d partitions, want a split that covers every partition once", a, b, len(partitions))
 	}

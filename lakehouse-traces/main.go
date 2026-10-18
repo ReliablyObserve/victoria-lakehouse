@@ -887,10 +887,12 @@ func maintenanceAllowed(cfg *config.Config, job string) bool {
 // address is never added to a discovered list: a pod that is not found in it
 // owns nothing, where adding it made the pod an extra member that left a share
 // of the partitions ownerless and another share owned by every writer.
-func newCompactionOwnership(addr string, peerCache *peercache.PeerCache, writers func() []string, env selfaddr.Env) *compaction.OwnershipResolver {
-	// Single-pod fallback: no writer list and nothing in the peer ring (no
-	// discovery configured, or none resolved yet) means this pod is alone and
-	// owns every partition.
+func newCompactionOwnership(addr string, peerCache *peercache.PeerCache, writers func() []string, env selfaddr.Env, discovery bool) *compaction.OwnershipResolver {
+	// Single-pod fallback, only when no discovery is configured at all: this pod
+	// is alone and owns every partition. With discovery configured, an empty list
+	// (DNS failed, the headless service lists nobody yet) means the pod does not
+	// know who its peers are, and it owns nothing until it does: falling back to
+	// itself would make every pod of a fleet own everything during a DNS outage.
 	ownership := compaction.NewOwnershipResolver(addr, func() []string {
 		if writers != nil {
 			if w := writers(); len(w) > 0 {
@@ -902,31 +904,13 @@ func newCompactionOwnership(addr string, peerCache *peercache.PeerCache, writers
 				return members
 			}
 		}
+		if discovery {
+			return nil
+		}
 		return []string{addr}
 	})
 	ownership.Env = env
 	if peerCache != nil {
-		ownership.SameAZPeers = func() []string {
-			same := peerCache.SameAZMembers()
-			if writers == nil {
-				return same
-			}
-			w := writers()
-			if len(w) == 0 {
-				return same
-			}
-			in := make(map[string]bool, len(w))
-			for _, m := range w {
-				in[m] = true
-			}
-			out := make([]string, 0, len(same))
-			for _, m := range same {
-				if in[m] {
-					out = append(out, m)
-				}
-			}
-			return out
-		}
 		ownership.Stabilizing = peerCache.IsStabilizing
 		ownership.IsDraining = peerCache.IsDraining
 	}
@@ -959,7 +943,7 @@ func setupCompaction(
 	policy.DailyRollupAge = cfg.Compaction.DailyRollupAge
 
 	peerCache := store.PeerCache()
-	ownership := newCompactionOwnership(addr, peerCache, store.WriterPeers, selfEnv)
+	ownership := newCompactionOwnership(addr, peerCache, store.WriterPeers, selfEnv, discoveryEnabled(cfg))
 	if cfg.Discovery.PeerHeadlessService != "" && cfg.Select.InsertHeadlessService == "" {
 		logger.Warnf("compaction ownership hashes over the whole peer ring because select.insert_headless_service is not set; " +
 			"select pods in that ring own partitions that nothing compacts. Set it to the insert pods' headless service (the chart does)")

@@ -43,6 +43,14 @@ func RecompactHandler(sched *Scheduler) http.HandlerFunc {
 		}
 		// Ownership gate — only the HRW owner may rewrite a partition.
 		if !sched.OwnsPartition(req.Partition) {
+			if !sched.InRing() {
+				http.Error(w,
+					fmt.Sprintf("this pod is not identified in the compaction ring, so it owns no partition (partition %s, owner=%s): "+
+						"see lakehouse_ring_self_resolved and the pod log, set POD_IP / POD_IPS or check the headless service",
+						req.Partition, sched.OwnerOf(req.Partition)),
+					http.StatusForbidden)
+				return
+			}
 			http.Error(w,
 				fmt.Sprintf("not owner of partition %s (owner=%s)", req.Partition, sched.OwnerOf(req.Partition)),
 				http.StatusForbidden)

@@ -158,13 +158,6 @@ func (pc *PeerCache) Members() []string {
 	return pc.ring.Members()
 }
 
-// SameAZMembers returns the subset of members in the same AZ as self.
-// Degrades to all members when zone info is unavailable. Used by the
-// compaction OwnershipResolver for AZ-stratified HRW (spec §12.1).
-func (pc *PeerCache) SameAZMembers() []string {
-	return pc.ring.SameAZMembers()
-}
-
 // HasZoneInfo reports whether the ring carries AZ labels for its peers.
 func (pc *PeerCache) HasZoneInfo() bool {
 	return pc.ring.HasZoneInfo()

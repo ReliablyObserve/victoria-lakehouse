@@ -227,6 +227,25 @@ func TestRecompactHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("pod not identified in the ring", func(t *testing.T) {
+		// The pod's listen address is not in the list and nothing else names it: it
+		// owns nothing, and the 403 says that instead of naming an owner as if the
+		// partition were somebody else's.
+		own := NewOwnershipResolver(":9428", staticPeers("10.0.0.1:9428", "10.0.0.2:9428"))
+		own.Env = selfEnv("other", "10.0.0.9")
+		sched := newRecompactSchedulerOwned(manifest.New("test", "logs/"), newMockPool(), "v2", own)
+		rr := post(RecompactHandler(sched), `{"partition":"dt=2026-06-01/hour=00"}`)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "not identified in the compaction ring") {
+			t.Errorf("403 body %q does not say the pod is unresolved", rr.Body.String())
+		}
+		if sched.InRing() {
+			t.Error("InRing = true for an unresolved pod")
+		}
+	})
+
 	t.Run("success", func(t *testing.T) {
 		const partition = "dt=2026-06-06/hour=00"
 		m := manifest.New("test", "logs/")

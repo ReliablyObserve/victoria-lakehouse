@@ -167,11 +167,13 @@
     - cmd/lakehouse-logs/ring_self_test.go#TestOwnership_EveryForm_ExactlyOneOwner
     - cmd/lakehouse-logs/ring_self_test.go#TestNewCompactionOwnership_NeverAppendsListenAddr
     - cmd/lakehouse-logs/ring_self_test.go#TestNewCompactionOwnership_SinglePodNoDiscovery_OwnsAll
+    - cmd/lakehouse-logs/ring_self_test.go#TestNewCompactionOwnership_DiscoveryConfiguredButEmpty_OwnsNothing
     - cmd/lakehouse-logs/ring_self_test.go#TestOwnership_RollingRestart_NewIP_ReResolves
     - cmd/lakehouse-logs/ring_multiinstance_test.go#TestMultiInstance_TwoWritersTwoSelects_EveryPartitionCompactedByExactlyOneWriter
     - lakehouse-traces/ring_self_test.go#TestOwnership_EveryForm_ExactlyOneOwner
     - lakehouse-traces/ring_self_test.go#TestNewCompactionOwnership_NeverAppendsListenAddr
     - lakehouse-traces/ring_self_test.go#TestNewCompactionOwnership_SinglePodNoDiscovery_OwnsAll
+    - lakehouse-traces/ring_self_test.go#TestNewCompactionOwnership_DiscoveryConfiguredButEmpty_OwnsNothing
     - lakehouse-traces/ring_self_test.go#TestOwnership_RollingRestart_NewIP_ReResolves
     - lakehouse-traces/ring_multiinstance_test.go#TestMultiInstance_TwoWritersTwoSelects_EveryPartitionCompactedByExactlyOneWriter
     - internal/selfaddr/selfaddr_test.go#TestSelfaddr_Forms
@@ -180,6 +182,7 @@
     - internal/peercache/ring_self_test.go#TestPeercacheRing_IsSelf_Hostname
     - internal/smartcache/ring_self_test.go#TestController_OwnKeysCauseNoSelfHTTP
     - internal/metrics/ring_self_test.go#TestAlerts_RingSelfUnresolved
+    - internal/metrics/ring_self_test.go#TestAlerts_NoWriterInCompactionRing
     - charts/victoria-lakehouse/test_templates.sh
     - internal/compaction/ownership_self_test.go#TestOrphanSweep_TierA_SecondaryFoundByIP
     - internal/compaction/ownership_self_test.go#TestOrphanSweep_TierB_UnresolvedSelf_DoesNothing
@@ -209,7 +212,7 @@
     - docs/kubernetes-deployment.md
     - docs/observability.md
   highlight: >-
-    **Pods find themselves in the ring**: compaction ownership and the peer cache recognise a pod's own entry in the discovered member list by IP, StatefulSet hostname or dashed-IP name, so every partition has exactly one compaction owner whether the headless service lists IPs or hostnames.
+    **Pods find themselves in the ring**: compaction ownership and the peer cache recognise a pod's own entry in the discovered member list by IP, StatefulSet hostname or dashed-IP name, so every partition has one scheduler owner whether the headless service lists IPs or hostnames and whatever availability zones the pods run in (the orphan sweep's Tier A can still merge a partition the owner is merging, issue 602).
   description: >-
     A pod listens on :9428 and service discovery lists it as an IP or a hostname, which never
     compared equal, so the pod added its listen address to the ring as an extra member: with
@@ -218,6 +221,6 @@
     POD_IPS, interfaces), hostname (POD_NAME) and a cached DNS lookup; a pod it cannot identify
     owns nothing and never invents a member. Gauges lakehouse_ring_self_resolved and
     lakehouse_ring_self_in_peers and the alert LakehouseRingSelfUnresolved say when a pod is not
-    found. Known gaps: the orphan sweep's Tier A secondary can still merge a partition the
+    found. Pods in different availability zones hash over the same whole writer list. Known gaps: the orphan sweep's Tier A secondary can still merge a partition the
     primary is merging (issue 602); other places compare the listen address by string
     (issue 603).

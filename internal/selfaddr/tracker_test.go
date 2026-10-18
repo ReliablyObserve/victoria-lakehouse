@@ -71,15 +71,20 @@ func TestTracker_ResolvesMemoisesAndReportsGauges(t *testing.T) {
 	if res := tr.Resolve([]string{"10.9.9.9:9428"}); res.OK() || tr.Resolved() != 0 || metrics.RingSelfResolved.Get("unit-a") != 0 {
 		t.Errorf("unresolved reported as resolved: %+v gauge=%d", res, metrics.RingSelfResolved.Get("unit-a"))
 	}
-	// An empty list says nothing: the gauge keeps its value.
+	// An empty list (nothing discovered) is "not in the ring": the gauge reads 0,
+	// also on a tracker that has never seen a member.
+	if res := tr.Resolve([]string{"10.1.2.4:9428"}); !res.OK() || tr.Resolved() != 1 {
+		t.Fatalf("setup: not resolved: %+v", res)
+	}
 	tr.Resolve(nil)
-	if tr.Resolved() != 0 {
-		t.Errorf("empty list changed the gauge to %d", tr.Resolved())
+	if tr.Resolved() != 0 || metrics.RingSelfResolved.Get("unit-a") != 0 {
+		t.Errorf("an empty list left the gauge at %d / %d, want 0 (a pod that knows no peers is not in the ring)", tr.Resolved(), metrics.RingSelfResolved.Get("unit-a"))
 	}
 	tr2 := NewTracker("unit-b", ":9428", env)
+	metrics.RingSelfResolved.Set("unit-b", 1)
 	tr2.Resolve(nil)
 	if metrics.RingSelfResolved.Get("unit-b") != 0 || tr2.Resolved() != 0 {
-		t.Error("an empty list on a new tracker published a value")
+		t.Error("an empty list on a new tracker did not publish 0")
 	}
 }
 

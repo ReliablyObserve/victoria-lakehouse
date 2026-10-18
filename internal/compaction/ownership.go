@@ -5,8 +5,8 @@
 // live peer set advertised by internal/peercache.
 //
 // for the architectural rationale (why HRW over consistent
-// hashing, why xxhash over CRC32) and §12.1 for the AZ-stratification
-// design.
+// hashing, why xxhash over CRC32). Ownership hashes over the whole writer list,
+// never a per-availability-zone subset.
 package compaction
 
 import (
@@ -42,12 +42,6 @@ type OwnershipResolver struct {
 	// implementation must be cheap and concurrency-safe (peercache's
 	// Members() satisfies both).
 	Peers func() []string
-
-	// SameAZPeers, when non-nil, returns the subset of peers in the
-	// same AZ as Self. When nil, AZ stratification is disabled and
-	// HRW runs over the full Peers() set. Used to keep cross-AZ
-	// traffic bounded (spec §12.1).
-	SameAZPeers func() []string
 
 	// Stabilizing returns true while the ring is in its post-change
 	// stabilization window. While true OwnsPartition returns false
@@ -153,17 +147,13 @@ type peerWeight struct {
 	weight uint64
 }
 
-// peersForOwnership decides whether to run HRW over the same-AZ subset
-// or the full peer set, then filters out draining peers. Returns the
-// peer slice to feed into ranking.
-//
-// AZ stratification (spec §12.1):
-//   - If SameAZPeers is configured AND returns a non-empty list once
-//     draining peers are removed, use that subset.
-//   - Otherwise fall back to the full (draining-filtered) peer set.
-//
-// Returns nil when no live peer is available — caller treats that as
-// "nobody can own anything right now" and skips work (edge case 10).
+// peersForOwnership is the peer set ownership hashes over: the discovered list
+// without the peers that advertise they are draining. It is the same list on
+// every pod, whatever availability zone a pod runs in: compaction reads and
+// writes S3 only, so a pod's zone gains nothing, and a per-zone subset would give
+// every partition one owner per zone. Returns nil when no live peer is
+// available; the caller treats that as "nobody can own anything right now" and
+// skips work (edge case 10).
 func (r *OwnershipResolver) peersForOwnership() []string {
 	return r.effectivePeers(r.rawPeers())
 }
@@ -207,19 +197,9 @@ func (r *OwnershipResolver) SelfMember() (string, bool) {
 	return self, owns
 }
 
-// effectivePeers applies the draining and AZ filters to raw.
-func (r *OwnershipResolver) effectivePeers(rawAll []string) []string {
-	all := r.filterDraining(rawAll)
-
-	if r.SameAZPeers != nil {
-		rawAZ := r.SameAZPeers()
-		azFiltered := r.filterDraining(rawAZ)
-		if len(azFiltered) > 0 {
-			return azFiltered
-		}
-	}
-
-	return all
+// effectivePeers is raw without the draining peers.
+func (r *OwnershipResolver) effectivePeers(raw []string) []string {
+	return r.filterDraining(raw)
 }
 
 // filterDraining returns the input minus any peers for which
@@ -291,7 +271,7 @@ func (r *OwnershipResolver) RankedOwners(partition string) []string {
 //   - when this pod is not the highest-weight ranked owner;
 //   - when this pod is not identified as exactly one member of the peer set
 //     (lakehouse_ring_self_resolved is 0), or is identified but filtered out
-//     of the set it hashes over (draining, outside the AZ subset).
+//     of the set it hashes over (draining).
 //
 // Updates the ring self gauges when the decision changes.
 func (r *OwnershipResolver) OwnsPartition(partition string) bool {

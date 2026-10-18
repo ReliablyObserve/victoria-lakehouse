@@ -59,10 +59,7 @@ In a multi-pod cluster, this is symptomatic of one of:
   as `draining=true` to the resolver, only `self` survives the filter.
   Check `lakehouse_compaction_draining` per pod — if it's stuck at 1
   on a non-terminating pod, the drain handler was misfired.
-- **AZ stratification artifact.** In a 1-pod-per-AZ deployment with AZ
-  stratification on, each pod's same-AZ peer list is `{self}` — all
-  partitions land on `self`. This is correct behaviour (no other
-  same-AZ peers to load-balance with), not a bug.
+- **Availability zones do not matter.** Ownership hashes over the whole writer list on every pod, so a pod's zone neither shrinks its ring nor moves a partition. If partitions have one owner per zone, a build still wires a per-zone subset into ownership (it must not).
 
 ---
 

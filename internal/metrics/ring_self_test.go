@@ -77,3 +77,45 @@ func TestAlerts_RingSelfUnresolved(t *testing.T) {
 	}
 	t.Fatal("alert LakehouseRingSelfUnresolved is missing from alerts/alerts-lakehouse.yml")
 }
+
+// The cluster-wide alert fires when every ready pod that runs compaction is out
+// of the compaction ring, and is page-worthy.
+func TestAlerts_NoWriterInCompactionRing(t *testing.T) {
+	b, err := os.ReadFile("../../alerts/alerts-lakehouse.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Groups []struct {
+			Rules []struct {
+				Alert  string            `yaml:"alert"`
+				Expr   string            `yaml:"expr"`
+				For    string            `yaml:"for"`
+				Labels map[string]string `yaml:"labels"`
+			} `yaml:"rules"`
+		} `yaml:"groups"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range doc.Groups {
+		for _, r := range g.Rules {
+			if r.Alert != "LakehouseNoWriterInCompactionRing" {
+				continue
+			}
+			if r.Labels["severity"] != "critical" {
+				t.Errorf("severity = %q, want critical", r.Labels["severity"])
+			}
+			if d, err := time.ParseDuration(r.For); err != nil || d < 5*time.Minute {
+				t.Errorf("for = %q, want >= 5m", r.For)
+			}
+			for _, want := range []string{`lakehouse_ring_self_resolved{ring="compaction"}`, "sum(", "== 0", "lakehouse_ready == 1"} {
+				if !strings.Contains(r.Expr, want) {
+					t.Errorf("expr %q lacks %q", r.Expr, want)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("alert LakehouseNoWriterInCompactionRing is missing from alerts/alerts-lakehouse.yml")
+}

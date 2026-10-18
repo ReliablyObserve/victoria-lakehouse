@@ -57,9 +57,7 @@ func (r *Ring) resolveSelf(peers []string) string {
 	tr := r.self
 	r.mu.RUnlock()
 	res := tr.Resolve(peers)
-	if res.Members > 0 {
-		tr.SetInPeers(res.OK())
-	}
+	tr.SetInPeers(res.OK())
 	if res.OK() {
 		return res.Self
 	}
@@ -187,38 +185,6 @@ func (r *Ring) LookupAZ(key string) (peer string, isLocal bool, isSameAZ bool) {
 	}
 	peer = r.sameAZRing[r.sameAZKeys[idx]]
 	return peer, r.isSelf(peer), true
-}
-
-// SameAZMembers returns the subset of members in the same AZ as self.
-// Returns the full member list when zone info is unavailable (treating
-// every peer as same-AZ so consumers degrade safely). The returned
-// slice is freshly allocated and sorted; safe to mutate.
-//
-// Used by internal/compaction.OwnershipResolver for AZ-stratified HRW
-// (spec §12.1).
-func (r *Ring) SameAZMembers() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if !r.hasZoneInfo {
-		out := make([]string, 0, len(r.members))
-		for m := range r.members {
-			out = append(out, m)
-		}
-		sort.Strings(out)
-		return out
-	}
-
-	seen := make(map[string]struct{}, len(r.sameAZRing))
-	for _, peer := range r.sameAZRing {
-		seen[peer] = struct{}{}
-	}
-	out := make([]string, 0, len(seen))
-	for peer := range seen {
-		out = append(out, peer)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // HasZoneInfo reports whether the ring was populated with zone data.
