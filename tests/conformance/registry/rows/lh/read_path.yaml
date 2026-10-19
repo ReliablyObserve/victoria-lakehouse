@@ -36,3 +36,45 @@
       - internal/storage/parquets3/footer_overlay_test.go
       - lakehouse-traces/internal/storage/parquets3/footer_cache_test.go
       - lakehouse-traces/internal/storage/parquets3/footer_overlay_test.go
+
+- id: lh.query.retention_cut
+  title: "A query never plans a file that is past its retention, although the retention loop may not have deleted it yet (one Policy object, upstream's day-partition rule, for the eviction loop and the read cut)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - internal/retention/policy_test.go#TestPolicy_Basics
+      - internal/retention/policy_test.go#TestPolicy_DayFloorMatchesUpstream
+      - internal/retention/policy_test.go#TestPolicy_DayFloorProperty
+      - internal/retention/policy_test.go#TestPolicy_SubDayTTLIsExact
+      - internal/retention/policy_test.go#TestRunOnce_DeletesWhatThePolicyExpires
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_PlansExcludeExpiredFiles
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_DayFloorBoundary
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_PerTenantRetention
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_ZeroKeepCutsOnlyItsRule
+      - internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_UsesTheInjectedClock
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_PlansExcludeExpiredFiles
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_DayFloorBoundary
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_PerTenantRetention
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_ZeroKeepCutsOnlyItsRule
+      - lakehouse-traces/internal/storage/parquets3/retention_cut_test.go#TestRetentionCut_UsesTheInjectedClock
+      - cmd/lakehouse-logs/retention_policy_test.go#TestRetentionPolicy_ExpectedValues
+      - cmd/lakehouse-logs/retention_policy_test.go#TestRetentionCut_EveryRoleInstallsThePolicy
+      - cmd/lakehouse-logs/retention_policy_test.go#TestRun_InstallsTheRetentionPolicyForEveryRole
+      - cmd/lakehouse-logs/retention_policy_test.go#TestRetention_EvictionAndCutShareOnePolicy
+      - cmd/lakehouse-logs/retention_policy_test.go#TestRetentionPolicy_RejectsAnInvalidConfig
+      - lakehouse-traces/retention_policy_test.go#TestRetentionPolicy_ExpectedValues
+      - lakehouse-traces/retention_policy_test.go#TestRetentionCut_EveryRoleInstallsThePolicy
+      - lakehouse-traces/retention_policy_test.go#TestRun_InstallsTheRetentionPolicyForEveryRole
+      - lakehouse-traces/retention_policy_test.go#TestRetention_EvictionAndCutShareOnePolicy
+      - lakehouse-traces/retention_policy_test.go#TestRetentionPolicy_RejectsAnInvalidConfig
+  notes: "Upstream VictoriaLogs/VictoriaTraces drop whole UTC day partitions: a partition is dropped when its day is before the day of now-retention (storage.go getMinAllowedDay; minimum retention one day). Lakehouse's eviction loop deleted files on its own schedule (and only on the insert and all roles), so a file past retention stayed readable until the loop reached it, and a select pod could serve it indefinitely. The cut and the eviction now use one Policy object with upstream's day rule for a TTL of a day or more; a TTL below a day (a Lakehouse extension, for example keep: 0d) is judged exactly by the newest row's age. DIRECTION: this changes results for data older than the retention that eviction has not yet removed, and it moves the eviction boundary to the day floor (later by up to 23 hours than the exact rule). NOT touched by this change: buffered rows, /select/tenant_ids and the stats and admin APIs (see #619). An alias-keyed tenant override that resolves after start applies to the cut and to eviction alike only after a restart."
