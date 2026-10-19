@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.157.1] - 2026-10-19
+
 ### Changed
 
 - **The existing lint findings of the parity and chaos test helpers are cleared (tests only, no behaviour change).** Seven findings in `tests/parity` and `tests/e2e` (unchecked `Body.Close` and `json.Unmarshal` results, a redundant nil check, and the complexity of `TestParity_CrossValidation`, whose two sum-per-label subtests now share one helper) no longer fail the lint step's only-new-issues pass on a very large PR, which treats every existing finding of a package as new when it cannot fetch the PR's patch.
