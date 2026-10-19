@@ -73,7 +73,7 @@
   since: v0.18.2
   area: deletion
   surfaces: [api, storage]
-  rows: [lh.delete.hide_survives_crash]
+  rows: [lh.delete.hide_survives_crash, lh.query.tombstone_per_file_fast_path]
   tests:
     - internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive
     - internal/delete/handler_test.go#TestHandler_handleDelete_Valid
