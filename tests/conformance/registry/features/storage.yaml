@@ -601,6 +601,7 @@
   since: v0.9.0
   area: storage
   surfaces: [flag, storage]
+  rows: [lh.query.retention_cut]
   tests:
     - internal/retention/retention_test.go
     - internal/retention/coverage_hardening_test.go
