@@ -30,7 +30,8 @@ type fieldValuesRequest struct {
 	// stream ids never carry it.
 	emptyBucket bool
 	filter      *logstorage.Filter
-	tombstones  []tombstone // every tombstone overlapping the files' rows
+	tombstones  []tombstone     // every tombstone overlapping the files' rows
+	proofs      tombstoneProofs // what each of them can match, compiled by collectFieldValues
 	parse       keyTenantFunc
 	startNs     int64
 	endNs       int64
@@ -59,6 +60,7 @@ func (s *Storage) collectFieldValues(ctx context.Context, files []manifest.FileI
 	// The objects of the buffer segments this request reads are not read (see
 	// bufferView): their rows come from the segments.
 	files = r.view.exclude(files)
+	r.proofs = s.compileProofs(r.tombstones)
 	seen := make(map[string]uint64)
 	scan := make([]manifest.FileInfo, 0, len(files))
 	fromMeta := 0
@@ -178,12 +180,11 @@ func (s *Storage) fileAggregate(fi manifest.FileInfo, r fieldValuesRequest) (map
 	if r.emptyBucket && fi.RowCount <= 0 {
 		return nil, false
 	}
-	// Counts predate any delete: a tombstone of the file's tenant whose time
-	// range reaches the file's rows sends it to the scan, which applies it.
-	for _, ts := range tombstonesForKey(r.tombstones, r.parse, fi.Key) {
-		if ts.AffectsFile(fi.MinTimeNs, fi.MaxTimeNs) {
-			return nil, false
-		}
+	// Counts predate any delete: a tombstone of the file's tenant that may
+	// match one of its rows (see tombstone_proof.go) sends it to the scan,
+	// which applies it.
+	if s.anyMayMatch(r.proofs, &fi, tombstonesForKey(r.tombstones, r.parse, fi.Key)) {
+		return nil, false
 	}
 	counts, ok := fi.LabelAggregates[r.column]
 	return counts, ok && len(counts) > 0

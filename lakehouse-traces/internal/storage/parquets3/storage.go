@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -871,51 +870,7 @@ func suppressTombstonedRows(db *logstorage.DataBlock, tombstones []tombstone) *l
 
 	columns := db.GetColumns(false)
 
-	// Find the timestamp column index
-	tsColIdx := -1
-	for i, col := range columns {
-		if col.Name == "_time" || col.Name == "timestamp_unix_nano" {
-			tsColIdx = i
-			break
-		}
-	}
-
-	// Determine which rows to keep
-	keep := make([]bool, rowsCount)
-	keepCount := 0
-
-	for rowIdx := 0; rowIdx < rowsCount; rowIdx++ {
-		// Build row map for this row
-		row := make(map[string]string, len(columns))
-		for _, col := range columns {
-			row[col.Name] = col.Values[rowIdx]
-		}
-
-		// Parse timestamp (RFC3339Nano format from VL, fallback to raw integer)
-		var tsNs int64
-		if tsColIdx >= 0 {
-			v := columns[tsColIdx].Values[rowIdx]
-			if ns, ok := logstorage.TryParseTimestampRFC3339Nano(v); ok {
-				tsNs = ns
-			} else {
-				tsNs, _ = strconv.ParseInt(v, 10, 64)
-			}
-		}
-
-		// Check if any tombstone matches this row
-		matched := false
-		for i := range tombstones {
-			if tombstones[i].MatchesRow(row, tsNs) {
-				matched = true
-				break
-			}
-		}
-
-		if !matched {
-			keep[rowIdx] = true
-			keepCount++
-		}
-	}
+	keep, keepCount := delete.KeepRows(columns, rowsCount, tombstones)
 
 	suppressed := rowsCount - keepCount
 	if suppressed > 0 {

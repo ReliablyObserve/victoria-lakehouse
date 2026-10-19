@@ -244,7 +244,8 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	scope := scopeFor(ctx, tenantIDs)
 	queryTombstones := s.scopeTombstones(scope, startNs, endNs)
 	hasTombstones := len(queryTombstones) > 0
-	ctx = withReadContext(ctx, q, neededFields, filter, queryStr, queryTombstones)
+	baseCtx := ctx
+	ctx = withReadContext(baseCtx, q, neededFields, filter, queryStr, queryTombstones)
 	sink := newTombstoneSink(scope, queryTombstones, s.keyTenantParser(), s.AccountOnlyTenantKeys(), writeBlockWith)
 	filteredWriteBlock := sink.uniform
 
@@ -300,8 +301,19 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	plan := planMetadataOnly(q)
 	ctx = withMetadataOnlyPlan(ctx, plan)
 
-	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones {
-		remaining := s.manifestFastPath(ctx, files, startNs, endNs, plan, filteredWriteBlock)
+	// A tombstone only turns the fast paths off for the files it can match: the
+	// files proven free of every tombstone acting on them (tombstone_proof.go)
+	// are answered and read as if there were none; the rest keep today's path.
+	fast, fastCtx, fastWrite, rest := files, ctx, filteredWriteBlock, []manifest.FileInfo(nil)
+	var lane *cleanLane
+	if hasTombstones {
+		cleanCtx := withMetadataOnlyPlan(withReadContext(baseCtx, q, neededFields, filter, queryStr, nil), plan)
+		lane, rest = s.newCleanLane(files, sink, cleanCtx, writeBlockWith(nil))
+		fast, fastCtx, fastWrite = lane.files, lane.ctx, lane.write
+	}
+
+	if storage.IsTimestampOnly(ctx) && filter == nil && len(fast) > 0 {
+		remaining := s.manifestFastPath(fastCtx, fast, startNs, endNs, plan, fastWrite)
 		// The fast path stops emitting as soon as the query's budget cancels the
 		// context. Surface that exactly the way THIS module's scan branch does
 		// (see the firstErr handling below): a cancellation is an error, except
@@ -314,14 +326,14 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				return err
 			}
 		}
-		if len(remaining) == 0 {
+		if len(remaining) == 0 && len(rest) == 0 {
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
 			s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 			return nil
 		}
-		files = remaining
+		fast = remaining
 	}
 
 	// Count-pushdown fast path: an unfiltered single-field query (e.g.
@@ -329,17 +341,19 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// LabelAggregates for files fully within the range — zero S3 reads. Boundary
 	// / un-aggregated files fall through to the scan below; the insert buffer
 	// still contributes its rows.
-	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && !hasTombstones && countPushdownSound(q, aggField) {
-		remaining := s.manifestCountFastPath(files, startNs, endNs, aggField, filteredWriteBlock)
-		if len(remaining) == 0 {
+	if aggField := countByPushdownField(queryStr, pipeFields, filter); aggField != "" && len(fast) > 0 && countPushdownSound(q, aggField) {
+		remaining := s.manifestCountFastPath(fast, startNs, endNs, aggField, fastWrite)
+		if len(remaining) == 0 && len(rest) == 0 {
 			if n := rowsEmitted.Load(); n > 0 {
 				metrics.QueryRowsTotal.Add(int(n))
 			}
 			s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 			return nil
 		}
-		files = remaining
+		fast = remaining
 	}
+
+	files = append(fast, rest...)
 
 	if !counting { // a field_names count must not skip an object for the row filter (see withReadContext)
 		files = s.preFilterFiles(files, queryStr)
@@ -422,7 +436,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.fileWorkerLoop(ctx, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink)
+			s.fileWorkerLoop(ctx, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink, lane)
 		}()
 	}
 	wg.Wait()
@@ -447,7 +461,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 // drains one file from taskCh, traverses the K8s-style FileWorkers
 // bound (when configured), and invokes processOneFile to run the I/O.
 // Mirror of the logs module helper.
-func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, sink *tombstoneSink) {
+func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, sink *tombstoneSink, lane *cleanLane) {
 	for fi := range taskCh {
 		if err := ctx.Err(); err != nil {
 			firstErr.CompareAndSwap(nil, err)
@@ -461,6 +475,7 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 		// file before any I/O; blocking acquires unstick on
 		// ctx cancellation, surfacing rejected_total++ for
 		// operator dashboards.
+		fctx, tomb, write := lane.pick(fi.Key, ctx, hasTombstones, sink)
 		if s.bounds != nil && s.bounds.FileWorkers != nil {
 			rel, boundErr := s.bounds.FileWorkers.Acquire(ctx, 1)
 			if boundErr != nil {
@@ -469,11 +484,11 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 			}
 			func() {
 				defer rel()
-				s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink.forKey(fi.Key))
+				s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)
 			}()
 			continue
 		}
-		s.processOneFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink.forKey(fi.Key))
+		s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)
 	}
 }
 

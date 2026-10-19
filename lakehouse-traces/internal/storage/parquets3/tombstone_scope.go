@@ -126,13 +126,11 @@ type tombstoneSink struct {
 // are tss. build turns a tombstone list into the query's write function.
 // accountOnly is the {OrgID} key layout (see tombstoneActsOnScope).
 func newTombstoneSink(scope tenantScope, tss []tombstone, parse keyTenantFunc, accountOnly bool, build func([]tombstone) logstorage.WriteDataBlockFunc) *tombstoneSink {
-	sk := &tombstoneSink{uniform: build(tss)}
+	sk := &tombstoneSink{uniform: build(tss), tss: tss, parse: parse}
 	if scope.single() || len(tss) == 0 {
 		return sk
 	}
 	sk.perTenant = true
-	sk.tss = tss
-	sk.parse = parse
 	sk.accountOnly = accountOnly
 	sk.build = build
 	sk.cache = make(map[string]logstorage.WriteDataBlockFunc, 2)
@@ -143,6 +141,15 @@ func newTombstoneSink(scope tenantScope, tss []tombstone, parse keyTenantFunc, a
 // callers with no tombstones to attribute.
 func uniformSink(wb logstorage.WriteDataBlockFunc) *tombstoneSink {
 	return &tombstoneSink{uniform: wb}
+}
+
+// forFile is the tombstones acting on the object at key: exactly the ones
+// forKey applies to its rows.
+func (sk *tombstoneSink) forFile(key string) []tombstone {
+	if !sk.perTenant {
+		return sk.tss
+	}
+	return tombstonesForKey(sk.tss, sk.parse, key)
 }
 
 // forKey is the write function for rows read from the object at key.
