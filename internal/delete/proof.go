@@ -32,6 +32,11 @@ type FileProof struct {
 // attribute has no label set or bloom to prove anything with).
 type Resolve func(field string) (column string, bloom, ok bool)
 
+// Bloom asks the bloom of the file at key whether column may hold value: present
+// is false only when it proves the value absent, usable is false when it cannot
+// tell. One Bloom serves a whole request, so asking costs nothing per file.
+type Bloom func(key, column, value string) (present, usable bool)
+
 type proofKey struct {
 	id, query      string
 	start, end, at int64
@@ -66,10 +71,10 @@ func keyOf(t *Tombstone) proofKey {
 // AnyMayMatch reports whether any of tss may match a row of a file with these
 // time bounds and label sets (see CannotMatch). A tombstone that was not
 // compiled may.
-func (p Proofs) AnyMayMatch(tss []Tombstone, minNs, maxNs int64, labels map[string][]string, labelCap int, bloom func(column, value string) (present, usable bool)) bool {
+func (p Proofs) AnyMayMatch(tss []Tombstone, key string, minNs, maxNs int64, labels map[string][]string, labelCap int, bloom Bloom) bool {
 	for i := range tss {
 		fp, ok := p[keyOf(&tss[i])]
-		if !ok || !fp.CannotMatch(minNs, maxNs, labels, labelCap, bloom) {
+		if !ok || !fp.CannotMatch(key, minNs, maxNs, labels, labelCap, bloom) {
 			return true
 		}
 	}
@@ -128,10 +133,10 @@ func exactValues(f reflect.Value) []string {
 		vals = []string{str(f, "value")}
 	case "filterIn":
 		in, _ := node(f.FieldByName("values"))
-		if !in.IsValid() {
+		if !in.IsValid() || in.Kind() != reflect.Struct {
 			return nil
 		}
-		if q := in.FieldByName("q"); !q.IsValid() || !q.IsNil() {
+		if q := in.FieldByName("q"); !q.IsValid() || q.Kind() != reflect.Pointer || !q.IsNil() {
 			return nil
 		}
 		if arr := in.FieldByName("values"); arr.IsValid() && arr.Kind() == reflect.Slice {
@@ -155,8 +160,9 @@ func exactValues(f reflect.Value) []string {
 //   - labels: a complete label set (below labelCap values, the empty value is
 //     never listed) holds none of a term's values;
 //   - bloom: the column's bloom, from memory only, holds none of them. bloom
-//     returns (present, usable) and is nil when there is no bloom facet.
-func (p *FileProof) CannotMatch(minNs, maxNs int64, labels map[string][]string, labelCap int, bloom func(column, value string) (present, usable bool)) bool {
+//     answers for the file at key with (present, usable) and is nil when there
+//     is no bloom facet.
+func (p *FileProof) CannotMatch(key string, minNs, maxNs int64, labels map[string][]string, labelCap int, bloom Bloom) bool {
 	if p.Start > p.End || (minNs != 0 && maxNs != 0 && (maxNs < p.Start || minNs > p.End)) {
 		return true
 	}
@@ -165,7 +171,7 @@ func (p *FileProof) CannotMatch(minNs, maxNs int64, labels map[string][]string, 
 		if have := labels[t.Column]; len(have) > 0 && len(have) < labelCap && !anyOf(t.Values, have) {
 			return true
 		}
-		if t.Bloom && bloom != nil && allAbsent(t, bloom) {
+		if t.Bloom && bloom != nil && allAbsent(t, key, bloom) {
 			return true
 		}
 	}
@@ -183,9 +189,9 @@ func anyOf(values, have []string) bool {
 	return false
 }
 
-func allAbsent(t *ProofTerm, bloom func(column, value string) (present, usable bool)) bool {
+func allAbsent(t *ProofTerm, key string, bloom Bloom) bool {
 	for _, v := range t.Values {
-		if present, usable := bloom(t.Column, v); present || !usable {
+		if present, usable := bloom(key, t.Column, v); present || !usable {
 			return false
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -423,5 +424,111 @@ func TestTombstoneProof_CompactedLabelSetIsNotTrusted(t *testing.T) {
 	fx.tombstone(allTime(gateSvc + `:="beta"`))
 	if got := fx.run(`* | stats count() n`, true); got.sum != total-beta {
 		t.Errorf("count = %d, want %d: the beta spans of the compacted file must stay deleted", got.sum, total-beta)
+	}
+}
+
+// compactedReader plays the pods that did not compact: the writer pod compacts
+// file 0 (alpha, beta; span names GET, PUT) into a compacted-L1 object whose
+// label sets are the partial union of its inputs' (what an unlabelled input
+// lost), folds it into its pmeta and persists the bundles. The returned reader
+// pod has its own storage, its own pmeta warmed from the persisted bundles (or,
+// with sharedCatalog, the writer's), and a manifest built the way a LIST builds
+// it (key and size only) and enriched from pmeta. That view carries no
+// compaction level, so the key is all that says "compaction output".
+func compactedReader(t *testing.T, fx *gateFx, sharedCatalog bool) *gateFx {
+	t.Helper()
+	old := fx.files[0]
+	fx.mock.mu.RLock()
+	data := fx.mock.files[old.Key]
+	fx.mock.mu.RUnlock()
+	newKey := path.Dir(old.Key) + "/compacted-L1-readerview.parquet"
+	fx.mock.putFile(newKey, data)
+	out := old
+	out.Key, out.CompactionLevel = newKey, 1
+	out.Labels = map[string][]string{"service.name": {"alpha"}, "span.name": {"GET"}}
+	fx.s.PmetaOnCompacted([]manifest.FileInfo{out}, []string{old.Key}, nil)
+
+	reader := testStorageWithS3(t, fx.mock.url())
+	reader.cfg.Mode = config.ModeTraces
+	reader.catalog = fx.s.catalog
+	if !sharedCatalog {
+		ctx := context.Background()
+		if _, err := fx.s.catalog.PersistDirty(ctx, poolObjectStore{fx.s.pool}); err != nil {
+			t.Fatal(err)
+		}
+		reader.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
+		var parts []string
+		for _, f := range append([]manifest.FileInfo{out}, fx.files[1:]...) {
+			parts = append(parts, manifest.ExtractTenantPartition(f.Key))
+		}
+		if res := reader.catalog.WarmPartitions(ctx, poolObjectStore{reader.pool}, parts, 4); res.Loaded == 0 {
+			t.Fatalf("no bundle loaded for the reader pod (NeedsRebuild=%v)", res.NeedsRebuild)
+		}
+	}
+	m := manifest.New("test-bucket", "logs/")
+	for _, f := range append([]manifest.FileInfo{out}, fx.files[1:]...) {
+		m.AddFile(manifest.ExtractTenantPartition(f.Key), manifest.FileInfo{Key: f.Key, Size: f.Size})
+	}
+	if n, _ := m.EnrichFromProvider(catalogFileMetaProvider{reader.catalog}); n != 4 {
+		t.Fatalf("the reader's manifest enriched %d files from pmeta, want 4", n)
+	}
+	reader.manifest = m
+	for _, f := range m.GetFilesForRange(0, gateMaxNs) {
+		if f.Key == newKey && f.CompactionLevel != 0 {
+			t.Fatalf("fixture: the reader's view is expected to carry no compaction level, got %d", f.CompactionLevel)
+		}
+	}
+	return &gateFx{t: t, s: reader, mock: fx.mock, rows: fx.rows, files: fx.files, start: fx.start, end: fx.end}
+}
+
+// A pod that did not compact never learns the compaction level of a file: its
+// manifest comes from a LIST and pmeta, which carry the (partial) union label
+// set but not the level. The file is still known to be a compaction output by
+// its key, so a delete of a value the union lacks is applied exactly as a scan
+// applies it (#621).
+func TestTombstoneProof_ReaderPodOfACompactedFile(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		name := "two_pods"
+		if shared {
+			name = "shared_catalog"
+		}
+		t.Run(name, func(t *testing.T) {
+			fx := newGateFx(t, true, gateGroups(gateBase()))
+			total := gateRowsMatching(fx.rows, func(*schema.TraceRow) bool { return true })
+			beta := gateRowsMatching(fx.rows, func(r *schema.TraceRow) bool { return r.ServiceName == "beta" })
+			put := gateRowsMatching(fx.rows, func(r *schema.TraceRow) bool { return r.SpanName == "PUT" })
+			trace := gateRowsMatching(fx.rows, func(r *schema.TraceRow) bool { return r.TraceID == gateTraceID(0, 1) })
+			reader := compactedReader(t, fx, shared)
+			saved := maxProofPairs
+			defer func() { maxProofPairs = saved }()
+			for _, c := range []struct {
+				tomb string
+				gone int64
+			}{{gateSvc + `:="beta"`, beta}, {`name:="PUT"`, put}, {`trace_id:="` + gateTraceID(0, 1) + `"`, trace}} {
+				reader.tombstone(allTime(c.tomb))
+				for _, sh := range []struct {
+					q    string
+					hint bool
+				}{
+					{`* | stats count() n`, true},
+					{`* | stats by (name) count() n`, false},
+					{`* | stats by (_time:1h) count() n`, true},
+					{`* | field_names`, false},
+					{`* | fields _time, name, trace_id | sort by (_time, name, trace_id)`, false},
+				} {
+					maxProofPairs = saved
+					gated := reader.run(sh.q, sh.hint)
+					maxProofPairs = 0
+					scan := reader.run(sh.q, sh.hint)
+					maxProofPairs = saved
+					if gated.rows != scan.rows {
+						t.Errorf("%s, %s:\n gated %s\n scan  %s", c.tomb, sh.q, gated.rows, scan.rows)
+					}
+					if sh.q == `* | stats count() n` && gated.sum != total-c.gone {
+						t.Errorf("%s: count = %d, want %d", c.tomb, gated.sum, total-c.gone)
+					}
+				}
+			}
+		})
 	}
 }

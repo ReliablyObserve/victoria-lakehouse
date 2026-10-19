@@ -1,6 +1,7 @@
 package delete
 
 import (
+	"fmt"
 	"math/rand"
 	"strconv"
 	"testing"
@@ -155,11 +156,11 @@ func TestFileProof_CannotMatch(t *testing.T) {
 	for i := range full {
 		full[i] = "s" + strconv.Itoa(i)
 	}
-	absent := func(string, string) (bool, bool) { return false, true }
-	present := func(string, string) (bool, bool) { return true, true }
-	unusable := func(string, string) (bool, bool) { return false, false }
-	byValue := func(held ...string) func(string, string) (bool, bool) {
-		return func(_, v string) (bool, bool) {
+	absent := func(string, string, string) (bool, bool) { return false, true }
+	present := func(string, string, string) (bool, bool) { return true, true }
+	unusable := func(string, string, string) (bool, bool) { return false, false }
+	byValue := func(held ...string) func(string, string, string) (bool, bool) {
+		return func(_, _, v string) (bool, bool) {
 			for _, h := range held {
 				if v == h {
 					return true, true
@@ -176,7 +177,7 @@ func TestFileProof_CannotMatch(t *testing.T) {
 		p           FileProof
 		min, max    int64
 		labels      map[string][]string
-		bloom       func(string, string) (bool, bool)
+		bloom       func(string, string, string) (bool, bool)
 		cannotMatch bool
 	}{
 		{"no terms, overlapping range", FileProof{Start: 0, End: 100}, 10, 20, labels, nil, false},
@@ -198,7 +199,7 @@ func TestFileProof_CannotMatch(t *testing.T) {
 		{"bloom: column without one", FileProof{Start: 0, End: 100, Terms: term(false, "x")}, 10, 20, nil, absent, false},
 	}
 	for _, c := range cases {
-		if got := c.p.CannotMatch(c.min, c.max, c.labels, cap, c.bloom); got != c.cannotMatch {
+		if got := c.p.CannotMatch("k", c.min, c.max, c.labels, cap, c.bloom); got != c.cannotMatch {
 			t.Errorf("%s: CannotMatch = %v, want %v", c.name, got, c.cannotMatch)
 		}
 	}
@@ -208,16 +209,95 @@ func TestFileProof_CannotMatch(t *testing.T) {
 	gone := Tombstone{ID: "a", Query: `service.name:="gone"`, StartNs: -1 << 63, EndNs: 1<<63 - 1}
 	beta := Tombstone{ID: "b", Query: `service.name:="beta"`, StartNs: -1 << 63, EndNs: 1<<63 - 1}
 	ps := CompileProofs([]Tombstone{gone, beta}, resolve)
-	if ps.AnyMayMatch([]Tombstone{gone}, 10, 20, labels, cap, nil) {
+	if ps.AnyMayMatch([]Tombstone{gone}, "k", 10, 20, labels, cap, nil) {
 		t.Error("a value the file does not hold should prove clean")
 	}
-	if !ps.AnyMayMatch([]Tombstone{gone, beta}, 10, 20, labels, cap, nil) {
+	if !ps.AnyMayMatch([]Tombstone{gone, beta}, "k", 10, 20, labels, cap, nil) {
 		t.Error("one tombstone on a held value must decide")
 	}
-	if !ps.AnyMayMatch([]Tombstone{{ID: "c", Query: `service.name:="gone"`}}, 10, 20, labels, cap, nil) {
+	if !ps.AnyMayMatch([]Tombstone{{ID: "c", Query: `service.name:="gone"`}}, "k", 10, 20, labels, cap, nil) {
 		t.Error("a tombstone that was not compiled must count as may-match")
 	}
-	if Proofs(nil).AnyMayMatch(nil, 10, 20, labels, cap, nil) {
+	if Proofs(nil).AnyMayMatch(nil, "k", 10, 20, labels, cap, nil) {
 		t.Error("no tombstone: nothing may match")
+	}
+}
+
+// TestCompileProofs_TermsAreImpliedByAMatch is the soundness property of the
+// extractor: over random filters (AND, OR, NOT, nested, exact, in(), empty
+// value, prefix, regex) and random rows, whenever the filter matches a row,
+// every term it yields holds for that row (the field equals one of the term's
+// values). A term that did not follow from a match would let the proof clear a
+// file that holds a matching row.
+func TestCompileProofs_TermsAreImpliedByAMatch(t *testing.T) {
+	rng := rand.New(rand.NewSource(612))
+	vals := []string{"", "v", "w", "x", "vv"}
+	fields := []string{"a", "b", "c"}
+	resolve := func(f string) (string, bool, bool) { return f, false, f != "c" } // c is not a registered column
+	var gen func(depth int) string
+	gen = func(depth int) string {
+		f, v := fields[rng.Intn(len(fields))], vals[rng.Intn(len(vals))]
+		if depth == 0 || rng.Intn(3) == 0 {
+			switch rng.Intn(6) {
+			case 0:
+				return fmt.Sprintf(`%s:=%q`, f, v)
+			case 1:
+				return fmt.Sprintf(`%s:in(%q,%q)`, f, v, vals[rng.Intn(len(vals))])
+			case 2:
+				return fmt.Sprintf(`%s:=%q*`, f, v)
+			case 3:
+				return fmt.Sprintf(`%s:~%q`, f, v+".*")
+			case 4:
+				return fmt.Sprintf(`%s:%q`, f, v)
+			}
+			return fmt.Sprintf(`%s:=%q`, f, vals[rng.Intn(len(vals))])
+		}
+		a, b := gen(depth-1), gen(depth-1)
+		switch rng.Intn(4) {
+		case 0:
+			return "(" + a + " OR " + b + ")"
+		case 1:
+			return "NOT (" + a + ")"
+		case 2:
+			return "(" + a + " AND " + b + ")"
+		}
+		return a + " " + b
+	}
+	matches := 0
+	for iter := 0; iter < 600; iter++ {
+		q := gen(3)
+		ts := Tombstone{ID: "t", Query: q, StartNs: -1 << 63, EndNs: 1<<63 - 1}
+		f := ts.Filter()
+		if f == nil {
+			continue
+		}
+		var terms []ProofTerm
+		for _, fp := range CompileProofs([]Tombstone{ts}, resolve) {
+			terms = fp.Terms
+		}
+		for r := 0; r < 20; r++ {
+			row := map[string]string{}
+			var fs []logstorage.Field
+			for _, fld := range fields {
+				row[fld] = vals[rng.Intn(len(vals))]
+				fs = append(fs, logstorage.Field{Name: fld, Value: row[fld]})
+			}
+			if !f.MatchRow(fs) {
+				continue
+			}
+			matches++
+			for _, term := range terms {
+				ok := false
+				for _, v := range term.Values {
+					ok = ok || row[term.Column] == v
+				}
+				if !ok {
+					t.Fatalf("filter %s matches %v but the term %+v does not hold", q, row, term)
+				}
+			}
+		}
+	}
+	if matches == 0 {
+		t.Fatal("the generator never produced a matching row")
 	}
 }

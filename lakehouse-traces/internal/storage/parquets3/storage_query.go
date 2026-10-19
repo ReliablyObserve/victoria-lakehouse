@@ -304,9 +304,8 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// A tombstone only turns the fast paths off for the files it can match: the
 	// files proven free of every tombstone acting on them (tombstone_proof.go)
 	// are answered and read as if there were none; the rest keep today's path.
-	fast, fastCtx, fastWrite, rest, lane := s.splitCleanFiles(hasTombstones, files, sink, ctx, filteredWriteBlock, func() context.Context {
-		return withMetadataOnlyPlan(withReadContext(baseCtx, q, neededFields, filter, queryStr, nil), plan)
-	}, writeBlockWith(nil))
+	fast, fastCtx, fastWrite, rest, lane := s.splitCleanFiles(hasTombstones, files, sink, ctx, filteredWriteBlock,
+		baseCtx, q, neededFields, filter, queryStr, plan, writeBlockWith)
 
 	if storage.IsTimestampOnly(ctx) && filter == nil && len(fast) > 0 {
 		remaining := s.manifestFastPath(fastCtx, fast, startNs, endNs, plan, fastWrite)
@@ -349,6 +348,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		fast = remaining
 	}
 
+	lane.markClean(fast)
 	files = append(fast, rest...)
 
 	if !counting { // a field_names count must not skip an object for the row filter (see withReadContext)

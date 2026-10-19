@@ -88,7 +88,7 @@ func TestTombstoneProof_NeverProves(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			tss := []tombstone{{ID: "t", Query: c.query, StartNs: c.start, EndNs: c.end}}
 			fi := c.fi
-			if got := s.anyMayMatch(s.compileProofs(tss), &fi, tss); got != c.may {
+			if got := s.compileProofs(tss).anyMayMatch(&fi, tss); got != c.may {
 				t.Fatalf("anyMayMatch(%q, [%d,%d]) = %v, want %v", c.query, c.start, c.end, got, c.may)
 			}
 		})
@@ -104,7 +104,7 @@ func TestTombstoneProof_TraceIDBloomFacetOnly(t *testing.T) {
 	getsBefore := fx.gets.Load()
 	probe := func(query string) bool {
 		tss := []tombstone{{ID: "t", Query: query, StartNs: -1 << 63, EndNs: 1<<63 - 1}}
-		return fx.s.anyMayMatch(fx.s.compileProofs(tss), &fi, tss)
+		return fx.s.compileProofs(tss).anyMayMatch(&fi, tss)
 	}
 	held, other := gateTraceID(1, 2), gateTraceID(0, 2)
 	if !probe(`trace_id:="` + held + `"`) {
@@ -160,8 +160,7 @@ func TestTombstoneProof_CleanLane_IsPerTenant(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			sink := newTombstoneSink(scope, c.tss, delete.DefaultKeyTenant, false, func([]tombstone) logstorage.WriteDataBlockFunc { return nil })
 			lane, rest := s.newCleanLane([]manifest.FileInfo{fileA, fileB}, sink, nil, nil)
-			_, aClean := lane.keys[fileA.Key]
-			_, bClean := lane.keys[fileB.Key]
+			aClean, bClean := laneHas(lane, fileA.Key), laneHas(lane, fileB.Key)
 			if aClean != c.cleanA || bClean != c.cleanB {
 				t.Fatalf("clean: tenant 1001 file %v, tenant 2002 file %v; want %v and %v (dirty files: %d)", aClean, bClean, c.cleanA, c.cleanB, len(rest))
 			}
@@ -185,4 +184,14 @@ func TestTombstoneProof_PairBudget(t *testing.T) {
 	if lane, rest := s.newCleanLane([]manifest.FileInfo{fi}, sink, nil, nil); len(lane.files) != 0 || len(rest) != 1 {
 		t.Fatalf("over budget: lane=%d rest=%d, want everything dirty", len(lane.files), len(rest))
 	}
+}
+
+// laneHas reports whether the file at key is one of the lane's clean files.
+func laneHas(l *cleanLane, key string) bool {
+	for i := range l.files {
+		if l.files[i].Key == key {
+			return true
+		}
+	}
+	return false
 }

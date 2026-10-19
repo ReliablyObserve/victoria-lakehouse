@@ -183,7 +183,7 @@ func (s *Storage) fileAggregate(fi manifest.FileInfo, r fieldValuesRequest) (map
 	// Counts predate any delete: a tombstone of the file's tenant that may
 	// match one of its rows (see tombstone_proof.go) sends it to the scan,
 	// which applies it.
-	if s.anyMayMatch(r.proofs, &fi, tombstonesForKey(r.tombstones, r.parse, fi.Key)) {
+	if r.proofs.anyMayMatch(&fi, tombstonesForKey(r.tombstones, r.parse, fi.Key)) {
 		return nil, false
 	}
 	counts, ok := fi.LabelAggregates[r.column]

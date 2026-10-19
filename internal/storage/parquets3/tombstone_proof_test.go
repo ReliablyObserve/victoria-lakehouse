@@ -96,7 +96,7 @@ func TestTombstoneProof_NeverProves(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			tss := []tombstone{{ID: "t", Query: c.query, StartNs: c.start, EndNs: c.end}}
 			fi := c.fi
-			if got := s.anyMayMatch(s.compileProofs(tss), &fi, tss); got != c.may {
+			if got := s.compileProofs(tss).anyMayMatch(&fi, tss); got != c.may {
 				t.Fatalf("anyMayMatch(%q, [%d,%d]) = %v, want %v", c.query, c.start, c.end, got, c.may)
 			}
 		})
@@ -116,17 +116,17 @@ func TestTombstoneProof_AnyTombstoneThatMayMatchWins(t *testing.T) {
 		{ID: "b", Query: `service.name:="beta"`, StartNs: -1 << 63, EndNs: 1<<63 - 1},
 		{ID: "c", Query: `service.name:="gone2"`, StartNs: -1 << 63, EndNs: 1<<63 - 1},
 	}
-	if !s.anyMayMatch(s.compileProofs(tss), &fi, tss) {
+	if !s.compileProofs(tss).anyMayMatch(&fi, tss) {
 		t.Fatal("a tombstone on beta may match the file, but the proof said clean")
 	}
-	if s.anyMayMatch(s.compileProofs(tss[:1]), &fi, tss[:1]) || s.anyMayMatch(s.compileProofs(tss[2:]), &fi, tss[2:]) {
+	if s.compileProofs(tss[:1]).anyMayMatch(&fi, tss[:1]) || s.compileProofs(tss[2:]).anyMayMatch(&fi, tss[2:]) {
 		t.Fatal("a tombstone on a value the file does not hold should prove clean")
 	}
 	// A tombstone the request never compiled may match: unknown means may.
-	if !s.anyMayMatch(nil, &fi, tss[:1]) {
+	if !(tombstoneProofs{}).anyMayMatch(&fi, tss[:1]) {
 		t.Fatal("a tombstone without a compiled proof must count as may-match")
 	}
-	if s.anyMayMatch(nil, &fi, nil) {
+	if (tombstoneProofs{}).anyMayMatch(&fi, nil) {
 		t.Fatal("no tombstones: nothing may match")
 	}
 }
@@ -138,10 +138,10 @@ func TestTombstoneProof_SameIDDifferentQuery(t *testing.T) {
 	gone := tombstone{ID: "x", Query: `service.name:="gone"`, StartNs: -1 << 63, EndNs: 1<<63 - 1}
 	alpha := tombstone{ID: "x", Query: `service.name:="alpha"`, StartNs: -1 << 63, EndNs: 1<<63 - 1}
 	proofs := s.compileProofs([]tombstone{gone, alpha})
-	if s.anyMayMatch(proofs, &fi, []tombstone{gone}) {
+	if proofs.anyMayMatch(&fi, []tombstone{gone}) {
 		t.Error("gone should prove clean")
 	}
-	if !s.anyMayMatch(proofs, &fi, []tombstone{alpha}) {
+	if !proofs.anyMayMatch(&fi, []tombstone{alpha}) {
 		t.Error("alpha must stay may-match although it shares the ID of a clean tombstone")
 	}
 }
@@ -163,7 +163,7 @@ func TestTombstoneProof_BloomFacetOnly(t *testing.T) {
 	getsBefore := fx.mock.gets.Load()
 	probe := func(query string) bool {
 		tss := []tombstone{{ID: "t", Query: query, StartNs: -1 << 63, EndNs: 1<<63 - 1}}
-		return fx.s.anyMayMatch(fx.s.compileProofs(tss), &fi, tss)
+		return fx.s.compileProofs(tss).anyMayMatch(&fi, tss)
 	}
 	if probe(`service.name:="svc-007"`) != true {
 		t.Error("a value the file holds must stay may-match")
@@ -220,8 +220,7 @@ func TestTombstoneProof_CleanLane_IsPerTenant(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			sink := newTombstoneSink(scope, c.tss, delete.DefaultKeyTenant, false, func([]tombstone) logstorage.WriteDataBlockFunc { return nil })
 			lane, rest := s.newCleanLane([]manifest.FileInfo{fileA, fileB}, sink, nil, nil)
-			_, aClean := lane.keys[fileA.Key]
-			_, bClean := lane.keys[fileB.Key]
+			aClean, bClean := laneHas(lane, fileA.Key), laneHas(lane, fileB.Key)
 			if aClean != c.cleanA || bClean != c.cleanB {
 				t.Fatalf("clean: tenant 1001 file %v, tenant 2002 file %v; want %v and %v (dirty files: %d)", aClean, bClean, c.cleanA, c.cleanB, len(rest))
 			}
@@ -254,4 +253,14 @@ func TestTombstoneProof_PairBudget(t *testing.T) {
 	if lane, rest := s.newCleanLane([]manifest.FileInfo{fi}, sink, nil, nil); len(lane.files) != 0 || len(rest) != 1 {
 		t.Fatalf("over budget: lane=%d rest=%d, want everything dirty", len(lane.files), len(rest))
 	}
+}
+
+// laneHas reports whether the file at key is one of the lane's clean files.
+func laneHas(l *cleanLane, key string) bool {
+	for i := range l.files {
+		if l.files[i].Key == key {
+			return true
+		}
+	}
+	return false
 }
