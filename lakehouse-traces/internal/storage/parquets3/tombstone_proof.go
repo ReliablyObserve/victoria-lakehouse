@@ -109,3 +109,15 @@ func (l *cleanLane) pick(key string, ctx context.Context, hasTombstones bool, si
 	}
 	return ctx, hasTombstones, sink.forKey(key)
 }
+
+// splitCleanFiles returns what RunQuery's metadata fast paths run over: the
+// files, the read context and the write function they use, the files that keep
+// their tombstones, and the clean lane (nil without a tombstone, when the fast
+// paths run over every file with the query's own context and write function).
+func (s *Storage) splitCleanFiles(hasTombstones bool, files []manifest.FileInfo, sink *tombstoneSink, ctx context.Context, write logstorage.WriteDataBlockFunc, cleanCtx func() context.Context, cleanWrite logstorage.WriteDataBlockFunc) ([]manifest.FileInfo, context.Context, logstorage.WriteDataBlockFunc, []manifest.FileInfo, *cleanLane) {
+	if !hasTombstones {
+		return files, ctx, write, nil, nil
+	}
+	lane, rest := s.newCleanLane(files, sink, cleanCtx(), cleanWrite)
+	return lane.files, lane.ctx, lane.write, rest, lane
+}
