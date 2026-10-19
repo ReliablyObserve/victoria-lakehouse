@@ -204,7 +204,7 @@ func fetchWith(t *testing.T, client *http.Client, baseURL, path string, params u
 	if err != nil {
 		return fetchResult{StatusCode: 0, Body: []byte(err.Error())}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		// A streaming endpoint (/select/logsql/tail) sends headers and then

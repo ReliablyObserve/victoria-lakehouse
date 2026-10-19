@@ -30,7 +30,7 @@ func ingestSpanMarker(t *testing.T, prefix string) (string, int64) {
 	if resp.StatusCode/100 != 2 {
 		t.Fatalf("ingest span marker: status %d", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return marker, end
 }
 
